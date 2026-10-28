@@ -46,8 +46,8 @@ on:
         required: true
         type: string
 
-# One dev-branch publication at a time, serialized with itself. This never joins
-# the release-dev group that release-swift.yml uses for the master dev lane.
+# One dev-branch publication at a time, serialized with itself. release-swift.yml
+# publishes no dev release, so no master lane joins this group.
 concurrency:
   group: release-dev-branch
   cancel-in-progress: false
@@ -216,9 +216,9 @@ jobs:
     permissions:
       contents: read
       actions: read
-    # Join the dev publication serialization group that release-swift.yml's
-    # publish-release job uses for environment=dev, so a dev-branch publish and
-    # a master dev publish never register against the dev coordinator at once.
+    # The dev publication group, named like release-provider.yml's
+    # provider-publication-<environment> groups. release-swift.yml publishes no
+    # dev release, so this lane is the only one that registers dev builds.
     concurrency:
       group: provider-publication-dev
       cancel-in-progress: false

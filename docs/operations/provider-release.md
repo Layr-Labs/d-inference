@@ -1,6 +1,6 @@
 # Release A Provider Version
 
-> Last updated: 2026-10-27
+> Last updated: 2026-10-28
 
 Build, sign, notarize and publish an explicitly authorized provider artifact.
 The pipeline registers its exact official identity through the external platform
@@ -9,15 +9,17 @@ authorize releases, infrastructure or hosting changes.
 
 ## When To Use
 
-Use `.github/workflows/release-swift.yml` for a production version tag, a dev
-publication, or a signed validation bundle. Build, SDK qualification, signing,
+Use `.github/workflows/release-swift.yml` for a production version tag, a
+staging publication, or a signed validation bundle. Build, SDK qualification, signing,
 R2 staging and publication are separate jobs. Staging/publication failures retry
 the retained artifact rather than rebuilding or re-signing it.
 
 A push to `master` that changes the provider or its release tooling publishes a
-dev release automatically, and a staging release too once the `STAGING_ENABLED`
-repository variable is set (DBLM-771: staging tracks main). A `vX.Y.Z` tag
-publishes production. `.github/workflows/release-swift.yml` is the
+staging release when the `STAGING_ENABLED` repository variable is set (DBLM-771:
+staging tracks main). While that variable is unset, a master push publishes
+nothing. A `vX.Y.Z` tag publishes production. No path of this workflow publishes
+a dev release. DevNet runs the d-inference `dev` branch from end to end: its dev
+releases come from `.github/workflows/release-dev-branch.yml`. `.github/workflows/release-swift.yml` is the
 thin caller that routes each trigger to one or more environment lanes; the
 reusable `.github/workflows/release-provider.yml` runs the resolve, build,
 qualification, signing, R2 staging and publication chain for one environment. To
@@ -258,32 +260,31 @@ workflow accepts `v*.*.*` but rejects `-dev.` tags and retired `-swift` aliases.
 job outputs, and trusted-source verification precedes secret-bearing jobs.
 Never move an existing release tag to repair a failed run.
 
-### 5. Select Dev Or Validation Mode When Needed
+### 5. Select Staging Or Validation Mode When Needed
 
-A push to `master` starts a dev release — and a staging release when the
-`STAGING_ENABLED` repository variable is `'true'` — when it changes a path in the
-caller's `on.push.paths` list: `provider-swift/**`, `libs/**`, the release
-caller, the reusable workflow, the build action, or a script that the release
-runs. The trigger, not an input, selects the lanes: the caller's `dev` and
-`staging` jobs each call `release-provider.yml` and run in parallel in one GitHub
-run (the `staging` job is skipped while `STAGING_ENABLED` is unset). They are different binaries — identity is compile-time, so a master
-push runs two full build, sign, notarize and publish lanes. A plain matrix
-cannot carry each lane's artifact id and digest across the dependent jobs, which
-is why each lane is a separate call of the reusable workflow. Path filters do not
-apply to tags, so tags publish production as before. One dev release and one
-staging release run at a time (the caller's `release-dev` and `release-staging`
-groups); a running release always completes, and when more merges arrive only
-the newest waiting run of each lane continues.
+A push to `master` starts a staging release when the `STAGING_ENABLED`
+repository variable is `'true'` and the push changes a path in the caller's
+`on.push.paths` list: `provider-swift/**`, `libs/**`, the release caller, the
+reusable workflow, the build action, or a script that the release runs. The
+trigger, not an input, selects the lane: the caller's `staging` job calls
+`release-provider.yml` (the job is skipped while `STAGING_ENABLED` is unset). A
+plain matrix cannot carry each lane's artifact id and digest across the
+dependent jobs, which is why each lane is a separate call of the reusable
+workflow. Path filters do not apply to tags, so tags publish production as
+before. One staging release runs at a time (the caller's `release-staging`
+group); a running release always completes, and when more merges arrive only
+the newest waiting run continues.
 
-To publish a dev release by hand:
-
-```bash
-gh workflow run release-swift.yml --ref master -f environment=dev
-```
+A master push does not publish a dev release, and the dispatch has no `dev`
+environment choice. The caller's `dev` job runs only for a dispatched signed
+validation build (below), and `scripts/resolve-provider-release.sh` refuses a
+dev publication and a branch push routed to dev. DevNet gets its provider
+releases from the d-inference `dev` branch through
+`.github/workflows/release-dev-branch.yml`.
 
 `version_override`, if supplied, must equal the source. Production without a
 source-matching tag is refused, except the validated retained-build recovery
-path below. Dev uses only `DEV_*` secrets: the `PROD_*` and legacy secret values
+path below. A dev validation build uses only `DEV_*` secrets: the `PROD_*` and legacy secret values
 are empty in every job unless the resolved environment is `prod`. Dev creates no
 GitHub Release and no tag. Dev uploads go only to the `DEV_R2_BUCKET` bucket and
 the `DEV_R2_PUBLIC_URL` origin.
@@ -434,11 +435,11 @@ identity (`scripts/install.sh`, `select_provider_identity`;
 `DARKBLOOM_ENV_STAGING`.
 
 Staging **tracks main**, gated by the `STAGING_ENABLED` repository variable:
-when it is `'true'`, a master push publishes a staging release in parallel with
-the dev release (DBLM-771), signed with the same Developer ID as dev and prod —
+when it is `'true'`, a master push publishes a staging release (DBLM-771),
+signed with the same Developer ID as dev and prod —
 staging is a normal Developer-ID dev-family release, not the self-signed build of
 `release-dev-branch.yml`. A `X.Y.Z-staging.N` version carries the workflow run
-number, like the dev lane's `X.Y.Z-dev.N`. Publish a staging build by hand with
+number, like a dev build's `X.Y.Z-dev.N`. Publish a staging build by hand with
 the same version form (the flag gates the manual lane too):
 
 ```bash
@@ -449,23 +450,24 @@ A staging run uses only `STAGING_*` secrets (`STAGING_R2_*`,
 `STAGING_COORDINATOR_URL`, `STAGING_RELEASE_KEY`). These secrets and the staging
 coordinator infra do not exist yet (a separate `darkbloom-devnet-infra` effort,
 DBLM-771 infra PR 18). Until they do, leave `STAGING_ENABLED` unset (the default):
-the caller's `staging` job is skipped, so a master push builds and publishes dev
-only and never burns a second macOS build + notarization that would hard-fail at
+the caller's `staging` job is skipped, so a master push builds and publishes
+nothing and never burns a macOS build + notarization that would hard-fail at
 staging publication for want of credentials. Turn staging publishing on by
 setting the `STAGING_ENABLED` repository variable to `true` once that infra PR is
-applied and the `STAGING_*` secrets exist. The dev lane is never gated — it
-publishes on every qualifying master push. A push never selects prod:
+applied and the `STAGING_*` secrets exist. A push never selects prod:
 `scripts/resolve-provider-release.sh` refuses prod on any non-tag trigger, so the
 production signing identity stays tag-gated.
 
 For a signed, notarized validation bundle without registration/publication:
 
 ```bash
-gh workflow run release-swift.yml --ref master -f environment=dev -f validation_only=true
+gh workflow run release-swift.yml --ref master -f validation_only=true
 gh run download <run-id> --name darkbloom-signed-validation-<commit>-<attempt> --dir <new-directory>
 ```
 
-Trusted-source/version checks and Apple credentials still apply. This mode skips
+The dispatch runs the caller's `dev` lane instead of the chosen environment, and
+the `staging` and `prod` lanes do not run. Trusted-source/version checks and
+Apple credentials still apply. This mode skips
 publication-secret resolution, R2 upload, registration and GitHub Release
 creation; it does not attach a GitHub environment. The artifact contains the
 final tarball and `darkbloom-validation-identity.json`: source/submodule pins,

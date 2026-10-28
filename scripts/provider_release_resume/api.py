@@ -69,7 +69,7 @@ def verify_workflow_source(api, env):
             raise ValueError("Release tag ref mismatch")
         verify_tag(api, tag, source)
     elif env.get("GITHUB_EVENT_NAME") == "push" and env.get("GITHUB_REF_TYPE") == "branch":
-        # A master push publishes dev only. verify_source proved the commit is
+        # A master push publishes staging only. verify_source proved the commit is
         # verified and on master ancestry; master may already have moved on.
         if env.get("GITHUB_REF") != "refs/heads/master":
             raise ValueError("Branch push releases require master")

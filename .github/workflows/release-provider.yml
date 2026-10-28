@@ -2,11 +2,11 @@ name: Provider Release Lane (reusable)
 
 # One environment's CLI-only Swift release pipeline, called once per environment
 # by release-swift.yml. The caller routes triggers to environments (master push
-# -> dev AND staging; tag -> prod; dispatch -> the chosen environment) and owns
-# the lane-level serialization groups; this reusable workflow encapsulates the
-# whole resolve -> build -> qualify -> sign -> stage -> publish chain so a single
-# GitHub run can execute two independent lanes (dev and staging) without a matrix
-# collapsing their per-lane artifact ids and digests into one.
+# -> staging; tag -> prod; dispatch -> the chosen environment, or the dev lane
+# for a signed validation build) and owns the lane-level serialization groups;
+# this reusable workflow encapsulates the whole resolve -> build -> qualify ->
+# sign -> stage -> publish chain so each lane keeps its own artifact ids and
+# digests, which a matrix would collapse into one.
 #
 # Builds and ships:
 #   - Darkbloom.app          (signed, notarized app; the only installed artifact)
@@ -30,10 +30,12 @@ name: Provider Release Lane (reusable)
 # The caller resolves the environment input from the trigger:
 #   - tag vX.Y.Z       -> prod release of ProviderCore.version (signed tag on
 #                         reviewed master). Path filters do not apply to tags.
-#   - push to master   -> dev release X.Y.Z-dev.<run number> AND staging release
-#                         X.Y.Z-staging.<run number> (two parallel lanes).
-#   - workflow_dispatch -> the chosen environment: a dev or staging release, a
-#                         signed dev validation build, or prod recovery.
+#   - push to master   -> staging release X.Y.Z-staging.<run number>. No
+#                         master path publishes a dev release; DevNet's dev
+#                         releases come from release-dev-branch.yml on dev.
+#   - workflow_dispatch -> the chosen environment: a staging release or prod
+#                         recovery; or a signed dev validation build that is
+#                         never published.
 # Every dev build carries -dev.<run number> and every staging build
 # -staging.<run number>: the build stamps it into ProviderCore.version, so
 # `darkbloom --version` shows it. prod is reachable only through a tag (or a
@@ -145,8 +147,8 @@ jobs:
           RELEASE_RESUME_RUN_ATTEMPT: ${{ inputs.resume_run_attempt || '1' }}
           # The caller always passes the environment (one lane per environment).
           # The script still validates it against GITHUB_EVENT_NAME and
-          # GITHUB_REF: a branch push accepts only dev or staging, and prod needs
-          # a source-matching tag.
+          # GITHUB_REF: a branch push accepts only staging, dev runs only as a
+          # signed validation build, and prod needs a source-matching tag.
           RELEASE_ENVIRONMENT: ${{ inputs.environment }}
           RELEASE_VERSION_OVERRIDE: ${{ inputs.version_override }}
           RELEASE_VALIDATION_ONLY: ${{ inputs.validation_only || false }}
@@ -199,8 +201,8 @@ jobs:
             --source "$GITHUB_WORKSPACE" --bin "$BIN_DIR" --metallib "$METALLIB" \
             --output "$RUNNER_TEMP/unsigned-provider" --version "$VERSION"
           COPYFILE_DISABLE=1 tar czf "$RUNNER_TEMP/unsigned-provider.tar.gz" -C "$RUNNER_TEMP/unsigned-provider" .
-          # dev and staging lanes share one GitHub run id, so their unsigned
-          # artifacts must not collide; prod keeps the unqualified name the
+          # dev and staging names carry the environment, so two lanes in one
+          # GitHub run never collide; prod keeps the unqualified name the
           # resume path (provider_release_resume) reconstructs unchanged.
           ARTIFACT_NAME="unsigned-provider-${GITHUB_SHA}-${GITHUB_RUN_ATTEMPT}"
           if [ "$ENV_PREFIX" != prod ]; then
@@ -926,8 +928,8 @@ jobs:
           set -euo pipefail
           python3 scripts/provider-release-publication.py prepare \
             --directory "$RUNNER_TEMP/provider-publication" --bundle /tmp/darkbloom-bundle-macos-arm64.tar.gz
-          # dev and staging lanes share one GitHub run id, so their signed
-          # publication artifacts must not collide; prod keeps the unqualified
+          # dev and staging names carry the environment, so two lanes in one
+          # GitHub run never collide; prod keeps the unqualified
           # name the resume path (provider_release_resume) reconstructs and the
           # "already signed" guard matches unchanged.
           PUBLICATION_NAME="provider-publication-${RELEASE_SOURCE_SHA}-${GITHUB_RUN_ATTEMPT}"

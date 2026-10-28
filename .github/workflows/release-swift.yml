@@ -8,12 +8,17 @@ name: Release Provider Bundle (Swift)
 # Triggers:
 #   - tag vX.Y.Z        -> one prod lane (signed tag on reviewed master). Path
 #                          filters do not apply to tags.
-#   - push to master    -> a dev lane AND a staging lane, in parallel, when the
-#                          push changes the provider or this release tooling
-#                          (DBLM-771: staging tracks main alongside dev).
-#   - workflow_dispatch  -> the chosen environment's lane: a manual dev or
-#                          staging release, a signed dev validation build, or a
-#                          prod recovery of a retained build.
+#   - push to master    -> one staging lane, when the push changes the provider
+#                          or this release tooling (DBLM-771: staging tracks
+#                          main). A master push publishes no dev release.
+#   - workflow_dispatch  -> the chosen environment's lane: a manual staging
+#                          release or a prod recovery of a retained build. With
+#                          validation_only, the dev lane builds a signed
+#                          validation artifact that it does not publish.
+#
+# DevNet runs the d-inference dev branch end to end: a dev push publishes the
+# DevNet provider through release-dev-branch.yml. No path in this file publishes
+# a dev release.
 #
 # A plain matrix cannot carry each environment's artifact id and digest across
 # the dependent build/sign/stage/publish jobs, so each lane is a separate call
@@ -25,10 +30,9 @@ name: Release Provider Bundle (Swift)
 
 run-name: >-
   ${{ (github.ref_type == 'tag' && format('prod provider release {0}', github.ref_name)) ||
-      (github.event_name == 'push' && format('dev + staging provider release (master push -dev.{0}/-staging.{0})', github.run_number)) ||
+      (github.event_name == 'push' && format('staging provider release (master push -staging.{0})', github.run_number)) ||
       (inputs.resume_run_id && format('prod provider release (resume run {0})', inputs.resume_run_id)) ||
       (inputs.validation_only && format('dev provider validation build -dev.{0} (not published)', github.run_number)) ||
-      (inputs.environment == 'dev' && format('dev provider release -dev.{0} (manual)', github.run_number)) ||
       (inputs.environment == 'staging' && format('staging provider release -staging.{0} (manual)', github.run_number)) ||
       'prod provider release (manual)' }}
 
@@ -36,7 +40,7 @@ on:
   push:
     tags:
       - 'v*.*.*'
-    # A master push publishes a dev release and a staging release. These paths
+    # A master push publishes a staging release. These paths
     # are the provider sources, its submodule pins, and every script the reusable
     # workflow and .github/actions/provider-release-build run.
     branches: [master]
@@ -89,14 +93,16 @@ on:
         # A dispatch runs exactly the chosen environment's lane. prod on a
         # non-tag dispatch is only the retained-build recovery path; otherwise
         # resolve-provider-release.sh refuses prod without a source-matching tag.
-        options: [dev, staging, prod]
-        default: dev
+        # There is no dev choice: dev releases come from the dev branch
+        # (release-dev-branch.yml). validation_only selects the dev lane.
+        options: [staging, prod]
+        default: staging
       version_override:
         description: 'Optional version string when running manually (otherwise derived from tag)'
         required: false
         type: string
       validation_only:
-        description: 'Build a signed validation artifact in dev without publishing a release'
+        description: 'Build a signed dev validation artifact without publishing a release (runs instead of the chosen environment)'
         required: false
         type: boolean
         default: false
@@ -106,18 +112,13 @@ permissions:
   actions: read     # download the unsigned artifact from this run
 
 jobs:
-  # Master push: publish dev. Manual dev dispatch (release or signed validation).
+  # Manual signed dev validation build only. It never publishes, so no master
+  # path publishes a dev release; resolve-provider-release.sh refuses a dev
+  # publication too. A validation build keeps its own per-run group.
   dev:
-    if: >-
-      ${{ (github.event_name == 'push' && github.ref_type == 'branch') ||
-          (github.event_name == 'workflow_dispatch' && inputs.environment == 'dev') }}
-    # One dev publication at a time across master pushes and manual dev releases;
-    # a running dev release always completes. A signed validation build does not
-    # publish, so it keeps its own per-run group instead of serializing releases.
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.validation_only }}
     concurrency:
-      group: >-
-        ${{ (github.event_name == 'workflow_dispatch' && inputs.validation_only)
-            && format('release-swift-{0}', github.run_id) || 'release-dev' }}
+      group: ${{ format('release-swift-{0}', github.run_id) }}
       cancel-in-progress: false
     uses: ./.github/workflows/release-provider.yml
     with:
@@ -125,21 +126,22 @@ jobs:
       resume_run_id: ${{ inputs.resume_run_id || '' }}
       resume_run_attempt: ${{ inputs.resume_run_attempt || '1' }}
       version_override: ${{ inputs.version_override || '' }}
-      validation_only: ${{ inputs.validation_only || false }}
+      validation_only: true
     secrets: inherit
 
-  # Master push: publish staging alongside dev. Manual staging dispatch.
+  # Master push: publish staging. Manual staging dispatch.
   # Gated OFF until the staging stack exists: set the STAGING_ENABLED repo
   # variable to 'true' once darkbloom-devnet-infra PR 18 is applied and the
   # STAGING_* secrets exist. Unset (the default) means a master push builds and
-  # publishes dev only, so provider pushes never burn a second build that would
+  # publishes nothing, so provider pushes never burn a build that would
   # hard-fail at staging publication for want of credentials.
   staging:
     if: >-
       ${{ vars.STAGING_ENABLED == 'true' &&
           ((github.event_name == 'push' && github.ref_type == 'branch') ||
-           (github.event_name == 'workflow_dispatch' && inputs.environment == 'staging')) }}
-    # One staging publication at a time, parallel to the dev lane in the same run.
+           (github.event_name == 'workflow_dispatch' && inputs.environment == 'staging' &&
+            !inputs.validation_only)) }}
+    # One staging publication at a time across master pushes and manual releases.
     concurrency:
       group: release-staging
       cancel-in-progress: false
@@ -154,11 +156,13 @@ jobs:
 
   # Tags publish prod. A non-tag prod dispatch is the retained-build recovery
   # path; resolve-provider-release.sh refuses prod otherwise. A push to a branch
-  # never selects prod, so the prod signing identity is tag-gated.
+  # never selects prod, so the prod signing identity is tag-gated. A validation
+  # dispatch runs the dev lane instead of the chosen environment.
   prod:
     if: >-
       ${{ github.ref_type == 'tag' ||
-          (github.event_name == 'workflow_dispatch' && inputs.environment == 'prod') }}
+          (github.event_name == 'workflow_dispatch' && inputs.environment == 'prod' &&
+           !inputs.validation_only) }}
     concurrency:
       group: ${{ format('release-swift-{0}', github.run_id) }}
       cancel-in-progress: false

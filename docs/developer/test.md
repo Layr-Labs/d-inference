@@ -1,6 +1,6 @@
 # Test Provider And Native Contracts
 
-> Last updated: 2026-10-27
+> Last updated: 2026-10-28
 
 Run isolated Swift, native-resource, public-fixture and landing tests here.
 Backend integration and cross-implementation qualification are platform-owned.
@@ -1056,6 +1056,14 @@ with verbatim annotations, including multiline opening paragraphs, extra blank
 lines, CRLFs and synthetic SSH/PGP signature armor. It checks exact retained note
 text and payload/provenance digest guards without invoking signing or live
 publication.
+
+`scripts/test-provider-release-pipeline.py` and
+`scripts/test-provider-release-resolution.py` pin the routing of
+`.github/workflows/release-swift.yml`. A master push publishes staging only, and
+only when `STAGING_ENABLED` is set. A tag publishes prod. No master path
+publishes dev: the dispatch has no `dev` choice, the `dev` lane runs only as an
+unpublished signed validation build, and the resolver refuses a dev publication
+and a branch push routed to dev.
 
 `scripts/test-darkbloom-route.py` runs the actual
 [CI runner routing](build.md#ci-runner-routing) shell step against a loopback

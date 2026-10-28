@@ -467,8 +467,19 @@ Dev builds dev, and master builds master. A push to the d-inference `dev` branch
 starts `.github/workflows/release-dev-branch.yml`, which builds a provider from
 the pushed commit and publishes it to the dev coordinator. A master push builds
 and publishes through `release-swift.yml`. No workflow dispatches a build of
-another branch. The lane has no `workflow_dispatch`. To build the same commit
-again, re-run the push run.
+another branch. The lane has no `workflow_dispatch`.
+
+A new `build-sign` attempt makes new signed bytes under the same version, and
+the coordinator refuses them with HTTP 409
+(`scripts/provider-release-publication.py`). Re-run failed jobs only when
+`build-sign` passed. To rebuild, push a new commit. The workflow-level
+`release-dev-branch` concurrency group does not cancel a running run, but a
+newer dev push cancels a run that is still pending in the group.
+
+Review is not enforced on `dev`. Its rules are required signatures and the
+"Darkbloom PR access control" ruleset, which lets only the accounts on that
+ruleset's bypass list create or update a ref. Those accounts can push signed
+commits straight to `dev`, and the lane builds and publishes what they push.
 
 The push trigger uses the same `paths:` list as the master push trigger of
 `release-swift.yml`, with `release-dev-branch.yml` in place of
@@ -508,18 +519,12 @@ to the Apple-team requirement for every version (`scripts/install.sh`,
 rejects the ad-hoc signed fan helper of a dev-branch build until a separate
 change relaxes that check for pre-release versions.
 
-Ruling (David, 2026-10-28): DevNet runs dev end to end. Dev-identity Macs with
-`auto_update` on move to the dev build. Under SemVer a text identifier outranks a
-number, so `X.Y.Z-dev.branch.N` ranks above `X.Y.Z-dev.M` for every N and M. The
-ruling holds only when the coordinator returns the SemVer-greatest active
-release. The current coordinator does not do this, as the rest of this section
-shows.
-
 Both the master dev lane and this lane publish to the dev coordinator and can
-advance the dev `releases/latest/` aliases. `/v1/releases/latest` does not order
-by `created_at`. The coordinator compares the dot-separated numeric parts of the
-version and uses `created_at` only to break a tie on the same version. A
-non-numeric part such as `branch` counts as 0
+advance the dev `releases/latest/` aliases. `/v1/releases/latest` returns the
+active release that `ReleaseVersionGreater` ranks highest. That comparison is not
+SemVer: it reads each dot-separated part of the version as an integer, so a
+non-numeric part such as `branch` counts as 0. It uses `created_at` only to break
+a tie on the same version
 ([`ReleaseVersionGreater` at `fb6aaa9e`](https://github.com/Layr-Labs/darkbloom-platform/blob/fb6aaa9e58c8795987dd832ecb5b98925c9ffbae/coordinator/internal/store/shared/release_version.go);
 [`GetLatestRelease` at `fb6aaa9e`](https://github.com/Layr-Labs/darkbloom-platform/blob/fb6aaa9e58c8795987dd832ecb5b98925c9ffbae/coordinator/store/postgres/releases.go)).
 Thus:
@@ -532,7 +537,8 @@ Thus:
   publication script then waits for a latest version that does not come, and the
   `publish` job fails after it registers the release.
 - When the dev-branch base version is higher, the newest dev-branch build is
-  latest until a master dev build with a higher base version is published.
+  latest until a master dev build with an equal or higher base version is
+  published.
 
 An existing install's self-updater may not downgrade to a lower version, while a
 fresh install takes the latest.

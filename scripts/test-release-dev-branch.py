@@ -122,11 +122,25 @@ class ReleaseDevBranchScopeTests(unittest.TestCase):
         # The DEV_* values are repository secrets; no job attaches a GitHub
         # environment, whose secrets would shadow or widen them.
         self.assertNotRegex(self.text, r"(?m)^\s+environment:")
-        # Every secret the file names is a dev secret.
-        secrets = re.findall(r"secrets\.([A-Za-z0-9_]+)", self.text)
-        self.assertTrue(secrets)
-        for secret in secrets:
-            self.assertTrue(secret.startswith("DEV_"), secret)
+        # Every `secrets` reference in every expression is exactly
+        # `secrets.DEV_<NAME>`. Expressions are case-insensitive, so the search
+        # is too; `toJSON(secrets)`, `secrets['X']`, `secrets[...]` and
+        # `SECRETS.DEV_X` all fail.
+        expressions = re.findall(r"\$\{\{(.*?)\}\}", self.text, re.S)
+        self.assertTrue(expressions)
+        references = 0
+        for expression in expressions:
+            for match in re.finditer(r"(?<![A-Za-z0-9_.])secrets(?![A-Za-z0-9_])",
+                                     expression, re.I):
+                references += 1
+                self.assertRegex(expression[match.start():],
+                                 r"^secrets\.DEV_[A-Z0-9_]+(?![A-Za-z0-9_.\[])",
+                                 expression)
+        self.assertGreater(references, 0)
+        # No `secrets` context reaches the file outside an expression either.
+        outside = re.sub(r"\$\{\{.*?\}\}", "", self.text, flags=re.S)
+        outside = re.sub(r"(?m)^\s*#.*$", "", outside)
+        self.assertNotRegex(outside, r"(?i)(?<![A-Za-z0-9_])secrets(?![A-Za-z0-9_])")
         # The publication job is pinned to the dev environment.
         self.assertIn("ENV_PREFIX: dev", self.text)
 

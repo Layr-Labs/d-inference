@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-10-27
+> Last updated: 2026-10-28
 
 Provider CLI and native-runtime environment variables, compiled defaults and reading symbols. Secrets are named, never valued. Unless specified otherwise, values are read at process start.
 
@@ -151,6 +151,25 @@ contract and files are in the [add-on hold IPC reference](addon-hold-ipc.md).
 
 Neither variable is in the LaunchAgent passthrough list; the installed
 provider always serves the default socket.
+
+## Darkbloom Sandbox CLI
+
+`darkbloom sandbox` and the `Sandboxes:` line of `darkbloom status` drive the
+separately installed add-on; their bounds are fixed in code except the variable
+below. Commands, flags and the add-on contract are in the
+[CLI reference](../provider/cli-reference.md#darkbloom-sandbox).
+
+| Setting | Default / bounds | Consumer |
+|---|---|---|
+| `DARKBLOOM_SANDBOX_ROOT` | unset: `~/DarkbloomSandbox`. Tests only, though every build reads it: the add-on root whose `darkbloom-sandbox` command and `agent/agent.log` the CLI uses. `setup` still runs the installer, which installs where it installs | `provider-swift/Sources/darkbloom/Sandbox/SandboxAddon.swift` (`SandboxAddon.live`) |
+| `setup --server` | `defaultServer = "https://api-sandbox.darkbloom.dev"`; `https` only | `provider-swift/Sources/darkbloom/Sandbox/SandboxCommand.swift` (`Sandbox`) |
+| `darkbloom status` wait for the add-on | `statusLineTimeout: TimeInterval = 2` | Same file |
+| Other status reads | `statusTimeout: TimeInterval = 10` | Same file |
+| `pause` and `resume` | `actionTimeout: TimeInterval = 60` | Same file |
+| Installer download | `downloadTimeout: TimeInterval = 30`; at most `maximumScriptBytes = 1 << 20` | `provider-swift/Sources/darkbloom/Sandbox/SandboxInstaller.swift` (`SandboxInstaller`) |
+
+`DARKBLOOM_SANDBOX_ROOT` is not in the LaunchAgent passthrough list; the
+provider service never runs the add-on.
 
 ## Provider endpoint resumption and logout
 

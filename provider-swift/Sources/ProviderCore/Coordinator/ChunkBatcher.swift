@@ -97,6 +97,9 @@ final class ChunkBatcher: @unchecked Sendable {
     /// once the byte threshold is crossed.
     func enqueue(_ frame: Data) {
         queue.async {
+            // A deferred flush can run after the next connection binds. Drop
+            // disconnected frames here so they cannot enter that session.
+            guard self.sink != nil else { return }
             self.pending.append(frame)
             self.pendingBytes += frame.count
             if self.pendingBytes >= Self.flushThresholdBytes {

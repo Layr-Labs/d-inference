@@ -47,6 +47,9 @@ methodology: STRIDE
 # mailbox, accept-time peer checks, the socket override, self-reported busy fields
 # and the fail-open hold record; T-059 adds the model-load fence; T-060 covers
 # starving the add-on socket and stalling control-file reads.
+# Darkbloom Sandbox CLI reviewed 2026-10-28: TB-013, A-019 and T-061 describe
+# darkbloom sandbox setup downloading and running the add-on's installer, and the
+# CLI running the installed add-on's command, as the Mac's owner.
 description: >
   Provider and native-runtime threat model, including the external trust
   contracts the provider consumes. The provider and coordinator remain plaintext
@@ -243,6 +246,17 @@ assets:
     notes: >
       An add-on hold withholds it deliberately while the Mac's memory runs VMs.
       Code: provider-swift/Sources/ProviderCore/Addon/ProviderLoop+AddonHold.swift.
+
+  - id: A-019
+    name: mac_owner_account
+    description: >
+      The macOS account of the Mac owner who runs darkbloom: its files, keychain items
+      and processes, which any code the CLI starts can use.
+    sensitivity: high
+    notes: >
+      darkbloom sandbox setup runs the add-on's downloaded installer, and the CLI runs
+      the installed add-on's command, with this account's rights.
+      Code: provider-swift/Sources/darkbloom/Sandbox/.
 
 trust_boundaries:
   - id: TB-002
@@ -867,6 +881,39 @@ trust_boundaries:
         drive it."
       - "Leases use wall-clock time; a clock change shortens or lengthens a lease.
         The machine lock still keeps the hold while VMs run."
+
+  - id: TB-013
+    name: provider_cli_to_sandbox_installer_and_addon
+    description: >
+      darkbloom sandbox setup downloads the Darkbloom Sandbox add-on's installer
+      (install.sh) from the sandbox service and runs it as the Mac's owner, and
+      darkbloom sandbox and darkbloom status run the installed add-on's command. The
+      add-on is separately signed, closed-source code that runs as the same user.
+    how_it_works: >
+      setup refuses to run as root and asks first (or takes --yes), then fetches
+      <server>/install.sh, by default
+      from https://api-sandbox.darkbloom.dev. --server must be an https URL without
+      credentials, query or fragment; a redirect is followed only to another https
+      URL; the response must be HTTP 200 over https, at most 1 MiB, with a #! first
+      line naming a shell. The script is written 0600 into a new 0700 temporary
+      directory, run with /bin/sh and removed afterwards; Ctrl-C reaches the script,
+      not the CLI. The installer verifies the add-on release (publisher signature,
+      archive digest, Developer ID team) before it installs the app; the CLI checks
+      nothing about the script beyond TLS. The CLI runs
+      ~/DarkbloomSandbox/darkbloom-sandbox (DARKBLOOM_SANDBOX_ROOT moves it, for
+      tests): status --json for at most 2 seconds from darkbloom status and 10 seconds
+      otherwise, pause and resume for at most 60 seconds, and uninstall --yes and an
+      older add-on's status with the terminal. Code:
+      provider-swift/Sources/darkbloom/Sandbox/.
+    current_limitations:
+      - "Trust in install.sh is trust in TLS and in whoever controls the sandbox
+        service, or a --server the owner names: either can serve any script, as with
+        the documented curl | sh install."
+      - "Same-UID code can replace the add-on command, which darkbloom status then
+        runs for up to 2 seconds."
+      - "The add-on's status JSON is shown, not verified: a tampered add-on can
+        misreport its state, which only changes what the CLI prints and whether setup
+        reruns the installer."
 
 threats:
   - id: T-007
@@ -2398,3 +2445,36 @@ threats:
     detection_hint: >
       Test silent and trickling peers against a full connection table, and FIFOs at
       the hold record and mailbox paths.
+
+  - id: T-061
+    trust_boundary: TB-013
+    stride: Tampering
+    title: A tampered installer or add-on command runs as the Mac's owner
+    description: >
+      An attacker on the network with a misissued certificate, or one who controls the
+      sandbox service, could serve a malicious install.sh that setup runs as the user;
+      same-UID code could swap the add-on command that the CLI runs.
+    adversaries: [ADV-003]
+    affected_assets: [A-019]
+    affected_files:
+      - provider-swift/Sources/darkbloom/Sandbox/SandboxInstaller.swift
+      - provider-swift/Sources/darkbloom/Sandbox/SandboxSetupCommand.swift
+      - provider-swift/Sources/darkbloom/Sandbox/SandboxAddon.swift
+    mitigations:
+      - description: >
+          HTTPS for the download and every redirect, system TLS validation, a size
+          bound, a shell-script check, owner-only staging, the owner's confirmation
+          before any download, bounded add-on command runs, and the installer's own
+          release signature, digest and Developer ID checks before it installs the app.
+        status: implemented
+      - description: >
+          The script carries no signature the CLI checks: trust rests on TLS and the
+          sandbox service, as for the documented curl | sh install. Same-UID tampering
+          is outside this boundary.
+        status: accepted
+    open_findings: []
+    severity: medium
+    detection_hint: >
+      Test http and credential URLs, redirects to http, non-200 and oversized
+      responses, non-script bodies, a hung or failing add-on command, and Ctrl-C
+      while the installer runs.

@@ -143,6 +143,8 @@ private struct StubTokenizer: MLXLMCommon.Tokenizer {
     var tokenTable: [String: Int] = ["</s>": 2, "<|eot|>": 7]
     var eosTokenString: String? = "</s>"
     var failTemplate = false
+    /// Text for chosen ids; every other id decodes as "t<id>".
+    var decodeTable: [Int: String] = [:]
 
     func encode(text: String, addSpecialTokens: Bool) -> [Int] {
         Array(repeating: 0, count: text.count)
@@ -150,7 +152,7 @@ private struct StubTokenizer: MLXLMCommon.Tokenizer {
     /// Deterministic per-id text ("t<id>") so logprob-entry conversion
     /// (token string + UTF-8 bytes) is assertable.
     func decode(tokenIds: [Int], skipSpecialTokens: Bool) -> String {
-        tokenIds.map { "t\($0)" }.joined()
+        tokenIds.map { decodeTable[$0] ?? "t\($0)" }.joined()
     }
     func convertTokenToId(_ token: String) -> Int? { tokenTable[token] }
     func convertIdToToken(_ id: Int) -> String? { nil }
@@ -435,6 +437,7 @@ private func makeBridge(
     modelId: String = "gemma-4-27b-it",
     eosTokenIds: Set<Int> = [2],
     extraEOSTokens: [String] = [],
+    stopStringScope: CBv2StopStringScope? = nil,
     defaultMaxTokens: Int = 4096,
     kvBytesPerToken: Int = 0,
     fixedRequestBytes: Int = 0,
@@ -453,6 +456,7 @@ private func makeBridge(
         tokenizer: TokenizerHandle(tokenizer),
         eosTokenIds: eosTokenIds,
         extraEOSTokens: extraEOSTokens,
+        stopStringScope: stopStringScope,
         defaultMaxTokens: defaultMaxTokens,
         maxConcurrentRequests: 4,
         kvBytesPerToken: kvBytesPerToken,
@@ -835,6 +839,47 @@ struct EngineV2MatchedStopSequenceTests {
             id: CBv2RequestID(2), promptTokens: [1], request: request, defaultMaxTokens: 16,
             stopTokenIds: [])
         #expect(unscoped.stopStringScope == nil)
+    }
+
+    @Test("a request's stop scope reaches the engine and the reported sequence")
+    func requestScopeReachesEngineAndReport() async {
+        // Gemma 4 with reasoning on: a period in the thought, "!" in the answer.
+        let tokenizer = StubTokenizer(decodeTable: [
+            20: "<|channel>", 21: "thought\nIt is A.", 22: "<channel|>", 23: "A!",
+        ])
+        let engine = ScriptedCBv2Engine(script: .stream([
+            .delta(text: "", tokens: [20, 21, 22, 23], logprobs: nil),
+            .finished(reason: .stop, usage: CBv2Usage(promptTokens: 5, completionTokens: 4)),
+        ]))
+        let bridge = makeBridge(engine: engine, tokenizer: tokenizer)
+        let scope = ReasoningStopScope.scope(reasoningParser: .gemma4, reasoningPrefix: nil)
+        let signal = EngineV2RequestUsageSignal()
+        _ = await record(await bridge.submitTokenized(
+            promptTokens: [1, 2, 3],
+            request: makeRequest(stop: .multiple([".", "!"])),
+            usageSignal: signal,
+            stopStringScope: scope
+        ))
+        #expect(engine.submitted.first?.stopStringScope == scope)
+        #expect(signal.matchedStopSequence == "!", "the thought's period did not stop it")
+    }
+
+    @Test("a request's scope replaces the model's, which applies otherwise")
+    func modelScopeIsTheDefault() async {
+        let harmony = ModelEOSPolicy.stopStringScope(modelId: "gpt-oss-20b")
+        let think = ReasoningStopScope.scope(reasoningParser: .qwen3, reasoningPrefix: "<think>")
+        for (modelScope, requestScope, expected) in [
+            (harmony, nil, harmony), (nil, nil, nil), (harmony, think, think),
+        ] {
+            let engine = ScriptedCBv2Engine(script: .stream([
+                .finished(reason: .stop, usage: CBv2Usage(promptTokens: 5, completionTokens: 0)),
+            ]))
+            let bridge = makeBridge(engine: engine, stopStringScope: modelScope)
+            _ = await record(await bridge.submitTokenized(
+                promptTokens: [1, 2, 3], request: makeRequest(stop: .single(".")),
+                stopStringScope: requestScope))
+            #expect(engine.submitted.first?.stopStringScope == expected)
+        }
     }
 
     @Test("compares Unicode scalars exactly rather than canonically")

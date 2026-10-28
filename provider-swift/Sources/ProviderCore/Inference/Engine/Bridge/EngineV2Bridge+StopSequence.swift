@@ -4,7 +4,8 @@ import MLXLMCommon
 extension EngineV2Bridge {
     func matchedStopSequence(
         candidates: [String],
-        generatedTokens: [Int]
+        generatedTokens: [Int],
+        scope: CBv2StopStringScope?
     ) -> String? {
         guard !candidates.isEmpty, !generatedTokens.isEmpty else { return nil }
         let generatedText = tokenizer.inner.decode(
@@ -12,12 +13,12 @@ extension EngineV2Bridge {
             skipSpecialTokens: false
         )
         return Self.matchedStopSequence(
-            candidates: candidates, generatedText: generatedText, scope: stopStringScope)
+            candidates: candidates, generatedText: generatedText, scope: scope)
     }
 
-    /// The candidate that ended generation. A scoped model matched stops only
-    /// inside its scope, so a candidate seen elsewhere (Harmony analysis) did
-    /// not stop it.
+    /// The candidate that ended generation. A scoped request matched stops
+    /// only inside its scope, so a candidate seen elsewhere (Harmony analysis,
+    /// reasoning) did not stop it.
     static func matchedStopSequence(
         candidates: [String],
         generatedText: String,

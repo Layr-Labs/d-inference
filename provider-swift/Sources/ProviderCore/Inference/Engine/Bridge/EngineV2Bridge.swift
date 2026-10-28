@@ -106,8 +106,8 @@ public actor EngineV2Bridge {
     /// tokens) — `buildStopTokenIds` semantics, computed ONCE at bridge
     /// construction so B=1 and batched behavior stay identical.
     let stopTokenIds: Set<Int>
-    /// Where client stop strings apply (`ModelEOSPolicy.stopStringScope`);
-    /// nil matches the whole generated text.
+    /// Where client stop strings apply (`ModelEOSPolicy.stopStringScope`)
+    /// unless a request brings its own; nil matches the whole generated text.
     let stopStringScope: CBv2StopStringScope?
     /// Artifact sampling defaults resolved once at construction
     /// (`EngineV2SamplingDefaults.resolve`); `.legacy` for every family

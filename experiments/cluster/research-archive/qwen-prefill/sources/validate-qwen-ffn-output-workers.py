@@ -1,0 +1,85 @@
+"""Synthetic persistent-worker state isolation and one-shot equivalence checks."""
+import hashlib
+import json
+from pathlib import Path
+import subprocess
+import sys
+import shutil
+
+REPO = Path('/Users/developer/DarkbloomDev/d-inference')
+CLUSTER = REPO / 'experiments/cluster'
+sys.path.insert(0, str(CLUSTER))
+from runtime.persistent import PersistentCohort
+
+BUNDLE = REPO.parent / 'cluster-research/runs/qwen-ffn-output-precision-20260913/bundle'
+OUT = Path(sys.argv[1])
+OUT.mkdir(mode=0o700, parents=True, exist_ok=False)
+receipt = dict(binary_sha256=hashlib.sha256((BUNDLE/'cluster-inference').read_bytes()).hexdigest(),
+               driver_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+               synthetic_only=True, performance_qualification=False, cohorts=[])
+sources=[]
+for name in sorted(subprocess.check_output(['rg','--files','experiments/cluster'],cwd=REPO,text=True).splitlines()):
+    path=REPO/name; target=OUT/'source'/path.relative_to(CLUSTER)
+    target.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(path,target)
+    sources.append(dict(path=name,sha256=hashlib.sha256(target.read_bytes()).hexdigest()))
+manifest=OUT/'source-manifest.json';manifest.write_text(json.dumps(sources,indent=2)+'\n')
+receipt['source_manifest_sha256']=hashlib.sha256(manifest.read_bytes()).hexdigest()
+shutil.copyfile(Path(__file__),OUT/Path(__file__).name)
+
+def save():
+    (OUT/'receipt.json').write_text(json.dumps(receipt, indent=2)+'\n')
+
+for profile, dtype in [('tiny','bfloat16'),('qwen27-heads','bfloat16')]:
+    for partition in ('solo','ffn','full'):
+        distributed = partition != 'solo'
+        name = f'{profile}-{dtype}-{partition}'
+        prompt_a = [3 + (i*17+7)%509 for i in range(65)]
+        prompt_b = [3 + (i*13+31)%509 for i in range(37)]
+        spec = dict(schema_version=1, backend='loopback-test' if distributed else 'solo',
+            ranks=[dict(location='local') for _ in range(2 if distributed else 1)],
+            partition='ffn' if not distributed else partition, timeout_seconds=60,
+            capture_logits=True, workload=dict(synthetic=True, synthetic_profile=profile,
+                synthetic_dtype=dtype, execution_path='cbv2-contiguous', attention_output_precision='float32', ffn_output_precision='float32', seed=7,
+                prompt_ids=prompt_a, prompt_tokens=65, chunk_size=32, decode_tokens=6,
+                repeats=1,warmups=0))
+        record = dict(name=name, requests=[])
+        with PersistentCohort(spec, BUNDLE, OUT/name) as cohort:
+            record['ready'] = cohort.ready
+            assert all(event['version']==5 and event['identity']['ffnOutputPrecision']=='float32' and event['identity']['attentionOutputPrecision']=='float32' and event['identity']['executionPath']=='cbv2-contiguous' for event in cohort.ready)
+            for request_id, prompt, chunk, count, teacher in [
+                ('A-first', prompt_a,32,6,None), ('B',prompt_b,16,6,[12,25,38,51,64]),
+                ('A-last', prompt_a,32,6,None), ('single', [3],1,1,None)]:
+                tokens=[]
+                result=cohort.infer(request_id,prompt,count,chunk,teacher_tokens=teacher,
+                    capture_logits=True,timeout_seconds=30,on_token=lambda step,token:tokens.append([step,token]))
+                assert tokens==list(map(list,enumerate(result[0]['result']['generatedTokens'])))
+                assert all(r['modelLoadID']==ready['modelLoadID'] for r,ready in zip(result,cohort.ready,strict=True))
+                assert all(r['logits']==result[0]['logits'] for r in result)
+                record['requests'].append(dict(request_id=request_id,events=result,tokens=tokens))
+            first,last=record['requests'][0]['events'],record['requests'][2]['events']
+            assert all(e['result']['decodeForwardCount']==0 and e['result']['decodeInputTokens']==[] for e in record['requests'][3]['events'])
+            for a,b in zip(first,last,strict=True):
+                assert a['logits']==b['logits'], 'A/B/A cache or state leakage'
+                for key in ('generatedTokens','decodeInputTokens','localArgmaxTokens'):
+                    assert a['result'][key]==b['result'][key]
+            record['ABA_exact']=True
+        record['final_state']=cohort.state
+        assert cohort.state=='closed' and cohort.epoch is None
+        specfile=OUT/(name+'.spec.json')
+        specfile.write_text(json.dumps(spec,indent=2)+'\n')
+        oneshot=OUT/(name+'-oneshot')
+        with (OUT/(name+'.oneshot.stdout')).open('w') as stdout,(OUT/(name+'.oneshot.stderr')).open('w') as stderr:
+            subprocess.run([sys.executable,str(CLUSTER/'run_inference.py'),'--spec',str(specfile),
+                '--bundle',str(BUNDLE),'--output',str(oneshot)],check=True,stdout=stdout,stderr=stderr,timeout=70)
+        report=json.loads((oneshot/'run.json').read_text())
+        assert report['verified_execution'] and not report['hardware_throughput_candidate']
+        assert all(r['schemaVersion']==9 and r['ffnOutputPrecision']=='float32' and r['attentionOutputPrecision']=='float32' and r['executionPath']=='cbv2-contiguous' for r in report['reports'])
+        for rank,event in enumerate(first):
+            assert json.loads((oneshot/f'rank-{rank}/logits.json').read_text())==event['logits']
+            for key in ('generatedTokens','decodeInputTokens','localArgmaxTokens'):
+                assert report['reports'][rank]['runs'][0][key]==event['result'][key]
+        record['oneshot_exact']=True
+        receipt['cohorts'].append(record)
+        save()
+        print(name,'A/B/A and one-shot exact; one model load per rank; single-token output passed',flush=True)
+print('Evidence:',OUT/'receipt.json',flush=True)

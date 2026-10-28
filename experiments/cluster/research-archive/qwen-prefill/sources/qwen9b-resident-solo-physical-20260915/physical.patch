@@ -1,0 +1,76 @@
+--- baseline/remote_preflight.py
++++ solo/remote_preflight.py
+@@ -1,8 +1,8 @@
+ from pathlib import Path
+ import fcntl,hashlib,json,os,stat,subprocess,sys
+-value=json.loads(sys.stdin.buffer.read(1048577));root=Path(value['remoteRoot'])
+-assert root==Path('/Users/developer/DarkbloomDev/qwen27b-owner-validation-20260915') and root.resolve()==root
+-sys.path.insert(0,str(root));from reference_resources import sample_local,validate_local
++root=Path(value['remoteRoot'])
++assert root==Path('/Users/developer/DarkbloomDev/qwen9b-resident-solo-generation-20260915') and root.resolve()==root
++sys.path.insert(0,str(root/'supervisor'));from reference_resources import sample_local,validate_local
+ observed={}
+ for item in value['files']:
+  p=root/item['path'];fd=os.open(p,os.O_RDONLY|os.O_NOFOLLOW);s=os.fstat(fd)
+@@ -13,7 +13,7 @@
+  assert h.hexdigest()==item['sha256'];observed[item['path']]=dict(bytes=s.st_size,sha256=h.hexdigest(),mode=stat.S_IMODE(s.st_mode))
+ for item in value['directories']:
+  p=root/item['path'];s=p.lstat();assert stat.S_ISDIR(s.st_mode) and stat.S_IMODE(s.st_mode)==int(item['mode'],8) and s.st_uid==os.getuid()
+-assert not list((root/'evidence').iterdir())
++assert not list((root/'runs').iterdir())
+ ps=subprocess.check_output(['/bin/ps','-axo','pid=,comm='],text=True);active=[]
+ for line in ps.splitlines():
+  parts=line.strip().split(maxsplit=1)
+--- baseline/run_physical.py
++++ solo/run_physical.py
+@@ -1,11 +1,11 @@
+ from pathlib import Path
+ import json,os,shlex,signal,subprocess,time
+ base=Path(__file__).resolve().parent
+-out=base/'run-4';out.mkdir(mode=0o700)
++out=base/'run-1';out.mkdir(mode=0o700)
+ script='''from pathlib import Path
+ import json,os,subprocess,sys
+-root=Path('/Users/developer/DarkbloomDev/qwen-registered-generation-reference-20260915')
+-sys.path.insert(0,str(root/'supervisor-aligned-payload'));sys.dont_write_bytecode=True
++root=Path('/Users/developer/DarkbloomDev/qwen9b-resident-solo-generation-20260915')
++sys.path.insert(0,str(root/'supervisor'));sys.dont_write_bytecode=True
+ from reference_resources import sample_local,validate_local
+ ps=subprocess.check_output(['/bin/ps','-axo','pid=,comm='],text=True)
+ names={'darkbloom','cluster-inference','darkbloom-cluster-worker','darkbloom-owner-qualification','owner-controller'}
+@@ -14,12 +14,12 @@
+ journal=Path('/Users/developer/.darkbloom/cluster-device/native-device.lease');assert journal.is_file() and not journal.is_symlink() and journal.stat().st_size==0
+ resource=sample_local();validate_local(resource)
+ print(json.dumps(dict(kind='root_reference_preflight',active=active,journalBytes=0,resource=resource)),flush=True)
+-os.chdir(root/'supervisor-aligned-payload')
+-os.execv('/usr/bin/python3',['/usr/bin/python3','-B',str(root/'supervisor-aligned-payload/run_reference.py'),'--job',str(root/'supervisor-aligned-payload/example-job.json'),'--job-sha256','ec7aab623ae685f66d4e9a1026cc629c0905aca4c7fc35ff0eda76622cfeabc5','--launcher-sha256','1a211e09dc4ed7f738ce9fd1abb6f3c559038b25d15eb21a00fc2034d2c65588'])
++os.chdir(root/'supervisor')
++os.execv('/usr/bin/python3',['/usr/bin/python3','-B',str(root/'supervisor/run_solo.py'),'--job',str(root/'supervisor/job.json'),'--job-sha256','da9b19233d6ca24879c1ee6ccafbc8ae7dd509eb70ce43f9d796f1709941bd37','--launcher-sha256','c59521b53eeac0b7fcf213c44e3058c2bcd530da3f73ee762e4e5a77c40568c7'])
+ '''
+ (out/'remote-launch.py').write_text(script)
+ argv=['/usr/bin/ssh','-T','-o','BatchMode=yes','-o','ConnectTimeout=8','darkbloom-48','/usr/bin/python3 -B -']
+-start=time.monotonic();receipt=dict(argv=argv,remoteRun='/Users/developer/DarkbloomDev/qwen-registered-generation-reference-20260915/runs/short-27b-4',timedOut=False,localRunnerPID=os.getpid())
++start=time.monotonic();receipt=dict(argv=argv,remoteRun='/Users/developer/DarkbloomDev/qwen9b-resident-solo-generation-20260915/runs/cohort-1',timedOut=False,localRunnerPID=os.getpid())
+ with (out/'ssh.stdout').open('xb') as stdout,(out/'ssh.stderr').open('xb') as stderr:
+  child=subprocess.Popen(argv,stdin=subprocess.PIPE,stdout=stdout,stderr=stderr,start_new_session=True)
+  receipt.update(sshPID=child.pid,sshPGID=child.pid)
+--- baseline/collect_reference_run.py
++++ solo/collect_run.py
+@@ -11,7 +11,7 @@
+ 
+ REMOTE = r'''from pathlib import Path
+ import base64,hashlib,json,subprocess,sys
+-p=Path('/Users/developer/DarkbloomDev/qwen-registered-generation-reference-20260915/runs')/sys.argv[1]
++p=Path('/Users/developer/DarkbloomDev/qwen9b-resident-solo-generation-20260915/runs')/sys.argv[1]
+ items=[]
+ for f in sorted(p.rglob('*')):
+  if f.is_file():
+@@ -39,7 +39,7 @@
+     returned = base / 'returned'
+     returned.mkdir(mode=0o700)
+     command = ['ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', 'darkbloom-48',
+-               shlex.join(['/usr/bin/python3', '-B', '-c', REMOTE, 'short-27b-' + str(number)])]
++               shlex.join(['/usr/bin/python3', '-B', '-c', REMOTE, 'cohort-' + str(number)])]
+     completed = subprocess.run(command, capture_output=True, timeout=30)
+     (base / 'retrieval.stdout').write_bytes(completed.stdout)
+     (base / 'retrieval.stderr').write_bytes(completed.stderr)

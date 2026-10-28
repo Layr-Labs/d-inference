@@ -1,0 +1,58 @@
+{
+  "base_manifest_sha256": "aa91244615528a5534b811d53368cbb6a1b30903dee18d7800027c79a2f391ca",
+  "base_overlay": "/Users/developer/DarkbloomDev/cluster-research/resident-prefill-lookahead-draft",
+  "changes": [
+    {
+      "action": "add",
+      "original_sha256": null,
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenGenerationLookaheadProducer.swift",
+      "sha256": "ed47c54e9ada590ec3f79d33264edd2a6847ca721f269146168b30cec5efce04"
+    },
+    {
+      "action": "replace",
+      "original_sha256": "43586716d0a1287359343d07a5809ed2e6ca84a20deaab21a9ed8f66786cb0d7",
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenLayerStageGenerationDriver.swift",
+      "sha256": "45cbc63ecad5d254fd72934a59ce542c48a7636e5b7b563084e3e92768225d9c"
+    }
+  ],
+  "native_typecheck_pending": true,
+  "schema": "private_lookahead_modularization_v1",
+  "unchanged_overlay_members": [
+    {
+      "bytes": 2130,
+      "path": "proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenGenerationPrefillAllowance.swift",
+      "sha256": "98a212857978f16bdf99dbd25e30e82ae1bd0135b184cdc9234ffdc34b9e7622"
+    },
+    {
+      "bytes": 3751,
+      "path": "proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenGenerationPrefillPolicy.swift",
+      "sha256": "9c4afbd7f4a1567ddea2ac6529be841ba03b9c1772d5b53a67c55ce588addea4"
+    },
+    {
+      "bytes": 4060,
+      "path": "proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenLayerStageGenerationAgreement.swift",
+      "sha256": "4ff030d6a92e4284dd20d3eaba57c7b7ff9dcd14fc328bb29d6a193882896230"
+    },
+    {
+      "bytes": 961,
+      "path": "proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenLayerStageGenerationResult.swift",
+      "sha256": "253da3d4b24f74265f27ecc385e370815a6f643b43722ed45aacd66717595718"
+    },
+    {
+      "bytes": 12467,
+      "path": "proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenLayerStageGenerationTransport.swift",
+      "sha256": "e969afee7dd263e8fe7cd6515f6450f7b7a978009c13cd83f9fe7789067a420a"
+    },
+    {
+      "bytes": 6158,
+      "path": "proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentRequestResources.swift",
+      "sha256": "ecd473554fb622006714010e95685a3a9338156e431527101498d7f4d38c1fea"
+    },
+    {
+      "bytes": 18995,
+      "path": "proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentRuntime.swift",
+      "sha256": "664ce9b8fe425c7676599ff2c834ba1d10429111f1c944dce5e2862654c408d9"
+    }
+  ],
+  "visibility_change": "QwenGenerationLookaheadProducer: private -> internal; no public API changes"
+}

@@ -1,0 +1,11 @@
+# Registered 9B MTP probe: compiled handoff
+
+The frozen eight-file source overlay compiled unchanged. Foundation control/cleanup checks passed (18 sources; two accepted sequences, five refusals, five actual extracted cleanup-method cases). The actual worker native build passed in 217.744 seconds with jobs 2, final macOS 26.2 deployment minimum and real JACCL symbols. All 3,060 complete source snapshot pins remained unchanged. No registered model, GPU, collective or remote process was executed by this build.
+
+The source/API and physical evidence gate remain in `qwen-resident-mtp-registered-probe-draft-20260915/HANDOFF.md`, manifest `60b154f52401e1d4ad7c04779696c0e5d4c41469736b7f61dc2516682cc94e73`. The compiled source snapshot is `36c41b6508c95390eb975df63117d679d94e8030855fb869a90fe46421106598`. No source correction was needed; the prior tiny snapshots/bundles and registered source freeze remain unchanged.
+
+The deployable three-file bundle is the sibling `runtime-bundle/` directory. Its `bundle.json` pins the worker executable and exact source-matched MLX/metallib resources. Use the executable's real SHA for both peers' build identity; the source snapshot SHA is separate provenance.
+
+The existing `owner-ssh-qualification-20260915` controller supports this request unchanged: `cpuQualification=false`, output 2, chunk 16, the pinned 32 prompt IDs, empty stops and `expectedTokenIDs=null`. It always continues the token callback and performs one request followed by model shutdown and authenticated owner lease-ACK drain. Keep its existing resource monitor, process bound, postflight and bootstrap ownership. The private worker writes one sidecar per rank to its existing private evidence directory. The native probe and sidecars enforce exact two tokens/three frames/frontier 33 and one unaccepted rank-1 proposal. Proposal equality with target token two is informational; no independent numerical comparison is claimed.
+
+Root owns deployment and the actual registered check. MTP accepted-prefix verification/stream publication remains the separately frozen, uncompiled target-transaction overlay; it is not part of this binary. Compiler slot was released immediately after native completion.

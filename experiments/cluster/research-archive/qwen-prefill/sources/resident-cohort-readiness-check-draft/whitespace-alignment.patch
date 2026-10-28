@@ -1,0 +1,11 @@
+--- before/proposed/Main.swift
++++ after/proposed/Main.swift
+@@ -25,7 +25,7 @@
+             try checkQwenLongPrefillPairCLI()
+             try checkQwenLongPrefillRankAdmission()
+             try checkQwenLongPrefillResidentRankAdmission()
+-        try checkQwenLongPrefillResidentCohortAgreement()
++            try checkQwenLongPrefillResidentCohortAgreement()
+             try checkQwenLongPrefillCohortReadinessAdmission()
+             try checkQwenLongPrefillSoloCLI()
+             try checkQwenPrefillPhaseCLI()

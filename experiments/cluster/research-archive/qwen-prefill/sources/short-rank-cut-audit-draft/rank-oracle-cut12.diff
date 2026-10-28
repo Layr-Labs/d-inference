@@ -1,0 +1,55 @@
+--- frozen/qwen_layer_stage_rank_audit.py
++++ draft/qwen_layer_stage_rank_cut12_audit.py
+@@ -1,4 +1,4 @@
+-"""Independent CPU comparison of real Qwen9B rank reports with a frozen baseline."""
++"""Prospective cut12 variant of the frozen short-rank numerical audit."""
+ import hashlib
+ import importlib.util
+ import json
+@@ -8,9 +8,11 @@
+ import sys
+ import uuid
+ 
+-BASELINE_STDOUT_SHA = 'dac1248a0b02ffa6010cd641834d2a43e1e7c5e92634bc28613fc7f73aaaf551'
+-BASE_HELPER_SHA = 'ba943e3ec2157447d7725ab3ca030bb398813c82be6d4d4a1024d4fbf98d29e4'
+-EXPECTED_CANONICAL_SHA = '6561d53690bb31effdd20a164417df3ebd70f32add9d0b0508ac03df1e7c2717'
++BASELINE_STDOUT_SHA = '6cfe70e292e0e09bdfa1e8c252251b5898f43ecff6e870729a02a1e406bcb4b9'
++BASE_HELPER_SHA = '00e07565fab523fded70caa3aabbcaa2064ede8291e1886e9701b455c446c2fe'
++EXPECTED_CANONICAL_SHA = 'b7e0c1110ff919a8b62f496a597145e0b845758dae6268254cd413f183c9c2fe'
++EXPLICIT_RANGES = [(0, 12), (12, 32)]
++COMPONENT_COUNTS = [27, 45]
+ MAX_STDOUT_BYTES = 32 * 1024 * 1024
+ MAX_JSON_DEPTH = 16
+ _BASE = None
+@@ -32,7 +34,7 @@
+ def base_helper():
+     global _BASE
+     if _BASE is None:
+-        path = Path(__file__).with_name('qwen_layer_stage_recorded_audit.py')
++        path = Path(__file__).resolve().parent.parent / 'short-stage-cut-audit-draft/qwen_layer_stage_cut12_audit.py'
+         require(digest(path.read_bytes()) == BASE_HELPER_SHA, 'Frozen recorded-baseline helper changed')
+         spec = importlib.util.spec_from_file_location('rank_audit_recorded_helper', path)
+         _BASE = importlib.util.module_from_spec(spec)
+@@ -183,10 +185,10 @@
+                 'outputKind', 'outputShape', 'outputDType'} | ({'logits'} if logits_expected else set())
+             require(set(capture) == keys and capture['kind'] == 'qwen_layer_stage_rank_frame_capture', 'Capture exact schema differs')
+             exact(capture['identity'], session_identity(report['sourceLoad'], rank, simple_request), 'Rank session identity differs')
+-            for key, value in [('frame', frame), ('committedTokens', tokens), ('sourceLayerStart', rank * 16), ('sourceLayerEnd', (rank + 1) * 16)]:
++            for key, value in [('frame', frame), ('committedTokens', tokens), ('sourceLayerStart', EXPLICIT_RANGES[rank][0]), ('sourceLayerEnd', EXPLICIT_RANGES[rank][1])]:
+                 exact(capture[key], value, 'Rank frame/source range differs: ' + key)
+-            expected_entries = [entry for entry in old_frame['state']['entries'] if rank * 16 <= entry['globalLayerIndex'] < (rank + 1) * 16]
+-            require(len(expected_entries) == 36, 'Baseline stage component count differs')
++            expected_entries = [entry for entry in old_frame['state']['entries'] if EXPLICIT_RANGES[rank][0] <= entry['globalLayerIndex'] < EXPLICIT_RANGES[rank][1]]
++            require(len(expected_entries) == COMPONENT_COUNTS[rank], 'Baseline stage component count differs')
+             exact(capture['stateEntries'], expected_entries, 'Rank state metadata/digest differs from baseline')
+             expected_bytes = sum(x['byteCount'] for x in expected_entries)
+             exact(capture['logicalStateBytes'], expected_bytes, 'Stage state byte count differs')
+@@ -212,7 +214,7 @@
+         header = header_bytes(reports[0]['sourceLoad'], simple_request, step, captures[0]['boundaryPayloadSHA256'])
+         header_hash = digest(header)
+         require(all(r['frames'][index]['headerSHA256'] == header_hash for r in reports), 'Canonical actual-input header digest differs')
+-        frames.append(dict(committedTokens=tokens, stateEntriesPerStage=[36, 36], stateEntriesCombined=72,
++        frames.append(dict(committedTokens=tokens, stateEntriesPerStage=list(COMPONENT_COUNTS), stateEntriesCombined=72,
+             stageStateBytes=[c['logicalStateBytes'] for c in captures], stageStateSHA256=[c['stageStateSHA256'] for c in captures],
+             fullStateSHA256=union_hash, boundaryPayloadSHA256=captures[0]['boundaryPayloadSHA256'],
+             boundaryByteCount=frame['tokenCount'] * 4096 * 2, headerSHA256=header_hash,

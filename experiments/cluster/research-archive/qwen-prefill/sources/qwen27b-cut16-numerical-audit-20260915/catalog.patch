@@ -1,0 +1,20 @@
+--- a/registered_profiles.json
++++ b/registered_profiles.json
+@@ -52,6 +52,17 @@
+     "manifest": "d1239a5bc6d26d5ce4bf87f22270e3a703f4942e3d0d779948b4f65410df6dcc",
+     "modelID": "registered_qwen38_27b",
+     "plans": {
++      "16": {
++        "constructions": [
++          "ed0261abe56892149254d5ba9c5454e38c259d179c1d7942aab77f08fe9eb337",
++          "01ea7507f7e5588cff445cab11bcaf127fdac4c4f06d4b76278a4c2c8687ba71"
++        ],
++        "fingerprint": "8e1408f4f044b0fa6f97ae9b997d575797fe1d22036ddb68409e2aeb349949ed",
++        "stages": [
++          "792c7df3cf4fe514f6fc574b7aca2fc458217380c9f738dc1c971a940cfcb219",
++          "b43375c3c417fe8122d4a06226f0e035a14c0ca1081d1e630fa8e3432b720271"
++        ]
++      },
+       "32": {
+         "constructions": [
+           "1f950482e15c622aedde80f785c11fbb5f5c41650f21f7787bec6ce0a793fda5",

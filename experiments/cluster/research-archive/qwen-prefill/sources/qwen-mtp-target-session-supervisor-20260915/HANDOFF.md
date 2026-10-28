@@ -1,0 +1,11 @@
+# Tiny actual Session physical validation
+
+Private native37783e2f, bundle43e38134, source32fdc7a7 built successfully from the ten-file fixture overlay with the compile-only QWEN_TARGET_TINY_FIXTURE define. CPU tests passed five groups, including three actual Python child cases; these are not native fixture results. The native run is pending.
+
+This new supervisor derives from the physically used target-verification supervisor. The pipe/process/resource/journal implementations remain exact. Changes bind the new native and source, validate its complete fourteen-or-fifteen-case output, identify the executable in process checks, and use native60s/parent90s/outerSSH135s. The same six-GiB actual-free, zero-swap, AC, canonical native gate and actual child cleanup requirements apply. No password, interface mutation, checkpoint load, provider launch, production operation or old directory replacement occurs.
+
+The target contract requires real fabricated-weight Qwen trunks and shared Session transactions. The ordinary target chooses test proposals. Registered checkpoint execution, actual MTP assistant proposals, bilateral wire verification, provider eligibility and throughput qualification remain false. Exact state hashes and subsequent decode are compared by native code; dynamic allocator rounding is retained from the actual run.
+
+Root commands: `python3 -B run_physical.py copy`, then `run`, then `collect`. Copy creates only the fresh24GB tree `/Users/developer/DarkbloomDev/qwen-target-session-check-20260915`; it refuses an existing tree and requires an empty existing native journal. All inputs and known_hosts are pinned. Each action writes a fresh local evidence directory and never overwrites prior outcomes. The remote supervisor refuses a preexisting physical-1 run. Read the actual terminal, native stdout/stderr and raw resource rows after collection; an SSH exit alone does not establish cleanup.
+
+No compiler, bulk copy/hash or competing remote operation may overlap the actual native run. Root owns the exclusive physical slot. A failed run remains intact for diagnosis; never clear an unresolved lease. This package does not claim a native pass until the physical evidence is reviewed.

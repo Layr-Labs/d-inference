@@ -1,0 +1,49 @@
+{
+  "schema": "resident_load_gate_diagnostics_integration_v1",
+  "scope": "private exact a7c35 registered 27B native build snapshot only",
+  "baseSourceSnapshot": {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/qwen27b-owner-validation-build-20260915/source-snapshot.json",
+    "bytes": 613047,
+    "sha256": "7a454fd5f44cbc292f0c64ae8e1dcf8c0b840803d346eb05ff06210bdf52522c"
+  },
+  "baseNativeBuildHandoff": {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/qwen27b-owner-validation-build-20260915/handoff/manifest.json",
+    "bytes": 16033,
+    "sha256": "d7d651af553e10d0d1fcb733d2c3ccf6a8597bcb89421c268f02424e7ad68cc1"
+  },
+  "mapping": [
+    {
+      "target": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentLoading.swift",
+      "original": {
+        "path": "/Users/developer/DarkbloomDev/cluster-research/qwen-resident-load-gate-diagnostics-draft-20260915/originals/QwenResidentLoading.swift",
+        "bytes": 5917,
+        "sha256": "4d440e9f9b2440f2c760262f95172d0f85d09683e43176b74ed165093e053cb5"
+      },
+      "proposed": {
+        "path": "/Users/developer/DarkbloomDev/cluster-research/qwen-resident-load-gate-diagnostics-draft-20260915/proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentLoading.swift",
+        "bytes": 6846,
+        "sha256": "80140c363e6a974293c2bd7203b5a1707473e66fd703e9be09e83ac3d3fa7361"
+      }
+    }
+  ],
+  "supportingEvidence": [
+    {
+      "path": "/Users/developer/DarkbloomDev/cluster-research/qwen27b-resident-load-gate-audit-20260915/review.json",
+      "bytes": 24547,
+      "sha256": "f15581afdc9abe5a23040a12566ba633ce3f20b7299d56a18490bb8feec83c25"
+    },
+    {
+      "path": "/Users/developer/DarkbloomDev/cluster-research/qwen27b-owner-diagnostic-drain-physical-audit-20260915/review.json",
+      "bytes": 28065,
+      "sha256": "74e0be828f2c4d05556ec0cb479f4e7cc95cb851fa421e2be3fdba519cf3d497"
+    },
+    {
+      "path": "/Users/developer/DarkbloomDev/cluster-research/qwen27b-owner-diagnostic-v2-physical-audit-20260915/review.json",
+      "bytes": 21324,
+      "sha256": "57b7a5940421c822226d647eb507e149b89d77a7a7e3fd07be8d2cc40416a72a"
+    }
+  ],
+  "compiled": false,
+  "physicalExecuted": false,
+  "independentSourceReview": "pending root review; no peer review claimed"
+}

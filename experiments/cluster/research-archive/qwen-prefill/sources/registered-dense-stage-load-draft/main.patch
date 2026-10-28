@@ -1,0 +1,13 @@
+--- a/experiments/cluster/inference/Sources/ClusterInference/Main.swift
++++ b/experiments/cluster/inference/Sources/ClusterInference/Main.swift
+@@ -11,6 +11,10 @@
+ 
+     static func run() throws {
+         let arguments = Array(CommandLine.arguments.dropFirst())
++        if QwenDenseStageLoadCLI.isRequested(arguments) {
++            try QwenDenseStageLoadCLI(arguments: arguments).run()
++            return
++        }
+         if QwenDenseConstructorCLI.isRequested(arguments) {
+             try QwenDenseConstructorCLI(arguments: arguments).run()
+             return

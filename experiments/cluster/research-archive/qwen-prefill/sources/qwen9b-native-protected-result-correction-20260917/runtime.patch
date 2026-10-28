@@ -1,0 +1,23 @@
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentRuntime+Load.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentRuntime+Load.swift
+@@ -49,15 +49,16 @@
+                 }
+             }
+             if let nativeStart {
+-                protection = try MLX.withError { error in
++                let establishedProtection: CollectiveProtectionConfiguration = try MLX.withError { nativeError in
+                     do {
+-                        try error.check(); try control.check()
++                        try nativeError.check(); try control.check()
+                         guard let recordBudget else { throw ProbeError("Protected setup credit missing") }
+                         let value = try nativeStart.establish(admission, recordBudget: recordBudget)
+-                        try error.check(); try control.check(); try error.check()
++                        try nativeError.check(); try control.check(); try nativeError.check()
+                         return value
+-                    } catch { try error.check(); throw error }
++                    } catch { try nativeError.check(); throw error }
+                 }
++                protection = establishedProtection
+             }
+             let collective: Collective
+             if let protection {

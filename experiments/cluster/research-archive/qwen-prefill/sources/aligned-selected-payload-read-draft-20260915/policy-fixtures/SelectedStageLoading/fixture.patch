@@ -1,0 +1,22 @@
+--- a/Tests/SelectedStageLoading/StageLoadCheck.swift
++++ b/Tests/SelectedStageLoading/StageLoadCheck.swift
+@@ -144,7 +144,7 @@
+             }
+             try reject(label + " out-of-order tensor") { try value.requireEntry(value.active[1], ordinal: 0) }
+             try reject(label + " exhausted permission ordinal") { try value.requireEntry(value.active[0], ordinal: value.active.count) }
+-            let required = max(6 * gib, value.roundedResidentBytes + 2 * value.largestHostTensorBytes + 4 * gib)
++            let required = max(6 * gib, value.roundedResidentBytes + 2 * value.largestHostTensorBytes + (8 * 1024 * 1024 + 16 * 1024) + 4 * gib)
+             let allocator = value.roundedResidentBytes + value.largestHostTensorBytes + 2 * gib
+             let decision = try QwenDenseStageLoadPolicy.evaluate(budget: value, ordinal: 0, os: os(required), native: native(limit: allocator), now: 11)
+             try require(label + " exact actual-free and allocator boundary", decision.requiredActualFreeBytes == required &&
+--- a/Tests/SelectedStageLoading/run.sh
++++ b/Tests/SelectedStageLoading/run.sh
+@@ -29,6 +29,8 @@
+   "$source_dir/QwenLayerStageInventoryTypes.swift" \
+   "$source_dir/QwenCheckpointManifestPin.swift" \
+   "$source_dir/VerifiedCheckpoint.swift" \
++  "$source_dir/CheckpointAlignedReadAccounting.swift" \
++  "$source_dir/CheckpointAlignedReader.swift" \
+   "$source_dir/QwenLongPrefillArithmeticEnvironment.swift" \
+   "$source_dir/QwenDenseConstructorAdmission.swift" \
+   "$test_dir/../LayerStageCandidates/TestSupport.swift" \

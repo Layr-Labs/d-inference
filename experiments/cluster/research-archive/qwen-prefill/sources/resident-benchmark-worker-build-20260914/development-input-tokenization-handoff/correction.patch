@@ -1,0 +1,87 @@
+--- original/prepare-development-inputs.py
++++ corrected/prepare-development-inputs.py
+@@ -15,6 +15,8 @@
+ destination = research / 'prefill-development-inputs-20260914'
+ recipe_raw = (draft / 'recipes.json').read_bytes()
+ recipe_pin = '94869a94f623ce7cf969061a57efd3e98bc5486cba1c35f13823b4e17262c443'
++model_vocabulary_size = 248320
++python_executable_pin = '01564940172b2811e1f39a4dc90e84c7a26a19cf071bbc5de67e456d82627bec'
+ 
+ 
+ def sha(raw):
+@@ -29,9 +31,12 @@
+ 
+ 
+ assert sha(recipe_raw) == recipe_pin
++assert not destination.exists()
+ recipe = json.loads(recipe_raw)
+ assert recipe['development_only'] and not recipe['qualification_workload']
+ assert tokenizers.__version__ == '0.22.2'
++assert platform.python_version() == '3.12.13'
++assert sha(Path(sys.executable).read_bytes()) == python_executable_pin
+ reference = recipe['tokenization_reference']
+ raw_tokenizer = Path(reference['tokenizer_path']).read_bytes()
+ assert sha(raw_tokenizer) == reference['tokenizer_sha256']
+@@ -53,24 +58,36 @@
+     raw_prompts.append((row, raw))
+ assert len(raw_prompts) == 10 and len(seen_sources) == 68
+ tokenizer = Tokenizer.from_str(raw_tokenizer.decode('utf-8'))
+-assert tokenizer.get_vocab_size(with_added_tokens=True) == 248320
++# The tokenizer's entry count is smaller than the native model's padded
++# vocabulary capacity. Both are pinned independently; no ID bound is widened.
++tokenizer_base_size = tokenizer.get_vocab_size(with_added_tokens=False)
++tokenizer_total_size = tokenizer.get_vocab_size(with_added_tokens=True)
++tokenizer_ids = tokenizer.get_vocab(with_added_tokens=True).values()
++tokenizer_minimum_id, tokenizer_maximum_id = min(tokenizer_ids), max(tokenizer_ids)
++assert tokenizer_base_size == 248044 and tokenizer_total_size == 248077
++assert tokenizer_minimum_id == 0 and tokenizer_maximum_id == 248076
++assert tokenizer_maximum_id < model_vocabulary_size == reference['vocabulary_size']
+ 
+ # Confirm the current tokenizer runtime reproduces the previously retained
+ # diagnostic IDs before using its settings for new, non-repeated source inputs.
+ old = research / 'long-prefill-input-20260914'
+-old_metadata = json.loads((old / 'tokenization.json').read_bytes())
++old_metadata_raw = (old / 'tokenization.json').read_bytes()
++assert sha(old_metadata_raw) == reference['metadata_sha256']
++old_metadata = json.loads(old_metadata_raw)
++assert old_metadata['tokenizerJSONSHA256'] == sha(raw_tokenizer)
+ old_text = (old / 'source-text.txt').read_bytes()
+ assert sha(old_text) == old_metadata['files']['source-text.txt']['sha256']
+ old_ids = tokenizer.encode(old_text.decode('utf-8'), add_special_tokens=False).ids[:8192]
+ old_encoded = json.dumps(old_ids, separators=(',', ':')).encode('ascii') + b'\n'
+ assert sha(old_encoded) == old_metadata['files']['prompt-8192.json']['sha256']
++assert (old / 'prompt-8192.json').read_bytes() == old_encoded
+ 
+ prepared = []
+ for row, raw in raw_prompts:
+     ids = tokenizer.encode(raw.decode('utf-8'), add_special_tokens=False).ids
+     assert len(ids) >= 8192
+     selected = ids[:8192]
+-    assert len(selected) == 8192 and all(type(value) is int and 0 <= value < 248320 for value in selected)
++    assert len(selected) == 8192 and all(type(value) is int and 0 <= value < model_vocabulary_size for value in selected)
+     encoded = json.dumps(selected, separators=(',', ':')).encode('ascii') + b'\n'
+     assert len(encoded) <= 65536
+     prefix = tokenizer.decode(selected, skip_special_tokens=False).encode('utf-8')
+@@ -97,14 +114,21 @@
+                qualificationWorkload=False, representativeWorkloadClaim=False, modelInferencePerformed=False,
+                nativeRequestsExecuted=False, actualNativeAdmissionPerformed=False,
+                artifactAggregateSHA256='127de76b4ef82b7aaa0acaac0ee31c784cff066eda64291f521f051469b7c24b',
+-               tokenizerJSONSHA256=sha(raw_tokenizer), tokenizerVersion=tokenizers.__version__, vocabularySize=248320,
++               tokenizerJSONSHA256=sha(raw_tokenizer), tokenizerVersion=tokenizers.__version__,
++               tokenizerVocabularySizeWithoutAddedTokens=tokenizer_base_size,
++               tokenizerVocabularySizeWithAddedTokens=tokenizer_total_size,
++               tokenizerMinimumTokenID=tokenizer_minimum_id, tokenizerMaximumTokenID=tokenizer_maximum_id,
++               modelVocabularySize=model_vocabulary_size,
+                pythonVersion=platform.python_version(), pythonExecutableSHA256=sha(Path(sys.executable).read_bytes()),
+                priorDiagnosticIDsReproducedExactly=True, chatTemplateApplied=False, addSpecialTokens=False,
+                promptCount=10, tokensPerPrompt=8192, distinctRawTokenFiles=True, repeatedPaddingUsed=False,
+                sourceFilesVerified=68, originRecipeSHA256=recipe_pin, sourceCommit=recipe['source_commit'],
+                fullSourceFilesRetained=True, decodedPrefixMayEndInsideSourceExcerpt=True, workloads=details, files=files)
++assert not any(name == 'mlx' or name.startswith('mlx.') or name == 'vllm' or name.startswith('vllm.')
++               for name in sys.modules)
+ receipt_raw = (json.dumps(receipt, indent=2, sort_keys=True) + '\n').encode()
+ save(destination / 'tokenization.json', receipt_raw)
+ print(json.dumps(dict(directory=str(destination), receipt_sha256=sha(receipt_raw), prompts=10,
+                       tokens_each=8192, source_token_counts=[row['sourceTokenCount'] for row in details],
++                      tokenizer_entries=tokenizer_total_size, model_vocabulary_size=model_vocabulary_size,
+                       native_model_executed=False)))

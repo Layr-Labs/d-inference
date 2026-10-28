@@ -1,0 +1,60 @@
+--- original/Controller.swift
++++ proposed/Controller.swift
+@@ -53,6 +53,13 @@
+         var configSHA = "", cpu = true
+         let captured = CapturedTokens()
+         var timer: DispatchSourceTimer?
++        // PHASE OBSERVATION BEGIN
++        var actualReadyCapacityBytes: [Int] = []
++        var admittedReservedBytes: Int?
++        var bytesBeforeRelease: Int?
++        var bytesAfterRelease: Int?
++        var actualRequestRetired = false
++        // PHASE OBSERVATION END
+         let began = DispatchTime.now().uptimeNanoseconds
+         var ownerDrainLimit = began + 302_000_000_000
+         signal(SIGALRM) { _ in Darwin._exit(124) }
+@@ -100,14 +107,27 @@
+             watchdog.resume(); timer = watchdog
+             let opened = try ClusterWorkerPair(workers: endpoints, startupDeadline: min(deadline, began + UInt64(config.startupSeconds) * 1_000_000_000)); pair = opened
+             guard let ready = opened.readiness else { throw QualificationFailure.invalid("Pair did not become ready") }
++            // PHASE OBSERVATION BEGIN
++            actualReadyCapacityBytes = endpoints.compactMap { $0.readiness?.requestCapacityBytes }
++            // PHASE OBSERVATION END
+             let generationDeadline = min(deadline, DispatchTime.now().uptimeNanoseconds + UInt64(config.requestSeconds) * 1_000_000_000)
+             let active = try opened.reserve(requestID: id, reservation: .init(profileID: template.profile.id,
+                 promptTokenIDs: config.promptTokenIDs, stopTokenIDs: config.stopTokenIDs, outputCount: config.outputCount,
+                 chunkSize: config.chunkSize, deadlineUptimeNanoseconds: generationDeadline, capacityLimitBytes: ready.requestCapacityBytes))
+             request = active
++            // PHASE OBSERVATION BEGIN
++            admittedReservedBytes = active.reservedBytes
++            // PHASE OBSERVATION END
+             try active.start { captured.accept($0) }
+             await active.waitUntilRetired()
++            // PHASE OBSERVATION BEGIN
++            actualRequestRetired = active.isRetired
++            bytesBeforeRelease = active.bytesInUse
++            // PHASE OBSERVATION END
+             active.releaseResources()
++            // PHASE OBSERVATION BEGIN
++            bytesAfterRelease = active.bytesInUse
++            // PHASE OBSERVATION END
+             let (tokens, reason, error) = captured.snapshot
+             guard active.bytesInUse == 0, error == nil, reason != nil, !tokens.isEmpty,
+                   tokens.count <= config.outputCount, config.expectedTokenIDs == nil || tokens == config.expectedTokenIDs else {
+@@ -163,6 +183,15 @@
+             "endpointDiagnosticsBase64": endpoints.map { $0.diagnosticTail.base64EncodedString() },
+             "journalRelease": "Authenticated owner acknowledgment; separate remote journal/process observation remains useful",
+             "elapsedControllerNanoseconds": DispatchTime.now().uptimeNanoseconds - began]
++        // PHASE OBSERVATION BEGIN
++        result["phaseReservationObservation"] = [
++            "schema": "resident_phase_external_reservation_v1",
++            "rankReadinessCapacityBytes": actualReadyCapacityBytes,
++            "admittedReservedBytes": admittedReservedBytes.map { $0 as Any } ?? NSNull(),
++            "bytesInUseAfterRetirementBeforeRelease": bytesBeforeRelease.map { $0 as Any } ?? NSNull(),
++            "bytesInUseAfterRelease": bytesAfterRelease.map { $0 as Any } ?? NSNull(),
++            "actualRequestRetired": actualRequestRetired]
++        // PHASE OBSERVATION END
+         if let reason { result["finishReason"] = reason }
+         if let error { result["workerFailure"] = error }
+         if let failure { result["failure"] = failure }

@@ -1,0 +1,73 @@
+--- frozen/qwen_layer_stage_recorded_audit.py
++++ prospective/qwen_layer_stage_cut12_audit.py
+@@ -1,4 +1,4 @@
+-"""CPU-only oracle for recorded, sequentially resident Qwen stage comparison."""
++"""Prospective registered9B cut12 variant; old recorded numerical algorithm retained."""
+ import hashlib
+ import json
+ import math
+@@ -8,6 +8,8 @@
+ 
+ WIDTH = {'float16': 2, 'bfloat16': 2, 'float32': 4, 'uint32': 4, 'int32': 4}
+ FRONTIERS = [32, 64, 65, 66, 67, 68]
++EXPECTED_CANONICAL_SHA256 = 'b7e0c1110ff919a8b62f496a597145e0b845758dae6268254cd413f183c9c2fe'
++EXPLICIT_RANGES = [(0, 12), (12, 32)]
+ 
+ 
+ def require(ok, message):
+@@ -111,8 +113,10 @@
+         for key in ['constructionConfigurationSHA256', 'stagePlanSHA256', 'sourceTensorManifestSHA256',
+                 'parameterLayoutSHA256', 'activeParameterLayoutSHA256', 'activeMappingSHA256', 'storageCommitmentSHA256']:
+             sha_string(receipt[key])
++        for key in ['constructionConfigurationSHA256', 'stagePlanSHA256']:
++            equal(receipt[key], expected['stages'][index][key], 'Pinned cut12 stage identity differs: ' + key)
+         entries = receipt['activeTensors']
+-        require(isinstance(entries, list) and len(entries) == ([463, 464] if expected else [118, 119])[index], 'Stage tensor count differs')
++        require(isinstance(entries, list) and len(entries) == len(expected['stages'][index]['activeTensors']), 'Stage tensor count differs')
+         equal(entries, sorted(entries, key=lambda x: x['localName']), 'Active inventory order differs')
+         local_names = set()
+         for tensor in entries:
+@@ -123,8 +127,9 @@
+             match = re.fullmatch(re.escape(namespace) + r'model\.layers\.(\d+)\.(.+)', name)
+             if match:
+                 layer = int(match[1])
+-                require(layer < layers and layer // (layers // 2) == index, 'Wrong source layer owner')
+-                local = namespace + f'model.layers.{layer % (layers // 2)}.' + match[2]
++                start, end = EXPLICIT_RANGES[index]
++                require(start <= layer < end, 'Wrong explicit cut12 source layer owner')
++                local = namespace + f'model.layers.{layer - start}.' + match[2]
+             else:
+                 allowed = ([namespace + 'model.embed_tokens.' + s for s in ['weight', 'scales', 'biases']] if index == 0 else
+                     [namespace + 'lm_head.' + s for s in ['weight', 'scales', 'biases']] + [namespace + 'model.norm.weight'])
+@@ -209,6 +214,8 @@
+ 
+ 
+ def check_recorded_pair(checkpoint: dict, report: dict, expected: dict | None = None) -> dict:
++    require(isinstance(expected, dict) and digest(canonical(expected)) == EXPECTED_CANONICAL_SHA256,
++        'Exact prospectively derived cut12 expectation is required')
+     require(checkpoint['kind'] == 'qwen_layer_stage_baseline_checkpoint'
+         and report['kind'] == 'qwen_layer_stage_comparison_report', 'Wrong outer record kinds')
+     flags(checkpoint, baselineModelReleasedBeforeStageLoading=True)
+@@ -231,10 +238,10 @@
+     require(integer(layers) == (32 if expected else 8) and integer(vocab) == (248320 if expected else 512)
+         and dtype in ('float16', 'bfloat16', 'float32') and integer(source['sourceModelTensorBytes'], 1), 'Source model geometry differs')
+     if expected:
+-        require(expected['kind'] == 'qwen_layer_stage_real9b_expected' and dtype == 'bfloat16', 'Wrong real expected oracle')
++        require(expected['kind'] == 'qwen_layer_stage_real9b_cut12_expected' and dtype == 'bfloat16', 'Wrong real expected oracle')
+         for key, expected_key in [('artifactAggregateSHA256', 'artifactAggregateSHA256ClaimedByPinnedManifest'),
+                 ('sourceConfigurationSHA256', 'configurationSHA256'), ('sourceParameterLayoutSHA256', 'sourceParameterLayoutSHA256'),
+-                ('sourceModelTensorBytes', 'sourceModelTensorBytes')]:
++                ('sourceModelTensorBytes', 'sourceModelTensorBytes'), ('planSHA256', 'planSHA256')]:
+             equal(source[key], expected[expected_key], 'Pinned real source identity differs: ' + key)
+     equal(comparison['source'], source, 'Baseline/staged source identity differs')
+     inventory = stage_inventory(source, report['stageLoads'], expected)
+@@ -315,7 +322,8 @@
+     boundary = 32 * (4096 if expected else 128) * 4
+     conservative = 3 * (layers - layers // 4) * (conv + ssm) + (layers // 4) * (kv + 4) + max(conv, ssm, kv // 2) + 2 * boundary
+     require(report['conservativeStateAndBoundaryBytes'] == conservative, 'Conservative state/boundary estimate differs')
+-    return dict(status='passed', vocabularySize=vocab, layerCount=layers, dtype=dtype, frames=6,
++    return dict(status='passed', explicitStageCut=12, stageLayerRanges=[[0,12],[12,32]],
++        planSHA256=expected['planSHA256'], vocabularySize=vocab, layerCount=layers, dtype=dtype, frames=6,
+         stateEntriesPerFrame=72 if expected else 18, stateBytesPerFrame=state_sizes,
+         independentlyVerifiedNativeLogitPairs=4, independentlyVerifiedRawLogitRows=8,
+         nativeLogitBytesExact=True, logitLogicalBytesSHA256=logit_hashes,

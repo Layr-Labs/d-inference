@@ -1,0 +1,132 @@
+--- a/worker_processes.py
++++ b/worker_processes.py
+@@ -10,6 +10,18 @@
+ import time
+ 
+ from worker_contract import MAX_LINE, MAX_OUTPUT, encoded, require
++
++
++def cleanup_error_text(error):
++    """Bound diagnostic text without trusting a cleanup exception's __str__."""
++    formatting_error = None
++    try:
++        detail = str(error)
++    except BaseException as failure:
++        formatting_error = failure
++        detail = 'message unavailable (%s)' % type(failure).__name__
++    text = (type(error).__name__ + ': ' + detail).replace('\0', '\\0')
++    return text.encode('utf-8', errors='replace')[:2048].decode('utf-8', errors='ignore'), formatting_error
+ 
+ 
+ class PipeWorkers:
+@@ -25,6 +37,8 @@
+         self.started = None
+         self.timer = None
+         self.closed = False
++        self._retiring = self._closing = False
++        self._cleanup_interrupt = None
+         self.complete_output = False
+         self.cleanup_errors = []
+         self._lock = threading.Lock()
+@@ -56,15 +70,23 @@
+     def _kill_groups(self):
+         with self._lock:
+             children = list(self.children)
+-        errors = []
+         for child in children:
+             try:
+                 os.killpg(child.pid, signal.SIGKILL)
+             except ProcessLookupError:
+                 pass
+-            except OSError as error:
+-                errors.append('killpg:%s:%s' % (child.pid, error))
+-        return errors
++            except BaseException as error:
++                self._note_cleanup_error('killpg:%s' % child.pid, error)
++
++    def _note_cleanup_error(self, label, error):
++        # Preserve an operator interruption before formatting can itself fail.
++        if not isinstance(error, Exception) and self._cleanup_interrupt is None:
++            self._cleanup_interrupt = error
++        text, formatting_error = cleanup_error_text(error)
++        if (formatting_error is not None and not isinstance(formatting_error, Exception)
++                and self._cleanup_interrupt is None):
++            self._cleanup_interrupt = formatting_error
++        self.cleanup_errors.append(label + ':' + text)
+ 
+     def _expire(self):
+         if self.closed:
+@@ -73,7 +95,7 @@
+         self._kill_groups()
+ 
+     def check(self):
+-        require(not self.closed, 'Worker supervisor has been closed')
++        require(not self.closed and not self._retiring, 'Worker supervisor has been closed or is retiring')
+         if self.expired.is_set() or (self.started is not None and time.monotonic() - self.started >= self.timeout):
+             self._expire()
+             raise TimeoutError('Resident worker lifetime expired')
+@@ -193,35 +215,42 @@
+         self.complete_output = True
+ 
+     def close(self, kill=True):
+-        if self.closed:
++        if self.closed or self._closing:
+             return
+-        self.closed = True
+-        if self.timer is not None:
+-            self.timer.cancel()
+-        if kill:
+-            self.cleanup_errors.extend(self._kill_groups())
+-        interrupt = None
++        self._retiring = self._closing = True
+         def attempt(label, action):
+-            nonlocal interrupt
+             try:
+                 action()
+                 return True
+             except BaseException as error:
+-                self.cleanup_errors.append('%s:%s:%s' % (label, type(error).__name__, error))
+-                if not isinstance(error, Exception) and interrupt is None:
+-                    interrupt = error
++                self._note_cleanup_error(label, error)
+                 return False
+-        for child in self.children:
+-            if not attempt('reap:%s' % child.pid, lambda: child.wait(timeout=1)):
+-                self.cleanup_errors.extend(self._kill_groups())
+-                attempt('reap-retry:%s' % child.pid, lambda: child.wait(timeout=1))
+-            for stream in ('stdin', 'stdout', 'stderr'):
+-                attempt('close-pipe:%s' % stream, getattr(child, stream).close)
+-        attempt('close-selector', self.selector.close)
+-        for handle in self.logs.values():
+-            attempt('close-log', handle.close)
+-        if interrupt is not None:
+-            raise interrupt
++        try:
++            # The watchdog remains active while each initial kill and reap is
++            # attempted. One kill interruption cannot skip the other groups.
++            if kill:
++                self._kill_groups()
++            for child in self.children:
++                if not attempt('reap:%s' % child.pid, lambda: child.wait(timeout=1)):
++                    self._kill_groups()
++                    attempt('reap-retry:%s' % child.pid, lambda: child.wait(timeout=1))
++                for stream in ('stdin', 'stdout', 'stderr'):
++                    attempt('close-pipe:%s' % stream, getattr(child, stream).close)
++            selector_closed = attempt('close-selector', self.selector.close)
++            for handle in self.logs.values():
++                attempt('close-log', handle.close)
++            retired = all(child.returncode is not None for child in self.children)
++            handles_closed = all(getattr(child, stream).closed for child in self.children
++                                 for stream in ('stdin', 'stdout', 'stderr'))
++            self.closed = retired and handles_closed and selector_closed and all(handle.closed for handle in self.logs.values())
++            if retired and self.timer is not None:
++                attempt('cancel-watchdog', self.timer.cancel)
++            # If reaping failed, leave closed false and the watchdog active.
++            # New work stays refused, but a later close may retry teardown.
++        finally:
++            self._closing = False
++        if self._cleanup_interrupt is not None:
++            raise self._cleanup_interrupt
+ 
+     def retained_streams(self):
+         """Only call after closure; hashes cover retained bytes, possibly a prefix."""

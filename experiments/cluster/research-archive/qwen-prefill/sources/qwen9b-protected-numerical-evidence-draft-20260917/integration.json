@@ -1,0 +1,179 @@
+{
+  "borrowedExactSource": {
+    "sha256": "12c40077cc5fb999ace351f54e9b9fabf8de919cc3a88988915e8f9be0ff17fc",
+    "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/resident-generation-phase-native-draft-20260916/proposed/libs/darkbloom-cluster-worker/Sources/DarkbloomClusterWorker/ResidentEvidenceSink.swift",
+    "targetPath": "libs/darkbloom-cluster-worker/Sources/DarkbloomClusterWorker/ResidentEvidenceSink.swift"
+  },
+  "compilerExecuted": false,
+  "composeNativeAfter": "qwen9b-protected-canonical-build-20260917 canonical two-source correction",
+  "composeProviderAfter": [
+    "cluster-native-member-shared-requests-draft-20260917",
+    "cluster-native-member-shared-requests-cancellation-correction-20260917"
+  ],
+  "files": [
+    {
+      "bytes": 4601,
+      "kind": "runtime",
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterOwnerProtectedReady.swift",
+      "preimageSHA256": "7e279198d435b89b68287021d16624dd431a39b2820afa8d88caa3a06dd38b24",
+      "preimageSourcePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-member-shared-requests-draft-20260917/proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterOwnerProtectedReady.swift",
+      "proposedSHA256": "3e21d3e0bafc2036b7840403de8ced31bf15008ce52835e85f9853852970fb04",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/qwen9b-protected-numerical-evidence-draft-20260917/proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterOwnerProtectedReady.swift"
+    },
+    {
+      "bytes": 2357,
+      "kind": "runtime",
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenProtectedDescriptionRecords.swift",
+      "preimageSHA256": "b5d5724062c4805118fb0273b600a72eff598ceeb4e20f159ff6e74e0e6a9de4",
+      "preimageSourcePath": "/Users/developer/DarkbloomDev/cluster-research/qwen9b-protected-canonical-description-correction-20260917/proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenProtectedDescriptionRecords.swift",
+      "proposedSHA256": "74e5019c39db9438f9f547f223c0d5a5fb1ac670fc0564638e09d36c7a8ece2a",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/qwen9b-protected-numerical-evidence-draft-20260917/proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenProtectedDescriptionRecords.swift"
+    },
+    {
+      "bytes": 879,
+      "kind": "runtime",
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenProtectedEvidenceBudget.swift",
+      "preimageSHA256": null,
+      "preimageSourcePath": null,
+      "proposedSHA256": "62db6bb771905e8afc87c1abebb05c1c26d54b8af4caa865d6300ae45e9a76b5",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/qwen9b-protected-numerical-evidence-draft-20260917/proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenProtectedEvidenceBudget.swift"
+    },
+    {
+      "bytes": 10297,
+      "kind": "runtime",
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenProtectedEvidenceExport.swift",
+      "preimageSHA256": null,
+      "preimageSourcePath": null,
+      "proposedSHA256": "194cf00057032e19da50a722f3ea7be6cfbdd06b10a560924a16f57f09ad37bc",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/qwen9b-protected-numerical-evidence-draft-20260917/proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenProtectedEvidenceExport.swift"
+    },
+    {
+      "bytes": 3706,
+      "kind": "runtime",
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenProtectedEvidenceJSON.swift",
+      "preimageSHA256": null,
+      "preimageSourcePath": null,
+      "proposedSHA256": "611f44f2bffdbdf291ce1cf52f6ef9607ed9a058c1a0158b00d9c6ff08485bb1",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/qwen9b-protected-numerical-evidence-draft-20260917/proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenProtectedEvidenceJSON.swift"
+    },
+    {
+      "bytes": 6441,
+      "kind": "runtime",
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenProtectedExperimentContract.swift",
+      "preimageSHA256": "89f1920604d7151269efd6bc67b7136a99ac3f8c1369ad0b59d28915f2104ea8",
+      "preimageSourcePath": "/Users/developer/DarkbloomDev/cluster-research/qwen9b-protected-canonical-description-correction-20260917/proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenProtectedExperimentContract.swift",
+      "proposedSHA256": "7ad72f434f463047e55bd4d81399da020f8c1d36d97253c00a48d8cd42a7349e",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/qwen9b-protected-numerical-evidence-draft-20260917/proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenProtectedExperimentContract.swift"
+    },
+    {
+      "bytes": 23766,
+      "kind": "runtime",
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentRuntime.swift",
+      "preimageSHA256": "490e8ec5ee031e59c9161fe70536ba70aa4b0bf9e63988bf6f859aa81c913bd1",
+      "preimageSourcePath": "/Users/developer/DarkbloomDev/cluster-research/qwen9b-native-protected-transport-draft-20260917/proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentRuntime.swift",
+      "proposedSHA256": "08ac8efdc91431f6039bc635d1e05c99252f3f2f74df3d9c2ac136f2fddaa925",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/qwen9b-protected-numerical-evidence-draft-20260917/proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentRuntime.swift"
+    },
+    {
+      "bytes": 3819,
+      "kind": "tests",
+      "path": "libs/darkbloom-cluster/Tests/DarkbloomClusterRuntimeTests/ProtectedEvidenceTests.swift",
+      "preimageSHA256": null,
+      "preimageSourcePath": null,
+      "proposedSHA256": "0a43d4b15641b8ce26445cb66cd5ead6616266113d8ea449e0871d9aa1f5c07f",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/qwen9b-protected-numerical-evidence-draft-20260917/proposed/libs/darkbloom-cluster/Tests/DarkbloomClusterRuntimeTests/ProtectedEvidenceTests.swift"
+    },
+    {
+      "bytes": 11237,
+      "kind": "tests",
+      "path": "libs/darkbloom-cluster/Tests/DarkbloomClusterRuntimeTests/ProtectedExperimentTests.swift",
+      "preimageSHA256": "ea3b5ad4f033fd70d38527764ea793f2b3a0cc895bb0e6600f96ac7d85e3504e",
+      "preimageSourcePath": "/Users/developer/DarkbloomDev/cluster-research/qwen9b-native-protected-transport-draft-20260917/proposed/libs/darkbloom-cluster/Tests/DarkbloomClusterRuntimeTests/ProtectedExperimentTests.swift",
+      "proposedSHA256": "6768a8a02a2f32632192639b4c96d53c045eced39a844d0a16a4938c6605b419",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/qwen9b-protected-numerical-evidence-draft-20260917/proposed/libs/darkbloom-cluster/Tests/DarkbloomClusterRuntimeTests/ProtectedExperimentTests.swift"
+    },
+    {
+      "bytes": 3370,
+      "kind": "runtime",
+      "path": "libs/darkbloom-cluster-worker/Sources/DarkbloomClusterWorker/NativeWorkerRuntime.swift",
+      "preimageSHA256": "d5d801cf971bed8a75ef064a7723067797fa8138be84c8c0eca45c7e8b818dc7",
+      "preimageSourcePath": "/Users/developer/DarkbloomDev/cluster-research/qwen9b-native-protected-transport-draft-20260917/proposed/libs/darkbloom-cluster-worker/Sources/DarkbloomClusterWorker/NativeWorkerRuntime.swift",
+      "proposedSHA256": "2cb46132593e4a8d205b3727d95ec45e1aa6ad9093446881f9cfcd5ba08eaf38",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/qwen9b-protected-numerical-evidence-draft-20260917/proposed/libs/darkbloom-cluster-worker/Sources/DarkbloomClusterWorker/NativeWorkerRuntime.swift"
+    },
+    {
+      "bytes": 2554,
+      "kind": "runtime",
+      "path": "libs/darkbloom-cluster-worker/Sources/DarkbloomClusterWorker/ResidentEvidenceSink.swift",
+      "preimageSHA256": null,
+      "preimageSourcePath": null,
+      "proposedSHA256": "12c40077cc5fb999ace351f54e9b9fabf8de919cc3a88988915e8f9be0ff17fc",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/qwen9b-protected-numerical-evidence-draft-20260917/proposed/libs/darkbloom-cluster-worker/Sources/DarkbloomClusterWorker/ResidentEvidenceSink.swift"
+    },
+    {
+      "bytes": 5235,
+      "kind": "runtime",
+      "path": "libs/darkbloom-cluster-worker/Sources/DarkbloomClusterWorker/WorkerConfiguration.swift",
+      "preimageSHA256": "f26ef8e648eb1c7d7632891d6bb8d274ab385bb03830db5b68e6271f2c30d2a1",
+      "preimageSourcePath": "/Users/developer/DarkbloomDev/cluster-research/qwen9b-native-protected-transport-draft-20260917/proposed/libs/darkbloom-cluster-worker/Sources/DarkbloomClusterWorker/WorkerConfiguration.swift",
+      "proposedSHA256": "d1039e20564aead3db2b1c29fc6d3e8e54e12cd797517fdaa424f1dd7544e925",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/qwen9b-protected-numerical-evidence-draft-20260917/proposed/libs/darkbloom-cluster-worker/Sources/DarkbloomClusterWorker/WorkerConfiguration.swift"
+    },
+    {
+      "bytes": 2021,
+      "kind": "runtime",
+      "path": "libs/darkbloom-cluster-worker/Sources/DarkbloomClusterWorker/WorkerMain.swift",
+      "preimageSHA256": "25dec257bf2f0c854de47198908c945d8e4ef9f424fa3dee5206ebd7c103cef4",
+      "preimageSourcePath": "/Users/developer/DarkbloomDev/cluster-research/qwen9b-native-protected-transport-draft-20260917/proposed/libs/darkbloom-cluster-worker/Sources/DarkbloomClusterWorker/WorkerMain.swift",
+      "proposedSHA256": "4130bcb281d68829a26a933e31307350a428cb5668311675de54c7baf108189f",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/qwen9b-protected-numerical-evidence-draft-20260917/proposed/libs/darkbloom-cluster-worker/Sources/DarkbloomClusterWorker/WorkerMain.swift"
+    },
+    {
+      "bytes": 5340,
+      "kind": "tests",
+      "path": "libs/darkbloom-cluster-worker/Tests/DarkbloomClusterWorkerTests/ProtectedWorkerTests.swift",
+      "preimageSHA256": "27ba79c28d03023e4fab5714ed8176fa115026a3b9809edc1d29e2a110a1cf21",
+      "preimageSourcePath": "/Users/developer/DarkbloomDev/cluster-research/qwen9b-native-protected-transport-draft-20260917/proposed/libs/darkbloom-cluster-worker/Tests/DarkbloomClusterWorkerTests/ProtectedWorkerTests.swift",
+      "proposedSHA256": "a78081890a200bfb58b8691560d457d81ae6e705dd560e4c368742c3ebd915dc",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/qwen9b-protected-numerical-evidence-draft-20260917/proposed/libs/darkbloom-cluster-worker/Tests/DarkbloomClusterWorkerTests/ProtectedWorkerTests.swift"
+    },
+    {
+      "bytes": 3377,
+      "kind": "tests",
+      "path": "libs/darkbloom-cluster-worker/Tests/DarkbloomClusterWorkerTests/ResidentEvidenceSinkTests.swift",
+      "preimageSHA256": null,
+      "preimageSourcePath": null,
+      "proposedSHA256": "46078609756b6256d03305e50360bca6650641f9499cd10b38798bbbe8cbb32a",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/qwen9b-protected-numerical-evidence-draft-20260917/proposed/libs/darkbloom-cluster-worker/Tests/DarkbloomClusterWorkerTests/ResidentEvidenceSinkTests.swift"
+    },
+    {
+      "bytes": 5652,
+      "kind": "runtime",
+      "path": "provider-swift/Sources/ProviderCore/Config/ClusterNativeMemberAttachment.swift",
+      "preimageSHA256": "5dd1cbce7e15f7e4a1d679e244e952d8fd86386465f14215e29b357acb13529f",
+      "preimageSourcePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-member-installed-attachment-draft-20260917/proposed/provider-swift/Sources/ProviderCore/Config/ClusterNativeMemberAttachment.swift",
+      "proposedSHA256": "c3d34503e8278a15bbb1ff62286c34a29c9487ada6dfb51a4f6f5694648e1dda",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/qwen9b-protected-numerical-evidence-draft-20260917/proposed/provider-swift/Sources/ProviderCore/Config/ClusterNativeMemberAttachment.swift"
+    },
+    {
+      "bytes": 3328,
+      "kind": "runtime",
+      "path": "provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledOwner+NativeMember.swift",
+      "preimageSHA256": "dedfc0ed9e812988f128222a9cb61769ec7ecddf7e70553eeeb6237e0fa04713",
+      "preimageSourcePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-member-shared-requests-draft-20260917/proposed/provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledOwner+NativeMember.swift",
+      "proposedSHA256": "3794a7305b68f860f9c384641f7d093fc369bad0ac5b2093bd570256b4a7f068",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/qwen9b-protected-numerical-evidence-draft-20260917/proposed/provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledOwner+NativeMember.swift"
+    },
+    {
+      "bytes": 13575,
+      "kind": "tests",
+      "path": "provider-swift/Tests/ProviderCoreTests/Config/ClusterNativeMemberAttachmentTests.swift",
+      "preimageSHA256": "dc739cf5b43042a7025aae93cd00826375dc06c60b5ae1fb82f2b13df4717f86",
+      "preimageSourcePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-member-installed-attachment-draft-20260917/proposed/provider-swift/Tests/ProviderCoreTests/Config/ClusterNativeMemberAttachmentTests.swift",
+      "proposedSHA256": "309c30e5ef16f82a980c00a689fbc4b6d348cd760a3196cdd1fcd8c83bf63ed8",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/qwen9b-protected-numerical-evidence-draft-20260917/proposed/provider-swift/Tests/ProviderCoreTests/Config/ClusterNativeMemberAttachmentTests.swift"
+    }
+  ],
+  "mainMutation": false,
+  "schema": "protected_numerical_source_overlay_v1"
+}

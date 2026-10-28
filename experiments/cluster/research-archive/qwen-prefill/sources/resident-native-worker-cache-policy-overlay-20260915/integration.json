@@ -1,0 +1,57 @@
+{
+  "baseCut8ManifestSHA256": "c1816b65a2320cc93a4d91328026e8a1e2f577b365c1ae9d97fe1678a868b068",
+  "baseWorkerManifestSHA256": "2d13d5add5901896fd9c7fff065dd4c6c89252c129266039665b7d00ce991f52",
+  "diagnosticOverlayIncluded": false,
+  "files": [
+    {
+      "originalSHA256": "5afa51fb51327b83e04bbf6235fc12ff23794da8e7a4bbdb15c656c727210445",
+      "path": "Sources/DarkbloomClusterRuntime/QwenResidentAdmission.swift",
+      "proposedSHA256": "973d2d2506df03d0f0fbc3e3d8c17b4e5efb049a957ae8d5fc875ad5ec58e1aa"
+    },
+    {
+      "originalSHA256": null,
+      "path": "Sources/DarkbloomClusterRuntime/QwenResidentAllocatorPolicy.swift",
+      "proposedSHA256": "e976fa721ab1ae529d27ea35a4c9c7512d613734b7a77bba1213a3e41ddd3d88"
+    },
+    {
+      "originalSHA256": "29138f09262ddc11ca5050c2e94a1cd3963b7b331556433304b9bb67831691b8",
+      "path": "Sources/DarkbloomClusterRuntime/QwenResidentLoading.swift",
+      "proposedSHA256": "4d440e9f9b2440f2c760262f95172d0f85d09683e43176b74ed165093e053cb5"
+    },
+    {
+      "originalSHA256": "cbed6fbf2364d3aca16272fd3713925e03c59c8a82f89c1b0035337b65a067e5",
+      "path": "Sources/DarkbloomClusterRuntime/QwenResidentRuntime+Load.swift",
+      "proposedSHA256": "981a7d375e9c61e659df5bb6591aa93017bac4de1d16bc9fee2753a8b9923427"
+    },
+    {
+      "originalSHA256": "361f6b49cdc1f880936e788b7173df7faa500cedb10238ca7c39cf9c48f7f2dd",
+      "path": "Sources/DarkbloomClusterWorker/WorkerConfiguration.swift",
+      "proposedSHA256": "c21b1041031c8fb3e110c8c32f98c302539d91387755afb9e18f886a228fe509"
+    },
+    {
+      "originalSHA256": "78762b328c86ca586266ae78ebfa37b874ef0da1c5217f4800decbaac8a348a7",
+      "path": "Tests/DarkbloomClusterRuntimeTests/ResidentFacadeTests.swift",
+      "proposedSHA256": "6b719c78bef7229cf09d3659ef33285ca2ec981693601d76df83c8d71996e0f7"
+    },
+    {
+      "originalSHA256": "c682985796065436dc0680e7f67161214c5c6ac361f030bdcc68f66d132ddffa",
+      "path": "Tests/DarkbloomClusterWorkerTests/WorkerTests.swift",
+      "proposedSHA256": "ef12d7599ed2705b81940efc560d9d72fffc2f0c82c2aba5384108da2f481941"
+    }
+  ],
+  "nativeBuildEntry": {
+    "executed": false,
+    "path": "/Users/developer/DarkbloomDev/cluster-research/resident-native-worker-draft-20260915/build-native-worker.sh",
+    "sha256": "574abbf7b2b40472ecb89b4db1f9ab42917256cc3492a04e00cd77536cc43cc7"
+  },
+  "packagePath": "/Users/developer/DarkbloomDev/cluster-research/resident-native-worker-policy-build-20260915/workspace/libs/darkbloom-cluster",
+  "runtimeQualification": {
+    "externalTTFTMeasured": false,
+    "generationExecuted": false,
+    "independentNumericalComparisonPerformed": false,
+    "modelLoaded": false,
+    "physicalTransferQualified": false
+  },
+  "schema": "resident_worker_cache_policy_overlay_v1",
+  "sourceCount": 93
+}

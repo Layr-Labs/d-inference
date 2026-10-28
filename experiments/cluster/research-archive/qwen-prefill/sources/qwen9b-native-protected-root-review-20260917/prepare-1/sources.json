@@ -1,0 +1,17 @@
+{
+  "argv": [
+    "/usr/bin/python3",
+    "-B",
+    "/Users/developer/DarkbloomDev/cluster-research/qwen9b-native-protected-build-draft-20260917/prepare.py",
+    "sources"
+  ],
+  "elapsedSeconds": 0.9699202499999999,
+  "exitCode": 0,
+  "groupAbsent": true,
+  "killedOwnedGroup": false,
+  "launchObservation": "owned-child pid 81568\n",
+  "pid": 81568,
+  "reaped": true,
+  "timedOut": false,
+  "timeoutSeconds": 210
+}

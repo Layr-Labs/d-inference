@@ -1,0 +1,13 @@
+# Resident load refusal operands — private measurement candidate
+
+This one-file proposal applies to the exact registered 27B `a7c35b37…043ad6` source snapshot. It changes the existing refusal text and retains the values used by the existing predicate. It does not change any reservation, floor, tensor ordering, loading operation, poison behavior, native error precedence or public capability.
+
+The failure records `phase` (`initial`, `before-read`, `materializer-check`, `finish`), `readAdmitted`/active count, actual/required free bytes, remaining allocation bound, host and scratch allowances, MLX active/cache bytes, and required/available allocator bytes. `readAdmitted` counts reads admitted by `beforeRead`; it does **not** attest completed tensors. `materializer-check` is the existing shared hook after evaluation, installation and final metadata checks; it does not distinguish those substeps.
+
+The allocator limit is sampled only if the free predicate passes, preserving the old short-circuit. A free-memory refusal reports `allocatorLimitBytes=not-read`, rather than inventing an allocator outcome. Active/cache reads remain in their original order before the OS sample. This is not an atomic memory snapshot. The already existing low-floor/stale/pressure/swap errors remain distinct and unchanged.
+
+`check_source.py` verifies exact inverse restoration of the original body, the short-circuit structure, and a conservative error-size bound under WorkerMain's 4096-byte cap. It emits `runtime.patch` and `source-checks.json`. No Swift compilation or native/model execution has occurred for this candidate. Root owns review, source snapshot, any later build, deployment and physical run; the existing failed binaries/packages remain unchanged.
+
+Supporting read-only analysis is `../qwen27b-resident-load-gate-audit-20260915/review.json`. Current physical replay is `../qwen27b-owner-diagnostic-drain-physical-audit-20260915/review.json`; the older V2 replay is retained separately. Existing verification already requests uncached full-file hashing, and the selected loader already requests uncached aligned payload reads. No missing cache-bypass change is proposed.
+
+An unchanged guarded retry after the existing authorized purge remains useful if it restores materially more actual free memory than the earlier approximately 14.1 GB start. The derived initial threshold is 13,165,129,827 bytes; it is not a certificate for all later checks. If materially larger headroom is unavailable or refusal repeats, this observation candidate is the narrow next measurement. No lower guard or changed cut is bundled with it.

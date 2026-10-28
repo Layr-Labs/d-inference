@@ -1,0 +1,63 @@
+--- ancestor/PhaseCheck.swift
++++ observer/PhaseCheck.swift
+@@ -16,7 +16,7 @@
+             try require(budget.maximumEvents == 64, "Frame-derived capacity")
+             try require(budget.requiredHostReservationBytes == budget.eventAllocationBytes
+                 + budget.encodedResultAllocationBytes + budget.encodingScratchAllowanceBytes
+-                + budget.metadataAllowanceBytes, "Complete named host sum")
++                + budget.metadataAllowanceBytes + budget.memoryAllocationBytes, "Complete named host sum")
+             try rejects("undersized allocator bound") {
+                 _ = try QwenGenerationPhaseBudget.derive(identity: identity(), hostAllocationBound: { $0 - 1 })
+             }
+--- ancestor/EncodingCheck.swift
++++ observer/EncodingCheck.swift
+@@ -5,18 +5,18 @@
+         var sizes = [Int](), groups = [String]()
+         func run(_ name: String, _ body: () throws -> Void) throws { try body(); groups.append(name) }
+         let bound = QwenGenerationPhaseHostAllocation.bound
+-        let id = identity(prompt: 8192, chunk: 274, output: 128)
++        let id = identity(prompt: 8192, chunk: 256, output: 128)
+         let budget = try QwenGenerationPhaseBudget.derive(identity: id, hostAllocationBound: bound)
+ 
+         try run("actual host rounding and wide-field full report") {
+-            try require(budget.maximumEvents == 512, "Maximum event slots")
++            try require(budget.maximumEvents == 544, "Maximum event slots")
+             for rank in 0...1 {
+-                let owner = identity(rank: rank, prompt: 8192, chunk: 274, output: 128)
++                let owner = identity(rank: rank, prompt: 8192, chunk: 256, output: 128)
+                 let captured = try QwenGenerationPhaseRecorder.forCPUFixture(identity: owner, budget: budget,
+                     clock: { UInt64.max }, reservationCheck: {})
+                 try captured.begin(expected: owner)
+                 try captured.observe(event(.requestBegin))
+-                let frame = QwenGenerationPhaseFrame(sequence: 29, tokenOffset: 7946, tokenCount: 246, finalPromptChunk: true)
++                let frame = QwenGenerationPhaseFrame(sequence: 31, tokenOffset: 7936, tokenCount: 256, finalPromptChunk: true)
+                 for _ in 0..<(budget.maximumEvents - 2) {
+                     try captured.observe(event(rank == 0 ? .originalWrapperReleased : .consumedAckSendBegin,
+                         frame: frame, local: 8320, agreed: 8320))
+@@ -29,14 +29,14 @@
+                     planFingerprint: hash, stageFingerprint: hash, activationDType: "bfloat16")
+                 let execution = QwenLayerStageGenerationResult(agreementFingerprint: hash,
+                     membershipEpoch: owner.membershipEpoch, identity: session, selectedTokenIDs: Array(248192..<248320),
+-                    tokenChainSHA256: hash, completedFrames: 143, committedTokens: 8319, finishReason: .length)
++                    tokenChainSHA256: hash, completedFrames: 159, committedTokens: 8319, finishReason: .length)
+                 let writer = try QwenGenerationPhaseJSON(budget: budget)
+-                try QwenGenerationPhaseEncoding.encode(trace: trace, budget: budget, execution: execution,
++                try QwenGenerationPhaseEncoding.encode(trace: trace, budget: budget, execution: execution, memory: wideMemoryTrace(),
+                     totalReserved: Int.max, liveChecks: Int.max, into: writer)
+                 try writer.publish { bytes in
+                     let object = try JSONSerialization.jsonObject(with: bytes) as! [String: Any]
+                     let events = object["events"] as! [[String: Any]]
+-                    try require(events.count == 512, "Missing bounded event rows")
++                    try require(events.count == 544, "Missing bounded event rows")
+                     try require((events[0]["localUptimeNanoseconds"] as! NSNumber).uint64Value == UInt64.max, "Timestamp narrowed")
+                     try require((object["execution"] as! [String: Any])["selectedTokenIDs"] as! [Int] == execution.selectedTokenIDs,
+                         "Token IDs changed while encoding")
+@@ -48,7 +48,7 @@
+         }
+         try run("fixed output refusal and unsafe JSON strings") {
+             let writer = try QwenGenerationPhaseJSON(budget: budget)
+-            for _ in 0..<256 { try writer.raw(String(repeating: "a", count: 1024)) }
++            for _ in 0..<(QwenGenerationPhaseBudget.maximumEncodedBytes / 1024) { try writer.raw(String(repeating: "a", count: 1024)) }
+             try rejects("one byte beyond allocation") { try writer.raw("b") }
+             let other = try QwenGenerationPhaseJSON(budget: budget)
+             try rejects("unescaped quote") { try other.string("\"") }

@@ -1,0 +1,629 @@
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenLayerStageGenerationDriver.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenLayerStageGenerationDriver.swift
+@@ -54,6 +54,7 @@
+ private func runQwenLayerStageGenerationCore(loaded: LoadedQwenLayerStage,
+     plan: QwenLayerStagePlan, agreement: QwenLayerStageGenerationAgreement,
+     collective: Collective, diagnostics: QwenGenerationDiagnosticCapture?,
++    observation: QwenGenerationPhaseObserver? = nil,
+     onCommittedToken: (Int) throws -> Bool, check: () throws -> Void
+ ) throws -> QwenLayerStageGenerationResult {
+     try MLX.withError { nativeError in
+@@ -65,18 +66,23 @@
+         do {
+             try requireGenerationSource(loaded: loaded, plan: plan, agreement: agreement, collective: collective)
+             try checked()
++            if let observation { try observeQwenGenerationPhase(observation, .requestBegin, check: checked) }
++            if let observation { try observeQwenGenerationPhase(observation, .readinessBegin, check: checked) }
+             _ = try requireQwenLongPrefillReadinessDigest(collective: collective,
+                 material: { .generation(agreementFingerprint: agreement.fingerprint) },
+                 disagreementMessage: "Generation membership/request/source readiness differs", check: checked)
++            if let observation { try observeQwenGenerationPhase(observation, .readinessEnd, check: checked) }
+             let control = QwenLayerStageGenerationControl(agreement: agreement)
+-            let transport = try QwenLayerStageGenerationTransport(agreement: agreement, collective: collective)
++            let transport = try QwenLayerStageGenerationTransport(agreement: agreement, collective: collective, observation: observation)
+             var session: QwenLayerStageSession?
+             var producer: QwenGenerationLookaheadProducer?
+             do {
++                if let observation { try observeQwenGenerationPhase(observation, .stateBegin, check: checked) }
+                 let owned = try QwenLayerStageSession(stage: loaded, plan: plan, generationRequest: agreement.request)
+                 session = owned
++                if let observation { try observeQwenGenerationPhase(observation, .stateEnd, localCommittedTokens: owned.committedTokens, check: checked) }
+                 if agreement.prefillPolicy == .oneChunkLookahead, collective.rank == 0 {
+-                    producer = try .init(request: agreement.request)
++                    producer = try .init(request: agreement.request, observation: observation)
+                 }
+                 var selectedTokens = [Int]()
+                 var finalDecision: QwenLayerStageGenerationDecisionPacket?
+@@ -84,6 +90,7 @@
+                     try autoreleasepool {
+                         try checked()
+                         let expected = try control.beginFrame()
++                        if let observation { try observeQwenGenerationPhase(observation, .frameBegin, frame: expected.frame, agreedCommittedTokens: control.committedTokens, check: checked) }
+                         let packet: QwenLayerStageGenerationBoundaryPacket
+                         let row: MLXArray?
+                         if let producer, expected.frame.phase == .prefill {
+@@ -95,12 +102,16 @@
+                                 throw ProbeError("Generation decode precedes lookahead prompt drain")
+                             }
+                             (packet, row) = try runGenerationFrame(session: owned, control: control,
+-                                transport: transport, expected: expected, check: checked)
++                                transport: transport, expected: expected, observation: observation, check: checked)
+                         }
+                         guard control.phase == .token else { return }
+                         let token = try agreeGenerationToken(row: row, boundary: packet, control: control,
+-                            transport: transport, check: checked)
++                            transport: transport, observation: observation, check: checked)
+                         let selected = try control.takeCommittedToken()
++                        if let observation, selectedTokens.isEmpty {
++                            try observeQwenGenerationPhase(observation, .firstTokenAgreed, frame: expected.frame,
++                                agreedCommittedTokens: control.committedTokens, check: checked)
++                        }
+                         selectedTokens.append(selected)
+                         // The scalar agreement is complete. No next forward can run
+                         // while this callback is active or before decision agreement.
+@@ -156,6 +167,7 @@
+                 guard control.isRetired, !control.isFailed, !transport.isFailed else {
+                     throw ProbeError("Generation both-rank retirement is incomplete")
+                 }
++                if let observation { try observeQwenGenerationPhase(observation, .requestRetired, localCommittedTokens: owned.committedTokens, agreedCommittedTokens: control.committedTokens, check: checked) }
+                 return .init(agreementFingerprint: agreement.fingerprint,
+                     membershipEpoch: agreement.descriptor.membershipEpoch, identity: owned.identity,
+                     selectedTokenIDs: selectedTokens, tokenChainSHA256: control.tokenChainSHA256,
+@@ -210,9 +222,13 @@
+ 
+ private func runGenerationFrame(session: QwenLayerStageSession, control: QwenLayerStageGenerationControl,
+     transport: QwenLayerStageGenerationTransport, expected: QwenLayerStageGenerationBoundaryExpectation,
+-    check: () throws -> Void
++    observation: QwenGenerationPhaseObserver? = nil, check: () throws -> Void
+ ) throws -> (QwenLayerStageGenerationBoundaryPacket, MLXArray?) {
+     let request = control.agreement.request, frame = expected.frame
++    if let observation, transport.rank == 0 {
++        try observeQwenGenerationPhase(observation, .prepareBegin, frame: frame,
++            localCommittedTokens: session.committedTokens, check: check)
++    }
+     let tokens: [Int]
+     if frame.phase == .prefill {
+         tokens = Array(request.promptTokenIDs[frame.tokenOffset..<(frame.tokenOffset + frame.tokenCount)])
+@@ -229,6 +245,7 @@
+     }
+     if transport.rank == 0 {
+         guard case .hidden(let boundary) = try forward(nil) else { throw ProbeError("Generation producer did not return a residual") }
++        if let observation { try observeQwenGenerationPhase(observation, .prepareEnd, frame: frame, localCommittedTokens: session.committedTokens, check: check) }
+         let packet = try QwenLayerStageGenerationBoundaryPacket(expected: expected, payloadSHA256: boundary.payloadSHA256)
+         try control.acknowledgeFrame(rank: 0, packet: packet, nativeCommittedTokens: session.committedTokens)
+         try transport.sendBoundary(boundary, packet: packet, check: check)
+@@ -241,8 +258,10 @@
+             // no consumed ACK is sent until this actual consumer commit returns.
+             try control.acknowledgeFrame(rank: 0, packet: packet,
+                 nativeCommittedTokens: frame.tokenOffset + frame.tokenCount)
++            if let observation { try observeQwenGenerationPhase(observation, .consumeBegin, frame: frame, localCommittedTokens: session.committedTokens, check: check) }
+             let output = try forward(boundary)
+             try control.acknowledgeFrame(rank: 1, packet: packet, nativeCommittedTokens: session.committedTokens)
++            if let observation { try observeQwenGenerationPhase(observation, .consumeEnd, frame: frame, localCommittedTokens: session.committedTokens, agreedCommittedTokens: control.committedTokens, check: check) }
+             switch output {
+             case .evaluationHandle where frame.phase == .prefill && !frame.finalPromptChunk: return nil
+             case .logits(let row) where frame.finalPromptChunk || frame.phase == .decode: return row
+@@ -254,26 +273,50 @@
+ 
+ private func agreeGenerationToken(row: MLXArray?, boundary: QwenLayerStageGenerationBoundaryPacket,
+     control: QwenLayerStageGenerationControl, transport: QwenLayerStageGenerationTransport,
+-    check: () throws -> Void
++    observation: QwenGenerationPhaseObserver? = nil, check: () throws -> Void
+ ) throws -> QwenLayerStageGenerationTokenPacket {
+     let packet: QwenLayerStageGenerationTokenPacket
+     if transport.rank == 1 {
+         guard let row else { throw ProbeError("Generation target selection lacks committed final logits") }
++        if let observation, boundary.content.expectation.frame.phase == .prefill {
++            try observeQwenGenerationPhase(observation, .selectionBegin, frame: boundary.content.expectation.frame, check: check)
++        }
+         let selected = try QwenLayerStageGenerationSelection.token(row, request: control.agreement.request, check: check)
++        if let observation, boundary.content.expectation.frame.phase == .prefill {
++            try observeQwenGenerationPhase(observation, .selectionEnd, frame: boundary.content.expectation.frame, check: check)
++        }
+         packet = try .init(agreement: control.agreement, boundaryFingerprint: boundary.fingerprint,
+             previousTokenChainSHA256: control.tokenChainSHA256, ordinal: control.selectedTokenCount,
+             committedTokens: control.committedTokens, tokenID: selected)
+         try control.acknowledgeToken(rank: 1, packet: packet)
++        if let observation, boundary.content.expectation.frame.phase == .prefill {
++            try observeQwenGenerationPhase(observation, .tokenSendBegin, frame: boundary.content.expectation.frame, check: check)
++        }
+         try transport.sendToken(packet, check: check)
++        if let observation, boundary.content.expectation.frame.phase == .prefill {
++            try observeQwenGenerationPhase(observation, .tokenSendEnd, frame: boundary.content.expectation.frame, check: check)
++        }
+         try control.acknowledgeToken(rank: 0, packet: packet)
+     } else {
+         guard case nil = row else { throw ProbeError("Generation rank0 unexpectedly owns logits") }
++        if let observation, boundary.content.expectation.frame.phase == .prefill {
++            try observeQwenGenerationPhase(observation, .tokenReceiveBegin, frame: boundary.content.expectation.frame, check: check)
++        }
+         packet = try transport.receiveToken(boundaryFingerprint: boundary.fingerprint,
+             previousChain: control.tokenChainSHA256, ordinal: control.selectedTokenCount,
+             committedTokens: control.committedTokens, check: check)
++        if let observation, boundary.content.expectation.frame.phase == .prefill {
++            try observeQwenGenerationPhase(observation, .tokenReceiveEnd, frame: boundary.content.expectation.frame, check: check)
++        }
+         try control.acknowledgeToken(rank: 1, packet: packet)
+         try control.acknowledgeToken(rank: 0, packet: packet)
++        if let observation, boundary.content.expectation.frame.phase == .prefill {
++            try observeQwenGenerationPhase(observation, .tokenAckBegin, frame: boundary.content.expectation.frame, check: check)
++        }
+         try transport.acknowledgeToken(packet, check: check)
++        if let observation, boundary.content.expectation.frame.phase == .prefill {
++            try observeQwenGenerationPhase(observation, .tokenAckEnd, frame: boundary.content.expectation.frame, check: check)
++        }
+     }
+     return packet
+ }
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenLayerStageGenerationTransport.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenLayerStageGenerationTransport.swift
+@@ -6,6 +6,7 @@
+ final class QwenLayerStageGenerationTransport {
+     let agreement: QwenLayerStageGenerationAgreement
+     let collective: Collective
++    private let observation: QwenGenerationPhaseObserver?
+     private(set) var isFailed = false
+     private var inOperation = false
+     struct BoundaryTicket {
+@@ -15,11 +16,12 @@
+     private var pendingBoundaryFingerprint: String?
+     var rank: Int { collective.rank }
+ 
+-    init(agreement: QwenLayerStageGenerationAgreement, collective: Collective) throws {
++    init(agreement: QwenLayerStageGenerationAgreement, collective: Collective,
++         observation: QwenGenerationPhaseObserver? = nil) throws {
+         guard collective.size == 2, (0...1).contains(collective.rank) else {
+             throw ProbeError("Generation transport requires two initialized ranks")
+         }
+-        self.agreement = agreement; self.collective = collective
++        self.agreement = agreement; self.collective = collective; self.observation = observation
+     }
+     func retire() { isFailed = true; pendingBoundaryFingerprint = nil }
+ 
+@@ -54,9 +56,15 @@
+             try boundary.validateOwnedArray(tokens: expected.frame.tokenCount,
+                 hidden: agreement.request.profile.hiddenSize, dtype: boundary.array.dtype)
+             try check()
++            if let observation { try observeQwenGenerationPhase(observation, .headerSendBegin, frame: expected.frame, check: check) }
+             try sendData(packet.encoded(), maximumBytes: QwenLayerStageGenerationBoundaryPacket.maximumEncodedBytes, check: check)
++            if let observation { try observeQwenGenerationPhase(observation, .headerSendEnd, frame: expected.frame, check: check) }
++            if let observation { try observeQwenGenerationPhase(observation, .readyAckWaitBegin, frame: expected.frame, check: check) }
+             try receiveAck(.boundaryReady, packet.fingerprint, from: 1, check: check)
++            if let observation { try observeQwenGenerationPhase(observation, .readyAckWaitEnd, frame: expected.frame, check: check) }
++            if let observation { try observeQwenGenerationPhase(observation, .payloadSendBegin, frame: expected.frame, check: check) }
+             _ = try collective.sendCompleted(boundary.array, to: 1, maximumBytes: expected.byteCount, check: check)
++            if let observation { try observeQwenGenerationPhase(observation, .payloadSendEnd, frame: expected.frame, check: check) }
+             pendingBoundaryFingerprint = packet.fingerprint
+             return BoundaryTicket(packet: packet)
+         }
+@@ -67,7 +75,9 @@
+             guard rank == 0, pendingBoundaryFingerprint == ticket.packet.fingerprint else {
+                 throw ProbeError("Generation consumed ticket differs or was replayed")
+             }
++            if let observation { try observeQwenGenerationPhase(observation, .consumedAckWaitBegin, frame: ticket.packet.content.expectation.frame, check: check) }
+             try receiveAck(.boundaryConsumed, ticket.packet.fingerprint, from: 1, check: check)
++            if let observation { try observeQwenGenerationPhase(observation, .consumedAckWaitEnd, frame: ticket.packet.content.expectation.frame, check: check) }
+             pendingBoundaryFingerprint = nil
+         }
+     }
+@@ -77,9 +87,13 @@
+                             check: () throws -> Void) throws -> (T, QwenLayerStageGenerationBoundaryPacket) {
+         try operation {
+             guard rank == 1 else { throw ProbeError("Only generation rank1 receives residuals") }
++            if let observation { try observeQwenGenerationPhase(observation, .headerReceiveBegin, frame: expected.frame, check: check) }
+             let packet = try QwenLayerStageGenerationBoundaryPacket.decode(
+                 receiveData(maximumBytes: QwenLayerStageGenerationBoundaryPacket.maximumEncodedBytes, check: check), expected: expected)
++            if let observation { try observeQwenGenerationPhase(observation, .headerReceiveEnd, frame: expected.frame, check: check) }
++            if let observation { try observeQwenGenerationPhase(observation, .readyAckSendBegin, frame: expected.frame, check: check) }
+             try sendAck(.boundaryReady, packet.fingerprint, check: check)
++            if let observation { try observeQwenGenerationPhase(observation, .readyAckSendEnd, frame: expected.frame, check: check) }
+             let dtype: DType
+             switch expected.dtype {
+             case "float16": dtype = .float16
+@@ -87,8 +101,10 @@
+             case "float32": dtype = .float32
+             default: throw ProbeError("Generation receive dtype unsupported")
+             }
++            if let observation { try observeQwenGenerationPhase(observation, .payloadReceiveBegin, frame: expected.frame, check: check) }
+             let array = try collective.receiveCompleted(shape: expected.shape, dtype: dtype, from: 0,
+                 maximumBytes: expected.byteCount, check: check)
++            if let observation { try observeQwenGenerationPhase(observation, .payloadReceiveEnd, frame: expected.frame, check: check) }
+             let source = agreement.descriptor
+             let boundary = QwenLayerStageBoundary(requestFingerprint: expected.requestFingerprint,
+                 sourceConfigurationSHA256: source.sourceConfigurationSHA256,
+@@ -99,9 +115,12 @@
+             try boundary.validateOwnedArray(tokens: expected.frame.tokenCount,
+                 hidden: agreement.request.profile.hiddenSize, dtype: dtype)
+             try check()
++            if let observation { try observeQwenGenerationPhase(observation, .payloadValidated, frame: expected.frame, check: check) }
+             let result = try consume(boundary, packet)
+             try check()
++            if let observation { try observeQwenGenerationPhase(observation, .consumedAckSendBegin, frame: expected.frame, check: check) }
+             try sendAck(.boundaryConsumed, packet.fingerprint, check: check)
++            if let observation { try observeQwenGenerationPhase(observation, .consumedAckSendEnd, frame: expected.frame, check: check) }
+             return (result, packet)
+         }
+     }
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenGenerationLookaheadProducer.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenGenerationLookaheadProducer.swift
+@@ -9,13 +9,14 @@
+         let committedTokens: Int
+     }
+     let request: QwenLayerStageGenerationRequest
++    private let observation: QwenGenerationPhaseObserver?
+     private var window: QwenGenerationPrefillWindow
+     private var prepared: Prepared?
+     var isComplete: Bool { window.complete && prepared == nil }
+     var preparedAheadFrames: Int { window.preparedAheadFrames }
+     var maximumPreparedBoundaries: Int { window.maximumPreparedBoundaries }
+-    init(request: QwenLayerStageGenerationRequest) throws {
+-        self.request = request
++    init(request: QwenLayerStageGenerationRequest, observation: QwenGenerationPhaseObserver? = nil) throws {
++        self.request = request; self.observation = observation
+         window = try .init(promptCount: request.promptCount, chunkSize: request.chunkSize)
+     }
+     func cancel() { prepared = nil; window.cancel() }
+@@ -23,6 +24,7 @@
+         guard prepared == nil else { throw ProbeError("Generation already owns its prepared slot") }
+         let frame = try request.frame(sequence: sequence)
+         guard frame.phase == .prefill else { throw ProbeError("Generation lookahead cannot prepare decode") }
++        if let observation { try observeQwenGenerationPhase(observation, .prepareBegin, frame: frame, localCommittedTokens: session.committedTokens, check: check) }
+         try window.beginPreparation(sequence: sequence, nativeCommittedTokens: session.committedTokens)
+         prepared = try autoreleasepool {
+             try check()
+@@ -34,6 +36,7 @@
+             try window.commitPreparation(sequence: sequence, nativeCommittedTokens: session.committedTokens)
+             return Prepared(boundary: boundary, committedTokens: session.committedTokens)
+         }
++        if let observation { try observeQwenGenerationPhase(observation, .prepareEnd, frame: frame, localCommittedTokens: session.committedTokens, check: check) }
+     }
+     func run(session: QwenLayerStageSession, control: QwenLayerStageGenerationControl,
+              transport: QwenLayerStageGenerationTransport,
+@@ -56,6 +59,7 @@
+             return (ticket, commit)
+         }
+         guard original == nil, prepared == nil else { throw ProbeError("Generation retained the sent boundary wrapper") }
++        if let observation { try observeQwenGenerationPhase(observation, .originalWrapperReleased, frame: expected.frame, localCommittedTokens: session.committedTokens, check: check) }
+         try window.completeSend(sent.1)
+         if expected.frame.sequence + 1 < request.prefillFrameCount {
+             try prepare(sequence: expected.frame.sequence + 1, session: session, check: check)
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenGenerationPhaseObservation.swift
+@@ -0,0 +1,128 @@
++import Foundation
++
++/// Local CPU boundaries of the resident-generation protocol. In particular,
++/// payloadSendEnd means local send completion, never peer validation.
++enum QwenGenerationPhase: String, Encodable, CaseIterable {
++    case requestBegin, readinessBegin, readinessEnd, stateBegin, stateEnd
++    case frameBegin, prepareBegin, prepareEnd, originalWrapperReleased
++    case headerSendBegin, headerSendEnd, readyAckWaitBegin, readyAckWaitEnd
++    case payloadSendBegin, payloadSendEnd, consumedAckWaitBegin, consumedAckWaitEnd
++    case headerReceiveBegin, headerReceiveEnd, readyAckSendBegin, readyAckSendEnd
++    case payloadReceiveBegin, payloadReceiveEnd, payloadValidated
++    case consumeBegin, consumeEnd, consumedAckSendBegin, consumedAckSendEnd
++    case selectionBegin, selectionEnd, tokenSendBegin, tokenSendEnd
++    case tokenReceiveBegin, tokenReceiveEnd, tokenAckBegin, tokenAckEnd
++    case firstTokenAgreed, requestRetired
++
++    var requiredRank: Int? {
++        switch self {
++        case .prepareBegin, .prepareEnd, .originalWrapperReleased,
++             .headerSendBegin, .headerSendEnd, .readyAckWaitBegin, .readyAckWaitEnd,
++             .payloadSendBegin, .payloadSendEnd, .consumedAckWaitBegin, .consumedAckWaitEnd,
++             .tokenReceiveBegin, .tokenReceiveEnd, .tokenAckBegin, .tokenAckEnd: return 0
++        case .headerReceiveBegin, .headerReceiveEnd, .readyAckSendBegin, .readyAckSendEnd,
++             .payloadReceiveBegin, .payloadReceiveEnd, .payloadValidated,
++             .consumeBegin, .consumeEnd, .consumedAckSendBegin, .consumedAckSendEnd,
++             .selectionBegin, .selectionEnd, .tokenSendBegin, .tokenSendEnd: return 1
++        default: return nil
++        }
++    }
++}
++
++struct QwenGenerationPhaseFrame: Encodable, Equatable {
++    let sequence: Int
++    let tokenOffset: Int
++    let tokenCount: Int
++    let finalPromptChunk: Bool
++}
++
++/// A missing frontier means it was not observed at this boundary. Local state
++/// can be one chunk ahead of bilateral control; keep these values separate.
++struct QwenGenerationPhaseObservation: Encodable {
++    let phase: QwenGenerationPhase
++    let frame: QwenGenerationPhaseFrame?
++    let localCommittedTokens: Int?
++    let agreedCommittedTokens: Int?
++
++    func deliver(to observer: QwenGenerationPhaseObserver, check: () throws -> Void) throws {
++        do { try observer(self) }
++        catch {
++            let observationError = error
++            // Reuse the owner's existing error/deadline precedence on failure.
++            try check()
++            throw observationError
++        }
++    }
++}
++
++/// Synchronous CPU scalars only. No native work, owner reentry, tensors or IO.
++typealias QwenGenerationPhaseObserver = (QwenGenerationPhaseObservation) throws -> Void
++
++struct QwenGenerationPhaseIdentity: Encodable, Equatable {
++    let requestID: String
++    let membershipEpoch: String
++    let requestFingerprint: String
++    let agreementFingerprint: String
++    let profileFingerprint: String
++    let sourceConfigurationSHA256: String
++    let artifactAggregateSHA256: String
++    let storageCommitmentSHA256: String
++    let planFingerprint: String
++    let stageFingerprint: String
++    let buildSHA256: String
++    let numericalPolicySHA256: String
++    let rank: Int
++    let promptCount: Int
++    let chunkSize: Int
++    let outputCount: Int
++    let prefillPolicy: String
++    let protocolBoundary = "resident_generation_send_completed_credit_v1"
++
++    func validate() throws {
++        func hash(_ value: String) -> Bool {
++            value.utf8.count == 64 && value.utf8.allSatisfy {
++                (48...57).contains($0) || (97...102).contains($0)
++            }
++        }
++        guard let request = UUID(uuidString: requestID), request.uuidString.lowercased() == requestID,
++              let epoch = UUID(uuidString: membershipEpoch), epoch.uuidString.lowercased() == membershipEpoch,
++              [requestFingerprint, agreementFingerprint, profileFingerprint, sourceConfigurationSHA256,
++               artifactAggregateSHA256, storageCommitmentSHA256, planFingerprint, stageFingerprint,
++               buildSHA256, numericalPolicySHA256].allSatisfy(hash),
++              (0...1).contains(rank), (1...8192).contains(promptCount),
++              (1...512).contains(chunkSize), (1...128).contains(outputCount),
++              promptCount + outputCount <= 8320,
++              ["serial", "oneChunkLookahead"].contains(prefillPolicy) else {
++            throw QwenGenerationPhaseError("Invalid resident observation identity or geometry")
++        }
++    }
++}
++
++struct QwenGenerationPhaseEvent: Encodable {
++    let ordinal: Int
++    let observation: QwenGenerationPhaseObservation
++    let localUptimeNanoseconds: UInt64
++}
++
++struct QwenGenerationPhaseTrace: Encodable {
++    let schema = "qwen_resident_generation_phase_trace_v1"
++    let identity: QwenGenerationPhaseIdentity
++    let clockSource: String
++    let maximumEvents: Int
++    let requiredHostReservationBytes: Int
++    let events: [QwenGenerationPhaseEvent]
++    let firstLocalUptimeNanoseconds: UInt64
++    let lastLocalUptimeNanoseconds: UInt64
++    let diagnosticOnly = true
++    let includesRecorderOverhead = true
++    let crossProcessClockAlignmentAsserted = false
++    let gpuKernelTimeAsserted = false
++    let transportWaitIsWireCost = false
++    let retirementIndependentlyVerified = false
++    let hostReservationIndependentlyVerified = false
++}
++
++struct QwenGenerationPhaseError: Error, CustomStringConvertible {
++    let description: String
++    init(_ description: String) { self.description = description }
++}
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenGenerationPhaseBudget.swift
+@@ -0,0 +1,56 @@
++import Foundation
++
++/// Named host allocations only, not a whole-process peak bound. The future
++/// native owner must supply an actual host-allocation bound and reserve this
++/// increment through trace encoding/publication. No such native entry exists
++/// in this first slice; it must not borrow the unmodified request allowance.
++struct QwenGenerationPhaseBudget: Encodable, Equatable {
++    static let maximumEncodedBytes = 256 * 1024
++    let maximumEvents: Int
++    let eventLogicalBytes: Int
++    let eventAllocationBytes: Int
++    let encodedResultAllocationBytes: Int
++    let encodingScratchAllowanceBytes: Int
++    let metadataAllowanceBytes: Int
++    let requiredHostReservationBytes: Int
++
++    static func derive(identity: QwenGenerationPhaseIdentity,
++                       hostAllocationBound: (Int) throws -> Int) throws -> Self {
++        try identity.validate()
++        let frames = (identity.promptCount - 1) / identity.chunkSize + 1
++        // At most 12 frame events per rank today; 16 leaves explicit bounded
++        // room for source-compatible scalar markers, plus 32 request markers.
++        let count = frames.multipliedReportingOverflow(by: 16)
++        guard !count.overflow, count.partialValue <= 480 else {
++            throw QwenGenerationPhaseError("Observed request exceeds the 512-event allowance")
++        }
++        let events = count.partialValue + 32
++        let logical = events.multipliedReportingOverflow(by: MemoryLayout<QwenGenerationPhaseEvent>.stride)
++        guard !logical.overflow, logical.partialValue > 0 else {
++            throw QwenGenerationPhaseError("Observation event byte count overflow")
++        }
++        func rounded(_ bytes: Int) throws -> Int {
++            let value = try hostAllocationBound(bytes)
++            guard value >= bytes, value <= 4 * 1024 * 1024 else {
++                throw QwenGenerationPhaseError("Invalid actual observation host-allocation bound")
++            }
++            return value
++        }
++        let eventBytes = try rounded(logical.partialValue)
++        let outputBytes = try rounded(maximumEncodedBytes)
++        let scratchBytes = try rounded(2 * maximumEncodedBytes)
++        let metadataBytes = try rounded(16 * 1024)
++        var total = 0
++        for value in [eventBytes, outputBytes, scratchBytes, metadataBytes] {
++            let sum = total.addingReportingOverflow(value)
++            guard !sum.overflow, sum.partialValue <= 8 * 1024 * 1024 else {
++                throw QwenGenerationPhaseError("Observation host reservation exceeds its closed bound")
++            }
++            total = sum.partialValue
++        }
++        return .init(maximumEvents: events, eventLogicalBytes: logical.partialValue,
++            eventAllocationBytes: eventBytes, encodedResultAllocationBytes: outputBytes,
++            encodingScratchAllowanceBytes: scratchBytes, metadataAllowanceBytes: metadataBytes,
++            requiredHostReservationBytes: total)
++    }
++}
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenGenerationPhaseRecorder.swift
+@@ -0,0 +1,128 @@
++import Foundation
++
++/// CPU recorder with no production constructor in this first slice. Both
++/// production generation wrappers still pass nil to their private core.
++/// A native factory/export entry must first bind actual owner reservation,
++/// cancellation/deadline and complete retirement to this recorder's lifetime.
++final class QwenGenerationPhaseRecorder {
++    static let nativeObservationEntryAvailable = false
++    private enum State: Equatable { case fresh, active, sealed, failed }
++    private let identity: QwenGenerationPhaseIdentity
++    private let budget: QwenGenerationPhaseBudget
++    private let clock: () throws -> UInt64
++    private let reservationCheck: () throws -> Void
++    private let lock = NSRecursiveLock()
++    private var state = State.fresh
++    private var readingClock = false
++    private var checkingReservation = false
++    private var events: [QwenGenerationPhaseEvent] = []
++    private var localFrontier = 0
++    private var agreedFrontier = 0
++    private var trace: QwenGenerationPhaseTrace?
++
++    private init(identity: QwenGenerationPhaseIdentity, budget: QwenGenerationPhaseBudget,
++                 clock: @escaping () throws -> UInt64,
++                 reservationCheck: @escaping () throws -> Void) throws {
++        try identity.validate(); try reservationCheck()
++        self.identity = identity; self.budget = budget
++        self.clock = clock; self.reservationCheck = reservationCheck
++        events.reserveCapacity(budget.maximumEvents)
++        let actual = events.capacity.multipliedReportingOverflow(by: MemoryLayout<QwenGenerationPhaseEvent>.stride)
++        guard !actual.overflow, actual.partialValue <= budget.eventAllocationBytes else {
++            throw QwenGenerationPhaseError("Actual event capacity exceeds its reserved host buffer")
++        }
++        try reservationCheck()
++    }
++
++    #if QWEN_GENERATION_PHASE_FIXTURE
++    /// Fabricated CPU authority only. This flag is absent from native products.
++    static func forCPUFixture(identity: QwenGenerationPhaseIdentity,
++        budget: QwenGenerationPhaseBudget, clock: @escaping () throws -> UInt64,
++        reservationCheck: @escaping () throws -> Void) throws -> QwenGenerationPhaseRecorder {
++        try .init(identity: identity, budget: budget, clock: clock, reservationCheck: reservationCheck)
++    }
++    #endif
++
++    func begin(expected: QwenGenerationPhaseIdentity) throws {
++        lock.lock(); defer { lock.unlock() }
++        guard state == .fresh, !readingClock, !checkingReservation, identity == expected else { try reject("Observation identity or state differs") }
++        do { try checkReservation(); state = .active }
++        catch { failLocked(); throw error }
++    }
++
++    func observe(_ value: QwenGenerationPhaseObservation) throws {
++        lock.lock(); defer { lock.unlock() }
++        do {
++            guard state == .active, !readingClock, !checkingReservation, events.count < budget.maximumEvents,
++                  value.phase.requiredRank == nil || value.phase.requiredRank == identity.rank else {
++                try reject("Observation is inactive, reentrant, over capacity or wrong-rank")
++            }
++            if let frame = value.frame {
++                let count = (identity.promptCount - 1) / identity.chunkSize + 1
++                guard (0..<count).contains(frame.sequence),
++                      frame.tokenOffset == frame.sequence * identity.chunkSize,
++                      frame.tokenCount == min(identity.chunkSize, identity.promptCount - frame.tokenOffset),
++                      frame.finalPromptChunk == (frame.sequence == count - 1) else {
++                    try reject("Observation frame differs from the admitted prompt")
++                }
++            }
++            func frontier(_ value: Int?, previous: Int) throws -> Int {
++                guard let value else { return previous }
++                guard value >= previous, value <= identity.promptCount + identity.outputCount else {
++                    throw QwenGenerationPhaseError("Observation frontier reversed or exceeded its request")
++                }
++                return value
++            }
++            let nextLocal = try frontier(value.localCommittedTokens, previous: localFrontier)
++            let nextAgreed = try frontier(value.agreedCommittedTokens, previous: agreedFrontier)
++            try checkReservation()
++            readingClock = true
++            defer { readingClock = false }
++            let now = try clock()
++            guard state == .active, readingClock,
++                  events.last == nil || now >= events.last!.localUptimeNanoseconds else {
++                try reject("Observation clock reversed or invalidated its owner")
++            }
++            events.append(.init(ordinal: events.count, observation: value, localUptimeNanoseconds: now))
++            localFrontier = nextLocal; agreedFrontier = nextAgreed
++        } catch { failLocked(); throw error }
++    }
++
++    /// Marker presence is not independent retirement proof. The future native
++    /// owner must call this only after its full successful retirement scope.
++    func seal() throws {
++        lock.lock(); defer { lock.unlock() }
++        do {
++            guard state == .active, !readingClock, !checkingReservation, let first = events.first, let last = events.last,
++                  first.observation.phase == .requestBegin, last.observation.phase == .requestRetired else {
++                try reject("Incomplete observation cannot be sealed")
++            }
++            try checkReservation()
++            trace = .init(identity: identity, clockSource: "injected_cpu_fixture",
++                maximumEvents: budget.maximumEvents, requiredHostReservationBytes: budget.requiredHostReservationBytes,
++                events: events, firstLocalUptimeNanoseconds: first.localUptimeNanoseconds,
++                lastLocalUptimeNanoseconds: last.localUptimeNanoseconds)
++            events = []; state = .sealed
++        } catch { failLocked(); throw error }
++    }
++
++    func successfulTrace() throws -> QwenGenerationPhaseTrace {
++        lock.lock(); defer { lock.unlock() }
++        guard state == .sealed, !readingClock, !checkingReservation, let trace else { try reject("Observation has no successful trace") }
++        do { try checkReservation(); return trace }
++        catch { failLocked(); throw error }
++    }
++
++    func fail() { lock.lock(); defer { lock.unlock() }; failLocked() }
++    private func checkReservation() throws {
++        guard !checkingReservation else { try reject("Reentrant observation reservation check") }
++        checkingReservation = true
++        defer { checkingReservation = false }
++        try reservationCheck()
++        guard state != .failed else { throw QwenGenerationPhaseError("Observation failed during its reservation check") }
++    }
++    private func failLocked() { state = .failed; events = []; trace = nil }
++    private func reject(_ message: String) throws -> Never {
++        failLocked(); throw QwenGenerationPhaseError(message)
++    }
++}
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenGenerationPhaseHook.swift
+@@ -0,0 +1,16 @@
++import Foundation
++
++/// The nil branch constructs no observation or clock. Production wrappers in
++/// this slice keep it nil; no native observation entry/export is available.
++func observeQwenGenerationPhase(_ observer: QwenGenerationPhaseObserver?,
++    _ phase: QwenGenerationPhase, frame: QwenLayerStageFrame? = nil,
++    localCommittedTokens: Int? = nil, agreedCommittedTokens: Int? = nil,
++    check: () throws -> Void) throws {
++    guard let observer else { return }
++    if let frame, frame.phase != .prefill { return }
++    let observedFrame = frame.map { QwenGenerationPhaseFrame(sequence: $0.sequence,
++        tokenOffset: $0.tokenOffset, tokenCount: $0.tokenCount, finalPromptChunk: $0.finalPromptChunk) }
++    try QwenGenerationPhaseObservation(phase: phase, frame: observedFrame,
++        localCommittedTokens: localCommittedTokens, agreedCommittedTokens: agreedCommittedTokens)
++        .deliver(to: observer, check: check)
++}

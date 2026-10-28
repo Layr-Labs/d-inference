@@ -1,0 +1,256 @@
+--- /dev/null
++++ b/experiments/cluster/stage_long_cut_test_support.py
+@@ -0,0 +1,28 @@
++"""Synthetic rank envelopes with independently recorded cut12 source constants."""
++from runtime.stage_checks.common import canonical, digest
++from stage_long_test_support import context, rows
++
++PLAN = '8c3fef079cc82295d70851ef9d9193954afc0d008ad09ce239baaa1a51391fed'
++STAGES = ('5d038414a2230a28246d4bb6d5b62e5d4859f2cc7a415dcd60349db851dfbd7d',
++          'd33e748ed1326bc1b6198c027a889e4fd9efa931d83cb81f5a67a36234e233e3')
++CONFIGURATIONS = ('d7412870394ac3d7959daf43687901b4ed261761b688f3f1440ad791bef6b2c7',
++                  '9dfb3c7494d46287334139e15b21cf10046bdd1535eebe1a2f076a98dcd0ef00')
++LAYOUT = '112ea4bf7ef38bd40a088dd9c654f77607a01c2bb0f37750ea901c2adfddcf94'
++HOSTS = [['127.0.0.1:31001'], ['127.0.0.1:31002']]
++
++
++def selected_context():
++    return dict(context(), stage_cut=12)
++
++
++def selected_rows(rank=0, ctx=None):
++    ctx = ctx or selected_context(); values = rows(rank, ctx)
++    for value in values:
++        agreement = value['agreement']
++        agreement.update(planFingerprint=PLAN, producerStageFingerprint=STAGES[0], consumerStageFingerprint=STAGES[1],
++            producerConstructionConfigurationSHA256=CONFIGURATIONS[0], consumerConstructionConfigurationSHA256=CONFIGURATIONS[1])
++        value['agreementFingerprint'] = digest(b'qwen-profiled-prefill-start-agreement-v1\n' + canonical(agreement))
++    values[1]['sourceLoad'].update(planSHA256=PLAN, stagePlanSHA256=STAGES[rank],
++        constructionConfigurationSHA256=CONFIGURATIONS[rank], sourceParameterLayoutSHA256=LAYOUT,
++        sourceModelTensorBytes=5038041600)
++    return values
+--- a/experiments/cluster/test_stage_checks_cut.py
++++ b/experiments/cluster/test_stage_checks_cut.py
+@@ -31,12 +31,12 @@
+             if mode.endswith('ranks'):result+=['--stage-prefill-policy','serial_v1','--stage-logits-dtype','bfloat16']
+         return result
+ 
+-    def test_parser_only_short_ranks_and_no_duplicate(self):
++    def test_parser_short_and_long_stage_cut_scopes_and_no_duplicate(self):
+         self.assertEqual(cli.parser().parse_args(self.args()+['--stage-cut','12']).stage_cut,12)
+         self.assertIsNone(cli.parser().parse_args(self.args()).stage_cut)
+         for mode in ('p2p','prefill-ranks','long-prefill-ranks','long-prefill-solo'):
+             self.assertEqual(cli.parser().parse_args(self.args(mode)).command,mode)
+-        for args in [self.args()+['--stage-cut','12','--stage-cut','16']]+[self.args(m)+['--stage-cut','12'] for m in ('p2p','prefill-ranks','long-prefill-ranks','long-prefill-solo')]:
++        for args in [self.args()+['--stage-cut','12','--stage-cut','16']]+[self.args(m)+['--stage-cut','12'] for m in ('p2p','prefill-ranks','long-prefill-solo')]:
+             with self.subTest(args=args),redirect_stderr(io.StringIO()),self.assertRaises(SystemExit):cli.parser().parse_args(args)
+ 
+     def test_explicit_unequal_and_odd_nonhalf_geometry(self):
+--- /dev/null
++++ b/experiments/cluster/test_stage_checks_long_cut.py
+@@ -0,0 +1,116 @@
++"""Explicit registered long cut admission; only synthetic inputs and fake IO."""
++import argparse
++import copy
++from contextlib import redirect_stderr
++import io
++from pathlib import Path
++import tempfile
++import unittest
++from unittest.mock import Mock, patch
++from runtime.stage_checks import cli, long_cli, long_configuration, long_inputs, long_rank_contract, long_solo_contract, long_stage_cut, stage_ranges
++from runtime.stage_checks.common import canonical, digest
++from runtime.stage_checks.long_identity import request_identity
++from runtime.stage_checks.long_profile import ARTIFACT
++from stage_long_test_support import EPOCH, context, rows
++from stage_long_cut_test_support import CONFIGURATIONS, HOSTS, PLAN, STAGES, selected_context, selected_rows
++
++
++class LongCutTests(unittest.TestCase):
++    def setUp(self):
++        for target in ('subprocess.Popen', 'subprocess.run', 'socket.socket'):
++            guard = patch(target, side_effect=AssertionError('No real process/socket calls'))
++            guard.start(); self.addCleanup(guard.stop)
++        temporary = tempfile.TemporaryDirectory(); self.addCleanup(temporary.cleanup); self.root = Path(temporary.name)
++
++    def arguments(self, mode='long-prefill-ranks'):
++        args = [mode, '--release', '/unused-release', '--runtime', '/unused-runtime', '--output', '/unused-output',
++            '--model-dir', '/unused-model', '--tokens-file', '/unused-tokens', '--prompt-origin-file', '/unused-origin',
++            '--expected-binary-sha256', 'a' * 64, '--artifact-aggregate-sha256', ARTIFACT,
++            '--tokens-sha256', 'b' * 64, '--prompt-origin-sha256', 'c' * 64]
++        if mode.endswith('ranks'): args += ['--stage-prefill-policy', 'serial_v1', '--stage-logits-dtype', 'bfloat16']
++        return args
++
++    def test_parser_uses_existing_duplicate_guard_and_rejects_solo(self):
++        self.assertEqual(cli.parser().parse_args(self.arguments() + ['--stage-cut', '12']).stage_cut, 12)
++        self.assertIsNone(cli.parser().parse_args(self.arguments()).stage_cut)
++        bad = [self.arguments() + ['--stage-cut', '12', '--stage-cut', '12'],
++               self.arguments('long-prefill-solo') + ['--stage-cut', '12'], self.arguments() + ['--stage-cut', '12.0']]
++        for args in bad:
++            with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit): cli.parser().parse_args(args)
++
++    def test_registered_geometry_reuses_shared_helper_and_keeps_eligibility_separate(self):
++        with patch.object(stage_ranges, 'ranges', wraps=stage_ranges.ranges) as shared:
++            self.assertEqual(long_stage_cut.for_context(selected_context()), 12)
++        shared.assert_called_once_with(dict(num_hidden_layers=32, full_attention_interval=4), 12)
++        for cut in (False, True, '12', 12.0, -1, 0, 4, 8, 16, 20, 24, 28, 32, 128):
++            with self.subTest(cut=cut), self.assertRaises(ValueError):
++                long_stage_cut.option('long-prefill-ranks', cut, 'serial_v1')
++        with self.assertRaises(ValueError): long_stage_cut.option('long-prefill-ranks', 12, 'prompt_lookahead_one_v1')
++
++    def test_foreign_and_unqualified_direct_calls_fail_before_io(self):
++        for mode, policy in [('long-prefill-solo', None), ('ranks', 'serial_v1'), ('prefill-ranks', 'serial_v1'),
++                             ('long-prefill-ranks', 'prompt_lookahead_one_v1')]:
++            args = argparse.Namespace(command=mode, stage_cut=12, stage_prefill_policy=policy)
++            with patch.object(Path, 'resolve', side_effect=AssertionError('No path IO')), patch.object(Path, 'open', side_effect=AssertionError('No input IO')):
++                with self.assertRaises(ValueError): long_cli.run(args)
++                with self.assertRaises(ValueError): long_inputs.prepare(args, self.root, EPOCH, Mock())
++            ctx = dict(mode=mode, stage_cut=12, stage_prefill_policy=policy)
++            with self.assertRaises(ValueError): long_configuration.build(0, ctx, '/bundle', 'c' * 64, HOSTS)
++        with self.assertRaises(ValueError): long_solo_contract.validate({}, 0, dict(context('long-prefill-solo'), stage_cut=12))
++
++    def test_selection_rejects_source_drift_and_context_mode_smuggling(self):
++        for key, value in [('artifact', '0' * 64), ('configuration_sha256', '0' * 64), ('mode', 'long-prefill-solo')]:
++            ctx = selected_context(); ctx[key] = value
++            with self.assertRaises(ValueError): long_configuration.build(0, ctx, '/bundle', 'c' * 64, HOSTS)
++
++    def test_default_argv_history_and_optional_phase_shape_are_preserved(self):
++        for rank in (0, 1):
++            for traced in (False, True):
++                old = dict(context(), prefill_phase_trace=traced); selected = dict(old, stage_cut=12)
++                base = long_configuration.build(rank, old, '/bundle', 'c' * 64, HOSTS)
++                chosen = long_configuration.build(rank, selected, '/bundle', 'c' * 64, HOSTS)
++                position = chosen['arguments'].index('--stage-cut')
++                self.assertEqual(chosen['arguments'][position:position + 2], ['--stage-cut', '12'])
++                self.assertEqual(chosen['arguments'].count('--stage-cut'), 1)
++                del chosen['arguments'][position:position + 2]
++                self.assertEqual(chosen, base)
++                self.assertEqual(request_identity(EPOCH, old['prompt']), request_identity(EPOCH, selected['prompt']))
++        self.assertEqual(long_stage_cut.agreement_fields(context()), {})
++        self.assertEqual(long_stage_cut.source_fields(context()), {})
++
++    def test_ready_binds_descriptor_before_accepting_rehashed_agreement(self):
++        ctx = selected_context()
++        for rank in (0, 1):
++            ready, final = selected_rows(rank, ctx)
++            long_rank_contract.validate(ready, 0, rank, EPOCH, 'serial_v1', ctx)
++            long_rank_contract.validate(final, 1, rank, EPOCH, 'serial_v1', ctx, ready)
++        for key in ('planFingerprint', 'producerStageFingerprint', 'consumerStageFingerprint',
++                    'producerConstructionConfigurationSHA256', 'consumerConstructionConfigurationSHA256'):
++            ready = selected_rows()[0]; ready['agreement'][key] = 'f' * 64
++            ready['agreementFingerprint'] = digest(b'qwen-profiled-prefill-start-agreement-v1\n' + canonical(ready['agreement']))
++            with self.subTest(key=key), self.assertRaises(ValueError):
++                long_rank_contract.validate(ready, 0, 0, EPOCH, 'serial_v1', ctx)
++        with self.assertRaises(ValueError): long_rank_contract.validate(rows()[0], 0, 0, EPOCH, 'serial_v1', ctx)
++
++    def test_existing_source_loop_binds_local_stage_and_full_source_descriptor(self):
++        ctx = selected_context()
++        for rank in (0, 1):
++            changes = [('stageIndex', 1 - rank), ('stagePlanSHA256', STAGES[1 - rank]),
++                ('constructionConfigurationSHA256', CONFIGURATIONS[1 - rank]), ('sourceParameterLayoutSHA256', 'f' * 64),
++                ('sourceModelTensorBytes', 5038041600.0), ('storageCommitmentSHA256', 'f' * 64)]
++            for key, value in changes:
++                ready, final = selected_rows(rank, ctx); final['sourceLoad'][key] = value
++                with self.subTest(rank=rank, key=key), self.assertRaises(ValueError):
++                    long_rank_contract.validate(final, 1, rank, EPOCH, 'serial_v1', ctx, ready)
++
++    def test_receipt_records_selected_identity_without_adding_a_numerical_claim(self):
++        value = long_stage_cut.receipt(selected_context())
++        self.assertEqual(value['source_layer_ranges'], [[0, 12], [12, 32]])
++        self.assertEqual(value['plan_sha256'], PLAN)
++        self.assertTrue(value['source_identity_validation_only'])
++        self.assertFalse(value['independent_numerical_action_timing_audit_performed'])
++        value['source_layer_ranges'][0][1] = 16
++        self.assertEqual(long_stage_cut.receipt(selected_context())['source_layer_ranges'], [[0, 12], [12, 32]])
++
++
++if __name__ == '__main__': unittest.main()
+--- /dev/null
++++ b/experiments/cluster/test_stage_checks_long_cut_flow.py
+@@ -0,0 +1,86 @@
++"""Reuse the public fake lifecycle harness for the selected long rank path."""
++from pathlib import Path
++import unittest
++from unittest.mock import Mock, patch
++from runtime.stage_checks import long_configuration, long_stage_cut, long_supervision
++from runtime.stage_checks.common import digest, parse
++import test_stage_checks_long_launch as inherited_launch
++import test_stage_checks_long_flow as inherited_flow
++from stage_long_cut_test_support import HOSTS, PLAN, selected_context, selected_rows
++
++
++class LongCutFlowTests(unittest.TestCase):
++    def launch(self, *, post_failure=False, wrong_plan=False):
++        harness = inherited_launch.LongLaunchTests(methodName='runTest')
++        harness.setUp(); self.addCleanup(harness.doCleanups)
++        original_arguments = harness.arguments
++        def arguments(mode, output): return original_arguments(mode, output) + ['--stage-cut', '12']
++        def native_rows(rank, context):
++            values = selected_rows(rank, context)
++            if wrong_plan:
++                # Both peers agree on a stale source; selection must still refuse.
++                from runtime.stage_checks.common import canonical
++                for value in values:
++                    value['agreement']['planFingerprint'] = 'f' * 64
++                    value['agreementFingerprint'] = digest(b'qwen-profiled-prefill-start-agreement-v1\n' + canonical(value['agreement']))
++                values[1]['sourceLoad']['planSHA256'] = 'f' * 64
++            return values
++        # The inherited harness already substitutes a tiny synthetic config pin
++        # in long_inputs; keep that same fake pin at the selected-context gate.
++        # This tests plumbing and ownership, not registered model qualification.
++        with patch.object(harness, 'arguments', side_effect=arguments), \
++             patch.object(inherited_launch, 'rows', side_effect=native_rows), \
++             patch.object(long_stage_cut, 'CONFIGURATION', digest(harness.config)):
++            code, receipt, output = harness.execute(post_failure=post_failure)
++        return harness, code, receipt, output
++
++    def test_full_fake_entry_retains_cut_raw_inputs_and_opaque_audit_scope(self):
++        harness, code, receipt, output = self.launch()
++        self.assertEqual(code, 0); self.assertTrue(receipt['passed'])
++        self.assertEqual(receipt['selected_layer_plan']['source_layer_ranges'], [[0, 12], [12, 32]])
++        self.assertEqual(receipt['selected_layer_plan']['plan_sha256'], PLAN)
++        self.assertFalse(receipt['independent_numerical_action_timing_audit']['performed'])
++        self.assertFalse(receipt['throughput_qualification'])
++        ctx = parse((output / 'context.json').read_bytes()); self.assertEqual(ctx['stage_cut'], 12)
++        for rank in (0, 1):
++            directory = output / ('rank-' + str(rank)); config = parse((directory / 'rank.json').read_bytes())
++            index = config['arguments'].index('--stage-cut')
++            self.assertEqual(config['arguments'][index:index + 2], ['--stage-cut', '12'])
++            self.assertEqual(config['input_files'], {})
++            self.assertEqual((directory / 'prompt.json').read_bytes(), harness.prompt.read_bytes())
++        self.assertEqual(len(receipt['rank_files']), 10)
++        self.assertEqual(harness.events[:3], ['initial', 'memory', 'source'])
++        self.assertTrue(all(child.waits == 1 for child in harness.children))
++
++    def test_full_fake_entry_rejects_coherently_wrong_plan_and_fences_both(self):
++        harness, code, receipt, _ = self.launch(wrong_plan=True)
++        self.assertEqual(code, 1); self.assertFalse(receipt['passed'])
++        self.assertTrue(harness.stops); self.assertTrue(all(owners == [0, 1] for owners in harness.stops))
++        self.assertEqual(len(harness.children), 2); self.assertTrue(all(child.waits == 1 for child in harness.children))
++
++    def test_selected_post_run_source_failure_preserves_completed_cohort_and_cleanup(self):
++        harness, code, receipt, _ = self.launch(post_failure=True)
++        self.assertEqual(code, 1); self.assertTrue(receipt['cohort']['passed'])
++        self.assertIn('post-run source drift', receipt['primary_failure']['error'])
++        self.assertEqual(harness.stops, [[0, 1]])
++
++    def test_selected_deadline_fences_all_fake_owners(self):
++        harness = inherited_flow.LongFlowTests(methodName='runTest')
++        harness.setUp(); self.addCleanup(harness.doCleanups)
++        with patch.object(inherited_flow, 'context', side_effect=lambda _mode: selected_context()), \
++             patch.object(inherited_flow, 'rows', side_effect=selected_rows):
++            result = harness.execute(finish=10)
++        self.assertFalse(result['passed']); self.assertEqual(result['cancellation_reason'], 'cohort_deadline')
++        self.assertEqual(harness.stops, [[0, 1]]); self.assertTrue(all(child.waits == 1 for child in harness.children))
++
++    def test_direct_staging_and_supervision_refuse_unqualified_context_before_io(self):
++        ctx = dict(selected_context(), stage_prefill_policy='prompt_lookahead_one_v1')
++        with patch.object(Path, 'open', side_effect=AssertionError('No input file read')):
++            with self.assertRaises(ValueError): long_configuration.stage(Path('/unused'), ctx, 'b' * 64, HOSTS)
++        start = Mock(side_effect=AssertionError('No process start'))
++        with self.assertRaises(ValueError):
++            long_supervision.run([], ctx, 1, start, Mock(), Mock(), clock=Mock(side_effect=AssertionError('No clock read')))
++        start.assert_not_called()
++
++
++if __name__ == '__main__': unittest.main()

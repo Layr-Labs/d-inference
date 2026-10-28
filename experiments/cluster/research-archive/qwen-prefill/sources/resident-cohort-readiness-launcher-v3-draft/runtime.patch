@@ -1,0 +1,137 @@
+--- a/launch_readiness.py
++++ b/launch_readiness.py
+@@ -52,7 +52,8 @@
+             'Output must be new, have an existing parent, and be outside the repository')
+     output.mkdir(mode=0o700)
+     epoch = uuid.uuid4().hex
+-    receipt = dict(schema_version=1, kind='private_model_free_cohort_readiness_launcher',
++    receipt = dict(schema_version=1, kind='private_model_free_cohort_readiness_launcher_v3',
++        mismatch_contract='both_exact_disagreement_exit1_before_parent_deadline',
+         epoch=epoch, scenario=arguments.scenario, status='preparing', scenario_passed=False,
+         native_success=False, expected_native_sha256=arguments.expected_native_sha256,
+         native_timeout_seconds=NATIVE_SECONDS, parent_timeout_seconds=parent_seconds(arguments.scenario),
+--- a/readiness_supervision.py
++++ b/readiness_supervision.py
+@@ -17,6 +17,16 @@
+     codes_before_cancellation = None
+     deadline = clock() + timeout
+     next_memory = clock()
++    def completed_mismatch(codes):
++        if scenario != 'warmup-mismatch' or codes != [1, 1]:
++            return False
++        if clock() >= deadline:
++            raise TimeoutError('Readiness mismatch observed after parent deadline')
++        for stream in streams:
++            stream.negative(mismatch=True)
++        if clock() >= deadline:
++            raise TimeoutError('Readiness mismatch validation exceeded parent deadline')
++        return True
+     try:
+         for rank in ranks[:count]:
+             if clock() >= deadline:
+@@ -27,17 +37,13 @@
+             for stream in streams[:count]:
+                 stream.poll()
+             observed_codes = [child.poll() for child in children]
++            if completed_mismatch(observed_codes):
++                reason = 'expected_warmup_mismatch'
++                break
+             if any(code is not None and code != 0 for code in observed_codes):
+-                if scenario == 'warmup-mismatch' and observed_codes == [None, 1]:
+-                    if clock() >= deadline:
+-                        raise TimeoutError('Readiness mismatch observed after parent deadline')
+-                    streams[1].negative(mismatch=True); streams[0].negative()
+-                    if clock() >= deadline:
+-                        raise TimeoutError('Readiness mismatch validation exceeded parent deadline')
+-                    reason = 'expected_warmup_mismatch'
+-                else:
++                if not (scenario == 'warmup-mismatch' and all(code in (None, 1) for code in observed_codes)):
+                     reason = 'unexpected_rank_failure'
+-                break
++                    break
+             if scenario != 'match' and any(code == 0 for code in observed_codes):
+                 raise ValueError('Negative scenario completed before parent cancellation')
+             if clock() >= next_memory:
+@@ -46,15 +52,15 @@
+             if clock() >= deadline:
+                 raise TimeoutError('Readiness parent execution deadline expired')
+             codes = [child.poll() for child in children]
+-            if scenario == 'warmup-mismatch' and codes[1] == 1 and codes[0] is None:
+-                streams[1].negative(mismatch=True); streams[0].negative()
+-                if clock() >= deadline:
+-                    raise TimeoutError('Readiness mismatch validation exceeded parent deadline')
++            if completed_mismatch(codes):
+                 reason = 'expected_warmup_mismatch'
+                 break
+             if any(code is not None and code != 0 for code in codes):
+-                reason = 'unexpected_rank_failure'
+-                break
++                if not (scenario == 'warmup-mismatch' and all(code in (None, 1) for code in codes)):
++                    reason = 'unexpected_rank_failure'
++                    break
++            if scenario != 'match' and any(code == 0 for code in codes):
++                raise ValueError('Negative scenario completed before parent cancellation')
+             if all(code is not None for code in codes):
+                 require(scenario == 'match', 'Negative scenario completed unexpectedly')
+                 for stream in streams:
+@@ -69,7 +75,7 @@
+                   if isinstance(caught, (KeyboardInterrupt, SystemExit)) else 'output_memory_or_startup_failure')
+         error = type(caught).__name__ + ': ' + str(caught)
+     finally:
+-        if reason is not None or validation is None:
++        if reason != 'expected_warmup_mismatch' and (reason is not None or validation is None):
+             # An observed exit before cancellation is not evidence of parent retirement.
+             codes_before_cancellation = [child.poll() for child in children]
+             try:
+@@ -89,7 +95,12 @@
+     passed = reaped and native_success
+     try:
+         if scenario == 'warmup-mismatch' and reason == 'expected_warmup_mismatch' and reaped:
+-            streams[0].negative(); streams[1].negative(mismatch=True)
++            require(codes == [1, 1] and codes_before_cancellation is None,
++                    'Mismatch requires both natural disagreement exits without parent cancellation')
++            for stream in streams:
++                stream.negative(mismatch=True)
++            if clock() >= deadline:
++                raise TimeoutError('Readiness final mismatch validation exceeded parent deadline')
+             passed = True
+         if (scenario == 'missing-peer' and reason == 'parent_deadline' and reaped and
+                 codes_before_cancellation == [None]):
+--- a/readiness_stream.py
++++ b/readiness_stream.py
+@@ -55,7 +55,7 @@
+ 
+     def poll(self):
+         stdout, stderr = self._read('stdout.jsonl'), self._read('stderr.log')
+-        expected = WARNING + MISMATCH if self.scenario == 'warmup-mismatch' and self.rank == 1 else WARNING
++        expected = WARNING + MISMATCH if self.scenario == 'warmup-mismatch' else WARNING
+         require(expected.startswith(stderr), 'Unexpected native stderr')
+         lines = stdout.split(b'\n')
+         require(len(lines) <= 2 and (len(lines) < 2 or lines[-1] == b''), 'Native stdout must contain one complete line')
+--- a/readiness_contract.py
++++ b/readiness_contract.py
+@@ -101,9 +101,15 @@
+         'QwenLongPrefillResidentCohortReadiness.swift', 'QwenLongPrefillCohortReadinessAdmission.swift',
+         'QwenLongPrefillCohortReadinessCheck.swift', 'QwenLongPrefillResidentCohortAgreement.swift',
+         'QwenLongPrefillResidentRankFixture.swift', 'QwenLayerStageProfiledPrefillRequestSpec.swift',
+-        'QwenLayerStageProfiledPrefillRecordedRequest.swift']
++        'QwenLayerStageProfiledPrefillRecordedRequest.swift', 'QwenLongPrefillReadinessExchange.swift']
+     text = {name: (source / name).read_text() for name in names}
+-    literal = 'log("' + WARNING.decode().rstrip('\n') + '")'
++    exchange_pin = 'a075b13f8606dcccd9459ba8140559af4d9d696bf9621c1b2d92838f333e210d'
++    require(digest(source / 'QwenLongPrefillReadinessExchange.swift') == exchange_pin,
++            'Readiness exchange must complete both ordered transfers before comparing')
++    worker = Path(output) / 'source/experiments/cluster/runtime/rank_worker.py'
++    require(digest(worker) == '2dbb639e3e112198f9a15cfeb98b21209657651e2126f6d59d7819202d55f5e3',
++            'Readiness worker must suppress bundle import bytecode')
++    literal = 'log("' + WARNING.decode().rstrip('\n') + '")' 
+     require('if transport == .loopbackTest {\n            ' + literal in text['Collective.swift'],
+             'Loopback warning source changed')
+     require('func log(_ message: String) {\n    FileHandle.standardError.write(Data((message + "\\n").utf8))\n}'
+@@ -115,5 +121,6 @@
+     require(CONFIG_SHA in text['QwenLongPrefillResidentRankFixture.swift'] and
+             ARTIFACT_SHA in text['QwenLongPrefillResidentRankFixture.swift'], 'Retained fixture pins changed')
+     return dict(exact_warning_utf8=WARNING.decode(), exact_mismatch_utf8=MISMATCH.decode(),
++        complete_before_compare_exchange_sha256=exchange_pin, bytecode_suppressed_worker_sha256=digest(worker),
+         source_sha256={name: digest(source / name) for name in names},
+         plan_arithmetic_resource_fingerprints_independently_derived=False)

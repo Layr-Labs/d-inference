@@ -1,0 +1,11 @@
+--- a/Tests/compile-command.json
++++ b/compile-command.json
+@@ -1,6 +1,8 @@
+ [
+   "xcrun",
+   "swiftc",
++  "-j",
++  "2",
+   "-swift-version",
+   "6",
+   "-warnings-as-errors",

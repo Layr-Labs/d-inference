@@ -1,0 +1,77 @@
+{
+  "runtimeChanges": [
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenDenseRegisteredResourceProfile.swift",
+      "oldSHA256": null,
+      "newSHA256": "4d86062bff7f01aa52abbd5709fea8c8aca40717b61834b1f1ed7d04ce64c4a4"
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenRegisteredDenseModelProfile.swift",
+      "oldSHA256": "2e8fc331bb7991bb92c761b551f7a0bb2e20d6688216b69f8fbca86c2078882a",
+      "newSHA256": "c726db0a05fdfadecba3b102485e4ee66217f93f7dd19f5bdf1a65455f67f197"
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentAdapterDefinition.swift",
+      "oldSHA256": "57791cfef002a1b5760e3f52060468e2ccd40c61f8475cf67c97bb17b6ab0d67",
+      "newSHA256": "73e49450f0c4de816db2579a6722a8108a89526f5a7067e154a193fb0e921ae6"
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentAdmission.swift",
+      "oldSHA256": "a07b49062d7938cc6a660c958a3788417d457676ae0b2f12ab3a25e5042ca087",
+      "newSHA256": "ef40f13ac69169c18288a023be2d16ecfda2e1c688ffb5cfd9ef5cbc9b044ab9"
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentModelDefinition.swift",
+      "oldSHA256": null,
+      "newSHA256": "1c694e4d88de1e7a7d59e3a4a68d90af18926a4c652e2bb38b35bcd2865169fb"
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentNativeValidation.swift",
+      "oldSHA256": null,
+      "newSHA256": "265dfc4bbac04965dfa4c6bf50f6380f61a71837627004ab6b7ff04594546e18"
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentRequestResources.swift",
+      "oldSHA256": "ecd473554fb622006714010e95685a3a9338156e431527101498d7f4d38c1fea",
+      "newSHA256": "f7b33b29729bbd705638f2ef238d453c0faf8d339b03ff720d0203ed213c3947"
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentSource.swift",
+      "oldSHA256": "a9a937d66bf1b69e0004586791e7c6b7ebfd08629b2393afb81c6a1091244a5e",
+      "newSHA256": "aea6bda30223098d7d477ca1d40a6ee0b2994ea785c1f5e8418cd76f6f33b9cb"
+    }
+  ],
+  "privateWorkerReplacements": [
+    {
+      "path": "libs/darkbloom-cluster-worker/Sources/DarkbloomClusterWorker/WorkerConfiguration.swift",
+      "source": "private-worker/WorkerConfiguration.swift",
+      "oldSHA256": "ea8bc8f1a6fb501c7051a37d581ca2dc4a9821a4b77c370f7e79f5e17f10212d",
+      "newSHA256": "85c368b4b111c7556962ed3cce9f1c66d237303de1b5e2147c14cd81f39a9887",
+      "privateValidationBuildOnly": true
+    },
+    {
+      "path": "libs/darkbloom-cluster-worker/Sources/DarkbloomClusterWorker/WorkerMain.swift",
+      "source": "private-worker/WorkerMain.swift",
+      "oldSHA256": "5efbf233eebe66c9f65e2211c0ef63c8c1607dfd0be4a4ea432ec9f4306343e4",
+      "newSHA256": "28df815853aee9870670d0b358c4388203bd391ee865eff4d905534acf8488ee",
+      "privateValidationBuildOnly": true
+    }
+  ],
+  "stagedNativeTests": [
+    {
+      "source": "Tests/NativeValidationAdmissionTests.swift",
+      "destination": "libs/darkbloom-cluster/Tests/DarkbloomClusterRuntimeTests/NativeValidationAdmissionTests.swift"
+    },
+    {
+      "source": "Tests/NativeValidationWorkerTests.swift",
+      "destination": "libs/darkbloom-cluster-worker/Tests/DarkbloomClusterWorkerTests/NativeValidationWorkerTests.swift"
+    }
+  ],
+  "ordinaryWorkerChanged": false,
+  "productCapabilityChanged": false,
+  "providerPolicyChanged": false,
+  "modelMathChanged": false,
+  "requestStateOrDriverChanged": false,
+  "mtpLoadingSourceChanged": false,
+  "compilerRun": false
+}

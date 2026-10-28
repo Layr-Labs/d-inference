@@ -1,0 +1,154 @@
+--- a/libs/darkbloom-cluster-worker/Sources/DarkbloomClusterWorker/NativeWorkerRuntime.swift
++++ b/libs/darkbloom-cluster-worker/Sources/DarkbloomClusterWorker/NativeWorkerRuntime.swift
+@@ -1,24 +1,58 @@
+ import DarkbloomClusterProtocol
+-import DarkbloomClusterRuntime
++@_spi(Benchmark) import DarkbloomClusterRuntime
+ import Foundation
+ 
+-/// Exactly one native executor uses this wrapper; cancel is the facade's
+-/// explicitly thread-safe operation. No model or tensor crosses the pipe.
++/// Private evidence-producing wrapper around the actual shared generation SPI.
++/// The public serving worker retains its normal non-recording wrapper.
+ final class NativeWorkerRuntime: WorkerRuntime, @unchecked Sendable {
+     private let owner: QwenResidentRuntime
++    private let sink: ResidentEvidenceSink
++    private let prefillPolicy: QwenResidentPrefillPolicy
++    private var active: (id: UUID, deadline: UInt64)?
++
+     init(_ configuration: QwenResidentLoadConfiguration, bootstrap: WorkerBootstrapConfiguration? = nil) throws {
+-        let attachment = try bootstrap?.connect(epoch: configuration.identity.membershipEpoch, rank: configuration.rank)
+-        owner = try .load(configuration, bootstrap: attachment.map { QwenResidentBootstrap(connection: $0) })
++        let environment = ProcessInfo.processInfo.environment
++        let selected = try BenchmarkPrefillPolicy.parse(environment[BenchmarkPrefillPolicy.environmentName])
++        guard selected == .serial else {
++            throw WorkerFailure.invalid("27B native validation requires serial recording")
++        }
++        switch selected {
++        case .serial: prefillPolicy = .serial
++        case .oneChunkLookahead: prefillPolicy = .oneChunkLookahead
++        }
++        guard let bootstrap,
++              let path = environment["DARKBLOOM_BENCHMARK_EVIDENCE_DIR"] else {
++            throw WorkerFailure.invalid("Private benchmark requires owner bootstrap and an evidence directory")
++        }
++        sink = try ResidentEvidenceSink(path: path)
++        let attachment = try bootstrap.connect(epoch: configuration.identity.membershipEpoch, rank: configuration.rank)
++        owner = try .load(configuration, bootstrap: QwenResidentBootstrap(connection: attachment))
+     }
+-    var readiness: ClusterWorkerReady? { owner.readiness }
++
++    var readiness: ClusterWorkerReady? { try? owner.recordingReadiness(prefillPolicy: prefillPolicy) }
++
+     func reserve(_ id: UUID, _ value: ClusterWorkerReservation) throws -> Int {
+-        try owner.reserve(requestID: id, request: value)
++        guard active == nil else { throw WorkerFailure.invalid("Benchmark request already active") }
++        let bytes = try owner.reserveRecording(requestID: id, request: value, prefillPolicy: prefillPolicy)
++        active = (id, value.deadlineUptimeNanoseconds)
++        return bytes
+     }
++
+     func start(_ id: UUID, token: (Int, Int, Int) throws -> Bool) throws -> ClusterWorkerFinishReason {
+-        let result = try owner.start(requestID: id, onCommittedToken: token)
+-        guard result.bothRequestStatesRetired else { throw WorkerFailure.invalid("Native generation did not retire both request states") }
+-        return result.finishReason
++        guard let reservation = active, reservation.id == id else {
++            throw WorkerFailure.invalid("Benchmark start has no matching reservation")
++        }
++        let result = try owner.startRecording(requestID: id, onCommittedToken: token)
++        guard result.completion.requestID == id, result.completion.bothRequestStatesRetired else {
++            throw WorkerFailure.invalid("Benchmark generation returned without matching retirement")
++        }
++        // Coordinator cannot emit finished/retired until this returns. A write
++        // failure makes this worker fail; no successful sidecar is fabricated.
++        try sink.publish(result.encodedEvidence, requestID: id, deadline: reservation.deadline)
++        active = nil
++        return result.completion.finishReason
+     }
++
+     func cancel(_ id: UUID) { owner.cancel(requestID: id) }
+-    func shutdown() throws { try owner.shutdown() }
++    func shutdown() throws { try owner.shutdown(); active = nil }
+ }
+--- /dev/null
++++ b/libs/darkbloom-cluster-worker/Sources/DarkbloomClusterWorker/BenchmarkPrefillPolicy.swift
+@@ -0,0 +1,21 @@
++/// Private benchmark configuration; no environment lookup or native dependency.
++/// External spellings are deliberately separate from the experimental SPI's
++/// raw values. An omitted value preserves the original serial behavior.
++enum BenchmarkPrefillPolicy: String, Sendable {
++    case serial = "serial_v1"
++    case oneChunkLookahead = "one_chunk_lookahead_v1"
++
++    static let environmentName = "DARKBLOOM_BENCHMARK_PREFILL_POLICY"
++
++    struct InvalidValue: Error, CustomStringConvertible {
++        var description: String {
++            "DARKBLOOM_BENCHMARK_PREFILL_POLICY must be serial_v1 or one_chunk_lookahead_v1"
++        }
++    }
++
++    static func parse(_ value: String?) throws -> Self {
++        guard let value else { return .serial }
++        guard let policy = Self(rawValue: value) else { throw InvalidValue() }
++        return policy
++    }
++}
+--- /dev/null
++++ b/libs/darkbloom-cluster-worker/Sources/DarkbloomClusterWorker/ResidentEvidenceSink.swift
+@@ -0,0 +1,55 @@
++import Darwin
++import Foundation
++
++/// Private benchmark sidecars. This is not part of the serving wire protocol.
++/// A failed/partial file remains evidence of the failed attempt and is never
++/// replaced by a later request. The external owner still fences failed workers.
++final class ResidentEvidenceSink {
++    enum Failure: Error { case invalidDirectory, invalidRecord, create, write, sync, expired }
++    private let directory: Int32
++    private var requests = Set<UUID>()
++    static let maximumBytes = 16 * 1024 * 1024
++
++    init(path: String) throws {
++        guard path.hasPrefix("/"), path.utf8.count <= 1024, !path.contains("\0") else {
++            throw Failure.invalidDirectory
++        }
++        let descriptor = Darwin.open(path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
++        guard descriptor >= 0 else { throw Failure.invalidDirectory }
++        var info = stat()
++        guard fstat(descriptor, &info) == 0, info.st_uid == geteuid(),
++              info.st_mode & S_IFMT == S_IFDIR, info.st_mode & 0o077 == 0 else {
++            Darwin.close(descriptor); throw Failure.invalidDirectory
++        }
++        directory = descriptor
++    }
++
++    func publish(_ evidence: Data, requestID: UUID, deadline: UInt64) throws {
++        guard !evidence.isEmpty, evidence.count <= Self.maximumBytes,
++              requests.count < 16, !requests.contains(requestID) else { throw Failure.invalidRecord }
++        func check() throws {
++            guard DispatchTime.now().uptimeNanoseconds < deadline else { throw Failure.expired }
++        }
++        try check()
++        let name = requestID.uuidString.lowercased() + ".json"
++        let descriptor = openat(directory, name, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
++        guard descriptor >= 0 else { throw Failure.create }
++        defer { Darwin.close(descriptor) }
++        requests.insert(requestID)
++        var offset = 0
++        while offset < evidence.count {
++            try check()
++            let count = evidence.withUnsafeBytes {
++                Darwin.write(descriptor, $0.baseAddress!.advanced(by: offset), min(65_536, evidence.count - offset))
++            }
++            if count < 0 && errno == EINTR { continue }
++            guard count > 0 else { throw Failure.write }
++            offset += count
++        }
++        try check()
++        guard fsync(descriptor) == 0, fsync(directory) == 0 else { throw Failure.sync }
++        try check()
++    }
++
++    deinit { Darwin.close(directory) }
++}

@@ -4358,8 +4358,9 @@ struct SSDWindowSidecarTests {
         #expect(await waitForIndexCount(cache, atLeast: 8))
         await cache.waitForWritesForTesting()
 
-        // `SSDWriteBehind.consume` charges the bucket per entry IN ARRAY
-        // ORDER, so whoever is queued first spends the allowance. The prefix
+        // When the whole donation does not fit, `SSDWriteBehind.consume`
+        // charges the bucket per entry IN ARRAY ORDER, so whoever is queued
+        // first spends the allowance. The prefix
         // blocks are the thing the sidecars can only accelerate, so they win:
         // all 8 land. Queued the other way round, the sidecars would spend
         // bytes that belong to the required block run.

@@ -1,6 +1,6 @@
 # SSD KV cache reference
 
-> Last updated: 2026-10-27
+> Last updated: 2026-10-28
 
 Exact on-disk format, paths, identity binding, environment knobs, size and
 eviction rules, and per-family reuse capability of the provider's encrypted SSD
@@ -390,7 +390,14 @@ extra hour of conservatism at bucket boundaries. Cache reconstruction and proces
 restart do not replenish this budget. Charges
 precede writes and are not refunded on failure or eviction. Attention blocks,
 window sidecars and complete checkpoints charge their complete serialized DBK3
-size, not just plaintext. Exhaustion reports `write_rate_limited`; existing cache
+size, not just plaintext. An attention donation of several blocks reserves their
+summed size in one charge before its first block is written, so its blocks share
+one durable ledger update instead of one `F_FULLFSYNC` each. When that charge is
+refused, for example near the cap or while another writer holds the ledger, each
+block is charged before its own write instead, so the leading blocks that fit are
+still written. Blocks skipped after a donation's charge stay charged, like a
+failed write (`SSDWriteBehind.chargeWholeDonation`).
+Exhaustion reports `write_rate_limited`; existing cache
 reads remain available. Corrupt or inaccessible accounting fails closed rather
 than restoring a full allowance. The ledger records only time buckets and byte
 counts, never cache keys, tokens or model identifiers.

@@ -24,7 +24,22 @@ enum DistributedInstalledFiles {
 
     static func verify(_ url: URL, expectedSHA256: String, maximumBytes: Int,
                        executable: Bool = false, deadline: UInt64) throws -> Identity {
-        guard ClusterConfigurationSyntax.hash(expectedSHA256), (1...(256 * 1024 * 1024)).contains(maximumBytes) else {
+        guard ClusterConfigurationSyntax.hash(expectedSHA256) else {
+            throw ClusterConfigurationError.invalid("Invalid installed input bound or pin")
+        }
+        let read = try digest(url, maximumBytes: maximumBytes, executable: executable, deadline: deadline)
+        guard read.sha256 == expectedSHA256 else {
+            throw ClusterConfigurationError.invalid("Installed input identity or SHA-256 differs")
+        }
+        return read.identity
+    }
+
+    /// The SHA-256 of one installed input, read under the same safety rules
+    /// `verify` applies (the one hashing of installed files: a release that
+    /// records a digest computes it exactly as the member that checks it).
+    static func digest(_ url: URL, maximumBytes: Int, executable: Bool = false,
+                       deadline: UInt64) throws -> (identity: Identity, sha256: String) {
+        guard (1...(256 * 1024 * 1024)).contains(maximumBytes) else {
             throw ClusterConfigurationError.invalid("Invalid installed input bound or pin")
         }
         try check(deadline)
@@ -40,7 +55,7 @@ enum DistributedInstalledFiles {
         if let reason = unsafeReason(before, maximumBytes: maximumBytes, executable: executable) {
             throw ClusterConfigurationError.invalid("Installed input \(url.lastPathComponent) is unsafe: \(reason)")
         }
-        var digest = SHA256(), total = 0
+        var hasher = SHA256(), total = 0
         var buffer = [UInt8](repeating: 0, count: 64 * 1024)
         while true {
             try check(deadline)
@@ -50,17 +65,16 @@ enum DistributedInstalledFiles {
                 throw ClusterConfigurationError.invalid("Installed input read exceeded its bound")
             }
             if count == 0 { break }
-            digest.update(data: Data(buffer.prefix(count))); total += count
+            hasher.update(data: Data(buffer.prefix(count))); total += count
         }
         try check(deadline)
         guard fstat(descriptor, &after) == 0,
               fstatat(parent.descriptor, url.lastPathComponent, &named, AT_SYMLINK_NOFOLLOW) == 0,
-              same(before, after), same(after, named), total == before.st_size,
-              digest.finalize().map({ String(format: "%02x", $0) }).joined() == expectedSHA256 else {
+              same(before, after), same(after, named), total == before.st_size else {
             throw ClusterConfigurationError.invalid("Installed input identity or SHA-256 differs")
         }
         try parent.check()
-        return .init(url: url, information: after)
+        return (.init(url: url, information: after), hasher.finalize().map({ String(format: "%02x", $0) }).joined())
     }
 
     /// The first condition an installed input fails, worded for the operator (nil when it is safe). A file with

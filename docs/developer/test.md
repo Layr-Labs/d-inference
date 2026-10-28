@@ -1060,17 +1060,37 @@ Release tests cover provider-only version/tag/binary parity even when backend
 source is absent, signed tags and trusted `master` before secrets, exact artifact
 registration, immutable producing attempts and retry-safe publication. Archive
 checks reject unsafe members, changed inventories, wrong source and entitlements.
-`scripts/test-release-dev-branch.py` pins the experimental dev-branch lane
-(`.github/workflows/release-dev-branch.yml`) to dev scope: dispatch-only with a
-`ref` input, no tag path, no production environment, signing identity or secret,
-and publication only with `DEV_RELEASE_KEY`. These CPU-only checks do not prove
-Apple runtime behavior.
+`scripts/test-release-dev-branch.py` pins the dev-branch lane
+(`.github/workflows/release-dev-branch.yml`). The only trigger is a push to
+`dev`, with the `paths:` list of the `release-swift.yml` master push. The lane
+has no dispatch, no input and no `ref:`. Its one job checks `refs/heads/dev` and
+only calls `release-provider.yml` with `environment: dev` and `secrets: inherit`.
+The caller names no secret and has no step, so it has no build or signing path
+of its own. In `release-provider.yml`, every secret read without a prod or
+staging guard is a `DEV_*` secret or one of the five Apple signing secrets, and
+those are read only in the signing job. The signing job signs with the
+Developer ID, notarizes, staples and verifies the fan helper against the
+Apple-team requirement; nothing signs ad-hoc. These CPU-only checks do not
+prove Apple runtime behavior.
 
 `scripts/test-provider-release-publication.py` creates isolated local Git tags
 with verbatim annotations, including multiline opening paragraphs, extra blank
 lines, CRLFs and synthetic SSH/PGP signature armor. It checks exact retained note
 text and payload/provenance digest guards without invoking signing or live
 publication.
+
+`scripts/test-provider-release-pipeline.py` and
+`scripts/test-provider-release-resolution.py` pin the routing of
+`.github/workflows/release-swift.yml`. A master push publishes staging only, and
+only when `STAGING_ENABLED` is `true`. A tag publishes prod. No master path
+publishes dev: the dispatch has no `dev` choice, the `dev` lane runs only as an
+unpublished signed validation build, and the resolver refuses a dev publication
+from master and a master push routed to dev. A push to `dev` resolves to
+`X.Y.Z-dev.branch.N` for `dev` only; `staging`, `prod` and other branches are
+refused. `scripts/test-provider-release-resume.py` pins the source gate: a dev
+push needs environment `dev` and a verified commit on `dev` ancestry, and the
+tag, master push and dispatch rows keep the master checks. The pipeline test
+pins the final-app check against the self-updater's designated requirement.
 
 `scripts/test-darkbloom-route.py` runs the actual
 [CI runner routing](build.md#ci-runner-routing) shell step against a loopback

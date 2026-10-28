@@ -85,7 +85,10 @@ A confirmed missing parent directory is file absence, not corruption. The
 resident-preflight regression creates actual malformed DBK3 files: equal or
 shorter SSD matches must avoid reading them, while a longer match must reject
 the malformed data. Missing-parent status and typed `ENOENT` reads have separate
-coverage (`SSDNoFollowIOSpecialFileTests`, `EngineV2BridgeTests`).
+coverage (`SSDNoFollowIOSpecialFileTests`, `EngineV2BridgeTests`). A complete
+checkpoint that the startup scan finds past its TTL is expiry, not corruption
+either: it is removed like any expired file and is not counted in
+`corrupt_drops_total` (`SSDHybridCheckpointStore.scanOnDisk`).
 
 ## Bounded attention-block staging
 

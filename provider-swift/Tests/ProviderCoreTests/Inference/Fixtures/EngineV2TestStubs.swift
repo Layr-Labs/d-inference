@@ -79,9 +79,10 @@ struct StubBridgeTokenizer: MLXLMCommon.Tokenizer {
 /// A slot-shaped stub bridge over an inert engine — enough for install/
 /// unload/persistence/capacity-guard suites.
 func makeInertStubBridge(
-    modelId: String, kvBytesCapacity: Int = 0
+    modelId: String, kvBytesCapacity: Int = 0,
+    onShutdown: @escaping @Sendable () async -> Void = {}
 ) -> (bridge: EngineV2Bridge, engine: InertStubEngine) {
-    let engine = InertStubEngine(kvBytesCapacity: kvBytesCapacity)
+    let engine = InertStubEngine(kvBytesCapacity: kvBytesCapacity, onShutdown: onShutdown)
     let bridge = EngineV2Bridge(
         engine: engine,
         modelId: modelId,

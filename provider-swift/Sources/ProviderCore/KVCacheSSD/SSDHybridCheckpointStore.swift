@@ -23,6 +23,7 @@ public final class SSDHybridCheckpointStore: CBv2NativeCompletePrefixCache, CBv2
         let nowSeconds: @Sendable () -> Int64
         let diskBudgetBytes: @Sendable () -> Int
         let maintainWholeRoot: @Sendable () -> Void
+        var incrementalCheckpoints = false
         // Monotonic, stage-local deadline clock. Default preserves first-attempt
         // timing; injected clocks keep retry boundary tests deterministic.
         var stageNow: @Sendable () -> ContinuousClock.Instant = { .now }
@@ -54,6 +55,7 @@ public final class SSDHybridCheckpointStore: CBv2NativeCompletePrefixCache, CBv2
     var afterPublishBeforeIndexForTesting: (@Sendable () -> Void)?
     #endif
     let statsBox = SSDHybridCheckpointStatsBox()
+    let stageCost: SSDCheckpointStageCost
     let activity = SSDCheckpointActivity()
     let fileCoordinator = SSDCheckpointFileCoordinator.shared
     let namespace = UUID().uuidString
@@ -65,6 +67,8 @@ public final class SSDHybridCheckpointStore: CBv2NativeCompletePrefixCache, CBv2
     var writing: Set<Data> = []
     var readyReceipts: [CBv2RequestID: ReadyReceipt] = [:]
     var authenticatedReceipts: [CBv2RequestID: (epoch: String?, files: [Data: SSDAuthenticatedFileIdentity])] = [:]
+    /// What each stage restored (leaf, root); deltas need the engine to consume it.
+    var restoredCheckpoints: [CBv2RequestID: (files: [SSDHybridCheckpointEnvelope.Parent], consumed: Bool)] = [:]
     var pipeline: BoundedSingleConsumerPipeline<WriteJob>!
 
     // Pauses the real durable writer at the rename/duplicate-validation boundary.
@@ -103,8 +107,15 @@ public final class SSDHybridCheckpointStore: CBv2NativeCompletePrefixCache, CBv2
             repeatReserveFraction: SSDCheckpointDemand.repeatReserveFraction,
             writeBudget: writeBudget, nowSeconds: writeNowSeconds)
         self.writeDemand = SSDCheckpointDemand(ttlSeconds: config.ttlSeconds)
+        self.stageCost = SSDCheckpointStageCost(
+            priorOverheadMilliseconds: SSDCheckpointStageCost.priorOverheadMilliseconds(
+                backendLayout: config.backendLayout))
+        // A buffered job keeps its `writing` entry, so a buffer as deep as the
+        // `prepareWriteJob` gate never drops a job that gate admitted, even one
+        // admitted after the writer settles a job but before it dequeues the
+        // next. The gate alone bounds the queue.
         self.pipeline = BoundedSingleConsumerPipeline(
-            capacity: 1,
+            capacity: SSDPrefixCachePolicy.writeQueueMaxJobs,
             onDropped: { [weak self] job in self?.settle(job, positions: []) ?? job.finish([]) },
             consume: { [weak self] job in
                 guard let self else { job.finish([]); return }
@@ -145,6 +156,7 @@ public final class SSDHybridCheckpointStore: CBv2NativeCompletePrefixCache, CBv2
             native ? staged.manifest.position <= tokens.count : staged.manifest.position < tokens.count,
             tokens.starts(with: staged.manifest.prefixTokens)
         else { staged.close(); return nil }
+        lock.withLock { restoredCheckpoints[requestID]?.consumed = true }
         statsBox.update { $0.stageConsumptions += 1; $0.consumedPrefixTokens += staged.manifest.position }
         return staged
     }
@@ -172,6 +184,7 @@ public final class SSDHybridCheckpointStore: CBv2NativeCompletePrefixCache, CBv2
         let (staged, access) = lock.withLock {
             let access = reading.removeValue(forKey: requestID)
             authenticatedReceipts.removeValue(forKey: requestID)
+            restoredCheckpoints.removeValue(forKey: requestID)
             stageReservations.removeValue(forKey: requestID)
             return (stages.removeValue(forKey: requestID), access)
         }
@@ -190,6 +203,7 @@ public final class SSDHybridCheckpointStore: CBv2NativeCompletePrefixCache, CBv2
         let (stage, reservation, access) = lock.withLock {
             let access = reading.removeValue(forKey: requestID)
             authenticatedReceipts.removeValue(forKey: requestID)
+            restoredCheckpoints.removeValue(forKey: requestID)
             return (stages.removeValue(forKey: requestID), stageReservations.removeValue(forKey: requestID), access)
         }
         access?.cancel()
@@ -208,6 +222,7 @@ public final class SSDHybridCheckpointStore: CBv2NativeCompletePrefixCache, CBv2
             reading.removeAll()
             readyReceipts.removeAll()
             authenticatedReceipts.removeAll()
+            restoredCheckpoints.removeAll()
             let retiring = Array(stages.values)
             stages.removeAll()
             stageReservations.removeAll()

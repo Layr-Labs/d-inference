@@ -37,7 +37,7 @@ public enum ProviderAuthorizationReadiness {
         }
         if authorization.hasCurrentAppAttestAuthorization(now: now) {
             return "App Attest authorizes this connection. " + (authorization.mdmRemovalReady
-                ? "Darkbloom MDM removal is available: run darkbloom unenroll and choose App Attest."
+                ? "Darkbloom MDM removal is available: run \(BuildEnvironment.current.cliName) unenroll and choose App Attest."
                 : "Darkbloom MDM removal is not enabled for this machine yet.")
         }
         if authorization.path == "legacy" {
@@ -49,7 +49,7 @@ public enum ProviderAuthorizationReadiness {
         }
         if ProviderOnboardingPolicy.usesAppAttest(macOSMajorVersion: macOSMajorVersion) {
             return "This coordinator has not enabled App Attest serving. New macOS 27+ setup remains pending; "
-                + "check `darkbloom doctor` and contact support. Keep existing management profiles installed."
+                + "check `\(BuildEnvironment.current.cliName) doctor` and contact support. Keep existing management profiles installed."
         }
         return "This coordinator has not enabled App Attest serving; legacy enrollment is still required on older macOS. "
             + ProviderOnboardingPolicy.retirementNotice

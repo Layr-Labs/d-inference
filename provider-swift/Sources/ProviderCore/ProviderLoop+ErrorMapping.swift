@@ -33,6 +33,14 @@ extension ProviderLoop {
             attemptUsage: terminal.usage)
     }
 
+    /// The closed reason a client refusal inside the inference task logs: an
+    /// `invalid_request` failure whose error names one
+    /// (`InferenceRefusalReason(promptRefusal:)`). Every other failure keeps its
+    /// bare category line.
+    static func promptRefusal(_ failure: InferenceFailure, _ error: any Error) -> InferenceRefusalReason? {
+        failure.code == .invalidRequest ? InferenceRefusalReason(promptRefusal: error) : nil
+    }
+
     /// Map rich in-process errors onto the bounded diagnostic vocabulary. The
     /// associated strings are inspected only to recognize engine-authored
     /// markers; no source string is returned, logged, or serialized.
@@ -60,8 +68,9 @@ extension ProviderLoop {
         switch engineError {
         case .modelNotLoaded, .noModelLoadedForTokenization:
             return .modelLoad
-        case .invalidRole, .invalidToolPayload, .unsupportedReasoningEffort, .unsupportedNativeReasoningEffort, .mediaUnsupportedByModel,
-            .multimodalRejected, .advertisedContextExceeded:
+        case .invalidRole, .invalidToolPayload, .missingUserQuery, .unsupportedReasoningEffort,
+            .unsupportedNativeReasoningEffort, .mediaUnsupportedByModel, .multimodalRejected,
+            .advertisedContextExceeded, .unsupportedOutputControl:
             return .clientError
         case .toolChoiceViolation:
             return .toolNoncompliance
@@ -79,6 +88,8 @@ extension ProviderLoop {
             return boundedCapacityReason(from: message, fallback: .capacityBusy)
         case .generationFailed, .platformTerminal:
             return nil
+        case .distributedRequestRefused(let refusal, _):
+            return refusal.exceedsContext ? .requestExceedsContext : .clientError
         }
     }
 
@@ -156,7 +167,8 @@ extension ProviderLoop {
             switch engineError {
             case .modelNotLoaded, .noModelLoadedForTokenization:
                 return .modelUnavailable
-            case .invalidRole, .invalidToolPayload, .unsupportedReasoningEffort, .unsupportedNativeReasoningEffort, .advertisedContextExceeded:
+            case .invalidRole, .invalidToolPayload, .missingUserQuery, .unsupportedReasoningEffort,
+                .unsupportedNativeReasoningEffort, .advertisedContextExceeded, .unsupportedOutputControl:
                 return .invalidRequest
             case .toolChoiceViolation, .generationFailed:
                 return .generationFailure
@@ -166,6 +178,8 @@ extension ProviderLoop {
                 return .unsupportedMedia
             case .multimodalRejected:
                 return .invalidMedia
+            case .distributedRequestRefused:
+                return .invalidRequest
             case .platformTerminal(let cause, _, _):
                 switch cause {
                 case .admissionTimeout:
@@ -234,9 +248,14 @@ extension ProviderLoop {
         if error is PreContentDeadlineFailure {
             return 503
         }
+        // Request shape the shared preparation refuses before any engine work
+        // (a negative output limit, a content part type no engine serves).
+        if error is OpenAIRequestValidationError {
+            return 400
+        }
         if let svcErr = error as? MLXOpenAIServiceError {
             switch svcErr {
-            case .invalidResponseFormatOutput, .multipleToolCallsNotAllowed:
+            case .invalidResponseFormatOutput, .multipleToolCallsNotAllowed, .responseFormatCutOffByMaxTokens:
                 return 422
             case .embeddingsNotConfigured:
                 return 501
@@ -252,11 +271,11 @@ extension ProviderLoop {
                 return 404
             case .invalidRole:
                 return 400
-            case .invalidToolPayload:
+            case .invalidToolPayload, .missingUserQuery:
                 return 400
             case .unsupportedReasoningEffort, .unsupportedNativeReasoningEffort:
                 return 400
-            case .advertisedContextExceeded:
+            case .advertisedContextExceeded, .unsupportedOutputControl:
                 return 400
             case .toolChoiceViolation:
                 // The MODEL failed the forced tool_choice contract — output-
@@ -281,15 +300,20 @@ extension ProviderLoop {
                 // v2 engine rejected the media submission at submit time
                 // (bad spans / embedding mismatch / block over the per-step
                 // budget / non-multimodal model or backend), or the routing
-                // engine's deterministic no-consumable-media shape (every
-                // media part on a non-user role). Deterministic for this
-                // request/engine pairing — 400, never a retry signal.
+                // engine's deterministic media faults (every media part on a
+                // non-user role, a shape the family rejects, media the
+                // processor cannot resize or decode —
+                // `EngineV2VisionPrefill.clientFault(for:)`). Deterministic
+                // for this request/engine pairing — 400, never a retry signal.
                 // (Other provider-side construction failures refuse loudly
                 // as `.requestRejected` → 503 so the coordinator reroutes;
                 // the pre-release legacy fallback is gone.)
                 return 400
             case .generationFailed:
                 return 500
+            case .distributedRequestRefused:
+                // Deterministic for the request on this pair: a client error.
+                return 400
             case .platformTerminal(let cause, _, _):
                 // Client-facing status only — the coordinator's HEALTH
                 // decisions key off `terminal_cause`, not this code. NEVER 429:

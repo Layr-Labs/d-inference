@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import ProviderBuildEnvironment
 import Security
 
 /// Only the key identifier/lifecycle state is stored here. The private key stays in Apple's service.
@@ -8,7 +9,7 @@ public struct KeychainShadowKeyStorage: ShadowKeyStorage {
 
     private func query(_ scope: String) -> [String: Any] {
         [kSecClass as String: kSecClassGenericPassword,
-         kSecAttrService as String: "io.darkbloom.provider.app-attest.shadow.v1",
+         kSecAttrService as String: BuildEnvironment.current.keychainServicePrefix + ".provider.app-attest.shadow.v1",
          kSecAttrAccount as String: Data(SHA256.hash(data: Data(scope.utf8))).base64EncodedString()]
     }
 

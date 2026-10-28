@@ -17,6 +17,7 @@ import MLXLMCommon
 /// Events emitted for a single inference request.
 public enum GenerationEvent: Sendable {
     case chunk(String)
+    case logprobs([SSETokenLogprob])
     /// Terminal usage. `finishReason` is the OpenAI wire value ("stop",
     /// "length") when the engine reported one; nil maps to "stop"
     /// downstream. Threaded end-to-end (`CBv2FinishReason.length`) so a
@@ -124,6 +125,31 @@ public final class TokenizerHandle: @unchecked Sendable {
     ) {
         self.inner = inner
         self.toolConstraintContractVerified = toolConstraintContractVerified
+    }
+
+    /// The handle a served model's requests use: its tokenizer, and whether
+    /// the artifact's chat template is the pinned Gemma tool-constraint
+    /// contract. Single-Mac slots (`ProviderModelContainer`) and cluster
+    /// pairs (local API and coordinator path) build it the same way, so
+    /// `tool_choice` takes the same path on both.
+    static func serving(
+        _ inner: any MLXLMCommon.Tokenizer, modelType: String?, modelDirectory: URL
+    ) -> TokenizerHandle {
+        TokenizerHandle(inner, toolConstraintContractVerified:
+            Gemma4ToolConstraintContract.isVerified(modelType: modelType, modelDirectory: modelDirectory))
+    }
+
+    /// A cluster pair's handle: `serving`, over the tokenizer a single-Mac
+    /// slot of the model renders with. For GLM-5.3-Flash that is the
+    /// thinking-off tokenizer the single-Mac load installs
+    /// (`GLM5NextManagedLoad`), so `reasoning.enabled: false` and effort
+    /// `none` close the think block on the pair as they do on one Mac.
+    static func pairServing(
+        _ inner: any MLXLMCommon.Tokenizer, modelType: String?, modelDirectory: URL
+    ) throws -> TokenizerHandle {
+        let rendering: any MLXLMCommon.Tokenizer = GLM5NextPromptPolicy.applies(modelType: modelType)
+            ? try GLM5NextThinkingTokenizer(base: inner) : inner
+        return serving(rendering, modelType: modelType, modelDirectory: modelDirectory)
     }
 
     func gemmaVocabulary(

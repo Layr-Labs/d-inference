@@ -19,9 +19,19 @@ extension ProviderLoop {
     // MARK: - Main Run Loop
 
     public func run() async throws {
+        nativePairConfigurationClosed = true
+        if isClusterMember { try prepareClusterMemberControl() }
+        defer {
+            if isClusterMember {
+                memberConnectionID = nil
+                finishMemberRegistrationWait(ClusterMemberControlError.connectionEnded)
+            }
+        }
         startLifecycleMonitor()
         defer { lifecycleMonitorTask?.cancel(); lifecycleMonitorTask = nil; cancelAppAttestShadow(stopWorker: true); cancelAppAttestStallMonitor() }
-        if servingDrain.refusing { return }
+        // An add-on hold refuses inference but keeps this startup going; only
+        // a stop, update or other service change ends it before registration.
+        if servingDrain.refusingForServiceChange { return }
         // Retired-knob warnings are emitted once by `Start.run()`, before
         // the serving-mode split — see `RetiredKnobWarnings`. Doing it here
         // reached only the coordinator-serving modes.
@@ -30,7 +40,7 @@ extension ProviderLoop {
         logger.info("Hardware: \(loopConfig.hardware.chipName), \(loopConfig.hardware.memoryGb) GB RAM, \(loopConfig.hardware.gpuCores) GPU cores")
         logger.info("Models: \(loopConfig.models.count) advertised")
         logger.info("Coordinator: \(loopConfig.coordinatorURL)")
-        let usesHostServices = serveUsesHostServices
+        let usesHostServices = serveUsesHostServices && !isClusterMember
 
         // Maintain the entire encrypted SSD-cache root even when no model is
         // loaded. This is metadata/file-only work: no weights or KV arrays are
@@ -69,9 +79,14 @@ extension ProviderLoop {
             if usesHostServices { OOMDetector.clearMarker() }
         }
 
+        // A persisted add-on hold must close admission before the local
+        // endpoint or the startup preload could load a model.
+        startAddonHoldService()
+        defer { stopAddonHoldService() }
+
         // 1. Apply security hardening
         try await applySecurityHardening()
-        if Task.isCancelled || servingDrain.refusing {
+        if Task.isCancelled || servingDrain.refusingForServiceChange {
             guard await shutdownBeforeRegistration() else {
                 throw InferenceError.modelLoadFailed("Native MiMo startup shutdown remains pending or requires process restart")
             }
@@ -81,16 +96,19 @@ extension ProviderLoop {
         // MTP catalog metadata is process-local. Give it one short, owned
         // prewarm before either startup preloads or the unified local endpoint
         // can perform the first normal cold target load. This never downloads
-        // assistant bytes and fails open on timeout.
-        await prewarmSpecDecCatalog()
-        if Task.isCancelled || servingDrain.refusing {
+        // assistant bytes and fails open on timeout. A control-only member
+        // serves no solo target, so it fetches no catalog and upgrades nothing.
+        if !isClusterMember { await prewarmSpecDecCatalog() }
+        if Task.isCancelled || servingDrain.refusingForServiceChange {
             guard await shutdownBeforeRegistration() else {
                 throw InferenceError.modelLoadFailed("Native MiMo startup shutdown remains pending or requires process restart")
             }
             return
         }
-        startMTPUpgradeMonitor()
-        startModelRevisionMonitor()
+        if !isClusterMember {
+            startMTPUpgradeMonitor()
+            startModelRevisionMonitor()
+        }
 
         // Unified mode: also expose a local OpenAI endpoint off the same loaded
         // models. It starts after the bounded metadata prewarm, but still before
@@ -103,8 +121,10 @@ extension ProviderLoop {
 
         // Arm the loaded-models persistence now that this loop is actually
         // serving (test instances never flip this, so their unload paths
-        // cannot clobber the real ~/.darkbloom/loaded-models.json).
-        loadedModelsPersistenceEnabled = true
+        // cannot clobber the real ~/.darkbloom/loaded-models.json). A
+        // control-only member never persists solo residency.
+        loadedModelsPersistenceEnabled = !isClusterMember
+        if usesHostServices { verifiedWeightHashesFile = VerifiedWeightHashStore.path() }
 
         // 1.5 Startup preload + readiness gate (ProviderLoop+StartupPreload):
         // load the previously-served / configured model set BEFORE the
@@ -122,14 +142,20 @@ extension ProviderLoop {
         // it is cancelled once the gate returns and the capacity loop takes over.
         writeDaemonState()
         let preloadLivenessRefresh = startPreloadLivenessRefresh()
-        await runStartupPreloadGate()
+        // A control-only member loads no solo models at startup or ever.
+        if !isClusterMember { await runStartupPreloadGate() }
         preloadLivenessRefresh.cancel()
-        if Task.isCancelled || servingDrain.refusing {
+        if Task.isCancelled || servingDrain.refusingForServiceChange {
             guard await shutdownBeforeRegistration() else {
                 throw InferenceError.modelLoadFailed("Native MiMo startup shutdown remains pending or requires process restart")
             }
             return
         }
+
+        // Schedule loaded engines before opening the coordinator connection.
+        // This is nonblocking; foreground work can still preempt calibration.
+        await refreshModelCalibration()
+        await updateAggregateCapacity()
 
         // 2. Hash the exact mlx.metallib the live process will load. The same
         // digest is sent as reported runtime evidence and embedded in the
@@ -183,12 +209,16 @@ extension ProviderLoop {
             apnsDeviceToken: apnsDeviceToken,
             apnsEnvironment: apnsDeviceToken != nil ? "production" : nil,
             idleUnloadMins: loopConfig.config.backend.idleTimeoutMins,
-            autopilotInventory: loopConfig.autopilotInventory
+            autopilotInventory: loopConfig.autopilotInventory,
+            executionRole: loopConfig.executionRole,
+            // Only a member with an installed control claims a membership, and
+            // the claim is derived from that control's own policy bytes.
+            clusterMembership: try nativePairMemberControl?.installation.membership
         )
 
         // A termination received during the APNs/startup awaits can already
         // have drained a process that has no coordinator connection yet.
-        if Task.isCancelled || servingDrain.refusing {
+        if Task.isCancelled || servingDrain.refusingForServiceChange {
             guard await shutdownBeforeRegistration() else {
                 throw InferenceError.modelLoadFailed("Native MiMo startup shutdown remains pending or requires process restart")
             }
@@ -205,21 +235,28 @@ extension ProviderLoop {
                 try fixedKey.appAttestResumeResponse(to: challenge, clientNonce: nonce)
             }
         )
+        // Installed before the first connection: each connection attaches it
+        // only after TLS readiness and its nonce-bound acceptance (inside the
+        // client); an ordinary WebSocket acknowledgment never activates it.
+        if let nativePairMemberControl { try await coordinator.installNativePairMember(nativePairMemberControl) }
         coordinatorClient = coordinator
         // Seed the client with the current map: a model loaded before the
         // client existed (e.g. a local-endpoint request during startup) may
         // already have refreshed a hash, and registration must carry it.
         await coordinator.updateModelWeightHashes(liveModelHashes)
 
-        if Task.isCancelled || servingDrain.refusing {
+        if Task.isCancelled || servingDrain.refusingForServiceChange {
             await coordinator.shutdown()
             guard await shutdownBeforeRegistration() else {
                 throw InferenceError.modelLoadFailed("Native MiMo startup shutdown remains pending or requires process restart")
             }
             return
         }
+        // A registration wait that began before the client existed keeps
+        // the client's first reconnects inside it as well.
+        await coordinator.setMemberRegistrationDeadline(memberRegistrationWaitDeadline)
         let (events, sendFn) = await coordinator.start()
-        if Task.isCancelled || servingDrain.refusing {
+        if Task.isCancelled || servingDrain.refusingForServiceChange {
             guard await shutdownBeforeRegistration() else {
                 throw InferenceError.modelLoadFailed("Native MiMo startup shutdown remains pending or requires process restart")
             }
@@ -271,17 +308,25 @@ extension ProviderLoop {
         // live connection without threading a handle through the prefetch
         // callbacks. (coordinatorClient was already retained above, at creation.)
         self.outboundSend = send
-        self.prefetchCoordinator = makePrefetchCoordinator()
-
+        // A control-only member never downloads or swaps models autonomously.
+        if !isClusterMember { self.prefetchCoordinator = makePrefetchCoordinator() }
         // Start the idle-timeout monitor before processing events so that
         // a rogue model-load (e.g. during `attestation_challenge` priming)
         // followed by a long disconnect is still subject to the unload
         // timer.
-        startIdleMonitor()
-        startCapacityRefreshMonitor()
-        startAutoUpdateMonitor()
+        // A control-only member holds no solo residency to unload, keeps the
+        // empty capacity it published at preparation, never relaunches its
+        // binary unattended and verifies no Autopilot candidates.
+        if !isClusterMember {
+            startIdleMonitor()
+            startCapacityRefreshMonitor()
+            startAutoUpdateMonitor()
+            startAutopilotCandidateVerification()
+        }
 
         logger.info(.coordinatorClientStarted)
+
+        noteCoordinatorConnection(connected: false)
 
         // 5. The event reader outlives cancellation of the calling task.
         // Lifecycle shutdown closes admission and drains accepted work plus
@@ -290,6 +335,9 @@ extension ProviderLoop {
         let (workEvents, workContinuation) = AsyncStream<CoordinatorEvent>.makeStream()
         let workTask = Task {
             for await event in workEvents {
+                // Only order-free events overtake a request waiting for its
+                // model load (`ProviderLoop+WorkFIFO.swift`).
+                if !event.overtakesReleasedAdmissions { await awaitReleasedAdmissions() }
                 switch event {
                 case .drainAck(let id):
                     await coordinator.completeDrainAcknowledgement(id)
@@ -318,26 +366,31 @@ extension ProviderLoop {
                     let receivedAt,
                     let profile, let serviceReservationID, let promptWork
                 ):
-                    await handleInferenceRequest(
-                        requestId: requestId,
-                        ciphertext: ciphertext,
-                        senderPublicKey: senderPublicKey,
-                        cacheReceiptNonce: cacheReceiptNonce,
-                        authenticatedCacheScope: cacheScope,
-                        prefixCacheProtocol: prefixCacheProtocol,
-                        cacheReceiptBoundaryMode: cacheReceiptBoundaryMode,
-                        cacheRepeatedPrefixTokens: cacheRepeatedPrefixTokens,
-                        toolSchemaMetadataProtocol: toolSchemaMetadataProtocol,
-                        firstContentDeadline: firstContentDeadline,
-                        receivedAt: receivedAt,
-                        profile: profile,
-                        serviceReservationID: serviceReservationID,
-                        promptWork: promptWork,
-                        send: send
-                    )
+                    await admitInWorkFIFO(requestId: requestId) { gate in
+                        await self.handleInferenceRequest(
+                            requestId: requestId,
+                            ciphertext: ciphertext,
+                            senderPublicKey: senderPublicKey,
+                            cacheReceiptNonce: cacheReceiptNonce,
+                            authenticatedCacheScope: cacheScope,
+                            prefixCacheProtocol: prefixCacheProtocol,
+                            cacheReceiptBoundaryMode: cacheReceiptBoundaryMode,
+                            cacheRepeatedPrefixTokens: cacheRepeatedPrefixTokens,
+                            toolSchemaMetadataProtocol: toolSchemaMetadataProtocol,
+                            firstContentDeadline: firstContentDeadline,
+                            receivedAt: receivedAt,
+                            profile: profile,
+                            serviceReservationID: serviceReservationID,
+                            promptWork: promptWork,
+                            send: send,
+                            workFIFOGate: gate
+                        )
+                    }
 
                 case .cancel(let requestId):
-                    await handleCancellation(requestId: requestId)
+                    if !deferCancelForReleasedAdmission(requestId) {
+                        await handleCancellation(requestId: requestId)
+                    }
 
                 case .attestationChallenge(let nonce, let timestamp):
                     await handleAttestationChallenge(
@@ -380,6 +433,8 @@ extension ProviderLoop {
 
                 }
             }
+            // The consumer ends only after every admission it started.
+            await awaitReleasedAdmissions()
         }
         let eventTask = Task {
             // Model admission, hashing and cancellation may suspend for longer
@@ -388,6 +443,16 @@ extension ProviderLoop {
             // All fast handlers are synchronous on this actor; connection
             // invalidation therefore precedes the next session's challenge.
             for await event in events {
+                // Member-mode events are consumed first: ordinary dispatch
+                // paths never see them, and direct work handlers refuse
+                // member mode independently.
+                if consumeClusterMemberEvent(event, send: send) { continue }
+                if memberControlRequiresStop {
+                    // The accepted control connection ended or lost trust.
+                    // End the loop instead of reconnecting under a new nonce.
+                    await coordinator.shutdown()
+                    break
+                }
                 switch event {
                 case .appAttestShadow(let payload, let reply):
                     handleAppAttestShadow(payload, reply: reply)
@@ -397,8 +462,13 @@ extension ProviderLoop {
                                       authorization: authorization)
                     continue
                 case .connected, .disconnected:
+                    noteCoordinatorConnection(connected: event.isConnected)
                     clearConnectionAuthorization()
                     cancelAppAttestShadow()
+                case .inferenceRequest:
+                    // Here, not in the work reader: on arrival, in order with
+                    // the trust statuses `ServingReadiness` compares it to.
+                    noteCoordinatorRequest()
                 default:
                     break
                 }
@@ -406,6 +476,7 @@ extension ProviderLoop {
                 // disconnect cleanup before the next connection's work.
                 workContinuation.yield(event)
             }
+            noteCoordinatorConnection(connected: false)
             clearConnectionAuthorization()
             cancelAppAttestShadow()
             workContinuation.finish()
@@ -414,12 +485,35 @@ extension ProviderLoop {
         await withTaskCancellationHandler {
             await eventTask.value
         } onCancel: {
-            Task { _ = await self.drainAndShutdown(timeoutSeconds: ProviderTermination.timeoutSeconds) }
+            Task {
+                if await self.drainAndShutdown(timeoutSeconds: ProviderTermination.timeoutSeconds) { return }
+                await self.shutdownStoppedClusterMember()
+            }
         }
 
         clearConnectionAuthorization()
         logger.info(.coordinatorEventStreamEnded)
         isShuttingDown = true
+        if isClusterMember {
+            // No grant or key is retained across a control connection boundary.
+            memberConnectionID = nil
+            state.refusingNewWork = true
+            // A refused or unanswered negotiation ended the client: a waiting
+            // start reports that, not a plain connection end.
+            let roleRefused = await coordinator.memberRoleFailure
+            let roleUnsupported = await coordinator.memberRoleUnsupported
+            let roleError: ClusterMemberControlError = roleUnsupported ? .roleUnsupported : .negotiationFailed
+            finishMemberRegistrationWait(roleRefused ? roleError : ClusterMemberControlError.connectionEnded)
+            // The pair slot's engine shuts its owner down, so both ranks end
+            // their work and each member's owner can release its device.
+            await retireClusterPairSlot(reason: "member stopping")
+            await coordinator.shutdown()
+            if await coordinator.memberRoleFailure {
+                throw await coordinator.memberRoleUnsupported ? ClusterMemberControlError.roleUnsupported
+                                                               : ClusterMemberControlError.negotiationFailed
+            }
+            return
+        }
         closeNativeMiMoLifecycle() // close native generation before teardown awaits
         await cancelModelSwitchAndWait()
         // Quote path mirror (routing v2): a shutting-down provider quotes
@@ -457,6 +551,10 @@ extension ProviderLoop {
         if let prefetchCoordinator {
             await prefetchCoordinator.shutdown(timeout: Self.preloadShutdownTimeout)
         }
+        if let autopilotDownloadCoordinator {
+            await autopilotDownloadCoordinator.shutdown(timeout: Self.preloadShutdownTimeout)
+        }
+        autopilotCandidateVerification?.cancel()
         // Cancel BOTH preload flavors: coordinator-driven load_model tasks and
         // any still-running startup preload driver (it outlives the readiness
         // gate when the timeout passed).
@@ -503,7 +601,7 @@ extension ProviderLoop {
 
     private func applySecurityHardening() async throws {
         #if !DEBUG
-        let posture = collectSecurityPosture()
+        let posture = collectSecurityPosture(coordinatorURL: loopConfig.coordinatorURL)
         guard let binaryHash = posture.binaryHash, !binaryHash.isEmpty else {
             logger.error("Security hardening failed: provider binary hash unavailable")
             throw ProviderLoopError.binaryHashUnavailable

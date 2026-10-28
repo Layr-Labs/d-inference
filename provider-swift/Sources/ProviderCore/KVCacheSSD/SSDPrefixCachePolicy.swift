@@ -116,10 +116,14 @@ enum SSDPrefixCachePolicy {
     static func maxStageBytes(
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> Int {
+        configuredMaxStageBytes(environment: environment) ?? defaultMaxStageBytes
+    }
+
+    private static func configuredMaxStageBytes(environment: [String: String]) -> Int? {
         guard let raw = environment[maxStageMBFlag],
             let mb = Int(raw.trimmingCharacters(in: .whitespaces)), mb > 0,
             mb < Int.max / 1_048_576
-        else { return defaultMaxStageBytes }
+        else { return nil }
         return mb * 1_048_576
     }
 
@@ -133,10 +137,44 @@ enum SSDPrefixCachePolicy {
     static func maxStageMillis(
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> Int {
+        configuredMaxStageMillis(environment: environment) ?? defaultMaxStageMillis
+    }
+
+    private static func configuredMaxStageMillis(environment: [String: String]) -> Int? {
         guard let raw = environment[maxStageMillisFlag],
             let ms = Int(raw.trimmingCharacters(in: .whitespaces)), ms > 0
-        else { return defaultMaxStageMillis }
+        else { return nil }
         return ms
+    }
+
+    /// A complete checkpoint restores a whole prompt prefix from one file, so
+    /// the byte cap is a token cap: on the 4,096-token prefill grid, Qwen 3.8
+    /// with MTP restores at most 8,192 tokens at 1 GiB and about 94,000 at
+    /// 7 GiB. Deeper captures and restores hold larger transient ledger
+    /// reservations, so only large-memory Macs default to the deeper cap;
+    /// explicit settings still win. A full-size file estimates about 5 s at
+    /// the conservative 1.5 GB/s rate, so the byte cap, not the 15 s time
+    /// cap, binds. Attention block caches keep the general defaults.
+    static let largeMemoryThresholdBytes: UInt64 = 48 << 30
+    static let largeMemoryCompleteCheckpointStageBytes = 7168 * 1_048_576  // 7 GiB
+    static let largeMemoryCompleteCheckpointStageMillis = 15_000
+
+    static func completeCheckpointMaxStageBytes(
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        physicalMemoryBytes: UInt64 = ProcessInfo.processInfo.physicalMemory
+    ) -> Int {
+        configuredMaxStageBytes(environment: environment)
+            ?? (physicalMemoryBytes >= largeMemoryThresholdBytes
+                ? largeMemoryCompleteCheckpointStageBytes : defaultMaxStageBytes)
+    }
+
+    static func completeCheckpointMaxStageMillis(
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        physicalMemoryBytes: UInt64 = ProcessInfo.processInfo.physicalMemory
+    ) -> Int {
+        configuredMaxStageMillis(environment: environment)
+            ?? (physicalMemoryBytes >= largeMemoryThresholdBytes
+                ? largeMemoryCompleteCheckpointStageMillis : defaultMaxStageMillis)
     }
 
     /// Conservative end-to-end read+decrypt planning rate (read and decrypt
@@ -181,6 +219,12 @@ enum SSDPrefixCachePolicy {
     /// reader deletes bad files — and skipping the flush saves ~2–15 ms
     /// per block write plus real flash wear.
     static let strictFsyncFlag = "DARKBLOOM_PREFIX_CACHE_SSD_STRICT_FSYNC"
+    /// Delta checkpoints (`SSDCheckpointDeltaLayout`); a negative value disables them.
+    static let incrementalCheckpointsFlag = "DARKBLOOM_PREFIX_CACHE_SSD_INCREMENTAL_CHECKPOINTS"
+
+    static func incrementalCheckpoints(environment: [String: String] = ProcessInfo.processInfo.environment) -> Bool {
+        !["0", "false", "no", "off"].contains(environment[incrementalCheckpointsFlag]?.trimmingCharacters(in: .whitespaces).lowercased())
+    }
 
     static func strictFsync(
         environment: [String: String] = ProcessInfo.processInfo.environment
@@ -194,8 +238,17 @@ enum SSDPrefixCachePolicy {
 
     /// Max donation jobs buffered behind the serial write-behind consumer
     /// (the CheckpointCapturePipeline in-flight cap pattern). Overflow
-    /// DROPS the donation — the engine is never back-pressured.
-    static let writeQueueMaxJobs = 2
+    /// DROPS the donation — the engine is never back-pressured. The
+    /// complete-checkpoint store applies the same bound to its unsettled
+    /// jobs, the one being written included. The count is not the memory
+    /// bound: attention jobs must also fit the queued-byte cap below, and a
+    /// queued complete checkpoint holds only donor state and I/O scratch
+    /// that stay charged to the admission or process memory ledger. The
+    /// engine ends a complete-checkpoint donor's stream and releases its
+    /// state only after all its checkpoints settle, so under write backlog a
+    /// deeper queue trades stream-end latency and longer-held donor memory
+    /// for fewer dropped checkpoints.
+    static let writeQueueMaxJobs = 6
     /// Floor on host bytes queued across buffered donation jobs. The
     /// effective cap is `max(this, maxStageBytes + writeQueueSlackBytes)`
     /// (SSDPrefixCache init) so ONE full max-size donation — a ~600 MB

@@ -20,13 +20,17 @@ ACTION = ROOT / ".github/actions/provider-ci-build/action.yml"
 BUILD_ACTION = "./.github/actions/provider-ci-build"
 PROVIDER_TEST_COMMAND = ('python3 ../scripts/run-provider-test-watchdog.py \\\n'
                          '  --output-dir "$RUNNER_TEMP/provider-test-diagnostics" \\\n'
-                         '  --diagnostic-after-seconds 480 --timeout-seconds 900 \\\n'
+                         '  --diagnostic-after-seconds 900 --timeout-seconds 1800 \\\n'
                          '  -- ../scripts/run-provider-tests.sh')
 READY = "${{ !cancelled() && steps.provider-ci-build.outcome == 'success' }}"
 MIMO_READY = "${{ !cancelled() && steps.provider-ci-build.outcome == 'success' && steps.mimo-fixtures.outcome == 'success' }}"
 PROVIDER_MIMO_READY = "${{ !cancelled() && steps.provider-ci-build.outcome == 'success' && steps.mimo-prompt-fixtures.outcome == 'success' && steps.mimo-fixtures.outcome == 'success' }}"
 MIMO_PREPARE = ('python3 scripts/prepare-mimo-prompt-fixtures.py '
                 '--output "$RUNNER_TEMP/mimo-prompt-fixtures" --github-env "$GITHUB_ENV"')
+MIMO_HTTP_PREPARE = ('python3 scripts/test-prepare-mimo-image-http-fixtures.py\n'
+                     + MIMO_PREPARE + '\n'
+                     + 'python3 scripts/prepare-mimo-image-http-fixtures.py '
+                     '--output "$RUNNER_TEMP/mimo-image-http-fixtures" --github-env "$GITHUB_ENV"')
 MIMO_PROVIDER_PREPARE = ('python3 scripts/prepare-mimo-provider-fixtures.py '
                          '--output "$RUNNER_TEMP/mimo-provider-fixtures" --github-env "$GITHUB_ENV"\n'
                          'python3 scripts/prepare-mimo-provider-fixtures.py '
@@ -176,8 +180,14 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         for job_id, lane in LANES.items():
             with self.subTest(lane=lane):
                 job = self.jobs[job_id]
-                self.assertIn("    runs-on: blacksmith-12vcpu-macos-27", job)
-                self.assertIn("    needs: changes\n", job)
+                # A Darkbloom macOS sandbox when granted, otherwise the same
+                # dedicated Blacksmith runner; requested only when the lane runs.
+                self.assertIn("    runs-on: ${{ fromJSON(needs.route.outputs.routes)['%s'] }}\n" % job_id, job)
+                self.assertIn("        %s macos_arm64 blacksmith-12vcpu-macos-27 "
+                              "${{ needs.changes.outputs.provider == 'true' && 1 || 0 }}\n" % job_id,
+                              self.jobs["route"])
+                self.assertIn("    timeout-minutes: 60\n", job)
+                self.assertIn("    needs: [changes, route]\n", job)
                 self.assertIn("    if: ${{ needs.changes.outputs.provider == 'true' }}\n", job)
                 self.assertNotRegex(job, re.compile(r"^    strategy:", re.MULTILINE), msg=job)
                 self.assertNotIn("continue-on-error:", job)
@@ -264,9 +274,10 @@ class ProviderCIWorkflowTests(unittest.TestCase):
             "python3 scripts/test-qwen4-packaged-resources.py",
             "python3 scripts/test-stage-swiftpm-resource-bundles.py",
             "python3 scripts/test-profile-inventory-auth.py",
-            MIMO_PREPARE,
+            MIMO_HTTP_PREPARE,
             MIMO_PROVIDER_PREPARE,
             PROVIDER_TEST_COMMAND,
+            "python3 scripts/test-desktop-api.py provider-swift/.build/debug/darkbloom",
             *MIMO_NATIVE_COMMANDS.values(),
             'python3 scripts/prepare-mimo-audio-fixtures.py --cache "$RUNNER_TEMP/mimo-audio-source" --output "$RUNNER_TEMP/mimo-audio-fixtures" --github-env "$GITHUB_ENV"',
             "../scripts/run-nested-suite.sh testNativeAudioRelease --no-parallel",
@@ -277,11 +288,14 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         self.assertEqual(runs, list(expected))
         test_step = next(step for step in steps if run_command(step) == PROVIDER_TEST_COMMAND)
         self.assertEqual(field(test_step, "id"), "provider-unit-tests")
-        self.assertEqual(field(test_step, "timeout-minutes"), "20")
+        self.assertEqual(field(test_step, "timeout-minutes"), "35")
 
         self.assertEqual(field(test_step, "working-directory"), "provider-swift")
         self.assertEqual(field(test_step, "if"), PROVIDER_MIMO_READY)
         self.assertEqual(field(test_step, "MIMO_V26_PROVIDER_LIFETIME_METADATA_TESTS", indent=10), "'1'")
+        desktop = next(step for step in steps if "scripts/test-desktop-api.py" in (run_command(step) or ""))
+        self.assertEqual(field(desktop, "if"), "${{ !cancelled() && steps.provider-ci-build.outcome == 'success' }}")
+        self.assertEqual(field(desktop, "timeout-minutes"), "3")
         installer = next(step for step in steps if run_command(step) == "./scripts/test-install-atomic.sh")
         self.assertEqual(field(installer, "if"), "${{ !cancelled() }}")
         self.assertEqual(field(installer, "timeout-minutes"), "2")
@@ -476,7 +490,8 @@ class ProviderCIWorkflowTests(unittest.TestCase):
     def test_fixture_prerequisites_are_fail_closed_in_provider_and_parity(self):
         for job_id in ("test-provider", "test-provider-parity"):
             steps = step_blocks(self.jobs[job_id])
-            fixtures = [step for step in steps if run_command(step) == MIMO_PREPARE]
+            expected_prepare = MIMO_HTTP_PREPARE if job_id == "test-provider" else MIMO_PREPARE
+            fixtures = [step for step in steps if run_command(step) == expected_prepare]
             self.assertEqual(len(fixtures), 1)
             expected_id = "mimo-prompt-fixtures" if job_id == "test-provider" else "mimo-fixtures"
             self.assertEqual(field(fixtures[0], "id"), expected_id)

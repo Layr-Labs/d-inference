@@ -27,7 +27,7 @@ extension Unenroll {
         }
         if force { return .fullExit }
         guard isInteractive else {
-            throw ValidationError("Run darkbloom unenroll in an interactive terminal to choose, or use --keep-serving for App Attest migration. --force fully exits and confirms local-data cleanup.")
+            throw ValidationError("Run \(BuildEnvironment.current.cliName) unenroll in an interactive terminal to choose, or use --keep-serving for App Attest migration. --force fully exits and confirms local-data cleanup.")
         }
 
         writeLine("Do you want to fully exit Darkbloom or just remove MDM and use App Attest?")
@@ -82,7 +82,7 @@ extension Unenroll {
         // provider may still be running: never purge identity beneath it, nor
         // signal an arbitrary PID from a local file.
         if let identity = DaemonStateFile.read()?.processIdentity, identity.isCurrent() {
-            throw ValidationError("A provider process is still running or shutting down. Stop any foreground darkbloom process, then run unenroll again. Local data has not been removed.")
+            throw ValidationError("A provider process is still running or shutting down. Stop any foreground \(BuildEnvironment.current.cliName) process, then run unenroll again. Local data has not been removed.")
         }
     }
 }

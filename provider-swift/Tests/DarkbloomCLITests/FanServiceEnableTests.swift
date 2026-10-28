@@ -69,6 +69,35 @@ struct FanServiceEnableTests {
         #expect(fixture.launchd.launchctlVerbs == ["print", "bootout", "enable", "bootstrap", "kickstart"])
     }
 
+    @Test("enable refuses to replace a newer running helper with this build's older one")
+    func enableRefusesHelperDowngrade() throws {
+        let fixture = try FanServiceFixture(loaded: true)
+        defer { fixture.remove() }
+        let newer = String((Int(FanIPC.helperVersion) ?? 0) + 1)
+        fixture.helper.answer(fixture.matchingStatus().withHelperVersion(newer))
+        let installedBefore = try? Data(contentsOf: fixture.paths.helper)
+
+        let error = fanManagerError { _ = try fixture.manager().enable(policy: .defaults) }
+
+        guard case .newerHelperInstalled(let installed) = error else {
+            Issue.record("expected newerHelperInstalled, got \(String(describing: error))")
+            return
+        }
+        #expect(installed == newer)
+        #expect((try? Data(contentsOf: fixture.paths.helper)) == installedBefore)
+        #expect(!fixture.launchd.launchctlVerbs.contains("bootout"))
+    }
+
+    @Test("an older helper is reported with the command that updates it")
+    func outdatedHelperNotice() {
+        #expect(Fan.outdatedHelperNotice(installedVersion: FanIPC.helperVersion) == nil)
+        #expect(Fan.outdatedHelperNotice(installedVersion: String((Int(FanIPC.helperVersion) ?? 0) + 1)) == nil)
+        #expect(Fan.outdatedHelperNotice(installedVersion: "not-a-number") == nil)
+        let notice = Fan.outdatedHelperNotice(installedVersion: "1")
+        #expect(notice?.contains("fan enable") == true)
+        #expect(FanIPC.compareHelperVersion("1") == .orderedAscending)
+    }
+
     @Test("enable requires root")
     func enableRequiresRoot() throws {
         let fixture = try FanServiceFixture()
@@ -249,7 +278,8 @@ struct FanServiceEnableTests {
             return
         }
         #expect(detail == "helper started but did not answer status")
-        #expect(fixture.helper.statusRequests == 30)
+        // One version check of a running helper, then 30 polls.
+        #expect(fixture.helper.statusRequests == 31)
         #expect(fixture.launchd.labelEnabled == false)
     }
 
@@ -354,6 +384,15 @@ struct FanServiceEnableTests {
 }
 
 extension FanServiceStatus {
+    func withHelperVersion(_ version: String) -> FanServiceStatus {
+        FanServiceStatus(
+            helperVersion: version, protocolVersion: protocolVersion, enabled: enabled,
+            configuredUID: configuredUID, providerActive: providerActive, mode: mode, chip: chip,
+            gpuSensorKeys: gpuSensorKeys, gpuTemperatureC: gpuTemperatureC,
+            triggerTemperatureC: triggerTemperatureC, releaseTemperatureC: releaseTemperatureC,
+            speedPercent: speedPercent, fans: fans, lastError: lastError, updatedAt: updatedAt)
+    }
+
     func withUpdatedAt(_ date: Date) -> FanServiceStatus {
         FanServiceStatus(
             helperVersion: helperVersion,

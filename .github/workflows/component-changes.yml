@@ -5,8 +5,6 @@ on:
     outputs:
       provider:
         value: ${{ jobs.changes.outputs.provider }}
-      console:
-        value: ${{ jobs.changes.outputs.console }}
 
 permissions:
   contents: read
@@ -14,10 +12,11 @@ permissions:
 jobs:
   changes:
     name: Detect Component Changes
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    # GitHub-hosted: runner routing waits for this job, so it never queues on
+    # a routed fleet.
+    runs-on: ubuntu-24.04
     outputs:
       provider: ${{ steps.paths.outputs.provider }}
-      console: ${{ steps.paths.outputs.console }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:

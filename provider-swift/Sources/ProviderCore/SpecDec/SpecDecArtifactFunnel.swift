@@ -157,6 +157,12 @@ actor SpecDecArtifactFunnel {
         }
     }
 
+    /// The cached catalog entry only; never network I/O.
+    func cachedCatalogModel(id: String) async -> CatalogModel? {
+        guard !isShutdown else { return nil }
+        return await catalog?.cachedModel(id: id)
+    }
+
     func prepare(_ request: Request) async -> SpecDecPreparation {
         guard !isShutdown else {
             return .init(
@@ -187,8 +193,11 @@ actor SpecDecArtifactFunnel {
                 return .init(artifact: artifact, status: .candidate(artifact))
             }
         }
+        let isBonsai9B = Bonsai9BModelPolicy.matches(
+            modelId: request.modelId, modelType: request.modelType)
         guard Self.isGemma4Target(modelType: request.modelType)
             || Self.isInlineTarget(modelType: request.modelType)
+            || isBonsai9B
         else {
             return .init(artifact: nil, status: .disabled(.targetUnsupported, configured: true))
         }

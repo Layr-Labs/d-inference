@@ -48,7 +48,7 @@ extension Start {
         guard let answer = readLine()?.trimmingCharacters(in: .whitespaces) else { return }
         let declined = ["n", "no"].contains(answer.lowercased())
         if declined {
-            print("  Skipped. You can link later with: darkbloom login")
+            print("  Skipped. You can link later with: \(BuildEnvironment.current.cliName) login")
             return
         }
 
@@ -62,7 +62,7 @@ extension Start {
         } catch {
             print()
             print("  Could not link account: \(error)")
-            print("  Continuing without account link. Run `darkbloom login` later.")
+            print("  Continuing without account link. Run `\(BuildEnvironment.current.cliName) login` later.")
             print()
         }
     }

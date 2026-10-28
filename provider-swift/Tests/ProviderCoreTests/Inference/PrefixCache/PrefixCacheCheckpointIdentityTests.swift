@@ -8,13 +8,14 @@ import Testing
 
 @Suite("Complete checkpoint identity")
 struct PrefixCacheCheckpointIdentityTests {
-    @Test("Normalization v8 and renderer v4 separate prior memory and disk cache identities")
+    @Test("Normalization v9 and renderer v4 separate prior memory and disk cache identities")
     func normalizationVersionFence() throws {
         struct Vector: Decodable {
             let artifacts: [ManifestFile]
             let expected_prompt_contract_id: String
             let legacy_v6_prompt_contract_id: String
             let legacy_v7_prompt_contract_id: String
+            let legacy_v8_prompt_contract_id: String
         }
         struct Corpus: Decodable { let vectors: [Vector] }
         var root = URL(fileURLWithPath: #filePath)
@@ -25,7 +26,8 @@ struct PrefixCacheCheckpointIdentityTests {
         for vector in corpus.vectors {
             let current = try PromptContractIdentity.compute(files: vector.artifacts)
             #expect(current == vector.expected_prompt_contract_id)
-            for old in [vector.legacy_v6_prompt_contract_id, vector.legacy_v7_prompt_contract_id] {
+            for old in [vector.legacy_v6_prompt_contract_id, vector.legacy_v7_prompt_contract_id,
+                vector.legacy_v8_prompt_contract_id] {
                 #expect(current != old)
                 let oldIdentity = try #require(identity(prompt: old))
                 let newIdentity = try #require(identity(prompt: current))

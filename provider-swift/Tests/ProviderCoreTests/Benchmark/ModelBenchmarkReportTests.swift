@@ -75,11 +75,21 @@ struct ModelBenchmarkReportTests {
             gemmaOptimizations: BenchmarkGemmaOptimizations(
                 settings: GemmaOptimizationSettings(), getenv: { _ in nil }),
             kvBackend: BenchmarkKVBackend(selection: "auto", resolved: ["contiguous"]),
-            soloPrefillStripeTokens: nil, samples: [sample])
+            soloPrefillStripeTokens: nil, prefillChunkTokens: 2048, maxBatchedTokensPerStep: 4096,
+            samples: [sample])
         let json = try report.jsonString()
         let decoded = try JSONDecoder().decode(
             SchedulerPrefillBenchmarkReport.self, from: Data(json.utf8))
-        #expect(decoded.schemaVersion == 4)
+        #expect(decoded.schemaVersion == 5)
+        #expect(decoded.prefillChunkTokens == 2048 && decoded.maxBatchedTokensPerStep == 4096)
+        // Schema 4 receipts predate the recorded geometry and still decode.
+        var legacy = try #require(JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any])
+        legacy["schemaVersion"] = 4
+        legacy.removeValue(forKey: "prefillChunkTokens")
+        legacy.removeValue(forKey: "maxBatchedTokensPerStep")
+        let older = try JSONDecoder().decode(
+            SchedulerPrefillBenchmarkReport.self, from: JSONSerialization.data(withJSONObject: legacy))
+        #expect(older.prefillChunkTokens == nil && older.maxBatchedTokensPerStep == nil)
         #expect(decoded.strategies == ["cbv2"])
         #expect(decoded.samples.first?.resolvedKVBackend == "contiguous")
         #expect(decoded.samples.first?.peakMemoryBytes == 2048)

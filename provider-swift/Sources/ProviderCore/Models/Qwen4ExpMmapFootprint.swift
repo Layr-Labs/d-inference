@@ -110,12 +110,12 @@ enum Qwen4ExpMmapFootprint {
         return Header(tensors: object, payloadBytes: payloadBytes, fileBytes: fileBytes)
     }
 
-    static func boundedIndex(_ url: URL) -> Data? {
+    static func boundedIndex(_ url: URL, maximumBytes: Int = maximumIndexBytes) -> Data? {
         guard let handle = regularHandle(url) else { return nil }
         defer { try? handle.close() }
-        guard let size = try? handle.seekToEnd(), size > 0, size <= maximumIndexBytes,
+        guard let size = try? handle.seekToEnd(), size > 0, size <= maximumBytes,
             (try? handle.seek(toOffset: 0)) != nil,
-            let data = try? handle.read(upToCount: maximumIndexBytes + 1), data.count <= maximumIndexBytes
+            let data = try? handle.read(upToCount: maximumBytes + 1), data.count <= maximumBytes
         else { return nil }
         return data
     }

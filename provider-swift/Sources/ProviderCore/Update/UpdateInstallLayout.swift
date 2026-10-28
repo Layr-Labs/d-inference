@@ -22,7 +22,7 @@ extension UpdateRecoveryStore {
 
         let copied = artifactPaths(root: nextRoot)
         try fm.copyItem(
-            at: installRoot.appendingPathComponent("Darkbloom.app"),
+            at: installRoot.appendingPathComponent(identity.appBundleName),
             to: copied.bundle)
 
         try verifySignature(bundle: copied.bundle, binary: copied.binary)
@@ -39,10 +39,10 @@ extension UpdateRecoveryStore {
         let manifest = VerifiedPredecessor(
             release: release,
             layout: .app,
-            bundlePath: "predecessor/Darkbloom.app",
-            binaryPath: "predecessor/Darkbloom.app/Contents/MacOS/darkbloom",
-            enclavePath: "predecessor/Darkbloom.app/Contents/MacOS/darkbloom-enclave",
-            metallibPath: "predecessor/Darkbloom.app/Contents/MacOS/mlx.metallib",
+            bundlePath: "predecessor/\(identity.appBundleName)",
+            binaryPath: "predecessor/\(identity.appBundleName)/Contents/MacOS/\(identity.cliName)",
+            enclavePath: "predecessor/\(identity.appBundleName)/Contents/MacOS/\(identity.enclaveName)",
+            metallibPath: "predecessor/\(identity.appBundleName)/Contents/MacOS/mlx.metallib",
             verifiedAt: now
         )
         try UpdateAtomicFilesystem.writeJSON(
@@ -91,18 +91,18 @@ extension UpdateRecoveryStore {
     /// Point the canonical `bin/` entries at the installed `Darkbloom.app`.
     func ensureCanonicalLinks() throws {
         guard fm.fileExists(
-            atPath: installRoot.appendingPathComponent("Darkbloom.app").path
+            atPath: installRoot.appendingPathComponent(identity.appBundleName).path
         ) else {
             throw StoreError.filesystem(
-                "canonical links requested but Darkbloom.app is missing")
+                "canonical links requested but \(identity.appBundleName) is missing")
         }
         let bin = installRoot.appendingPathComponent("bin")
         try fm.createDirectory(at: bin, withIntermediateDirectories: true)
-        let appBin = "../Darkbloom.app/Contents/MacOS"
+        let appBin = "../\(identity.appBundleName)/Contents/MacOS"
         for (name, target) in [
             ("mlx.metallib", "\(appBin)/mlx.metallib"),
-            ("darkbloom-enclave", "\(appBin)/darkbloom-enclave"),
-            ("darkbloom", "\(appBin)/darkbloom"),
+            (identity.enclaveName, "\(appBin)/\(identity.enclaveName)"),
+            (identity.cliName, "\(appBin)/\(identity.cliName)"),
         ] {
             try UpdateAtomicFilesystem.replaceSymlink(
                 at: bin.appendingPathComponent(name),
@@ -223,15 +223,16 @@ extension UpdateRecoveryStore {
         guard fm.fileExists(atPath: sourceApp.path) else {
             throw StoreError.filesystem("staged app bundle is missing")
         }
-        let liveApp = installRoot.appendingPathComponent("Darkbloom.app")
+        let liveApp = installRoot.appendingPathComponent(identity.appBundleName)
         try UpdateAtomicFilesystem.replace(sourceApp, at: liveApp)
     }
 
     /// The live install must be the signed `Darkbloom.app` layout before it
     /// can be snapshotted as rollback material.
     private func requireLiveApp() throws {
-        let app = installRoot.appendingPathComponent("Darkbloom.app/Contents/MacOS")
-        guard fm.fileExists(atPath: app.appendingPathComponent("darkbloom").path),
+        let app = installRoot.appendingPathComponent(identity.appBundleName)
+            .appendingPathComponent("Contents/MacOS")
+        guard fm.fileExists(atPath: app.appendingPathComponent(identity.cliName).path),
               fm.fileExists(atPath: app.appendingPathComponent("mlx.metallib").path)
         else {
             throw StoreError.missingLiveInstall
@@ -241,19 +242,22 @@ extension UpdateRecoveryStore {
     private func artifactPaths(
         root: URL
     ) -> (bundle: URL, binary: URL, enclave: URL, metallib: URL) {
-        let bundle = root.appendingPathComponent("Darkbloom.app")
+        let bundle = root.appendingPathComponent(identity.appBundleName)
         let app = bundle.appendingPathComponent("Contents/MacOS")
         return (
             bundle,
-            app.appendingPathComponent("darkbloom"),
-            app.appendingPathComponent("darkbloom-enclave"),
+            app.appendingPathComponent(identity.cliName),
+            app.appendingPathComponent(identity.enclaveName),
             app.appendingPathComponent("mlx.metallib")
         )
     }
 
+    /// Names of the app and its executables for this build.
+    private var identity: BuildEnvironment { BuildEnvironment.current }
+
     private func stateInstallDateFallback(_ now: Double) -> Double {
         guard let attributes = try? fm.attributesOfItem(
-            atPath: installRoot.appendingPathComponent("Darkbloom.app").path
+            atPath: installRoot.appendingPathComponent(identity.appBundleName).path
         ), let created = attributes[.creationDate] as? Date
         else {
             return now

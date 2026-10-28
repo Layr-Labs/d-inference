@@ -29,7 +29,7 @@ struct Start: AsyncParsableCommand {
     @Flag(help: "Serve all local models (skips interactive picker).")
     var all = false
 
-    @Option(help: "Minutes without requests before a model is unloaded (0 = keep loaded). Saved to your config; the interactive picker asks this too. See `darkbloom idle`.")
+    @Option(help: "Minutes without requests before a model is unloaded (0 = keep loaded). Saved to your config; the interactive picker asks this too. See `\(BuildEnvironment.current.cliName) idle`.")
     var idleTimeout: UInt64?
 
     @Flag(help: "Interactively configure weekly availability and preloading before starting.")
@@ -45,13 +45,60 @@ struct Start: AsyncParsableCommand {
     var localEndpoint = false
 
     @Option(help: "Local server port (used with --local / --local-endpoint).")
-    var port: UInt16 = 8000
+    var port: UInt16 = BuildEnvironment.current.defaultLocalPort
 
     @Option(help: "Bind address for --local / --local-endpoint (default 127.0.0.1; a tailnet IP exposes it to same-account devices, still API-key gated).")
     var bind: String = "127.0.0.1"
 
     @Flag(help: "Disable local API-key auth for --local / --local-endpoint (NOT recommended; trusted/airgapped use only).")
     var noAuth = false
+
+    @Flag(help: "Register a foreground control-only cluster member; requires a saved cluster and never serves solo inference.")
+    var clusterMember = false
+
+    @Flag(help: "Use the saved distributed cluster for local serving and register its leader as a control-only member (requires --local).")
+    var distributed = false
+
+    @Flag(name: .customLong("no-coordinator"),
+          help: "With --distributed: serve the saved cluster on the local API only and never contact the coordinator (`darkbloom cluster local` starts it this way).")
+    var noCoordinator = false
+
+    @Flag(help: "With --cluster-member: install the member as an always-on background service (starts at login, waits for the cluster link, restarts with backoff, coordinated updates).")
+    var alwaysOn = false
+
+    /// launchd's entry point for `--always-on` (and usable in a terminal):
+    /// run the member under the cluster-member supervisor in this process.
+    @Flag(help: .hidden)
+    var supervise = false
+
+    /// Both cluster modes are control-only: they take the saved cluster's
+    /// model and lifecycle, so every solo serving option is refused at parse.
+    mutating func validate() throws {
+        let soloOverrides = !model.isEmpty || all || idleTimeout != nil || schedule || autopilot != nil
+        if clusterMember {
+            guard !distributed, !local, !localEndpoint, !soloOverrides else {
+                throw ValidationError("--cluster-member cannot be combined with solo serving or local distributed mode.")
+            }
+            guard !(alwaysOn && supervise) else {
+                throw ValidationError("--always-on installs the service that runs --supervise; use one of them.")
+            }
+        } else if alwaysOn || supervise {
+            throw ValidationError("--always-on and --supervise apply to --cluster-member only.")
+        }
+        if noCoordinator {
+            guard distributed else {
+                throw ValidationError("--no-coordinator applies to --distributed only (plain --local never contacts the coordinator).")
+            }
+            guard coordinatorURL == nil else { throw ValidationError("--no-coordinator never contacts a coordinator: drop --coordinator-url.") }
+        }
+        guard distributed else { return }
+        guard local, !foreground, !localEndpoint else {
+            throw ValidationError("Distributed startup requires --local; its coordinator connection is control-only.")
+        }
+        guard !soloOverrides else {
+            throw ValidationError("Distributed startup uses the saved cluster model and lifecycle; solo model and idle overrides are unavailable.")
+        }
+    }
 
     /// Only the process actually owned by launchd ignores stale baked argv.
     /// A manually launched foreground command retains explicit --model priority.
@@ -87,11 +134,28 @@ struct Start: AsyncParsableCommand {
             printError("--local and --local-endpoint are mutually exclusive: use --local for a coordinator-less local server, or --local-endpoint to serve a local endpoint alongside the coordinator.")
             throw ExitCode.failure
         }
+        // Control-only cluster modes leave before the solo runtime is
+        // prepared: no model scan, Metal probe or serving-mode selection.
+        // The native owner child, not this process, holds the device.
+        if clusterMember {
+            if alwaysOn {
+                try await installClusterMemberService()
+            } else if supervise {
+                try await runClusterMemberSupervisor()
+            } else {
+                try await runClusterMember()
+            }
+            return
+        }
+        if distributed {
+            try await runLocalDistributed()
+            return
+        }
 
         var scheduleEdit: (current: ScheduleSettings, draft: ScheduleSettings)?
         if schedule {
             guard !local, !foreground else {
-                throw ValidationError("--schedule configures a background provider. Use `darkbloom schedule` before --foreground; standalone --local does not use availability windows.")
+                throw ValidationError("--schedule configures a background provider. Use `\(BuildEnvironment.current.cliName) schedule` before --foreground; standalone --local does not use availability windows.")
             }
             try AvailabilitySchedule.requireInteractiveTerminal()
             let loaded = try loadRuntimeConfiguration(configPath: configOptions.config)
@@ -160,15 +224,23 @@ struct Start: AsyncParsableCommand {
         }
         // Diagnose once from the already-bound immutable snapshot and carry
         // this exact set through every serving mode and registration path.
-        let runtimeCapabilities = ProviderRuntimeCapabilityDetector.detectPrepared(
-            hardware: hardware,
-            boundMetallibHash: boundMetallibHash
-        )
+        let runtimeCapabilities = GLM5NextLocalServing.gatingCapabilities(
+            ProviderRuntimeCapabilityDetector.detectPrepared(
+                hardware: hardware,
+                boundMetallibHash: boundMetallibHash),
+            mode: effectiveConfig.backend.mtpMode)
         // One WARN per retired knob still set, BEFORE the serving-mode split:
         // `--local` builds no ProviderLoop, so emitting these from the serve
         // loop left standalone operators with no notice at all.
         for message in RetiredKnobWarnings.emit(config: effectiveConfig) {
             printError("warning: \(message)")
+        }
+        let servedModels = advertisedModels(
+            from: snapshot.models, config: effectiveConfig, modelOverrides: model, includeDisabled: all,
+            runtimeCapabilities: runtimeCapabilities)
+        if let notice = GLMWiredLimitAdvice.startNotice(
+            hardware: hardware, servedModels: servedModels, limits: .live()) {
+            printError("warning: \(notice)")
         }
 
         if local {

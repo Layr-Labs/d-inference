@@ -57,20 +57,20 @@ struct ProviderLogger: Sendable {
 
     private func publicLog(_ level: ProviderLogLevel, _ message: ProviderOperationalMessage) {
         if let sink {
-            sink(level, .public, message.rawValue)
+            sink(level, .public, message.text)
             return
         }
         #if canImport(os)
         switch level {
         case .info:
-            osLogger.info("\(message.rawValue, privacy: .public)")
+            osLogger.info("\(message.text, privacy: .public)")
         case .warning:
-            osLogger.warning("\(message.rawValue, privacy: .public)")
+            osLogger.warning("\(message.text, privacy: .public)")
         case .error:
-            osLogger.error("\(message.rawValue, privacy: .public)")
+            osLogger.error("\(message.text, privacy: .public)")
         }
         #else
-        print("[\(category)] \(level.label): \(message.rawValue)")
+        print("[\(category)] \(level.label): \(message.text)")
         #endif
     }
 
@@ -120,9 +120,15 @@ enum ProviderLogVisibility: Sendable, Equatable {
 /// Do not add associated values or `ExpressibleByStringLiteral` conformance:
 /// public log text must remain a closed vocabulary.
 enum ProviderOperationalMessage: String, CaseIterable, Sendable {
+    /// The published text. `{cli}` names this build's command
+    /// (`BuildEnvironment.cliName`); no other substitution exists.
+    var text: String {
+        rawValue.replacingOccurrences(of: "{cli}", with: BuildEnvironment.current.cliName)
+    }
+
     // Startup and shutdown.
     case providerStarting = "Provider starting"
-    case startupPreloadInsufficientMemory = "Startup preload skipped: low free memory. Run darkbloom status or doctor."
+    case startupPreloadInsufficientMemory = "Startup preload skipped: low free memory. Run {cli} status or doctor."
     case coordinatorClientStarted = "Coordinator client started"
     case coordinatorEventStreamEnded = "Coordinator event stream ended; shutting down"
 
@@ -138,6 +144,10 @@ enum ProviderOperationalMessage: String, CaseIterable, Sendable {
     case coordinatorSendFailed = "Coordinator WebSocket send failed"
     case coordinatorChunkEncodeFailed = "Coordinator chunk encode failed"
     case coordinatorChunkSendFailed = "Coordinator chunk send failed"
+    case coordinatorNotRoutingConnection = "Coordinator is not routing work to this connection. Run {cli} status for the reason."
+    case coordinatorRoutingConnection = "Coordinator authorizes this connection for work"
+    case coordinatorRefusalUnconfirmed = "Coordinator refusal of this connection is no longer current; routing is unconfirmed"
+    case unauthorizedConnectionReregistering = "Coordinator has not authorized this connection for at least 15 min; re-registering it"
 
     // Attestation and integrity lifecycle.
     case attestationChallengeReceived = "Attestation challenge received"
@@ -162,4 +172,35 @@ enum ProviderOperationalMessage: String, CaseIterable, Sendable {
     case inferenceFailureEncryption = "Inference failure: encryption"
     case inferenceFailureGeneration = "Inference failure: generation"
     case inferenceFailureInternal = "Inference failure: internal"
+
+    // Closed reasons for client refusals before the inference task or while
+    // the prompt is prepared (`InferenceRefusalReason`).
+    case refusalMissingSenderKey = "Inference failure: invalid request (missing sender key)"
+    case refusalUndecryptableRequest = "Inference failure: invalid request (undecryptable request)"
+    case refusalReservedToolSchemaMetadata = "Inference failure: invalid request (reserved tool schema metadata)"
+    case refusalMalformedBody = "Inference failure: invalid request (malformed body)"
+    case refusalInvalidMessages = "Inference failure: invalid request (invalid messages)"
+    case refusalUnsupportedMessageRole = "Inference failure: invalid request (unsupported message role)"
+    case refusalInvalidToolHistory = "Inference failure: invalid request (invalid tool history)"
+    case refusalInvalidToolArguments = "Inference failure: invalid request (invalid tool arguments)"
+    case refusalInvalidToolDeclaration = "Inference failure: invalid request (invalid tool declaration)"
+    case refusalInvalidToolChoice = "Inference failure: invalid request (invalid tool choice)"
+    case refusalUnsupportedResponseFormat = "Inference failure: invalid request (unsupported response format)"
+    case refusalInvalidRequestField = "Inference failure: invalid request (invalid request field)"
+    case refusalUnsupportedReasoningControl = "Inference failure: invalid request (unsupported reasoning control)"
+    case refusalContradictoryReasoningControls = "Inference failure: invalid request (contradictory reasoning controls)"
+    case refusalUnsupportedToolType = "Inference failure: invalid request (unsupported tool type)"
+    case refusalInvalidToolSchema = "Inference failure: invalid request (invalid tool schema)"
+    case refusalUnsupportedAudio = "Inference failure: invalid media (unsupported audio)"
+    case refusalUnansweredToolCall = "Inference failure: invalid request (unanswered tool call)"
+    case refusalUnmatchedToolResult = "Inference failure: invalid request (unmatched tool result)"
+    case refusalNativeDelimiterInHistory = "Inference failure: invalid request (native delimiter in history)"
+    case refusalNonTextContent = "Inference failure: invalid request (non-text content)"
+    case refusalUnsupportedForcedToolChoice = "Inference failure: invalid request (unsupported forced tool choice)"
+    case refusalRequestExceedsContext = "Inference failure: invalid request (request exceeds context)"
+    case refusalUnsupportedOutputControl = "Inference failure: invalid request (unsupported output control)"
+
+    // Operator guidance.
+    case glmWiredLimitNotice = "GLM-5.3-Flash hit the macOS GPU wired-memory limit. Run {cli} doctor for the fix."
+    case prefixCacheUnavailable = "SSD prefix cache did not start for a loaded model; it serves uncached. Run {cli} status."
 }

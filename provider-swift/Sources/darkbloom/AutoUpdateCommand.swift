@@ -12,9 +12,9 @@ struct AutoUpdate: AsyncParsableCommand {
         installs new signed releases automatically.
 
         Examples:
-          darkbloom autoupdate enable
-          darkbloom autoupdate disable
-          darkbloom autoupdate status
+          \(BuildEnvironment.current.cliName) autoupdate enable
+          \(BuildEnvironment.current.cliName) autoupdate disable
+          \(BuildEnvironment.current.cliName) autoupdate status
         """
     )
 
@@ -39,7 +39,7 @@ struct AutoUpdate: AsyncParsableCommand {
         case "disable", "off", "false":
             try setAutoUpdate(false, configPath: configOptions.config)
             print("Auto-update DISABLED.")
-            print("Run 'darkbloom update' manually to install new releases.")
+            print("Run '\(BuildEnvironment.current.cliName) update' manually to install new releases.")
 
         default:
             printError("Unknown action: '\(action)'. Use 'enable', 'disable', or 'status'.")

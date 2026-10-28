@@ -399,6 +399,7 @@ func collect(
     var collected = CollectedGeneration()
     for await event in stream {
         switch event {
+        case .logprobs: break
         case .chunk(let text):
             collected.chunks.append(text)
         case .info(let prompt, let completion, let tps, _):

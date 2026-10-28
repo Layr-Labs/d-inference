@@ -1,8 +1,13 @@
 # Provider And Native Evidence
 
-> Last updated: 2026-10-13
+> Last updated: 2026-10-22
 
 Dated records and raw native evidence retain their original content, revisions and limitations. A record is not a fresh test result or proof of private platform compatibility.
+
+- [Mixed-step prefill geometry](2026-10-21-mixed-step-prefill-geometry.md) - load, engine, inter-token latency and KV-subtracted activation measurements behind Gemma 4's 2,048 / 4,096 prompt geometry, its media ceiling and the GPT-OSS and dense Qwen opt-in.
+- [GLM-5.3-Flash single-Mac qualification record](2026-10-21-glm53-flash-single-mac-qualification.md)
+- [Startup shape warmup: first-request TTFT](2026-10-21-startup-shape-warmup-first-request.md)
+- [Bonsai 9B publication delay](2026-10-15-bonsai9b-publication.md)
 
 - [Provider v0.8.0 — release notes](../releases/v0.8.0-notes.md)
 - [Metal resource-COUNT crash fix — how the upstream C++ was landed](2026-06-15-metal-resource-count-fix-handoff.md)
@@ -116,6 +121,7 @@ Dated records and raw native evidence retain their original content, revisions a
 - [Native loaded-engine endpoint resumption](2026-10-11-native-serving-resumption-qualification.md) - real Apple verification, full loopback coordinator, encrypted inference across a 125-second break, unchanged loaded engine and assertion counter, and exactly-one-refund evidence.
 - [Native inference and quantized checkpoint qualification](2026-10-11-native-inference-checkpoint-storage.md) — eight-artifact storage/restore measurements, matched prefill controls, OS-backed process restart, and explicit performance limits.
 - [Runtime KV quantization qualification](2026-10-09-runtime-kv-quantization.md) — exact-artifact paired storage/quality controls, real adaptive MTP and encrypted complete-cache reuse, with latency and qualification limits.
+- [Two-Mac baseline, load generator and catalog model matrix](2026-10-09-two-mac-baseline-and-model-matrix.md) - single-Mac product-path baseline for Qwen3.5 9B on an M3 Ultra and an M5 Max, the status of every catalog model on each Mac, and the benchmarking tools added; no two-Mac measurement (the link was down), with clock and sample-size limits.
 
 ## Retired Original Records
 
@@ -256,3 +262,4 @@ retained in this tree.
 - [2026-10-07-autopilot-shadow-evidence.md](https://github.com/Layr-Labs/d-inference/blob/4230fa03ddbc84e34e2de150c89431744d6f1c55/docs/reports/2026-10-07-autopilot-shadow-evidence.md)
 - [README.md](https://github.com/Layr-Labs/d-inference/blob/4230fa03ddbc84e34e2de150c89431744d6f1c55/docs/reports/evidence/2026-09-08-gemma-qat-defaults/README.md)
 - [README.md](https://github.com/Layr-Labs/d-inference/blob/4230fa03ddbc84e34e2de150c89431744d6f1c55/docs/reports/evidence/all-model-prefix-2026-10-03/README.md)
+- [Nemotron Super image ingress measurements — 2026-10-15](2026-10-15-nemotron-super-image-ingress.md)

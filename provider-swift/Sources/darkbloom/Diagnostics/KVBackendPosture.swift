@@ -81,6 +81,13 @@ enum KVBackendPosture {
         }
         for slot in slots {
             lines.append("  " + slotLine(slot))
+            if let advice = PrefixCacheDiagnosis.advice(
+                state: slot.prefixCacheState, reason: slot.prefixCacheReason,
+                detail: slot.prefixCacheDetail)
+            {
+                lines.append("    → prefix cache: \(advice.message)")
+                if let fix = advice.fix { lines.append("    → fix: \(fix)") }
+            }
         }
         return lines
     }
@@ -95,6 +102,7 @@ enum KVBackendPosture {
         let precision = precisionPhrase(slot)
         return "\(slot.model): \(backendPhrase(slot)) | \(mtpPhrase(slot))"
             + (precision.isEmpty ? "" : " | \(precision)")
+            + (PrefixCacheDiagnosis.statusPhrase(slot).map { " | \($0)" } ?? "")
     }
 
     static func precisionPhrase(_ slot: DaemonState.SlotPosture) -> String {
@@ -247,7 +255,7 @@ enum KVPostureDiagnosis {
                     status: .fail,
                     detail: "daemon is running but its state file has not been rewritten for "
                         + "\(ageText) (expected every ~\(Int(period))s) — it is wedged; "
-                        + "check `darkbloom logs`, then `darkbloom stop && darkbloom start`"))
+                        + "check `\(BuildEnvironment.current.cliName) logs`, then `\(BuildEnvironment.current.cliName) stop && \(BuildEnvironment.current.cliName) start`"))
         } else if age > staleAfter {
             out.append(
                 DoctorCheck(

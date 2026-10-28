@@ -557,7 +557,7 @@ final class MiMoV26EncodedMediaIngressTests: XCTestCase {
         let (value,bundle,actual) = try await published()
         let uri = "data:video/mp4;base64," + mp4Base64
         let ingested = try await MediaIngest.decodeVideo(uri)
-        guard case .memoryBacked(let owner) = ingested.video else { return XCTFail("plaintext/url video path") }
+        guard case .memoryBacked(let owner) = ingested.video.source else { return XCTFail("plaintext/url video path") }
         let limits = MiMoV26EncodedVisualDecoder.Limits(maximumPixels:10000,
             maximumWorkingBytes:16 << 20,maximumSourceFrames:10000,maximumSampledFrames:4)
         let planned = try await MiMoV26EncodedVisualDecoder.inspectVideo(owner,

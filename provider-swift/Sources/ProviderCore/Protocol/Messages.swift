@@ -42,19 +42,25 @@ public struct PrefixCacheModelStatus: Codable, Sendable, Equatable {
     public let replayStrategy: PrefixCacheReplayStrategy
     public let state: PrefixCacheStatusState
     public let reason: PrefixCacheStatusReason
+    /// The typed store refusal behind an `error` state, for example
+    /// `key_unavailable` behind `cache_init_failed`; nil otherwise. Optional
+    /// and omitted when nil, so coordinators that predate it ignore it.
+    public let detail: SSDPrefixCacheConstructionFailure?
 
     public init(
         modelId: String,
         backend: PrefixCacheStatusBackend,
         replayStrategy: PrefixCacheReplayStrategy,
         state: PrefixCacheStatusState,
-        reason: PrefixCacheStatusReason
+        reason: PrefixCacheStatusReason,
+        detail: SSDPrefixCacheConstructionFailure? = nil
     ) {
         self.modelId = modelId
         self.backend = backend
         self.replayStrategy = replayStrategy
         self.state = state
         self.reason = reason
+        self.detail = state == .error ? detail : nil
     }
 
     enum CodingKeys: String, CodingKey {
@@ -63,6 +69,7 @@ public struct PrefixCacheModelStatus: Codable, Sendable, Equatable {
         case replayStrategy = "replay_strategy"
         case state
         case reason
+        case detail
     }
 }
 
@@ -201,6 +208,15 @@ public enum ProviderMessage: Sendable, Equatable {
     case capacityQuote(CapacityQuote)
 
     public struct Register: Sendable, Equatable {
+        /// Restrictive registration role. Omitted legacy role remains ordinary
+        /// solo; a member role grants no trust or model capability. Mirrors
+        /// RegisterMessage.ExecutionRole/MemberRegistrationNonce/ClusterModels (Go).
+        public var executionRole: ProviderExecutionRole
+        public var memberRegistrationNonce: String?
+        public var clusterModels: [ModelInfo]?
+        /// Member role only; nil is accepted by the coordinator but never
+        /// paired. Mirrors RegisterMessage.ClusterMembership (Go).
+        public var clusterMembership: ClusterMembership?
         public var modelAutopilot: ModelAutopilotSnapshot?
         public var autopilotInventory: [ModelInfo]?
         public var hardware: HardwareInfo
@@ -238,6 +254,10 @@ public enum ProviderMessage: Sendable, Equatable {
         /// only with concrete model IDs whose Gemma contract is enforced.
         public var toolConstraintProtocol: Int?
         public var toolConstraintModels: [String]?
+        /// Present while an add-on hold refuses work, so a fresh connection
+        /// is excluded from routing before its first heartbeat. Omitted
+        /// otherwise; older coordinators ignore it.
+        public var busy: ProviderBusy?
 
         public init(
             hardware: HardwareInfo,
@@ -267,10 +287,20 @@ public enum ProviderMessage: Sendable, Equatable {
             appAttestResumeProtocol: Int? = nil,
             appAttestResumeNonce: String? = nil,
             modelAutopilot: ModelAutopilotSnapshot? = nil,
-            autopilotInventory: [ModelInfo]? = nil
+            autopilotInventory: [ModelInfo]? = nil,
+            executionRole: ProviderExecutionRole = .solo,
+            memberRegistrationNonce: String? = nil,
+            clusterModels: [ModelInfo]? = nil,
+            clusterMembership: ClusterMembership? = nil,
+            busy: ProviderBusy? = nil
         ) {
+            self.executionRole = executionRole
+            self.memberRegistrationNonce = memberRegistrationNonce
+            self.clusterModels = clusterModels
+            self.clusterMembership = clusterMembership
             self.modelAutopilot = modelAutopilot
             self.autopilotInventory = autopilotInventory
+            self.busy = busy
             self.hardware = hardware
             self.models = models
             self.backend = backend
@@ -328,6 +358,13 @@ public enum ProviderMessage: Sendable, Equatable {
         /// dashboard) tell "unloaded on purpose, wakes on demand" apart from
         /// "should be loaded and isn't". nil/omitted from older providers.
         public var idleUnloadMins: UInt64?
+        /// S16: the coordinator-formed session this member's owner runs and
+        /// how its data plane is protected (`cluster_session`); nil while the
+        /// member runs no owner, and for every provider that is not a member.
+        public var clusterSession: ClusterSessionStatus?
+        /// Why `status` is `draining` while an add-on holds the Mac
+        /// (`busy_reason`, `busy_since_ms`, `busy_addon`). Omitted otherwise.
+        public var busy: ProviderBusy?
 
         public init(
             status: ProviderStatus,
@@ -344,8 +381,12 @@ public enum ProviderMessage: Sendable, Equatable {
             prefixCacheStatuses: [PrefixCacheModelStatus]? = nil,
             prefixCacheDonationOutcomes: [PrefixCacheDonationOutcomeCount]? = nil,
             idleUnloadMins: UInt64? = nil,
-            modelAutopilot: ModelAutopilotSnapshot? = nil
+            modelAutopilot: ModelAutopilotSnapshot? = nil,
+            clusterSession: ClusterSessionStatus? = nil,
+            busy: ProviderBusy? = nil
         ) {
+            self.clusterSession = clusterSession
+            self.busy = busy
             self.status = status
             self.activeModel = activeModel
             self.warmModels = warmModels
@@ -894,6 +935,10 @@ extension ProviderMessage: Codable {
         case serviceReservationID = "service_reservation_id"
         // Register
         case hardware, models, backend, version
+        case executionRole = "execution_role"
+        case memberRegistrationNonce = "member_registration_nonce"
+        case clusterModels = "cluster_models"
+        case clusterMembership = "cluster_membership"
         case publicKey = "public_key"
         case encryptedResponseChunks = "encrypted_response_chunks"
         case attestation
@@ -927,6 +972,11 @@ extension ProviderMessage: Codable {
         case systemMetrics = "system_metrics"
         case backendCapacity = "backend_capacity"
         case idleUnloadMins = "idle_unload_mins"
+        case clusterSession = "cluster_session"
+        // Register + Heartbeat (add-on hold)
+        case busyReason = "busy_reason"
+        case busySinceMs = "busy_since_ms"
+        case busyAddon = "busy_addon"
         // Common
         case requestId = "request_id"
         // InferenceResponseChunk
@@ -1003,6 +1053,12 @@ extension ProviderMessage: Codable {
 
         case .register(let r):
             try container.encode(TypeValue.register, forKey: .type)
+            if r.executionRole != .solo {
+                try container.encode(r.executionRole, forKey: .executionRole)
+                try container.encodeIfPresent(r.memberRegistrationNonce, forKey: .memberRegistrationNonce)
+                try container.encodeIfPresent(r.clusterModels, forKey: .clusterModels)
+                try container.encodeIfPresent(r.clusterMembership, forKey: .clusterMembership)
+            }
             try container.encodeIfPresent(r.modelAutopilot, forKey: .modelAutopilot)
             try container.encodeIfPresent(r.autopilotInventory, forKey: .autopilotInventory)
             try container.encode(r.hardware, forKey: .hardware)
@@ -1045,6 +1101,7 @@ extension ProviderMessage: Codable {
             }
             try container.encodeIfPresent(
                 r.toolConstraintModels, forKey: .toolConstraintModels)
+            try Self.encodeBusy(r.busy, into: &container)
 
         case .heartbeat(let h):
             try container.encode(TypeValue.heartbeat, forKey: .type)
@@ -1071,6 +1128,8 @@ extension ProviderMessage: Codable {
             // 0 ("always ready") is a real value and MUST reach the wire; only
             // nil (policy not reported) is omitted — Go decodes into *int.
             try container.encodeIfPresent(h.idleUnloadMins, forKey: .idleUnloadMins)
+            try container.encodeIfPresent(h.clusterSession, forKey: .clusterSession)
+            try Self.encodeBusy(h.busy, into: &container)
 
         case .serviceReservationReleased(let id):
             try container.encode(TypeValue.serviceReservationReleased, forKey: .type)
@@ -1318,7 +1377,12 @@ extension ProviderMessage: Codable {
                 appAttestResumeProtocol: try container.decodeIfPresent(Int.self, forKey: .appAttestResumeProtocol),
                 appAttestResumeNonce: try container.decodeIfPresent(String.self, forKey: .appAttestResumeNonce),
                 modelAutopilot: try container.decodeIfPresent(ModelAutopilotSnapshot.self, forKey: .modelAutopilot),
-                autopilotInventory: try container.decodeIfPresent([ModelInfo].self, forKey: .autopilotInventory)
+                autopilotInventory: try container.decodeIfPresent([ModelInfo].self, forKey: .autopilotInventory),
+                executionRole: try container.decodeIfPresent(ProviderExecutionRole.self, forKey: .executionRole) ?? .solo,
+                memberRegistrationNonce: try container.decodeIfPresent(String.self, forKey: .memberRegistrationNonce),
+                clusterModels: try container.decodeIfPresent([ModelInfo].self, forKey: .clusterModels),
+                clusterMembership: try container.decodeIfPresent(ClusterMembership.self, forKey: .clusterMembership),
+                busy: try Self.decodeBusy(from: container)
             ))
 
         case .heartbeat:
@@ -1343,7 +1407,9 @@ extension ProviderMessage: Codable {
                     [PrefixCacheDonationOutcomeCount].self,
                     forKey: .prefixCacheDonationOutcomes),
                 idleUnloadMins: try container.decodeIfPresent(UInt64.self, forKey: .idleUnloadMins),
-                modelAutopilot: try container.decodeIfPresent(ModelAutopilotSnapshot.self, forKey: .modelAutopilot)
+                modelAutopilot: try container.decodeIfPresent(ModelAutopilotSnapshot.self, forKey: .modelAutopilot),
+                clusterSession: try container.decodeIfPresent(ClusterSessionStatus.self, forKey: .clusterSession),
+                busy: try Self.decodeBusy(from: container)
             ))
 
         case .serviceReservationReleased:
@@ -1581,6 +1647,10 @@ public enum CoordinatorMessage: Sendable, Equatable {
     case desiredModels(DesiredModels)
     case trustStatus(TrustStatus)
     case capacityProbe(CapacityProbe)
+    /// Coordinator acknowledgment of a control-only member registration;
+    /// proves protocol support and connection binding only, never attestation,
+    /// runtime approval, native-owner authorization or serving readiness.
+    case clusterMemberAccepted(ClusterMemberAccepted)
 
     public struct InferenceRequest: Sendable, Equatable {
         public var requestId: String
@@ -1801,6 +1871,7 @@ extension CoordinatorMessage: Codable {
         case desiredModels = "desired_models"
         case trustStatus = "trust_status"
         case capacityProbe = "capacity_probe"
+        case clusterMemberAccepted = "cluster_member_accepted"
     }
 
     enum CodingKeys: String, CodingKey {
@@ -1833,6 +1904,10 @@ extension CoordinatorMessage: Codable {
         case requiresVision = "requires_vision"
         case visionImageCount = "vision_image_count"
         case deadlineRemainingMs = "deadline_remaining_ms"
+        // ClusterMemberAccepted
+        case executionRole = "execution_role"
+        case memberRegistrationNonce = "member_registration_nonce"
+        case providerID = "provider_id"
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -1941,6 +2016,12 @@ extension CoordinatorMessage: Codable {
                 try container.encode(p.visionImageCount, forKey: .visionImageCount)
             }
             try container.encode(p.deadlineRemainingMs, forKey: .deadlineRemainingMs)
+
+        case .clusterMemberAccepted(let ack):
+            try container.encode(TypeValue.clusterMemberAccepted, forKey: .type)
+            try container.encode(ack.executionRole, forKey: .executionRole)
+            try container.encode(ack.memberRegistrationNonce, forKey: .memberRegistrationNonce)
+            try container.encode(ack.providerID, forKey: .providerID)
         }
     }
 
@@ -2053,6 +2134,13 @@ extension CoordinatorMessage: Codable {
                 status: try container.decode(String.self, forKey: .status),
                 reason: try container.decodeIfPresent(String.self, forKey: .reason) ?? "",
                 authorization: try container.decodeIfPresent(ProviderAuthorizationStatus.self, forKey: .authorization)
+            ))
+
+        case .clusterMemberAccepted:
+            self = .clusterMemberAccepted(ClusterMemberAccepted(
+                executionRole: try container.decode(ProviderExecutionRole.self, forKey: .executionRole),
+                memberRegistrationNonce: try container.decode(String.self, forKey: .memberRegistrationNonce),
+                providerID: try container.decode(String.self, forKey: .providerID)
             ))
         }
     }

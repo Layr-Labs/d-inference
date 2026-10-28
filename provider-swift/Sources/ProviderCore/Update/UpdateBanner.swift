@@ -108,7 +108,7 @@ public enum UpdateBanner: Sendable {
             lines.append("  │  \(pad(trimmed, to: 44))│")
         }
         lines.append("  │                                              │")
-        lines.append("  │  Run: darkbloom update                       │")
+        lines.append("  │  \(pad("Run: \(BuildEnvironment.current.cliName) update", to: 44))│")
         lines.append("  ╰──────────────────────────────────────────────╯")
         lines.append("")
 

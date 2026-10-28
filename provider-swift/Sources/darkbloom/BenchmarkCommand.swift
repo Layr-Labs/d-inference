@@ -27,14 +27,14 @@ struct Benchmark: AsyncParsableCommand {
     @Flag(name: .long, help: """
         Run the fail-closed signed-candidate cap-0/cap-1 scheduler-prefill \
         evaluation. This mode only runs from the packaged signed \
-        Darkbloom.app main executable.
+        \(BuildEnvironment.current.appBundleName) main executable.
         """)
     var schedulerPrefillDecision = false
 
     @Option(name: .long, help: "Signed decision: expected registered model aggregate SHA-256.")
     var expectedModelAggregateSHA256: String?
 
-    @Option(name: .long, help: "Signed decision: expected registered signed darkbloom binary SHA-256.")
+    @Option(name: .long, help: "Signed decision: expected registered signed \(BuildEnvironment.current.cliName) binary SHA-256.")
     var expectedRegisteredBinarySHA256: String?
 
     @Option(name: .long, help: "Signed decision: exact expected ProviderCore version.")
@@ -126,6 +126,12 @@ struct Benchmark: AsyncParsableCommand {
     @Option(name: .long, help: "Runtime generation: read the public/synthetic prompt from a UTF-8 file (at most 4 MiB).")
     var runtimePromptFile: String?
 
+    @Option(name: .long, help: "Runtime generation: comma-separated concurrent batch sizes from 1 to 64 (e.g. 1,2,4,8). One production slot per size, warmed by one identical batch; greedy rows with distinct prompts; per-token arrival timing as JSON.")
+    var runtimeConcurrency: String?
+
+    @Flag(name: .long, help: "Runtime concurrency: row i of a B-row batch stops after max-tokens*(B-i)/B tokens (max-tokens must be at least 3*B), so the decode cohort shrinks to one row.")
+    var runtimeStagger = false
+
     @Option(name: .long, help: "Runtime generation: fixed UTC template date YYYY-MM-DD for paired runs.")
     var runtimePromptDate = PromptRenderDate.capture().value
 
@@ -138,6 +144,9 @@ struct Benchmark: AsyncParsableCommand {
 
     @Option(name: .long, help: "Scheduler prefill: measured iterations per length.")
     var prefillIterations = 2
+
+    @Flag(name: .long, help: "Scheduler prefill only: repeat the same seed-token prompt at offset 0 for warmup and measured iterations; default rotates measured prompts by iteration * 17.")
+    var prefillFixedPrompt = false
 
     @Flag(name: .long, help: "Measure production CBv2 burst-versus-staggered request arrivals and output invariance.")
     var arrivalInvariance = false
@@ -188,6 +197,16 @@ struct Benchmark: AsyncParsableCommand {
     @Option(name: .long, help: "Score bounded exact token contexts from JSON with an explicit --model and --kv-backend; ordinary target only, cache and MTP off.")
     var teacherForcedInput: String?
 
+    @Flag(name: .long, help: """
+        CPU only: time prompt preparation (template render and tokenization) \
+        for synthetic chat and agent conversations, uncached and through the \
+        prompt token cache, and print a JSON report. Loads only the tokenizer.
+        """)
+    var promptPrep = false
+
+    @Option(name: .long, help: "Prompt prep: comma-separated approximate prompt lengths in tokens (default 2048,8192,32768).")
+    var promptPrepLengths = "2048,8192,32768"
+
     mutating func run() async throws {
         if let conflict = benchmarkModeConflict() {
             printError(conflict)
@@ -236,7 +255,7 @@ struct Benchmark: AsyncParsableCommand {
                 benchmark is config-driven: refusing to run with \
                 \(conflict.key)=\(conflict.shellValue) set in this shell while \
                 provider.toml projects \(conflict.configValue). Toggle with \
-                `darkbloom beta` or edit [gemma_optimizations] in provider.toml, \
+                `\(BuildEnvironment.current.cliName) beta` or edit [gemma_optimizations] in provider.toml, \
                 then re-run benchmark without the low-level override.
                 """)
             throw ExitCode.failure
@@ -289,6 +308,22 @@ struct Benchmark: AsyncParsableCommand {
             throw ExitCode(2)
         }
 
+        if promptPrep {
+            let lengths = promptPrepLengths.split(separator: ",").compactMap {
+                Int($0.trimmingCharacters(in: .whitespaces))
+            }.filter { $0 > 0 }
+            guard !lengths.isEmpty else {
+                printError("--prompt-prep-lengths needs positive token counts")
+                throw ExitCode(2)
+            }
+            let result = try await PromptPreparationBenchmark.run(
+                modelID: selectedModel.id, modelDirectory: modelPath,
+                modelType: selectedModel.modelType, lengths: lengths, iterations: iterations)
+            print(result.json)
+            if !result.identical { throw ExitCode(2) }
+            return
+        }
+
         if runtimeGeneration {
             let input: String
             if let runtimePromptFile {
@@ -300,6 +335,20 @@ struct Benchmark: AsyncParsableCommand {
                 else { throw RuntimeGenerationBenchmark.Failure.invalidArguments }
                 input = text
             } else { input = prompt }
+            if let runtimeConcurrency {
+                let result = try await RuntimeConcurrencyBenchmark.run(
+                    modelID: selectedModel.id, modelDirectory: modelPath, prompt: input,
+                    batchSizes: try RuntimeConcurrencyBenchmark.batchSizes(
+                        parsing: runtimeConcurrency),
+                    maxTokens: maxTokens, staggered: runtimeStagger, backend: kvBackend,
+                    mtpEnabled: runtimeMtp,
+                    assistantDirectory: runtimeAssistantDirectory.map { URL(fileURLWithPath: $0) },
+                    renderDate: runtimePromptDate,
+                    checkpointQuantizationConfig: checkpointPrecision.rawValue)
+                print(result.json)
+                if !result.succeeded { throw ExitCode(2) }
+                return
+            }
             let result = try await RuntimeGenerationBenchmark.run(
                 modelID: selectedModel.id, modelDirectory: modelPath, prompt: input,
                 maxTokens: maxTokens, backend: kvBackend, mtpEnabled: runtimeMtp,
@@ -363,7 +412,7 @@ struct Benchmark: AsyncParsableCommand {
             return
         }
 
-        print("darkbloom benchmark")
+        print("\(BuildEnvironment.current.cliName) benchmark")
         print("")
 
         let report = try await ModelBenchmark.run(
@@ -393,8 +442,19 @@ struct Benchmark: AsyncParsableCommand {
     }
 
     func benchmarkModeConflict() -> String? {
-        if !runtimeGeneration && (runtimeMtp || runtimePromptFile != nil || runtimeAssistantDirectory != nil) {
+        if !runtimeGeneration
+            && (runtimeMtp || runtimePromptFile != nil || runtimeAssistantDirectory != nil
+                || runtimeConcurrency != nil)
+        {
             return "Runtime options require --runtime-generation"
+        }
+        if runtimeStagger && runtimeConcurrency == nil {
+            return "--runtime-stagger requires --runtime-concurrency"
+        }
+        if let runtimeConcurrency,
+            (try? RuntimeConcurrencyBenchmark.batchSizes(parsing: runtimeConcurrency)) == nil
+        {
+            return "--runtime-concurrency takes comma-separated batch sizes from 1 to 64"
         }
         if let runtimeAssistantDirectory,
             !runtimeMtp || runtimeAssistantDirectory.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -408,6 +468,7 @@ struct Benchmark: AsyncParsableCommand {
             (parity, "--parity"),
             (teacherForcedInput != nil, "--teacher-forced-input"),
             (runtimeGeneration, "--runtime-generation"),
+            (promptPrep, "--prompt-prep"),
         ].compactMap { $0.0 ? $0.1 : nil }
         guard selected.count <= 1 else {
             return "benchmark modes are mutually exclusive: \(selected.joined(separator: ", "))"

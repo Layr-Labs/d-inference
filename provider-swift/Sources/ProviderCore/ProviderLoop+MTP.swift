@@ -8,7 +8,7 @@ extension ProviderLoop {
     /// not download assistant bytes and is bounded/fail-open; every ordinary
     /// load remains a local-only catalog-cache/artifact-cache consultation.
     ///
-    /// `auto` prewarms only for the exact Gemma QAT target; explicit `on`
+    /// `auto` prewarms for the exact Gemma QAT and Bonsai 9B targets; explicit `on`
     /// also permits other supported external assistants. Embedded Qwen heads,
     /// including native Qwen4, resolve from the checkpoint itself without
     /// catalog metadata.

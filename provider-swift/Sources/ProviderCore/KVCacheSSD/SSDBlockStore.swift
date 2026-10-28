@@ -52,6 +52,9 @@
 //     format's `NO token ids/counts` invariant (TB-003).
 //   * `windowTokens` equals `blockSize`, which is already in this header.
 //
+// A delta checkpoint adds `parentCommitment`, HMAC(K_lookup, …‖parentTag‖
+// parentIV): it binds one exact parent file without linking the two files.
+//
 // v1 `.darkbloom-kv` files are never read by this tier (different
 // subtree + suffix).
 
@@ -134,12 +137,15 @@ struct SSDBlockMetadata: Codable, Equatable, Sendable {
     let windowBaseTag: String?
     /// Token count this sidecar carries (== `blockSize`).
     let windowTokens: Int?
+    /// A delta checkpoint's parent commitment; nil on a complete file.
+    let parentCommitment: String?
 
     init(
         lookupTag: String, weightHash: String, layoutEpoch: String, blockSize: Int,
         layerCount: Int, chunks: [SSDBlockChunkDescriptor], chunkPlaintextSizes: [Int],
         createdAt: Int64 = Int64(Date().timeIntervalSince1970),
-        windowKind: String? = nil, windowBaseTag: String? = nil, windowTokens: Int? = nil
+        windowKind: String? = nil, windowBaseTag: String? = nil, windowTokens: Int? = nil,
+        parentCommitment: String? = nil
     ) {
         self.schema = "darkbloom.kv.v3"
         self.lookupTag = lookupTag
@@ -153,6 +159,7 @@ struct SSDBlockMetadata: Codable, Equatable, Sendable {
         self.windowKind = windowKind
         self.windowBaseTag = windowBaseTag
         self.windowTokens = windowTokens
+        self.parentCommitment = parentCommitment
     }
 }
 
@@ -176,7 +183,7 @@ enum SSDBlockStore {
 
     #if canImport(os)
     private static let logger = Logger(
-        subsystem: "com.darkbloom.provider", category: "ssd_block_store")
+        subsystem: BuildEnvironment.current.logSubsystem, category: "ssd_block_store")
     #endif
 
     // MARK: Layout epoch
@@ -276,6 +283,15 @@ enum SSDBlockStore {
         maximumWrappedDEKBytes: Int = maxHeaderFieldBytes,
         beforeOperation: (@Sendable (SSDActiveIOOperation) -> Void)? = nil
     ) throws -> SSDBlockMetadata {
+        try readHeaderOnly(from: url, maximumMetadataBytes: maximumMetadataBytes,
+                           maximumWrappedDEKBytes: maximumWrappedDEKBytes, beforeOperation: beforeOperation).metadata
+    }
+
+    /// `readMetadataOnly` plus the public file IV, equally unauthenticated.
+    static func readHeaderOnly(
+        from url: URL, maximumMetadataBytes: Int = maxHeaderFieldBytes, maximumWrappedDEKBytes: Int = maxHeaderFieldBytes,
+        beforeOperation: (@Sendable (SSDActiveIOOperation) -> Void)? = nil
+    ) throws -> ParsedHeader {
         guard isSafeBlockURL(url), isRealRegularFile(url) else {
             throw SSDBlockStoreError.ioFailure("unsafe block path")
         }
@@ -283,7 +299,7 @@ enum SSDBlockStore {
             at: url, beforeOperation: beforeOperation)
         defer { try? handle.close() }
         return try readHeader(from: handle, maximumMetadataBytes: maximumMetadataBytes,
-                              maximumWrappedDEKBytes: maximumWrappedDEKBytes).metadata
+                              maximumWrappedDEKBytes: maximumWrappedDEKBytes)
     }
 
     // MARK: Temp sweep

@@ -50,7 +50,7 @@ public struct TelemetryClientConfig: Sendable {
 public final class TelemetryClient: @unchecked Sendable {
     public static let shared = TelemetryClient()
 
-    private let logger = Logger(subsystem: "dev.darkbloom.provider", category: "telemetry")
+    private let logger = Logger(subsystem: BuildEnvironment.current.serviceLogSubsystem, category: "telemetry")
 
     private init() {}
 

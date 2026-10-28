@@ -35,14 +35,19 @@ final class ModelPrefixBenchmarkFixture {
 
     /// Forward an explicit specification value through the existing factory
     /// setting. Process-wide diagnostic variables cannot silently change a
-    /// frozen benchmark specification or its serving geometry.
+    /// frozen benchmark specification or its serving geometry. Specifications
+    /// pinned a stripe above the SDK's plain chunk, which a wide-chunk family
+    /// would otherwise swallow, so a pinned stripe also pins that chunk.
     static func checkpointEnvironment(
         root: URL, soloPrefillStripeTokens: Int?
     ) -> [String: String] {
         var environment = ["DARKBLOOM_PREFIX_CACHE": "1", "DARKBLOOM_PREFIX_CACHE_MEMORY": "0",
             "DARKBLOOM_PREFIX_CACHE_ALLOW_EPHEMERAL": "1", "DARKBLOOM_PREFIX_CACHE_TEST_ROOT": root.path]
         if let stripe = soloPrefillStripeTokens {
+            let sdk = CBv2SchedulerConfig()
             environment[EngineV2Factory.soloPrefillStripeKey] = String(stripe)
+            environment[EngineV2Factory.prefillChunkKey] = String(sdk.prefillChunkSize)
+            environment[EngineV2Factory.stepTokenBudgetKey] = String(sdk.maxBatchedTokensPerStep)
         }
         return environment
     }
@@ -50,11 +55,12 @@ final class ModelPrefixBenchmarkFixture {
     init(_ specification: ModelPrefixBenchmarkSpecification,
          persistentRoot: URL? = nil,
          persistentTestNamespace: SSDPersistentTestKeyNamespace? = nil,
-         maximumStageMegabytes: Int? = nil) async throws {
+         maximumStageMegabytes: Int? = nil, incrementalCheckpoints: String? = nil) async throws {
         self.specification = specification
         self.persistentTestNamespace = persistentTestNamespace
         let owned = try await Self.prepare(specification, persistentRoot: persistentRoot,
-            persistentTestNamespace: persistentTestNamespace, maximumStageMegabytes: maximumStageMegabytes)
+            persistentTestNamespace: persistentTestNamespace, maximumStageMegabytes: maximumStageMegabytes,
+            incrementalCheckpoints: incrementalCheckpoints)
         container = owned.container
         tokenizer = owned.tokenizer
         session = owned.session
@@ -73,7 +79,7 @@ final class ModelPrefixBenchmarkFixture {
     private static func prepare(_ specification: ModelPrefixBenchmarkSpecification,
                                 persistentRoot: URL?,
                                 persistentTestNamespace: SSDPersistentTestKeyNamespace?,
-                                maximumStageMegabytes: Int?) async throws -> Owned {
+                                maximumStageMegabytes: Int?, incrementalCheckpoints: String?) async throws -> Owned {
         try specification.validate()
         guard (persistentRoot == nil) == (persistentTestNamespace == nil) else {
             throw SSDPersistentTestKeyNamespace.Failure.isolatedRootRequired
@@ -89,6 +95,7 @@ final class ModelPrefixBenchmarkFixture {
         if let maximumStageMegabytes {
             environment["DARKBLOOM_PREFIX_CACHE_SSD_MAX_STAGE_MB"] = String(maximumStageMegabytes)
         }
+        environment[SSDPrefixCachePolicy.incrementalCheckpointsFlag] = incrementalCheckpoints
         let directory = URL(fileURLWithPath: specification.directory, isDirectory: true)
         struct Declaration: Decodable {
             let modelType: String

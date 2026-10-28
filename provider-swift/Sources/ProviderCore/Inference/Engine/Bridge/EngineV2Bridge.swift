@@ -27,6 +27,16 @@ public actor EngineV2Bridge {
 
     /// Shutdown drains and releases the engine before the slot owner purges
     /// MLX cache or grows the surviving models' memory grants.
+    let draftMiMoImageConfiguration: Data?
+    let clusterGLMImageConfiguration: Data?
+    /// GLM images and video on the tensor-parallel pair (`ClusterGLMMedia`):
+    /// present only when both ranks serve the media contract.
+    let clusterGLMMediaIngress: DistributedGLMMediaIngress?
+    let clusterQwenMediaIngress: DistributedQwenMediaIngress?
+    let clusterQwenMediaHostBudget: GlobalKVCacheBudget?
+    /// Entries survive terminal HTTP events and are removed only by refused
+    /// admission cleanup or definitive generation retirement.
+    var qwenMediaHostResources: [String: (DistributedQwenMediaLifetime, DistributedQwenMediaLifetime.Submission)] = [:]
     var ownedEngine: (any CBv2Engine)?
     struct NativeShutdownIdentity: Equatable {
         let engineID: UUID
@@ -51,6 +61,12 @@ public actor EngineV2Bridge {
     // managed ownership cannot silently select legacy admission.
     weak var nativeTransaction: MiMoV26NativeLoadTransaction?
     var nativeTransactionID: UUID?
+    let glm5NextNativeOwner: GLM5NextNativeOperationOwner?
+    /// One GLM step's setup bytes. The engine charges step scratch from the
+    /// same ledger as requests, so request admission leaves this much free.
+    var glm5NextStepSetupBytes = 0
+    /// GLM requests between the capacity gate and `active`.
+    var glm5NextGateReservations: [String: Int] = [:]
     var tracksNativeShutdown: Bool {
         (ownedEngine as? EngineV2)?.nativeShutdownExecutionContractID != nil
     }
@@ -88,6 +104,11 @@ public actor EngineV2Bridge {
     /// Construction-time fallback reason, retained for heartbeat reporting.
     /// Admission and resizing depend on the actual kvBackendKind only.
     public let kvBackendFallbackReason: String?
+    /// Optional distributed first-token budget policy for the staged cluster
+    /// engine path; nil on every ordinary local engine. A distributed submit
+    /// narrows the origin-anchored deadline context through it without
+    /// granting a fresh budget.
+    let distributedFirstTokenBudgetPolicy: DistributedFirstTokenBudgetPolicy?
     /// `kvBackendFallbackReason` already clamped to the heartbeat budget.
     /// Stored rather than recomputed because the reason is fixed at
     /// construction while the heartbeat rebuilds every slot's capacity every
@@ -105,6 +126,9 @@ public actor EngineV2Bridge {
     /// that has not been admitted.
     let samplingDefaults: EngineV2SamplingDefaults
     let defaultMaxTokens: Int
+    /// A cluster pair's context: an omitted `max_tokens` is the default cut
+    /// to what still fits after the prompt (nil everywhere else).
+    let defaultMaxTokensContextLimit: Int?
     let maxConcurrentRequests: Int
     nonisolated let performanceProfile: ServingPerformanceProfile?
     nonisolated let deadlineProfile: DeadlinePerformanceProfile?
@@ -129,10 +153,11 @@ public actor EngineV2Bridge {
     let partialPrefillCap: Int?
     /// Per-token KV byte cost for bytes→tokens capacity derivation
     /// (0 = unknown; capacity then falls back to the engine's token counts).
-    /// This is the resolved native serving rate. Contiguous GPT-OSS adds the
-    /// fp32 owning-full-row delta to the nominal fp16 sizing rate; Gemma and
-    /// paged slots remain fp16. Heartbeats and process-wide reservations use
-    /// the same value so neither can overstate capacity.
+    /// This is the resolved native serving rate. Ordinary CBv2 slots price the
+    /// observed native per-layer K/V types
+    /// (`EngineV2SlotFactory.slotKVBytesPerToken`). Heartbeats and
+    /// process-wide reservations use the same value so neither can overstate
+    /// capacity.
     let kvBytesPerToken: Int
     /// Peak request-owned residency outside attention KV (Qwen recurrent
     /// committed + transactional conv/SSM generations). Zero preserves the
@@ -176,6 +201,8 @@ public actor EngineV2Bridge {
         ssdPrefixCache != nil || ssdHybridCheckpointStore != nil ? .ssd : .memory
     }
     nonisolated let prefixCacheBaseStatus: PrefixCacheModelStatus
+    /// Typed reason the slot's SSD store was refused; local `/metrics` only.
+    nonisolated let prefixCacheConstructionFailure: SSDPrefixCacheConstructionFailure?
     nonisolated let prefixCacheEvidenceSequencer: PrefixCacheEvidenceSequencer?
     nonisolated let residentPrefixCacheEvidence: ResidentPrefixCacheEvidence?
     nonisolated let residentPrefixCacheEvidenceSequencer: PrefixCacheEvidenceSequencer?
@@ -297,12 +324,19 @@ public actor EngineV2Bridge {
     var performanceUpdates: EnginePerformanceUpdates?
     var performanceMeasurements = EnginePerformanceMeasurements()
     var prefillEvidenceRecovery = PrefillEvidenceRecovery()
-    var mimoCalibration = MimoCalibrationState()
+    var modelCalibration = ModelCalibrationState()
+    let calibrationPosturePermitsWork: @Sendable () -> Bool
     var prefillRequestsTotal: Int64 = 0
     var generatedTokensTotal: Int64 = 0
     var generationRequestsTotal: Int64 = 0
     var observedDecodeTpsEwma: Double = 0
     var ewmaInitialized = false
+    /// Decode step of the requests behind `observedDecodeTpsEwma`, smoothed
+    /// and reset with it. Deadline admission uses it to charge decode per
+    /// batch step instead of per row.
+    var observedDecodeStep = MeasuredDecodeStep()
+    /// `DeadlineAdmissionFixes`, resolved once per bridge.
+    let admissionFixes: Bool
     /// Cold-prefill throughput from completed prompt computation, independent
     /// of answer success. Engine timings exclude queueing and output delivery;
     /// cache-reuse samples remain in their separate workload buckets.
@@ -315,6 +349,9 @@ public actor EngineV2Bridge {
     /// hidden inside this prefill denominator.
     var isolatedPrefillTpsEwma: Double = 0
     var isolatedPrefillEwmaInitialized = false
+    /// Latest published calibration-cell isolated rate: measured idle at
+    /// nominal posture with caching off. Anchors admission's isolated rate.
+    var calibratedIsolatedPrefillTps: Double?
     var nativeMediaPrefillRates = NativeMediaPrefillRates()
     var nativeMediaBootstrapRequestID: String?
     var nativeMediaLearnedRequestIDs: Set<String> = []
@@ -351,6 +388,7 @@ public actor EngineV2Bridge {
         extraEOSTokens: [String] = [],
         samplingDefaults: EngineV2SamplingDefaults = .legacy,
         defaultMaxTokens: Int = 4096,
+        defaultMaxTokensContextLimit: Int? = nil,
         maxConcurrentRequests: Int = 4,
         performanceProfile: ServingPerformanceProfile? = nil,
         deadlineProfile: DeadlinePerformanceProfile? = nil,
@@ -371,22 +409,43 @@ public actor EngineV2Bridge {
         ssdHybridCheckpointStore: SSDHybridCheckpointStore? = nil,
         residentPrefixCacheEvidence: ResidentPrefixCacheEvidence? = nil,
         prefixCacheStatus: PrefixCacheModelStatus? = nil,
+        prefixCacheConstructionFailure: SSDPrefixCacheConstructionFailure? = nil,
         kvBackendKind: EngineV2KVBackendKind = .contiguous,
         kvQuantization: EngineV2KVQuantizationSelection = .native,
         kvCheckpointQuantization: EngineV2KVQuantizationSelection = .native,
         pagedPageSize: Int? = nil,
         kvBackendFallbackReason: String? = nil,
         advertisedContextTokens: Int? = nil,
+        distributedFirstTokenBudgetPolicy: DistributedFirstTokenBudgetPolicy? = nil,
+        draftMiMoImageConfiguration: Data? = nil,
+        clusterGLMImageConfiguration: Data? = nil,
+        clusterGLMMediaIngress: DistributedGLMMediaIngress? = nil,
+        clusterQwenMediaIngress: DistributedQwenMediaIngress? = nil,
+        clusterQwenMediaHostBudget: GlobalKVCacheBudget? = nil,
+        calibrationPosturePermitsWork: @escaping @Sendable () -> Bool = {
+            !ProcessInfo.processInfo.isLowPowerModeEnabled && ProcessInfo.processInfo.thermalState == .nominal
+        },
+        admissionFixes: Bool? = nil,
+        glm5NextNativeOwner: GLM5NextNativeOperationOwner? = nil,
         emitTelemetry: (@Sendable (TelemetryEvent) -> Void)? = nil
     ) {
+        self.draftMiMoImageConfiguration = draftMiMoImageConfiguration
+        self.clusterGLMImageConfiguration = clusterGLMImageConfiguration
+        self.clusterGLMMediaIngress = clusterGLMMediaIngress
+        self.clusterQwenMediaIngress = clusterQwenMediaIngress
+        self.clusterQwenMediaHostBudget = clusterQwenMediaHostBudget
         self.ownedEngine = engine
+        self.glm5NextNativeOwner = glm5NextNativeOwner
         self.modelId = modelId
+        self.calibrationPosturePermitsWork = calibrationPosturePermitsWork
+        self.admissionFixes = admissionFixes ?? DeadlineAdmissionFixes.enabled
         self.usesNativeBlockTiming = engine is CBv2NativeBlockEngine
         self.tokenizer = tokenizer
         self.kvBackendKind = kvBackendKind
         self.kvQuantization = kvQuantization
         self.pagedPageSize = kvBackendKind == .paged && (pagedPageSize ?? 0) > 0 ? pagedPageSize : nil
         self.kvBackendFallbackReason = kvBackendFallbackReason
+        self.distributedFirstTokenBudgetPolicy = distributedFirstTokenBudgetPolicy
         self.advertisedContextTokens =
             Qwen4SupportPolicy.validatedContextTokens(advertisedContextTokens)
             ?? Qwen4SupportPolicy.contextLimit(modelID: modelId)
@@ -402,6 +461,7 @@ public actor EngineV2Bridge {
         )
         self.samplingDefaults = samplingDefaults
         self.defaultMaxTokens = defaultMaxTokens
+        self.defaultMaxTokensContextLimit = defaultMaxTokensContextLimit
         self.maxConcurrentRequests = maxConcurrentRequests
         self.performanceProfile = performanceProfile
         self.deadlineProfile = deadlineProfile
@@ -441,7 +501,8 @@ public actor EngineV2Bridge {
         let durableSource: (any DurablePrefixCacheEvidenceSource)? =
             completeStore.map { $0 as any DurablePrefixCacheEvidenceSource } ?? ssdPrefixCache
         let cacheRejected = ssdHybridCheckpointStore != nil && completeStore == nil
-        self.prefixCacheBaseStatus = cacheRejected ? PrefixCacheModelStatus(
+        let constructionFailure = durableSource == nil ? prefixCacheConstructionFailure : nil
+        let baseStatus = cacheRejected ? PrefixCacheModelStatus(
             modelId: modelId, backend: PrefixCacheStatusBackend(kvBackendKind),
             replayStrategy: .unknown, state: .disabled, reason: .unsupportedLayout
         ) : prefixCacheStatus ?? PrefixCacheModelStatus(
@@ -450,13 +511,22 @@ public actor EngineV2Bridge {
             replayStrategy: .unknown,
             state: durableSource == nil ? .disabled : .pending,
             reason: durableSource == nil ? .unsupportedBackend : .scanPending)
+        // A refused store reports its typed cause beside the closed reason.
+        self.prefixCacheBaseStatus = PrefixCacheModelStatus(
+            modelId: baseStatus.modelId, backend: baseStatus.backend,
+            replayStrategy: baseStatus.replayStrategy, state: baseStatus.state,
+            reason: baseStatus.reason, detail: baseStatus.detail ?? constructionFailure)
+        self.prefixCacheConstructionFailure = constructionFailure
         self.prefixCacheEvidenceSequencer = durableSource.map {
             PrefixCacheEvidenceSequencer(source: $0)
         }
         // Complete-checkpoint lookup always precedes the resident bank.
         // Do not advertise a tier this engine cannot adopt, including while
         // its durable capability is temporarily absent during a scan/epoch change.
-        let residentEvidence = (engine as? EngineV2)?.hybridPrefixCache == nil
+        // A distributed engine's prefix caches live on its peers; it reports
+        // the frontiers both hold, so it may advertise the memory tier too.
+        let residentEvidence = engine is DistributedCBv2Engine ? residentPrefixCacheEvidence
+            : (engine as? EngineV2)?.hybridPrefixCache == nil
             || (engine as? EngineV2)?.completePrefixCache != nil
             ? nil : residentPrefixCacheEvidence
         self.residentPrefixCacheEvidence = residentEvidence
@@ -470,12 +540,18 @@ public actor EngineV2Bridge {
                 residentEvidence?.publish(receiptID: receiptID, checkpointTokens: positions)
             }
         }
+        if let residentEvidence, let distributed = engine as? DistributedCBv2Engine {
+            distributed.setResidentPrefixPublicationHandler { [weak residentEvidence] receiptID, positions in
+                residentEvidence?.publish(receiptID: receiptID, checkpointTokens: positions)
+            }
+        }
         if let completeStore, let liveEngine = engine as? EngineV2 {
             liveEngine.setCompletePrefixPublicationHandler { [weak completeStore] receiptID, positions in
                 completeStore?.publishReady(requestID: receiptID, positions: positions)
             }
         }
         self.emitTelemetry = emitTelemetry
+        performanceMeasurements.keepsNewestObservationTime = self.admissionFixes
     }
 
     /// Deterministic timing seam for prefill-sampling tests.
@@ -498,7 +574,14 @@ public actor EngineV2Bridge {
     // Test-installed only; never emitted to logging/telemetry or built in release.
     var _testNativeTextObserver: (@Sendable (String, String) -> Void)?
     var _testBeforeNativeTerminal: (@Sendable (CBv2Usage) async -> Void)?
+    /// Awaited before every native terminal until cleared. Concurrent requests
+    /// can finish in one batched step, which a re-armed one-shot gate can miss.
+    var _testPersistentBeforeNativeTerminal: (@Sendable (CBv2Usage) async -> Void)?
     var _testOnCancelledSettlementWait: (@Sendable () -> Void)?
+
+    func _testInstallPersistentTerminalGate(_ gate: (@Sendable (CBv2Usage) async -> Void)?) {
+        _testPersistentBeforeNativeTerminal = gate
+    }
 
     func _testInstallCancelledSettlementHooks(
         beforeNativeTerminal: @escaping @Sendable (CBv2Usage) async -> Void,

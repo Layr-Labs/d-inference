@@ -19,13 +19,18 @@ extension CoordinatorClient {
             do {
                 try await connectAndRun()
                 logger.info(.coordinatorConnectionClosed)
+                // A clean close ends a final attempt too; it reconnects at once.
+                memberFinalAttemptUntil = nil
+                if memberRoleFailure { break }
                 backoff.reset()
                 continue
             } catch {
-                if shutdownRequested { break }
+                if shutdownRequested || memberRoleFailure { break }
 
+                // Placed before the event: a waiting member reads the
+                // attempt's outcome when it sees the disconnect.
+                let delay = nextMemberAwareReconnectDelay(backoff: backoff.nextDelay())
                 eventContinuation?.yield(.disconnected)
-                let delay = backoff.nextDelay()
                 let reachable = reachability.isReachable
                 logger.warning(.coordinatorConnectionFailed)
                 logger.warning("Coordinator connection error: \(error.localizedDescription). network_reachable=\(reachable). Reconnecting in \(delay)s")
@@ -50,17 +55,20 @@ extension CoordinatorClient {
 
     // MARK: - Single Connection Session
 
-    private func connectAndRun() async throws {
-        guard let url = URL(string: config.url) else {
-            throw CoordinatorError.invalidURL(config.url)
-        }
-
+    /// Transport stack for one coordinator connection: TCP, TLS for a
+    /// `wss`/`https` URL, and the WebSocket protocol on top.
+    static func connectionParameters(for url: URL) -> NWParameters {
         // ws:// (integration tests) vs wss:// (production). The transport security
         // MUST match the URL scheme: pairing `.tcp` params with a wss URL makes the
         // WebSocket server-response validation fail.
         let scheme = url.scheme?.lowercased()
         let useTLS = (scheme == "wss" || scheme == "https")
-        let params = useTLS ? NWParameters.tls : NWParameters.tcp
+        // A debug build may pin a local test coordinator's certificate
+        // (`CoordinatorDebugCertificatePin`); release builds always use the
+        // system's trust evaluation.
+        let params = useTLS
+            ? (CoordinatorDebugCertificatePin.tlsOptions().map { NWParameters(tls: $0) } ?? NWParameters.tls)
+            : NWParameters.tcp
 
         // Disable Nagle's algorithm (TCP_NODELAY). Without this, the kernel
         // batches small WebSocket frames (~200 bytes each) and delays sending
@@ -87,12 +95,19 @@ extension CoordinatorClient {
         // headers), so there are none to forward via
         // `wsOptions.setAdditionalHeaders(...)` here.
         params.defaultProtocolStack.applicationProtocols.insert(wsOptions, at: 0)
+        return params
+    }
+
+    private func connectAndRun() async throws {
+        guard let url = URL(string: config.url) else {
+            throw CoordinatorError.invalidURL(config.url)
+        }
 
         // WebSocket REQUIRES a URL endpoint: Network.framework derives host, port,
         // AND the request path (e.g. /v1/providers/ws) from it. A `.hostPort`
         // endpoint drops the path, so the handshake would issue `GET / HTTP/1.1`
         // and the coordinator's WS route would reject it.
-        let connection = NWConnection(to: .url(url), using: params)
+        let connection = NWConnection(to: .url(url), using: Self.connectionParameters(for: url))
         self.nwConnection = connection
         self.appAttestResumeNonce = appAttestResumeResponder == nil ? nil
             : Data(Sodium().randomBytes.buf(length: 32)!).base64EncodedString()
@@ -101,8 +116,13 @@ extension CoordinatorClient {
         // Mid-session connection drops are published here by the persistent state
         // handler and rethrown by a task-group child to drive the reconnect loop.
         let (failureStream, failureCont) = AsyncStream<Error>.makeStream()
+        var memberTimeout: Task<Void, Never>?
         defer {
+            memberTimeout?.cancel()
             failureCont.finish()
+            // Before the reconnect loop announces the end: a waiting member
+            // past its deadline must not wait on a connection that is gone.
+            self.noteMemberAttemptEnded()
             // Tear down this connection on every exit (error OR clean reconnect),
             // so a stale NWConnection (and its internal retry) never lingers.
             // Nil the stored reference so sendOnCurrentConnection fast-returns
@@ -115,6 +135,11 @@ extension CoordinatorClient {
             // quote snapshot is dropped with it so quotes never answer from a
             // session the new coordinator connection has not seen.
             self.sessionRegistered = false
+            // One negotiation per connection: a late prior acknowledgment must
+            // never open the next connection's member wait.
+            self.memberNegotiation = nil
+            // No grant or key is retained across a connection boundary.
+            self.detachNativePairMember()
             self.failDrainBarriers()
             self.failModelReplacements()
             self.state.resetCapacitySession()
@@ -128,56 +153,50 @@ extension CoordinatorClient {
 
         let logger = self.logger
 
-        // Wait for the handshake to complete (.ready). The one-shot handler set
-        // here is swapped for a persistent failure-forwarding handler the instant
-        // the connection is ready — done inside the `.ready` branch (serial on
-        // connectionQueue) so no post-ready state change slips through the gap
-        // between resuming the continuation and installing the persistent handler.
-        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
-            connection.stateUpdateHandler = { state in
-                switch state {
-                case .ready:
-                    connection.stateUpdateHandler = { laterState in
-                        switch laterState {
-                        case .failed(let error):
-                            failureCont.yield(CoordinatorError.connectionClosed(error))
-                        case .waiting(let error):
-                            failureCont.yield(CoordinatorError.connectionClosed(error))
-                        case .cancelled:
-                            failureCont.yield(CoordinatorError.connectionClosed(NWError.posix(.ECANCELED)))
-                        default:
-                            break
-                        }
+        // Wait for the handshake to complete (.ready), bounded by the
+        // handshake deadline. The persistent failure-forwarding handler is
+        // installed inside the `.ready` callback (serial on connectionQueue) so
+        // no post-ready state change slips through the gap between resuming
+        // and installing it.
+        noteMemberAttemptStarted()
+        do {
+            try await CoordinatorConnectionHandshake.start(
+                connection, on: connectionQueue, timeout: config.handshakeTimeout
+            ) {
+                connection.stateUpdateHandler = { laterState in
+                    if let error = CoordinatorError(terminalState: laterState) {
+                        failureCont.yield(error)
                     }
-                    cont.resume()
-                case .failed(let error):
-                    connection.stateUpdateHandler = nil
-                    cont.resume(throwing: CoordinatorError.connectionClosed(error))
-                case .waiting(let error):
-                    // Can't establish yet (DNS failure, connection refused, no
-                    // route). Don't sit in NWConnection's internal wait/retry —
-                    // surface it so the client's own backoff loop owns reconnect.
-                    connection.stateUpdateHandler = nil
-                    cont.resume(throwing: CoordinatorError.connectionClosed(error))
-                case .cancelled:
-                    connection.stateUpdateHandler = nil
-                    cont.resume(throwing: CoordinatorError.connectionClosed(NWError.posix(.ECANCELED)))
-                default:
-                    break
                 }
             }
-            connection.start(queue: self.connectionQueue)
+        } catch {
+            // Not reached at all: a waiting member says so instead of
+            // reporting a role refusal (F11).
+            noteMemberAttemptUnreachable(error)
+            throw error
         }
 
         logger.info(.coordinatorTransportReady)
 
+        // A member registration carries this connection's fresh negotiation
+        // nonce; the coordinator's acceptance must echo it within ten seconds.
+        memberNegotiation = config.executionRole == .clusterMember ? .init() : nil
+        memberOrdinaryAnswer = false
+        noteMemberTransportReady(memberNegotiation)
+        if let negotiation = memberNegotiation {
+            memberTimeout = Task { [weak self] in
+                do { try await ContinuousClock().sleep(until: negotiation.deadline) } catch { return }
+                guard !Task.isCancelled else { return }
+                await self?.expireMemberNegotiation(nonce: negotiation.nonce)
+            }
+        }
         try await sendRegistration(connection: connection)
         logger.info(.coordinatorRegistrationSent)
         // Fresh capacity-seq session for this connection (routing v2): seq
         // restarts at 1 on the first heartbeat and out-of-band event
         // heartbeats are permitted from here on.
         state.resetCapacitySession()
-        sessionRegistered = true
+        sessionRegistered = config.executionRole == .solo
 
         // Fresh outbound stream for THIS connection. AsyncStream is single-shot:
         // its iterator is terminated when the previous session's consumer task is
@@ -200,7 +219,9 @@ extension CoordinatorClient {
             chunkWriter.write(frames)
         }
 
-        eventContinuation?.yield(.connected)
+        // A member connection is announced only by its nonce-bound acceptance
+        // (CoordinatorClient+Inbound), never by the registration send.
+        if config.executionRole == .solo { eventContinuation?.yield(.connected) }
 
         try await sessionLoop(
             connection: connection,

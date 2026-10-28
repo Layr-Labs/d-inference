@@ -1,6 +1,6 @@
 # Provider Encryption And Privacy
 
-> Last updated: 2026-10-09
+> Last updated: 2026-10-26
 
 This page describes the provider's plaintext boundary, encrypted network traffic
 and local cache storage. Backend cryptographic implementation and consumer
@@ -105,17 +105,38 @@ This table is the privacy statement. [../../consumer/privacy-expectations.md](ht
 The provider encrypts attention blocks and complete checkpoints before disk I/O
 using the existing DBK3 authenticated-encryption format. Keys remain in the
 Mac's Secure Enclave/Keychain hierarchy; selecting a different payload volume
-does not copy keys there. Lookup names remain keyed HMACs. Some operational
+does not copy keys there. A dev build has its own installation KEK and Secure
+Enclave key (keychain prefix `io.darkbloom.dev`), so it cannot read a production
+provider's cache, and the reverse. An ad hoc signed build has no keychain access
+group, so it gets no persistent cache key: its SSD stores are refused with
+`key_unavailable` unless an ephemeral key is explicitly allowed. For
+qualification only, a DEBUG build can instead derive the KEK from an
+operator-created private file (`DARKBLOOM_DEBUG_CACHE_KEY_FILE`,
+`provider-swift/Sources/ProviderCore/KVCacheSSD/SSDDebugCacheKeyFile.swift`).
+That key material sits on disk protected only by file ownership, mode `0600`
+and the volume's encryption, not the Secure Enclave; release builds do not
+contain this path. Lookup names remain keyed HMACs. Some operational
 metadata (sizes, model/layout binding and times) remains visible; the precise
 [format and observable fields](../../reference/ssd-kv-cache.md#dbk3-file-format)
-are unchanged. TTL checks on reuse, tenant binding and authentication remain in
+list it. A delta checkpoint names its parent only through a keyed commitment, so
+files of one conversation stay unlinkable without the cache key. TTL checks on reuse, tenant binding and authentication remain in
 force. Switching locations leaves earlier ciphertext in its old location; the
 new location's maintenance does not sweep the old one or securely erase a disk.
 TTL limits ordinary cache reuse, not physical retention: detached or inaccessible
 media can retain ciphertext and metadata indefinitely. TTL/LRU deletion requires the
 selected volume to be mounted and accessible. Destroying the installation KEK
 provides a cryptographic purge for retained encrypted copies; it does not erase
-their bytes or visible metadata.
+their bytes or visible metadata. A Keychain KEK sealed to a Secure Enclave key
+that no longer exists (the attestation key's self-repair re-mints it;
+`darkbloom unenroll` deletes it) can never be unwrapped again, so the provider
+replaces it with a fresh KEK sealed to the current key, and each store wipes
+the files it can no longer read when it next starts
+(`provider-swift/Sources/ProviderCore/KVCache/KVCacheKEK.swift`). Only a
+ciphertext the current key cannot open triggers this; a failure to reach or use
+the key, such as a locked keychain or an access-control refusal, leaves the
+entry untouched
+(`provider-swift/Sources/ProviderCore/KVCache/SecureEnclaveKeyWrappingService.swift`,
+`unwrapError`).
 Restart scanning seeds freshness from file modification times, so TTL is not
 an anti-rollback guarantee against a malicious disk replaying data and metadata.
 
@@ -163,6 +184,80 @@ Code: `provider-swift/Sources/ProviderCore/KVCacheSSD/CacheVolume.swift`,
 `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDNoFollowIO.swift`.
 Operator steps: [cache storage](../../provider/cache-storage.md).
 
+## Two-Mac cluster (experimental)
+
+A [two-Mac cluster](../../provider/two-mac-cluster.md) keeps the same rules
+across the Thunderbolt cable:
+
+- **Pairing.** Each Mac's Secure Enclave identity signs the pairing (S17); both
+  screens show the same six-digit code and both owners confirm it. The peer's
+  pin is stored owner-only (0600), and both Macs verify each other before any
+  data-plane key exists. A DEBUG build without the signed build's keychain
+  entitlement may keep its Secure Enclave key's opaque handle in an owner-only
+  file (`DARKBLOOM_DEBUG_SE_KEY_FILE`, `SecureEnclaveIdentity.debugPersisted`);
+  the key itself never leaves the Secure Enclave, and a release build has no
+  such path.
+- **Cable bytes.** The link control channel (commands, control leases, model
+  copies) is keyed by the pairing's edge secret with fresh nonces both ways;
+  the data plane (activations, KV hand-offs, cache transfers) is encrypted and
+  authenticated with rekeying, and tampered records are refused. The control
+  lease runs on a listener and epoch label of its own; no key material crosses
+  Macs when control fails over.
+  Every installed paired-link text session requires the same keyed worker build
+  on both Macs; unsupported or different builds are refused before launch.
+  The leader issues fresh session credentials, sends each rank only its own
+  credential over its authenticated owner route, and the follower checks the
+  epoch and rank before opening its local owner. The native worker verifies
+  the certificate and pinned peer. Serving begins only after both workers
+  report one matching encrypted, peer-verified data plane. Authenticated
+  control/bootstrap status alone cannot satisfy that condition
+  (`provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/ClusterMiMoPrivateImagePolicy.swift`,
+  `keysDataPlane`, `followerDataPlaneTrust`;
+  `provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledSession.swift`,
+  `launch`; `libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterDataPlaneLaunch.swift`).
+- **Qwen batch records.** Both ranks derive one batch identity from their
+  pinned membership epoch, execution plan, lane count and increasing batch
+  ordinal. Control records bind the phase, direction and step. Residual records
+  also bind the ordered local request identities, fingerprints and frontiers;
+  prefill binds its frame bounds. The producer captures these facts before
+  forward computation advances its state, and the consumer before receiving.
+  The array codec additionally binds shape, dtype, chunk index and byte length.
+  Directional record sequences continue across batches and rekeys: replay,
+  wrong scope or authentication failure fences the session without a plaintext
+  retry (`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Batch/QwenBatchRecordBinding.swift`,
+  `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Resident/QwenResidentRuntime+Batch.swift`,
+  `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Transport/CollectiveAuthenticatedRecords.swift`).
+- **Model copies.** A Mac accepts a model from its paired Mac only when this
+  build's qualification records pin the manifest's aggregate digest, verifies
+  every file as it arrives, has its own worker check the staged files before
+  the folder is renamed into place, and refuses hard links and unexpected files.
+- **Cluster prompt cache at rest.** AES-GCM under a key derived from the
+  Secure Enclave-rooted KEK (`provider-swift/Sources/ProviderCore/KVCacheSSD/ClusterPrefixSSDKeyMaterial.swift`),
+  passed to ranks on an input pipe (never in an environment), scoped to model,
+  plan, rank and Mac.
+- **Cluster prompt cache partitions.** Both ranks keep and look up every
+  prompt prefix, in memory and in their SSD tiers, only under the request's own
+  partition, as one Mac does with the request's cache scope: a coordinator
+  request's authenticated cache scope reaches the ranks only as a SHA-256 digest
+  (`ClusterWorkerPrefixCache.tenantDigest`, domain
+  `darkbloom-cluster-prefix-tenant-v1|`), which every key and record
+  scope carries, so one scope's requests never restore or probe another's prefixes. A
+  request whose cache is off (a remote request without an authenticated scope,
+  or one with GLM or Qwen media) restores and keeps nothing on either rank. The
+  scope itself never leaves the leader's provider process; the digest stays out
+  of descriptions and logs (`ClusterWorkerPrefixCache.description`), though it
+  links one scope's requests within the cache as the scope does. Both ranks bind
+  the partition into the request fingerprint they compare first, so ranks given
+  different partitions fail the request rather than share state. Requests from
+  the local endpoint carry no partition and share only one another's prefixes
+  (`libs/darkbloom-cluster/Sources/DarkbloomClusterProtocol/ClusterWorkerPrefixCache.swift`,
+  `provider-swift/Sources/ProviderCore/Inference/Distributed/DistributedPipeExecutionOwner.swift`;
+  [mechanism](../prefix-cache.md#cluster-prefix-tenant-partitions)).
+- **Helpers.** The cluster worker and placement tool ship in
+  `Darkbloom.app/Contents/Helpers`, Developer ID signed with hardened runtime
+  and network client/server entitlements only
+  (`provider-swift/entitlements-cluster-worker.plist`).
+
 ## Invariants And Failure Modes
 
 - Do not fall back to plaintext when decryption/authentication fails.
@@ -172,6 +267,8 @@ Operator steps: [cache storage](../../provider/cache-storage.md).
   inference may recompute, but must not redirect payloads to another disk.
 - Keep cache keys and persistent write accounting on the Mac. Changing the
   payload volume does not reset accounting or erase old ciphertext.
+- A cluster rank receives a request's cache scope only as its digest, and
+  offers, restores and keeps prompt prefixes only within the request's partition.
 - Do not claim guaranteed buffer zeroization, forward secrecy against recipient
   key compromise, peripheral attestation or correct computation from these controls.
 
@@ -181,3 +278,54 @@ Operator steps: [cache storage](../../provider/cache-storage.md).
 - [Cache format](../../reference/ssd-kv-cache.md)
 - [Attestation](attestation.md)
 - [Identity binding](identity-binding.md)
+
+### Drained batch setup adoption
+
+The private `batchSetup` command uses the existing authenticated pair-control
+channel. The receiver authorizes its saved serving rank 0 and checks unchanged
+model, capability, peers, trust, ranks and request limits before publishing a
+new setup under the ordinary empty-device lease gate. A compare-and-swap on
+the previous full digest refuses an unrelated later choice; retrying the exact
+already-selected target is idempotent. The running follower's full setup digest
+fences a stale control client before a new native epoch opens. These checks
+grant neither coordinator membership nor worker ownership. Sources:
+`provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/ClusterAutomaticBatchSetupTransaction.swift`
+and `provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/ClusterService.swift`.
+
+### Qwen media reservation identity
+
+The optional `qwen35_tp_media_v1` carrier uses at most 16 images, eight videos and
+32 MiB of encoded input, with bounded source-raster totals and checked grid/span
+arithmetic. Its fingerprint binds all immutable identity and geometry fields but
+not encoded-byte presence, so the local payload and peer metadata agree. Rank
+zero must separately verify encoded and prepared-patch digests before execution;
+a supplied digest is not a decoded-feature authorization. The carrier cannot be
+combined with another media contract or request route. Existing record sealing,
+worker trust and actual memory admission remain required; this codec change does
+not advertise a media-capable runtime or endpoint.
+
+The Qwen27 native media seam sends rank-zero vision features through the
+existing authenticated TP collective records. The receiver copies rank-zero
+values without a numerical sum, and both ranks verify the same media fingerprint
+and recomputed three-axis position identity. Encoded source media is retained
+only on its declared rank. `WorkerQwenMediaAdmission` rejects an unsupported
+runtime, missing verified data plane, wrong rank payload or mismatched artifact
+before reservation. These checks do not grant provider ingress or qualify media
+numerics. Source:
+`libs/darkbloom-cluster-worker/Sources/DarkbloomClusterWorker/Execution/WorkerQwenMediaAdmission.swift`.
+
+Qwen media transport preserves the typed envelope through owner and peer-link
+clock translation. The pair sends encoded inputs to rank 0 only; rank 1 receives
+metadata and the same content-bound fingerprint. A caller cancellation or early
+resource-release attempt cannot release the owner's encoded alias before the
+request has retired. Other model media contracts retain their existing behavior.
+
+Provider Qwen media ingress binds encoded bytes to the loaded artifact, model
+configuration, resolved processor, expanded prompt, prepared patches and
+three-axis position digest. The bridge checks this binding before submission;
+local SDK engines refuse the opaque cluster carrier before allocating KV state.
+The process-wide host reservation follows an explicit generation/request owner
+through submission and definitive native retirement. Cancellation or HTTP stream
+termination is not an encoded-buffer release receipt. No media, token IDs or
+prompt content is added to telemetry by this path. The lifetime implementation is
+`provider-swift/Sources/ProviderCore/Inference/Distributed/Requests/DistributedQwenMediaLifetime.swift`.

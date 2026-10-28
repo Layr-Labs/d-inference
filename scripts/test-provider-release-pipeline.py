@@ -6,7 +6,11 @@ import re
 import unittest
 
 ROOT = Path(__file__).resolve().parent.parent
-RELEASE = (ROOT / '.github/workflows/release-swift.yml').read_text()
+# release-swift.yml is the thin caller that owns the triggers and routes each one
+# to one or more environment lanes; release-provider.yml is the reusable workflow
+# that holds the resolve -> build -> sign -> stage -> publish job chain.
+CALLER = (ROOT / '.github/workflows/release-swift.yml').read_text()
+RELEASE = (ROOT / '.github/workflows/release-provider.yml').read_text()
 WARM = (ROOT / '.github/workflows/provider-release-cache.yml').read_text()
 ACTION = (ROOT / '.github/actions/provider-release-build/action.yml').read_text()
 
@@ -22,15 +26,17 @@ def job(workflow, name):
 class ReleasePipelineTests(unittest.TestCase):
     maxDiff = 1000
     def test_master_push_publishes_dev_and_tags_still_publish_production(self):
-        trigger = RELEASE.split('\non:\n', 1)[1].split('\n  workflow_dispatch:', 1)[0]
+        # The caller owns the triggers; path filters still apply to pushes, not tags.
+        trigger = CALLER.split('\non:\n', 1)[1].split('\n  workflow_dispatch:', 1)[0]
         self.assertIn("    tags:\n      - 'v*.*.*'\n", trigger)
         self.assertIn('    branches: [master]\n', trigger)
         paths = re.findall(r"(?m)^      - '([^']+)'$", trigger.split('    paths:\n', 1)[1])
         for required in ['provider-swift/**', 'libs/**', '.github/workflows/release-swift.yml',
+                         '.github/workflows/release-provider.yml',
                          '.github/actions/provider-release-build/**']:
             self.assertIn(required, paths)
-        # Every script the release runs must start a dev release when it changes.
-        scripts = set(re.findall(r'scripts/[A-Za-z0-9_.*-]+\.(?:sh|py)', RELEASE + ACTION))
+        # Every script a release runs must start the push lanes when it changes.
+        scripts = set(re.findall(r'scripts/[A-Za-z0-9_.*-]+\.(?:sh|py)', RELEASE + CALLER + ACTION))
         scripts |= {'scripts/provider_release_resume/api.py', 'scripts/provider_release_artifact.py',
                     'scripts/provider_release_github.py', 'scripts/provider_release_cache/mtimes.py',
                     'scripts/stage-swiftpm-resource-bundles.sh'}
@@ -40,13 +46,86 @@ class ReleasePipelineTests(unittest.TestCase):
         self.assertNotIn('branches-ignore', trigger)
         self.assertNotIn('pull_request', trigger)
 
-    def test_dev_publication_is_serialized_and_never_cancelled_in_progress(self):
+    def test_caller_routes_each_trigger_to_the_right_environment_lanes(self):
+        # A master push runs dev and staging; a tag runs prod; dispatch runs the
+        # chosen environment. Every lane calls the reusable workflow and inherits
+        # the credentials it needs.
+        lanes = {
+            'dev': CALLER.split('\n  dev:\n', 1)[1].split('\n  staging:\n', 1)[0],
+            'staging': CALLER.split('\n  staging:\n', 1)[1].split('\n  prod:\n', 1)[0],
+            'prod': CALLER.split('\n  prod:\n', 1)[1],
+        }
+        push_branch = "(github.event_name == 'push' && github.ref_type == 'branch')"
+        for name in ('dev', 'staging'):
+            with self.subTest(lane=name):
+                self.assertIn(push_branch, lanes[name])
+                self.assertIn("(github.event_name == 'workflow_dispatch' && inputs.environment == '%s')" % name,
+                              lanes[name])
+                self.assertIn('uses: ./.github/workflows/release-provider.yml', lanes[name])
+                self.assertIn('environment: ' + name, lanes[name])
+                self.assertIn('secrets: inherit', lanes[name])
+        # prod never runs on a branch push: it is tag-gated (or a recovery dispatch).
+        self.assertIn("github.ref_type == 'tag'", lanes['prod'])
+        self.assertIn("(github.event_name == 'workflow_dispatch' && inputs.environment == 'prod')",
+                      lanes['prod'])
+        self.assertNotIn(push_branch, lanes['prod'])
+        self.assertIn('environment: prod', lanes['prod'])
+        self.assertIn('secrets: inherit', lanes['prod'])
+        # The caller holds no secrets, run steps or job chain of its own: it only
+        # routes triggers to lanes. Every lane calls the one reusable workflow.
+        self.assertNotIn('secrets.', CALLER)
+        self.assertNotRegex(CALLER, r'(?m)^\s+run:')
+        self.assertNotRegex(CALLER, r'(?m)^\s+steps:')
+        for job in ('resolve-env:', 'build-and-release:', 'stage-release:', 'publish-release:'):
+            self.assertNotIn('\n  ' + job, CALLER)
+        self.assertEqual(CALLER.count('uses: ./.github/workflows/release-provider.yml'), 3)
+
+    def test_staging_lane_is_gated_off_until_the_infra_var_is_set(self):
+        # A master push builds and publishes dev unconditionally; staging only
+        # when the STAGING_ENABLED repo variable is 'true' (set once the staging
+        # stack and STAGING_* secrets exist), so a push never burns a second
+        # build that would hard-fail at staging publication for want of secrets.
+        dev = CALLER.split('\n  dev:\n', 1)[1].split('\n  staging:\n', 1)[0]
+        staging = CALLER.split('\n  staging:\n', 1)[1].split('\n  prod:\n', 1)[0]
+        prod = CALLER.split('\n  prod:\n', 1)[1]
+        staging_if = staging.split('    if:', 1)[1].split('    concurrency:', 1)[0]
+        self.assertIn("vars.STAGING_ENABLED == 'true'", staging_if)
+        # The gate ANDs with the trigger routing, so disabling it drops staging
+        # entirely while dev still matches the push.
+        self.assertIn("(github.event_name == 'push' && github.ref_type == 'branch')", staging_if)
+        self.assertNotIn("vars.STAGING_ENABLED", dev)
+        self.assertNotIn("vars.STAGING_ENABLED", prod)
+        self.assertEqual(CALLER.count("vars.STAGING_ENABLED"), 1)
+
+    def test_reusable_workflow_takes_the_environment_as_a_called_input(self):
         header = RELEASE.split('\njobs:\n', 1)[0]
-        concurrency = header.split('\nconcurrency:\n', 1)[1].split('\npermissions:', 1)[0]
-        self.assertIn("(github.event_name == 'push' && github.ref_type == 'branch')", concurrency)
-        self.assertIn("&& 'release-dev' || format('release-swift-{0}', github.run_id)", concurrency)
-        self.assertIn('cancel-in-progress: false', concurrency)
-        self.assertIn("format('dev provider release -dev.{0} (master push)', github.run_number)", header)
+        self.assertIn('\non:\n  workflow_call:\n', header)
+        inputs = header.split('    inputs:\n', 1)[1]
+        self.assertIn('      environment:\n', inputs)
+        self.assertRegex(inputs, r'environment:\n(?:.*\n)*?        required: true')
+        # The reusable workflow carries no triggers of its own.
+        self.assertNotIn('  push:', header)
+        self.assertNotIn('workflow_dispatch:', header)
+
+    def test_dev_and_staging_publication_are_serialized_and_never_cancelled(self):
+        # Serialization moved from a single workflow-level group to one group per
+        # caller lane, so dev and staging run in parallel in one master-push run
+        # while each environment still publishes one at a time across runs.
+        dev = CALLER.split('\n  dev:\n', 1)[1].split('\n  staging:\n', 1)[0]
+        staging = CALLER.split('\n  staging:\n', 1)[1].split('\n  prod:\n', 1)[0]
+        prod = CALLER.split('\n  prod:\n', 1)[1]
+        dev_group = dev.split('    concurrency:\n', 1)[1].split('    uses:', 1)[0]
+        self.assertIn("(github.event_name == 'workflow_dispatch' && inputs.validation_only)", dev_group)
+        self.assertIn("|| 'release-dev'", dev_group)
+        self.assertIn('cancel-in-progress: false', dev_group)
+        self.assertIn('group: release-staging', staging)
+        self.assertIn('cancel-in-progress: false',
+                      staging.split('    concurrency:\n', 1)[1].split('    uses:', 1)[0])
+        # prod keeps a unique per-run group, as before; it never joins release-dev.
+        self.assertIn("group: ${{ format('release-swift-{0}', github.run_id) }}", prod)
+        self.assertNotIn('release-dev', prod)
+        self.assertIn("format('dev + staging provider release (master push -dev.{0}/-staging.{0})', github.run_number)",
+                      CALLER)
 
     def test_production_secrets_require_the_resolved_production_environment(self):
         references = re.findall(r'(?m)^\s+((?:DEV|PROD|LEGACY)_[A-Z0-9_]+): (.*)$', RELEASE)
@@ -88,7 +167,11 @@ class ReleasePipelineTests(unittest.TestCase):
         signing = job(RELEASE, 'build-and-release')
         for output in ['PRE_SIGN_SMOKE_OUTPUT', 'FINAL_SMOKE_OUTPUT']:
             self.assertIn(f'printf \'%s\\n\' "${output}" \\\n'
-                          '            | grep -Eq "^build-environment-runtime-smoke: ${ENV_PREFIX} "', signing)
+                          '            | grep -Eq "^build-environment-runtime-smoke: ${ENV_PREFIX} cli=${CLI_NAME} "', signing)
+        # The packaged names follow the version; the compiled names must agree.
+        resolve = 'python3 scripts/provider_release_identity.py "$VERSION" >> "$GITHUB_ENV"'
+        for name in ['build-and-release', 'validate-older-macos']:
+            self.assertIn(resolve, job(RELEASE, name))
 
     def test_signing_requires_both_sdk_lanes_without_environment_approval(self):
         content = job(RELEASE, 'build-and-release')
@@ -202,7 +285,12 @@ class ReleasePipelineTests(unittest.TestCase):
         self.assertIn("github.event_name == 'pull_request' || github.ref == 'refs/heads/master'", WARM)
         self.assertIn('lane: [release, qualification]', WARM)
         self.assertIn('max-parallel: 2', WARM)
-        self.assertIn('runs-on: blacksmith-12vcpu-macos-27', WARM)
+        # Only PR warming may use a Darkbloom Sandbox; master and dispatched
+        # warming feed release builds and keep the literal Blacksmith runner.
+        self.assertIn("    runs-on: ${{ github.event_name == 'pull_request' && "
+                      "fromJSON(needs.route.outputs.routes)['warm'] || 'blacksmith-12vcpu-macos-27' }}\n", WARM)
+        self.assertIn("        warm macos_arm64 blacksmith-12vcpu-macos-27 "
+                      "${{ github.event_name == 'pull_request' && 2 || 0 }}\n", WARM)
         self.assertNotRegex(WARM, r'(?m)^  (pull_request_target|workflow_run):')
         for text in [WARM, ACTION]:
             for forbidden in ['secrets.', 'contents: write', 'gh release create', 'aws s3', 'notarytool']:
@@ -230,10 +318,72 @@ class ReleasePipelineTests(unittest.TestCase):
         self.assertNotIn("cache-hit", gate)
         self.assertNotIn("continue-on-error:", gate)
 
+    def test_image_http_fixtures_reach_the_full_sdk_test_process(self):
+        marker = '- name: Prepare MiMo image HTTP fixtures\n'
+        self.assertIn(marker, ACTION)
+        fixture = ACTION.split(marker, 1)[1].split('\n    - name:', 1)[0]
+        self.assertIn("if: inputs.lane == 'qualification'", fixture)
+        self.assertIn('python3 scripts/prepare-mimo-image-http-fixtures.py', fixture)
+        self.assertIn('--github-env "$GITHUB_ENV"', fixture)
+        self.assertNotIn('cache-hit', fixture)
+        self.assertNotIn('continue-on-error:', fixture)
+        self.assertLess(ACTION.index(marker), ACTION.index('- name: Test provider with release SDK\n'))
+        # GitHub applies this environment file to the following step, not its writer.
+        test = ACTION.split('- name: Test provider with release SDK\n', 1)[1].split('\n    - name:', 1)[0]
+        self.assertIn('-- ../scripts/run-provider-tests.sh', test)
+        self.assertNotIn('MiMoImageHTTPIngressTests', test)
+
     def test_qwen_resource_regression_runs_without_a_cache_hit_bypass(self):
         step = ACTION.split('- name: Test Qwen resources in a relocated app\n', 1)[1].split('\n    - name:', 1)[0]
         self.assertIn('python3 scripts/test-qwen4-packaged-resources.py', step)
         self.assertNotIn('if:', step)
+
+    def test_every_environment_signs_with_the_real_developer_id_not_self_signed(self):
+        # dev, staging and prod share one signing job with no per-environment
+        # branch: all sign with the Developer ID. Only the separate
+        # release-dev-branch.yml lane ad-hoc self-signs; this lane never does.
+        sign = job(RELEASE, 'build-and-release')
+        self.assertEqual(sign.count('--sign "$DEVELOPER_ID"'), 5)
+        for adhoc in ('--sign -', 'codesign -s -', 'self-sign', 'ad-hoc', 'adhoc',
+                      'runtime-codesign.sh', 'acknowledge_install_signature_gate'):
+            self.assertNotIn(adhoc, sign)
+        # The signing identity does not switch on the resolved environment.
+        self.assertNotIn('DEVELOPER_ID_STAGING', RELEASE)
+        self.assertNotIn("ENV_PREFIX == 'staging'", sign)
+        self.assertIn("DEVELOPER_ID: 'Developer ID Application: Eigen Labs, Inc. (SLDQ2GJ6TL)'", RELEASE)
+
+    def test_prod_signing_identity_is_only_reachable_through_a_tag(self):
+        # Three independent gates keep a push off the prod signing identity:
+        # the caller never routes a branch push to prod, resolve refuses prod on
+        # a non-tag trigger, and signing requires a successful resolve-env.
+        prod = CALLER.split('\n  prod:\n', 1)[1]
+        self.assertNotIn("github.ref_type == 'branch'", prod)
+        resolver = (ROOT / 'scripts/resolve-provider-release.sh').read_text()
+        self.assertIn("Production publication requires a source-matching release tag", resolver)
+        self.assertIn('Branch pushes publish dev or staging only', resolver)
+        sign = job(RELEASE, 'build-and-release')
+        self.assertIn("needs.resolve-env.result == 'success'", sign)
+
+    def test_dev_and_staging_artifacts_avoid_collision_but_prod_stays_unqualified(self):
+        # dev and staging share one GitHub run id on a master push, so their
+        # unsigned and publication artifact names carry the environment; prod
+        # keeps the bare names the resume provenance reconstructs unchanged.
+        build = job(RELEASE, 'build-provider')
+        self.assertIn('ARTIFACT_NAME="unsigned-provider-${GITHUB_SHA}-${GITHUB_RUN_ATTEMPT}"', build)
+        self.assertIn('if [ "$ENV_PREFIX" != prod ]; then', build)
+        self.assertIn('ARTIFACT_NAME="unsigned-provider-${ENV_PREFIX}-${GITHUB_SHA}-${GITHUB_RUN_ATTEMPT}"', build)
+        sign = job(RELEASE, 'build-and-release')
+        self.assertIn('PUBLICATION_NAME="provider-publication-${RELEASE_SOURCE_SHA}-${GITHUB_RUN_ATTEMPT}"', sign)
+        self.assertIn('PUBLICATION_NAME="provider-publication-${ENV_PREFIX}-${RELEASE_SOURCE_SHA}-${GITHUB_RUN_ATTEMPT}"', sign)
+        # Both SDK lanes pass the environment so retained diagnostics never clash.
+        self.assertIn('environment: ${{ needs.resolve-env.outputs.environment }}', job(RELEASE, 'build-provider'))
+        self.assertIn('environment: ${{ needs.resolve-env.outputs.environment }}', job(RELEASE, 'qualify-sdk'))
+        # Release lanes add an -<environment>- infix; a caller passing no
+        # environment (the warm lane) keeps the historical name with no empty
+        # double dash.
+        self.assertIn("provider-sdk-test-diagnostics${{ inputs.environment != '' && format('-{0}', inputs.environment) || '' }}-", ACTION)
+        self.assertNotIn('provider-sdk-test-diagnostics--', ACTION)
+        self.assertNotRegex(WARM, r'(?m)^\s+environment:')
 
 
 if __name__ == '__main__':

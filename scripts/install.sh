@@ -4,10 +4,11 @@
 set -euo pipefail
 
 # Darkbloom Provider Installer (Swift CLI release v0.5.0+)
-# Usage: curl -fsSL https://api.darkbloom.dev/install.sh | bash
+# Usage: curl -fsSL <coordinator base URL>/install.sh | bash
 #
 # This script:
-#   1. Fetches the latest signed release from the coordinator
+#   1. Fetches the latest signed release from the coordinator that served it
+#      and selects the provider identity from the release version
 #   2. Downloads the provider app (binaries, metallib, SwiftPM resources)
 #   3. Verifies bundle SHA-256 + Apple Developer ID code signature
 #   4. Sets up the Secure Enclave identity
@@ -23,17 +24,68 @@ set -euo pipefail
 # End users fetch /install.sh from a coordinator, which substitutes its own base
 # URL. Direct source execution must set COORD_URL explicitly.
 COORD_URL="${COORD_URL:-__DARKBLOOM_COORD_URL__}"
-INSTALL_DIR="$HOME/.darkbloom"
-BIN_DIR="$INSTALL_DIR/bin"
-PROVIDER_CONFIG="$HOME/.config/darkbloom/provider.toml"
 # The provider connects here when provider.toml sets no [coordinator] url
 # (CoordinatorSettings in provider-swift ProviderConfig.swift), so the
 # production installer removes that url instead of writing one.
 PRODUCTION_COORD_URL="https://api.darkbloom.dev"
 DARKBLOOM_DESIGNATED_REQUIREMENT='anchor apple generic and identifier "io.darkbloom.provider" and certificate leaf[subject.OU] = "SLDQ2GJ6TL"'
+# Pre-release builds (versions carrying -dev. or -staging.) are self-signed and
+# served only by the dev and staging coordinators, which accept an ad-hoc or
+# otherwise non-Apple-anchored signature. For those the Apple-anchor and team-OU
+# clause is dropped; the bundle identifier io.darkbloom.provider stays pinned and
+# every other check (deep/strict verify and the staged-app checks) is unchanged.
+DARKBLOOM_PRERELEASE_DESIGNATED_REQUIREMENT='identifier "io.darkbloom.provider"'
 DARKBLOOM_FAN_HELPER_REQUIREMENT='anchor apple generic and identifier "io.darkbloom.fan-helper" and certificate leaf[subject.OU] = "SLDQ2GJ6TL"'
 FAN_HELPER_REQUIREMENT="$DARKBLOOM_FAN_HELPER_REQUIREMENT"
 INSTALL_TEST_MODE=0
+
+# A dev release (version X.Y.Z-dev.N) or a staging release (X.Y.Z-staging.N)
+# installs as its own provider beside the production provider. The identities
+# share no name and no path, so one install never reads, moves or deletes
+# another's files. Nothing may use these names or paths before this function runs.
+select_provider_identity() {
+    # Classify by the SemVer pre-release component, not an unanchored substring.
+    # Strip any +build metadata first, then take the segment after the first "-".
+    # A marker that appears only in build metadata (e.g. 1.2.3+x-dev.y) is not a
+    # pre-release and stays prod, so it never relaxes the signature requirement.
+    local prerelease=
+    case "${1%%+*}" in
+        *-*) prerelease="${1%%+*}" ; prerelease="${prerelease#*-}" ;;
+    esac
+    case "$prerelease" in
+        dev.*)
+            PROVIDER_LABEL="Darkbloom Dev"
+            CLI_NAME="darkbloom-dev"
+            ENCLAVE_NAME="darkbloom-enclave-dev"
+            ;;
+        staging.*)
+            PROVIDER_LABEL="Darkbloom Staging"
+            CLI_NAME="darkbloom-staging"
+            ENCLAVE_NAME="darkbloom-enclave-staging"
+            ;;
+        *)
+            PROVIDER_LABEL="Darkbloom"
+            CLI_NAME="darkbloom"
+            ENCLAVE_NAME="darkbloom-enclave"
+            ;;
+    esac
+    # Choose the designated requirement from the same pre-release component. A
+    # pre-release version relaxes only the Apple-anchor/team-OU clause; prod gets
+    # the full Apple-team requirement. A prod coordinator is never served a
+    # pre-release version, so the relaxed branch is unreachable on prod.
+    case "$prerelease" in
+        dev.*|staging.*)
+            DESIGNATED_REQUIREMENT="$DARKBLOOM_PRERELEASE_DESIGNATED_REQUIREMENT"
+            ;;
+        *)
+            DESIGNATED_REQUIREMENT="$DARKBLOOM_DESIGNATED_REQUIREMENT"
+            ;;
+    esac
+    APP_NAME="$PROVIDER_LABEL.app"
+    INSTALL_DIR="$HOME/.$CLI_NAME"
+    BIN_DIR="$INSTALL_DIR/bin"
+    PROVIDER_CONFIG="$HOME/.config/$CLI_NAME/provider.toml"
+}
 
 fail_install() {
     echo "  ✗ $*" >&2
@@ -66,9 +118,11 @@ verify_code_requirement() {
 
 verify_staged_app_signature() {
     local app=$1
-    local requirement=${2:-$DARKBLOOM_DESIGNATED_REQUIREMENT}
+    # Defaults to the per-identity requirement that select_provider_identity
+    # chose from the version marker (relaxed for pre-release, full for prod).
+    local requirement=${2:-$DESIGNATED_REQUIREMENT}
     verify_code_requirement "$app" 1 "$requirement" || {
-        fail_install "Staged Darkbloom.app does not satisfy the pinned signature requirement."
+        fail_install "Staged $APP_NAME does not satisfy the pinned signature requirement."
         return 1
     }
 }
@@ -83,7 +137,7 @@ binary_contains_paged_code() {
 
 verify_fan_helper_capability() {
     local app=$1
-    local executable="$app/Contents/MacOS/darkbloom"
+    local executable="$app/Contents/MacOS/$CLI_NAME"
     local marker="$app/Contents/Resources/darkbloom-runtime-capabilities/fan-helper-v1"
     local helper="$app/Contents/Helpers/darkbloom-fan-helper"
     local code_present=0
@@ -122,12 +176,12 @@ verify_fan_helper_capability() {
 
 verify_staged_app() {
     local app=$1
-    local executable="$app/Contents/MacOS/darkbloom"
+    local executable="$app/Contents/MacOS/$CLI_NAME"
     local marker="$app/Contents/Resources/darkbloom-runtime-capabilities/paged-kernel-v1"
 
     if [ "$INSTALL_TEST_MODE" = "1" ]; then
         codesign --verify --deep --strict --verbose=2 "$app" >/dev/null 2>&1 || {
-            fail_install "Strict code-signature verification failed for staged Darkbloom.app."
+            fail_install "Strict code-signature verification failed for staged $APP_NAME."
             return 1
         }
     else
@@ -201,7 +255,7 @@ verify_staged_app_payload() {
         fail_install "App releases require binary_hash and metallib_hash."
         return 1
     }
-    verify_file_hash "$app_bin/darkbloom" "$binary_hash" "App binary" \
+    verify_file_hash "$app_bin/$CLI_NAME" "$binary_hash" "App binary" \
         && verify_file_hash "$app_bin/mlx.metallib" "$metallib_hash" "App metallib"
 }
 
@@ -209,12 +263,12 @@ commit_staged_app() {
     local staged_app=$1
     local install_dir=$2
     local backup="$install_dir/.install-backup-$$-$RANDOM"
-    local destination="$install_dir/Darkbloom.app"
+    local destination="$install_dir/$APP_NAME"
     local had_previous=0
     mkdir -p "$backup" "$install_dir/bin"
 
     if [ -d "$destination" ]; then
-        mv "$destination" "$backup/Darkbloom.app" || {
+        mv "$destination" "$backup/$APP_NAME" || {
             rm -rf "$backup"
             return 1
         }
@@ -222,23 +276,23 @@ commit_staged_app() {
     fi
     if ! mv "$staged_app" "$destination"; then
         [ "$had_previous" -eq 1 ] \
-            && mv "$backup/Darkbloom.app" "$destination" 2>/dev/null || true
+            && mv "$backup/$APP_NAME" "$destination" 2>/dev/null || true
         rm -rf "$backup"
         return 1
     fi
 
     local app_bin="$destination/Contents/MacOS"
-    if ! ln -sfn "../Darkbloom.app/Contents/MacOS/darkbloom" "$install_dir/bin/darkbloom" \
-        || ! ln -sfn "../Darkbloom.app/Contents/MacOS/darkbloom-enclave" "$install_dir/bin/darkbloom-enclave" \
-        || ! ln -sfn "../Darkbloom.app/Contents/MacOS/mlx.metallib" "$install_dir/bin/mlx.metallib"
+    if ! ln -sfn "../$APP_NAME/Contents/MacOS/$CLI_NAME" "$install_dir/bin/$CLI_NAME" \
+        || ! ln -sfn "../$APP_NAME/Contents/MacOS/$ENCLAVE_NAME" "$install_dir/bin/$ENCLAVE_NAME" \
+        || ! ln -sfn "../$APP_NAME/Contents/MacOS/mlx.metallib" "$install_dir/bin/mlx.metallib"
     then
         rm -rf "$destination"
         [ "$had_previous" -eq 1 ] \
-            && mv "$backup/Darkbloom.app" "$destination" 2>/dev/null || true
+            && mv "$backup/$APP_NAME" "$destination" 2>/dev/null || true
         rm -rf "$backup"
         return 1
     fi
-    chmod +x "$app_bin/darkbloom" "$app_bin/darkbloom-enclave"
+    chmod +x "$app_bin/$CLI_NAME" "$app_bin/$ENCLAVE_NAME"
     rm -rf "$backup"
 }
 
@@ -250,11 +304,15 @@ install_bundle_atomically() {
     local stage="$install_dir/.install-staging-$$-$RANDOM"
     rm -rf "$stage"
     mkdir -p "$stage"
-    if ! tar xzf "$archive" -C "$stage"; then
+    # Restore ordinary release modes without changing private-state creation
+    # elsewhere in the installer or enabling tar's full-permissions mode.
+    if ! (umask 022; /usr/bin/tar xzf "$archive" -C "$stage"); then
         rm -rf "$stage"
         return 1
     fi
 
+    # The flat verifier names are the coordinator's release-artifact contract
+    # (bin/darkbloom) and are the same for both provider identities.
     local flat_bin="$stage/bin"
     [ -f "$flat_bin/darkbloom" ] \
         && [ -f "$flat_bin/darkbloom-enclave" ] \
@@ -273,21 +331,30 @@ install_bundle_atomically() {
         return 1
     }
 
-    [ -d "$stage/Darkbloom.app" ] || {
+    local staged_app="$stage/$APP_NAME"
+    [ -d "$staged_app" ] || {
         rm -rf "$stage"
-        fail_install "Release bundle has no Darkbloom.app; flat-only bundles are no longer installable."
+        fail_install "Release bundle has no $APP_NAME; flat-only bundles are no longer installable."
         return 1
     }
+    local name
+    for name in "$CLI_NAME" "$ENCLAVE_NAME"; do
+        [ -f "$staged_app/Contents/MacOS/$name" ] || {
+            rm -rf "$stage"
+            fail_install "Release bundle $APP_NAME has no Contents/MacOS/$name, which a $PROVIDER_LABEL release must contain."
+            return 1
+        }
+    done
     verify_staged_app_payload \
-        "$stage/Darkbloom.app" "$binary_hash" "$metallib_hash" || {
+        "$staged_app" "$binary_hash" "$metallib_hash" || {
         rm -rf "$stage"
         return 1
     }
-    verify_staged_app "$stage/Darkbloom.app" || {
+    verify_staged_app "$staged_app" || {
         rm -rf "$stage"
         return 1
     }
-    commit_staged_app "$stage/Darkbloom.app" "$install_dir" || {
+    commit_staged_app "$staged_app" "$install_dir" || {
         rm -rf "$stage"
         fail_install "Atomic app swap failed; previous install was restored."
         return 1
@@ -374,7 +441,26 @@ bind_provider_coordinator() {
     else
         echo "  Coordinator: production default (removed [coordinator] url from $config)"
     fi
-    echo "  A provider that is already running keeps its old coordinator until darkbloom start."
+    echo "  A provider that is already running keeps its old coordinator until $CLI_NAME start."
+}
+
+# New providers need macOS 27 or later. A Mac that already has this provider installed (a
+# grandfathered provider reinstalling or repairing) continues; configure_device_verification
+# explains its upgrade path. An unknown version is not guessed either way.
+require_supported_macos() {
+    local macos_major=${MACOS%%.*}
+    case "$macos_major" in
+        ''|*[!0-9]*) return 0 ;;
+    esac
+    [ "$macos_major" -ge 27 ] && return 0
+    if [ -e "$BIN_DIR/$CLI_NAME" ] || [ -e "$PROVIDER_CONFIG" ]; then
+        echo "  macOS $MACOS: updating an existing $PROVIDER_LABEL install."
+        echo "  Upgrade to macOS 27 or later to keep serving."
+        return 0
+    fi
+    echo "  ✗ $PROVIDER_LABEL needs macOS 27 or later for new providers; this Mac runs macOS $MACOS." >&2
+    echo "    Update macOS in System Settings › General › Software Update, then run this installer again." >&2
+    return 1
 }
 
 # Setup routing is independent of serving authorization. App Attest failures
@@ -387,7 +473,7 @@ configure_device_verification() {
     case "$macos_major" in
         ''|*[!0-9]*)
             echo "  Could not determine the macOS version; no MDM profile was downloaded."
-            echo "  Run darkbloom login with your existing account, then darkbloom enroll"
+            echo "  Run $CLI_NAME login with your existing account, then $CLI_NAME enroll"
             echo "  to select the verification setup for this Mac."
             return
             ;;
@@ -396,11 +482,11 @@ configure_device_verification() {
     echo "  Darkbloom MDM will be deactivated soon."
     if [ "$macos_major" -ge 27 ]; then
         echo "  macOS 27 or later: use App Attest without Darkbloom MDM enrollment."
-        echo "  Run darkbloom login, then darkbloom start, and check darkbloom status."
+        echo "  Run $CLI_NAME login, then $CLI_NAME start, and check $CLI_NAME status."
         echo "  Serving starts only after the coordinator approves this connection."
-        echo "  If approval is pending or unavailable, run darkbloom doctor."
+        echo "  If approval is pending or unavailable, run $CLI_NAME doctor."
         echo "  Existing management profiles are kept in place."
-        echo "  To remove an existing Darkbloom profile, run darkbloom unenroll"
+        echo "  To remove an existing Darkbloom profile, run $CLI_NAME unenroll"
         echo "  and choose App Attest once removal is approved."
         return
     fi
@@ -408,12 +494,12 @@ configure_device_verification() {
     echo "  Upgrade to macOS 27 or later for App Attest."
     if profiles status -type enrollment 2>&1 | grep -q "MDM enrollment: Yes"; then
         echo "  An MDM profile is already installed; keep existing management in place."
-        echo "  Run darkbloom doctor to check Darkbloom verification."
+        echo "  Run $CLI_NAME doctor to check Darkbloom verification."
     fi
     echo "  Legacy re-enrollment is deferred; this installer downloads no MDM profile."
     echo "  If you need legacy re-enrollment, after installation run:"
-    echo "    darkbloom login   # sign in to your existing account"
-    echo "    darkbloom enroll  # performs the current signed eligibility check"
+    echo "    $CLI_NAME login   # sign in to your existing account"
+    echo "    $CLI_NAME enroll  # performs the current signed eligibility check"
     echo "  Only eligible grandfathered providers can re-enroll; installation continues."
 }
 
@@ -422,6 +508,7 @@ if [ "${1:-}" = "--verify-staged-app-signature-test" ]; then
         echo "usage: $0 --verify-staged-app-signature-test <app> <requirement>" >&2
         exit 64
     }
+    select_provider_identity production
     verify_staged_app_signature "$2" "$3"
     exit $?
 fi
@@ -431,6 +518,7 @@ if [ "${1:-}" = "--bind-coordinator-test" ]; then
         echo "usage: COORD_URL=<url> $0 --bind-coordinator-test <provider-toml>" >&2
         exit 64
     }
+    select_provider_identity production
     bind_provider_coordinator "$COORD_URL" "$2"
     exit $?
 fi
@@ -441,6 +529,7 @@ if [ "${1:-}" = "--install-bundle-test" ]; then
         exit 64
     }
     INSTALL_TEST_MODE=1
+    select_provider_identity production
     if [ "$#" -eq 6 ]; then FAN_HELPER_REQUIREMENT=$6; fi
     install_bundle_atomically "$2" "$3" "$4" "$5"
     exit $?
@@ -499,16 +588,20 @@ if [ -z "$BUNDLE_URL" ] || [ -z "$BUNDLE_HASH" ] || [ -z "$VERSION" ]; then
     exit 1
 fi
 
+select_provider_identity "$VERSION"
+require_supported_macos || exit 1
+
 echo "  Version: $VERSION"
+echo "  Provider: $PROVIDER_LABEL ($CLI_NAME, installs in $INSTALL_DIR)"
 echo "  Backend: ${BACKEND:-mlx-swift}"
 echo "  Signed by: Developer ID Application: Eigen Labs, Inc."
 echo ""
 
 # ─── Step 2: Download + verify bundle ────────────────────────
-echo "→ [2/5] Downloading Darkbloom v${VERSION}..."
+echo "→ [2/5] Downloading $PROVIDER_LABEL v${VERSION}..."
 mkdir -p "$INSTALL_DIR" "$BIN_DIR"
 
-TARBALL="/tmp/darkbloom-bundle.tar.gz"
+TARBALL="${TMPDIR:-/tmp}/$CLI_NAME-bundle.tar.gz"
 curl -f#L "$BUNDLE_URL" -o "$TARBALL"
 
 ACTUAL_HASH=$(shasum -a 256 "$TARBALL" | cut -d' ' -f1)
@@ -532,20 +625,16 @@ rm -f "$TARBALL"
 echo "  Strict signature, runtime resources, and atomic swap verified ✓"
 
 # Make available in PATH. Try /usr/local/bin symlink, fall back to shell rc.
-if ln -sf "$BIN_DIR/darkbloom" /usr/local/bin/darkbloom 2>/dev/null; then
+if ln -sf "$BIN_DIR/$CLI_NAME" "/usr/local/bin/$CLI_NAME" 2>/dev/null; then
     :
 fi
 RC="$HOME/.zshrc"
 if [ -f "$HOME/.bashrc" ] && [ ! -f "$HOME/.zshrc" ]; then
     RC="$HOME/.bashrc"
 fi
-if ! grep -q "\.darkbloom/bin" "$RC" 2>/dev/null; then
-    sed -i '' '/\.dginf\/bin/d; /\.eigeninference\/bin/d; /alias eigeninf/d; /alias dginf/d; /# EigenInference/d; /# Darkbloom$/d' "$RC" 2>/dev/null || true
-    cat >> "$RC" << 'SHELL'
-
-# Darkbloom
-export PATH="$HOME/.darkbloom/bin:$PATH"
-SHELL
+if ! grep -qF ".$CLI_NAME/bin" "$RC" 2>/dev/null; then
+    sed -i '' "/\\.dginf\\/bin/d; /\\.eigeninference\\/bin/d; /alias eigeninf/d; /alias dginf/d; /# EigenInference/d; /# $PROVIDER_LABEL\$/d" "$RC" 2>/dev/null || true
+    printf "\n# %s\nexport PATH=\"\$HOME/.%s/bin:\$PATH\"\n" "$PROVIDER_LABEL" "$CLI_NAME" >> "$RC"
 fi
 export PATH="$BIN_DIR:$PATH"
 
@@ -556,7 +645,7 @@ source "$RC" 2>/dev/null || true
 set -eu
 
 echo "  Binaries installed ✓"
-echo "  Shortcut: darkbloom"
+echo "  Shortcut: $CLI_NAME"
 
 if ! bind_provider_coordinator "$COORD_URL" "$PROVIDER_CONFIG"; then
     echo "  Could not write the coordinator URL to $PROVIDER_CONFIG."
@@ -566,7 +655,7 @@ fi
 # ─── Step 3: Secure Enclave identity ─────────────────────────
 echo ""
 echo "→ [3/5] Provisioning Secure Enclave identity..."
-if "$BIN_DIR/darkbloom-enclave" info >/dev/null 2>&1; then
+if "$BIN_DIR/$ENCLAVE_NAME" info >/dev/null 2>&1; then
     echo "  Secure Enclave ✓ (P-256 key generated)"
 else
     echo "  Secure Enclave ⚠ (not available on this hardware; provider will run with reduced trust)"
@@ -594,11 +683,11 @@ if [ -n "$CATALOG_JSON" ]; then
           | head -20
         echo ""
         echo "  Download a model with:"
-        echo "    darkbloom models download <id>"
+        echo "    $CLI_NAME models download <id>"
     else
         echo "  Run interactively to pick a starter model:"
         echo "    curl -fsSL $COORD_URL/install.sh | bash -s"
-        echo "  Or list the catalog with:  darkbloom models catalog"
+        echo "  Or list the catalog with:  $CLI_NAME models catalog"
     fi
 else
     echo "  Could not fetch model catalog (continuing anyway)."
@@ -610,10 +699,13 @@ echo "╔═══════════════════════�
 echo "║  Install complete                            ║"
 echo "╚══════════════════════════════════════════════╝"
 echo ""
+echo "  Installed: $PROVIDER_LABEL v$VERSION in $INSTALL_DIR"
+echo "  Command:   $CLI_NAME"
+echo ""
 echo "  Next steps:"
-echo "    darkbloom doctor             # verify the system is ready"
-echo "    darkbloom models catalog     # browse available models"
-echo "    darkbloom models download <id>"
-echo "    darkbloom login              # link this Mac to your account"
-echo "    darkbloom start              # serve inference (interactive picker)"
+echo "    $CLI_NAME doctor             # verify the system is ready"
+echo "    $CLI_NAME models catalog     # browse available models"
+echo "    $CLI_NAME models download <id>"
+echo "    $CLI_NAME login              # link this Mac to your account"
+echo "    $CLI_NAME start              # serve inference (interactive picker)"
 echo ""

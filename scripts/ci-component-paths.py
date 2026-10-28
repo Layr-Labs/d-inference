@@ -10,13 +10,15 @@ import re
 import subprocess
 
 
-COMPONENTS = ("provider", "console")
+COMPONENTS = ("provider",)
 COMMON = (
     "Makefile", "mise.toml", ".gitmodules", ".github/workflows/component-changes.yml",
+    ".github/workflows/darkbloom-route.yml",
     "scripts/ci-component-paths.py", "scripts/test-ci-component-paths.py",
 )
 PROVIDER = (
-    "provider-swift/**", "libs/**", "fixtures/**", ".github/actions/provider-ci-build/**",
+    "provider-swift/**", "libs/**", "fixtures/**",
+    ".github/workflows/ci.yml", ".github/actions/provider-ci-build/**",
     "scripts/provider-ci-cache.py", "scripts/provider_ci_cache/**",
     "scripts/provider-release-cache.py", "scripts/provider_release_cache/**",
     "scripts/provider-release-swift.sh", "scripts/prepare-provider-release-toolchain.sh",
@@ -28,13 +30,8 @@ PROVIDER = (
     "scripts/prepare-mimo-*-fixtures.py", "scripts/verify-*-prompt-parity.sh",
     "scripts/prepare-prompt-fixtures.py", "scripts/test-prepare-prompt-fixtures.py",
     "scripts/verify-prompt-parity.sh", "scripts/test-qwen4-packaged-resources.py",
-    "scripts/test-profile-inventory-auth.py", "scripts/install.sh",
+    "scripts/test-profile-inventory-auth.py", "scripts/test-desktop-api.py", "scripts/install.sh",
     "scripts/test-install-atomic.sh", "scripts/entitlements*.plist",
-)
-CONSOLE = (
-    "console-ui/**", ".githooks/**",
-    "coordinator/tests/protocol/testdata/paged_footprint_wire.json",
-    "coordinator/tests/protocol/testdata/process_memory_wire.json",
 )
 
 
@@ -51,10 +48,7 @@ def classify(paths):
             continue
         if matches(path, COMMON):
             return dict.fromkeys(COMPONENTS, True)
-        ci = path == ".github/workflows/ci.yml"
-        provider = matches(path, PROVIDER)
-        selected["provider"] |= ci or provider
-        selected["console"] |= ci or matches(path, CONSOLE)
+        selected["provider"] |= matches(path, PROVIDER)
     return selected
 
 

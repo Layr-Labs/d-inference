@@ -1,6 +1,6 @@
 # Provider hardware requirements
 
-> Last updated: 2026-10-13
+> Last updated: 2026-10-25
 
 Reference for what a Mac needs to run the `darkbloom` provider: the minimum
 requirements, the chip families the provider distinguishes, which catalog
@@ -9,6 +9,24 @@ operator has to plan for. For operators choosing or checking a machine. The
 memory constants and the load-gate arithmetic behind the RAM table are stated
 once in [`../architecture/hardware-support.md`](../architecture/hardware-support.md)
 and are not repeated here.
+
+Nemotron 3.5 Super (`nvidia-nemotron-3.5-super`) is registered for Apple M5 Max
+(128 GB) and M5 Ultra (`apple_m5`, at least 128 GB of unified memory). Its
+default eight-request speculating owner, serving the full 262,144-token
+context, leaves 13.9 GiB of a 128 GB Mac's cap beside its activation reserve,
+but a 16-image request beside it does not fit; with less memory available it
+loads a narrower owner, down to one request from 85.6 GiB available. Only
+256 GB (M3 Ultra) is measured on hardware. Plan about 75 GB of disk for its weights. The derivation
+is in
+[hardware support](../architecture/hardware-support.md#context); the slot is
+described in [the inference architecture](../architecture/inference.md#managed-nemotron-super-slot).
+
+For a paired cluster, the registered Qwen3.5 and Qwen3.6 35B A3B text targets
+support two equal tensor-parallel shares. Both Macs still need to pass their independent
+verified-load and request-memory gates. A capability is not a throughput or
+two-Mac qualification result; placement compares measured tensor-parallel and
+pipeline estimates. Unequal routed shares are excluded from this path. See [routed-expert TP](../architecture/inference.md#qwen35-routed-expert-tensor-parallel)
+and the [cluster memory policy](../architecture/hardware-support.md#context).
 
 Native live inference is the default. Independent checkpoint compression can
 reduce encoded older-row storage, not the native serving allocation or measured
@@ -19,10 +37,40 @@ activation floors or minimum serveable KV headroom. The RAM-tier table remains
 subject to the same load gate. Precision controls and fallback are in the
 [CLI reference](cli-reference.md#providertoml-keys-read-by-the-cli).
 
+GLM-5.3-Flash (`glm-5.3-flash`) loads only on Apple M5 Max or M5 Ultra with at
+least 256 GB of unified memory. The provider reports runtime capability
+`glm5_next_v1` only on such a Mac, the catalog build additionally requires
+`apple_m5` and `mlx_nax`, and every other Mac refuses the load with its chip
+and memory in the reason (`GLM5NextHardwareRequirement`). On a 256 GiB host the
+post-load admission is about 56.8 GB: one 262,144-token request fits, and
+shorter requests run concurrently by their actual reserved tokens, at most two
+or three at once because the engine's step-scratch activation check caps
+running rows (`EngineV2Factory.glm5NextActivatableRows`). The provider also
+refuses GLM loads and prefetches when MTP is disabled. The
+[native implementation](../design/glm53-flash-native.md) does not reduce these
+memory safeguards.
+
+At full KV, GLM plans the whole 90% memory cap as GPU memory: about 247 GB on
+a 256 GB Mac. The macOS default GPU wired-memory limit (`iogpu.wired_limit_mb=0`)
+is Metal's recommended working set, about 222 GiB there, and Metal command
+buffers past it fail with "Insufficient Memory". Set the values the production
+256 GB hosts use: `iogpu.wired_limit_mb=245760` (physical memory less 16 GiB)
+and `vm.global_user_wire_limit=261134011596` and `vm.user_wire_limit=261134011596`
+(95% of physical memory), then restart the provider. The
+[troubleshooting steps](troubleshooting.md#glm-53-flash-gpu-wired-memory-limit)
+keep them after a reboot. Only the 256 GB values are defined
+(`provider-swift/Sources/ProviderCore/Diagnostics/GLM5NextWiredLimit.swift`,
+`GLM5NextWiredLimit.recommendation`); they change no admission or capacity
+figure.
+
 Current backend behavior is owned by the
 [platform's latest default branch](https://github.com/Layr-Labs/darkbloom-platform/tree/master).
 Immutable external citations below preserve evidence snapshots, not current
 source or proof of deployed policy.
+
+A serving Mac can still receive $0 of `model=base_reward` for a 5-minute
+period. `doctor` does not name the reason.
+[Check a missing base reward](base-rewards.md).
 
 ## Registering interest for unsupported hardware
 
@@ -106,6 +154,12 @@ Sources: `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/MiMo/MiMo
 
 ## Bonsai 2 qualification scope
 
+The exact EigenLabs Bonsai 2 9B `2026-10-15-base-r2` artifact has a registered
+cluster pipeline implementation. Its implementation and accounting are
+[documented separately](../architecture/inference.md#two-mac-cluster-stages-experimental);
+this registration does not establish numerical or hardware qualification on a
+new Mac pair and does not advertise tensor parallelism.
+
 The unchanged Prism Bonsai 2 27B MLX 2-bit payload is 8,595,477,990 bytes,
 including its vision tensors. File size is not a RAM-tier qualification:
 activation/KV reserves and live OS headroom remain required. The initial draft
@@ -113,6 +167,19 @@ targets M5 Max testing; no minimum-RAM catalog value, full-context guarantee or
 MTP capability is introduced. `EngineV2KVBackendPolicy` selects paging for the
 exact artifact ID; all existing admission checks remain in effect. The artifact
 contract is in `libs/mlx-swift-lm/docs/bonsai2.md`.
+
+The 9B main payload is 3,462,149,260 bytes at revision
+`b94a52f3ce9047919dce00392a0fc6b8a7968abe`. It uses 4096-wide Hadamard blocks,
+so the 27B block-1024 constant-reuse estimate does not transfer. No measured
+activation floor or lower RAM tier is introduced. Text, single/multiple-image,
+concurrent prefill and cache-restoration peaks must be measured on the final
+source composition; all existing OS/activation/KV guards remain in effect.
+The explicit 9B MTP binding adds the separate head's existing artifact
+residency charge and F32 request-state reservations. Stored F16 head tensors
+do not justify pricing their runtime KV or hidden history as F16. See
+`Qwen35InlineMTPAssistant.requestStateAllocationSpecs` in
+`libs/mlx-swift-lm/Libraries/MLXLLM/Models/Qwen35MTP.swift`; rounded allocations
+and temporary live owners remain included. This adds no minimum-RAM claim.
 
 ## Chip families
 
@@ -268,6 +335,12 @@ useful KV space rather than reserve every possible future workspace. See
 [per-slot memory admission](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/architecture/scheduling.md#token-budget-admission-per-slot);
 the reduction does not lower the load, activation or operating-system reserves.
 
+Explicit multi-request Lightning widths are restricted to plain text pipeline;
+installed defaults and memory reserves are unchanged. See the [cluster lane
+selection boundary](../architecture/inference.md#context) and
+`DistributedInstalledPlan.laneAdapters` in
+`provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledPlan.swift`.
+
 ## Disk for the SSD prefix cache
 
 | Rule | Where it is specified | Code |
@@ -315,6 +388,25 @@ default).
 | Thermal state (`nominal`, `fair`, `serious`, `critical`) is sampled from `ProcessInfo.thermalState`, sent to the coordinator as `thermal_state`, and written to the daemon state file read by `darkbloom status` | `provider-swift/Sources/ProviderCore/Hardware/SystemMetrics.swift`, `provider-swift/Sources/ProviderCore/Protocol/Types.swift`, `provider-swift/Sources/ProviderCore/Service/DaemonStateFile.swift` |
 | Optional experimental fan control (Macs with a fan and a validated GPU sensor) | [`fan-control.md`](./fan-control.md) |
 
+## Flint validation scope
+
+The [native Flint implementation](../architecture/inference.md#native-flint)
+accepts the official text-only artifact; physical verification currently targets
+one Apple M5 Max with 128 GiB RAM.
+
+| Contract or evidence | Scope | Source |
+|---|---|---|
+| Memory admission | No new minimum RAM tier or concurrency guarantee; full/sliding accounting remains in force | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+ModelAdapter.swift`, `ProductionModelAdapter`; [memory model](../architecture/hardware-support.md#flint-memory-admission) |
+| Context | Artifact context bound is retained; full 262,144-token qualification remains outstanding | `libs/mlx-swift-lm/Libraries/MLXLLM/Models/Flint/FlintConfiguration.swift`, `FlintConfiguration` |
+| Precision | Official package uses native BF16 KV; live and checkpoint selections must be native | `provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2KVQuantizationPolicy.swift`, `resolve` |
+| NAX dispatch | Captured official INT4 layers 0–2 and head execute dense `affine_qmm_t_nax` and routed `affine_gather_qmm_rhs_nax_nt`; FP32 head uses a portable fallback. This establishes those operators' execution, not a whole-model speedup | SDK `FlintCaptureTests`; [validation procedure](../developer/test.md#flint-native-validation) |
+| NAX comparison | `MLX_METAL_NO_NAX` is a build-time definition; `MLX_ENABLE_TF32` is a process-start precision control. Initial numerical checks use `MLX_ENABLE_TF32=0` without changing fleet defaults | `libs/mlx-swift/Source/Cmlx/mlx/mlx/backend/metal/device.cpp` |
+| Performance | New measurements of the prefill output optimization are pending. The 2× M3 Ultra prefill and 400 decode tok/s targets are not met | `libs/mlx-swift-lm/Libraries/MLXLLM/Models/Flint/Flint+PrefillOutput.swift`, `cbv2Prefill`; [measurement requirements](../developer/test.md#flint-native-validation) |
+
+Existing system swap is distinct from swap growth during a measured run.
+Earlier throughput samples precede the current optimization and were taken with
+another inference service present; they do not qualify this revision.
+
 ## Related
 
 - [`../architecture/hardware-support.md`](../architecture/hardware-support.md) — the memory constants, cap formulas and load gate
@@ -323,3 +415,48 @@ default).
 - [`../reference/configuration.md`](../reference/configuration.md) — every `DARKBLOOM_*` variable
 - [`cli-reference.md`](./cli-reference.md) — `provider.toml` keys and their defaults
 - [../consumer/models.md](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/consumer/models.md) — the model catalog as consumers see it
+
+## GLM cluster still-image candidate
+
+The private GLM cluster image slice adds rank-0 vision weights and bounded media
+workspace to the text pair's load/request requirements. It does not establish a
+new RAM tier or qualified catalog modality. Only bounded still PNG input is
+implemented; video remains unqualified and audio is refused. See
+[cluster image execution](../architecture/inference.md#bounded-glm-cluster-still-images)
+and [its memory quotation](../architecture/hardware-support.md#glm-cluster-image-accounting).
+
+## GPT-OSS cluster concurrency
+
+The GPT-OSS text pipeline can be explicitly configured for 2...8 native decode
+lanes, with separate demand-grown histories. Every lane needs its full admitted
+request allowance plus shared batch workspace; adding a lane is refused if
+host or allocator capacity cannot cover it. The default remains one lane.
+Device-specific full-artifact correctness and throughput qualify a wider setup;
+see [the accounting contract](../architecture/hardware-support.md#context) and
+[owner checks](../developer/test.md#gpt-oss-batch-owner-checks).
+Explicit Lightning stage-batch widths retain the single-request installed
+default. Full-artifact output, retirement and memory qualification are
+separate from the tiny model's raw output/state checks. See [cluster inference](../architecture/inference.md#context)
+and `NemotronH35Model.cbv2BatchedStageResidual` in
+`libs/mlx-swift-lm/Libraries/MLXLLM/Models/Nemotron35BatchDecode.swift`.
+
+## MiMo cluster history storage
+
+MiMo's supported text pipeline, compact, speculative and phase modes use
+request-owned pages. Only the plain pipeline admits multiple native lanes;
+other modes retain their single-request schedules. Pages grow with forwarded
+rows, while admission keeps the full request and transfer allowances. This
+does not reduce the model's RAM requirement or establish a new qualified
+hardware tier. See [MiMo history ownership](../architecture/inference.md#mimo-plain-pipeline-independent-histories)
+and [its admission bounds](../architecture/hardware-support.md#context).
+
+Qwen27 cluster media also reserves provider-host memory independently of each
+rank's native LOAD and request quotation. The shared host ledger charges bounded
+encoded wire copies before decoding, then source rasters, prepared patches and
+position arrays before preprocessing. Video uses the processor's conservative
+pre-decode patch ceiling rather than the final claimed prompt length. Cancellation
+waits for the producer to finish before refunding preprocessing; encoded memory
+remains charged until submission and native retirement both finish. A second
+listener generation cannot reuse a separate private ledger to bypass this cap.
+See `provider-swift/Sources/ProviderCore/Inference/Distributed/Requests/DistributedQwenMediaHostMemory.swift`
+and `provider-swift/Sources/ProviderCore/Inference/Distributed/Requests/DistributedQwenMediaHostBudget.swift`.

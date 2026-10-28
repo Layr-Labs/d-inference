@@ -1,0 +1,242 @@
+// Copyright © 2026 Eigen Labs.
+
+import Foundation
+import Testing
+
+@testable import ProviderCore
+
+/// A request waiting for its model load releases the coordinator work FIFO:
+/// a warm model's request is served meanwhile, while a cancel for the waiting
+/// request still takes effect exactly where the serial FIFO applied it.
+@Suite("Serve loop cold-load admission")
+struct ServeLoopColdLoadTests {
+    static let coldModel = "cold-load-fixture"
+
+    @Test("a warm model's request is served while another request waits for its model load")
+    func warmRequestOvertakesLoadWait() async throws {
+        let fixture = try await ServeLoopFixture.make(models: [ModelLoadingFixtures.model(Self.coldModel)])
+        let task = fixture.start()
+        _ = try await fixture.awaitRegistration()
+        await fixture.loop.modelLoadingMarkLoading(Self.coldModel)
+
+        try await fixture.pushChatRequest(requestId: "cold", body: Self.body(model: Self.coldModel))
+        try await Self.until { await fixture.loop.modelLoadingLoadingWaiterCount(Self.coldModel) == 1 }
+        try await fixture.pushChatRequest(requestId: "warm")
+        try await fixture.awaitSubmissions(1)
+        fixture.completeSubmission(0)
+        let warm = try await fixture.mock.waitForSnapshot(timeout: .seconds(15)) {
+            ServeLoopFixture.terminalCount($0, requestId: "warm") > 0
+        }
+        #expect(try #require(warm).inferenceComplete.contains { $0.requestId == "warm" })
+        #expect(await fixture.loop.releasedAdmissionCountForTesting() == 1)
+
+        // The failed load ends the waiting request with its one terminal.
+        await fixture.loop.modelLoadingResumeLoadingWaiters(Self.coldModel, failure: "scripted")
+        let cold = try await fixture.mock.waitForSnapshot(timeout: .seconds(15)) {
+            ServeLoopFixture.terminalCount($0, requestId: "cold") > 0
+        }
+        #expect(ServeLoopFixture.terminalCount(try #require(cold), requestId: "cold") == 1)
+        try await Self.until { await fixture.loop.releasedAdmissionCountForTesting() == 0 }
+        #expect(await fixture.stop(task))
+    }
+
+    @Test("a cancel for a request waiting on its load applies once the admission returns")
+    func cancelDuringLoadWaitAppliesAfterAdmission() async throws {
+        let fixture = try await ServeLoopFixture.make(models: [ModelLoadingFixtures.model(Self.coldModel)])
+        let task = fixture.start()
+        _ = try await fixture.awaitRegistration()
+        await fixture.loop.modelLoadingMarkLoading(Self.coldModel)
+
+        try await fixture.pushChatRequest(requestId: "cold", body: Self.body(model: Self.coldModel))
+        try await Self.until { await fixture.loop.modelLoadingLoadingWaiterCount(Self.coldModel) == 1 }
+        try await fixture.mock.pushCancel(requestId: "cold")
+        // An event behind the cancel proves the FIFO already passed it.
+        try await fixture.pushChatRequest(requestId: "warm")
+        try await fixture.awaitSubmissions(1)
+        #expect(await fixture.loop.modelLoadingLoadingWaiterCount(Self.coldModel) == 1)
+
+        // The load completes: the request is admitted, then cancelled, as when
+        // the FIFO held the cancel behind the load.
+        let bridge = await Self.installResidentSlot(Self.coldModel, engine: PrefillScriptEngine(), fixture: fixture)
+        await fixture.loop.modelLoadingClearLoading(Self.coldModel)
+        await fixture.loop.modelLoadingResumeLoadingWaiters(Self.coldModel)
+
+        let cold = try await fixture.mock.waitForSnapshot(timeout: .seconds(15)) {
+            ServeLoopFixture.terminalCount($0, requestId: "cold") > 0
+        }
+        let snapshot = try #require(cold)
+        #expect(ServeLoopFixture.terminalCount(snapshot, requestId: "cold") == 1)
+        #expect(snapshot.inferenceErrors.first { $0.requestId == "cold" }?.failureCode == .cancelled)
+        try await Self.until { await fixture.loop.releasedAdmissionCountForTesting() == 0 }
+
+        fixture.completeSubmission(0)
+        await bridge.shutdown()
+        _ = await fixture.runtime.unregister(modelId: Self.coldModel)
+        #expect(await fixture.stop(task))
+    }
+
+    @Test("a request for another cold model is admitted against the capacity the released load takes")
+    func secondColdModelWaitsForReleasedLoad() async throws {
+        // Either model fits the free memory alone; both together do not.
+        let first = "cold-load-first", second = "cold-load-second"
+        let fixture = try await ServeLoopFixture.make(models: [
+            ModelLoadingFixtures.model(first, memoryGb: 100_000),
+            ModelLoadingFixtures.model(second, memoryGb: 100_000),
+        ])
+        await ModelLoadingFixtures.setAvailableMemory(fixture.loop, gb: 150_000)
+        let task = fixture.start()
+        _ = try await fixture.awaitRegistration()
+        await fixture.loop.modelLoadingMarkLoading(first)
+
+        try await fixture.pushChatRequest(requestId: "first", body: Self.body(model: first))
+        try await Self.until { await fixture.loop.modelLoadingLoadingWaiterCount(first) == 1 }
+        try await fixture.pushChatRequest(requestId: "second", body: Self.body(model: second))
+        try await Task.sleep(for: .milliseconds(300))
+        #expect(!fixture.mock.snapshot().inferenceAccepted.contains { $0.requestId == "second" })
+
+        // The first load takes its memory and serves its request; only then is
+        // the second request checked, and rejected before acceptance.
+        await ModelLoadingFixtures.setAvailableMemory(fixture.loop, gb: 50_000)
+        let engine = PrefillScriptEngine()
+        let bridge = await Self.installResidentSlot(first, engine: engine, fixture: fixture)
+        await fixture.loop.modelLoadingClearLoading(first)
+        await fixture.loop.modelLoadingResumeLoadingWaiters(first)
+
+        let rejected = try await fixture.mock.waitForSnapshot(timeout: .seconds(15)) {
+            ServeLoopFixture.terminalCount($0, requestId: "second") > 0
+        }
+        let snapshot = try #require(rejected)
+        #expect(snapshot.inferenceAccepted.map(\.requestId) == ["first"])
+        #expect(snapshot.inferenceErrors.first { $0.requestId == "second" }?.failureCode == .capacity)
+
+        try await Self.until { engine.continuations.count == 1 }
+        let continuation = engine.continuations[0]
+        continuation.yield(.delta(text: "a", tokens: [5], logprobs: nil))
+        continuation.yield(.finished(reason: .length, usage: .init(promptTokens: 3, completionTokens: 1)))
+        continuation.finish()
+        _ = try await fixture.mock.waitForSnapshot(timeout: .seconds(15)) {
+            ServeLoopFixture.terminalCount($0, requestId: "first") > 0
+        }
+        try await Self.until { await fixture.loop.releasedAdmissionCountForTesting() == 0 }
+        await bridge.shutdown()
+        _ = await fixture.runtime.unregister(modelId: first)
+        #expect(await fixture.stop(task))
+    }
+
+    @Test("a request for the model being loaded is checked again after that load, not against a second copy")
+    func sameModelRequestRechecksAfterReleasedLoad() async throws {
+        // The model fits the free memory once; its in-flight load then holds it.
+        let fixture = try await ServeLoopFixture.make(models: [
+            ModelLoadingFixtures.model(Self.coldModel, memoryGb: 100_000),
+        ])
+        await ModelLoadingFixtures.setAvailableMemory(fixture.loop, gb: 150_000)
+        let task = fixture.start()
+        _ = try await fixture.awaitRegistration()
+        await fixture.loop.modelLoadingMarkLoading(Self.coldModel)
+
+        try await fixture.pushChatRequest(requestId: "first", body: Self.body(model: Self.coldModel))
+        try await Self.until { await fixture.loop.modelLoadingLoadingWaiterCount(Self.coldModel) == 1 }
+        await ModelLoadingFixtures.setAvailableMemory(fixture.loop, gb: 50_000)
+        try await fixture.pushChatRequest(requestId: "follower", body: Self.body(model: Self.coldModel))
+        try await Task.sleep(for: .milliseconds(300))
+        #expect(ServeLoopFixture.terminalCount(fixture.mock.snapshot(), requestId: "follower") == 0)
+
+        // The load completes; both requests are served from it, as when the
+        // FIFO held the second request behind the load.
+        let engine = PrefillScriptEngine()
+        let bridge = await Self.installResidentSlot(Self.coldModel, engine: engine, fixture: fixture)
+        await fixture.loop.modelLoadingClearLoading(Self.coldModel)
+        await fixture.loop.modelLoadingResumeLoadingWaiters(Self.coldModel)
+
+        try await Self.until { engine.continuations.count == 2 }
+        #expect(fixture.mock.snapshot().inferenceAccepted.map(\.requestId) == ["first", "follower"])
+        for continuation in engine.continuations {
+            continuation.yield(.delta(text: "a", tokens: [5], logprobs: nil))
+            continuation.yield(.finished(reason: .length, usage: .init(promptTokens: 3, completionTokens: 1)))
+            continuation.finish()
+        }
+        let served = try await fixture.mock.waitForSnapshot(timeout: .seconds(15)) {
+            ServeLoopFixture.terminalCount($0, requestId: "first") > 0
+                && ServeLoopFixture.terminalCount($0, requestId: "follower") > 0
+        }
+        #expect(try #require(served).inferenceErrors.isEmpty)
+        try await Self.until { await fixture.loop.releasedAdmissionCountForTesting() == 0 }
+        await bridge.shutdown()
+        _ = await fixture.runtime.unregister(modelId: Self.coldModel)
+        #expect(await fixture.stop(task))
+    }
+
+    @Test("the kill switch keeps the FIFO serial behind a load wait")
+    func killSwitchKeepsSerialAdmission() async throws {
+        let fixture = try await ServeLoopFixture.make(models: [ModelLoadingFixtures.model(Self.coldModel)])
+        await fixture.loop.setColdLoadReleasesWorkFIFOForTesting(false)
+        let task = fixture.start()
+        _ = try await fixture.awaitRegistration()
+        await fixture.loop.modelLoadingMarkLoading(Self.coldModel)
+
+        try await fixture.pushChatRequest(requestId: "cold", body: Self.body(model: Self.coldModel))
+        try await Self.until { await fixture.loop.modelLoadingLoadingWaiterCount(Self.coldModel) == 1 }
+        try await fixture.pushChatRequest(requestId: "warm")
+        try await Task.sleep(for: .milliseconds(300))
+        #expect(fixture.engine.continuations.isEmpty)
+        #expect(await fixture.loop.releasedAdmissionCountForTesting() == 0)
+
+        await fixture.loop.modelLoadingResumeLoadingWaiters(Self.coldModel, failure: "scripted")
+        try await fixture.awaitSubmissions(1)
+        fixture.completeSubmission(0)
+        #expect(await fixture.stop(task))
+    }
+
+    @Test("connection, drain and model-management events wait for released admissions")
+    func barrierEvents() {
+        #expect(CoordinatorEvent.cancel(requestId: "r").overtakesReleasedAdmissions)
+        #expect(CoordinatorEvent.attestationChallenge(nonce: "n", timestamp: "t").overtakesReleasedAdmissions)
+        #expect(!CoordinatorEvent.disconnected.overtakesReleasedAdmissions)
+        #expect(!CoordinatorEvent.connected.overtakesReleasedAdmissions)
+        #expect(!CoordinatorEvent.drainAck("d").overtakesReleasedAdmissions)
+        #expect(!CoordinatorEvent.loadModel(modelId: "m").overtakesReleasedAdmissions)
+        #expect(!CoordinatorEvent.desiredModels(entries: []).overtakesReleasedAdmissions)
+        #expect(!CoordinatorEvent.prefetchModel(modelId: "m", priority: 0).overtakesReleasedAdmissions)
+        #expect(WorkFIFOPolicy.releasesColdLoadWaits(environment: [:]))
+        #expect(!WorkFIFOPolicy.releasesColdLoadWaits(environment: ["DARKBLOOM_TTFT_COLD_LOAD_RELEASE": "0"]))
+        // The rollback must reach the launchd provider job.
+        let rollback = [WorkFIFOPolicy.coldLoadReleaseEnvironmentKey: "0"]
+        #expect(LaunchAgent.passthroughEnvironment(from: rollback) == rollback)
+    }
+
+    /// Makes `modelId` resident on a scripted engine, as its load would.
+    private static func installResidentSlot(
+        _ modelId: String, engine: PrefillScriptEngine, fixture: ServeLoopFixture
+    ) async -> EngineV2Bridge {
+        let tokenizer = CancelledPrefixTokenizer(prompt: [1, 2, 3])
+        let budget = GlobalKVCacheBudget(capFraction: 0.9, activationReserveBytes: 0) {
+            .init(total: 64 << 30, active: 0, cache: 0, systemAvailable: 64 << 30)
+        }
+        let bridge = EngineV2Bridge(
+            engine: engine, modelId: modelId, tokenizer: TokenizerHandle(tokenizer),
+            eosTokenIds: [], kvBytesPerToken: 4_000, kvBudget: budget)
+        await fixture.runtime.register(modelId: modelId, bridge: bridge)
+        await fixture.loop.installModelSlotForTesting(
+            modelId: modelId, container: cancelledPrefixContainer(tokenizer: tokenizer),
+            tokenizer: TokenizerHandle(tokenizer), engineV2: bridge,
+            sizing: .init(weightsBytes: 0, fp16KVBytesPerToken: 4_000, maxContextLength: 8192, defaultMaxTokens: 4096))
+        return bridge
+    }
+
+    private static func body(model: String) throws -> Data {
+        try JSONSerialization.data(withJSONObject: [
+            "model": model, "messages": [["role": "user", "content": "fixture"]],
+            "max_tokens": 1, "stream": true, "reasoning_parser": "none",
+        ])
+    }
+
+    private static func until(
+        timeout: Duration = .seconds(10), _ condition: () async -> Bool
+    ) async throws {
+        let deadline = ContinuousClock.now + timeout
+        while !(await condition()), ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        #expect(await condition())
+    }
+}

@@ -1,4 +1,5 @@
 import Foundation
+import ProviderCore
 import Testing
 
 @testable import darkbloom
@@ -112,7 +113,7 @@ struct ReportConfigPathTests {
     @Test func sudoReportReadsTheInvokingUsersConfig() throws {
         let home = FileManager.default.temporaryDirectory.appendingPathComponent("report-home-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: home) }
-        let xdg = home.appendingPathComponent(".config/darkbloom/provider.toml")
+        let xdg = home.appendingPathComponent("\(BuildEnvironment.current.configDirectoryName)/provider.toml")
         // Retired locations are never consulted, whether or not the canonical
         // file exists yet.
         let retired = home.appendingPathComponent("Library/Application Support/darkbloom/provider.toml")

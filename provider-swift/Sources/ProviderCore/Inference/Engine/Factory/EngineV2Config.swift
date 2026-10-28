@@ -176,11 +176,14 @@ public enum EngineV2Factory {
         ssdHybridCheckpointStore: SSDHybridCheckpointStore? = nil,
         residentPrefixCacheEvidence: ResidentPrefixCacheEvidence? = nil,
         prefixCacheStatus: PrefixCacheModelStatus? = nil,
+        prefixCacheConstructionFailure: SSDPrefixCacheConstructionFailure? = nil,
         emitTelemetry: (@Sendable (TelemetryEvent) -> Void)? = nil,
         makeEngine: () throws -> EngineV2Factory.ProductionBuild
     ) throws -> EngineV2Bridge {
+        var glmOwner: GLM5NextNativeOperationOwner?
         do {
             let build = try makeEngine()
+            glmOwner = build.glm5NextNativeOwner
             let charges = try EngineV2MTPAdmissionCharges.resolve(
                 resolution: build.mtpAdmissionResolution,
                 legacyMTPBytesPerToken: build.legacyMTPBytesPerToken,
@@ -195,7 +198,7 @@ public enum EngineV2Factory {
                 fallbackReason: build.kvBackendFallbackReason,
                 kvQuantization: build.kvQuantization,
                 emitTelemetry: emitTelemetry)
-            return EngineV2Bridge(
+            let bridge = EngineV2Bridge(
                 engine: build.engine,
                 modelId: modelId,
                 tokenizer: tokenizer,
@@ -233,6 +236,7 @@ public enum EngineV2Factory {
                 ssdHybridCheckpointStore: ssdHybridCheckpointStore,
                 residentPrefixCacheEvidence: residentPrefixCacheEvidence,
                 prefixCacheStatus: prefixCacheStatus,
+                prefixCacheConstructionFailure: prefixCacheConstructionFailure,
                 kvBackendKind: build.kvBackendKind,
                 kvQuantization: build.kvQuantization,
                 kvCheckpointQuantization: build.kvCheckpointQuantization,
@@ -242,10 +246,14 @@ public enum EngineV2Factory {
                 // heartbeat as `BackendSlotCapacity.kv_backend_fallback_reason`.
                 kvBackendFallbackReason: build.kvBackendFallbackReason,
                 advertisedContextTokens: advertisedContextTokens
+                    ?? build.glm5NextMaximumContextTokens
                     ?? Qwen4SupportPolicy.contextLimit(
                         modelID: modelId, environment: runtimePolicyEnvironment),
+                glm5NextNativeOwner: glmOwner,
                 emitTelemetry: emitTelemetry
             )
+            try glmOwner?.bind(to: bridge)
+            return bridge
         } catch {
             // A failed v2 init must not leak the SSD tier's background
             // tasks/registration (the refusal unloads the slot — there is
@@ -258,6 +266,7 @@ public enum EngineV2Factory {
                 error: error,
                 emitTelemetry: emitTelemetry
             )
+            if let glmOwner { throw GLM5NextNativeConstructionFailure(owner: glmOwner, cause: error) }
             throw error
         }
     }

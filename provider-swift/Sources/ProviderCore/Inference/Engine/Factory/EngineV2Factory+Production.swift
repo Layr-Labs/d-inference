@@ -5,6 +5,7 @@
 import Foundation
 import MLXLLM
 import MLXLMCommon
+import MLXVLM
 
 /// Construction failures reported by the factory's refusal telemetry.
 enum EngineV2ProductionError: Error, CustomStringConvertible {
@@ -12,6 +13,7 @@ enum EngineV2ProductionError: Error, CustomStringConvertible {
     case noKVHeadroom
     case pagedUnavailable(String)
     case invalidPagedPoolDType(String)
+    case invalidDecodeStepsBetweenChunks(key: String, value: String, maximum: Int)
 
     var description: String {
         switch self {
@@ -25,6 +27,9 @@ enum EngineV2ProductionError: Error, CustomStringConvertible {
         case .invalidPagedPoolDType(let raw):
             return "engine_v2: \(EngineV2Factory.pagedPoolDTypeEnvKey)=\"\(raw)\" is not a "
                 + "recognized paged page dtype (expected float16 or float32)"
+        case .invalidDecodeStepsBetweenChunks(let key, let value, let maximum):
+            return "engine_v2: \(key)=\"\(value)\" is not a decode-step count "
+                + "(expected an integer from 0 to \(maximum))"
         }
     }
 }
@@ -83,6 +88,10 @@ extension EngineV2Factory {
 
     /// The engine and resolved backend metadata used for admission and telemetry.
     public struct ProductionBuild {
+        var glm5NextNativeOwner: GLM5NextNativeOperationOwner? = nil
+        /// The protected model's enforced context. The bridge advertises it so
+        /// over-length requests fail before native admission.
+        var glm5NextMaximumContextTokens: Int? = nil
         public let engine: any CBv2Engine
         /// Concrete engine residency, including MTP expansion.
         public let fixedRequestBytes: Int
@@ -107,6 +116,9 @@ extension EngineV2Factory {
         public let kvQuantization: EngineV2KVQuantizationSelection
         /// Effective complete-checkpoint encoding, independent of live precision.
         public let kvCheckpointQuantization: EngineV2KVQuantizationSelection
+        /// Prompt geometry of the scheduler handed to the engine, after serving,
+        /// calibration and GLM policy. Nil for scripted/test builds.
+        public let prefillGeometry: PrefillGeometry?
 
         /// Stable spelling consumed by benchmark artifact readers.
         public var resolvedKVBackendDescriptor: String {
@@ -126,7 +138,8 @@ extension EngineV2Factory {
             effectiveMaxConcurrentRequests: Int = 0,
             kvQuantization: EngineV2KVQuantizationSelection = .native,
             kvCheckpointQuantization: EngineV2KVQuantizationSelection = .native,
-            admissionWatermarkFraction: Double? = nil
+            admissionWatermarkFraction: Double? = nil,
+            prefillGeometry: PrefillGeometry? = nil
         ) {
             self.engine = engine
             self.fixedRequestBytes = fixedRequestBytes
@@ -140,11 +153,14 @@ extension EngineV2Factory {
             self.effectiveMaxConcurrentRequests = effectiveMaxConcurrentRequests
             self.kvQuantization = kvQuantization
             self.kvCheckpointQuantization = kvCheckpointQuantization
+            self.prefillGeometry = prefillGeometry
         }
     }
 
     /// Prepare backend resources, then assemble the engine. Slot loading may call
     /// these phases separately to construct a prefix cache for the resolved backend.
+    /// `schedulerPolicy` lets a dedicated owner adjust the resolved scheduler
+    /// configuration before the backend is sized; nil keeps the production policy.
     public static func makeProductionBuild(
         model: any LanguageModel,
         modelID: String? = nil,
@@ -164,12 +180,14 @@ extension EngineV2Factory {
         checkpointQuantization: EngineV2KVQuantizationSelection? = nil,
         maxContextLength: Int? = nil,
         environment: [String: String] = ProcessInfo.processInfo.environment,
-        pagedPreflightOverride: (([CBv2LayerKind]) throws -> Void)? = nil
+        pagedPreflightOverride: (([CBv2LayerKind]) throws -> Void)? = nil,
+        schedulerPolicy: ((inout CBv2SchedulerConfig) -> Void)? = nil
     ) throws -> ProductionBuild {
         let preparedBackend = try prepareProductionBackend(
             model: model,
             modelID: modelID,
             constructionPurpose: constructionPurpose,
+            kvBudget: kvBudget,
             kvBytesCapacity: kvBytesCapacity,
             maxConcurrentRequests: maxConcurrentRequests,
             kvBackend: kvBackend,
@@ -181,17 +199,32 @@ extension EngineV2Factory {
             nativeKVLayerIndices: EngineV2KVQuantizationPolicy.nativeAssistantAccessLayers(
                 layerKinds: (model as? Gemma4TextModel)?.cbv2LayerKinds ?? [],
                 gemmaAssistantActive: mtpDrafter != nil && mtpConfig.effectiveEnabled),
-            pagedPreflightOverride: pagedPreflightOverride)
+            pagedPreflightOverride: pagedPreflightOverride,
+            schedulerPolicy: schedulerPolicy)
         let storageQuantization: PagedKVQuantizationConfig?
         if completePrefixCache != nil {
             let requested = try checkpointQuantization ?? EngineV2KVQuantizationPolicy.resolve(
-                modelType: nil, modelID: modelID ?? "", environment: environment, purpose: .checkpoint)
-            storageQuantization = CBv2CompleteCheckpointStorageQuantization.resolve(
-                requested.configuration, layerKinds: preparedBackend.layerKinds,
-                layerDTypes: preparedBackend.nativeLayerDTypes,
-                pagedConfig: preparedBackend.pagedPoolConfig,
-                hasAssistantState: mtpDrafter is any CBv2MTPPrefixCheckpointCoding
-                    || mtpDrafter is any CBv2MTPRequestStatefulDrafter)
+                modelType: model is FlintModel ? "flint" : nil, modelID: modelID ?? "", environment: environment, purpose: .checkpoint)
+            if model is FlintModel, requested != .native {
+                throw EngineV2KVQuantizationPolicy.Failure.flintRequiresNative
+            }
+            if model is GLM5NextProtectedModel {
+                storageQuantization = CBv2CompleteCheckpointStorageQuantization.resolveGLM5Next(
+                    requested.configuration, layerKinds: preparedBackend.layerKinds,
+                    pagedConfig: preparedBackend.pagedPoolConfig, assistant: mtpDrafter)
+            } else {
+                let persistent = mtpDrafter is any CBv2MTPPrefixCheckpointCoding
+                    || mtpDrafter is any CBv2MTPRequestStatefulDrafter
+                storageQuantization = CBv2CompleteCheckpointStorageQuantization.resolve(
+                    requested.configuration, layerKinds: preparedBackend.layerKinds,
+                    layerDTypes: preparedBackend.nativeLayerDTypes,
+                    pagedConfig: preparedBackend.pagedPoolConfig,
+                    hasAssistantState: persistent
+                        && !CBv2CompleteCheckpointStorageQuantization.permitsLossyTarget(
+                            besideAssistant: mtpDrafter,
+                            pagedRecurrent: preparedBackend.kind == .paged
+                                && preparedBackend.modelCapabilities.supportsRecurrentCheckpointReuse))
+            }
         } else {
             storageQuantization = nil
         }
@@ -225,14 +258,40 @@ extension EngineV2Factory {
         constructionPurpose: ConstructionPurpose = .serving,
         checkpointPartition: EngineV2BenchmarkCheckpointPartition = .production
     ) throws -> ProductionBuild {
+        if glm5NextTarget(model: model) != nil {
+            guard let kvBudget,
+                kvBudget.memoryHeadroomSnapshot().activationReserveBytes >= UnifiedMemoryCap.defaultActivationReserveBytes else {
+                throw EngineV2ProductionError.noKVHeadroom
+            }
+        }
+        var mtpConfig = mtpConfig
+        if let protected = model as? GLM5NextProtectedModel {
+            // A checkpoint profile only ever accompanies its complete store.
+            guard preparedBackend.glm5NextModel === protected,
+                prefixCache == nil, !preparedBackend.residentPrefixCacheEnabled,
+                preparedBackend.hybridPrefixCache == nil,
+                checkpointQuantization == nil || completePrefixCache != nil else {
+                throw EngineV2ProductionError.pagedUnavailable("GLM protected execution tuple changed")
+            }
+            mtpConfig = try protected.resolvedMTPConfiguration(mtpConfig, drafter: mtpDrafter)
+            // Also refuse a different store on a previously issued preparation,
+            // before its one-shot consumption check can obscure the mismatch.
+            try preparedBackend.glm5NextNative?.validateBinding(completePrefixCache: completePrefixCache)
+        }
         let (backend, caches) = try preparedBackend.consume(
-            model: model,
-            maxConcurrentRequests: maxConcurrentRequests)
+            model: model, maxConcurrentRequests: maxConcurrentRequests,
+            completePrefixCache: completePrefixCache, kvBudget: kvBudget)
+        let glmNative = preparedBackend.glm5NextNative
+        try glmNative?.validateBinding(completePrefixCache: completePrefixCache)
+        let modelCapabilities = glmNative?.resources.model.cbv2Capabilities ?? preparedBackend.modelCapabilities
+        let boundCompletePrefixCache: (any CBv2CompletePrefixCache)?
+        if let glmNative { boundCompletePrefixCache = glmNative.resources.completePrefixCache }
+        else { boundCompletePrefixCache = completePrefixCache }
         if let violation = EngineV2.backendCapabilityViolation(
-            capabilities: preparedBackend.modelCapabilities, backend: backend) {
+            capabilities: modelCapabilities, backend: backend) {
             throw EngineV2ProductionError.pagedUnavailable(violation)
         }
-        let effectivePrefixCache = preparedBackend.modelCapabilities.supportsPrefixReuse
+        let effectivePrefixCache = modelCapabilities.supportsPrefixReuse
             ? prefixCache : nil
         var schedulerConfig = preparedBackend.schedulerConfig
         schedulerConfig.enablePrefixCache =
@@ -246,8 +305,18 @@ extension EngineV2Factory {
             benchmarkDemandedCheckpointPartitionIncludesLongPrompts(
                 model: model, backend: preparedBackend.kind, store: completePrefixCache,
                 constructionPurpose: constructionPurpose, checkpointPartition: checkpointPartition)
-        let processOwner: EngineProcessMemoryOwner?
-        if preparedBackend.kind == .paged, let kvBudget {
+        schedulerConfig.demandedCaptureBoundaryMinimumTokens = demandedCaptureBoundaryMinimumTokens(
+            model: model, store: completePrefixCache)
+        let processOwner: (any CBv2ProcessMemoryOwner)?
+        if let glmNative {
+            guard glmNative.resources.backend === backend,
+                glmNative.resources.backend.pool.bytesMaterialized == 0,
+                glmNative.resources.backend.bytesReserved == 0,
+                !glmNative.scope.snapshot.isRetainedFault else {
+                throw EngineV2ProductionError.pagedUnavailable("GLM protected backend was consumed before engine admission")
+            }
+            processOwner = glmNative.resources.processMemoryOwner
+        } else if preparedBackend.kind == .paged, let kvBudget {
             // Binding after any slab/request allocation would lose the required
             // reserve-before-allocation boundary. Contiguous keeps its existing
             // bridge claim until its actual backing coverage is implemented.
@@ -268,11 +337,32 @@ extension EngineV2Factory {
         if preparedBackend.kind == .contiguous {
             admissionConfig.layerElementBytes = preparedBackend.nativeLayerDTypes.map(\.size)
         }
+        if glmNative != nil {
+            admissionConfig.watermarkFraction = glm5NextAdmissionWatermarkFraction
+        }
+        let steppable: any CBv2SteppableModel
+        let cacheProvider: any CBv2LayerCacheProvider
+        if let glmNative {
+            steppable = glmNative.resources.model
+            cacheProvider = glmNative.resources.cacheProvider
+        } else if let target = glm5NextTarget(model: model) {
+            let root = model as? GLM5NextModel
+            steppable = GLM5NextSteppableModel(target: target, root: root)
+            if let paged = backend as? PagedKVBackend {
+                cacheProvider = try GLM5NextCausalCacheBank(target: target, root: root,
+                    backend: paged, caches: caches)
+            } else {
+                cacheProvider = CBv2LayerCacheBank(caches: caches)
+            }
+        } else {
+            steppable = CBv2SteppableLanguageModelAdapter(model)
+            cacheProvider = CBv2LayerCacheBank(caches: caches)
+        }
         let engine = EngineV2(
-            model: CBv2SteppableLanguageModelAdapter(model),
+            model: steppable,
             layerKinds: preparedBackend.layerKinds,
             backend: backend,
-            cacheProvider: CBv2LayerCacheBank(caches: caches),
+            cacheProvider: cacheProvider,
             sampler: CBv2DefaultSampler(),
             detokenizerFactory: CBv2TextDetokenizerFactory(tokenizer: tokenizer),
             schedulerConfig: schedulerConfig,
@@ -281,19 +371,38 @@ extension EngineV2Factory {
             admissionConfig: admissionConfig,
             prefixCache: effectivePrefixCache,
             hybridPrefixCache: preparedBackend.hybridPrefixCache,
-            completePrefixCache: completePrefixCache,
+            completePrefixCache: boundCompletePrefixCache,
             checkpointQuantization: checkpointQuantization,
             completeCheckpointKVDTypes: preparedBackend.nativeLayerDTypes,
             mtpDrafter: mtpDrafter,
             mtpConfig: mtpConfig,
-            processMemoryOwner: processOwner)
+            processMemoryOwner: processOwner,
+            nativeCompletionTracking: glmNative != nil,
+            nativeExecutionContract: glmNative?.resources.contract)
+        let glmOwner: GLM5NextNativeOperationOwner?
+        if let glmNative, let protected = model as? GLM5NextProtectedModel {
+            glmOwner = GLM5NextNativeOperationOwner(model: protected, resources: glmNative, engine: engine)
+        } else { glmOwner = nil }
         // Direct makeProductionEngine callers discard the build metadata.
         // Refuse here as well as in makeBridge, before an unusable engine can
         // escape. No request has been submitted; construction owners unwind.
         if case .unavailable(let reason)? = engine.resolvedMTPAdmission {
+            if let glmOwner { throw GLM5NextNativeConstructionFailure(owner: glmOwner, cause: reason) }
             throw reason
         }
-        return ProductionBuild(
+        if let glmNative, let glmOwner {
+            do {
+                try glmNative.validateBinding(completePrefixCache: engine.completePrefixCache)
+                if let refusal = glm5NextActivationRefusal(
+                    mtpInactiveReason: engine.mtpInactiveReason,
+                    pagedAttentionWorkInactiveReason: engine.pagedAttentionWorkInactiveReason,
+                    nativeCompletionFault: engine.nativeCompletionFault?.reason.rawValue,
+                    scheduler: preparedBackend.schedulerConfig) {
+                    throw EngineV2ProductionError.pagedUnavailable(refusal)
+                }
+            } catch { throw GLM5NextNativeConstructionFailure(owner: glmOwner, cause: error) }
+        }
+        var build = ProductionBuild(
             engine: engine,
             fixedRequestBytes: engine.resolvedFixedBytesPerRequest,
             kvBackendKind: preparedBackend.kind,
@@ -308,6 +417,12 @@ extension EngineV2Factory {
                 : checkpointQuantization.flatMap { configuration in
                     EngineV2KVQuantizationSelection.allCases.first { $0.configuration == configuration }
                 } ?? preparedBackend.kvQuantization,
-            admissionWatermarkFraction: admissionConfig.watermarkFraction)
+            admissionWatermarkFraction: admissionConfig.watermarkFraction,
+            prefillGeometry: PrefillGeometry(scheduler: schedulerConfig))
+        build.glm5NextNativeOwner = glmOwner
+        if glmOwner != nil {
+            build.glm5NextMaximumContextTokens = (model as? GLM5NextProtectedModel)?.maximumContextLength
+        }
+        return build
     }
 }

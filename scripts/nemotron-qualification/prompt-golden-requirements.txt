@@ -1,0 +1,6 @@
+# Exact PyPI versions that generated
+# provider-swift/Tests/ProviderCoreTests/Fixtures/nemotron-super-prompt-golden.json.
+# prompt_golden.py refuses any other installed version.
+jinja2==3.1.6
+markupsafe==3.0.3
+tokenizers==0.22.2

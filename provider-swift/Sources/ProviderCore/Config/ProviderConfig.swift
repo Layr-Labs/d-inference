@@ -56,7 +56,7 @@ public struct ProviderSettings: Sendable, Equatable, Codable {
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        self.name = try container.decodeIfPresent(String.self, forKey: .name) ?? "darkbloom"
+        self.name = try container.decodeIfPresent(String.self, forKey: .name) ?? BuildEnvironment.current.cliName
         self.memoryReserveGB = try container.decodeIfPresent(UInt64.self, forKey: .memoryReserveGB) ?? 4
         self.autoUpdate = try container.decodeIfPresent(Bool.self, forKey: .autoUpdate) ?? true
         self.autoRestart = try container.decodeIfPresent(Bool.self, forKey: .autoRestart) ?? true
@@ -66,7 +66,7 @@ public struct ProviderSettings: Sendable, Equatable, Codable {
 /// Operator policy for multi-token prediction.
 ///
 /// `auto` enables embedded Qwen-family, Nemotron Lightning and native MiMo heads, plus the separately published
-/// assistant for the exact `gemma-4-26b-qat-4bit` target. Other Gemma artifacts
+/// assistants for exact `gemma-4-26b-qat-4bit` and Bonsai 9B targets. Other Gemma artifacts
 /// and Qwen checkpoints without an embedded declaration require explicit `on`.
 /// Model IDs are exact catalog identities; model types retain the funnel's
 /// case/whitespace normalization.
@@ -87,9 +87,17 @@ public enum MTPMode: String, Sendable, Equatable, Codable {
         "qwen3_5", "qwen3_5_moe", "qwen4_exp", "qwen4_exp_text", "nemotron_h", "mimo_v2",
     ]
 
-    private static func isAutomaticGemmaTarget(modelType: String?, modelID: String?) -> Bool {
-        modelID == "gemma-4-26b-qat-4bit"
-            && SpecDecArtifactFunnel.isGemma4Target(modelType: modelType)
+    static func isAutomaticExternalTarget(modelType: String?, modelID: String?) -> Bool {
+        (modelID == "gemma-4-26b-qat-4bit"
+            && SpecDecArtifactFunnel.isGemma4Target(modelType: modelType))
+            || Bonsai9BModelPolicy.matches(modelId: modelID, modelType: modelType)
+    }
+
+    /// GLM serves only through its embedded-MTP native owner, and its managed
+    /// loader validates the trained head, so automatic intent needs no config
+    /// declaration probe. `off` and the process kill switch still disable it.
+    private static func isAutomaticGLM5NextTarget(modelType: String?) -> Bool {
+        modelType?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "glm5_next"
     }
 
     func enablesMTP(
@@ -103,7 +111,8 @@ public enum MTPMode: String, Sendable, Equatable, Codable {
         case .off:
             return false
         case .auto:
-            if Self.isAutomaticGemmaTarget(modelType: modelType, modelID: modelID) {
+            if Self.isAutomaticExternalTarget(modelType: modelType, modelID: modelID)
+                || Self.isAutomaticGLM5NextTarget(modelType: modelType) {
                 return true
             }
             guard embeddedArtifactDeclared,
@@ -122,9 +131,10 @@ public enum MTPMode: String, Sendable, Equatable, Codable {
         case .off:
             return false
         case .auto:
-            return Self.isAutomaticGemmaTarget(modelType: modelType, modelID: modelID)
+            return Self.isAutomaticExternalTarget(modelType: modelType, modelID: modelID)
         case .on:
-            return SpecDecArtifactFunnel.isGemma4Target(modelType: modelType)
+            return Self.isAutomaticExternalTarget(modelType: modelType, modelID: modelID)
+                || SpecDecArtifactFunnel.isGemma4Target(modelType: modelType)
                 || SpecDecArtifactFunnel.isInlineTarget(modelType: modelType)
         }
     }
@@ -148,6 +158,13 @@ public struct BackendSettings: Sendable, Equatable, Codable {
     public var maxModelSlots: UInt64
     /// Explicit network residency control; advertising all cached models is not consent.
     public var modelAutopilot: ModelAutopilotSettings
+    /// Downloads Autopilot may make on the operator's behalf
+    /// (`[backend.autopilot_downloads]`). nil (table absent) means the
+    /// defaults: on, no caps, the built-in reserve; optional so a written
+    /// default never shadows a later built-in change.
+    /// Provider configuration, not consent: changing it never bumps the
+    /// Autopilot revision.
+    public var autopilotDownloads: AutopilotDownloadSettings?
     /// Box-wide concurrent-request cap per v2 engine slot
     /// (`engine_v2_max_concurrent` under `[backend]`). Default
     /// ``defaultEngineV2MaxConcurrent`` — 4, the knee of the measured
@@ -156,7 +173,9 @@ public struct BackendSettings: Sendable, Equatable, Codable {
     /// decode is aggregate/B (`docs/reports/2026-07-25-paged-gate-results.md`).
     ///
     /// Missing configuration selects the exact reviewed model/runtime/hardware
-    /// profile when one exists; unknown profiles retain default 4 and ceiling 8.
+    /// profile when one exists; unknown profiles retain default 4 and ceiling 8,
+    /// except that models on the native `auto` paged allowlist start at 8 on
+    /// M5 Pro, Max and Ultra (`ServingPerformanceProfiles.automaticConcurrency`).
     /// Explicit values remain upper bounds. Widths up to 16 require a reviewed
     /// profile after backend resolution, physical fit and shared-Mac admission.
     /// Heartbeats report the final effective cap, never the requested ceiling.
@@ -242,7 +261,7 @@ public struct BackendSettings: Sendable, Equatable, Codable {
     /// (`mtp_mode` under `[backend]`, default `"auto"` — beta id `mtp`).
     /// Automatic mode activates Qwen3.5-family checkpoints (`qwen3_5`,
     /// `qwen3_5_moe`) that declare an embedded head (`mtplx_mtp`), and the
-    /// catalog-declared assistant for exact `gemma-4-26b-qat-4bit`.
+    /// catalog-declared assistants for exact `gemma-4-26b-qat-4bit` and Bonsai 9B identities.
     /// Native `mimo_v2` also requests its inspected embedded heads automatically.
     /// The retired boolean `mtp` key is ignored (and warned about, see
     /// ``retiredKeysPresent``); only `mtp_mode` is read or written.
@@ -321,7 +340,8 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         mtpDrafterPath: String? = nil,
         mtpAcceptance: String? = nil,
         mtpAcceptanceByModel: [String: String] = [:],
-        modelAutopilot: ModelAutopilotSettings = .init()
+        modelAutopilot: ModelAutopilotSettings = .init(),
+        autopilotDownloads: AutopilotDownloadSettings? = nil
     ) {
         self.port = port
         self.model = model
@@ -349,6 +369,7 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         self.mtpAcceptance = mtpAcceptance
         self.mtpAcceptanceByModel = mtpAcceptanceByModel
         self.modelAutopilot = modelAutopilot
+        self.autopilotDownloads = autopilotDownloads
     }
 
     enum CodingKeys: String, CodingKey {
@@ -359,6 +380,7 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         case idleTimeoutMins = "idle_timeout_mins"
         case maxModelSlots = "max_model_slots"
         case modelAutopilot = "model_autopilot"
+        case autopilotDownloads = "autopilot_downloads"
         case engineV2MaxConcurrent = "engine_v2_max_concurrent"
         case engineV2MaxConcurrentByModel = "engine_v2_max_concurrent_by_model"
         case engineV2KVBackend = "engine_v2_kv_backend"
@@ -402,6 +424,7 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         self.idleTimeoutMins = try container.decodeIfPresent(UInt64.self, forKey: .idleTimeoutMins) ?? 60
         self.maxModelSlots = try container.decodeIfPresent(UInt64.self, forKey: .maxModelSlots) ?? 3
         self.modelAutopilot = try container.decodeIfPresent(ModelAutopilotSettings.self, forKey: .modelAutopilot) ?? .init()
+        self.autopilotDownloads = try container.decodeIfPresent(AutopilotDownloadSettings.self, forKey: .autopilotDownloads)
         self.engineV2MaxConcurrentIsExplicit = container.contains(.engineV2MaxConcurrent)
         self.engineV2MaxConcurrent =
             try container.decodeIfPresent(UInt64.self, forKey: .engineV2MaxConcurrent)
@@ -456,6 +479,7 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         try container.encode(idleTimeoutMins, forKey: .idleTimeoutMins)
         try container.encode(maxModelSlots, forKey: .maxModelSlots)
         try container.encode(modelAutopilot, forKey: .modelAutopilot)
+        try container.encodeIfPresent(autopilotDownloads, forKey: .autopilotDownloads)
         if engineV2MaxConcurrentIsExplicit {
             try container.encode(engineV2MaxConcurrent, forKey: .engineV2MaxConcurrent)
         }
@@ -508,6 +532,9 @@ public struct CoordinatorSettings: Sendable, Equatable, Codable {
 }
 
 public struct ProviderConfig: Sendable, Equatable, Codable {
+    /// Inert saved cluster setup; startup requires a separate explicit
+    /// distributed opt-in. Never an approval or serving capacity.
+    public var cluster: ClusterConfigurationReference?
     public var provider: ProviderSettings
     public var backend: BackendSettings
     public var coordinator: CoordinatorSettings
@@ -521,7 +548,8 @@ public struct ProviderConfig: Sendable, Equatable, Codable {
         coordinator: CoordinatorSettings = CoordinatorSettings(),
         schedule: ScheduleConfig? = nil,
         gemmaOptimizations: GemmaOptimizationSettings = GemmaOptimizationSettings(),
-        cache: CacheSettings = CacheSettings()
+        cache: CacheSettings = CacheSettings(),
+        cluster: ClusterConfigurationReference? = nil
     ) {
         self.provider = provider
         self.backend = backend
@@ -529,6 +557,7 @@ public struct ProviderConfig: Sendable, Equatable, Codable {
         self.schedule = schedule
         self.gemmaOptimizations = gemmaOptimizations
         self.cache = cache
+        self.cluster = cluster
     }
 
     enum CodingKeys: String, CodingKey {
@@ -538,11 +567,12 @@ public struct ProviderConfig: Sendable, Equatable, Codable {
         case schedule
         case gemmaOptimizations = "gemma_optimizations"
         case cache
+        case cluster
     }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        self.provider = try container.decodeIfPresent(ProviderSettings.self, forKey: .provider) ?? ProviderSettings(name: "darkbloom")
+        self.provider = try container.decodeIfPresent(ProviderSettings.self, forKey: .provider) ?? ProviderSettings(name: BuildEnvironment.current.cliName)
         self.backend = try container.decodeIfPresent(BackendSettings.self, forKey: .backend) ?? BackendSettings()
         self.coordinator = try container.decodeIfPresent(CoordinatorSettings.self, forKey: .coordinator) ?? CoordinatorSettings()
         self.schedule = try container.decodeIfPresent(ScheduleConfig.self, forKey: .schedule)
@@ -551,6 +581,7 @@ public struct ProviderConfig: Sendable, Equatable, Codable {
         ) ?? GemmaOptimizationSettings()
         self.cache = try container.decodeIfPresent(CacheSettings.self, forKey: .cache) ?? CacheSettings()
         try self.cache.validate()
+        self.cluster = try container.decodeIfPresent(ClusterConfigurationReference.self, forKey: .cluster)
     }
 
     /// Generate a default config based on detected hardware.
@@ -558,7 +589,7 @@ public struct ProviderConfig: Sendable, Equatable, Codable {
     /// The provider name is derived from the machine model identifier
     /// (e.g. "Mac16,1" -> "darkbloom-mac16-1").
     public static func defaultForHardware(_ hw: HardwareInfo) -> ProviderConfig {
-        let name = "darkbloom-" + hw.machineModel
+        let name = BuildEnvironment.current.cliName + "-" + hw.machineModel
             .replacingOccurrences(of: ",", with: "-")
             .lowercased()
 
@@ -616,9 +647,7 @@ public enum ConfigManager: Sendable {
     /// The same path for another account's home, such as the invoking user
     /// of `sudo darkbloom report`.
     public static func defaultConfigPath(home: URL) -> URL {
-        home
-            .appendingPathComponent(".config")
-            .appendingPathComponent("darkbloom")
+        BuildEnvironment.current.configDirectory(home: home)
             .appendingPathComponent("provider.toml")
     }
 
@@ -648,7 +677,7 @@ public enum ConfigManager: Sendable {
         else {
             // Return a minimal default if we can't load
             return ProviderConfig(
-                provider: ProviderSettings(name: "darkbloom"),
+                provider: ProviderSettings(name: BuildEnvironment.current.cliName),
                 backend: BackendSettings(),
                 coordinator: CoordinatorSettings()
             )
@@ -656,7 +685,22 @@ public enum ConfigManager: Sendable {
         return config
     }
 
-    /// Save config to a file path, creating parent directories as needed.
+    /// The config at `path`, or the build's defaults when nothing exists at
+    /// that path: a new Mac has no provider.toml until its first cluster
+    /// setup is saved, and `darkbloom cluster` reads the coordinator (for
+    /// Darkbloom's catalog) before that. A file that exists but cannot be read
+    /// or decoded still throws, as `load(from:)` does.
+    public static func loadOrDefaults(from path: URL) throws -> ProviderConfig {
+        var value = stat()
+        if lstat(path.path, &value) != 0, errno == ENOENT {
+            return ProviderConfig(provider: ProviderSettings(name: "darkbloom"), backend: BackendSettings(),
+                                  coordinator: CoordinatorSettings())
+        }
+        return try load(from: path)
+    }
+
+    /// Save config to a file path, creating parent directories as needed. The
+    /// file is replaced atomically and owner-only (`ProviderConfigFile`).
     public static func save(_ config: ProviderConfig, to path: URL) throws {
         let dir = path.deletingLastPathComponent()
         do {
@@ -669,7 +713,7 @@ public enum ConfigManager: Sendable {
 
         let toml = serialize(config)
         do {
-            try toml.write(to: path, atomically: true, encoding: .utf8)
+            try ProviderConfigFile.replace(path, with: Data(toml.utf8))
         } catch {
             throw ConfigError.writeFailed(path: path.path, underlying: error)
         }
@@ -694,11 +738,11 @@ public enum ConfigManager: Sendable {
     /// ``parseValidating(_:)`` (via ``load(from:)``) on that path.
     public static func parse(_ content: String) -> ProviderConfig {
         do {
-            return try TOMLDecoder().decode(ProviderConfig.self, from: content)
+            return try decodeRemembered(content)
         } catch {
             // Fall back to defaults on malformed TOML (matches previous behavior)
             return ProviderConfig(
-                provider: ProviderSettings(name: "darkbloom"),
+                provider: ProviderSettings(name: BuildEnvironment.current.cliName),
                 backend: BackendSettings(),
                 coordinator: CoordinatorSettings()
             )
@@ -715,10 +759,22 @@ public enum ConfigManager: Sendable {
     /// undecodable FILE is rejected.
     public static func parseValidating(_ content: String) throws -> ProviderConfig {
         do {
-            return try TOMLDecoder().decode(ProviderConfig.self, from: content)
+            return try decodeRemembered(content)
         } catch {
             throw ConfigError.parseFailed(detail: "\(error)")
         }
+    }
+
+    /// TOMLKit never frees the C++ table a parse builds (its `TOMLTable` has no deinit), so every parse stayed in memory
+    /// for the life of the process. The cluster service parses `provider.toml` every tick (the member sync reads the
+    /// saved cache settings): both services grew about 1 MiB a minute. The same text decodes to the same value, so the
+    /// last few decoded texts are remembered and only a text not seen recently is parsed. Failures are not remembered.
+    private static let decodedTexts = RememberedProviderConfigurations(capacity: 8)
+    private static func decodeRemembered(_ content: String) throws -> ProviderConfig {
+        if let known = decodedTexts.value(for: content) { return known }
+        let value = try TOMLDecoder().decode(ProviderConfig.self, from: content)
+        decodedTexts.remember(value, for: content)
+        return value
     }
 
     /// Serialize a ProviderConfig to the provider's TOML config format.
@@ -729,6 +785,28 @@ public enum ConfigManager: Sendable {
             // Should never happen with our well-defined types, but return empty
             // string rather than crashing (matches previous graceful behavior).
             return ""
+        }
+    }
+}
+
+/// The last `capacity` provider configuration texts and what they decoded to, most recent first.
+final class RememberedProviderConfigurations: @unchecked Sendable {
+    private let lock = NSLock()
+    private let capacity: Int
+    private var entries: [(text: String, value: ProviderConfig)] = []
+    init(capacity: Int) { self.capacity = max(1, capacity) }
+    func value(for text: String) -> ProviderConfig? {
+        lock.withLock {
+            guard let index = entries.firstIndex(where: { $0.text == text }) else { return nil }
+            let entry = entries.remove(at: index); entries.insert(entry, at: 0)
+            return entry.value
+        }
+    }
+    func remember(_ value: ProviderConfig, for text: String) {
+        lock.withLock {
+            entries.removeAll { $0.text == text }
+            entries.insert((text, value), at: 0)
+            if entries.count > capacity { entries.removeLast(entries.count - capacity) }
         }
     }
 }

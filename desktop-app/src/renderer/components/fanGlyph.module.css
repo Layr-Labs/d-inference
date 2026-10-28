@@ -1,0 +1,24 @@
+.glyph {
+  display: inline-flex;
+  flex-shrink: 0;
+  color: var(--muted);
+}
+.glyph[data-spinning='true'] {
+  color: var(--accent-brand);
+}
+.glyph svg {
+  display: block;
+}
+.glyph[data-animate='true'] svg {
+  animation: spin var(--fan-turn, 2.4s) linear infinite;
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .glyph[data-animate='true'] svg {
+    animation: none;
+  }
+}

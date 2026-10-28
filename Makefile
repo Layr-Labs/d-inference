@@ -1,7 +1,6 @@
 .DEFAULT_GOAL := help
 .PHONY: help provider-build provider-test provider \
         benchmark-gemma-contbatch benchmark-wrapper-test \
-        ui-install ui-build ui-lint ui-test ui \
         landing-install landing-build landing-lint landing-test landing \
         docs-check docs-impact-check docs-stamp changelog-check changelog-preview \
         test build all clean
@@ -40,21 +39,23 @@ benchmark-wrapper-test: ## Unit-test benchmark wrappers (no GPU or weights)
 benchmark-gemma-contbatch: ## Build and benchmark Gemma 4 26B continuous batching
 	python3 scripts/benchmark-gemma-contbatch.py $(GEMMA_BENCHMARK_ARGS)
 
-# ---- Retained Console UI (Next.js 16) --------------------------------------
+# ---- Desktop frontend ------------------------------------------------------
+.PHONY: desktop-install desktop-build desktop-test desktop-package desktop-api-test
 
-ui-install: ## npm install for console-ui
-	cd console-ui && npm install
+desktop-install: ## Install Electron app dependencies
+	cd desktop-app && npm ci
 
-ui-build: ## next build for console-ui
-	cd console-ui && npm run build
+desktop-build: ## Build the Electron frontend and native bridge
+	cd desktop-app && npm run build
 
-ui-lint: ## eslint check for console-ui sources
-	cd console-ui && npx eslint src/
+desktop-test: ## Test desktop user journeys and IPC boundaries
+	cd desktop-app && npm test
 
-ui-test: ## vitest for console-ui
-	cd console-ui && npm test
+desktop-package: ## Create a macOS app for review without publishing
+	cd desktop-app && npm run package
 
-ui: ui-install ui-lint ui-test ui-build ## Install, lint, test, build retained console-ui
+desktop-api-test: ## Test the real Swift desktop API with isolated local fixtures
+	python3 scripts/test-desktop-api.py provider-swift/.build/debug/darkbloom
 
 # ---- Marketing site (Next.js 16) ------------------------------------------
 
@@ -91,13 +92,12 @@ changelog-preview: ## Preview pending release notes without changing files
 
 # ---- Aggregates ------------------------------------------------------------
 
-test: provider-test ui-test landing-test benchmark-wrapper-test changelog-check docs-check ## Run provider, retained console and landing tests + docs lint
+test: provider-test landing-test benchmark-wrapper-test changelog-check docs-check ## Run provider and landing tests + docs lint
 
-build: provider-build ui-build landing-build ## Build provider, retained console and landing
+build: provider-build landing-build ## Build provider and landing
 
 all: test build ## Test + build everything
 
 clean: ## Remove built artifacts
 	rm -rf provider-swift/.build
-	rm -rf console-ui/.next console-ui/node_modules
 	rm -rf landing/.next landing/node_modules

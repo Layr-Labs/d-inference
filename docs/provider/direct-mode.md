@@ -1,12 +1,20 @@
 # Direct mode: a local OpenAI-compatible endpoint
 
-> Last updated: 2026-09-30
+> Last updated: 2026-10-26
 
 Run the provider's inference engine as an OpenAI-compatible HTTP server on your
 own Mac, either standalone (`darkbloom start --local`, no coordinator, no
 earnings) or alongside fleet serving (`darkbloom start --local-endpoint`). For
 operators who want their own tools to call the models they already host.
 Requests never leave the machine and are never billed.
+
+Chat completions accept `stop` as a string or string array and pass explicit
+`min_p` to the engine. JSON and SSE responses include requested captured
+logprobs and reasoning-token usage when available, using the same HTTP wiring
+as a local cluster endpoint. Capture still depends on the selected native
+runtime: an unsupported cluster mode returns `logprob_capture_unsupported`
+before reservation. Shared API tests do not establish native feature support.
+See [inference and logprob admission](../architecture/inference.md).
 
 ## Prerequisites
 
@@ -35,22 +43,38 @@ Requests never leave the machine and are never billed.
    darkbloom start --local --port 8080 --bind 0.0.0.0  # other port / all interfaces
    ```
 
-   `--port` defaults to `8000`, `--bind` to `127.0.0.1`. Before serving,
+   `--port` defaults to `8000` (`defaultLocalPort`; a dev build uses its own
+   port, see [Dev build identity](../operations/provider-release.md#dev-build-identity)),
+   `--bind` to `127.0.0.1`. Before serving,
    `Start.runLocalStandalone` (`provider-swift/Sources/darkbloom/Start/StartCommand+Modes.swift`)
    loads or creates the API token, filters the chosen models to those with an
    engine-v2 adapter (exit 1 with `No engine-v2-capable models available to
    serve.` if none remain), and preloads the selected models before listening
-   when `[backend] startup_preload` is enabled (the default). The explicit
+   when `[backend] startup_preload` is enabled (the default). When a load is
+   short of headroom the server first releases retained paged KV segments and
+   drops the MLX buffer cache once, then evicts the least recently used idle
+   slot (`StandaloneServer.ensureMemoryHeadroomForLoad`). The explicit
    `preload_models` list takes precedence; slot and memory limits can skip a
-   model, which still loads on request. Standalone preload does not run the
-   coordinator-serving one-token startup self-test, so the first local request
-   may still compile Metal kernels. Ctrl-C during preload cancels startup
+   model, which still loads on request. A local GLM qualification load reads its
+   weights for its own per-file SHA-256 verification and the tensor reads only;
+   that verification is the artifact hash, with no separate weight-hash passes
+   (`GLM5NextManagedLoad.verifiedArtifactSHA256`). Standalone preload does not run the
+   coordinator-serving one-token startup self-test. Each preloaded model does run
+   the excluded [shape warmup](../architecture/inference.md#model-startup-calibration)
+   before the listener opens: a short shader-cache probe, plus the shape cells
+   after a new install or a macOS or MLX kernel update. The 5-second sweep tick
+   warms a deferred, lazily loaded or MTP-upgraded engine once the server is
+   idle; a request that arrives first preempts it and may still compile Metal
+   kernels. `DARKBLOOM_TTFT_SHAPE_WARMUP=0` disables the warmup. Ctrl-C during preload cancels startup
    without opening the listener. It then waits for the socket to bind (`waitUntilBound`,
    bounded by the local bind wait in [runtime constants](./cli-reference.md#runtime-constants);
    `Local server failed to bind <addr>:<port> within 5s` otherwise), writes the
    discovery file and holds a fan-control lease while running
    ([fan control](./fan-control.md)). Ctrl-C stops it and removes the
-   discovery file.
+   discovery file. Closing the terminal window does the same
+   ([stop signals](./cli-reference.md#graceful-stop-and-restart)), unless the
+   command was started with hangups ignored (for example under `nohup`), in
+   which case it keeps serving.
 
 3. Or start unified. This goes through the normal LaunchAgent path, so the
    flags are recorded in the plist and survive reboots:
@@ -97,8 +121,8 @@ Requests never leave the machine and are never billed.
 |---|---|---|
 | API key | `~/.darkbloom/local_token`, mode `0600`; `dk-local-` + base64url of 32 random bytes; created once, reused across restarts | `provider-swift/Sources/ProviderCore/Server/LocalEndpoint.swift` (`loadOrCreateToken`, `tokenPrefix`) |
 | Discovery record | `~/.darkbloom/local.json`, mode `0600`: `base_url`, `api_key`, `host`, `port`, `pid`, `version`, `updated_at`; removed on graceful shutdown | `LocalEndpoint.Info`, `writeInfo`, `removeInfo` |
-| Directory override | `DARKBLOOM_LOCAL_DIR` replaces `~/.darkbloom` for both files | `LocalEndpoint.directory` |
-| `--bind 0.0.0.0` | Advertised `base_url` uses `127.0.0.1`; other hosts use the machine's address | `LocalEndpoint.Info.init` |
+| Directory | `~/.darkbloom`; a dev build (`darkbloom-dev`) uses `~/.darkbloom-dev`. `DARKBLOOM_LOCAL_DIR` replaces it for both files | `LocalEndpoint.directory`, `BuildEnvironment.installDirectory` |
+| `--bind 0.0.0.0` | Advertised `base_url` uses `127.0.0.1`; other hosts use the machine's address, and `darkbloom local` prints its Bonjour URL on a `network:` line. [`darkbloom cluster local`](./two-mac-cluster.md#serving-locally-only) binds the cluster's API this way by default | `LocalEndpoint.Info.init`, `Local.networkURL` |
 | `--no-auth` | No token check; `api_key` is empty in the discovery record | `LocalInferenceHTTPConfig.authToken == nil` |
 
 `LocalAuthResponder` (`provider-swift/Sources/ProviderCore/Server/LocalAuthResponder.swift`)
@@ -122,11 +146,11 @@ the upstream `MLXLMServer` router
 |---|---|---|
 | GET | `/health`, `/v1/health` | Unauthenticated |
 | GET | `/models`, `/v1/models` | Advertised catalog, not just resident models |
-| GET | `/props`, `/metrics` | `/metrics` adds per-slot MTP posture lines (`provider-swift/Sources/ProviderCore/Server/LocalMetricsResponder.swift`) |
+| GET | `/props`, `/metrics` | `/metrics` adds per-slot MTP and serving-posture lines (`provider-swift/Sources/ProviderCore/Server/LocalMetricsResponder.swift`); see [SSD cache observations](../reference/ssd-kv-cache.md#verification) for `prefix_cache_status` |
 | POST | `/v1/chat/completions`, `/chat/completions` | Streaming and non-streaming; inline media; body capped at `localInferenceMaxUploadBytes` |
 | POST | `/v1/chat/completions/batch` | Same cap |
 | POST | `/v1/completions`, `/completions`, `/completion` | Text; upstream 2 MiB body ceiling |
-| POST | `/v1/responses`, `/responses` | Responses API, in-memory store |
+| POST | `/v1/responses`, `/responses` | Responses API; provider continuation history and SDK response-object storage, with distinct retention below |
 | GET / POST | `/v1/responses/:response_id`, `/v1/responses/:response_id/cancel` | |
 | POST | `/tokenize`, `/detokenize`, `/apply-template` | Tokenizer utilities |
 | POST | `/v1/embeddings`, `/embeddings`, `/embedding` | Registered upstream; the provider configures no embedding model, so they return an OpenAI error envelope with code `embeddings_not_configured` |
@@ -148,6 +172,51 @@ The provider chat-upload interceptor selects the SDK service's HTTP framing
 policy (`LocalChatUploadResponder.respond` and `MLXOpenAIService.streamChatCompletionFrames`).
 A failed required tool call is still a failure; no argument repair or fabricated
 call is performed.
+
+### Refused request shapes
+
+The chat routes and Responses input answer these shapes with an OpenAI error
+envelope, the same on one Mac and on a [two-Mac cluster](./two-mac-cluster.md):
+
+| Request | Answer | Source |
+|---|---|---|
+| A content part whose `type` is none of `text`, `input_text`, `output_text`, `image_url`, `input_image`, `video_url`, `input_audio` (for example `input_file`, `input_video`, `refusal`) | HTTP `400` before model acquisition or SSE headers: `Content part type "<type>" is not supported. Send text, image_url, video_url or input_audio parts.` The type is shown with at most 64 of its letters, digits and `_.-:/`. Models without native audio still refuse `input_audio` | `libs/mlx-swift-lm/Libraries/MLXLMServer/Runtime/OpenAIRequestValidation.swift` (`OpenAIRequestValidationError.unsupportedContentPart`) |
+| `response_format` `json_object`/`json_schema` whose answer stopped at `max_tokens` before it was complete (a reasoning model can spend the whole budget thinking) | HTTP `422`: `The output was cut off by max_tokens before the structured (response_format) answer was complete. Raise max_tokens or lower the reasoning effort, and retry.` Invalid JSON at a natural stop keeps its `422` with the closed internal-failure message. GLM-5.3-Flash validates its withheld JSON answer itself (`GLM5NextResponseFormat`) and answers a truncated one with that closed `422` | `libs/mlx-swift-lm/Libraries/MLXLMServer/Runtime/MLXOpenAIService.swift` (`MLXOpenAIServiceError.responseFormatCutOffByMaxTokens`); `provider-swift/Sources/ProviderCore/Server/StandaloneServer+HTTP.swift` (`CORSResponder`); `provider-swift/Sources/ProviderCore/Inference/Prompting/GLM5NextResponseFormat.swift` (`validatedContent`) |
+| GLM-5.3-Flash with images or video and `response_format` `json_object`/`json_schema` or a required or named `tool_choice` | HTTP `400` `Invalid inference request.` (failure code `invalid_request`) before any media decode: only the text path withholds and validates such an answer or call. Hidden reasoning (`reasoning.exclude: true`, `include_reasoning: false`, `thinking.display: "omitted"`) is served with media too, its reasoning withheld | `provider-swift/Sources/ProviderCore/Inference/Engine/Scheduler/MultiModelBatchSchedulerEngine.swift` (`prepareCompletion`); `provider-swift/Sources/ProviderCore/Inference/Prompting/GLM5NextPromptPolicy.swift` (`withholdsOutput`, `withholdsReasoning`) |
+| An image or video the model's processor refuses: for Qwen 3.5 and 3.8 a side below `patch_size × merge_size` (32 pixels) or an aspect ratio above 200:1, which it does not upscale; a video without a decodable track; more images or videos than the processor takes | HTTP `400` `Invalid media input.` (failure code `invalid_media`), before the vision tower or any native reservation, never the retryable `503` | `provider-swift/Sources/ProviderCore/Inference/Vision/EngineV2VisionPrefill.swift` (`clientFault(for:)`) |
+
+## Responses continuation and retention
+
+Send a stored response's string `id` as `previous_response_id` on the next
+Responses POST. Send only the new input; the provider prepends the stored input
+and assistant output. Supply the new request's instructions and tool settings
+again: previous top-level instructions and settings are not inherited. Keep
+your own history if a conversation must survive eviction or an application
+restart (`provider-swift/Sources/ProviderCore/Server/LocalResponseConversation.swift`,
+`prepare`, `conversation`).
+
+| Behavior | Local contract | Source |
+|---|---|---|
+| Input limit | Responses POST bodies use `min(maxUploadBytes, 2 * 1024 * 1024)`; the larger Chat upload cap does not apply. Reconstructed history still passes ordinary token/context admission. | `provider-swift/Sources/ProviderCore/Server/LocalChatUploadResponder.swift` (`respond`) |
+| Continuation ID | Omitted or JSON `null` starts without prior history. Non-null non-string values, empty/unknown IDs and evicted IDs return JSON HTTP `400`, code `previous_response_not_found`, before model acquisition or SSE setup. | `LocalResponseConversation.prepare`; `LocalChatUploadResponder.respond` |
+| Saved history | Input plus one assistant turn containing answer, reasoning and tool calls; tool-result `call_id` is preserved. A streamed completed/incomplete response is recorded before its terminal frame is forwarded; a failed frame is not recorded. | `LocalResponseConversation.conversation`, `finalResponse`; `provider-swift/Sources/ProviderCore/Server/LocalResponseConversationStore.swift` (`record`, `recording`) |
+| Continuation lifetime | One history store per local application. Defaults are `maxResponses = 256` and `maxBytes = 64 * 1024 * 1024`, measured as retained serialized histories including inline media. Reads refresh recency; oldest entries are evicted, and a history larger than the byte cap is not saved. This is not a total process-memory bound. | `LocalResponseConversationStore.init`, `conversation`, `save`; `provider-swift/Sources/ProviderCore/Server/LocalInferenceHTTP.swift` (`makeLocalInferenceApplication`) |
+| Retrieval lifetime | GET reads a separate application-shared SDK object store. It has no matching count/byte eviction or TTL; objects remain in memory for that store's lifetime. A successful GET does not imply the ID is still available for continuation, and GET does not refresh history recency. Neither store is persistent. | `libs/mlx-swift-lm/Libraries/MLXLMServer/Runtime/InMemoryResponseStore.swift` (`save`, `get`); `makeLocalInferenceApplication` |
+| Storage opt-out | `store: false` suppresses both new saves. It can still read an available previous history; it does not delete an older response. | `LocalChatUploadResponder.respond`; `libs/mlx-swift-lm/Libraries/MLXLMServer/Runtime/MLXOpenAIService.swift` (`createResponse`, `streamResponseFrames`) |
+
+If continuation returns `previous_response_not_found`, resend the conversation
+you retained as explicit input without the expired ID. GET may still retrieve
+the old response object. See [reasoning state](../architecture/inference.md#collected-and-streaming-reasoning-state)
+for parser selection and incomplete thinking, and the
+[regression recipe](../developer/test.md#local-responses-and-reasoning-regressions)
+for isolated helper/router checks.
+
+Flint (`model_type: flint`) reads the same reasoning controls on Chat
+Completions and Responses. Effort values and thinking switches are accepted
+with no effect; `reasoning.exclude: true`, `include_reasoning: false` or
+`reasoning.enabled: false` omit reasoning from the response while its tokens
+are still counted. `stop` and JSON `response_format` apply to the answer after
+reasoning. See [Native Flint](../architecture/inference.md#native-flint).
 
 ## Verify
 
@@ -171,6 +240,65 @@ the process prints its listening address and the daemon-state file is not used.
 | Model not in `/v1/models` | Only models with an engine-v2 adapter are advertised; `darkbloom models list` |
 | Endpoint unreachable from another machine | Default bind is loopback; `--bind 0.0.0.0` and open the port, then set a reverse proxy with TLS |
 
+## Nemotron Super
+
+In unified mode, chat completions for `nvidia-nemotron-3.5-super` load the
+managed slot through the ordinary local acquisition and run on its owner
+(`provider-swift/Sources/ProviderCore/Server/NemotronSuperLocalEndpointEngine.swift`):
+the controls in the table below apply, prefix reuse uses one partition per
+local endpoint (text checkpoints are complete SSD checkpoints by default; an
+image turn reuses only with the resident bank, `DARKBLOOM_PREFIX_CACHE_MEMORY=1`,
+and only checkpoints of the same images at the same positions), a text
+response's `usage.prompt_tokens_details.cached_tokens` counts the prompt tokens
+it restored, and inline images are served as described below, target-only on
+the default speculating owner. Other routes for that id
+(`/v1/completions`, `/v1/responses`) are refused; the generic engine never
+serves Super. Standalone mode (`darkbloom start --local`) does not list it.
+
+### Experimental Nemotron Super owner fixtures
+
+The optional `NemotronSuperLocalImageHTTP` owner hook in
+`provider-swift/Sources/ProviderCore/Server/NemotronSuperLocalImageHTTP.swift`
+uses the existing local authentication, body limits, JSON/SSE framing and
+request-cancellation scope. Its default is absent; only the qualification
+runner installs it as a hook, and it does not advertise a new model. When installed it serves
+every chat request for the Super model ID: text on the owner's text binding with
+its own tokenizer, and bounded inline images on the owner's image binding:
+`data:image/png;base64,` or `data:image/jpeg;base64,` URIs whose content, not the
+label, selects PNG or JPEG (see the
+[image format reference](../reference/nemotron-super-image-formats.md)), or one
+`data:video/mp4;base64,` or `data:video/quicktime;base64,` video as the only
+media of the request ([managed slot](../architecture/inference.md#managed-nemotron-super-slot)).
+Image prompts carry the reference `<img>`, one `<image>` per visual feature,
+`</img>` span for each image; a video carries one per tubelet behind its
+frame-timestamp label.
+
+| Request control | Hook behavior |
+|---|---|
+| `enable_thinking` absent or `true` | Template default; `reasoning_content` streams until `</think>` |
+| `enable_thinking: false` | All output is `content`, including literal markers |
+| `chat_template_kwargs.force_nonempty_content` | Unterminated reasoning becomes `content`: moved in a complete response; a stream sends it as reasoning, then repeats it as `content` at the end |
+| `tools`, `tool_choice` (text) | `<tool_call>` frames become validated `tool_calls`; violations return 422, or end a stream with an error event |
+| `response_format` `json_object`/`json_schema` (text) | Content is withheld and validated; invalid JSON returns 422, or ends a stream with an error event. With `tools`, calls return as `tool_calls` and only an answer without calls must be JSON |
+| `logprobs: true`, `top_logprobs` 0 to 20 (text, image or video) | `choices[0].logprobs.content`, streamed and complete: one entry per generated token in generation order, covering reasoning, answer and tool-call tokens (as vLLM and SGLang return them), each with at least one alternative. Joined, the entry tokens spell the reasoning, the `</think>` marker and then the answer, not the answer alone. Reasoning chunks carry their tokens' entries, and a response that ends while reasoning still carries them. A complete response carries the stream's entries. Tool-call tokens lack entries only in the rare case that nothing follows the call. The request does not speculate; others keep speculating ([logprob rows](../architecture/inference.md#nemotron-super-logprobs)) |
+| Contradictory controls, `top_logprobs` outside 0 to 20, `logit_bias`, `min_p`, `n > 1` | 400 before generation |
+| A request beyond the owner's concurrency while others are in flight (text or image) | 429 once the service has decoded the request, before its prompt is planned or rendered and before any response starts; the owner serves one request unless `DARKBLOOM_NEMOTRON_SUPER_MAX_CONCURRENT` raises it, and one image at a time |
+| Image input while speculation is installed | Served target-only: no speculation for that request, while text keeps speculating |
+| Image whose media reservation does not fit the shared budget | 503 before decoding; nothing stays reserved |
+| Visual tokens or an image or video prompt beyond the context | 400 before decoding; nothing stays reserved |
+| A media request body above `localInferenceMaxUploadBytes` | 413 from the chat route; the owner's own 40 MiB bound (`NemotronSuperServingPolicy.maximumEncodedBodyBytes`) is above it |
+| A second video, a video with images, another container, a codec other than H.264 or HEVC, an undecodable movie, frames of more than 8,847,360 pixels (`4096 * 2160`, in any shape), more decoded pixels than `NemotronSuperVideoDecode.maximumDecodedPixels` or an extreme aspect ratio | 400 before any frame decodes |
+
+Image and video requests still refuse `tools` and `response_format`; formats outside the
+image format reference are refused. The host calls the hook's `drain()` before the
+owner's `closeAfterDrain()`. This is not full image support or full-checkpoint
+serving qualification.
+
+The [portable component harness](../../scripts/nemotron-qualification/README.md)
+exercises this hook on isolated loopback endpoints. Admission/reservation
+calibration and full-checkpoint throughput remain separate gates. Cancellation
+must retain media/KV and response ownership until native terminal retirement.
+
 ## Related
 
 - [Self-route](./self-route.md) — route your *fleet* requests to your own
@@ -178,3 +306,59 @@ the process prints its listening address and the daemon-state file is not used.
 - [CLI reference](./cli-reference.md) — `start`, `local` flags and paths.
 - [Beta features](./beta-features.md) — MTP and paged KV apply to local serving too.
 - [`reference/configuration.md`](../reference/configuration.md) — media limits and engine variables.
+
+## Graceful drain
+
+After local admission closes for shutdown, a new POST receives HTTP `503`
+with a structured capacity response (`invalid_request_error`) from `LocalDisconnectResponder`.
+CORS headers remain present. Health checks and preflight requests still work,
+and already admitted responses retain their existing owner. Retry a rejected
+request after the provider is serving again.
+
+
+### Queued cluster requests during a mode change
+
+A cluster host configured for automatic batch replacement keeps the same authenticated local endpoint while changing native modes for queued demand. Running requests finish on their existing workers. Requests still waiting keep their place, cancellation state and original queue wait limit while the old workers release and the replacement loads. A disconnected or expired request is not admitted after loading finishes. Diagnostics report the temporary reconfiguration as not ready; the bounded request queue remains available.
+
+If a short burst drains before planning finishes, the host may retain the metadata-only proposal for up to 30 seconds. It uses that proposal only when fresh requests wait in the same serving generation; an idle endpoint does not reload. The planner considers the largest independently priced capacity first, and the deferred load still checks current memory after both previous workers release. Request cancellation and the original queue wait limit remain unchanged.
+
+The replacement must preserve the exact model and request limits and must fit both Macs. If a wider mode cannot start, a fresh previous-mode session may be restored after the failed replacement releases. Missing release proof stops the transition; it is never treated as free memory. The HTTP API gains no mode-selection parameter or credential change from this mechanism.
+
+### Speed records of cluster requests
+
+A cluster endpoint records how fast each request ran that computed its whole
+prompt, completed and had the pair to itself, for the next plan of the pair
+(`~/.darkbloom/cluster/served-speed.json` on the Mac where requests enter;
+values only: no prompt, output or client identity). Each record
+names the worker build each Mac served the request with, and a plan or route
+uses a speed only for the build that served it, so speeds an earlier build
+served no longer steer the pair's plan after an update
+([served speed records](../architecture/inference.md#served-speed-records-and-worker-builds)).
+The HTTP API is unchanged. Source:
+`provider-swift/Sources/ProviderCore/Server/Distributed/DistributedLocalServer+Startup.swift`
+and `provider-swift/Sources/ProviderCore/Inference/Distributed/Observability/DistributedPairTelemetryRecorder.swift`.
+
+### Qwen27 image and video requests on a pair
+
+An installed pair that explicitly reports the Qwen media contract accepts the
+existing OpenAI image/video content parts through the same local endpoint.
+The provider validates the exact registered 27B configuration and resolved
+processor before preparing media. A model name or vision configuration alone
+does not enable the route. The native pair must independently load and report
+the supported media path; selecting an unsupported mode is not repaired by
+silently discarding media.
+
+Use default processing controls. Nondefault resize/pixel settings, forced media
+tool choices and JSON/schema output constraints are refused on this route.
+Image/video preprocessing and transport tests do not establish full-model
+answers, native concurrency or automatic TP selection; retain those separate
+qualification records. The implementation is in
+`provider-swift/Sources/ProviderCore/Inference/Engine/Scheduler/MultiModelBatchSchedulerEngine.swift`
+and `provider-swift/Sources/ProviderCore/Inference/Distributed/Requests/DistributedQwenMediaIngress+Preparation.swift`.
+
+For every registered Qwen TP row (9B, 27B, Qwen3.5/3.6 35B A3B), a queued-demand
+replacement can select a priced TP batch or plain pipeline. The chosen mode still follows measured stage/link rates,
+qualification shape gates and current memory on both Macs. The installed width
+default remains one; a wider saved plan propagates through both owners to the
+native ranks. This integration does not claim a full-artifact throughput result.
+See [automatic cluster batching](../architecture/inference.md#automatic-local-cluster-batching).

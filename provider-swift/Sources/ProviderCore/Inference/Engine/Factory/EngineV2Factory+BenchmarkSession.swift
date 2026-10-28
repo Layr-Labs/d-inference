@@ -251,6 +251,10 @@ public actor EngineV2BenchmarkSession {
     }
 
     public func shutdown() async {
+        if await bundle.bridge.hasGLM5NextNativeOwner {
+            try? await shutdownReportingCompletion()
+            return
+        }
         if nativeMiMoOwnership != nil {
             // Compatibility entrypoint is not success evidence. MiMo benchmark
             // drivers MUST use shutdownReportingCompletion and retain failures.
@@ -268,6 +272,13 @@ public actor EngineV2BenchmarkSession {
     /// supplies a retirement receipt. No assistant/external-resource release or
     /// numeric refund is inferred from a timeout or a void engine shutdown.
     public func shutdownReportingCompletion() async throws {
+        if await bundle.bridge.hasGLM5NextNativeOwner {
+            closed = true
+            try await GLM5NextRetirement.beforeRelease(bundle.bridge)
+            active.removeAll()
+            bundle.releaseAssistant()
+            return
+        }
         guard let ownership = nativeMiMoOwnership else {
             await shutdown()
             return

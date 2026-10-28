@@ -841,6 +841,18 @@ struct EngineV2MatchedStopSequenceTests {
         #expect(unscoped.stopStringScope == nil)
     }
 
+    @Test("a scoped report names the stop that matched, not one that only starts there")
+    func scopedReportNamesTheMatchingCandidate() {
+        let inside = ReasoningStopScope.scope(reasoningParser: .qwen3, reasoningPrefix: "<think>")
+        #expect(EngineV2Bridge.matchedStopSequence(
+            candidates: ["\n", "\nUser:"], generatedText: "r</think>\n\nUser: hi", scope: inside
+        ) == "\nUser:", "a bare newline before the answer does not stop it")
+        let outside = ReasoningStopScope.scope(reasoningParser: .qwen3, reasoningPrefix: nil)
+        #expect(EngineV2Bridge.matchedStopSequence(
+            candidates: ["A<th", "A"], generatedText: "xA<think>r</think>", scope: outside
+        ) == "A", "a stop never matches into a span")
+    }
+
     @Test("a request's stop scope reaches the engine and the reported sequence")
     func requestScopeReachesEngineAndReport() async {
         // Gemma 4 with reasoning on: a period in the thought, "!" in the answer.

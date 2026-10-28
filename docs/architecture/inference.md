@@ -1843,7 +1843,7 @@ disabled for this hybrid model.
 | `logit_bias` | `logitBias` — string keys parsed to non-negative `Int`; invalid keys dropped and counted | `[:]` |
 | `logprobs` + `top_logprobs` | `topLogprobs = logprobs ? min(20, max(1, top_logprobs ?? 0)) : 0` | `0` |
 | `max_tokens` | `maxTokens = max_tokens ?? 4096` | 4096 |
-| `stop` | `stopStrings`, matched on held-back detokenised text (`StopHoldback`). GPT-OSS sets `stopStringScope` to the Harmony `final` message (`ModelEOSPolicy.stopStringScope`), so analysis and tool-call frames never match. Gemma 4 and `<think>` parsers exclude their reasoning and tool-call spans per request instead, starting inside reasoning when the prompt opened a think block (`ReasoningStopScope`). The reported sequence replays the request's scope (`EngineV2Bridge+StopSequence.swift`) | `[]` |
+| `stop` | `stopStrings`, matched on held-back detokenised text (`StopHoldback`). GPT-OSS sets `stopStringScope` to the Harmony `final` message (`ModelEOSPolicy.stopStringScope`), so analysis and tool-call frames never match. Gemma 4 and `<think>` parsers exclude their reasoning and tool-call spans per request instead, starting inside reasoning when the prompt opened a think block (`ReasoningStopScope`). The native block engine (diffusion Gemma) matches the whole output, so its requests carry no scope. The reported sequence replays the request's scope (`EngineV2Bridge+StopSequence.swift`) | `[]` |
 | `min_p`, `priority` | **Ignored**: always `0` | — |
 | `n`, `best_of` | **Not represented**: one alternative | — |
 

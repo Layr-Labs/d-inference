@@ -25,11 +25,14 @@ extension EngineV2Bridge {
         scope: CBv2StopStringScope? = nil
     ) -> String? {
         if let scope {
-            let holdback = StopHoldback(stopStrings: candidates, scope: scope)
-            let scan = holdback.ingest(generatedText)
+            let scan = StopHoldback(stopStrings: candidates, scope: scope).ingest(generatedText)
             guard scan.stopped else { return nil }
-            let tail = generatedText.unicodeScalars.dropFirst(scan.text.unicodeScalars.count)
-            return candidates.first { !$0.isEmpty && tail.starts(with: $0.unicodeScalars) }
+            // The first candidate that alone stops at the same place: one that
+            // merely starts there may not count (whitespace before an answer).
+            return candidates.first {
+                !$0.isEmpty
+                    && StopHoldback(stopStrings: [$0], scope: scope).ingest(generatedText) == scan
+            }
         }
         let generatedScalars = Array(generatedText.unicodeScalars)
         var best: (position: Int, candidateIndex: Int, value: String)?

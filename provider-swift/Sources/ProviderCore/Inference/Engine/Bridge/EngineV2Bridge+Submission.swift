@@ -252,7 +252,11 @@ extension EngineV2Bridge {
             // The same coordinator hint that gates the write also tells the
             // engine which fork boundary is worth staging.
             prefixCheckpointTargetTokens: donationDemand?.repeatedPrefixTokens,
-            stopStringScope: stopStringScope ?? self.stopStringScope
+            // The native block engine's decoder matches stops over the whole
+            // output, so its requests carry no scope and the reported stop
+            // agrees with the one that matched.
+            stopStringScope: ownedEngine is CBv2NativeBlockEngine
+                ? nil : stopStringScope ?? self.stopStringScope
         )
         cbv2Request.positionState = positionState ?? multimodal?.positionState
         cbv2Request.hybridPrefixIdentity = hybridPrefixIdentity

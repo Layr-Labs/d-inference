@@ -31,12 +31,13 @@ extension SSDHybridCheckpointStore: SSDEvictableStore, DurablePrefixCacheEvidenc
     }
 
     private func retireIndexedEntries(_ urls: [URL]) -> SSDOwnedEntryRetirement.Result {
-        let result: SSDOwnedEntryRetirement.Result? = removalLock.withLock {
-            guard hasSafeRoot, ownsEvictionRoot else { return nil }
-            return SSDOwnedEntryRetirement.remove(
-                urls: urls, root: config.root, index: index, epochStore: config.epochStore)
+        let result = SSDOwnedEntryRetirement.removeInSlices(urls) { slice in
+            removalLock.withLock {
+                guard hasSafeRoot, ownsEvictionRoot else { return nil }
+                return SSDOwnedEntryRetirement.remove(
+                    urls: slice, root: config.root, index: index, epochStore: config.epochStore)
+            }
         }
-        guard let result else { return .init() }
         if result.externalChange { reconcileExternalRemovals() }
         return result
     }

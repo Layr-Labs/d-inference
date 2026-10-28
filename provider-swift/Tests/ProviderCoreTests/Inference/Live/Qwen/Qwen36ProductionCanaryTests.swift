@@ -391,6 +391,8 @@ private enum Qwen36ProductionCanary {
                 if let call = delta.completed { result.toolCalls.append(call) }
             case .info(let info):
                 result.info = info
+            case .logprobs:
+                break
             }
         }
         return result

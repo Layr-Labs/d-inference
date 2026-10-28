@@ -226,11 +226,11 @@ final class SSDWholeRootMaintainer: @unchecked Sendable {
         let previouslyReadable = readableHeaderIdentities[rootKey] ?? [:]
         var readable: [String: FileIdentity] = [:]
         defer { readableHeaderIdentities[rootKey] = readable }
-        func isHeaderReadable(_ url: URL, fanoutPassesReadChecks: Bool) -> Bool {
+        func isHeaderReadable(_ url: URL, fanoutPassesReadChecks: () -> Bool) -> Bool {
             // Take the identity before the read: a file that changes during it
             // gets another identity and is read again by the next pass.
             let identity = Self.identity(of: url)
-            if fanoutPassesReadChecks, let identity, previouslyReadable[url.path] == identity {
+            if let identity, previouslyReadable[url.path] == identity, fanoutPassesReadChecks() {
                 readable[url.path] = identity
                 return true
             }
@@ -262,7 +262,16 @@ final class SSDWholeRootMaintainer: @unchecked Sendable {
                         includingPropertiesForKeys: Array(keys),
                         options: [.skipsHiddenFiles])
                 else { continue }
-                let fanoutPassesReadChecks = Self.fanoutPassesReadChecks(fanout)
+                // Checked once per pass, and only when a remembered header is
+                // about to be reused: a first pass or a fanout of changed files
+                // makes no walk that the header reads do not make themselves.
+                var fanoutCheck: Bool?
+                func fanoutPassesReadChecks() -> Bool {
+                    if let fanoutCheck { return fanoutCheck }
+                    let passes = Self.fanoutPassesReadChecks(fanout)
+                    fanoutCheck = passes
+                    return passes
+                }
                 for url in entries {
                     guard let values = try? url.resourceValues(forKeys: keys),
                         values.isRegularFile == true, values.isSymbolicLink != true

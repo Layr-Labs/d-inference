@@ -1,6 +1,6 @@
 # Test Provider And Native Contracts
 
-> Last updated: 2026-10-27
+> Last updated: 2026-10-28
 
 Run isolated Swift, native-resource, public-fixture and landing tests here.
 Backend integration and cross-implementation qualification are platform-owned.
@@ -40,6 +40,17 @@ The SDK has independent test products under `libs/mlx-swift-lm`. CI validates
 native memory ownership, cancellation, media decoding, paged KV and resource
 packaging there as well as provider behavior. Preserve all retained lane gates;
 do not treat the repository split as permission to skip native regressions.
+
+### Download completion ownership
+
+After rebuilding the provider test products, select
+`StreamingFileDownloadDelegateTests` through the isolated provider test runner.
+The suite cancels a real suspended `URLSession` task before attaching its waiter,
+checks both completion orders and duplicate terminal callbacks, races attachment
+against completion, and verifies that cancellation preserves the exact received
+`.part` bytes. Fixtures use unique temporary directories and never resume a
+network task or load model weights. These component tests do not qualify live
+HTTP downloads or model serving.
 
 ### Local Responses and reasoning regressions
 

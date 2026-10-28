@@ -39,7 +39,8 @@ final class ClusterApprovalMacs: @unchecked Sendable {
     /// `coordinatorURL`: the coordinator both provider configurations name.
     init(coordinatorURL: String) throws {
         let h = Self.hash
-        root = try NativePairMemberFixture.privateRoot()
+        let base = try NativePairMemberFixture.privateRoot()
+        root = base
         let profile = ClusterWorkerProfile(id: "registered_qwen35_9b_greedy_generation_v1", vocabularySize: 248320,
             maximumPromptTokens: 8192, maximumOutputTokens: 128, maximumChunkTokens: 512, maximumContextTokens: 8320)
         capability = try ClusterRuntimeCapability(runtimeBinarySHA256: h("a"), adapterID: "qwen35-dense-layer-stage", adapterVersion: 1,
@@ -52,7 +53,7 @@ final class ClusterApprovalMacs: @unchecked Sendable {
         capabilitySHA256 = ClusterConfigurationCodec.sha256(capabilityData)
 
         let homes = try (0..<2).map { rank -> URL in
-            let home = root.appendingPathComponent("mac-\(rank)", isDirectory: true)
+            let home = base.appendingPathComponent("mac-\(rank)", isDirectory: true)
             for folder in ["", ".darkbloom", "app", "app/Contents", "app/Contents/Helpers", "app/Contents/MacOS", "model", "scratch"] {
                 try FileManager.default.createDirectory(at: home.appendingPathComponent(folder, isDirectory: true),
                     withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])

@@ -417,6 +417,37 @@ class ReleasePipelineTests(unittest.TestCase):
         sign = job(RELEASE, 'build-and-release')
         self.assertIn("needs.resolve-env.result == 'success'", sign)
 
+    def test_dev_cluster_runtime_facts_come_from_the_final_signed_app_without_secrets(self):
+        sign = job(RELEASE, 'build-and-release')
+        name = '- name: Compute dev cluster runtime facts from the final signed app\n'
+        step = sign.split(name, 1)[1].split('\n      - name:', 1)[0]
+        self.assertIn("if: needs.resolve-env.outputs.environment == 'dev'\n", step)
+        # After signing, notarization, the final tar and its hashes; before the
+        # payload is prepared and the keychain is cleaned up.
+        self.assertLess(sign.index('xcrun notarytool submit'), sign.index(name))
+        self.assertLess(sign.index('echo "BUNDLE_HASH=$BUNDLE_HASH"'), sign.index(name))
+        self.assertLess(sign.index(name), sign.index('- name: Prepare exact signed release identity'))
+        self.assertLess(sign.index(name), sign.index('- name: Cleanup keychain'))
+        # No secret: none referenced, the two secret-derived GITHUB_ENV values
+        # and the signing keychain removed before release code runs, which then
+        # runs with an empty environment.
+        self.assertNotIn('secrets.', step)
+        self.assertNotIn('env:', step)
+        first_run = step.index('runtime_facts --list-release-models')
+        for removal in ('unset r2_public_url coordinator_url', 'security delete-keychain "$KEYCHAIN_PATH"'):
+            self.assertLess(step.index(removal), first_run)
+        self.assertIn('env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin', step)
+        # The final archived bytes, extracted afresh after their hash is checked.
+        self.assertLess(step.index('= "$BUNDLE_HASH"'), step.index('tar -xzf /tmp/darkbloom-bundle-macos-arm64.tar.gz'))
+        self.assertIn('scripts/provider-cluster-runtime-models.py', step)
+        for model in ('Qwen3.5-9B', 'glm-5.3-flash'):
+            self.assertIn('--require-model ' + model, step)
+        self.assertIn('echo "CLUSTER_RUNTIME_FILE=$FACTS_ROOT/cluster-runtime.json" >> "$GITHUB_ENV"', step)
+        prepare = sign.split('- name: Prepare exact signed release identity\n', 1)[1].split('\n      - name:', 1)[0]
+        self.assertIn('${CLUSTER_RUNTIME_FILE:+--cluster-runtime "$CLUSTER_RUNTIME_FILE"}', prepare)
+        # Only the dev lane computes the file, so prod and staging prepare without it.
+        self.assertEqual(RELEASE.count('CLUSTER_RUNTIME_FILE='), 1)
+
     def test_dev_and_staging_artifacts_avoid_collision_but_prod_stays_unqualified(self):
         # dev and staging unsigned and publication artifact names carry the
         # environment, so two lanes in one run never collide; prod

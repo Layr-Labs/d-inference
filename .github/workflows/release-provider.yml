@@ -915,6 +915,45 @@ jobs:
           echo "Bundle hash:   $BUNDLE_HASH"
           echo "Metallib hash: $METALLIB_HASH"
 
+      # dev only: the cluster runtime facts (cluster_runtime) the dev
+      # coordinator derives its cluster approvals from, computed by the final
+      # signed app's own CLI and worker after every signing, notarization and
+      # final-bytes check above. No secret is in this step: it reads no
+      # secrets.*, removes the two secret-derived values the job's
+      # GITHUB_ENV holds and the signing keychain before any release code
+      # runs, and runs that code with an empty environment.
+      - name: Compute dev cluster runtime facts from the final signed app
+        if: needs.resolve-env.outputs.environment == 'dev'
+        run: |
+          set -euo pipefail
+          unset r2_public_url coordinator_url
+          security delete-keychain "$KEYCHAIN_PATH" 2>/dev/null || true
+          test "$(shasum -a 256 /tmp/darkbloom-bundle-macos-arm64.tar.gz | cut -d' ' -f1)" = "$BUNDLE_HASH"
+          FACTS_ROOT="$RUNNER_TEMP/cluster-runtime"
+          rm -rf "$FACTS_ROOT"
+          mkdir -p "$FACTS_ROOT/app" "$FACTS_ROOT/home"
+          /usr/bin/tar -xzf /tmp/darkbloom-bundle-macos-arm64.tar.gz -C "$FACTS_ROOT/app"
+          FINAL_APP="$FACTS_ROOT/app/$APP_NAME"
+          runtime_facts() {
+            env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin HOME="$FACTS_ROOT/home" DARKBLOOM_NO_UPDATE_CHECK=1 \
+              "$FINAL_APP/Contents/MacOS/$CLI_NAME" cluster runtime-facts "$@"
+          }
+          # The models this build qualifies on a cluster, from its own records;
+          # their manifest and config.json (never weights) from the public
+          # model registry; the build's worker describes each one.
+          runtime_facts --list-release-models > "$FACTS_ROOT/release-models.json"
+          python3 scripts/provider-cluster-runtime-models.py \
+            --models "$FACTS_ROOT/release-models.json" --output "$FACTS_ROOT/candidates"
+          runtime_facts --app "$FINAL_APP" --release-candidates "$FACTS_ROOT/candidates" \
+            --require-model Qwen3.5-9B --require-model glm-5.3-flash > "$FACTS_ROOT/cluster-runtime.json"
+          echo "CLUSTER_RUNTIME_FILE=$FACTS_ROOT/cluster-runtime.json" >> "$GITHUB_ENV"
+          {
+            echo '### Cluster runtime facts (dev)'
+            echo '```json'
+            python3 -m json.tool --sort-keys "$FACTS_ROOT/cluster-runtime.json"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Record signed validation identity
         id: validation_identity
         if: needs.resolve-env.outputs.publish == 'false'
@@ -969,8 +1008,10 @@ jobs:
           COORDINATOR_URL: ${{ env.coordinator_url }}
         run: |
           set -euo pipefail
+          # A dev release carries cluster_runtime; prod and staging never do.
           python3 scripts/provider-release-publication.py prepare \
-            --directory "$RUNNER_TEMP/provider-publication" --bundle /tmp/darkbloom-bundle-macos-arm64.tar.gz
+            --directory "$RUNNER_TEMP/provider-publication" --bundle /tmp/darkbloom-bundle-macos-arm64.tar.gz \
+            ${CLUSTER_RUNTIME_FILE:+--cluster-runtime "$CLUSTER_RUNTIME_FILE"}
           # dev and staging names carry the environment, so two lanes in one
           # GitHub run never collide; prod keeps the unqualified
           # name the resume path (provider_release_resume) reconstructs and the

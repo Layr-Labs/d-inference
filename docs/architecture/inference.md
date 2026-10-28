@@ -5105,6 +5105,32 @@ The exact registered Qwen3.8 27B dense adapter/profile requires images, video an
 
 New saves and installed startup enforce the same mode rule. Old pipeline records remain strictly readable so ordinary onboarding can replan them; startup explains that replan is required. If the current measured link, supported shape or memory cannot admit tensor parallel, no reduced-feature setup is produced. After LOAD, the actual owner identity/profile, Qwen media READY contract and logprob execution profile must match before `DistributedEngineFactory.makeBridge` constructs the serving bridge. No artifact digest, shape or READY check is bypassed. This mode policy does not add grammar constraints or change JSON/schema post-validation; standalone model behavior remains the reference for those capabilities.
 
+## Cluster runtime facts of a build
+
+A coordinator-formed cluster session is admitted when its committed native start
+matches the approval each member installed. A dev release supplies the digests
+of such an approval from its own final signed app, so that no person types them
+([block format](../reference/configuration.md#cluster-runtime-facts-of-a-dev-release)).
+
+1. The file digests (worker, metallib, paged-attention source, placement tool)
+   come from `DistributedInstalledFiles.digest`. `DistributedInstalledFiles.verify`,
+   which a member's `NativePairMemberInstallation.verifyInstalledFiles` calls,
+   hashes with the same function and compares the result.
+2. The capability digest is the SHA-256 of the exact `--describe-runtime` output
+   of the build's own worker, pinned to the worker hash just computed. A member's
+   setup saves the same digest (`DistributedCapabilityProbe.verify` compares it).
+3. The resource policy comes from
+   `DistributedInstalledNativeStart.resourcePolicySHA256`, the one formula. The
+   native start of an owner-formed session calls it for its
+   `resourcePolicySHA256`. A coordinator-formed start carries the approval's
+   value, which the member and its owner compare with the installed approval
+   (`NativePairMemberPolicy.require`).
+
+Code map: `provider-swift/Sources/ProviderCore/Config/ClusterRuntimeApprovalFacts.swift`
+(`ClusterRuntimeApprovalFacts`),
+`provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledFiles.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledNativeStart.swift`.
+
 ## Cluster pair capability honesty
 
 A pair advertises what its placed mode serves, not what the artifact's

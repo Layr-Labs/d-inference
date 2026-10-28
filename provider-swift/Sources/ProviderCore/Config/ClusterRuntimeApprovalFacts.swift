@@ -130,9 +130,9 @@ public struct ClusterRuntimeApprovalFacts: Equatable, Sendable {
     /// The models this build qualifies on a cluster, from its own bundled
     /// qualification records (`ClusterPairServingGrants.records`): the one
     /// source of the release's model list.
-    public static var releaseModels: [ReleaseModel] { releaseModels(records: ClusterPairServingGrants.records) }
+    public static var releaseModels: [ReleaseModel] { qualifiedModels(records: ClusterPairServingGrants.records) }
 
-    static func releaseModels(records: [ClusterPairQualificationRecord]) -> [ReleaseModel] {
+    static func qualifiedModels(records: [ClusterPairQualificationRecord]) -> [ReleaseModel] {
         Set(records.filter {
             $0.isConsistent && $0.outcome == .passed && ClusterPairServingGrants.hasStageAdapter(runtimeModelID: $0.runtimeModelID)
         }.map { ReleaseModel(runtimeModelID: $0.runtimeModelID, artifactSHA256: $0.artifactSHA256) })

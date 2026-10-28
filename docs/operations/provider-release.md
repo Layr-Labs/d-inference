@@ -603,8 +603,9 @@ run is a tooling failure, not a model or notarization failure.
 | 3 | Sign the canonical app with hardened runtime and preserve SwiftPM resources |
 | 4 | Copy `darkbloom`, `darkbloom-enclave` and `mlx.metallib` into regular files under `bin/`; these verification copies support current and older updaters, not flat installation |
 | 5 | Notarize, staple, rebuild/extract the final archive, run packaged smoke and compute final binary/archive/metallib and full CodeDirectory SHA-256 hashes |
-| 6 | Run `scripts/provider-release-publication.py prepare` to retain exact registration payload, original annotated-tag notes without the signature suffix, and source/run provenance |
-| 7 | Retain `provider-publication-<SOURCE_SHA>-<SIGNING_ATTEMPT>` for 30 days; always remove the signing keychain |
+| 6 | Dev only: compute the [cluster runtime facts](#dev-cluster-runtime-facts) from the final archive |
+| 7 | Run `scripts/provider-release-publication.py prepare` to retain exact registration payload, original annotated-tag notes without the signature suffix, and source/run provenance |
+| 8 | Retain `provider-publication-<SOURCE_SHA>-<SIGNING_ATTEMPT>` for 30 days; always remove the signing keychain |
 
 All hashes describe final signed bytes. `scripts/install.sh` and self-update
 verify the `bin/` files before installing the app; the external artifact verifier
@@ -627,7 +628,8 @@ staging and performs these operations in order:
 The payload contains `version`, `platform=macos-arm64`, `backend=mlx-swift`,
 `binary_hash`, `bundle_hash`, `metallib_hash`, `code_directory_hash`,
 `source_commit`, `ci_run_id`, `require_app_attest_qualification=true`, `url`
-and `changelog`. The URL is the configured CDN followed by
+and `changelog`. A dev payload also contains `cluster_runtime`; a prod or
+staging payload never does. The URL is the configured CDN followed by
 `releases/v<VERSION>/artifacts/<BUNDLE_SHA256>/darkbloom-bundle-macos-arm64.tar.gz`.
 Use the retained payload, never hand-reconstruct hashes. The
 [pinned release-handler contract](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/api/releases/release_handlers.go)
@@ -669,6 +671,49 @@ reboots ([always on](../provider/cluster-always-on.md)). The
 environment-free signing workflow builds, stages, signs and verifies the helpers
 the same way. An owner signing a local build runs the same script with the
 Developer ID identity, then signs and notarizes the app as the workflow does.
+
+### Dev Cluster Runtime Facts
+
+A dev release registers the cluster runtime facts of its final signed app as
+`cluster_runtime`. The dev coordinator derives its cluster approvals from them;
+the block format and its rules are in the
+[configuration reference](../reference/configuration.md#cluster-runtime-facts-of-a-dev-release).
+The step `Compute dev cluster runtime facts from the final signed app` of job
+`build-and-release` runs only when the environment is `dev`:
+
+1. It runs after notarization, stapling and the final-archive checks, and before
+   `prepare`.
+2. It reads no secret. It removes the two secret-derived values in the job's
+   `GITHUB_ENV` (`r2_public_url`, `coordinator_url`) and deletes the signing
+   keychain before any release code runs. The release CLI runs with an empty
+   environment (`env -i`).
+3. It checks the archive against `BUNDLE_HASH` and extracts it into a new folder.
+4. The final CLI prints the build's model list:
+   `darkbloom-dev cluster runtime-facts --list-release-models`. The list holds
+   every model with a cluster stage adapter and a passing pair qualification
+   record in the build (`ClusterRuntimeApprovalFacts.releaseModels`).
+5. `scripts/provider-cluster-runtime-models.py` reads the public model catalogs
+   of the dev and prod coordinators and fetches, for each listed artifact, the
+   `manifest.json` encodings the provider reads (CDN and coordinator) and
+   `config.json` from the CDN. It never reads weights. It fails when a listed
+   model has no metadata.
+6. The final CLI computes the facts:
+   `cluster runtime-facts --app <app> --release-candidates <folder>
+   --require-model Qwen3.5-9B --require-model glm-5.3-flash`. The app's own
+   worker describes each candidate (`--describe-runtime`). The step fails when a
+   listed model has no candidate that the worker describes as that model, or
+   when a required model is missing.
+7. `prepare --cluster-runtime <file>` adds the block to `release-payload.json`.
+   `validate` refuses a dev payload without a valid block and a prod or staging
+   payload with one.
+
+To compute the facts of an installed or downloaded app by hand, give the models
+explicitly:
+
+```bash
+darkbloom cluster runtime-facts --app /Applications/Darkbloom.app \
+  --model Qwen3.5-9B=/path/to/Qwen3.5-9B-folder
+```
 
 ## Recovery
 

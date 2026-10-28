@@ -4,7 +4,9 @@ import Testing
 
 @Suite("Owned SSD retirement", .serialized)
 struct SSDOwnedEntryRetirementTests {
-    final class Fixture {
+    // Synchronous component fixture: real retirement and budget coordination,
+    // without either production store's native payload or lifecycle machinery.
+    final class Fixture: SSDEvictableStore {
         let root: URL
         let model: URL
         let index = SSDBlockIndex()
@@ -31,6 +33,217 @@ struct SSDOwnedEntryRetirementTests {
             index.insert(tag16: tag, fileBytes: 64, lastAccess: Int64(byte))
             return url
         }
+
+        func evictOldest() -> Int {
+            SSDOwnedEntryRetirement.evictOldest(index: index) { tag in
+                let url = SSDBlockStore.fileURL(root: model, tag16Hex: tag.hexString)
+                return retire([url])
+            }
+        }
+
+        var evictionRoot: URL { model }
+        var ownsEvictionRoot: Bool { epoch.current != nil }
+        var diskBytesOnDisk: Int { index.totalBytes }
+        func oldestEntryAccess() -> Int64? { index.oldest()?.lastAccess }
+        func evictOldestEntry() -> Int { evictOldest() }
+        func retireOwnedEntries(_ urls: [URL]) -> Set<String> { retire(urls).removed }
+        func reconcileExternalRemovals() {
+            SSDOwnedEntryRetirement.reconcileMissingEntries(root: model, index: index)
+        }
+        func performExternalDestructiveChange(_ body: () -> Void) -> Bool {
+            let completed: Void? = epoch.performOwnedRetirement {
+                body()
+                reconcileExternalRemovals()
+            }
+            return completed != nil
+        }
+        private func retire(_ urls: [URL]) -> SSDOwnedEntryRetirement.Result {
+            let result = SSDOwnedEntryRetirement.remove(
+                urls: urls, root: model, index: index, epochStore: epoch) ?? .init()
+            if result.externalChange { reconcileExternalRemovals() }
+            return result
+        }
+    }
+
+    @Test("eviction uses the tag tie-break, frees one file, and preserves survivor identity")
+    func oldestEviction() throws {
+        let f = try Fixture()
+        let survivor = try f.file(2), oldest = try f.file(1)
+        f.index.touch(tags16: [Data(repeating: 1, count: 16)], now: 2)
+        let epoch = try #require(f.epoch.current)
+        #expect(f.epoch.takeNextSequence(expectedEpoch: epoch) == 1)
+        let bytes = try Data(contentsOf: survivor)
+        #expect(f.evictOldest() == 64)
+        #expect(!FileManager.default.fileExists(atPath: oldest.path))
+        #expect(try Data(contentsOf: survivor) == bytes)
+        #expect(f.index.totalBytes == 64)
+        #expect(f.epoch.current == epoch)
+        #expect(f.epoch.takeNextSequence(expectedEpoch: epoch) == 2)
+    }
+
+    @Test("eviction skips busy files, terminates when all are busy, and resumes after release")
+    func busyEviction() throws {
+        let f = try Fixture()
+        let oldest = try f.file(1), second = try f.file(2), victim = try f.file(3)
+        let firstLease = try #require(SSDCheckpointFileCoordinator.shared.tryAcquire(to: oldest))
+        defer { firstLease.release() }
+        let secondLease = try #require(SSDCheckpointFileCoordinator.shared.tryAcquire(to: second))
+        defer { secondLease.release() }
+        #expect(f.evictOldest() == 64)
+        #expect(!FileManager.default.fileExists(atPath: victim.path))
+        #expect(f.evictOldest() == 0)
+        #expect(f.index.totalBytes == 128)
+        #expect(try Data(contentsOf: oldest) == Data(repeating: 1, count: 64))
+        #expect(try Data(contentsOf: second) == Data(repeating: 2, count: 64))
+        firstLease.release()
+        #expect(f.evictOldest() == 64)
+        #expect(!FileManager.default.fileExists(atPath: oldest.path))
+        #expect(f.index.totalBytes == 64)
+    }
+
+    @Test("an undeletable oldest file does not pin newer eviction candidates")
+    func undeletableEviction() throws {
+        let f = try Fixture()
+        let oldest = try f.file(1), victim = try f.file(2)
+        let fanout = oldest.deletingLastPathComponent()
+        try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: fanout.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: fanout.path) }
+        #expect(f.evictOldest() == 64)
+        #expect(try Data(contentsOf: oldest) == Data(repeating: 1, count: 64))
+        #expect(!FileManager.default.fileExists(atPath: victim.path))
+        #expect(f.index.totalBytes == 64)
+    }
+
+    @Test("external loss stops eviction after reconciliation, including in the fallback",
+          arguments: [false, true], [false, true])
+    func externalLossStopsEviction(busyOldest: Bool, symlink: Bool) throws {
+        let f = try Fixture()
+        let oldest = try f.file(1), missing = try f.file(2), survivor = try f.file(3)
+        let epoch = try #require(f.epoch.current)
+        let lease: SSDCheckpointFileCoordinator.Access?
+        if busyOldest {
+            let acquired: SSDCheckpointFileCoordinator.Access =
+                try #require(SSDCheckpointFileCoordinator.shared.tryAcquire(to: oldest))
+            lease = acquired
+        } else {
+            lease = nil
+        }
+        defer { lease?.release() }
+        let lost = busyOldest ? missing : oldest
+        try FileManager.default.removeItem(at: lost)
+        if symlink { try FileManager.default.createSymbolicLink(at: lost, withDestinationURL: survivor) }
+        #expect(f.evictOldest() == 0)
+        #expect(f.index.totalBytes == 128)
+        #expect(f.index.count == 2)
+        #expect(try Data(contentsOf: survivor) == Data(repeating: 3, count: 64))
+        #expect(f.epoch.current == epoch)
+        if busyOldest { #expect(try Data(contentsOf: oldest) == Data(repeating: 1, count: 64)) }
+        else { #expect(try Data(contentsOf: missing) == Data(repeating: 2, count: 64)) }
+    }
+
+    @Test("budget rechecks reconciled usage and counts only needed physical retirements",
+          arguments: [false, true], [128, 192])
+    func budgetAfterExternalLoss(busyOldest: Bool, limit: Int) throws {
+        let f = try Fixture(), peer = try Fixture()
+        let oldest = try f.file(1), second = try f.file(2), third = try f.file(3)
+        let peerFile = try peer.file(4)
+        let epoch = try #require(f.epoch.current)
+        let lease = busyOldest ? SSDCheckpointFileCoordinator.shared.tryAcquire(to: oldest) : nil
+        if busyOldest { _ = try #require(lease) }
+        defer { lease?.release() }
+        try FileManager.default.removeItem(at: busyOldest ? second : oldest)
+        let budget = SSDDiskBudget()
+        budget.register(f)
+        budget.register(peer)
+        #expect(budget.totalBytes == 256)
+        let expectedEvictions = limit == 192 ? 0 : 1
+        #expect(budget.enforce(budgetBytes: limit) == expectedEvictions)
+        #expect(budget.evictionCount == expectedEvictions)
+        #expect(budget.totalBytes == limit)
+        let candidate = busyOldest ? third : second
+        #expect(FileManager.default.fileExists(atPath: candidate.path) == (expectedEvictions == 0))
+        let survivor = busyOldest ? oldest : third
+        #expect(try Data(contentsOf: survivor) == Data(repeating: busyOldest ? 1 : 3, count: 64))
+        #expect(try Data(contentsOf: peerFile) == Data(repeating: 4, count: 64))
+        #expect(f.epoch.current == epoch)
+    }
+
+    @Test("a fully leased store does not stop budget eviction in another store")
+    func budgetSkipsBusyStore() throws {
+        let busy = try Fixture(), peer = try Fixture()
+        let oldest = try busy.file(1), victim = try peer.file(2)
+        let lease = try #require(SSDCheckpointFileCoordinator.shared.tryAcquire(to: oldest))
+        defer { lease.release() }
+        let budget = SSDDiskBudget()
+        budget.register(busy)
+        budget.register(peer)
+        #expect(budget.enforce(budgetBytes: 0) == 1)
+        #expect(budget.evictionCount == 1)
+        #expect(budget.totalBytes == 64)
+        #expect(try Data(contentsOf: oldest) == Data(repeating: 1, count: 64))
+        #expect(!FileManager.default.fileExists(atPath: victim.path))
+    }
+
+    @Test("a refused epoch leaves all files indexed and untouched")
+    func disownedEviction() throws {
+        let f = try Fixture()
+        let first = try f.file(1), second = try f.file(2)
+        try Data("invalid record".utf8).write(to: f.model.appendingPathComponent("cache-epoch.json"))
+        #expect(f.evictOldest() == 0)
+        #expect(f.index.totalBytes == 128)
+        #expect(try Data(contentsOf: first) == Data(repeating: 1, count: 64))
+        #expect(try Data(contentsOf: second) == Data(repeating: 2, count: 64))
+    }
+
+    @Test("fallback stays bounded when retirement touches the first tag and inserts more entries")
+    func boundedFallback() {
+        let index = SSDBlockIndex()
+        var attempts: [Data] = []
+        #expect(SSDOwnedEntryRetirement.evictOldest(index: index) { tag in
+            attempts.append(tag)
+            return .init()
+        } == 0)
+        #expect(attempts.isEmpty)
+        for byte: UInt8 in [1, 2, 3] {
+            index.insert(tag16: Data(repeating: byte, count: 16), fileBytes: 64, lastAccess: Int64(byte))
+        }
+        #expect(SSDOwnedEntryRetirement.evictOldest(index: index) { tag in
+            attempts.append(tag)
+            // This also verifies the callback does not hold the index lock.
+            index.touch(tags16: [Data(repeating: 1, count: 16)], now: 100)
+            if attempts.count > 1 {
+                index.insert(tag16: Data(repeating: UInt8(100 + attempts.count), count: 16),
+                             fileBytes: 64, lastAccess: 0)
+            }
+            return .init()
+        } == 0)
+        #expect(attempts == [1, 2, 3].map { Data(repeating: UInt8($0), count: 16) })
+    }
+
+    @Test("fallback snapshots changes during the probe, then freezes order and membership")
+    func fallbackSnapshotBoundary() {
+        let index = SSDBlockIndex()
+        func tag(_ byte: UInt8) -> Data { Data(repeating: byte, count: 16) }
+        for byte: UInt8 in [1, 2, 3] {
+            index.insert(tag16: tag(byte), fileBytes: 64, lastAccess: Int64(byte))
+        }
+        var attempts: [Data] = []
+        #expect(SSDOwnedEntryRetirement.evictOldest(index: index) { candidate in
+            attempts.append(candidate)
+            if attempts.count == 1 {
+                index.touch(tags16: [tag(1), tag(2)], now: 100)
+                index.insert(tag16: tag(4), fileBytes: 64, lastAccess: 0)
+            } else {
+                // Neither a new oldest entry nor changed recency can restart
+                // selection once the fallback snapshot exists.
+                index.touch(tags16: [tag(2)], now: -1)
+                index.insert(tag16: tag(5), fileBytes: 64, lastAccess: -2)
+                index.remove(tag16: tag(1))
+                index.insert(tag16: tag(1), fileBytes: 64, lastAccess: -3)
+            }
+            return .init()
+        } == 0)
+        #expect(attempts == [1, 4, 3, 2].map { tag($0) })
     }
 
     @Test("known retirement preserves durable identity, sequence and survivor bytes")

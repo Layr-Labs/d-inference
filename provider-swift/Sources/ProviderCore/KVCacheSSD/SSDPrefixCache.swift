@@ -1769,21 +1769,12 @@ public final class SSDPrefixCache:
     /// Unlink the LRU entry (box-wide budget enforcement).
     func evictOldestEntry() -> Int {
         guard hasSafeRoot else { return 0 }
-        // Bounded by the index snapshot. Invalid/missing entries are dropped
-        // without touching their pathname; a valid-but-undeletable entry is
-        // skipped so a newer victim can still satisfy the box-wide budget.
-        let victims = index.oldestEntries()
-        guard !victims.isEmpty else { return 0 }
-        for victim in victims {
-            let url = SSDBlockStore.fileURL(root: config.root, tag16Hex: SSDLookupKeys.hex(victim.tag16))
-            let retired = retireIndexedEntries([url])
-            if retired.externalChange { return 0 }
-            if retired.indexedBytesFreed > 0 {
-                statsBox.add(evictions: 1)
-                return retired.indexedBytesFreed
-            }
+        let freed = SSDOwnedEntryRetirement.evictOldest(index: index) { tag in
+            let url = SSDBlockStore.fileURL(root: config.root, tag16Hex: SSDLookupKeys.hex(tag))
+            return retireIndexedEntries([url])
         }
-        return 0
+        if freed > 0 { statsBox.add(evictions: 1) }
+        return freed
     }
 
     func retireOwnedEntries(_ urls: [URL]) -> Set<String> {

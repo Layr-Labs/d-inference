@@ -10,6 +10,30 @@ enum SSDOwnedEntryRetirement {
         var externalChange = false
     }
 
+    /// Try the linear LRU probe before allocating and sorting a fallback
+    /// snapshot. Retirement runs outside the index lock and keeps the owning
+    /// store's file/epoch checks and external-removal reconciliation.
+    static func evictOldest(index: SSDBlockIndex, retire: (Data) -> Result) -> Int {
+        guard let oldest = index.oldest() else { return 0 }
+        let first = retire(oldest.tag16)
+        // Reconciliation may already satisfy the global limit. Let the budget
+        // recheck it before selecting another physical victim.
+        if first.externalChange { return 0 }
+        if first.indexedBytesFreed > 0 { return first.indexedBytesFreed }
+
+        // A busy or undeletable oldest entry must not pin newer victims. This
+        // snapshot observes touches/inserts during the first attempt; later
+        // changes cannot extend or reorder it. Never retry the first tag,
+        // even if it was touched or replaced. No index lock spans retirement.
+        let fallback = index.oldestEntries()
+        for entry in fallback where entry.tag16 != oldest.tag16 {
+            let result = retire(entry.tag16)
+            if result.externalChange { return 0 }
+            if result.indexedBytesFreed > 0 { return result.indexedBytesFreed }
+        }
+        return 0
+    }
+
     /// Caller holds its index-publication/removal barrier. File leases also
     /// exclude a writer between rename and publication; busy entries wait for
     /// the next pass. Recheck status at removal, never from an earlier snapshot.

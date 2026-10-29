@@ -301,4 +301,20 @@ struct ClusterApprovalWatchTests {
         // No answer at all is unknown too.
         #expect(ClusterApprovalCheck.peerApprovalID(nil) == nil)
     }
+
+    @Test func convergingOnNoneAlsoClearsTheLeadersApprovalThatIsNotOffered() throws {
+        let macs = try ClusterApprovalMacs(coordinatorURL: "ws://127.0.0.1:9/ws/provider")
+        let facts = try macs.facts(), approval = macs.approval()
+        #expect(macs.sync(.approvals([approval]), leaderFacts: facts, followerFacts: facts).changed)
+        // The other Mac lost its copy; the leader serves locally only now, so its own approval is not offered.
+        try macs.cable(facts: facts)(ClusterServiceCommand(op: .approval))
+        let local = ClusterServingScope.localOnly(bind: "127.0.0.1"), lost = try peerID(macs)
+        #expect(try step(macs, .unavailable("not asked"), peer: lost, scope: local, Watched(), clock: 0) == .converge(nil))
+        let result = converge(macs, nil, followerFacts: facts)
+        #expect(result.changed && result.line?.hasSuffix("neither Mac carries one now") == true, "\(result.line ?? "")")
+        // Both Macs hold none, so the next check finds no difference and does not repeat.
+        for mac in macs.macs { #expect(try macs.saved(mac).configuration.nativeMember == nil, "rank \(mac.rank)") }
+        let leaderSaved = try macs.saved(macs.leader), settled = try peerID(macs)
+        #expect(!ClusterApprovalCheck.macsDiffer(leaderSaved, peerApprovalID: settled))
+    }
 }

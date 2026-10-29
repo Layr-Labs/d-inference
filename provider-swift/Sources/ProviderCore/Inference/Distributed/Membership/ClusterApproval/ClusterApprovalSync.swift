@@ -111,9 +111,19 @@ public enum ClusterApprovalSync {
             catch { line += " (this Mac could not save its setup yet: \(refusal(error)))" }
             return Result(changed: true, line: line, note: .some(line))
         }
-        let line = target.map { "The other Mac's cluster approval differed from this Mac's: both Macs now carry approval \($0.id)" }
-            ?? "The other Mac's cluster approval differed from this Mac's: neither Mac carries one now"
-        return Result(changed: true, line: line, note: nil)
+        guard let target else {
+            // None: this Mac also saves its setup without a cluster approval it still holds but does not offer (it
+            // ended, or the cluster serves locally only), so both Macs hold none and the next check finds no difference.
+            var line = "The other Mac's cluster approval differed from this Mac's: neither Mac carries one now"
+            if saved.configuration.nativeMember?.clusterApproval != nil {
+                do { _ = try ClusterApprovalAttachment.save(nil, saved: saved, paths: paths, providerConfiguration: providerConfiguration,
+                                                            scratch: scratch) }
+                catch { line += " (this Mac could not save its setup yet: \(refusal(error)))" }
+            }
+            return Result(changed: true, line: line, note: nil)
+        }
+        return Result(changed: true, line: "The other Mac's cluster approval differed from this Mac's: both Macs now carry approval \(target.id)",
+                      note: nil)
     }
 
     /// One run of the step. `sendToPeer` delivers an `approval` command over the cable and throws the other Mac's

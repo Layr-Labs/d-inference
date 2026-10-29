@@ -193,9 +193,8 @@ public final class MockCoordinator: @unchecked Sendable {
     private let lock = NSLock()
     private var captured = CapturedMessages()
     private var acknowledgedReadiness = Set<String>()
-    /// `GET /v1/cluster/approvals`: the status and exact body bytes answered, and the only `version` answered (nil:
-    /// any); nil answers 404 (pairing off).
-    private var clusterApprovals: (status: Int, body: Data, location: String?, version: String?)?
+    /// `GET /v1/cluster/approvals`: the status and exact body bytes answered; nil answers 404 (pair control off).
+    private var clusterApprovals: (status: Int, body: Data, location: String?)?
     private var activeOutbound: WebSocketOutboundWriter?
     private var bound: BoundServer?
 
@@ -254,10 +253,9 @@ public final class MockCoordinator: @unchecked Sendable {
     public var events: AsyncStream<MockEvent> { eventStream }
 
     /// What `GET /v1/cluster/approvals` answers from now on; nil answers 404, as a coordinator without pairing does.
-    /// `location` adds a `Location` header (a redirect the provider must not follow). `version`: only a request for
-    /// that release gets the answer; any other version gets 404, as for a release without a cluster runtime.
-    public func setClusterApprovals(status: Int = 200, body: Data?, location: String? = nil, version: String? = nil) {
-        lock.withLock { clusterApprovals = body.map { (status, $0, location, version) } }
+    /// `location` adds a `Location` header (a redirect the provider must not follow).
+    public func setClusterApprovals(status: Int = 200, body: Data?, location: String? = nil) {
+        lock.withLock { clusterApprovals = body.map { (status, $0, location) } }
     }
 
     /// Return a snapshot of all messages captured so far. Each call clones the
@@ -551,14 +549,11 @@ public final class MockCoordinator: @unchecked Sendable {
                 return MockCoordinator.makeJSONResponse(body: ["error": "mock dead"], status: .internalServerError)
             }
             let query = request.uri.query ?? ""
-            let answer = self.lock.withLock { () -> (status: Int, body: Data, location: String?, version: String?)? in
+            let answer = self.lock.withLock { () -> (status: Int, body: Data, location: String?)? in
                 self.captured.clusterApprovalQueries.append(query)
                 return self.clusterApprovals
             }
-            let asked = URLComponents(string: "?" + query)?.queryItems?.first { $0.name == "version" }?.value
-            guard let answer, answer.version == nil || answer.version == asked else {
-                return MockCoordinator.makeJSONResponse(body: ["error": "not found"], status: .notFound)
-            }
+            guard let answer else { return MockCoordinator.makeJSONResponse(body: ["error": "not found"], status: .notFound) }
             var headers: HTTPFields = [.contentType: "application/json"]
             if let location = answer.location { headers[.location] = location }
             return Response(status: .init(code: answer.status), headers: headers,

@@ -1,8 +1,8 @@
 import Foundation
 import DarkbloomClusterProtocol
 
-/// Which cluster approval a pair's setup keeps, and for how long. Every approval expires (14 days after its release);
-/// one within a day of its end is replaced when the coordinator has a later one. An expired approval is removed, never
+/// Which cluster approval a pair's setup keeps, and for how long. Every approval expires (its `not_after`, 14 days
+/// after the operator computed it); one within a day of its end is replaced when the coordinator has a later one. An expired approval is removed, never
 /// kept: the Macs then serve as a pair without one does, on the leader's local API.
 public enum ClusterApprovalLifetime {
     /// A saved approval this close to its `not_after` is replaced when the coordinator offers a later one.
@@ -32,11 +32,15 @@ public enum ClusterApprovalLifetime {
     /// The schedule number an approval names for a setup's prefill schedule (1 serial, 2 one-chunk lookahead).
     static func schedule(_ value: ClusterPrefillSchedule) -> UInt8 { value == .serial ? 1 : 2 }
 
-    /// The entry for this setup: its model and its prefill schedule, still current, the latest `not_after` first.
+    /// The entry for this setup: its model and its prefill schedule, all eight digests this Mac's own cluster runtime
+    /// facts (`ClusterApprovalAttachment.mismatches`), still current, the latest `not_after` first. An entry for
+    /// another build or another copy of the model is simply not this setup's.
     static func select(_ approvals: [ClusterRuntimeApproval], model: String, schedule: ClusterPrefillSchedule,
-                       now: Double) -> ClusterRuntimeApproval? {
-        approvals.filter { $0.model == model && $0.schedule == Self.schedule(schedule) && current($0, now: now) }
-            .max { (expiry($0) ?? 0) < (expiry($1) ?? 0) }
+                       facts: ClusterRuntimeApprovalFacts, now: Double) -> ClusterRuntimeApproval? {
+        approvals.filter {
+            $0.model == model && $0.schedule == Self.schedule(schedule) && current($0, now: now)
+                && ClusterApprovalAttachment.mismatches($0, facts: facts).isEmpty
+        }.max { (expiry($0) ?? 0) < (expiry($1) ?? 0) }
     }
 
     public enum Decision: Equatable, Sendable {
@@ -49,20 +53,22 @@ public enum ClusterApprovalLifetime {
     }
 
     /// What to do with the setup's saved approval (`saved`, nil for none) after asking the coordinator (`fetched`).
+    /// `facts` are this Mac's own cluster runtime facts for the setup's model; they are computed only when an entry
+    /// must be chosen (nil: they could not be, so no entry is this setup's).
     static func decide(saved: ClusterRuntimeApproval?, fetched: ClusterApprovalFetch.Outcome, model: String,
-                       schedule: ClusterPrefillSchedule, now: Double) -> Decision {
-        let candidate: ClusterRuntimeApproval?
-        if case .approvals(let approvals) = fetched {
-            candidate = select(approvals, model: model, schedule: schedule, now: now)
-        } else { candidate = nil }
-        guard let saved else { return candidate.map(Decision.save) ?? .keep }
+                       schedule: ClusterPrefillSchedule, facts: () -> ClusterRuntimeApprovalFacts?, now: Double) -> Decision {
+        func candidate() -> ClusterRuntimeApproval? {
+            guard case .approvals(let approvals) = fetched, !approvals.isEmpty, let facts = facts() else { return nil }
+            return select(approvals, model: model, schedule: schedule, facts: facts, now: now)
+        }
+        guard let saved else { return candidate().map(Decision.save) ?? .keep }
         let savedEnd = expiry(saved) ?? 0
         if savedEnd - now > renewWithinSeconds { return .keep }
-        if let candidate, candidate != saved, (expiry(candidate) ?? 0) > savedEnd { return .save(candidate) }
+        if let candidate = candidate(), candidate != saved, (expiry(candidate) ?? 0) > savedEnd { return .save(candidate) }
         return savedEnd > now ? .keep : .remove
     }
 
-    /// The one status line of a pair offered to the coordinator for pairing.
+    /// The one status line of a pair registered with the coordinator as a cluster member.
     public static func offeredLine(_ approval: ClusterRuntimeApproval) -> String { offeredLine(id: approval.id, notAfter: approval.notAfter) }
 
     /// The same for a saved setup's attachment (a cluster approval, or a pair approval saved by hand).

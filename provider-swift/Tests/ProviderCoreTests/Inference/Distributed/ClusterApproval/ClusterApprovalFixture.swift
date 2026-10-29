@@ -188,13 +188,6 @@ final class ClusterApprovalMacs: @unchecked Sendable {
             sendToPeer: cable(facts: followerFacts, sent: sent), chipClass: Self.chip, facts: { _ in leaderFacts })
     }
 
-    /// The app's `Contents/Info.plist` naming `version`, as an update leaves it on `mac`'s disk.
-    func installApp(version: String, on mac: Mac) throws {
-        let info = mac.worker.deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("Info.plist")
-        try PropertyListSerialization.data(fromPropertyList: ["CFBundleShortVersionString": version], format: .xml, options: 0)
-            .write(to: info, options: .atomic)
-    }
-
     /// The probe a serving leader records for the pair after a load.
     func recordLinkProbe() {
         let probe = ClusterWorkerLinkProbe(transport: "jaccl", keyed: true, pointToPointSmallBytes: 64, pointToPointSmallMicroseconds: 20,

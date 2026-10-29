@@ -584,6 +584,9 @@ public struct ClusterOnboardingOperations: Sendable {
     /// Saves how the cluster serves on the control leader (kept until changed). While it serves, the leading Mac's
     /// part starts again in the new scope by itself; its lines say so.
     public var setScope: @Sendable (_ scope: ClusterServingScope) -> Result<[String], ClusterOnboardingFailure>
+    /// After the Test stage passed: registers the pair with the coordinator as a cluster member when the coordinator
+    /// serves a cluster approval for this pair's installed app and model; its lines (none: nothing changed).
+    public var register: @Sendable () -> Result<[String], ClusterOnboardingFailure>
 
     public init(resume: @escaping @Sendable () -> ClusterOnboardingResume,
                 checkLink: @escaping @Sendable (@escaping @Sendable (String) -> Void) -> ClusterOnboardingLinkResult,
@@ -607,13 +610,14 @@ public struct ClusterOnboardingOperations: Sendable {
                 saveDiagnostics: @escaping @Sendable () -> Result<[String], ClusterOnboardingFailure> = { .failure(.init("No diagnostics file can be saved here.")) },
                 developerNotice: @escaping @Sendable () -> String? = { nil },
                 setScope: @escaping @Sendable (ClusterServingScope) -> Result<[String], ClusterOnboardingFailure>
-                    = { _ in .failure(.init("This build cannot change how the cluster serves.")) }) {
+                    = { _ in .failure(.init("This build cannot change how the cluster serves.")) },
+                register: @escaping @Sendable () -> Result<[String], ClusterOnboardingFailure> = { .success([]) }) {
         self.resume = resume; self.checkLink = checkLink; self.pair = pair; self.answerCode = answerCode
         self.ensureService = ensureService; self.reachMembers = reachMembers; self.planModels = planModels
         self.adopt = adopt; self.serve = serve; self.waitReady = waitReady; self.testRequest = testRequest
         self.status = status; self.stop = stop; self.provision = provision; self.verifyTeardown = verifyTeardown
         self.useLinkPort = useLinkPort; self.recheckFit = recheckFit; self.afterRestart = afterRestart; self.saveDiagnostics = saveDiagnostics
-        self.developerNotice = developerNotice; self.setScope = setScope
+        self.developerNotice = developerNotice; self.setScope = setScope; self.register = register
     }
 }
 
@@ -1174,6 +1178,7 @@ public enum ClusterOnboardingDriver {
         // A pair offered for pairing has no local API to test: its requests come through Darkbloom.
         if ready.offered != nil { console.say(ClusterOnboardingReady.offeredTestLine) }
         let tested = ready.offered != nil || test(operations, console, setup: true)
+        if tested, ready.offered == nil, !scope.isLocalOnly { register(title: choice.title, operations, console) }
         console.say("")
         if tested {
             console.say("Done. Run `darkbloom cluster` on any of these Macs to see it, change the model or stop it.")
@@ -1183,6 +1188,20 @@ public enum ClusterOnboardingDriver {
         }
         console.say("Nothing else is needed on the other Mac." + (operations.afterRestart().map { " " + $0 } ?? ""))
         return tested ? 0 : 1
+    }
+
+    /// After the Test stage: registers the pair with the coordinator when it serves a cluster approval for this pair,
+    /// then waits until both Macs say so. Nothing is said when the coordinator serves none.
+    static func register(title: String, _ operations: ClusterOnboardingOperations, _ console: ClusterOnboardingConsole) {
+        switch operations.register() {
+        case .success(let lines):
+            for line in lines { console.say("  " + line) }
+            guard lines.first?.hasPrefix(ClusterLocalServing.offeredNotice) == true else { return }
+            console.say("Starting both Macs' parts again as cluster members…")
+            _ = awaitReady(title: title, operations, console)
+        case .failure(let failure):
+            for line in failure.lines { console.say("  " + line) }
+        }
     }
 
     /// Waits for the started cluster with its progress, then says where it serves; nil (with the last errors and the

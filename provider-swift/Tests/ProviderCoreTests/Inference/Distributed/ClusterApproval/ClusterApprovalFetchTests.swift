@@ -17,12 +17,12 @@ struct ClusterApprovalFetchTests {
         return [macs.approval(schedule: 1), macs.approval(schedule: 2)]
     }
 
-    @Test func aStrictListIsTakenAndTheRequestNamesThisRelease() async throws {
+    @Test func aStrictListIsTakenAndTheRequestHasNoQuery() async throws {
         let (mock, url) = try await coordinator()
         let entries = try approvals()
         mock.setClusterApprovals(body: try ClusterApprovalMacs.body(entries))
-        #expect(await ClusterApprovalFetch.fetch(coordinatorURL: url, version: "0.10.4") == .approvals(entries))
-        #expect(mock.snapshot().clusterApprovalQueries == ["version=0.10.4&platform=macos-arm64"])
+        #expect(await ClusterApprovalFetch.fetch(coordinatorURL: url) == .approvals(entries))
+        #expect(mock.snapshot().clusterApprovalQueries == [""])
         await mock.shutdown()
     }
 
@@ -68,12 +68,12 @@ struct ClusterApprovalFetchTests {
     }
 
     @Test func onlyHTTPSOrThisMacsLoopbackIsAsked() async throws {
-        #expect(ClusterApprovalFetch.url(coordinatorURL: "wss://api.dev.darkbloom.xyz/ws/provider", version: "1.2.3")?.absoluteString
-            == "https://api.dev.darkbloom.xyz/v1/cluster/approvals?version=1.2.3&platform=macos-arm64")
-        #expect(ClusterApprovalFetch.url(coordinatorURL: "ws://127.0.0.1:8080/ws/provider", version: "1") != nil)
+        #expect(ClusterApprovalFetch.url(coordinatorURL: "wss://api.dev.darkbloom.xyz/ws/provider")?.absoluteString
+            == "https://api.dev.darkbloom.xyz/v1/cluster/approvals")
+        #expect(ClusterApprovalFetch.url(coordinatorURL: "ws://127.0.0.1:8080/ws/provider") != nil)
         for refused in ["ws://coordinator.example/ws/provider", "http://10.0.0.1/ws/provider", "ftp://host/x",
                         "wss://host/ws/provider?token=1", "not a url"] {
-            #expect(ClusterApprovalFetch.url(coordinatorURL: refused, version: "1") == nil, "\(refused) must not be asked")
+            #expect(ClusterApprovalFetch.url(coordinatorURL: refused) == nil, "\(refused) must not be asked")
         }
         #expect(await ClusterApprovalFetch.fetch(coordinatorURL: "ws://coordinator.example/ws/provider")
             == .unavailable("the coordinator URL is not HTTPS"))

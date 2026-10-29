@@ -631,7 +631,7 @@ public struct ClusterControlRequest: Codable, Sendable, Equatable {
     /// `scope`: how the cluster serves from now on (`localOnly`, `bind`), saved on the leader. A leader whose build
     /// predates an operation cannot decode the request and answers with a failure.
     public enum Operation: String, Codable, Sendable {
-        case status, reachMembers, planModels, adopt, serve, stop, readiness, test, verifyTeardown, scope
+        case status, reachMembers, planModels, adopt, serve, stop, readiness, test, verifyTeardown, scope, register
     }
     public var op: Operation
     /// `adopt`: the choice's index as `planModels` listed it on the leader.

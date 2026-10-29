@@ -2,11 +2,12 @@ import Foundation
 import DarkbloomClusterProtocol
 import DarkbloomClusterSecurity
 
-/// The control leader's step that keeps both Macs' setups on the same cluster approval: after the guided setup saved
-/// both setups, after an update re-adopted them, and once at each start of its cluster service. The leader asks its
-/// coordinator, checks the entry against its own files, sends it to the other Mac over the cable (which checks it
-/// against its files and saves it, or refuses), and saves it itself only after the other Mac did. Both Macs so carry
-/// the approval, or neither does. A coordinator that offers none (404, any failure) changes nothing.
+/// The control leader's step that keeps both Macs' setups on the same cluster approval: after the guided setup's Test
+/// stage passed, once at each start of its cluster service and after an update re-adopted the setups, and every
+/// minute while the pair is offered. The leader asks its coordinator, takes the entry whose digests are its own
+/// facts, sends it to the other Mac over the cable (which checks it against its own files and saves it, or refuses),
+/// and saves it itself only after the other Mac did. Both Macs so carry the approval, or neither does. A coordinator
+/// that serves none (404, no matching entry, any failure) changes nothing.
 public enum ClusterApprovalSync {
     /// How the other Mac's refusal starts, so the leader's line names the Mac that refused.
     public static let peerRefusalPrefix = "the other Mac refused the cluster approval: "
@@ -31,14 +32,16 @@ public enum ClusterApprovalSync {
         return "\(error)"
     }
 
-    /// What the step would do with this saved setup and this answer.
-    static func decision(saved: ClusterConfigurationStore.Saved, fetched: ClusterApprovalFetch.Outcome,
-                         now: Double) -> ClusterApprovalLifetime.Decision {
+    /// What the step would do with this saved setup and this answer. `facts` describes this Mac's installed app for
+    /// the setup's model; it runs only when an entry must be chosen.
+    static func decision(saved: ClusterConfigurationStore.Saved, fetched: ClusterApprovalFetch.Outcome, now: Double,
+                         facts: (ClusterConfiguration) throws -> ClusterRuntimeApprovalFacts) -> ClusterApprovalLifetime.Decision {
         let configuration = saved.configuration
         // A pair approval an operator saved by hand (`darkbloom cluster configure`) is theirs to change.
         guard configuration.nativeMember?.approval == nil else { return .keep }
         return ClusterApprovalLifetime.decide(saved: configuration.nativeMember?.clusterApproval, fetched: fetched,
-            model: configuration.publicModelID, schedule: configuration.selectedPrefillSchedule, now: now)
+            model: configuration.publicModelID, schedule: configuration.selectedPrefillSchedule,
+            facts: { try? facts(configuration) }, now: now)
     }
 
     /// The control leader's watch over the coordinator of a pair it offered: a pair whose coordinator gives no answer
@@ -64,7 +67,8 @@ public enum ClusterApprovalSync {
     /// The step for this saved setup and answer. `parked` is the approval set aside while the pair serves locally.
     /// `clock` and `grace` are control-clock seconds (`ClusterService.monotonicSeconds`); `now` is wall-clock seconds.
     static func step(saved: ClusterConfigurationStore.Saved, fetched: ClusterApprovalFetch.Outcome, parked: ClusterRuntimeApproval?,
-                     scope: ClusterServingScope, watch: inout Watch, clock: Double, grace: Double, now: Double) -> Step {
+                     scope: ClusterServingScope, watch: inout Watch, clock: Double, grace: Double, now: Double,
+                     facts: (ClusterConfiguration) throws -> ClusterRuntimeApprovalFacts = ClusterApprovalAttachment.installedFacts) -> Step {
         let configuration = saved.configuration
         if case .unreachable = fetched {
             // Only a pair offered now with a cluster approval falls back; a hand-saved pair approval is the operator's.
@@ -83,10 +87,11 @@ public enum ClusterApprovalSync {
         if let parked, configuration.nativeMember == nil, !scope.isLocalOnly {
             var candidates = [parked]
             if case .approvals(let approvals) = fetched { candidates += approvals }
+            guard let installed = try? facts(configuration) else { return .keep }
             return ClusterApprovalLifetime.select(candidates, model: configuration.publicModelID,
-                schedule: configuration.selectedPrefillSchedule, now: now).map(Step.save) ?? .keep
+                schedule: configuration.selectedPrefillSchedule, facts: installed, now: now).map(Step.save) ?? .keep
         }
-        if case .save(let approval) = decision(saved: saved, fetched: fetched, now: now) { return .save(approval) }
+        if case .save(let approval) = decision(saved: saved, fetched: fetched, now: now, facts: facts) { return .save(approval) }
         return .keep
     }
 
@@ -154,7 +159,7 @@ public enum ClusterApprovalSync {
             do { _ = try saveHere(nil) } catch { line += " (this Mac could not save its setup: \(refusal(error)))" }
             return Result(changed: true, line: line, note: .some(line))
         }
-        switch decision(saved: saved, fetched: fetched, now: now) {
+        switch decision(saved: saved, fetched: fetched, now: now, facts: facts) {
         case .keep:
             return .unchanged
         case .remove:
@@ -215,17 +220,5 @@ public enum ClusterApprovalSync {
             say("did not save the cluster approval the leader sent: \(reason)")
             throw ClusterSetupFailure(peerRefusalPrefix + reason)
         }
-    }
-
-    /// The step from a thread of the onboarding or the cluster service: first fetches the approvals of the installed
-    /// app's release from the provider configuration's coordinator (`ClusterApprovalFetch.fetch(for:)`).
-    static func runLive(paths: ClusterUserPaths, providerConfiguration: URL, pairingStore: ClusterPairingStore, scratch: URL,
-                        sendToPeer: (ClusterServiceCommand) throws -> Void) -> Result {
-        guard let saved = try? ClusterApprovalAttachment.savedSetup(paths: paths, providerConfiguration: providerConfiguration),
-              let fetched = ClusterApprovalFetch.fetchBlocking(for: saved.configuration, providerConfiguration: providerConfiguration) else {
-            return .unchanged
-        }
-        return run(fetched: fetched, paths: paths, providerConfiguration: providerConfiguration, pairingStore: pairingStore,
-                   scratch: scratch, now: Date().timeIntervalSince1970, sendToPeer: sendToPeer)
     }
 }

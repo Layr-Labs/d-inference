@@ -34,9 +34,11 @@ public enum ClusterLocalServing {
 
     /// A part of a setup saved with a current cluster approval (`start --cluster-member`), once its member is
     /// registered: the coordinator may form the pair, which then serves its owner's own requests through Darkbloom.
-    /// There is no local API in this mode.
-    public static let offeredNotice = "Offered to the coordinator for pairing"
-    public static var offeredLogLine: String { logPrefix + offeredNotice }
+    /// There is no local API in this mode. The status line (`ClusterApprovalLifetime.offeredLine`) adds the approval.
+    public static let offeredNotice = "Registered with the coordinator as a cluster member"
+    /// How such a part writes it to its log: not `registeredLogLine`, which a leader that serves on its local API as
+    /// a control-only member writes.
+    public static var offeredLogLine: String { logPrefix + offeredNotice + " with an installed cluster approval" }
 
     /// The leader part's start option that skips the coordinator entirely (`darkbloom start --distributed`).
     public static let noCoordinatorFlag = "--no-coordinator"

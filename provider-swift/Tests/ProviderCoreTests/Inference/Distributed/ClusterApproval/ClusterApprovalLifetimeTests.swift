@@ -9,15 +9,24 @@ struct ClusterApprovalLifetimeTests {
     private func macs() throws -> ClusterApprovalMacs { try Self.macs.get() }
     private let now = Date().timeIntervalSince1970
 
-    @Test func selectionTakesThisModelAndScheduleStillCurrentWithTheLatestEnd() throws {
-        let m = try macs()
+    @Test func selectionTakesThisModelScheduleAndFactsStillCurrentWithTheLatestEnd() throws {
+        let m = try macs(), facts = try m.facts()
         let serial = m.approval(schedule: 1), lookahead = m.approval(schedule: 2)
         let other = m.approval(model: "other/model"), later = m.approval(endsIn: 20 * 86_400, id: "later")
         let ended = m.approval(endsIn: -60, id: "ended")
         let all = [lookahead, other, serial, later, ended]
-        #expect(ClusterApprovalLifetime.select(all, model: ClusterApprovalMacs.model, schedule: .serial, now: now) == later)
-        #expect(ClusterApprovalLifetime.select(all, model: ClusterApprovalMacs.model, schedule: .oneChunkLookahead, now: now) == lookahead)
-        #expect(ClusterApprovalLifetime.select([other, lookahead, ended], model: ClusterApprovalMacs.model, schedule: .serial, now: now) == nil)
+        func select(_ approvals: [ClusterRuntimeApproval], _ schedule: ClusterPrefillSchedule,
+                    facts: ClusterRuntimeApprovalFacts) -> ClusterRuntimeApproval? {
+            ClusterApprovalLifetime.select(approvals, model: ClusterApprovalMacs.model, schedule: schedule, facts: facts, now: now)
+        }
+        #expect(select(all, .serial, facts: facts) == later)
+        #expect(select(all, .oneChunkLookahead, facts: facts) == lookahead)
+        #expect(select([other, lookahead, ended], .serial, facts: facts) == nil)
+        // An entry with any digest that is not this Mac's (another build, another copy of the model) is not taken.
+        for field in ClusterApprovalMacs.blockFields {
+            let differing = try m.facts(differing: field)
+            #expect(select(all, .serial, facts: differing) == nil, "\(field)")
+        }
     }
 
     @Test func aSavedApprovalIsKeptReplacedNearItsEndAndRemovedOnceEnded() throws {
@@ -25,11 +34,15 @@ struct ClusterApprovalLifetimeTests {
         let fresh = m.approval(), near = m.approval(endsIn: 3_600, id: "near"), ended = m.approval(endsIn: -60, id: "ended")
         let later = m.approval(endsIn: 13 * 86_400, id: "later")
         func decide(_ saved: ClusterRuntimeApproval?, _ fetched: ClusterApprovalFetch.Outcome) -> ClusterApprovalLifetime.Decision {
-            ClusterApprovalLifetime.decide(saved: saved, fetched: fetched, model: model, schedule: .serial, now: now)
+            ClusterApprovalLifetime.decide(saved: saved, fetched: fetched, model: model, schedule: .serial,
+                                           facts: { try? m.facts() }, now: now)
         }
         #expect(decide(nil, .approvals([fresh])) == .save(fresh))
         #expect(decide(nil, .notOffered) == .keep)
         #expect(decide(nil, .unavailable("no answer")) == .keep)
+        // Facts that cannot be described choose no entry.
+        #expect(ClusterApprovalLifetime.decide(saved: nil, fetched: .approvals([fresh]), model: model, schedule: .serial,
+                                               facts: { nil }, now: now) == .keep)
         // More than a day left: nothing is written, whatever the coordinator says now.
         #expect(decide(fresh, .approvals([later])) == .keep)
         #expect(decide(fresh, .notOffered) == .keep)

@@ -48,7 +48,8 @@ extension ClusterOnboardingOperations {
             afterRestart: { live.afterRestart() },
             saveDiagnostics: { live.saveDiagnostics() },
             developerNotice: { ClusterForcedModeSetting.notice(environment: ProcessInfo.processInfo.environment) },
-            setScope: { live.setScope($0) })
+            setScope: { live.setScope($0) },
+            register: { live.register() })
     }
 }
 
@@ -283,6 +284,7 @@ final class OnboardingLive: @unchecked Sendable {
         case .scope:
             guard let scope = request.scope else { return lines(.failure(.init("No way of serving was named, or its address is not one the API takes."))) }
             return lines(localSetScope(scope))
+        case .register: return lines(localRegister())
         }
     }
 
@@ -1091,22 +1093,42 @@ final class OnboardingLive: @unchecked Sendable {
         // bound to the plan just saved so a verdict never outlives its plan.
         let plan = context.savedConfiguration().configuration?.selectedPlanSHA256
         try? store.updateRecord { $0.aloneHolders = choice.alone.sorted(); $0.aloneHoldersPlan = plan }
-        // Both setups are saved and both parts are stopped: the cluster approval of this release, when the
-        // coordinator offers one, is checked on each Mac and saved on both (or on neither).
-        let approval = syncApproval()
-        return .success(lines + result.lines + (approval.line.map { [$0 + "."] } ?? []))
+        return .success(lines + result.lines)
     }
 
-    /// `ClusterApprovalSync` from this (control leader) Mac, with the other Mac reached over the cable. Records the
-    /// status note it returns. Both Macs' parts must be stopped.
-    func syncApproval() -> ClusterApprovalSync.Result {
-        let result = ClusterApprovalSync.runLive(paths: context.paths,
-            providerConfiguration: settings.service.wizard.providerConfiguration,
-            pairingStore: .default(home: context.paths.homeDirectory), scratch: store.paths.directory) { request in
+    /// After the Test stage passed: registers the pair with the coordinator as a cluster member when the coordinator
+    /// serves a cluster approval whose digests are this Mac's own facts (`ClusterApprovalSync`), on the control leader.
+    func register() -> Result<[String], ClusterOnboardingFailure> {
+        routed(.init(op: .register), seconds: 900, acting: true, local: { localRegister() }) { $0.lines }
+    }
+
+    /// The leader's half of `register`. A local-only cluster never asks; a coordinator that serves no matching entry
+    /// (404, none listed, any failure) changes nothing and stops nothing. Otherwise both parts stop (each save needs
+    /// its device journal empty), each Mac checks the entry against its own files and saves it, the other Mac first,
+    /// and both parts start again as cluster members.
+    func localRegister() -> Result<[String], ClusterOnboardingFailure> {
+        guard leadership?.scope.isLocalOnly != true else { return .success([]) }
+        let providerConfiguration = settings.service.wizard.providerConfiguration
+        guard let saved = try? ClusterApprovalAttachment.savedSetup(paths: context.paths, providerConfiguration: providerConfiguration),
+              let fetched = ClusterApprovalFetch.fetchBlocking(providerConfiguration: providerConfiguration),
+              case .save(let approval) = ClusterApprovalSync.decision(saved: saved, fetched: fetched, now: Date().timeIntervalSince1970,
+                                                                         facts: ClusterApprovalAttachment.installedFacts) else {
+            return .success([])
+        }
+        if case .failure(let failure) = localStop() { return .failure(failure) }
+        guard drained(seconds: 300) else {
+            // The services start the parts again by themselves, with the setups as they were.
+            try? store.updateRecord { $0.leadership?.serving = true }
+            return .failure(.init("A part did not stop within 5 minutes, so the cluster was not registered with the coordinator."))
+        }
+        let result = ClusterApprovalSync.run(fetched: .approvals([approval]), paths: context.paths,
+            providerConfiguration: providerConfiguration, pairingStore: .default(home: context.paths.homeDirectory),
+            scratch: store.paths.directory, now: Date().timeIntervalSince1970) { request in
             _ = try command(request, seconds: 180)
         }
         if let note = result.note { try? store.updateRecord { $0.approvalNote = note } }
-        return result
+        if case .failure(let failure) = localServe() { return .failure(.init((result.line.map { [$0 + "."] } ?? []) + failure.lines)) }
+        return .success(result.line.map { [$0 + "."] } ?? [])
     }
 
     /// Both Macs' parts ended (this Mac's service publishes its own; the other Mac's is asked over the link).

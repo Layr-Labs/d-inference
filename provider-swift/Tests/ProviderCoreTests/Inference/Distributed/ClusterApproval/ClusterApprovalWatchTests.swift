@@ -26,8 +26,10 @@ struct ClusterApprovalWatchTests {
 
     private func step(_ macs: ClusterApprovalMacs, _ fetched: ClusterApprovalFetch.Outcome, parked: ClusterRuntimeApproval? = nil,
                       scope: ClusterServingScope = .publicServing, _ watched: Watched, clock: Double) throws -> ClusterApprovalSync.Step {
-        ClusterApprovalSync.step(saved: try macs.saved(macs.leader), fetched: fetched, parked: parked, scope: scope,
-                                 watch: &watched.watch, clock: clock, grace: grace, now: Date().timeIntervalSince1970)
+        let facts = try macs.facts()
+        return ClusterApprovalSync.step(saved: try macs.saved(macs.leader), fetched: fetched, parked: parked, scope: scope,
+                                        watch: &watched.watch, clock: clock, grace: grace, now: Date().timeIntervalSince1970,
+                                        facts: { _ in facts })
     }
 
     private func serveLocally(_ macs: ClusterApprovalMacs, _ approval: ClusterRuntimeApproval, facts: ClusterRuntimeApprovalFacts,

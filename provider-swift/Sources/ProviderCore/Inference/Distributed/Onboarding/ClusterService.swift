@@ -993,6 +993,8 @@ public final class ClusterService: @unchecked Sendable {
             // The plan's own line and its reason for the mode (tensor parallel or a pipeline), so the log says why.
             say("set the cluster up again after the update: \(model) is starting on both Macs ("
                 + choices[index].lines.joined(separator: " ") + ")")
+            // The re-adopted setups carry no cluster approval: the next check looks for the entry of the updated app.
+            self.lock.withLock { self.approvalChecked = false; self.nextApprovalCheck = .distantPast }
         }
     }
 
@@ -1034,10 +1036,7 @@ public final class ClusterService: @unchecked Sendable {
                 ClusterApprovalLifetime.offers($0, scope: scope, now: Date().timeIntervalSince1970)
             } ?? false
             guard first || (record?.leadership?.serving == true && (offered || parked != nil)) else { return checked() }
-            // The installed app's release, also when this service still runs the build an update replaced.
-            guard let fetched = ClusterApprovalFetch.fetchBlocking(for: saved.configuration, providerConfiguration: configuration) else {
-                return checked()
-            }
+            guard let fetched = ClusterApprovalFetch.fetchBlocking(providerConfiguration: configuration) else { return checked() }
             let now = Date().timeIntervalSince1970
             if let parked, !ClusterApprovalLifetime.current(parked, now: now) {
                 let line = "The cluster approval \(parked.id) ended while the coordinator did not answer; the pair serves on the leader's local API"

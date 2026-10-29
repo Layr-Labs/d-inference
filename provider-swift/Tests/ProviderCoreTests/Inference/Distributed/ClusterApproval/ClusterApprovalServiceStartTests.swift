@@ -7,16 +7,31 @@ import Testing
 /// started. Nothing here loads a model.
 @Suite("Cluster approval at a service start", .serialized)
 struct ClusterApprovalServiceStartTests {
-    /// The leader's setup saved with an approval ending `endsIn` seconds from now (in the past: ended).
-    private func setUp(endsIn: Double) throws -> (ClusterApprovalMacs, ClusterService, URL) {
+    /// The leader's setup saved with an approval ending `endsIn` seconds from now (in the past: ended): a cluster
+    /// approval as the guided setup saves it, or (`handSaved`) a pair approval an operator saved by hand.
+    private func setUp(endsIn: Double, handSaved: Bool = false) throws -> (ClusterApprovalMacs, ClusterService, URL) {
         let macs = try ClusterApprovalMacs(coordinatorURL: "ws://127.0.0.1:9/ws/provider")
         let leader = macs.leader, saved = try macs.saved(leader), facts = try macs.facts()
         let current = try ClusterApprovalAttachment.attachment(for: macs.approval(), saved: saved, paths: leader.paths,
             pairingStore: leader.pairing, edge: nil, now: Date().timeIntervalSince1970, chipClass: ClusterApprovalMacs.chip,
             facts: { _ in facts })
-        let attachment = ClusterNativeMemberAttachment(ownerSHA256: current.ownerSHA256, metallibPath: current.metallibPath,
-            resourceLibraryPath: current.resourceLibraryPath, clusterApproval: macs.approval(endsIn: endsIn),
-            roster: try #require(current.roster), memberPins: try #require(current.memberPins), edges: nil)
+        let attachment: ClusterNativeMemberAttachment
+        if handSaved {
+            let h = ClusterApprovalMacs.hash
+            let end = ISO8601DateFormatter().string(from: Date(timeIntervalSince1970: (Date().timeIntervalSince1970 + endsIn).rounded(.down)))
+            let pair = try ClusterPairApprovalTests.approval(["id": "hand-saved", "model": ClusterApprovalMacs.model, "generation": 1,
+                "plan_sha256": h("f"), "artifact_sha256": h("b"), "native_runtime_sha256": h("a"),
+                "metallib_sha256": h("3"), "resource_library_sha256": h("4"), "capability_sha256": macs.capabilitySHA256,
+                "resource_policy_sha256": h("8"), "profile_sha256": h("e"), "schedule": 1,
+                "maximum_transport_frame": 131_112, "maximum_plaintext": 131_072, "maximum_records": 1024,
+                "maximum_cumulative_plaintext": 16_777_216, "allowed_chips": ["Apple M3 Ultra"], "not_after": end])
+            attachment = ClusterNativeMemberAttachment(ownerSHA256: current.ownerSHA256, metallibPath: current.metallibPath,
+                resourceLibraryPath: current.resourceLibraryPath, approval: pair)
+        } else {
+            attachment = ClusterNativeMemberAttachment(ownerSHA256: current.ownerSHA256, metallibPath: current.metallibPath,
+                resourceLibraryPath: current.resourceLibraryPath, clusterApproval: macs.approval(endsIn: endsIn),
+                roster: try #require(current.roster), memberPins: try #require(current.memberPins), edges: nil)
+        }
         try ClusterApprovalAttachment.save(attachment, saved: saved, paths: leader.paths, providerConfiguration: leader.provider,
                                            scratch: leader.scratch)
         // The loop answers no paired Mac here: only its own part is under test.
@@ -85,5 +100,16 @@ struct ClusterApprovalServiceStartTests {
         #expect(reached, "the member part did not start: \(lines)")
         #expect(!started(parts, "leader"))
         #expect(try macs.bytes(macs.leader) == before, "a current approval was rewritten")
+    }
+
+    @Test func aHandSavedPairApprovalThatEndedStaysSavedAndIsNeverOffered() throws {
+        let (macs, service, parts) = try setUp(endsIn: -60, handSaved: true)
+        let before = try macs.bytes(macs.leader)
+        // The ordinary part starts (and, on a real Mac, says why it cannot run beside the saved approval).
+        let (reached, lines) = run(service, parts: parts) { started(parts, "leader") }
+        #expect(reached, "the ordinary part did not start: \(lines)")
+        #expect(!started(parts, "member"), "an ended pair approval was offered to the coordinator")
+        #expect(try macs.bytes(macs.leader) == before, "the operator's pair approval was removed")
+        #expect(try macs.saved(macs.leader).configuration.nativeMember?.approval?.id == "hand-saved")
     }
 }

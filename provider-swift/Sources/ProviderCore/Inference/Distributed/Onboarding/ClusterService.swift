@@ -1265,11 +1265,12 @@ public final class ClusterService: @unchecked Sendable {
             return
         }
         // A part offered to the coordinator whose approval ended, or whose leader now serves locally only, stops
-        // here; the next tick saves this Mac's setup without the approval and starts the part that serves locally.
+        // here; the next tick saves this Mac's setup without a cluster approval and starts the part that serves
+        // locally (a pair approval saved by hand stays saved: see below).
         if running != nil, setup == key, case .cluster = want, let member = saved.configuration?.nativeMember,
            !ClusterApprovalLifetime.offers(member, scope: scope, now: Date().timeIntervalSince1970) {
-            say("this Mac's part is offered to the coordinator, but "
-                + (scope.isLocalOnly ? "the cluster serves locally only now" : "its cluster approval expired") + ": stopping it")
+            say("this Mac's part is registered with the coordinator, but "
+                + (scope.isLocalOnly ? "the cluster serves locally only now" : "its approval ended") + ": stopping it")
             _ = stopChild(say: say, seconds: 300)
             lock.withLock { nextStart = .distantPast; backoff = 3 }
             return
@@ -1318,14 +1319,18 @@ public final class ClusterService: @unchecked Sendable {
             port = Self.soloPort
         } else {
             guard let configuration = saved.configuration else { return }
-            if let member = configuration.nativeMember,
-               !ClusterApprovalLifetime.offers(member, scope: scope, now: Date().timeIntervalSince1970) {
-                // Never a failed start: the setup is saved without the approval (both Macs reach the same bytes by
-                // themselves), and the part that serves on the leader's local API starts at the next tick.
+            let offered = configuration.nativeMember.map {
+                ClusterApprovalLifetime.offers($0, scope: scope, now: Date().timeIntervalSince1970)
+            } ?? false
+            if let member = configuration.nativeMember, !offered, member.clusterApproval != nil {
+                // Never a failed start: the setup is saved without the cluster approval (both Macs reach the same
+                // bytes by themselves), and the part that serves on the leader's local API starts at the next tick.
+                // A pair approval saved by hand (`darkbloom cluster configure`) is the operator's: it stays, and the
+                // ordinary part below says why it cannot run beside it, as before the guided setup saved approvals.
                 removeEndedApproval(key: key, localOnly: scope.isLocalOnly, say: say)
                 return
             }
-            if configuration.nativeMember != nil {
+            if offered {
                 // Offered to the coordinator for pairing: both Macs run the coordinator-formed pair's member; the
                 // leader's rank hosts the link listener and the pair's slot, the other rank dials it.
                 arguments = settings.memberArguments
@@ -1340,8 +1345,8 @@ public final class ClusterService: @unchecked Sendable {
             } else {
                 arguments = settings.followerArguments
             }
-            what = "this Mac's part: " + (configuration.nativeMember != nil
-                ? "rank \(configuration.localRank), offered to the coordinator for pairing"
+            what = "this Mac's part: " + (offered
+                ? "rank \(configuration.localRank), registered with the coordinator as a cluster member"
                 : configuration.role == .leader
                 ? "rank 0 and the serving API" + (scope.isLocalOnly ? " (local only, no coordinator)" : "")
                 : "rank \(configuration.localRank)")
@@ -1386,7 +1391,7 @@ public final class ClusterService: @unchecked Sendable {
             say(line)
             if !localOnly, saved.configuration.role == .leader { try? store.updateRecord { $0.approvalNote = line } }
         } catch {
-            say("could not save this Mac's setup without its ended cluster approval yet: \(ClusterApprovalSync.refusal(error))")
+            say("could not save this Mac's setup without its cluster approval yet: \(ClusterApprovalSync.refusal(error))")
             lock.withLock { nextStart = Date().addingTimeInterval(backoff); backoff = min(backoff * 2, 30); endedKey = key }
         }
     }

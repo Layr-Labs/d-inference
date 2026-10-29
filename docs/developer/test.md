@@ -1065,11 +1065,12 @@ with isolated fixture runners: each `provider-swift/Tests/Cluster*Checks/run.sh`
 `libs/darkbloom-cluster/Tests/*Checks/run.sh` and
 `libs/darkbloom-cluster-worker/Tests/*Checks/run.sh` prints its pass count and
 exits non-zero on a failure. The CI job `test-cluster-checks` (Cluster Metadata
-Checks, `.github/workflows/ci.yml`) runs four of them on every pull request that
+Checks, `.github/workflows/ci.yml`) runs five of them on every pull request that
 changes provider code: `libs/darkbloom-cluster-worker/Tests/CapabilityChecks/run.sh`,
 `libs/darkbloom-cluster/Tests/StageMetadataChecks/run.py`,
-`libs/darkbloom-cluster/Tests/GPTOSSStageChecks/run.sh` and
-`libs/darkbloom-cluster/Tests/NemotronStageChecks/run.sh`. The library's XCTest targets
+`libs/darkbloom-cluster/Tests/GPTOSSStageChecks/run.sh`,
+`libs/darkbloom-cluster/Tests/NemotronStageChecks/run.sh` and
+`provider-swift/Tests/ClusterModelProvisioningChecks/run.sh`. The library's XCTest targets
 (`swift test --package-path libs/darkbloom-cluster`) and the worker package's
 tests (built for macOS 26.2) need the GPU and exclusive device access. A
 loopback or fixture pass never counts as a two-Mac hardware pass.

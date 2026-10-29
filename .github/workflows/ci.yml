@@ -608,6 +608,9 @@ jobs:
       - name: Run Nemotron stage checks
         if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
         run: bash libs/darkbloom-cluster/Tests/NemotronStageChecks/run.sh
+      - name: Run cluster model provisioning checks
+        if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
+        run: bash provider-swift/Tests/ClusterModelProvisioningChecks/run.sh
 
   provider-test-gate:
     name: Provider Tests

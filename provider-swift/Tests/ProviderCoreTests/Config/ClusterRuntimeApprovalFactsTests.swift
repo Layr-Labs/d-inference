@@ -86,8 +86,43 @@ struct ClusterRuntimeApprovalFactsTests {
             let data = try JSONSerialization.data(withJSONObject: value)
             #expect(throws: ClusterConfigurationError.self, "\(label)") { try ClusterRuntimeApprovalFacts(canonical: data) }
         }
+        // A repeated key, also one spelled with an escape, at the top or in a model.
+        let text = String(decoding: try Self.facts().canonicalBytes(), as: UTF8.self)
+        for (label, repeated) in [
+            ("top", text.replacingOccurrences(of: #"{"metallib_sha256":"#,
+                                              with: #"{"schema":"darkbloom_cluster_runtime_v1","metallib_sha256":"#)),
+            ("escaped", text.replacingOccurrences(of: #"{"metallib_sha256":"#,
+                                                  with: #"{"sch\u0065ma":"darkbloom_cluster_runtime_v1","metallib_sha256":"#)),
+            ("model", text.replacingOccurrences(of: #"[{"artifact_sha256":"#, with: #"[{"model":"Z","artifact_sha256":"#)),
+        ] {
+            #expect(repeated != text, "\(label)")
+            #expect(throws: ClusterConfigurationError.self, "\(label)") { try ClusterRuntimeApprovalFacts(canonical: Data(repeated.utf8)) }
+        }
         for data in [Data("{".utf8), Data("[]".utf8), Data(repeating: 32, count: ClusterRuntimeApprovalFacts.maximumEncodedBytes + 1)] {
             #expect(throws: ClusterConfigurationError.self) { try ClusterRuntimeApprovalFacts(canonical: data) }
+        }
+    }
+
+    @Test func decoderRefusesFactsWhoseDerivedApprovalIDsExceedTheirBound() throws {
+        // release/1.2.3/<model>/s2: 17 bytes plus the model ID.
+        func block(_ model: String) throws -> Data {
+            var object = try JSONSerialization.jsonObject(with: Self.facts().canonicalBytes()) as! [String: Any]
+            var models = object["models"] as! [[String: Any]]
+            models = [models[0]]; models[0]["model"] = model
+            object["models"] = models
+            return try JSONSerialization.data(withJSONObject: object)
+        }
+        let fits = String(repeating: "m", count: 111), over = String(repeating: "m", count: 112)
+        #expect("release/1.2.3/\(fits)/s2".utf8.count == ClusterRuntimeApprovalFacts.maximumApprovalIDBytes)
+        #expect(try ClusterRuntimeApprovalFacts(canonical: block(fits), releaseVersion: "1.2.3").models.map(\.model) == [fits])
+        #expect(throws: ClusterConfigurationError.self) {
+            try ClusterRuntimeApprovalFacts(canonical: block(over), releaseVersion: "1.2.3")
+        }
+        // The default is this build's own version: a longer version leaves less room.
+        let room = ClusterRuntimeApprovalFacts.maximumApprovalIDBytes - "release/\(ProviderCore.version)//s2".utf8.count
+        _ = try ClusterRuntimeApprovalFacts(canonical: block(String(repeating: "m", count: room)))
+        #expect(throws: ClusterConfigurationError.self) {
+            try ClusterRuntimeApprovalFacts(canonical: block(String(repeating: "m", count: room + 1)))
         }
     }
 

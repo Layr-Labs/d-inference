@@ -920,54 +920,37 @@ jobs:
       # signed app's own CLI and worker after every signing, notarization and
       # final-bytes check above. No secret is in this step: it reads no
       # secrets.*, removes the two secret-derived values the job's
-      # GITHUB_ENV holds and the signing keychain before any release code
-      # runs, and runs that code with an empty environment.
+      # GITHUB_ENV holds and the signing keychain (and proves the identity
+      # is gone) before any release code runs, and runs that code with an
+      # empty environment.
       - name: Compute dev cluster runtime facts from the final signed app
         if: needs.resolve-env.outputs.environment == 'dev'
         run: |
           set -euo pipefail
           unset r2_public_url coordinator_url
-          security delete-keychain "$KEYCHAIN_PATH" 2>/dev/null || true
+          # The signing keychain must be gone, and no keychain may still list
+          # the signing identity, before any release code runs.
+          security delete-keychain "$KEYCHAIN_PATH"
+          test ! -e "$KEYCHAIN_PATH"
+          test -n "$DEVELOPER_ID"
+          IDENTITIES=$(security find-identity -v -p codesigning)
+          if grep -F -q -- "$DEVELOPER_ID" <<< "$IDENTITIES"; then
+            echo "::error::The signing identity is still readable after the signing keychain was deleted"
+            exit 1
+          fi
           test "$(shasum -a 256 /tmp/darkbloom-bundle-macos-arm64.tar.gz | cut -d' ' -f1)" = "$BUNDLE_HASH"
           FACTS_ROOT="$RUNNER_TEMP/cluster-runtime"
           rm -rf "$FACTS_ROOT"
-          mkdir -p "$FACTS_ROOT/app" "$FACTS_ROOT/home"
+          mkdir -p "$FACTS_ROOT/app"
           /usr/bin/tar -xzf /tmp/darkbloom-bundle-macos-arm64.tar.gz -C "$FACTS_ROOT/app"
-          FINAL_APP="$FACTS_ROOT/app/$APP_NAME"
-          runtime_facts() {
-            env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin HOME="$FACTS_ROOT/home" DARKBLOOM_NO_UPDATE_CHECK=1 \
-              "$FINAL_APP/Contents/MacOS/$CLI_NAME" cluster runtime-facts "$@"
-          }
-          # The models this build qualifies on a cluster, from its own records;
-          # their manifest and config.json (never weights) from the public
-          # model registry; the build's worker describes each one.
-          runtime_facts --list-release-models > "$FACTS_ROOT/release-models.json"
-          python3 scripts/provider-cluster-runtime-models.py \
-            --models "$FACTS_ROOT/release-models.json" --output "$FACTS_ROOT/candidates"
-          status=0
-          runtime_facts --app "$FINAL_APP" --release-candidates "$FACTS_ROOT/candidates" \
-            --require-model Qwen3.5-9B --require-model glm-5.3-flash \
-            > "$FACTS_ROOT/cluster-runtime.json" 2> "$FACTS_ROOT/runtime-facts.err" || status=$?
-          # A model the build may leave out (ClusterRuntimeApprovalFacts.softReleaseModels)
-          # is one line on standard error: a warning annotation and a summary line.
-          # Every other line is the command's own error output.
-          LEFT_OUT='Left out of the cluster runtime facts: '
-          : > "$FACTS_ROOT/left-out.md"
-          while IFS= read -r line || [ -n "$line" ]; do
-            case "$line" in
-              "$LEFT_OUT"*)
-                printf '::warning::%s\n' "$line"
-                printf -- '- **Warning:** %s\n' "$line" >> "$FACTS_ROOT/left-out.md" ;;
-              *) printf '%s\n' "$line" >&2 ;;
-            esac
-          done < "$FACTS_ROOT/runtime-facts.err"
-          test "$status" -eq 0
-          echo "CLUSTER_RUNTIME_FILE=$FACTS_ROOT/cluster-runtime.json" >> "$GITHUB_ENV"
+          # The same script the pull-request build runs on its unsigned app.
+          scripts/provider-cluster-runtime-facts.sh "$FACTS_ROOT/app/$APP_NAME" "$CLI_NAME" "$FACTS_ROOT/facts"
+          echo "CLUSTER_RUNTIME_FILE=$FACTS_ROOT/facts/cluster-runtime.json" >> "$GITHUB_ENV"
           {
             echo '### Cluster runtime facts (dev)'
-            cat "$FACTS_ROOT/left-out.md"
+            cat "$FACTS_ROOT/facts/left-out.md"
             echo '```json'
-            python3 -m json.tool --sort-keys "$FACTS_ROOT/cluster-runtime.json"
+            python3 -m json.tool --sort-keys "$FACTS_ROOT/facts/cluster-runtime.json"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 

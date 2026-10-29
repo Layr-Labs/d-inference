@@ -17,6 +17,9 @@ public struct ClusterRuntimeApprovalFacts: Equatable, Sendable {
     public static let maximumModelBytes = 128
     /// The canonical form is far smaller; anything larger is refused unread.
     public static let maximumEncodedBytes = 64 * 1024
+    /// The longest cluster approval ID the coordinator derives from the facts
+    /// (`release/<version>/<model>/s<1|2>`) and registers.
+    public static let maximumApprovalIDBytes = 128
 
     /// One model: what a member's saved setup pins for it.
     public struct Model: Codable, Equatable, Sendable {
@@ -262,9 +265,10 @@ public struct ClusterRuntimeApprovalFacts: Equatable, Sendable {
             placementPolicySHA256: placementPolicySHA256, models: models))
     }
 
-    /// Strict: an unknown or missing field, another schema or a value outside
-    /// the rules is refused.
-    public init(canonical data: Data) throws {
+    /// Strict: an unknown, missing or repeated field, another schema, a value outside
+    /// the rules or a model whose derived approval ID for `releaseVersion`
+    /// exceeds `maximumApprovalIDBytes` is refused.
+    public init(canonical data: Data, releaseVersion: String = ProviderCore.version) throws {
         guard data.count <= Self.maximumEncodedBytes,
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               Set(object.keys) == Document.fields, object["schema"] as? String == Self.schema,
@@ -272,12 +276,19 @@ public struct ClusterRuntimeApprovalFacts: Equatable, Sendable {
               models.allSatisfy({ Set($0.keys) == Model.fields }) else {
             throw ClusterConfigurationError.invalid("Cluster runtime facts have unknown or missing fields or another schema")
         }
+        guard !Self.repeatsAKey(data) else {
+            throw ClusterConfigurationError.invalid("Cluster runtime facts repeat a field")
+        }
         let document: Document
         do { document = try JSONDecoder().decode(Document.self, from: data) }
         catch { throw ClusterConfigurationError.invalid("Cluster runtime facts have a field of the wrong type") }
         try self.init(nativeRuntimeSHA256: document.nativeRuntimeSHA256, metallibSHA256: document.metallibSHA256,
                       resourceLibrarySHA256: document.resourceLibrarySHA256,
                       placementPolicySHA256: document.placementPolicySHA256, models: document.models)
+        guard models.allSatisfy({ "release/\(releaseVersion)/\($0.model)/s2".utf8.count <= Self.maximumApprovalIDBytes }) else {
+            throw ClusterConfigurationError.invalid(
+                "A cluster approval ID derived from these facts exceeds \(Self.maximumApprovalIDBytes) bytes")
+        }
     }
 
     /// Every digest 64 lowercase hex and nonzero; 1 to 64 models with valid,
@@ -325,6 +336,35 @@ public struct ClusterRuntimeApprovalFacts: Equatable, Sendable {
     }
 
     // MARK: - Helpers
+
+    /// True when an object in `data` (already parsed as JSON) names one key
+    /// twice. Keys compare after unescaping, as a JSON reader sees them.
+    private static func repeatsAKey(_ data: Data) -> Bool {
+        let bytes = [UInt8](data)
+        var open: [(isObject: Bool, keys: Set<String>)] = [], expectingKey = false, index = 0
+        while index < bytes.count {
+            switch bytes[index] {
+            case UInt8(ascii: "{"): open.append((true, [])); expectingKey = true
+            case UInt8(ascii: "["): open.append((false, [])); expectingKey = false
+            case UInt8(ascii: "}"), UInt8(ascii: "]"): _ = open.popLast(); expectingKey = false
+            case UInt8(ascii: ","): expectingKey = open.last?.isObject == true
+            case UInt8(ascii: "\""):
+                let start = index
+                index += 1
+                while index < bytes.count, bytes[index] != UInt8(ascii: "\"") {
+                    index += bytes[index] == UInt8(ascii: "\\") ? 2 : 1
+                }
+                guard expectingKey, !open.isEmpty else { break }
+                expectingKey = false
+                guard index < bytes.count,
+                      let key = try? JSONSerialization.jsonObject(with: Data(bytes[start...index]), options: .fragmentsAllowed) as? String,
+                      open[open.count - 1].keys.insert(key).inserted else { return true }
+            default: break
+            }
+            index += 1
+        }
+        return false
+    }
 
     /// An installation's four helpers, each resolved to its real path and
     /// then hashed under the installed-file rules, and the worker that

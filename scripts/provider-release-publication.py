@@ -31,6 +31,9 @@ CLUSTER_RUNTIME_DIGESTS = ('native_runtime_sha256', 'metallib_sha256', 'resource
                            'placement_policy_sha256')
 CLUSTER_RUNTIME_MODEL_DIGESTS = ('artifact_sha256', 'capability_sha256', 'profile_sha256', 'resource_policy_sha256')
 CLUSTER_RUNTIME_MAXIMUM_BYTES = 64 * 1024
+# The coordinator derives approvals `release/<version>/<model>/s<1|2>` from the
+# block and refuses an ID over this bound at registration.
+CLUSTER_APPROVAL_ID_MAXIMUM_BYTES = 128
 
 
 def check_cluster_runtime(block):
@@ -72,12 +75,21 @@ def load_cluster_runtime(path):
     return block
 
 
+def check_cluster_approval_ids(block, version):
+    """Every approval ID the coordinator derives from the block fits its bound."""
+    if any(len(f"release/{version}/{model['model']}/s2".encode()) > CLUSTER_APPROVAL_ID_MAXIMUM_BYTES
+           for model in block['models']):
+        raise ValueError(f'Invalid cluster_runtime: a derived cluster approval ID exceeds '
+                         f'{CLUSTER_APPROVAL_ID_MAXIMUM_BYTES} bytes')
+
+
 def check_cluster_runtime_scope(payload, env):
     """A dev release carries the block; a prod or staging release never does."""
     if env['ENV_PREFIX'] == 'dev':
         if 'cluster_runtime' not in payload:
             raise ValueError('A dev release must carry cluster_runtime')
         check_cluster_runtime(payload['cluster_runtime'])
+        check_cluster_approval_ids(payload['cluster_runtime'], payload['version'])
     elif 'cluster_runtime' in payload:
         raise ValueError('Only a dev release carries cluster_runtime')
 

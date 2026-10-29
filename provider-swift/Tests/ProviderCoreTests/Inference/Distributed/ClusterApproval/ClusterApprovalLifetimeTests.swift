@@ -75,13 +75,13 @@ struct ClusterApprovalLifetimeTests {
         #expect(!ClusterApprovalLifetime.offers(member(m.approval()), scope: .localOnly(bind: "127.0.0.1"), now: now))
         let approval = m.approval()
         #expect(ClusterApprovalLifetime.offeredLine(member(approval))
-            == "Offered to the coordinator for pairing: approval \(approval.id), until \(approval.notAfter)")
+            == "Registered with the coordinator as a cluster member: approval \(approval.id), until \(approval.notAfter)")
     }
 
     @Test func theScreensSayOfferedInOneLineAndTheLogLineIsRead() {
         let ready = ClusterOnboardingReady(servedBy: ClusterOnboardingMacName.this, port: 0, deployment: "Serving fixture across both Macs",
-            offered: "Offered to the coordinator for pairing: approval a, until b")
-        #expect(ready.lines(model: "fixture") == ["Serving fixture across both Macs", "Offered to the coordinator for pairing: approval a, until b"])
+            offered: "Registered with the coordinator as a cluster member: approval a, until b")
+        #expect(ready.lines(model: "fixture") == ["Serving fixture across both Macs", "Registered with the coordinator as a cluster member: approval a, until b"])
         let local = ClusterOnboardingReady(servedBy: ClusterOnboardingMacName.this, port: 8000)
         #expect(local.lines(model: "fixture") == ["Serving fixture across both Macs", "API at http://localhost:8000 on this Mac"])
         let log = "Notice: Serving locally on this Mac's API; public serving needs a coordinator with cluster support\n"

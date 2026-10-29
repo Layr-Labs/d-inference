@@ -1360,7 +1360,7 @@ public final class ClusterService: @unchecked Sendable {
             }
             if offered {
                 memberRoute = true
-                // Offered to the coordinator for pairing: both Macs run the coordinator-formed pair's member; the
+                // Registered with the coordinator as a cluster member: both Macs run the coordinator-formed pair's member; the
                 // leader's rank hosts the link listener and the pair's slot, the other rank dials it.
                 arguments = settings.memberArguments
             } else if configuration.role == .leader {

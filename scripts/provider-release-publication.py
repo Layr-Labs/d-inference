@@ -23,77 +23,6 @@ class ReadinessPending(RuntimeError):
     pass
 
 
-# The dev lane's cluster runtime facts (darkbloom_cluster_runtime_v1), written by
-# `darkbloom cluster runtime-facts` (ClusterRuntimeApprovalFacts) on the final
-# signed app. This only checks the block; it computes no digest.
-CLUSTER_RUNTIME_SCHEMA = 'darkbloom_cluster_runtime_v1'
-CLUSTER_RUNTIME_DIGESTS = ('native_runtime_sha256', 'metallib_sha256', 'resource_library_sha256',
-                           'placement_policy_sha256')
-CLUSTER_RUNTIME_MODEL_DIGESTS = ('artifact_sha256', 'capability_sha256', 'profile_sha256', 'resource_policy_sha256')
-CLUSTER_RUNTIME_MAXIMUM_BYTES = 64 * 1024
-# The coordinator derives approvals `release/<version>/<model>/s<1|2>` from the
-# block and refuses an ID over this bound at registration.
-CLUSTER_APPROVAL_ID_MAXIMUM_BYTES = 128
-
-
-def check_cluster_runtime(block):
-    if not isinstance(block, dict) or set(block) != {'schema', 'models', *CLUSTER_RUNTIME_DIGESTS} \
-            or block['schema'] != CLUSTER_RUNTIME_SCHEMA:
-        raise ValueError('Invalid cluster_runtime: unknown or missing fields or another schema')
-    models = block['models']
-    if not isinstance(models, list) or not 1 <= len(models) <= 64:
-        raise ValueError('Invalid cluster_runtime: 1 to 64 models are required')
-    digests, names = [block[key] for key in CLUSTER_RUNTIME_DIGESTS], []
-    for model in models:
-        if not isinstance(model, dict) or set(model) != {'model', *CLUSTER_RUNTIME_MODEL_DIGESTS}:
-            raise ValueError('Invalid cluster_runtime: unknown or missing model fields')
-        if not isinstance(model['model'], str) or re.fullmatch(r'[\x20-\x7e]{1,128}', model['model']) is None:
-            raise ValueError('Invalid cluster_runtime: a model ID is not 1 to 128 printable ASCII bytes')
-        names.append(model['model'].encode())
-        digests += [model[key] for key in CLUSTER_RUNTIME_MODEL_DIGESTS]
-    if any(not isinstance(value, str) or re.fullmatch('[0-9a-f]{64}', value) is None or value == '0' * 64
-           for value in digests):
-        raise ValueError('Invalid cluster_runtime: a digest is not 64 lowercase hex characters or is zero')
-    if any(first >= second for first, second in zip(names, names[1:])):
-        raise ValueError('Invalid cluster_runtime: models must be sorted by model ID and unique')
-
-
-def load_cluster_runtime(path):
-    data = Path(path).read_bytes()
-    if len(data) > CLUSTER_RUNTIME_MAXIMUM_BYTES:
-        raise ValueError('Invalid cluster_runtime: the block exceeds its bound')
-
-    def unique(pairs):
-        if len({key for key, _ in pairs}) != len(pairs):
-            raise ValueError('Invalid cluster_runtime: a field is repeated')
-        return dict(pairs)
-    try:
-        block = json.loads(data, object_pairs_hook=unique)
-    except json.JSONDecodeError as error:
-        raise ValueError('Invalid cluster_runtime: not JSON') from error
-    check_cluster_runtime(block)
-    return block
-
-
-def check_cluster_approval_ids(block, version):
-    """Every approval ID the coordinator derives from the block fits its bound."""
-    if any(len(f"release/{version}/{model['model']}/s2".encode()) > CLUSTER_APPROVAL_ID_MAXIMUM_BYTES
-           for model in block['models']):
-        raise ValueError(f'Invalid cluster_runtime: a derived cluster approval ID exceeds '
-                         f'{CLUSTER_APPROVAL_ID_MAXIMUM_BYTES} bytes')
-
-
-def check_cluster_runtime_scope(payload, env):
-    """A dev release carries the block; a prod or staging release never does."""
-    if env['ENV_PREFIX'] == 'dev':
-        if 'cluster_runtime' not in payload:
-            raise ValueError('A dev release must carry cluster_runtime')
-        check_cluster_runtime(payload['cluster_runtime'])
-        check_cluster_approval_ids(payload['cluster_runtime'], payload['version'])
-    elif 'cluster_runtime' in payload:
-        raise ValueError('Only a dev release carries cluster_runtime')
-
-
 def object_key(payload):
     return f"releases/v{payload['version']}/artifacts/{payload['bundle_hash']}/{BUNDLE}"
 
@@ -121,7 +50,6 @@ def validate(payload, env):
             raise ValueError(f'Invalid signed digest: {key}')
     if payload['url'] != env['R2_PUBLIC_URL'].rstrip('/') + '/' + object_key(payload):
         raise ValueError('Publication origin or immutable object path changed')
-    check_cluster_runtime_scope(payload, env)
 
 
 def release_changelog(env):
@@ -140,9 +68,7 @@ def release_changelog(env):
     return f"Release v{env['VERSION']}"
 
 
-def prepare(root, bundle, env, cluster_runtime=None):
-    if (env['ENV_PREFIX'] == 'dev') != (cluster_runtime is not None):
-        raise ValueError('--cluster-runtime is required for a dev release and refused for any other')
+def prepare(root, bundle, env):
     root.mkdir(parents=True, exist_ok=False)
     payload = {
         'version': env['VERSION'], 'platform': 'macos-arm64', 'backend': 'mlx-swift',
@@ -154,8 +80,6 @@ def prepare(root, bundle, env, cluster_runtime=None):
         'changelog': release_changelog(env),
     }
     payload['url'] = env['R2_PUBLIC_URL'].rstrip('/') + '/' + object_key(payload)
-    if cluster_runtime is not None:
-        payload['cluster_runtime'] = load_cluster_runtime(cluster_runtime)
     validate(payload, env)
     if sha256(bundle) != payload['bundle_hash']:
         raise ValueError('Signed bundle changed after final verification')
@@ -289,8 +213,6 @@ def main():
     parser.add_argument('--artifact-id')
     parser.add_argument('--artifact-digest')
     parser.add_argument('--run-id')
-    parser.add_argument('--cluster-runtime', type=Path,
-                        help='prepare, dev only: the cluster runtime facts of the final signed app')
     args = parser.parse_args()
     if args.operation == 'download':
         download(os.environ['GITHUB_REPOSITORY'], args.artifact_id, args.artifact_digest,
@@ -298,7 +220,7 @@ def main():
     elif args.operation == 'prepare':
         if args.bundle is None:
             parser.error('prepare requires --bundle')
-        prepare(args.directory, args.bundle, os.environ, args.cluster_runtime)
+        prepare(args.directory, args.bundle, os.environ)
     else:
         globals()[args.operation](args.directory, os.environ)
 

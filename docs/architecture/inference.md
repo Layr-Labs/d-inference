@@ -5112,12 +5112,13 @@ The exact registered Qwen3.8 27B dense adapter/profile requires images, video an
 
 New saves and installed startup enforce the same mode rule. Old pipeline records remain strictly readable so ordinary onboarding can replan them; startup explains that replan is required. If the current measured link, supported shape or memory cannot admit tensor parallel, no reduced-feature setup is produced. After LOAD, the actual owner identity/profile, Qwen media READY contract and logprob execution profile must match before `DistributedEngineFactory.makeBridge` constructs the serving bridge. No artifact digest, shape or READY check is bypassed. This mode policy does not add grammar constraints or change JSON/schema post-validation; standalone model behavior remains the reference for those capabilities.
 
-## Cluster runtime facts of a build
+## Cluster runtime facts of an installed app
 
 A coordinator-formed cluster session is admitted when its committed native start
-matches the approval each member installed. A dev release supplies the digests
-of such an approval from its own final signed app, so that no person types them
-([block format](../reference/configuration.md#cluster-runtime-facts-of-a-dev-release)).
+matches the approval each member installed. The guided setup registers the
+digests of such an approval from the installed app and the chosen model, so
+that no person types them
+([fields](../reference/configuration.md#cluster-runtime-facts)).
 
 1. The file digests (worker, metallib, paged-attention source, placement tool)
    come from `DistributedInstalledFiles.digest`. `DistributedInstalledFiles.verify`,

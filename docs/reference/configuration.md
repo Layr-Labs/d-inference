@@ -914,18 +914,18 @@ policy, and their SHA-256 is the `policy_sha256` it registers
 different policy: members that installed the old one are no longer offered a
 pair.
 
-### Cluster runtime facts of a dev release
+### Cluster runtime facts
 
-A dev release carries `cluster_runtime` in its `POST /v1/releases` payload: the
-facts of its final signed app from which the dev coordinator derives cluster
-approvals. Only the dev release lane computes it, on the signing runner after
-signing, with no secret in the step
-([release lane](../operations/provider-release.md#dev-cluster-runtime-facts)).
-A prod or staging payload never carries it, so only the dev coordinator
-receives it. One type computes every value:
+The cluster runtime facts are the digests of one installed app's cluster
+helpers and, for each model, of the capability its own worker describes. The
+guided setup sends them to the coordinator to register the pair's cluster
+approval ([coordinator-paired member](#coordinator-paired-member)), and each
+member checks the registered approval against its own installed files with
+the same computation. One type computes every value:
 `provider-swift/Sources/ProviderCore/Config/ClusterRuntimeApprovalFacts.swift`
-(`ClusterRuntimeApprovalFacts`), run as the hidden command
-`darkbloom cluster runtime-facts`. No value is typed by hand.
+(`ClusterRuntimeApprovalFacts`). The hidden command
+`darkbloom cluster runtime-facts --app <app> --model <id>=<folder>` prints them
+in their canonical form. No value is typed by hand.
 
 | Field | Value |
 |---|---|
@@ -934,18 +934,16 @@ receives it. One type computes every value:
 | `metallib_sha256` | SHA-256 of `Contents/Helpers/mlx.metallib` |
 | `resource_library_sha256` | SHA-256 of `Contents/Helpers/pagedattention.metal` |
 | `placement_policy_sha256` | SHA-256 of the signed `Contents/Helpers/darkbloom-cluster-plan` |
-| `models` | 1 to 64 entries, sorted by `model` in byte order, unique |
+| `models` | 1 to 32 entries, sorted by `model` in byte order, unique |
 | `models[].model` | the catalog model ID the manifest names (`model_id`); 1 to 128 printable ASCII bytes |
 | `models[].artifact_sha256` | the capability's `artifactSHA256`, the catalog aggregate |
 | `models[].capability_sha256` | SHA-256 of the exact output of `darkbloom-cluster-worker --describe-runtime` |
 | `models[].profile_sha256` | the capability's `profileFingerprint` |
 | `models[].resource_policy_sha256` | `DistributedInstalledNativeStart.resourcePolicySHA256` of the capability, the value a native start carries |
 
-Every digest is 64 lowercase hex and nonzero. Unknown and missing fields are
-refused. The canonical form is JSON with sorted keys and no whitespace.
-`scripts/provider-release-publication.py` checks the block but computes no
-digest. Why each digest is the one a member compares:
-[cluster runtime facts of a build](../architecture/inference.md#cluster-runtime-facts-of-a-build).
+Every digest is 64 lowercase hex and nonzero. The canonical form is JSON with
+sorted keys and no whitespace. Why each digest is the one a member compares:
+[cluster runtime facts of an installed app](../architecture/inference.md#cluster-runtime-facts-of-an-installed-app).
 
 ### Sharded placement and the hand-off opt-in
 

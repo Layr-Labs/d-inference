@@ -27,6 +27,7 @@ import Darwin
         modelPresentationPreservesEveryFamilyAndBlocker()
         pairingStateMachine()
         leaderFromScratch()
+        leaderWaitsForThePartsAfterTheRegistration()
         forcedModeNoticeOnTheSetupScreen()
         memberFromScratch()
         bothWaitingAtOnce()
@@ -362,6 +363,7 @@ import Darwin
                            testResult: Result<[String], ClusterOnboardingFailure> = .success(["\"Red, Blue, Green\" (6 tokens, first token 0.61 s)"]),
                            machines: [ClusterOnboardingMachine] = leaderHardware,
                            answeredSeconds: String = "0.4",
+                           registerResult: Result<[String], ClusterOnboardingFailure> = .success([]),
                            readyResult: Result<ClusterOnboardingReady, ClusterOnboardingFailure> = .success(.init(servedBy: "the other Mac (Apple M3 Ultra, 256 GB)", port: 8000,
                                deployment: "Serving Qwen3.5-9B across both Macs: pipeline, the other Mac 16 layers / this Mac 16 layers"))) -> ClusterOnboardingOperations {
         let answered = DispatchSemaphore(value: 0)
@@ -444,7 +446,8 @@ import Darwin
             setScope: { scope in
                 recorder.note(scope.bind.map { "setScope local \($0)" } ?? "setScope public")
                 return .success([scope.isLocalOnly ? "Saved: this cluster serves locally only." : "Saved: this cluster serves through Darkbloom."])
-            })
+            },
+            register: { recorder.note("register"); return registerResult })
     }
 
     static func privateMiMoSelectionRefusesBeforeAnyActionOnMemberOrUnpairedMac() {
@@ -632,9 +635,38 @@ import Darwin
         expect(!text.contains("\u{1B}"), "NO_COLOR transcript has no terminal escapes")
         expect(run.keys == 2, "leader: two keys (y, enter), got \(run.keys)")
         expect(recorder.all == ["checkLink", "pair", "answer y", "ensureService", "reachMembers", "planModels", "recheckFit 0", "adopt 0", "serve",
-            "waitReady", "testRequest"], "leader: operations in order: \(recorder.all)")
+            "waitReady", "testRequest", "register"], "leader: operations in order: \(recorder.all)")
         expect(!text.lowercased().contains("ssh") && !text.contains("10.219"), "leader: no SSH and no address on screen")
         transcript("leader-from-scratch", text, keys: run.keys)
+    }
+
+    /// After the Test stage: a coordinator that serves no approval stops nothing and the setup ends at once; a
+    /// registration that stopped the parts, whether it was refused or registered, waits until they serve again
+    /// before the screen says Done.
+    static func leaderWaitsForThePartsAfterTheRegistration() {
+        let cases: [(String, Result<[String], ClusterOnboardingFailure>, String)] = [
+            ("refused", .failure(.init("Not offered for pairing: the other Mac refused the cluster approval: the approval's metallib_sha256 differ from this Mac's installation.")),
+             "Starting both Macs' parts again…"),
+            ("registered", .success([ClusterOnboardingReady.registeredNotice + ": approval devnet/0.10.4-dev.1/Qwen3.5-9B/s1, until 2026-11-12T00:00:00Z."]),
+             "Starting both Macs' parts again as cluster members…"),
+        ]
+        for (label, result, restart) in cases {
+            let recorder = Recorder()
+            let run = TerminalRun(operations(recorder, pairEvents: [.searching, .waitingAsLeader, .connected,
+                .code("123456", peer: ["Apple M3 Ultra, 256 GB"]), .peerDecided(true)],
+                pairResult: .paired(role: .leader, peerName: "Apple M3 Ultra, 256 GB"), registerResult: result))
+            expect(run.waitFor("Does the other Mac show 123 456? Press y if it does, n if it does not."), "\(label): the code question")
+            run.type("y")
+            expect(run.waitFor("Choose a model [1-2, enter = 1]: "), "\(label): the model choice")
+            run.type("\r")
+            _ = run.finish()
+            let text = run.text
+            expect(text.contains(restart), "\(label): the restart line: \(text)")
+            expect(Array(recorder.all.suffix(3)) == ["testRequest", "register", "waitReady"],
+                   "\(label): the parts are awaited after the registration: \(recorder.all)")
+            let done = text.range(of: "Done.")?.lowerBound, restarted = text.range(of: restart)?.lowerBound
+            expect(done != nil && restarted != nil && restarted! < done!, "\(label): Done comes after the parts serve again")
+        }
     }
 
     /// DEVELOPER ONLY (`DARKBLOOM_CLUSTER_FORCE_MODE` in a debug build): a forced mode is said loudly, in one line, on

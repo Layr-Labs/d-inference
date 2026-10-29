@@ -4,10 +4,11 @@ import DarkbloomClusterProtocol
 
 /// The cluster runtime facts of one installed app (`darkbloom_cluster_runtime_v1`):
 /// the digests of the cluster helpers it ships and, for each model, the
-/// digests of the capability its own worker describes. The guided setup sends
-/// them to the coordinator to register the pair's cluster approval
-/// (`ClusterApprovalClient.register`), and each member checks the registered
-/// approval against its own installed files with the same computation. Every digest is computed by the code the
+/// digests of the capability its own worker describes. The coordinator operator
+/// copies them into a cluster approval (`darkbloom cluster runtime-facts`); the
+/// guided setup takes the served approval whose digests equal this Mac's facts
+/// (`ClusterApprovalLifetime.select`), and each member checks it against its own
+/// installed files with the same computation. Every digest is computed by the code the
 /// member's checks use (`DistributedInstalledFiles.digest`, the worker's
 /// `--describe-runtime`, `DistributedInstalledNativeStart.resourcePolicySHA256`).
 /// The facts approve nothing by themselves.
@@ -17,8 +18,6 @@ public struct ClusterRuntimeApprovalFacts: Equatable, Sendable {
     /// coordinator's cluster catalog bound for one file.
     public static let maximumModels = 32
     public static let maximumModelBytes = 128
-    /// The canonical form is far smaller; anything larger is refused unread.
-    public static let maximumEncodedBytes = 64 * 1024
 
     /// One model: what a member's saved setup pins for it.
     public struct Model: Codable, Equatable, Sendable {

@@ -496,6 +496,9 @@ public struct ClusterOnboardingReady: Codable, Sendable, Equatable {
         return servesHere ? notice : notice.replacingOccurrences(of: "this Mac's API", with: "that Mac's API")
     }
 
+    /// How the line of a pair registered with the coordinator as a cluster member starts (`ClusterLocalServing`).
+    public static let registeredNotice = "Registered with the coordinator as a cluster member"
+
     /// Said instead of the test request when the pair is offered for pairing (and the answer of `t` then).
     public static let offeredTestLine = "This pair has no local API while it is offered for pairing: requests from your own account reach it through Darkbloom."
 
@@ -1191,17 +1194,19 @@ public enum ClusterOnboardingDriver {
     }
 
     /// After the Test stage: registers the pair with the coordinator when it serves a cluster approval for this pair,
-    /// then waits until both Macs say so. Nothing is said when the coordinator serves none.
+    /// then waits until both Macs serve again. Nothing is said, and nothing stopped, when the coordinator serves none.
+    /// A registration that stopped the parts and was then refused also waits: both parts start again as before.
     static func register(title: String, _ operations: ClusterOnboardingOperations, _ console: ClusterOnboardingConsole) {
+        let lines: [String]
         switch operations.register() {
-        case .success(let lines):
-            for line in lines { console.say("  " + line) }
-            guard lines.first?.hasPrefix(ClusterLocalServing.offeredNotice) == true else { return }
-            console.say("Starting both Macs' parts again as cluster members…")
-            _ = awaitReady(title: title, operations, console)
-        case .failure(let failure):
-            for line in failure.lines { console.say("  " + line) }
+        case .success(let said): lines = said
+        case .failure(let failure): lines = failure.lines
         }
+        guard !lines.isEmpty else { return }
+        for line in lines { console.say("  " + line) }
+        console.say(lines.first?.hasPrefix(ClusterOnboardingReady.registeredNotice) == true
+            ? "Starting both Macs' parts again as cluster members…" : "Starting both Macs' parts again…")
+        _ = awaitReady(title: title, operations, console)
     }
 
     /// Waits for the started cluster with its progress, then says where it serves; nil (with the last errors and the

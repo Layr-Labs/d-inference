@@ -918,10 +918,12 @@ pair.
 
 The cluster runtime facts are the digests of one installed app's cluster
 helpers and, for each model, of the capability its own worker describes. The
-guided setup sends them to the coordinator to register the pair's cluster
-approval ([coordinator-paired member](#coordinator-paired-member)), and each
-member checks the registered approval against its own installed files with
-the same computation. One type computes every value:
+coordinator operator copies them into a cluster approval in the operator
+approval file. After the Test stage, the guided setup reads the approvals the
+coordinator serves (`GET /v1/cluster/approvals`) and takes the one whose
+digests equal this Mac's facts
+([coordinator-paired member](#coordinator-paired-member)), and each member
+checks it against its own installed files with the same computation. One type computes every value:
 `provider-swift/Sources/ProviderCore/Config/ClusterRuntimeApprovalFacts.swift`
 (`ClusterRuntimeApprovalFacts`). The hidden command
 `darkbloom cluster runtime-facts --app <app> --model <id>=<folder>` prints them

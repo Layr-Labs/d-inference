@@ -434,8 +434,14 @@ class ReleasePipelineTests(unittest.TestCase):
         self.assertNotIn('secrets.', step)
         self.assertNotIn('env:', step)
         first_run = step.index('runtime_facts --list-release-models')
-        for removal in ('unset r2_public_url coordinator_url', 'security delete-keychain "$KEYCHAIN_PATH"'):
+        for removal in ('unset r2_public_url coordinator_url', 'security delete-keychain "$KEYCHAIN_PATH"\n',
+                        'test ! -e "$KEYCHAIN_PATH"', 'IDENTITIES=$(security find-identity -v -p codesigning)',
+                        'if grep -F -q -- "$DEVELOPER_ID" <<< "$IDENTITIES"; then'):
             self.assertLess(step.index(removal), first_run)
+        # A keychain that cannot be deleted, or an identity still listed, fails the step.
+        self.assertNotIn('|| true', step)
+        self.assertNotIn('2>/dev/null', step)
+        self.assertLess(step.index('security delete-keychain'), step.index('IDENTITIES='))
         self.assertIn('env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin', step)
         # The final archived bytes, extracted afresh after their hash is checked.
         self.assertLess(step.index('= "$BUNDLE_HASH"'), step.index('tar -xzf /tmp/darkbloom-bundle-macos-arm64.tar.gz'))

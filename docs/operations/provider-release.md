@@ -685,8 +685,9 @@ The step `Compute dev cluster runtime facts from the final signed app` of job
    `prepare`.
 2. It reads no secret. It removes the two secret-derived values in the job's
    `GITHUB_ENV` (`r2_public_url`, `coordinator_url`) and deletes the signing
-   keychain before any release code runs. The release CLI runs with an empty
-   environment (`env -i`).
+   keychain before any release code runs. The step fails unless the keychain
+   file is gone and `security find-identity -v -p codesigning` no longer lists
+   `$DEVELOPER_ID`. The release CLI runs with an empty environment (`env -i`).
 3. It checks the archive against `BUNDLE_HASH` and extracts it into a new folder.
 4. The final CLI prints the build's model list:
    `darkbloom-dev cluster runtime-facts --list-release-models`. The list holds

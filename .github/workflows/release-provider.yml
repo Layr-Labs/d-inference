@@ -920,14 +920,24 @@ jobs:
       # signed app's own CLI and worker after every signing, notarization and
       # final-bytes check above. No secret is in this step: it reads no
       # secrets.*, removes the two secret-derived values the job's
-      # GITHUB_ENV holds and the signing keychain before any release code
-      # runs, and runs that code with an empty environment.
+      # GITHUB_ENV holds and the signing keychain (and proves the identity
+      # is gone) before any release code runs, and runs that code with an
+      # empty environment.
       - name: Compute dev cluster runtime facts from the final signed app
         if: needs.resolve-env.outputs.environment == 'dev'
         run: |
           set -euo pipefail
           unset r2_public_url coordinator_url
-          security delete-keychain "$KEYCHAIN_PATH" 2>/dev/null || true
+          # The signing keychain must be gone, and no keychain may still list
+          # the signing identity, before any release code runs.
+          security delete-keychain "$KEYCHAIN_PATH"
+          test ! -e "$KEYCHAIN_PATH"
+          test -n "$DEVELOPER_ID"
+          IDENTITIES=$(security find-identity -v -p codesigning)
+          if grep -F -q -- "$DEVELOPER_ID" <<< "$IDENTITIES"; then
+            echo "::error::The signing identity is still readable after the signing keychain was deleted"
+            exit 1
+          fi
           test "$(shasum -a 256 /tmp/darkbloom-bundle-macos-arm64.tar.gz | cut -d' ' -f1)" = "$BUNDLE_HASH"
           FACTS_ROOT="$RUNNER_TEMP/cluster-runtime"
           rm -rf "$FACTS_ROOT"

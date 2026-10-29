@@ -217,13 +217,15 @@ public enum ClusterApprovalSync {
         }
     }
 
-    /// The step from a thread of the onboarding or the cluster service: fetches this release's approvals from the
-    /// provider configuration's coordinator first.
+    /// The step from a thread of the onboarding or the cluster service: first fetches the approvals of the installed
+    /// app's release from the provider configuration's coordinator (`ClusterApprovalFetch.fetch(for:)`).
     static func runLive(paths: ClusterUserPaths, providerConfiguration: URL, pairingStore: ClusterPairingStore, scratch: URL,
                         sendToPeer: (ClusterServiceCommand) throws -> Void) -> Result {
-        guard let coordinator = try? ConfigManager.loadOrDefaults(from: providerConfiguration).coordinator.url else { return .unchanged }
-        return run(fetched: ClusterApprovalFetch.fetchBlocking(coordinatorURL: coordinator), paths: paths,
-                   providerConfiguration: providerConfiguration, pairingStore: pairingStore, scratch: scratch,
-                   now: Date().timeIntervalSince1970, sendToPeer: sendToPeer)
+        guard let saved = try? ClusterApprovalAttachment.savedSetup(paths: paths, providerConfiguration: providerConfiguration),
+              let fetched = ClusterApprovalFetch.fetchBlocking(for: saved.configuration, providerConfiguration: providerConfiguration) else {
+            return .unchanged
+        }
+        return run(fetched: fetched, paths: paths, providerConfiguration: providerConfiguration, pairingStore: pairingStore,
+                   scratch: scratch, now: Date().timeIntervalSince1970, sendToPeer: sendToPeer)
     }
 }

@@ -118,7 +118,7 @@ as described above.
 
 1. Run `darkbloom cluster` and choose a model, as in [the steps](#the-steps-once).
    After the Start stage saves the setup, the leader asks the coordinator for
-   the approval of this Darkbloom version (`GET /v1/cluster/approvals`). Each
+   the approval of the installed Darkbloom version (`GET /v1/cluster/approvals`). Each
    Mac checks the approval against its own installed app and model, and both
    Macs save it, or neither does.
 2. Read the ready screen. Instead of the API line it says:

@@ -68,9 +68,42 @@ public enum ClusterApprovalFetch {
         }
     }
 
+    /// What the provider configuration's coordinator offers for the Darkbloom app installed beside `configuration`'s
+    /// worker (`installedVersion`); nil when the provider configuration names no coordinator.
+    static func fetch(for configuration: ClusterConfiguration, providerConfiguration: URL) async -> Outcome? {
+        guard let coordinator = try? ConfigManager.loadOrDefaults(from: providerConfiguration).coordinator.url else { return nil }
+        return await fetch(coordinatorURL: coordinator, version: installedVersion(configuration))
+    }
+
     /// The same, from a thread outside the cooperative pool (the cluster service's and the onboarding's threads).
-    static func fetchBlocking(coordinatorURL: String, version: String = ProviderCore.version) -> Outcome {
-        blockingWizard { await fetch(coordinatorURL: coordinatorURL, version: version) }
+    static func fetchBlocking(for configuration: ClusterConfiguration, providerConfiguration: URL) -> Outcome? {
+        blockingWizard { await fetch(for: configuration, providerConfiguration: providerConfiguration) }
+    }
+
+    /// Largest `Info.plist` read for `installedVersion`.
+    static let maximumInfoBytes = 64 * 1024
+
+    /// The version of the Darkbloom app whose helpers `configuration` names: `CFBundleShortVersionString` of the
+    /// `Contents/Info.plist` above the worker's `Contents/Helpers`. That is the app whose files each Mac checks the
+    /// approval against (`ClusterApprovalAttachment.installation`) and whose worker the update re-adoption detects
+    /// (`ClusterService.checkForUpdate`). After an update, a cluster service that has not restarted still runs the
+    /// earlier build, so this process's own version would ask for the earlier release's approval. This process's
+    /// version only when the worker is not inside an app, or the app names no valid version. The file is read
+    /// directly, not through `Bundle`, which keeps a bundle's first `Info.plist` for the life of the process.
+    static func installedVersion(_ configuration: ClusterConfiguration) -> String {
+        let helpers = ClusterApprovalAttachment.installation(configuration).worker.deletingLastPathComponent()
+        let contents = helpers.deletingLastPathComponent()
+        guard helpers.lastPathComponent == "Helpers", contents.lastPathComponent == "Contents",
+              let handle = try? FileHandle(forReadingFrom: contents.appendingPathComponent("Info.plist")) else {
+            return ProviderCore.version
+        }
+        defer { try? handle.close() }
+        guard let data = try? handle.read(upToCount: maximumInfoBytes + 1), data.count <= maximumInfoBytes,
+              let info = (try? PropertyListSerialization.propertyList(from: data, options: [], format: nil)) as? [String: Any],
+              let version = info["CFBundleShortVersionString"] as? String, SemanticVersion(version) != nil else {
+            return ProviderCore.version
+        }
+        return version
     }
 
     /// `{"schema":"darkbloom_cluster_catalog_v2","cluster_approvals":[…]}`, read as strictly as a saved setup reads

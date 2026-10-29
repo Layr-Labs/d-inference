@@ -1025,15 +1025,19 @@ public final class ClusterService: @unchecked Sendable {
             let record = try? self.store.readRecord()
             let scope = record?.leadership?.scope ?? .publicServing
             let parked = record?.parkedApproval
-            guard let saved = try? ClusterApprovalAttachment.savedSetup(paths: paths, providerConfiguration: configuration),
-                  let coordinator = try? ConfigManager.loadOrDefaults(from: configuration).coordinator.url else { return checked() }
+            guard let saved = try? ClusterApprovalAttachment.savedSetup(paths: paths, providerConfiguration: configuration) else {
+                return checked()
+            }
             // After the first check, the coordinator is asked again only for a serving pair it is offered to, or one that
             // serves locally because it did not answer: no other pair asks more than once per run.
             let offered = saved.configuration.nativeMember.map {
                 ClusterApprovalLifetime.offers($0, scope: scope, now: Date().timeIntervalSince1970)
             } ?? false
             guard first || (record?.leadership?.serving == true && (offered || parked != nil)) else { return checked() }
-            let fetched = ClusterApprovalFetch.fetchBlocking(coordinatorURL: coordinator)
+            // The installed app's release, also when this service still runs the build an update replaced.
+            guard let fetched = ClusterApprovalFetch.fetchBlocking(for: saved.configuration, providerConfiguration: configuration) else {
+                return checked()
+            }
             let now = Date().timeIntervalSince1970
             if let parked, !ClusterApprovalLifetime.current(parked, now: now) {
                 let line = "The cluster approval \(parked.id) ended while the coordinator did not answer; the pair serves on the leader's local API"

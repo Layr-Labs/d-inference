@@ -65,6 +65,31 @@ struct ClusterApprovalSyncTests {
         await mock.shutdown()
     }
 
+    @Test func afterAnUpdateTheFetchAsksForTheInstalledVersionAndItsApprovalIsSaved() async throws {
+        let mock = MockCoordinator()
+        let url = try await mock.start().mockProviderWebSocketURL()
+        let macs = try ClusterApprovalMacs(coordinatorURL: url)
+        let configuration = try macs.saved(macs.leader).configuration
+        // A worker outside an app, or an app that names no valid version: this process's own version.
+        #expect(ClusterApprovalFetch.installedVersion(configuration) == ProviderCore.version)
+        try macs.installApp(version: "not a version", on: macs.leader)
+        #expect(ClusterApprovalFetch.installedVersion(configuration) == ProviderCore.version)
+        // The app on disk was updated; this process (a cluster service that has not restarted) is the earlier build.
+        let installed = "99.0.0"
+        #expect(installed != ProviderCore.version)
+        try macs.installApp(version: installed, on: macs.leader)
+        let approval = macs.approval(id: "release/\(installed)/\(ClusterApprovalMacs.model)/s1")
+        // The coordinator answers only the installed release; the earlier one would get 404 and nothing would save.
+        mock.setClusterApprovals(body: try ClusterApprovalMacs.body([approval]), version: installed)
+        let fetched = try #require(await ClusterApprovalFetch.fetch(for: configuration, providerConfiguration: macs.leader.provider))
+        #expect(mock.snapshot().clusterApprovalQueries == ["version=\(installed)&platform=macos-arm64"])
+        #expect(fetched == .approvals([approval]))
+        let facts = try macs.facts()
+        #expect(macs.sync(fetched, leaderFacts: facts, followerFacts: facts).changed)
+        for mac in macs.macs { #expect(try attachment(macs, mac)?.clusterApproval == approval, "rank \(mac.rank)") }
+        await mock.shutdown()
+    }
+
     @Test func anEntryWithAnyDigestThatIsNotThisMacsIsSavedOnNeitherMac() throws {
         let macs = try ClusterApprovalMacs(coordinatorURL: "ws://127.0.0.1:9/ws/provider")
         let before = try macs.macs.map(macs.bytes), approval = macs.approval(), facts = try macs.facts()

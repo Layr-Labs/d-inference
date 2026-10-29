@@ -50,6 +50,13 @@ public struct ClusterConfiguration: Codable, Sendable, Equatable {
     /// Present only on a Mac set up to be paired by the coordinator. Omission
     /// preserves an existing setup and its saved bytes; null is rejected.
     public private(set) var nativeMember: ClusterNativeMemberAttachment?
+    /// The same setup with `attachment` saved for coordinator pairing, or without any (nil). Every other field and
+    /// so the plan, the model and the pins stay as they are (`ClusterApprovalAttachment`).
+    func replacingNativeMember(_ attachment: ClusterNativeMemberAttachment?) -> ClusterConfiguration {
+        var copy = self
+        copy.nativeMember = attachment
+        return copy
+    }
     /// Present only on a setup whose follower is reached over the link control
     /// channel (PROD-PLAN S08). Omission preserves an existing setup's bytes.
     public private(set) var linkControl: ClusterLinkControlAttachment?

@@ -64,6 +64,13 @@ public struct ClusterServiceStatus: Codable, Sendable, Equatable {
     /// its own API, relay or solo server holds count as free), so rank 0 takes a port free on both Macs. Nil from an
     /// older build.
     public var freePorts: [Int]? = nil
+    /// This Mac's coordinator-paired parts that ended in a row right after starting (`ClusterApprovalCheck`); the
+    /// control leader makes the pair serve locally when either Mac's count reaches the solo server's limit. Nil from an
+    /// older build.
+    public var memberQuickEnds: Int? = nil
+    /// The ID of the cluster approval this Mac's saved setup carries (none: absent). The control leader compares it
+    /// with its own on each check and gives this Mac its own, or none, when they differ (`ClusterApprovalCheck`).
+    public var approvalID: String? = nil
     public struct Control: Codable, Sendable, Equatable {
         public var leaderID: String
         public var leaderName: String
@@ -90,10 +97,13 @@ public struct ClusterServiceCommand: Codable, Sendable, Equatable {
     /// digest `text`) over the cable. `lease`: the control leader's renewal or
     /// hand-over (control listener only). `control`: a `darkbloom cluster`
     /// command forwarded from any member to the control leader. `teardown`:
-    /// this Mac's verify-teardown summary. A member whose build predates an
-    /// operation refuses the command (it cannot decode it).
+    /// this Mac's verify-teardown summary. `approval`: the cluster approval the
+    /// leader fetched for the saved setup (`approval`, nil: save the setup
+    /// without one), which the member checks against its own files before it
+    /// saves it. A member whose build predates an operation refuses the command
+    /// (it cannot decode it).
     public enum Operation: String, Codable, Sendable {
-        case serve, stop, status, prompt, cacheSettings, unpair, sendModel, lease, control, teardown, batchSetup
+        case serve, stop, status, prompt, cacheSettings, unpair, sendModel, lease, control, teardown, batchSetup, approval
     }
     public var op: Operation
     public var model: String?
@@ -124,6 +134,10 @@ public struct ClusterServiceCommand: Codable, Sendable, Equatable {
     /// A drained same-model replacement from the currently saved rank-0
     /// member. Validated independently of control-leadership preference.
     public var batchSetup: ClusterAutomaticBatchSetup? = nil
+    /// `approval`: the entry to save, and the link the member registers to the sender (its pin names the sender).
+    /// Claims only: the member derives every pin it saves from its own files and pairing.
+    public var approval: ClusterRuntimeApproval? = nil
+    public var approvalEdge: ClusterEdge? = nil
     public init(op: Operation, model: String? = nil, text: String? = nil, cache: ClusterCacheSettingsSync? = nil,
                 clusterID: String? = nil, claim: ClusterControlClaim? = nil, running: Bool? = nil,
                 facts: [ClusterControlMember]? = nil, alonePlan: String? = nil, control: ClusterControlRequest? = nil,

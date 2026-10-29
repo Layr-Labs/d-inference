@@ -9,8 +9,10 @@ extension Start {
         try await makeClusterMemberLoopAndPreparation(reference: reference, stopOnDisconnect: stopOnDisconnect).loop
     }
 
+    /// `offered`: the saved setup carries an approval this Mac installed, so its member registers a membership and
+    /// the coordinator may form a pair with it.
     func makeClusterMemberLoopAndPreparation(reference: ClusterConfigurationReference, stopOnDisconnect: Bool = false)
-        async throws -> (loop: ProviderLoop, prepared: ClusterMemberPreparation) {
+        async throws -> (loop: ProviderLoop, prepared: ClusterMemberPreparation, offered: Bool) {
         // The model's pair-serving grant for the rank this Mac runs, with this
         // Mac's own chip class (any Apple silicon; owner 2026-10-14), is decided inside the
         // preparation, before the weights are read. The single-Mac
@@ -66,7 +68,7 @@ extension Start {
                 throw ClusterConfigurationError.invalid("This Mac cannot register the saved pair approval: it needs its attestation signing key and the approved chip and model")
             }
         }
-        return (loop, prepared)
+        return (loop, prepared, installation != nil)
     }
 
     func runClusterMember() async throws {
@@ -87,7 +89,7 @@ extension Start {
         // bootstrap directories), reported in this member's log.
         Self.sweepOrphans(phase: "start", waitForContract: true)
         defer { Self.sweepOrphans(phase: "end", waitForContract: true) }
-        let (loop, prepared) = try await makeClusterMemberLoopAndPreparation(reference: factory.reference)
+        let (loop, prepared, offered) = try await makeClusterMemberLoopAndPreparation(reference: factory.reference)
         heartbeat.attach(loop: loop)
         // A setup saved for coordinator pairing over the link serves the
         // pair's committed starts (S10): the leader hosts the link listener
@@ -111,6 +113,8 @@ extension Start {
             let wait: Duration = heartbeat.isSupervised ? .seconds(365 * 86_400) : .seconds(30)
             try await loop.waitForClusterMemberRegistration(until: .now.advanced(by: wait))
             print("darkbloom \(ProviderCore.version) (registered cluster member; solo inference disabled)")
+            // The cluster service reads its part's latest notice line (unbuffered stderr): this part is offered.
+            if offered { printError(ClusterLocalServing.offeredLogLine) }
             try await withTaskCancellationHandler { try await task.value }
                 onCancel: { task.cancel() }
         } catch {

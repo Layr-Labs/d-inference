@@ -224,7 +224,16 @@ and `libs/darkbloom-cluster/Sources/DarkbloomClusterPlacement/ClusterPlacementBa
 
 `ClusterOnboardingDriver` presents connection, pairing, model choice, startup
 and a test response as five stages. Completion requires the test response to
-succeed; a failed response retains the saved setup for a later retry.
+succeed; a failed response retains the saved setup for a later retry. After
+the test response succeeds, the control leader registers the pair with the
+coordinator when the coordinator serves a cluster approval for this pair
+(`ClusterOnboardingDriver.register`, control operation `register`). Both parts
+then run as coordinator-paired members
+(`ClusterService.Settings.memberArguments`), which have no local API, and the
+ready screen shows the registered line (`ClusterOnboardingReady.offered`,
+`OnboardingLive.offeredReadiness`). How the approval is fetched, matched,
+checked on each Mac and saved:
+[coordinator-paired member](../reference/configuration.md#coordinator-paired-member).
 `OnboardingLive` uses fresh peer display facts only while their authenticated
 member identity matches the current pairing. These labels do not rewrite saved
 serving intent or change model eligibility and placement. See the
@@ -5145,6 +5154,33 @@ Sources: `provider-swift/Sources/ProviderCore/Inference/Distributed/Requests/Dis
 The exact registered Qwen3.8 27B dense adapter/profile requires images, video and committed-token logprobs on its installed cluster route. `provider-swift/Sources/ProviderCore/Inference/Distributed/Placement/ClusterModelFeaturePolicy.swift` restricts that row to the advertised tensor-parallel mode before the ordinary placement cost ranking. Initial onboarding and automatic batch replacement share this intersection in `ClusterPlacementFlow.swift`; an incumbent pipeline cannot override it. Other registrations, GLM, measured rates, qualification shape exclusions and native memory gates keep their existing behavior. This policy is a restriction on existing metadata, not a new model catalog or capability grant. It does not prove tensor parallel is faster.
 
 New saves and installed startup enforce the same mode rule. Old pipeline records remain strictly readable so ordinary onboarding can replan them; startup explains that replan is required. If the current measured link, supported shape or memory cannot admit tensor parallel, no reduced-feature setup is produced. After LOAD, the actual owner identity/profile, Qwen media READY contract and logprob execution profile must match before `DistributedEngineFactory.makeBridge` constructs the serving bridge. No artifact digest, shape or READY check is bypassed. This mode policy does not add grammar constraints or change JSON/schema post-validation; standalone model behavior remains the reference for those capabilities.
+
+## Cluster runtime facts of an installed app
+
+A coordinator-formed cluster session is admitted when its committed native start
+matches the approval each member installed. The guided setup registers the
+digests of such an approval from the installed app and the chosen model, so
+that no person types them
+([fields](../reference/configuration.md#cluster-runtime-facts)).
+
+1. The file digests (worker, metallib, paged-attention source, placement tool)
+   come from `DistributedInstalledFiles.digest`. `DistributedInstalledFiles.verify`,
+   which a member's `NativePairMemberInstallation.verifyInstalledFiles` calls,
+   hashes with the same function and compares the result.
+2. The capability digest is the SHA-256 of the exact `--describe-runtime` output
+   of the build's own worker, pinned to the worker hash just computed. A member's
+   setup saves the same digest (`DistributedCapabilityProbe.verify` compares it).
+3. The resource policy comes from
+   `DistributedInstalledNativeStart.resourcePolicySHA256`, the one formula. The
+   native start of an owner-formed session calls it for its
+   `resourcePolicySHA256`. A coordinator-formed start carries the approval's
+   value, which the member and its owner compare with the installed approval
+   (`NativePairMemberPolicy.require`).
+
+Code map: `provider-swift/Sources/ProviderCore/Config/ClusterRuntimeApprovalFacts.swift`
+(`ClusterRuntimeApprovalFacts`),
+`provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledFiles.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledNativeStart.swift`.
 
 ## Cluster pair capability honesty
 

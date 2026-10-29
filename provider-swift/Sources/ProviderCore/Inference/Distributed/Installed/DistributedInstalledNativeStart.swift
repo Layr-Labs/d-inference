@@ -15,11 +15,22 @@ import DarkbloomClusterSecurity
 enum DistributedInstalledNativeStart {
     static let maximumRecordPlaintextBytes = 1 << 20
 
+    /// The SHA-256 of fields joined by the unit separator, the form of every
+    /// installed-start digest below.
+    private static func digest(_ fields: [String]) -> Data {
+        Data(SHA256.hash(data: Data(fields.joined(separator: "\u{1F}").utf8)))
+    }
+
+    /// The resource policy a native start carries for a capability. The one
+    /// formula: the native start below and the release's cluster runtime
+    /// facts (`ClusterRuntimeApprovalFacts`) both call it.
+    static func resourcePolicySHA256(_ capability: ClusterRuntimeCapability) -> Data {
+        digest(["darkbloom/installed-resource-policy/v1", capability.arithmeticPolicyID,
+            capability.arithmeticPolicySHA256, capability.stateSemantics, capability.schedulingPolicy])
+    }
+
     static func common(plan: DistributedInstalledPlan, epoch: UUID) throws -> ClusterNativeAuthorizationCommon {
         let configuration = plan.configuration, capability = plan.capability
-        func digest(_ fields: [String]) -> Data {
-            Data(SHA256.hash(data: Data(fields.joined(separator: "\u{1F}").utf8)))
-        }
         func bytes(_ hex: String) throws -> Data {
             guard hex.utf8.count == 64 else { throw ClusterConfigurationError.invalid("Native start digest differs") }
             var result = Data(capacity: 32), index = hex.startIndex
@@ -42,8 +53,7 @@ enum DistributedInstalledNativeStart {
             planSHA256: try bytes(plan.partition.planSHA256), artifactSHA256: try bytes(capability.artifactSHA256),
             nativeRuntimeSHA256: try bytes(capability.runtimeBinarySHA256),
             capabilitySHA256: try bytes(configuration.capabilitySHA256),
-            resourcePolicySHA256: digest(["darkbloom/installed-resource-policy/v1", capability.arithmeticPolicyID,
-                capability.arithmeticPolicySHA256, capability.stateSemantics, capability.schedulingPolicy]),
+            resourcePolicySHA256: resourcePolicySHA256(capability),
             profileSHA256: digest(["darkbloom/installed-profile/v1", profile.id, String(profile.vocabularySize),
                 String(profile.maximumPromptTokens), String(profile.maximumOutputTokens), String(profile.maximumChunkTokens),
                 String(profile.maximumContextTokens), capability.profileFingerprint]),

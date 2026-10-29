@@ -1,6 +1,6 @@
 # Experimental cluster control protocol
 
-> Last updated: 2026-10-13
+> Last updated: 2026-10-29
 
 Exact member-role and native-pair public-control shapes on the provider
 WebSocket, as staged in draft pull requests: the provider side in this
@@ -21,11 +21,10 @@ mode only through the explicit distributed start opt-in
 `makeClusterMemberLoop`). When the operator configures an approval catalog the
 coordinator's pair selector reserves pairs by itself (see
 [pair formation](#pair-formation)) and routes its owner's requests to a pair
-that is serving (see [serving a pair](#serving-a-pair)). In this build a real
-member declines the preparation, so a reserved pair stops before owners are
-committed and no pair serves a request. Everything after preparation, routing
-included, is exercised on the coordinator against a fake member that speaks
-this protocol.
+that is serving (see [serving a pair](#serving-a-pair)). A member whose setup
+reaches the other Mac over the cable serves the committed start; any other
+member declines the preparation (see
+[provider member control](#provider-member-control)).
 
 ## Member registration and acknowledgment
 
@@ -185,7 +184,11 @@ verify the peer's hello against the peer's attested key before deriving a key.
 ## Provider member control
 
 A member registers a `cluster_membership` only when its saved setup carries a
-[pair approval](configuration.md#coordinator-paired-member). The claim is
+[pair approval](configuration.md#coordinator-paired-member). The guided setup
+saves one by itself, after its Test stage, from the coordinator's
+`GET /v1/cluster/approvals` when the operator approval file holds an entry
+whose digests are this pair's own (each Mac checks it against its own files
+first), and removes it when it ends. The claim is
 derived from the installed control, so its `policy_sha256` names exactly the
 policy bytes the control requires in a prepare frame
 (`provider-swift/Sources/ProviderCore/ProviderLoop+Serve.swift`, `serve`;
@@ -203,21 +206,21 @@ policy bytes the control requires in a prepare frame
 | Cancel or expiry | Requests native cleanup at once, independently of signing or the socket. An uncommitted session is dropped and the member can prepare again; a committed one that cannot deliver its release stays quarantined in the control, which then refuses every later attachment | `cancel`; `NativePairMemberControl.finished` |
 
 **What a real member does in this build.** The installed owner
-(`darkbloom cluster worker-owner --stdio`) serves only the mesh profile of a
-session the leader launches itself, and the installed worker refuses every
-owner bootstrap attachment
-(`provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledOwner.swift`,
-`servesCommittedNativeStart`). A committed start could therefore not be
-honoured and would hold both devices until the members disconnect. The member
-declines instead: it answers `native_pair_prepare` with a signed
-`native_pair_cancel`, the coordinator never commits, reports the cluster as
-`member_declined` and offers it again on the
-[declined backoff](#pair-formation). The frames after `native_pair_prepared` are
-exercised only against a CPU fixture owner
-(`provider-swift/Tests/ClusterMemberFixtureChild`), which proves control flow
-and process ownership, never a model, a mesh or hardware trust. A member
-accepts no coordinator inference request in any state: it answers 503
-`model_unavailable` and reports `draining` with no slots.
+(`darkbloom cluster worker-owner --stdio`) admits a start the coordinator
+committed when the approval this Mac installed covers it, and runs the combined
+profile: the prelude through the coordinator, then the mesh rounds over the
+link (`provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledOwner.swift`,
+`servesCommittedNativeStart`, `memberAuthorizer`). Only a setup that reaches
+the other Mac over the link control channel can serve such a start
+(`provider-swift/Sources/ProviderCore/Inference/Distributed/Membership/ClusterMemberPreparation+PairServing.swift`,
+`installPairServing`): the plan's rank 0 hosts the link listener and the
+pair's slot, rank 1 dials it. A member without that link declines: it answers
+`native_pair_prepare` with a signed `native_pair_cancel`, the coordinator
+never commits, reports the cluster as `member_declined` and offers it again on
+the [declined backoff](#pair-formation). A member answers a coordinator
+inference request only through its published pair slot
+(`provider-swift/Sources/ProviderCore/ProviderLoop+InferenceHandler.swift`);
+without one it answers 503 `model_unavailable`.
 
 ## Native pair messages
 

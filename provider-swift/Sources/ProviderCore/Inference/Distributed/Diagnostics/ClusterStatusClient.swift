@@ -16,7 +16,7 @@ enum ClusterStatusClient {
         configuration.timeoutIntervalForRequest = 3; configuration.timeoutIntervalForResource = 3
         configuration.urlCache = nil; configuration.httpCookieStorage = nil; configuration.urlCredentialStorage = nil
         configuration.connectionProxyDictionary = [:]
-        let session = URLSession(configuration: configuration, delegate: ClusterStatusNoRedirect(), delegateQueue: nil)
+        let session = URLSession(configuration: configuration, delegate: ClusterNoRedirect(), delegateQueue: nil)
         defer { session.invalidateAndCancel() }
         let (stream, response) = try await session.bytes(for: request)
         guard let http = response as? HTTPURLResponse, http.statusCode == 200,
@@ -41,7 +41,8 @@ enum ClusterStatusClient {
     }
 }
 
-private final class ClusterStatusNoRedirect: NSObject, URLSessionTaskDelegate {
+/// Refuses every redirect: a cluster client reads only the exact URL it asked for.
+final class ClusterNoRedirect: NSObject, URLSessionTaskDelegate {
     func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
                     newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {
         completionHandler(nil)

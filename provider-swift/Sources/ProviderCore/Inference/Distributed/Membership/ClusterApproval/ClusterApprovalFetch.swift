@@ -21,7 +21,7 @@ public enum ClusterApprovalFetch {
         /// Any other answer, or a URL this Mac does not ask: the reason, for one log line.
         case unavailable(String)
         /// No answer at all (the request failed before an HTTP answer: no route, refused, timed out): the reason. An
-        /// offered pair whose coordinator stays so for the absence grace serves locally (`ClusterApprovalSync.step`).
+        /// offered pair whose coordinator stays so for the absence grace serves locally (`ClusterApprovalCheck.step`).
         case unreachable(String)
     }
 

@@ -44,13 +44,18 @@ struct ClusterApprovalLifetimeTests {
         // Facts that cannot be described choose no entry.
         #expect(ClusterApprovalLifetime.decide(saved: nil, fetched: .approvals([fresh]), model: model, schedule: .serial,
                                                facts: { nil }, now: now) == .keep)
-        // More than a day left: nothing is written, whatever the coordinator says now.
-        #expect(decide(fresh, .approvals([later])) == .keep)
-        #expect(decide(fresh, .notOffered) == .keep)
-        // Within a day of its end: a later one replaces it; without one it stays until it ends.
-        #expect(decide(near, .approvals([later])) == .save(later))
+        // More than a day left and still listed: nothing is written; no usable answer says nothing about it.
+        #expect(decide(fresh, .approvals([fresh, later])) == .keep)
+        #expect(decide(fresh, .unavailable("HTTP 500")) == .keep)
+        #expect(decide(fresh, .unreachable("no answer")) == .keep)
+        // No longer listed (a 200 without it, an empty list, a 404): replaced by a matching entry, else withdrawn.
+        #expect(decide(fresh, .approvals([later])) == .save(later))
+        #expect(decide(fresh, .approvals([])) == .withdrawn)
+        #expect(decide(fresh, .notOffered) == .withdrawn)
+        // Within a day of its end: a later one replaces it; still listed without one, it stays until it ends.
+        #expect(decide(near, .approvals([near, later])) == .save(later))
         #expect(decide(near, .approvals([near])) == .keep)
-        #expect(decide(near, .notOffered) == .keep)
+        #expect(decide(near, .notOffered) == .withdrawn)
         // Ended: replaced when there is a later one, else removed (never kept).
         #expect(decide(ended, .approvals([later])) == .save(later))
         #expect(decide(ended, .notOffered) == .remove)

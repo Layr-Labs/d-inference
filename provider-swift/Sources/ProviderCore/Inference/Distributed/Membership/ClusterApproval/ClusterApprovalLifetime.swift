@@ -46,26 +46,39 @@ public enum ClusterApprovalLifetime {
     public enum Decision: Equatable, Sendable {
         /// Nothing to write: the saved setup stays byte for byte as it is.
         case keep
-        /// Save this approval on both Macs (none was saved, or the saved one is near its end and this one is later).
+        /// Save this approval on both Macs: none was saved; the saved one is near its end and this one is later; or the
+        /// coordinator no longer lists the saved one and serves this matching one.
         case save(ClusterRuntimeApproval)
         /// The saved approval expired and the coordinator has no later one: both Macs save the setup without it.
         case remove
+        /// The coordinator answered (404, or a list without the saved approval) and serves no other matching entry: the
+        /// saved approval is withdrawn although it has not ended.
+        case withdrawn
     }
 
     /// What to do with the setup's saved approval (`saved`, nil for none) after asking the coordinator (`fetched`).
-    /// `facts` are this Mac's own cluster runtime facts for the setup's model; they are computed only when an entry
-    /// must be chosen (nil: they could not be, so no entry is this setup's).
+    /// Only a list (200) or 404 says anything about the saved approval; any other outcome keeps it. `facts` are this
+    /// Mac's own cluster runtime facts for the setup's model; they are computed only when an entry must be chosen
+    /// (nil: they could not be, so no entry is this setup's).
     static func decide(saved: ClusterRuntimeApproval?, fetched: ClusterApprovalFetch.Outcome, model: String,
                        schedule: ClusterPrefillSchedule, facts: () -> ClusterRuntimeApprovalFacts?, now: Double) -> Decision {
+        let listed: [ClusterRuntimeApproval]?
+        switch fetched {
+        case .approvals(let approvals): listed = approvals
+        case .notOffered: listed = []
+        case .unavailable, .unreachable: listed = nil
+        }
         func candidate() -> ClusterRuntimeApproval? {
-            guard case .approvals(let approvals) = fetched, !approvals.isEmpty, let facts = facts() else { return nil }
-            return select(approvals, model: model, schedule: schedule, facts: facts, now: now)
+            guard let listed, !listed.isEmpty, let facts = facts() else { return nil }
+            return select(listed, model: model, schedule: schedule, facts: facts, now: now)
         }
         guard let saved else { return candidate().map(Decision.save) ?? .keep }
         let savedEnd = expiry(saved) ?? 0
+        if savedEnd <= now { return candidate().map(Decision.save) ?? .remove }
+        if let listed, !listed.contains(where: { $0.id == saved.id }) { return candidate().map(Decision.save) ?? .withdrawn }
         if savedEnd - now > renewWithinSeconds { return .keep }
         if let candidate = candidate(), candidate != saved, (expiry(candidate) ?? 0) > savedEnd { return .save(candidate) }
-        return savedEnd > now ? .keep : .remove
+        return .keep
     }
 
     /// The one status line of a pair registered with the coordinator as a cluster member.

@@ -64,6 +64,10 @@ public struct ClusterServiceStatus: Codable, Sendable, Equatable {
     /// its own API, relay or solo server holds count as free), so rank 0 takes a port free on both Macs. Nil from an
     /// older build.
     public var freePorts: [Int]? = nil
+    /// This Mac's coordinator-paired parts that ended in a row right after starting (`ClusterApprovalCheck`); the
+    /// control leader makes the pair serve locally when either Mac's count reaches the solo server's limit. Nil from an
+    /// older build.
+    public var memberQuickEnds: Int? = nil
     public struct Control: Codable, Sendable, Equatable {
         public var leaderID: String
         public var leaderName: String

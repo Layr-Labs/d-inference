@@ -100,9 +100,9 @@ struct ClusterApprovalSyncTests {
         // Within a day of its end and the coordinator has a later one: both Macs take it.
         #expect(macs.sync(.approvals([later]), leaderFacts: facts, followerFacts: facts).changed)
         for mac in macs.macs { #expect(try attachment(macs, mac)?.clusterApproval == later) }
-        // A day before the later one ends, the coordinator offers nothing newer: it stays.
+        // A day before the later one ends, the coordinator still lists it and serves nothing newer: it stays.
         let dayBefore = Date().timeIntervalSince1970 + 13.5 * 86_400
-        #expect(macs.sync(.notOffered, leaderFacts: facts, followerFacts: facts, now: dayBefore) == .unchanged)
+        #expect(macs.sync(.approvals([later]), leaderFacts: facts, followerFacts: facts, now: dayBefore) == .unchanged)
         // Once it ended, with no answer from the coordinator: removed on both Macs, said in one line.
         let after = Date().timeIntervalSince1970 + 15 * 86_400
         let removed = macs.sync(.unavailable("no answer"), leaderFacts: facts, followerFacts: facts, now: after)

@@ -44,6 +44,14 @@ public enum ClusterApprovalSync {
             facts: { try? facts(configuration) }, now: now)
     }
 
+    /// Whether the control leader asks its coordinator at this check. A cluster that serves locally only never does.
+    /// Otherwise the first check of a service run asks; after it, only a serving pair that is offered, or that serves
+    /// locally with its approval set aside, asks again: no other pair asks more than once per run.
+    static func asks(first: Bool, serving: Bool, scope: ClusterServingScope, offered: Bool, setAside: Bool) -> Bool {
+        guard !scope.isLocalOnly else { return false }
+        return first || (serving && (offered || setAside))
+    }
+
     /// The control leader's watch over the coordinator of a pair it offered: a pair whose coordinator gives no answer
     /// for the absence grace (`ClusterService.soloGraceSeconds`, the grace before a Mac serves alone) serves on the
     /// leader's local API, and is offered again once the coordinator answers.
@@ -70,6 +78,11 @@ public enum ClusterApprovalSync {
                      scope: ClusterServingScope, watch: inout Watch, clock: Double, grace: Double, now: Double,
                      facts: (ClusterConfiguration) throws -> ClusterRuntimeApprovalFacts = ClusterApprovalAttachment.installedFacts) -> Step {
         let configuration = saved.configuration
+        // A cluster that serves locally only is never offered, and changes nothing here.
+        guard !scope.isLocalOnly else {
+            watch.unreachableSince = nil
+            return .keep
+        }
         if case .unreachable = fetched {
             // Only a pair offered now with a cluster approval falls back; a hand-saved pair approval is the operator's.
             guard let member = configuration.nativeMember, let offered = member.clusterApproval,
@@ -84,7 +97,7 @@ public enum ClusterApprovalSync {
         watch.unreachableSince = nil
         // The coordinator answers: a pair that serves locally because it did not is offered again with the approval
         // it set aside while that is current, or with a later one the coordinator offers now.
-        if let parked, configuration.nativeMember == nil, !scope.isLocalOnly {
+        if let parked, configuration.nativeMember == nil {
             var candidates = [parked]
             if case .approvals(let approvals) = fetched { candidates += approvals }
             guard let installed = try? facts(configuration) else { return .keep }

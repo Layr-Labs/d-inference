@@ -115,4 +115,30 @@ struct ClusterApprovalWatchTests {
         #expect(result == .init(changed: true, line: ClusterApprovalLifetime.offeredLine(approval), note: .some(nil)))
         for mac in macs.macs { #expect(try macs.saved(mac).configuration.nativeMember?.clusterApproval == approval) }
     }
+
+    @Test func aClusterThatServesLocallyOnlyNeverAsksTheCoordinatorAndChangesNothing() throws {
+        let local = ClusterServingScope.localOnly(bind: "127.0.0.1")
+        for first in [true, false] {
+            for serving in [true, false] {
+                for offered in [true, false] {
+                    for setAside in [true, false] {
+                        #expect(!ClusterApprovalSync.asks(first: first, serving: serving, scope: local, offered: offered, setAside: setAside))
+                    }
+                }
+            }
+        }
+        // Serving publicly: the first check asks; later ones only for a serving pair that is offered or set aside.
+        #expect(ClusterApprovalSync.asks(first: true, serving: false, scope: .publicServing, offered: false, setAside: false))
+        #expect(!ClusterApprovalSync.asks(first: false, serving: true, scope: .publicServing, offered: false, setAside: false))
+        #expect(ClusterApprovalSync.asks(first: false, serving: true, scope: .publicServing, offered: true, setAside: false))
+        #expect(ClusterApprovalSync.asks(first: false, serving: true, scope: .publicServing, offered: false, setAside: true))
+        #expect(!ClusterApprovalSync.asks(first: false, serving: false, scope: .publicServing, offered: true, setAside: true))
+
+        // Even with a matching entry served and one set aside, a local-only step saves nothing.
+        let macs = try ClusterApprovalMacs(coordinatorURL: "ws://127.0.0.1:9/ws/provider")
+        let approval = macs.approval(), watch = Watched()
+        #expect(try step(macs, .approvals([approval]), watch, clock: 0) == .save(approval))
+        #expect(try step(macs, .approvals([approval]), scope: local, watch, clock: 0) == .keep)
+        #expect(try step(macs, .approvals([approval]), parked: approval, scope: local, watch, clock: 0) == .keep)
+    }
 }

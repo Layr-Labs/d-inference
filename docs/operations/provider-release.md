@@ -689,6 +689,7 @@ The step `Compute dev cluster runtime facts from the final signed app` of job
    file is gone and `security find-identity -v -p codesigning` no longer lists
    `$DEVELOPER_ID`. The release CLI runs with an empty environment (`env -i`).
 3. It checks the archive against `BUNDLE_HASH` and extracts it into a new folder.
+   Steps 4 to 6 are `scripts/provider-cluster-runtime-facts.sh`.
 4. The final CLI prints the build's model list:
    `darkbloom-dev cluster runtime-facts --list-release-models`. The list holds
    every model with a cluster stage adapter and a passing pair qualification
@@ -705,8 +706,16 @@ The step `Compute dev cluster runtime facts from the final signed app` of job
    listed model has no candidate that the worker describes as that model, or
    when a required model is missing.
 7. `prepare --cluster-runtime <file>` adds the block to `release-payload.json`.
-   `validate` refuses a dev payload without a valid block and a prod or staging
-   payload with one.
+   `validate` refuses a dev payload without a valid block, a block whose derived
+   approval IDs (`release/<version>/<model>/s<1|2>`) exceed 128 bytes, and a
+   prod or staging payload with a block.
+
+Before merge, the release lane of the pull-request build (workflow
+`SDK 27 release preparation`, job `SDK 27 release`, step
+`Describe the qualified cluster models with the built app`) runs the same
+script on the unsigned app it built, so a pull request that changes the facts
+code shows that its worker describes every qualified model. That build is not
+signed and publishes nothing.
 
 To compute the facts of an installed or downloaded app by hand, give the models
 explicitly:

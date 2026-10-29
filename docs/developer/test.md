@@ -1288,6 +1288,9 @@ prod and staging refuse one, and that the prod payload bytes are unchanged.
 model-metadata fetch against a local HTTP registry: candidate selection, the
 manifest and `config.json` checks, retries and refusals. It reads no weights and
 uses no network.
+`scripts/provider-cluster-runtime-facts.sh` has no fake-driven test: the step
+`Describe the qualified cluster models with the built app` of the pull-request
+release build runs it on the real built app against the public model registry.
 
 `scripts/test-provider-release-pipeline.py` and
 `scripts/test-provider-release-resolution.py` pin the routing of

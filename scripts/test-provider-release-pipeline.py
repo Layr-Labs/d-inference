@@ -13,6 +13,7 @@ CALLER = (ROOT / '.github/workflows/release-swift.yml').read_text()
 RELEASE = (ROOT / '.github/workflows/release-provider.yml').read_text()
 WARM = (ROOT / '.github/workflows/provider-release-cache.yml').read_text()
 ACTION = (ROOT / '.github/actions/provider-release-build/action.yml').read_text()
+FACTS_SCRIPT = (ROOT / 'scripts/provider-cluster-runtime-facts.sh').read_text()
 
 
 def caller_lanes():
@@ -433,7 +434,7 @@ class ReleasePipelineTests(unittest.TestCase):
         # runs with an empty environment.
         self.assertNotIn('secrets.', step)
         self.assertNotIn('env:', step)
-        first_run = step.index('runtime_facts --list-release-models')
+        first_run = step.index('scripts/provider-cluster-runtime-facts.sh "$FACTS_ROOT/app/$APP_NAME" "$CLI_NAME"')
         for removal in ('unset r2_public_url coordinator_url', 'security delete-keychain "$KEYCHAIN_PATH"\n',
                         'test ! -e "$KEYCHAIN_PATH"', 'IDENTITIES=$(security find-identity -v -p codesigning)',
                         'if grep -F -q -- "$DEVELOPER_ID" <<< "$IDENTITIES"; then'):
@@ -442,17 +443,48 @@ class ReleasePipelineTests(unittest.TestCase):
         self.assertNotIn('|| true', step)
         self.assertNotIn('2>/dev/null', step)
         self.assertLess(step.index('security delete-keychain'), step.index('IDENTITIES='))
-        self.assertIn('env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin', step)
         # The final archived bytes, extracted afresh after their hash is checked.
         self.assertLess(step.index('= "$BUNDLE_HASH"'), step.index('tar -xzf /tmp/darkbloom-bundle-macos-arm64.tar.gz'))
-        self.assertIn('scripts/provider-cluster-runtime-models.py', step)
+        self.assertLess(step.index('tar -xzf /tmp/darkbloom-bundle-macos-arm64.tar.gz'), first_run)
+        self.assertIn('echo "CLUSTER_RUNTIME_FILE=$FACTS_ROOT/facts/cluster-runtime.json" >> "$GITHUB_ENV"', step)
+        # The shared script: the app's CLI only ever runs with an empty
+        # environment, the metadata comes from the fetch script, and both
+        # required models are required.
+        self.assertIn('set -euo pipefail', FACTS_SCRIPT)
+        self.assertEqual(FACTS_SCRIPT.count('/Contents/MacOS/'), 1)
+        self.assertIn('  env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin HOME="$root/home" DARKBLOOM_NO_UPDATE_CHECK=1 \\\n'
+                      '    "$app/Contents/MacOS/$cli" cluster runtime-facts "$@"\n', FACTS_SCRIPT)
+        self.assertLess(FACTS_SCRIPT.index('runtime_facts --list-release-models'),
+                        FACTS_SCRIPT.index('provider-cluster-runtime-models.py'))
+        self.assertLess(FACTS_SCRIPT.index('provider-cluster-runtime-models.py'),
+                        FACTS_SCRIPT.index('runtime_facts --app "$app" --release-candidates'))
         for model in ('Qwen3.5-9B', 'glm-5.3-flash'):
-            self.assertIn('--require-model ' + model, step)
-        self.assertIn('echo "CLUSTER_RUNTIME_FILE=$FACTS_ROOT/cluster-runtime.json" >> "$GITHUB_ENV"', step)
+            self.assertIn('--require-model ' + model, FACTS_SCRIPT)
         prepare = sign.split('- name: Prepare exact signed release identity\n', 1)[1].split('\n      - name:', 1)[0]
         self.assertIn('${CLUSTER_RUNTIME_FILE:+--cluster-runtime "$CLUSTER_RUNTIME_FILE"}', prepare)
         # Only the dev lane computes the file, so prod and staging prepare without it.
         self.assertEqual(RELEASE.count('CLUSTER_RUNTIME_FILE='), 1)
+
+    def test_pull_requests_describe_the_qualified_models_with_their_built_app(self):
+        # Evidence before merge: the release lane of PR warming runs the release
+        # script on the app it staged and unpacked, never on master or dispatch.
+        name = '- name: Describe the qualified cluster models with the built app\n'
+        steps = WARM.split('\n    steps:\n', 1)[1]
+        step = steps.split(name, 1)[1].split('\n      - name:', 1)[0]
+        self.assertIn("if: matrix.lane == 'release' && github.event_name == 'pull_request'\n", step)
+        self.assertLess(steps.index('provider-signing-validation.py unpack'), steps.index(name))
+        self.assertIn('scripts/provider-cluster-runtime-facts.sh "$ROUNDTRIP/$APP_NAME" "$CLI_NAME"', step)
+        self.assertIn('ROUNDTRIP="$RUNNER_TEMP/verified-roundtrip"', step)
+        self.assertNotIn('continue-on-error', step)
+        # The step runs whenever a pull request changes the facts code or scripts.
+        paths = WARM.split('  pull_request:\n', 1)[1].split('  workflow_dispatch:', 1)[0]
+        for path in ('scripts/provider-cluster-runtime-facts.sh', 'scripts/provider-cluster-runtime-models.py',
+                     'provider-swift/Sources/ProviderCore/Config/ClusterRuntimeApprovalFacts.swift',
+                     'provider-swift/Sources/darkbloom/ClusterRuntimeFactsCommand.swift'):
+            self.assertIn(f"      - '{path}'\n", paths)
+        # A release that changes only the script still triggers the release lanes.
+        for caller in (CALLER, (ROOT / '.github/workflows/release-dev-branch.yml').read_text()):
+            self.assertIn("      - 'scripts/provider-cluster-runtime-facts.sh'\n", caller)
 
     def test_dev_and_staging_artifacts_avoid_collision_but_prod_stays_unqualified(self):
         # dev and staging unsigned and publication artifact names carry the

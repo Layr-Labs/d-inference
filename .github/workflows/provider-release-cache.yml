@@ -31,6 +31,10 @@ on:
       - 'scripts/prepare-prompt-fixtures.py'
       - 'scripts/test-prepare-prompt-fixtures.py'
       - 'scripts/run-provider-tests.sh'
+      - 'scripts/provider-cluster-runtime-facts.sh'
+      - 'scripts/provider-cluster-runtime-models.py'
+      - 'provider-swift/Sources/ProviderCore/Config/ClusterRuntimeApprovalFacts.swift'
+      - 'provider-swift/Sources/darkbloom/ClusterRuntimeFactsCommand.swift'
       - 'provider-swift/Tests/ProviderCoreTests/Qwen4StandaloneAdmissionTests.swift'
       - 'provider-swift/Sources/ProviderCore/KVCacheSSD/BoundedSingleConsumerPipeline.swift'
       - 'provider-swift/Tests/ProviderCoreTests/KVCacheSSD/BoundedSingleConsumerPipelineTests.swift'
@@ -103,3 +107,24 @@ jobs:
             --archive "$RUNNER_TEMP/unsigned-roundtrip.tar.gz" \
             --output "$RUNNER_TEMP/verified-roundtrip" \
             --source-sha "$GITHUB_SHA" --version "$VERSION"
+
+      # Evidence before merge for the dev release's cluster runtime facts: the
+      # app this build staged runs the script the dev release lane runs on its
+      # signed app, so its own worker describes every model it qualifies on a
+      # cluster from the public registry's manifests (metadata only). Pull
+      # requests only: master warms the release caches with no registry read.
+      - name: Describe the qualified cluster models with the built app
+        if: matrix.lane == 'release' && github.event_name == 'pull_request'
+        run: |
+          set -euo pipefail
+          ROUNDTRIP="$RUNNER_TEMP/verified-roundtrip"
+          IFS=$'\t' read -r APP_NAME CLI_NAME < <(python3 -c \
+            'import json, sys; names = json.load(open(sys.argv[1]))["packaging"]; print(names["appBundleName"] + "\t" + names["cliName"])' \
+            "$ROUNDTRIP/unsigned-files.json")
+          scripts/provider-cluster-runtime-facts.sh "$ROUNDTRIP/$APP_NAME" "$CLI_NAME" "$RUNNER_TEMP/cluster-runtime"
+          {
+            echo '### Cluster runtime facts of this build (unsigned, not published)'
+            echo '```json'
+            python3 -m json.tool --sort-keys "$RUNNER_TEMP/cluster-runtime/cluster-runtime.json"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

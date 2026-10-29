@@ -131,9 +131,10 @@ class PartitionTests(unittest.TestCase):
         self.assertFalse(re.search(pattern, "OtherTests.Heavy/a()"))
 
     def test_longest_suites_spread_over_the_shards(self):
-        assigned, loads = shards.assignment(2, {"M.A": 10.0, "M.B": 9.0, "M.C": 2.0, "M.D": 1.0})
-        self.assertEqual([sorted(keys) for keys in assigned], [["M.A", "M.D"], ["M.B", "M.C"]])
-        self.assertEqual(loads, [11.0 + shards.FIRST_SHARD_EXTRA_SECONDS, 11.0 + shards.LAST_SHARD_EXTRA_SECONDS])
+        # Weights well above the fixed extra seconds of shards 1 and N.
+        assigned, loads = shards.assignment(2, {"M.A": 1000.0, "M.B": 900.0, "M.C": 200.0, "M.D": 100.0})
+        self.assertEqual([sorted(keys) for keys in assigned], [["M.A", "M.C"], ["M.B", "M.D"]])
+        self.assertEqual(loads, [1200.0 + shards.FIRST_SHARD_EXTRA_SECONDS, 1000.0 + shards.LAST_SHARD_EXTRA_SECONDS])
 
     def test_arguments_and_shard_validation(self):
         self.assertEqual(shards.arguments("parallel", ISOLATED, self.weights),
@@ -195,8 +196,8 @@ class CountAndAuditTests(unittest.TestCase):
             return result
 
         self.assertEqual(shards.audit(tests, reports(), ISOLATED, weights), [])
-        short = shards.audit(tests, reports(**{"2/2": 1}), ISOLATED, weights)
-        self.assertTrue(any("executed 1 tests" in error for error in short), short)
+        short = shards.audit(tests, reports(**{"2/2": 5}), ISOLATED, weights)
+        self.assertTrue(any("Shard 2/2 executed 5 tests" in error for error in short), short)
         self.assertTrue(any("The shards executed" in error for error in short), short)
         missing = shards.audit(tests, [r for r in reports() if r["shard"] != "1/2"], ISOLATED, weights)
         self.assertTrue(any("Expected one report per shard" in error for error in missing), missing)

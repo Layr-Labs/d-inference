@@ -127,6 +127,7 @@ private struct FlintStreamOutcome {
         case .toolCall(let call): calls.append(call)
         case .toolCallDelta(let delta): if let call = delta.completed { calls.append(call) }
         case .info(let info): self.info = info
+        case .logprobs: break
         }
     }
 }

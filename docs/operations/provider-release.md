@@ -687,7 +687,8 @@ The step `Compute dev cluster runtime facts from the final signed app` of job
    `GITHUB_ENV` (`r2_public_url`, `coordinator_url`) and deletes the signing
    keychain before any release code runs. The step fails unless the keychain
    file is gone and `security find-identity -p codesigning` (every identity, not
-   only valid ones) no longer lists `$DEVELOPER_ID`. The release CLI runs with an empty environment (`env -i`).
+   only valid ones) no longer lists `$DEVELOPER_ID`. The release CLI runs with an
+   empty environment (`env -i`).
 3. It checks the archive against `BUNDLE_HASH` and extracts it into a new folder.
    Steps 4 to 6 are `scripts/provider-cluster-runtime-facts.sh`.
 4. The final CLI prints the build's model list:
@@ -715,7 +716,9 @@ Before merge, the release lane of the pull-request build (workflow
 `Describe the qualified cluster models with the built app`) runs the same
 script on the unsigned app it built, so a pull request that changes the facts
 code shows that its worker describes every qualified model. That build is not
-signed and publishes nothing.
+signed and publishes nothing. It uses the prod identity
+(`DARKBLOOM_RELEASE_ENVIRONMENT=prod`), so its digests are evidence only and
+differ from the dev release's.
 
 To compute the facts of an installed or downloaded app by hand, give the models
 explicitly:

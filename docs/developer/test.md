@@ -1291,6 +1291,8 @@ uses no network.
 `scripts/provider-cluster-runtime-facts.sh` has no fake-driven test: the step
 `Describe the qualified cluster models with the built app` of the pull-request
 release build runs it on the real built app against the public model registry.
+The `SDK 27 release` check therefore reads the dev and prod model catalogs and the
+model CDN over the network.
 
 `scripts/test-provider-release-pipeline.py` and
 `scripts/test-provider-release-resolution.py` pin the routing of

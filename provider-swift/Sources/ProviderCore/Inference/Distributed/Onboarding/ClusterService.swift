@@ -924,6 +924,7 @@ public final class ClusterService: @unchecked Sendable {
             value.updating = updatingLine
             value.localOnly = record?.leadership.map { $0.scope.isLocalOnly }
             value.memberQuickEnds = memberQuickEnds
+            value.approvalID = configuration?.nativeMember?.clusterApproval?.id
             return value
         }
     }
@@ -1038,22 +1039,28 @@ public final class ClusterService: @unchecked Sendable {
             let offered = saved.configuration.nativeMember.map {
                 ClusterApprovalLifetime.offers($0, scope: scope, now: Date().timeIntervalSince1970)
             } ?? false
-            guard ClusterApprovalCheck.asks(first: first, serving: record?.leadership?.serving == true, scope: scope,
-                                            offered: offered, setAside: setAside != nil) else { return checked() }
-            guard let fetched = ClusterApprovalFetch.fetchBlocking(providerConfiguration: configuration) else { return checked() }
+            let live = self.controlLive
+            // The other Mac's saved cluster approval and its coordinator-paired parts' quick ends, from its status (nil
+            // when it does not answer): both Macs carry the same approval, or neither does.
+            let peer = try? JSONDecoder().decode(ClusterServiceStatus.self, from: live.command(.init(op: .status), seconds: 10))
+            let peerApprovalID: String?? = peer.map { $0.approvalID }
+            let macsDiffer = ClusterApprovalCheck.macsDiffer(saved, peerApprovalID: peerApprovalID)
+            let asks = ClusterApprovalCheck.asks(first: first, serving: record?.leadership?.serving == true, scope: scope,
+                                                 offered: offered, setAside: setAside != nil, macsDiffer: macsDiffer)
+            guard asks || macsDiffer else { return checked() }
+            // A local-only cluster settles a difference between the Macs without asking the coordinator.
+            let fetched = asks ? ClusterApprovalFetch.fetchBlocking(providerConfiguration: configuration)
+                ?? .unavailable("no coordinator is configured") : .unavailable("not asked")
             let now = Date().timeIntervalSince1970
             if let ended = setAside, !ClusterApprovalLifetime.current(ended.approval, now: now) {
                 try? self.store.updateRecord { $0.approvalSetAside = nil }
                 setAside = nil
             }
-            let live = self.controlLive
-            // Both Macs' coordinator-paired parts that ended in a row right after starting (the other Mac's from its status).
-            let peerQuickEnds = (try? JSONDecoder().decode(ClusterServiceStatus.self,
-                from: live.command(.init(op: .status), seconds: 10)))?.memberQuickEnds ?? 0
-            let quickEnds = max(self.lock.withLock { self.memberQuickEnds }, peerQuickEnds)
+            // Both Macs' coordinator-paired parts that ended in a row right after starting.
+            let quickEnds = max(self.lock.withLock { self.memberQuickEnds }, peer?.memberQuickEnds ?? 0)
             var watch = self.lock.withLock { self.approvalWatch }
             let step = ClusterApprovalCheck.step(saved: saved, fetched: fetched, setAside: setAside, scope: scope,
-                memberQuickEnds: quickEnds, watch: &watch, clock: ClusterService.monotonicSeconds(),
+                memberQuickEnds: quickEnds, peerApprovalID: peerApprovalID, watch: &watch, clock: ClusterService.monotonicSeconds(),
                 grace: ClusterService.soloGraceSeconds, now: now)
             self.lock.withLock { self.approvalWatch = watch }
             guard step != .keep else { return checked() }
@@ -1081,6 +1088,9 @@ public final class ClusterService: @unchecked Sendable {
             case .serveLocally(let approval, let reason):
                 result = ClusterApprovalSync.serveLocally(approval, line: reason.line(approval, grace: ClusterService.soloGraceSeconds),
                     paths: paths, providerConfiguration: configuration, pairingStore: pairingStore, scratch: scratch, sendToPeer: send)
+            case .converge(let target):
+                result = ClusterApprovalSync.converge(target, paths: paths, providerConfiguration: configuration,
+                    pairingStore: pairingStore, scratch: scratch, sendToPeer: send)
             }
             try? self.store.updateRecord { stored in
                 if let note = result.note { stored.approvalNote = note }

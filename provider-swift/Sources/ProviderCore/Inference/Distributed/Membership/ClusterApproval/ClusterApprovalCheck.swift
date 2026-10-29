@@ -34,11 +34,20 @@ public enum ClusterApprovalFallback: String, Codable, Equatable, Sendable {
 /// changed here.
 enum ClusterApprovalCheck {
     /// Whether the control leader asks its coordinator at this check. A cluster that serves locally only never does.
-    /// Otherwise the first check of a service run asks; after it, only a serving pair that is offered, or that serves
-    /// locally with its approval set aside, asks again: no other pair asks more than once per run.
-    static func asks(first: Bool, serving: Bool, scope: ClusterServingScope, offered: Bool, setAside: Bool) -> Bool {
+    /// Otherwise the first check of a service run asks, and every check while the two Macs' saved approvals differ;
+    /// after it, only a serving pair that is offered, or that serves locally with its approval set aside, asks again: no
+    /// other pair asks more than once per run.
+    static func asks(first: Bool, serving: Bool, scope: ClusterServingScope, offered: Bool, setAside: Bool,
+                     macsDiffer: Bool = false) -> Bool {
         guard !scope.isLocalOnly else { return false }
-        return first || (serving && (offered || setAside))
+        return first || macsDiffer || (serving && (offered || setAside))
+    }
+
+    /// Whether the other Mac's saved cluster approval (`peerApprovalID`, from its status; nil: it did not answer) is not
+    /// this Mac's. A pair approval saved by hand on this Mac is the operator's and never compared.
+    static func macsDiffer(_ saved: ClusterConfigurationStore.Saved, peerApprovalID: String??) -> Bool {
+        guard saved.configuration.nativeMember?.approval == nil, let peer = peerApprovalID else { return false }
+        return peer != saved.configuration.nativeMember?.clusterApproval?.id
     }
 
     /// The no-answer clock the leader keeps between checks.
@@ -57,6 +66,9 @@ enum ClusterApprovalCheck {
         /// Both Macs save their setups without this approval (`ClusterApprovalSync.serveLocally`); the leader keeps it
         /// aside (`ClusterSetupRecord.approvalSetAside`) and checks every minute until it can offer the pair again.
         case serveLocally(ClusterRuntimeApproval, ClusterApprovalFallback)
+        /// The two Macs' saved approvals differ: the other Mac is given this Mac's (when it is offered now) or none
+        /// (`ClusterApprovalSync.converge`).
+        case converge(ClusterRuntimeApproval?)
     }
 
     /// The step for the leader's saved setup and the coordinator's answer. `setAside` is the approval kept aside while
@@ -65,9 +77,17 @@ enum ClusterApprovalCheck {
     /// (`ClusterService.monotonicSeconds`); `now` is wall-clock seconds. `facts` runs only when an entry must be chosen.
     static func step(saved: ClusterConfigurationStore.Saved, fetched: ClusterApprovalFetch.Outcome,
                      setAside: ClusterSetupRecord.ApprovalSetAside?, scope: ClusterServingScope, memberQuickEnds: Int,
-                     watch: inout Watch, clock: Double, grace: Double, now: Double,
+                     peerApprovalID: String??, watch: inout Watch, clock: Double, grace: Double, now: Double,
                      facts: (ClusterConfiguration) throws -> ClusterRuntimeApprovalFacts = ClusterApprovalAttachment.installedFacts) -> Step {
         let configuration = saved.configuration
+        // Both Macs carry the same approval, or neither does: a difference (a lost reply, a failed give-back) is
+        // settled first, on this Mac's approval while it is offered, else on none.
+        if macsDiffer(saved, peerApprovalID: peerApprovalID) {
+            let offered = configuration.nativeMember.flatMap { member in
+                ClusterApprovalLifetime.offers(member, scope: scope, now: now) ? member.clusterApproval : nil
+            }
+            return .converge(offered)
+        }
         // A cluster that serves locally only is never offered, and changes nothing here.
         guard !scope.isLocalOnly else {
             watch.unreachableSince = nil

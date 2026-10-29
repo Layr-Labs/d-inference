@@ -64,6 +64,7 @@ public enum ClusterApprovalSync {
             _ = try ClusterApprovalAttachment.save(nil, saved: saved, paths: paths, providerConfiguration: providerConfiguration,
                                                    scratch: scratch)
         } catch {
+            let saveFailure = refusal(error)
             // The other Mac saved without it: give it back there, with the link it registers to this Mac.
             var back = ClusterServiceCommand(op: .approval)
             back.approval = approval
@@ -71,10 +72,48 @@ public enum ClusterApprovalSync {
                 ClusterApprovalAttachment.measuredEdge(peerPin: $0.localPin, members: saved.configuration.peers.map(\.id),
                                                        homeDirectory: paths.homeDirectory)
             }
-            try? sendToPeer(back)
-            return stays("this Mac could not save its setup (\(refusal(error)))")
+            do { try sendToPeer(back) } catch {
+                return stays("this Mac could not save its setup (\(saveFailure)), and giving the other Mac the approval back "
+                    + "failed too (\(refusal(error))): the next check compares both Macs")
+            }
+            return stays("this Mac could not save its setup (\(saveFailure))")
         }
         return Result(changed: true, line: line, note: .some(line))
+    }
+
+    /// `ClusterApprovalCheck.Step.converge`: the other Mac's saved cluster approval differs from this Mac's (a lost
+    /// reply, a failed give-back), so it is given this Mac's (`target`), which it checks against its own files, or
+    /// none. When it refuses this Mac's, this Mac saves its setup without it too: both Macs carry the approval, or
+    /// neither does. The parts of both Macs must be stopped.
+    static func converge(_ target: ClusterRuntimeApproval?, paths: ClusterUserPaths, providerConfiguration: URL,
+                         pairingStore: ClusterPairingStore, scratch: URL, sendToPeer: (ClusterServiceCommand) throws -> Void) -> Result {
+        guard let saved = try? ClusterApprovalAttachment.savedSetup(paths: paths, providerConfiguration: providerConfiguration) else {
+            return .unchanged
+        }
+        var command = ClusterServiceCommand(op: .approval)
+        command.approval = target
+        if target != nil {
+            command.approvalEdge = (try? ClusterApprovalAttachment.pairing(saved.configuration, store: pairingStore)).flatMap {
+                ClusterApprovalAttachment.measuredEdge(peerPin: $0.localPin, members: saved.configuration.peers.map(\.id),
+                                                       homeDirectory: paths.homeDirectory)
+            }
+        }
+        do { try sendToPeer(command) } catch {
+            let reason = refusal(error)
+            guard let target, let range = reason.range(of: peerRefusalPrefix) else {
+                return Result(changed: false, line: "The other Mac's cluster approval differs from this Mac's, and it could not be "
+                    + "given this Mac's (\(reason)): this is tried again at the next check", note: nil)
+            }
+            var line = "The other Mac's cluster approval differed from this Mac's, and " + String(reason[range.lowerBound...])
+                + ": neither Mac carries cluster approval \(target.id) now; the pair serves on the leader's local API"
+            do { _ = try ClusterApprovalAttachment.save(nil, saved: saved, paths: paths, providerConfiguration: providerConfiguration,
+                                                        scratch: scratch) }
+            catch { line += " (this Mac could not save its setup yet: \(refusal(error)))" }
+            return Result(changed: true, line: line, note: .some(line))
+        }
+        let line = target.map { "The other Mac's cluster approval differed from this Mac's: both Macs now carry approval \($0.id)" }
+            ?? "The other Mac's cluster approval differed from this Mac's: neither Mac carries one now"
+        return Result(changed: true, line: line, note: nil)
     }
 
     /// One run of the step. `sendToPeer` delivers an `approval` command over the cable and throws the other Mac's
@@ -134,16 +173,23 @@ public enum ClusterApprovalSync {
                 attachment = try ClusterApprovalAttachment.attachment(for: approval, saved: saved, paths: paths, pairingStore: pairingStore,
                     edge: edge(to: paired.pins.first { $0 != paired.localPin } ?? ""), now: now, chipClass: chipClass, facts: facts)
             } catch { return refused("this Mac's check refused it: \(refusal(error))") }
+            /// Gives the other Mac this Mac's setup back (it may have saved `approval`): the reason, plus what was left
+            /// undone when the give-back failed too, which the next check finds by comparing both Macs' approvals.
+            func givenBack(_ reason: String) -> String {
+                do { try send(current, edge: peerEdge); return reason } catch {
+                    return reason + "; giving the other Mac its setup back failed too (\(refusal(error))): the next check compares both Macs"
+                }
+            }
             do { try send(approval, edge: peerEdge) } catch {
-                // The link exchange wraps the other Mac's own reason ("the other Mac refused: …").
+                // The link exchange wraps the other Mac's own reason ("the other Mac refused: …"): it saved nothing.
+                // Any other failure (a lost reply) may come after the other Mac saved it.
                 let reason = refusal(error)
-                return refused(reason.range(of: peerRefusalPrefix).map { String(reason[$0.lowerBound...]) }
-                               ?? "the other Mac did not answer over the cable (\(reason))")
+                if let range = reason.range(of: peerRefusalPrefix) { return refused(String(reason[range.lowerBound...])) }
+                return refused(givenBack("the other Mac did not answer over the cable (\(reason))"))
             }
             do { _ = try saveHere(attachment) } catch {
-                // The other Mac saved it: take it back there, so neither Mac offers the pair alone.
-                try? send(current, edge: peerEdge)
-                return refused("this Mac could not save its setup: \(refusal(error))")
+                // The other Mac saved it: give its setup back, so neither Mac offers the pair alone.
+                return refused(givenBack("this Mac could not save its setup: \(refusal(error))"))
             }
             let line = ClusterApprovalLifetime.offeredLine(approval)
             return Result(changed: true, line: line, note: .some(nil))

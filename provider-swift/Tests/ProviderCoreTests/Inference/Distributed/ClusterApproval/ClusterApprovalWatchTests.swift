@@ -26,12 +26,23 @@ struct ClusterApprovalWatchTests {
     }
 
     private func step(_ macs: ClusterApprovalMacs, _ fetched: ClusterApprovalFetch.Outcome,
-                      setAside: ClusterSetupRecord.ApprovalSetAside? = nil, quickEnds: Int = 0,
+                      setAside: ClusterSetupRecord.ApprovalSetAside? = nil, quickEnds: Int = 0, peer: String?? = nil,
                       scope: ClusterServingScope = .publicServing, _ watched: Watched, clock: Double) throws -> ClusterApprovalCheck.Step {
         let facts = try macs.facts()
         return ClusterApprovalCheck.step(saved: try macs.saved(macs.leader), fetched: fetched, setAside: setAside, scope: scope,
-                                         memberQuickEnds: quickEnds, watch: &watched.watch, clock: clock, grace: grace,
-                                         now: Date().timeIntervalSince1970, facts: { _ in facts })
+                                         memberQuickEnds: quickEnds, peerApprovalID: peer, watch: &watched.watch, clock: clock,
+                                         grace: grace, now: Date().timeIntervalSince1970, facts: { _ in facts })
+    }
+
+    /// The other Mac's saved cluster approval ID, as its status reports it.
+    private func peerID(_ macs: ClusterApprovalMacs) throws -> String?? {
+        .some(try macs.saved(macs.follower).configuration.nativeMember?.clusterApproval?.id)
+    }
+
+    private func converge(_ macs: ClusterApprovalMacs, _ target: ClusterRuntimeApproval?,
+                          followerFacts: ClusterRuntimeApprovalFacts) -> ClusterApprovalSync.Result {
+        ClusterApprovalSync.converge(target, paths: macs.leader.paths, providerConfiguration: macs.leader.provider,
+            pairingStore: macs.leader.pairing, scratch: macs.leader.scratch, sendToPeer: macs.cable(facts: followerFacts))
     }
 
     private func serveLocally(_ macs: ClusterApprovalMacs, _ approval: ClusterRuntimeApproval, facts: ClusterRuntimeApprovalFacts,
@@ -186,5 +197,60 @@ struct ClusterApprovalWatchTests {
         #expect(try step(macs, .approvals([approval]), watch, clock: 0) == .save(approval))
         #expect(try step(macs, .approvals([approval]), scope: local, watch, clock: 0) == .keep)
         #expect(try step(macs, .approvals([approval]), setAside: setAside, scope: local, watch, clock: 0) == .keep)
+    }
+
+    @Test func aLostReplyIsGivenBackAndTheNextCheckBringsBothMacsTogether() throws {
+        let macs = try ClusterApprovalMacs(coordinatorURL: "ws://127.0.0.1:9/ws/provider")
+        let approval = macs.approval(), facts = try macs.facts(), cable = macs.cable(facts: facts)
+        func run(_ sendToPeer: (ClusterServiceCommand) throws -> Void) -> ClusterApprovalSync.Result {
+            ClusterApprovalSync.run(fetched: .approvals([approval]), paths: macs.leader.paths, providerConfiguration: macs.leader.provider,
+                pairingStore: macs.leader.pairing, scratch: macs.leader.scratch, now: Date().timeIntervalSince1970,
+                sendToPeer: sendToPeer, chipClass: ClusterApprovalMacs.chip, facts: { _ in facts })
+        }
+        // The other Mac saves the approval but every reply is lost: the leader gives it its setup back (which it
+        // also applies), and says the reply of the give-back was lost too. Neither Mac carries the approval.
+        let lossy = run { command in
+            try cable(command)
+            throw ClusterSetupFailure("the other Mac's reply was lost")
+        }
+        #expect(!lossy.changed && lossy.line?.contains("did not answer over the cable") == true, "\(lossy.line ?? "")")
+        #expect(lossy.line?.contains("giving the other Mac its setup back failed too") == true)
+        for mac in macs.macs { #expect(try macs.saved(mac).configuration.nativeMember == nil, "rank \(mac.rank)") }
+
+        // The cable drops after the other Mac saved the approval: the give-back never arrives.
+        var delivered = 0
+        let dropped = run { command in
+            delivered += 1
+            if delivered == 1 { try cable(command) }
+            throw ClusterSetupFailure("the cable dropped")
+        }
+        #expect(!dropped.changed && dropped.line?.contains("the next check compares both Macs") == true, "\(dropped.line ?? "")")
+        #expect(try macs.saved(macs.follower).configuration.nativeMember?.clusterApproval == approval)
+        #expect(try macs.saved(macs.leader).configuration.nativeMember == nil)
+        // The next check compares both Macs, keeps asking while they differ, and gives the other Mac none.
+        let leaderSaved = try macs.saved(macs.leader), differing = try peerID(macs)
+        #expect(ClusterApprovalCheck.macsDiffer(leaderSaved, peerApprovalID: differing))
+        #expect(ClusterApprovalCheck.asks(first: false, serving: true, scope: .publicServing, offered: false, setAside: false,
+                                          macsDiffer: true))
+        #expect(try step(macs, .approvals([approval]), peer: differing, Watched(), clock: 0) == .converge(nil))
+        #expect(converge(macs, nil, followerFacts: facts).changed)
+        for mac in macs.macs { #expect(try macs.saved(mac).configuration.nativeMember == nil, "rank \(mac.rank)") }
+        let settledLeader = try macs.saved(macs.leader), settledPeer = try peerID(macs)
+        #expect(!ClusterApprovalCheck.macsDiffer(settledLeader, peerApprovalID: settledPeer))
+        // A Mac that did not answer its status is not compared.
+        #expect(!ClusterApprovalCheck.macsDiffer(leaderSaved, peerApprovalID: nil))
+
+        // The leader is registered and the other Mac lost its copy: it is given the leader's, and checks it itself.
+        #expect(macs.sync(.approvals([approval]), leaderFacts: facts, followerFacts: facts).changed)
+        try cable(ClusterServiceCommand(op: .approval))
+        let lostCopy = try peerID(macs)
+        #expect(try step(macs, .approvals([approval]), peer: lostCopy, Watched(), clock: 0) == .converge(approval))
+        #expect(converge(macs, approval, followerFacts: facts).changed)
+        for mac in macs.macs { #expect(try macs.saved(mac).configuration.nativeMember?.clusterApproval == approval, "rank \(mac.rank)") }
+        // When the other Mac's own check refuses it now, neither Mac carries it.
+        try cable(ClusterServiceCommand(op: .approval))
+        let refused = converge(macs, approval, followerFacts: try macs.facts(differing: "metallib_sha256"))
+        #expect(refused.changed && refused.line?.contains("neither Mac carries cluster approval") == true, "\(refused.line ?? "")")
+        for mac in macs.macs { #expect(try macs.saved(mac).configuration.nativeMember == nil, "rank \(mac.rank)") }
     }
 }

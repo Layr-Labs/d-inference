@@ -110,6 +110,8 @@ public final class ClusterService: @unchecked Sendable {
     // and whether the running part is one.
     private var memberQuickEnds = 0
     private var childIsMember = false
+    // Where the running part began writing its log (`lastError(in:from:)`).
+    private var childLogOffset: UInt64 = 0
     // Derived control (ClusterServiceControl.swift).
     var control: ClusterControlNode?
     var controlResponder: ClusterSetupLinkExchange.Responder?
@@ -1113,11 +1115,14 @@ public final class ClusterService: @unchecked Sendable {
         (try? paths().rankLog).flatMap { lastError(in: $0) }
     }
 
-    private static func lastError(in log: URL) -> String? {
+    /// The same in `log`, reading only from `offset` on (where the part that ended began writing), so an error an
+    /// earlier part wrote is never taken for this part's. A log shorter than `offset` was replaced: it is read whole.
+    static func lastError(in log: URL, from offset: UInt64 = 0) -> String? {
         guard let handle = FileHandle(forReadingAtPath: log.path) else { return nil }
         defer { try? handle.close() }
         let size = (try? handle.seekToEnd()) ?? 0
-        try? handle.seek(toOffset: size > 16_384 ? size - 16_384 : 0)
+        let tail: UInt64 = size > 16_384 ? size - 16_384 : 0
+        try? handle.seek(toOffset: offset <= size ? max(offset, tail) : tail)
         let tail = String(decoding: handle.readDataToEndOfFile(), as: UTF8.self)
         guard let line = tail.split(whereSeparator: \.isNewline).last(where: { $0.hasPrefix("Error:") }) else { return nil }
         return ClusterConsoleText.plain(ClusterConsoleText.bounded(String(line.dropFirst(6)).trimmingCharacters(in: .whitespaces), maximum: 240))
@@ -1267,7 +1272,7 @@ public final class ClusterService: @unchecked Sendable {
             // A coordinator-paired part that keeps ending right after its start makes the leader serve locally
             // (`ClusterApprovalCheck.step`); an end because the coordinator was out of reach is not counted.
             if lock.withLock({ childIsMember }) {
-                let lastError = Self.lastError(in: serviceFiles.rankLog)
+                let lastError = Self.lastError(in: serviceFiles.rankLog, from: lock.withLock { childLogOffset })
                 lock.withLock { memberQuickEnds = ClusterApprovalCheck.memberQuickEnds(after: memberQuickEnds, ranSeconds: ran, lastError: lastError) }
             }
             // F14: a solo server that keeps ending right after its start is not started again for this plan and model
@@ -1394,7 +1399,8 @@ public final class ClusterService: @unchecked Sendable {
         process.standardInput = FileHandle.nullDevice
         let log = serviceFiles.rankLog
         if !FileManager.default.fileExists(atPath: log.path) { FileManager.default.createFile(atPath: log.path, contents: nil, attributes: [.posixPermissions: 0o600]) }
-        if let handle = try? FileHandle(forWritingTo: log) { handle.seekToEndOfFile(); process.standardOutput = handle; process.standardError = handle }
+        var logOffset: UInt64 = 0
+        if let handle = try? FileHandle(forWritingTo: log) { logOffset = handle.seekToEndOfFile(); process.standardOutput = handle; process.standardError = handle }
         beforePartStart?()
         do { try process.run() } catch {
             say("\(what) could not start: \(error)")
@@ -1404,7 +1410,7 @@ public final class ClusterService: @unchecked Sendable {
         let startedAt = ClusterProcessTable.startTime(of: process.processIdentifier)
         lock.withLock {
             child = process; childSetup = key; childPort = port; childStarted = Date(); childStartedAt = startedAt; starts += 1
-            childIsMember = memberRoute
+            childIsMember = memberRoute; childLogOffset = logOffset
             if !memberRoute { memberQuickEnds = 0 }
         }
         say("started \(what) (pid \(process.processIdentifier))")

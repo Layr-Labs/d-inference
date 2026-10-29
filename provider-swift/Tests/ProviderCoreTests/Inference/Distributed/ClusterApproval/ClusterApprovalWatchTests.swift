@@ -253,4 +253,28 @@ struct ClusterApprovalWatchTests {
         #expect(refused.changed && refused.line?.contains("neither Mac carries cluster approval") == true, "\(refused.line ?? "")")
         for mac in macs.macs { #expect(try macs.saved(mac).configuration.nativeMember == nil, "rank \(mac.rank)") }
     }
+
+    @Test func aPartsQuickEndsAreCountedFromItsOwnLogLinesOnly() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("rank-log-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let log = folder.appendingPathComponent("rank.log")
+        // An earlier part ended because the coordinator was out of reach; then the next part starts writing here.
+        try Data(("Error: " + ClusterMemberControlError.coordinatorUnreachable.rawValue + "\n").utf8).write(to: log)
+        let offset = UInt64(try Data(contentsOf: log).count)
+        // The next part ends quickly without an error line of its own: its end is not the coordinator's and counts.
+        #expect(ClusterService.lastError(in: log, from: offset) == nil)
+        #expect(ClusterApprovalCheck.memberQuickEnds(after: 1, ranSeconds: 5,
+                                                     lastError: ClusterService.lastError(in: log, from: offset)) == 2)
+        // Its own error line is the one read.
+        let handle = try FileHandle(forWritingTo: log)
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data("Error: Saved cluster approval does not cover this Mac's chip\n".utf8))
+        try handle.close()
+        #expect(ClusterService.lastError(in: log, from: offset) == "Saved cluster approval does not cover this Mac's chip")
+        // The whole log still names the earlier part's line before it.
+        #expect(ClusterService.lastError(in: log)?.hasPrefix("Saved cluster approval") == true)
+        #expect(ClusterService.lastError(in: log, from: offset + 4_096)?.hasPrefix("Saved cluster approval") == true,
+                "a log shorter than the offset was replaced and is read whole")
+    }
 }

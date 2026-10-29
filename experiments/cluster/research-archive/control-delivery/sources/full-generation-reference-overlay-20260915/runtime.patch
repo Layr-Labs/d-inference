@@ -1,0 +1,399 @@
+--- a/experiments/cluster/inference/Sources/ClusterInference/CBv2RequestSession.swift
++++ b/experiments/cluster/inference/Sources/ClusterInference/CBv2RequestSession.swift
+@@ -17,6 +17,7 @@
+     private let promptCount: Int
+     private let outputCount: Int
+     private var promptFinished = false
++    private var generationCompleted = false
+     private(set) var committedPromptTokens = 0
+     private(set) var decodeForwardCount = 0
+     private(set) var committedTokens = 0
+@@ -200,6 +201,20 @@
+             includeBytes: includeBytes, check: check)
+     }
+ 
++    /// Explicit clean generation completion, including early EOS. The existing
++    /// fixed-output close contract remains unchanged for every other caller.
++    func finishGeneration(_ completion: QwenGenerationReferenceCompletion) throws {
++        do {
++            try requireOpen()
++            guard !generationCompleted else { throw ProbeError("Full generation already completed") }
++            try completion.requireSession(promptCount: promptCount, outputCount: outputCount,
++                committedPromptTokens: committedPromptTokens, decodeForwardCount: decodeForwardCount,
++                committedTokens: committedTokens)
++            generationCompleted = true
++            try close()
++        } catch { isFailed = true; throw error }
++    }
++
+     /// Cleanup is idempotent and retires the entire request even when a forward
+     /// failed. A stalled collective requires the outer process deadline; state
+     /// is never declared reusable while device work is still in flight.
+@@ -223,7 +238,7 @@
+             throw cleanupError ?? ProbeError("CBv2 request ownership remained after retirement")
+         }
+         if let cleanupError { isFailed = true; throw cleanupError }
+-        guard isFailed || (promptFinished && committedPromptTokens == promptCount
++        guard isFailed || generationCompleted || (promptFinished && committedPromptTokens == promptCount
+                            && decodeForwardCount == outputCount - 1
+                            && committedTokens == promptCount + outputCount - 1) else {
+             isFailed = true
+--- /dev/null
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenGenerationReferenceAdmission.swift
+@@ -0,0 +1,59 @@
++import Foundation
++
++/// Reuses the exact registered source/prompt/arithmetic admission. Its output-one
++/// budget is provenance only: generation recomputes the named terms at P+O.
++/// Neither admission is a live OS/allocator permit.
++struct QwenGenerationReferenceAdmission {
++    let source: QwenRegistered9BLongPrefillReferenceAdmission
++    let request: QwenLayerStageGenerationRequest
++    let requirements: QwenGenerationReferenceRequirements
++
++    init(source: QwenRegistered9BLongPrefillReferenceAdmission,
++         request: QwenLayerStageGenerationRequest) throws {
++        guard request.requestID == source.request.request.requestID,
++              request.promptTokenIDs == source.request.promptTokenIDs,
++              request.chunkSize == source.resource.chunkSize,
++              request.profile.hiddenSize == source.resource.geometry.hiddenSize,
++              request.profile.vocabularySize == source.request.vocabularySize,
++              request.profile.activationDType == source.resource.requiredNativeDType,
++              request.prefillFrameCount == source.request.steps.count,
++              (1...128).contains(request.outputCount) else {
++            throw ProbeError("Generation reference differs from its registered source or prompt admission")
++        }
++        self.source = source; self.request = request
++        requirements = try .init(request: request, geometry: source.resource.geometry,
++            namedTensorByteCeiling: source.resource.namedTensorByteCeiling)
++    }
++}
++
++/// Named logical tensor terms, not a peak/RSS/allocator bound. The required
++/// callback must independently apply live OS/allocator/timeout admission before
++/// state creation and keep its check active during capture and retirement.
++struct QwenGenerationReferenceRequirements: Encodable {
++    let requestFingerprint: String
++    let maximumTokens: Int
++    let namedTensors: QwenLongPrefillTensorBudget
++    let namedTensorByteCeiling: Int
++    let maximumCapturedRowsSimultaneously = 2
++    let capturedRowsCPUBytes: Int
++    let temporaryFloat32RowBytes: Int
++    let includesWeightsOrUnknownNativeWorkspace = false
++    let resourceAdmissionPerformed = false
++
++    init(request: QwenLayerStageGenerationRequest, geometry: QwenLongPrefillBudgetGeometry,
++         namedTensorByteCeiling: Int) throws {
++        let budget = try QwenLongPrefillTensorBudget.estimate(geometry: geometry,
++            maximumTokens: request.maximumTokens, chunkSize: request.chunkSize)
++        guard budget.conservativeStateAndBoundaryBytes <= namedTensorByteCeiling else {
++            throw ProbeError("Generation reference exceeds the existing named-tensor ceiling")
++        }
++        let bytes = try qwenStageWireElementBytes(request.profile.activationDType)
++        let product = QwenLongPrefillCheckedBytes.product
++        self.requestFingerprint = request.fingerprint; maximumTokens = request.maximumTokens
++        namedTensors = budget; self.namedTensorByteCeiling = namedTensorByteCeiling
++        // One current capture plus the previous final-row candidate during
++        // assignment; each has native bytes and complete Float32 CPU values.
++        capturedRowsCPUBytes = try product([2, request.profile.vocabularySize, bytes + 4])
++        temporaryFloat32RowBytes = try product([request.profile.vocabularySize, 4])
++    }
++}
+--- /dev/null
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenGenerationReferenceCapture.swift
+@@ -0,0 +1,44 @@
++import MLX
++
++enum QwenGenerationReferenceCapture {
++    /// Independent full-model selection: the existing finite native argmax
++    /// mechanics are checked against an actual complete CPU vocabulary copy.
++    static func token(_ logits: MLXArray, request: QwenLayerStageGenerationRequest,
++                      check: () throws -> Void) throws -> Int {
++        guard logits.shape == [1, request.profile.vocabularySize],
++              String(describing: logits.dtype) == request.profile.activationDType else {
++            throw ProbeError("Generation reference output row differs from admitted geometry/dtype")
++        }
++        let selected = argMax(logits), finite = all(isFinite(logits))
++        eval(selected, finite); try check()
++        guard selected.size == 1, selected.dtype == .uint32, finite.size == 1 else {
++            throw ProbeError("Generation reference finite argmax scalar differs")
++        }
++        let valid = finite.item(Bool.self); try check()
++        guard valid else { throw ProbeError("Generation reference logits are not finite") }
++        let token = Int(selected.item(UInt32.self)); try check()
++        guard (0..<request.profile.vocabularySize).contains(token) else {
++            throw ProbeError("Generation reference selected token exceeds vocabulary")
++        }
++        return token
++    }
++
++    static func evidence(_ logits: MLXArray, request: QwenLayerStageGenerationRequest,
++                         frame: QwenLayerStageFrame, ordinal: Int, token: Int,
++                         check: () throws -> Void
++    ) throws -> (QwenGenerationReferenceTokenEvidence, QwenRecordedLogits) {
++        let captured = try QwenRecordedLogits(logits,
++            vocabularySize: request.profile.vocabularySize, check: check)
++        guard let maximum = captured.record.values.max(),
++              let first = captured.record.values.firstIndex(of: maximum), first == token else {
++            throw ProbeError("Generation reference native selection differs from captured full row")
++        }
++        let evidence = QwenGenerationReferenceTokenEvidence(outputOrdinal: ordinal,
++            frame: frame, committedTokens: frame.tokenOffset + frame.tokenCount, tokenID: token,
++            maximumTieCount: captured.record.values.reduce(0) { $0 + ($1 == maximum ? 1 : 0) },
++            maximumLogit: maximum, logitsShape: captured.record.shape,
++            logitsDType: captured.record.dtype, logitsByteCount: captured.record.byteCount,
++            logitsLogicalBytesSHA256: captured.record.logicalBytesSHA256)
++        return (evidence, captured)
++    }
++}
+--- /dev/null
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenGenerationReferenceCompletion.swift
+@@ -0,0 +1,38 @@
++import Foundation
++
++/// A completed native full-model frontier, validated with the existing typed
++/// generation schedule. It permits EOS without pretending all O-1 decodes ran.
++struct QwenGenerationReferenceCompletion {
++    let request: QwenLayerStageGenerationRequest
++    let reason: QwenLayerStageGenerationFinishReason
++    let selectedTokenIDs: [Int]
++    let completedFrames: Int
++    let committedTokens: Int
++    var decodeForwardCount: Int { selectedTokenIDs.count - 1 }
++
++    init(request: QwenLayerStageGenerationRequest, reason: QwenLayerStageGenerationFinishReason,
++         selectedTokenIDs: [Int], completedFrames: Int) throws {
++        guard reason != .clientStop, !selectedTokenIDs.isEmpty,
++              selectedTokenIDs.count <= request.outputCount,
++              selectedTokenIDs.allSatisfy({ (0..<request.profile.vocabularySize).contains($0) }),
++              !selectedTokenIDs.dropLast().contains(where: request.stopTokenIDs.contains),
++              completedFrames == request.prefillFrameCount + selectedTokenIDs.count - 1 else {
++            throw ProbeError("Generation reference completion has invalid token history or frame count")
++        }
++        var schedule = QwenLayerStageGenerationSchedule(request: request)
++        for sequence in 0..<completedFrames { try schedule.commit(request.frame(sequence: sequence)) }
++        try schedule.finish(reason, selectedTokenCount: selectedTokenIDs.count,
++                            lastTokenID: selectedTokenIDs[selectedTokenIDs.count - 1])
++        self.request = request; self.reason = reason; self.selectedTokenIDs = selectedTokenIDs
++        self.completedFrames = completedFrames; committedTokens = schedule.committedTokens
++    }
++
++    func requireSession(promptCount: Int, outputCount: Int, committedPromptTokens: Int,
++                        decodeForwardCount: Int, committedTokens: Int) throws {
++        guard promptCount == request.promptCount, outputCount == request.outputCount,
++              committedPromptTokens == request.promptCount,
++              decodeForwardCount == self.decodeForwardCount, committedTokens == self.committedTokens else {
++            throw ProbeError("Full-model session differs from the completed generation frontier")
++        }
++    }
++}
+--- /dev/null
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenGenerationReferenceEvidence.swift
+@@ -0,0 +1,68 @@
++import Foundation
++
++struct QwenGenerationReferenceTokenEvidence: Encodable {
++    let outputOrdinal: Int
++    let frame: QwenLayerStageFrame
++    let committedTokens: Int
++    let tokenID: Int
++    let maximumTieCount: Int
++    let maximumLogit: Float
++    let logitsShape: [Int]
++    let logitsDType: String
++    let logitsByteCount: Int
++    let logitsLogicalBytesSHA256: String
++    let policy = "mlx_argmax_all_axes_with_finite_guard_v1"
++    let cpuCrosscheckPolicy = "finite_maximum_lowest_vocabulary_index_v1"
++    let nativeSelectionMatchesCapturedFullRow = true
++}
++
++struct QwenGenerationReferenceTiming: Encodable {
++    let clock = "DispatchTime.uptimeNanoseconds.same_process"
++    let requestStartNanoseconds: UInt64
++    let firstSelectedTokenNanoseconds: UInt64
++    let finalSelectedTokenNanoseconds: UInt64
++    let retiredNanoseconds: UInt64
++    let includesLoading = false
++    let includesSourceAndResourceAdmission = false
++    let firstTokenIncludesFreshStateConstruction = true
++    let continuationIncludesPriorEvidenceCapture = true
++    let externalTTFTMeasured = false
++    let throughputMeasurementValid = false
++}
++
++/// CPU-only return. Every target row was copied and checked, but only compact
++/// row identities and the last complete row are retained. The caller still owns
++/// the full model; this result claims request retirement, not model release.
++struct QwenGenerationReferenceResult: Encodable {
++    let schema = "qwen_full_generation_reference_v1"
++    let source: QwenLongPrefillReferenceSource
++    let sourceLoad: VerifiedQwenDiagnosticReceipt
++    let promptFileSHA256: String
++    let promptTokenIDsSHA256: String
++    let requestID: UUID
++    let requestFingerprint: String
++    let profile: QwenLayerStageGenerationProfile
++    let promptCount: Int
++    let chunkSize: Int
++    let requestedOutputCount: Int
++    let maximumTokens: Int
++    let stopTokenIDs: [Int]
++    let requirements: QwenGenerationReferenceRequirements
++    let selectedTokenIDs: [Int]
++    let selectedTokenIDsSHA256: String
++    let finishReason: QwenLayerStageGenerationFinishReason
++    let completedFrames: Int
++    let committedTokens: Int
++    let tokens: [QwenGenerationReferenceTokenEvidence]
++    let finalLogits: QwenRecordedLogits
++    let finalState: QwenRecordedState
++    let timing: QwenGenerationReferenceTiming
++    let finalStateCaptures = 1
++    let allRequestStateRetired = true
++    let modelRemainsResident = true
++    let fullVocabularyValuesRetainedForEveryToken = false
++    let mtpEnabled = false
++    let correctnessOnly = true
++    let candidateNumericalComparisonPerformed = false
++    let physicalTransferQualified = false
++}
+--- /dev/null
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenGenerationReferenceRequest.swift
+@@ -0,0 +1,135 @@
++import Foundation
++import MLX
++
++/// Runs one fresh full-model CBv2 request after the caller's verified model
++/// load. No stage forward, teacher forcing, MTP, transport or sampling is used.
++/// The mandatory resource callback is a live owner obligation; source metadata
++/// and the old output-one receipt do not authorize this request's allocations.
++func runQwenGenerationReference(loaded: LoadedModel,
++    admission: QwenGenerationReferenceAdmission,
++    admitResources: (QwenGenerationReferenceRequirements) throws -> Void,
++    check: () throws -> Void
++) throws -> QwenGenerationReferenceResult {
++    var session: CBv2RequestSession?
++    var finalLogits: QwenRecordedLogits?
++    do {
++        return try MLX.withError { nativeError in
++            func checked() throws { try nativeError.check(); try check(); try nativeError.check() }
++            let request = admission.request
++            let (source, receipt) = try admitQwenLongPrefillReferenceSource(
++                loaded: loaded, admission: admission.source)
++            guard try QwenLongPrefillArithmeticEnvironment.admit(ProcessInfo.processInfo.environment)
++                == admission.source.arithmetic else {
++                throw ProbeError("Generation reference process arithmetic changed after source admission")
++            }
++            try checked()
++            try admitResources(admission.requirements)
++            try checked()
++            let start = DispatchTime.now().uptimeNanoseconds
++            let owned = try CBv2RequestSession(loaded: loaded,
++                promptCount: request.promptCount, outputCount: request.outputCount)
++            session = owned
++            guard owned.committedTokens == 0, owned.committedPromptTokens == 0,
++                  owned.decodeForwardCount == 0, !owned.isClosed, !owned.isFailed else {
++                throw ProbeError("Generation reference did not begin with fresh full-model state")
++            }
++            var tokens: [Int] = []
++            var observations: [QwenGenerationReferenceTokenEvidence] = []
++            var completedFrames = 0
++            var firstSelected: UInt64?
++            var lastSelected: UInt64?
++            var reason: QwenLayerStageGenerationFinishReason?
++            for sequence in 0..<request.forwardCount {
++                let frame = try request.frame(sequence: sequence)
++                let observation: (QwenGenerationReferenceTokenEvidence, QwenRecordedLogits, UInt64)? = try autoreleasepool {
++                    try checked()
++                    let output: MLXArray
++                    switch frame.phase {
++                    case .prefill:
++                        let ids = Array(request.promptTokenIDs[frame.tokenOffset..<(frame.tokenOffset + frame.tokenCount)])
++                        output = try owned.prefillChunk(ids, final: frame.finalPromptChunk, check: checked)
++                    case .decode:
++                        guard let previous = tokens.last else {
++                            throw ProbeError("Generation reference decode lacks a selected target token")
++                        }
++                        output = try owned.decode(previous, check: checked)
++                    }
++                    let expectsLogits = frame.finalPromptChunk || frame.phase == .decode
++                    guard owned.committedTokens == frame.tokenOffset + frame.tokenCount,
++                          owned.committedPromptTokens == min(request.promptCount, owned.committedTokens),
++                          owned.decodeForwardCount == max(0, owned.committedTokens - request.promptCount),
++                          output.shape == [1, expectsLogits ? request.profile.vocabularySize : 1],
++                          String(describing: output.dtype) == request.profile.activationDType else {
++                        throw ProbeError("Generation reference forward differs from its exact frame")
++                    }
++                    try checked()
++                    guard expectsLogits else { return nil }
++                    let token = try QwenGenerationReferenceCapture.token(output, request: request, check: checked)
++                    // Stop this timestamp before the complete-row CPU copy.
++                    let selectedAt = DispatchTime.now().uptimeNanoseconds
++                    let capture = try QwenGenerationReferenceCapture.evidence(output, request: request,
++                        frame: frame, ordinal: tokens.count, token: token, check: checked)
++                    return (capture.0, capture.1, selectedAt)
++                }
++                completedFrames += 1
++                if let (evidence, logits, selectedAt) = observation {
++                    tokens.append(evidence.tokenID); observations.append(evidence); finalLogits = logits
++                    if firstSelected == nil { firstSelected = selectedAt }
++                    lastSelected = selectedAt
++                    if request.stopTokenIDs.contains(evidence.tokenID) { reason = .eos }
++                    else if tokens.count == request.outputCount { reason = .length }
++                    if reason != nil { break }
++                }
++            }
++            guard let reason, let firstSelected, let lastSelected, let finalLogits else {
++                throw ProbeError("Generation reference ended without a selected-token completion")
++            }
++            let completion = try QwenGenerationReferenceCompletion(request: request, reason: reason,
++                selectedTokenIDs: tokens, completedFrames: completedFrames)
++            try completion.requireSession(promptCount: request.promptCount, outputCount: request.outputCount,
++                committedPromptTokens: owned.committedPromptTokens, decodeForwardCount: owned.decodeForwardCount,
++                committedTokens: owned.committedTokens)
++            let snapshot = try owned.snapshot(includeBytes: false, check: checked)
++            let state = try QwenRecordedState(snapshots: [snapshot], plan: admission.source.plan,
++                                             committedTokens: completion.committedTokens)
++            try checked()
++            try owned.finishGeneration(completion)
++            try checked()
++            guard owned.isClosed, !owned.isFailed else {
++                throw ProbeError("Generation reference did not retire request state cleanly")
++            }
++            let retired = DispatchTime.now().uptimeNanoseconds
++            guard start <= firstSelected, firstSelected <= lastSelected, lastSelected <= retired else {
++                throw ProbeError("Generation reference monotonic clock order differs")
++            }
++            return .init(source: source, sourceLoad: receipt,
++                promptFileSHA256: admission.source.promptFileSHA256,
++                promptTokenIDsSHA256: admission.source.promptTokenIDsSHA256,
++                requestID: request.requestID, requestFingerprint: request.fingerprint, profile: request.profile,
++                promptCount: request.promptCount, chunkSize: request.chunkSize,
++                requestedOutputCount: request.outputCount, maximumTokens: request.maximumTokens,
++                stopTokenIDs: request.stopTokenIDs.sorted(), requirements: admission.requirements,
++                selectedTokenIDs: tokens, selectedTokenIDsSHA256: qwenGenerationTokenHash(tokens),
++                finishReason: reason, completedFrames: completedFrames, committedTokens: completion.committedTokens,
++                tokens: observations, finalLogits: finalLogits, finalState: state,
++                timing: .init(requestStartNanoseconds: start, firstSelectedTokenNanoseconds: firstSelected,
++                    finalSelectedTokenNanoseconds: lastSelected, retiredNanoseconds: retired))
++        }
++    } catch {
++        let primary = error
++        finalLogits = nil
++        var cleanup: [String] = []
++        if let session {
++            do {
++                try MLX.withError { nativeError in
++                    try session.cancel(); try nativeError.check()
++                }
++            } catch { cleanup.append(String(describing: error)) }
++            if !session.isClosed || !session.isFailed { cleanup.append("full generation state was not failed and retired") }
++        }
++        if !cleanup.isEmpty {
++            throw ProbeError("Full generation reference failed (\(primary)); cleanup: \(cleanup.joined(separator: "; "))")
++        }
++        throw primary
++    }
++}

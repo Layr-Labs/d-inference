@@ -1,0 +1,38 @@
+--- a/provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge.swift
++++ b/provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge.swift
+@@ -302,6 +302,7 @@
+         modelId: String,
+         tokenizer: TokenizerHandle,
+         eosTokenIds: Set<Int>,
++        resolvedStopTokenIds: Set<Int>? = nil,
+         extraEOSTokens: [String] = [],
+         defaultMaxTokens: Int = 4096,
+         maxConcurrentRequests: Int = 4,
+@@ -336,7 +337,10 @@
+             ?? Qwen4SupportPolicy.contextLimit(modelID: modelId)
+         self.clampedKVBackendFallbackReason =
+             Self.heartbeatFallbackReason(kvBackendFallbackReason)
+-        self.stopTokenIds = EngineV2Translation.stopTokenIds(
++        // A trusted session can supply its already-resolved policy, including
++        // an intentionally empty fixed-length stop set. Legacy callers retain
++        // the original model/tokenizer/extra-token union.
++        self.stopTokenIds = resolvedStopTokenIds ?? EngineV2Translation.stopTokenIds(
+             eosTokenIds: eosTokenIds,
+             tokenizerEOSTokenId: tokenizer.inner.eosTokenId,
+             extraEOSTokens: extraEOSTokens,
+--- a/provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Submission.swift
++++ b/provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Submission.swift
+@@ -685,6 +685,13 @@
+             }
+             if let failure = error as? PreContentDeadlineFailure { throw failure }
+             if error is CancellationError { throw CancellationError() }
++            // Distributed HTTP has no native terminal when admission refuses.
++            // Propagate the existing mapped error before response headers; an
++            // error-only stream cannot manufacture a native retirement record.
++            if distributed != nil, httpResponse != nil, !retirementTransfer.isClaimed {
++                throw MultiModelBatchSchedulerEngineError.fromSchedulerMessage(
++                    EngineV2Translation.admissionErrorMessage(for: error))
++            }
+             // Admission failure. The message keeps the canonical
+             // `token_budget_exhausted:` prefix contract so
+             // `fromSchedulerMessage` classifies it as a retryable capacity

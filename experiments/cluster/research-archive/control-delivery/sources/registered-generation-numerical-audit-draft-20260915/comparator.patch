@@ -1,0 +1,968 @@
+--- a/audit_candidate.py
++++ b/audit_candidate.py
+@@ -3,6 +3,7 @@
+     VOCAB, OUTPUT, FRONTIER, FRAMES, fields, exact, integer, sha, profile,
+     agreement, token_hash, token_ids, selected_frame)
+ from audit_state import check_entries, state_fingerprint
++from audit_scope import LEGACY, scope_for
+ from recorded_math import digest, logical_bytes, require
+ 
+ EVIDENCE_KEYS = ('schema execution agreement requestFingerprint profileFingerprint rank sourceLayerStart '
+@@ -16,15 +17,20 @@
+ 
+ 
+ def compare(reference, candidates, expected_agreement, context):
++    scope = scope_for(context)
++    model = scope.model
++    ARTIFACT, CONFIG = model['artifact'], model['configuration']
++    CONSTRUCTIONS, STAGES, PLAN = scope.plan['constructions'], scope.plan['stages'], scope.plan['fingerprint']
++    RANGES, VOCAB, OUTPUT, FRONTIER, FRAMES = scope.ranges, model['vocab'], scope.output, scope.frontier, scope.frames
+     expected_hash = agreement(expected_agreement, context)
+     require(type(candidates) is list and len(candidates) == 2, 'Exactly two ranked sidecars required')
+     for rank, evidence in enumerate(candidates):
+         fields(evidence, EVIDENCE_KEYS + (' finalLogits' if rank == 1 else ''), 'candidate evidence')
+         for key, value in dict(schema='qwen_stage_generation_final_diagnostic_v1',
+             agreement=expected_agreement, requestFingerprint=context['fingerprint'],
+-            profileFingerprint=profile()['fingerprint'], rank=rank,
++            profileFingerprint=profile(scope)['fingerprint'], rank=rank,
+             sourceLayerStart=RANGES[rank][0], sourceLayerEnd=RANGES[rank][1],
+-            finalFrame=selected_frame(OUTPUT - 1), actualAllocatorBoundsUsed=True,
++            finalFrame=selected_frame(OUTPUT - 1, scope), actualAllocatorBoundsUsed=True,
+             correctnessOnly=True, throughputMeasurementValid=False, stateBytesIncluded=False,
+             intermediateLogitRowsCompared=False, independentNumericalComparisonPerformed=False,
+             physicalTransferQualified=False).items():
+@@ -46,13 +52,13 @@
+         initial_chain = digest(('qwen-generation-history-v1|' + expected_hash + '|'
+                                 + context['prompt_tokens_sha']).encode())
+         require(execution['tokenChainSHA256'] != initial_chain, 'Token chain did not advance')
+-        size, pin = check_entries(evidence['stateEntries'], *RANGES[rank])
++        size, pin = check_entries(evidence['stateEntries'], *RANGES[rank], scope=scope)
+         exact(evidence['logicalStateBytes'], size, 'stage logical state bytes')
+         exact(evidence['stageStateSHA256'], pin, 'stage state fingerprint')
+         expected_entries = [e for e in reference['entries'] if RANGES[rank][0]
+                             <= e['globalLayerIndex'] < RANGES[rank][1]]
+         exact(evidence['stateEntries'], expected_entries, 'stage state metadata/digest comparison')
+-        check_capture_budget(evidence['captureBudget'], rank)
++        check_capture_budget(evidence['captureBudget'], rank, scope)
+         integer(evidence['resourceObservationCount'], 1)
+         integer(evidence['minimumObservedActualFreeBytes'], 6 * 1024**3)
+         integer(evidence['minimumObservedAllocatorLimitBytes'], 1)
+@@ -65,10 +71,10 @@
+     maximum = max(candidate_row['values'])
+     exact(candidate_row['values'].index(maximum), reference['selected'][-1], 'candidate final CPU argmax')
+     merged = candidates[0]['stateEntries'] + candidates[1]['stateEntries']
+-    exact(merged, reference['entries'], 'complete ordered 72-entry state union')
+-    exact(state_fingerprint(merged), reference['execution']['finalState']['fingerprint'], 'merged full-state fingerprint')
++    exact(merged, reference['entries'], 'complete ordered state union')
++    exact(state_fingerprint(merged, scope), reference['execution']['finalState']['fingerprint'], 'merged full-state fingerprint')
+     return dict(schema='private_generation128_numerical_comparison_v1', status='passed',
+-        modelID='registered_qwen35_9b', stageCut=4, requestID=context['request_id'],
++        modelID=scope.model_id, stageCut=scope.cut, requestID=context['request_id'],
+         requestFingerprint=context['fingerprint'], agreementFingerprint=expected_hash,
+         membershipEpoch=expected_agreement['membershipEpoch'], expectedAgreement=expected_agreement,
+         comparedSelectedTokenCount=OUTPUT, selectedTokenIDsSHA256=token_hash(reference['selected']),
+@@ -82,8 +88,8 @@
+         finalCPUArgmaxTokenID=reference['selected'][-1], finalCPUArgmaxTieCount=candidate_row['values'].count(maximum),
+         orderedStateEntriesCompared=len(merged), stageStateEntryCounts=[len(c['stateEntries']) for c in candidates],
+         logicalStateBytes=reference['execution']['finalState']['logicalByteCount'],
+-        mergedStateFingerprint=state_fingerprint(merged), positionOffsetEntriesReconstructed=8,
+-        otherStateEntryDigestsCompared=64, otherStateEntryBytesReconstructed=False,
++        mergedStateFingerprint=state_fingerprint(merged, scope), positionOffsetEntriesReconstructed=model['layers'] // model['interval'],
++        otherStateEntryDigestsCompared=len(merged) - model['layers'] // model['interval'], otherStateEntryBytesReconstructed=False,
+         storageCommitmentComparedAsOpaqueIdentity=True, storageCommitmentIndependentlyRecomputed=False,
+         expectedProvenanceIsCallerSupplied=True, nativeExecutionBindingVerified=False,
+         declaredBuildAndPolicyIdentitiesIndependentlyAttested=False,
+@@ -93,7 +99,8 @@
+         scope='CPU comparison of pinned exported values and reported state digests; no physical/runtime attestation')
+ 
+ 
+-def check_capture_budget(value, rank):
++def check_capture_budget(value, rank, scope=LEGACY):
++    VOCAB = scope.model['vocab']
+     fields(value, 'rank vocabularySize activationDType logicalRowBytes float32RowBytes extraHostBytes '
+         'extraNativeBytes originalRequestReservedBytes', 'capture budget')
+     row, floating = (0, 0) if rank == 0 else (VOCAB * 2, VOCAB * 4)
+--- a/audit_common.py
++++ b/audit_common.py
+@@ -1,8 +1,9 @@
+-"""Closed registered9B / cut4 / 8192+128 serial diagnostic identities."""
++"""Serial comparison helpers with the original9B defaults and explicit registered scope."""
+ import math
+ import re
+ import uuid
+ from recorded_math import canonical, digest, parse_json, require
++from audit_scope import LEGACY, scope_for
+ 
+ VOCAB = 248320
+ PROMPT = 8192
+@@ -90,33 +91,38 @@
+     return value
+ 
+ 
+-def profile():
+-    identifier = 'registered_qwen35_9b_greedy_generation_v1'
+-    result = dict(identifier=identifier, vocabularySize=VOCAB, hiddenSize=4096,
+-                  activationDType='bfloat16', maximumPromptTokens=PROMPT,
+-                  maximumChunkTokens=CHUNK, maximumOutputTokens=OUTPUT,
+-                  maximumContextTokens=PROMPT + OUTPUT)
++def profile(scope=LEGACY):
++    identifier = scope.model['profile_id']
++    result = dict(identifier=identifier, vocabularySize=scope.model['vocab'], hiddenSize=scope.model['hidden'],
++                  activationDType='bfloat16', maximumPromptTokens=8192,
++                  maximumChunkTokens=512, maximumOutputTokens=128, maximumContextTokens=8320)
+     result['fingerprint'] = digest('|'.join(['qwen-stage-generation-profile-v1', identifier,
+-        str(VOCAB), '4096', 'bfloat16', str(PROMPT), str(CHUNK), str(OUTPUT), str(PROMPT + OUTPUT)]).encode())
++        str(scope.model['vocab']), str(scope.model['hidden']), 'bfloat16', '8192', '512', '128', '8320']).encode())
+     return result
+ 
+ 
+-def request_context(prompt_raw, request_id):
++def request_context(prompt_raw, request_id, scope=None):
++    chosen = LEGACY if scope is None else scope
+     canonical_uuid(request_id)
+-    tokens = token_ids(parse(prompt_raw), PROMPT)
++    tokens = token_ids(parse(prompt_raw), chosen.prompt)
+     token_pin = token_hash(tokens)
+-    fingerprint = digest('\n'.join(['qwen-stage-generation-request-v1', profile()['fingerprint'],
+-        request_id, 'prompt=' + token_pin, 'chunk=' + str(CHUNK), 'output=' + str(OUTPUT), 'stop=']).encode())
+-    return dict(request_id=request_id, fingerprint=fingerprint,
+-                prompt_sha=digest(prompt_raw), prompt_tokens_sha=token_pin)
++    fingerprint = digest('\n'.join(['qwen-stage-generation-request-v1', profile(chosen)['fingerprint'],
++        request_id, 'prompt=' + token_pin, 'chunk=' + str(chosen.chunk), 'output=' + str(chosen.output), 'stop=']).encode())
++    result = dict(request_id=request_id, fingerprint=fingerprint,
++                  prompt_sha=digest(prompt_raw), prompt_tokens_sha=token_pin)
++    if scope is not None:
++        result['scope'] = scope
++    return result
+ 
+ 
+-def selected_frame(ordinal):
+-    integer(ordinal, 0, OUTPUT - 1)
++def selected_frame(ordinal, scope=LEGACY):
++    integer(ordinal, 0, scope.output - 1)
++    sequence = scope.prefill_frames - 1
+     if ordinal == 0:
+-        return dict(sequence=15, phase='prefill', tokenOffset=7680,
+-                    tokenCount=CHUNK, finalPromptChunk=True)
+-    return dict(sequence=15 + ordinal, phase='decode', tokenOffset=PROMPT + ordinal - 1,
++        offset = sequence * scope.chunk
++        return dict(sequence=sequence, phase='prefill', tokenOffset=offset,
++                    tokenCount=scope.prompt - offset, finalPromptChunk=True)
++    return dict(sequence=sequence + ordinal, phase='decode', tokenOffset=scope.prompt + ordinal - 1,
+                 tokenCount=1, finalPromptChunk=False)
+ 
+ 
+@@ -126,6 +132,7 @@
+ 
+ 
+ def agreement(value, context):
++    scope = scope_for(context)
+     fields(value, AGREEMENT_KEYS, 'expected agreement')
+     canonical_uuid(value['membershipEpoch'])
+     require(type(value['rankBuildSHA256']) is list and len(value['rankBuildSHA256']) == 2,
+@@ -134,10 +141,10 @@
+         sha(pin)
+     expected = dict(schema='qwen_stage_generation_agreement_v1', rankCount=2,
+         membershipEpoch=value['membershipEpoch'], requestID=context['request_id'],
+-        requestFingerprint=context['fingerprint'], profileFingerprint=profile()['fingerprint'],
+-        sourceConfigurationSHA256=CONFIG, artifactAggregateSHA256=ARTIFACT,
+-        storageCommitmentSHA256=value['storageCommitmentSHA256'], planFingerprint=PLAN,
+-        stageFingerprints=STAGES, rankBuildSHA256=value['rankBuildSHA256'],
++        requestFingerprint=context['fingerprint'], profileFingerprint=profile(scope)['fingerprint'],
++        sourceConfigurationSHA256=scope.model['configuration'], artifactAggregateSHA256=scope.model['artifact'],
++        storageCommitmentSHA256=value['storageCommitmentSHA256'], planFingerprint=scope.plan['fingerprint'],
++        stageFingerprints=scope.plan['stages'], rankBuildSHA256=value['rankBuildSHA256'],
+         numericalPolicySHA256=value['numericalPolicySHA256'], mtpEnabled=False)
+     exact(value, expected, 'expected agreement')
+     return digest(b'qwen-stage-generation-v1|agreement|' + canonical(value))
+--- a/audit_generation.py
++++ b/audit_generation.py
+@@ -7,6 +7,7 @@
+ from pathlib import Path
+ from audit_common import (REFERENCE_SHA, PROMPT_SHA, REQUEST_ID, fields, exact, sha,
+                           parse, request_context, agreement)
++from audit_scope import pinned_scope
+ from audit_reference import check_reference
+ from audit_candidate import compare
+ from recorded_math import canonical, require
+@@ -23,12 +24,15 @@
+         self.metadata = {}
+         packet_item = self.read(self.packet_path, 64*1024, sha(packet_sha))
+         packet = fields(parse(packet_item['raw']), 'schema request_id expected_agreement files', 'audit packet')
+-        exact(packet['schema'], 'private_generation128_comparison_packet_v1', 'packet schema')
+-        exact(packet['request_id'], REQUEST_ID, 'declared matched request')
+-        refs = fields(packet['files'], ' '.join(LIMITS), 'input references')
++        registered = packet['schema'] == 'private_registered_generation_comparison_packet_v1'
++        if not registered:
++            exact(packet['schema'], 'private_generation128_comparison_packet_v1', 'packet schema')
++            exact(packet['request_id'], REQUEST_ID, 'declared matched request')
++        limits = LIMITS | (dict(registered_request=64*1024, registered_plan=64*1024) if registered else {})
++        refs = fields(packet['files'], ' '.join(limits), 'input references')
+         self.raw = {}
+         identities = {packet_item['identity'][:2]}
+-        for role, limit in LIMITS.items():
++        for role, limit in limits.items():
+             ref = fields(refs[role], 'path sha256', role)
+             label = ref['path']
+             require(type(label) is str and 0 < len(label) <= 4096 and '\x00' not in label, 'Invalid input path')
+@@ -40,9 +44,20 @@
+             identities.add(item['identity'][:2])
+             self.raw[role] = item['raw']
+             self.metadata[role] = dict(sha256=item['sha256'], size_bytes=item['size_bytes'])
+-        exact(self.metadata['reference_stdout']['sha256'], REFERENCE_SHA, 'frozen actual reference pin')
+-        exact(self.metadata['prompt']['sha256'], PROMPT_SHA, 'matched prompt raw pin')
+-        self.context = request_context(self.raw['prompt'], packet['request_id'])
++        if registered:
++            request = parse(self.raw['registered_request'])
++            plan = parse(self.raw['registered_plan'])
++            scope = pinned_scope(request, plan)
++            exact(packet['request_id'], request['requestID'], 'pinned registered request UUID')
++            exact(self.metadata['prompt']['sha256'], sha(request['promptFileSHA256']), 'registered prompt raw pin')
++            self.context = request_context(self.raw['prompt'], packet['request_id'], scope)
++            exact(self.context['prompt_tokens_sha'], sha(request['promptTokenIDsSHA256']), 'registered token ID pin')
++            exact(packet['expected_agreement']['rankBuildSHA256'], [sha(plan['nativeBinarySHA256'])] * 2,
++                  'expected same pinned native worker on both ranks')
++        else:
++            exact(self.metadata['reference_stdout']['sha256'], REFERENCE_SHA, 'frozen actual reference pin')
++            exact(self.metadata['prompt']['sha256'], PROMPT_SHA, 'matched prompt raw pin')
++            self.context = request_context(self.raw['prompt'], packet['request_id'])
+         agreement(packet['expected_agreement'], self.context)
+         self.expected_agreement = packet['expected_agreement']
+         self.packet_sha = packet_item['sha256']
+--- a/audit_reference.py
++++ b/audit_reference.py
+@@ -5,6 +5,7 @@
+     VOCAB, PROMPT, OUTPUT, CHUNK, FRONTIER, FRAMES, fields, exact, integer, sha,
+     parse, profile, token_hash, token_ids, selected_frame)
+ from audit_state import check_state
++from audit_scope import scope_for
+ from recorded_math import logical_bytes, require
+ 
+ ADMITTED_KEYS = ('kind schemaVersion requestID requestFingerprint profile promptFileSHA256 '
+@@ -26,6 +27,12 @@
+ 
+ 
+ def check_reference(raw, context):
++    scope = scope_for(context)
++    model = scope.model
++    ARTIFACT, CONFIG, MANIFEST, LAYOUT, PLAN = (model['artifact'], model['configuration'],
++        model['manifest'], model['layout'], scope.plan['fingerprint'])
++    VOCAB, PROMPT, OUTPUT, CHUNK = model['vocab'], scope.prompt, scope.output, scope.chunk
++    FRONTIER, FRAMES = scope.frontier, scope.frames
+     # Native JSONL requires two complete nonempty LF-terminated records.
+     require(type(raw) is bytes and len(raw) <= 32 * 1024**2, 'Reference output cap')
+     lines = raw.split(b'\n')
+@@ -34,7 +41,7 @@
+     fields(admitted, ADMITTED_KEYS, 'reference admitted')
+     fields(report, REPORT_KEYS, 'reference report')
+     shared = dict(requestID=context['request_id'].upper(), requestFingerprint=context['fingerprint'],
+-        profile=profile(), promptFileSHA256=context['prompt_sha'],
++        profile=profile(scope), promptFileSHA256=context['prompt_sha'],
+         promptTokenIDsSHA256=context['prompt_tokens_sha'], requestedOutputCount=OUTPUT,
+         maximumTokens=PROMPT + OUTPUT, stopTokenIDs=[])
+     exact(admitted, dict(kind='qwen_full_generation_reference_admitted', schemaVersion=1,
+@@ -58,12 +65,12 @@
+         exact(execution[key], value, 'reference execution.' + key)
+     exact(execution['source'], dict(artifactAggregateSHA256=ARTIFACT, sourceConfigurationSHA256=CONFIG,
+         sourceParameterLayoutSHA256=LAYOUT, planSHA256=PLAN, arithmeticEnvironmentSHA256=ARITHMETIC,
+-        bf16ConversionEnabled=True, embeddingActivationDType='bfloat16', sourceModelTensorBytes=5038041600,
+-        layerCount=32, vocabularySize=VOCAB), 'reference source')
++        bf16ConversionEnabled=True, embeddingActivationDType='bfloat16', sourceModelTensorBytes=model['source_bytes'],
++        layerCount=model['layers'], vocabularySize=VOCAB), 'reference source')
+     exact(execution['sourceLoad'], dict(schemaVersion=1, verifiedAggregateSHA256=ARTIFACT,
+         configurationSHA256=CONFIG, parameterLayoutSHA256=LAYOUT, bf16ConversionEnabled=True,
+-        sourceModelTensorBytes=5038041600, loadedTensorBytes=5038041600,
+-        largestHostTensorBytes=508559360, sourceTensorCount=927, tensorCount=927), 'reference source load')
++        sourceModelTensorBytes=model['source_bytes'], loadedTensorBytes=model['source_bytes'],
++        largestHostTensorBytes=model['largest'], sourceTensorCount=model['source_count'], tensorCount=model['source_count']), 'reference source load')
+     require(type(execution['requirements']) is dict, 'Reference requirements missing')
+     selected = token_ids(execution['selectedTokenIDs'], OUTPUT)
+     exact(execution['selectedTokenIDsSHA256'], token_hash(selected), 'selected token hash')
+@@ -71,7 +78,7 @@
+     require(type(tokens) is list and len(tokens) == OUTPUT, 'All reference token observations required')
+     for ordinal, item in enumerate(tokens):
+         fields(item, TOKEN_KEYS, 'reference token')
+-        for key, value in dict(outputOrdinal=ordinal, frame=selected_frame(ordinal),
++        for key, value in dict(outputOrdinal=ordinal, frame=selected_frame(ordinal, scope),
+             committedTokens=PROMPT + ordinal, tokenID=selected[ordinal], logitsShape=[1, VOCAB],
+             logitsDType='bfloat16', logitsByteCount=VOCAB * 2,
+             policy='mlx_argmax_all_axes_with_finite_guard_v1',
+@@ -97,7 +104,7 @@
+     require(tokens[-1]['maximumLogit'] == maximum, 'Final reference maximum differs from full row')
+     exact(tokens[-1]['maximumTieCount'], tie_count, 'final reference tie count')
+     exact(tokens[-1]['logitsLogicalBytesSHA256'], row['logicalBytesSHA256'], 'final compact/full row join')
+-    entries = check_state(execution['finalState'])
++    entries = check_state(execution['finalState'], scope)
+     check_timing(execution['timing'])
+     return dict(execution=execution, selected=selected, final_bytes=final_bytes, entries=entries)
+ 
+--- a/audit_state.py
++++ b/audit_state.py
+@@ -3,33 +3,40 @@
+ import struct
+ from audit_common import FRONTIER, fields, exact, integer, sha
+ from recorded_math import digest, require
++from audit_scope import LEGACY
+ 
+ 
+-def state_geometry(start=0, end=32):
++def state_geometry(start=0, end=None, scope=LEGACY):
++    end = scope.model['layers'] if end is None else end
++    FRONTIER = scope.frontier
++    model = scope.model
+     rows = []
+     for layer in range(start, end):
+-        if layer % 4 == 3:
+-            components = [('kv.keys', [1, 4, FRONTIER, 256], 'bfloat16', 2),
++        if (layer + 1) % model['interval'] == 0:
++            components = [('kv.keys', [1, model['kv_heads'], FRONTIER, model['head_dim']], 'bfloat16', 2),
+                           ('kv.position_offsets', [1], 'int32', 4),
+-                          ('kv.values', [1, 4, FRONTIER, 256], 'bfloat16', 2)]
++                          ('kv.values', [1, model['kv_heads'], FRONTIER, model['head_dim']], 'bfloat16', 2)]
+         else:
+-            components = [('conv', [1, 3, 8192], 'bfloat16', 2),
+-                          ('ssm', [1, 32, 128, 128], 'float32', 4)]
++            components = [('conv', [1, model['conv_history'], model['conv_channels']], 'bfloat16', 2),
++                          ('ssm', [1, model['linear_value_heads'], model['linear_value_dim'],
++                                   model['linear_key_dim']], 'float32', 4)]
+         for component, shape, dtype, width in components:
+             rows.append(dict(globalLayerIndex=layer, component=component, shape=shape,
+                              dtype=dtype, byteCount=math.prod(shape) * width))
+     return rows
+ 
+ 
+-def state_fingerprint(entries):
++def state_fingerprint(entries, scope=LEGACY):
++    FRONTIER = scope.frontier
+     rows = ['cbv2-owned-state-v1', 'tokens=' + str(FRONTIER)]
+     rows.extend('{globalLayerIndex}|{component}|{shape}|{dtype}|{byteCount}|{sha256}'.format(**e)
+                 for e in entries)
+     return digest('\n'.join(rows).encode())
+ 
+ 
+-def check_entries(entries, start=0, end=32):
+-    geometry = state_geometry(start, end)
++def check_entries(entries, start=0, end=None, scope=LEGACY):
++    FRONTIER = scope.frontier
++    geometry = state_geometry(start, end, scope)
+     require(type(entries) is list and len(entries) == len(geometry), 'State component count differs')
+     for entry, expected in zip(entries, geometry):
+         fields(entry, 'globalLayerIndex component shape dtype byteCount sha256', 'state entry')
+@@ -37,13 +44,14 @@
+         sha(entry['sha256'])
+         if entry['component'] == 'kv.position_offsets':
+             exact(entry['sha256'], digest(struct.pack('<i', FRONTIER)), 'native Int32 position offset')
+-    return sum(e['byteCount'] for e in entries), state_fingerprint(entries)
++    return sum(e['byteCount'] for e in entries), state_fingerprint(entries, scope)
+ 
+ 
+-def check_state(state):
++def check_state(state, scope=LEGACY):
++    FRONTIER = scope.frontier
+     fields(state, 'committedTokens entries logicalByteCount fingerprint', 'reference state')
+     exact(state['committedTokens'], FRONTIER, 'state frontier')
+-    size, pin = check_entries(state['entries'])
++    size, pin = check_entries(state['entries'], scope=scope)
+     exact(state['logicalByteCount'], size, 'state logical bytes')
+     exact(state['fingerprint'], pin, 'state fingerprint')
+     return state['entries']
+--- a/fabricated.py
++++ b/fabricated.py
+@@ -5,51 +5,58 @@
+     STAGES, CONSTRUCTIONS, REQUEST_ID, profile, request_context, token_hash, agreement)
+ from audit_state import state_geometry, state_fingerprint
+ from recorded_math import canonical, digest
++from audit_scope import LEGACY
++from audit_common import selected_frame
+ 
+ 
+-def fixture():
+-    prompt_raw = canonical([7] * 8192) + b'\n'
+-    context = request_context(prompt_raw, REQUEST_ID)
+-    selected = [3 * (i + 1) for i in range(128)]
++def fixture(scope=None, request_id=None):
++    chosen = LEGACY if scope is None else scope
++    model = chosen.model
++    ARTIFACT, CONFIG, MANIFEST, LAYOUT, PLAN = (model['artifact'], model['configuration'],
++        model['manifest'], model['layout'], chosen.plan['fingerprint'])
++    STAGES, CONSTRUCTIONS = chosen.plan['stages'], chosen.plan['constructions']
++    PROMPT, CHUNK, OUTPUT, FRONTIER, FRAMES = chosen.prompt, chosen.chunk, chosen.output, chosen.frontier, chosen.frames
++    request_id = REQUEST_ID if request_id is None else request_id
++    prompt_raw = canonical([7] * PROMPT) + b'\n'
++    context = request_context(prompt_raw, request_id, scope)
++    selected = [3 * (i + 1) for i in range(OUTPUT)]
+     values = [-2.0] * 248320
+     values[1], values[2] = -0.0, 0.0
+-    values[384], values[400] = 8.0, 8.0
++    values[selected[-1]], values[400] = 8.0, 8.0
+     row_bytes = b''.join(struct.pack('<H', struct.unpack('<I', struct.pack('<f', v))[0] >> 16) for v in values)
+     row = dict(shape=[1, 248320], dtype='bfloat16', byteCount=496640,
+                logicalBytesSHA256=digest(row_bytes), values=values)
+-    entries = state_geometry()
++    entries = state_geometry(scope=chosen)
+     for e in entries:
+-        e['sha256'] = (digest(struct.pack('<i', 8319)) if e['component'] == 'kv.position_offsets'
++        e['sha256'] = (digest(struct.pack('<i', FRONTIER)) if e['component'] == 'kv.position_offsets'
+                        else digest(('invented-state-' + str(e['globalLayerIndex']) + '-' + e['component']).encode()))
+-    state = dict(committedTokens=8319, entries=entries, logicalByteCount=sum(e['byteCount'] for e in entries),
+-                 fingerprint=state_fingerprint(entries))
++    state = dict(committedTokens=FRONTIER, entries=entries, logicalByteCount=sum(e['byteCount'] for e in entries),
++                 fingerprint=state_fingerprint(entries, chosen))
+     tokens = []
+-    for i in range(128):
+-        frame = (dict(sequence=15, phase='prefill', tokenOffset=7680, tokenCount=512, finalPromptChunk=True)
+-                 if i == 0 else dict(sequence=15+i, phase='decode', tokenOffset=8191+i,
+-                                     tokenCount=1, finalPromptChunk=False))
+-        tokens.append(dict(outputOrdinal=i, frame=frame, committedTokens=8192+i, tokenID=selected[i],
+-            maximumTieCount=2 if i == 127 else 1, maximumLogit=8.0 if i == 127 else 2.0,
++    for i in range(OUTPUT):
++        frame = selected_frame(i, chosen)
++        tokens.append(dict(outputOrdinal=i, frame=frame, committedTokens=PROMPT+i, tokenID=selected[i],
++            maximumTieCount=2 if i == OUTPUT - 1 else 1, maximumLogit=8.0 if i == OUTPUT - 1 else 2.0,
+             logitsShape=[1, 248320], logitsDType='bfloat16', logitsByteCount=496640,
+-            logitsLogicalBytesSHA256=row['logicalBytesSHA256'] if i == 127 else digest(('invented-row-' + str(i)).encode()),
++            logitsLogicalBytesSHA256=row['logicalBytesSHA256'] if i == OUTPUT - 1 else digest(('invented-row-' + str(i)).encode()),
+             policy='mlx_argmax_all_axes_with_finite_guard_v1',
+             cpuCrosscheckPolicy='finite_maximum_lowest_vocabulary_index_v1', nativeSelectionMatchesCapturedFullRow=True))
+-    shared = dict(requestID=REQUEST_ID.upper(), requestFingerprint=context['fingerprint'], profile=profile(),
++    shared = dict(requestID=request_id.upper(), requestFingerprint=context['fingerprint'], profile=profile(chosen),
+         promptFileSHA256=context['prompt_sha'], promptTokenIDsSHA256=context['prompt_tokens_sha'],
+-        requestedOutputCount=128, maximumTokens=8320, stopTokenIDs=[])
++        requestedOutputCount=OUTPUT, maximumTokens=PROMPT+OUTPUT, stopTokenIDs=[])
+     admitted = dict(kind='qwen_full_generation_reference_admitted', schemaVersion=1, **shared,
+         manifestSHA256=MANIFEST, artifactSHA256=ARTIFACT, configurationSHA256=CONFIG, planSHA256=PLAN,
+         verifiedModelLoaded=False, freshRequestStateCreated=False, correctnessOnly=True, throughputMeasurementValid=False)
+     execution = dict(schema='qwen_full_generation_reference_v1', **shared,
+         source=dict(artifactAggregateSHA256=ARTIFACT, sourceConfigurationSHA256=CONFIG,
+             sourceParameterLayoutSHA256=LAYOUT, planSHA256=PLAN, arithmeticEnvironmentSHA256=ARITHMETIC,
+-            bf16ConversionEnabled=True, embeddingActivationDType='bfloat16', sourceModelTensorBytes=5038041600,
+-            layerCount=32, vocabularySize=248320),
++            bf16ConversionEnabled=True, embeddingActivationDType='bfloat16', sourceModelTensorBytes=model['source_bytes'],
++            layerCount=model['layers'], vocabularySize=248320),
+         sourceLoad=dict(schemaVersion=1, verifiedAggregateSHA256=ARTIFACT, configurationSHA256=CONFIG,
+-            parameterLayoutSHA256=LAYOUT, bf16ConversionEnabled=True, sourceModelTensorBytes=5038041600,
+-            loadedTensorBytes=5038041600, largestHostTensorBytes=508559360, sourceTensorCount=927, tensorCount=927),
+-        promptCount=8192, chunkSize=512, requirements={}, selectedTokenIDs=selected,
+-        selectedTokenIDsSHA256=token_hash(selected), finishReason='length', completedFrames=143, committedTokens=8319,
++            parameterLayoutSHA256=LAYOUT, bf16ConversionEnabled=True, sourceModelTensorBytes=model['source_bytes'],
++            loadedTensorBytes=model['source_bytes'], largestHostTensorBytes=model['largest'], sourceTensorCount=model['source_count'], tensorCount=model['source_count']),
++        promptCount=PROMPT, chunkSize=CHUNK, requirements={}, selectedTokenIDs=selected,
++        selectedTokenIDsSHA256=token_hash(selected), finishReason='length', completedFrames=FRAMES, committedTokens=FRONTIER,
+         tokens=tokens, finalLogits=row, finalState=state,
+         timing=dict(clock='DispatchTime.uptimeNanoseconds.same_process', requestStartNanoseconds=1,
+             firstSelectedTokenNanoseconds=2, finalSelectedTokenNanoseconds=3, retiredNanoseconds=4,
+@@ -64,13 +71,13 @@
+         correctnessOnly=True, throughputMeasurementValid=False, physicalTransferQualified=False,
+         candidateNumericalComparisonPerformed=False, execution=execution, resources={}, runtime={}, memory=[])
+     expected = dict(schema='qwen_stage_generation_agreement_v1', rankCount=2,
+-        membershipEpoch='11111111-2222-4333-8444-555555555555', requestID=REQUEST_ID,
+-        requestFingerprint=context['fingerprint'], profileFingerprint=profile()['fingerprint'],
++        membershipEpoch='11111111-2222-4333-8444-555555555555', requestID=request_id,
++        requestFingerprint=context['fingerprint'], profileFingerprint=profile(chosen)['fingerprint'],
+         sourceConfigurationSHA256=CONFIG, artifactAggregateSHA256=ARTIFACT,
+         storageCommitmentSHA256='a' * 64, planFingerprint=PLAN, stageFingerprints=list(STAGES),
+         rankBuildSHA256=['b' * 64, 'c' * 64], numericalPolicySHA256='d' * 64, mtpEnabled=False)
+     candidates = []
+-    for rank, (start, end) in enumerate(((0, 4), (4, 32))):
++    for rank, (start, end) in enumerate(chosen.ranges):
+         local_entries = copy.deepcopy([e for e in entries if start <= e['globalLayerIndex'] < end])
+         identity = dict(stageIndex=rank, requestFingerprint=context['fingerprint'], artifactAggregateSHA256=ARTIFACT,
+             storageCommitmentSHA256=expected['storageCommitmentSHA256'], bf16ConversionEnabled=True,
+@@ -79,13 +86,13 @@
+         candidate = dict(schema='qwen_stage_generation_final_diagnostic_v1',
+             execution=dict(schema='qwen_stage_generation_result_v1', agreementFingerprint=agreement(expected, context),
+                 membershipEpoch=expected['membershipEpoch'], identity=identity,
+-                selectedTokenIDs=list(selected), tokenChainSHA256='e' * 64, completedFrames=143, committedTokens=8319,
++                selectedTokenIDs=list(selected), tokenChainSHA256='e' * 64, completedFrames=FRAMES, committedTokens=FRONTIER,
+                 finishReason='length', bothRequestStatesRetired=True, modelRemainsResident=True, mtpEnabled=False,
+                 physicalTransferQualified=False, independentNumericalComparisonPerformed=False, externalTTFTMeasured=False),
+             agreement=copy.deepcopy(expected), requestFingerprint=context['fingerprint'],
+-            profileFingerprint=profile()['fingerprint'], rank=rank, sourceLayerStart=start, sourceLayerEnd=end,
++            profileFingerprint=profile(chosen)['fingerprint'], rank=rank, sourceLayerStart=start, sourceLayerEnd=end,
+             finalFrame=copy.deepcopy(tokens[-1]['frame']), stateEntries=local_entries,
+-            logicalStateBytes=sum(e['byteCount'] for e in local_entries), stageStateSHA256=state_fingerprint(local_entries),
++            logicalStateBytes=sum(e['byteCount'] for e in local_entries), stageStateSHA256=state_fingerprint(local_entries, chosen),
+             captureBudget=dict(rank=rank, vocabularySize=248320, activationDType='bfloat16',
+                 logicalRowBytes=496640*rank, float32RowBytes=993280*rank, extraHostBytes=1489920*rank,
+                 extraNativeBytes=1507328*rank, originalRequestReservedBytes=800000000),
+--- /dev/null
++++ b/audit_scope.py
+@@ -0,0 +1,75 @@
++"""Explicit registered metadata/request scope; never inferred from a candidate."""
++from dataclasses import dataclass
++import json
++from pathlib import Path
++from recorded_math import canonical, require
++
++CATALOG = json.loads((Path(__file__).with_name('registered_profiles.json')).read_text())
++
++
++@dataclass(frozen=True)
++class AuditScope:
++    model_id: str = 'registered_qwen35_9b'
++    prompt: int = 8192
++    chunk: int = 512
++    output: int = 128
++    cut: int = 4
++
++    def __post_init__(self):
++        require(type(self.model_id) is str and self.model_id in CATALOG, 'Unregistered comparison model')
++        for value, maximum in ((self.prompt, 8192), (self.chunk, 512), (self.output, 128)):
++            require(type(value) is int and 1 <= value <= maximum, 'Request geometry outside profile')
++        require(self.prompt + self.output <= 8320 and type(self.cut) is int
++                and str(self.cut) in self.model['plans'], 'Unpinned comparison cut/capacity')
++
++    @property
++    def model(self):
++        return CATALOG[self.model_id]
++
++    @property
++    def plan(self):
++        return self.model['plans'][str(self.cut)]
++
++    @property
++    def frontier(self):
++        return self.prompt + self.output - 1
++
++    @property
++    def prefill_frames(self):
++        return (self.prompt - 1) // self.chunk + 1
++
++    @property
++    def frames(self):
++        return self.prefill_frames + self.output - 1
++
++    @property
++    def ranges(self):
++        return ((0, self.cut), (self.cut, self.model['layers']))
++
++
++LEGACY = AuditScope()
++
++
++def scope_for(context=None):
++    value = LEGACY if context is None else context.get('scope', LEGACY)
++    require(type(value) is AuditScope, 'Explicit comparison scope required')
++    return value
++
++
++def pinned_scope(request, plan):
++    require(type(request) is dict and type(plan) is dict, 'Pinned request and Plan objects required')
++    scope = AuditScope(request['model'], request['promptCount'], request['chunkSize'],
++                       request['outputCount'], request['stageCut'])
++    require(request['stopTokenIDs'] == [] and request['mtp'] is False, 'Only length-ended target requests supported')
++    expected = {'artifactSHA256': scope.model['artifact'], 'configurationSHA256': scope.model['configuration'],
++                'manifestSHA256': scope.model['manifest']}
++    for key, value in expected.items():
++        require(canonical(request[key]) == canonical(value), 'Request registered identity differs: ' + key)
++        require(canonical(plan[key]) == canonical(value), 'Plan registered identity differs: ' + key)
++    for key, value in dict(modelID=scope.model_id, stageCut=scope.cut,
++                           planSHA256=scope.plan['fingerprint'], stagePlanSHA256=scope.plan['stages'],
++                           constructionConfigurationSHA256=scope.plan['constructions']).items():
++        require(value is not None and canonical(plan[key]) == canonical(value), 'Pinned Plan differs: ' + key)
++    # Both supported models retain interval4 and their exact disjoint state map.
++    require(scope.model['interval'] == 4 and scope.cut % 4 == 0, 'Layer phase differs')
++    return scope
+--- /dev/null
++++ b/derive_profiles.py
+@@ -0,0 +1,78 @@
++#!/usr/bin/env python3
++"""Replay fixed profile metadata from retained bytes; no model payload or execution."""
++import base64
++import importlib.util
++import json
++from pathlib import Path
++from recorded_math import digest, require
++
++BASE = Path(__file__).resolve().parent
++
++
++def legacy_constants():
++    spec = importlib.util.spec_from_file_location('frozen_audit_common', BASE / 'originals/audit_common.py')
++    result = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(result)
++    return result
++
++
++def derive():
++    retained = json.loads((BASE / 'inputs/retained-inputs.json').read_text())
++    metadata = json.loads((BASE / 'inputs/recording-metadata.json').read_text())
++    old = legacy_constants()
++    result = {}
++    for name, model_id, cut in [('nine', 'registered_qwen35_9b', 4),
++                               ('twentySeven', 'registered_qwen38_27b', 32)]:
++        item = retained[name]
++        config_bytes = base64.b64decode(item['configuration'], validate=True)
++        manifest_bytes = base64.b64decode(item['manifest'], validate=True)
++        config = json.loads(config_bytes)['text_config']
++        manifest = json.loads(manifest_bytes)
++        tensors = item['canonicalTensors']
++        require(len({t['name'] for t in tensors}) == len(tensors), 'Duplicate source tensor')
++        dtype = {'U32': 'uint32', 'BF16': 'bfloat16', 'F16': 'bfloat16', 'F32': 'float32'}
++        # QwenDenseObservedTensor.layoutEntry / parameterLayoutFingerprint spelling.
++        layout = sorted(t['name'] + ':' + dtype[t['sourceDType']] + ':' + str(t['shape']) for t in tensors)
++        value = dict(modelID=model_id, artifact=manifest['aggregate_sha256'],
++            configuration=digest(config_bytes), manifest=digest(manifest_bytes),
++            layers=config['num_hidden_layers'], hidden=config['hidden_size'], vocab=config['vocab_size'],
++            interval=config['full_attention_interval'], kv_heads=config['num_key_value_heads'],
++            head_dim=config['head_dim'], linear_value_heads=config['linear_num_value_heads'],
++            linear_key_dim=config['linear_key_head_dim'], linear_value_dim=config['linear_value_head_dim'],
++            conv_history=config['linear_conv_kernel_dim'] - 1,
++            conv_channels=2*config['linear_num_key_heads']*config['linear_key_head_dim']
++                          + config['linear_num_value_heads']*config['linear_value_head_dim'],
++            layout=digest('\n'.join(layout).encode()), source_count=len(tensors),
++            source_bytes=sum(t['byteCount'] for t in tensors), largest=max(t['byteCount'] for t in tensors),
++            profile_id=model_id + '_greedy_generation_v1')
++        expected_types = [('full_attention' if (i+1) % value['interval'] == 0 else 'linear_attention')
++                          for i in range(value['layers'])]
++        require(config['layer_types'] == expected_types, 'Unexpected layer phase')
++        if name == 'nine':
++            for key, expected in dict(artifact=old.ARTIFACT, configuration=old.CONFIG,
++                    manifest=old.MANIFEST, layout=old.LAYOUT).items():
++                require(value[key] == expected, 'Frozen9B metadata differs: ' + key)
++            plan = dict(fingerprint=old.PLAN, stages=old.STAGES, constructions=old.CONSTRUCTIONS)
++        else:
++            for key, source in [('artifact', 'artifactSHA256'), ('configuration', 'configurationSHA256'),
++                                ('manifest', 'manifestSHA256'), ('modelID', 'modelID')]:
++                require(value[key] == metadata[source], 'Actual metadata helper differs: ' + key)
++            require(sum(metadata['canonicalCounts']) == value['source_count']
++                    and sum(metadata['activeBytes']) == value['source_bytes'], 'Helper coverage differs')
++            require(metadata['stageCut'] == cut and metadata['modelPayloadRead'] is False
++                    and metadata['nativeExecuted'] is False, 'Metadata-only helper scope differs')
++            plan = dict(fingerprint=metadata['planSHA256'], stages=metadata['stagePlanSHA256'],
++                        constructions=metadata['constructionConfigurationSHA256'])
++        value['plans'] = {str(cut): plan}
++        result[model_id] = value
++    return result
++
++
++def verify():
++    expected = json.loads((BASE / 'registered_profiles.json').read_text())
++    require(derive() == expected, 'Registered profile catalog differs from retained source replay')
++    return dict(status='passed', profiles=len(expected), payloadRead=False, nativeExecuted=False)
++
++
++if __name__ == '__main__':
++    print(json.dumps(verify(), sort_keys=True))
+--- /dev/null
++++ b/prepare_expected.py
+@@ -0,0 +1,54 @@
++#!/usr/bin/env python3
++"""Construct the expected agreement before candidate access; opaque identity pins are caller supplied."""
++import argparse
++import json
++from pathlib import Path
++from audit_common import agreement, canonical_uuid, parse, profile, request_context, sha, exact
++from audit_generation import write_result
++from audit_scope import pinned_scope
++from snapshot import snapshot
++
++
++def expected(request_raw, plan_raw, prompt_raw, epoch, storage, numerical_policy):
++    request, plan = parse(request_raw), parse(plan_raw)
++    scope = pinned_scope(request, plan)
++    context = request_context(prompt_raw, request['requestID'], scope)
++    exact(context['prompt_sha'], sha(request['promptFileSHA256']), 'expected prompt raw pin')
++    exact(context['prompt_tokens_sha'], sha(request['promptTokenIDsSHA256']), 'expected prompt ID pin')
++    result = dict(schema='qwen_stage_generation_agreement_v1', rankCount=2,
++        membershipEpoch=canonical_uuid(epoch), requestID=context['request_id'],
++        requestFingerprint=context['fingerprint'], profileFingerprint=profile(scope)['fingerprint'],
++        sourceConfigurationSHA256=scope.model['configuration'], artifactAggregateSHA256=scope.model['artifact'],
++        storageCommitmentSHA256=sha(storage), planFingerprint=scope.plan['fingerprint'],
++        stageFingerprints=scope.plan['stages'], rankBuildSHA256=[sha(plan['nativeBinarySHA256'])] * 2,
++        numericalPolicySHA256=sha(numerical_policy), mtpEnabled=False)
++    agreement(result, context)
++    return result
++
++
++def main():
++    parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
++    for name in ('request', 'plan', 'prompt'):
++        parser.add_argument('--' + name, required=True)
++        parser.add_argument('--' + name + '-sha256', required=True)
++    parser.add_argument('--epoch', required=True)
++    parser.add_argument('--storage-commitment-sha256', required=True)
++    parser.add_argument('--numerical-policy-sha256', required=True)
++    parser.add_argument('--output', required=True)
++    args = parser.parse_args()
++    saved = []
++    for name, limit in [('request', 64*1024), ('plan', 64*1024), ('prompt', 256*1024)]:
++        path = Path(getattr(args, name)).absolute()
++        item = snapshot(path, limit)
++        exact(item['sha256'], sha(getattr(args, name + '_sha256')), name + ' raw pin')
++        saved.append((path, limit, item))
++    result = expected(*(item['raw'] for _, _, item in saved), args.epoch,
++                      args.storage_commitment_sha256, args.numerical_policy_sha256)
++    for path, limit, item in saved:
++        exact(snapshot(path, limit, keep=False), {k:v for k,v in item.items() if k != 'raw'}, 'input recheck')
++    write_result(args.output, result)
++    print(json.dumps(dict(status='prepared', candidateInputsRead=False, nativeExecutionBindingVerified=False)))
++
++
++if __name__ == '__main__':
++    main()
+--- /dev/null
++++ b/test_registered.py
+@@ -0,0 +1,187 @@
++"""Fabricated CPU evidence only; no27B model/reference/candidate execution."""
++import copy
++import json
++from pathlib import Path
++import struct
++import subprocess
++import sys
++import tempfile
++import unittest
++from audit_scope import AuditScope, pinned_scope
++from audit_common import agreement, profile, request_context, selected_frame, token_hash
++from audit_candidate import compare
++from audit_generation import audit
++from audit_reference import check_reference
++from audit_state import check_state, state_fingerprint
++from fabricated import fixture, reference_bytes
++from recorded_math import canonical, digest
++from derive_profiles import verify
++from prepare_expected import expected
++
++BASE = Path(__file__).resolve().parent
++REQUEST_ID = '20801ced-ca29-4faf-b71a-9ebbe1886a14'
++
++
++class RegisteredTests(unittest.TestCase):
++    def test_catalog_replays_from_retained_configuration_and_actual_metadata(self):
++        self.assertEqual(verify()['profiles'], 2)
++
++    @classmethod
++    def setUpClass(cls):
++        cls.scope = AuditScope('registered_qwen38_27b', 32, 16, 128, 32)
++        cls.prompt, cls.context, cls.admitted, cls.report, cls.expected, cls.candidates = fixture(cls.scope, REQUEST_ID)
++        cls.raw = reference_bytes(cls.admitted, cls.report)
++        cls.reference = check_reference(cls.raw, cls.context)
++        cls.plan = json.loads((BASE / 'inputs/recording-metadata.json').read_text())
++
++    def bad_candidate(self, change):
++        candidates = copy.deepcopy(self.candidates)
++        change(candidates)
++        with self.assertRaises(ValueError):
++            compare(self.reference, candidates, self.expected, self.context)
++
++    def bad_reference(self, change):
++        report = copy.deepcopy(self.report)
++        change(report['execution'])
++        with self.assertRaises(ValueError):
++            check_reference(reference_bytes(self.admitted, report), self.context)
++
++    def request(self):
++        return dict(model=self.scope.model_id, artifactSHA256=self.scope.model['artifact'],
++            configurationSHA256=self.scope.model['configuration'], manifestSHA256=self.scope.model['manifest'],
++            requestID=REQUEST_ID, promptCount=32, chunkSize=16, outputCount=128, stageCut=32,
++            stopTokenIDs=[], mtp=False, promptFileSHA256=digest(self.prompt),
++            promptTokenIDsSHA256=self.context['prompt_tokens_sha'])
++
++    def test_legacy_result_is_byte_identical_to_frozen_algorithm(self):
++        prompt, context, admitted, report, expected, candidates = fixture()
++        actual = canonical(compare(check_reference(reference_bytes(admitted, report), context), candidates, expected, context))
++        script = ('from fabricated import fixture,reference_bytes;from audit_reference import check_reference;'
++                  'from audit_candidate import compare;from recorded_math import canonical;import sys;'
++                  'p,c,a,r,e,s=fixture();sys.stdout.buffer.write(canonical(compare(check_reference(reference_bytes(a,r),c),s,e,c)))')
++        original = subprocess.run([sys.executable, '-B', '-c', script], cwd=BASE / 'originals',
++                                  capture_output=True, timeout=15, check=True)
++        self.assertEqual(original.stderr, b'')
++        self.assertEqual(actual, original.stdout)
++
++    def test_exact_27b_metadata_profile_and_complete_comparison(self):
++        self.assertEqual(profile(self.scope)['fingerprint'], self.plan['generationProfileSHA256'])
++        result = compare(self.reference, self.candidates, self.expected, self.context)
++        self.assertEqual((result['modelID'], result['stageCut']), ('registered_qwen38_27b', 32))
++        self.assertEqual((result['comparedSelectedTokenCount'], result['finalCompletedFrames'],
++                          result['finalCommittedTokens']), (128, 129, 159))
++        self.assertEqual(self.report['execution']['maximumTokens'], 160)
++        self.assertEqual(result['stageStateEntryCounts'], [72, 72])
++        self.assertEqual(result['orderedStateEntriesCompared'], 144)
++        self.assertEqual(result['logicalStateBytes'], 164_364_352)
++        self.assertEqual(result['positionOffsetEntriesReconstructed'], 16)
++        self.assertEqual(result['otherStateEntryDigestsCompared'], 128)
++        self.assertEqual(result['finalNativeBF16RowBytesCompared'], 496_640)
++        for key in ('perTokenLogitComparisonPerformed', 'candidateIntermediateFrontiersIndependentlyVerified',
++                    'tokenChainIndependentlyReconstructed', 'otherStateEntryBytesReconstructed',
++                    'nativeExecutionBindingVerified', 'physicalTransferQualified', 'performanceQualification',
++                    'throughputMeasurementValid', 'externalTTFTMeasured'):
++            self.assertIs(result[key], False)
++
++    def test_partial_final_prefill_chunk_and_profile_cap_are_distinct(self):
++        scope = AuditScope('registered_qwen38_27b', 33, 16, 128, 32)
++        self.assertEqual(selected_frame(0, scope), dict(sequence=2, phase='prefill',
++            tokenOffset=32, tokenCount=1, finalPromptChunk=True))
++        self.assertEqual((scope.frames, scope.frontier), (130, 160))
++        self.assertEqual(profile(scope)['maximumContextTokens'], 8320)
++        p, c, a, r, e, candidates = fixture(scope, REQUEST_ID)
++        result = compare(check_reference(reference_bytes(a, r), c), candidates, e, c)
++        self.assertEqual(result['finalCommittedTokens'], 160)
++
++    def test_short_9b_uses_same_generalized_comparison(self):
++        scope = AuditScope('registered_qwen35_9b', 17, 16, 8, 4)
++        p, c, a, r, e, candidates = fixture(scope, REQUEST_ID)
++        result = compare(check_reference(reference_bytes(a, r), c), candidates, e, c)
++        self.assertEqual((result['comparedSelectedTokenCount'], result['finalCompletedFrames'],
++                          result['finalCommittedTokens'], result['orderedStateEntriesCompared']), (8, 9, 24, 72))
++
++    def test_wrong_registered_model_cut_and_request_bounds(self):
++        for values in [('unknown', 32, 16, 128, 32), ('registered_qwen38_27b', 32, 16, 128, 4),
++                       ('registered_qwen38_27b', True, 16, 128, 32),
++                       ('registered_qwen38_27b', 8193, 16, 128, 32),
++                       ('registered_qwen38_27b', 32, 0, 128, 32),
++                       ('registered_qwen38_27b', 32, 513, 128, 32),
++                       ('registered_qwen38_27b', 32, 16, 129, 32)]:
++            with self.subTest(values=values), self.assertRaises(ValueError):
++                AuditScope(*values)
++
++    def test_pinned_request_plan_identity_substitutions(self):
++        self.assertEqual(pinned_scope(self.request(), self.plan), self.scope)
++        for key, value in [('model', 'registered_qwen35_9b'), ('artifactSHA256', '0'*64),
++                           ('configurationSHA256', '0'*64), ('manifestSHA256', '0'*64),
++                           ('stopTokenIDs', [1]), ('mtp', True), ('stageCut', 4)]:
++            request = self.request(); request[key] = value
++            with self.subTest(key=key), self.assertRaises(ValueError):
++                pinned_scope(request, self.plan)
++        for key, value in [('planSHA256', '0'*64), ('stagePlanSHA256', ['0'*64]*2),
++                           ('constructionConfigurationSHA256', ['0'*64]*2)]:
++            plan = copy.deepcopy(self.plan); plan[key] = value
++            with self.subTest(key=key), self.assertRaises(ValueError):
++                pinned_scope(self.request(), plan)
++
++    def test_expected_agreement_is_prepared_without_candidate_inputs(self):
++        result = expected(canonical(self.request()), canonical(self.plan), self.prompt,
++            self.expected['membershipEpoch'], self.expected['storageCommitmentSHA256'],
++            self.expected['numericalPolicySHA256'])
++        self.assertEqual(result['rankBuildSHA256'], [self.plan['nativeBinarySHA256']] * 2)
++        self.assertEqual(result['requestFingerprint'], self.context['fingerprint'])
++        for bad in ('', '0'*63, 'G'*64):
++            with self.subTest(bad=bad), self.assertRaises(ValueError):
++                expected(canonical(self.request()), canonical(self.plan), self.prompt,
++                    self.expected['membershipEpoch'], bad, self.expected['numericalPolicySHA256'])
++
++    def test_legacy_source_counts_and_geometry_are_rejected_for_27b(self):
++        for key, value in [('sourceModelTensorBytes', 5_038_041_600), ('layerCount', 32),
++                           ('sourceParameterLayoutSHA256', '0'*64)]:
++            self.bad_reference(lambda e, k=key, v=value: e['source'].__setitem__(k, v))
++        self.bad_reference(lambda e: e['sourceLoad'].__setitem__('tensorCount', 927))
++        self.bad_candidate(lambda c: c[0]['stateEntries'][0]['shape'].__setitem__(2, 8192))
++        self.bad_candidate(lambda c: c[0]['stateEntries'][1]['shape'].__setitem__(1, 32))
++
++    def test_global_rank_coverage_and_rehashed_wrong_position(self):
++        self.bad_candidate(lambda c: c[0]['stateEntries'].pop())
++        self.bad_candidate(lambda c: c[1]['stateEntries'].__setitem__(0, c[0]['stateEntries'][0]))
++        self.bad_candidate(lambda c: c[0].__setitem__('sourceLayerEnd', 4))
++        state = copy.deepcopy(self.report['execution']['finalState'])
++        entry = next(e for e in state['entries'] if e['component'] == 'kv.position_offsets')
++        entry['sha256'] = digest(struct.pack('<i', 160))
++        state['fingerprint'] = state_fingerprint(state['entries'], self.scope)
++        with self.assertRaises(ValueError):
++            check_state(state, self.scope)
++
++    def test_actual_frame_frontier_and_capacity_join(self):
++        self.bad_reference(lambda e: e.__setitem__('maximumTokens', 8320))
++        self.bad_reference(lambda e: e['tokens'][0]['frame'].__setitem__('sequence', 15))
++        for key, value in [('completedFrames', 143), ('committedTokens', 160), ('finishReason', 'eos')]:
++            self.bad_candidate(lambda c, k=key, v=value: c[1]['execution'].__setitem__(k, v))
++        self.bad_candidate(lambda c: c[1]['finalFrame'].__setitem__('tokenOffset', 159))
++
++    def test_registered_packet_snapshots_and_expected_binary_binding(self):
++        expected = copy.deepcopy(self.expected)
++        expected['rankBuildSHA256'] = [self.plan['nativeBinarySHA256']] * 2
++        candidates = copy.deepcopy(self.candidates)
++        for c in candidates:
++            c['agreement'] = copy.deepcopy(expected)
++            c['execution']['agreementFingerprint'] = agreement(expected, self.context)
++        inputs = dict(prompt=self.prompt, reference_stdout=self.raw,
++            rank0_evidence=canonical(candidates[0]), rank1_evidence=canonical(candidates[1]),
++            registered_request=canonical(self.request()), registered_plan=canonical(self.plan))
++        with tempfile.TemporaryDirectory() as folder:
++            base = Path(folder); refs = {}
++            for role, raw in inputs.items():
++                file = base / role; file.write_bytes(raw)
++                refs[role] = dict(path=role, sha256=digest(raw))
++            packet = dict(schema='private_registered_generation_comparison_packet_v1', request_id=REQUEST_ID,
++                          expected_agreement=expected, files=refs)
++            raw = canonical(packet); file = base / 'packet'; file.write_bytes(raw)
++            result = audit(file, digest(raw))
++            self.assertTrue(result['rawInputSnapshotsRechecked'])
++            packet['expected_agreement']['rankBuildSHA256'][1] = '0'*64
++            raw = canonical(packet); file.write_bytes(raw)
++            with self.assertRaises(ValueError):
++                audit(file, digest(raw))
+--- /dev/null
++++ b/registered_profiles.json
+@@ -0,0 +1,72 @@
++{
++  "registered_qwen35_9b": {
++    "artifact": "127de76b4ef82b7aaa0acaac0ee31c784cff066eda64291f521f051469b7c24b",
++    "configuration": "c8e767de4953e58352fbc1acbf6615329075ed02fe16a36b8065714d85ee4423",
++    "conv_channels": 8192,
++    "conv_history": 3,
++    "head_dim": 256,
++    "hidden": 4096,
++    "interval": 4,
++    "kv_heads": 4,
++    "largest": 508559360,
++    "layers": 32,
++    "layout": "112ea4bf7ef38bd40a088dd9c654f77607a01c2bb0f37750ea901c2adfddcf94",
++    "linear_key_dim": 128,
++    "linear_value_dim": 128,
++    "linear_value_heads": 32,
++    "manifest": "4f2735026cc7b40ee2c886ee53fb8755816c0001c4c69c141a61d5f56ff22aa4",
++    "modelID": "registered_qwen35_9b",
++    "plans": {
++      "4": {
++        "constructions": [
++          "54e01cdceaea0fba5033e1378f4d534a73aae30a56cf052548b7f03fa3b23d72",
++          "2b5acaba48a06190b6a4268a8b0ef9f3475318057ab275277f57f3c02dfe6582"
++        ],
++        "fingerprint": "67bf0b1bf94f229682df58ae1ae10c758e2a386d66d3e1b68146f5c090f6309f",
++        "stages": [
++          "7d5ebf4cec108854b7a5375a208301ca58d00a33d1fb8ef3e3bb59923f482f0a",
++          "7b362c5c14e45c17ce1327bc23179dc58b61f8d6a96ca2bc5752976f9fe53264"
++        ]
++      }
++    },
++    "profile_id": "registered_qwen35_9b_greedy_generation_v1",
++    "source_bytes": 5038041600,
++    "source_count": 927,
++    "vocab": 248320
++  },
++  "registered_qwen38_27b": {
++    "artifact": "bbd0e0adcfe74e095073fefd0b9e116e4311d606ad9989cf81f8175e8ac18463",
++    "configuration": "4691da94a1b4ef415aad112ec46abebd33f8a41ad07380e486c0526eb945c1ff",
++    "conv_channels": 10240,
++    "conv_history": 3,
++    "head_dim": 256,
++    "hidden": 5120,
++    "interval": 4,
++    "kv_heads": 4,
++    "largest": 635699200,
++    "layers": 64,
++    "layout": "e517783275382caaa57e20cf541a98fd09bd25a13622959c9590a6086d400d24",
++    "linear_key_dim": 128,
++    "linear_value_dim": 128,
++    "linear_value_heads": 48,
++    "manifest": "d1239a5bc6d26d5ce4bf87f22270e3a703f4942e3d0d779948b4f65410df6dcc",
++    "modelID": "registered_qwen38_27b",
++    "plans": {
++      "32": {
++        "constructions": [
++          "1f950482e15c622aedde80f785c11fbb5f5c41650f21f7787bec6ce0a793fda5",
++          "d641fecef06d6280178976459dd492eef8fbc2304c923c46971ca15833afc78b"
++        ],
++        "fingerprint": "980b0f6ece0a078c284143d8af05c1532c2fdd7f0a6b1a06682b7bcc94b377d3",
++        "stages": [
++          "c70505baf644e14d223c7e5905d5760978054bcb070b7e05e21ba5de9eed181d",
++          "f0847477d245360a2c77b5923963e44eae69790b746a3d5279046ebff362fe98"
++        ]
++      }
++    },
++    "profile_id": "registered_qwen38_27b_greedy_generation_v1",
++    "source_bytes": 15132802048,
++    "source_count": 1847,
++    "vocab": 248320
++  }
++}

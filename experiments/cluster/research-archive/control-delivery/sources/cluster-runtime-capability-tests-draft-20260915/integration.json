@@ -1,0 +1,95 @@
+{
+  "changes": [
+    {
+      "action": "add",
+      "bytes": 7659,
+      "mode": "0644",
+      "path": "libs/darkbloom-cluster/Tests/CapabilityChecks/CapabilityProtocolCheck.swift",
+      "sha256": "81c452c15e300643919eb46cfc34b55a370d63392be09fbde0f5b95a748f8f83"
+    },
+    {
+      "action": "add",
+      "bytes": 3704,
+      "mode": "0644",
+      "path": "libs/darkbloom-cluster/Tests/CapabilityChecks/Fixtures/registered-qwen35-9b.capability.json",
+      "sha256": "380e10617f2afe8e35e2beaef194fb23934d072c480eb0729686ec3cbcbc1ff8"
+    },
+    {
+      "action": "add",
+      "bytes": 1036,
+      "mode": "0644",
+      "path": "libs/darkbloom-cluster/Tests/CapabilityChecks/README.md",
+      "sha256": "79265bf58c8dd96fcccd2a20be067fd0f7690a21aeabb3082c482f3a83662b5a"
+    },
+    {
+      "action": "add",
+      "bytes": 1200,
+      "mode": "0755",
+      "path": "libs/darkbloom-cluster/Tests/CapabilityChecks/run.sh",
+      "sha256": "bbdd6e67676760acc5afe4a31ee7ea97a72acb4751a0b28667584b7e5ab4293d"
+    },
+    {
+      "action": "add",
+      "bytes": 645,
+      "mode": "0644",
+      "path": "libs/darkbloom-cluster-worker/Tests/CapabilityChecks/CapabilityCheckSupport.swift",
+      "sha256": "f4f7b9f1861fc542799c36099cccf70f791feafb0cc52f1a3fcc3c9a0a8f5522"
+    },
+    {
+      "action": "add",
+      "bytes": 3362,
+      "mode": "0644",
+      "path": "libs/darkbloom-cluster-worker/Tests/CapabilityChecks/CapabilityCommandCheck.swift",
+      "sha256": "eed6d0ad08ccd8ab1a22e1bd9bbe97c284949342a8abd1354facbdf105904383"
+    },
+    {
+      "action": "add",
+      "bytes": 2489,
+      "mode": "0644",
+      "path": "libs/darkbloom-cluster-worker/Tests/CapabilityChecks/CapabilityInputCheck.swift",
+      "sha256": "1383bbc3144aad5321e2f00ffd9e6f84c33b23fb1ff474e4001048d6aa49e0a1"
+    },
+    {
+      "action": "add",
+      "bytes": 3118,
+      "mode": "0644",
+      "path": "libs/darkbloom-cluster-worker/Tests/CapabilityChecks/Fixtures/registered-qwen35-9b.configuration.json",
+      "sha256": "c8e767de4953e58352fbc1acbf6615329075ed02fe16a36b8065714d85ee4423"
+    },
+    {
+      "action": "add",
+      "bytes": 2685,
+      "mode": "0644",
+      "path": "libs/darkbloom-cluster-worker/Tests/CapabilityChecks/Fixtures/registered-qwen35-9b.manifest.json",
+      "sha256": "4f2735026cc7b40ee2c886ee53fb8755816c0001c4c69c141a61d5f56ff22aa4"
+    },
+    {
+      "action": "add",
+      "bytes": 1588,
+      "mode": "0644",
+      "path": "libs/darkbloom-cluster-worker/Tests/CapabilityChecks/README.md",
+      "sha256": "ae0141ac2aab838213a2aa7281a3af62ba7ac8d6340f15be5a11e1f250fb4c15"
+    },
+    {
+      "action": "add",
+      "bytes": 2945,
+      "mode": "0644",
+      "path": "libs/darkbloom-cluster-worker/Tests/CapabilityChecks/check_command.py",
+      "sha256": "c93a9331b87189f37bc7a74c4785961ab9133c6853d1b763ac9aec0d5769f12d"
+    },
+    {
+      "action": "add",
+      "bytes": 2490,
+      "mode": "0755",
+      "path": "libs/darkbloom-cluster-worker/Tests/CapabilityChecks/run.sh",
+      "sha256": "93e9b899d19796e867ff3b276f99702ac60ae510aa5c5e4db2ce4c41cf44895d"
+    }
+  ],
+  "package_manifests_changed": false,
+  "runner_commands": [
+    "libs/darkbloom-cluster/Tests/CapabilityChecks/run.sh",
+    "libs/darkbloom-cluster-worker/Tests/CapabilityChecks/run.sh"
+  ],
+  "runtime_sources_changed": false,
+  "schema": "private_package_capability_test_integration_v1"
+}

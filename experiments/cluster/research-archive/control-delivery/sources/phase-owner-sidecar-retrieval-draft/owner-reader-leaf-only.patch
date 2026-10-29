@@ -1,0 +1,11 @@
+--- phase_sidecar_remote_reader.py
++++ owner_sidecar_remote_reader.py
+@@ -23,7 +23,7 @@
+     components = PurePosixPath(path).parts
+     require(path.startswith('/') and str(PurePosixPath(path)) == path
+             and all(part not in ('.', '..') for part in components)
+-            and components[-1] == 'phase-trace.json', 'Expected canonical phase sidecar path')
++            and components[-1] == 'owner-trace.json', 'Expected canonical owner sidecar path')
+     flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
+     directory = os.open('/', flags | os.O_DIRECTORY)
+     descriptor = None

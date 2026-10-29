@@ -1,0 +1,73 @@
+{
+  "schema": "diagnostic_drain_main_integration_v1",
+  "upstreamManifestSHA256": "ebccbc7e4f216af0313c0f1ce36711f06dd570dafe92a136ce1a673ca4536615",
+  "reviewSHA256": "750193b50edab803e91ce10aa616a764561f55457100481960646e29f7452415",
+  "upstreamRuntimePatchSHA256": "d8bb8ce01b14df3c6b3a2ba3712b2f93b7507209a0dbca1b230799cb6ecb37c2",
+  "changes": [
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterRemoteWorkerEndpoint.swift",
+      "baseSHA256": "a565f25912fe7ff61726b895d2fa6e6f7ecb491a3cf54d5be22672682002cbfa",
+      "mode": 420,
+      "upstream": "proposed/Sources/DarkbloomClusterRemote/ClusterRemoteWorkerEndpoint.swift",
+      "proposedSHA256": "a551c2f317b48b9e4e35656d03337f5f4b770da2b45821100e34ca791d2aa9ab",
+      "bytes": 20487
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterOwnerDiagnostics.swift",
+      "baseSHA256": null,
+      "mode": 420,
+      "upstream": "proposed/Sources/DarkbloomClusterRemote/ClusterOwnerDiagnostics.swift",
+      "proposedSHA256": "3caaca93b99d278fcd25664079daa005a14b0396ee59652e7cc0498900bb3652",
+      "bytes": 2325
+    },
+    {
+      "path": "libs/darkbloom-cluster/Tests/SSHChecks/DiagnosticFailureWorker.swift",
+      "baseSHA256": null,
+      "mode": 420,
+      "upstream": "Fixtures/DiagnosticFailureWorker.swift",
+      "proposedSHA256": "7eedadae5ad44ba882053ed5b91135de68833c4f9cb0ff5bd1917340710e73fa",
+      "bytes": 458
+    },
+    {
+      "path": "libs/darkbloom-cluster/Tests/SSHChecks/LateDiagnosticOwner.swift",
+      "baseSHA256": null,
+      "mode": 420,
+      "upstream": "Fixtures/LateDiagnosticOwner.swift",
+      "proposedSHA256": "798891e640504effec96ebc847f1974ab68e08d11cfd1ec5917b6ad30632384d",
+      "bytes": 3041
+    },
+    {
+      "path": "libs/darkbloom-cluster/Tests/SSHChecks/OwnerDiagnosticDrainTests.swift",
+      "baseSHA256": null,
+      "mode": 420,
+      "upstream": "Fixtures/OwnerDiagnosticDrainTests.swift",
+      "proposedSHA256": "55678918342e23e01aea3600c092f593763de85f34f1d4c3c1035eea8a23940d",
+      "bytes": 7390
+    },
+    {
+      "path": "libs/darkbloom-cluster/Tests/SSHChecks/run.sh",
+      "baseSHA256": "67d764f2583aa8737cf5aea4539bc3a24da0c6cd826162beb8f810f321d4fb8f",
+      "mode": 493,
+      "upstream": null,
+      "proposedSHA256": "0a6bfbccd4143174de87bb2e895cd499d6401f1f136d6ab2784990c2b540dbe8",
+      "bytes": 2752
+    },
+    {
+      "path": "libs/darkbloom-cluster/Tests/SSHChecks/README.md",
+      "baseSHA256": "c1c845352f3d6160ae4ef7d3c7b004976ffc4375134458eb3fadb7d446617551",
+      "mode": 420,
+      "upstream": null,
+      "proposedSHA256": "7cb2b60c0a845c39f68d6eef03902ae2864ec755477834882efd82ec59d4cbf9",
+      "bytes": 2398
+    }
+  ],
+  "testCommand": "bash libs/darkbloom-cluster/Tests/SSHChecks/run.sh",
+  "expectedGroups": {
+    "existingSSH": 13,
+    "retirement": 6,
+    "diagnosticDrain": 5
+  },
+  "mainTestsExecuted": false,
+  "mainCompilationHeldForRootPhysicalTiming": true,
+  "privateControllerPromoted": false
+}

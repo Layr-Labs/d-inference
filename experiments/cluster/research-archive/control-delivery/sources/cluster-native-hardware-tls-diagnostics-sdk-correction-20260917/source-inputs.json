@@ -1,0 +1,57 @@
+[
+  {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-hardware-tls-diagnostics-sdk-correction-20260917/HANDOFF.md",
+    "sha256": "663acd1369e20d872028ca437ae8d3ffbdf95efb1d8522240343b9b5f090291a",
+    "bytes": 690
+  },
+  {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-hardware-tls-diagnostics-sdk-correction-20260917/Tests/PrivateClusterTLSCheck.swift",
+    "sha256": "8ba0f1373c7da3d8e3b61464d885304e4cae7dab92c89b39605a55b1f4c12b6a",
+    "bytes": 6420
+  },
+  {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-hardware-tls-diagnostics-sdk-correction-20260917/Tests/owned_process.py",
+    "sha256": "c3910bf16a0fbe4d68ab6349e862ef5a2c92fe64e79a68d2ccfc700daf4fa2bf",
+    "bytes": 2211
+  },
+  {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-hardware-tls-diagnostics-sdk-correction-20260917/Tests/run_tls.py",
+    "sha256": "9127c92ddced8e66c2e4445278ee199494c789fd065e3f1f7e2d60cbc09f2cf8",
+    "bytes": 2779
+  },
+  {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-hardware-tls-diagnostics-sdk-correction-20260917/Tests/tls_group.py",
+    "sha256": "c81d55906304a9958aecb38de95678c7b1d175ae6b95442232f881b8ce7e31c3",
+    "bytes": 2448
+  },
+  {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-hardware-tls-diagnostics-sdk-correction-20260917/Tests/tls_server.go",
+    "sha256": "270cbb20adaf022b6caf888739baad494ea831e2db97f5c22ced7938cce476fe",
+    "bytes": 5563
+  },
+  {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-hardware-tls-diagnostics-sdk-correction-20260917/correction.patch",
+    "sha256": "f1a96183a97edbcdb22e074809bde28cf0acf88173f78a5b3c36c509aba36999",
+    "bytes": 798
+  },
+  {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-hardware-tls-diagnostics-correction-20260917/manifest.json",
+    "sha256": "7f0ea66f379eabd090690b3a7cb71c7db7bc9052ae36c74917aa88bb46386c0b",
+    "bytes": 1302
+  },
+  {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-hardware-tls-diagnostics-correction-20260917/tls-check-1/receipt.json",
+    "sha256": "7826f65bd0abab7953f312d228670a546dede27619c1d13dff96cdebb0317e68",
+    "bytes": 1980
+  },
+  {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-shared-hardware-driver-draft-20260917/manifest.json",
+    "sha256": "e0d428fb6c7b7ea93d67ff6d31aad8f8ca7e47aec9d8f4918f1c0d64340cf80f",
+    "bytes": 8530
+  },
+  {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-shared-hardware-driver-draft-20260917/proposed/provider-swift/Sources/ProviderCore/Coordinator/PrivateClusterTLSAnchor.swift",
+    "sha256": "b68c522383747f1f59222b008e6c44fddb6fd5047c8152bb0d08550bf239a635",
+    "bytes": 5732
+  }
+]

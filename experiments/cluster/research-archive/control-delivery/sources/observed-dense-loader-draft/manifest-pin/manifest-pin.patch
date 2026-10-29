@@ -1,0 +1,61 @@
+--- a/experiments/cluster/inference/Sources/ClusterInference/VerifiedCheckpoint.swift
++++ b/experiments/cluster/inference/Sources/ClusterInference/VerifiedCheckpoint.swift
+@@ -81,10 +81,13 @@
+     }
+ 
+     let aggregate: String
++    /// Non-nil only after an independently expected raw manifest matched and all files verified.
++    let verifiedManifestSHA256: String?
+     let files: [String: File]
+ 
+     init(directory: URL, configurationData: Data,
+-         expectedAggregateSHA256: String? = nil, maximumPayloadBytes: Int? = nil) throws {
++         expectedAggregateSHA256: String? = nil, maximumPayloadBytes: Int? = nil,
++         expectedManifestSHA256: String? = nil) throws {
+         if let expectedAggregateSHA256 {
+             guard expectedAggregateSHA256.utf8.count == 64,
+                   expectedAggregateSHA256.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }) else {
+@@ -94,9 +97,10 @@
+         if let maximumPayloadBytes, maximumPayloadBytes < 0 {
+             throw ProbeError("Checkpoint payload limit must be nonnegative")
+         }
++        try QwenCheckpointManifestPin.validateExpected(expectedManifestSHA256)
+         let manifestURL = directory.appendingPathComponent("manifest.json")
+         let manifestData: Data
+-        if maximumPayloadBytes != nil {
++        if maximumPayloadBytes != nil || expectedManifestSHA256 != nil {
+             // Opt-in bounded admission must bound the manifest itself before
+             // decoding its claimed payload sizes. Existing callers keep their IO.
+             let maximumManifestBytes = 4 * 1024 * 1024
+@@ -109,6 +113,7 @@
+         } else {
+             manifestData = try Data(contentsOf: manifestURL)
+         }
++        let matchedManifest = try QwenCheckpointManifestPin.match(manifestData, expected: expectedManifestSHA256)
+         let manifest = try JSONDecoder().decode(CheckpointManifest.self, from: manifestData)
+         guard manifest.file_count == manifest.files.count,
+             Set(manifest.files.map(\.path)).count == manifest.files.count,
+@@ -156,6 +161,7 @@
+             throw ProbeError("Verified checkpoint differs from expected aggregate")
+         }
+         self.aggregate = aggregate; files = verified
++        self.verifiedManifestSHA256 = matchedManifest
+     }
+ 
+     func checkUnchanged() throws { for file in files.values { try file.checkUnchanged() } }
+--- a/experiments/cluster/inference/Sources/ClusterInference/PreparedQwenCheckpoint.swift
++++ b/experiments/cluster/inference/Sources/ClusterInference/PreparedQwenCheckpoint.swift
+@@ -14,10 +14,11 @@
+ 
+     init(model: any LanguageModel, directory: URL, originalConfiguration: Data,
+          policy: BaseConfiguration.PerLayerQuantization, partitionKind: QwenPartitionKind? = nil,
+-         expectedAggregateSHA256: String? = nil, maximumPayloadBytes: Int? = nil) throws {
++         expectedAggregateSHA256: String? = nil, maximumPayloadBytes: Int? = nil,
++         expectedManifestSHA256: String? = nil) throws {
+         let checkpoint = try VerifiedCheckpoint(directory: directory, configurationData: originalConfiguration,
+             expectedAggregateSHA256: expectedAggregateSHA256,
+-            maximumPayloadBytes: maximumPayloadBytes)
++            maximumPayloadBytes: maximumPayloadBytes, expectedManifestSHA256: expectedManifestSHA256)
+         let descriptors = try tensorDescriptors(checkpoint: checkpoint)
+         var canonicalSources: [String: TensorDescriptor] = [:]
+         // Only converted MLX Qwen layouts are supported. This makes per-tensor sanitize equivalent

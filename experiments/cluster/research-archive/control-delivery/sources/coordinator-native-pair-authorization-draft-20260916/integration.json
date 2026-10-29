@@ -1,0 +1,183 @@
+{
+  "schema": "coordinator_native_pair_source_overlay_v1",
+  "mainChanged": false,
+  "memberManifestSHA256": "4ae431c60990ff9e4dfe319b8b5387ac8fb6bffcd54eac0213d3f85ed60ef965",
+  "files": [
+    {
+      "path": "coordinator/api/native_pair.go",
+      "effectiveBasePath": null,
+      "baseSHA256": null,
+      "mainSHA256": null,
+      "proposedSHA256": "d46432b6c12b52c518286d193f4e2300c67cc9e6ddf5d6dbd0f4833275c5322d",
+      "sizeBytes": 787
+    },
+    {
+      "path": "coordinator/api/native_pair_test.go",
+      "effectiveBasePath": null,
+      "baseSHA256": null,
+      "mainSHA256": null,
+      "proposedSHA256": "fd4a15fd7c640eda467a096123e8ff17e94f28bda6ef6594a6b55bdace54c423",
+      "sizeBytes": 3321
+    },
+    {
+      "path": "coordinator/api/provider.go",
+      "effectiveBasePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-registered-member-draft-20260915/proposed/coordinator/api/provider.go",
+      "baseSHA256": "fdf0423089f50b217a5ea810cc2a863a414d82eefab91834b5d95217496cf0b8",
+      "mainSHA256": "fbd9345a9b5b7605f6d7fff3fca47e719c5eb3f8e4cf08ad3b7f8bbffdf76020",
+      "proposedSHA256": "9d6f07b7d7c220bfb298fa52d8caa6eedb991f9934485c4f2574847999b9247a",
+      "sizeBytes": 169600
+    },
+    {
+      "path": "coordinator/api/server.go",
+      "effectiveBasePath": "/Users/developer/DarkbloomDev/d-inference/coordinator/api/server.go",
+      "baseSHA256": "a50e0d91057115c8af392e901bfe4b9fac8c2e41d11dc7e9c40dcf62ee4b5d54",
+      "mainSHA256": "a50e0d91057115c8af392e901bfe4b9fac8c2e41d11dc7e9c40dcf62ee4b5d54",
+      "proposedSHA256": "13ee179973957fa0c07c014414281899eefc1cd6eeb49440d20f8be630227846",
+      "sizeBytes": 154189
+    },
+    {
+      "path": "coordinator/api/server_config.go",
+      "effectiveBasePath": "/Users/developer/DarkbloomDev/d-inference/coordinator/api/server_config.go",
+      "baseSHA256": "6233e68312a45edf6ef9119f8269865876340937070ee235836142f32b2c788f",
+      "mainSHA256": "6233e68312a45edf6ef9119f8269865876340937070ee235836142f32b2c788f",
+      "proposedSHA256": "a7be7729f493e01136a8d5604dd0628dd410166f4d0e035436b8a4454807abb1",
+      "sizeBytes": 6356
+    },
+    {
+      "path": "coordinator/protocol/messages.go",
+      "effectiveBasePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-registered-member-draft-20260915/proposed/coordinator/protocol/messages.go",
+      "baseSHA256": "41721eae4a027cf55cbbf21a647bbc648fa623a6a4e4170d2d7fe9b6d7a8c6d1",
+      "mainSHA256": "2a5cc5f95a1837d735e9ca5a45d6e0a7527dd505b8fa91974bc128bec7657e37",
+      "proposedSHA256": "b4fb26d1c9b68ce20a73df1019645c6ffefacffe56ab4d9f4964f059d04f563e",
+      "sizeBytes": 62756
+    },
+    {
+      "path": "coordinator/protocol/native_authorization.go",
+      "effectiveBasePath": null,
+      "baseSHA256": null,
+      "mainSHA256": null,
+      "proposedSHA256": "cb1e4b9d779e89ae1526d4f3c3548dbfafade6a460eb8e0f2b7abdf2c9f64b57",
+      "sizeBytes": 4586
+    },
+    {
+      "path": "coordinator/protocol/native_pair.go",
+      "effectiveBasePath": null,
+      "baseSHA256": null,
+      "mainSHA256": null,
+      "proposedSHA256": "ec0057650bcb7b21238ad6033c2940f9598d4904185cb41326c03509d9b8a29f",
+      "sizeBytes": 5774
+    },
+    {
+      "path": "coordinator/protocol/native_pair_test.go",
+      "effectiveBasePath": null,
+      "baseSHA256": null,
+      "mainSHA256": null,
+      "proposedSHA256": "5fe39dca2a00ab18039dcbda28eddad0a041e7f692213471b2e4d83221d2ace9",
+      "sizeBytes": 3698
+    },
+    {
+      "path": "coordinator/protocol/testdata/native_pair_public_vector.json",
+      "effectiveBasePath": null,
+      "baseSHA256": null,
+      "mainSHA256": null,
+      "proposedSHA256": "9db6d133dc8c08b646389e031a2073fa78e429c978324c3d3f003e558cf5ff18",
+      "sizeBytes": 7735
+    },
+    {
+      "path": "coordinator/registry/native_pair_approval.go",
+      "effectiveBasePath": null,
+      "baseSHA256": null,
+      "mainSHA256": null,
+      "proposedSHA256": "216157d0a7083d069900245d663bf87fbc71f003a93df1d787e48a4b71f0afff",
+      "sizeBytes": 4369
+    },
+    {
+      "path": "coordinator/registry/native_pair_connection.go",
+      "effectiveBasePath": null,
+      "baseSHA256": null,
+      "mainSHA256": null,
+      "proposedSHA256": "b3ee31221950b9de728c0950b4938f6f6fb53167e47f445801d9c96418d147be",
+      "sizeBytes": 2356
+    },
+    {
+      "path": "coordinator/registry/native_pair_fixture_test.go",
+      "effectiveBasePath": null,
+      "baseSHA256": null,
+      "mainSHA256": null,
+      "proposedSHA256": "d0ea83d85869606c16b27c1bdfaf1322f22134b7f572deb75325daee80c1b77a",
+      "sizeBytes": 4956
+    },
+    {
+      "path": "coordinator/registry/native_pair_handlers.go",
+      "effectiveBasePath": null,
+      "baseSHA256": null,
+      "mainSHA256": null,
+      "proposedSHA256": "798ddb3459ca9f0a2700f2f0f47055ef05e3cbb3f4f4d94d1a1f5c1152686402",
+      "sizeBytes": 5814
+    },
+    {
+      "path": "coordinator/registry/native_pair_relay.go",
+      "effectiveBasePath": null,
+      "baseSHA256": null,
+      "mainSHA256": null,
+      "proposedSHA256": "637c359146e791f7e0ae6592d61cea7fe21fac0f58820e464672c4989153a818",
+      "sizeBytes": 5473
+    },
+    {
+      "path": "coordinator/registry/native_pair_reservation.go",
+      "effectiveBasePath": null,
+      "baseSHA256": null,
+      "mainSHA256": null,
+      "proposedSHA256": "e74f9b3380665e0224d3dcf0cffb1b11db32a6c2de2e15271ffd05ad6ab2e484",
+      "sizeBytes": 5042
+    },
+    {
+      "path": "coordinator/registry/native_pair_test.go",
+      "effectiveBasePath": null,
+      "baseSHA256": null,
+      "mainSHA256": null,
+      "proposedSHA256": "1d134b633b1c5d8cce3ccafcd9edb5955fa752bd7fb765c377234125310fa9f2",
+      "sizeBytes": 8696
+    },
+    {
+      "path": "coordinator/registry/native_pair_types.go",
+      "effectiveBasePath": null,
+      "baseSHA256": null,
+      "mainSHA256": null,
+      "proposedSHA256": "64b8265e862db4e0d5763c2d934dad487a265b568fe3ea9df993eec5e9410fcc",
+      "sizeBytes": 3042
+    },
+    {
+      "path": "coordinator/registry/provider.go",
+      "effectiveBasePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-registered-member-draft-20260915/proposed/coordinator/registry/provider.go",
+      "baseSHA256": "a1675b8cdc9473c591ee7707bb78416b612afda4c0a46ff1df9392ea3020271e",
+      "mainSHA256": "754990d7fe5d9ecc2b7391b21ed47891a240e47346864c00305d07a045ab952a",
+      "proposedSHA256": "f5b8ea08a220a7bac37bed32acb7621b74821163f2d5d14b60d577e549100838",
+      "sizeBytes": 23633
+    },
+    {
+      "path": "coordinator/registry/provider_lifecycle.go",
+      "effectiveBasePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-registered-member-draft-20260915/proposed/coordinator/registry/provider_lifecycle.go",
+      "baseSHA256": "b2cef882220ccb41e3feb9eca52c2f8b287e1c81b302705703fdfc0d2b38710f",
+      "mainSHA256": "d8c62bee076c774d6e04073c7692865910095dc06ed177fead36ea30c052af61",
+      "proposedSHA256": "0fe1647874b0bb414a95f5a82009f2cb04c207b4a8a001d39946ceaba435ef96",
+      "sizeBytes": 22158
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Protocol/NativePairMessages.swift",
+      "effectiveBasePath": null,
+      "baseSHA256": null,
+      "mainSHA256": null,
+      "proposedSHA256": "b74bfb547105bbcca078f3e3292c6bb7f54a3bd57b4c89cbba8b5e41d3ea3d23",
+      "sizeBytes": 6085
+    },
+    {
+      "path": "provider-swift/Tests/ProviderCoreTests/Protocol/NativePairMessageTests.swift",
+      "effectiveBasePath": null,
+      "baseSHA256": null,
+      "mainSHA256": null,
+      "proposedSHA256": "0a67f6fce6cb7dedd0b5d476ccde546c72dac8f23b8e2d07fcff4dd63f6a216d",
+      "sizeBytes": 3217
+    }
+  ]
+}

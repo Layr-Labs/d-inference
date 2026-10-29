@@ -1,0 +1,33 @@
+--- a/experiments/cluster/inference/README.md
++++ b/experiments/cluster/inference/README.md
+@@ -163,6 +163,10 @@
+ The [registered dense-profile API](QWEN_DENSE_PROFILE.md) binds retained 9B/27B
+ metadata to plan- and role-specific storage requirements. Its pure fixtures
+ preserve existing loader gates and provide no execution permission.
++The [shared loading checks](QWEN_DENSE_LOADING.md) validate actual prepared
++descriptors under unchanged legacy bounds and add optional raw-manifest pinning.
++Their Foundation fixture passes 22 accepted/104 rejected cases, including tiny
++checkpoint file verification; registered 27B materialization remains unwired.
+ 
+ | Stage | Active weights | Inactive components that the loader must handle |
+ |---|---|---|
+--- a/docs/developer/test.md
++++ b/docs/developer/test.md
+@@ -26,6 +26,17 @@
+ ```sh
+ bash experiments/cluster/inference/Tests/RegisteredDenseProfiles/run.sh
+ ```
++
++Run the [observed descriptor and checkpoint IO fixtures](../../experiments/cluster/inference/QWEN_DENSE_LOADING.md)
++under Swift 6 without MLX or downloaded model payloads:
++
++```sh
++bash experiments/cluster/inference/Tests/ObservedDenseLoader/run.sh
++```
++
++These pass 22 accepted/104 rejected cases and reuse the registered-profile
++metadata fixture. The actual checkpoint constructor verifies tiny synthetic
++temporary files; this does not qualify 27B model loading or resource admission.
+ 
+ Run the [resident lifecycle fixtures](../../experiments/cluster/inference/QWEN_RESIDENT_STAGES.md)
+ under Swift 6 without MLX:

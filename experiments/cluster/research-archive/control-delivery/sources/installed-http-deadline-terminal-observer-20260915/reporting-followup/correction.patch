@@ -1,0 +1,79 @@
+--- a/harness/run.py
++++ b/harness/run.py
+@@ -8,7 +8,7 @@
+ from tokenizer_check import verify as verify_tokenizer
+ from cancellation_observation import observe_after_close
+ from status_capture import capture as capture_status
+-from terminal_contract import validate_client, natural_failure_exit
++from terminal_contract import validate_client, natural_failure_exit, request_disposition
+ 
+ BASE=Path(__file__).resolve().parent
+ ROOT=BASE.parents[1]  # cluster-research; private derivative is nested one level
+@@ -32,7 +32,7 @@
+     record={'schema':'installed_distributed_http_terminal_observation_v1','startedUnix':time.time(),
+             'representativePerformanceQualified':False,'openRouterQualified':False,
+             'numericalReferenceCompared':False,'requestCount':1,
+-            'inferenceRequestSucceeded':False,'slaPassed':False,'cancellationQualified':False}
++            'inferenceRequestSucceeded':None,'slaPassed':None,'cancellationQualified':False}
+     record['declaredPromptTokens']=args.declared_prompt_tokens
+     codefiles=sorted(BASE.glob('*.py'))+sorted((BASE/'stage_checks').glob('*.py'))+sorted(args.client.parent.glob('*.py'))+[args.prompt_file]
+     if args.rendered_prompt is not None:
+@@ -116,6 +116,7 @@
+         if len(raw_receipt)>131072: raise RuntimeError('Client receipt exceeded bound')
+         client_receipt=json.loads(raw_receipt)
+         record['clientReceiptSHA256']=hashlib.sha256(raw_receipt).hexdigest()
++        record.update(request_disposition(client_receipt))
+         record['terminalObservation']=validate_client(client_receipt,result.returncode)
+         close_origin=record['terminalObservation']['closeOrigin']
+         # The client closes only after complete error + DONE + body EOF. This
+--- a/harness/terminal_contract.py
++++ b/harness/terminal_contract.py
+@@ -1,13 +1,21 @@
+ """A delivered cold-prefill failure is an observation, never successful inference."""
+ 
+ DEADLINE_NS = 18_192_000_000
++
++
++def request_disposition(receipt):
++    # An unexpected normal response is not this expected-failure observation,
++    # but must not be relabeled failed inference by the harness.
++    status = receipt.get('status')
++    return dict(inferenceRequestSucceeded=status in ('completed', 'content_deadline_missed'),
++                slaPassed=status == 'completed')
+ 
+ 
+ def validate_client(receipt, exit_code):
+     measurement = receipt.get('measurement', {})
+     error = measurement.get('typed_error')
+     usage = measurement.get('attempt_usage')
+-    if (exit_code != 1 or receipt.get('schema') != 'installed_external_terminal_observer_v1'
++    if (type(exit_code) is not int or exit_code != 1 or receipt.get('schema') != 'installed_external_terminal_observer_v1'
+             or receipt.get('status') != 'failed' or receipt.get('http_status') != 200
+             or receipt.get('error') != {'type': 'ClientOutcome', 'code': 'typed_terminal_failure'}
+             or receipt.get('capture_complete') is not True
+--- a/test_terminal.py
++++ b/test_terminal.py
+@@ -9,7 +9,7 @@
+ from client import run
+ from terminal_observation import TerminalObservation, terminal_error
+ from test_client import server, event, DONE, USAGE, SECRET, MODEL
+-from harness.terminal_contract import validate_client, natural_failure_exit
++from harness.terminal_contract import validate_client, natural_failure_exit, request_disposition
+ 
+ 
+ def failure(code='deadline_unreachable', cause=None):
+@@ -158,6 +158,14 @@
+             value = complete_receipt(); mutation(value)
+             with self.subTest(mutation=mutation), self.assertRaises(ValueError): validate_client(value, 1)
+         with self.assertRaises(ValueError): validate_client(complete_receipt(), 0)
++        with self.assertRaises(ValueError): validate_client(complete_receipt(), True)
++
++    def test_unexpected_success_is_not_relabeled_as_failed_inference(self):
++        for status, inference, sla in [('completed', True, True),
++                                      ('content_deadline_missed', True, False),
++                                      ('failed', False, False), ('no_content', False, False)]:
++            self.assertEqual(request_disposition(dict(status=status)),
++                             dict(inferenceRequestSucceeded=inference, slaPassed=sla))
+ 
+     def test_natural_runtime_exit1_only(self):
+         value = dict(state='exited', stopReason='natural-exit', forcedKill=False, exitCode=1)

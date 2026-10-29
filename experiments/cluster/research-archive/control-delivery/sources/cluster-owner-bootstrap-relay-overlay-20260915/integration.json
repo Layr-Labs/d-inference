@@ -1,0 +1,84 @@
+{
+  "schema": "owner_bootstrap_relay_overlay_v1",
+  "changes": [
+    {
+      "source": "workspace/libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterOwnerBootstrapAttachment.swift",
+      "destination": "libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterOwnerBootstrapAttachment.swift",
+      "sha256": "875792464f6c247eed1c6b499267b356a7b3930d4bde8b71df968865dcac9499",
+      "bytes": 4677
+    },
+    {
+      "source": "workspace/libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterOwnerBootstrapProfile.swift",
+      "destination": "libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterOwnerBootstrapProfile.swift",
+      "sha256": "6630d4adc65a24e2832181da65379164187bc820a9553e112e29d00d796860a4",
+      "bytes": 4871
+    },
+    {
+      "source": "workspace/libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterOwnerPipe.swift",
+      "destination": "libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterOwnerPipe.swift",
+      "sha256": "667388716e9fa7eebad3a50832f29011e7c875456e4527e1bbc00a92203bfdf4",
+      "bytes": 3685
+    },
+    {
+      "source": "workspace/libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterOwnerWire.swift",
+      "destination": "libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterOwnerWire.swift",
+      "sha256": "a8a5ce563a0154ee8300b443acfb191d9e4e8a48fd6651b11031672bf5e9b81f",
+      "bytes": 10753
+    },
+    {
+      "source": "workspace/libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterRemoteWorkerEndpoint.swift",
+      "destination": "libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterRemoteWorkerEndpoint.swift",
+      "sha256": "18b94d2af79a8a5323dcd2083faefbf4127c6d43fff21f9bb1e3f4ede07af53e",
+      "bytes": 17762
+    },
+    {
+      "source": "workspace/libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterWorkerOwnerService.swift",
+      "destination": "libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterWorkerOwnerService.swift",
+      "sha256": "67a597484dc15c1c9733e74efc8bc5ab449ff12730ce869058f907ef0150f7ae",
+      "bytes": 17375
+    },
+    {
+      "source": "workspace/libs/darkbloom-cluster/Tests/ProcessChecks/FakeClusterWorker.swift",
+      "destination": "libs/darkbloom-cluster/Tests/ProcessChecks/FakeClusterWorker.swift",
+      "sha256": "18b62e97b98807cc1958e991dd8f01a24d7af94a41cb0a880dabdac8fe9a2183",
+      "bytes": 6015
+    },
+    {
+      "source": "workspace/libs/darkbloom-cluster/Tests/RemoteChecks/FakeOwner.swift",
+      "destination": "libs/darkbloom-cluster/Tests/RemoteChecks/FakeOwner.swift",
+      "sha256": "fbc395cd8ba70b7c08c53b46e6640b5d8a8933eabd87edf4bbdd094b96d7a043",
+      "bytes": 5547
+    },
+    {
+      "source": "workspace/libs/darkbloom-cluster/Tests/RemoteChecks/RemoteOwnerTests.swift",
+      "destination": "libs/darkbloom-cluster/Tests/RemoteChecks/RemoteOwnerTests.swift",
+      "sha256": "9fb495453f92b7169ce67c3c98ea7c2bb91cbc9b761732b47d8a9d04f2f8b639",
+      "bytes": 21364
+    },
+    {
+      "source": "workspace/libs/darkbloom-cluster/Tests/RemoteChecks/run.sh",
+      "destination": "libs/darkbloom-cluster/Tests/RemoteChecks/run.sh",
+      "sha256": "5954fed7b5bb104fe8443895ac2603adde89bc240a4793f72a1d17f360b7e8ca",
+      "bytes": 2097
+    },
+    {
+      "source": "workspace/libs/darkbloom-cluster/Tools/ConfiguredOwner/build.sh",
+      "destination": "libs/darkbloom-cluster/Tools/ConfiguredOwner/build.sh",
+      "sha256": "022ef35bed44bd5b4539b6d32eb5c03a2996b6ea7ef49688a843b7224fb86067",
+      "bytes": 1583
+    },
+    {
+      "source": "workspace/libs/darkbloom-cluster/Tools/ConfiguredOwner/main.swift",
+      "destination": "libs/darkbloom-cluster/Tools/ConfiguredOwner/main.swift",
+      "sha256": "20ee07c1451ab8054dff613728efd36ccdf25a4211c3589c4a30e8270d79442e",
+      "bytes": 5897
+    }
+  ],
+  "bases": {
+    "SSH": "d78ead9ee13aa713575a4697555911816be5450b122c03be20d45313acfd6cc8",
+    "localChannel": "52952c675f0bc09ee0589202f36e6a3ccffe1550872bfe72768b476821a1af33"
+  },
+  "packageMerge": "Add DarkbloomClusterBootstrap to Remote dependencies. Do not replace Package.swift or main test runners. Main renamed SSH fixtures to SSHChecks; adapt these test-only hunks to those paths, preserving existing deadline fixture cases.",
+  "portableQualificationBuild": "qualification-build-v2",
+  "tests": "records/cpu-corrected.json"
+}

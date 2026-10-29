@@ -1,0 +1,34 @@
+--- prior/RotationOwners.swift
++++ corrected/RotationOwners.swift
+@@ -90,13 +90,17 @@
+         }
+     }
+ 
+-    func validateReleased(_ record: RotationOwnedGeneration) throws {
++    func validateReleaseProof(_ record: RotationOwnedGeneration) throws {
+         try rotationRequire(record.session.canRotate && record.session.status == .released,
+                             "Replacement attempted before installed release barrier")
+         let endpoints = record.endpoints.values
+         try rotationRequire(endpoints.count == 2 && endpoints.allSatisfy {
+             $0.nativeCleanupObserved && $0.ownerDeviceLeaseReleasedObserved && $0.ownerTermination == .exited(0)
+         }, "Replacement preceded native cleanup, explicit owner ACK or clean transport termination")
++    }
++
++    func validateReleased(_ record: RotationOwnedGeneration) throws {
++        try validateReleaseProof(record)
+         for rank in 0..<2 {
+             let current = try leaseIdentity(rank: rank, requireEmptyUnlocked: true)
+             try lock.withLock {
+--- prior/RotationScenarios.swift
++++ corrected/RotationScenarios.swift
+@@ -60,7 +60,9 @@
+                 let status = await host.status
+                 return owners.snapshot.count == 2 && status.phase == .serving
+             }
+-            try owners.validateReleased(first)
++            // The replacement now legitimately owns the same canonical locks.
++            // The factory checked empty/unlocked before starting this generation.
++            try owners.validateReleaseProof(first)
+             try owners.observeReady(owners.snapshot[1])
+         } catch {
+             lease.cancel(); await lease.waitUntilRetired(); lease.releaseResources()

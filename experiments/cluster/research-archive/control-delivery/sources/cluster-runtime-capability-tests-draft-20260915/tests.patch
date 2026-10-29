@@ -1,0 +1,548 @@
+--- /dev/null
++++ b/libs/darkbloom-cluster/Tests/CapabilityChecks/CapabilityProtocolCheck.swift
+@@ -0,0 +1,98 @@
++import DarkbloomClusterProtocol
++import Darwin
++import Foundation
++
++struct CheckFailure: Error { let message: String }
++@main enum CapabilityProtocolCheck {
++    static func main() {
++        do { try checks(Array(CommandLine.arguments.dropFirst())) }
++        catch { FileHandle.standardError.write(Data("REFUSED: \(error)\n".utf8)); Darwin.exit(1) }
++    }
++    static func checks(_ args: [String]) throws {
++        guard args.count == 1 else { throw CheckFailure(message: "Expected canonical capability fixture") }
++        let encoded = try Data(contentsOf: URL(fileURLWithPath: args[0]))
++        let value = try ClusterRuntimeCapabilityCodec.decode(encoded)
++        var accepted: [String] = [], rejected: [String] = []
++        func require(_ condition: Bool, _ message: String) throws { if !condition { throw CheckFailure(message: message) } }
++        func yes(_ name: String, _ body: () throws -> Void) throws { try body(); accepted.append(name) }
++        func no(_ name: String, _ body: () throws -> Void) throws {
++            do { try body() } catch { rejected.append(name); return }
++            throw CheckFailure(message: "Unexpected acceptance: " + name)
++        }
++        func modified(_ edit: (inout [String: Any]) -> Void) throws -> Data {
++            var object = try JSONSerialization.jsonObject(with: encoded) as! [String: Any]
++            edit(&object)
++            var result = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys, .withoutEscapingSlashes])
++            result.append(10); return result
++        }
++        func refuse(_ name: String, _ edit: (inout [String: Any]) -> Void) throws {
++            let bytes = try modified(edit); try no(name) { _ = try ClusterRuntimeCapabilityCodec.decode(bytes) }
++        }
++        func profileEdit(_ key: String, _ replacement: Any) throws {
++            try refuse("profile-" + key + "-" + String(describing: replacement)) { object in
++                var profile = object["profile"] as! [String: Any]; profile[key] = replacement; object["profile"] = profile
++            }
++        }
++        func partitionEdit(_ name: String, _ edit: (inout [[String: Any]]) -> Void) throws {
++            try refuse(name) { object in var partitions = object["partitions"] as! [[String: Any]]; edit(&partitions); object["partitions"] = partitions }
++        }
++        try yes("canonical-roundtrip") { try require(try ClusterRuntimeCapabilityCodec.decode(encoded) == value, "Roundtrip differs") }
++        try yes("exact-native-profile-and-arithmetic") {
++            try require(value.profileFingerprint == "73532005bbf8385dc43db4bdb529bcd5d612af7d1055becbefe721b4be2324ff", "Profile recipe changed")
++            try require(value.arithmeticPolicySHA256 == "0ae9c7c21048fa94fc90353b84cd8578f4adc05b1b22c3d55bd70f01c9c3bc74", "Arithmetic receipt changed")
++            try require(value.profile.maximumPromptTokens == 8192 && value.profile.maximumOutputTokens == 128
++                && value.profile.maximumChunkTokens == 512 && value.profile.maximumContextTokens == 8320, "Native bounds differ")
++        }
++        try yes("native-cut4-plan-and-complete-partitions") {
++            try require(value.partitions[0].planSHA256 == "67bf0b1bf94f229682df58ae1ae10c758e2a386d66d3e1b68146f5c090f6309f", "Known cut4 Plan differs")
++            try require(value.partitions.map { $0.stages[0].sourceLayerEnd } == [4, 8, 12, 16], "Wrong admitted cuts")
++            for partition in value.partitions {
++                try require(try value.selection(planSHA256: partition.planSHA256) == partition, "Selection differs")
++                try require(partition.stages.flatMap { Array($0.sourceLayerStart..<$0.sourceLayerEnd) } == Array(0..<32), "Partition differs")
++            }
++        }
++        try no("unknown-plan-selection") { _ = try value.selection(planSHA256: String(repeating: "f", count: 64)) }
++        for (key, replacement): (String, Any) in [
++            ("adapterID", "unknown"), ("adapterVersion", 2), ("runtimeModelID", "registered_qwen38_27b"),
++            ("workerProtocolVersion", 2), ("ownerProtocolVersion", 2), ("bootstrapABIVersion", 2),
++            ("rankCount", 3), ("batchSize", 2), ("maxActiveRequests", 2), ("maxLifetimeSeconds", 301),
++            ("maxRequests", 17), ("schedulingPolicy", "oneChunkLookahead"), ("selectionPolicy", "sampling"),
++            ("speculation", "mtp"), ("prefixReuse", true), ("prefixReuse", 0), ("modality", "image"),
++            ("stopPolicy", "string"), ("arithmeticPolicyID", "unknown"), ("stateSemantics", "sharedCache"),
++            ("runtimeBinarySHA256", String(repeating: "A", count: 64)), ("adapterVersion", true), ("schema", NSNull()),
++        ] { try refuse("closed-field-" + key + "-" + String(describing: replacement)) { $0[key] = replacement } }
++        try refuse("unknown-top-key") { $0["ready"] = true }
++        try refuse("missing-key") { $0.removeValue(forKey: "manifestSHA256") }
++        try profileEdit("id", "unknown"); try profileEdit("extra", 1); try profileEdit("maximumContextTokens", Int.min)
++        try profileEdit("maximumContextTokens", Int.max); try profileEdit("maximumContextTokens", 8192)
++        try profileEdit("maximumPromptTokens", 0); try profileEdit("maximumOutputTokens", true)
++        try partitionEdit("duplicate-plan") { $0[1]["planSHA256"] = $0[0]["planSHA256"] }
++        try partitionEdit("unknown-kind") { $0[0]["kind"] = "tensorParallel" }
++        try partitionEdit("unordered-partitions") { $0.swapAt(0, 1) }
++        try partitionEdit("partition-extra-field") { $0[0]["extra"] = 1 }
++        for (name, rank, key, replacement): (String, Int, String, Any) in [
++            ("gap", 1, "sourceLayerStart", 5), ("overlap", 1, "sourceLayerStart", 3),
++            ("wrong-rank", 0, "rank", 1), ("partial", 0, "sourceLayerStart", 1),
++            ("inconsistent-end", 1, "sourceLayerEnd", 31), ("stage-extra", 0, "extra", true),
++            ("stage-bool", 0, "rank", false), ("negative-start", 1, "sourceLayerStart", Int.min),
++        ] {
++            try partitionEdit(name) { parts in var stages = parts[0]["stages"] as! [[String: Any]]; stages[rank][key] = replacement; parts[0]["stages"] = stages }
++        }
++        let text = String(decoding: encoded, as: UTF8.self)
++        for (name, bytes) in [
++            ("missing-LF", Data(encoded.dropLast())), ("extra-LF", encoded + Data([10])),
++            ("leading-space", Data([32]) + encoded), ("oversized", Data(repeating: 32, count: 16 * 1024 + 1)),
++            ("duplicate-key", Data(text.replacingOccurrences(of: "\"adapterVersion\":1", with: "\"adapterVersion\":1,\"adapterVersion\":1").utf8)),
++            ("escaped-duplicate", Data(text.replacingOccurrences(of: "\"adapterVersion\":1", with: "\"adapterVersion\":1,\"\\u0061dapterVersion\":1").utf8)),
++            ("fraction", Data(text.replacingOccurrences(of: "\"adapterVersion\":1", with: "\"adapterVersion\":1.0").utf8)),
++            ("exponent", Data(text.replacingOccurrences(of: "\"adapterVersion\":1", with: "\"adapterVersion\":1e0").utf8)),
++            ("int-overflow", Data(text.replacingOccurrences(of: "\"adapterVersion\":1", with: "\"adapterVersion\":18446744073709551615").utf8)),
++            ("negative-zero", Data(text.replacingOccurrences(of: "\"rank\":0", with: "\"rank\":-0").utf8)),
++        ] { try no(name) { _ = try ClusterRuntimeCapabilityCodec.decode(bytes) } }
++
++        let result: [String: Any] = ["accepted": accepted, "rejected": rejected,
++            "capabilityBytes": encoded.count, "nativeOrModelExecution": false]
++        var output = try JSONSerialization.data(withJSONObject: result, options: [.sortedKeys]); output.append(10)
++        FileHandle.standardOutput.write(output)
++    }
++}
+--- /dev/null
++++ b/libs/darkbloom-cluster/Tests/CapabilityChecks/Fixtures/registered-qwen35-9b.capability.json
+@@ -0,0 +1 @@
++{"adapterID":"qwen35-dense-layer-stage","adapterVersion":1,"arithmeticPolicyID":"qwen_cbv2_query128_bf16_tf32_default_v1","arithmeticPolicySHA256":"0ae9c7c21048fa94fc90353b84cd8578f4adc05b1b22c3d55bd70f01c9c3bc74","artifactSHA256":"127de76b4ef82b7aaa0acaac0ee31c784cff066eda64291f521f051469b7c24b","batchSize":1,"bootstrapABIVersion":1,"configurationSHA256":"c8e767de4953e58352fbc1acbf6615329075ed02fe16a36b8065714d85ee4423","manifestSHA256":"4f2735026cc7b40ee2c886ee53fb8755816c0001c4c69c141a61d5f56ff22aa4","maxActiveRequests":1,"maxLifetimeSeconds":300,"maxRequests":16,"modality":"text","ownerProtocolVersion":1,"partitions":[{"kind":"contiguousWholeLayers","planSHA256":"67bf0b1bf94f229682df58ae1ae10c758e2a386d66d3e1b68146f5c090f6309f","stages":[{"constructionConfigurationSHA256":"54e01cdceaea0fba5033e1378f4d534a73aae30a56cf052548b7f03fa3b23d72","rank":0,"sourceLayerEnd":4,"sourceLayerStart":0,"stagePlanSHA256":"7d5ebf4cec108854b7a5375a208301ca58d00a33d1fb8ef3e3bb59923f482f0a"},{"constructionConfigurationSHA256":"2b5acaba48a06190b6a4268a8b0ef9f3475318057ab275277f57f3c02dfe6582","rank":1,"sourceLayerEnd":32,"sourceLayerStart":4,"stagePlanSHA256":"7b362c5c14e45c17ce1327bc23179dc58b61f8d6a96ca2bc5752976f9fe53264"}]},{"kind":"contiguousWholeLayers","planSHA256":"0f287a057042275470eeab37596b621d1134061db0c1fd9ef9b09022ea81da92","stages":[{"constructionConfigurationSHA256":"15a6b3723c0cf616b750de62e4ab1741e7188f888033b0311b20d447cf942a1e","rank":0,"sourceLayerEnd":8,"sourceLayerStart":0,"stagePlanSHA256":"134c5cf7b258d49da6bc0e2cc24d2df0ef0dc32b1005eaa65459281103a799ed"},{"constructionConfigurationSHA256":"fc7de42df3259d93f751d866ed06b1aa97c283b8ff1a7ffe83a75ffe3d9d5e97","rank":1,"sourceLayerEnd":32,"sourceLayerStart":8,"stagePlanSHA256":"a6014a9afd73a5bc3a310a60f1decbcb24912c585d29aa70193457f624c41c1b"}]},{"kind":"contiguousWholeLayers","planSHA256":"8c3fef079cc82295d70851ef9d9193954afc0d008ad09ce239baaa1a51391fed","stages":[{"constructionConfigurationSHA256":"d7412870394ac3d7959daf43687901b4ed261761b688f3f1440ad791bef6b2c7","rank":0,"sourceLayerEnd":12,"sourceLayerStart":0,"stagePlanSHA256":"5d038414a2230a28246d4bb6d5b62e5d4859f2cc7a415dcd60349db851dfbd7d"},{"constructionConfigurationSHA256":"9dfb3c7494d46287334139e15b21cf10046bdd1535eebe1a2f076a98dcd0ef00","rank":1,"sourceLayerEnd":32,"sourceLayerStart":12,"stagePlanSHA256":"d33e748ed1326bc1b6198c027a889e4fd9efa931d83cb81f5a67a36234e233e3"}]},{"kind":"contiguousWholeLayers","planSHA256":"2b5aa52cab49c12cfa44f2348326f956127d2ca15b1c55b5632f447901e56293","stages":[{"constructionConfigurationSHA256":"b8a18013bb81aa763f4a9f165125e606e84c077377eed01ebc7a55ea8f8d00b7","rank":0,"sourceLayerEnd":16,"sourceLayerStart":0,"stagePlanSHA256":"65cb10e0fc8ef439b035ee141695132ca76f88160e8920bd8c72cd780fedbb76"},{"constructionConfigurationSHA256":"f00c549345940b92da7a616a4d26de9a316a67ea0ca0620219cc0bd243e04dd7","rank":1,"sourceLayerEnd":32,"sourceLayerStart":16,"stagePlanSHA256":"90eb156179c547bf6024b8f6756d725b6f33af26f379d5aa549e241f15dbb22e"}]}],"prefixReuse":false,"profile":{"id":"registered_qwen35_9b_greedy_generation_v1","maximumChunkTokens":512,"maximumContextTokens":8320,"maximumOutputTokens":128,"maximumPromptTokens":8192,"vocabularySize":248320},"profileFingerprint":"73532005bbf8385dc43db4bdb529bcd5d612af7d1055becbefe721b4be2324ff","rankCount":2,"runtimeBinarySHA256":"1111111111111111111111111111111111111111111111111111111111111111","runtimeModelID":"registered_qwen35_9b","schedulingPolicy":"serial","schema":"darkbloom_cluster_runtime_capability_v1","selectionPolicy":"greedy","speculation":"off","stateSemantics":"requestOwnedKVAndRecurrent","stopPolicy":"selectedTokenIDs","workerProtocolVersion":1}
+--- /dev/null
++++ b/libs/darkbloom-cluster/Tests/CapabilityChecks/README.md
+@@ -0,0 +1,7 @@
++# Runtime capability Protocol checks
++
++Run `./Tests/CapabilityChecks/run.sh` from the shared package. This compiles the actual Protocol sources with Swift 6 warnings-as-errors, exercises canonical decoding and refusal cases, and runs the unchanged existing Protocol checks against that same module. It uses Foundation only; no model or native worker is launched.
++
++The 3.7 KiB canonical fixture is produced from the current registered Qwen3.5 9B adapter metadata. Its runtime binary hash is deliberately 64 ones: a fabricated codec input, not an installed build or readiness claim. The separate worker metadata suite checks the actual producer against these profile/Plan/arithmetic identities.
++
++Coverage includes duplicate decoded keys, missing/extra fields, integer overflow and Boolean confusion, noncanonical numbers/bytes, unknown adapter/profile/partition/policy, malformed intervals and exact declared Plan selection. The decoder validates declared consistency; this suite does not recreate native Plan legality or attest binaries.
+--- /dev/null
++++ b/libs/darkbloom-cluster/Tests/CapabilityChecks/run.sh
+@@ -0,0 +1,19 @@
++#!/bin/bash
++set -euo pipefail
++task_package="$(cd "$(dirname "$0")/../.." && pwd)"
++task_fixtures="$task_package/Tests/CapabilityChecks"
++task_build="$(mktemp -d "${TMPDIR:-/tmp}/cluster-capability-protocol.XXXXXXXX")"
++trap 'rm -rf "$task_build"' EXIT
++xcrun swiftc -swift-version 6 -warnings-as-errors -target "$(uname -m)-apple-macos14.0" \
++  -emit-library -emit-module -module-name DarkbloomClusterProtocol \
++  -emit-module-path "$task_build/DarkbloomClusterProtocol.swiftmodule" \
++  "$task_package"/Sources/DarkbloomClusterProtocol/*.swift -o "$task_build/libDarkbloomClusterProtocol.dylib"
++for task_case in capability original; do
++  task_source="$task_fixtures/CapabilityProtocolCheck.swift"
++  if [[ "$task_case" == original ]]; then task_source="$task_package/Tests/ProtocolChecks/ClusterWorkerProtocolTests.swift"; fi
++  xcrun swiftc -swift-version 6 -warnings-as-errors -parse-as-library -target "$(uname -m)-apple-macos14.0" \
++    -I "$task_build" -L "$task_build" -lDarkbloomClusterProtocol -Xlinker -rpath -Xlinker "$task_build" \
++    "$task_source" -o "$task_build/$task_case"
++done
++"$task_build/capability" "$task_fixtures/Fixtures/registered-qwen35-9b.capability.json"
++"$task_build/original"
+--- /dev/null
++++ b/libs/darkbloom-cluster-worker/Tests/CapabilityChecks/CapabilityCheckSupport.swift
+@@ -0,0 +1,14 @@
++import Foundation
++
++struct CapabilityCheckFailure: Error { let message: String }
++struct CapabilityCheckResults {
++    var accepted: [String] = [], rejected: [String] = []
++    mutating func yes(_ name: String, _ body: () throws -> Void) throws { try body(); accepted.append(name) }
++    mutating func no(_ name: String, _ body: () throws -> Void) throws {
++        do { try body() } catch { rejected.append(name); return }
++        throw CapabilityCheckFailure(message: "Unexpected acceptance: " + name)
++    }
++}
++func capabilityCheck(_ condition: Bool, _ message: String) throws {
++    if !condition { throw CapabilityCheckFailure(message: message) }
++}
+--- /dev/null
++++ b/libs/darkbloom-cluster-worker/Tests/CapabilityChecks/CapabilityCommandCheck.swift
+@@ -0,0 +1,40 @@
++import DarkbloomClusterProtocol
++import DarkbloomClusterRuntime
++import Darwin
++import Foundation
++
++@main enum CapabilityCommandCheck {
++    static func main() {
++        do {
++            let args = Array(CommandLine.arguments.dropFirst())
++            if args.first == "--describe-runtime" { try WorkerCapabilityCommand.run(arguments: args); return }
++            guard args.count == 2 else { throw CapabilityCheckFailure(message: "Expected metadata and capability fixtures") }
++            var checks = CapabilityCheckResults()
++            let fixtures = URL(fileURLWithPath: args[0])
++            let configuration = try Data(contentsOf: fixtures.appendingPathComponent("registered-qwen35-9b.configuration.json"))
++            let manifest = try Data(contentsOf: fixtures.appendingPathComponent("registered-qwen35-9b.manifest.json"))
++            let golden = try ClusterRuntimeCapabilityCodec.decode(Data(contentsOf: URL(fileURLWithPath: args[1])))
++            let binary = String(repeating: "1", count: 64)
++            try checks.yes("actual-native-metadata-matches-golden-profile-and-four-plans") {
++                let value = try QwenResidentCapabilityMetadata.describe(configuration: configuration, manifest: manifest, runtimeBinarySHA256: binary)
++                try capabilityCheck(value == golden, "Actual native metadata changed")
++            }
++            try checks.yes("binary-binding-remains-separate-from-model-identities") {
++                let value = try QwenResidentCapabilityMetadata.describe(configuration: configuration, manifest: manifest, runtimeBinarySHA256: String(repeating: "2", count: 64))
++                try capabilityCheck(value.runtimeBinarySHA256 != golden.runtimeBinarySHA256 && value.partitions == golden.partitions
++                    && value.profileFingerprint == golden.profileFingerprint, "Binary identity substituted model identity")
++            }
++            try checks.no("changed-config") { _ = try QwenResidentCapabilityMetadata.describe(configuration: configuration + Data([32]), manifest: manifest, runtimeBinarySHA256: binary) }
++            try checks.no("changed-manifest") { _ = try QwenResidentCapabilityMetadata.describe(configuration: configuration, manifest: manifest + Data([32]), runtimeBinarySHA256: binary) }
++            try checks.no("oversized-config") { _ = try QwenResidentCapabilityMetadata.describe(configuration: Data(repeating: 32, count: 1_048_577), manifest: manifest, runtimeBinarySHA256: binary) }
++            try checks.no("invalid-binary-pin") { _ = try QwenResidentCapabilityMetadata.describe(configuration: configuration, manifest: manifest, runtimeBinarySHA256: String(repeating: "A", count: 64)) }
++            try checks.no("unknown-metadata") { _ = try QwenResidentCapabilityMetadata.describe(configuration: Data("{\"model_type\":\"unknown\"}".utf8), manifest: manifest, runtimeBinarySHA256: binary) }
++            try checkCapabilityFiles(&checks)
++            var output = try JSONSerialization.data(withJSONObject: ["accepted": checks.accepted, "rejected": checks.rejected,
++                "nativeWorkerExecuted": false, "modelOrGPUExecution": false] as [String: Any], options: [.sortedKeys])
++            output.append(10); FileHandle.standardOutput.write(output)
++        } catch {
++            FileHandle.standardError.write(Data("REFUSED: \(error)\n".utf8)); Darwin.exit(1)
++        }
++    }
++}
+--- /dev/null
++++ b/libs/darkbloom-cluster-worker/Tests/CapabilityChecks/CapabilityInputCheck.swift
+@@ -0,0 +1,27 @@
++import Darwin
++import Foundation
++
++func checkCapabilityFiles(_ checks: inout CapabilityCheckResults) throws {
++    let temporary = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
++    try FileManager.default.createDirectory(at: temporary, withIntermediateDirectories: false)
++    defer { try? FileManager.default.removeItem(at: temporary) }
++    let file = temporary.appendingPathComponent("bytes"), link = temporary.appendingPathComponent("link"), fifo = temporary.appendingPathComponent("fifo")
++    try Data("abc".utf8).write(to: file)
++    try FileManager.default.createSymbolicLink(at: link, withDestinationURL: file)
++    guard mkfifo(fifo.path, 0o600) == 0 else { throw CapabilityCheckFailure(message: "Cannot create fixture FIFO") }
++    let deadline = DispatchTime.now().uptimeNanoseconds + 5_000_000_000
++    try checks.yes("regular-file-and-streaming-hash") {
++        try capabilityCheck(try WorkerCapabilityInput.read(file.path, maximumBytes: 3, deadline: deadline) == Data("abc".utf8), "Read differs")
++        try capabilityCheck(try WorkerCapabilityInput.hash(file.path, maximumBytes: 3, deadline: deadline) == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", "Hash differs")
++    }
++    try checks.no("read-size-bound") { _ = try WorkerCapabilityInput.read(file.path, maximumBytes: 2, deadline: deadline) }
++    try checks.no("read-symlink") { _ = try WorkerCapabilityInput.read(link.path, maximumBytes: 3, deadline: deadline) }
++    try checks.no("read-directory") { _ = try WorkerCapabilityInput.read(temporary.path, maximumBytes: 3, deadline: deadline) }
++    try checks.no("read-fifo-does-not-block") { _ = try WorkerCapabilityInput.read(fifo.path, maximumBytes: 3, deadline: deadline) }
++    try checks.no("expired-read") { _ = try WorkerCapabilityInput.read(file.path, maximumBytes: 3, deadline: 0) }
++    let validArgs = ["--describe-runtime", "--config", "/config", "--manifest", "/manifest", "--expected-executable-sha256", String(repeating: "1", count: 64)]
++    try checks.yes("explicit-command") { _ = try WorkerCapabilityCommand.Arguments(validArgs) }
++    try checks.no("command-extra") { _ = try WorkerCapabilityCommand.Arguments(validArgs + ["--mtp"]) }
++    try checks.no("command-empty") { var a = validArgs; a[2] = ""; _ = try WorkerCapabilityCommand.Arguments(a) }
++    try checks.no("command-wrong-binary-pin") { var a = validArgs; a[6] = String(repeating: "A", count: 64); _ = try WorkerCapabilityCommand.Arguments(a) }
++}
+--- /dev/null
++++ b/libs/darkbloom-cluster-worker/Tests/CapabilityChecks/Fixtures/registered-qwen35-9b.configuration.json
+@@ -0,0 +1,126 @@
++{
++  "architectures": [
++    "Qwen3_5ForConditionalGeneration"
++  ],
++  "image_token_id": 248056,
++  "model_type": "qwen3_5",
++  "quantization": {
++    "group_size": 64,
++    "bits": 4,
++    "mode": "affine"
++  },
++  "quantization_config": {
++    "group_size": 64,
++    "bits": 4,
++    "mode": "affine"
++  },
++  "text_config": {
++    "attention_bias": false,
++    "attention_dropout": 0.0,
++    "attn_output_gate": true,
++    "dtype": "bfloat16",
++    "eos_token_id": 248044,
++    "full_attention_interval": 4,
++    "head_dim": 256,
++    "hidden_act": "silu",
++    "hidden_size": 4096,
++    "initializer_range": 0.02,
++    "intermediate_size": 12288,
++    "layer_types": [
++      "linear_attention",
++      "linear_attention",
++      "linear_attention",
++      "full_attention",
++      "linear_attention",
++      "linear_attention",
++      "linear_attention",
++      "full_attention",
++      "linear_attention",
++      "linear_attention",
++      "linear_attention",
++      "full_attention",
++      "linear_attention",
++      "linear_attention",
++      "linear_attention",
++      "full_attention",
++      "linear_attention",
++      "linear_attention",
++      "linear_attention",
++      "full_attention",
++      "linear_attention",
++      "linear_attention",
++      "linear_attention",
++      "full_attention",
++      "linear_attention",
++      "linear_attention",
++      "linear_attention",
++      "full_attention",
++      "linear_attention",
++      "linear_attention",
++      "linear_attention",
++      "full_attention"
++    ],
++    "linear_conv_kernel_dim": 4,
++    "linear_key_head_dim": 128,
++    "linear_num_key_heads": 16,
++    "linear_num_value_heads": 32,
++    "linear_value_head_dim": 128,
++    "max_position_embeddings": 262144,
++    "mlp_only_layers": [],
++    "model_type": "qwen3_5_text",
++    "mtp_num_hidden_layers": 1,
++    "mtp_use_dedicated_embeddings": false,
++    "num_attention_heads": 16,
++    "num_hidden_layers": 32,
++    "num_key_value_heads": 4,
++    "rms_norm_eps": 1e-06,
++    "use_cache": true,
++    "vocab_size": 248320,
++    "mamba_ssm_dtype": "float32",
++    "rope_parameters": {
++      "mrope_interleaved": true,
++      "mrope_section": [
++        11,
++        11,
++        10
++      ],
++      "rope_type": "default",
++      "rope_theta": 10000000,
++      "partial_rotary_factor": 0.25
++    }
++  },
++  "tie_word_embeddings": false,
++  "transformers_version": "4.57.0.dev0",
++  "video_token_id": 248057,
++  "vision_config": {
++    "deepstack_visual_indexes": [],
++    "depth": 27,
++    "hidden_act": "gelu_pytorch_tanh",
++    "hidden_size": 1152,
++    "in_channels": 3,
++    "initializer_range": 0.02,
++    "intermediate_size": 4304,
++    "model_type": "qwen3_5",
++    "num_heads": 16,
++    "num_position_embeddings": 2304,
++    "out_hidden_size": 4096,
++    "patch_size": 16,
++    "spatial_merge_size": 2,
++    "temporal_patch_size": 2
++  },
++  "vision_end_token_id": 248054,
++  "vision_start_token_id": 248053,
++  "mtplx_mtp": {
++    "included": true,
++    "prefix": "mtp.",
++    "model_type": "qwen3_5_mtp",
++    "block_size": 3,
++    "shares_target_embeddings": true,
++    "shares_target_lm_head": true
++  },
++  "mtplx_mtp_quantization": {
++    "group_size": 64,
++    "bits": 4,
++    "mode": "affine"
++  }
++}--- /dev/null
++++ b/libs/darkbloom-cluster-worker/Tests/CapabilityChecks/Fixtures/registered-qwen35-9b.manifest.json
+@@ -0,0 +1,84 @@
++{
++  "aggregate_sha256" : "127de76b4ef82b7aaa0acaac0ee31c784cff066eda64291f521f051469b7c24b",
++  "created_at" : "2026-09-03T23:10:07Z",
++  "file_count" : 12,
++  "files" : [
++    {
++      "path" : "chat_template.jinja",
++      "role" : "template",
++      "sha256" : "a4aee8afcf2e0711942cf848899be66016f8d14a889ff9ede07bca099c28f715",
++      "size_bytes" : 7756
++    },
++    {
++      "path" : "config.json",
++      "role" : "config",
++      "sha256" : "c8e767de4953e58352fbc1acbf6615329075ed02fe16a36b8065714d85ee4423",
++      "size_bytes" : 3118
++    },
++    {
++      "path" : "model-00001-of-00002.safetensors",
++      "role" : "weight",
++      "sha256" : "a68b87558c6ef43f74c2bd63ce7e9092ceddc3101f3def0030774bae5f42aadd",
++      "size_bytes" : 5349771222
++    },
++    {
++      "path" : "model-00002-of-00002.safetensors",
++      "role" : "weight",
++      "sha256" : "b0a770bf8469c7f3f18756a0e0283f1c1174344a83e059a4e483f6af4907352d",
++      "size_bytes" : 600449850
++    },
++    {
++      "path" : "model.safetensors.index.json",
++      "role" : "index",
++      "sha256" : "f3753fc5d26bcc0b257c152289b4fd7a20d7c8b0e59292e34a01064fa43018ff",
++      "size_bytes" : 120552
++    },
++    {
++      "path" : "mtp-00001.safetensors",
++      "role" : "weight",
++      "sha256" : "1f3269b9c9c4d201e01e0d7003a5cdf649dbfbf1be63859c1baf662313dfd8e2",
++      "size_bytes" : 136884416
++    },
++    {
++      "path" : "preprocessor_config.json",
++      "role" : "preprocessor",
++      "sha256" : "27225450ac9c6529872ee1924fcb0962ff5634834f817040f444118116f4e516",
++      "size_bytes" : 390
++    },
++    {
++      "path" : "processor_config.json",
++      "role" : "preprocessor",
++      "sha256" : "14932921ca485d458a04dafd8069fbb0a4505622a48208d19ed247115801385b",
++      "size_bytes" : 1300
++    },
++    {
++      "path" : "tokenizer.json",
++      "role" : "tokenizer",
++      "sha256" : "87a7830d63fcf43bf241c3c5242e96e62dd3fdc29224ca26fed8ea333db72de4",
++      "size_bytes" : 19989343
++    },
++    {
++      "path" : "tokenizer_config.json",
++      "role" : "tokenizer",
++      "sha256" : "e98f1901ac6f0adff67b1d540bfa0c36ac1a0cf59eb72ed78146ef89aafa1182",
++      "size_bytes" : 1139
++    },
++    {
++      "path" : "video_preprocessor_config.json",
++      "role" : "preprocessor",
++      "sha256" : "7768af27c1fafa9cc9011c1dc20067e03f8915e03b63504550e11d5066986d13",
++      "size_bytes" : 385
++    },
++    {
++      "path" : "vocab.json",
++      "role" : "tokenizer",
++      "sha256" : "ce99b4cb2983d118806ce0a8b777a35b093e2000a503ebde25853284c9dfa003",
++      "size_bytes" : 6722759
++    }
++  ],
++  "model_id" : "Qwen3.5-9B",
++  "r2_prefix" : "v2\/Qwen3.5-9B--3e3c04992a0d\/2026-09-03-r1",
++  "schema_version" : 1,
++  "total_size_bytes" : 6113952230,
++  "version" : "2026-09-03-r1"
++}--- /dev/null
++++ b/libs/darkbloom-cluster-worker/Tests/CapabilityChecks/README.md
+@@ -0,0 +1,9 @@
++# Worker capability metadata checks
++
++Run `./Tests/CapabilityChecks/run.sh` from the worker package. The runner builds only the actual Foundation/CryptoKit metadata source closure and the worker's metadata command/input helpers. It does not use SwiftPM, link MLX/Cmlx, build the native worker, open weights or execute GPU work.
++
++The two fixtures are byte-exact configuration/manifest metadata decoded from the existing `experiments/cluster/inference/Tests/RegisteredDenseProfiles/retained-inputs.json` nine-model fields. Together they are 5,803 bytes; no tensor inventory or payload is copied. Configuration SHA is `c8e767de4953e58352fbc1acbf6615329075ed02fe16a36b8065714d85ee4423`; manifest SHA is `4f2735026cc7b40ee2c886ee53fb8755816c0001c4c69c141a61d5f56ff22aa4`.
++
++The pure producer must match the shared Protocol fixture's profile, four Plan/stage/construction identities and arithmetic receipt. Refusal cases exercise altered/oversized/unknown metadata, invalid binary binding, bounded regular-file reads, symlink/directory/FIFO refusal and exact command arguments. Five actual CPU fixture children exercise executable-file hashing and output; a wrong binary pin must fail before metadata files are opened. The installed executable in those tests is the CPU fixture itself, not the native worker.
++
++The runner needs the sibling shared package and Python 3.9+. It has no dependency on a private research directory, external weights or a running service. All temporary build/input files are removed on exit. A full native worker metadata invocation remains a separate integration check.
+--- /dev/null
++++ b/libs/darkbloom-cluster-worker/Tests/CapabilityChecks/check_command.py
+@@ -0,0 +1,55 @@
++#!/usr/bin/env python3
++"""Run the compiled CPU fixture, never the native/model worker."""
++import hashlib
++import json
++import pathlib
++import subprocess
++import sys
++import tempfile
++
++
++def main(binary, fixtures):
++    binary, fixtures = pathlib.Path(binary).resolve(strict=True), pathlib.Path(fixtures).resolve(strict=True)
++    digest = hashlib.sha256(binary.read_bytes()).hexdigest()
++    names = ["registered-qwen35-9b.configuration.json", "registered-qwen35-9b.manifest.json"]
++    originals = [(fixtures / name).read_bytes() for name in names]
++    cases = []
++    with tempfile.TemporaryDirectory(prefix="capability-command-") as temporary:
++        directory = pathlib.Path(temporary)
++        config, manifest = directory / "config.json", directory / "manifest.json"
++        config.write_bytes(originals[0]); manifest.write_bytes(originals[1])
++        link = directory / "config-link"; link.symlink_to(config)
++        argv = [str(binary), "--describe-runtime", "--config", str(config), "--manifest", str(manifest),
++                "--expected-executable-sha256", digest]
++
++        def case(name, args, success, contains=None):
++            result = subprocess.run(args, capture_output=True, timeout=20)
++            assert (result.returncode == 0) is success, (name, result.returncode, result.stderr)
++            if success:
++                assert result.stderr == b""
++                value = json.loads(result.stdout)
++                assert value["runtimeBinarySHA256"] == digest
++                assert value["profile"]["maximumOutputTokens"] == 128
++                assert [p["stages"][0]["sourceLayerEnd"] for p in value["partitions"]] == [4, 8, 12, 16]
++                assert result.stdout == (json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n").encode()
++            else:
++                assert result.stdout == b"", name
++                assert contains in result.stderr, (name, result.stderr)
++            cases.append(name)
++
++        case("actual-fixture-executable-binding", argv, True)
++        wrong = list(argv); wrong[-1] = "0" * 64; wrong[3] = str(directory / "does-not-exist")
++        case("binary-refusal-precedes-metadata-open", wrong, False, b"Installed executable bytes differ")
++        symlink = list(argv); symlink[3] = str(link)
++        case("symlink-input-refused", symlink, False, b"Cannot open metadata input")
++        case("extra-option-refused", argv + ["--mtp"], False, b"Expected --describe-runtime")
++        config.write_bytes(config.read_bytes() + b" ")
++        case("changed-config-refused", argv, False, b"exact registered 9B")
++    assert [(fixtures / name).read_bytes() for name in names] == originals
++    assert hashlib.sha256(binary.read_bytes()).hexdigest() == digest
++    print(json.dumps({"passed": True, "actualCPUChildren": len(cases), "cases": cases,
++                      "nativeWorkerExecuted": False, "modelOrGPUExecution": False}, sort_keys=True))
++
++
++if __name__ == "__main__":
++    main(*sys.argv[1:])
+--- /dev/null
++++ b/libs/darkbloom-cluster-worker/Tests/CapabilityChecks/run.sh
+@@ -0,0 +1,34 @@
++#!/bin/bash
++set -euo pipefail
++task_package="$(cd "$(dirname "$0")/../.." && pwd)"
++task_shared="$(cd "$task_package/../darkbloom-cluster" && pwd)"
++task_runtime="$task_shared/Sources/DarkbloomClusterRuntime"
++task_fixtures="$task_package/Tests/CapabilityChecks"
++task_build="$(mktemp -d "${TMPDIR:-/tmp}/cluster-capability-metadata.XXXXXXXX")"
++trap 'rm -rf "$task_build"' EXIT
++xcrun swiftc -swift-version 6 -warnings-as-errors -target "$(uname -m)-apple-macos14.0" \
++  -emit-library -emit-module -module-name DarkbloomClusterProtocol \
++  -emit-module-path "$task_build/DarkbloomClusterProtocol.swiftmodule" \
++  "$task_shared"/Sources/DarkbloomClusterProtocol/*.swift -o "$task_build/libDarkbloomClusterProtocol.dylib"
++# The producer's actual pure source closure; no MLX/Cmlx or model constructor.
++task_sources=(WorkerJSONScanner BoundedProbeInput QwenLayerStageMetadata QwenLayerStagePlan
++  QwenLongPrefillTensorBudget QwenDenseProfileTypes QwenDenseRegisteredSpecification
++  QwenLayerStageGenerationRequest QwenLayerStageSchedule QwenLayerStageWireExpectation
++  ClusterRuntimeError CanonicalJSON ClusterMetadataHashing QwenLongPrefillArithmeticEnvironment
++  QwenResidentAdapterDefinition QwenResidentCapabilityMetadata)
++task_paths=()
++for task_source in "${task_sources[@]}"; do task_paths+=("$task_runtime/$task_source.swift"); done
++xcrun swiftc -swift-version 6 -warnings-as-errors -target "$(uname -m)-apple-macos14.0" \
++  -emit-library -emit-module -module-name DarkbloomClusterRuntime \
++  -emit-module-path "$task_build/DarkbloomClusterRuntime.swiftmodule" \
++  -I "$task_build" -L "$task_build" -lDarkbloomClusterProtocol \
++  "${task_paths[@]}" -o "$task_build/libDarkbloomClusterRuntime.dylib"
++xcrun swiftc -swift-version 6 -warnings-as-errors -parse-as-library -target "$(uname -m)-apple-macos14.0" \
++  -I "$task_build" -L "$task_build" -lDarkbloomClusterProtocol -lDarkbloomClusterRuntime \
++  -Xlinker -rpath -Xlinker "$task_build" \
++  "$task_package/Sources/DarkbloomClusterWorker/WorkerCapabilityInput.swift" \
++  "$task_package/Sources/DarkbloomClusterWorker/WorkerCapabilityCommand.swift" \
++  "$task_fixtures/CapabilityCheckSupport.swift" "$task_fixtures/CapabilityInputCheck.swift" \
++  "$task_fixtures/CapabilityCommandCheck.swift" -o "$task_build/check"
++"$task_build/check" "$task_fixtures/Fixtures" "$task_shared/Tests/CapabilityChecks/Fixtures/registered-qwen35-9b.capability.json"
++/usr/bin/python3 "$task_fixtures/check_command.py" "$task_build/check" "$task_fixtures/Fixtures"

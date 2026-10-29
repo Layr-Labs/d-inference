@@ -1,0 +1,206 @@
+{
+  "baseRevision": "605651bb95d71c1da9bb122107925143e9441973",
+  "changes": [
+    {
+      "after": {
+        "bytes": 48002,
+        "path": "/Users/developer/DarkbloomDev/cluster-research/upstream-cluster-swift-resolution-20260920/proposed/provider-swift/Sources/ProviderCore/ProviderLoop.swift",
+        "sha256": "a134cc6c663ad958cc436afc5b9c2f1f22990d779b5838d6354dd5919126f287"
+      },
+      "before": {
+        "bytes": 48151,
+        "path": "/Users/developer/DarkbloomDev/cluster-research/upstream-refresh-20260920/tracked-three-way/merged/provider-swift/Sources/ProviderCore/ProviderLoop.swift",
+        "sha256": "53eede8320ff3b4b9542843da5b3a4fee978bc2039701cda379dc54ec9261713"
+      },
+      "conflictsResolved": 1,
+      "kind": "tracked-conflict-resolution",
+      "target": "provider-swift/Sources/ProviderCore/ProviderLoop.swift"
+    },
+    {
+      "after": {
+        "bytes": 25915,
+        "path": "/Users/developer/DarkbloomDev/cluster-research/upstream-cluster-swift-resolution-20260920/proposed/provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge.swift",
+        "sha256": "0c862540ac7300a8dc86094221b6e67d5716e091e284cf41d6409fe2c014b0db"
+      },
+      "before": {
+        "bytes": 25986,
+        "path": "/Users/developer/DarkbloomDev/cluster-research/upstream-refresh-20260920/tracked-three-way/merged/provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge.swift",
+        "sha256": "f52a822ba3cfc87882088eb296fc8acc95176d26f3c317cab95e765f848b8a8f"
+      },
+      "conflictsResolved": 1,
+      "kind": "tracked-conflict-resolution",
+      "target": "provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge.swift"
+    },
+    {
+      "after": {
+        "bytes": 10670,
+        "path": "/Users/developer/DarkbloomDev/cluster-research/upstream-cluster-swift-resolution-20260920/proposed/provider-swift/Sources/ProviderCore/Server/StandaloneServer+HTTP.swift",
+        "sha256": "e559837efb4dface13e4d2d40f9418154e4016970228d686ffd68a55c85330c9"
+      },
+      "before": {
+        "bytes": 10741,
+        "path": "/Users/developer/DarkbloomDev/cluster-research/upstream-refresh-20260920/tracked-three-way/merged/provider-swift/Sources/ProviderCore/Server/StandaloneServer+HTTP.swift",
+        "sha256": "b20caaaa50c16f8423a40e8dd3e71cba0c9678295c4206f9bf27df616f5dd6e8"
+      },
+      "conflictsResolved": 1,
+      "kind": "tracked-conflict-resolution",
+      "target": "provider-swift/Sources/ProviderCore/Server/StandaloneServer+HTTP.swift"
+    },
+    {
+      "after": {
+        "bytes": 9600,
+        "path": "/Users/developer/DarkbloomDev/cluster-research/upstream-cluster-swift-resolution-20260920/proposed/provider-swift/Sources/ProviderCore/Server/LocalChatUploadResponder.swift",
+        "sha256": "db14196910e912f61429039dc4fea69e702e21d326eb2c672bd512ee5ea0862b"
+      },
+      "before": {
+        "bytes": 9812,
+        "path": "/Users/developer/DarkbloomDev/cluster-research/upstream-refresh-20260920/tracked-three-way/merged/provider-swift/Sources/ProviderCore/Server/LocalChatUploadResponder.swift",
+        "sha256": "0b301e9e099dc67841c134130affa6d5f7e2d14bf296041e4ccb0cc736262842"
+      },
+      "conflictsResolved": 1,
+      "kind": "tracked-conflict-resolution",
+      "target": "provider-swift/Sources/ProviderCore/Server/LocalChatUploadResponder.swift"
+    },
+    {
+      "after": {
+        "bytes": 7664,
+        "path": "/Users/developer/DarkbloomDev/cluster-research/upstream-cluster-swift-resolution-20260920/proposed/provider-swift/Sources/ProviderCore/Server/LocalInferenceHTTP.swift",
+        "sha256": "bbd13ae29717ae5a9dc7125f35b2cb2083ddf17f0cdad7362b7a5f98e469bb25"
+      },
+      "before": {
+        "bytes": 8805,
+        "path": "/Users/developer/DarkbloomDev/cluster-research/upstream-refresh-20260920/tracked-three-way/merged/provider-swift/Sources/ProviderCore/Server/LocalInferenceHTTP.swift",
+        "sha256": "a06a259c977a7ae56374126909f5b2f15d23721ef2aed546d683381ff03e60ac"
+      },
+      "conflictsResolved": 5,
+      "kind": "tracked-conflict-resolution",
+      "target": "provider-swift/Sources/ProviderCore/Server/LocalInferenceHTTP.swift"
+    },
+    {
+      "after": {
+        "bytes": 2570,
+        "path": "/Users/developer/DarkbloomDev/cluster-research/upstream-cluster-swift-resolution-20260920/proposed/provider-swift/Sources/ProviderCore/Server/LocalDisconnectResponder.swift",
+        "sha256": "31e52de1a6d33db2737bb97b9a2f20f4541081c3949267bdf8d22c4f1d89c7e1"
+      },
+      "before": {
+        "bytes": 1892,
+        "path": "/Users/developer/DarkbloomDev/cluster-research/upstream-cluster-swift-resolution-20260920/original-upstream/provider-swift/Sources/ProviderCore/Server/LocalDisconnectResponder.swift",
+        "sha256": "c8e89d79780d4075af1af12eac0149a6b246857c134185f45fa4217d60a3a0b5"
+      },
+      "kind": "upstream-context-composition",
+      "target": "provider-swift/Sources/ProviderCore/Server/LocalDisconnectResponder.swift",
+      "upstreamRevision": "cc225365f866d9a0e6f565fe9426703785611f84"
+    },
+    {
+      "after": {
+        "bytes": 9762,
+        "path": "/Users/developer/DarkbloomDev/cluster-research/upstream-cluster-swift-resolution-20260920/proposed/provider-swift/Tests/ProviderCoreTests/Server/DistributedHTTPOriginTests.swift",
+        "sha256": "ea2336d1687bf8396f6a89f12637a72bfe6f746dcb0345e1fd38c8c10dc28a25"
+      },
+      "before": {
+        "bytes": 9645,
+        "path": "/Users/developer/DarkbloomDev/cluster-research/upstream-cluster-swift-resolution-20260920/original-local/provider-swift/Tests/ProviderCoreTests/Server/DistributedHTTPOriginTests.swift",
+        "sha256": "af427abd1057325658bb1004f010096cdbb3e19a2278b35b4d4a3865d4d47952"
+      },
+      "kind": "existing-test-context-composition",
+      "target": "provider-swift/Tests/ProviderCoreTests/Server/DistributedHTTPOriginTests.swift"
+    }
+  ],
+  "compilerExecuted": false,
+  "fixturesOrBinariesQualified": false,
+  "goResolutionManifest": {
+    "bytes": 1710,
+    "path": "/Users/developer/DarkbloomDev/cluster-research/upstream-cluster-go-resolution-20260920/manifest.json",
+    "sha256": "3c8287fe9eaf745fb3ece5cd35d2760c0e0cf98cbfd589121b7c33853df191bd"
+  },
+  "httpRebase": [
+    {
+      "after": {
+        "bytes": 26203,
+        "path": "/Users/developer/DarkbloomDev/cluster-research/upstream-cluster-swift-resolution-20260920/http-composed/provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge.swift",
+        "sha256": "3acda0cf0b0dc61ad25844ea7bf2e7521fcb2ed670688cba09eb4552a256e527"
+      },
+      "before": {
+        "bytes": 25915,
+        "path": "/Users/developer/DarkbloomDev/cluster-research/upstream-cluster-swift-resolution-20260920/proposed/provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge.swift",
+        "sha256": "0c862540ac7300a8dc86094221b6e67d5716e091e284cf41d6409fe2c014b0db"
+      },
+      "edits": [
+        {
+          "after": "        eosTokenIds: Set<Int>,\n        resolvedStopTokenIds: Set<Int>? = nil,\n",
+          "before": "        eosTokenIds: Set<Int>,\n"
+        },
+        {
+          "after": "            Self.heartbeatFallbackReason(kvBackendFallbackReason)\n        // A trusted session can supply its already-resolved policy, including\n        // an intentionally empty fixed-length stop set. Legacy callers retain\n        // the original model/tokenizer/extra-token union.\n        self.stopTokenIds = resolvedStopTokenIds ?? EngineV2Translation.stopTokenIds(\n",
+          "before": "            Self.heartbeatFallbackReason(kvBackendFallbackReason)\n        self.stopTokenIds = EngineV2Translation.stopTokenIds(\n"
+        }
+      ],
+      "reviewedHTTPAfter": {
+        "bytes": 25511,
+        "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-product-http-correction-20260920/proposed/provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge.swift",
+        "sha256": "dc1ade0b165d4f28b1ccc11a696db11eff450594559847b5cb0eb8cf41e81a7c"
+      },
+      "reviewedHTTPBefore": {
+        "bytes": 25223,
+        "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-product-http-correction-20260920/original/provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge.swift",
+        "sha256": "93c6db0716c5b2993d710cf3e9f91ca68a81c70c2306b2ead1fd3ec182fe6424"
+      },
+      "target": "provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge.swift"
+    },
+    {
+      "after": {
+        "bytes": 38133,
+        "path": "/Users/developer/DarkbloomDev/cluster-research/upstream-cluster-swift-resolution-20260920/http-composed/provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Submission.swift",
+        "sha256": "0a688ef680d446518e435295b85befa24962964f2c7d082a160ab047aa5f5967"
+      },
+      "before": {
+        "bytes": 37638,
+        "path": "/Users/developer/DarkbloomDev/cluster-research/upstream-refresh-20260920/tracked-three-way/merged/provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Submission.swift",
+        "sha256": "eebfacbf1fa122296885c79b55a83ade93cb73040b9e7c17c777a46ef0d98eca"
+      },
+      "edits": [
+        {
+          "after": "            if error is CancellationError { throw CancellationError() }\n            // Distributed HTTP has no native terminal when admission refuses.\n            // Propagate the existing mapped error before response headers; an\n            // error-only stream cannot manufacture a native retirement record.\n            if distributed != nil, httpResponse != nil, !retirementTransfer.isClaimed {\n                throw MultiModelBatchSchedulerEngineError.fromSchedulerMessage(\n                    EngineV2Translation.admissionErrorMessage(for: error))\n            }\n",
+          "before": "            if error is CancellationError { throw CancellationError() }\n"
+        }
+      ],
+      "reviewedHTTPAfter": {
+        "bytes": 36797,
+        "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-product-http-correction-20260920/proposed/provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Submission.swift",
+        "sha256": "29955db9d8e19b55e41ad75a6a9fd1fe0e033229ed848378494ea986a5895247"
+      },
+      "reviewedHTTPBefore": {
+        "bytes": 36302,
+        "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-product-http-correction-20260920/original/provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Submission.swift",
+        "sha256": "96f34ff7b7f244f60ab2217b432a212447569009774e016fd27b4136e68538fc"
+      },
+      "target": "provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Submission.swift"
+    }
+  ],
+  "httpRebaseRequiresRemainingExactFrozenFiles": [
+    "provider-swift/Sources/ProviderCore/Inference/Distributed/DistributedEngineFactory.swift",
+    "provider-swift/Sources/ProviderCore/Server/Distributed/DistributedLocalServer+Startup.swift",
+    "provider-swift/Tests/ProviderCoreTests/Server/DistributedStopResolutionTests.swift"
+  ],
+  "httpSourceManifest": {
+    "bytes": 4679,
+    "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-product-http-correction-20260920/manifest.json",
+    "sha256": "2661c909e97bc0e52fa8f710d4f1e9247c8ec6f29144e99aa496d9afb8db015b"
+  },
+  "httpSourceReview": {
+    "bytes": 10814,
+    "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-product-http-source-review-20260920/source-review.json",
+    "sha256": "13352508a8bba6cd8e4ebccb8eeeff13554c30ba4e84d61ac845a3c959c409ef"
+  },
+  "mainMutated": false,
+  "schema": "upstream_cluster_swift_resolution_v1",
+  "sourceOnly": true,
+  "testsExecuted": false,
+  "trackedReceipt": {
+    "bytes": 29015,
+    "path": "/Users/developer/DarkbloomDev/cluster-research/upstream-refresh-20260920/tracked-three-way/receipt.json",
+    "sha256": "c2f1033e4fa26a68a55036fc6e728cf8ce5aa78a3f46543839b488eec45b3b3e"
+  },
+  "upstreamMLXSwiftLMRevision": "e22fc82bdb7bfbd93874d56c7df9ca3306782b09",
+  "upstreamRevision": "cc225365f866d9a0e6f565fe9426703785611f84"
+}

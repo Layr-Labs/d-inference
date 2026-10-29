@@ -1,0 +1,12 @@
+--- a/docs/reports/2026-09-15-cluster-lookahead-generation-and-timing.md
++++ b/docs/reports/2026-09-15-cluster-lookahead-generation-and-timing.md
+@@ -69,7 +69,8 @@
+ rises 15.968%. Earlier-pump observations remain separate. The wakeup cohorts
+ retain a 50 ms watchdog interval; the change removes the outgoing-data wait.
+ One diagnostic input and three samples per mode establish neither sustained
+-nor representative performance, and these rates remain below the 800-token/s target.
++nor representative performance. These M4 Pro 9B measurements do not qualify the
++separate 27B two-M3-Ultra projection target.
+ 
+ Every timed request matches the declared 128-token sequence. Both sidecars join
+ to request/model/Plan/build identities, final schedule and intended policy.

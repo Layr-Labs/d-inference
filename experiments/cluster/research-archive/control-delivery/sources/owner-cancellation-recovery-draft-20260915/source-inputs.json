@@ -1,0 +1,134 @@
+{
+  "/Users/developer/DarkbloomDev/cluster-research/resident-owner-timing-controller-draft-20260915/Sources/QualificationInput.swift": {
+    "copy": "Sources/QualificationInput.swift",
+    "sha256": "186632f3dd1948180be611dee3a5c72539de881d8264df0aa487b406bb5a1734"
+  },
+  "/Users/developer/DarkbloomDev/d-inference/libs/darkbloom-cluster/Sources/DarkbloomClusterBootstrap/BootstrapSocket.swift": {
+    "copy": "upstream/DarkbloomClusterBootstrap/BootstrapSocket.swift",
+    "sha256": "4fb0b1968dca75055ec5d982e9d3487e1d61ee034066322316b831d739354097"
+  },
+  "/Users/developer/DarkbloomDev/d-inference/libs/darkbloom-cluster/Sources/DarkbloomClusterBootstrap/ClusterBootstrapConnection.swift": {
+    "copy": "upstream/DarkbloomClusterBootstrap/ClusterBootstrapConnection.swift",
+    "sha256": "44b8a6cd29154c2d720aab5851053cbd3394edfa6ec1c0de7c9d54dd9df57efa"
+  },
+  "/Users/developer/DarkbloomDev/d-inference/libs/darkbloom-cluster/Sources/DarkbloomClusterBootstrap/ClusterBootstrapFrame.swift": {
+    "copy": "upstream/DarkbloomClusterBootstrap/ClusterBootstrapFrame.swift",
+    "sha256": "daa0889c01a1c375242d1b10b25b0382dd2da43897f3d126ae1cae544d170832"
+  },
+  "/Users/developer/DarkbloomDev/d-inference/libs/darkbloom-cluster/Sources/DarkbloomClusterBootstrap/ClusterBootstrapListener.swift": {
+    "copy": "upstream/DarkbloomClusterBootstrap/ClusterBootstrapListener.swift",
+    "sha256": "7c26f245b20f0c8ac76f49cbb4decd875fa549bc8bdd8b4113fa625c35ce7fd4"
+  },
+  "/Users/developer/DarkbloomDev/d-inference/libs/darkbloom-cluster/Sources/DarkbloomClusterProcess/ClusterWorkerEndpoint.swift": {
+    "copy": "upstream/DarkbloomClusterProcess/ClusterWorkerEndpoint.swift",
+    "sha256": "8de606b33adeda437f3f454e07b6d9f9fc68cfc8384bc9345f139bec2b72ef32"
+  },
+  "/Users/developer/DarkbloomDev/d-inference/libs/darkbloom-cluster/Sources/DarkbloomClusterProcess/ClusterWorkerPair.swift": {
+    "copy": "upstream/DarkbloomClusterProcess/ClusterWorkerPair.swift",
+    "sha256": "95ccad5c27d4d4b5cb63edbca618fe3ea0feb9aaf43a8807fd9678dbac0ff46e"
+  },
+  "/Users/developer/DarkbloomDev/d-inference/libs/darkbloom-cluster/Sources/DarkbloomClusterProcess/ClusterWorkerProcess.swift": {
+    "copy": "upstream/DarkbloomClusterProcess/ClusterWorkerProcess.swift",
+    "sha256": "e09eb12b8b27ede734b1142a40dd9ba4b4c7d3aed25f384c8a2556c9d7b92250"
+  },
+  "/Users/developer/DarkbloomDev/d-inference/libs/darkbloom-cluster/Sources/DarkbloomClusterProcess/ClusterWorkerRequest.swift": {
+    "copy": "upstream/DarkbloomClusterProcess/ClusterWorkerRequest.swift",
+    "sha256": "5157cdbf409c895f5cb4ca6292708cd5429d82c802786602d241861738de31ae"
+  },
+  "/Users/developer/DarkbloomDev/d-inference/libs/darkbloom-cluster/Sources/DarkbloomClusterProcess/WorkerPumpWakeup.swift": {
+    "copy": "upstream/DarkbloomClusterProcess/WorkerPumpWakeup.swift",
+    "sha256": "2177145d635909b953eb6c1074807c6cac1a5f313dce352169e753684f9d204a"
+  },
+  "/Users/developer/DarkbloomDev/d-inference/libs/darkbloom-cluster/Sources/DarkbloomClusterProtocol/ClusterRuntimeCapability.swift": {
+    "copy": "upstream/DarkbloomClusterProtocol/ClusterRuntimeCapability.swift",
+    "sha256": "bb66c18489f693a8bce237cd4cff277c7d96360abdb82cdd09d2278cd55fe21b"
+  },
+  "/Users/developer/DarkbloomDev/d-inference/libs/darkbloom-cluster/Sources/DarkbloomClusterProtocol/ClusterRuntimeCapabilityCodec.swift": {
+    "copy": "upstream/DarkbloomClusterProtocol/ClusterRuntimeCapabilityCodec.swift",
+    "sha256": "9b3e461608fa661766d8b162607e69bdbe8cae0094435112bbb0c5474c934f0e"
+  },
+  "/Users/developer/DarkbloomDev/d-inference/libs/darkbloom-cluster/Sources/DarkbloomClusterProtocol/ClusterRuntimeCapabilityValidation.swift": {
+    "copy": "upstream/DarkbloomClusterProtocol/ClusterRuntimeCapabilityValidation.swift",
+    "sha256": "193db3cdae708f37cc0f4ce213094716a3441da7b94662d34f6399b4fe7d8e08"
+  },
+  "/Users/developer/DarkbloomDev/d-inference/libs/darkbloom-cluster/Sources/DarkbloomClusterProtocol/ClusterWorkerCodec.swift": {
+    "copy": "upstream/DarkbloomClusterProtocol/ClusterWorkerCodec.swift",
+    "sha256": "070fbea45cb5f1d1a39d09bac9cfc73a9f9d7a31e5825ec4ea355a8789f8538e"
+  },
+  "/Users/developer/DarkbloomDev/d-inference/libs/darkbloom-cluster/Sources/DarkbloomClusterProtocol/ClusterWorkerEnvelopeValidation.swift": {
+    "copy": "upstream/DarkbloomClusterProtocol/ClusterWorkerEnvelopeValidation.swift",
+    "sha256": "a058472e4c0739681e7fd21d410dc60060dc42ea3c071c6fee934dd155d3bc26"
+  },
+  "/Users/developer/DarkbloomDev/d-inference/libs/darkbloom-cluster/Sources/DarkbloomClusterProtocol/ClusterWorkerFraming.swift": {
+    "copy": "upstream/DarkbloomClusterProtocol/ClusterWorkerFraming.swift",
+    "sha256": "f8b361ccf8770a3fd46b7985accd3f28cfdce31c78532b874c570e8fae6dbd45"
+  },
+  "/Users/developer/DarkbloomDev/d-inference/libs/darkbloom-cluster/Sources/DarkbloomClusterProtocol/ClusterWorkerJSON.swift": {
+    "copy": "upstream/DarkbloomClusterProtocol/ClusterWorkerJSON.swift",
+    "sha256": "dec57dd50237af7d0597374e36a49b23f5105b07943ca024be368f6b9f1d5046"
+  },
+  "/Users/developer/DarkbloomDev/d-inference/libs/darkbloom-cluster/Sources/DarkbloomClusterProtocol/ClusterWorkerMessages.swift": {
+    "copy": "upstream/DarkbloomClusterProtocol/ClusterWorkerMessages.swift",
+    "sha256": "fe9cd8e5ac2a92559cb5d4ded98fcf5cbc4194c5341eb91c3880c2f21a312dea"
+  },
+  "/Users/developer/DarkbloomDev/d-inference/libs/darkbloom-cluster/Sources/DarkbloomClusterProtocol/ClusterWorkerObject.swift": {
+    "copy": "upstream/DarkbloomClusterProtocol/ClusterWorkerObject.swift",
+    "sha256": "4bd7b6bcc4fe128e99c400b84c2e9ec1d470ae7db1d5d0f0c90c68308ba65a0d"
+  },
+  "/Users/developer/DarkbloomDev/d-inference/libs/darkbloom-cluster/Sources/DarkbloomClusterProtocol/ClusterWorkerSession.swift": {
+    "copy": "upstream/DarkbloomClusterProtocol/ClusterWorkerSession.swift",
+    "sha256": "f2afbfe40df22f023089d208f78a0d949a5c3fcf09e9cb8930eedbaf28acfa76"
+  },
+  "/Users/developer/DarkbloomDev/d-inference/libs/darkbloom-cluster/Sources/DarkbloomClusterProtocol/ClusterWorkerValidation.swift": {
+    "copy": "upstream/DarkbloomClusterProtocol/ClusterWorkerValidation.swift",
+    "sha256": "c09f396c8ad55e10568337afb6bbae07853a841768f95898c3dd604602a849c8"
+  },
+  "/Users/developer/DarkbloomDev/d-inference/libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterDeviceLease.swift": {
+    "copy": "upstream/DarkbloomClusterRemote/ClusterDeviceLease.swift",
+    "sha256": "df1c60f0f615e5347751bb4c795c0dbb1e6e45a8a01b1c6654e576b1eec4bf86"
+  },
+  "/Users/developer/DarkbloomDev/d-inference/libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterOwnerBinding.swift": {
+    "copy": "upstream/DarkbloomClusterRemote/ClusterOwnerBinding.swift",
+    "sha256": "5af2586ba1203d287069f834e6d07995ba34d20da301c7d6c5e738b3513aa420"
+  },
+  "/Users/developer/DarkbloomDev/d-inference/libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterOwnerBootstrapAttachment.swift": {
+    "copy": "upstream/DarkbloomClusterRemote/ClusterOwnerBootstrapAttachment.swift",
+    "sha256": "875792464f6c247eed1c6b499267b356a7b3930d4bde8b71df968865dcac9499"
+  },
+  "/Users/developer/DarkbloomDev/d-inference/libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterOwnerBootstrapProfile.swift": {
+    "copy": "upstream/DarkbloomClusterRemote/ClusterOwnerBootstrapProfile.swift",
+    "sha256": "6630d4adc65a24e2832181da65379164187bc820a9553e112e29d00d796860a4"
+  },
+  "/Users/developer/DarkbloomDev/d-inference/libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterOwnerLeaseState+Control.swift": {
+    "copy": "upstream/DarkbloomClusterRemote/ClusterOwnerLeaseState+Control.swift",
+    "sha256": "39ea944a977acadbb3dcfab9ce6cd4855337335d1c87f964689b1e832dd632fa"
+  },
+  "/Users/developer/DarkbloomDev/d-inference/libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterOwnerLeaseState.swift": {
+    "copy": "upstream/DarkbloomClusterRemote/ClusterOwnerLeaseState.swift",
+    "sha256": "6fddb3195c78c7c17a9e5bb74080440f0a7ba0bb8d12e64921ec1ef29b0c8954"
+  },
+  "/Users/developer/DarkbloomDev/d-inference/libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterOwnerPipe.swift": {
+    "copy": "upstream/DarkbloomClusterRemote/ClusterOwnerPipe.swift",
+    "sha256": "667388716e9fa7eebad3a50832f29011e7c875456e4527e1bbc00a92203bfdf4"
+  },
+  "/Users/developer/DarkbloomDev/d-inference/libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterOwnerStatus.swift": {
+    "copy": "upstream/DarkbloomClusterRemote/ClusterOwnerStatus.swift",
+    "sha256": "2440348dc4c8b2e02be0449387fa8e42d8c5fcaa2fc8d45cf0aef23c675ca5cb"
+  },
+  "/Users/developer/DarkbloomDev/d-inference/libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterOwnerWire.swift": {
+    "copy": "upstream/DarkbloomClusterRemote/ClusterOwnerWire.swift",
+    "sha256": "a8a5ce563a0154ee8300b443acfb191d9e4e8a48fd6651b11031672bf5e9b81f"
+  },
+  "/Users/developer/DarkbloomDev/d-inference/libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterRemoteWorkerEndpoint.swift": {
+    "copy": "upstream/DarkbloomClusterRemote/ClusterRemoteWorkerEndpoint.swift",
+    "sha256": "a36cc11ae36f060a2fafe456bf08e529a2d50c2deb6beb60fbf3f9ab97a056a0"
+  },
+  "/Users/developer/DarkbloomDev/d-inference/libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterSSHConfiguration.swift": {
+    "copy": "upstream/DarkbloomClusterRemote/ClusterSSHConfiguration.swift",
+    "sha256": "598deefa1498057b0ddd015293f5250573201288602fec19d9d239d11d5aa08a"
+  },
+  "/Users/developer/DarkbloomDev/d-inference/libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterWorkerOwnerService.swift": {
+    "copy": "upstream/DarkbloomClusterRemote/ClusterWorkerOwnerService.swift",
+    "sha256": "67a597484dc15c1c9733e74efc8bc5ab449ff12730ce869058f907ef0150f7ae"
+  }
+}

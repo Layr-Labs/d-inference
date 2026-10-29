@@ -1,0 +1,161 @@
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterProcess/ClusterWorkerProcess.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterProcess/ClusterWorkerProcess.swift
+@@ -50,6 +50,7 @@
+     private let lock = NSLock()
+     private let arrivals = DispatchSemaphore(value: 0)
+     private let exited = WorkerCompletion()
++    private let wakeup: WorkerPumpWakeup
+     private var incoming: [ClusterWorkerEventFrame] = []
+     private var outgoing: [(bytes: Data, offset: Int, deadline: UInt64)] = []
+     private var queuedBytes = 0
+@@ -90,6 +91,7 @@
+         self.expectedIdentity = expectedIdentity; self.rank = rank; expectedProfile = profile
+         self.executionPlanSHA256 = executionPlanSHA256; self.startupDeadline = startupDeadline
+         self.lifetimeDeadline = lifetimeDeadline
++        wakeup = try WorkerPumpWakeup()
+         process.executableURL = launch.executable; process.arguments = launch.arguments
+         process.environment = launch.environment
+         process.standardInput = input; process.standardOutput = output; process.standardError = diagnostics
+@@ -107,7 +109,7 @@
+         try lock.withLock {
+             guard !launched else { throw ClusterWorkerOwnerError.invalid("Worker launched twice") }
+             launched = true
+-            do { try process.run(); launchedPID = process.processIdentifier } catch { fault = .closed; terminalValue = .launchFailed; exited.complete(); throw error }
++            do { try process.run(); launchedPID = process.processIdentifier } catch { fault = .closed; terminalValue = .launchFailed; exited.complete(); wakeup.closeAfterPolling(); throw error }
+         }
+         try? input.fileHandleForReading.close(); try? output.fileHandleForWriting.close(); try? diagnostics.fileHandleForWriting.close()
+         DispatchQueue(label: "darkbloom.worker.io.\(rank)").async { self.pump() }
+@@ -134,6 +136,7 @@
+             }
+             outgoing.append((bytes, 0, deadline)); queuedBytes += bytes.count; nextCommand += 1
+         }
++        guard wakeup.signal() else { fail(.closed); throw ClusterWorkerOwnerError.closed }
+     }
+ 
+     func next(until deadline: UInt64, cancelled: () -> Bool = { false }) throws -> ClusterWorkerEventFrame {
+@@ -158,12 +161,13 @@
+     func waitForExit() { exited.wait() }
+ 
+     private func fail(_ error: ClusterWorkerOwnerError) {
+-        let notify = lock.withLock { () -> (@Sendable () -> Void)? in
+-            if fault != nil { return nil }
++        let failure = lock.withLock { () -> (changed: Bool, notify: (@Sendable () -> Void)?) in
++            if fault != nil { return (false, nil) }
+             fault = error; fenceAt = DispatchTime.now().uptimeNanoseconds; outgoing.removeAll(); queuedBytes = 0
+-            return notificationLocked()
+-        }
+-        arrivals.signal(); if let notify { notifications.async(execute: notify) }
++            return (true, notificationLocked())
++        }
++        if failure.changed { wakeup.signal() }
++        arrivals.signal(); if let notify = failure.notify { notifications.async(execute: notify) }
+     }
+ 
+     /// All call sites hold lock. Notifications never run on the pipe pump.
+@@ -198,9 +202,11 @@
+         var decoder = ClusterWorkerLineDecoder(commandStream: false)
+         var stdoutOpen = true, stderrOpen = true, termSent = false, killSent = false
+         var exitObservedAt: UInt64?
++        var wakeupUsable = true
+         let outFD = output.fileHandleForReading.fileDescriptor, errFD = diagnostics.fileHandleForReading.fileDescriptor
+         let inFD = input.fileHandleForWriting.fileDescriptor
+         defer {
++            wakeup.closeAfterPolling()
+             try? input.fileHandleForWriting.close(); try? output.fileHandleForReading.close(); try? diagnostics.fileHandleForReading.close()
+         }
+         while true {
+@@ -213,9 +219,15 @@
+             }
+             var fds = [pollfd(fd: stdoutOpen ? outFD : -1, events: Int16(POLLIN), revents: 0),
+                 pollfd(fd: stderrOpen ? errFD : -1, events: Int16(POLLIN), revents: 0),
+-                pollfd(fd: lock.withLock({ outgoing.isEmpty }) ? -1 : inFD, events: Int16(POLLOUT), revents: 0)]
++                pollfd(fd: lock.withLock({ outgoing.isEmpty }) ? -1 : inFD, events: Int16(POLLOUT), revents: 0),
++                pollfd(fd: wakeupUsable ? wakeup.readDescriptor : -1, events: Int16(POLLIN), revents: 0)]
+             let status = fds.withUnsafeMutableBufferPointer { Darwin.poll($0.baseAddress, nfds_t($0.count), 50) }
+             if status < 0 && errno != EINTR { fail(.invalid("Worker poll failed")) }
++            if fds[3].revents != 0 && !wakeup.drain() {
++                wakeupUsable = false; fail(.invalid("Worker wakeup read failed"))
++            }
++            // A wake can arrive after the input-FD snapshot. Rebuild that
++            // snapshot on the next iteration; no timeout reduction is needed.
+             for index in 0..<2 where fds[index].revents != 0 {
+                 var bytes = [UInt8](repeating: 0, count: ClusterWorkerLineDecoder.readChunkBytes)
+                 let count = Darwin.read(fds[index].fd, &bytes, bytes.count)
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterProcess/WorkerPumpWakeup.swift
+@@ -0,0 +1,75 @@
++import Foundation
++import Darwin
++
++/// One coalesced, nonblocking notification for a single poll-owner thread.
++/// The pump owns the read descriptor until it leaves its poll loop. Only that
++/// thread may call closeAfterPolling(); deinit handles a never-launched owner.
++final class WorkerPumpWakeup: @unchecked Sendable {
++    private let lock = NSLock()
++    let readDescriptor: Int32
++    private let writeDescriptor: Int32
++    private var pending = false
++    private var closed = false
++
++    init() throws {
++        var descriptors: [Int32] = [-1, -1]
++        guard Darwin.pipe(&descriptors) == 0 else { throw ClusterWorkerOwnerError.invalid("Cannot create pump wakeup") }
++        var complete = false
++        defer { if !complete { for descriptor in descriptors { Darwin.close(descriptor) } } }
++        for descriptor in descriptors {
++            guard fcntl(descriptor, F_SETFL, fcntl(descriptor, F_GETFL) | O_NONBLOCK) == 0,
++                  fcntl(descriptor, F_SETFD, FD_CLOEXEC) == 0 else {
++                throw ClusterWorkerOwnerError.invalid("Cannot bound pump wakeup")
++            }
++        }
++        guard fcntl(descriptors[1], F_SETNOSIGPIPE, 1) == 0 else {
++            throw ClusterWorkerOwnerError.invalid("Cannot suppress pump wakeup SIGPIPE")
++        }
++        readDescriptor = descriptors[0]; writeDescriptor = descriptors[1]; complete = true
++    }
++
++    /// No lock held by the poll wait. Signal/close serialize the descriptor use,
++    /// so a late signal cannot write to an unrelated FD reusing the old number.
++    /// Four interrupted nonblocking attempts are bounded; the unchanged poll
++    /// timeout remains a fallback if all attempts receive EINTR.
++    @discardableResult func signal() -> Bool {
++        lock.withLock {
++            guard !closed else { return false }
++            if pending { return true }
++            var byte: UInt8 = 1
++            for _ in 0..<4 {
++                let count = Darwin.write(writeDescriptor, &byte, 1)
++                if count == 1 || (count < 0 && errno == EAGAIN) { pending = true; return true }
++                if count < 0 && errno == EINTR { continue }
++                return false
++            }
++            return true
++        }
++    }
++
++    /// At most one byte is queued by this object, independent of producer count.
++    func drain() -> Bool {
++        lock.withLock {
++            guard !closed else { return false }
++            var byte: UInt8 = 0
++            for _ in 0..<4 {
++                let count = Darwin.read(readDescriptor, &byte, 1)
++                if count == 1 || (count < 0 && errno == EAGAIN) { pending = false; return true }
++                if count < 0 && errno == EINTR { continue }
++                return false
++            }
++            return true
++        }
++    }
++
++    /// Caller has stopped polling this read FD. No external fence closes it.
++    func closeAfterPolling() {
++        lock.withLock {
++            guard !closed else { return }
++            closed = true; pending = false
++            // Do not retry close after EINTR: the number may already be reused.
++            Darwin.close(writeDescriptor); Darwin.close(readDescriptor)
++        }
++    }
++    deinit { closeAfterPolling() }
++}

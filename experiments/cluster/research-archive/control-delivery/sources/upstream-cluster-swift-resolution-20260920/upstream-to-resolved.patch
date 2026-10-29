@@ -1,0 +1,215 @@
+--- a/provider-swift/Sources/ProviderCore/ProviderLoop.swift
++++ b/provider-swift/Sources/ProviderCore/ProviderLoop.swift
+@@ -182,6 +182,12 @@
+     internal var appAttestShadowClient: AppAttestShadowClient?
+     internal var appAttestShadowTask: Task<Void, Never>?
+     internal var appAttestShadowGeneration: UInt64 = 0
++    internal var memberControlRequiresStop = false
++    internal var memberHadAcceptedConnection = false
++    internal var memberConnectionID: UUID?
++    internal var memberRegistrationWaitID: UUID?
++    internal var memberRegistrationWaiter: CheckedContinuation<Void, Error>?
++    internal var memberRegistrationTimer: Task<Void, Never>?
+     internal let loopConfig: ProviderLoopConfig
+     internal let keyPair: NodeKeyPair
+     internal let signer: (any AttestationSigner)?
+@@ -634,7 +640,7 @@
+                 ineligibleModelIds.append(model.id)
+                 continue
+             }
+-            if EngineV2SupportedModels.isSupported(model: model) {
++            if config.executionRole == .clusterMember || EngineV2SupportedModels.isSupported(model: model) {
+                 advertised[model.id] = model
+             } else {
+                 unsupportedModelIds.append(model.id)
+@@ -675,7 +681,7 @@
+         // Sweep only the retired checkpoint tier's `darkbloom/kv` directory.
+         // The EngineV2 SSD tier uses the separate `darkbloom/kv3` root,
+         // so this cleanup cannot delete current cache data.
+-        if purgeLegacyFiles { LegacyKVCacheSweeper.sweep() }
++        if config.executionRole == .solo && purgeLegacyFiles { LegacyKVCacheSweeper.sweep() }
+         self.powerAssertion = InferencePowerAssertion(reason: "Darkbloom inference job active")
+         self.preloadTaskStarted = preloadTaskStarted
+         self.beforeModelLoad = beforeModelLoad
+--- a/provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge.swift
++++ b/provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge.swift
+@@ -72,6 +72,8 @@
+     /// construction so B=1 and batched behavior stay identical.
+     let stopTokenIds: Set<Int>
+     let defaultMaxTokens: Int
++    /// Opt-in distributed policy; ignored by ordinary local engines.
++    let distributedFirstTokenBudgetPolicy: DistributedFirstTokenBudgetPolicy?
+     let maxConcurrentRequests: Int
+     /// Operational control for atomic first-token deadline admission.
+     /// Parsed once per bridge so runtime behavior cannot change mid-request.
+@@ -320,6 +322,7 @@
+         pagedPageSize: Int? = nil,
+         kvBackendFallbackReason: String? = nil,
+         advertisedContextTokens: Int? = nil,
++        distributedFirstTokenBudgetPolicy: DistributedFirstTokenBudgetPolicy? = nil,
+         emitTelemetry: (@Sendable (TelemetryEvent) -> Void)? = nil
+     ) {
+         self.ownedEngine = engine
+@@ -340,6 +343,7 @@
+             convertTokenToId: { [inner = tokenizer.inner] in inner.convertTokenToId($0) }
+         )
+         self.defaultMaxTokens = defaultMaxTokens
++        self.distributedFirstTokenBudgetPolicy = distributedFirstTokenBudgetPolicy
+         self.maxConcurrentRequests = maxConcurrentRequests
+         self.prefillDeadlineMode = prefillDeadlineMode
+         self.prefillDeadlineProjectionEnabled = prefillDeadlineProjectionEnabled
+--- a/provider-swift/Sources/ProviderCore/Server/StandaloneServer+HTTP.swift
++++ b/provider-swift/Sources/ProviderCore/Server/StandaloneServer+HTTP.swift
+@@ -140,6 +140,13 @@
+                 message: ProviderLoop.sanitizedInferenceFailure(
+                     from: error, phase: .generation).message
+             )
++        } catch let error as PreContentDeadlineFailure {
++            // Opt-in distributed HTTP budgets use the existing pre-content
++            // refusal mapping, before any SSE headers or content are returned.
++            return Self.openAIErrorResponse(
++                status: HTTPResponse.Status(code: Int(ProviderLoop.mapInferenceErrorToStatus(error))),
++                message: ProviderLoop.sanitizedInferenceFailure(
++                    from: error, phase: .generation).message)
+         } catch let error as OpenAIRequestValidationError {
+             // Chat upload interception lives outside the upstream router's
+             // HTTPResponseError mapping. Preserve this fixed, content-free
+--- a/provider-swift/Sources/ProviderCore/Server/LocalChatUploadResponder.swift
++++ b/provider-swift/Sources/ProviderCore/Server/LocalChatUploadResponder.swift
+@@ -26,16 +26,19 @@
+     public let inner: Inner
+     let serviceForTemplateControls: @Sendable (ChatTemplateControls) -> MLXOpenAIService
+     let maxUploadBytes: Int
++    let distributedResponses: (any DistributedHTTPResponseProviding)?
+ 
+     init(
+         inner: Inner,
+         service: MLXOpenAIService,
+         maxUploadBytes: Int = localInferenceMaxUploadBytes,
+-        serviceForTemplateControls: (@Sendable (ChatTemplateControls) -> MLXOpenAIService)? = nil
++        serviceForTemplateControls: (@Sendable (ChatTemplateControls) -> MLXOpenAIService)? = nil,
++        distributedResponses: (any DistributedHTTPResponseProviding)? = nil
+     ) {
+         self.inner = inner
+         self.serviceForTemplateControls = serviceForTemplateControls ?? { _ in service }
+         self.maxUploadBytes = maxUploadBytes
++        self.distributedResponses = distributedResponses
+     }
+ 
+     /// The POST paths that carry inline media and need the raised ceiling.
+@@ -98,6 +101,30 @@
+         // throws (unknown model, admission refusal) travel to
+         // `CORSResponder`'s status mapping unchanged.
+         if item.request.stream == true {
++            if let distributedResponses {
++                let response = try distributedResponses.begin()
++                do {
++                    guard let channel = LocalHTTPConnectionScope.current else {
++                        throw MultiModelBatchSchedulerEngineError.requestRejected("Missing local connection observation")
++                    }
++                    // A full close is definitive. Input half-close alone is
++                    // allowed; the serialized SSE writer probes for write loss.
++                    channel.closeFuture.whenComplete { [weak response] _ in
++                        guard let response else { return }
++                        // Delivery is impossible after a full close. This ends
++                        // only the HTTP hold; engine/lease retirement stays held.
++                        response.disconnect(); response.finish()
++                    }
++                    if !channel.isActive { response.disconnect(); response.finish(); throw CancellationError() }
++                    let frames = try await DistributedHTTPResponseScope.$current.withValue(response) {
++                        try await requestService.streamChatCompletionFrames(
++                            request: item.request, frameGenerationErrors: false)
++                    }
++                    return DistributedHTTPEventStream.response(frames, control: response)
++                } catch {
++                    response.disconnect(); response.finish(); throw error
++                }
++            }
+             let frames = try await requestService.streamChatCompletionFrames(
+                 request: item.request, frameGenerationErrors: true)
+             return Self.sseResponse(frames)
+--- a/provider-swift/Sources/ProviderCore/Server/LocalInferenceHTTP.swift
++++ b/provider-swift/Sources/ProviderCore/Server/LocalInferenceHTTP.swift
+@@ -15,6 +15,7 @@
+ 
+ import Foundation
+ import Hummingbird
++import HTTPTypes
+ import MLXLMServer
+ import NIOCore
+ 
+@@ -33,15 +34,15 @@
+ }
+ 
+ /// The concrete responder stack the local endpoint always uses:
+-/// disconnect ownership → auth → CORS → MTP-augmented /metrics → chat-upload
++/// receipt origin → disconnect ownership → auth → CORS → MTP-augmented /metrics → chat-upload
+ /// interception (32 MiB body ceiling for the media-bearing chat routes, see
+ /// `LocalChatUploadResponder`) → upstream MLXLMServer router.
+ public typealias LocalInferenceApplication =
+     Application<
+-        LocalDisconnectResponder<LocalAuthResponder<
++        LocalRequestOriginResponder<LocalDisconnectResponder<LocalAuthResponder<
+             CORSResponder<
+                 LocalMetricsResponder<
+-                    LocalChatUploadResponder<RouterResponder<BasicRequestContext>>>>>>>
++                    LocalChatUploadResponder<RouterResponder<BasicRequestContext>>>>>>>>
+ 
+ /// Builds the local OpenAI-compatible Hummingbird application from a model
+ /// registry expressed as three closures. Shared by `StandaloneServer` and the
+@@ -70,6 +71,8 @@
+     tokenizerProvider: @escaping @Sendable (String?) async throws -> MultiModelBatchSchedulerEngine.TokenizerResolution,
+     availableModels: @escaping @Sendable () async -> [String],
+     mtpSlots: @escaping @Sendable () async -> [MTPSlotMetricsSample],
++    clusterStatus: (@Sendable (String) async throws -> ClusterLiveStatus)? = nil,
++    distributedResponses: (any DistributedHTTPResponseProviding)? = nil,
+     onServerRunning: @escaping @Sendable (any Channel) async -> Void = { _ in }
+ ) -> LocalInferenceApplication {
+     // The upstream OpenAI request shape intentionally ignores Qwen's
+@@ -93,6 +96,21 @@
+     }
+     let service = serviceForTemplateControls(.init())
+     let router = MLXServerApplication.buildRouter(service: service)
++    if let clusterStatus {
++        router.get("/v1/cluster/status") { request, _ async throws -> Response in
++            let header = HTTPField.Name(ClusterStatusCodec.nonceHeader)!
++            guard let nonce = request.headers[header], (try? ClusterStatusCodec.nonce(nonce)) != nil else {
++                return Response(status: .badRequest, headers: [.cacheControl: "no-store"])
++            }
++            do {
++                let bytes = try ClusterStatusCodec.encode(await clusterStatus(nonce))
++                return Response(status: .ok, headers: [.contentType: "application/json", .cacheControl: "no-store"],
++                    body: .init(byteBuffer: ByteBuffer(bytes: bytes)))
++            } catch {
++                return Response(status: .serviceUnavailable, headers: [.cacheControl: "no-store"])
++            }
++        }
++    }
+     // Chat-completions POSTs are served by the interception responder with
+     // the 32 MiB body ceiling (the upstream router's BasicRequestContext
+     // pins the Hummingbird 2 MiB default, which 413s inline media — see
+@@ -100,7 +118,8 @@
+     // upstream router unchanged.
+     let uploadResponder = LocalChatUploadResponder(
+         inner: router.buildResponder(), service: service,
+-        serviceForTemplateControls: serviceForTemplateControls)
++        serviceForTemplateControls: serviceForTemplateControls,
++        distributedResponses: distributedResponses)
+     // GET /metrics is served by the metrics responder: the upstream
+     // ServerMetrics body plus the provider-owned MTP posture lines (see
+     // LocalMetricsResponder for why the upstream route cannot be extended).
+@@ -108,11 +127,12 @@
+         inner: uploadResponder, service: service, mtpSlots: mtpSlots)
+     let corsResponder = CORSResponder(inner: metricsResponder)
+     // Auth rejects unauthenticated requests before body/model handling. The
+-    // outer disconnect layer only binds lifetime; it does not inspect content.
++    // outer origin and disconnect layers bind timing/lifetime, not authority.
+     let authedResponder = LocalAuthResponder(inner: corsResponder, token: config.authToken)
+ 
+     return Application(
+-        responder: LocalDisconnectResponder(inner: authedResponder),
++        responder: LocalRequestOriginResponder(inner: LocalDisconnectResponder(
++            inner: authedResponder, observeConnection: distributedResponses != nil)),
+         configuration: .init(
+             address: .hostname(config.host, port: Int(config.port)),
+             serverName: "darkbloom-provider"

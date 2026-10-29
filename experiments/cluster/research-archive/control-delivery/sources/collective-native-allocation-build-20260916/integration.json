@@ -1,0 +1,383 @@
+{
+  "base": "/Users/developer/DarkbloomDev/cluster-research/qwen27b-lookahead-native-build-20260915/workspace",
+  "files": [
+    {
+      "path": "libs/darkbloom-cluster-worker/Package.swift",
+      "source": "/Users/developer/DarkbloomDev/cluster-research/collective-native-allocation-probe-draft-20260916/proposed/libs/darkbloom-cluster-worker/Package.swift",
+      "beforeSHA256": "6fb5df560d1588217a1fdc2ba4dfec9288b9379fb7d79c39db9e090b97203ef6",
+      "afterSHA256": "0dcdc75f96c110d59fef02d313ac54d99d12d47e598d7148aeb8dc898da65199",
+      "upstreamMainBeforeSHA256": "6fb5df560d1588217a1fdc2ba4dfec9288b9379fb7d79c39db9e090b97203ef6",
+      "reason": "frozen probe/facade"
+    },
+    {
+      "path": "libs/darkbloom-cluster-worker/Sources/DarkbloomClusterWorker/NativeWorkerRuntime.swift",
+      "source": "/Users/developer/DarkbloomDev/d-inference/libs/darkbloom-cluster-worker/Sources/DarkbloomClusterWorker/NativeWorkerRuntime.swift",
+      "beforeSHA256": "39272cd3f59c17e1d3d25e88c1883a8d0195aa07857432f21222dd2b78af0a84",
+      "afterSHA256": "dc8b0a289b8b950b67c4b55ccd6f3de5ba45ea21e19bc14eb5164ed3c5f8c456",
+      "reason": "restore exact MAIN model/worker implementation; no27B qualification SPI in probe"
+    },
+    {
+      "path": "libs/darkbloom-cluster-worker/Sources/DarkbloomClusterWorker/WorkerConfiguration.swift",
+      "source": "/Users/developer/DarkbloomDev/d-inference/libs/darkbloom-cluster-worker/Sources/DarkbloomClusterWorker/WorkerConfiguration.swift",
+      "beforeSHA256": "85c368b4b111c7556962ed3cce9f1c66d237303de1b5e2147c14cd81f39a9887",
+      "afterSHA256": "ea8bc8f1a6fb501c7051a37d581ca2dc4a9821a4b77c370f7e79f5e17f10212d",
+      "reason": "restore exact MAIN model/worker implementation; no27B qualification SPI in probe"
+    },
+    {
+      "path": "libs/darkbloom-cluster-worker/Sources/DarkbloomClusterWorker/WorkerMain.swift",
+      "source": "/Users/developer/DarkbloomDev/d-inference/libs/darkbloom-cluster-worker/Sources/DarkbloomClusterWorker/WorkerMain.swift",
+      "beforeSHA256": "28df815853aee9870670d0b358c4388203bd391ee865eff4d905534acf8488ee",
+      "afterSHA256": "5efbf233eebe66c9f65e2211c0ef63c8c1607dfd0be4a4ea432ec9f4306343e4",
+      "reason": "restore exact MAIN model/worker implementation; no27B qualification SPI in probe"
+    },
+    {
+      "path": "libs/darkbloom-cluster-worker/Tests/CollectiveAllocationCheck/Main.swift",
+      "source": "/Users/developer/DarkbloomDev/cluster-research/collective-native-allocation-probe-draft-20260916/proposed/libs/darkbloom-cluster-worker/Tests/CollectiveAllocationCheck/Main.swift",
+      "beforeSHA256": null,
+      "afterSHA256": "2492e8c8ac058f00d6ccbce18f3b181a9f397eea7ace7275087ab367a52c6c70",
+      "upstreamMainBeforeSHA256": null,
+      "reason": "frozen probe/facade"
+    },
+    {
+      "path": "libs/darkbloom-cluster/Package.swift",
+      "source": "/Users/developer/DarkbloomDev/d-inference/libs/darkbloom-cluster/Package.swift",
+      "beforeSHA256": "ca0b58ea4616f89d298bfdd81905026d3c161c559b648b1d631da49ab7579f0f",
+      "afterSHA256": "5ae0b8127a339867e87b34784531bd44acd617ff2d05dae49c1b95e3716240ad",
+      "reason": "explicit MAIN prerequisite/control restoration"
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Collective.swift",
+      "source": "/Users/developer/DarkbloomDev/cluster-research/collective-protected-scopes-draft-20260915/proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Collective.swift",
+      "beforeSHA256": "62ccc2ae5ca03f4eaa2059a5fd7b579bd32442ab7c1e17df8dcfe4c23ceb077e",
+      "afterSHA256": "2009fdcc6a20f6d32048d74713eae20e0ddf7e6834c0dc360d03c681280a6f90",
+      "upstreamMainBeforeSHA256": "62ccc2ae5ca03f4eaa2059a5fd7b579bd32442ab7c1e17df8dcfe4c23ceb077e",
+      "reason": "frozen probe/facade"
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/CollectiveAllocationCases.swift",
+      "source": "/Users/developer/DarkbloomDev/cluster-research/collective-native-allocation-probe-draft-20260916/proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/CollectiveAllocationCases.swift",
+      "beforeSHA256": null,
+      "afterSHA256": "ebf50f117ee131bfd6aba49b46c4b1c98efc6fb9c8d141d013af0b639ff0beff",
+      "upstreamMainBeforeSHA256": null,
+      "reason": "frozen probe/facade"
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/CollectiveAllocationEndpoint.swift",
+      "source": "/Users/developer/DarkbloomDev/cluster-research/collective-native-allocation-probe-draft-20260916/proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/CollectiveAllocationEndpoint.swift",
+      "beforeSHA256": null,
+      "afterSHA256": "168f7c2dd9c4d7a0d4ef11d55f628d4ac1966c8a9525957faca51425079750b7",
+      "upstreamMainBeforeSHA256": null,
+      "reason": "frozen probe/facade"
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/CollectiveAllocationExecution.swift",
+      "source": "/Users/developer/DarkbloomDev/cluster-research/collective-native-allocation-probe-draft-20260916/proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/CollectiveAllocationExecution.swift",
+      "beforeSHA256": null,
+      "afterSHA256": "e8c225b25545a5966a16729daf563784463c105c3f5f843d9f6e337c93dee207",
+      "upstreamMainBeforeSHA256": null,
+      "reason": "frozen probe/facade"
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/CollectiveAllocationFootprint.swift",
+      "source": "/Users/developer/DarkbloomDev/cluster-research/collective-native-allocation-probe-draft-20260916/proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/CollectiveAllocationFootprint.swift",
+      "beforeSHA256": null,
+      "afterSHA256": "0cb3498ecb8be74ec00a204c9202876cac2bfaaab819fcd1ffbdfec09e9a8c60",
+      "upstreamMainBeforeSHA256": null,
+      "reason": "frozen probe/facade"
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/CollectiveAllocationProbe.swift",
+      "source": "/Users/developer/DarkbloomDev/cluster-research/collective-native-allocation-probe-draft-20260916/proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/CollectiveAllocationProbe.swift",
+      "beforeSHA256": null,
+      "afterSHA256": "e8e1fd79cbe96cfb1fcb1c806aafc472aac6b403d3ecefea5fdde9fbc5b53f5c",
+      "upstreamMainBeforeSHA256": null,
+      "reason": "frozen probe/facade"
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/CollectiveAllocationReport.swift",
+      "source": "/Users/developer/DarkbloomDev/cluster-research/collective-native-allocation-probe-draft-20260916/proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/CollectiveAllocationReport.swift",
+      "beforeSHA256": null,
+      "afterSHA256": "56429f2e98fce67f9362e4913359e768cf02720ebd5529b95f98ae77ac04b9ff",
+      "upstreamMainBeforeSHA256": null,
+      "reason": "frozen probe/facade"
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/CollectiveAuthenticatedRecords.swift",
+      "source": "/Users/developer/DarkbloomDev/cluster-research/collective-protected-scopes-draft-20260915/proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/CollectiveAuthenticatedRecords.swift",
+      "beforeSHA256": null,
+      "afterSHA256": "d8533413ee2237e656bbb86b211fba6f4dde78520868dabc122fa178e60ea156",
+      "upstreamMainBeforeSHA256": "26f263f64a8aa18c6c5085b7b6a4ccf1ed1d1cdd6b4def7620404ccdc88b46a0",
+      "reason": "frozen probe/facade"
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/CollectivePointToPoint.swift",
+      "source": "/Users/developer/DarkbloomDev/d-inference/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/CollectivePointToPoint.swift",
+      "beforeSHA256": "5ec2749839feec80425e83e847c61ed49632c4758361f7101b5d1eb6c3b9dff8",
+      "afterSHA256": "23bfc1d43fcc4335ffefc72ec9b5defa3cec81c96bb45567529fffff4b22c351",
+      "reason": "explicit MAIN prerequisite/control restoration"
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/CollectiveProtectedResources.swift",
+      "source": "/Users/developer/DarkbloomDev/cluster-research/collective-protected-scopes-draft-20260915/proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/CollectiveProtectedResources.swift",
+      "beforeSHA256": null,
+      "afterSHA256": "43c7f0d25437ab1e0f55134081e41cc17646b4b6fa722cbf3461d717e1b0ad61",
+      "upstreamMainBeforeSHA256": null,
+      "reason": "frozen probe/facade"
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/CollectiveProtectedSession.swift",
+      "source": "/Users/developer/DarkbloomDev/cluster-research/collective-protected-scopes-draft-20260915/proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/CollectiveProtectedSession.swift",
+      "beforeSHA256": null,
+      "afterSHA256": "337ae67a462f0f681ecc31042575ce1b51a0511acc5e45788f2387c93627e705",
+      "upstreamMainBeforeSHA256": null,
+      "reason": "frozen probe/facade"
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/CollectiveRecordByteIO.swift",
+      "source": "/Users/developer/DarkbloomDev/cluster-research/collective-protected-scopes-draft-20260915/proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/CollectiveRecordByteIO.swift",
+      "beforeSHA256": null,
+      "afterSHA256": "792ad9c2bc043f28810623cc58b91a024d80150b25c8d9dcf1316ba4280ca81b",
+      "upstreamMainBeforeSHA256": "19d003d8292c6d1f461d295f1d63476321a4e1623a57036dfc273e6ca3c1a78f",
+      "reason": "frozen probe/facade"
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/CollectiveRecordScope.swift",
+      "source": "/Users/developer/DarkbloomDev/cluster-research/collective-protected-scopes-draft-20260915/proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/CollectiveRecordScope.swift",
+      "beforeSHA256": null,
+      "afterSHA256": "fb551e31295a81251749ac38c4fa848ca6b687f60d17ad51316bf48f9fb072b5",
+      "upstreamMainBeforeSHA256": null,
+      "reason": "frozen probe/facade"
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenGenerationRecordScopes.swift",
+      "source": "/Users/developer/DarkbloomDev/cluster-research/collective-protected-scopes-draft-20260915/proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenGenerationRecordScopes.swift",
+      "beforeSHA256": null,
+      "afterSHA256": "53cd87e68586731ef0e64be38fbf61a4082385c745510f2a7be5674d274613a4",
+      "upstreamMainBeforeSHA256": null,
+      "reason": "frozen probe/facade"
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenLayerStageGenerationDriver.swift",
+      "source": "/Users/developer/DarkbloomDev/cluster-research/collective-protected-scopes-draft-20260915/proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenLayerStageGenerationDriver.swift",
+      "beforeSHA256": "45cbc63ecad5d254fd72934a59ce542c48a7636e5b7b563084e3e92768225d9c",
+      "afterSHA256": "153e2169ad0852571c35a3d3f54ed31fd50a85ab120d8284ea35ed761bd7a9c9",
+      "upstreamMainBeforeSHA256": "45cbc63ecad5d254fd72934a59ce542c48a7636e5b7b563084e3e92768225d9c",
+      "reason": "frozen probe/facade"
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenLayerStageGenerationTransport.swift",
+      "source": "/Users/developer/DarkbloomDev/cluster-research/collective-protected-scopes-draft-20260915/proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenLayerStageGenerationTransport.swift",
+      "beforeSHA256": "e969afee7dd263e8fe7cd6515f6450f7b7a978009c13cd83f9fe7789067a420a",
+      "afterSHA256": "1bb07986b45eaed6a69969bf2c4177c612df1052fa626025ee19ce7cdb167f94",
+      "upstreamMainBeforeSHA256": "e969afee7dd263e8fe7cd6515f6450f7b7a978009c13cd83f9fe7789067a420a",
+      "reason": "frozen probe/facade"
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenLongPrefillReadinessExchange.swift",
+      "source": "/Users/developer/DarkbloomDev/cluster-research/collective-protected-scopes-draft-20260915/proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenLongPrefillReadinessExchange.swift",
+      "beforeSHA256": "a075b13f8606dcccd9459ba8140559af4d9d696bf9621c1b2d92838f333e210d",
+      "afterSHA256": "dd2c159ad21ffc6b6440773a177a6398df09b54660c2e57eb24a7ff7223ecfb7",
+      "upstreamMainBeforeSHA256": "a075b13f8606dcccd9459ba8140559af4d9d696bf9621c1b2d92838f333e210d",
+      "reason": "frozen probe/facade"
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenRegisteredDenseModelProfile.swift",
+      "source": "/Users/developer/DarkbloomDev/d-inference/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenRegisteredDenseModelProfile.swift",
+      "beforeSHA256": "c726db0a05fdfadecba3b102485e4ee66217f93f7dd19f5bdf1a65455f67f197",
+      "afterSHA256": "2e8fc331bb7991bb92c761b551f7a0bb2e20d6688216b69f8fbca86c2078882a",
+      "reason": "restore exact MAIN model/worker implementation; no27B qualification SPI in probe"
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentAdapterDefinition.swift",
+      "source": "/Users/developer/DarkbloomDev/d-inference/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentAdapterDefinition.swift",
+      "beforeSHA256": "73e49450f0c4de816db2579a6722a8108a89526f5a7067e154a193fb0e921ae6",
+      "afterSHA256": "57791cfef002a1b5760e3f52060468e2ccd40c61f8475cf67c97bb17b6ab0d67",
+      "reason": "restore exact MAIN model/worker implementation; no27B qualification SPI in probe"
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentAdmission.swift",
+      "source": "/Users/developer/DarkbloomDev/d-inference/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentAdmission.swift",
+      "beforeSHA256": "ef40f13ac69169c18288a023be2d16ecfda2e1c688ffb5cfd9ef5cbc9b044ab9",
+      "afterSHA256": "a07b49062d7938cc6a660c958a3788417d457676ae0b2f12ab3a25e5042ca087",
+      "reason": "restore exact MAIN model/worker implementation; no27B qualification SPI in probe"
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentLoading.swift",
+      "source": "/Users/developer/DarkbloomDev/d-inference/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentLoading.swift",
+      "beforeSHA256": "80140c363e6a974293c2bd7203b5a1707473e66fd703e9be09e83ac3d3fa7361",
+      "afterSHA256": "4d440e9f9b2440f2c760262f95172d0f85d09683e43176b74ed165093e053cb5",
+      "reason": "restore exact MAIN model/worker implementation; no27B qualification SPI in probe"
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentRequestResources.swift",
+      "source": "/Users/developer/DarkbloomDev/d-inference/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentRequestResources.swift",
+      "beforeSHA256": "f7b33b29729bbd705638f2ef238d453c0faf8d339b03ff720d0203ed213c3947",
+      "afterSHA256": "ecd473554fb622006714010e95685a3a9338156e431527101498d7f4d38c1fea",
+      "reason": "restore exact MAIN model/worker implementation; no27B qualification SPI in probe"
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentRuntime+Load.swift",
+      "source": "/Users/developer/DarkbloomDev/cluster-research/collective-protected-scopes-draft-20260915/proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentRuntime+Load.swift",
+      "beforeSHA256": "582872f5338ca6a1c7277d7c7749f1bbdb0111aabefc5192710757c8e1bcbaf5",
+      "afterSHA256": "f26545c4563d85d6bb8774656c95d60e12254db419bc4ce0d02fe3a845939c71",
+      "upstreamMainBeforeSHA256": "582872f5338ca6a1c7277d7c7749f1bbdb0111aabefc5192710757c8e1bcbaf5",
+      "reason": "frozen probe/facade"
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentSource.swift",
+      "source": "/Users/developer/DarkbloomDev/d-inference/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentSource.swift",
+      "beforeSHA256": "aea6bda30223098d7d477ca1d40a6ee0b2994ea785c1f5e8418cd76f6f33b9cb",
+      "afterSHA256": "a9a937d66bf1b69e0004586791e7c6b7ebfd08629b2393afb81c6a1091244a5e",
+      "reason": "restore exact MAIN model/worker implementation; no27B qualification SPI in probe"
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterSecurity/ClusterAuthenticatedRecordChannel.swift",
+      "source": "/Users/developer/DarkbloomDev/d-inference/libs/darkbloom-cluster/Sources/DarkbloomClusterSecurity/ClusterAuthenticatedRecordChannel.swift",
+      "beforeSHA256": null,
+      "afterSHA256": "6d81628e5780612cbedde71b82e5c5e3fd53ef30cc3810ea97e974a788fead9d",
+      "reason": "explicit MAIN prerequisite/control restoration"
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterSecurity/ClusterAuthenticatedRecordTransport.swift",
+      "source": "/Users/developer/DarkbloomDev/d-inference/libs/darkbloom-cluster/Sources/DarkbloomClusterSecurity/ClusterAuthenticatedRecordTransport.swift",
+      "beforeSHA256": null,
+      "afterSHA256": "6f20e605f1d0116f192907f3966e3aeeb1c234e6491279a1be7a32a2eb0b23ca",
+      "reason": "explicit MAIN prerequisite/control restoration"
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterSecurity/ClusterRecordByteIO.swift",
+      "source": "/Users/developer/DarkbloomDev/d-inference/libs/darkbloom-cluster/Sources/DarkbloomClusterSecurity/ClusterRecordByteIO.swift",
+      "beforeSHA256": null,
+      "afterSHA256": "d8a823051dd69cc13a1bd6cd6f69363a4a2fccc5cc36dcbd64b262509ce21d19",
+      "reason": "explicit MAIN prerequisite/control restoration"
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterSecurity/ClusterRecordFraming.swift",
+      "source": "/Users/developer/DarkbloomDev/d-inference/libs/darkbloom-cluster/Sources/DarkbloomClusterSecurity/ClusterRecordFraming.swift",
+      "beforeSHA256": null,
+      "afterSHA256": "1bed76a6016cc18ef4a35b45c2af305bfe5ce1342c925d9e74bd6bcda55effce",
+      "reason": "explicit MAIN prerequisite/control restoration"
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterSecurity/ClusterRecordState.swift",
+      "source": "/Users/developer/DarkbloomDev/d-inference/libs/darkbloom-cluster/Sources/DarkbloomClusterSecurity/ClusterRecordState.swift",
+      "beforeSHA256": null,
+      "afterSHA256": "91577a9cf2b9a7d274846e13274764825e3cb1de1459d869955b1d21027b1e61",
+      "reason": "explicit MAIN prerequisite/control restoration"
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterSecurity/ClusterRecordTransferAccounting.swift",
+      "source": "/Users/developer/DarkbloomDev/d-inference/libs/darkbloom-cluster/Sources/DarkbloomClusterSecurity/ClusterRecordTransferAccounting.swift",
+      "beforeSHA256": null,
+      "afterSHA256": "aab036c9991f35e40f2a7d8a0283c8fc54c73f40b3e36f52a1515f6b5e36339d",
+      "reason": "explicit MAIN prerequisite/control restoration"
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterSecurity/ClusterRecordTransferExpectation.swift",
+      "source": "/Users/developer/DarkbloomDev/d-inference/libs/darkbloom-cluster/Sources/DarkbloomClusterSecurity/ClusterRecordTransferExpectation.swift",
+      "beforeSHA256": null,
+      "afterSHA256": "151f673993b3391d4fd0ba937c04d2d6531fb23bd248f46a5b608f97ddc96a57",
+      "reason": "explicit MAIN prerequisite/control restoration"
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterSecurity/ClusterRecordTypes.swift",
+      "source": "/Users/developer/DarkbloomDev/d-inference/libs/darkbloom-cluster/Sources/DarkbloomClusterSecurity/ClusterRecordTypes.swift",
+      "beforeSHA256": null,
+      "afterSHA256": "723e1e63d9b6f8fc0a38f47b94152fa026fba478d05642494b6aab05f6940366",
+      "reason": "explicit MAIN prerequisite/control restoration"
+    },
+    {
+      "path": "libs/darkbloom-cluster/Tests/DarkbloomClusterRuntimeTests/CollectiveScopeFixture.swift",
+      "source": "/Users/developer/DarkbloomDev/cluster-research/collective-protected-scopes-draft-20260915/proposed/libs/darkbloom-cluster/Tests/DarkbloomClusterRuntimeTests/CollectiveScopeFixture.swift",
+      "beforeSHA256": null,
+      "afterSHA256": "ce695413f1926b244abfb8ddc9eb77a35b1085f46a04c87e3476c56ace834dd9",
+      "upstreamMainBeforeSHA256": null,
+      "reason": "frozen probe/facade"
+    },
+    {
+      "path": "libs/darkbloom-cluster/Tests/DarkbloomClusterRuntimeTests/CollectiveScopeTests.swift",
+      "source": "/Users/developer/DarkbloomDev/cluster-research/collective-protected-scopes-draft-20260915/proposed/libs/darkbloom-cluster/Tests/DarkbloomClusterRuntimeTests/CollectiveScopeTests.swift",
+      "beforeSHA256": null,
+      "afterSHA256": "0aca3ff66acde9f8a13c406cba8f6f2f80bd006245e991138633af78c57ecea5",
+      "upstreamMainBeforeSHA256": null,
+      "reason": "frozen probe/facade"
+    },
+    {
+      "path": "libs/darkbloom-cluster/Tests/DarkbloomClusterRuntimeTests/QwenRecordScopeTests.swift",
+      "source": "/Users/developer/DarkbloomDev/cluster-research/collective-protected-scopes-draft-20260915/proposed/libs/darkbloom-cluster/Tests/DarkbloomClusterRuntimeTests/QwenRecordScopeTests.swift",
+      "beforeSHA256": null,
+      "afterSHA256": "edf5cea9b73d08fa97fe260444c72903d700b07640e0028416059b149da20394",
+      "upstreamMainBeforeSHA256": null,
+      "reason": "frozen probe/facade"
+    },
+    {
+      "path": "libs/mlx-swift/Source/Cmlx/mlx/mlx/distributed/jaccl/lib/jaccl/mesh_impl.h",
+      "source": "/Users/developer/DarkbloomDev/d-inference/libs/mlx-swift/Source/Cmlx/mlx/mlx/distributed/jaccl/lib/jaccl/mesh_impl.h",
+      "beforeSHA256": "330d399b2af0b2614b87221a400a2e45abac1293804b36ef5a622e22a89adc7b",
+      "afterSHA256": "3ea07df67aae3d0327f111de3b7673c8c76a6c2362682d4b085cd10a8d5847f5",
+      "reason": "explicit MAIN prerequisite/control restoration"
+    },
+    {
+      "path": "libs/mlx-swift/Source/Cmlx/mlx/mlx/distributed/jaccl/lib/jaccl/rdma.h",
+      "source": "/Users/developer/DarkbloomDev/d-inference/libs/mlx-swift/Source/Cmlx/mlx/mlx/distributed/jaccl/lib/jaccl/rdma.h",
+      "beforeSHA256": "dbe318131a2d1daa3614b5a48c5be6a31fd8405ebfa394138172d9bb1b7d9f94",
+      "afterSHA256": "726f94b96febd2ec294269872d6672bcaf0a4fc97ecbef9474bdf97b4e962498",
+      "reason": "explicit MAIN prerequisite/control restoration"
+    },
+    {
+      "path": "libs/mlx-swift/Source/Cmlx/mlx/mlx/distributed/jaccl/lib/jaccl/ring_impl.h",
+      "source": "/Users/developer/DarkbloomDev/d-inference/libs/mlx-swift/Source/Cmlx/mlx/mlx/distributed/jaccl/lib/jaccl/ring_impl.h",
+      "beforeSHA256": "f16a493f34bc175c1541ee1a4b2a3a1e3d52c1c78d8942b1f8ed743be3d6a2bb",
+      "afterSHA256": "1f71b26a8448f6ef46aafdae0d3ff760b72317cd3276a069b7d6b92024eb2a33",
+      "reason": "explicit MAIN prerequisite/control restoration"
+    },
+    {
+      "path": "libs/mlx-swift/Source/Cmlx/mlx/mlx/distributed/jaccl/lib/jaccl/send_frame.h",
+      "source": "/Users/developer/DarkbloomDev/d-inference/libs/mlx-swift/Source/Cmlx/mlx/mlx/distributed/jaccl/lib/jaccl/send_frame.h",
+      "beforeSHA256": null,
+      "afterSHA256": "771846ae0406bc2203b37ec9620b3158405433fbe76421e315296670c3c590c7",
+      "reason": "explicit MAIN prerequisite/control restoration"
+    }
+  ],
+  "exclude": [
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenDenseRegisteredResourceProfile.swift",
+      "beforeSHA256": "4d86062bff7f01aa52abbd5709fea8c8aca40717b61834b1f1ed7d04ce64c4a4",
+      "reason": "private27B addition absent from MAIN; excluded from new copy"
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentModelDefinition.swift",
+      "beforeSHA256": "1c694e4d88de1e7a7d59e3a4a68d90af18926a4c652e2bb38b35bcd2865169fb",
+      "reason": "private27B addition absent from MAIN; excluded from new copy"
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentNativeValidation.swift",
+      "beforeSHA256": "265dfc4bbac04965dfa4c6bf50f6380f61a71837627004ab6b7ff04594546e18",
+      "reason": "private27B addition absent from MAIN; excluded from new copy"
+    },
+    {
+      "path": "libs/darkbloom-cluster/Tests/DarkbloomClusterRuntimeTests/NativeValidationAdmissionTests.swift",
+      "beforeSHA256": "8ec1894591413787f4e344ca56c054d0f4aa467ac5b834b183417ecc4ede90c8",
+      "reason": "private27B addition absent from MAIN; excluded from new copy"
+    },
+    {
+      "path": "libs/darkbloom-cluster-worker/Tests/DarkbloomClusterWorkerTests/NativeValidationWorkerTests.swift",
+      "beforeSHA256": "4915ce871f9879e13c6b1fccfb1c5956ca5c98652a67f4c5ab4975f6bc9dd48c",
+      "reason": "private27B addition absent from MAIN; excluded from new copy"
+    }
+  ],
+  "explicitPreimageBridges": [
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/CollectiveAuthenticatedRecords.swift",
+      "baseBeforeSHA256": null,
+      "frozenMainBeforeSHA256": "26f263f64a8aa18c6c5085b7b6a4ccf1ed1d1cdd6b4def7620404ccdc88b46a0",
+      "resolution": "explicitly add exact frozen adapter; absent in qualified ancestor"
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/CollectiveRecordByteIO.swift",
+      "baseBeforeSHA256": null,
+      "frozenMainBeforeSHA256": "19d003d8292c6d1f461d295f1d63476321a4e1623a57036dfc273e6ca3c1a78f",
+      "resolution": "explicitly add exact frozen adapter; absent in qualified ancestor"
+    }
+  ]
+}

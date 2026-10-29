@@ -1,0 +1,1247 @@
+--- a/provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Events.swift
++++ b/provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Events.swift
+@@ -16,7 +16,8 @@
+         usageSignal: EngineV2RequestUsageSignal? = nil,
+         prefixCacheReceiptID: CBv2RequestID? = nil,
+         readyReceiptRegistered: Bool = false,
+-        profile: RequestProfileBuilder? = nil
++        profile: RequestProfileBuilder? = nil,
++        httpResponse: DistributedHTTPResponse? = nil
+     ) {
+         let bridge = self
+         usageSignal?.beginTerminalObservation()
+@@ -29,7 +30,8 @@
+                 usageSignal: usageSignal,
+                 prefixCacheReceiptID: prefixCacheReceiptID,
+                 readyReceiptRegistered: readyReceiptRegistered,
+-                profile: profile
++                profile: profile,
++                httpResponse: httpResponse
+             )
+             await bridge.clearPumpTask(id: id)
+         }
+@@ -52,7 +54,8 @@
+         usageSignal: EngineV2RequestUsageSignal? = nil,
+         prefixCacheReceiptID: CBv2RequestID? = nil,
+         readyReceiptRegistered: Bool = false,
+-        profile: RequestProfileBuilder? = nil
++        profile: RequestProfileBuilder? = nil,
++        httpResponse: DistributedHTTPResponse? = nil
+     ) async {
+         // Resolve only after record(usage:) has delivered the lookup callback
+         // or teardown has finalized its failure, and owned resources retire.
+@@ -121,6 +124,17 @@
+                 }
+                 #endif
+                 sawTerminal = true
++                let httpCause: InferenceTerminalCause?
++                switch reason {
++                case .stop, .length: httpCause = nil
++                case .cancelled: httpCause = .cancelled
++                case .terminal(let cause, _): httpCause = Self.wireTerminalCause(cause) ?? .engineError
++                case .error: httpCause = .engineError
++                }
++                // Distributed .finished is emitted only after lease retirement.
++                // EOF/pump cancellation deliberately never fills this value.
++                httpResponse?.recordTerminal(.init(promptTokens: usage.promptTokens,
++                    completionTokens: usage.completionTokens, cause: httpCause))
+                 if reason == .stop || reason == .length {
+                     usageSignal?.record(matchedStopSequence: matchedStopSequence(
+                         candidates: stopSequences,
+--- a/provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Submission.swift
++++ b/provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Submission.swift
+@@ -109,6 +109,7 @@
+     ) async throws -> AsyncStream<GenerationEvent> {
+         // This is our frame-receipt clock when available, never an upstream wall
+         // timestamp. Local engines are unaffected by the distributed-only context.
++        let httpResponse = DistributedHTTPResponseScope.current
+         let distributedOrigin = DistributedRequestOrigin.earliest(
+             handler: distributedRequestOrigin, profile: profile?.continuousAnchor,
+             now: ContinuousClock.now)
+@@ -488,6 +489,14 @@
+                     try policy.restricting(bounded, receivedAt: distributedOrigin,
+                                            inputTokenCount: promptTokens.count)
+                 } ?? bounded
++            }
++            if let distributed, let selectedContext, let httpResponse {
++                // Actual token count and trusted origin have selected this
++                // absolute deadline. Bind before reserve/start; no fresh budget.
++                try httpResponse.bind(deadline: selectedContext.firstTokenDeadline) { [weak distributed] in
++                    // Never block a writer/timer on a synchronous engine queue.
++                    distributed?.queue.async { [weak distributed] in distributed?.cancel(cbv2Id) }
++                }
+             }
+             if let admission = deadlineAdmission {
+                 // The engine's serialized closure compares projection against
+@@ -611,6 +620,7 @@
+                     }
+                 }
+             }
++            httpResponse?.applyPendingCancellation()
+         } catch let cancellation as CBv2FirstTokenAdmissionCancellation {
+             // This exception proves acceptance but carries no projected work.
+             profile?.observeDeadlineDecision(
+@@ -693,7 +703,8 @@
+             usageSignal: usageSignal,
+             prefixCacheReceiptID: prefixCacheReceiptID,
+             readyReceiptRegistered: readyReceiptRegistered,
+-            profile: profile
++            profile: profile,
++            httpResponse: distributed == nil ? nil : httpResponse
+         )
+ 
+         let bridge = self
+--- /dev/null
++++ b/provider-swift/Sources/ProviderCore/Server/Distributed/DistributedHTTPEventStream.swift
+@@ -0,0 +1,139 @@
++import Foundation
++import Hummingbird
++import MLXLMServer
++import NIOCore
++
++/// Distributed-only body writer. Existing solo response framing is unchanged.
++/// The native profile already bounds generation; these are additional limits
++/// on frames examined/written here, not a claim about upstream stream buffers.
++/// A single writer sends a comment probe every 500 ms while awaiting output;
++/// comments are never visible content, tokens or a refreshed request budget.
++enum DistributedHTTPEventStream {
++    static let maximumFrameBytes = 1_048_576
++    static let maximumStreamBytes = 8_388_608
++    static let maximumTerminalBytes = 4_096
++    enum Failure: Error, Equatable { case outputLimit, malformedFrame, missingTerminal }
++
++    static func isVisibleContent(_ frame: String) throws -> Bool {
++        guard frame.utf8.count <= maximumFrameBytes else { throw Failure.outputLimit }
++        if frame == ServerSentEventEncoder.done { return false }
++        guard frame.hasPrefix("data: "), frame.hasSuffix("\n\n"),
++              let object = try JSONSerialization.jsonObject(with: Data(frame.dropFirst(6).dropLast(2).utf8)) as? [String: Any],
++              let choices = object["choices"] as? [[String: Any]] else { throw Failure.malformedFrame }
++        return choices.contains { choice in
++            guard let delta = choice["delta"] as? [String: Any], let content = delta["content"] as? String else { return false }
++            return !content.isEmpty
++        }
++    }
++
++    static func failureFrame(for response: DistributedHTTPResponse, upstreamFailed: Bool) throws -> String? {
++        guard let terminal = response.terminal else {
++            // No actual native terminal means no reconciled usage or completion
++            // can be asserted, even if an HTTP task or owner channel closed.
++            throw Failure.missingTerminal
++        }
++        guard terminal.promptTokens >= 0, terminal.completionTokens >= 0 else { throw Failure.malformedFrame }
++        let deadline = response.deadlineExpired || response.contentMissingAtTerminal
++        let nativeFailure = terminal.cause != nil && terminal.cause != .cancelled
++        guard deadline || nativeFailure || terminal.cause == .cancelled || upstreamFailed else { return nil }
++        let reason = nativeFailure ? "inference_error" : deadline
++            ? PreContentDeadlineFailure.deadlineUnreachable.rawValue : "inference_error"
++        let cause = nativeFailure || !deadline ? terminal.cause?.rawValue : nil
++        var error: [String: Any] = ["type": "server_error", "code": reason,
++            "message": deadline && !nativeFailure ? "First visible content deadline was not met" : "Distributed generation did not complete"]
++        if let cause { error["terminal_cause"] = cause }
++        let bytes = try JSONSerialization.data(withJSONObject: ["error": error,
++            "attempt_usage": ["prompt_tokens": terminal.promptTokens, "completion_tokens": terminal.completionTokens]],
++            options: [.sortedKeys, .withoutEscapingSlashes])
++        let frame = "data: \(String(decoding: bytes, as: UTF8.self))\n\n"
++        guard frame.utf8.count + ServerSentEventEncoder.done.utf8.count <= maximumTerminalBytes else { throw Failure.outputLimit }
++        return frame
++    }
++
++    static func response(_ frames: AsyncThrowingStream<String, Error>, control: DistributedHTTPResponse) -> Response {
++        Response(status: .ok, headers: [.contentType: "text/event-stream; charset=utf-8", .cacheControl: "no-store"],
++            body: .init { writer in
++                defer { control.finish() }
++                do {
++                    try await withTaskCancellationHandler {
++                        try await write(frames, control: control, writer: &writer)
++                    } onCancel: { control.disconnect() }
++                } catch {
++                    control.disconnect(); throw error
++                }
++            })
++    }
++
++    private static func write(_ frames: AsyncThrowingStream<String, Error>, control: DistributedHTTPResponse,
++                              writer: inout any ResponseBodyWriter) async throws {
++        let pump = DistributedHTTPFramePump(frames, maximumFrameBytes: maximumFrameBytes)
++        defer { pump.cancel() }
++        let probe = ": keep-alive\n\n"
++        var nextProbe = ContinuousClock.now.advanced(by: .milliseconds(500))
++        var total = 0
++        var writerFailed = false
++        var upstreamFailed = false
++        var trailing: [String] = []
++        do {
++            readLoop: while true {
++                try Task.checkCancellation()
++                guard let item = pump.take() else {
++                    if ContinuousClock.now >= nextProbe {
++                        guard probe.utf8.count <= maximumStreamBytes - maximumTerminalBytes - total else { throw Failure.outputLimit }
++                        total += probe.utf8.count
++                        do { try await writer.write(ByteBuffer(string: probe)) }
++                        catch { writerFailed = true; throw error }
++                        nextProbe = ContinuousClock.now.advanced(by: .milliseconds(500))
++                    } else { try await Task.sleep(for: .milliseconds(5)) }
++                    continue
++                }
++                let frame: String
++                switch item {
++                case .frame(let value): frame = value
++                case .end: break readLoop
++                case .failed(let error): throw error
++                }
++                let size = frame.utf8.count
++                guard size <= maximumFrameBytes, size <= maximumStreamBytes - maximumTerminalBytes - total else {
++                    control.disconnect(); throw Failure.outputLimit
++                }
++                total += size
++                let visible = try isVisibleContent(frame)
++                control.expire(at: ContinuousClock.now)
++                // Defer final usage/finish/DONE until error disposition
++                // is known. At most the existing finish frame + DONE.
++                if frame == ServerSentEventEncoder.done || isFinishFrame(frame) {
++                    guard trailing.count < 2 else { throw Failure.malformedFrame }
++                    trailing.append(frame); continue
++                }
++                if control.deadlineExpired { continue }
++                do { try await writer.write(ByteBuffer(string: frame)) }
++                catch { writerFailed = true; throw error }
++                if visible { control.contentAccepted() }
++                nextProbe = ContinuousClock.now.advanced(by: .milliseconds(500))
++            }
++        } catch {
++            if writerFailed || Task.isCancelled {
++                control.disconnect(); throw error
++            }
++            if error is Failure { control.disconnect(); throw error }
++            upstreamFailed = true
++        }
++        control.expire(at: ContinuousClock.now)
++        if let failure = try failureFrame(for: control, upstreamFailed: upstreamFailed) {
++            try await writer.write(ByteBuffer(string: failure))
++            try await writer.write(ByteBuffer(string: ServerSentEventEncoder.done))
++        } else {
++            for frame in trailing { try await writer.write(ByteBuffer(string: frame)) }
++        }
++        try Task.checkCancellation()
++        try await writer.finish(nil)
++    }
++
++    private static func isFinishFrame(_ frame: String) -> Bool {
++        guard frame.hasPrefix("data: "), frame.hasSuffix("\n\n"),
++              let object = try? JSONSerialization.jsonObject(with: Data(frame.dropFirst(6).dropLast(2).utf8)),
++              let row = object as? [String: Any], let choices = row["choices"] as? [[String: Any]] else { return false }
++        return choices.contains { $0["finish_reason"] is String } || row["usage"] is [String: Any]
++    }
++}
+--- /dev/null
++++ b/provider-swift/Sources/ProviderCore/Server/Distributed/DistributedHTTPFramePump.swift
+@@ -0,0 +1,60 @@
++import Foundation
++
++/// One pending frame plus the writer's current frame. The producer cannot take
++/// another source element until the consumer takes this slot. Polling the slot
++/// lets that same writer issue bounded keepalive comments without a second writer.
++final class DistributedHTTPFramePump: @unchecked Sendable {
++    enum Item: Sendable { case frame(String), end, failed(any Error) }
++    private let lock = NSLock()
++    private var slot: Item?
++    private var taken: CheckedContinuation<Bool, Never>?
++    private var closed = false
++    private var producer: Task<Void, Never>?
++
++    init(_ frames: AsyncThrowingStream<String, Error>, maximumFrameBytes: Int) {
++        producer = Task { [weak self] in
++            guard let self else { return }
++            do {
++                for try await frame in frames {
++                    guard frame.utf8.count <= maximumFrameBytes else {
++                        throw DistributedHTTPEventStream.Failure.outputLimit
++                    }
++                    guard await offer(.frame(frame)) else { return }
++                }
++                _ = await offer(.end)
++            } catch { _ = await offer(.failed(error)) }
++        }
++    }
++
++    private func offer(_ item: Item) async -> Bool {
++        await withCheckedContinuation { continuation in
++            let refused = lock.withLock { () -> Bool in
++                guard !closed, slot == nil, taken == nil else { return true }
++                slot = item; taken = continuation
++                return false
++            }
++            if refused { continuation.resume(returning: false) }
++        }
++    }
++
++    func take() -> Item? {
++        let result = lock.withLock { () -> (Item?, CheckedContinuation<Bool, Never>?) in
++            let result = (slot, taken); slot = nil; taken = nil
++            return result
++        }
++        result.1?.resume(returning: true)
++        return result.0
++    }
++
++    var pendingFrames: Int { lock.withLock { slot == nil ? 0 : 1 } }
++
++    @discardableResult func cancel() -> Task<Void, Never>? {
++        let result = lock.withLock { () -> (Task<Void, Never>?, CheckedContinuation<Bool, Never>?) in
++            closed = true; slot = nil
++            let result = (producer, taken); producer = nil; taken = nil
++            return result
++        }
++        result.0?.cancel(); result.1?.resume(returning: false)
++        return result.0
++    }
++}
+--- /dev/null
++++ b/provider-swift/Sources/ProviderCore/Server/Distributed/DistributedHTTPResponse.swift
+@@ -0,0 +1,111 @@
++import Foundation
++
++/// A provider-local response handle. It owns no model, lease, or retirement proof.
++/// Only the distributed upload responder installs this task-local scope. The
++/// bridge copies it before suspension and binds the actual tokenized deadline.
++enum DistributedHTTPResponseScope {
++    @TaskLocal static var current: DistributedHTTPResponse?
++}
++
++final class DistributedHTTPResponse: @unchecked Sendable {
++    struct Terminal: Sendable {
++        let promptTokens: Int
++        let completionTokens: Int
++        let cause: InferenceTerminalCause?
++    }
++    private let lock = NSLock()
++    private var bound = false
++    private var deadline: ContinuousClock.Instant?
++    private var timer: Task<Void, Never>?
++    private var cancel: (@Sendable () -> Void)?
++    private var expired = false
++    private var disconnected = false
++    private var completed = false
++    private var acceptedContent = false
++    private var nativeTerminal: Terminal?
++    private let onComplete: @Sendable () -> Void
++
++    init(onComplete: @escaping @Sendable () -> Void = {}) { self.onComplete = onComplete }
++
++    /// Before native admission. An expired budget is a pre-content refusal;
++    /// after admission expiry uses normal cancellation and keeps the lease held.
++    func bind(deadline: ContinuousClock.Instant?, cancel: @escaping @Sendable () -> Void) throws {
++        try lock.withLock {
++            guard !bound, !completed, !disconnected else { throw CancellationError() }
++            bound = true; self.deadline = deadline; self.cancel = cancel
++            if let deadline, ContinuousClock.now >= deadline {
++                expired = true
++                throw PreContentDeadlineFailure.deadlineUnreachable
++            }
++            if let deadline {
++                timer = Task { [weak self] in
++                    do { try await ContinuousClock().sleep(until: deadline) }
++                    catch { return }
++                    self?.expire(at: ContinuousClock.now)
++                }
++            }
++        }
++    }
++
++    /// Repeat after synchronous admission: a timer may have fired while no
++    /// engine row existed yet. The generation-bound cancel is idempotent.
++    func applyPendingCancellation() {
++        let action = lock.withLock { expired || disconnected ? cancel : nil }
++        action?()
++    }
++
++    func expire(at now: ContinuousClock.Instant) {
++        let action = lock.withLock { () -> (@Sendable () -> Void)? in
++            guard !completed, !acceptedContent, !expired, let deadline, now >= deadline else { return nil }
++            expired = true
++            return cancel
++        }
++        action?()
++    }
++
++    /// Called AFTER the local writer accepts a nonempty content frame. This is
++    /// not evidence that a remote client received it. Equality loses the race.
++    @discardableResult func contentAccepted(at now: ContinuousClock.Instant = ContinuousClock.now) -> Bool {
++        expire(at: now)
++        let result = lock.withLock { () -> (Bool, Task<Void, Never>?) in
++            guard !completed, !disconnected, !expired else { return (false, nil) }
++            acceptedContent = true
++            let task = timer; timer = nil
++            return (true, task)
++        }
++        result.1?.cancel()
++        return result.0
++    }
++
++    var deadlineExpired: Bool { lock.withLock { expired } }
++    var selectedDeadline: ContinuousClock.Instant? { lock.withLock { deadline } }
++    var contentMissingAtTerminal: Bool { lock.withLock { deadline != nil && !acceptedContent } }
++    var terminal: Terminal? { lock.withLock { nativeTerminal } }
++    var isComplete: Bool { lock.withLock { completed } }
++
++    /// Only the bridge's actual .finished event calls this. EOF, cancellation,
++    /// body completion and the three-second delivery cutoff never manufacture it.
++    func recordTerminal(_ value: Terminal) {
++        lock.withLock { if nativeTerminal == nil { nativeTerminal = value } }
++    }
++
++    func disconnect() {
++        let action = lock.withLock { () -> (@Sendable () -> Void)? in
++            guard !completed, !disconnected else { return nil }
++            disconnected = true
++            return cancel
++        }
++        action?()
++    }
++
++    func finish() {
++        let result = lock.withLock { () -> (Bool, Task<Void, Never>?) in
++            guard !completed else { return (false, nil) }
++            completed = true
++            let task = timer; timer = nil; cancel = nil
++            return (true, task)
++        }
++        result.1?.cancel()
++        if result.0 { onComplete() }
++    }
++}
+--- /dev/null
++++ b/provider-swift/Sources/ProviderCore/Server/Distributed/DistributedHTTPResponses.swift
+@@ -0,0 +1,62 @@
++import Foundation
++
++/// One active streaming response for the one-request installed pipeline. The
++/// response hold is separate from the model acquisition and native ownership.
++final class DistributedHTTPResponses: @unchecked Sendable {
++    private let lock = NSLock()
++    private var active: (UUID, DistributedHTTPResponse)?
++    private var accepting = true
++    private var deliveryDeadline: ContinuousClock.Instant?
++
++    func begin() throws -> DistributedHTTPResponse {
++        try lock.withLock {
++            guard accepting, active == nil else {
++                throw MultiModelBatchSchedulerEngineError.requestRejected("Distributed response is unavailable")
++            }
++            let id = UUID()
++            let response = DistributedHTTPResponse { [weak self] in self?.complete(id) }
++            active = (id, response)
++            return response
++        }
++    }
++
++    private func complete(_ id: UUID) {
++        lock.withLock { if active?.0 == id { active = nil } }
++    }
++
++    func closeAdmissions() { lock.withLock { accepting = false } }
++
++    /// Installed once, at cancellation; repeated stop/monitor calls cannot
++    /// extend this delivery-only grace or any generation/native deadline.
++    func beginDeliveryGrace(now: ContinuousClock.Instant = ContinuousClock.now) {
++        lock.withLock {
++            accepting = false
++            if deliveryDeadline == nil { deliveryDeadline = now.advanced(by: .seconds(3)) }
++        }
++    }
++
++    var hasActiveResponse: Bool { lock.withLock { active != nil } }
++
++    func waitForDelivery() async {
++        while true {
++            let waiting = lock.withLock {
++                active != nil && deliveryDeadline.map { ContinuousClock.now < $0 } == true
++            }
++            guard waiting else { return }
++            do { try await Task.sleep(for: .milliseconds(5)) }
++            catch { return }
++        }
++    }
++
++    /// Called only after the actual HTTP service task (and its child handlers)
++    /// has returned. A discarded/unstarted body is then no longer deliverable.
++    func listenerStopped() {
++        let response = lock.withLock { active?.1 }
++        response?.finish()
++    }
++
++    func abort() {
++        let response = lock.withLock { active?.1 }
++        response?.disconnect()
++    }
++}
+--- a/provider-swift/Sources/ProviderCore/Server/Distributed/DistributedLocalServer+HTTP.swift
++++ b/provider-swift/Sources/ProviderCore/Server/Distributed/DistributedLocalServer+HTTP.swift
+@@ -8,6 +8,7 @@
+             tokenizerProvider: { try await self.resolveTokenizer($0) },
+             availableModels: { await self.catalog() }, mtpSlots: { [] },
+             clusterStatus: { try await self.clusterStatus(nonce: $0) },
++            distributedResponses: responses,
+             onServerRunning: { await self.didBind($0) })
+     }
+ 
+--- a/provider-swift/Sources/ProviderCore/Server/Distributed/DistributedLocalServer.swift
++++ b/provider-swift/Sources/ProviderCore/Server/Distributed/DistributedLocalServer.swift
+@@ -11,6 +11,7 @@
+     let firstTokenBudgetPolicy: DistributedFirstTokenBudgetPolicy?
+     let tokenizerLoader: @Sendable (URL) async throws -> TokenizerHandle
+     let discovery: DistributedLocalDiscovery?
++    let responses = DistributedHTTPResponses()
+     var phase: DistributedLocalServerPhase = .prepared
+     var entry: MultiModelBatchSchedulerEngine.ModelRegistryEntry?
+     var pin: UUID?
+@@ -152,18 +153,23 @@
+     func beginTeardown(drainUntil: UInt64?) {
+         if phase == .stopped { return }
+         removeDiscovery()
++        responses.closeAdmissions()
+         if teardownTask != nil {
+             // Explicit stop or fixed lifetime expiry interrupts a graceful drain.
+             if drainUntil == nil {
+                 if phase != .quarantined { phase = .stopping }
+-                serviceTask?.cancel()
++                responses.beginDeliveryGrace()
+                 Task { _ = await session.stop(until: DispatchTime.now().uptimeNanoseconds) }
+             }
+             return
+         }
+         if phase != .quarantined { phase = drainUntil == nil ? .stopping : .draining }
+         startupTask?.cancel()
+-        if drainUntil == nil { serviceTask?.cancel() }
++        if drainUntil == nil {
++            responses.beginDeliveryGrace()
++            // Cancellation/fencing begins now, independently of HTTP delivery.
++            Task { _ = await session.stop(until: DispatchTime.now().uptimeNanoseconds) }
++        }
+         teardownTask = Task { await self.finishTeardown(drainUntil: drainUntil) }
+     }
+ 
+@@ -171,14 +177,20 @@
+         // Joining startup prevents a late tokenizer/load/bridge installation.
+         _ = await startupTask?.result
+         if let drainUntil { _ = await session.drain(until: drainUntil) }
++        responses.beginDeliveryGrace()
++        let ownerStop = Task { await session.shutdown() }
++        // Keep the existing bridge pump alive for an already-connected response
++        // while owner cancellation/cleanup proceeds. The fixed three-second
++        // grace affects only delivery, never request/native deadlines or leases.
++        await responses.waitForDelivery()
++        responses.abort()
+         serviceTask?.cancel()
+-        // Engine cancellation/retirement must run while HTTP streams unwind;
+-        // awaiting the listener first can deadlock a stream waiting on the owner.
+         let bridge = entry?.engineV2Bridge
+         let engineStop = Task { await bridge?.shutdown() }
+-        await session.shutdown()
++        await ownerStop.value
+         _ = await engineStop.value
+         _ = await serviceTask?.value
++        responses.listenerStopped()
+         if pin != nil { await withCheckedContinuation { pinWaiters.append($0) } }
+         lifetimeTask?.cancel(); lifetimeTask = nil
+         removeDiscovery()
+--- a/provider-swift/Sources/ProviderCore/Server/LocalChatUploadResponder.swift
++++ b/provider-swift/Sources/ProviderCore/Server/LocalChatUploadResponder.swift
+@@ -26,16 +26,19 @@
+     public let inner: Inner
+     let serviceForTemplateControls: @Sendable (ChatTemplateControls) -> MLXOpenAIService
+     let maxUploadBytes: Int
++    let distributedResponses: DistributedHTTPResponses?
+ 
+     init(
+         inner: Inner,
+         service: MLXOpenAIService,
+         maxUploadBytes: Int = localInferenceMaxUploadBytes,
+-        serviceForTemplateControls: (@Sendable (ChatTemplateControls) -> MLXOpenAIService)? = nil
++        serviceForTemplateControls: (@Sendable (ChatTemplateControls) -> MLXOpenAIService)? = nil,
++        distributedResponses: DistributedHTTPResponses? = nil
+     ) {
+         self.inner = inner
+         self.serviceForTemplateControls = serviceForTemplateControls ?? { _ in service }
+         self.maxUploadBytes = maxUploadBytes
++        self.distributedResponses = distributedResponses
+     }
+ 
+     /// The POST paths that carry inline media and need the raised ceiling.
+@@ -98,6 +101,24 @@
+         // throws (unknown model, admission refusal) travel to
+         // `CORSResponder`'s status mapping unchanged.
+         if item.request.stream == true {
++            if let distributedResponses {
++                let response = try distributedResponses.begin()
++                do {
++                    guard let channel = LocalHTTPConnectionScope.current else {
++                        throw MultiModelBatchSchedulerEngineError.requestRejected("Missing local connection observation")
++                    }
++                    // A full close is definitive. Input half-close alone is
++                    // allowed; the serialized SSE writer probes for write loss.
++                    channel.closeFuture.whenComplete { [weak response] _ in response?.disconnect() }
++                    if !channel.isActive { response.disconnect(); throw CancellationError() }
++                    let frames = try await DistributedHTTPResponseScope.$current.withValue(response) {
++                        try await requestService.streamChatCompletionFrames(request: item.request)
++                    }
++                    return DistributedHTTPEventStream.response(frames, control: response)
++                } catch {
++                    response.disconnect(); response.finish(); throw error
++                }
++            }
+             let frames = try await requestService.streamChatCompletionFrames(request: item.request)
+             return Self.sseResponse(frames)
+         }
+--- /dev/null
++++ b/provider-swift/Sources/ProviderCore/Server/LocalConnectionResponder.swift
+@@ -0,0 +1,34 @@
++import Foundation
++import Hummingbird
++import NIOCore
++
++/// Preserve the actual application's channel before BasicRequestContext drops
++/// it. Existing auth/router responders still receive the same basic storage.
++public struct LocalConnectionRequestContext: RequestContext {
++    public var coreContext: CoreRequestContextStorage
++    let channel: any Channel
++    public init(source: ApplicationRequestContextSource) {
++        coreContext = .init(source: source); channel = source.channel
++    }
++}
++
++enum LocalHTTPConnectionScope {
++    @TaskLocal static var current: (any Channel)?
++}
++
++public struct LocalConnectionResponder<Inner: HTTPResponder>: HTTPResponder
++where Inner.Context == BasicRequestContext {
++    public typealias Context = LocalConnectionRequestContext
++    let inner: Inner
++    let observeConnection: Bool
++
++    public func respond(to request: Request, context: Context) async throws -> Response {
++        var basic = BasicRequestContext(source: .init(channel: context.channel, logger: context.logger))
++        basic.coreContext = context.coreContext
++        if !observeConnection { return try await inner.respond(to: request, context: basic) }
++        let innerContext = basic
++        return try await LocalHTTPConnectionScope.$current.withValue(context.channel) {
++            try await inner.respond(to: request, context: innerContext)
++        }
++    }
++}
+--- a/provider-swift/Sources/ProviderCore/Server/LocalInferenceHTTP.swift
++++ b/provider-swift/Sources/ProviderCore/Server/LocalInferenceHTTP.swift
+@@ -39,10 +39,10 @@
+ /// `LocalChatUploadResponder`) → upstream MLXLMServer router.
+ public typealias LocalInferenceApplication =
+     Application<
+-        LocalRequestOriginResponder<LocalAuthResponder<
++        LocalRequestOriginResponder<LocalConnectionResponder<LocalAuthResponder<
+             CORSResponder<
+                 LocalMetricsResponder<
+-                    LocalChatUploadResponder<RouterResponder<BasicRequestContext>>>>>>>
++                    LocalChatUploadResponder<RouterResponder<BasicRequestContext>>>>>>>>
+ 
+ /// Builds the local OpenAI-compatible Hummingbird application from a model
+ /// registry expressed as three closures. Shared by `StandaloneServer` and the
+@@ -72,6 +72,7 @@
+     availableModels: @escaping @Sendable () async -> [String],
+     mtpSlots: @escaping @Sendable () async -> [MTPSlotMetricsSample],
+     clusterStatus: (@Sendable (String) async throws -> ClusterLiveStatus)? = nil,
++    distributedResponses: DistributedHTTPResponses? = nil,
+     onServerRunning: @escaping @Sendable (any Channel) async -> Void = { _ in }
+ ) -> LocalInferenceApplication {
+     // The upstream OpenAI request shape intentionally ignores Qwen's
+@@ -117,7 +118,8 @@
+     // upstream router unchanged.
+     let uploadResponder = LocalChatUploadResponder(
+         inner: router.buildResponder(), service: service,
+-        serviceForTemplateControls: serviceForTemplateControls)
++        serviceForTemplateControls: serviceForTemplateControls,
++        distributedResponses: distributedResponses)
+     // GET /metrics is served by the metrics responder: the upstream
+     // ServerMetrics body plus the provider-owned MTP posture lines (see
+     // LocalMetricsResponder for why the upstream route cannot be extended).
+@@ -129,7 +131,8 @@
+     let authedResponder = LocalAuthResponder(inner: corsResponder, token: config.authToken)
+ 
+     return Application(
+-        responder: LocalRequestOriginResponder(inner: authedResponder),
++        responder: LocalRequestOriginResponder(inner: LocalConnectionResponder(
++            inner: authedResponder, observeConnection: distributedResponses != nil)),
+         configuration: .init(
+             address: .hostname(config.host, port: Int(config.port)),
+             serverName: "darkbloom-provider"
+--- /dev/null
++++ b/provider-swift/Tests/ProviderCoreTests/Server/DistributedHTTPDeliveryLifecycleTests.swift
+@@ -0,0 +1,90 @@
++import Foundation
++import MLXLMServer
++import Testing
++@testable import ProviderCore
++
++@Suite(.timeLimit(.minutes(1)))
++struct DistributedHTTPDeliveryLifecycleTests {
++    @Test func ordinarySuccessfulContentPreservesFrameBytes() async throws {
++        let control = DistributedHTTPResponse(), capture = HTTPDeliveryCapture()
++        try control.bind(deadline: ContinuousClock.now.advanced(by: .seconds(20)), cancel: capture.cancel)
++        control.recordTerminal(.init(promptTokens: 3, completionTokens: 1, cause: nil))
++        let values = [try httpDeliveryFrame(role: "assistant"), try httpDeliveryFrame(content: "fixture"),
++                      try httpDeliveryFrame(finish: "length"), ServerSentEventEncoder.done]
++        let stream = AsyncThrowingStream<String, Error> { continuation in
++            for value in values { continuation.yield(value) }; continuation.finish()
++        }
++        let response = DistributedHTTPEventStream.response(stream, control: control)
++        try await response.body.write(HTTPDeliveryWriter(capture: capture))
++        #expect(capture.values == values && capture.finishCount == 1 && capture.cancelCount == 0)
++        #expect(control.isComplete && !control.deadlineExpired)
++    }
++
++    @Test func cleanEmptyCompletionCannotClaimTheExplicitContentPolicy() throws {
++        let policy = DistributedHTTPResponse(), legacy = DistributedHTTPResponse()
++        defer { policy.finish(); legacy.finish() }
++        try policy.bind(deadline: ContinuousClock.now.advanced(by: .seconds(20)), cancel: {})
++        try legacy.bind(deadline: nil, cancel: {})
++        for response in [policy, legacy] {
++            response.recordTerminal(.init(promptTokens: 3, completionTokens: 1, cause: nil))
++        }
++        #expect(try DistributedHTTPEventStream.failureFrame(for: policy, upstreamFailed: false)?.contains("deadline_unreachable") == true)
++        #expect(try DistributedHTTPEventStream.failureFrame(for: legacy, upstreamFailed: false) == nil)
++    }
++
++    @Test func deliveryGraceIsOnceBoundAndCannotClearNativeOwnership() async throws {
++        let responses = DistributedHTTPResponses(), capture = HTTPDeliveryCapture()
++        let response = try responses.begin()
++        try response.bind(deadline: nil, cancel: capture.cancel)
++        let now = ContinuousClock.now
++        responses.beginDeliveryGrace(now: now.advanced(by: .seconds(-4)))
++        responses.beginDeliveryGrace(now: now) // cannot replenish the first grace
++        let start = ContinuousClock.now
++        await responses.waitForDelivery()
++        #expect(start.duration(to: ContinuousClock.now) < .seconds(1))
++        #expect(responses.hasActiveResponse && response.terminal == nil)
++        #expect(throws: MultiModelBatchSchedulerEngineError.self) { _ = try responses.begin() }
++        responses.abort()
++        #expect(capture.cancelCount == 1 && response.terminal == nil && !response.isComplete)
++        responses.listenerStopped()
++        #expect(response.isComplete && !responses.hasActiveResponse && response.terminal == nil)
++    }
++
++    @Test func frameAndTotalBoundsCancelWithoutInventingUsage() async throws {
++        #expect(throws: DistributedHTTPEventStream.Failure.outputLimit) {
++            _ = try DistributedHTTPEventStream.isVisibleContent(String(repeating: "x", count: DistributedHTTPEventStream.maximumFrameBytes + 1))
++        }
++        let control = DistributedHTTPResponse(), capture = HTTPDeliveryCapture()
++        try control.bind(deadline: nil, cancel: capture.cancel)
++        let frame = try httpDeliveryFrame(content: String(repeating: "x", count: 1_000_000))
++        let stream = AsyncThrowingStream<String, Error> { continuation in
++            for _ in 0..<9 { continuation.yield(frame) }; continuation.finish()
++        }
++        let response = DistributedHTTPEventStream.response(stream, control: control)
++        do { try await response.body.write(HTTPDeliveryWriter(capture: capture)); Issue.record("Output limit accepted") }
++        catch DistributedHTTPEventStream.Failure.outputLimit {}
++        #expect(capture.values.reduce(0) { $0 + $1.utf8.count } < DistributedHTTPEventStream.maximumStreamBytes)
++        #expect(capture.cancelCount == 1 && capture.finishCount == 0 && control.terminal == nil)
++    }
++
++    @Test func hostClosesAdmissionsBeforeGraceAndRetainsEntryUntilOwnerACK() async throws {
++        let session = LocalHostTestSession(); session.holdOwnerACK = true
++        let host = localHost(session)
++        try await host.start()
++        let responses = host.responses
++        let response = try responses.begin()
++        let stop = Task { await host.stop(until: localHostDeadline(50)) }
++        #expect(try await localHostEventually { session.nativeCleanupObserved })
++        #expect(throws: MultiModelBatchSchedulerEngineError.self) { _ = try responses.begin() }
++        let bounded = await stop.value
++        #expect(bounded.phase == .quarantined && !bounded.cleanupComplete)
++        let heldEntry = await host.entry
++        #expect(heldEntry != nil && !response.isComplete)
++        // Model release and native cleanup are not response completion/owner ACK.
++        response.finish()
++        let retainedEntry = await host.entry
++        #expect(!responses.hasActiveResponse && retainedEntry != nil)
++        session.ack.complete()
++        #expect(try await localHostEventually { await host.status.cleanupComplete })
++    }
++}
+--- /dev/null
++++ b/provider-swift/Tests/ProviderCoreTests/Server/DistributedHTTPDeliveryTestSupport.swift
+@@ -0,0 +1,48 @@
++import Foundation
++import Hummingbird
++import HTTPTypes
++import MLXLMServer
++import NIOCore
++@testable import ProviderCore
++
++/// In-memory writer only; acceptance here is deliberately not network receipt.
++final class HTTPDeliveryCapture: @unchecked Sendable {
++    private let lock = NSLock()
++    private var frames: [String] = []
++    private var finishes = 0
++    private var cancellations = 0
++    var values: [String] { lock.withLock { frames } }
++    var finishCount: Int { lock.withLock { finishes } }
++    var cancelCount: Int { lock.withLock { cancellations } }
++    func append(_ text: String) { lock.withLock { frames.append(text) } }
++    func finish() { lock.withLock { finishes += 1 } }
++    func cancel() { lock.withLock { cancellations += 1 } }
++}
++
++struct HTTPDeliveryWriter: ResponseBodyWriter {
++    let capture: HTTPDeliveryCapture
++    var beforeWrite: @Sendable (String) async throws -> Void = { _ in }
++    mutating func write(_ buffer: ByteBuffer) async throws {
++        let text = String(decoding: buffer.readableBytesView, as: UTF8.self)
++        try await beforeWrite(text)
++        try Task.checkCancellation()
++        capture.append(text)
++    }
++    consuming func finish(_ trailingHeaders: HTTPFields?) async throws { capture.finish() }
++}
++
++func httpDeliveryFrame(content: String? = nil, reasoning: String? = nil, role: String? = nil,
++                       finish: String? = nil) throws -> String {
++    try ServerSentEventEncoder.encode(OpenAIChatCompletionChunk(id: "fixture", model: "fixture",
++        choices: [.init(index: 0, delta: .init(role: role, content: content,
++            reasoningContent: reasoning, toolCalls: nil), finishReason: finish)], usage: nil, created: 1))
++}
++
++func httpDeliveryEventually(_ predicate: () -> Bool) async throws -> Bool {
++    let end = ContinuousClock.now.advanced(by: .seconds(2))
++    while ContinuousClock.now < end {
++        if predicate() { return true }
++        try await Task.sleep(for: .milliseconds(2))
++    }
++    return predicate()
++}
+--- /dev/null
++++ b/provider-swift/Tests/ProviderCoreTests/Server/DistributedHTTPDisconnectTests.swift
+@@ -0,0 +1,74 @@
++import Foundation
++import MLXLMCommon
++import Testing
++@testable import ProviderCore
++
++@Suite(.timeLimit(.minutes(1)))
++struct DistributedHTTPDisconnectTests {
++    private func start() async throws -> (DistributedLocalServer, LocalHostTestSession, UInt16) {
++        let session = LocalHostTestSession(); session.lifetimeNanoseconds = 15_000_000_000
++        let host = DistributedLocalServer(session: session, config: .init(host: "127.0.0.1", port: 0),
++            firstTokenBudgetPolicy: .init(baseMilliseconds: 10_000, millisecondsPerInputToken: 0),
++            tokenizerLoader: { _ in TokenizerHandle(DistributedTestTokenizer()) })
++        try await host.start()
++        return (host, session, try #require(await host.status.boundPort))
++    }
++
++    private func request(model: String) throws -> Data {
++        let body = try JSONSerialization.data(withJSONObject: ["model": model,
++            "messages": [["role": "user", "content": "fixture"]], "temperature": 0,
++            "max_tokens": 1, "stream": true])
++        var bytes = Data(("POST /v1/chat/completions HTTP/1.1\r\nHost: 127.0.0.1\r\n"
++            + "Content-Type: application/json\r\nContent-Length: \(body.count)\r\nConnection: close\r\n\r\n").utf8)
++        bytes.append(body); return bytes
++    }
++
++    @Test func actualFullSocketCloseCancelsBeforeFirstTokenDeadline() async throws {
++        let (host, session, port) = try await start()
++        let socket = try await HTTPRawSocket.open(port: port, request: request(model: session.model.publicModelID))
++        defer { socket.close() }
++        _ = try await socket.read(until: "\"role\":\"assistant\"")
++        #expect(session.base.reserveCount == 1)
++        let lease = session.base.last, began = ContinuousClock.now
++        socket.close() // real FIN/full client close; no Task.cancel/parent stop
++        #expect(try await httpDeliveryEventually { lease.cancelCount == 1 })
++        #expect(began.duration(to: ContinuousClock.now) < .seconds(2)) // configured first-token budget is ten seconds
++        #expect(lease.releaseCount == 0)
++        lease.acknowledge()
++        #expect(try await httpDeliveryEventually { lease.releaseCount == 1 })
++        _ = await host.stop(until: localHostDeadline())
++    }
++
++    @Test func actualWriteHalfCloseMayContinueReadingProbesAndContent() async throws {
++        let (host, session, port) = try await start()
++        let socket = try await HTTPRawSocket.open(port: port, request: request(model: session.model.publicModelID))
++        defer { socket.close() }
++        try socket.halfCloseWrite() // valid HTTP half-close, not a cancellation signal
++        let initial = try await socket.read(until: ": keep-alive")
++        #expect(initial.contains("\"role\":\"assistant\""))
++        #expect(session.base.reserveCount == 1 && session.base.last.cancelCount == 0)
++        let lease = session.base.last
++        #expect(!lease.send(.token(4))) // normal one-token length finish
++        #expect(lease.releaseCount == 0)
++        lease.acknowledge()
++        let final = try await socket.read(until: "data: [DONE]")
++        #expect(final.contains("t4") && !final.contains("\"error\""))
++        #expect(lease.releaseCount == 1 && lease.cancelCount == 0)
++        _ = await host.stop(until: localHostDeadline())
++    }
++
++    @Test func framePumpBacklogIsOneAndCancellationUnblocksTheProducer() async throws {
++        let (frames, continuation) = AsyncThrowingStream<String, Error>.makeStream()
++        let pump = DistributedHTTPFramePump(frames, maximumFrameBytes: 1024)
++        defer { pump.cancel() }
++        continuation.yield("one"); continuation.yield("two"); continuation.finish()
++        #expect(try await httpDeliveryEventually { pump.pendingFrames == 1 })
++        try await Task.sleep(for: .milliseconds(20))
++        #expect(pump.pendingFrames == 1)
++        guard case .frame("one") = pump.take() else { Issue.record("Wrong pending frame"); return }
++        #expect(try await httpDeliveryEventually { pump.pendingFrames == 1 })
++        let producer = pump.cancel()
++        await producer?.value
++        #expect(pump.pendingFrames == 0 && pump.take() == nil)
++    }
++}
+--- /dev/null
++++ b/provider-swift/Tests/ProviderCoreTests/Server/DistributedHTTPRawSocket.swift
+@@ -0,0 +1,77 @@
++import Darwin
++import Foundation
++
++/// Bounded real TCP fixture; only 127.0.0.1 and a test-created listener port.
++/// Read/write operations have kernel timeouts and run off the Swift executor.
++final class HTTPRawSocket: @unchecked Sendable {
++    enum Failure: Error { case socket, connect, write, read, limit }
++    private let lock = NSLock()
++    private var descriptor: Int32
++    private init(_ descriptor: Int32) { self.descriptor = descriptor }
++    deinit { close() }
++    func close() {
++        let fd = lock.withLock { let value = descriptor; descriptor = -1; return value }
++        if fd >= 0 { Darwin.close(fd) }
++    }
++    func halfCloseWrite() throws {
++        let fd = lock.withLock { descriptor }
++        guard Darwin.shutdown(fd, SHUT_WR) == 0 else { throw Failure.write }
++    }
++
++    static func open(port: UInt16, request: Data) async throws -> HTTPRawSocket {
++        try await withCheckedThrowingContinuation { continuation in
++            DispatchQueue.global().async {
++                do {
++                    let fd = Darwin.socket(AF_INET, SOCK_STREAM, 0)
++                    guard fd >= 0 else { throw Failure.socket }
++                    let socket = HTTPRawSocket(fd)
++                    var timeout = timeval(tv_sec: 2, tv_usec: 0), one: Int32 = 1
++                    guard setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size)) == 0,
++                          setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size)) == 0,
++                          setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, socklen_t(MemoryLayout<Int32>.size)) == 0 else {
++                        throw Failure.socket
++                    }
++                    var address = sockaddr_in()
++                    address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
++                    address.sin_family = sa_family_t(AF_INET); address.sin_port = port.bigEndian
++                    guard inet_pton(AF_INET, "127.0.0.1", &address.sin_addr) == 1 else { throw Failure.socket }
++                    let connected = withUnsafePointer(to: &address) {
++                        $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
++                            Darwin.connect(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
++                        }
++                    }
++                    guard connected == 0 else { throw Failure.connect }
++                    try request.withUnsafeBytes { raw in
++                        var offset = 0
++                        while offset < raw.count {
++                            let wrote = Darwin.send(fd, raw.baseAddress!.advanced(by: offset), raw.count - offset, 0)
++                            guard wrote > 0 else { throw Failure.write }; offset += wrote
++                        }
++                    }
++                    continuation.resume(returning: socket)
++                } catch { continuation.resume(throwing: error) }
++            }
++        }
++    }
++
++    func read(until marker: String) async throws -> String {
++        let fd = lock.withLock { descriptor }
++        return try await withCheckedThrowingContinuation { continuation in
++            DispatchQueue.global().async {
++                do {
++                    var bytes = Data(), buffer = [UInt8](repeating: 0, count: 4096)
++                    let deadline = ContinuousClock.now.advanced(by: .seconds(3))
++                    while ContinuousClock.now < deadline {
++                        let count = Darwin.recv(fd, &buffer, buffer.count, 0)
++                        guard count > 0 else { throw Failure.read }
++                        guard bytes.count + count <= 262_144 else { throw Failure.limit }
++                        bytes.append(contentsOf: buffer.prefix(count))
++                        let text = String(decoding: bytes, as: UTF8.self)
++                        if text.contains(marker) { continuation.resume(returning: text); return }
++                    }
++                    throw Failure.read
++                } catch { continuation.resume(throwing: error) }
++            }
++        }
++    }
++}
+--- /dev/null
++++ b/provider-swift/Tests/ProviderCoreTests/Server/DistributedHTTPRetirementTests.swift
+@@ -0,0 +1,114 @@
++import Foundation
++import MLXLMCommon
++import MLXLMServer
++import Testing
++@testable import ProviderCore
++
++@Suite(.timeLimit(.minutes(1)))
++struct DistributedHTTPRetirementTests {
++    @Test func blockedWriterCannotHoldDeadlineCancellationOrActualLeaseRetirement() async throws {
++        let owner = DistributedTestOwner(), engine = try distributedTestEngine(owner)
++        let stream = try engine.submit(distributedTestRequest(maxTokens: 5))
++        let capture = HTTPDeliveryCapture(), entered = HTTPDeliveryCapture(), release = LocalHostLatch()
++        defer { release.complete() }
++        let control = DistributedHTTPResponse(), deadline = ContinuousClock.now.advanced(by: .seconds(20))
++        try control.bind(deadline: deadline) { engine.cancel(owner.last.requestID); capture.cancel() }
++        let (frames, continuation) = AsyncThrowingStream<String, Error>.makeStream()
++        let response = DistributedHTTPEventStream.response(frames, control: control)
++        let writing = Task {
++            try await response.body.write(HTTPDeliveryWriter(capture: capture, beforeWrite: { _ in
++                entered.cancel(); await release.wait()
++            }))
++        }
++        let collecting = Task {
++            for await event in stream {
++                if case .finished(_, let usage) = event {
++                    control.recordTerminal(.init(promptTokens: usage.promptTokens,
++                        completionTokens: usage.completionTokens, cause: .cancelled))
++                    continuation.finish(throwing: CancellationError())
++                }
++            }
++        }
++        continuation.yield(try httpDeliveryFrame(role: "assistant"))
++        #expect(try await httpDeliveryEventually { entered.cancelCount == 1 })
++        #expect(owner.last.send(.token(4))) // raw token does not acknowledge HTTP content
++        control.expire(at: deadline)
++        #expect(owner.last.cancelCount == 1 && owner.last.releaseCount == 0 && control.terminal == nil)
++        owner.last.acknowledge()
++        await collecting.value
++        #expect(owner.last.releaseCount == 1 && control.terminal?.completionTokens == 1)
++        #expect(capture.values.isEmpty && capture.finishCount == 0)
++        release.complete()
++        try await writing.value
++        #expect(capture.values.joined().contains("deadline_unreachable"))
++        await engine.shutdown()
++    }
++
++    @Test func disconnectCancelsButDoesNotInventRetirementOrUsage() async throws {
++        let owner = DistributedTestOwner(), engine = try distributedTestEngine(owner)
++        let stream = try engine.submit(distributedTestRequest(maxTokens: 5))
++        let control = DistributedHTTPResponse(), capture = HTTPDeliveryCapture()
++        try control.bind(deadline: ContinuousClock.now.advanced(by: .seconds(20))) { engine.cancel(owner.last.requestID) }
++        let (frames, continuation) = AsyncThrowingStream<String, Error>.makeStream()
++        let response = DistributedHTTPEventStream.response(frames, control: control)
++        let writing = Task {
++            try await response.body.write(HTTPDeliveryWriter(capture: capture, beforeWrite: { _ in
++                throw CancellationError()
++            }))
++        }
++        continuation.yield(try httpDeliveryFrame(role: "assistant"))
++        do { try await writing.value; Issue.record("Disconnected writer succeeded") } catch {}
++        #expect(owner.last.cancelCount == 1 && owner.last.releaseCount == 0 && control.terminal == nil)
++        #expect(capture.values.isEmpty && capture.finishCount == 0)
++        owner.last.acknowledge(); _ = await distributedCollect(stream)
++        #expect(owner.last.releaseCount == 1)
++        await engine.shutdown()
++    }
++
++    @Test func bridgeBindsActualTokenCountBeforeReserveAndCarriesOnlyActualTerminalUsage() async throws {
++        let owner = DistributedTestOwner(), control = DistributedHTTPResponse()
++        defer { control.finish() }
++        let policy = try DistributedFirstTokenBudgetPolicy(baseMilliseconds: 10_000, millisecondsPerInputToken: 100)
++        let bridge = try DistributedEngineFactory.makeBridge(owner: owner, expectedIdentity: owner.identity,
++            profile: distributedTestProfile(), tokenizer: TokenizerHandle(DistributedTestTokenizer()),
++            eosTokenIDs: [99], firstTokenBudgetPolicy: policy)
++        let origin = ContinuousClock.now.advanced(by: .seconds(-1))
++        let expected = origin.advanced(by: .milliseconds(10_300))
++        owner.onReserve = { #expect(control.selectedDeadline == expected) }
++        let stream = try await DistributedHTTPResponseScope.$current.withValue(control) {
++            try await bridge.submitTokenized(promptTokens: [1, 2, 3],
++                request: ChatCompletionRequest(model: owner.identity.modelID, messages: [], temperature: 0, max_tokens: 5),
++                requestId: "http-deadline-fixture", cacheEnabled: false,
++                firstContentDeadline: nil, distributedRequestOrigin: origin)
++        }
++        #expect(control.selectedDeadline == expected && owner.reserveCount == 1)
++        #expect(owner.last.send(.token(4)))
++        control.expire(at: expected)
++        #expect(try await httpDeliveryEventually { owner.last.cancelCount == 1 })
++        #expect(control.terminal == nil && owner.last.releaseCount == 0)
++        owner.last.acknowledge()
++        for await _ in stream {}
++        #expect(control.terminal?.completionTokens == 1 && control.terminal?.cause == .cancelled)
++        #expect(owner.last.releaseCount == 1)
++        await bridge.shutdown()
++    }
++
++    @Test func delayedAdmissionConsumesBoundDeadlineAndPendingCancelIsReapplied() async throws {
++        let owner = DistributedTestOwner(), control = DistributedHTTPResponse()
++        defer { control.finish() }
++        let bridge = try DistributedEngineFactory.makeBridge(owner: owner, expectedIdentity: owner.identity,
++            profile: distributedTestProfile(), tokenizer: TokenizerHandle(DistributedTestTokenizer()), eosTokenIDs: [99],
++            firstTokenBudgetPolicy: .init(baseMilliseconds: 10_000, millisecondsPerInputToken: 0))
++        owner.onReserve = { control.expire(at: control.selectedDeadline!) }
++        let stream = await DistributedHTTPResponseScope.$current.withValue(control) {
++            await bridge.submitTokenized(promptTokens: [1, 2, 3],
++                request: ChatCompletionRequest(model: owner.identity.modelID, messages: [], temperature: 0, max_tokens: 5),
++                requestId: "http-reserve-race", cacheEnabled: false)
++        }
++        #expect(try await httpDeliveryEventually { owner.last.cancelCount == 1 })
++        #expect(control.deadlineExpired && control.terminal == nil && owner.last.releaseCount == 0)
++        owner.last.acknowledge(); for await _ in stream {}
++        #expect(control.terminal != nil && owner.last.releaseCount == 1)
++        await bridge.shutdown()
++    }
++}
+--- /dev/null
++++ b/provider-swift/Tests/ProviderCoreTests/Server/DistributedHTTPTerminalIntegrationTests.swift
+@@ -0,0 +1,48 @@
++import Foundation
++import MLXLMCommon
++import Testing
++@testable import ProviderCore
++
++/// Real local HTTP stack with a fabricated owner; no model/child/peer execution.
++@Suite(.timeLimit(.minutes(1)))
++struct DistributedHTTPTerminalIntegrationTests {
++    @Test func roleOnlyDeadlineErrorSurvivesSessionInvalidationUntilActualRequestACK() async throws {
++        let session = LocalHostTestSession()
++        let host = DistributedLocalServer(session: session,
++            config: .init(host: "127.0.0.1", port: 0, authToken: "fixture-token"),
++            firstTokenBudgetPolicy: .init(baseMilliseconds: 500, millisecondsPerInputToken: 100),
++            tokenizerLoader: { _ in TokenizerHandle(DistributedTestTokenizer()) })
++        try await host.start()
++        let port = try #require(await host.status.boundPort)
++        var request = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/v1/chat/completions")!)
++        request.httpMethod = "POST"; request.timeoutInterval = 5
++        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
++        request.setValue("Bearer fixture-token", forHTTPHeaderField: "Authorization")
++        request.httpBody = try JSONSerialization.data(withJSONObject: ["model": session.model.publicModelID,
++            "messages": [["role": "user", "content": "fixture"]], "temperature": 0,
++            "max_tokens": 5, "stream": true])
++        let completed = HTTPDeliveryCapture()
++        let client = Task {
++            defer { completed.finish() }
++            return try await URLSession.shared.data(for: request)
++        }
++        #expect(try await httpDeliveryEventually { session.base.reserveCount == 1 })
++        let lease = session.base.last
++        #expect(try await httpDeliveryEventually { lease.cancelCount == 1 })
++        #expect(lease.releaseCount == 0 && completed.finishCount == 0)
++        session.invalidatePairBeforeStatusCallback()
++        #expect(try await localHostEventually { await host.status.phase == .stopping })
++        #expect(host.responses.hasActiveResponse && lease.releaseCount == 0)
++        // The response remains pending, but native request ownership is still
++        // held. Only the explicit fake ACK below permits the real engine to end.
++        lease.acknowledge()
++        let (data, reply) = try await client.value
++        let http = try #require(reply as? HTTPURLResponse)
++        let text = String(decoding: data, as: UTF8.self)
++        #expect(http.statusCode == 200 && text.contains("\"role\":\"assistant\""))
++        #expect(text.contains("\"error\"") && text.contains("attempt_usage"))
++        #expect(text.contains("prefill_stall") || text.contains("deadline_unreachable"))
++        #expect(text.hasSuffix("data: [DONE]\n\n") && lease.releaseCount == 1)
++        #expect(try await localHostEventually { await host.status.cleanupComplete })
++    }
++}
+--- /dev/null
++++ b/provider-swift/Tests/ProviderCoreTests/Server/DistributedHTTPVisibleContentTests.swift
+@@ -0,0 +1,100 @@
++import Foundation
++import MLXLMServer
++import Testing
++@testable import ProviderCore
++
++@Suite(.timeLimit(.minutes(1)))
++struct DistributedHTTPVisibleContentTests {
++    @Test func roleEmptyAndReasoningFramesDoNotSatisfyVisibleContent() async throws {
++        for frame in [try httpDeliveryFrame(role: "assistant"), try httpDeliveryFrame(content: ""),
++                      try httpDeliveryFrame(reasoning: "reasoning fixture")] {
++            #expect(try !DistributedHTTPEventStream.isVisibleContent(frame))
++            let capture = HTTPDeliveryCapture(), control = DistributedHTTPResponse()
++            let deadline = ContinuousClock.now.advanced(by: .seconds(10))
++            try control.bind(deadline: deadline, cancel: capture.cancel)
++            let (stream, continuation) = AsyncThrowingStream<String, Error>.makeStream()
++            let response = DistributedHTTPEventStream.response(stream, control: control)
++            let writing = Task { try await response.body.write(HTTPDeliveryWriter(capture: capture)) }
++            continuation.yield(frame)
++            #expect(try await httpDeliveryEventually { capture.values.count == 1 })
++            control.expire(at: deadline)
++            #expect(capture.cancelCount == 1 && control.terminal == nil)
++            #expect(capture.values.count == 1 && capture.finishCount == 0)
++            // This fabricated terminal stands for the independent engine ACK;
++            // neither expiry nor the writer created this usage.
++            control.recordTerminal(.init(promptTokens: 3, completionTokens: 1, cause: .cancelled))
++            continuation.finish(throwing: CancellationError())
++            try await writing.value
++            #expect(capture.values.count == 3 && capture.values[1].contains("deadline_unreachable"))
++            #expect(capture.values[1].contains("attempt_usage") && capture.values[2] == ServerSentEventEncoder.done)
++            #expect(!capture.values[1].contains("reasoning fixture") && capture.finishCount == 1)
++        }
++    }
++
++    @Test func acceptanceEqualityLosesAndEarlierAcceptanceDisarmsOnlyContentTimer() throws {
++        let end = ContinuousClock.now.advanced(by: .seconds(20))
++        let capture = HTTPDeliveryCapture(), late = DistributedHTTPResponse(), timely = DistributedHTTPResponse()
++        defer { late.finish(); timely.finish() }
++        try late.bind(deadline: end, cancel: capture.cancel)
++        #expect(!late.contentAccepted(at: end))
++        #expect(late.deadlineExpired && capture.cancelCount == 1)
++        try timely.bind(deadline: end, cancel: capture.cancel)
++        #expect(timely.contentAccepted(at: end.advanced(by: .nanoseconds(-1))))
++        timely.expire(at: end.advanced(by: .seconds(1)))
++        #expect(!timely.deadlineExpired && capture.cancelCount == 1)
++        #expect(timely.terminal == nil) // no fabricated generation completion
++    }
++
++    @Test func writerAcceptanceCrossingDeadlineCannotBecomeSuccess() async throws {
++        let capture = HTTPDeliveryCapture(), entered = HTTPDeliveryCapture(), release = LocalHostLatch()
++        defer { release.complete() }
++        let control = DistributedHTTPResponse(), end = ContinuousClock.now.advanced(by: .seconds(20))
++        try control.bind(deadline: end, cancel: capture.cancel)
++        let frame = try httpDeliveryFrame(content: "late fixture")
++        let (stream, continuation) = AsyncThrowingStream<String, Error>.makeStream()
++        let response = DistributedHTTPEventStream.response(stream, control: control)
++        let writing = Task {
++            try await response.body.write(HTTPDeliveryWriter(capture: capture, beforeWrite: { value in
++                if value == frame { entered.cancel(); await release.wait() }
++            }))
++        }
++        continuation.yield(frame)
++        #expect(try await httpDeliveryEventually { entered.cancelCount == 1 })
++        control.expire(at: end)
++        #expect(capture.cancelCount == 1 && capture.values.isEmpty)
++        control.recordTerminal(.init(promptTokens: 3, completionTokens: 1, cause: .cancelled))
++        continuation.finish(throwing: CancellationError())
++        release.complete()
++        try await writing.value
++        #expect(control.deadlineExpired)
++        #expect(capture.values[0] == frame) // cannot retract a write already in flight
++        #expect(capture.values[1].contains("deadline_unreachable"))
++    }
++
++    @Test func expiredOrRepeatedBindingNeverRefreshesBudget() throws {
++        let control = DistributedHTTPResponse(), capture = HTTPDeliveryCapture()
++        defer { control.finish() }
++        #expect(throws: PreContentDeadlineFailure.deadlineUnreachable) {
++            try control.bind(deadline: ContinuousClock.now.advanced(by: .seconds(-1)), cancel: capture.cancel)
++        }
++        #expect(throws: CancellationError.self) {
++            try control.bind(deadline: ContinuousClock.now.advanced(by: .seconds(30)), cancel: capture.cancel)
++        }
++        control.applyPendingCancellation()
++        #expect(capture.cancelCount == 1 && control.deadlineExpired)
++    }
++
++    @Test func missingTerminalNeverProducesUsageAndNativeFailureWinsOverVisibleExpiry() throws {
++        let control = DistributedHTTPResponse()
++        defer { control.finish() }
++        let end = ContinuousClock.now.advanced(by: .seconds(20))
++        try control.bind(deadline: end, cancel: {})
++        control.expire(at: end)
++        #expect(throws: DistributedHTTPEventStream.Failure.missingTerminal) {
++            _ = try DistributedHTTPEventStream.failureFrame(for: control, upstreamFailed: true)
++        }
++        control.recordTerminal(.init(promptTokens: 3, completionTokens: 0, cause: .prefillStall))
++        let frame = try #require(DistributedHTTPEventStream.failureFrame(for: control, upstreamFailed: true))
++        #expect(frame.contains("prefill_stall") && !frame.contains("deadline_unreachable"))
++    }
++}

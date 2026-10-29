@@ -1,0 +1,58 @@
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterProcess/ClusterWorkerRequest.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterProcess/ClusterWorkerRequest.swift
+@@ -14,6 +14,8 @@
+     private var released = false
+     private var cancellation: ClusterWorkerCancellationReason?
+     private var byteReservation = 0
++    private enum Submission { case none, submitted, admitted, refused }
++    private var submissions: [Submission] = [.none, .none]
+     private var callback: (@Sendable (ClusterWorkerRequestEvent) -> Bool)?
+     public var reservedBytes: Int { lock.withLock { byteReservation } }
+     public var bytesInUse: Int { lock.withLock { released ? 0 : byteReservation } }
+@@ -42,7 +44,7 @@
+                            now + 5_000_000_000)
+         guard now < deadline else { throw ClusterWorkerOwnerError.deadline }
+         var bytes = 0
+-        for worker in owner.workers {
++        for (index, worker) in owner.workers.enumerated() {
+             guard let capacity = worker.readiness?.requestCapacityBytes,
+                   bytes < reservation.capacityLimitBytes else { throw ClusterWorkerOwnerError.unavailable }
+             let local = ClusterWorkerReservation(profileID: reservation.profileID, promptTokenIDs: reservation.promptTokenIDs,
+@@ -52,12 +54,19 @@
+             try lock.withLock {
+                 guard cancellation == nil else { throw ClusterWorkerOwnerError.cancelled }
+                 try worker.sendWorkerCommand(.reserve(local), requestID: requestID, deadline: deadline)
++                submissions[index] = .submitted
+             }
+             let event = try worker.receiveWorkerEvent(until: deadline, cancelled: { self.isCancelled })
+-            guard event.requestID == requestID, case .admitted(let allocation) = event.event,
++            guard event.requestID == requestID else { throw ClusterWorkerOwnerError.unavailable }
++            if case .refused = event.event {
++                lock.withLock { submissions[index] = .refused }
++                throw ClusterWorkerOwnerError.unavailable
++            }
++            guard case .admitted(let allocation) = event.event,
+                   allocation <= local.capacityLimitBytes, allocation <= capacity else {
+                 throw ClusterWorkerOwnerError.unavailable
+             }
++            lock.withLock { submissions[index] = .admitted }
+             bytes += allocation // Bounded by the remaining global ceiling above.
+         }
+         try lock.withLock {
+@@ -176,8 +185,16 @@
+         if retired.isComplete { return }
+         var acknowledged = original
+         let reason = lock.withLock { cancellation ?? .runtimeError }
++        let submitted = lock.withLock { submissions }
+         let deadline = DispatchTime.now().uptimeNanoseconds + 2_000_000_000
+         for index in 0..<2 where !acknowledged[index] {
++            // Never-submitted/refused ranks have no request to cancel. Pending
++            // submission can race an unread refusal, so only confirmed admission
++            // permits request cancel. All other ranks need actual native cleanup.
++            guard submitted[index] == .admitted else {
++                owner.workers[index].requestNativeCleanup()
++                continue
++            }
+             do { try owner.workers[index].sendWorkerCommand(.cancel(reason), requestID: requestID, deadline: deadline) }
+             catch { owner.workers[index].requestNativeCleanup() }
+         }

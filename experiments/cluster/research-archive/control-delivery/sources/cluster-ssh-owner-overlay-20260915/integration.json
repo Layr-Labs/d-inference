@@ -1,0 +1,81 @@
+{
+  "schema": "ssh_owner_overlay_v1",
+  "files": [
+    {
+      "source": "workspace/libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterDeviceLease.swift",
+      "destination": "libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterDeviceLease.swift",
+      "sha256": "df1c60f0f615e5347751bb4c795c0dbb1e6e45a8a01b1c6654e576b1eec4bf86",
+      "bytes": 5132
+    },
+    {
+      "source": "workspace/libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterOwnerPipe.swift",
+      "destination": "libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterOwnerPipe.swift",
+      "sha256": "9289966caf156b1a0b5510772b9d8fd5ca9a920f4815d31485a8652a6cd61bd4",
+      "bytes": 3621
+    },
+    {
+      "source": "workspace/libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterOwnerWire.swift",
+      "destination": "libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterOwnerWire.swift",
+      "sha256": "416afcca82fc57ca0bee8f45d89685e59604513eda0696d20090290b64c2b714",
+      "bytes": 9255
+    },
+    {
+      "source": "workspace/libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterRemoteWorkerEndpoint.swift",
+      "destination": "libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterRemoteWorkerEndpoint.swift",
+      "sha256": "1ca0e49e5bb81fc85de4ec4ecd70e777cf18485e6f3a5aa9b2dedcff0330b261",
+      "bytes": 14457
+    },
+    {
+      "source": "workspace/libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterSSHConfiguration.swift",
+      "destination": "libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterSSHConfiguration.swift",
+      "sha256": "598deefa1498057b0ddd015293f5250573201288602fec19d9d239d11d5aa08a",
+      "bytes": 3369
+    },
+    {
+      "source": "workspace/libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterWorkerOwnerService.swift",
+      "destination": "libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterWorkerOwnerService.swift",
+      "sha256": "874ebb78ed66727bb891046888e2cffc1ec3748e194019f3322cd920ce550a03",
+      "bytes": 14789
+    },
+    {
+      "source": "workspace/libs/darkbloom-cluster/Sources/DarkbloomClusterProtocol/ClusterWorkerEnvelopeValidation.swift",
+      "destination": "libs/darkbloom-cluster/Sources/DarkbloomClusterProtocol/ClusterWorkerEnvelopeValidation.swift",
+      "sha256": "a058472e4c0739681e7fd21d410dc60060dc42ea3c071c6fee934dd155d3bc26",
+      "bytes": 614
+    },
+    {
+      "source": "workspace/libs/darkbloom-cluster/Sources/DarkbloomClusterProcess/ClusterWorkerProcess.swift",
+      "destination": "libs/darkbloom-cluster/Sources/DarkbloomClusterProcess/ClusterWorkerProcess.swift",
+      "sha256": "bcd6c794d56fcf54999d039e5e7dea3c141f9ae5f2b8b52e69fa747444c9a0c4",
+      "bytes": 16045
+    },
+    {
+      "source": "workspace/libs/darkbloom-cluster/Tests/RemoteChecks/FakeOwner.swift",
+      "destination": "libs/darkbloom-cluster/Tests/RemoteChecks/FakeOwner.swift",
+      "sha256": "279d690067b0b4598be45fbb66addf88611f4eb0c66d657ff1605c1cbe7a28c6",
+      "bytes": 2492
+    },
+    {
+      "source": "workspace/libs/darkbloom-cluster/Tests/RemoteChecks/RemoteOwnerTests.swift",
+      "destination": "libs/darkbloom-cluster/Tests/RemoteChecks/RemoteOwnerTests.swift",
+      "sha256": "0c346c9af540f969553f3d96395dfd86b07671a34e8c14eaf109dabc773bd7ef",
+      "bytes": 15055
+    },
+    {
+      "source": "workspace/libs/darkbloom-cluster/Tests/RemoteChecks/run.sh",
+      "destination": "libs/darkbloom-cluster/Tests/RemoteChecks/run.sh",
+      "sha256": "80bd95d6aee8a44420869a6705f0cdda8b8ae9170107b6b3e121d251da0836ea",
+      "bytes": 1674
+    }
+  ],
+  "additionalTestOnlyPatch": "fake-worker-test-only.patch",
+  "packageNote": "Main already has DarkbloomClusterRemote depending on Protocol and Process; do not copy this older Package.swift or overwrite main ProcessChecks/run.sh/FakeClusterWorker.swift. Apply focused fake-worker patch onto current main fixture.",
+  "upstream": "cluster-worker-endpoint-overlay-20260915/a12a78a1122252317c9556d49d5fbec95bf75678b463e29d464d2685e7f48ef6",
+  "pureOwner": "cluster-remote-owner-overlay-20260915/850ea696f437d74f03bc217c87cfbfb5371752b264a235fd0885e666c3c90180",
+  "tests": "records/cpu-final/execution.json",
+  "limits": [
+    "No real SSH/authentication handshake",
+    "No native/model/GPU",
+    "Installed CLI dispatch and authenticated bootstrap round relay pending"
+  ]
+}

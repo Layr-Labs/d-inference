@@ -1,0 +1,35 @@
+{
+  "schema": "worker_pump_wakeup_integration_v1",
+  "mappings": [
+    {
+      "source": "workspace/libs/darkbloom-cluster/Sources/DarkbloomClusterProcess/ClusterWorkerProcess.swift",
+      "destination": "libs/darkbloom-cluster/Sources/DarkbloomClusterProcess/ClusterWorkerProcess.swift",
+      "sha256": "e09eb12b8b27ede734b1142a40dd9ba4b4c7d3aed25f384c8a2556c9d7b92250",
+      "originalSHA256": "bcd6c794d56fcf54999d039e5e7dea3c141f9ae5f2b8b52e69fa747444c9a0c4"
+    },
+    {
+      "source": "workspace/libs/darkbloom-cluster/Sources/DarkbloomClusterProcess/WorkerPumpWakeup.swift",
+      "destination": "libs/darkbloom-cluster/Sources/DarkbloomClusterProcess/WorkerPumpWakeup.swift",
+      "sha256": "2177145d635909b953eb6c1074807c6cac1a5f313dce352169e753684f9d204a",
+      "originalSHA256": null
+    },
+    {
+      "source": "workspace/libs/darkbloom-cluster/Tests/ProcessChecks/PumpFixtureIdentity.swift",
+      "destination": "libs/darkbloom-cluster/Tests/ProcessChecks/PumpFixtureIdentity.swift",
+      "sha256": "acebae7d24002bb1dea38ab25e6bede5d05e32ec3cb28339089def3d0ba98ed6",
+      "originalSHA256": null
+    },
+    {
+      "source": "workspace/libs/darkbloom-cluster/Tests/ProcessChecks/PumpWakeupCheck.swift",
+      "destination": "libs/darkbloom-cluster/Tests/ProcessChecks/PumpWakeupCheck.swift",
+      "sha256": "0ac3d19a7fd90a5b1338408198eb34a7ba668636ea10a2533a5203892649b73b",
+      "originalSHA256": null
+    },
+    {
+      "source": "workspace/libs/darkbloom-cluster/Tests/ProcessChecks/run.sh",
+      "destination": "libs/darkbloom-cluster/Tests/ProcessChecks/run.sh",
+      "sha256": "f9d58bc13b1257c3470da021e60e4a9e9d92aaf81d38a43a45d57f58ecb51cca",
+      "originalSHA256": "673a470de1b8959b8298948a5f518a66087ee54fe087ceaf4d0f60bf5f051c3f"
+    }
+  ]
+}

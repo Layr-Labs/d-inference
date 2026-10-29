@@ -1,0 +1,67 @@
+--- a/provider-swift/Sources/ProviderCore/ProviderLoop+ClusterMember.swift
++++ b/provider-swift/Sources/ProviderCore/ProviderLoop+ClusterMember.swift
+@@ -46,7 +46,9 @@
+             // Desired solo residency has no meaning in this role. No retry or
+             // delayed task is retained, including an empty revoke.
+             return true
+-        case .trustStatus(_, let status, _):
++        case .trustStatus(_, let status, _, _):
++            // Authorization is upstream diagnostics, not a native grant. Leave
++            // the complete event for Serve.handleTrustStatus below this hook.
+             if status == "untrusted" || status == "offline" {
+                 memberConnectionID = nil
+                 memberControlRequiresStop = loopConfig.clusterMemberStopsOnDisconnect && memberHadAcceptedConnection
+--- a/provider-swift/Tests/ProviderCoreTests/ProviderLoop/ClusterMemberLoopTests.swift
++++ b/provider-swift/Tests/ProviderCoreTests/ProviderLoop/ClusterMemberLoopTests.swift
+@@ -88,6 +88,51 @@
+         #expect(await loop.memberConnectionID == nil)
+     }
+ 
++    @Test func authorizationDiagnosticsPreserveDispatchAndNeverOverrideMemberStop() async throws {
++        let loop = try makeMemberLoop(stopOnDisconnect: true), send = SendHandle { _ in }
++        let path = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
++        defer { try? FileManager.default.removeItem(at: path) }
++        await loop.memberTestStateFile(path)
++        try await loop.prepareClusterMemberControl()
++        _ = await loop.consumeClusterMemberEvent(.connected, send: send)
++        let connection = try #require(await loop.memberConnectionID)
++        let authorization = ProviderAuthorizationStatus(
++            appAttestAvailable: true, path: "app_attest",
++            expiresAt: Date().timeIntervalSince1970 + 30, mdmRemovalReady: true,
++            sessionID: "member-diagnostic", machineID: "fixture-machine")
++        let event = CoordinatorEvent.trustStatus(trustLevel: "self_signed", status: "online",
++            reason: "qualified", authorization: authorization)
++        #expect(await loop.consumeClusterMemberEvent(event, send: send) == false)
++        #expect(await loop.memberConnectionID == connection)
++        #expect(await loop.memberControlRequiresStop == false)
++        // The unchanged Serve dispatcher handles this same complete event.
++        if case .trustStatus(let level, let status, let reason, let value) = event {
++            await loop.handleTrustStatus(trustLevel: level, status: status, reason: reason,
++                authorization: value)
++        } else { Issue.record("unexpected diagnostic event") }
++        #expect(DaemonStateFile.read(from: path)?.trust?.authorization == authorization)
++        #expect(await loop.nativePairMemberStatus == nil)
++        #expect(await loop.memberWorkIsEmpty())
++
++        let legacy = CoordinatorEvent.trustStatus(trustLevel: "hardware", status: "online",
++            reason: "legacy", authorization: nil)
++        #expect(await loop.consumeClusterMemberEvent(legacy, send: send) == false)
++        if case .trustStatus(let level, let status, let reason, let value) = legacy {
++            await loop.handleTrustStatus(trustLevel: level, status: status, reason: reason,
++                authorization: value)
++        }
++        #expect(DaemonStateFile.read(from: path)?.trust?.authorization == nil)
++        #expect(await loop.memberConnectionID == connection)
++
++        _ = await loop.consumeClusterMemberEvent(.trustStatus(trustLevel: "self_signed",
++            status: "untrusted", reason: "revoked", authorization: authorization), send: send)
++        #expect(await loop.memberControlRequiresStop)
++        #expect(await loop.memberConnectionID == nil)
++        #expect(await loop.consumeClusterMemberEvent(.connected, send: send))
++        #expect(await loop.memberConnectionID == nil)
++        #expect(await loop.memberWorkIsEmpty())
++    }
++
+     @Test func unacknowledgedAndCancelledRegistrationWaitsRefuse() async throws {
+         let loop = try makeMemberLoop()
+         do {

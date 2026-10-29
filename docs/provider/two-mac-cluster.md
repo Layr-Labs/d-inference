@@ -140,11 +140,14 @@ ended saves its setup without it before its part starts, and the pair serves on
 the leader's local API again. `darkbloom cluster local` never asks the
 coordinator and serves without the approval.
 
-When the coordinator gives no answer for the absence grace (10 minutes, the
-same grace as in [if a Mac goes away](#if-a-mac-goes-away)), both Macs save
-their setups without the approval and the pair serves on the leader's local
-API. When the coordinator answers again with a matching approval, the pair
-registers again.
+The pair also serves on the leader's local API, both Macs without the
+approval, when the coordinator gives no answer for the absence grace (10
+minutes, the same grace as in [if a Mac goes away](#if-a-mac-goes-away)), when
+it no longer lists the approval, or when the coordinator-paired parts end three
+times in a row right after starting. When the coordinator lists a matching
+approval again, the pair registers again (after repeated failures, only with a
+later approval). Both Macs carry the same approval, or neither does: the leader
+compares the two at every check.
 
 What `darkbloom cluster` status says in each mode:
 
@@ -152,6 +155,8 @@ What `darkbloom cluster` status says in each mode:
 |---|---|
 | Registered | `Registered with the coordinator as a cluster member: approval <id>, until <date>.` |
 | Coordinator gave no answer for the grace | The API line, then `The coordinator has not answered for 10 minutes: the pair serves on the leader's local API until it answers again, then it is offered again with approval <id>.` |
+| Approval no longer listed | The API line, then `The coordinator no longer lists cluster approval <id>: the pair serves on the leader's local API until it lists a matching one again.` |
+| Parts kept ending | The API line, then `The coordinator-paired parts ended 3 times in a row right after starting with cluster approval <id>: the pair serves on the leader's local API until the coordinator lists a later one.` |
 | Approval ended | The API line, then one line that says the cluster approval `<id>` expired and the pair serves on the leader's local API |
 | No approval (production, staging, no matching entry) | The API line, then (only after a refusal) `Not offered for pairing: <reason>.` |
 

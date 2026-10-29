@@ -25,17 +25,22 @@ public struct NativePairMemberRoster: Sendable, Equatable {
     public let plan: ClusterPlan
 
     /// `rankPins`: the roster pins in the setup's rank order. `cut`: the
-    /// selected partition's first stage end (the planner's cut).
+    /// selected partition's first stage end (the planner's cut); a
+    /// tensor-parallel plan names no cut. `tensorShares`: the setup's unequal
+    /// tensor-parallel shares, which this registration does not carry yet, so
+    /// such a setup is refused rather than registered as an equal split.
     public init(clusterID: String, rank: Int, roster: ClusterRoster, rankPins: [String], policyBytes: Data,
                 model: String, artifactSHA256: String, planSHA256: String, cut: Int, mode: ClusterGenerationMode,
-                deviceProfile: ClusterRegisteredDeviceProfile, edges: [ClusterEdge]) throws {
+                tensorShares: [Int]? = nil, deviceProfile: ClusterRegisteredDeviceProfile, edges: [ClusterEdge]) throws {
         guard rankPins.count == 2, (0...1).contains(rank), cut > 0,
               let key = roster.memberKey(rankPins[1 - rank]), let peer = Data(base64Encoded: key), peer.count == 65 else {
             throw ClusterRosterError.invalidMembership
         }
+        guard tensorShares == nil else { throw ClusterRosterError.invalidPlan }
         let policy = Data(SHA256.hash(data: policyBytes)).map { String(format: "%02x", $0) }.joined()
         plan = ClusterPlan(policySHA256: policy, model: model, planSHA256: planSHA256, members: rankPins,
-            cuts: [UInt32(cut)], mode: mode == .pipeline ? nil : mode.rawValue)
+            cuts: mode.layerCutCount(ranks: rankPins.count) == 0 ? [] : [UInt32(cut)],
+            mode: mode == .pipeline ? nil : mode.rawValue)
         membership = try ClusterMembership(rosterClusterID: clusterID, memberPin: rankPins[rank], roster: roster,
             deviceProfile: deviceProfile, edges: edges,
             inventory: [ClusterModelArtifact(model: model, artifactSHA256: artifactSHA256)], plans: [plan])

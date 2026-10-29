@@ -57,11 +57,12 @@ struct ClusterRosterMemberTests {
         return (roster, signers)
     }
 
-    private func registration(_ roster: ClusterRoster, pins: [String], rank: Int, profile: ClusterRegisteredDeviceProfile) throws -> NativePairMemberRoster {
+    private func registration(_ roster: ClusterRoster, pins: [String], rank: Int, profile: ClusterRegisteredDeviceProfile,
+                              mode: ClusterGenerationMode = .pipeline, tensorShares: [Int]? = nil) throws -> NativePairMemberRoster {
         try NativePairMemberRoster(clusterID: "pub-pair", rank: rank, roster: roster, rankPins: pins,
             policyBytes: try Self.approval().canonicalPolicy(), model: "mlx-community/Qwen3.5-9B",
             artifactSHA256: String(repeating: "02", count: 32), planSHA256: String(repeating: "ab", count: 32),
-            cut: 16, mode: .pipeline, deviceProfile: profile,
+            cut: 16, mode: mode, tensorShares: tensorShares, deviceProfile: profile,
             edges: [ClusterEdge(peerPin: pins[1 - rank], transport: "rdma", measuredMbps: 80_000, measuredRTTMicros: 20)])
     }
 
@@ -84,6 +85,47 @@ struct ClusterRosterMemberTests {
         #expect(decoded == r1.membership)
         // A roster that does not list this rank's pin in the setup's order is refused.
         #expect(throws: (any Error).self) { _ = try registration(roster, pins: [pins[0], pins[0]], rank: 0, profile: p0) }
+    }
+
+    /// A tensor-parallel placement names no cut (`protocol.ClusterPlanModeCutCount`): every member holds a share of
+    /// every layer. A member that named the stage end as a cut would refuse its own plan, and the pair would serve
+    /// only its local API.
+    @Test func aTensorParallelPlanRegistersWithoutACut() throws {
+        let (roster, signers) = try members()
+        let pins = signers.map(\.pin)
+        let profiles = try Self.classes.map {
+            try ClusterRegisteredDeviceProfile(chipName: "Apple M5 Ultra", numericsClass: $0, gpuCores: 80,
+                memoryBytes: 256 << 30, usableWiredBytes: 240 << 30, osBuild: "26A434")
+        }
+        let r0 = try registration(roster, pins: pins, rank: 0, profile: profiles[0], mode: .tensorParallel)
+        let r1 = try registration(roster, pins: pins, rank: 1, profile: profiles[1], mode: .tensorParallel)
+        #expect(r0.plan.samePlacement(as: r1.plan))
+        #expect(r0.plan.members == pins && r0.plan.cuts.isEmpty && r0.plan.mode == "tensor_parallel_v1")
+        let wire = try #require(String(data: JSONEncoder().encode(r1.membership), encoding: .utf8))
+        #expect(wire.contains(#""cuts":[]"#) && wire.contains(#""mode":"tensor_parallel_v1""#))
+        #expect(try JSONDecoder().decode(ClusterMembership.self, from: Data(wire.utf8)) == r1.membership)
+        // Unequal shares need the plan's tensor_parallel_shares, which this registration does not carry yet.
+        #expect(throws: ClusterRosterError.invalidPlan) {
+            _ = try registration(roster, pins: pins, rank: 0, profile: profiles[0], mode: .tensorParallel, tensorShares: [1, 3])
+        }
+    }
+
+    @Test func aPlanNamesExactlyTheCutsOfItsMode() throws {
+        let (roster, signers) = try members()
+        let pins = signers.map(\.pin)
+        let profile = try ClusterRegisteredDeviceProfile(chipName: "Apple M5 Ultra", numericsClass: Self.classes[0],
+            gpuCores: 80, memoryBytes: 256 << 30, usableWiredBytes: 240 << 30, osBuild: "26A434")
+        func membership(cuts: [UInt32], mode: String?) throws -> ClusterMembership {
+            let plan = ClusterPlan(policySHA256: String(repeating: "cd", count: 32), model: "mlx-community/Qwen3.5-9B",
+                planSHA256: String(repeating: "ab", count: 32), members: pins, cuts: cuts, mode: mode)
+            return try ClusterMembership(rosterClusterID: "pub-pair", memberPin: pins[0], roster: roster, deviceProfile: profile,
+                edges: [], inventory: [ClusterModelArtifact(model: "mlx-community/Qwen3.5-9B",
+                    artifactSHA256: String(repeating: "02", count: 32))], plans: [plan])
+        }
+        _ = try membership(cuts: [], mode: "tensor_parallel_v1")
+        _ = try membership(cuts: [16], mode: nil)
+        #expect(throws: ClusterRosterError.invalidPlan) { _ = try membership(cuts: [16], mode: "tensor_parallel_v1") }
+        #expect(throws: ClusterRosterError.invalidPlan) { _ = try membership(cuts: [], mode: nil) }
     }
 
     @Test func eachMemberCertifiesItsWorkerAndPinsThePeer() throws {

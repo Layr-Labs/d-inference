@@ -114,8 +114,11 @@ start fails and says why. To serve without any coordinator, use
 When the coordinator's operator approval file holds a cluster approval for this
 pair's installed app and model (DevNet only), the pair registers with the
 coordinator by itself. Nothing is typed and no file is copied. Production and
-staging serve no approvals, and the pair serves as described above. The pair is
-owner-only: it serves only its owner's own requests.
+staging serve no approvals, and the pair serves as described above. The pair
+serves its owner's own requests, and public requests too once the coordinator's
+operator has turned public cluster routing on and qualified the pair's model and
+split ([serving a pair](../reference/cluster-control-protocol.md#serving-a-pair)).
+A tensor-parallel pair registers like a pipeline one; its plan names no cut.
 
 1. Run `darkbloom cluster` and choose a model, as in [the steps](#the-steps-once).
    After the Test stage passes, the leader reads the approvals the coordinator
@@ -541,9 +544,8 @@ and they must match.
 
 - The login agent and macOS's one Local Network approval need the signed
   Darkbloom.app ([always on](cluster-always-on.md)).
-- Public serving through Darkbloom is not offered by the onboarding. A pair
-  registers with a coordinator that serves a matching cluster approval, and
-  then serves only its owner's own requests (owner-only).
+- A setup with unequal tensor-parallel shares cannot register with the
+  coordinator yet.
 - A member cannot yet download a catalog model itself (the leader downloads and
   copies), and a model change typed on a Mac that does not lead cannot copy a
   model (run it on the leader).

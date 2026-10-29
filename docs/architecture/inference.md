@@ -2874,6 +2874,24 @@ serializes SSE frames; the provider encrypts and sends them back over the
 coordinator connection. This integration does not start a local HTTP endpoint
 or change consumer/OpenRouter routing.
 
+### Cluster member registration
+
+A member whose saved setup carries a cluster approval registers the roster and
+the plan both members derive from their saved setups
+(`provider-swift/Sources/ProviderCore/Coordinator/NativePairMemberRoster.swift`).
+The plan names its generation mode and that mode's layer cuts
+(`provider-swift/Sources/ProviderCore/Protocol/ClusterRosterRegistration.swift`,
+`ClusterPlan.cutCount`): none for `tensor_parallel_v1`, where every member holds
+a share of every layer, and one fewer than the members otherwise, as the
+coordinator requires. A setup with unequal tensor-parallel shares is refused at
+registration, because the provider does not encode the plan's
+`tensor_parallel_shares` yet: a plan without them is an equal split to the
+coordinator. For a cluster that serves through Darkbloom, the onboarding's start
+line says it serves its owner's requests, and public requests where Darkbloom
+has qualified the model and split
+(`provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/ClusterOnboardingFlow.swift`);
+the coordinator decides each public placement.
+
 ### Two-Mac cluster stages (experimental)
 
 The registered `EigenLabs/Ternary-Bonsai-2-9B-MLX-2bit` revision

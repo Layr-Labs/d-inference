@@ -1191,6 +1191,10 @@ import Foundation
         require("records of another artifact credit nothing", factor("registered_rounds", artifact: hash("z")) == nil)
         require("a member's roster plan may name the rounds (protocol.ClusterPlanModes)",
             ClusterPlan.modes.contains(ClusterGenerationMode.pipelineMTP.rawValue))
+        require("a member's roster plan may name tensor parallel, with no cut (protocol.ClusterPlanModeCutCount)",
+            ClusterPlan.modes.contains(ClusterGenerationMode.tensorParallel.rawValue)
+                && ClusterPlan.cutCount(mode: ClusterGenerationMode.tensorParallel.rawValue, members: 2) == 0
+                && ClusterPlan.cutCount(mode: ClusterGenerationMode.pipeline.rawValue, members: 2) == 1)
         require("the rounds are plannable where their family is granted",
             ClusterPairServingGrants.plannable([ClusterChipClass(chipName: "Apple M3 Ultra"), ClusterChipClass(chipName: "Apple M5 Ultra")],
                 cuts: [8], mode: .pipelineMTP, runtimeModelID: "registered_qwen38_27b", decisions: decisions))

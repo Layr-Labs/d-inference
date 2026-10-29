@@ -220,7 +220,7 @@ class WorkflowRoutingTests(unittest.TestCase):
     def test_expensive_jobs_depend_on_successful_classifier(self):
         expected = {
             "ci.yml": {"test-provider": "provider", "test-provider-sdk": "provider",
-                       "test-provider-parity": "provider"},
+                       "test-provider-parity": "provider", "test-cluster-checks": "provider"},
         }
         for name, lanes in expected.items():
             jobs = workflow.job_blocks((ROOT / ".github/workflows" / name).read_text())

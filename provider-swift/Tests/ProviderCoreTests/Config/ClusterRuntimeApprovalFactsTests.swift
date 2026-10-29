@@ -267,6 +267,66 @@ struct ClusterRuntimeApprovalFactsTests {
         #expect(!lacking.contains("Qwen3.5-9B"))
     }
 
+    /// `softReleaseModels`: the GLM runtime model is left out, and reported,
+    /// only when the worker refused every candidate and the caller reports
+    /// omissions. Qwen, every other refusal and every other model still fail.
+    @Test func releaseLeavesOutOnlyASoftModelEveryCandidateOfWhichTheWorkerRefuses() throws {
+        let f = try Fixture()
+        typealias Listed = ClusterRuntimeApprovalFacts.ReleaseModel
+        let otherArtifact = try Self.aggregate(of: "registered-qwen38-27b")
+        let qwen = Listed(runtimeModelID: "registered_qwen35_9b", artifactSHA256: Self.qwenArtifact)
+        let glm = Listed(runtimeModelID: "registered_glm53_flash", artifactSHA256: otherArtifact)
+        /// A candidate folder per (name, fixture, refused, worker pin); then release with or without a reporter.
+        func release(_ folders: [(String, String, Bool, String?)], models: [Listed], required: [String] = ["Qwen3.5-9B", "glm-5.3-flash"],
+                     reporting: Bool = true) throws -> (ClusterRuntimeApprovalFacts, [ClusterRuntimeApprovalFacts.Omission]) {
+            let parent = f.root.appendingPathComponent("candidates-\(UUID().uuidString)", isDirectory: true)
+            for (name, fixture, refused, pin) in folders {
+                _ = try f.model(name, parent: parent, fixture: fixture, workerSHA256: pin, refused: refused)
+            }
+            var omissions: [ClusterRuntimeApprovalFacts.Omission] = []
+            var report: ((ClusterRuntimeApprovalFacts.Omission) -> Void)?
+            if reporting { report = { omissions.append($0) } }
+            let facts = try ClusterRuntimeApprovalFacts.release(installation: f.installation,
+                candidates: try ClusterRuntimeApprovalFacts.candidates(in: parent), required: required, models: models,
+                omitted: report)
+            return (facts, omissions)
+        }
+        func failure(_ body: () throws -> Void) -> String {
+            do { try body(); return "" } catch { return String(describing: error) }
+        }
+        let qwenFolder = ("qwen", "registered-qwen35-9b", false, String?.none)
+        let refusedGLM = ("glm", "registered-qwen38-27b", true, String?.none)
+
+        // GLM refused by the worker: left out, reported once, required GLM met.
+        let (facts, omissions) = try release([qwenFolder, refusedGLM], models: [qwen, glm])
+        #expect(facts.models.map(\.model) == ["Qwen3.5-9B"])
+        #expect(omissions.map(\.model) == ["glm-5.3-flash"] && omissions.map(\.runtimeModelID) == ["registered_glm53_flash"])
+        #expect(omissions.first?.reason.contains("glm/manifest.json: Installed capability command failed") == true)
+
+        let rows: [(String, String, () throws -> Void)] = [
+            ("a caller that reports no omission", "registered_glm53_flash", {
+                _ = try release([qwenFolder, refusedGLM], models: [qwen, glm], reporting: false) }),
+            ("Qwen refused by the worker", "registered_qwen35_9b", {
+                _ = try release([("qwen", "registered-qwen35-9b", true, nil), refusedGLM], models: [qwen, glm]) }),
+            ("GLM described as another build", "registered_glm53_flash", {
+                _ = try release([qwenFolder, ("glm", "registered-qwen38-27b", false, String(repeating: "e", count: 64))],
+                                models: [qwen, glm]) }),
+            ("GLM's candidate is another runtime model", "registered_glm53_flash", {
+                _ = try release([qwenFolder], models: [qwen, Listed(runtimeModelID: glm.runtimeModelID, artifactSHA256: Self.qwenArtifact)]) }),
+            ("GLM without a candidate", "no candidate folder has this artifact", {
+                _ = try release([qwenFolder], models: [qwen, glm]) }),
+            ("a model outside the soft list", "registered_other", {
+                _ = try release([qwenFolder, refusedGLM], models: [qwen, Listed(runtimeModelID: "registered_other", artifactSHA256: otherArtifact)],
+                                required: ["Qwen3.5-9B"]) }),
+            ("required GLM that is not listed", "lack required models: glm-5.3-flash", {
+                _ = try release([qwenFolder], models: [qwen]) }),
+        ]
+        for (label, named, row) in rows {
+            #expect(failure(row).contains(named), "\(label)")
+        }
+        #expect(ClusterRuntimeApprovalFacts.softReleaseModels == ["registered_glm53_flash": "glm-5.3-flash"])
+    }
+
     @Test func releaseModelsComeFromPassingRecordsOfModelsWithAStageAdapter() throws {
         let bundled = ClusterRuntimeApprovalFacts.releaseModels
         for required in [ClusterRuntimeApprovalFacts.ReleaseModel(runtimeModelID: "registered_qwen35_9b", artifactSHA256: Self.qwenArtifact),
@@ -317,6 +377,13 @@ struct ClusterRuntimeApprovalFactsTests {
         }
         #expect(try ClusterRuntimeApprovalFacts.candidates(in: folder).map { $0.manifest.deletingLastPathComponent().lastPathComponent } == ["a", "b"])
         #expect(throws: ClusterConfigurationError.self) { _ = try ClusterRuntimeApprovalFacts.candidates(in: f.root.appendingPathComponent("none")) }
+    }
+
+    /// The catalog aggregate a metadata fixture's manifest names.
+    static func aggregate(of fixture: String) throws -> String {
+        let data = try Data(contentsOf: Fixture.metadataFixtures.appendingPathComponent("\(fixture).manifest.json"))
+        let object = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        return try #require(object?["aggregate_sha256"] as? String)
     }
 
     /// Facts with three models (byte order: uppercase before lowercase), for the codec rows.

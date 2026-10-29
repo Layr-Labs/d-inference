@@ -1,5 +1,6 @@
 // CoordinatorClient shared state: atomic provider stats + provider state, and
-// the small Sendable concurrency primitives (unfair lock, pong tracker, atomic).
+// the small Sendable concurrency primitives (unfair lock, pong tracker,
+// session recorder, atomic).
 
 import Foundation
 import Network
@@ -211,6 +212,7 @@ public final class ProviderState: @unchecked Sendable {
     private var _publishedCapacity: BackendCapacity? = nil
     private var _capacitySeq: UInt64 = 0
     private var _refusingNewWork = false
+    private var _busy: ProviderBusy? = nil
     private var _modelAdmissionDrains: Set<String> = []
 
     /// Bounded per-(model, warm/cold, prompt-bucket, batch-bucket) end-to-end
@@ -303,6 +305,14 @@ public final class ProviderState: @unchecked Sendable {
     public var refusingNewWork: Bool {
         get { lock.withLock { _refusingNewWork } }
         set { lock.withLock { _refusingNewWork = newValue } }
+    }
+
+    /// Why the provider refuses work while connected (an add-on hold). Every
+    /// heartbeat and registration copies it; the loop sets it before the
+    /// event heartbeat that announces the hold and clears it on release.
+    public var busy: ProviderBusy? {
+        get { lock.withLock { _busy } }
+        set { lock.withLock { _busy = newValue } }
     }
 
     /// Model admission mirrors are separate from whole-provider draining:
@@ -493,6 +503,35 @@ internal final class PongTracker: @unchecked Sendable {
 
     func elapsed() -> TimeInterval {
         lock.withLock { CFAbsoluteTimeGetCurrent() - lastPong }
+    }
+}
+
+// MARK: - CoordinatorSessionRecorder (how one connection attempt ended)
+
+/// Records how one connection attempt ends, for `CoordinatorReconnectPolicy`.
+/// The actor marks the session open after it sends `register`; the receive
+/// callback records the coordinator's close code on `connectionQueue`. The
+/// actor reads the result after the attempt ends.
+internal final class CoordinatorSessionRecorder: @unchecked Sendable {
+    private let lock = OSAllocatedUnfairLock()
+    private var openedAt: ContinuousClock.Instant?
+    private var closeCode: UInt16?
+
+    func markOpened() {
+        let now = ContinuousClock.now
+        lock.withLock { openedAt = now }
+    }
+
+    /// `receiveLoop` ends at the first close frame, so this runs at most once.
+    func recordCloseCode(_ code: UInt16) {
+        lock.withLock { closeCode = code }
+    }
+
+    func end() -> CoordinatorSessionEnd {
+        let now = ContinuousClock.now
+        return lock.withLock {
+            CoordinatorSessionEnd(openDuration: openedAt.map { now - $0 }, closeCode: closeCode)
+        }
     }
 }
 

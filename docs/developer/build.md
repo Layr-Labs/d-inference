@@ -1,11 +1,10 @@
-# Build The Provider, Retained Console And Landing
+# Build The Provider And Landing
 
-> Last updated: 2026-10-23
+> Last updated: 2026-10-27
 
 Build the provider, its source-matched native resources, and the independent
-landing site from this repository. The existing console snapshot and its build,
-lint, test and hosting configuration remain here; new console development belongs
-to the platform. Backend, sidecar and admin builds belong to that sibling repository.
+landing site from this repository. Backend, sidecar, console and admin builds
+belong to the sibling platform repository.
 
 ## Prerequisites
 
@@ -28,7 +27,6 @@ never share an active Swift scratch path or another suite's GPU reservation.
 
 ```bash
 make provider-build
-make ui-install ui-build
 make landing-install landing-build
 ```
 
@@ -148,6 +146,41 @@ the selected product without treating an old build-directory layout as a
 resource authority. Keep its archive/path checks and source-matched staging;
 see [resource and release tooling checks](test.md#focused-tooling-checks).
 
+## CI Runner Routing
+
+`.github/workflows/darkbloom-route.yml` chooses where read-only CI jobs run: a
+Darkbloom Sandbox when its plane grants one, otherwise the job's Blacksmith
+fallback. It runs on GitHub-hosted `ubuntu-24.04` with no token permissions or
+checkout. Each routed job runs on `fromJSON(needs.route.outputs.routes)['<lane>']`.
+
+| Workflow | Routed jobs | Fallback |
+|---|---|---|
+| `ci.yml` | `release-integrity`, `docs` | `blacksmith-4vcpu-ubuntu-2404` |
+| `ci.yml` | `test-provider`, `test-provider-sdk`, `test-provider-parity` | `blacksmith-12vcpu-macos-27` |
+| `docs-impact.yml` | `commit-signatures`, `docs-impact` | `blacksmith-4vcpu-ubuntu-2404` |
+| `landing.yml`, `desktop.yml`, `nightly-linear-package.yml` | `check`, `frontend`, `test` | `blacksmith-4vcpu-ubuntu-2404` |
+| `provider-release-cache.yml` | `warm`, pull requests only | `blacksmith-12vcpu-macos-27` |
+
+Routing is off unless the repository variable `DARKBLOOM_ROUTING` is exactly
+`on`. While it is off, and for pull requests from forks, every job keeps its
+fallback and the plane is not contacted. When it is on, the route job sends one
+`POST /v1/ci/routes` to `DARKBLOOM_SANDBOX_URL` (default
+`https://api-sandbox.darkbloom.dev`) for the jobs that will run, retrying at
+most once after a transient failure. It uses a grant only when the grant
+repeats the exact Darkbloom labels for the job's profile. Errors, timeouts and
+malformed replies keep the fallback; the plane never fails the route job.
+Release, signing, publication, model registration, review automation,
+`cache-swift` and `master` or dispatched cache warming keep literal Blacksmith
+labels. The component classifier and the `Provider Tests` gate run on
+`ubuntu-24.04`.
+
+Jobs on Darkbloom Sandboxes use GitHub's Actions cache, not Blacksmith's
+colocated cache, so their first runs start without cached build products.
+Darkbloom Linux sandboxes are ARM64; the Blacksmith Linux fallback is x64. The
+decision is fixed for the run: **Re-run failed jobs** reuses it, so turn routing
+off and use **Re-run all jobs** to move a run back to Blacksmith. See the
+[routing checks](test.md#focused-tooling-checks).
+
 ## Dev Build Identity
 
 A dev release build (`DARKBLOOM_RELEASE_ENVIRONMENT=dev`) has its own install
@@ -242,21 +275,6 @@ to match the release environment, plus all four markers:
 installer/updater launches. Callback completion and expiry use no Apple service
 or Keychain item; this linked-binary smoke is not physical Apple qualification.
 
-## Retained Console
-
-`make ui-install` installs the console dependencies and `make ui-build` runs its
-Next.js production build. For local preview, run `npm run dev` in `console-ui/`.
-The existing `ui-lint`, `ui-test` and aggregate `ui` targets remain available,
-along with the console CI lane and console-only pre-commit lint hook.
-
-The console uses `console-ui/` as its hosting project root and requires a Next.js
-server for same-origin `/api/*` routes, not static export. Existing
-`console-ui/vercel.json` hosting configuration remains in place. Configure the
-build-time public variables in the [configuration reference](../reference/configuration.md#console-ui)
-and use a real Privy app for a hosted deployment; missing/placeholder Privy
-configuration selects mock authentication. See [console architecture](../architecture/components/console-ui.md).
-Retaining source or running a build does not authorize hosting or traffic changes.
-
 ## Verify
 
 For changes to the trusted PR reviewer, no provider build is required. Run the
@@ -304,7 +322,7 @@ That pinned reference is historical context, not current backend source authorit
 
 Use source-matched submodules, the documented Xcode SDK and fresh resources when
 diagnosing native failures. Preserve cache identity checks; do not bypass them
-to reuse incompatible artifacts. Run `make clean` only when its provider/console/landing
+to reuse incompatible artifacts. Run `make clean` only when its provider/landing
 artifact removal is intended. Never erase live provider state as build cleanup.
 
 Do not repair an old backend trigger by reintroducing backend build targets here.

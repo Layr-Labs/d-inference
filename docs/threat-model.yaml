@@ -40,6 +40,16 @@ methodology: STRIDE
 # See docs/architecture/security/attestation.md#provider-connection-control.
 # Current backend behavior belongs to the platform's latest default branch.
 # Immutable links preserve reviewed evidence, not current source or deployment.
+# Provider add-on hold reviewed 2026-10-26: TB-012, A-018 and T-059 describe the
+# local hold socket, its signature check, leases and the machine-lock fallback.
+# Coordinator handling of the busy fields is separate platform work.
+# Add-on hold hardening reviewed 2026-10-27: TB-012 now also records the operator
+# mailbox, accept-time peer checks, the socket override, self-reported busy fields
+# and the fail-open hold record; T-059 adds the model-load fence; T-060 covers
+# starving the add-on socket and stalling control-file reads.
+# Darkbloom Sandbox CLI reviewed 2026-10-28: TB-013, A-019 and T-061 describe
+# darkbloom sandbox setup downloading and running the add-on's installer, and the
+# CLI running the installed add-on's command, as the Mac's owner.
 description: >
   Provider and native-runtime threat model, including the external trust
   contracts the provider consumes. The provider and coordinator remain plaintext
@@ -226,6 +236,27 @@ assets:
       Release publication keys cannot approve qualifications. A reported binary hash
       or green CI run alone is not operator qualification or Apple code evidence.
       Code: coordinator/appattest/service/build_qualifications.go.
+
+  - id: A-018
+    name: provider_serving_availability
+    description: >
+      Whether a connected provider takes inference: its admission state, resident
+      models and the coordinator's routing view through heartbeat status and busy fields.
+    sensitivity: medium
+    notes: >
+      An add-on hold withholds it deliberately while the Mac's memory runs VMs.
+      Code: provider-swift/Sources/ProviderCore/Addon/ProviderLoop+AddonHold.swift.
+
+  - id: A-019
+    name: mac_owner_account
+    description: >
+      The macOS account of the Mac owner who runs darkbloom: its files, keychain items
+      and processes, which any code the CLI starts can use.
+    sensitivity: high
+    notes: >
+      darkbloom sandbox setup runs the add-on's downloaded installer, and the CLI runs
+      the installed add-on's command, with this account's rights.
+      Code: provider-swift/Sources/darkbloom/Sandbox/.
 
 trust_boundaries:
   - id: TB-002
@@ -795,6 +826,92 @@ trust_boundaries:
         and committed frames cannot be recalled by revocation."
       - "Checked-in flags and onboarding behavior do not prove live fleet activation.
         Inspect current authorized deployment state separately."
+
+  - id: TB-012
+    name: provider_to_local_addon_hold_socket
+    description: >
+      A separately signed add-on (io.darkbloom.sandbox) asks the provider over an
+      owner-only AF_UNIX socket to leave inference while its VMs use the Mac; the
+      operator does the same through the lifecycle mailbox (darkbloom addon). All
+      run as the same user; the socket, the mailbox and the add-on's machine lock
+      coordinate them and are not a boundary against that user.
+    how_it_works: >
+      The provider binds ~/.darkbloom/runtime/addon.sock 0600 in a 0700 directory and
+      never replaces a live socket. It verifies a connection when accepting it, before
+      the connection takes one of eight slots, and again for every request: it reads
+      the LOCAL_PEERTOKEN audit token, requires the provider's effective UID, selects
+      the running code by that token and requires the Developer ID requirement for
+      io.darkbloom.sandbox under team SLDQ2GJ6TL plus the hardened runtime; the
+      requested add-on must equal the verified identifier. An unverified connection is
+      answered unauthorized and closed at once. A request line must finish within 10
+      seconds and 8 KiB, and an idle connection closes after 300 seconds. DEBUG builds
+      alone add one identity from DARKBLOOM_ADDON_DEV_IDENTITY. Every build honors
+      DARKBLOOM_ADDON_SOCKET, which moves the socket, record and lock together; the
+      LaunchAgent does not pass it, so the installed provider serves the default path.
+      darkbloom addon status, hold and release write owner-only mailbox requests bound
+      to the provider's process identity and valid for 60 seconds; an unforced release
+      is refused while the machine lock is held. A hold closes admission, reports
+      status draining with busy fields, finishes accepted work within 120 seconds,
+      refuses model loads, waits for a running load to unwind, unloads every model and
+      never sends the provider_drain barrier or stops the App Attest worker. Leases are
+      30 to 600 seconds; an expired lease ends the hold only when no add-on holds
+      ownership.lock exclusively. Active holds persist 0600 so a restart comes back
+      held. The hold record and mailbox files are opened without following links or
+      blocking and are read only as owner-only regular files within a size bound.
+      Code: provider-swift/Sources/ProviderCore/Addon/ and
+      provider-swift/Sources/ProviderCore/Service/LifecycleMailbox.swift.
+    current_limitations:
+      - "Same-UID code can tamper with the add-on's files, the hold record or the
+        machine lock, or keep the lock open to extend a hold; it can equally stop the
+        provider. The check only keeps other same-UID programs from holding the Mac
+        through the socket."
+      - "No bound limits how long a held machine lock keeps an expired hold; only the
+        lock's release or darkbloom addon release --force ends it."
+      - "An unreadable or replaced hold record fails open: the provider logs it and
+        starts unheld, so models may load beside VMs that still run."
+      - "A same-UID program can keep opening connections. Each costs a signature check
+        on the accept thread and is closed at once; the listen backlog bounds how many
+        wait, so a flood can delay the add-on's connection but not hold a slot."
+      - "The busy fields are the provider's own report; the coordinator cannot verify
+        why a provider stopped taking work."
+      - "Entitlements of the add-on are not inspected beyond the hardened runtime; a
+        debuggable or library-validation-exempt add-on build would widen what can
+        drive it."
+      - "Leases use wall-clock time; a clock change shortens or lengthens a lease.
+        The machine lock still keeps the hold while VMs run."
+
+  - id: TB-013
+    name: provider_cli_to_sandbox_installer_and_addon
+    description: >
+      darkbloom sandbox setup downloads the Darkbloom Sandbox add-on's installer
+      (install.sh) from the sandbox service and runs it as the Mac's owner, and
+      darkbloom sandbox and darkbloom status run the installed add-on's command. The
+      add-on is separately signed, closed-source code that runs as the same user.
+    how_it_works: >
+      setup refuses to run as root and asks first (or takes --yes), then fetches
+      <server>/install.sh, by default
+      from https://api-sandbox.darkbloom.dev. --server must be an https URL without
+      credentials, query or fragment; a redirect is followed only to another https
+      URL; the response must be HTTP 200 over https, at most 1 MiB, with a #! first
+      line naming a shell. The script is written 0600 into a new 0700 temporary
+      directory, run with /bin/sh and removed afterwards; Ctrl-C reaches the script,
+      not the CLI. The installer verifies the add-on release (publisher signature,
+      archive digest, Developer ID team) before it installs the app; the CLI checks
+      nothing about the script beyond TLS. The CLI runs
+      ~/DarkbloomSandbox/darkbloom-sandbox (DARKBLOOM_SANDBOX_ROOT moves it, for
+      tests): status --json for at most 2 seconds from darkbloom status and 10 seconds
+      otherwise, pause and resume for at most 60 seconds, and uninstall --yes and an
+      older add-on's status with the terminal. Code:
+      provider-swift/Sources/darkbloom/Sandbox/.
+    current_limitations:
+      - "Trust in install.sh is trust in TLS and in whoever controls the sandbox
+        service, or a --server the owner names: either can serve any script, as with
+        the documented curl | sh install."
+      - "Same-UID code can replace the add-on command, which darkbloom status then
+        runs for up to 2 seconds."
+      - "The add-on's status JSON is shown, not verified: a tampered add-on can
+        misreport its state, which only changes what the CLI prints and whether setup
+        reruns the installer."
 
 threats:
   - id: T-007
@@ -2258,3 +2375,104 @@ threats:
     detection_hint: >
       Review public payloads, archives, logs and cache timing separately; never expose
       raw evidence or infer authorization from client-supplied diagnostics.
+
+  - id: T-059
+    trust_boundary: TB-012
+    stride: Denial_of_Service
+    title: A local process holds the provider out of routing or loads models beside running VMs
+    description: >
+      An unsigned same-UID program could try to hold the provider through the add-on
+      socket and stop its earnings, an add-on crash could leave a hold behind, or a
+      lost hold could let models load into memory that VMs still use.
+    adversaries: [ADV-001, ADV-003]
+    affected_assets: [A-018]
+    affected_files:
+      - provider-swift/Sources/ProviderCore/Addon/AddonPeerPolicy.swift
+      - provider-swift/Sources/ProviderCore/Addon/AddonIPCServer.swift
+      - provider-swift/Sources/ProviderCore/Addon/ProviderLoop+AddonHold.swift
+      - provider-swift/Sources/ProviderCore/Service/ProviderDrain.swift
+    mitigations:
+      - description: >
+          Accept-time and per-request audit-token code-signature check with exact
+          identifier, team, Developer ID requirement and hardened runtime; bounded
+          framing, connection count, request and idle time; leases with a machine-lock
+          fallback; persisted holds; drain ownership no update or reconnect can reopen;
+          no model load starts or publishes its slot while held, and the hold reports
+          held only after a running load unwinds; and operator release through
+          darkbloom addon release.
+        status: implemented
+      - description: >
+          Same-UID tampering with the add-on, the record or the lock is outside this
+          boundary, as is coordinator enforcement of the busy fields.
+        status: accepted
+    open_findings: []
+    severity: medium
+    detection_hint: >
+      Test unsigned peers, oversized and malformed lines, lease expiry with and
+      without the lock, restart restore, update or reconnect during a hold, and a
+      model load already running when a hold begins.
+
+  - id: T-060
+    trust_boundary: TB-012
+    stride: Denial_of_Service
+    title: A local process starves the add-on socket or stalls control-file reads
+    description: >
+      An unsigned same-UID program could open every add-on socket slot and send
+      nothing, or trickle bytes without finishing a line, so the signed add-on cannot
+      hold, renew or release. It could also put a FIFO at the hold record or a mailbox
+      path so that the provider's read waits for a writer forever.
+    adversaries: [ADV-001, ADV-003]
+    affected_assets: [A-018]
+    affected_files:
+      - provider-swift/Sources/ProviderCore/Addon/AddonIPCServer.swift
+      - provider-swift/Sources/ProviderCore/Addon/AddonHoldStore.swift
+      - provider-swift/Sources/ProviderCore/Service/LifecycleMailbox.swift
+    mitigations:
+      - description: >
+          A connection is verified when accepted, so an unverified peer never holds a
+          slot; a request line must finish within 10 seconds however its bytes trickle
+          in; control files are opened with O_NONBLOCK and O_NOFOLLOW and read only as
+          owner-only regular files within a size bound.
+        status: implemented
+      - description: >
+          A same-UID program that floods connection attempts can still delay the
+          add-on, and one that tampers with the runtime files can stop either side.
+        status: accepted
+    open_findings: []
+    severity: low
+    detection_hint: >
+      Test silent and trickling peers against a full connection table, and FIFOs at
+      the hold record and mailbox paths.
+
+  - id: T-061
+    trust_boundary: TB-013
+    stride: Tampering
+    title: A tampered installer or add-on command runs as the Mac's owner
+    description: >
+      An attacker on the network with a misissued certificate, or one who controls the
+      sandbox service, could serve a malicious install.sh that setup runs as the user;
+      same-UID code could swap the add-on command that the CLI runs.
+    adversaries: [ADV-003]
+    affected_assets: [A-019]
+    affected_files:
+      - provider-swift/Sources/darkbloom/Sandbox/SandboxInstaller.swift
+      - provider-swift/Sources/darkbloom/Sandbox/SandboxSetupCommand.swift
+      - provider-swift/Sources/darkbloom/Sandbox/SandboxAddon.swift
+    mitigations:
+      - description: >
+          HTTPS for the download and every redirect, system TLS validation, a size
+          bound, a shell-script check, owner-only staging, the owner's confirmation
+          before any download, bounded add-on command runs, and the installer's own
+          release signature, digest and Developer ID checks before it installs the app.
+        status: implemented
+      - description: >
+          The script carries no signature the CLI checks: trust rests on TLS and the
+          sandbox service, as for the documented curl | sh install. Same-UID tampering
+          is outside this boundary.
+        status: accepted
+    open_findings: []
+    severity: medium
+    detection_hint: >
+      Test http and credential URLs, redirects to http, non-200 and oversized
+      responses, non-script bodies, a hung or failing add-on command, and Ctrl-C
+      while the installer runs.

@@ -15,9 +15,17 @@ permissions:
   contents: read
 
 jobs:
+  route:
+    uses: ./.github/workflows/darkbloom-route.yml
+    permissions: {}
+    with:
+      lanes: |
+        check linux_arm64 blacksmith-4vcpu-ubuntu-2404
+
   check:
     name: Landing Lint, Build & Test
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    needs: route
+    runs-on: ${{ fromJSON(needs.route.outputs.routes)['check'] }}
     timeout-minutes: 10
     defaults:
       run:

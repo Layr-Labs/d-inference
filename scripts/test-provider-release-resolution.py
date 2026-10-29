@@ -8,6 +8,11 @@ import tempfile
 import unittest
 
 
+def branch_push(branch):
+    return {"GITHUB_EVENT_NAME": "push", "GITHUB_REF_TYPE": "branch",
+            "GITHUB_REF": "refs/heads/" + branch, "GITHUB_REF_NAME": branch}
+
+
 class ReleaseResolutionTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
@@ -35,43 +40,85 @@ class ReleaseResolutionTests(unittest.TestCase):
         values = dict(line.split("=", 1) for line in output.read_text().splitlines())
         return result, values
 
-    def test_manual_dev_release_and_signed_validation_have_distinct_destinations(self):
-        for validation, publish in (("", "true"), ("false", "true"), ("true", "false")):
+    def test_dev_resolves_only_as_an_unpublished_validation_build(self):
+        # Master publishes no dev release: DevNet's dev releases come from dev
+        # pushes. A dispatched dev lane resolves only as a signed validation
+        # build; a dev publication without a dev push fails closed.
+        result, values = self.resolve(RELEASE_VALIDATION_ONLY="true")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(values, {"environment": "dev", "version": "0.9.0-dev.42", "publish": "false"})
+        for validation in ("", "false"):
             with self.subTest(validation=validation):
                 result, values = self.resolve(RELEASE_VALIDATION_ONLY=validation)
-                self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertEqual(values, {"environment": "dev", "version": "0.9.0-dev.42", "publish": publish})
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("A dev release requires a push to the dev branch", result.stderr)
+                self.assertEqual(values, {})
 
-    def test_master_push_publishes_the_lane_the_caller_routes(self):
-        # A master push publishes dev and staging; the caller routes one lane per
-        # environment and passes RELEASE_ENVIRONMENT. The push itself carries no
-        # dispatch inputs, so validation and version overrides are ignored, and a
-        # push can never resolve to prod (the production signing identity).
-        push = {"GITHUB_EVENT_NAME": "push", "GITHUB_REF_TYPE": "branch",
-                "GITHUB_REF": "refs/heads/master", "GITHUB_REF_NAME": "master"}
-        expected = {"dev": "0.9.0-dev.42", "staging": "0.9.0-staging.42"}
-        for environment, version in expected.items():
-            for extra in ({}, {"RELEASE_VALIDATION_ONLY": "true"}, {"RELEASE_VERSION_OVERRIDE": "0.9.1"}):
+    def test_master_push_publishes_staging_only(self):
+        # A master push publishes staging only; the caller routes the lane and
+        # passes RELEASE_ENVIRONMENT. The push itself carries no dispatch inputs,
+        # so validation and version overrides are ignored.
+        push = branch_push("master")
+        for extra in ({}, {"RELEASE_VALIDATION_ONLY": "true"}, {"RELEASE_VERSION_OVERRIDE": "0.9.1"}):
+            with self.subTest(extra=extra):
+                result, values = self.resolve(**push, RELEASE_ENVIRONMENT="staging", **extra)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(values, {"environment": "staging", "version": "0.9.0-staging.42", "publish": "true"})
+        # A push with no routed environment, or a push routed to dev or prod,
+        # fails closed with no authorization outputs, also when it asks for a
+        # validation build: a push never publishes dev and never reaches the
+        # production signing identity.
+        for environment in ("", "dev", "prod"):
+            for extra in ({}, {"RELEASE_VALIDATION_ONLY": "true"}):
                 with self.subTest(environment=environment, extra=extra):
                     result, values = self.resolve(**push, RELEASE_ENVIRONMENT=environment, **extra)
-                    self.assertEqual(result.returncode, 0, result.stderr)
-                    self.assertEqual(values, {"environment": environment, "version": version, "publish": "true"})
-        # A push with no routed environment, or a push routed to prod, fails
-        # closed with no authorization outputs.
-        for environment in ("", "prod"):
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn("Master pushes publish staging only", result.stderr)
+                    self.assertEqual(values, {})
+
+    def test_dev_push_publishes_a_dev_branch_build_only(self):
+        # A dev push publishes dev only, stamped -dev.branch.N apart from the
+        # -dev.N validation builds. The push carries no dispatch inputs, so
+        # validation and version overrides are ignored.
+        push = branch_push("dev")
+        for extra in ({}, {"RELEASE_VALIDATION_ONLY": "true"}, {"RELEASE_VERSION_OVERRIDE": "0.9.1"}):
+            with self.subTest(extra=extra):
+                result, values = self.resolve(**push, RELEASE_ENVIRONMENT="dev", **extra)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(values, {"environment": "dev", "version": "0.9.0-dev.branch.42", "publish": "true"})
+        # Prod or staging from a dev push, or no environment, fails closed.
+        for environment in ("", "prod", "staging"):
             with self.subTest(environment=environment):
                 result, values = self.resolve(**push, RELEASE_ENVIRONMENT=environment)
                 self.assertNotEqual(result.returncode, 0)
+                self.assertIn("Dev branch pushes publish dev only", result.stderr)
                 self.assertEqual(values, {})
+        # Dev from any other branch fails closed.
+        for ref in ("refs/heads/candidate", "refs/heads/devx", "refs/heads/dev/x", ""):
+            with self.subTest(ref=ref):
+                result, values = self.resolve(**dict(push, GITHUB_REF=ref), RELEASE_ENVIRONMENT="dev")
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("Branch pushes publish releases only from master or dev", result.stderr)
+                self.assertEqual(values, {})
+        # A dev push still needs a valid run number.
+        result, values = self.resolve(**push, RELEASE_ENVIRONMENT="dev", GITHUB_RUN_NUMBER="0")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(values, {})
 
-    def test_dev_versions_carry_the_run_number_and_production_does_not(self):
+    def test_prerelease_versions_carry_the_run_number_and_production_does_not(self):
         summary = self.root / "summary"
-        result, values = self.resolve(GITHUB_EVENT_NAME="push", GITHUB_REF_TYPE="branch",
-                                      GITHUB_REF="refs/heads/master", GITHUB_RUN_NUMBER="1077",
-                                      GITHUB_STEP_SUMMARY=str(summary))
+        result, values = self.resolve(**branch_push("master"), GITHUB_RUN_NUMBER="1077",
+                                      RELEASE_ENVIRONMENT="staging", GITHUB_STEP_SUMMARY=str(summary))
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(values["version"], "0.9.0-dev.1077")
-        self.assertEqual(summary.read_text(), "### dev provider release 0.9.0-dev.1077\n")
+        self.assertEqual(values["version"], "0.9.0-staging.1077")
+        self.assertEqual(summary.read_text(), "### staging provider release 0.9.0-staging.1077\n")
+        summary.unlink()
+        # A dev push (the d-inference dev caller) stamps -dev.branch.<run number>.
+        result, values = self.resolve(**branch_push("dev"), GITHUB_RUN_NUMBER="1077",
+                                      RELEASE_ENVIRONMENT="dev", GITHUB_STEP_SUMMARY=str(summary))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(values, {"environment": "dev", "version": "0.9.0-dev.branch.1077", "publish": "true"})
+        self.assertEqual(summary.read_text(), "### dev provider release 0.9.0-dev.branch.1077\n")
         summary.unlink()
         result, values = self.resolve(RELEASE_VALIDATION_ONLY="true", GITHUB_STEP_SUMMARY=str(summary))
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -98,19 +145,24 @@ class ReleaseResolutionTests(unittest.TestCase):
                 self.assertEqual(values, {})
 
     def test_invalid_routes_emit_no_authorization_outputs(self):
+        # Dev cases ask for a validation build so that each one reaches the
+        # check it names, past the refusal of a dev publication.
+        validation = {"RELEASE_VALIDATION_ONLY": "true"}
         cases = [
             {"RELEASE_ENVIRONMENT": "prod"},
             {"RELEASE_ENVIRONMENT": "prod", "RELEASE_VALIDATION_ONLY": "true", "GITHUB_REF_TYPE": "tag"},
             {"RELEASE_VALIDATION_ONLY": "true", "GITHUB_EVENT_NAME": "push"},
-            {"GITHUB_REF_TYPE": "tag", "GITHUB_REF_NAME": "v0.9.0-dev.1"},
-            {"RELEASE_VERSION_OVERRIDE": "0.9.1"},
+            {**validation, "GITHUB_REF_TYPE": "tag", "GITHUB_REF_NAME": "v0.9.0-dev.1"},
+            {"RELEASE_ENVIRONMENT": "staging", "GITHUB_REF_TYPE": "tag", "GITHUB_REF_NAME": "v0.9.0-staging.1"},
+            {**validation, "RELEASE_VERSION_OVERRIDE": "0.9.1"},
             {"RELEASE_ENVIRONMENT": "dev\npublish=true"},
             {"RELEASE_VALIDATION_ONLY": "1"},
-            {"RELEASE_VERSION_OVERRIDE": "$(touch unexpected-command)"},
-            {"RELEASE_VERSION_OVERRIDE": "0.9.0-dev.1"},
-            {"GITHUB_RUN_NUMBER": ""},
-            {"GITHUB_RUN_NUMBER": "0"},
-            {"GITHUB_RUN_NUMBER": "1\npublish=false"},
+            {**validation, "RELEASE_VERSION_OVERRIDE": "$(touch unexpected-command)"},
+            {**validation, "RELEASE_VERSION_OVERRIDE": "0.9.0-dev.1"},
+            {**validation, "GITHUB_RUN_NUMBER": ""},
+            {**validation, "GITHUB_RUN_NUMBER": "0"},
+            {**validation, "GITHUB_RUN_NUMBER": "1\npublish=false"},
+            {},
             {"GITHUB_EVENT_NAME": "push", "GITHUB_REF_TYPE": "branch", "GITHUB_REF": "refs/heads/candidate"},
             {"GITHUB_EVENT_NAME": "push", "GITHUB_REF_TYPE": "branch", "GITHUB_REF": ""},
         ]

@@ -1,6 +1,6 @@
 # Release A Provider Version
 
-> Last updated: 2026-10-25
+> Last updated: 2026-10-28
 
 Build, sign, notarize and publish an explicitly authorized provider artifact.
 The pipeline registers its exact official identity through the external platform
@@ -9,97 +9,125 @@ authorize releases, infrastructure or hosting changes.
 
 ## When To Use
 
-Use `.github/workflows/release-swift.yml` for a production version tag, a dev
-publication, or a signed validation bundle. Build, SDK qualification, signing,
-R2 staging and publication are separate jobs. Staging/publication failures retry
-the retained artifact rather than rebuilding or re-signing it.
+Use `.github/workflows/release-swift.yml` for a production version tag, a
+staging publication, or a signed validation bundle. Build, SDK qualification,
+signing, R2 staging and publication are separate jobs. Staging/publication
+failures retry the retained artifact rather than rebuilding or re-signing it.
 
 A push to `master` that changes the provider or its release tooling publishes a
-dev release automatically, and a staging release too once the `STAGING_ENABLED`
-repository variable is set (DBLM-771: staging tracks main). A `vX.Y.Z` tag
-publishes production. `.github/workflows/release-swift.yml` is the
-thin caller that routes each trigger to one or more environment lanes; the
-reusable `.github/workflows/release-provider.yml` runs the resolve, build,
-qualification, signing, R2 staging and publication chain for one environment. To
-find the newest dev release, read `https://api.dev.darkbloom.dev/v1/releases/latest`.
+staging release when the `STAGING_ENABLED` repository variable is `true`
+(DBLM-771: staging tracks main). While that variable is unset, a master push
+publishes nothing. A `vX.Y.Z` tag publishes production. No path of this workflow
+publishes a dev release. DevNet runs the d-inference `dev` branch from end to
+end: its dev releases come from `.github/workflows/release-dev-branch.yml`.
 
-`ProviderCore.version` is prepared as `0.10.2`, a patch release over `v0.10.1`.
-Nemotron 3.5 Super gains prefix caching through the coordinator: it advertises
-its prefix cache, sends cache receipts and reports cached prompt tokens, and it
-keeps its prefix reuse as encrypted SSD checkpoints by default. GLM-5.3-Flash
-captures checkpoints beside decoding requests on a 256-token grid and prices
-its measured restore time in ready receipts. Both models' SSD checkpoints are
-4-bit `balanced` snapshots by default; `native` keeps exact checkpoints, which
-for GLM-5.3-Flash use a half-size BF16 layout. Both SSD prefix-cache writers
-queue up to six writes on every model, and a replaced Secure Enclave key no
-longer disables the SSD cache. Nemotron 3.5 Super and GLM-5.3-Flash serve
-logprobs under one contract once each model's catalog row lists them.
-GLM-5.3-Flash accepts OpenRouter's `reasoning.context`, `reasoning.mode` and
-hidden reasoning and Anthropic's `thinking` object. It also serves
-structured-output schemas outside its grammar subset, a JSON `response_format`
-beside tools, tool results whose `name` differs from the call and legacy
-`function_call` histories, and MiMo-V2.6-Flash serves tool results whose `name`
-differs; 0.10.1 refuses each with 400. `darkbloom logs` names the reason for
-each refusal before inference and for client errors found while a
-GLM-5.3-Flash prompt is prepared, and load refusals and `darkbloom status`
-explain the memory a load cannot reclaim: Autopilot placement holds, work in
-flight and models served outside the enabled model filter. Decoding is
-faster: Super's first token no longer stalls near the FP8 eager bound, Super
-speculates for sampled requests and tapers its draft depth on an M5, both
-models keep decoding while another request prefills, and GLM-5.3-Flash decodes
-faster at long context and speculates for two concurrent requests. The MLX
-stack moves to the 2026-10-22 upstream sync, so the release metallib changes.
-See the [`v0.10.2` changelog entry](../../CHANGELOG.md) for the full scope.
+`.github/workflows/release-swift.yml` is the thin caller that routes each trigger
+to at most one environment lane. The reusable `.github/workflows/release-provider.yml`
+runs the resolve, build, qualification, signing, R2 staging and publication
+chain for one environment. To find the newest dev release, read
+`https://api.dev.darkbloom.dev/v1/releases/latest`.
 
-Before tagging `v0.10.2`:
+`ProviderCore.version` is prepared as `0.10.4`, a patch release over `v0.10.3`.
+A Qwen 3.5, 3.6 or 3.8 request with a JSON `response_format` and no thinking
+control answers without thinking, and on `qwen3_5` and `qwen3_5_moe` text
+requests without tools the answer is grammar-constrained. Qwen3.5-9B,
+Qwen3.5-35B-A3B, Qwen3.6-35B-A3B and MiMo-V2.6-Flash advertise forced
+`tool_choice`. A request that restored a Qwen native recurrent complete
+checkpoint writes its later checkpoints as deltas. A signed local add-on such
+as the Darkbloom Sandbox can hold the provider, which stays connected, leaves
+routing and unloads its models.
+`darkbloom status` and `darkbloom doctor` say why a connected provider gets no
+coordinator work, the provider re-registers a connection the coordinator leaves
+unauthorized, and a stalled coordinator reconnect fails after 30 seconds and
+retries. `darkbloom stop` finishes without a coordinator session,
+`darkbloom status` says what its served counts cover, and `darkbloom switch`
+scans the configured model cache. The MLX pins are unchanged from 0.10.3. The
+entry also records desktop app, CI, landing and documentation changes that build
+no provider artifact. See the [`v0.10.4` changelog entry](../../CHANGELOG.md)
+for the full scope.
 
-- Confirm that the tagged commit pins `libs/mlx-swift-lm` to a commit on SDK
-  `main`. d-inference#1592 pins `aee6ebb6`, the head of the SDK set
-  `release/sdk-0.10.2-final`: SDK `main` with
-  [mlx-swift-lm#356](https://github.com/Layr-Labs/mlx-swift-lm/pull/356) merged,
-  plus #357, #359, #360, #362 and #363. SDK `main` was fast-forwarded to that
-  head, and #1592 and then #1603 were squash-merged with no re-pin.
-- Confirm that the changelog's SDK note matches that pin, including every change
-  that SDK `main` gained after `6148b6da`.
+Before tagging `v0.10.4`:
 
-Enable the new behaviour in this order; each step is a separate approval, and
-only the last waits for the tag:
+- Confirm that the tagged commit still pins `libs/mlx-swift` to `4926d3d9` and
+  `libs/mlx` and the nested `mlx` to `31f550af`, the heads of the mlx-swift and
+  mlx branches `hotfix/0.10.2-jit-nax-dsplit`, and `libs/mlx-swift-lm` to
+  `aee6ebb6`, the head of SDK `main`. Neither fork's `main` contains its pinned
+  commit, so keep both hotfix branches.
+- With those pins the tag build's `metallib_hash` should equal v0.10.3's
+  `6ccc62966bb452b767fbd7261175b06c7653259a25f657524f1c1ef71f556d45`. The
+  `bin/mlx.metallib` in the `v0.10.2` bundle, built before 0.10.3's MLX fix
+  (C++ only), has the same hash. A different hash needs an explanation, such as
+  a changed Metal toolchain.
 
-1. Deploy a `darkbloom-platform` coordinator that includes
-   [darkbloom-platform#464](https://github.com/Layr-Labs/darkbloom-platform/pull/464)
-   before any catalog row lists `logprobs` for GLM-5.3-Flash or Nemotron 3.5
-   Super. Its floors send a logprob request on either model only to providers
-   on `0.10.2` or later.
-2. Add GLM-5.3-Flash's tuple to the coordinator's cache-routing allowlist. This
-   step does not depend on this release: GLM's SSD reuse was qualified on a
-   signed `0.10.1` provider, and the coordinator must include request
-   normalization v9.
-3. After the fleet converges on `0.10.2`, list `logprobs` in GLM-5.3-Flash's
-   catalog row. Once a signed `0.10.2` build also restores Nemotron 3.5 Super's
-   SSD checkpoints after a restart, add Super's tuple to the allowlist and list
-   `logprobs` in Super's catalog row.
+Roll out in this order; each step is a separate approval:
 
-After the tag, the platform refreshes its provider-contract snapshot from the
-tagged commit and sets `LatestProviderVersion` to `0.10.2` in the same change;
-that fallback constant does not gate publication. Catalog changes, allowlist
-changes and model registration are separate approvals. This preparation does
-not tag, register, upload, deploy or enable anything.
+1. Shortly before the tag, deploy a `darkbloom-platform` coordinator that
+   includes [darkbloom-platform#516](https://github.com/Layr-Labs/darkbloom-platform/pull/516),
+   [#491](https://github.com/Layr-Labs/darkbloom-platform/pull/491) and
+   [#541](https://github.com/Layr-Labs/darkbloom-platform/pull/541). #516's
+   prompt sidecar plans a Qwen JSON `response_format` without thinking, as
+   0.10.4 renders it. While a provider and the coordinator disagree, that
+   provider's Qwen JSON requests without a thinking control fail their cache
+   receipts with `prompt_anchor_mismatch`, and each failure quarantines its
+   cache affinity for the whole model for up to 10 minutes; serving is
+   unaffected. #491 repeats a refusal every 5 seconds while App Attest serving
+   is on, and #541 tells a legacy Mac when its first passing challenge
+   authorizes it; 0.10.4's `Traffic:` line and re-registration act only on
+   that current evidence.
+2. Tag `v0.10.4` ([step 4](#4-tag-and-push-production-source)).
+3. The platform snapshots its provider contracts from the tagged commit
+   (`python3 scripts/provider-contracts.py snapshot <tag commit>`), sets
+   `LatestProviderVersion` to `0.10.4` in the coordinator's
+   [`server.go`](https://github.com/Layr-Labs/darkbloom-platform/blob/5ba280d89aa5e9bd4fbf05e0dfa848059cd3b585/coordinator/api/server.go)
+   in the same change and adds the revision row to its
+   [provider-contract reference](https://github.com/Layr-Labs/darkbloom-platform/blob/5ba280d89aa5e9bd4fbf05e0dfa848059cd3b585/docs/reference/provider-contracts.md).
+   Of the snapshotted inputs, only `contracts/provider/ProviderCore.swift`
+   should change: the prompt vectors are unchanged since `a8556957`, the
+   revision the platform already pins. `LatestProviderVersion` is a fallback
+   and does not gate publication.
 
-Platform evidence, inspected on 2026-10-25 (recheck before tagging):
+No provider-version floor is needed. Coordinators send forced `tool_choice` only
+to providers that advertise it, and only 0.10.4 providers advertise it for those
+four models. The add-on hold's coordinator side,
+[darkbloom-platform#514](https://github.com/Layr-Labs/darkbloom-platform/pull/514),
+is already in production.
+
+0.10.2's remaining enablement steps do not wait for this tag and still apply;
+each is a separate approval:
+
+1. Add GLM-5.3-Flash's tuple to the coordinator's cache-routing allowlist. GLM's
+   SSD reuse was qualified on a signed `0.10.1` provider, and the coordinator
+   must include request normalization v9.
+2. After the fleet converges on `0.10.3` or later, list `logprobs` in
+   GLM-5.3-Flash's catalog row. Once a signed `0.10.3` or later build also
+   restores Nemotron 3.5 Super's SSD checkpoints after a restart, add Super's
+   tuple to the allowlist and list `logprobs` in Super's catalog row.
+
+Catalog changes, allowlist changes and model registration are separate
+approvals. This preparation does not tag, register, upload, deploy or enable
+anything.
+
+Platform evidence, inspected on 2026-10-27 (recheck before tagging):
 
 | Claim | Source |
 |---|---|
-| Production runs platform `master` `7bf80fdd`, which has darkbloom-platform#411's catalog logprobs gate and request normalization v9 but no per-version logprobs floor | `/health` `build_commit`; [`modelarch/logprobs.go` at `7bf80fdd`](https://github.com/Layr-Labs/darkbloom-platform/blob/7bf80fdd3fd679df0a686773221be8fdf69edc1e/coordinator/internal/modelarch/logprobs.go) (`LogprobsNeedCatalogCapability` only) |
-| #464 adds the floor `0.10.2` for both GLM-5.3-Flash and Super (provisional until this release) | [`modelarch/logprobs.go` at `9d44e01e`](https://github.com/Layr-Labs/darkbloom-platform/blob/9d44e01eb0d4f6052f2be471b8107b94754c5c3e/coordinator/internal/modelarch/logprobs.go) (`LogprobsMinimumProviderVersion`) |
+| Production runs platform `master` `2acffb5c`, which includes darkbloom-platform#514 and #464's `0.10.2` logprobs floors but not #516, #491 or #541 | `/health` `build_commit`; [`modelarch/logprobs.go` at `2acffb5c`](https://github.com/Layr-Labs/darkbloom-platform/blob/2acffb5c301547b085b846adbc2a3fed95fafb2c/coordinator/internal/modelarch/logprobs.go) (`LogprobsMinimumProviderVersion`); #514 merged as `6259c9dc`, #516 as `5a779a11`, #491 as `809d2366` and #541 as `6beb8514` |
+| #516 plans a Qwen JSON `response_format` without thinking | [`normalize.rs` at `5a779a11`](https://github.com/Layr-Labs/darkbloom-platform/blob/5a779a113b3874bf06f597f6c4107a4d08103a6f/coordinator/promptsidecar/src/normalize.rs) (`template_additional_context`) and [`response_format.rs`](https://github.com/Layr-Labs/darkbloom-platform/blob/5a779a113b3874bf06f597f6c4107a4d08103a6f/coordinator/promptsidecar/src/response_format.rs) (`requires_json_output`) |
+| A `prompt_anchor_mismatch` quarantines the provider's cache capability for that model: 60 s, doubling on repeats up to 10 min | [`registry/cache_quarantine.go` at `2acffb5c`](https://github.com/Layr-Labs/darkbloom-platform/blob/2acffb5c301547b085b846adbc2a3fed95fafb2c/coordinator/registry/cache_quarantine.go) (`CacheQuarantineCommit.Apply`) and [`cachetracker/proofs.go`](https://github.com/Layr-Labs/darkbloom-platform/blob/2acffb5c301547b085b846adbc2a3fed95fafb2c/coordinator/internal/registry/cachetracker/proofs.go) (`ProofFenceBase`, `ProofFenceMax`) |
+| #491 repeats an unauthorized connection's `trust_status` every 5 s while App Attest serving is on; #541 sends one when a verdict changes its `authorization.path` | [`serving_diagnostic.go` at `6beb8514`](https://github.com/Layr-Labs/darkbloom-platform/blob/6beb851488e08b3fc950b46f5002a502c4fcc9d4/coordinator/appattest/service/serving_diagnostic.go) (`startUnauthorizedStatusRefresh`) and [`trust/status.go`](https://github.com/Layr-Labs/darkbloom-platform/blob/6beb851488e08b3fc950b46f5002a502c4fcc9d4/coordinator/api/provider/trust/status.go) (`notifyServingAuthorizationChange`) |
+| The provider-contract snapshot pins d-inference `a8556957`, and its 34 inputs equal those of this preparation except `ProviderCore.swift` | [`contracts/provider/manifest.json` at `5ba280d8`](https://github.com/Layr-Labs/darkbloom-platform/blob/5ba280d89aa5e9bd4fbf05e0dfa848059cd3b585/contracts/provider/manifest.json) (`source_revision`) |
+| Forced tool choice goes only to advertising providers | [`registry/tool_constraints.go` at `2acffb5c`](https://github.com/Layr-Labs/darkbloom-platform/blob/2acffb5c301547b085b846adbc2a3fed95fafb2c/coordinator/registry/tool_constraints.go) (`providerSupportsToolConstraintLocked`) |
 | A model without an allowlisted tuple gets no cache routing | [`cache-routing-rollout.md` at `9d44e01e`](https://github.com/Layr-Labs/darkbloom-platform/blob/9d44e01eb0d4f6052f2be471b8107b94754c5c3e/docs/operations/cache-routing-rollout.md) ("Add GLM-5.3-Flash", "Add Nemotron 3.5 Super") |
-| `LatestProviderVersion` must equal the snapshotted `ProviderCore.version` | [`provider_version_sync_test.go` at `9d44e01e`](https://github.com/Layr-Labs/darkbloom-platform/blob/9d44e01eb0d4f6052f2be471b8107b94754c5c3e/coordinator/tests/api/provider_version_sync_test.go) (`TestLatestProviderVersionMatchesProviderCore`) |
+| `LatestProviderVersion` must equal the snapshotted `ProviderCore.version` | [`provider_version_sync_test.go` at `5ba280d8`](https://github.com/Layr-Labs/darkbloom-platform/blob/5ba280d89aa5e9bd4fbf05e0dfa848059cd3b585/coordinator/tests/api/provider_version_sync_test.go) (`TestLatestProviderVersionMatchesProviderCore`) |
 
-`v0.10.1` was [published on 2026-10-24](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.1)
-from `9034a5a0f3526dec83ab6384e5264db595cb7549`, `v0.10.0` was
+`v0.10.3` was [published on 2026-10-26](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.3)
+from `3ddd11ce8d7204cc5aadefd2050376c583da4ff8`, `v0.10.2` was
+[published on 2026-10-26](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.2)
+from `f9d1af3d0d3e1838974a5cfdff0a08142977b45e`, `v0.10.1` was
+[published on 2026-10-24](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.1)
+from `9034a5a0f3526dec83ab6384e5264db595cb7549`, and `v0.10.0` was
 [published on 2026-10-23](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.0)
-from `1ef9c89f465ba1299b4938c2b0359e9ae33ed454`, and `v0.9.22` was
-[published on 2026-10-15](https://github.com/Layr-Labs/d-inference/releases/tag/v0.9.22)
-from `7925ba4c0f1f82c8d3e4ef04758a77865b5ee510`. Publication does not establish
+from `1ef9c89f465ba1299b4938c2b0359e9ae33ed454`. Publication does not establish
 that every optional feature or environment has been activated.
 
 ## Prerequisites
@@ -198,7 +226,9 @@ After merge, let **SDK 27 release preparation** finish on `master`, or dispatch
 `.github/workflows/provider-release-cache.yml` on `master`. It runs optimized
 compilation and SDK qualification on separate `blacksmith-12vcpu-macos-27`
 runners with no signing/publication secrets. PR caches remain PR-scoped and do
-not seed `master`.
+not seed `master`. Only pull-request runs can use Darkbloom Sandboxes, under
+[CI runner routing](../developer/build.md#ci-runner-routing); `master` and
+dispatched runs always use these Blacksmith runners.
 
 Inspect each **SDK 27 build cache** summary and actual restore key. Compatible
 prefix hits are useful even when the exact-hit output is false. Compiler, SDK,
@@ -232,52 +262,73 @@ workflow accepts `v*.*.*` but rejects `-dev.` tags and retired `-swift` aliases.
 job outputs, and trusted-source verification precedes secret-bearing jobs.
 Never move an existing release tag to repair a failed run.
 
-### 5. Select Dev Or Validation Mode When Needed
+### 5. Select Staging Or Validation Mode When Needed
 
-A push to `master` starts a dev release — and a staging release when the
-`STAGING_ENABLED` repository variable is `'true'` — when it changes a path in the
-caller's `on.push.paths` list: `provider-swift/**`, `libs/**`, the release
-caller, the reusable workflow, the build action, or a script that the release
-runs. The trigger, not an input, selects the lanes: the caller's `dev` and
-`staging` jobs each call `release-provider.yml` and run in parallel in one GitHub
-run (the `staging` job is skipped while `STAGING_ENABLED` is unset). They are different binaries — identity is compile-time, so a master
-push runs two full build, sign, notarize and publish lanes. A plain matrix
-cannot carry each lane's artifact id and digest across the dependent jobs, which
-is why each lane is a separate call of the reusable workflow. Path filters do not
-apply to tags, so tags publish production as before. One dev release and one
-staging release run at a time (the caller's `release-dev` and `release-staging`
-groups); a running release always completes, and when more merges arrive only
-the newest waiting run of each lane continues.
+A push to `master` starts a staging release when the `STAGING_ENABLED`
+repository variable is `'true'` and the push changes a path in the caller's
+`on.push.paths` list: `provider-swift/**`, `libs/**`, the release caller, the
+reusable workflow, the build action, or a script that the release runs. The
+trigger, not an input, selects the lane: the caller's `staging` job calls
+`release-provider.yml` (the job is skipped while `STAGING_ENABLED` is unset). A
+plain matrix cannot carry each lane's artifact id and digest across the
+dependent jobs, which is why each lane is a separate call of the reusable
+workflow. Path filters do not apply to tags, so tags publish production as
+before. One staging release runs at a time (the caller's `release-staging`
+group); a running release always completes, and when more merges arrive only
+the newest waiting run continues.
 
-To publish a dev release by hand:
+A master push does not publish a dev release, and the dispatch has no `dev`
+environment choice. The caller's `dev` job runs only for a dispatched signed
+validation build (below), and `scripts/resolve-provider-release.sh` refuses a
+dev publication from master and a master push routed to dev. DevNet gets its
+provider releases from the d-inference `dev` branch through
+`.github/workflows/release-dev-branch.yml`.
 
-```bash
-gh workflow run release-swift.yml --ref master -f environment=dev
-```
+The source gate on `master` admits a push to `dev` for the `dev` environment
+only. `verify_workflow_source` (`scripts/provider_release_resume/api.py`)
+requires a GitHub-verified commit on `dev` ancestry and refuses `staging`, `prod`
+and a missing environment. `resolve-env` runs this gate from `master`, and then
+runs `scripts/resolve-provider-release.sh` from the pushed commit. The resolver
+stamps `X.Y.Z-dev.branch.N` (`N` is the run number). It refuses a dev push routed
+to another environment and a push from any other branch. A dev build signs with
+the same Developer ID as staging and prod.
+
+Before upload, `build-and-release` checks the final archived app against the
+designated requirement of the provider self-updater
+(`DarkbloomCodeSignature.designatedRequirement`): Apple anchor, identifier
+`io.darkbloom.provider`, team `SLDQ2GJ6TL`. A dev build meets the same
+requirement as a production build, so only the production registration and the
+production release key keep a dev build out of production.
 
 `version_override`, if supplied, must equal the source. Production without a
 source-matching tag is refused, except the validated retained-build recovery
-path below. Dev uses only `DEV_*` secrets: the `PROD_*` and legacy secret values
-are empty in every job unless the resolved environment is `prod`. Dev creates no
-GitHub Release and no tag. Dev uploads go only to the `DEV_R2_BUCKET` bucket and
-the `DEV_R2_PUBLIC_URL` origin.
+path below. A dev lane reads the shared Apple signing secrets and only the
+`DEV_*` publication secrets: the `PROD_*` and legacy secret values are empty in
+every job unless the resolved environment is `prod`. Dev creates no GitHub
+Release and no tag. Dev uploads go only to the `DEV_R2_BUCKET` bucket and the
+`DEV_R2_PUBLIC_URL` origin.
 
 The optimized job sets `DARKBLOOM_RELEASE_ENVIRONMENT`. For `dev`,
 `provider-swift/Package.swift` compiles `ProviderBuildEnvironment` with
 `DARKBLOOM_ENV_DEV`; defaults are `wss://api.dev.darkbloom.dev/ws/provider` and
 `https://models.darkbloom.ai`
-(`provider-swift/Sources/ProviderBuildEnvironment/BuildEnvironment.swift`). Local
-builds, tests and `qualify-sdk` retain production defaults. Config, CLI flags and
+(`provider-swift/Sources/ProviderBuildEnvironment/BuildEnvironment.swift`).
+`qualify-sdk` sets `DARKBLOOM_RELEASE_ENVIRONMENT: prod`, so its tests see
+production defaults on every branch: on `dev`, an unset value compiles the dev
+identity (`provider-swift/Package.swift`). Config, CLI flags and
 `DARKBLOOM_R2_CDN_URL` still override defaults. Dev/prod products have different
 cache keys, and packaged smoke must report the selected build environment.
 
-Every dev build has the version `X.Y.Z-dev.N`. `X.Y.Z` is the source
+A dev release from a dev push has the version `X.Y.Z-dev.branch.N`, and a
+master validation build has `X.Y.Z-dev.N`. `X.Y.Z` is the source
 `ProviderCore.version` and `N` is the workflow run number. The release lane
 writes this version into `ProviderCore.version` before it compiles, so
 `darkbloom --version`, the app `Info.plist`, the registration and the R2 path all
-show the `-dev.N` marker. SemVer puts `X.Y.Z-dev.N` below `X.Y.Z` and orders dev
-builds by `N`, so a dev provider updates to each newer dev build. Production
-versions never have a suffix. A dev `EIGENINFERENCE_MIN_PROVIDER_VERSION` must
+show the dev marker. SemVer puts `X.Y.Z-dev.branch.N` below `X.Y.Z` and orders
+dev-branch builds by `N`. The dev coordinator ranks releases with
+`ReleaseVersionGreater`, not SemVer, until [darkbloom-platform#551](https://github.com/Layr-Labs/darkbloom-platform/pull/551) is
+deployed (see the Dev-Branch Lane section). Production versions never have a
+suffix. A dev `EIGENINFERENCE_MIN_PROVIDER_VERSION` must
 use the dev form, for example `0.9.20-dev.0`, because `0.9.20` excludes every
 `0.9.20-dev.N` build.
 
@@ -362,7 +413,7 @@ These values are the same for both builds:
 - The flat verifier copies `bin/darkbloom` and `bin/darkbloom-enclave` and the
   bundle file `darkbloom-bundle-macos-arm64.tar.gz`. The coordinator's release
   registration requires these names. Dev uploads go to the dev bucket under the
-  `-dev.N` version.
+  `-dev.branch.N` version.
 
 These surfaces are shared, and an operator must know about them:
 
@@ -408,11 +459,11 @@ identity (`scripts/install.sh`, `select_provider_identity`;
 `DARKBLOOM_ENV_STAGING`.
 
 Staging **tracks main**, gated by the `STAGING_ENABLED` repository variable:
-when it is `'true'`, a master push publishes a staging release in parallel with
-the dev release (DBLM-771), signed with the same Developer ID as dev and prod —
-staging is a normal Developer-ID dev-family release, not the self-signed build of
-`release-dev-branch.yml`. A `X.Y.Z-staging.N` version carries the workflow run
-number, like the dev lane's `X.Y.Z-dev.N`. Publish a staging build by hand with
+when it is `'true'`, a master push publishes a staging release (DBLM-771),
+signed with the same Developer ID as dev and prod —
+staging is a normal Developer-ID dev-family release, as is the dev-branch build
+of `release-dev-branch.yml`. A `X.Y.Z-staging.N` version carries the workflow run
+number, like a dev build's `X.Y.Z-dev.branch.N`. Publish a staging build by hand with
 the same version form (the flag gates the manual lane too):
 
 ```bash
@@ -423,23 +474,24 @@ A staging run uses only `STAGING_*` secrets (`STAGING_R2_*`,
 `STAGING_COORDINATOR_URL`, `STAGING_RELEASE_KEY`). These secrets and the staging
 coordinator infra do not exist yet (a separate `darkbloom-devnet-infra` effort,
 DBLM-771 infra PR 18). Until they do, leave `STAGING_ENABLED` unset (the default):
-the caller's `staging` job is skipped, so a master push builds and publishes dev
-only and never burns a second macOS build + notarization that would hard-fail at
+the caller's `staging` job is skipped, so a master push builds and publishes
+nothing and never burns a macOS build + notarization that would hard-fail at
 staging publication for want of credentials. Turn staging publishing on by
 setting the `STAGING_ENABLED` repository variable to `true` once that infra PR is
-applied and the `STAGING_*` secrets exist. The dev lane is never gated — it
-publishes on every qualifying master push. A push never selects prod:
+applied and the `STAGING_*` secrets exist. A push never selects prod:
 `scripts/resolve-provider-release.sh` refuses prod on any non-tag trigger, so the
 production signing identity stays tag-gated.
 
 For a signed, notarized validation bundle without registration/publication:
 
 ```bash
-gh workflow run release-swift.yml --ref master -f environment=dev -f validation_only=true
+gh workflow run release-swift.yml --ref master -f validation_only=true
 gh run download <run-id> --name darkbloom-signed-validation-<commit>-<attempt> --dir <new-directory>
 ```
 
-Trusted-source/version checks and Apple credentials still apply. This mode skips
+The dispatch runs the caller's `dev` lane instead of the chosen environment, and
+the `staging` and `prod` lanes do not run. Trusted-source/version checks and
+Apple credentials still apply. This mode skips
 publication-secret resolution, R2 upload, registration and GitHub Release
 creation; it does not attach a GitHub environment. The artifact contains the
 final tarball and `darkbloom-validation-identity.json`: source/submodule pins,
@@ -450,44 +502,77 @@ the environment line plus all four runtime-smoke markers. Retention is 14 days.
 Verify artifact identity before isolated model/restart tests; build success does
 not establish persistence, real Apple functionality or fleet readiness.
 
-#### Experimental Dev-Branch Lane (Dev Only, Self-Signed)
+#### Dev-Branch Lane (Dev Only)
 
-`.github/workflows/release-dev-branch.yml` builds a provider from any branch or
-commit and publishes it to the dev coordinator without merging to master. It is
-dispatch-only on `master`, so the credentialed publication logic runs the
-reviewed master copy of every script; it checks out the chosen `ref` only to
-compile and ad-hoc sign (`codesign -s -`), never reading a production secret or
-the production Apple signing identity. The branch binary is compiled and signed
-in a job that holds no secret, and is never run in a step that holds a
-credential. The version is `X.Y.Z-dev.branch.<run>`, which
-`scripts/check-release-version.sh` accepts and which stays distinct from the
-master dev lane's `X.Y.Z-dev.<run>`.
+Dev builds dev, and master builds master. A push to the d-inference `dev` branch
+starts `.github/workflows/release-dev-branch.yml`. A master push and a release
+tag run `release-swift.yml`. No workflow dispatches a build of another branch,
+and the dev-branch lane has no `workflow_dispatch`.
 
-```bash
-gh workflow run release-dev-branch.yml --ref master -f ref=<branch>
-```
+`release-dev-branch.yml` is only a caller. Its one job checks
+`github.ref == 'refs/heads/dev'` and calls the reusable `release-provider.yml`
+with `environment: dev` and `secrets: inherit`. The reusable workflow runs the
+same chain as every release lane: the source gate, the build, the SDK
+qualification, Developer ID signing, notarization and stapling, R2 staging and
+registration on the dev coordinator. A dev-branch build therefore has the same
+signature as a master build and passes the same checks: the fan-helper
+requirement of `scripts/install.sh` and the self-updater's
+`DarkbloomCodeSignature` production requirement. The push trigger uses the
+`paths:` list of the `release-swift.yml` master push, with
+`release-dev-branch.yml` in place of `release-swift.yml`.
 
-The installer accepts an ad-hoc signature for pre-release versions: for a
-version carrying `-dev.` or `-staging.`, `select_provider_identity` chooses a
-relaxed designated requirement that keeps the bundle identifier
-`io.darkbloom.provider` pinned but drops the Apple-anchor and team-OU clause
-(`scripts/install.sh`, `verify_staged_app_signature`). Production versions keep
-the full Apple-team requirement unchanged, and a prod coordinator is never
-served a pre-release version. The installer extracts the release archive with
-`/usr/bin/tar` under umask 022, so a restrictive caller umask cannot leave the
-installed app owner-only; private state it creates elsewhere keeps its own modes
-(`scripts/install.sh`, `install_bundle_atomically`). The dev coordinator also hashes the bundle rather
-than inspecting the Apple signature, and `MIN_TRUST=self_signed` is a
-device-attestation tier, not a code-signature tier.
+| Item | Dev-branch lane |
+|---|---|
+| Version | `X.Y.Z-dev.branch.<run>`, stamped by `scripts/resolve-provider-release.sh` and accepted by `scripts/check-release-version.sh` |
+| Source gate | Job `resolve-env` runs master's copy of `scripts/provider-release-resume.py verify-source`. The gate must accept a `refs/heads/dev` push for environment `dev`; until master carries that change, the lane fails at the gate. |
+| Signing and notarization secrets | `APPLE_CERTIFICATE_P12`, `APPLE_CERTIFICATE_PASSWORD`, `PROVISIONING_PROFILE_BASE64`, `APPLE_ID`, `APPLE_APP_PASSWORD`, read only in job `build-and-release` |
+| Publication secrets | `DEV_R2_*`, `DEV_COORDINATOR_URL`, `DEV_RELEASE_KEY` |
+| GitHub environment | None. All of these are repository secrets. |
+| Serialization | Workflow group `release-dev-branch`; publication group `provider-publication-dev` |
 
-The installer is a pinned provider-contract snapshot, so the dev coordinator
-serves the relaxed installer only after the `darkbloom-platform` served copy is
-re-snapshotted from the merged commit in a separate platform PR. Until that
-re-snapshot lands, a fresh `darkbloom-dev` install still runs the old installer
-and rejects the self-signed build. Because `/v1/releases/latest` orders by
-`created_at`, publishing makes the branch build the latest dev release; an
-existing install's self-updater may not downgrade to a lower run number, while a
-fresh install takes the newest.
+`secrets: inherit` passes every repository secret to the reusable workflow. For
+environment `dev` it reads only the secrets in the table; it reads a `PROD_*`,
+`STAGING_*` or unprefixed publication secret only behind an
+`environment == 'prod'` or `environment == 'staging'` guard.
+`scripts/test-release-dev-branch.py` pins this.
+
+To retry, follow [Retry Staging Or Publication](#retry-staging-or-publication):
+re-run failed jobs only after the signing job passed, and push a new commit to
+rebuild. The `release-dev-branch` group does not cancel a running run, but a
+newer dev push cancels a run that is still pending in the group.
+
+Review is not enforced on `dev` today. Its rules are required signatures and the
+"Darkbloom PR access control" ruleset, which lets only the accounts on that
+ruleset's bypass list create or update a ref. Because a dev push gets the
+Developer ID signature, `dev` needs a pull_request rule before the lane runs. A
+repository administrator adds that rule.
+
+The dev coordinator can still hold `X.Y.Z-dev.<run>` releases from the master
+dev lane; `0.10.4-dev.224` is the latest dev release on 2026-10-28.
+`/v1/releases/latest` returns the active release that `ReleaseVersionGreater`
+ranks highest. That comparison is not SemVer: it reads each dot-separated part of
+the version as an integer, so a non-numeric part such as `branch` counts as 0. It
+uses `created_at` only to break a tie on the same version
+([`ReleaseVersionGreater` at `fb6aaa9e`](https://github.com/Layr-Labs/darkbloom-platform/blob/fb6aaa9e58c8795987dd832ecb5b98925c9ffbae/coordinator/internal/store/shared/release_version.go);
+[`GetLatestRelease` at `fb6aaa9e`](https://github.com/Layr-Labs/darkbloom-platform/blob/fb6aaa9e58c8795987dd832ecb5b98925c9ffbae/coordinator/store/postgres/releases.go)).
+Until the coordinator ranks releases by SemVer:
+
+- At a lower base version than an existing `-dev.<run>` release, that release
+  stays latest. The dev-branch build is registered, but the publication does not
+  advance the latest aliases.
+- At an equal base version, `X.Y.Z-dev.<run>` ranks above
+  `X.Y.Z-dev.branch.<run>`, so the existing release stays latest. The
+  publication script then waits for a latest version that does not come, and the
+  `publish-release` job fails after it registers the release.
+- At a higher base version, the newest dev-branch build is latest.
+
+When the coordinator ranks by SemVer 2.0, an alphanumeric identifier ranks above
+a numeric one in the same position. Then `X.Y.Z-dev.branch.<run>` ranks above
+`X.Y.Z-dev.<run>`, and the newest dev-branch build at the highest base version is
+latest.
+
+An existing install's self-updater may not downgrade to a lower version, while a
+fresh install takes the latest.
 
 ### 6. Sign, Stage And Register Exact Bytes
 

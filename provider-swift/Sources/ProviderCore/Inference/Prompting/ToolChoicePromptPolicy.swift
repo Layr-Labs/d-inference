@@ -10,8 +10,9 @@ enum ToolChoicePromptPolicy {
         let compiledTools: [CompiledToolSchema]?
         let allowsParallelCalls: Bool
         let allowedToolNames: Set<String>
-        /// Exact-Flint JSON content contract. When present, no call is allowed.
-        var responseFormat: FlintResponseFormat? = nil
+        /// Exact-Flint JSON content contract (`FlintResponseFormat`). When
+        /// present, no call is allowed.
+        var responseFormat: JSONAnswerFormat? = nil
         /// GLM JSON content contract: the answer is withheld and validated.
         var glmResponseFormat: GLM5NextResponseFormat? = nil
 

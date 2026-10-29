@@ -1,10 +1,10 @@
 # Configuration reference
 
-> Last updated: 2026-10-24
+> Last updated: 2026-10-28
 
-Provider CLI, native-runtime and retained-console environment variables, compiled defaults and reading symbols. Secrets are named, never valued. Unless specified otherwise, values are read at process start.
+Provider CLI and native-runtime environment variables, compiled defaults and reading symbols. Secrets are named, never valued. Unless specified otherwise, values are read at process start.
 
-Coordinator and admin settings belong to the [platform configuration reference](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/reference/configuration.md).
+Coordinator, console and admin settings belong to the [platform configuration reference](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/reference/configuration.md).
 Pinned platform links on this page are immutable evidence snapshots, not claims
 about current platform behavior. For current settings and behavior, consult the
 latest default branch of [darkbloom-platform](https://github.com/Layr-Labs/darkbloom-platform).
@@ -79,25 +79,6 @@ published GLM slot whose unload, eviction or shutdown cannot prove retirement
 stays in place: its KV claim is charged, its grant is frozen, eviction skips
 it and shutdown stays draining.
 
-## Console UI
-
-The retained console uses build-time public variables. Rebuild after changing
-them; never place private credentials in `NEXT_PUBLIC_*` values.
-
-| Variable | Default / behavior | Consumer |
-|---|---|---|
-| `NEXT_PUBLIC_COORDINATOR_URL` | `https://api.darkbloom.dev` when missing or empty; server-side upstream for same-origin API routes | `console-ui/src/lib/server/coordinator.ts` (`coordinatorUrl`), `console-ui/src/lib/coordinator-url.ts` |
-| `NEXT_PUBLIC_PRIVY_APP_ID` | Missing or `placeholder` selects mock authentication; configure a real app for a hosted deployment | `console-ui/src/components/app-providers/PrivyClientProvider.tsx` (`IS_PRIVY_CONFIGURED`) |
-| `NEXT_PUBLIC_GA_MEASUREMENT_ID` | Built-in measurement ID when missing; empty string disables analytics | `console-ui/src/lib/google-analytics.ts` (`getGoogleAnalyticsMeasurementId`) |
-| `NEXT_PUBLIC_DD_APPLICATION_ID`, `NEXT_PUBLIC_DD_CLIENT_TOKEN` | Both required to enable Datadog RUM | `console-ui/src/components/DatadogRUM.tsx` |
-| `NEXT_PUBLIC_DD_SITE` | `datadoghq.com` | `console-ui/src/components/DatadogRUM.tsx` |
-| `NEXT_PUBLIC_DD_ENV` | `production` | `console-ui/src/components/DatadogRUM.tsx` |
-| `NEXT_PUBLIC_APP_VERSION` | `dev` | `console-ui/src/components/DatadogRUM.tsx` |
-
-The Settings API-example URL is a display preference, not an upstream routing
-override. Request headers, cookies and browser storage cannot choose the
-server's coordinator origin. See [console architecture](../architecture/components/console-ui.md#coordinator-url-resolution).
-
 ## Desktop app
 
 | Setting | Default | Consumer and effect |
@@ -146,6 +127,41 @@ for recovery and explicit force semantics. Existing loaded launchd jobs must be
 restarted to adopt the new allowance. Local mailbox files are owner-only under
 `lifecycle/` beside the daemon state file and bind PID plus kernel process-start
 time; they are not network control endpoints or serving credentials.
+
+## Add-on hold
+
+Add-on hold settings are fixed in code except the two variables below; the
+contract and files are in the [add-on hold IPC reference](addon-hold-ipc.md).
+
+| Setting | Default / bounds | Consumer |
+|---|---|---|
+| `DARKBLOOM_ADDON_SOCKET` | unset: `<install directory>/runtime/addon.sock` (`~/.darkbloom/runtime/addon.sock` for production builds). Tests only, though every build reads it: an absolute socket path whose parent the provider can create `0700`; `ownership.lock` and `addon-hold.json` then live beside it | `provider-swift/Sources/ProviderCore/Addon/AddonHoldPaths.swift` (`AddonHoldPaths.production`) |
+| `DARKBLOOM_ADDON_DEV_IDENTITY` | unset. DEBUG builds only: one extra `TEAMID:identifier` add-on identity, for example `P7373SVQX6:io.darkbloom-test.sandbox`; release builds never read it | `provider-swift/Sources/ProviderCore/Addon/AddonPeerPolicy.swift` (`AddonPeerPolicy.current`) |
+| `darkbloom addon hold --lease-seconds` | `600`; 30–600, the IPC lease bounds | `provider-swift/Sources/darkbloom/AddonCommand.swift` (`Addon.Hold`) |
+| Drain bound for accepted work | `addonHoldDrainTimeoutDefault = .seconds(120)` | `provider-swift/Sources/ProviderCore/Addon/ProviderLoop+AddonHold.swift` |
+| Load-transition settle bound | `addonHoldSettleTimeoutDefault = .seconds(60)`; a load still running after it is waited for, not abandoned | Same file |
+
+Neither variable is in the LaunchAgent passthrough list; the installed
+provider always serves the default socket.
+
+## Darkbloom Sandbox CLI
+
+`darkbloom sandbox` and the `Sandboxes:` line of `darkbloom status` drive the
+separately installed add-on; their bounds are fixed in code except the variable
+below. Commands, flags and the add-on contract are in the
+[CLI reference](../provider/cli-reference.md#darkbloom-sandbox).
+
+| Setting | Default / bounds | Consumer |
+|---|---|---|
+| `DARKBLOOM_SANDBOX_ROOT` | unset: `~/DarkbloomSandbox`. Tests only, though every build reads it: the add-on root whose `darkbloom-sandbox` command and `agent/agent.log` the CLI uses. `setup` still runs the installer, which installs where it installs | `provider-swift/Sources/darkbloom/Sandbox/SandboxAddon.swift` (`SandboxAddon.live`) |
+| `setup --server` | `defaultServer = "https://api-sandbox.darkbloom.dev"`; `https` only | `provider-swift/Sources/darkbloom/Sandbox/SandboxCommand.swift` (`Sandbox`) |
+| `darkbloom status` wait for the add-on | `statusLineTimeout: TimeInterval = 2` | Same file |
+| Other status reads | `statusTimeout: TimeInterval = 10` | Same file |
+| `pause` and `resume` | `actionTimeout: TimeInterval = 60` | Same file |
+| Installer download | `downloadTimeout: TimeInterval = 30`; at most `maximumScriptBytes = 1 << 20` | `provider-swift/Sources/darkbloom/Sandbox/SandboxInstaller.swift` (`SandboxInstaller`) |
+
+`DARKBLOOM_SANDBOX_ROOT` is not in the LaunchAgent passthrough list; the
+provider service never runs the add-on.
 
 ## Provider endpoint resumption and logout
 
@@ -602,7 +618,11 @@ reading and scheduling, not the verified
 bytes or model arithmetic. Each file is first read through a page-aligned
 `F_NOCACHE` descriptor (`WeightHasher.hashSingleFileUncached`), so verification
 does not pull a second copy of loaded weights through the file cache; the
-readers selected below remain its fallbacks. `F_NOCACHE` does not evict pages
+readers selected below remain its fallbacks. Uncached reads get no read-ahead,
+so a reader thread stays one 4 MiB chunk
+(`WeightHasher.uncachedChunkBytes = 4 << 20`) ahead of SHA-256 in a second
+page-aligned buffer (`OverlappedFileDigest`, two buffers per file being hashed),
+and the disk and the hash run at the same time. `F_NOCACHE` does not evict pages
 that were cached before the read (a download's own writes, an earlier read), so
 that reader then drops the file's cached pages (`PageCache.drop`); a managed GLM
 load does the same for its shards once loaded. Discovery remains hash-free. Fresh pre/post-load
@@ -666,6 +686,7 @@ Internals and file format: [`ssd-kv-cache.md`](ssd-kv-cache.md).
 | `DARKBLOOM_PREFIX_CACHE_SSD_WINDOW_SIDECAR` | affirmative | off | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCachePolicy.swift` | Persists the sliding-window sidecar. |
 | `DARKBLOOM_PREFIX_CACHE_SSD_MAX_STAGE_MB`, `DARKBLOOM_PREFIX_CACHE_SSD_MAX_STAGE_MS` | MiB, ms | `1024`, `1000`; complete checkpoints on Macs with ≥ 48 GiB: `7168`, `15000` | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCachePolicy.swift` | Attention staging byte/time caps. Complete checkpoints apply the byte value as a payload cap and the time value as an estimated-read cap when capturing and reading (both defaults raised on large-memory Macs; an explicit value overrides both families); native destination plus bounded scratch is separately reserved before allocation, with no permanent RAM carve. Not forwarded to LaunchAgents, so installed daemons use the defaults. |
 | `DARKBLOOM_PREFIX_CACHE_SSD_STRICT_FSYNC` | affirmative | off | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCachePolicy.swift` | `fsync` after every write. |
+| `DARKBLOOM_PREFIX_CACHE_SSD_INCREMENTAL_CHECKPOINTS` | negative (`0`, `false`, `no`, `off`) disables | on | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCachePolicy.swift` (`incrementalCheckpoints`) | Writes eligible native recurrent complete checkpoints as [deltas](ssd-kv-cache.md#delta-complete-checkpoints) of the restored file. Forwarded to the launchd provider job. |
 
 ### Resident recurrent prefix cache
 

@@ -8,7 +8,10 @@ extension ProviderLoop {
         // admission; the serve task performs slot teardown before returning.
         startupPreloadTask?.cancel()
         startupPreloadGateWaiter?.cancel()
-        if servingDrain.owner != .lifecycle { lifecycleStatus = .init(outcome: .draining, remaining: lifecycleRemaining) }
+        // An add-on hold reports through its own daemon-state record.
+        if servingDrain.owner != .lifecycle && servingDrain.owner != .addonHold {
+            lifecycleStatus = .init(outcome: .draining, remaining: lifecycleRemaining)
+        }
         localResponseTracker.setAccepting(false)
         state.refusingNewWork = true
     }
@@ -97,6 +100,14 @@ extension ProviderLoop {
         if !Task.isCancelled, lifecycleRemaining == 0, let client = coordinatorClient, ContinuousClock.now < finishDeadline {
             acknowledged = await client.acknowledgeDrain(timeout: ContinuousClock.now.duration(to: finishDeadline))
         }
+        // Without a registered session there is no coordinator to acknowledge:
+        // a disconnect already cancelled accepted work and outbound messages
+        // are never carried to a later connection. Waiting would leave a
+        // provider whose reconnect keeps failing unable to stop gracefully.
+        var coordinatorSettled = acknowledged || coordinatorClient == nil
+        if !coordinatorSettled, !Task.isCancelled, let client = coordinatorClient {
+            coordinatorSettled = await !client.hasRegisteredConnection()
+        }
         lifecycleStatus.remaining = lifecycleRemaining
         lifecycleStatus.coordinatorAcknowledged = acknowledged
         let workerRetired = await stopAppAttestWorkerAndWait()
@@ -105,7 +116,7 @@ extension ProviderLoop {
         } else if request.force {
             lifecycleStatus.outcome = .forced
             servingDrain.drained()
-        } else if nativeOwnersDrained, lifecycleRemaining == 0 && (acknowledged || coordinatorClient == nil) {
+        } else if nativeOwnersDrained, lifecycleRemaining == 0, coordinatorSettled {
             lifecycleStatus.outcome = .drained
             servingDrain.drained()
         } else {
@@ -140,6 +151,7 @@ extension ProviderLoop {
                     Task { await self?.handleLifecycleCommand(request) }
                 }
                 _ = await self?.acceptPendingModelSwitch(from: mailbox)
+                _ = await self?.acceptPendingAddonControl(from: mailbox)
                 try? await Task.sleep(nanoseconds: 250_000_000)
             }
         }

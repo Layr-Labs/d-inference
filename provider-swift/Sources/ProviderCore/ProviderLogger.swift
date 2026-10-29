@@ -144,6 +144,10 @@ enum ProviderOperationalMessage: String, CaseIterable, Sendable {
     case coordinatorSendFailed = "Coordinator WebSocket send failed"
     case coordinatorChunkEncodeFailed = "Coordinator chunk encode failed"
     case coordinatorChunkSendFailed = "Coordinator chunk send failed"
+    case coordinatorNotRoutingConnection = "Coordinator is not routing work to this connection. Run {cli} status for the reason."
+    case coordinatorRoutingConnection = "Coordinator authorizes this connection for work"
+    case coordinatorRefusalUnconfirmed = "Coordinator refusal of this connection is no longer current; routing is unconfirmed"
+    case unauthorizedConnectionReregistering = "Coordinator has not authorized this connection for at least 15 min; re-registering it"
 
     // Attestation and integrity lifecycle.
     case attestationChallengeReceived = "Attestation challenge received"

@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-10-25
+> Last updated: 2026-10-28
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -153,6 +153,8 @@ Subcommands declared by `Darkbloom.configuration.subcommands`:
 | `start` | Serve. Default: install and start the LaunchAgent; `--local` for a coordinator-less server | ✓ | `StartCommand.swift` (`Start`) |
 | `schedule` | Edit, show or disable saved weekly availability and startup loading; never start/stop the service | ✓ | `Scheduling/ScheduleCommand.swift` (`AvailabilitySchedule`) |
 | `switch` | Gracefully replace hosted models in the running coordinator-connected provider, without restart or reconnect | | `SwitchCommand.swift` (`Switch`) |
+| `addon` | Debug add-on holds on the running provider: `status` (default), `hold`, `release` | | `AddonCommand.swift` (`Addon`) |
+| `sandbox` | Set up and manage [Darkbloom Sandbox](./sandboxes.md) CI jobs through its add-on: status (bare), `setup`, `pause`, `resume`, `logs`, `uninstall` | | `Sandbox/SandboxCommand.swift` (`Sandbox`) |
 | `stop` | Drain accepted requests, then stop the LaunchAgent; `--uninstall` removes the provider, watchdog and desktop API agents | | `StopCommand.swift` (`Stop`) |
 | `restart` | Drain, restart with recorded configuration, and confirm fresh authorization | ✓ | `RestartCommand.swift` (`Restart`) |
 | `status` | Config, hardware, schedule, live daemon state (including the coordinator's last `Trust: <level> / <status>` message), per-slot KV/MTP posture | ✓ | `StatusCommand.swift` (`Status`) |
@@ -323,7 +325,8 @@ With neither selection flag, this command reuses the `start` catalog picker and
 downloader. It checks fresh daemon identity and switch capability before opening
 the picker, and uses the running daemon's runtime capabilities rather than
 initializing a second inference runtime. There is no `--force` or `--config`:
-the daemon's own resolved config path, including a custom path, is authoritative.
+the daemon's own resolved config path, including a custom path, is authoritative,
+and the command scans local models in that config's `model_cache_directory`.
 
 The provider validates local artifacts before fencing new coordinator and
 unified-local admissions, finishes accepted requests and terminal usage, and
@@ -440,7 +443,11 @@ With no accepted work left, a graceful drain retries native MiMo owner
 retirement until the owners retire or its deadline passes: after served
 requests, the first attempt only starts joining their finished consumers
 (`provider-swift/Sources/ProviderCore/ProviderLoop+Lifecycle.swift`,
-`performLifecycleDrain`).
+`performLifecycleDrain`). A drain completes without the coordinator
+acknowledgement only when no work is left and the provider has no registered
+coordinator session, for example while it is reconnecting; the command then
+reports the acknowledgement as `not needed (no coordinator connection)`. A
+registered session must acknowledge before the deadline.
 Newly installed or CLI-restarted jobs have launchd `ExitTimeOut = 3660`; an
 existing job must be restarted to load that allowance. OS logout/shutdown may
 impose its own limit. Crashes, power loss, SIGKILL and explicit force can interrupt
@@ -901,6 +908,212 @@ its heartbeat (`idle_unload_mins`) so the dashboard shows an empty slot as
 "sleeping, wakes on demand" rather than as a fault. `--json` prints the policy
 machine-readably.
 
+## `darkbloom addon`
+
+Operator debugging of [add-on holds](../architecture/addon-hold.md): inspect,
+place or release the hold a local add-on uses while its VMs run. The commands
+reach the running provider through its owner-only lifecycle mailbox, bound to
+the live process identity; add-ons themselves use the
+[local socket](../reference/addon-hold-ipc.md).
+
+```bash
+darkbloom addon [status]
+darkbloom addon hold [--lease-seconds <30...600>]
+darkbloom addon release [--force]
+```
+
+| Subcommand / flag | Default | Effect |
+|---|---|---|
+| `status` | default subcommand | Active holds (add-on, `draining` or `held`, start time, lease) and whether an add-on holds the machine lock |
+| `hold --lease-seconds <n>` | `600` | Hold as add-on `operator`, exactly like an add-on: admission closes, accepted work finishes (up to 120 s), every model unloads. Repeating renews the lease |
+| `release` | — | Release every active hold; the provider serves again at once on the same connection |
+| `release --force` | `false` | Release even while an add-on holds the machine lock, so its VMs may still be using memory |
+
+Without `--force`, `release` refuses while the machine lock is held. A provider
+without add-on support (older, or a standalone `--local` server) is refused
+before anything is sent. The command waits up to 10 seconds for the provider's
+answer. `darkbloom status` prints `Not serving: held by add-on …` while held.
+Code: `provider-swift/Sources/darkbloom/AddonCommand.swift` (`Addon`),
+`provider-swift/Sources/ProviderCore/Addon/ProviderLoop+AddonHold.swift`
+(`handleAddonControl`).
+
+## `darkbloom sandbox`
+
+Set up and manage [Darkbloom Sandbox](./sandboxes.md) on this Mac: approved
+GitHub Actions jobs in Linux and macOS VMs, run by the separately installed,
+closed-source add-on `DarkbloomSandbox.app` in `~/DarkbloomSandbox`. Every
+subcommand runs the add-on's own command; only `setup` contacts the sandbox
+service, to download the add-on's installer. Code:
+`provider-swift/Sources/darkbloom/Sandbox/SandboxCommand.swift` (`Sandbox`).
+
+```bash
+darkbloom sandbox [status [--json]]
+darkbloom sandbox setup [--yes] [--no-browser] [--linux-slots <n>] [--macos-slots <n>] [--wait-ready] [--server <url>]
+darkbloom sandbox pause | resume
+darkbloom sandbox logs [-f] [-n <lines>]
+darkbloom sandbox uninstall [--yes]
+```
+
+| Subcommand / flag | Default | Effect |
+|---|---|---|
+| none, `status` | — | One screen: the state, what it means for inference, free slots, images, host, last update check and console. Without the add-on: what sandboxes are and how to set them up. `darkbloom sandbox --help` shows the group's help |
+| `status --json` | `false` | The add-on's `status --json` output, unchanged. Without the add-on, a schema 1 `not_installed` document; an add-on that cannot answer exits `1` |
+| `setup` | — | Check, explain, confirm, install and summarize; see [Setup](#setup) |
+| `setup --yes`, `-y` | `false` | Skip the confirmation |
+| `setup --no-browser` | `false` | The installer does not open the approval page; open the printed link |
+| `setup --linux-slots <n>`, `--macos-slots <n>` | what fits the Mac | Jobs at a time: Linux `0`–`16`, macOS `0`–`2`; both `0` is refused. Counts above the estimate are flagged, not refused |
+| `setup --wait-ready` | `false` | The installer waits until the images are downloaded and the Mac takes jobs |
+| `setup --server <url>` | `https://api-sandbox.darkbloom.dev` | Where `install.sh` comes from: an `https` URL without credentials, query or fragment |
+| `pause` | — | `darkbloom-sandbox pause`: running jobs finish, no new jobs; then prints how many still run |
+| `resume` | — | `darkbloom-sandbox resume` |
+| `logs` | `-n 50` | `tail` of `~/DarkbloomSandbox/agent/agent.log`; `-f`/`--follow` runs `tail -F`; `-l` is the same as `-n`/`--lines` |
+| `uninstall` | — | Says what stops (running jobs end unpaid), asks, then runs `darkbloom-sandbox uninstall --yes` with the terminal. `--yes`/`-y` skips the question; without a terminal it is required |
+
+### Setup
+
+1. **Check.** Refuses `sudo`, then prints chip, macOS, cores, memory, free disk,
+   desktop session, network, power and sleep in the `doctor` style (`[PASS]`, `[WARN]` with a `↳ fix:` line,
+   `[FAIL]`), then a verdict and the jobs this Mac can run at a time. The
+   rules are the add-on installer's own slot sizing, so the estimate matches
+   the slots the installer then chooses
+   (`provider-swift/Sources/darkbloom/Sandbox/SandboxEligibility.swift`,
+   `SandboxEligibility`; measurements in `SandboxHostProbe`):
+
+   | Rule | Value |
+   |---|---|
+   | Kept for the owner | A quarter of the cores (at least 2) and of the memory (at least 8 GiB) |
+   | Kept for inference | Another quarter of the memory, when the provider runs or its add-on socket exists |
+   | Linux job | 4 cores, 16 GiB and a 30 GiB scratch disk; at most 16 |
+   | macOS job | 8 cores and 16 GiB; at most 2, macOS's limit, which counts the owner's own macOS VMs |
+   | Order | Linux, macOS, Linux, macOS, then Linux only, while cores, memory and disk last |
+   | Free-space floor | A tenth of the home folder's volume, between 50 and 100 GiB, stays free |
+   | VM images | 50 GiB above the floor, unless already installed |
+   | Most requested macOS size | 12 cores and 32 GB: reported as fitting when 12 cores and 32 GiB are left for jobs, which takes 16 cores and about 64 GB beside inference |
+   | Refused | Not Apple silicon, macOS before 27, no network, or this user not logged in at the Mac's desktop (`/dev/console` owner), where the add-on runs |
+   | Warned, not refused | Wi-Fi, a laptop on battery, system sleep on the power adapter (`pmset -g custom`; `SleepDisabled 1` counts as off) |
+
+   Examples: 16 cores and 128 GB run 1 Linux and 1 macOS job; 12 cores and
+   32 GB run 1 Linux job; 8 cores and 16 GB are not eligible. When only disk
+   is short, the verdict says how many GiB to free and what the Mac then runs.
+2. **Confirm.** Explains that inference pauses while a job runs, that each job
+   pays its price minus a 10% fee into the Darkbloom balance, the 50 GiB of
+   images and the one browser approval, then asks `[y/N]`. `--yes` skips it;
+   without a terminal and without `--yes`, setup stops before downloading.
+3. **Install.** Downloads `<server>/install.sh` over HTTPS: a redirect is
+   followed only to another `https` URL, and the response must be HTTP 200 over
+   `https`, at most 1 MiB, with a `#!` first line naming a shell. The script is
+   written as a `0600` file in a new `0700` directory, run with `/bin/sh` and
+   removed afterwards. The installer verifies the add-on release before it
+   installs it; the CLI does not verify the script beyond TLS
+   (`provider-swift/Sources/darkbloom/Sandbox/SandboxInstaller.swift`,
+   `SandboxInstaller`). A script that names `--json-progress` runs with
+   `--json-progress --yes` and the owner's `--no-browser`, `--wait-ready` and
+   slot options, with stdin closed, and its stages render as
+   [progress events](#installer-progress-events). Any other script is an older
+   installer: it runs with the terminal and only the slot options, and the CLI
+   says so.
+4. **Summarize.** Reads `status --json` again: the state, the jobs at a time and
+   the next commands.
+
+While the installer runs, Ctrl-C reaches the installer, not the CLI, and setup
+exits `130`; an enrollment waiting for approval goes on and a rerun follows it.
+A failed installer's exit status becomes the CLI's, after the stage marked ✗,
+its `failed` message and the last lines of its stderr that do not repeat it.
+
+Rerunning `setup` decides from the add-on's answer
+(`provider-swift/Sources/darkbloom/Sandbox/SandboxSetupCommand.swift`,
+`SandboxSetupPlan`):
+
+| Add-on answer | `setup` |
+|---|---|
+| No add-on, or `not_installed` | A first setup: check, explain, confirm, install |
+| `waiting_for_approval`, `waitlisted`, `enrolling` | Runs the installer again to continue, without the check or the question |
+| `stopped`, `error`, no answer within 10 s, a failed status, an add-on older than `status --json` | Runs the installer again to repair or update the add-on |
+| `ready`, `running`, `paused`, `downloading_images`, `updating`, an unknown state | Reports the state and changes nothing; with `--linux-slots` or `--macos-slots` it runs the installer to apply them |
+
+### Installer progress events
+
+These are the add-on's command contract as of add-on 1.0.1 (schema 1): new
+fields and events may appear without a new schema, so unknown ones are
+ignored; other stdout lines show as text, and stderr is kept for the error
+report (`provider-swift/Sources/darkbloom/Sandbox/SandboxSetupProgress.swift`,
+`SandboxInstallerEvent`, `SandboxSetupRenderer`). With `--json-progress` the
+installer writes one object per line: `{"schema":1,"event":"stage","stage":…,
+"step":n,"steps":8,"status":…,"message":…}` with the stage's own fields beside
+them, and a successful run ends with one `{"event":"summary",…}`.
+
+| `status` | Meaning | The CLI |
+|---|---|---|
+| `started` | A stage begins; `message` is its title | The stage becomes the running line |
+| `progress` | Something while the stage runs | The approval link and code or the waitlist print at once; download progress updates the running line; another `message` prints under the stage when it ends |
+| `done` | The stage ended; `message` is its one-line result | `✓ Title`, then the stage's messages |
+| `failed` | The last event of a failed run; `message` and `exit_code` | `✗ Title` and the message; stderr lines that only repeat it are dropped |
+
+| `stage` | Line | Fields the CLI reads |
+|---|---|---|
+| `checking_mac` | Checking this Mac | — |
+| `verifying_release` | Verifying release | — |
+| `installing` | Installing | — |
+| `waiting_for_approval` | Waiting for approval, or waiting for Darkbloom to approve the account | `progress` with `user_code`, `verification_uri`, `verification_uri_complete` (or `null`) and `browser_opened`; `progress` with `waitlisted: true` |
+| `enrolled` | Enrolled | — |
+| `starting` | Starting | — |
+| `downloading_images` | Downloading images N% | `progress` (0 to 1) with `--wait-ready` |
+| `ready` | Ready | — |
+| another | its `started` message | — |
+
+The summary's `slots` (`linux`, `macos`: `count`, `automatic`, `limit`) and
+`console_url` feed the setup summary. On a terminal the running stage is the
+last line, with a spinner, and turns into ✓ or ✗ when it ends; elsewhere each
+stage prints once, when it ends, and `--wait-ready` download progress prints
+every tenth.
+
+| Installer exit status | `setup` says |
+|---|---|
+| `0` | The summary: state, jobs at a time (automatic and the limit, or your choice), next commands |
+| `2` | This Mac cannot host Darkbloom Sandbox as it is (the failed stage says why) |
+| `3` | Not enrolled: the code was denied or expired, or the waitlist request ended; run `setup` to start again |
+| `4` | Jobs are running; run `setup` again once they finish, `pause` meanwhile |
+| `130` | Stopped; an enrollment waiting for approval goes on, and a rerun follows it |
+| other | Setup did not finish; it is safe to rerun |
+
+### Add-on commands
+
+| Command the CLI runs | By | Bound |
+|---|---|---|
+| `darkbloom-sandbox status --json` | `darkbloom status`; `status`, `setup`, `pause`, `resume` and `uninstall` | 2 s for `darkbloom status`, 10 s otherwise; SIGKILL after it |
+| `darkbloom-sandbox pause`, `resume` | `pause`, `resume` | 60 s |
+| `darkbloom-sandbox uninstall --yes` | `uninstall` | none; terminal attached |
+| `darkbloom-sandbox status` | `status`, for an add-on older than `status --json` | none; terminal attached |
+
+`status --json` exits `1` when nothing is installed and still prints its
+document, so the CLI reads stdout whatever the exit status. `pause` and
+`resume` exit `0` (also when already so) and `1` when nothing is installed,
+which the CLI reports as not set up. `status --json` (schema 1, every member
+present, nullable ones as `null`) is decoded leniently: only an integer
+`schema` of 1 or more and a string `state` are required, so older and newer
+add-ons still render (`provider-swift/Sources/darkbloom/Sandbox/SandboxAddon.swift`,
+`SandboxAddonStatus`).
+
+| Field | Type | Use |
+|---|---|---|
+| `schema` | integer | `1` |
+| `installed` | bool | `false` reads as not set up |
+| `version` | string | Shown in the heading |
+| `host_id` | string or null | Shown as `Host` |
+| `state` | `not_installed`, `waiting_for_approval`, `waitlisted`, `enrolling`, `downloading_images`, `ready`, `running`, `paused`, `updating`, `stopped`, `error` | The heading; another value shows as text |
+| `detail` | string | The line under the heading, except for `ready`, `running`, `paused` and `stopped`, where the CLI says what the state means for inference and which command to run |
+| `slots.linux`, `slots.macos` | `{"total": n, "free": n}` | Free slots while the agent reports (`ready`, `running`, `paused`, `updating`); a platform without slots is left out |
+| `jobs_running` | integer | `running N jobs` |
+| `images` | `[{"platform": "linux" \| "macos", "state": "installed" \| "downloading" \| "missing", "progress": 0..1 or null}]` | Images line and the download percentage |
+| `accepting` | bool | A ready Mac with `false` shows the add-on's `detail` |
+| `last_update_check` | Unix seconds or null (milliseconds and ISO 8601 are read too) | `Updates` line |
+| `console_url` | string | `Console` line and the setup summary |
+
+An add-on that answers with exit status `64` or its usage on stderr predates
+the option or action: `status` then shows the add-on's own `status` output,
+`pause` and `resume` say to update it with `setup`, and `darkbloom status` says
+it is installed.
+
 ## `darkbloom stop`
 
 Drain accepted requests and their terminal usage before persistently stopping
@@ -987,6 +1200,18 @@ Output includes:
   GLM-5.3-Flash error that reports a Metal command buffer out of memory adds
   the `→ fix:` line from
   [GLM-5.3-Flash GPU wired-memory limit](#glm-53-flash-gpu-wired-memory-limit).
+- `Requests served since the daemon started (… ago)`: coordinator requests
+  this daemon finished since it started, with output tokens only. The count
+  restarts at zero when the daemon restarts or a scheduled availability window
+  opens. It includes requests that ended early on a coordinator cancel or a
+  dropped connection after output had been delivered (the next line counts
+  them when there are any; the coordinator may not pay for them) and free
+  [self-route](./self-route.md) requests to your own machine. Paid jobs are on
+  the console's Earnings page; the console's machine card adds these counters
+  up across restarts
+  ([coordinator/registry/heartbeat.go](https://github.com/Layr-Labs/darkbloom-platform/blob/10b8b4fabad60e20961b1b74a8672be41c5a0a2d/coordinator/registry/heartbeat.go),
+  `cumulativeDelta`)
+  (`provider-swift/Sources/darkbloom/StatusCommand+ServedRequests.swift`).
 - `Enabled model filter` is the saved config; a running daemon applies a
   changed `enabled_models` only at its next start. `Serving outside the enabled
   model filter` names each warm or advertised model the filter omits and why it
@@ -995,11 +1220,41 @@ Output includes:
   holds with each hold's UTC expiry and time left. `Not evictable for a load
   now` lists the resident models no load can evict at the snapshot, with the
   same reasons a refusal gives (`provider-swift/Sources/darkbloom/StatusCommand+Residency.swift`).
+- `Traffic:` whether the coordinator can route work to this connection, judged
+  from current evidence only; the provider re-registers on the same verdict.
+  `eligible for coordinator work` names the App Attest lease or legacy
+  verification, or a request the coordinator routed after its latest status
+  (`received a coordinator request … ago`; state field
+  `coordinator_connection.last_request_at`). `not yet eligible` covers the first
+  90 seconds after connecting (`statusGraceSeconds`) while the coordinator has
+  sent no status or one that does not authorize the connection yet.
+  `NOT receiving coordinator work:` names the cause with a `→ fix:` line:
+  disconnected, with how long the connection has been down across failed
+  reconnect attempts; no coordinator status 90 seconds after connecting; an
+  `untrusted` or `offline` status; an expired lease; or a refusal received in the
+  last 60 seconds (`refusalMaxAge`) with the coordinator's reason, such as a
+  locked login keychain, a stalled Apple call, App Attest unavailable on macOS 26
+  or outside a logged-in GUI session, or a connection without a linked account.
+  An older refusal reads `unconfirmed`, with its age and reason and no fix: the
+  current coordinator sends no status when legacy verification authorizes a
+  connection after the refusal it sends at registration. Omitted while a drain line
+  is shown, while an add-on holds a connected Mac (its
+  `Not serving: held by add-on` line says why no work arrives), for a stale
+  snapshot, and for daemons that predate the `coordinator_connection` state field
+  (`provider-swift/Sources/ProviderCore/Diagnostics/ServingReadiness.swift`,
+  `provider-swift/Sources/darkbloom/StatusCommand+Traffic.swift`).
 - `Not serving:` when the daemon is alive but a graceful drain has closed
   admission — draining, a drain that did not finish, or a drain whose relaunch
   never happened — with the commands that finish or interrupt it
   (`provider-swift/Sources/darkbloom/StatusCommand+LifecycleDrain.swift`,
   `Status.lifecycleDrainLine`).
+- `Sandboxes:` after `Serving concurrency`, while the
+  [Darkbloom Sandbox](#darkbloom-sandbox) add-on is installed: its state, the
+  jobs running and the free slots (`Sandboxes: running 1 job; free slots Linux
+  0/1, macOS 1/1`), or why it could not answer. Nothing without the add-on. The
+  query starts with the command and gives up after 2 seconds, so the add-on
+  never fails `status` (`provider-swift/Sources/darkbloom/Sandbox/SandboxStatusView.swift`,
+  `SandboxStatusView.statusLine`).
 - `Memory when idle`: the idle-memory policy in force (`always ready` or
   `free after N idle`). Advertised models without a resident engine are
   separated into `Startup preload pending`, `Not loaded (loads on request)`,
@@ -1712,6 +1967,8 @@ manual use.
 | `0` | Success, `--help`, `--version` |
 | `1` | `ExitCode.failure` — every runtime error listed above |
 | `64` | swift-argument-parser validation error (unknown flag, missing positional, `fan configure` with no option) |
+| `130` | `darkbloom sandbox setup` stopped with Ctrl-C while the add-on installer ran |
+| `2`, `3`, `4`, other | `darkbloom sandbox setup` exits with a failing add-on installer's own status ([what each means](#installer-progress-events)); `sandbox logs` and `sandbox uninstall` with `tail`'s or the add-on's |
 
 ## Paths and identifiers
 
@@ -1725,6 +1982,8 @@ manual use.
 | Device token | `~/.darkbloom/auth_token` (`DARKBLOOM_AUTH_TOKEN_PATH`) | `provider-swift/Sources/ProviderCore/Auth/DeviceAuth.swift` |
 | Local-mode token / discovery | `~/.darkbloom/local_token`, `~/.darkbloom/local.json` (`DARKBLOOM_LOCAL_DIR`), both `0600` | `provider-swift/Sources/ProviderCore/Server/LocalEndpoint.swift` |
 | Daemon state | `~/.darkbloom/daemon-state.json` (`DARKBLOOM_STATE_FILE`) | `provider-swift/Sources/ProviderCore/Service/DaemonStateFile.swift` |
+| Add-on runtime | `~/.darkbloom/runtime/` (`0700`): `addon.sock` (`0600`, test override `DARKBLOOM_ADDON_SOCKET`), `addon-hold.json` (`0600`, active holds) and the add-on's `ownership.lock` ([IPC reference](../reference/addon-hold-ipc.md#files)) | `provider-swift/Sources/ProviderCore/Addon/AddonHoldPaths.swift` (`AddonHoldPaths`) |
+| Darkbloom Sandbox add-on | `~/DarkbloomSandbox/` (test override `DARKBLOOM_SANDBOX_ROOT`), owned by the add-on: the CLI runs its `darkbloom-sandbox` command and reads `agent/agent.log` | `provider-swift/Sources/darkbloom/Sandbox/SandboxAddon.swift` (`SandboxAddon`) |
 | PID file | `~/.darkbloom/provider.pid` (`DARKBLOOM_PID_FILE`) | `provider-swift/Sources/ProviderCore/Service/ProcessLifecycle.swift` |
 | Warm-model journal | `~/.darkbloom/loaded-models.json` (`DARKBLOOM_LOADED_MODELS_FILE`) | `provider-swift/Sources/ProviderCore/Service/LoadedModelsStore.swift` |
 | Verified weight hashes | `~/.darkbloom/verified-weights.json` (`DARKBLOOM_VERIFIED_WEIGHTS_FILE`), `0600`; managed GLM load hashes bound to file identities, reused for startup registration | `provider-swift/Sources/ProviderCore/Service/VerifiedWeightHashStore.swift` |
@@ -1896,6 +2155,7 @@ must support the checkpoint contract described in
 | `DARKBLOOM_PREFIX_CACHE_MEMORY` | `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy+Activation.swift` (`memoryEnvironmentFlag`) |
 | `DARKBLOOM_PREFIX_CACHE` | `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy+Activation.swift` (`environmentFlag`) |
 | `DARKBLOOM_MIMO_COMPLETE_PREFIX` | `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy+Activation.swift` (`isMiMoCompletePrefixEnabled`); unset/empty uses the model default; `0` disables native MiMo text-prefix caching |
+| `DARKBLOOM_PREFIX_CACHE_SSD_INCREMENTAL_CHECKPOINTS` | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCachePolicy.swift` (`incrementalCheckpoints`); a negative value writes complete checkpoints instead of deltas |
 | `DARKBLOOM_MIMO_PERSISTENT_WIRED_RESIDENCY` | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/MiMo/MiMoV26WiredResidency.swift` (`isEnabled`) |
 | `DARKBLOOM_GLM_PERSISTENT_WIRED_RESIDENCY` | `provider-swift/Sources/ProviderCore/Inference/Models/GLM5Next/GLM5NextWiredResidency.swift` (`isEnabled`); on by default, `0`/`false`/`no`/`off` rolls back to per-command-buffer residency |
 | `DARKBLOOM_MLX_RESOURCE_DEBUG` | forwarded to `mlx-swift-lm` |
@@ -1934,8 +2194,11 @@ automatic updates with `darkbloom autoupdate disable`.
 
 | Constant | Value | Source |
 |---|---|---|
-| Coordinator reconnect backoff | `ExponentialBackoff(base: 1.0, max: 30.0)` s | `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient+Connection.swift` |
-| WebSocket ping interval / pong timeout | `pingInterval = 10.0` s / `pongTimeout = 30.0` s | same |
+| Coordinator reconnect backoff | `ExponentialBackoff(base: 1.0, max: 30.0)` s | `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorReconnectPolicy.swift` (`CoordinatorReconnectPolicy`) |
+| Backoff reset after a stable session | `stableSessionDuration = .seconds(60)`, counted from the `register` frame | same |
+| Reconnect wait after close code `1012` (service restart) | `serviceRestartDelayRange = 0...1` s, drawn at random; the backoff does not grow | same |
+| WebSocket ping interval / pong timeout | `pingInterval = 10.0` s / `pongTimeout = 30.0` s | `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient+Connection.swift` |
+| Coordinator handshake deadline (TCP, TLS and WebSocket upgrade to `.ready`) | `defaultTimeout = 30` s; a stalled handshake is cancelled and retried with the reconnect backoff | `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorConnectionHandshake.swift` (`CoordinatorConnectionHandshake`) |
 | State-file and capacity refresh | every `max(1, heartbeat_interval_secs / 2)` s; the heartbeat default is in the [`provider.toml` table](#providertoml-keys-read-by-the-cli) | `provider-swift/Sources/ProviderCore/ProviderLoop+Capacity.swift` |
 | State-file stale threshold | `isStale(maxAge: 90)` s; `doctor` calls the daemon wedged after `max(8 × refresh period, 90)` s | `provider-swift/Sources/ProviderCore/Service/DaemonStateFile.swift`; `provider-swift/Sources/darkbloom/Diagnostics/KVBackendPosture.swift` (`wedgedAfterSeconds`) |
 | Idle unload | `idle_timeout_mins` ([`provider.toml` table](#providertoml-keys-read-by-the-cli)); polled every 60 s; unloads the model, the daemon keeps running | `provider-swift/Sources/ProviderCore/ProviderLoop+IdleTimeout.swift` |
@@ -1954,7 +2217,7 @@ automatic updates with `darkbloom autoupdate disable`.
 ## Related
 
 - [Installation](./installation.md) · [Quickstart](./quickstart.md) · [Troubleshooting](./troubleshooting.md)
-- [Direct mode](./direct-mode.md) · [Self-route](./self-route.md) · [Fan control](./fan-control.md) · [Beta features](./beta-features.md)
+- [Direct mode](./direct-mode.md) · [Self-route](./self-route.md) · [Fan control](./fan-control.md) · [Beta features](./beta-features.md) · [Darkbloom Sandbox](./sandboxes.md)
 - [`reference/configuration.md`](../reference/configuration.md) — every environment variable and config key.
 - [Attestation](./attestation.md) — trust levels; [`architecture/security/attestation.md`](../architecture/security/attestation.md) for the mechanism.
 

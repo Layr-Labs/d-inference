@@ -248,6 +248,7 @@ extension ProviderLoop {
         try requireNativeMiMoProcessWorkAllowed()
         guard !isShuttingDown, !nativeMiMoLifecycleClosed,
             nativeMiMoLoads[modelID] === load, modelSlots[modelID] == nil else { throw CancellationError() }
+        if let refusal = addonHoldLoadRefusal(for: modelID) { throw refusal }
         try throwIfRetiring(modelID)
         try load.recheck()
     }

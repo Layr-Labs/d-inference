@@ -1,8 +1,8 @@
 # Test Provider And Native Contracts
 
-> Last updated: 2026-10-24
+> Last updated: 2026-10-28
 
-Run isolated Swift, native-resource, public-fixture, retained-console and landing tests here.
+Run isolated Swift, native-resource, public-fixture and landing tests here.
 Backend integration and cross-implementation qualification are platform-owned.
 Never point tests at production or overwrite a running provider's state.
 
@@ -40,6 +40,17 @@ The SDK has independent test products under `libs/mlx-swift-lm`. CI validates
 native memory ownership, cancellation, media decoding, paged KV and resource
 packaging there as well as provider behavior. Preserve all retained lane gates;
 do not treat the repository split as permission to skip native regressions.
+
+### Download completion ownership
+
+After rebuilding the provider test products, select
+`StreamingFileDownloadDelegateTests` through the isolated provider test runner.
+The suite cancels a real suspended `URLSession` task before attaching its waiter,
+checks both completion orders and duplicate terminal callbacks, races attachment
+against completion, and verifies that cancellation preserves the exact received
+`.part` bytes. Fixtures use unique temporary directories and never resume a
+network task or load model weights. These component tests do not qualify live
+HTTP downloads or model serving.
 
 ### Local Responses and reasoning regressions
 
@@ -427,8 +438,12 @@ swift test --skip-build --filter 'PromptTokenCacheTests|ChatTemplateLoopRewrites
 `PromptTokenCacheTests` loads synthetic tokenizers through the production
 `LocalTokenizerLoader` for the Qwen split, GPT-2 byte-level and Gemma metaspace
 pre-tokenizer families, with no download, and requires piecewise, cached and
-cross-turn token IDs to equal the unchanged path. A marker template that only
-the served loop renders, or raises for, checks that a background comparison
+cross-turn token IDs to equal the unchanged path. Cache-generation regressions
+require hits present at batch-lookup entry to be returned in request order,
+including duplicate keys and genuine misses across multiple rotations. They
+check exact byte accounting and subsequent eviction, and ensure batches without
+old-generation hits preserve cached entries. A marker template that only the
+served loop renders, or raises for, checks that a background comparison
 disables reuse. `ChatTemplateLoopRewritesTests`
 renders random agent histories through skeleton templates built from each loop
 rewrite's matched blocks and requires the rewritten render to equal the
@@ -670,7 +685,9 @@ turn is served with the prompt it shares with the previous turn as the
 repeated-prefix hint, as an agent loop's next turn would be. Per turn the
 report records TTFT, restored tokens, the gap from the last token to the
 terminal (which waits for checkpoint publication) and the files and bytes the
-complete-checkpoint store wrote. It fails only when a turn after the first
+complete-checkpoint store wrote, the delta files and the greedy output tokens;
+`DARKBLOOM_PREFIX_CACHE_SSD_INCREMENTAL_CHECKPOINTS=0` gives the complete-file
+baseline to compare against. It fails only when a turn after the first
 restores nothing. `DARKBLOOM_CHECKPOINT_CONVERSATION_STAGE_MB` sets
 `DARKBLOOM_PREFIX_CACHE_SSD_MAX_STAGE_MB` for the run, for example `1024` to
 compare against the large-memory complete-checkpoint default. The timings need
@@ -764,6 +781,34 @@ swift test --skip-build --no-parallel --filter 'AppAttestResume|ProviderLogout|L
 Keep state paths isolated as in `scripts/run-provider-tests.sh`; these tests
 must never stop an operator process. They do not establish physical Apple
 qualification or end-to-end platform authorization.
+
+## Add-On Hold
+
+These suites need no downloaded model weights, credentials or live provider
+state. The socket and loop tests bind a real `AF_UNIX` socket and take a real
+`flock` in a private temporary runtime directory. The load-fence and managed
+Super cases load synthetic tiny weights through MLX, so they need the staged
+test metallib.
+
+```bash
+swift test --skip-build --no-parallel \
+  --filter 'AddonIPCTests|AddonHoldDrainOwnershipTests|AddonHoldStoreTests|AddonPeerPolicyTests|AddonIPCServerTests|AddonHoldLoopTests|AddonHoldServeLoopTests|AddonHoldLoadFence|anAddonHoldRetiresTheSuperSlotButKeepsItsPreloadPlan|aFIFOInPlaceOfARequestIsIgnoredWithoutBlocking|ProviderBusyWireTests|AddonCommandTests|AutopilotBusyReasonTests'
+```
+
+| Coverage | Suites |
+|---|---|
+| `hold.v1` parsing, limits, exact response keys; drain-owner precedence | `AddonIPCTests`, `AddonHoldDrainOwnershipTests` |
+| Owner-only record, a FIFO record refused without blocking, lock probe, runtime paths; the real peer policy refuses the test process | `AddonHoldStoreTests`, `AddonPeerPolicyTests` |
+| Socket permissions, several requests per connection, oversized and unfinished lines, peers refused when accepted so silent ones cannot fill the slots, stale and live sockets | `AddonIPCServerTests` |
+| Unload of every model, kept preload set, idempotency, bounded drain that cancels only its own stragglers, update and reconnect cannot reopen, stop takeover, lease expiry with and without the lock, restart restore, operator mailbox | `AddonHoldLoopTests` |
+| A real tiny-model load running when the hold begins never installs, the hold waits for it, and loads resume after release | `TinyModelLoadTests/AddonHoldLoadFence` |
+| The managed Super slot's own retirement keeps the preload plan; a FIFO mailbox file is refused without blocking | `NemotronSuperManagedSlotTests`, `LifecycleMailboxTests` (filtered cases above) |
+| Loopback coordinator: draining heartbeat with busy fields, no `provider_drain`, 503 draining rejection, planned reconnect keeps the hold in `register`, release heartbeat | `AddonHoldServeLoopTests` |
+| Heartbeat and both register encodings | `ProviderBusyWireTests` |
+
+The peer check is exercised only negatively: no signed add-on is available to
+the test runner, and a test authenticator stands in for it in the socket and
+serve-loop flows. Physical add-on interoperation remains a separate check.
 
 ## Watchdog Launch Acknowledgement
 
@@ -918,11 +963,17 @@ runs its implementation at explicit revisions and records native/full-model evid
 Public CI must not clone a moving private branch or replace failed qualification
 with a hash check. Refresh expected outputs only after review.
 
-The retained console tests still read
-`coordinator/tests/protocol/testdata/paged_footprint_wire.json` and
-`coordinator/tests/protocol/testdata/process_memory_wire.json`. These are fixtures,
-not a retained coordinator implementation/test suite. Preserve agreement with the
-provider resource copies and run each implementation's checks in its owner repo.
+`fixtures/prompt-contract/v1/production_vectors.json` is regenerated only in
+darkbloom-platform, by its prompt sidecar at an explicit revision. This
+repository copies the file byte-for-byte and records the source revision and
+SHA-256 in the commit. A provider change to the rendered prompt, such as the
+Qwen JSON `response_format` thinking default, lands with the regenerated
+vectors and must pass `scripts/verify-prompt-parity.sh` before review.
+
+darkbloom-platform keeps byte-identical copies of the provider's
+`paged_footprint_wire.json` and `process_memory_wire.json` for its own
+coordinator and console tests. Coordinate fixture changes with the platform and
+run each implementation's checks in its owner repo.
 The [immutable platform test guide](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/developer/test.md)
 is historical context, not the current backend source authority.
 
@@ -995,6 +1046,7 @@ python3 scripts/test-release-dev-branch.py
 python3 scripts/test-provider-release-pipeline.py
 python3 scripts/test-provider-release-artifact.py
 python3 scripts/test-provider-release-cache.py
+python3 scripts/test-darkbloom-route.py
 python3 scripts/test-provider-signing-validation.py
 python3 scripts/test-prepare-metal-toolchain.py
 python3 scripts/test-stage-swiftpm-resource-bundles.py
@@ -1008,11 +1060,18 @@ Release tests cover provider-only version/tag/binary parity even when backend
 source is absent, signed tags and trusted `master` before secrets, exact artifact
 registration, immutable producing attempts and retry-safe publication. Archive
 checks reject unsafe members, changed inventories, wrong source and entitlements.
-`scripts/test-release-dev-branch.py` pins the experimental dev-branch lane
-(`.github/workflows/release-dev-branch.yml`) to dev scope: dispatch-only with a
-`ref` input, no tag path, no production environment, signing identity or secret,
-and publication only with `DEV_RELEASE_KEY`. These CPU-only checks do not prove
-Apple runtime behavior.
+`scripts/test-release-dev-branch.py` pins the dev-branch lane
+(`.github/workflows/release-dev-branch.yml`). The only trigger is a push to
+`dev`, with the `paths:` list of the `release-swift.yml` master push. The lane
+has no dispatch, no input and no `ref:`. Its one job checks `refs/heads/dev` and
+only calls `release-provider.yml` with `environment: dev` and `secrets: inherit`.
+The caller names no secret and has no step, so it has no build or signing path
+of its own. In `release-provider.yml`, every secret read without a prod or
+staging guard is a `DEV_*` secret or one of the five Apple signing secrets, and
+those are read only in the signing job. The signing job signs with the
+Developer ID, notarizes, staples and verifies the fan helper against the
+Apple-team requirement; nothing signs ad-hoc. These CPU-only checks do not
+prove Apple runtime behavior.
 
 `scripts/test-provider-release-publication.py` creates isolated local Git tags
 with verbatim annotations, including multiline opening paragraphs, extra blank
@@ -1020,9 +1079,31 @@ lines, CRLFs and synthetic SSH/PGP signature armor. It checks exact retained not
 text and payload/provenance digest guards without invoking signing or live
 publication.
 
+`scripts/test-provider-release-pipeline.py` and
+`scripts/test-provider-release-resolution.py` pin the routing of
+`.github/workflows/release-swift.yml`. A master push publishes staging only, and
+only when `STAGING_ENABLED` is `true`. A tag publishes prod. No master path
+publishes dev: the dispatch has no `dev` choice, the `dev` lane runs only as an
+unpublished signed validation build, and the resolver refuses a dev publication
+from master and a master push routed to dev. A push to `dev` resolves to
+`X.Y.Z-dev.branch.N` for `dev` only; `staging`, `prod` and other branches are
+refused. `scripts/test-provider-release-resume.py` pins the source gate: a dev
+push needs environment `dev` and a verified commit on `dev` ancestry, and the
+tag, master push and dispatch rows keep the master checks. The pipeline test
+pins the final-app check against the self-updater's designated requirement.
+
+`scripts/test-darkbloom-route.py` runs the actual
+[CI runner routing](build.md#ci-runner-routing) shell step against a loopback
+HTTPS plane with a throwaway certificate; the host needs Bash, Python, jq, curl
+and openssl. It covers the default-off switch, fork pull requests, exact label
+grants, HTTP errors, the single retry, timeouts, untrusted or plain-HTTP planes
+and hostile reply text. It also pins each routed job's fallback, timeout and
+read-only permissions, and keeps release workflows on literal Blacksmith
+runners. No check contacts the real plane.
+
 Docs-impact tests retain provider, protocol, privacy, native capacity, cache,
-release/model publication, console packaging and fixture mappings. Historical
-links need exact provenance. Final full-tree lint needs intended additions/removals
+release/model publication and fixture mappings. Historical links need exact
+provenance. Final full-tree lint needs intended additions/removals
 staged because it enumerates tracked files; explicit paths can be checked earlier
 without the orphan pass. Neither replaces final staged full-tree validation.
 
@@ -1034,20 +1115,6 @@ checks. `SSDCheckpointMaintenanceEpochTests`, `SSDTrackedNativeRetryTests` and
 `SSDCacheEpochStoreRecoveryTests` cover encrypted accounting/reconciliation,
 real-completion fences and refusal/recovery. Permission cases require a non-root
 test user and only change temporary fixture directories.
-
-## Retained Console
-
-```bash
-make ui-install ui-lint ui-test ui-build
-```
-
-Vitest covers route handlers, validation, state and protocol fixtures. ESLint
-checks `src/`; the console lane and console-only pre-commit hook remain.
-The retained `next build` ignores TypeScript errors, so it does not replace
-lint, Vitest or the separate `npm run typecheck` diagnostic in `console-ui/`.
-Use isolated fixtures/services, never real accounts or billing credentials.
-See [console architecture](../architecture/components/console-ui.md);
-new console development remains platform-owned.
 
 ## Landing
 
@@ -1095,6 +1162,39 @@ Report exact selector, revision, native resources and model identity. Distinguis
 compile-only, fixed vectors, tiny native fixtures, full-model execution,
 signed-artifact tests and private platform integration. Document skips and
 unavailable hardware honestly. Local validation does not authorize deployment.
+
+## Constrained JSON answers
+
+After rebuilding the provider test product and staging its metallib, run the
+CPU-only JSON-answer suites from `provider-swift/` together with the Flint suites
+whose automaton they share:
+
+```bash
+../scripts/run-nested-suite.sh 'QwenJSONAnswer(Constraint|Policy|Output|Serving)Tests|FlintResponseFormat|FlintNativeProtocol|FlintAnswerStop' --no-parallel
+```
+
+`QwenJSONAnswerConstraintTests` drives the production constraint over a
+synthetic Qwen-shaped vocabulary: single bytes, the pinned terminators and think
+markers at 248044, 248046, 248068 and 248069, and no piece for any other id up to
+248,320. It covers both prompt phases, masked EOS, schema violations, forbidden
+spellings, mask/transition agreement, token splits, bounded states and the
+pinned tokenizer checks. `QwenJSONAnswerPolicyTests` checks eligibility and
+every prompt-only fallback through `ToolConstraintFactory.make`, and
+`QwenJSONAnswerOutputTests` the completed-output validation.
+`QwenJSONAnswerServingTests` samples a scripted engine through the real bridge
+and scheduler: streamed content, a typed 422 on truncation, requested reasoning
+split before validation, and unchanged tool and other-family paths.
+
+`QwenJSONAnswerRealTokenizerTests` is opt-in. Set
+`DARKBLOOM_TEST_QWEN_TOKENIZER_DIR` to a local Qwen 3.5, 3.6 or 3.8 snapshot
+directory and select that suite alone; it reads only tokenizer and template
+files, checks the pinned contract and both rendered JSON prompt tails, and walks
+a real tokenization of an answer. Without the variable the suite is skipped,
+which the nested runner reports as an error. None of these suites loads weights
+or establishes answer quality or throughput. Sources:
+`provider-swift/Tests/ProviderCoreTests/Inference/Tools/QwenJSONAnswerConstraintTests.swift`,
+`provider-swift/Tests/ProviderCoreTests/Inference/Tools/QwenJSONAnswerServingTests.swift`,
+`provider-swift/Tests/ProviderCoreTests/Inference/Tools/QwenJSONAnswerRealTokenizerTests.swift`.
 
 ## Flint native validation
 

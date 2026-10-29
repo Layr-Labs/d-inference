@@ -578,19 +578,16 @@ private final class RegistrationAttestationSequence: @unchecked Sendable {
 @Test func exponentialBackoffDoublesWithJitterUntilMaximumAndResets() {
     var backoff = ExponentialBackoff(base: 1, max: 4)
 
-    // Equal jitter: each delay is in [deterministic/2, deterministic], where the
-    // deterministic component doubles (1, 2, 4, 4) and caps at max. We sample
-    // each step and assert the bounds hold (and the cap is respected).
-    func inRange(_ v: Double, _ det: Double) -> Bool { v >= det / 2 && v <= det }
-
-    #expect(inRange(backoff.nextDelay(), 1))
-    #expect(inRange(backoff.nextDelay(), 2))
-    #expect(inRange(backoff.nextDelay(), 4))
-    let capped = backoff.nextDelay()
-    #expect(capped >= 2 && capped <= 4) // still capped at max even with jitter
+    // Equal jitter: each delay range is [deterministic/2, deterministic], where
+    // the deterministic component doubles (1, 2, 4, 4) and caps at max.
+    var ranges: [ClosedRange<TimeInterval>] = []
+    for _ in 0..<4 { ranges.append(backoff.nextDelayRange()) }
+    let expected: [ClosedRange<TimeInterval>] = [0.5...1, 1...2, 2...4, 2...4]
+    #expect(ranges == expected) // still capped at max
 
     backoff.reset()
-    #expect(inRange(backoff.nextDelay(), 1))
+    let afterReset = backoff.nextDelayRange()
+    #expect(afterReset == (0.5...1.0))
 }
 
 @Test("NWProtocolWebSocket options set maximum message size above default")

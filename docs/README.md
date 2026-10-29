@@ -1,10 +1,10 @@
 # Darkbloom Provider Documentation
 
-> Last updated: 2026-10-18
+> Last updated: 2026-10-28
 
-This repository documents the Swift provider, local native inference, landing,
-and retained console snapshot. New backend, console and admin development and
-backend operating guides belong to
+This repository documents the Swift provider, local native inference and
+landing. Backend, console and admin source, development and operating guides
+belong to
 [the platform](https://github.com/Layr-Labs/darkbloom-platform/tree/48a198c71a2d30feec5597bacf1101120f7f955d/docs).
 
 ## Operate A Provider
@@ -12,10 +12,12 @@ backend operating guides belong to
 - [Installation](provider/installation.md) and [quickstart](provider/quickstart.md)
 - [CLI reference](provider/cli-reference.md) and [configuration](reference/configuration.md)
 - [Hardware requirements](provider/hardware-requirements.md)
+- [Check a missing base reward](provider/base-rewards.md)
 - [Cache storage and daily writes](provider/cache-storage.md)
 - [Attestation](provider/attestation.md) and [troubleshooting](provider/troubleshooting.md)
 - [Local direct mode](provider/direct-mode.md) and [network self-route](provider/self-route.md)
 - [Fan control](provider/fan-control.md) and [beta features](provider/beta-features.md)
+- [Host Darkbloom Sandbox CI jobs](provider/sandboxes.md) beside inference
 - [Desktop app development](developer/desktop-app.md): build and validate the Electron frontend and its Swift CLI/backend interface
 
 ## Understand And Develop
@@ -30,7 +32,6 @@ backend operating guides belong to
 - [PR stacks](developer/pull-requests.md) and [threat-review tooling](developer/threat-model-review.md)
 - [Landing application](../landing/README.md) and [public representations](architecture/components/landing.md)
 - [Native KV and checkpoint quantization](architecture/kv-cache-quantization.md)
-- [Retained console architecture and hosting configuration](architecture/components/console-ui.md)
 
 Public golden vectors validate fixed expected behavior. They do not execute the
 private platform implementation or establish live routing, real Apple

@@ -11,32 +11,29 @@ extension SSDHybridCheckpointStore: SSDEvictableStore, DurablePrefixCacheEvidenc
     func oldestEntryAccess() -> Int64? { index.oldest()?.lastAccess }
 
     func evictOldestEntry() -> Int {
-        for entry in index.oldestEntries() {
-            let url = SSDBlockStore.fileURL(root: config.root, tag16Hex: entry.tag16.hexString)
-            let retired = retireIndexedEntries([url])
-            // Reconciliation may already satisfy the global limit. Return to
-            // enforcement before selecting another physical victim.
-            if retired.externalChange { return 0 }
-            let freed = retired.indexedBytesFreed
-            if freed > 0 {
-                statsBox.update { $0.evictions += 1 }
-                return freed
+        // A closed store refuses every removal and is never reopened.
+        guard !isClosed else { return 0 }
+        let freed = SSDOwnedEntryRetirement.evictOldest(index: index, isClosed: { isClosed }) { tag in
+            let url = SSDBlockStore.fileURL(root: config.root, tag16Hex: tag.hexString)
+            return retireIndexedEntries([url])
+        }
+        if freed > 0 { statsBox.update { $0.evictions += 1 } }
+        return freed
+    }
+
+    func retireOwnedEntries(_ urls: [URL], unusedSince: Int64? = nil) -> Set<String> {
+        retireIndexedEntries(urls, unusedSince: unusedSince).removed
+    }
+
+    private func retireIndexedEntries(_ urls: [URL], unusedSince: Int64? = nil) -> SSDOwnedEntryRetirement.Result {
+        let result = SSDOwnedEntryRetirement.removeInSlices(urls) { slice in
+            removalLock.withLock {
+                guard hasSafeRoot, ownsEvictionRoot else { return nil }
+                return SSDOwnedEntryRetirement.remove(
+                    urls: slice, root: config.root, index: index, epochStore: config.epochStore,
+                    unusedSince: unusedSince)
             }
         }
-        return 0
-    }
-
-    func retireOwnedEntries(_ urls: [URL]) -> Set<String> {
-        retireIndexedEntries(urls).removed
-    }
-
-    private func retireIndexedEntries(_ urls: [URL]) -> SSDOwnedEntryRetirement.Result {
-        let result: SSDOwnedEntryRetirement.Result? = removalLock.withLock {
-            guard hasSafeRoot, ownsEvictionRoot else { return nil }
-            return SSDOwnedEntryRetirement.remove(
-                urls: urls, root: config.root, index: index, epochStore: config.epochStore)
-        }
-        guard let result else { return .init() }
         if result.externalChange { reconcileExternalRemovals() }
         return result
     }
@@ -110,12 +107,16 @@ extension SSDHybridCheckpointStore: SSDEvictableStore, DurablePrefixCacheEvidenc
     }
 
     func removeCorrupt(_ tag: Data) {
+        removeFile(tag)
+        statsBox.update { $0.corruptDropped += 1 }
+    }
+
+    private func removeFile(_ tag: Data) {
         _ = performIndexedRemoval {
             let url = SSDBlockStore.fileURL(root: self.config.root, tag16Hex: tag.hexString)
             _ = SSDBlockStore.removeItemIfSafe(at: url, under: self.config.root)
             _ = self.index.remove(tag16: tag)
         }
-        statsBox.update { $0.corruptDropped += 1 }
     }
 
     func scanOnDisk() {
@@ -126,6 +127,8 @@ extension SSDHybridCheckpointStore: SSDEvictableStore, DurablePrefixCacheEvidenc
             at: config.root, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles])
         else { return }
         let now = config.nowSeconds()
+        // Pair each delta's commitment with its parent once every header is seen.
+        var commitments: [String: Data] = [:], parents: [Data: String] = [:]
         for fanout in fanouts where SSDBlockStore.isLowerHex(fanout.lastPathComponent, count: 2) {
             guard SSDBlockStore.isRealDirectory(fanout), SSDBlockStore.pathResolvesToItself(fanout),
                 let files = try? manager.contentsOfDirectory(
@@ -140,20 +143,31 @@ extension SSDHybridCheckpointStore: SSDEvictableStore, DurablePrefixCacheEvidenc
                 guard SSDBlockStore.isSafeBlockURL(file, modelRoot: config.root),
                     let tag = SSDPrefixCache.hexDecode(file.deletingPathExtension().lastPathComponent)
                 else { index.removeAll(); return }
-                guard let metadata = try? SSDBlockStore.readMetadataOnly(
+                guard let header = try? SSDBlockStore.readHeaderOnly(
                     from: file, maximumMetadataBytes: 1 << 20, maximumWrappedDEKBytes: 60),
+                    case let metadata = header.metadata, let fullTag = SSDPrefixCache.hexDecode(metadata.lookupTag),
                     metadata.weightHash == identity.modelAggregateHash,
                     metadata.layoutEpoch == SSDHybridCheckpointEnvelope.layoutEpoch(
                         identity: identity, backendLayout: config.backendLayout),
                     metadata.blockSize == PrefixCachePolicy.blockSize,
                     metadata.lookupTag.hasPrefix(tag.hexString),
                     let attributes = try? file.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey]),
-                    let size = attributes.fileSize, let date = attributes.contentModificationDate,
-                    now - Int64(date.timeIntervalSince1970) < config.ttlSeconds
+                    let size = attributes.fileSize, let date = attributes.contentModificationDate
                 else { removeCorrupt(tag); continue }
-                index.insert(tag16: tag, fileBytes: size, lastAccess: Int64(date.timeIntervalSince1970))
+                // A file left past its TTL while the provider was stopped is
+                // removed, but it is not corrupt.
+                guard now - Int64(date.timeIntervalSince1970) < config.ttlSeconds else {
+                    removeFile(tag)
+                    continue
+                }
+                index.insert(tag16: tag, fileBytes: size, lastAccess: Int64(date.timeIntervalSince1970),
+                             parent: metadata.parentCommitment.map { _ in Data() })
+                commitments[lookupKeys.checkpointParentCommitmentHex(parentTag: fullTag, parentFileIV: header.fileIV)] = tag
+                parents[tag] = metadata.parentCommitment
             }
         }
+        // An unpaired delta stays unusable and ages out like any untouched file.
+        for (tag, commitment) in parents { commitments[commitment].map { index.setParent(tag16: tag, parent: $0) } }
         lock.withLock { if !closed { scanReady = true } }
     }
 
@@ -204,6 +218,7 @@ extension SSDHybridCheckpointStore: SSDEvictableStore, DurablePrefixCacheEvidenc
         lock.withLock {
             readyReceipts.removeValue(forKey: requestID)
             authenticatedReceipts.removeValue(forKey: requestID)
+            restoredCheckpoints.removeValue(forKey: requestID)
         }
     }
 
@@ -225,7 +240,7 @@ extension SSDHybridCheckpointStore: SSDEvictableStore, DurablePrefixCacheEvidenc
                 let tag = Data(proof.tags[offset].prefix(16))
                 let url = SSDBlockStore.fileURL(root: config.root, tag16Hex: tag.hexString)
                 guard SSDBlockStore.indexedBlockFileStatus(at: url, under: config.root) == .regular,
-                    let size = index.fileBytes(tags16: [tag][...])?.first
+                    let size = index.chain(tag16: tag)?.bytes
                 else { continue }
                 maximumFileBytes = max(maximumFileBytes, size)
                 let anchor = PrefixCacheAnchor(chainHash: proof.hashes[offset].hexString, tokenCount: UInt64(position))

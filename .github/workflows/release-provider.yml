@@ -944,11 +944,28 @@ jobs:
           runtime_facts --list-release-models > "$FACTS_ROOT/release-models.json"
           python3 scripts/provider-cluster-runtime-models.py \
             --models "$FACTS_ROOT/release-models.json" --output "$FACTS_ROOT/candidates"
+          status=0
           runtime_facts --app "$FINAL_APP" --release-candidates "$FACTS_ROOT/candidates" \
-            --require-model Qwen3.5-9B --require-model glm-5.3-flash > "$FACTS_ROOT/cluster-runtime.json"
+            --require-model Qwen3.5-9B --require-model glm-5.3-flash \
+            > "$FACTS_ROOT/cluster-runtime.json" 2> "$FACTS_ROOT/runtime-facts.err" || status=$?
+          # A model the build may leave out (ClusterRuntimeApprovalFacts.softReleaseModels)
+          # is one line on standard error: a warning annotation and a summary line.
+          # Every other line is the command's own error output.
+          LEFT_OUT='Left out of the cluster runtime facts: '
+          : > "$FACTS_ROOT/left-out.md"
+          while IFS= read -r line || [ -n "$line" ]; do
+            case "$line" in
+              "$LEFT_OUT"*)
+                printf '::warning::%s\n' "$line"
+                printf -- '- **Warning:** %s\n' "$line" >> "$FACTS_ROOT/left-out.md" ;;
+              *) printf '%s\n' "$line" >&2 ;;
+            esac
+          done < "$FACTS_ROOT/runtime-facts.err"
+          test "$status" -eq 0
           echo "CLUSTER_RUNTIME_FILE=$FACTS_ROOT/cluster-runtime.json" >> "$GITHUB_ENV"
           {
             echo '### Cluster runtime facts (dev)'
+            cat "$FACTS_ROOT/left-out.md"
             echo '```json'
             python3 -m json.tool --sort-keys "$FACTS_ROOT/cluster-runtime.json"
             echo '```'

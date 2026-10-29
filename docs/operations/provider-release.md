@@ -702,7 +702,12 @@ The step `Compute dev cluster runtime facts from the final signed app` of job
    --require-model Qwen3.5-9B --require-model glm-5.3-flash`. The app's own
    worker describes each candidate (`--describe-runtime`). The step fails when a
    listed model has no candidate that the worker describes as that model, or
-   when a required model is missing.
+   when a required model is missing. One exception holds until the GLM manifest
+   repin lands: when the worker refuses every candidate of `glm-5.3-flash`
+   (`registered_glm53_flash`, `ClusterRuntimeApprovalFacts.softReleaseModels`),
+   the block leaves it out, and the step writes a `::warning::` annotation and a
+   step-summary line with the model, its runtime ID and the reason. A fetch or
+   integrity failure of `glm-5.3-flash` still fails the step.
 7. `prepare --cluster-runtime <file>` adds the block to `release-payload.json`.
    `validate` refuses a dev payload without a valid block and a prod or staging
    payload with one.

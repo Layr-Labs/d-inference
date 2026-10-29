@@ -7,6 +7,10 @@ import DarkbloomClusterProtocol
 /// that exact command privately and compare its complete canonical response.
 /// This direct child is not a generation owner and acquires no device lease.
 enum DistributedCapabilityProbe {
+    /// The worker ran and refused: a non-zero exit, a signal or any standard
+    /// error output. Every other failure of `run` is another error.
+    static let commandFailed = ClusterConfigurationError.invalid("Installed capability command failed")
+
     static func verify(plan: DistributedInstalledPlan, executable: DistributedInstalledFiles.Identity,
                        deadline: UInt64) throws {
         try executable.requireUnchanged()
@@ -82,7 +86,7 @@ enum DistributedCapabilityProbe {
         exit.wait()
         try DistributedInstalledFiles.check(deadline)
         guard child.terminationReason == .exit, child.terminationStatus == 0, data[1].isEmpty else {
-            throw ClusterConfigurationError.invalid("Installed capability command failed")
+            throw commandFailed
         }
         return data[0]
     }

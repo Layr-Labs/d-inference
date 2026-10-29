@@ -189,6 +189,47 @@ struct ClusterStoreManifestRepairTests {
         #expect(server.requestedPaths() == [Self.gptOSSPath])
     }
 
+    /// A setup report bounds its repairs (`ClusterSetupOperations.reportRepairSeconds`). Eight refused folders and a CDN
+    /// that answers after 0.4 s: a pass with a 1 s deadline returns in time and leaves folders over, and the next pass
+    /// repairs them at once (a folder the deadline cut is not held back for the retry interval).
+    @Test func repairsStopAtTheDeadlineAndTheRestFollowOnTheNextPass() async throws {
+        let old = try Self.coordinatorCopy("gpt-oss-20b"), published = try Self.worker("registered-gpt-oss-20b.manifest.json")
+        let configuration = try Self.worker("registered-gpt-oss-20b.configuration.json")
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("cluster-repair-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = root.appendingPathComponent("store", isDirectory: true)
+        let folders = (0..<8).map { store.appendingPathComponent("gpt-oss-20b-2026-05-25-r1-\($0)", isDirectory: true) }
+        for folder in folders {
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            try configuration.write(to: folder.appendingPathComponent("config.json"))
+            try old.write(to: folder.appendingPathComponent("manifest.json"))
+        }
+        let providerConfiguration = root.appendingPathComponent("provider.toml")
+        try Data("[coordinator]\nurl = \"ws://127.0.0.1:9/ws/provider\"\n".utf8).write(to: providerConfiguration)
+        let server = LocalCDNFileServer()
+        let cdn = try await server.start()
+        defer { Task { await server.shutdown() } }
+        server.setFiles([Self.gptOSSPath: published])
+        server.setResponseDelay(milliseconds: 400)
+        let aggregate = try ClusterCatalogArtifact.parse(manifest: old).aggregateSHA256
+        func pass(deadline: Date?) {
+            ClusterProductModelStore.repairStoreManifests(store: store, servable: [aggregate], providerConfiguration: providerConfiguration,
+                environment: ["DARKBLOOM_R2_CDN_URL": cdn.absoluteString], deadline: deadline, accepts: Self.describes)
+        }
+        func repaired() -> Int {
+            folders.filter { (try? Data(contentsOf: $0.appendingPathComponent("manifest.json"))) == published }.count
+        }
+
+        let started = Date()
+        pass(deadline: started.addingTimeInterval(1))
+        #expect(Date().timeIntervalSince(started) < 2)
+        #expect((1..<folders.count).contains(repaired()))
+
+        server.setResponseDelay(milliseconds: 0)
+        pass(deadline: nil)
+        #expect(repaired() == folders.count)
+    }
+
     /// Neither the CDN nor the coordinator answers: the folder is unchanged and the worker refuses it as before.
     @Test func unreachableCatalogLeavesTheFolderUnchanged() throws {
         let old = try Self.coordinatorCopy("gpt-oss-20b")

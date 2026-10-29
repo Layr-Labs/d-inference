@@ -4463,6 +4463,10 @@ fetched bytes, the folder is unchanged and the next attempt for it comes
 `ClusterOnboardingUpdate.checkEverySeconds` (60 s) later. When the bytes name
 other files or another catalog entry, the folder is unchanged, the worker
 refuses it, and the provider does not ask for it again until it restarts.
+A setup report spends at most `ClusterSetupOperations.reportRepairSeconds`
+(10 s) on repairs, so the Mac still answers the other Mac's question within
+`ClusterSetupOperations.peerSeconds` (30 s). Folders left over are repaired on
+the next report or before the next plan.
 
 
 ## GPT-OSS independent-history batch forward

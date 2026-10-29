@@ -53,6 +53,9 @@ extension ClusterSetupOperations {
 
     /// Seconds an SSH question to the other Mac may take.
     static let peerSeconds = 30.0
+    /// The longest a setup report spends on manifest repairs, well inside `peerSeconds`: the other Mac's question
+    /// also waits for the clone-in, the doctor and the transport. Folders left over are repaired on the next report.
+    static let reportRepairSeconds = 10.0
 
     public static func live(_ settings: LiveSettings) throws -> ClusterSetupOperations {
         let paths = try ClusterUserPaths()
@@ -435,7 +438,7 @@ final class LiveContext: @unchecked Sendable {
             // artifacts a pair may serve, as the onboarding clones: any other activated folder stays out of the store.
             // A folder copied over the cable has no receipt here: its manifest is repaired against the catalog too.
             ClusterProductModelStore.updateClusterStore(URL(fileURLWithPath: store), providerConfiguration: configuration,
-                                                        accepts: workerAcceptsManifest)
+                repairDeadline: Date().addingTimeInterval(ClusterSetupOperations.reportRepairSeconds), accepts: workerAcceptsManifest)
         }
         let doctor = blockingWizard { await ClusterDiagnostics.doctor(providerConfiguration: self.configuration, localLink: link) }
         let savedSetup: ClusterConsoleSavedSetup

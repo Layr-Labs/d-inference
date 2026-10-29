@@ -60,9 +60,10 @@ enum ClusterProductModelStore {
         case unavailable
     }
 
-    /// `catalogManifest` with the reason when it has no bytes.
+    /// `catalogManifest` with the reason when it has no bytes. With a `deadline`, no request waits past it, and a
+    /// source not asked before it counts as no answer.
     static func catalogAnswer(providerConfiguration: URL, artifact: ClusterCatalogArtifact, seconds: Double = 5,
-                              environment: [String: String] = ProcessInfo.processInfo.environment,
+                              environment: [String: String] = ProcessInfo.processInfo.environment, deadline: Date? = nil,
                               accepts: ((Data) -> Bool)? = nil) -> CatalogAnswer {
         var urls = [URL]()
         if let prefix = artifact.r2Prefix {
@@ -74,7 +75,7 @@ enum ClusterProductModelStore {
         var candidates = [Data]()
         var otherContent = false
         for url in urls {
-            switch fetchManifest(url, artifact: artifact, seconds: seconds) {
+            switch fetchManifest(url, artifact: artifact, seconds: seconds, deadline: deadline) {
             case .manifest(let data):
                 guard !candidates.contains(data) else { continue }
                 if accepts == nil || accepts?(data) == true { return .manifest(data) }
@@ -87,30 +88,37 @@ enum ClusterProductModelStore {
         return otherContent ? .otherContent : .unavailable
     }
 
-    private static func fetchManifest(_ url: URL, artifact: ClusterCatalogArtifact, seconds: Double) -> CatalogAnswer {
+    private static func fetchManifest(_ url: URL, artifact: ClusterCatalogArtifact, seconds: Double, deadline: Date?) -> CatalogAnswer {
+        var limit = seconds + 1
+        if let deadline {
+            limit = min(limit, deadline.timeIntervalSinceNow)
+            guard limit > 0 else { return .unavailable }
+        }
         var request = URLRequest(url: url)
-        request.timeoutInterval = seconds
+        request.timeoutInterval = min(seconds, limit)
         let box = ClusterOnboardingMailbox<Data>()
         let done = DispatchSemaphore(value: 0)
         URLSession.shared.dataTask(with: request) { data, response, _ in
             if let data, (response as? HTTPURLResponse)?.statusCode == 200, data.count <= ClusterCatalogArtifact.maximumManifestBytes { box.post(data) }
             done.signal()
         }.resume()
-        guard done.wait(timeout: .now() + seconds + 1) == .success, let data = box.take().first else { return .unavailable }
+        guard done.wait(timeout: .now() + limit) == .success, let data = box.take().first else { return .unavailable }
         guard let parsed = try? ClusterCatalogArtifact.parse(manifest: data), parsed.sameArtifact(artifact) else { return .otherContent }
         return .manifest(data)
     }
 
     /// Clones a product-store model into the cluster's store under its folder name; nil when it is there already.
     /// `providerConfiguration` names the catalog whose exact manifest bytes are written beside the files.
+    /// `repairDeadline` bounds the repair of a folder that is there already (`repairManifest`).
     static func cloneIntoClusterStore(_ installed: Installed, store: URL, providerConfiguration: URL? = nil,
+                                      repairDeadline: Date? = nil,
                                       accepts: ((_ manifest: Data, _ folder: URL) -> Bool)? = nil) throws -> String? {
         var artifact = installed.artifact
         if case .complete(let folder) = ClusterModelStore.holding(store: store, artifact: artifact) {
             if let providerConfiguration {
                 let directory = store.appendingPathComponent(folder)
                 repairManifest(directory, artifact: artifact, providerConfiguration: providerConfiguration,
-                               accepts: accepts.map { check in { check($0, directory) } })
+                               deadline: repairDeadline, accepts: accepts.map { check in { check($0, directory) } })
             }
             return nil
         }
@@ -133,7 +141,8 @@ enum ClusterProductModelStore {
     /// Folders under repair now: two callers (setup report and plan) never ask the catalog for one folder at once.
     nonisolated(unsafe) private static var repairRunning = Set<String>()
 
-    private enum RepairOutcome { case settled, retry }
+    /// `notAttempted`: the deadline came before the catalog answered; the next pass asks at once.
+    private enum RepairOutcome { case settled, retry, notAttempted }
 
     /// A model cloned in while the catalog did not answer kept the product store's re-encoded receipt as its
     /// manifest; the worker pins the catalog's exact bytes, so the cluster said "not supported" for a verified model
@@ -144,11 +153,12 @@ enum ClusterProductModelStore {
     /// A folder with a definite outcome is not asked again in this process. After a failed attempt (the catalog did
     /// not answer, the worker refused the fetched bytes or the write failed) the next one waits
     /// `ClusterOnboardingUpdate.checkEverySeconds` from `now`, so a fetch that failed once after an update is retried.
+    /// After `deadline` the folder is not asked (the next pass asks), and no catalog request waits past it.
     static func repairManifest(_ folder: URL, artifact: ClusterCatalogArtifact, providerConfiguration: URL,
                                environment: [String: String] = ProcessInfo.processInfo.environment, now: Date = Date(),
-                               accepts: ((Data) -> Bool)? = nil) {
+                               deadline: Date? = nil, accepts: ((Data) -> Bool)? = nil) {
         // Only with the worker's own answer: without it the catalog's two encodings could replace one the worker takes.
-        guard let accepts else { return }
+        guard let accepts, deadline.map({ Date() < $0 }) ?? true else { return }
         let key = folder.path
         let due: Bool = repairLock.withLock { () -> Bool in
             guard !repairSettled.contains(key), !repairRunning.contains(key), repairRetryAt[key].map({ now >= $0 }) ?? true else { return false }
@@ -157,27 +167,30 @@ enum ClusterProductModelStore {
         }
         guard due else { return }
         let outcome = attemptRepair(folder, artifact: artifact, providerConfiguration: providerConfiguration,
-                                    environment: environment, accepts: accepts)
+                                    environment: environment, deadline: deadline, accepts: accepts)
         repairLock.withLock { () -> Void in
             repairRunning.remove(key)
             switch outcome {
             case .settled: repairSettled.insert(key); repairRetryAt[key] = nil
             case .retry: repairRetryAt[key] = now.addingTimeInterval(ClusterOnboardingUpdate.checkEverySeconds)
+            case .notAttempted: break
             }
         }
     }
 
     private static func attemptRepair(_ folder: URL, artifact: ClusterCatalogArtifact, providerConfiguration: URL,
-                                      environment: [String: String], accepts: @escaping (Data) -> Bool) -> RepairOutcome {
+                                      environment: [String: String], deadline: Date?,
+                                      accepts: @escaping (Data) -> Bool) -> RepairOutcome {
         let manifest = folder.appendingPathComponent("manifest.json")
         // A manifest this Mac's worker already takes is left as it is.
         guard let current = ClusterModelStore.readSmall(manifest), !accepts(current),
               let parsed = try? ClusterCatalogArtifact.parse(manifest: current), parsed.sameArtifact(artifact) else { return .settled }
         let exact: Data
-        switch catalogAnswer(providerConfiguration: providerConfiguration, artifact: artifact, environment: environment, accepts: accepts) {
+        switch catalogAnswer(providerConfiguration: providerConfiguration, artifact: artifact, environment: environment,
+                             deadline: deadline, accepts: accepts) {
         case .manifest(let data): exact = data
         case .otherContent: return .settled
-        case .unavailable: return .retry
+        case .unavailable: return deadline.map({ Date() >= $0 }) == true ? .notAttempted : .retry
         }
         guard exact != current else { return .settled }
         guard accepts(exact) else { return .retry }
@@ -191,14 +204,17 @@ enum ClusterProductModelStore {
     /// Brings the cluster's store up to date before its models are listed or planned: every product-store model a pair
     /// may serve is cloned in, then every servable folder's manifest is repaired (`repairStoreManifests`). Runs where
     /// each Mac lists its models (its setup report, which also answers the other Mac) and before the leader plans, so
-    /// an update needs no hand step.
-    static func updateClusterStore(_ store: URL, providerConfiguration: URL,
+    /// an update needs no hand step. `repairDeadline` bounds the repairs, not the clones: folders left over are
+    /// repaired on the next pass.
+    static func updateClusterStore(_ store: URL, providerConfiguration: URL, repairDeadline: Date? = nil,
                                    accepts: @escaping (_ manifest: Data, _ folder: URL) -> Bool) {
         let servable = ClusterModelCopyTrust.servableArtifacts
         for model in installed() where servable.contains(model.artifact.aggregateSHA256) {
-            _ = try? cloneIntoClusterStore(model, store: store, providerConfiguration: providerConfiguration, accepts: accepts)
+            _ = try? cloneIntoClusterStore(model, store: store, providerConfiguration: providerConfiguration,
+                                           repairDeadline: repairDeadline, accepts: accepts)
         }
-        repairStoreManifests(store: store, servable: servable, providerConfiguration: providerConfiguration, accepts: accepts)
+        repairStoreManifests(store: store, servable: servable, providerConfiguration: providerConfiguration,
+                             deadline: repairDeadline, accepts: accepts)
     }
 
     /// The same repair for every folder of the cluster's store whose artifact a pair may serve (`servable`), each
@@ -208,14 +224,15 @@ enum ClusterProductModelStore {
     /// removing the folder by hand would bring the model back.
     static func repairStoreManifests(store: URL, servable: Set<String>, providerConfiguration: URL,
                                      environment: [String: String] = ProcessInfo.processInfo.environment, now: Date = Date(),
-                                     accepts: @escaping (_ manifest: Data, _ folder: URL) -> Bool) {
+                                     deadline: Date? = nil, accepts: @escaping (_ manifest: Data, _ folder: URL) -> Bool) {
         let names = ((try? FileManager.default.contentsOfDirectory(atPath: store.path)) ?? []).sorted()
         for name in names.prefix(256) where !name.hasPrefix(".") {
+            if let deadline, Date() >= deadline { return }
             let folder = store.appendingPathComponent(name)
             guard let data = ClusterModelStore.readSmall(folder.appendingPathComponent("manifest.json")),
                   let held = try? ClusterCatalogArtifact.parse(manifest: data), servable.contains(held.aggregateSHA256) else { continue }
             repairManifest(folder, artifact: held, providerConfiguration: providerConfiguration, environment: environment,
-                           now: now, accepts: { accepts($0, folder) })
+                           now: now, deadline: deadline, accepts: { accepts($0, folder) })
         }
     }
 }

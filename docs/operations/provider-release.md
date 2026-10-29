@@ -326,8 +326,10 @@ The optimized job sets `DARKBLOOM_RELEASE_ENVIRONMENT`. For `dev`,
 `provider-swift/Package.swift` compiles `ProviderBuildEnvironment` with
 `DARKBLOOM_ENV_DEV`; defaults are `wss://api.dev.darkbloom.dev/ws/provider` and
 `https://models.darkbloom.ai`
-(`provider-swift/Sources/ProviderBuildEnvironment/BuildEnvironment.swift`). Local
-builds, tests and `qualify-sdk` retain production defaults. Config, CLI flags and
+(`provider-swift/Sources/ProviderBuildEnvironment/BuildEnvironment.swift`).
+`qualify-sdk` sets `DARKBLOOM_RELEASE_ENVIRONMENT: prod`, so its tests see
+production defaults on every branch: on `dev`, an unset value compiles the dev
+identity (`provider-swift/Package.swift`). Config, CLI flags and
 `DARKBLOOM_R2_CDN_URL` still override defaults. Dev/prod products have different
 cache keys, and packaged smoke must report the selected build environment.
 

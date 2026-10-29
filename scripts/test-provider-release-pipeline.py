@@ -178,7 +178,12 @@ class ReleasePipelineTests(unittest.TestCase):
     def test_only_the_release_lane_compiles_the_release_environment(self):
         selector = 'DARKBLOOM_RELEASE_ENVIRONMENT: ${{ needs.resolve-env.outputs.environment }}'
         self.assertIn(selector, job(RELEASE, 'build-provider'))
-        self.assertNotIn('DARKBLOOM_RELEASE_ENVIRONMENT', job(RELEASE, 'qualify-sdk'))
+        qualify = job(RELEASE, 'qualify-sdk')
+        self.assertNotIn(selector, qualify)
+        self.assertEqual(re.findall(r'DARKBLOOM_RELEASE_ENVIRONMENT: (\S+)', qualify), ['prod'])
+        # Named once, in the job-level env: (no step or shell override).
+        self.assertEqual(qualify.count('DARKBLOOM_RELEASE_ENVIRONMENT'), 1)
+        self.assertRegex(qualify, r'(?m)^    env:\n(?:      #.*\n)*      DARKBLOOM_RELEASE_ENVIRONMENT: prod$')
         signing = job(RELEASE, 'build-and-release')
         for output in ['PRE_SIGN_SMOKE_OUTPUT', 'FINAL_SMOKE_OUTPUT']:
             self.assertIn(f'printf \'%s\\n\' "${output}" \\\n'

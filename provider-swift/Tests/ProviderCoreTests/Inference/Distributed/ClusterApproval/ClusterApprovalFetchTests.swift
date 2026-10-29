@@ -67,6 +67,16 @@ struct ClusterApprovalFetchTests {
         await mock.shutdown()
     }
 
+    @Test func anAnswerWhoseBodyBreaksOffIsAnAnswerNotUnreachable() async throws {
+        // A real HTTP server on this Mac's loopback that sends a 200 head promising more bytes than it sends, then
+        // closes: the coordinator answered, so an offered pair must not count this toward the no-answer grace.
+        let server = try TruncatingHTTPServer()
+        let outcome = await ClusterApprovalFetch.fetch(coordinatorURL: "ws://127.0.0.1:\(server.port)/ws/provider")
+        server.close()
+        guard case .unavailable(let reason) = outcome else { Issue.record("a broken body was \(outcome)"); return }
+        #expect(reason.hasPrefix("the answer could not be read"), "\(reason)")
+    }
+
     @Test func onlyHTTPSOrThisMacsLoopbackIsAsked() async throws {
         #expect(ClusterApprovalFetch.url(coordinatorURL: "wss://api.dev.darkbloom.xyz/ws/provider")?.absoluteString
             == "https://api.dev.darkbloom.xyz/v1/cluster/approvals")
@@ -82,5 +92,54 @@ struct ClusterApprovalFetchTests {
         guard case .unreachable = await ClusterApprovalFetch.fetch(coordinatorURL: "ws://127.0.0.1:9/ws/provider") else {
             Issue.record("an unreachable coordinator was read as an answer"); return
         }
+    }
+}
+
+/// One HTTP exchange on a loopback port: reads the request head, answers `200` with a `Content-Length` far beyond the
+/// bytes it then sends, and closes the connection.
+private final class TruncatingHTTPServer: @unchecked Sendable {
+    let port: UInt16
+    private let listener: Int32
+    private let done = DispatchSemaphore(value: 0)
+
+    init() throws {
+        let fd = socket(AF_INET, SOCK_STREAM, 0)
+        guard fd >= 0 else { throw ClusterConfigurationError.invalid("no socket") }
+        var address = sockaddr_in()
+        address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        address.sin_family = sa_family_t(AF_INET)
+        address.sin_addr.s_addr = inet_addr("127.0.0.1")
+        address.sin_port = 0
+        let bound = withUnsafePointer(to: &address) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) }
+        }
+        guard bound == 0, listen(fd, 1) == 0 else { Darwin.close(fd); throw ClusterConfigurationError.invalid("no listener") }
+        var assigned = sockaddr_in(), length = socklen_t(MemoryLayout<sockaddr_in>.size)
+        _ = withUnsafeMutablePointer(to: &assigned) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { getsockname(fd, $0, &length) }
+        }
+        listener = fd
+        port = UInt16(bigEndian: assigned.sin_port)
+        let done = self.done
+        Thread.detachNewThread {
+            defer { done.signal() }
+            let connection = accept(fd, nil, nil)
+            guard connection >= 0 else { return }
+            defer { Darwin.close(connection) }
+            var head = Data(), buffer = [UInt8](repeating: 0, count: 4096)
+            while head.range(of: Data("\r\n\r\n".utf8)) == nil {
+                let count = Darwin.read(connection, &buffer, buffer.count)
+                guard count > 0 else { return }
+                head.append(contentsOf: buffer.prefix(count))
+            }
+            let answer = Array("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 4096\r\nConnection: close\r\n\r\n{\"schema\"".utf8)
+            _ = answer.withUnsafeBytes { Darwin.write(connection, $0.baseAddress, $0.count) }
+        }
+    }
+
+    func close() {
+        Darwin.shutdown(listener, SHUT_RDWR)
+        Darwin.close(listener)
+        _ = done.wait(timeout: .now() + 10)
     }
 }

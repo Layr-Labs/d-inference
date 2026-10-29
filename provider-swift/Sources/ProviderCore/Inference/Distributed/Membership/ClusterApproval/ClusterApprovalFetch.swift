@@ -53,10 +53,15 @@ public enum ClusterApprovalFetch {
             if http.statusCode == 404 { return .notOffered }
             guard http.statusCode == 200 else { return .unavailable("HTTP \(http.statusCode)") }
             guard response.expectedContentLength <= Int64(maximumBytes) else { return .unavailable("the answer exceeds its bound") }
+            // An answer came: a failure from here on is an unusable answer, never "unreachable".
             var bytes = Data()
-            for try await byte in stream {
-                guard bytes.count < maximumBytes else { return .unavailable("the answer exceeds its bound") }
-                bytes.append(byte)
+            do {
+                for try await byte in stream {
+                    guard bytes.count < maximumBytes else { return .unavailable("the answer exceeds its bound") }
+                    bytes.append(byte)
+                }
+            } catch {
+                return .unavailable("the answer could not be read: \(error.localizedDescription)")
             }
             return .approvals(try decode(bytes))
         } catch let error as ClusterConfigurationError {

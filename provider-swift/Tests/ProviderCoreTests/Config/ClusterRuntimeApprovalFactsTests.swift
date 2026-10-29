@@ -12,6 +12,8 @@ import DarkbloomClusterRuntime
 @Suite("Cluster runtime approval facts")
 struct ClusterRuntimeApprovalFactsTests {
     static let qwenArtifact = "127de76b4ef82b7aaa0acaac0ee31c784cff066eda64291f521f051469b7c24b"
+    /// The release version the decoder rows name (`init(canonical:releaseVersion:)`).
+    static let releaseVersion = "1.2.3"
 
     @Test func everyDigestIsTheOneTheMembersChecksCompare() throws {
         let f = try Fixture()
@@ -63,7 +65,7 @@ struct ClusterRuntimeApprovalFactsTests {
         #expect(text.contains(#""model":"EigenLabs/Qwen3.8-27B-4bit-mtp""#))
         #expect(text.hasSuffix(#""schema":"darkbloom_cluster_runtime_v1"}"#))
         #expect(!text.contains(" ") && !text.contains("\n") && !text.contains(#"\/"#))
-        let decoded = try ClusterRuntimeApprovalFacts(canonical: bytes)
+        let decoded = try ClusterRuntimeApprovalFacts(canonical: bytes, releaseVersion: Self.releaseVersion)
         #expect(decoded == facts)
         #expect(try decoded.canonicalBytes() == bytes)
     }
@@ -84,7 +86,7 @@ struct ClusterRuntimeApprovalFactsTests {
         rows["models not a list"] = edited { $0["models"] = [:] as [String: Any] }
         for (label, value) in rows {
             let data = try JSONSerialization.data(withJSONObject: value)
-            #expect(throws: ClusterConfigurationError.self, "\(label)") { try ClusterRuntimeApprovalFacts(canonical: data) }
+            #expect(throws: ClusterConfigurationError.self, "\(label)") { try ClusterRuntimeApprovalFacts(canonical: data, releaseVersion: Self.releaseVersion) }
         }
         // A repeated key, also one spelled with an escape, at the top or in a model.
         let text = String(decoding: try Self.facts().canonicalBytes(), as: UTF8.self)
@@ -96,10 +98,10 @@ struct ClusterRuntimeApprovalFactsTests {
             ("model", text.replacingOccurrences(of: #"[{"artifact_sha256":"#, with: #"[{"model":"Z","artifact_sha256":"#)),
         ] {
             #expect(repeated != text, "\(label)")
-            #expect(throws: ClusterConfigurationError.self, "\(label)") { try ClusterRuntimeApprovalFacts(canonical: Data(repeated.utf8)) }
+            #expect(throws: ClusterConfigurationError.self, "\(label)") { try ClusterRuntimeApprovalFacts(canonical: Data(repeated.utf8), releaseVersion: Self.releaseVersion) }
         }
         for data in [Data("{".utf8), Data("[]".utf8), Data(repeating: 32, count: ClusterRuntimeApprovalFacts.maximumEncodedBytes + 1)] {
-            #expect(throws: ClusterConfigurationError.self) { try ClusterRuntimeApprovalFacts(canonical: data) }
+            #expect(throws: ClusterConfigurationError.self) { try ClusterRuntimeApprovalFacts(canonical: data, releaseVersion: Self.releaseVersion) }
         }
     }
 
@@ -118,11 +120,12 @@ struct ClusterRuntimeApprovalFactsTests {
         #expect(throws: ClusterConfigurationError.self) {
             try ClusterRuntimeApprovalFacts(canonical: block(over), releaseVersion: "1.2.3")
         }
-        // The default is this build's own version: a longer version leaves less room.
-        let room = ClusterRuntimeApprovalFacts.maximumApprovalIDBytes - "release/\(ProviderCore.version)//s2".utf8.count
-        _ = try ClusterRuntimeApprovalFacts(canonical: block(String(repeating: "m", count: room)))
+        // The bound follows the version the caller names: a dev release
+        // version (30 bytes of ID before the model) leaves 98 bytes.
+        let dev = "1.2.3-dev.branch.7"
+        _ = try ClusterRuntimeApprovalFacts(canonical: block(String(repeating: "m", count: 98)), releaseVersion: dev)
         #expect(throws: ClusterConfigurationError.self) {
-            try ClusterRuntimeApprovalFacts(canonical: block(String(repeating: "m", count: room + 1)))
+            try ClusterRuntimeApprovalFacts(canonical: block(String(repeating: "m", count: 99)), releaseVersion: dev)
         }
     }
 

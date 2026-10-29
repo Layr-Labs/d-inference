@@ -237,8 +237,9 @@ public struct ClusterRuntimeApprovalFacts: Equatable, Sendable {
 
     /// Strict: an unknown, missing or repeated field, another schema, a value outside
     /// the rules or a model whose derived approval ID for `releaseVersion`
-    /// exceeds `maximumApprovalIDBytes` is refused.
-    public init(canonical data: Data, releaseVersion: String = ProviderCore.version) throws {
+    /// exceeds `maximumApprovalIDBytes` is refused. `releaseVersion` is the
+    /// version of the release the facts belong to, which the caller must name.
+    public init(canonical data: Data, releaseVersion: String) throws {
         guard data.count <= Self.maximumEncodedBytes,
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               Set(object.keys) == Document.fields, object["schema"] as? String == Self.schema,

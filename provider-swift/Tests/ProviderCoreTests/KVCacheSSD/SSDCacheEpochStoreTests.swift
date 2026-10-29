@@ -5,15 +5,6 @@ import Testing
 
 @testable import ProviderCore
 
-/// Runs blocking work on a GCD thread. While a test holds the process-wide
-/// epoch record lock, parallel suites blocked on it can fill the cooperative
-/// pool, so nothing that releases the lock may need a pool thread.
-private func onGCD<T: Sendable>(_ work: @escaping @Sendable () throws -> T) async throws -> T {
-    try await withCheckedThrowingContinuation { continuation in
-        DispatchQueue.global().async { continuation.resume(with: Result(catching: work)) }
-    }
-}
-
 @Suite("SSD cache epoch persistence")
 struct SSDCacheEpochStoreTests {
     @Test("epoch persists, rotates durably, and binding drift wipes blocks")

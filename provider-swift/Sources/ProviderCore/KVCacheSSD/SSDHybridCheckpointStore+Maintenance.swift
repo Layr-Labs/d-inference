@@ -24,12 +24,13 @@ extension SSDHybridCheckpointStore: SSDEvictableStore, DurablePrefixCacheEvidenc
     }
 
     private func retireIndexedEntries(_ urls: [URL]) -> SSDOwnedEntryRetirement.Result {
-        let result: SSDOwnedEntryRetirement.Result? = removalLock.withLock {
-            guard hasSafeRoot, ownsEvictionRoot else { return nil }
-            return SSDOwnedEntryRetirement.remove(
-                urls: urls, root: config.root, index: index, epochStore: config.epochStore)
+        let result = SSDOwnedEntryRetirement.removeInSlices(urls) { slice in
+            removalLock.withLock {
+                guard hasSafeRoot, ownsEvictionRoot else { return nil }
+                return SSDOwnedEntryRetirement.remove(
+                    urls: slice, root: config.root, index: index, epochStore: config.epochStore)
+            }
         }
-        guard let result else { return .init() }
         if result.externalChange { reconcileExternalRemovals() }
         return result
     }
@@ -103,12 +104,16 @@ extension SSDHybridCheckpointStore: SSDEvictableStore, DurablePrefixCacheEvidenc
     }
 
     func removeCorrupt(_ tag: Data) {
+        removeFile(tag)
+        statsBox.update { $0.corruptDropped += 1 }
+    }
+
+    private func removeFile(_ tag: Data) {
         _ = performIndexedRemoval {
             let url = SSDBlockStore.fileURL(root: self.config.root, tag16Hex: tag.hexString)
             _ = SSDBlockStore.removeItemIfSafe(at: url, under: self.config.root)
             _ = self.index.remove(tag16: tag)
         }
-        statsBox.update { $0.corruptDropped += 1 }
     }
 
     func scanOnDisk() {
@@ -144,9 +149,14 @@ extension SSDHybridCheckpointStore: SSDEvictableStore, DurablePrefixCacheEvidenc
                     metadata.blockSize == PrefixCachePolicy.blockSize,
                     metadata.lookupTag.hasPrefix(tag.hexString),
                     let attributes = try? file.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey]),
-                    let size = attributes.fileSize, let date = attributes.contentModificationDate,
-                    now - Int64(date.timeIntervalSince1970) < config.ttlSeconds
+                    let size = attributes.fileSize, let date = attributes.contentModificationDate
                 else { removeCorrupt(tag); continue }
+                // A file left past its TTL while the provider was stopped is
+                // removed, but it is not corrupt.
+                guard now - Int64(date.timeIntervalSince1970) < config.ttlSeconds else {
+                    removeFile(tag)
+                    continue
+                }
                 index.insert(tag16: tag, fileBytes: size, lastAccess: Int64(date.timeIntervalSince1970),
                              parent: metadata.parentCommitment.map { _ in Data() })
                 commitments[lookupKeys.checkpointParentCommitmentHex(parentTag: fullTag, parentFileIV: header.fileIV)] = tag

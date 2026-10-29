@@ -315,6 +315,54 @@ struct SSDOwnedEntryRetirementTests {
         #expect(FileManager.default.fileExists(atPath: foreign.path))
     }
 
+    @Test("a long batch retires in short holds, each through the epoch barrier")
+    func longBatchRetiresInSlices() throws {
+        let f = try Fixture()
+        let urls = try (1 ... 40).map { try f.file(UInt8($0)) }
+        let original = try #require(f.epoch.current)
+        var slices: [Int] = []
+        let result = SSDOwnedEntryRetirement.removeInSlices(urls) { slice in
+            slices.append(slice.count)
+            return SSDOwnedEntryRetirement.remove(urls: slice, root: f.model, index: f.index, epochStore: f.epoch)
+        }
+        #expect(slices == [16, 16, 8])
+        #expect(result.removed == Set(urls.map(\.path)))
+        #expect(result.indexedBytesFreed == 40 * 64)
+        #expect(!result.externalChange)
+        #expect(f.index.count == 0)
+        #expect(f.epoch.current == original)
+    }
+
+    @Test("a refused slice stops the batch and keeps what earlier slices removed")
+    func refusedSliceStopsTheBatch() throws {
+        let f = try Fixture()
+        let urls = try (1 ... 40).map { try f.file(UInt8($0)) }
+        let record = f.model.appendingPathComponent("cache-epoch.json")
+        var slices: [Int] = []
+        let result = SSDOwnedEntryRetirement.removeInSlices(urls) { slice in
+            slices.append(slice.count)
+            // Ownership is lost after the first slice.
+            if slices.count == 2 { try? Data("invalid record".utf8).write(to: record) }
+            return SSDOwnedEntryRetirement.remove(urls: slice, root: f.model, index: f.index, epochStore: f.epoch)
+        }
+        #expect(slices == [16, 16])
+        #expect(result.removed == Set(urls.prefix(16).map(\.path)))
+        #expect(urls.dropFirst(16).allSatisfy { FileManager.default.fileExists(atPath: $0.path) })
+        #expect(f.epoch.current == nil)
+    }
+
+    @Test("an empty batch still makes one ownership-checked call")
+    func emptyBatchMakesOneCall() throws {
+        let f = try Fixture()
+        var calls = 0
+        let result = SSDOwnedEntryRetirement.removeInSlices([]) { slice in
+            calls += 1
+            return SSDOwnedEntryRetirement.remove(urls: slice, root: f.model, index: f.index, epochStore: f.epoch)
+        }
+        #expect(calls == 1)
+        #expect(result.removed.isEmpty && result.indexedBytesFreed == 0 && !result.externalChange)
+    }
+
     @Test("invalid epoch record disables retirement and advertisement without deleting files")
     func invalidRecordFailsClosed() throws {
         let f = try Fixture()

@@ -38,6 +38,7 @@ class FakeAPI:
         self.provider_source = None
         self.content_requests = []
         self.comparison = {"status": "ahead", "merge_base_commit": {"sha": SHA}}
+        self.dev_comparison = {"status": "ahead", "merge_base_commit": {"sha": SHA}}
     def get(self,path):
         if path == "actions/runs/123":return self.run
         if path == "git/ref/tags/v0.9.13":return {"object":{"type":"tag","sha":"c"*40}}
@@ -46,6 +47,8 @@ class FakeAPI:
         if path == "commits/" + "d"*40:return self.commit
         if path == "git/ref/heads/master":return {"object":{"sha":"d"*40}}
         if path == f"compare/{SHA}..." + "d"*40:return self.comparison
+        if path == "git/ref/heads/dev":return {"object":{"sha":"f"*40}}
+        if path == f"compare/{SHA}..." + "f"*40:return self.dev_comparison
         if path == "compare/" + "d"*40 + "..." + "d"*40:
             return {"status":"identical","merge_base_commit":{"sha":"d"*40}}
         if path.startswith("contents/"):
@@ -128,6 +131,46 @@ class RecoveryTests(unittest.TestCase):
             mutate(api)
             with self.assertRaises(ValueError):
                 verify_workflow_source(api, env)
+
+    def test_dev_push_source_must_be_verified_dev_ancestry_for_dev_only(self):
+        # master's gate admits a dev push for environment dev only. The commit
+        # must be GitHub-verified and on dev ancestry; dev may advance first.
+        env = {"GITHUB_EVENT_NAME": "push", "GITHUB_REF_TYPE": "branch", "GITHUB_REF_NAME": "dev",
+               "GITHUB_REF": "refs/heads/dev", "GITHUB_SHA": SHA, "RELEASE_ENVIRONMENT": "dev"}
+        self.assertEqual(verify_workflow_source(FakeAPI(), env), SHA)
+        # Prod or staging from a dev push, or no environment, is refused.
+        for environment in ("prod", "staging", ""):
+            with self.subTest(environment=environment), \
+                    self.assertRaisesRegex(ValueError, "require environment dev"):
+                verify_workflow_source(FakeAPI(), dict(env, RELEASE_ENVIRONMENT=environment))
+        without = dict(env)
+        del without["RELEASE_ENVIRONMENT"]
+        with self.assertRaisesRegex(ValueError, "require environment dev"):
+            verify_workflow_source(FakeAPI(), without)
+        # An unverified commit, or one that dev does not contain, is refused.
+        for mutate, message in [
+                (lambda api: api.commit["commit"]["verification"].update(verified=False), "not verified"),
+                (lambda api: api.dev_comparison.update(status="diverged"), "not on dev ancestry"),
+                (lambda api: api.dev_comparison.update(status="behind"), "not on dev ancestry"),
+                (lambda api: api.dev_comparison["merge_base_commit"].update(sha="e"*40), "not on dev ancestry")]:
+            api = FakeAPI()
+            mutate(api)
+            with self.subTest(message=message), self.assertRaisesRegex(ValueError, message):
+                verify_workflow_source(api, env)
+        # Dev from any other branch or trigger is refused: another branch push,
+        # a dispatch on dev, and a pull request.
+        for key, value, message in [("GITHUB_REF", "refs/heads/candidate", "require master or dev"),
+                                    ("GITHUB_REF", "refs/heads/devx", "require master or dev"),
+                                    ("GITHUB_EVENT_NAME", "workflow_dispatch", "current reviewed master"),
+                                    ("GITHUB_EVENT_NAME", "pull_request", "trusted tag push")]:
+            with self.subTest(key=key, value=value), self.assertRaisesRegex(ValueError, message):
+                verify_workflow_source(FakeAPI(), dict(env, **{key: value}))
+        # Dev ancestry never stands in for master ancestry on a master route.
+        api = FakeAPI()
+        api.comparison.update(status="diverged")
+        master_push = dict(env, GITHUB_REF_NAME="master", GITHUB_REF="refs/heads/master")
+        with self.assertRaisesRegex(ValueError, "not on reviewed master ancestry"):
+            verify_workflow_source(api, master_push)
 
     def test_failed_source_verification_emits_no_trusted_outputs(self):
         with tempfile.TemporaryDirectory() as temp:

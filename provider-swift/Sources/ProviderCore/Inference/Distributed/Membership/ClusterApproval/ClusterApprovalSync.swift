@@ -81,6 +81,44 @@ public enum ClusterApprovalSync {
         return Result(changed: true, line: line, note: .some(line))
     }
 
+    /// The control leader's change for `step` (`ClusterService.checkApproval`, under the command lock). A save is first
+    /// checked against this Mac's own files and pairing, so no part stops for an approval this Mac refuses. Then `stop`
+    /// stops both parts (nil when they stopped, else the line why not, and nothing changes), the change runs on both
+    /// Macs, and `serve` starts the parts again.
+    static func apply(_ step: ClusterApprovalCheck.Step, grace: Double, paths: ClusterUserPaths, providerConfiguration: URL,
+                      pairingStore: ClusterPairingStore, scratch: URL, now: Double, stop: () -> String?, serve: () -> Void,
+                      sendToPeer: (ClusterServiceCommand) throws -> Void, chipClass: ClusterChipClass? = ClusterChipClass.local(),
+                      facts: (ClusterConfiguration) throws -> ClusterRuntimeApprovalFacts = ClusterApprovalAttachment.installedFacts)
+        -> Result {
+        if case .keep = step { return .unchanged }
+        if case .save(let approval) = step,
+           let saved = try? ClusterApprovalAttachment.savedSetup(paths: paths, providerConfiguration: providerConfiguration) {
+            do {
+                _ = try ClusterApprovalAttachment.attachment(for: approval, saved: saved, paths: paths, pairingStore: pairingStore,
+                                                             edge: nil, now: now, chipClass: chipClass, facts: facts)
+            } catch {
+                let line = "Not offered for pairing: this Mac's check refused it: \(refusal(error))"
+                return Result(changed: false, line: line, note: .some(line))
+            }
+        }
+        if let failure = stop() { return Result(changed: false, line: failure, note: nil) }
+        defer { serve() }
+        switch step {
+        case .keep:
+            return .unchanged
+        case .save(let approval):
+            return run(fetched: .approvals([approval]), paths: paths, providerConfiguration: providerConfiguration,
+                       pairingStore: pairingStore, scratch: scratch, now: now, sendToPeer: sendToPeer, chipClass: chipClass, facts: facts)
+        case .serveLocally(let approval, let reason):
+            return serveLocally(approval, line: reason.line(approval, grace: grace), paths: paths,
+                                providerConfiguration: providerConfiguration, pairingStore: pairingStore, scratch: scratch,
+                                sendToPeer: sendToPeer)
+        case .converge(let target):
+            return converge(target, paths: paths, providerConfiguration: providerConfiguration, pairingStore: pairingStore,
+                            scratch: scratch, sendToPeer: sendToPeer)
+        }
+    }
+
     /// `ClusterApprovalCheck.Step.converge`: the other Mac's saved cluster approval differs from this Mac's (a lost
     /// reply, a failed give-back), so it is given this Mac's (`target`), which it checks against its own files, or
     /// none. When it refuses this Mac's, this Mac saves its setup without it too: both Macs carry the approval, or

@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import DarkbloomClusterProtocol
 @testable import ProviderCore
 
 /// Which approval a setup keeps and for how long, and the one line each screen shows for it.

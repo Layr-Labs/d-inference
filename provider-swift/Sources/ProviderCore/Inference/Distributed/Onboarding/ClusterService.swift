@@ -1137,8 +1137,8 @@ public final class ClusterService: @unchecked Sendable {
         guard let handle = FileHandle(forReadingAtPath: log.path) else { return nil }
         defer { try? handle.close() }
         let size = (try? handle.seekToEnd()) ?? 0
-        let tail: UInt64 = size > 16_384 ? size - 16_384 : 0
-        try? handle.seek(toOffset: offset <= size ? max(offset, tail) : tail)
+        let window: UInt64 = size > 16_384 ? size - 16_384 : 0
+        try? handle.seek(toOffset: offset <= size ? max(offset, window) : window)
         let tail = String(decoding: handle.readDataToEndOfFile(), as: UTF8.self)
         guard let line = tail.split(whereSeparator: \.isNewline).last(where: { $0.hasPrefix("Error:") }) else { return nil }
         return ClusterConsoleText.plain(ClusterConsoleText.bounded(String(line.dropFirst(6)).trimmingCharacters(in: .whitespaces), maximum: 240))

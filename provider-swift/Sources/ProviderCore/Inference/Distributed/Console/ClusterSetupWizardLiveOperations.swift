@@ -433,14 +433,9 @@ final class LiveContext: @unchecked Sendable {
             // `darkbloom cluster` needs no model folder: the models single-Mac Darkbloom installed are cloned into the
             // cluster's store (no new blocks), so both the leader and its members list them by digest. Only the
             // artifacts a pair may serve, as the onboarding clones: any other activated folder stays out of the store.
-            for installed in ClusterProductModelStore.installed()
-            where ClusterModelCopyTrust.servableArtifacts.contains(installed.artifact.aggregateSHA256) {
-                _ = try? ClusterProductModelStore.cloneIntoClusterStore(installed, store: URL(fileURLWithPath: store), providerConfiguration: configuration,
-                                                                        accepts: workerAcceptsManifest)
-            }
             // A folder copied over the cable has no receipt here: its manifest is repaired against the catalog too.
-            ClusterProductModelStore.repairStoreManifests(store: URL(fileURLWithPath: store), servable: ClusterModelCopyTrust.servableArtifacts,
-                                                          providerConfiguration: configuration, accepts: workerAcceptsManifest)
+            ClusterProductModelStore.updateClusterStore(URL(fileURLWithPath: store), providerConfiguration: configuration,
+                                                        accepts: workerAcceptsManifest)
         }
         let doctor = blockingWizard { await ClusterDiagnostics.doctor(providerConfiguration: self.configuration, localLink: link) }
         let savedSetup: ClusterConsoleSavedSetup

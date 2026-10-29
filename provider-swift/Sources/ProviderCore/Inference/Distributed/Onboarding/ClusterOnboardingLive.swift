@@ -616,14 +616,9 @@ final class OnboardingLive: @unchecked Sendable {
         let store = URL(fileURLWithPath: context.modelsDirectory() ?? ClusterModelStoreLocation.defaultDirectory().path)
         // Models' pages stay in the file cache: the plan judges each Mac by what its load gate counts, which is all
         // of the cache (58d7371a, de782ff1), and the start that follows reads the cached part at memory speed.
-        for installed in ClusterProductModelStore.installed() where ClusterModelCopyTrust.servableArtifacts.contains(installed.artifact.aggregateSHA256) {
-            _ = try? ClusterProductModelStore.cloneIntoClusterStore(installed, store: store, providerConfiguration: settings.service.wizard.providerConfiguration,
-                                                                    accepts: context.workerAcceptsManifest)
-        }
         // Folders copied over the cable (no receipt on this Mac) are repaired before the plan describes them.
-        ClusterProductModelStore.repairStoreManifests(store: store, servable: ClusterModelCopyTrust.servableArtifacts,
-                                                      providerConfiguration: settings.service.wizard.providerConfiguration,
-                                                      accepts: context.workerAcceptsManifest)
+        ClusterProductModelStore.updateClusterStore(store, providerConfiguration: settings.service.wizard.providerConfiguration,
+                                                    accepts: context.workerAcceptsManifest)
         switch context.plan(peer: peer, keeping: keeping) {
         case .failed(let reason): return .failure(.init("Planning failed: \(reason)"))
         case .ready(let options):

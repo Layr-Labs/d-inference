@@ -20,15 +20,15 @@ final class LocalCDNFileServer: @unchecked Sendable {
     private var responseDelayNanoseconds: UInt64 = 0
 
     func setFiles(_ files: [String: Data]) {
-        lock.lock(); self.files = files; lock.unlock()
+        lock.withLock { self.files = files }
     }
 
     func requestedPaths() -> [String] {
-        lock.lock(); defer { lock.unlock() }; return requested
+        lock.withLock { requested }
     }
 
     func clearRequested() {
-        lock.lock(); requested = []; lock.unlock()
+        lock.withLock { requested = [] }
     }
 
     func setResponseDelay(milliseconds: UInt64) {
@@ -36,11 +36,11 @@ final class LocalCDNFileServer: @unchecked Sendable {
     }
 
     private func record(_ path: String) {
-        lock.lock(); requested.append(path); lock.unlock()
+        lock.withLock { requested.append(path) }
     }
 
     private func body(for path: String) -> Data? {
-        lock.lock(); defer { lock.unlock() }; return files[path]
+        lock.withLock { files[path] }
     }
 
     private func responseDelay() -> UInt64 {
@@ -110,33 +110,5 @@ final class LocalCDNFileServer: @unchecked Sendable {
         }
         task?.cancel()
         _ = await task?.value
-    }
-}
-
-/// One-shot async box for the bound port (MockCoordinator's PortBox pattern).
-final class OneShotPortBox: @unchecked Sendable {
-    private let lock = NSLock()
-    private var port: Int?
-    private var continuation: CheckedContinuation<Int, Never>?
-
-    var value: Int {
-        get async {
-            await withCheckedContinuation { (cont: CheckedContinuation<Int, Never>) in
-                lock.withLock {
-                    if let p = port { cont.resume(returning: p) } else { continuation = cont }
-                }
-            }
-        }
-    }
-
-    func complete(_ port: Int) {
-        let cont: CheckedContinuation<Int, Never>? = lock.withLock {
-            if self.port != nil { return nil }
-            self.port = port
-            let cont = continuation
-            continuation = nil
-            return cont
-        }
-        cont?.resume(returning: port)
     }
 }

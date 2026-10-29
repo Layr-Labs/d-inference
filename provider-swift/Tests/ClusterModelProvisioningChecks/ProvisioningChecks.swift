@@ -137,11 +137,12 @@ import CryptoKit
         expect(model.artifact.files.count == 4 && model.artifact.totalBytes == Int64(model.files.reduce(0) { $0 + $1.1.count }), "manifest parsed")
         expect(model.artifact.folderName == "Tiny-Model-2026-10-13-r1", "folder: the model ID's last part and the version, got \(model.artifact.folderName)")
         // The CDN lists the files in another order than the receipt (2026-10-15): the same files in any order match.
-        let files = model.artifact.files
-        expect(ClusterCatalogArtifact.sameFiles(files, files.reversed()), "the same files in another order match")
-        expect(!ClusterCatalogArtifact.sameFiles(files, Array(files.dropLast())), "a missing file does not match")
-        var changed = files; changed[0].sha256 = String(repeating: "0", count: 64)
-        expect(!ClusterCatalogArtifact.sameFiles(files, changed), "a different digest does not match")
+        var reordered = model.artifact; reordered.files.reverse()
+        expect(model.artifact.sameArtifact(reordered), "the same files in another order match")
+        var missing = model.artifact; missing.files.removeLast()
+        expect(!model.artifact.sameArtifact(missing), "a missing file does not match")
+        var changed = model.artifact; changed.files[0].sha256 = String(repeating: "0", count: 64)
+        expect(!model.artifact.sameArtifact(changed), "a different digest does not match")
         // Dropping a folder's cached pages: every regular file, nothing else, the bytes unchanged (2026-10-16).
         let cacheFolder = temporary("drop-cache")
         try! FileManager.default.createDirectory(at: cacheFolder, withIntermediateDirectories: true)

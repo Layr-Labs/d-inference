@@ -75,7 +75,6 @@ enum ClusterProductModelStore {
         return data
     }
 
-
     /// Clones a product-store model into the cluster's store under its folder name; nil when it is there already.
     /// `providerConfiguration` names the catalog whose exact manifest bytes are written beside the files.
     static func cloneIntoClusterStore(_ installed: Installed, store: URL, providerConfiguration: URL? = nil,
@@ -126,12 +125,24 @@ enum ClusterProductModelStore {
         _ = chmod(manifest.path, 0o600)
     }
 
+    /// Brings the cluster's store up to date before its models are listed or planned: every product-store model a pair
+    /// may serve is cloned in, then every servable folder's manifest is repaired (`repairStoreManifests`). Runs where
+    /// each Mac lists its models (its setup report, which also answers the other Mac) and before the leader plans, so
+    /// an update needs no hand step.
+    static func updateClusterStore(_ store: URL, providerConfiguration: URL,
+                                   accepts: @escaping (_ manifest: Data, _ folder: URL) -> Bool) {
+        let servable = ClusterModelCopyTrust.servableArtifacts
+        for model in installed() where servable.contains(model.artifact.aggregateSHA256) {
+            _ = try? cloneIntoClusterStore(model, store: store, providerConfiguration: providerConfiguration, accepts: accepts)
+        }
+        repairStoreManifests(store: store, servable: servable, providerConfiguration: providerConfiguration, accepts: accepts)
+    }
+
     /// The same repair for every folder of the cluster's store whose artifact a pair may serve (`servable`), each
     /// against its own manifest. A folder copied over the cable has no product-store receipt here, so clone-in never
     /// repairs it: after the pin change of 2026-10-28 (every registered model pins the CDN's `manifest.json`) this
     /// Mac's worker refuses a copied folder that kept the production coordinator's bytes, and without this repair only
-    /// removing the folder by hand would bring the model back. Runs where each Mac lists its models (its setup report,
-    /// which also answers the other Mac) and before the leader plans, so an update needs no hand step.
+    /// removing the folder by hand would bring the model back.
     static func repairStoreManifests(store: URL, servable: Set<String>, providerConfiguration: URL,
                                      environment: [String: String] = ProcessInfo.processInfo.environment,
                                      accepts: @escaping (_ manifest: Data, _ folder: URL) -> Bool) {

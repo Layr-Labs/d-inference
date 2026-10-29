@@ -246,7 +246,8 @@ extension EngineV2Bridge {
             samplingDefaults: samplingDefaults,
             // The same coordinator hint that gates the write also tells the
             // engine which fork boundary is worth staging.
-            prefixCheckpointTargetTokens: donationDemand?.repeatedPrefixTokens
+            prefixCheckpointTargetTokens: donationDemand?.repeatedPrefixTokens,
+            stopStringScope: stopStringScope
         )
         cbv2Request.positionState = positionState ?? multimodal?.positionState
         cbv2Request.hybridPrefixIdentity = hybridPrefixIdentity

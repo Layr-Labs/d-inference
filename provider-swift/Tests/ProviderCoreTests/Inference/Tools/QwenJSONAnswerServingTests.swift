@@ -104,7 +104,7 @@ private struct QwenAnswerOutcome {
         case .content(let text): parser.parse(text).forEach { apply($0) }
         case .parsed(let parsed): apply(parsed)
         case .info(let info): self.info = info
-        case .toolCall, .toolCallDelta: break
+        case .toolCall, .toolCallDelta, .logprobs: break
         }
     }
 

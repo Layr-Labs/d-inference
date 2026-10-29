@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-10-27
+> Last updated: 2026-10-28
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -1284,13 +1284,32 @@ sequenceDiagram
     S-->>C: SSE chunks / final response
 ```
 
+For coordinator requests, `ProviderLoop+InferenceHandler.swift` encrypts each
+SSE frame and sends it through `SendHandle.sendChunk`. The serial queue in
+`provider-swift/Sources/ProviderCore/Coordinator/ChunkBatcher.swift` coalesces
+frames for `ChunkFrameWriter`, while `SendHandle.send` flushes queued frames
+before sending a terminal message. On that queue, `ChunkBatcher.enqueue`
+drops a frame immediately if no session sink is bound. It cannot leave that
+frame pending for a deferred flush after a replacement session binds.
+`CoordinatorClient+Connection.swift` unbinds the old session during teardown;
+`ProviderLoop+Cancellation.swift` cancels its in-flight requests separately.
+The sink check occurs when the enqueue closure runs, not when its caller
+submits the frame. `SendHandle` and `ChunkSender` persist across reconnects,
+so an old request's frame processed after a replacement sink binds still
+passes this check; it does not enforce request-to-session identity.
+
 The chat template is rendered on every request. When caching is enabled for
 the request, `LocalTokenizerBridge` encodes the rendered prompt through
 `PromptTokenCache` (`provider-swift/Sources/ProviderCore/Inference/Prompting/PromptTokenCache.swift`):
 it cuts the text where an added token begins, under the conditions in which the
 swift-transformers encoder already encodes those pieces independently, and
 reuses the token IDs of pieces seen before in the same prefix-cache scope. New
-long prompts encode their pieces on up to four cores. The cache renders Gemma 4
+long prompts encode their pieces on up to four cores. `PromptPieceTokenStore.lookup`
+snapshots all of a request's hits before promoting them between its two bounded
+generations: a promotion that rotates the cache cannot turn a later piece in
+the same lookup into a miss. Token arrays share storage during that snapshot;
+the existing admission and byte bounds still apply. Batches with no old-generation
+hits return the snapshot without a promotion pass. The cache renders Gemma 4
 and GPT-OSS templates through `ChatTemplateLoopRewrites`, linear-time forms of
 their per-message history scans that render the same text, so render time no
 longer grows with the square of the history length. The IDs equal the unchanged
@@ -1384,6 +1403,7 @@ elapsed nanoseconds. Numerics only — never tokens, text or hashes
 | `maxWaiting` | 64 (`CBv2SchedulerConfig` init default) | `CBv2Contracts.swift`, `CBv2SchedulerConfig` |
 | `soloPrefillStripeTokens` | 4096 for dense Qwen3.5/3.8 (`Qwen35Model`, not `Qwen35MoEModel`); 2048 (`defaultSoloPrefillStripeTokens`) for families on the 512-token chunk; none for Gemma 4, because a stripe arms only above the plain chunk; `DARKBLOOM_CBV2_SOLO_PREFILL_STRIPE` | `EngineV2Factory+Configuration.swift` (`soloPrefillStripeTokens`) |
 | `bidirectionalMediaPrefillChunkCeiling` | 512 whenever the plain chunk is wider, otherwise unset | `EngineV2Factory+Configuration.swift` (`prefillGeometry`); `CBv2Contracts.swift` (`plainPrefillChunkSize`) |
+| `demandedLatestCheckpointMinimumTokens` | The paged complete store's effective-token floor for dense Qwen3.5/3.8 (`Qwen35Model`, not `Qwen35MoEModel`), otherwise unset: a range ends just below the prompt end when that saves at least the floor ([end-of-prompt boundary](prefix-cache.md#streamed-complete-checkpoints)) | `EngineV2Factory+DemandedCheckpoint.swift` (`demandedLatestCheckpointMinimumTokens`) |
 | `maxConcurrentPartialPrefills` | 1; `DARKBLOOM_CBV2_MAX_PARTIAL_PREFILLS` | `EngineV2Factory+Configuration.swift`, `maxPartialPrefillsKey` |
 | Prompt-chunk attention | 128-query blocks (`DARKBLOOM_CBV2_ATTN_QUERY_BLOCK`; paged blocks other than Qwen4 QSA build an absolute mask), bounding the composed score tensor. A full-attention chunk with no window, softcap, vision span or bidirectional mask, whose head_dim MLX fuses (64/72/80/96/128; 256 on NAX from 1024 queries in bf16/fp16), is one `.causal` call on either KV backend (live packed paged KV keeps its own path); `DARKBLOOM_TTFT_FUSED_CAUSAL_PREFILL=0` restores blocks | `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/AttentionV1.swift` (`usesFusedCausalPrefill`), `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedLayerCache.swift` (`prefillAttend`) |
 | `enablePrefixCache` | true when the slot has an effective SSD cache, enabled paged resident cache, or recurrent checkpoint-bank configuration, or complete SSD checkpoint store; engine capability gates still apply | `EngineV2Factory+Production.swift` (`assembleProductionBuild`), `EngineV2.swift` |
@@ -1838,12 +1858,12 @@ disabled for this hybrid model.
 | `top_p` | `topP` | artifact default, else `1.0` |
 | `top_k` | `topK` | artifact default, else `0` |
 | `repetition_penalty` | `repetitionPenalty` | artifact default, else `1.0` |
-| `frequency_penalty` / `presence_penalty` | `frequencyPenalty` / `presencePenalty` | `0` |
+| `frequency_penalty` / `presence_penalty` | `frequencyPenalty` / `presencePenalty` | `0`; `presence_penalty` takes a model-card default (catalog Qwen 3.5/3.6) |
 | `seed` | `seed`; also keys a stable engine request id | nil |
 | `logit_bias` | `logitBias` — string keys parsed to non-negative `Int`; invalid keys dropped and counted | `[:]` |
 | `logprobs` + `top_logprobs` | `topLogprobs = logprobs ? min(20, max(1, top_logprobs ?? 0)) : 0` | `0` |
 | `max_tokens` | `maxTokens = max_tokens ?? 4096` | 4096 |
-| `stop` | `stopStrings`, matched on held-back detokenised text (`EngineV2Bridge+StopSequence.swift`) | `[]` |
+| `stop` | `stopStrings`, matched on held-back detokenised text (`StopHoldback`). GPT-OSS sets `stopStringScope` to the Harmony `final` message (`ModelEOSPolicy.stopStringScope`), so analysis and tool-call frames never match; the reported sequence replays the same scope (`EngineV2Bridge+StopSequence.swift`) | `[]` |
 | `min_p`, `priority` | **Ignored**: always `0` | — |
 | `n`, `best_of` | **Not represented**: one alternative | — |
 
@@ -1861,7 +1881,14 @@ recommends). The exact `prism-ml/Ternary-Bonsai-2-9B-mlx-2bit` and
 `EigenLabs/Ternary-Bonsai-2-9B-MLX-2bit` identities also require `model_type == prism_hadamard_qwen35` and honors its pinned artifact
 defaults (`temperature 1.0`, `top_p 0.95`, `top_k 20`, `do_sample true`). Its
 qualification requests explicitly supply `presence_penalty: 1.5`; that value
-is absent from the artifact and is not injected as a default. This request
+is absent from the artifact and is not injected as a default. The catalog
+`Qwen3.5-9B`, `qwen3.5-35b-a3b` and `qwen3.6-35b-a3b-vl-mtp-mxfp8` builds
+(`EngineV2SamplingDefaults.qwen35CardModelTypes`, each bound to its `model_type`)
+ship no `generation_config.json`; omitted knobs take their model cards'
+thinking-mode values
+(`EngineV2SamplingDefaults.qwen35CardDefaults`: `temperature 1.0`, `top_p 0.95`,
+`top_k 20`, `presence_penalty 1.5`). Greedy decoding with no presence penalty
+made them repeat themselves until `max_tokens` (#1530). This request
 policy enables native channels, nested reasoning and forced-media framing.
 These exact 9B identities separately default to paged attention and encrypted SSD
 prefix caching. Explicit operator selections, kill switches, native capability

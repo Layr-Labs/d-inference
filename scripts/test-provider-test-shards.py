@@ -218,6 +218,10 @@ class CountAndAuditTests(unittest.TestCase):
                             '<testcase classname="ProviderCoreTests" name="free()" time="9"/>'
                             '</testsuite></testsuites>')
             self.assertEqual(shards.measured_weights([path]), {"ProviderCoreTests.A": 2.0})
+            # XCTest classes have no serial xUnit report; they keep their old seconds.
+            base = {"ProviderCoreTests.A": 7.0, "ProviderCoreTests.XCTestClass": 3.0}
+            self.assertEqual(shards.measured_weights([path], base),
+                             {"ProviderCoreTests.A": 2.0, "ProviderCoreTests.XCTestClass": 3.0})
 
 
 class RunnerTests(unittest.TestCase):

@@ -632,6 +632,26 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         # The capability build may use the whole dedicated runner.
         capability = named["Run worker capability checks"]
         self.assertEqual(field(capability, "DARKBLOOM_CLUSTER_METADATA_BUILD_JOBS", indent=10), "'12'")
+        # Its release build is restored with timestamps only for unchanged
+        # sources, keyed by toolchain, manifests, submodule pins and paths.
+        self.assertEqual(field(capability, "DARKBLOOM_CLUSTER_METADATA_BUILD_ROOT", indent=10),
+                         "${{ runner.temp }}/cluster-native-metadata")
+        order = [field(step, "name", indent=6) for step in steps]
+        restore, timestamps, record, upload = (order.index(name) for name in (
+            "Restore cluster metadata build", "Restore unchanged source timestamps",
+            "Record source timestamps for the cluster build", "Upload cluster metadata build cache"))
+        self.assertLess(restore, timestamps)
+        self.assertLess(timestamps, order.index("Run worker capability checks"))
+        self.assertLess(order.index("Run worker capability checks"), record)
+        self.assertEqual(upload, record + 1)
+        self.assertIn("python3 scripts/provider-release-cache.py restore-mtimes", steps[timestamps])
+        self.assertIn("python3 scripts/provider-release-cache.py snapshot-mtimes", steps[record])
+        key = named["Resolve cluster metadata build cache key"]
+        for component in ("swift --version", "xcodebuild -version", "git submodule status --recursive",
+                          "$GITHUB_WORKSPACE $RUNNER_TEMP $MANIFESTS", "native-metadata.sh"):
+            self.assertIn(component, key)
+        for step in (steps[record], steps[upload]):
+            self.assertIn("steps.capability-checks.outcome == 'success'", field(step, "if"))
         support = (ROOT / "libs/darkbloom-cluster/Tests/Support/native-metadata.sh").read_text()
         self.assertIn('task_jobs="${DARKBLOOM_CLUSTER_METADATA_BUILD_JOBS:-4}"', support)
         self.assertIn('--jobs "$task_jobs"', support)

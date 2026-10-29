@@ -689,12 +689,58 @@ jobs:
       - name: Select SDK 27 provider toolchain
         id: toolchain
         run: ./scripts/prepare-provider-release-toolchain.sh
+      # The capability runner's release build of the cluster runtime and MLX is
+      # reused across runs: SwiftPM rebuilds what changed, and source timestamps
+      # are restored only for files whose contents match the cached build's
+      # (scripts/provider-release-cache.py). The key binds the toolchain, the
+      # package manifests, the submodule pins, the runner script and the paths.
+      - name: Resolve cluster metadata build cache key
+        id: cluster-build-key
+        if: ${{ steps.toolchain.outcome == 'success' }}
+        env:
+          MANIFESTS: ${{ hashFiles('libs/darkbloom-cluster/Package.swift', 'libs/darkbloom-cluster/Package.resolved', 'libs/darkbloom-cluster-worker/Package.swift', 'libs/darkbloom-cluster-worker/Package.resolved', 'libs/darkbloom-cluster/Tests/Support/native-metadata.sh', '.gitmodules') }}
+        run: |
+          set -euo pipefail
+          identity=$( { swift --version 2>&1; xcodebuild -version; xcrun --show-sdk-path; \
+            git submodule status --recursive; echo "$GITHUB_WORKSPACE $RUNNER_TEMP $MANIFESTS"; } | shasum -a 256 | cut -c1-32)
+          echo "prefix=cluster-metadata-release-v1-$identity-" >> "$GITHUB_OUTPUT"
+          echo "key=cluster-metadata-release-v1-$identity-$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+      - name: Restore cluster metadata build
+        id: cluster-build-cache
+        if: ${{ steps.cluster-build-key.outcome == 'success' }}
+        uses: actions/cache/restore@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: ${{ runner.temp }}/cluster-native-metadata
+          key: ${{ steps.cluster-build-key.outputs.key }}
+          restore-keys: ${{ steps.cluster-build-key.outputs.prefix }}
+      - name: Restore unchanged source timestamps
+        if: ${{ steps.cluster-build-key.outcome == 'success' }}
+        run: |
+          manifest="$RUNNER_TEMP/cluster-native-metadata/provider-release-source-mtimes.json"
+          if [ -f "$manifest" ]; then
+            mkdir -p provider-swift/.build
+            cp "$manifest" provider-swift/.build/
+            python3 scripts/provider-release-cache.py restore-mtimes
+          fi
       - name: Run worker capability checks
+        id: capability-checks
         if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
         # The runner is this job's alone: compile the native closure on all its cores.
         env:
           DARKBLOOM_CLUSTER_METADATA_BUILD_JOBS: '12'
+          DARKBLOOM_CLUSTER_METADATA_BUILD_ROOT: ${{ runner.temp }}/cluster-native-metadata
         run: bash libs/darkbloom-cluster-worker/Tests/CapabilityChecks/run.sh
+      - name: Record source timestamps for the cluster build
+        if: ${{ !cancelled() && steps.capability-checks.outcome == 'success' && steps.cluster-build-cache.outputs.cache-hit != 'true' }}
+        run: |
+          python3 scripts/provider-release-cache.py snapshot-mtimes
+          cp provider-swift/.build/provider-release-source-mtimes.json "$RUNNER_TEMP/cluster-native-metadata/"
+      - name: Upload cluster metadata build cache
+        if: ${{ !cancelled() && steps.capability-checks.outcome == 'success' && steps.cluster-build-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: ${{ runner.temp }}/cluster-native-metadata
+          key: ${{ steps.cluster-build-key.outputs.key }}
       - name: Run stage metadata checks
         if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
         run: python3 libs/darkbloom-cluster/Tests/StageMetadataChecks/run.py --output "$RUNNER_TEMP/stage-metadata-checks"

@@ -1090,7 +1090,9 @@ changes provider code: `libs/darkbloom-cluster-worker/Tests/CapabilityChecks/run
 `libs/darkbloom-cluster/Tests/NemotronStageChecks/run.sh` and
 `provider-swift/Tests/ClusterModelProvisioningChecks/run.sh provisioning`. The
 last one runs the provisioning checks only. The capability runner compiles with
-`DARKBLOOM_CLUSTER_METADATA_BUILD_JOBS` jobs (4 by default; CI uses 12). Its download cache-policy check
+`DARKBLOOM_CLUSTER_METADATA_BUILD_JOBS` jobs (4 by default; CI uses 12). CI keeps
+its build in `DARKBLOOM_CLUSTER_METADATA_BUILD_ROOT` between runs and restores
+source timestamps only for unchanged files, so SwiftPM rebuilds only what changed. Its download cache-policy check
 reads how many written pages stay in the file cache, which the host's kernel
 and disk decide: on the hosted CI VM 0.75 of the pages written with
 `F_NOCACHE` stayed resident. Run `run.sh` with no argument on a Mac for that

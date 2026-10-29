@@ -18,7 +18,10 @@ Subcommands:
                          write the executed test counts of one `swift test` run
   audit LIST REPORTS     check each shard executed exactly its planned tests and
                          that all shards together executed the full list
-  weights XUNIT...       print measured seconds per suite from xUnit reports
+  weights XUNIT...       print measured seconds per suite from xUnit reports;
+                         suites they do not cover (SwiftPM writes no XCTest
+                         xUnit report for a serial run) keep their seconds in
+                         the checked-in weights
 """
 
 import argparse
@@ -42,7 +45,7 @@ PARALLEL_MODULES = (
 # in shard 1; the catch-all suites, isolated processes and native gates run in
 # the last shard.
 FIRST_SHARD_EXTRA_SECONDS = 15.0
-LAST_SHARD_EXTRA_SECONDS = 180.0
+LAST_SHARD_EXTRA_SECONDS = 150.0
 # A test identifier starts with its module and its top-level suite or function.
 SUITE = re.compile(r"^([^./]+)[./]([^./]+)")
 
@@ -183,14 +186,15 @@ def audit(test_ids, reports, isolated, weights):
     return errors
 
 
-def measured_weights(paths):
+def measured_weights(paths, base=None):
     seconds = defaultdict(float)
     for path in paths:
         for case in ElementTree.parse(path).getroot().iter("testcase"):
             key = suite_key(case.get("classname", ""))
             if key and "." in key and key.split(".", 1)[1]:
                 seconds[key] += float(case.get("time") or 0)
-    return {key: round(value, 3) for key, value in sorted(seconds.items())}
+    measured = {key: round(value, 3) for key, value in seconds.items()}
+    return dict(sorted({**(base or {}), **measured}.items()))
 
 
 def main():
@@ -229,7 +233,7 @@ def main():
             print(f"::error::{error}")
         return 1 if errors else 0
     else:
-        json.dump(measured_weights(args.xunit), sys.stdout, indent=0, sort_keys=True)
+        json.dump(measured_weights(args.xunit, load_weights()), sys.stdout, indent=0, sort_keys=True)
         print()
     return 0
 

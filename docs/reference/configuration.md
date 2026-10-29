@@ -942,11 +942,10 @@ receives it. One type computes every value:
 | `models[].resource_policy_sha256` | `DistributedInstalledNativeStart.resourcePolicySHA256` of the capability, the value a native start carries |
 
 Every digest is 64 lowercase hex and nonzero. Unknown and missing fields are
-refused. The canonical form is JSON with sorted keys and no whitespace. The
-file digests come from `DistributedInstalledFiles.digest`, the same reading a
-member's `NativePairMemberInstallation.verifyInstalledFiles` compares;
+refused. The canonical form is JSON with sorted keys and no whitespace.
 `scripts/provider-release-publication.py` checks the block but computes no
-digest.
+digest. Why each digest is the one a member compares:
+[cluster runtime facts of a build](../architecture/inference.md#cluster-runtime-facts-of-a-build).
 
 ### Sharded placement and the hand-off opt-in
 

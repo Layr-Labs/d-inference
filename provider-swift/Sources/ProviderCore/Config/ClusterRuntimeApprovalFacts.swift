@@ -17,6 +17,9 @@ public struct ClusterRuntimeApprovalFacts: Equatable, Sendable {
     public static let maximumModelBytes = 128
     /// The canonical form is far smaller; anything larger is refused unread.
     public static let maximumEncodedBytes = 64 * 1024
+    /// The longest cluster approval ID the coordinator derives from the facts
+    /// (`release/<version>/<model>/s<1|2>`) and registers.
+    public static let maximumApprovalIDBytes = 128
 
     /// One model: what a member's saved setup pins for it.
     public struct Model: Codable, Equatable, Sendable {
@@ -232,9 +235,10 @@ public struct ClusterRuntimeApprovalFacts: Equatable, Sendable {
             placementPolicySHA256: placementPolicySHA256, models: models))
     }
 
-    /// Strict: an unknown or missing field, another schema or a value outside
-    /// the rules is refused.
-    public init(canonical data: Data) throws {
+    /// Strict: an unknown or missing field, another schema, a value outside
+    /// the rules or a model whose derived approval ID for `releaseVersion`
+    /// exceeds `maximumApprovalIDBytes` is refused.
+    public init(canonical data: Data, releaseVersion: String = ProviderCore.version) throws {
         guard data.count <= Self.maximumEncodedBytes,
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               Set(object.keys) == Document.fields, object["schema"] as? String == Self.schema,
@@ -248,6 +252,10 @@ public struct ClusterRuntimeApprovalFacts: Equatable, Sendable {
         try self.init(nativeRuntimeSHA256: document.nativeRuntimeSHA256, metallibSHA256: document.metallibSHA256,
                       resourceLibrarySHA256: document.resourceLibrarySHA256,
                       placementPolicySHA256: document.placementPolicySHA256, models: document.models)
+        guard models.allSatisfy({ "release/\(releaseVersion)/\($0.model)/s2".utf8.count <= Self.maximumApprovalIDBytes }) else {
+            throw ClusterConfigurationError.invalid(
+                "A cluster approval ID derived from these facts exceeds \(Self.maximumApprovalIDBytes) bytes")
+        }
     }
 
     /// Every digest 64 lowercase hex and nonzero; 1 to 64 models with valid,

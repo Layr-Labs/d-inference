@@ -404,6 +404,23 @@ class ClusterRuntimeTests(PublicationFixture):
             with self.subTest(row=label), self.assertRaisesRegex(ValueError, 'Invalid cluster_runtime'):
                 PUB.prepare(self.base / label, self.root / PUB.BUNDLE, self.dev_env(), self.write_block(data))
 
+    def test_a_block_whose_derived_approval_ids_exceed_128_bytes_is_refused_before_staging(self):
+        # release/<version>/<model>/s2 with version 0.9.8-dev.branch.7: 30 bytes plus the model ID.
+        env = self.dev_env()
+        fits, over = cluster_runtime_block(), cluster_runtime_block()
+        fits['models'] = [dict(fits['models'][0], model='m' * 98)]
+        over['models'] = [dict(over['models'][0], model='m' * 99)]
+        self.assertEqual(len(f"release/{env['VERSION']}/{'m' * 98}/s2".encode()), 128)
+        payload = PUB.prepare(self.base / 'fits', self.root / PUB.BUNDLE, env, self.write_block(fits, 'fits.json'))
+        self.assertEqual(payload['cluster_runtime'], fits)
+        with self.assertRaisesRegex(ValueError, 'derived cluster approval ID exceeds 128 bytes'), \
+                patch.object(PUB, 'upload') as upload:
+            PUB.prepare(self.base / 'over', self.root / PUB.BUNDLE, env, self.write_block(over, 'over.json'))
+        upload.assert_not_called()
+        self.assertFalse((self.base / 'over' / 'release-payload.json').exists())
+        with self.assertRaisesRegex(ValueError, 'derived cluster approval ID exceeds 128 bytes'):
+            PUB.validate(dict(payload, cluster_runtime=over), env)
+
     def test_boundary_values_are_accepted(self):
         block = cluster_runtime_block()
         block['models'] = [dict(block['models'][0], model=f'm{index:02d}') for index in range(64)]

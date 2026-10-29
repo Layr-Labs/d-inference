@@ -93,6 +93,10 @@ public struct ClusterSetupRecord: Codable, Sendable, Equatable {
     /// Why the pair serves on the leader's local API although its coordinator offers a cluster approval (one line,
     /// `ClusterApprovalSync`); nil when it is offered for pairing or the coordinator offers none.
     public var approvalNote: String? = nil
+    /// The cluster approval both Macs saved their setups without because the coordinator gave no answer for the
+    /// absence grace; the pair is offered with it again once the coordinator answers, while it is current
+    /// (`ClusterApprovalSync.step`). Nil otherwise.
+    public var parkedApproval: ClusterRuntimeApproval? = nil
 
     public init(pair: Pair? = nil) { self.pair = pair }
 

@@ -77,8 +77,9 @@ struct ClusterApprovalFetchTests {
         }
         #expect(await ClusterApprovalFetch.fetch(coordinatorURL: "ws://coordinator.example/ws/provider")
             == .unavailable("the coordinator URL is not HTTPS"))
-        // Nothing listens on port 9 of this Mac: no answer is no approval, never an error that stops serving.
-        guard case .unavailable = await ClusterApprovalFetch.fetch(coordinatorURL: "ws://127.0.0.1:9/ws/provider") else {
+        // Nothing listens on port 9 of this Mac: no answer is no approval, never an error that stops serving, and it
+        // is told apart from an answer (an offered pair falls back to local serving only on no answer).
+        guard case .unreachable = await ClusterApprovalFetch.fetch(coordinatorURL: "ws://127.0.0.1:9/ws/provider") else {
             Issue.record("an unreachable coordinator was read as an answer"); return
         }
     }

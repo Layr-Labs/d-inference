@@ -41,6 +41,90 @@ public enum ClusterApprovalSync {
             model: configuration.publicModelID, schedule: configuration.selectedPrefillSchedule, now: now)
     }
 
+    /// The control leader's watch over the coordinator of a pair it offered: a pair whose coordinator gives no answer
+    /// for the absence grace (`ClusterService.soloGraceSeconds`, the grace before a Mac serves alone) serves on the
+    /// leader's local API, and is offered again once the coordinator answers.
+    struct Watch: Equatable, Sendable {
+        /// Control-clock seconds of the first check in a row that got no answer; nil once the coordinator answered.
+        var unreachableSince: Double?
+        init() {}
+    }
+
+    /// What the control leader does after it asked its coordinator.
+    enum Step: Equatable, Sendable {
+        /// Nothing to write.
+        case keep
+        /// Save this approval on both Macs (`run`): the first one, a later one, or the one set aside, offered again.
+        case save(ClusterRuntimeApproval)
+        /// The coordinator gave no answer for the grace: both Macs save their setups without this approval, and the
+        /// leader keeps it aside (`ClusterSetupRecord.parkedApproval`) to offer the pair again (`serveLocally`).
+        case serveLocally(ClusterRuntimeApproval)
+    }
+
+    /// The step for this saved setup and answer. `parked` is the approval set aside while the pair serves locally.
+    /// `clock` and `grace` are control-clock seconds (`ClusterService.monotonicSeconds`); `now` is wall-clock seconds.
+    static func step(saved: ClusterConfigurationStore.Saved, fetched: ClusterApprovalFetch.Outcome, parked: ClusterRuntimeApproval?,
+                     scope: ClusterServingScope, watch: inout Watch, clock: Double, grace: Double, now: Double) -> Step {
+        let configuration = saved.configuration
+        if case .unreachable = fetched {
+            // Only a pair offered now with a cluster approval falls back; a hand-saved pair approval is the operator's.
+            guard let member = configuration.nativeMember, let offered = member.clusterApproval,
+                  ClusterApprovalLifetime.offers(member, scope: scope, now: now) else {
+                watch.unreachableSince = nil
+                return .keep
+            }
+            let since = watch.unreachableSince ?? clock
+            watch.unreachableSince = since
+            return clock - since >= grace ? .serveLocally(offered) : .keep
+        }
+        watch.unreachableSince = nil
+        // The coordinator answers: a pair that serves locally because it did not is offered again with the approval
+        // it set aside while that is current, or with a later one the coordinator offers now.
+        if let parked, configuration.nativeMember == nil, !scope.isLocalOnly {
+            var candidates = [parked]
+            if case .approvals(let approvals) = fetched { candidates += approvals }
+            return ClusterApprovalLifetime.select(candidates, model: configuration.publicModelID,
+                schedule: configuration.selectedPrefillSchedule, now: now).map(Step.save) ?? .keep
+        }
+        if case .save(let approval) = decision(saved: saved, fetched: fetched, now: now) { return .save(approval) }
+        return .keep
+    }
+
+    /// `Step.serveLocally`: the other Mac saves its setup without the approval first, then this Mac. When either Mac
+    /// cannot save, both keep the approval (the other Mac gets it back and checks it again), so neither serves in
+    /// another mode than the other, and the next check tries again. The parts of both Macs must be stopped.
+    static func serveLocally(_ approval: ClusterRuntimeApproval, grace: Double, paths: ClusterUserPaths, providerConfiguration: URL,
+                             pairingStore: ClusterPairingStore, scratch: URL,
+                             sendToPeer: (ClusterServiceCommand) throws -> Void) -> Result {
+        guard let saved = try? ClusterApprovalAttachment.savedSetup(paths: paths, providerConfiguration: providerConfiguration) else {
+            return .unchanged
+        }
+        let waited = "The coordinator has not answered for " + (grace >= 60 ? "\(Int(grace / 60)) minutes" : "\(Int(grace)) s")
+        func stays(_ why: String) -> Result {
+            Result(changed: false, line: waited + ", but " + why + ": the pair stays offered and this is tried again", note: nil)
+        }
+        do { try sendToPeer(ClusterServiceCommand(op: .approval)) } catch {
+            return stays("the other Mac could not be told to serve locally (\(refusal(error)))")
+        }
+        do {
+            _ = try ClusterApprovalAttachment.save(nil, saved: saved, paths: paths, providerConfiguration: providerConfiguration,
+                                                   scratch: scratch)
+        } catch {
+            // The other Mac saved without it: give it back there, with the link it registers to this Mac.
+            var back = ClusterServiceCommand(op: .approval)
+            back.approval = approval
+            back.approvalEdge = (try? ClusterApprovalAttachment.pairing(saved.configuration, store: pairingStore)).flatMap {
+                ClusterApprovalAttachment.measuredEdge(peerPin: $0.localPin, members: saved.configuration.peers.map(\.id),
+                                                       homeDirectory: paths.homeDirectory)
+            }
+            try? sendToPeer(back)
+            return stays("this Mac could not save its setup (\(refusal(error)))")
+        }
+        let line = waited + ": the pair serves on the leader's local API until it answers again, then it is offered again "
+            + "with approval \(approval.id)"
+        return Result(changed: true, line: line, note: .some(line))
+    }
+
     /// One run of the step. `sendToPeer` delivers an `approval` command over the cable and throws the other Mac's
     /// refusal. The parts of both Macs must be stopped (each save needs its device journal empty).
     static func run(fetched: ClusterApprovalFetch.Outcome, paths: ClusterUserPaths, providerConfiguration: URL,

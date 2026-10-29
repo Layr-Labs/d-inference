@@ -100,9 +100,12 @@ public final class ClusterService: @unchecked Sendable {
     private var updateInFlight = false
     private var nextUpdateCheck = Date.distantPast
     private var updatingLine: String?
-    // The cluster approval is asked for once per run of this service, on the control leader (`checkApproval`).
+    // The cluster approval is asked for once per run of this service on the control leader, and again every minute
+    // while the pair is offered or serves locally with its approval set aside (`checkApproval`).
     private var approvalChecked = false
     private var approvalInFlight = false
+    private var nextApprovalCheck = Date.distantPast
+    private var approvalWatch = ClusterApprovalSync.Watch()
     // Derived control (ClusterServiceControl.swift).
     var control: ClusterControlNode?
     var controlResponder: ClusterSetupLinkExchange.Responder?
@@ -993,14 +996,16 @@ public final class ClusterService: @unchecked Sendable {
         }
     }
 
-    /// Once per run of this service, on the control leader: asks the coordinator for this release's cluster approval
-    /// and, only when one must be saved (none was saved and one is offered now, or the saved one ends within a day
-    /// and a later one is offered), stops both parts, saves it on both Macs (`ClusterApprovalSync`) and serves again.
-    /// A coordinator that offers nothing, or the same approval, changes nothing and stops nothing. An approval that
-    /// ended is removed by each Mac itself before its part starts (`supervise`), never by stopping a running pair.
+    /// On the control leader: asks the coordinator for this release's cluster approval once per run of this service,
+    /// and every `ClusterOnboardingUpdate.checkEverySeconds` while the pair serves offered to the coordinator or serves
+    /// locally with its approval set aside. Only when a setup must change (`ClusterApprovalSync.step`: an approval to
+    /// save, or a coordinator that gave no answer for the absence grace) it stops both parts, changes both Macs'
+    /// setups and serves again. A coordinator that offers nothing, or the same approval, changes nothing and stops
+    /// nothing. An approval that ended is removed by each Mac itself before its part starts (`supervise`), never by
+    /// stopping a running pair.
     private func checkApproval(say: @escaping @Sendable (String) -> Void) {
         let begin: Bool = lock.withLock {
-            guard !approvalChecked, !approvalInFlight, !updateInFlight, !stopping, control?.leads == true else { return false }
+            guard !approvalInFlight, !updateInFlight, !stopping, control?.leads == true, Date() >= nextApprovalCheck else { return false }
             approvalInFlight = true
             return true
         }
@@ -1010,21 +1015,40 @@ public final class ClusterService: @unchecked Sendable {
         Thread.detachNewThread { [weak self] in
             guard let self else { return }
             defer { self.lock.withLock { self.approvalInFlight = false } }
-            guard let saved = try? ClusterApprovalAttachment.savedSetup(paths: paths, providerConfiguration: configuration),
-                  let coordinator = try? ConfigManager.loadOrDefaults(from: configuration).coordinator.url else {
-                self.lock.withLock { self.approvalChecked = true }
-                return
+            let first = self.lock.withLock { !self.approvalChecked }
+            func checked() {
+                self.lock.withLock {
+                    self.approvalChecked = true
+                    self.nextApprovalCheck = Date().addingTimeInterval(ClusterOnboardingUpdate.checkEverySeconds)
+                }
             }
+            let record = try? self.store.readRecord()
+            let scope = record?.leadership?.scope ?? .publicServing
+            let parked = record?.parkedApproval
+            guard let saved = try? ClusterApprovalAttachment.savedSetup(paths: paths, providerConfiguration: configuration),
+                  let coordinator = try? ConfigManager.loadOrDefaults(from: configuration).coordinator.url else { return checked() }
+            // After the first check, the coordinator is asked again only for a serving pair it is offered to, or one that
+            // serves locally because it did not answer: no other pair asks more than once per run.
+            let offered = saved.configuration.nativeMember.map {
+                ClusterApprovalLifetime.offers($0, scope: scope, now: Date().timeIntervalSince1970)
+            } ?? false
+            guard first || (record?.leadership?.serving == true && (offered || parked != nil)) else { return checked() }
             let fetched = ClusterApprovalFetch.fetchBlocking(coordinatorURL: coordinator)
             let now = Date().timeIntervalSince1970
-            guard case .save = ClusterApprovalSync.decision(saved: saved, fetched: fetched, now: now) else {
-                self.lock.withLock { self.approvalChecked = true }
-                return
+            if let parked, !ClusterApprovalLifetime.current(parked, now: now) {
+                let line = "The cluster approval \(parked.id) ended while the coordinator did not answer; the pair serves on the leader's local API"
+                try? self.store.updateRecord { $0.parkedApproval = nil; $0.approvalNote = line }
+                say(line)
             }
+            var watch = self.lock.withLock { self.approvalWatch }
+            let step = ClusterApprovalSync.step(saved: saved, fetched: fetched, parked: parked, scope: scope, watch: &watch,
+                                                clock: ClusterService.monotonicSeconds(), grace: ClusterService.soloGraceSeconds, now: now)
+            self.lock.withLock { self.approvalWatch = watch }
+            guard step != .keep else { return checked() }
             // A person's command and this never run at once; a busy lock is tried again at the next tick.
             guard let held = ClusterControlCommandLock.acquire(seconds: 5) else { return }
             defer { held.release() }
-            self.lock.withLock { self.approvalChecked = true }
+            checked()
             let live = self.controlLive
             let serving = (try? self.store.readRecord())?.leadership?.serving == true
             if serving {
@@ -1036,11 +1060,23 @@ public final class ClusterService: @unchecked Sendable {
                     return say("a part did not stop within 5 minutes: the cluster approval stays as it is")
                 }
             }
-            let result = ClusterApprovalSync.run(fetched: fetched, paths: paths, providerConfiguration: configuration,
-                pairingStore: pairingStore, scratch: scratch, now: Date().timeIntervalSince1970) { request in
-                _ = try live.command(request, seconds: 180)
+            let send: (ClusterServiceCommand) throws -> Void = { request in _ = try live.command(request, seconds: 180) }
+            let result: ClusterApprovalSync.Result
+            switch step {
+            case .keep: return
+            case .save(let approval):
+                result = ClusterApprovalSync.run(fetched: .approvals([approval]), paths: paths, providerConfiguration: configuration,
+                    pairingStore: pairingStore, scratch: scratch, now: Date().timeIntervalSince1970, sendToPeer: send)
+            case .serveLocally(let approval):
+                result = ClusterApprovalSync.serveLocally(approval, grace: ClusterService.soloGraceSeconds, paths: paths,
+                    providerConfiguration: configuration, pairingStore: pairingStore, scratch: scratch, sendToPeer: send)
             }
-            if let note = result.note { try? self.store.updateRecord { $0.approvalNote = note } }
+            try? self.store.updateRecord { stored in
+                if let note = result.note { stored.approvalNote = note }
+                // The approval set aside is kept while the pair serves locally and dropped once it is offered again.
+                if case .serveLocally(let approval) = step, result.changed { stored.parkedApproval = approval }
+                if case .save = step, result.changed { stored.parkedApproval = nil }
+            }
             if let line = result.line { say(line) }
             if serving, case .failure(let failure) = live.localServe() {
                 try? self.store.updateRecord { $0.leadership?.serving = true }

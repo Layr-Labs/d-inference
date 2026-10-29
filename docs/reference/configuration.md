@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-10-28
+> Last updated: 2026-10-29
 
 Provider CLI and native-runtime environment variables, compiled defaults and reading symbols. Secrets are named, never valued. Unless specified otherwise, values are read at process start.
 
@@ -1019,8 +1019,9 @@ runtime (DevNet only). The cluster service then runs each Mac's part as
 | Select | The entry whose `model` is the setup's `publicModelID` and whose `schedule` is its prefill schedule (`1` serial, `2` one-chunk lookahead), still current, latest `not_after` first | `provider-swift/Sources/ProviderCore/Inference/Distributed/Membership/ClusterApproval/ClusterApprovalLifetime.swift` (`select`) |
 | Check | On each Mac, against its own files: every digest of the release's cluster runtime facts (`ClusterRuntimeApprovalFacts`, computed from the helpers beside the setup's worker and the setup's model folder); the member's own start refusals (`requireLocalRankGranted`); the roster of this Mac's pairing (S17); `validate` below | `provider-swift/Sources/ProviderCore/Inference/Distributed/Membership/ClusterApproval/ClusterApprovalAttachment.swift` (`attachment`) |
 | Save | The leader checks the entry, sends it to the other Mac over the cable (service command `approval`), and saves it only after the other Mac checked and saved it. A refusal on either Mac saves it on neither | `provider-swift/Sources/ProviderCore/Inference/Distributed/Membership/ClusterApproval/ClusterApprovalSync.swift` (`run`, `receive`) |
-| When | After the guided setup's Start stage saved both setups and after an update re-adopted them (`OnboardingLive.syncApproval`), and once at each start of the control leader's cluster service (`ClusterService.checkApproval`) | as named |
+| When | After the guided setup's Start stage saved both setups and after an update re-adopted them (`OnboardingLive.syncApproval`), once at each start of the control leader's cluster service, and every minute while a serving pair is offered or has its approval kept aside (`ClusterService.checkApproval`) | as named |
 | Lifetime | A saved approval with more than `renewWithinSeconds = 86_400` left is kept. Within that day a later entry replaces it. An ended one is removed: each Mac saves its setup without it before its part starts, and its part then serves on the leader's local API (`ClusterService.supervise`) | `ClusterApprovalLifetime.decide` |
+| No answer | While a serving pair is offered, the leader asks again every `ClusterOnboardingUpdate.checkEverySeconds = 60`. When no request gets an HTTP answer for the absence grace (`ClusterService.soloGraceSeconds`: 600 s; `DARKBLOOM_DEBUG_CLUSTER_SOLO_GRACE_SECONDS` in a development build), both Macs save their setups without the approval, the other Mac first; when the other Mac cannot be told, nothing changes and the next check tries again. The leader keeps the approval in its setup record (`parkedApproval`). At the next HTTP answer, that approval (or a later one) is saved on both Macs again through the Save step, while it is current. Any HTTP answer counts, also an error status | `ClusterApprovalSync.step`, `serveLocally`; `ClusterService.checkApproval` |
 
 A coordinator that answers 404 (pairing off, production, staging) leaves both
 saved setups byte for byte as they were, and nothing is sent over the cable.

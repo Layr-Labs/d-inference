@@ -1,6 +1,6 @@
 # Two Macs as one provider (guided setup)
 
-> Last updated: 2026-10-28
+> Last updated: 2026-10-29
 
 Two Apple Silicon Macs joined by one Thunderbolt 5 cable serve a model together:
 each Mac holds part of its layers, and the pair serves as one provider. Setting
@@ -135,9 +135,28 @@ An approval ends 14 days after its release. The leader asks again at each start
 of its cluster service and after each Darkbloom update, and takes a later
 approval when the saved one ends within a day. A Mac whose approval ended
 saves its setup without it before its part starts, and the pair serves on the
-leader's local API again; the status says why in one line. `darkbloom cluster
-local` also serves without the approval. Approval sources, checks and saved
-fields: [coordinator-paired member](../reference/configuration.md#coordinator-paired-member).
+leader's local API again. `darkbloom cluster local` also serves without the
+approval.
+
+While the pair is offered, the leader asks the coordinator once a minute. When
+the coordinator gives no answer for the absence grace (10 minutes, the same
+grace as in [if a Mac goes away](#if-a-mac-goes-away)), both Macs save their
+setups without the approval and the pair serves on the leader's local API. The
+leader keeps the approval aside. When the coordinator answers again, each Mac
+checks the approval again and the pair is offered again, while the approval is
+current.
+
+What `darkbloom cluster` status says in each mode:
+
+| Mode | Status line |
+|---|---|
+| Offered | `Offered to the coordinator for pairing: approval <id>, until <date>.` |
+| Coordinator gave no answer for the grace | The API line, then `The coordinator has not answered for 10 minutes: the pair serves on the leader's local API until it answers again, then it is offered again with approval <id>.` |
+| Approval ended | The API line, then one line that says the cluster approval `<id>` expired and the pair serves on the leader's local API |
+| Not offered (production, staging, a refusal) | The API line, then (only after a refusal) `Not offered for pairing: <reason>.` |
+
+Approval sources, checks and saved fields:
+[coordinator-paired member](../reference/configuration.md#coordinator-paired-member).
 
 Counting every key: `y` on the other Mac, and `y` and enter on the leader
 (three keys), plus at most one macOS approval per Mac.

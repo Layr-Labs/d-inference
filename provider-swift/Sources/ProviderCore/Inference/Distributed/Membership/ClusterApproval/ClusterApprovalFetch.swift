@@ -17,8 +17,11 @@ public enum ClusterApprovalFetch {
         case approvals([ClusterRuntimeApproval])
         /// 404: pairing is off on this coordinator, or the release has no cluster runtime.
         case notOffered
-        /// Any other answer, or no answer: the reason, for one log line.
+        /// Any other answer, or a URL this Mac does not ask: the reason, for one log line.
         case unavailable(String)
+        /// No answer at all (the request failed before an HTTP answer: no route, refused, timed out): the reason. An
+        /// offered pair whose coordinator stays so for the absence grace serves locally (`ClusterApprovalSync.step`).
+        case unreachable(String)
     }
 
     /// The request URL for the provider's coordinator: HTTPS, or plain HTTP to this Mac's own loopback (a local test
@@ -58,6 +61,8 @@ public enum ClusterApprovalFetch {
             return .approvals(try decode(bytes))
         } catch let error as ClusterConfigurationError {
             return .unavailable("\(error)")
+        } catch let error as URLError {
+            return .unreachable(error.localizedDescription)
         } catch {
             return .unavailable(error.localizedDescription)
         }

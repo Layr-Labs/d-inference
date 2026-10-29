@@ -492,6 +492,54 @@ private struct EngineV2BridgePumpReceiptTests {
         #expect(store.stats().stagedBytesInUse == 0)
         await bridge.shutdown()
     }
+
+    @Test("with the opt-in on, a seeded donor's response still waits for its checkpoint write")
+    func seededDonorKeepsTerminalAfterPublication() async throws {
+        let fixture = try SSDHybridCheckpointTestFixture()
+        defer { fixture.remove() }
+        let store = try fixture.makeStore(useGlobalBudget: false)
+        let entered = DispatchSemaphore(value: 0)
+        let resume = DispatchSemaphore(value: 0)
+        store.lock.withLock {
+            store.beforeWriteIndexForTesting = { _, durable in
+                guard !durable else { return }
+                entered.signal()
+                _ = resume.wait(timeout: .now() + 10)
+            }
+        }
+        let model = PumpReceiptModel()
+        defer {
+            model.allowForward()
+            for _ in 0 ..< 8 { resume.signal() }
+        }
+        let owned = engine(model: model, store: store)
+        let bridge = makeBridge(
+            engine: owned, modelId: "fixture-model", ssdHybridCheckpointStore: store,
+            terminalBeforeCheckpointPublication: true)
+        let stream = await bridge.submitTokenized(
+            promptTokens: fixture.tokens, request: makeRequest(maxTokens: 1, seed: 7),
+            requestId: "seeded-donor", cacheScope: "tenant-a",
+            donationDemand: .init(repeatedPrefixTokens: 256))
+        let finished = DispatchSemaphore(value: 0)
+        let collection = Task {
+            let recorded = await record(stream)
+            finished.signal()
+            return recorded
+        }
+        model.allowForward()
+        let writing = await Task.detached { blockingWait(entered, seconds: 10) }.value
+        #expect(writing)
+        // A seeded engine ID is reused right after its terminal, so the
+        // terminal must keep following publication.
+        let early = await Task.detached { blockingWait(finished, seconds: 0.5) }.value
+        #expect(!early, "a seeded donor answered before its checkpoint was durable")
+        for _ in 0 ..< 8 { resume.signal() }
+        let recorded = await collection.value
+        #expect(recorded.events.contains { if case .info = $0 { true } else { false } })
+        await store.waitForWritesForTesting()
+        #expect(store.stats().filesWritten > 0)
+        await bridge.shutdown()
+    }
 }
 
 private func makeBridge(

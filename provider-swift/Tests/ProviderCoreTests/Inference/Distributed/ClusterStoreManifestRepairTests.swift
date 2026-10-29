@@ -28,6 +28,13 @@ struct ClusterStoreManifestRepairTests {
             "provider-swift/Tests/ProviderCoreTests/Fixtures/ClusterManifestRepair/\(name).coordinator-manifest.json"))
     }
 
+    /// The GPT-OSS CDN manifest with one file renamed: the same aggregate, another file list.
+    private static func renamedGPTOSSManifest() throws -> Data {
+        Data(String(decoding: try worker("registered-gpt-oss-20b.manifest.json"), as: UTF8.self)
+            .replacingOccurrences(of: "\"path\" : \"generation_config.json\"", with: "\"path\" : \"generation_config_2.json\"").utf8)
+    }
+    private static let gptOSSPath = "/v2/gpt-oss-20b--ca1fe4e9c149/2026-05-25-r1/manifest.json"
+
     /// The worker's answer for `manifest` beside the folder's own configuration.
     private static func describes(_ manifest: Data, _ folder: URL) -> Bool {
         guard let configuration = try? Data(contentsOf: folder.appendingPathComponent("config.json")) else { return false }
@@ -53,9 +60,9 @@ struct ClusterStoreManifestRepairTests {
         var store: URL { folder.deletingLastPathComponent() }
         var manifest: Data { (try? Data(contentsOf: folder.appendingPathComponent("manifest.json"))) ?? Data() }
         var names: [String] { ((try? FileManager.default.contentsOfDirectory(atPath: folder.path)) ?? []).sorted() }
-        func repair(cdn: String, servable: Set<String>) {
+        func repair(cdn: String, servable: Set<String>, now: Date = Date()) {
             ClusterProductModelStore.repairStoreManifests(store: store, servable: servable,
-                providerConfiguration: providerConfiguration, environment: ["DARKBLOOM_R2_CDN_URL": cdn],
+                providerConfiguration: providerConfiguration, environment: ["DARKBLOOM_R2_CDN_URL": cdn], now: now,
                 accepts: ClusterStoreManifestRepairTests.describes)
         }
         func weightState() -> (bytes: Data, inode: UInt64, modified: timespec) {
@@ -74,7 +81,7 @@ struct ClusterStoreManifestRepairTests {
         let server = LocalCDNFileServer()
         let cdn = try await server.start()
         defer { Task { await server.shutdown() } }
-        let path = "/v2/gpt-oss-20b--ca1fe4e9c149/2026-05-25-r1/manifest.json"
+        let path = Self.gptOSSPath
         server.setFiles([path: published])
         #expect(!Self.describes(old, store.folder))
         let before = store.weightState()
@@ -94,8 +101,7 @@ struct ClusterStoreManifestRepairTests {
     /// A published manifest that names other files is not this folder's artifact: the folder is left as it is.
     @Test func fetchedManifestWithAnotherFileListIsRefused() async throws {
         let old = try Self.coordinatorCopy("gpt-oss-20b")
-        let renamed = Data(String(decoding: try Self.worker("registered-gpt-oss-20b.manifest.json"), as: UTF8.self)
-            .replacingOccurrences(of: "\"path\" : \"generation_config.json\"", with: "\"path\" : \"generation_config_2.json\"").utf8)
+        let renamed = try Self.renamedGPTOSSManifest()
         let parsed = try ClusterCatalogArtifact.parse(manifest: renamed), held = try ClusterCatalogArtifact.parse(manifest: old)
         #expect(parsed.aggregateSHA256 == held.aggregateSHA256 && !parsed.sameArtifact(held))
         let store = try Store(folder: "gpt-oss-20b-2026-05-25-r1",
@@ -104,7 +110,7 @@ struct ClusterStoreManifestRepairTests {
         let server = LocalCDNFileServer()
         let cdn = try await server.start()
         defer { Task { await server.shutdown() } }
-        server.setFiles(["/v2/gpt-oss-20b--ca1fe4e9c149/2026-05-25-r1/manifest.json": renamed])
+        server.setFiles([Self.gptOSSPath: renamed])
 
         store.repair(cdn: cdn.absoluteString, servable: [parsed.aggregateSHA256])
 
@@ -129,6 +135,58 @@ struct ClusterStoreManifestRepairTests {
         store.repair(cdn: cdn.absoluteString, servable: [aggregate])
 
         #expect(store.manifest == old)
+    }
+
+    /// The CDN has no file the first time (404) and the coordinator does not answer: the folder is asked again after
+    /// `ClusterOnboardingUpdate.checkEverySeconds`, not before, and is then repaired.
+    @Test func failedFetchIsRetriedAfterTheIntervalAndThenRepairs() async throws {
+        let old = try Self.coordinatorCopy("gpt-oss-20b"), published = try Self.worker("registered-gpt-oss-20b.manifest.json")
+        let store = try Store(folder: "gpt-oss-20b-2026-05-25-r1",
+            configuration: try Self.worker("registered-gpt-oss-20b.configuration.json"), manifest: old)
+        defer { store.remove() }
+        let server = LocalCDNFileServer()
+        let cdn = try await server.start()
+        defer { Task { await server.shutdown() } }
+        let aggregate = try ClusterCatalogArtifact.parse(manifest: old).aggregateSHA256
+        let start = Date(), interval = ClusterOnboardingUpdate.checkEverySeconds
+
+        store.repair(cdn: cdn.absoluteString, servable: [aggregate], now: start)
+        #expect(store.manifest == old)
+        #expect(server.requestedPaths() == [Self.gptOSSPath])
+
+        server.setFiles([Self.gptOSSPath: published])
+        store.repair(cdn: cdn.absoluteString, servable: [aggregate], now: start.addingTimeInterval(interval - 1))
+        #expect(store.manifest == old)
+        #expect(server.requestedPaths() == [Self.gptOSSPath])
+
+        store.repair(cdn: cdn.absoluteString, servable: [aggregate], now: start.addingTimeInterval(interval))
+        #expect(store.manifest == published)
+        #expect(Self.describes(store.manifest, store.folder))
+        #expect(server.requestedPaths() == [Self.gptOSSPath, Self.gptOSSPath])
+    }
+
+    /// A published manifest of other content is a definite answer: the folder is not asked again, even after the
+    /// interval and with the right bytes published.
+    @Test func contentMismatchIsNotRetried() async throws {
+        let old = try Self.coordinatorCopy("gpt-oss-20b")
+        let store = try Store(folder: "gpt-oss-20b-2026-05-25-r1",
+            configuration: try Self.worker("registered-gpt-oss-20b.configuration.json"), manifest: old)
+        defer { store.remove() }
+        let server = LocalCDNFileServer()
+        let cdn = try await server.start()
+        defer { Task { await server.shutdown() } }
+        server.setFiles([Self.gptOSSPath: try Self.renamedGPTOSSManifest()])
+        let aggregate = try ClusterCatalogArtifact.parse(manifest: old).aggregateSHA256
+        let start = Date()
+
+        store.repair(cdn: cdn.absoluteString, servable: [aggregate], now: start)
+        #expect(store.manifest == old)
+
+        server.setFiles([Self.gptOSSPath: try Self.worker("registered-gpt-oss-20b.manifest.json")])
+        store.repair(cdn: cdn.absoluteString, servable: [aggregate],
+                     now: start.addingTimeInterval(ClusterOnboardingUpdate.checkEverySeconds))
+        #expect(store.manifest == old)
+        #expect(server.requestedPaths() == [Self.gptOSSPath])
     }
 
     /// Neither the CDN nor the coordinator answers: the folder is unchanged and the worker refuses it as before.

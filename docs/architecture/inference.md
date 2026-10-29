@@ -4458,8 +4458,11 @@ it plans (`ClusterProductModelStore.updateClusterStore`). It fetches the
 published manifest in the same order and replaces `manifest.json` atomically
 only when the fetched bytes name the same model, version, aggregate and files
 (`ClusterCatalogArtifact.sameArtifact`) and the worker describes them. It never
-writes the weight files. When nothing answers, or the bytes name other files or
-another catalog entry, the folder is unchanged and the worker refuses it.
+writes the weight files. When nothing answers, or the worker refuses the
+fetched bytes, the folder is unchanged and the next attempt for it comes
+`ClusterOnboardingUpdate.checkEverySeconds` (60 s) later. When the bytes name
+other files or another catalog entry, the folder is unchanged, the worker
+refuses it, and the provider does not ask for it again until it restarts.
 
 
 ## GPT-OSS independent-history batch forward

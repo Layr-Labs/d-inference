@@ -45,6 +45,25 @@ enum ClusterProductModelStore {
     static func catalogManifest(providerConfiguration: URL, artifact: ClusterCatalogArtifact, seconds: Double = 5,
                                 environment: [String: String] = ProcessInfo.processInfo.environment,
                                 accepts: ((Data) -> Bool)? = nil) -> Data? {
+        guard case .manifest(let data) = catalogAnswer(providerConfiguration: providerConfiguration, artifact: artifact,
+                                                       seconds: seconds, environment: environment, accepts: accepts) else { return nil }
+        return data
+    }
+
+    /// What the catalog answered for an artifact.
+    enum CatalogAnswer: Equatable {
+        /// Bytes that name exactly the artifact (`catalogManifest`'s choice among them).
+        case manifest(Data)
+        /// No source gave such bytes, and at least one answered with a manifest of other content.
+        case otherContent
+        /// No source answered with a manifest.
+        case unavailable
+    }
+
+    /// `catalogManifest` with the reason when it has no bytes.
+    static func catalogAnswer(providerConfiguration: URL, artifact: ClusterCatalogArtifact, seconds: Double = 5,
+                              environment: [String: String] = ProcessInfo.processInfo.environment,
+                              accepts: ((Data) -> Bool)? = nil) -> CatalogAnswer {
         var urls = [URL]()
         if let prefix = artifact.r2Prefix {
             let cdn = ModelDownloader.resolveCDNURL(environment: environment)
@@ -53,15 +72,22 @@ enum ClusterProductModelStore {
         if let config = try? ConfigManager.loadOrDefaults(from: providerConfiguration), let escaped = ModelCatalogClient.escapeModelIDForPath(artifact.modelID),
            let url = URL(string: "\(coordinatorHTTPBase(config.coordinator.url))/v1/models/catalog/manifest/\(escaped)") { urls.append(url) }
         var candidates = [Data]()
+        var otherContent = false
         for url in urls {
-            guard let data = fetchManifest(url, artifact: artifact, seconds: seconds), !candidates.contains(data) else { continue }
-            if accepts == nil || accepts?(data) == true { return data }
-            candidates.append(data)
+            switch fetchManifest(url, artifact: artifact, seconds: seconds) {
+            case .manifest(let data):
+                guard !candidates.contains(data) else { continue }
+                if accepts == nil || accepts?(data) == true { return .manifest(data) }
+                candidates.append(data)
+            case .otherContent: otherContent = true
+            case .unavailable: continue
+            }
         }
-        return candidates.first
+        if let first = candidates.first { return .manifest(first) }
+        return otherContent ? .otherContent : .unavailable
     }
 
-    private static func fetchManifest(_ url: URL, artifact: ClusterCatalogArtifact, seconds: Double) -> Data? {
+    private static func fetchManifest(_ url: URL, artifact: ClusterCatalogArtifact, seconds: Double) -> CatalogAnswer {
         var request = URLRequest(url: url)
         request.timeoutInterval = seconds
         let box = ClusterOnboardingMailbox<Data>()
@@ -70,9 +96,9 @@ enum ClusterProductModelStore {
             if let data, (response as? HTTPURLResponse)?.statusCode == 200, data.count <= ClusterCatalogArtifact.maximumManifestBytes { box.post(data) }
             done.signal()
         }.resume()
-        guard done.wait(timeout: .now() + seconds + 1) == .success, let data = box.take().first,
-              let parsed = try? ClusterCatalogArtifact.parse(manifest: data), parsed.sameArtifact(artifact) else { return nil }
-        return data
+        guard done.wait(timeout: .now() + seconds + 1) == .success, let data = box.take().first else { return .unavailable }
+        guard let parsed = try? ClusterCatalogArtifact.parse(manifest: data), parsed.sameArtifact(artifact) else { return .otherContent }
+        return .manifest(data)
     }
 
     /// Clones a product-store model into the cluster's store under its folder name; nil when it is there already.
@@ -98,7 +124,16 @@ enum ClusterProductModelStore {
     }
 
     private static let repairLock = NSLock()
-    nonisolated(unsafe) private static var repairChecked = Set<String>()
+    /// Folders with a definite outcome: the worker takes the manifest, it was repaired, or the folder or the catalog
+    /// holds other content. They are not asked again in this process.
+    nonisolated(unsafe) private static var repairSettled = Set<String>()
+    /// Folders whose last attempt failed (no answer from the catalog, the worker refused the fetched bytes, or the
+    /// write failed), with the time of the next attempt.
+    nonisolated(unsafe) private static var repairRetryAt = [String: Date]()
+    /// Folders under repair now: two callers (setup report and plan) never ask the catalog for one folder at once.
+    nonisolated(unsafe) private static var repairRunning = Set<String>()
+
+    private enum RepairOutcome { case settled, retry }
 
     /// A model cloned in while the catalog did not answer kept the product store's re-encoded receipt as its
     /// manifest; the worker pins the catalog's exact bytes, so the cluster said "not supported" for a verified model
@@ -106,23 +141,51 @@ enum ClusterProductModelStore {
     /// `artifact` (model, version, aggregate and files) but is not bytes the worker takes, the catalog's bytes replace
     /// it, once they name exactly that artifact too (`fetchManifest`) and the worker takes them. Only `manifest.json`
     /// is replaced (atomically); the weight files are never opened. Otherwise the folder is left as it is.
+    /// A folder with a definite outcome is not asked again in this process. After a failed attempt (the catalog did
+    /// not answer, the worker refused the fetched bytes or the write failed) the next one waits
+    /// `ClusterOnboardingUpdate.checkEverySeconds` from `now`, so a fetch that failed once after an update is retried.
     static func repairManifest(_ folder: URL, artifact: ClusterCatalogArtifact, providerConfiguration: URL,
-                               environment: [String: String] = ProcessInfo.processInfo.environment,
+                               environment: [String: String] = ProcessInfo.processInfo.environment, now: Date = Date(),
                                accepts: ((Data) -> Bool)? = nil) {
-        let manifest = folder.appendingPathComponent("manifest.json")
-        // Asked once per folder per process: the catalog is read only for a model it has not been checked against;
-        // a manifest this Mac's worker already takes is left as it is.
         // Only with the worker's own answer: without it the catalog's two encodings could replace one the worker takes.
-        guard let accepts, repairLock.withLock({ repairChecked.insert(folder.path).inserted }),
-              let current = ClusterModelStore.readSmall(manifest), !accepts(current),
-              let parsed = try? ClusterCatalogArtifact.parse(manifest: current), parsed.sameArtifact(artifact),
-              let exact = catalogManifest(providerConfiguration: providerConfiguration, artifact: artifact,
-                                          environment: environment, accepts: accepts),
-              exact != current, accepts(exact) else { return }
+        guard let accepts else { return }
+        let key = folder.path
+        let due: Bool = repairLock.withLock { () -> Bool in
+            guard !repairSettled.contains(key), !repairRunning.contains(key), repairRetryAt[key].map({ now >= $0 }) ?? true else { return false }
+            repairRunning.insert(key)
+            return true
+        }
+        guard due else { return }
+        let outcome = attemptRepair(folder, artifact: artifact, providerConfiguration: providerConfiguration,
+                                    environment: environment, accepts: accepts)
+        repairLock.withLock { () -> Void in
+            repairRunning.remove(key)
+            switch outcome {
+            case .settled: repairSettled.insert(key); repairRetryAt[key] = nil
+            case .retry: repairRetryAt[key] = now.addingTimeInterval(ClusterOnboardingUpdate.checkEverySeconds)
+            }
+        }
+    }
+
+    private static func attemptRepair(_ folder: URL, artifact: ClusterCatalogArtifact, providerConfiguration: URL,
+                                      environment: [String: String], accepts: @escaping (Data) -> Bool) -> RepairOutcome {
+        let manifest = folder.appendingPathComponent("manifest.json")
+        // A manifest this Mac's worker already takes is left as it is.
+        guard let current = ClusterModelStore.readSmall(manifest), !accepts(current),
+              let parsed = try? ClusterCatalogArtifact.parse(manifest: current), parsed.sameArtifact(artifact) else { return .settled }
+        let exact: Data
+        switch catalogAnswer(providerConfiguration: providerConfiguration, artifact: artifact, environment: environment, accepts: accepts) {
+        case .manifest(let data): exact = data
+        case .otherContent: return .settled
+        case .unavailable: return .retry
+        }
+        guard exact != current else { return .settled }
+        guard accepts(exact) else { return .retry }
         var information = stat()
-        guard lstat(folder.path, &information) == 0, information.st_mode & S_IFMT == S_IFDIR, information.st_uid == geteuid() else { return }
-        try? exact.write(to: manifest, options: [.atomic])
+        guard lstat(folder.path, &information) == 0, information.st_mode & S_IFMT == S_IFDIR, information.st_uid == geteuid() else { return .settled }
+        guard (try? exact.write(to: manifest, options: [.atomic])) != nil else { return .retry }
         _ = chmod(manifest.path, 0o600)
+        return .settled
     }
 
     /// Brings the cluster's store up to date before its models are listed or planned: every product-store model a pair
@@ -144,7 +207,7 @@ enum ClusterProductModelStore {
     /// Mac's worker refuses a copied folder that kept the production coordinator's bytes, and without this repair only
     /// removing the folder by hand would bring the model back.
     static func repairStoreManifests(store: URL, servable: Set<String>, providerConfiguration: URL,
-                                     environment: [String: String] = ProcessInfo.processInfo.environment,
+                                     environment: [String: String] = ProcessInfo.processInfo.environment, now: Date = Date(),
                                      accepts: @escaping (_ manifest: Data, _ folder: URL) -> Bool) {
         let names = ((try? FileManager.default.contentsOfDirectory(atPath: store.path)) ?? []).sorted()
         for name in names.prefix(256) where !name.hasPrefix(".") {
@@ -152,7 +215,7 @@ enum ClusterProductModelStore {
             guard let data = ClusterModelStore.readSmall(folder.appendingPathComponent("manifest.json")),
                   let held = try? ClusterCatalogArtifact.parse(manifest: data), servable.contains(held.aggregateSHA256) else { continue }
             repairManifest(folder, artifact: held, providerConfiguration: providerConfiguration, environment: environment,
-                           accepts: { accepts($0, folder) })
+                           now: now, accepts: { accepts($0, folder) })
         }
     }
 }

@@ -948,7 +948,6 @@ jobs:
           echo "CLUSTER_RUNTIME_FILE=$FACTS_ROOT/facts/cluster-runtime.json" >> "$GITHUB_ENV"
           {
             echo '### Cluster runtime facts (dev)'
-            cat "$FACTS_ROOT/facts/left-out.md"
             echo '```json'
             python3 -m json.tool --sort-keys "$FACTS_ROOT/facts/cluster-runtime.json"
             echo '```'

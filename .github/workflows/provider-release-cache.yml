@@ -124,7 +124,6 @@ jobs:
           scripts/provider-cluster-runtime-facts.sh "$ROUNDTRIP/$APP_NAME" "$CLI_NAME" "$RUNNER_TEMP/cluster-runtime"
           {
             echo '### Cluster runtime facts of this build (unsigned, not published)'
-            cat "$RUNNER_TEMP/cluster-runtime/left-out.md"
             echo '```json'
             python3 -m json.tool --sort-keys "$RUNNER_TEMP/cluster-runtime/cluster-runtime.json"
             echo '```'

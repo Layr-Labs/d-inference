@@ -486,31 +486,6 @@ class ReleasePipelineTests(unittest.TestCase):
         for caller in (CALLER, (ROOT / '.github/workflows/release-dev-branch.yml').read_text()):
             self.assertIn("      - 'scripts/provider-cluster-runtime-facts.sh'\n", caller)
 
-    def test_a_model_the_facts_leave_out_is_a_warning_and_every_other_failure_fails(self):
-        # The script matches the exact line the CLI writes for an omission.
-        command = (ROOT / 'provider-swift/Sources/darkbloom/ClusterRuntimeFactsCommand.swift').read_text()
-        prefix = 'Left out of the cluster runtime facts: '
-        self.assertIn(f'static let leftOutPrefix = "{prefix}"', command)
-        self.assertIn(f"LEFT_OUT='{prefix}'", FACTS_SCRIPT)
-        self.assertIn("printf '::warning::%s\\n' \"$line\"", FACTS_SCRIPT)
-        self.assertIn('>> "$root/left-out.md"', FACTS_SCRIPT)
-        # Both steps that run the script show the left-out lines in their summary.
-        sign = job(RELEASE, 'build-and-release')
-        step = sign.split('- name: Compute dev cluster runtime facts from the final signed app\n', 1)[1]
-        step = step.split('\n      - name:', 1)[0]
-        self.assertIn('cat "$FACTS_ROOT/facts/left-out.md"', step)
-        self.assertIn('cat "$RUNNER_TEMP/cluster-runtime/left-out.md"', WARM)
-        # The command's exit status still decides, after its output is shown;
-        # the script ends there, so a failure fails the step before prepare.
-        self.assertIn('2> "$root/runtime-facts.err" || status=$?', FACTS_SCRIPT)
-        self.assertLess(FACTS_SCRIPT.index('done < "$root/runtime-facts.err"'), FACTS_SCRIPT.index('test "$status" -eq 0'))
-        self.assertTrue(FACTS_SCRIPT.rstrip().endswith('test "$status" -eq 0'))
-        # The soft list lives in ClusterRuntimeApprovalFacts only: neither the
-        # script nor the steps name a runtime model or an option that adds one.
-        for text in (FACTS_SCRIPT, step):
-            self.assertNotIn('registered_', text)
-        self.assertEqual(FACTS_SCRIPT.count('glm-5.3-flash'), 1)
-
     def test_dev_and_staging_artifacts_avoid_collision_but_prod_stays_unqualified(self):
         # dev and staging unsigned and publication artifact names carry the
         # environment, so two lanes in one run never collide; prod

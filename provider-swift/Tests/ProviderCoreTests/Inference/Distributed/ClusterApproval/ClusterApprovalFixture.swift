@@ -165,7 +165,7 @@ final class ClusterApprovalMacs: @unchecked Sendable {
 
     /// The cable to the follower: its cluster service's own `approval` handling against its own home, wrapped as the
     /// link exchange wraps a refusal. `facts` are the follower installation's facts.
-    func cable(facts: ClusterRuntimeApprovalFacts, sent: ClusterApprovalSent? = nil) -> (ClusterServiceCommand) throws -> Void {
+    func cable(facts: ClusterRuntimeApprovalFacts, sent: ClusterApprovalRecorder<ClusterServiceCommand>? = nil) -> (ClusterServiceCommand) throws -> Void {
         let mac = follower
         return { command in
             sent?.append(command)
@@ -181,7 +181,7 @@ final class ClusterApprovalMacs: @unchecked Sendable {
 
     /// The leader's step against the test coordinator's answer.
     func sync(_ fetched: ClusterApprovalFetch.Outcome, leaderFacts: ClusterRuntimeApprovalFacts,
-              followerFacts: ClusterRuntimeApprovalFacts, sent: ClusterApprovalSent? = nil,
+              followerFacts: ClusterRuntimeApprovalFacts, sent: ClusterApprovalRecorder<ClusterServiceCommand>? = nil,
               now: Double = Date().timeIntervalSince1970) -> ClusterApprovalSync.Result {
         ClusterApprovalSync.run(fetched: fetched, paths: leader.paths, providerConfiguration: leader.provider,
             pairingStore: leader.pairing, scratch: leader.scratch, now: now,
@@ -197,10 +197,10 @@ final class ClusterApprovalMacs: @unchecked Sendable {
     }
 }
 
-/// The commands the leader sent over the cable, in order.
-final class ClusterApprovalSent: @unchecked Sendable {
+/// Values recorded from other threads, in order: the commands the leader sent over the cable, the service's log lines.
+final class ClusterApprovalRecorder<Value>: @unchecked Sendable {
     private let lock = NSLock()
-    private var values: [ClusterServiceCommand] = []
-    func append(_ command: ClusterServiceCommand) { lock.withLock { values.append(command) } }
-    var commands: [ClusterServiceCommand] { lock.withLock { values } }
+    private var stored: [Value] = []
+    func append(_ value: Value) { lock.withLock { stored.append(value) } }
+    var values: [Value] { lock.withLock { stored } }
 }

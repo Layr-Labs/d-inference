@@ -1417,12 +1417,12 @@ final class OnboardingLive: @unchecked Sendable {
     }
 
     func localTestRequest() -> Result<[String], ClusterOnboardingFailure> {
+        let alone = ClusterService.published()?.control?.mode == "alone"
+        // A pair offered for pairing has no local API to send the test request to.
+        if !alone, offeredLine() != nil { return .failure(.init(ClusterOnboardingReady.offeredTestLine)) }
         let text = "Name three colors."
         let answer: ClusterServicePromptAnswer
-        if ClusterService.published()?.control?.mode != "alone", offeredLine() != nil {
-            return .failure(.init(ClusterOnboardingReady.offeredTestLine))
-        }
-        if ClusterService.published()?.control?.mode == "alone" {
+        if alone {
             // Degraded: this Mac serves alone on its own loopback, once its own solo server holds the port.
             guard ClusterService.soloReadiness(ClusterService.published()) == .ready else {
                 return .failure(.init("\(Self.sentence(here)) serves alone, but its solo server is not answering on port \(ClusterService.soloPort) yet."))

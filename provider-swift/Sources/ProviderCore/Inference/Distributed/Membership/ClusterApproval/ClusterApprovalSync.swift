@@ -86,13 +86,15 @@ public enum ClusterApprovalSync {
             }
             let attachment: ClusterNativeMemberAttachment, peerEdge: ClusterEdge?
             do {
+                // The leader's one link measurement, once from each side: the other Mac's edge names this Mac.
                 let paired = try ClusterApprovalAttachment.pairing(configuration, store: pairingStore)
-                let peerPin = paired.pins.first { $0 != paired.localPin } ?? ""
-                let members = configuration.peers.map(\.id)
-                peerEdge = ClusterApprovalAttachment.measuredEdge(peerPin: paired.localPin, members: members, homeDirectory: paths.homeDirectory)
+                func edge(to pin: String) -> ClusterEdge? {
+                    ClusterApprovalAttachment.measuredEdge(peerPin: pin, members: configuration.peers.map(\.id),
+                                                           homeDirectory: paths.homeDirectory)
+                }
+                peerEdge = edge(to: paired.localPin)
                 attachment = try ClusterApprovalAttachment.attachment(for: approval, saved: saved, paths: paths, pairingStore: pairingStore,
-                    edge: ClusterApprovalAttachment.measuredEdge(peerPin: peerPin, members: members, homeDirectory: paths.homeDirectory),
-                    now: now, chipClass: chipClass, facts: facts)
+                    edge: edge(to: paired.pins.first { $0 != paired.localPin } ?? ""), now: now, chipClass: chipClass, facts: facts)
             } catch { return refused("this Mac's check refused it: \(refusal(error))") }
             do { try send(approval, edge: peerEdge) } catch {
                 // The link exchange wraps the other Mac's own reason ("the other Mac refused: …").

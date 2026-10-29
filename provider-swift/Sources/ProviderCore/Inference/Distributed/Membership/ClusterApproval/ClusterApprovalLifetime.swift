@@ -9,8 +9,10 @@ public enum ClusterApprovalLifetime {
     public static let renewWithinSeconds: Double = 86_400
 
     /// `not_after` in seconds since 1970; nil when it is not a strict RFC 3339 instant (such an entry never saves).
-    static func expiry(_ approval: ClusterRuntimeApproval) -> Double? {
-        ClusterPairApproval.unixNanoseconds(rfc3339: approval.notAfter).map { Double($0) / 1_000_000_000 }
+    static func expiry(_ approval: ClusterRuntimeApproval) -> Double? { expiry(notAfter: approval.notAfter) }
+
+    private static func expiry(notAfter: String) -> Double? {
+        ClusterPairApproval.unixNanoseconds(rfc3339: notAfter).map { Double($0) / 1_000_000_000 }
     }
 
     /// Whether `approval` may still be registered at `now`.
@@ -23,8 +25,8 @@ public enum ClusterApprovalLifetime {
     /// without it and the pair serves as one without an approval does.
     static func offers(_ member: ClusterNativeMemberAttachment, scope: ClusterServingScope, now: Double) -> Bool {
         guard !scope.isLocalOnly, let notAfter = member.clusterApproval?.notAfter ?? member.approval?.notAfter,
-              let end = ClusterPairApproval.unixNanoseconds(rfc3339: notAfter) else { return false }
-        return now < Double(end) / 1_000_000_000
+              let end = expiry(notAfter: notAfter) else { return false }
+        return now < end
     }
 
     /// The schedule number an approval names for a setup's prefill schedule (1 serial, 2 one-chunk lookahead).

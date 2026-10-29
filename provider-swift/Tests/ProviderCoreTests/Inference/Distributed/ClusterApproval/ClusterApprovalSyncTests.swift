@@ -26,10 +26,10 @@ struct ClusterApprovalSyncTests {
         mock.setClusterApprovals(body: try ClusterApprovalMacs.body([macs.approval(schedule: 2), serial,
                                                                      macs.approval(model: "other/model")]))
         let fetched = await ClusterApprovalFetch.fetch(coordinatorURL: url)
-        let sent = ClusterApprovalSent(), facts = try macs.facts()
+        let sent = ClusterApprovalRecorder<ClusterServiceCommand>(), facts = try macs.facts()
         let result = macs.sync(fetched, leaderFacts: facts, followerFacts: facts, sent: sent)
         #expect(result == .init(changed: true, line: ClusterApprovalLifetime.offeredLine(serial), note: .some(nil)))
-        #expect(sent.commands.map(\.op) == [.approval] && sent.commands.first?.approval == serial)
+        #expect(sent.values.map(\.op) == [.approval] && sent.values.first?.approval == serial)
 
         let roster = ClusterPairingRosterCheck.roster(of: try #require(try macs.leader.pairing.load()?.pairings.first))
         for mac in macs.macs {
@@ -48,7 +48,7 @@ struct ClusterApprovalSyncTests {
         // Asked again with the same answer: nothing is written and nothing is sent.
         let before = try macs.macs.map(macs.bytes)
         #expect(macs.sync(fetched, leaderFacts: facts, followerFacts: facts, sent: sent) == .unchanged)
-        #expect(try macs.macs.map(macs.bytes) == before && sent.commands.count == 1)
+        #expect(try macs.macs.map(macs.bytes) == before && sent.values.count == 1)
         await mock.shutdown()
     }
 
@@ -59,9 +59,9 @@ struct ClusterApprovalSyncTests {
         let before = try macs.macs.map(macs.bytes)
         let fetched = await ClusterApprovalFetch.fetch(coordinatorURL: url)
         #expect(fetched == .notOffered)
-        let sent = ClusterApprovalSent(), facts = try macs.facts()
+        let sent = ClusterApprovalRecorder<ClusterServiceCommand>(), facts = try macs.facts()
         #expect(macs.sync(fetched, leaderFacts: facts, followerFacts: facts, sent: sent) == .unchanged)
-        #expect(try macs.macs.map(macs.bytes) == before && sent.commands.isEmpty)
+        #expect(try macs.macs.map(macs.bytes) == before && sent.values.isEmpty)
         await mock.shutdown()
     }
 
@@ -70,9 +70,9 @@ struct ClusterApprovalSyncTests {
         let before = try macs.macs.map(macs.bytes), approval = macs.approval(), facts = try macs.facts()
         for field in ClusterApprovalMacs.blockFields {
             // The leader's own check refuses before anything is sent.
-            let sent = ClusterApprovalSent()
+            let sent = ClusterApprovalRecorder<ClusterServiceCommand>()
             let mine = macs.sync(.approvals([approval]), leaderFacts: try macs.facts(differing: field), followerFacts: facts, sent: sent)
-            #expect(!mine.changed && sent.commands.isEmpty, "\(field)")
+            #expect(!mine.changed && sent.values.isEmpty, "\(field)")
             #expect(mine.line?.contains("this Mac's check refused it: the approval's \(field) differ") == true, "\(mine.line ?? "")")
             // The follower's own check refuses it: the leader then saves nothing either.
             let theirs = macs.sync(.approvals([approval]), leaderFacts: facts, followerFacts: try macs.facts(differing: field))

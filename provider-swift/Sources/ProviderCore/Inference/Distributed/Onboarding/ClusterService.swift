@@ -1228,11 +1228,10 @@ public final class ClusterService: @unchecked Sendable {
         }
         // A part offered to the coordinator whose approval ended, or whose leader now serves locally only, stops
         // here; the next tick saves this Mac's setup without the approval and starts the part that serves locally.
-        if let running, setup == key, case .cluster = want, let member = saved.configuration?.nativeMember,
+        if running != nil, setup == key, case .cluster = want, let member = saved.configuration?.nativeMember,
            !ClusterApprovalLifetime.offers(member, scope: scope, now: Date().timeIntervalSince1970) {
             say("this Mac's part is offered to the coordinator, but "
                 + (scope.isLocalOnly ? "the cluster serves locally only now" : "its cluster approval expired") + ": stopping it")
-            _ = running
             _ = stopChild(say: say, seconds: 300)
             lock.withLock { nextStart = .distantPast; backoff = 3 }
             return

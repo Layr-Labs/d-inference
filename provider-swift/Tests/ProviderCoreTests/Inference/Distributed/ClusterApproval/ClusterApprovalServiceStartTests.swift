@@ -53,7 +53,7 @@ struct ClusterApprovalServiceStartTests {
 
     private func run(_ service: ClusterService, parts: URL, until predicate: () -> Bool) -> (Bool, [String]) {
         let stop = DispatchSemaphore(value: 0), done = DispatchSemaphore(value: 0)
-        let lines = ClusterApprovalSent.Lines()
+        let lines = ClusterApprovalRecorder<String>()
         Thread.detachNewThread {
             _ = try? service.run(stop: stop) { lines.append($0) }
             done.signal()
@@ -85,15 +85,5 @@ struct ClusterApprovalServiceStartTests {
         #expect(reached, "the member part did not start: \(lines)")
         #expect(!started(parts, "leader"))
         #expect(try macs.bytes(macs.leader) == before, "a current approval was rewritten")
-    }
-}
-
-extension ClusterApprovalSent {
-    /// The service's log lines, collected from its threads.
-    final class Lines: @unchecked Sendable {
-        private let lock = NSLock()
-        private var stored: [String] = []
-        func append(_ line: String) { lock.withLock { stored.append(line) } }
-        var values: [String] { lock.withLock { stored } }
     }
 }

@@ -44,8 +44,8 @@ isolated_pattern="ProcessMemoryNativeIntegrationTests|${isolated_pattern}"
 # shard, everything runs here as one serial suite.
 provider_test_shard=${PROVIDER_TEST_SHARD:-}
 run_provider_test_selection() {
-  local selection=$1 name=${1//\//-of-} arguments parallel_flag=(--no-parallel) status
-  local selected=() report="$PROVIDER_TEST_REPORT_DIR/shard-${1//\//-of-}"
+  local selection=$1 name=${1//\//-of-} arguments argument parallel_flag=(--no-parallel) status
+  local selected=() report="$PROVIDER_TEST_REPORT_DIR/shard-$name"
   arguments=$(python3 "$script_directory/provider-test-shards.py" args "$selection" "$isolated_pattern") || return 1
   while IFS= read -r argument; do selected+=("$argument"); done <<<"$arguments"
   # The parallel class keeps Swift Testing's default in-process parallelism.

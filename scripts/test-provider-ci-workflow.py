@@ -345,11 +345,11 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         every_shard = {MIMO_HTTP_PREPARE, MIMO_PROVIDER_PREPARE, PROVIDER_TEST_COMMAND}
         for step in steps:
             command = run_command(step) if field(step, "run") else None
-            if command in expected and command not in every_shard:
-                with self.subTest(step=field(step, "name", indent=6)):
-                    self.assertIn(LAST_SHARD, field(step, "if"))
             if command in every_shard:
                 self.assertNotIn("matrix.shard", field(step, "if") or "")
+            elif command in expected:
+                with self.subTest(step=field(step, "name", indent=6)):
+                    self.assertIn(LAST_SHARD, field(step, "if"))
 
         self.assertEqual(field(test_step, "working-directory"), "provider-swift")
         self.assertEqual(field(test_step, "if"), PROVIDER_MIMO_READY)

@@ -35,7 +35,7 @@ import xml.etree.ElementTree as ElementTree
 
 WEIGHTS = Path(__file__).resolve().with_name("provider-test-shard-weights.json")
 # Test targets whose dependency closure has no MLX, Metal or cluster runtime
-# (provider-swift/Package.swift); test-provider-ci-workflow.py checks this.
+# (provider-swift/Package.swift); test-provider-test-shards.py checks this.
 PARALLEL_MODULES = (
     "DarkbloomFanCoreTests", "DarkbloomFanHelperTests", "DarkbloomFanServiceTests",
     "DarkbloomHardwareLoadTests", "DarkbloomPublishTests", "ProviderAppAttestTests",
@@ -63,7 +63,11 @@ def parse_shard(value):
 
 
 def assignment(shards, weights):
-    """Return the serial suites each shard 1..N selects explicitly."""
+    """Return each shard's serial suites and estimated seconds.
+
+    The last shard's list only balances the load: that shard runs every serial
+    suite that shards 1..N-1 do not select.
+    """
     loads = [0.0] * shards
     loads[0] += FIRST_SHARD_EXTRA_SECONDS
     loads[-1] += LAST_SHARD_EXTRA_SECONDS
@@ -105,17 +109,16 @@ def selection(shard, isolated, weights):
     index, shards = parse_shard(shard)
     assigned, _ = assignment(shards, weights)
     if index < shards:
-        return (suites_regex(assigned[index - 1]) if assigned[index - 1] else None), isolated
+        if not assigned[index - 1]:
+            raise ValueError(f"Shard {shard} has no suites; use fewer shards")
+        return suites_regex(assigned[index - 1]), isolated
     others = [suites_regex(keys) for keys in assigned[:-1] if keys]
     return None, "|".join([parallel_regex(), *others, isolated])
 
 
 def arguments(shard, isolated, weights):
     selected, skipped = selection(shard, isolated, weights)
-    if shard != "parallel" and parse_shard(shard)[0] < parse_shard(shard)[1] and selected is None:
-        raise ValueError(f"Shard {shard} has no suites; use fewer shards")
-    result = ["--filter", selected] if selected else []
-    return result + ["--skip", skipped]
+    return (["--filter", selected] if selected else []) + ["--skip", skipped]
 
 
 def planned(test_ids, shard, isolated, weights):
@@ -146,8 +149,8 @@ def counts(log_text):
 
 def listed_tests(list_text):
     """Test identifiers from `swift test list`, one per line."""
-    return sorted({line.strip() for line in list_text.splitlines()
-                   if line.strip() and " " not in line.strip() and suite_key(line.strip())})
+    lines = {line.strip() for line in list_text.splitlines()}
+    return sorted(line for line in lines if " " not in line and suite_key(line))
 
 
 def audit(test_ids, reports, isolated, weights):
@@ -155,8 +158,7 @@ def audit(test_ids, reports, isolated, weights):
     errors = []
     expected = [test_id for test_id in test_ids if not re.search(isolated, test_id)]
     shards = {report["shard"] for report in reports}
-    serial = sorted((shard for shard in shards if shard != "parallel"), key=parse_shard)
-    totals = {parse_shard(shard)[1] for shard in serial}
+    totals = {parse_shard(shard)[1] for shard in shards if shard != "parallel"}
     if len(totals) != 1:
         return [f"Shard reports disagree on the shard count: {sorted(shards)}"]
     total = totals.pop()
@@ -191,7 +193,7 @@ def measured_weights(paths, base=None):
     for path in paths:
         for case in ElementTree.parse(path).getroot().iter("testcase"):
             key = suite_key(case.get("classname", ""))
-            if key and "." in key and key.split(".", 1)[1]:
+            if key:
                 seconds[key] += float(case.get("time") or 0)
     measured = {key: round(value, 3) for key, value in seconds.items()}
     return dict(sorted({**(base or {}), **measured}.items()))

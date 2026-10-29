@@ -210,6 +210,20 @@ import DarkbloomClusterProtocol
             var bad = object; bad["peers"] = [peer(0), badPeer]
             try rejected { _ = try decode(bad) }
         }
+        // A DevNet build is installed as "Darkbloom Dev.app". Each Mac opens its own installed files directly, so the
+        // space is accepted; shell syntax, relative and unnormalized paths are still refused.
+        let devApp = "/Users/fixture/.darkbloom-dev/Darkbloom Dev.app/Contents/MacOS"
+        var devPeer = peer(1)
+        devPeer["ownerExecutable"] = devApp + "/darkbloom-dev"; devPeer["workerExecutable"] = devApp + "/darkbloom-cluster-worker"
+        var devObject = object; devObject["peers"] = [peer(0), devPeer]
+        try require(try decode(devObject).peers[1].workerExecutable == devApp + "/darkbloom-cluster-worker",
+                    "A peer installed in Darkbloom Dev.app was refused")
+        for unsafe in [devApp + "/../worker", devApp + "/worker $(cmd)", devApp + "/worker;touch", devApp + "/worker\tx",
+                       "Darkbloom Dev.app/worker", devApp + "/"] {
+            var badPeer = devPeer; badPeer["workerExecutable"] = unsafe
+            var bad = object; bad["peers"] = [peer(0), badPeer]
+            try rejected { _ = try decode(bad) }
+        }
         // Match the actual native matrix parser's inclusive 63-byte bound.
         var deviceBoundary = peer(1); deviceBoundary["jacclDevice"] = String(repeating: "d", count: 63)
         var deviceObject = object; deviceObject["peers"] = [peer(0), deviceBoundary]
@@ -351,6 +365,6 @@ import DarkbloomClusterProtocol
         try require(try store.load(reference: .init(configuration: linkSaved.configuration, sha256: ClusterConfigurationCodec.sha256(
             Data(contentsOf: URL(fileURLWithPath: linkSaved.configuration))))).configuration.linkControl == linkSetup.linkControl,
             "Saved link control setup differs")
-        print("Cluster configuration: 13 schema/store groups passed; fabricated metadata and local files only")
+        print("Cluster configuration: 14 schema/store groups passed; fabricated metadata and local files only")
     }
 }

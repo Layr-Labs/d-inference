@@ -38,7 +38,7 @@ struct ClusterNativeMemberAttachmentTests {
             ["schema": "other"], ["ownerSHA256": "not-a-hash"], ["ownerSHA256": NSNull()],
             ["metallibPath": "/tmp/../other"], ["metallibPath": "relative/mlx.metallib"],
             ["resourceLibraryPath": "/fixture/native"], ["resourceLibraryPath": "/fixture/mlx.metallib"],
-            ["metallibPath": "/fixture/owner"],
+            ["metallibPath": "/fixture/owner"], ["metallibPath": "/fixture/Darkbloom Dev.app/mlx $(touch).metallib"],
             ["privateKey": "never accepted"], ["environment": ["APPROVE": "true"]],
             ["coordinatorPolicyBase64": "AAAA"], ["approval": NSNull()], ["approval": "golden"]]
         for change in changes {
@@ -60,6 +60,17 @@ struct ClusterNativeMemberAttachmentTests {
             var object = f.configuration; object["nativeMember"] = value
             #expect(throws: (any Error).self) { try f.decode(object) }
         }
+    }
+
+    /// A DevNet build is installed as "Darkbloom Dev.app"; the member opens its libraries there directly.
+    @Test func librariesInsideAnAppWhoseNameHasASpaceAreAccepted() throws {
+        let f = try Fixture()
+        let app = "/fixture/Darkbloom Dev.app/Contents/MacOS"
+        var attachment = f.attachment
+        attachment["metallibPath"] = app + "/mlx.metallib"; attachment["resourceLibraryPath"] = app + "/resource.metallib"
+        var object = f.configuration; object["nativeMember"] = attachment
+        let member = try #require(try f.decode(object).nativeMember)
+        #expect(member.metallibPath == app + "/mlx.metallib" && member.resourceLibraryPath == app + "/resource.metallib")
     }
 
     @Test func approvalMustMatchTheSavedModelRuntimePlanProfileAndSchedule() throws {

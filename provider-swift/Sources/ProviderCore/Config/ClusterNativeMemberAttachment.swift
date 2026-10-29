@@ -64,7 +64,7 @@ public struct ClusterNativeMemberAttachment: Codable, Sendable, Equatable {
     func validate(configuration: ClusterConfiguration, capability: ClusterRuntimeCapability) throws {
         let local = configuration.peers[configuration.localRank]
         guard [Self.schemaName, Self.rosterSchemaName].contains(schema), ClusterConfigurationSyntax.hash(ownerSHA256),
-              [metallibPath, resourceLibraryPath].allSatisfy(ClusterConfigurationSyntax.sshPath),
+              [metallibPath, resourceLibraryPath].allSatisfy(ClusterConfigurationSyntax.installedPath),
               Set([metallibPath, resourceLibraryPath, local.workerExecutable, local.ownerExecutable]).count == 4,
               isRoster ? (approval == nil && clusterApproval != nil && roster != nil && memberPins != nil)
                        : (approval != nil && clusterApproval == nil && roster == nil && memberPins == nil && edges == nil) else {

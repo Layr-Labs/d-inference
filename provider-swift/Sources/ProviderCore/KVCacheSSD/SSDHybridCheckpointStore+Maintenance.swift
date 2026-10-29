@@ -11,19 +11,14 @@ extension SSDHybridCheckpointStore: SSDEvictableStore, DurablePrefixCacheEvidenc
     func oldestEntryAccess() -> Int64? { index.oldest()?.lastAccess }
 
     func evictOldestEntry() -> Int {
-        for entry in index.oldestEntries() {
-            let url = SSDBlockStore.fileURL(root: config.root, tag16Hex: entry.tag16.hexString)
-            let retired = retireIndexedEntries([url])
-            // Reconciliation may already satisfy the global limit. Return to
-            // enforcement before selecting another physical victim.
-            if retired.externalChange { return 0 }
-            let freed = retired.indexedBytesFreed
-            if freed > 0 {
-                statsBox.update { $0.evictions += 1 }
-                return freed
-            }
+        // A closed store refuses every removal and is never reopened.
+        guard !isClosed else { return 0 }
+        let freed = SSDOwnedEntryRetirement.evictOldest(index: index, isClosed: { isClosed }) { tag in
+            let url = SSDBlockStore.fileURL(root: config.root, tag16Hex: tag.hexString)
+            return retireIndexedEntries([url])
         }
-        return 0
+        if freed > 0 { statsBox.update { $0.evictions += 1 } }
+        return freed
     }
 
     func retireOwnedEntries(_ urls: [URL]) -> Set<String> {

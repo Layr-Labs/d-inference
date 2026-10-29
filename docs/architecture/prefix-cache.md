@@ -1,6 +1,6 @@
 # KV cache layouts and prefix caching
 
-> Last updated: 2026-10-24
+> Last updated: 2026-10-28
 
 How the provider lays out a request's KV cache, how it decides whether a
 previously computed prefix can be reused, and where reusable state lives:
@@ -528,6 +528,26 @@ whole-root rebuilds retain their epoch barriers; unloaded-root maintenance
 validates the durable record without rotating it.
 See [routing evidence lifecycle](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/architecture/cache-aware-routing.md) and
 [eviction rules](../reference/ssd-kv-cache.md#size-and-eviction-rules).
+
+Both active SSD stores use `SSDOwnedEntryRetirement.evictOldest` to try one
+linear `SSDBlockIndex.oldest` probe before copying the index. If that file is
+busy or cannot be unlinked, one `SSDBlockIndex.oldestFirstSnapshot` bounds the
+remaining attempts. It yields the probe's order (last hit, then
+lexicographic tag) from a binary heap: O(n) to copy and build, then O(log n)
+per candidate tried, so the pass orders only as many entries as it walks. The
+snapshot includes recency and membership changes during the first attempt;
+later changes cannot extend or reorder the pass. The first tag is excluded,
+even if it was touched or replaced. Stable inputs keep the same LRU order;
+concurrent schedules can select different victims from a snapshot taken
+before the first attempt. File leases, epoch validation and the store's
+removal lock still govern retirement; external loss returns control to the
+disk budget after reconciliation so it can recheck usage before deleting
+another file. A closed store refuses every removal and is never reopened, so
+eviction makes no attempt in a store that is closed when the pass starts and
+ends the pass at the first attempt that frees nothing after the store closes.
+Other refusals (an unsafe root, a lost or unreadable epoch record) can clear,
+so the pass continues past them. Source:
+`provider-swift/Sources/ProviderCore/KVCacheSSD/SSDOwnedEntryRetirement.swift`.
 
 A natural `stop`/`length` donor exports its actual complete prompt checkpoints,
 one per file. A remote donor writes them only on evidence of demand: the

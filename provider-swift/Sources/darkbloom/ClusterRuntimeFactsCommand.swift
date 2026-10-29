@@ -48,13 +48,9 @@ extension Cluster {
             let installation = ClusterRuntimeApprovalFacts.Installation(app: URL(fileURLWithPath: app, isDirectory: true))
             let facts: ClusterRuntimeApprovalFacts
             if let releaseCandidates {
-                // A model the facts leave out (`ClusterRuntimeApprovalFacts.softReleaseModels`) is
-                // one line on standard error; the release workflow turns it into a warning.
                 facts = try ClusterRuntimeApprovalFacts.release(installation: installation,
                     candidates: try ClusterRuntimeApprovalFacts.candidates(in: URL(fileURLWithPath: releaseCandidates, isDirectory: true)),
-                    required: requiredModels, omitted: { omission in
-                        FileHandle.standardError.write(Data(Self.leftOutLine(omission).utf8))
-                    })
+                    required: requiredModels)
             } else {
                 let given = try models.map(ClusterRuntimeApprovalFacts.modelArgument)
                 facts = try ClusterRuntimeApprovalFacts.compute(installation: installation, models: given.map { $0.files })
@@ -64,14 +60,6 @@ extension Cluster {
                 }
             }
             FileHandle.standardOutput.write(try facts.canonicalBytes())
-        }
-
-        /// The prefix the release workflow matches (`release-provider.yml`).
-        static let leftOutPrefix = "Left out of the cluster runtime facts: "
-
-        static func leftOutLine(_ omission: ClusterRuntimeApprovalFacts.Omission) -> String {
-            leftOutPrefix + "\(omission.model) (\(omission.runtimeModelID)): "
-                + omission.reason.replacingOccurrences(of: "\n", with: " ") + "\n"
         }
     }
 }

@@ -145,69 +145,39 @@ public struct ClusterRuntimeApprovalFacts: Equatable, Sendable {
         return try installed.facts(models.map { try installed.describe($0).entry })
     }
 
-    /// The qualified models a release may leave out, by runtime model ID with
-    /// their catalog model ID, when the build's own worker refuses every
-    /// candidate of the model. Until the GLM manifest repin PR lands, then
-    /// remove. Fixed in code: no argument or input file adds to it.
-    static let softReleaseModels = ["registered_glm53_flash": "glm-5.3-flash"]
-
-    /// A model of `softReleaseModels` that a release left out, and why.
-    public struct Omission: Equatable, Sendable {
-        /// The catalog model ID.
-        public let model: String
-        public let runtimeModelID: String
-        public let reason: String
-    }
-
     /// The facts a release registers: for every model in `models`, the first
     /// candidate folder with its artifact that the worker describes as that
     /// model. Fails naming every model that has none, and when a model in
     /// `required` (catalog IDs) is not among the result.
-    ///
-    /// Only a caller that gives `omitted` lets a model of `softReleaseModels`
-    /// whose candidates the worker all refused (`DistributedCapabilityProbe.commandFailed`)
-    /// be left out: `omitted` receives it once the facts are complete, and a
-    /// required model left out so does not fail. Any other failure of that
-    /// model (no candidate, a candidate of another model, a file or integrity
-    /// refusal) still fails.
     public static func release(installation: Installation, candidates: [ModelFiles], required: [String],
-                               models: [ReleaseModel] = ClusterRuntimeApprovalFacts.releaseModels,
-                               omitted: ((Omission) -> Void)? = nil) throws -> Self {
+                               models: [ReleaseModel] = ClusterRuntimeApprovalFacts.releaseModels) throws -> Self {
         let installed = try HashedInstallation(installation)
         let parsed = try candidates.map { ($0, try catalogArtifact($0)) }
-        var entries: [Model] = [], failures: [String] = [], omissions: [Omission] = []
+        var entries: [Model] = [], failures: [String] = []
         for listed in models {
-            var refusals: [String] = [], workerRefusedAll = true, chosen: Model?
+            var refusals: [String] = [], chosen: Model?
             for (files, artifact) in parsed where artifact.aggregateSHA256 == listed.artifactSHA256 {
                 do {
                     let described = try installed.describe(files)
                     if described.runtimeModelID == listed.runtimeModelID { chosen = described.entry; break }
                     refusals.append("\(files.manifest.path) is \(described.runtimeModelID)")
-                    workerRefusedAll = false
                 } catch {
                     refusals.append("\(files.manifest.path): \(error)")
-                    if (error as? ClusterConfigurationError) != DistributedCapabilityProbe.commandFailed { workerRefusedAll = false }
                 }
             }
             if let chosen { entries.append(chosen); continue }
-            let reason = refusals.isEmpty ? "no candidate folder has this artifact" : refusals.joined(separator: "; ")
-            if omitted != nil, !refusals.isEmpty, workerRefusedAll, let model = softReleaseModels[listed.runtimeModelID] {
-                omissions.append(Omission(model: model, runtimeModelID: listed.runtimeModelID, reason: reason))
-                continue
-            }
-            failures.append("\(listed.runtimeModelID) (\(listed.artifactSHA256)): " + reason)
+            failures.append("\(listed.runtimeModelID) (\(listed.artifactSHA256)): "
+                + (refusals.isEmpty ? "no candidate folder has this artifact" : refusals.joined(separator: "; ")))
         }
         guard failures.isEmpty else {
             throw ClusterConfigurationError.invalid("Qualified cluster models the release cannot describe: " + failures.joined(separator: " | "))
         }
-        let names = Set(entries.map(\.model) + omissions.map(\.model))
+        let names = Set(entries.map(\.model))
         let missing = required.filter { !names.contains($0) }
         guard missing.isEmpty else {
             throw ClusterConfigurationError.invalid("The release's cluster models lack required models: " + missing.joined(separator: ", "))
         }
-        let facts = try installed.facts(entries)
-        omissions.forEach { omitted?($0) }
-        return facts
+        return try installed.facts(entries)
     }
 
     /// One model's entry, described by `worker` pinned to `workerSHA256`.

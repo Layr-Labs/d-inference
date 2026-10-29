@@ -1,7 +1,6 @@
 import ArgumentParser
 import Testing
 @testable import darkbloom
-@testable import ProviderCore
 
 @Suite("Cluster runtime-facts CLI")
 struct ClusterRuntimeFactsCommandTests {
@@ -16,14 +15,6 @@ struct ClusterRuntimeFactsCommandTests {
         #expect(release.requiredModels == ["Qwen3.5-9B", "glm-5.3-flash"] && release.releaseCandidates == "/c")
         #expect(try Darkbloom.parseAsRoot(["cluster", "runtime-facts", "--list-release-models"]) is Cluster.RuntimeFacts)
         #expect(Cluster.RuntimeFacts.configuration.shouldDisplay == false)
-    }
-
-    @Test("a model the facts leave out is one line the release workflow matches")
-    func leftOutLine() {
-        let line = Cluster.RuntimeFacts.leftOutLine(.init(model: "glm-5.3-flash", runtimeModelID: "registered_glm53_flash",
-                                                           reason: "/c/000/manifest.json: refused\nsecond line"))
-        #expect(line == "Left out of the cluster runtime facts: glm-5.3-flash (registered_glm53_flash): "
-                + "/c/000/manifest.json: refused second line\n")
     }
 
     @Test("mixed, incomplete or contradictory modes refuse")

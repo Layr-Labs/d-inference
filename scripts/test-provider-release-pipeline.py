@@ -448,28 +448,6 @@ class ReleasePipelineTests(unittest.TestCase):
         # Only the dev lane computes the file, so prod and staging prepare without it.
         self.assertEqual(RELEASE.count('CLUSTER_RUNTIME_FILE='), 1)
 
-    def test_a_model_the_facts_leave_out_is_a_warning_and_every_other_failure_fails(self):
-        sign = job(RELEASE, 'build-and-release')
-        step = sign.split('- name: Compute dev cluster runtime facts from the final signed app\n', 1)[1]
-        step = step.split('\n      - name:', 1)[0]
-        # The workflow matches the exact line the CLI writes for an omission.
-        command = (ROOT / 'provider-swift/Sources/darkbloom/ClusterRuntimeFactsCommand.swift').read_text()
-        prefix = 'Left out of the cluster runtime facts: '
-        self.assertIn(f'static let leftOutPrefix = "{prefix}"', command)
-        self.assertIn(f"LEFT_OUT='{prefix}'", step)
-        self.assertIn("printf '::warning::%s\\n' \"$line\"", step)
-        self.assertIn('>> "$FACTS_ROOT/left-out.md"', step)
-        self.assertIn('cat "$FACTS_ROOT/left-out.md"', step)
-        # The command's exit status still decides, after its output is shown and
-        # before the block is handed to prepare.
-        self.assertIn('2> "$FACTS_ROOT/runtime-facts.err" || status=$?', step)
-        self.assertLess(step.index('done < "$FACTS_ROOT/runtime-facts.err"'), step.index('test "$status" -eq 0'))
-        self.assertLess(step.index('test "$status" -eq 0'), step.index('CLUSTER_RUNTIME_FILE='))
-        # The soft list lives in ClusterRuntimeApprovalFacts only: the workflow
-        # names no runtime model and no option that could add one.
-        self.assertNotIn('registered_', step)
-        self.assertEqual(step.count('glm-5.3-flash'), 1)
-
     def test_dev_and_staging_artifacts_avoid_collision_but_prod_stays_unqualified(self):
         # dev and staging unsigned and publication artifact names carry the
         # environment, so two lanes in one run never collide; prod

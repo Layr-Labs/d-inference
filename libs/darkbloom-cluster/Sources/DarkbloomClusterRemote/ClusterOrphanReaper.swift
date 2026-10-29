@@ -38,6 +38,9 @@ import DarkbloomClusterProtocol
 /// with a fake table and real orphaned children alike.
 public enum ClusterOrphanReaper {
     public static let workerExecutableName = "darkbloom-cluster-worker"
+    /// The CLI of each build environment (`Identity.generated.swift` `cliName`): a DevNet build runs its owner as
+    /// `Darkbloom Dev.app/Contents/MacOS/darkbloom-dev`.
+    public static let ownerExecutableNames: Set<String> = ["darkbloom", "darkbloom-dev", "darkbloom-staging"]
     public static let bootstrapDirectoryPrefix = "/private/tmp/darkbloom-bootstrap-"
 
     /// How long a leftover may still be unwinding by its own contract before
@@ -100,12 +103,12 @@ public enum ClusterOrphanReaper {
                      kept: kept.sorted { $0.processIdentifier < $1.processIdentifier })
     }
 
-    /// A worker is the worker executable; an owner is `darkbloom cluster
-    /// worker-owner`. Anything else is not a cluster process.
+    /// A worker is the worker executable; an owner is `<CLI> cluster worker-owner`
+    /// for a CLI of `ownerExecutableNames`. Anything else is not a cluster process.
     public static func role(of entry: ClusterProcessTable.Entry) -> Role? {
         let name = entry.executableName ?? entry.arguments.first.flatMap { $0.split(separator: "/").last.map(String.init) }
         if name == workerExecutableName { return .worker }
-        if name == "darkbloom", entry.arguments.count >= 3, entry.arguments[1] == "cluster", entry.arguments[2] == "worker-owner" { return .owner }
+        if let name, ownerExecutableNames.contains(name), entry.arguments.count >= 3, entry.arguments[1] == "cluster", entry.arguments[2] == "worker-owner" { return .owner }
         return nil
     }
 

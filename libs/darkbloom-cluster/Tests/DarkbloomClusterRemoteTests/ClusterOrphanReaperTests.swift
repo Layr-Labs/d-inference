@@ -49,6 +49,14 @@ final class ClusterOrphanReaperTests: XCTestCase {
         XCTAssertEqual(ClusterOrphanReaper.role(of: owner(1, parent: 1)), .owner)
         XCTAssertNil(ClusterOrphanReaper.role(of: .init(processIdentifier: 1, arguments: ["/opt/x/darkbloom", "start"], executableName: "darkbloom")))
         XCTAssertNil(ClusterOrphanReaper.role(of: .init(processIdentifier: 1, arguments: ["/opt/x/darkbloom", "cluster", "status"], executableName: "darkbloom")))
+        // A DevNet build's owner is `Darkbloom Dev.app/Contents/MacOS/darkbloom-dev`.
+        let devOwner = "/Users/x/.darkbloom-dev/Darkbloom Dev.app/Contents/MacOS/darkbloom-dev"
+        XCTAssertEqual(ClusterOrphanReaper.role(of: .init(processIdentifier: 1, arguments: [devOwner, "cluster", "worker-owner", "--stdio"],
+                                                          executableName: "darkbloom-dev")), .owner)
+        XCTAssertEqual(ClusterOrphanReaper.role(of: .init(processIdentifier: 1, arguments: [devOwner, "cluster", "worker-owner"])), .owner)
+        XCTAssertNil(ClusterOrphanReaper.role(of: .init(processIdentifier: 1, arguments: [devOwner, "start"], executableName: "darkbloom-dev")))
+        XCTAssertNil(ClusterOrphanReaper.role(of: .init(processIdentifier: 1, arguments: ["/opt/x/darkbloom-other", "cluster", "worker-owner"],
+                                                        executableName: "darkbloom-other")))
         // Without the executable name the first argument's basename decides.
         XCTAssertEqual(ClusterOrphanReaper.role(of: .init(processIdentifier: 1, arguments: ["/opt/x/darkbloom-cluster-worker"])), .worker)
         XCTAssertNil(ClusterOrphanReaper.membershipEpoch(of: worker(1, parent: 1, epoch: "not-a-uuid")))

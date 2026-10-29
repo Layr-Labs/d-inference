@@ -255,6 +255,13 @@ served is left out when another offers the same digests under the same name,
 and an artifact this build serves is never called unsupported for a copy the
 worker does not take (`ClusterSetupPlanning.copyNotTaken`).
 
+A DevNet build is installed as `Darkbloom Dev.app`, and its CLI is
+`darkbloom-dev`. A saved setup accepts a space in its installed paths
+(`ClusterConfigurationSyntax.installedPath`). The orphan sweep, the teardown
+check and `cancel-all` know an owner by the CLI name of each build environment
+(`ClusterOrphanReaper.ownerExecutableNames`). The cluster service stop knows
+the service by this build's CLI name (`ClusterService.isClusterService`).
+
 ## Context
 
 The unregistered `NemotronSuperLocalBridgeBuilder` assembles an installed Super

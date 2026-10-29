@@ -933,7 +933,8 @@ jobs:
           security delete-keychain "$KEYCHAIN_PATH"
           test ! -e "$KEYCHAIN_PATH"
           test -n "$DEVELOPER_ID"
-          IDENTITIES=$(security find-identity -v -p codesigning)
+          # Without -v: every identity, valid or not, so a key left behind is found.
+          IDENTITIES=$(security find-identity -p codesigning)
           if grep -F -q -- "$DEVELOPER_ID" <<< "$IDENTITIES"; then
             echo "::error::The signing identity is still readable after the signing keychain was deleted"
             exit 1

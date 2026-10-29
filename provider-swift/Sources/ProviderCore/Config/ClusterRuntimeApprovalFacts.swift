@@ -285,7 +285,7 @@ public struct ClusterRuntimeApprovalFacts: Equatable, Sendable {
         try self.init(nativeRuntimeSHA256: document.nativeRuntimeSHA256, metallibSHA256: document.metallibSHA256,
                       resourceLibrarySHA256: document.resourceLibrarySHA256,
                       placementPolicySHA256: document.placementPolicySHA256, models: document.models)
-        guard models.allSatisfy({ "release/\(releaseVersion)/\($0.model)/s2".utf8.count <= Self.maximumApprovalIDBytes }) else {
+        guard self.models.allSatisfy({ "release/\(releaseVersion)/\($0.model)/s2".utf8.count <= Self.maximumApprovalIDBytes }) else {
             throw ClusterConfigurationError.invalid(
                 "A cluster approval ID derived from these facts exceeds \(Self.maximumApprovalIDBytes) bytes")
         }

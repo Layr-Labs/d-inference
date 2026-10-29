@@ -455,8 +455,8 @@ class ReleasePipelineTests(unittest.TestCase):
         self.assertIn('  env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin HOME="$root/home" DARKBLOOM_NO_UPDATE_CHECK=1 \\\n'
                       '    "$app/Contents/MacOS/$cli" cluster runtime-facts "$@"\n', FACTS_SCRIPT)
         self.assertLess(FACTS_SCRIPT.index('runtime_facts --list-release-models'),
-                        FACTS_SCRIPT.index('provider-cluster-runtime-models.py'))
-        self.assertLess(FACTS_SCRIPT.index('provider-cluster-runtime-models.py'),
+                        FACTS_SCRIPT.index('python3 "$scripts/provider-cluster-runtime-models.py"'))
+        self.assertLess(FACTS_SCRIPT.index('python3 "$scripts/provider-cluster-runtime-models.py"'),
                         FACTS_SCRIPT.index('runtime_facts --app "$app" --release-candidates'))
         for model in ('Qwen3.5-9B', 'glm-5.3-flash'):
             self.assertIn('--require-model ' + model, FACTS_SCRIPT)

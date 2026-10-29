@@ -86,6 +86,18 @@ struct ClusterRuntimeApprovalFactsTests {
             let data = try JSONSerialization.data(withJSONObject: value)
             #expect(throws: ClusterConfigurationError.self, "\(label)") { try ClusterRuntimeApprovalFacts(canonical: data) }
         }
+        // A repeated key, also one spelled with an escape, at the top or in a model.
+        let text = String(decoding: try Self.facts().canonicalBytes(), as: UTF8.self)
+        for (label, repeated) in [
+            ("top", text.replacingOccurrences(of: #"{"metallib_sha256":"#,
+                                              with: #"{"schema":"darkbloom_cluster_runtime_v1","metallib_sha256":"#)),
+            ("escaped", text.replacingOccurrences(of: #"{"metallib_sha256":"#,
+                                                  with: #"{"sch\u0065ma":"darkbloom_cluster_runtime_v1","metallib_sha256":"#)),
+            ("model", text.replacingOccurrences(of: #"[{"artifact_sha256":"#, with: #"[{"model":"Z","artifact_sha256":"#)),
+        ] {
+            #expect(repeated != text, "\(label)")
+            #expect(throws: ClusterConfigurationError.self, "\(label)") { try ClusterRuntimeApprovalFacts(canonical: Data(repeated.utf8)) }
+        }
         for data in [Data("{".utf8), Data("[]".utf8), Data(repeating: 32, count: ClusterRuntimeApprovalFacts.maximumEncodedBytes + 1)] {
             #expect(throws: ClusterConfigurationError.self) { try ClusterRuntimeApprovalFacts(canonical: data) }
         }

@@ -235,7 +235,7 @@ public struct ClusterRuntimeApprovalFacts: Equatable, Sendable {
             placementPolicySHA256: placementPolicySHA256, models: models))
     }
 
-    /// Strict: an unknown or missing field, another schema, a value outside
+    /// Strict: an unknown, missing or repeated field, another schema, a value outside
     /// the rules or a model whose derived approval ID for `releaseVersion`
     /// exceeds `maximumApprovalIDBytes` is refused.
     public init(canonical data: Data, releaseVersion: String = ProviderCore.version) throws {
@@ -245,6 +245,9 @@ public struct ClusterRuntimeApprovalFacts: Equatable, Sendable {
               let models = object["models"] as? [[String: Any]],
               models.allSatisfy({ Set($0.keys) == Model.fields }) else {
             throw ClusterConfigurationError.invalid("Cluster runtime facts have unknown or missing fields or another schema")
+        }
+        guard !Self.repeatsAKey(data) else {
+            throw ClusterConfigurationError.invalid("Cluster runtime facts repeat a field")
         }
         let document: Document
         do { document = try JSONDecoder().decode(Document.self, from: data) }
@@ -303,6 +306,35 @@ public struct ClusterRuntimeApprovalFacts: Equatable, Sendable {
     }
 
     // MARK: - Helpers
+
+    /// True when an object in `data` (already parsed as JSON) names one key
+    /// twice. Keys compare after unescaping, as a JSON reader sees them.
+    private static func repeatsAKey(_ data: Data) -> Bool {
+        let bytes = [UInt8](data)
+        var open: [(isObject: Bool, keys: Set<String>)] = [], expectingKey = false, index = 0
+        while index < bytes.count {
+            switch bytes[index] {
+            case UInt8(ascii: "{"): open.append((true, [])); expectingKey = true
+            case UInt8(ascii: "["): open.append((false, [])); expectingKey = false
+            case UInt8(ascii: "}"), UInt8(ascii: "]"): _ = open.popLast(); expectingKey = false
+            case UInt8(ascii: ","): expectingKey = open.last?.isObject == true
+            case UInt8(ascii: "\""):
+                let start = index
+                index += 1
+                while index < bytes.count, bytes[index] != UInt8(ascii: "\"") {
+                    index += bytes[index] == UInt8(ascii: "\\") ? 2 : 1
+                }
+                guard expectingKey, !open.isEmpty else { break }
+                expectingKey = false
+                guard index < bytes.count,
+                      let key = try? JSONSerialization.jsonObject(with: Data(bytes[start...index]), options: .fragmentsAllowed) as? String,
+                      open[open.count - 1].keys.insert(key).inserted else { return true }
+            default: break
+            }
+            index += 1
+        }
+        return false
+    }
 
     /// An installation's four helpers, each resolved to its real path and
     /// then hashed under the installed-file rules, and the worker that

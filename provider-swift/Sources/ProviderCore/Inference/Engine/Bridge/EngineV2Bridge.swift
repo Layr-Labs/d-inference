@@ -319,6 +319,8 @@ public actor EngineV2Bridge {
     var observedDecodeStep = MeasuredDecodeStep()
     /// `DeadlineAdmissionFixes`, resolved once per bridge.
     let admissionFixes: Bool
+    /// `SSDPrefixCachePolicy.terminalBeforePublication`, resolved once per bridge.
+    let terminalBeforeCheckpointPublication: Bool
     /// Cold-prefill throughput from completed prompt computation, independent
     /// of answer success. Engine timings exclude queueing and output delivery;
     /// cache-reuse samples remain in their separate workload buckets.
@@ -401,6 +403,7 @@ public actor EngineV2Bridge {
             !ProcessInfo.processInfo.isLowPowerModeEnabled && ProcessInfo.processInfo.thermalState == .nominal
         },
         admissionFixes: Bool? = nil,
+        terminalBeforeCheckpointPublication: Bool? = nil,
         glm5NextNativeOwner: GLM5NextNativeOperationOwner? = nil,
         emitTelemetry: (@Sendable (TelemetryEvent) -> Void)? = nil
     ) {
@@ -409,6 +412,8 @@ public actor EngineV2Bridge {
         self.modelId = modelId
         self.calibrationPosturePermitsWork = calibrationPosturePermitsWork
         self.admissionFixes = admissionFixes ?? DeadlineAdmissionFixes.enabled
+        self.terminalBeforeCheckpointPublication =
+            terminalBeforeCheckpointPublication ?? SSDPrefixCachePolicy.terminalBeforePublication()
         self.usesNativeBlockTiming = engine is CBv2NativeBlockEngine
         self.tokenizer = tokenizer
         self.kvBackendKind = kvBackendKind

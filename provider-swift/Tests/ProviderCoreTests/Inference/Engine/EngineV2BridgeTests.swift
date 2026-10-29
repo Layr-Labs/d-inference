@@ -427,6 +427,67 @@ private struct EngineV2BridgePumpReceiptTests {
         #expect(store.donationDemandHints.count == 0)
         await bridge.shutdown()
     }
+
+    @Test("an early terminal answers before the durable write and holds capacity until it retires")
+    func earlyTerminalHoldsCapacityUntilPublication() async throws {
+        let fixture = try SSDHybridCheckpointTestFixture()
+        defer { fixture.remove() }
+        let store = try fixture.makeStore(useGlobalBudget: false)
+        let entered = DispatchSemaphore(value: 0)
+        let resume = DispatchSemaphore(value: 0)
+        store.lock.withLock {
+            store.beforeWriteIndexForTesting = { _, durable in
+                guard !durable else { return }
+                entered.signal()
+                _ = resume.wait(timeout: .now() + 10)
+            }
+        }
+        let model = PumpReceiptModel()
+        defer {
+            model.allowForward()
+            for _ in 0 ..< 8 { resume.signal() }
+        }
+        let budget = TestBudgets.ample()
+        let owned = engine(model: model, store: store)
+        let bridge = makeBridge(
+            engine: owned, modelId: "fixture-model", kvBytesPerToken: 64, kvBudget: budget,
+            ssdHybridCheckpointStore: store, terminalBeforeCheckpointPublication: true)
+        let received = ReceiptNonceBox()
+        let stream = await bridge.submitTokenized(
+            promptTokens: fixture.tokens, request: makeRequest(maxTokens: 1),
+            requestId: "early-terminal", cacheScope: "tenant-a",
+            usageSignal: EngineV2RequestUsageSignal(onCacheReady: {
+                received.append(nonce: "durable", result: $0)
+            }),
+            donationDemand: .init(repeatedPrefixTokens: 256))
+        model.allowForward()
+        // Without the opt-in this returns only after the blocked write times out.
+        let recorded = await record(stream)
+        #expect(recorded.events.contains { if case .info = $0 { true } else { false } })
+        let writing = await Task.detached { entered.wait(timeout: .now() + 10) == .success }.value
+        #expect(writing)
+        #expect(store.stats().filesWritten == 0)
+        #expect(received.snapshot.isEmpty)
+        // The answer is out, but the KV reservation and the pump still wait
+        // for the engine to retire the donor.
+        #expect(await budget.outstandingReservedBytes() > 0)
+        #expect(await bridge._testLivePumpCount() == 1)
+        #expect(await bridge._testPendingSubmissionCount() == 1)
+        for _ in 0 ..< 8 { resume.signal() }
+        await store.waitForWritesForTesting()
+        #expect(store.stats().filesWritten > 0)
+        #expect(await received.waitForCount(1))
+        #expect(received.snapshot == ["durable:512"])
+        #expect(await waitForBudgetRelease(budget, timeout: .seconds(10)))
+        let deadline = ContinuousClock.now.advanced(by: .seconds(10))
+        while await bridge._testLivePumpCount() > 0, ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(await bridge._testLivePumpCount() == 0)
+        #expect(await bridge._testPendingSubmissionCount() == 0)
+        #expect(store.stats().stagedBytesInUse == 0)
+        await bridge.shutdown()
+    }
 }
 
 private func makeBridge(
@@ -445,6 +506,7 @@ private func makeBridge(
     ssdPrefixCache: SSDPrefixCache? = nil,
     ssdHybridCheckpointStore: SSDHybridCheckpointStore? = nil,
     kvBackendKind: EngineV2KVBackendKind = .contiguous,
+    terminalBeforeCheckpointPublication: Bool = false,
     telemetry: TelemetrySink? = nil
 ) -> EngineV2Bridge {
     EngineV2Bridge(
@@ -464,6 +526,7 @@ private func makeBridge(
         ssdPrefixCache: ssdPrefixCache,
         ssdHybridCheckpointStore: ssdHybridCheckpointStore,
         kvBackendKind: kvBackendKind,
+        terminalBeforeCheckpointPublication: terminalBeforeCheckpointPublication,
         emitTelemetry: telemetry?.callback()
     )
 }
@@ -775,6 +838,24 @@ struct EngineV2TranslationTests {
         #expect(engine.submitted[1].cacheSalt == nil)
         #expect(engine.submitted[2].cacheSalt == nil)
         #expect(engine.submitted[3].cacheSalt == nil)
+    }
+
+    @Test("the early-terminal opt-in reaches the engine only for unseeded requests")
+    func earlyTerminalOptInSkipsSeededRequests() async {
+        for enabled in [false, true] {
+            let engine = ScriptedCBv2Engine(script: .stream([
+                .finished(reason: .stop, usage: CBv2Usage(promptTokens: 2, completionTokens: 0))
+            ]))
+            let bridge = makeBridge(engine: engine, terminalBeforeCheckpointPublication: enabled)
+            _ = await record(await bridge.submitTokenized(
+                promptTokens: [1, 2], request: makeRequest(), requestId: "unseeded",
+                cacheScope: "tenant"))
+            // A seeded request reuses its stable engine ID right after its terminal.
+            _ = await record(await bridge.submitTokenized(
+                promptTokens: [1, 2], request: makeRequest(seed: 7), requestId: "seeded",
+                cacheScope: "tenant"))
+            #expect(engine.submitted.map(\.terminalPrecedesCheckpointPublication) == [enabled, false])
+        }
     }
 }
 

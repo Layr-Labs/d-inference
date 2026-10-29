@@ -1,0 +1,4 @@
+### Cluster models pin the manifest a Mac downloads
+
+- The cluster worker now pins the model CDN's `manifest.json` bytes for every registered model. GLM-5.3-Flash pinned bytes that no Mac could fetch, so a downloaded GLM was never described and the cluster refused it. Qwen3.5 35B A3B, Qwen3.6 35B A3B, Nemotron 3.5 Lightning, GPT-OSS 20B, MiMo V2.6 Flash and the three Gemma 4 26B entries pinned the production coordinator's re-encoding, whose `created_at` is different on each environment, so DevNet could not use them. The files and aggregate digests are unchanged; only the pinned serialization of each manifest is different.
+- A cluster folder cloned in from this Mac's own download with the earlier bytes is repaired when setup next lists the models: the worker refuses its manifest, and the cluster store writes the CDN's bytes in its place.

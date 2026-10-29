@@ -89,7 +89,7 @@ struct MiMoRegisteredSpecification {
     static let all: [Self] = [
         .init(model: .v26FlashMOPD, profileID: "registered_mimo_v26_flash_mopd_greedy_generation_v1",
             configurationSHA256: "35b6e3d4543b65e6fa9d6174e2260d9ac1d3ea1e5acb9955d9fe9f2b815d13d4",
-            manifestSHA256: "de1bd701115a9ee7e4a99ac85307b31285c63a0b0b1c22ef0c69e9b4ac10f346",
+            manifestSHA256: "56c0a624037457a7e9705f765e50ff346c5fb4eec410bdfee443b20dbca56565",
             artifactSHA256: "2334547d8acc9898ad4a74570ce44d2b12390bbac8d4bc52c092eb5ad5cfe034",
             inventorySHA256: "284eb2366eb7aacec0aa8362f54d195312bd2d0c2f68b3f7069e8a80add6d7d5",
             manifestBytes: 172_863_462_401, manifestFileCount: 53,

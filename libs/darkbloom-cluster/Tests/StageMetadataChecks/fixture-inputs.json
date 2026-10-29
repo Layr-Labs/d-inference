@@ -47,8 +47,8 @@
     },
     {
       "path": "Inputs/manifest.json",
-      "sha256": "c1fefb1fa593fa3ca83e72a1124fb3afca10a59eed272c7ac2ac4a57f8018dfd",
-      "sizeBytes": 1822
+      "sha256": "e1bd0a99f0eeb451bd1be9baf700c7563816e3375bb24cdc6d1c8933cb36799e",
+      "sizeBytes": 2325
     },
     {
       "path": "Inputs/model-00001-of-00003.safetensors.header.json",

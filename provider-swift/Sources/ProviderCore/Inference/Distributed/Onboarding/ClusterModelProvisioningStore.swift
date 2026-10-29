@@ -38,9 +38,10 @@ enum ClusterProductModelStore {
     /// The catalog's exact manifest bytes for a model (the cluster worker pins the registered manifest's own bytes; the
     /// product store keeps a re-encoded receipt), checked to name the same artifact; nil when the catalog does not answer.
     /// `accepts`: whether this Mac's cluster worker takes a manifest (its runtime description, no model load). The
-    /// catalog publishes two encodings of one manifest (the CDN's file and the coordinator's re-encoding) and the
-    /// worker pins one of them per model: Qwen 3.8 27B the CDN's, GPT-OSS 20B the coordinator's (2026-10-16). The
-    /// first one the worker takes is used; without `accepts` (or when it takes neither), the first that answers.
+    /// catalog publishes two encodings of one manifest: the CDN's `manifest.json`, the same bytes for every
+    /// environment, and the coordinator's re-encoding, whose `created_at` is each environment's own registration time.
+    /// The worker pins the CDN's file for every registered model (2026-10-28), so the CDN is asked first. The first
+    /// one the worker takes is used; without `accepts` (or when it takes neither), the first that answers.
     static func catalogManifest(providerConfiguration: URL, artifact: ClusterCatalogArtifact, seconds: Double = 5,
                                 accepts: ((Data) -> Bool)? = nil) -> Data? {
         var urls = [URL]()

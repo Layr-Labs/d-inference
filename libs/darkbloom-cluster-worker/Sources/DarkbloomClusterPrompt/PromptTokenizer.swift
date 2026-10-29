@@ -13,18 +13,18 @@ public struct PromptTokenizer: Sendable {
     public static let registeredManifests: [(sha256: String, modelID: String)] = [
         (registeredManifestSHA256, "registered_qwen35_9b"),
         ("d1239a5bc6d26d5ce4bf87f22270e3a703f4942e3d0d779948b4f65410df6dcc", "registered_qwen38_27b"),
-        ("db0a8dd2902473c4b6dcd4eab9511212b52fe7bf9cb8e043aebfc47a900d21ff", "registered_qwen35_35b_a3b"),
-        ("54ba4df3022077a69974cfd4de91196622c865b45ae361e1051c1cda405bc7cc", "registered_qwen36_35b_a3b"),
+        ("1807c0cc834ac472a71013f6951ab82a620e7bc6b004a24866c9340d90dc5abb", "registered_qwen35_35b_a3b"),
+        ("19a69c0c992dc4fda29d72f4f18a039865bccd8d9c6e0efe1104c4fa8b8b0ffc", "registered_qwen36_35b_a3b"),
         ("e6871c8df1f9d30895ff5caf84a40fe902cf8771cda56a2b9f087991ca34c1e4", "registered_ternary_bonsai_2_27b"),
         ("c226d5cf4ecea1c6f299c2a8ebaa8686a89be12750b45fa6fc910cb078b19c13", "registered_ternary_bonsai_2_9b"),
-        ("7a3486d633ae181dbdf0e955e24e10a143de86cdf1e91cfb3345f7978a0b4e8a", "registered_nemotron35_lightning"),
+        ("fd6491377ed831c22ccb168ce1cc71b003a3b9a0dccdcb53a08f31e8208cee78", "registered_nemotron35_lightning"),
         // GPT-OSS prompts are raw text: its chat format is not the wrapper below.
-        ("a66dc823dd0cea6710be6bb7a84a8b9f78454a1893a76dcd7a9d4e5ba861a996", "registered_gpt_oss_20b"),
-        ("de1bd701115a9ee7e4a99ac85307b31285c63a0b0b1c22ef0c69e9b4ac10f346", "registered_mimo_v26_flash_mopd"),
-        ("c1fefb1fa593fa3ca83e72a1124fb3afca10a59eed272c7ac2ac4a57f8018dfd", "registered_gemma4_26b_qat_4bit"),
-        ("4d36eeed9afe33805bdccf9f59b4d455193ada96a56b4b4e346727a5879b0c9b", "registered_gemma4_26b"),
-        ("4e4e7df6aed1964ce70d9a3334e8114d2a18593a334c2fc3e5f2dce5ae65deed", "registered_gemma4_26b_8bit"),
-        ("daee0b1bef9258ae0d8ed98b7a489586f2eb8453453302be057b12008d249649", "registered_glm53_flash"),
+        ("fe9f986d5574db34202ab32a16a99dd109b3233c904e87edc8cbfe40bc5a3461", "registered_gpt_oss_20b"),
+        ("56c0a624037457a7e9705f765e50ff346c5fb4eec410bdfee443b20dbca56565", "registered_mimo_v26_flash_mopd"),
+        ("e1bd0a99f0eeb451bd1be9baf700c7563816e3375bb24cdc6d1c8933cb36799e", "registered_gemma4_26b_qat_4bit"),
+        ("534b6e9eb9c4f93c24f12e191e022865388c124f8021c213852cc3c2d51f795c", "registered_gemma4_26b"),
+        ("84b34231bc57b36a2d412f2fb0608a7828437915806241ca212b30912ceabbbb", "registered_gemma4_26b_8bit"),
+        ("ae8750273ae85bbcc9d77dfb3b8af8dd11bfb25622524689be2ee3a71bece570", "registered_glm53_flash"),
     ]
     /// Models whose chat format is not the wrapper below. Their prompts are raw
     /// text only, so a request never carries a chat format the model does not have.

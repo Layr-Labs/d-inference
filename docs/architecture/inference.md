@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-10-28
+> Last updated: 2026-10-29
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -4426,6 +4426,29 @@ multiple-identity aggregates remain refused. A run of one alias supplies no
 record or serving grant for the other: `ClusterPairServingDecisions` in
 `provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledPairServingGrant.swift`
 continues to scope decisions by runtime identity and artifact.
+
+### Registered manifest pins
+
+Each registered cluster model pins the SHA-256 of its manifest's exact bytes
+(`manifestSHA256` in the model's registered specification under
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/`, and
+`PromptTokenizer.registeredManifests` in
+`libs/darkbloom-cluster-worker/Sources/DarkbloomClusterPrompt/PromptTokenizer.swift`).
+The pinned bytes are the model CDN's `manifest.json` at the catalog row's
+`r2_prefix`. Every build environment reads the same CDN
+(`BuildEnvironment.modelCDNURL`), so the bytes are the same on production,
+staging and DevNet. The coordinator's
+`/v1/models/catalog/manifest/{id}` answer names the same files, but its
+`created_at` is the time of each environment's own registration, so its bytes
+are different on each environment and are not a pin.
+
+The product's download keeps only a re-encoded receipt
+(`.darkbloom-manifest.json`, `ModelDownloader.writeRevisionReceipt`). When a
+model is cloned into the cluster store, `ClusterProductModelStore.catalogManifest`
+in `provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/ClusterModelProvisioningStore.swift`
+fetches the CDN's file first and writes the first encoding this Mac's worker
+describes as `manifest.json`. A copy over the cable sends those same bytes, and
+the receiving Mac's worker checks them before the folder is renamed into place.
 
 
 ## GPT-OSS independent-history batch forward

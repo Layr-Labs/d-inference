@@ -62,7 +62,7 @@ struct GPTOSSRegisteredSpecification {
         .init(model: .twentyB, profileID: "registered_gpt_oss_20b_greedy_generation_v1",
             catalogModelID: "gpt-oss-20b", catalogVersion: "2026-05-25-r1",
             configurationSHA256: "d1c1f73bf62116ed0bb37c068af80534543cd1de9b61d609fc01bf70920e842d",
-            manifestSHA256: "a66dc823dd0cea6710be6bb7a84a8b9f78454a1893a76dcd7a9d4e5ba861a996",
+            manifestSHA256: "fe9f986d5574db34202ab32a16a99dd109b3233c904e87edc8cbfe40bc5a3461",
             artifactSHA256: "61bfc04e4016a7fa487eb10e29f79360047e302487229f298da3681984aec512",
             inventorySHA256: "eb0ae091bd96dec62e14d162c4ac1e26b8a66a90d3141d16d06bc06abffe1c8b",
             manifestBytes: 12_104_215_835, manifestFileCount: 10,

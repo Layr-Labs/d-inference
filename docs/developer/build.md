@@ -1,6 +1,6 @@
 # Build The Provider And Landing
 
-> Last updated: 2026-10-27
+> Last updated: 2026-10-29
 
 Build the provider, its source-matched native resources, and the independent
 landing site from this repository. Backend, sidecar, console and admin builds
@@ -230,7 +230,7 @@ checkout. Each routed job runs on `fromJSON(needs.route.outputs.routes)['<lane>'
 | Workflow | Routed jobs | Fallback |
 |---|---|---|
 | `ci.yml` | `release-integrity`, `docs` | `blacksmith-4vcpu-ubuntu-2404` |
-| `ci.yml` | `test-provider`, `test-provider-sdk`, `test-provider-parity` | `blacksmith-12vcpu-macos-27` |
+| `ci.yml` | `test-provider`, `test-provider-sdk`, `test-provider-parity`, `test-cluster-checks` | `blacksmith-12vcpu-macos-27` |
 | `docs-impact.yml` | `commit-signatures`, `docs-impact` | `blacksmith-4vcpu-ubuntu-2404` |
 | `landing.yml`, `desktop.yml`, `nightly-linear-package.yml` | `check`, `frontend`, `test` | `blacksmith-4vcpu-ubuntu-2404` |
 | `provider-release-cache.yml` | `warm`, pull requests only | `blacksmith-12vcpu-macos-27` |

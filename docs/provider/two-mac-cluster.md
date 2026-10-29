@@ -1,6 +1,6 @@
 # Two Macs as one provider (guided setup)
 
-> Last updated: 2026-10-26
+> Last updated: 2026-10-29
 
 Two Apple Silicon Macs joined by one Thunderbolt 5 cable serve a model together:
 each Mac holds part of its layers, and the pair serves as one provider. Setting
@@ -109,6 +109,60 @@ clusters. A coordinator that refuses this pair is not treated this way; the
 start fails and says why. To serve without any coordinator, use
 [`darkbloom cluster local`](#serving-locally-only).
 
+## Registered with the coordinator as a cluster member (DevNet)
+
+When the coordinator's operator approval file holds a cluster approval for this
+pair's installed app and model (DevNet only), the pair registers with the
+coordinator by itself. Nothing is typed and no file is copied. Production and
+staging serve no approvals, and the pair serves as described above. The pair is
+owner-only: it serves only its owner's own requests.
+
+1. Run `darkbloom cluster` and choose a model, as in [the steps](#the-steps-once).
+   After the Test stage passes, the leader reads the approvals the coordinator
+   serves (`GET /v1/cluster/approvals`) and takes the one whose model, prefill
+   schedule and eight digests match this pair's installed app and model. Each
+   Mac checks it against its own files, and both Macs save it, or neither
+   does. Both Macs then start their parts again as cluster members.
+2. Read the ready screen. Instead of the API line it says:
+
+   ```
+   Registered with the coordinator as a cluster member: approval <id>, until <date>.
+   ```
+
+   There is no local API in this mode. `darkbloom cluster` status shows the
+   same line.
+
+An approval ends at its `not_after` (14 days after the operator added it). The
+leader asks again at each start of its cluster service, after each Darkbloom
+update and every minute while the pair is registered, and takes a later
+matching approval when the saved one ends within a day. A Mac whose approval
+ended saves its setup without it before its part starts, and the pair serves on
+the leader's local API again. `darkbloom cluster local` never asks the
+coordinator and serves without the approval.
+
+The pair also serves on the leader's local API, both Macs without the
+approval, when the coordinator gives no answer for the absence grace (10
+minutes, the same grace as in [if a Mac goes away](#if-a-mac-goes-away)), when
+it no longer lists the approval, or when the coordinator-paired parts end three
+times in a row right after starting. When the coordinator lists a matching
+approval again, the pair registers again (after repeated failures, only with a
+later approval). Both Macs carry the same approval, or neither does: the leader
+compares the two at every check.
+
+What `darkbloom cluster` status says in each mode:
+
+| Mode | Status line |
+|---|---|
+| Registered | `Registered with the coordinator as a cluster member: approval <id>, until <date>.` |
+| Coordinator gave no answer for the grace | The API line, then `The coordinator has not answered for 10 minutes: the pair serves on the leader's local API until it answers again, then it is offered again with approval <id>.` |
+| Approval no longer listed | The API line, then `The coordinator no longer lists cluster approval <id>: the pair serves on the leader's local API until it lists a matching one again.` |
+| Parts kept ending | The API line, then `The coordinator-paired parts ended 3 times in a row right after starting with cluster approval <id>: the pair serves on the leader's local API until the coordinator lists a later one.` |
+| Approval ended | The API line, then one line that says the cluster approval `<id>` expired and the pair serves on the leader's local API |
+| No approval (production, staging, no matching entry) | The API line, then (only after a refusal) `Not offered for pairing: <reason>.` |
+
+Approval sources, checks and saved fields:
+[coordinator-paired member](../reference/configuration.md#coordinator-paired-member).
+
 Counting every key: `y` on the other Mac, and `y` and enter on the leader
 (three keys), plus at most one macOS approval per Mac.
 
@@ -179,8 +233,9 @@ plaintext fallback; see the [cluster encryption contract](../architecture/securi
 
 - **Clone in.** Every model the single-Mac product installed and verified
   (`darkbloom models download`, its manifest receipt) is cloned into the cluster
-  store with APFS clones, so it costs no disk space and keeps the catalog's
-  exact manifest bytes (the cluster worker pins them).
+  store with APFS clones, so it costs no disk space. Beside the files it writes
+  the model CDN's exact `manifest.json` bytes, which the cluster worker pins
+  ([registered manifest pins](../architecture/inference.md#registered-manifest-pins)).
 - **Copy over the cable.** A model one Mac lacks is sent by the Mac that has it
   over the link control channel: keyed by the pairing (S17), encrypted and
   authenticated records, 4 MiB chunks acknowledged only after the receiver wrote
@@ -486,7 +541,9 @@ and they must match.
 
 - The login agent and macOS's one Local Network approval need the signed
   Darkbloom.app ([always on](cluster-always-on.md)).
-- Public serving through Darkbloom is not offered by the onboarding yet.
+- Public serving through Darkbloom is not offered by the onboarding. A pair
+  registers with a coordinator that serves a matching cluster approval, and
+  then serves only its owner's own requests (owner-only).
 - A member cannot yet download a catalog model itself (the leader downloads and
   copies), and a model change typed on a Mac that does not lead cannot copy a
   model (run it on the leader).

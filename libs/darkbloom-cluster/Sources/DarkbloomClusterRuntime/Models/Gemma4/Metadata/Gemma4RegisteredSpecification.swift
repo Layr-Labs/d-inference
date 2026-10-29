@@ -54,15 +54,15 @@ struct Gemma4RegisteredSpecification {
     static let all: [Self] = [
         .init(model: .twentySixBQAT4Bit, catalogModelID: "gemma-4-26b-qat-4bit",
             configurationSHA256: "29910322dd085f45c8f95c6c0f1611b20f722d6f6c8394321b34817e98a972fa",
-            manifestSHA256: "c1fefb1fa593fa3ca83e72a1124fb3afca10a59eed272c7ac2ac4a57f8018dfd",
+            manifestSHA256: "e1bd0a99f0eeb451bd1be9baf700c7563816e3375bb24cdc6d1c8933cb36799e",
             artifactSHA256: "2468a0cb3049a871f42052f4d9f9380bf12a0792f64c7a29f768559fc7d28785",
             inventorySHA256: "da7781c57eb4864913649b547e51821398813a4b9f1c61e09bcc1fb3e7cd3c08",
             manifestBytes: 15_641_239_295, manifestFileCount: 10, sourceBytes: 14_467_688_508,
             tensorCount: 1339, largestTensorBytes: 369_098_752, defaultQuantizationBits: 4),
         eightBit(.twentySixB, catalogModelID: "gemma-4-26b",
-            manifestSHA256: "4d36eeed9afe33805bdccf9f59b4d455193ada96a56b4b4e346727a5879b0c9b"),
+            manifestSHA256: "534b6e9eb9c4f93c24f12e191e022865388c124f8021c213852cc3c2d51f795c"),
         eightBit(.twentySixB8Bit, catalogModelID: "gemma-4-26b-8bit",
-            manifestSHA256: "4e4e7df6aed1964ce70d9a3334e8114d2a18593a334c2fc3e5f2dce5ae65deed"),
+            manifestSHA256: "84b34231bc57b36a2d412f2fb0608a7828437915806241ca212b30912ceabbbb"),
     ]
 
     static func registered(_ model: Gemma4RegisteredModel) throws -> Self {

@@ -58,10 +58,14 @@ public final class ClusterService: @unchecked Sendable {
         public var followerArguments: [String]
         /// Degraded serving on this Mac alone: `start --local` with the provider configuration (the model is added).
         public var soloArguments: [String]
+        /// Either Mac's part of a setup saved with a current cluster approval, served publicly: the coordinator-formed
+        /// pair's member (`start --foreground --cluster-member` with the provider configuration).
+        public var memberArguments: [String]
         public init(wizard: ClusterSetupOperations.LiveSettings, leaderArguments: [String], followerArguments: [String],
-                    soloArguments: [String] = ["start", "--local"]) {
+                    soloArguments: [String] = ["start", "--local"],
+                    memberArguments: [String] = ["start", "--foreground", "--cluster-member"]) {
             self.wizard = wizard; self.leaderArguments = leaderArguments; self.followerArguments = followerArguments
-            self.soloArguments = soloArguments
+            self.soloArguments = soloArguments; self.memberArguments = memberArguments
         }
     }
 
@@ -96,6 +100,16 @@ public final class ClusterService: @unchecked Sendable {
     private var updateInFlight = false
     private var nextUpdateCheck = Date.distantPast
     private var updatingLine: String?
+    // The cluster approval is asked for once per run of this service on the control leader, and again every minute
+    // while the pair is offered or serves locally with its approval set aside (`checkApproval`).
+    private var approvalChecked = false
+    private var approvalInFlight = false
+    private var nextApprovalCheck = Date.distantPast
+    private var approvalWatch = ClusterApprovalCheck.Watch()
+    // This Mac's coordinator-paired parts that ended in a row right after starting (`ClusterApprovalCheck.memberQuickEnds`),
+    // and whether the running part is one.
+    private var memberQuickEnds = 0
+    private var childIsMember = false
     // Derived control (ClusterServiceControl.swift).
     var control: ClusterControlNode?
     var controlResponder: ClusterSetupLinkExchange.Responder?
@@ -152,7 +166,7 @@ public final class ClusterService: @unchecked Sendable {
         wizard.derivedPlacement = true
         wizard.answersOverLink = false
         self.settings = Settings(wizard: wizard, leaderArguments: settings.leaderArguments, followerArguments: settings.followerArguments,
-            soloArguments: settings.soloArguments)
+            soloArguments: settings.soloArguments, memberArguments: settings.memberArguments)
         store = ClusterSetupStore(paths: .init(paths: paths))
         context = LiveContext(paths: paths, store: store, settings: wizard,
             clean: ClusterConsoleFreeText(homeDirectory: paths.homeDirectory.path))
@@ -273,6 +287,7 @@ public final class ClusterService: @unchecked Sendable {
                 refreshPowerAssertions(power)
                 syncMembers(say: say)
                 checkForUpdate(say: say)
+                checkApproval(say: say)
                 publish(afterSupervision: true)
             }
             if ticker.wait(timeout: .now() + 1) == .success { stopped = true }
@@ -707,6 +722,15 @@ public final class ClusterService: @unchecked Sendable {
                 directory: store.paths.directory, senderMemberID: pairing.peerMemberID)
             say("saved the serving leader's compatible batch setup after native release")
             return try encoder.encode(reference)
+        case .approval:
+            // Only from the Mac this one follows, and only once its part has stopped (the save needs the device
+            // journal empty). The approval is checked against this Mac's own files and pairing: the leader's word
+            // adds no trust.
+            guard followsPeer(pairing) else { throw ClusterSetupFailure("this Mac does not follow the Mac that asked") }
+            let line = try ClusterApprovalSync.receive(command, paths: context.paths,
+                providerConfiguration: settings.wizard.providerConfiguration, pairingStore: pairingStore,
+                scratch: store.paths.directory, now: Date().timeIntervalSince1970, say: say)
+            return Data(line.utf8)
         case .lease:
             throw ClusterSetupFailure("leases go to the control listener")
         }
@@ -899,6 +923,8 @@ public final class ClusterService: @unchecked Sendable {
                 control: controlStatusLocked(model: record?.leadership?.modelName), servicePID: getpid())
             value.updating = updatingLine
             value.localOnly = record?.leadership.map { $0.scope.isLocalOnly }
+            value.memberQuickEnds = memberQuickEnds
+            value.approvalID = configuration?.nativeMember?.clusterApproval?.id
             return value
         }
     }
@@ -973,6 +999,112 @@ public final class ClusterService: @unchecked Sendable {
             // The plan's own line and its reason for the mode (tensor parallel or a pipeline), so the log says why.
             say("set the cluster up again after the update: \(model) is starting on both Macs ("
                 + choices[index].lines.joined(separator: " ") + ")")
+            // The re-adopted setups carry no cluster approval: the next check looks for the entry of the updated app.
+            self.lock.withLock { self.approvalChecked = false; self.nextApprovalCheck = .distantPast }
+        }
+    }
+
+    /// On the control leader: asks the coordinator for its cluster approvals once per run of this service, and every
+    /// `ClusterOnboardingUpdate.checkEverySeconds` while the pair is registered or serves locally with its approval set
+    /// aside (`ClusterApprovalCheck.asks`). Only when a setup must change (`ClusterApprovalCheck.step`: an approval to
+    /// save, or one to serve without because the coordinator gave no answer for the grace, no longer lists it, or the
+    /// parts keep failing with it) it stops both parts, changes both Macs' setups and serves again. A coordinator that
+    /// serves nothing new changes nothing and stops nothing. An approval that ended is removed by each Mac itself
+    /// before its part starts (`supervise`), never by stopping a running pair.
+    private func checkApproval(say: @escaping @Sendable (String) -> Void) {
+        let begin: Bool = lock.withLock {
+            guard !approvalInFlight, !updateInFlight, !stopping, control?.leads == true, Date() >= nextApprovalCheck else { return false }
+            approvalInFlight = true
+            return true
+        }
+        guard begin else { return }
+        let paths = context.paths, configuration = settings.wizard.providerConfiguration, scratch = store.paths.directory
+        let pairingStore = self.pairingStore
+        Thread.detachNewThread { [weak self] in
+            guard let self else { return }
+            defer { self.lock.withLock { self.approvalInFlight = false } }
+            let first = self.lock.withLock { !self.approvalChecked }
+            func checked() {
+                self.lock.withLock {
+                    self.approvalChecked = true
+                    self.nextApprovalCheck = Date().addingTimeInterval(ClusterOnboardingUpdate.checkEverySeconds)
+                }
+            }
+            let record = try? self.store.readRecord()
+            let scope = record?.leadership?.scope ?? .publicServing
+            var setAside = record?.approvalSetAside
+            guard let saved = try? ClusterApprovalAttachment.savedSetup(paths: paths, providerConfiguration: configuration) else {
+                return checked()
+            }
+            let offered = saved.configuration.nativeMember.map {
+                ClusterApprovalLifetime.offers($0, scope: scope, now: Date().timeIntervalSince1970)
+            } ?? false
+            let live = self.controlLive
+            // The other Mac's saved cluster approval and its coordinator-paired parts' quick ends, from its status (nil
+            // when it does not answer): both Macs carry the same approval, or neither does.
+            let peer = try? JSONDecoder().decode(ClusterServiceStatus.self, from: live.command(.init(op: .status), seconds: 10))
+            let peerApprovalID: String?? = peer.map { $0.approvalID }
+            let macsDiffer = ClusterApprovalCheck.macsDiffer(saved, peerApprovalID: peerApprovalID)
+            let asks = ClusterApprovalCheck.asks(first: first, serving: record?.leadership?.serving == true, scope: scope,
+                                                 offered: offered, setAside: setAside != nil, macsDiffer: macsDiffer)
+            guard asks || macsDiffer else { return checked() }
+            // A local-only cluster settles a difference between the Macs without asking the coordinator.
+            let fetched = asks ? ClusterApprovalFetch.fetchBlocking(providerConfiguration: configuration)
+                ?? .unavailable("no coordinator is configured") : .unavailable("not asked")
+            let now = Date().timeIntervalSince1970
+            if let ended = setAside, !ClusterApprovalLifetime.current(ended.approval, now: now) {
+                try? self.store.updateRecord { $0.approvalSetAside = nil }
+                setAside = nil
+            }
+            // Both Macs' coordinator-paired parts that ended in a row right after starting.
+            let quickEnds = max(self.lock.withLock { self.memberQuickEnds }, peer?.memberQuickEnds ?? 0)
+            var watch = self.lock.withLock { self.approvalWatch }
+            let step = ClusterApprovalCheck.step(saved: saved, fetched: fetched, setAside: setAside, scope: scope,
+                memberQuickEnds: quickEnds, peerApprovalID: peerApprovalID, watch: &watch, clock: ClusterService.monotonicSeconds(),
+                grace: ClusterService.soloGraceSeconds, now: now)
+            self.lock.withLock { self.approvalWatch = watch }
+            guard step != .keep else { return checked() }
+            // A person's command and this never run at once; a busy lock is tried again at the next tick.
+            guard let held = ClusterControlCommandLock.acquire(seconds: 5) else { return }
+            defer { held.release() }
+            checked()
+            let serving = (try? self.store.readRecord())?.leadership?.serving == true
+            if serving {
+                if case .failure(let failure) = live.localStop() {
+                    return say("could not stop the parts to change the cluster approval: " + failure.lines.joined(separator: " "))
+                }
+                guard live.drained(seconds: 300) else {
+                    try? self.store.updateRecord { $0.leadership?.serving = true }
+                    return say("a part did not stop within 5 minutes: the cluster approval stays as it is")
+                }
+            }
+            let send: (ClusterServiceCommand) throws -> Void = { request in _ = try live.command(request, seconds: 180) }
+            let result: ClusterApprovalSync.Result
+            switch step {
+            case .keep: return
+            case .save(let approval):
+                result = ClusterApprovalSync.run(fetched: .approvals([approval]), paths: paths, providerConfiguration: configuration,
+                    pairingStore: pairingStore, scratch: scratch, now: Date().timeIntervalSince1970, sendToPeer: send)
+            case .serveLocally(let approval, let reason):
+                result = ClusterApprovalSync.serveLocally(approval, line: reason.line(approval, grace: ClusterService.soloGraceSeconds),
+                    paths: paths, providerConfiguration: configuration, pairingStore: pairingStore, scratch: scratch, sendToPeer: send)
+            case .converge(let target):
+                result = ClusterApprovalSync.converge(target, paths: paths, providerConfiguration: configuration,
+                    pairingStore: pairingStore, scratch: scratch, sendToPeer: send)
+            }
+            try? self.store.updateRecord { stored in
+                if let note = result.note { stored.approvalNote = note }
+                // The approval set aside is kept while the pair serves locally and dropped once one is saved again.
+                if case .serveLocally(let approval, let reason) = step, result.changed {
+                    stored.approvalSetAside = .init(approval: approval, reason: reason)
+                }
+                if case .save = step, result.changed { stored.approvalSetAside = nil }
+            }
+            if let line = result.line { say(line) }
+            if serving, case .failure(let failure) = live.localServe() {
+                try? self.store.updateRecord { $0.leadership?.serving = true }
+                say("could not start the parts again after the cluster approval changed: " + failure.lines.joined(separator: " "))
+            }
         }
     }
 
@@ -1132,6 +1264,12 @@ public final class ClusterService: @unchecked Sendable {
                 backoff = ran >= 120 ? 3 : min(backoff * 2, 30)
                 nextStart = Date().addingTimeInterval(ran >= 120 ? 3 : backoff)
             }
+            // A coordinator-paired part that keeps ending right after its start makes the leader serve locally
+            // (`ClusterApprovalCheck.step`); an end because the coordinator was out of reach is not counted.
+            if lock.withLock({ childIsMember }) {
+                let lastError = Self.lastError(in: serviceFiles.rankLog)
+                lock.withLock { memberQuickEnds = ClusterApprovalCheck.memberQuickEnds(after: memberQuickEnds, ranSeconds: ran, lastError: lastError) }
+            }
             // F14: a solo server that keeps ending right after its start is not started again for this plan and model
             // (`ClusterControlSoloAdmission`): the status then says this Mac cannot serve it alone.
             if let setup, setup.hasPrefix("solo:") {
@@ -1151,6 +1289,17 @@ public final class ClusterService: @unchecked Sendable {
             if let setup, setup.hasPrefix("cluster:"), leadsSession, let model = record.leadership?.modelName {
                 noteMemoryRefusal(key: setup, since: Date().addingTimeInterval(-ran - 5), model: model, say: say)
             }
+            return
+        }
+        // A part offered to the coordinator whose approval ended, or whose leader now serves locally only, stops
+        // here; the next tick saves this Mac's setup without a cluster approval and starts the part that serves
+        // locally (a pair approval saved by hand stays saved: see below).
+        if running != nil, setup == key, case .cluster = want, let member = saved.configuration?.nativeMember,
+           !ClusterApprovalLifetime.offers(member, scope: scope, now: Date().timeIntervalSince1970) {
+            say("this Mac's part is registered with the coordinator, but "
+                + (scope.isLocalOnly ? "the cluster serves locally only now" : "its approval ended") + ": stopping it")
+            _ = stopChild(say: say, seconds: 300)
+            lock.withLock { nextStart = .distantPast; backoff = 3 }
             return
         }
         if let running, key == nil || setup != key {
@@ -1190,6 +1339,7 @@ public final class ClusterService: @unchecked Sendable {
         else { return }
         let arguments: [String]
         let what: String
+        var memberRoute = false
         var port: Int?
         if case .solo(let model) = want {
             arguments = ClusterLocalServing.soloArguments(settings.soloArguments, scope: scope) + ["--model", model, "--port", String(Self.soloPort)]
@@ -1197,7 +1347,23 @@ public final class ClusterService: @unchecked Sendable {
             port = Self.soloPort
         } else {
             guard let configuration = saved.configuration else { return }
-            if configuration.role == .leader {
+            let offered = configuration.nativeMember.map {
+                ClusterApprovalLifetime.offers($0, scope: scope, now: Date().timeIntervalSince1970)
+            } ?? false
+            if let member = configuration.nativeMember, !offered, member.clusterApproval != nil {
+                // Never a failed start: the setup is saved without the cluster approval (both Macs reach the same
+                // bytes by themselves), and the part that serves on the leader's local API starts at the next tick.
+                // A pair approval saved by hand (`darkbloom cluster configure`) is the operator's: it stays, and the
+                // ordinary part below says why it cannot run beside it, as before the guided setup saved approvals.
+                removeEndedApproval(key: key, localOnly: scope.isLocalOnly, say: say)
+                return
+            }
+            if offered {
+                memberRoute = true
+                // Registered with the coordinator as a cluster member: both Macs run the coordinator-formed pair's member; the
+                // leader's rank hosts the link listener and the pair's slot, the other rank dials it.
+                arguments = settings.memberArguments
+            } else if configuration.role == .leader {
                 // This Mac is rank 0 now: the relay gives its port back first.
                 if let passing = lock.withLock({ () -> ClusterLocalRelay? in defer { relay = nil }; return relay }) {
                     passing.stop(); LocalEndpoint.removeInfo(ifPID: getpid())
@@ -1208,7 +1374,9 @@ public final class ClusterService: @unchecked Sendable {
             } else {
                 arguments = settings.followerArguments
             }
-            what = "this Mac's part: " + (configuration.role == .leader
+            what = "this Mac's part: " + (offered
+                ? "rank \(configuration.localRank), registered with the coordinator as a cluster member"
+                : configuration.role == .leader
                 ? "rank 0 and the serving API" + (scope.isLocalOnly ? " (local only, no coordinator)" : "")
                 : "rank \(configuration.localRank)")
         }
@@ -1234,8 +1402,31 @@ public final class ClusterService: @unchecked Sendable {
             return
         }
         let startedAt = ClusterProcessTable.startTime(of: process.processIdentifier)
-        lock.withLock { child = process; childSetup = key; childPort = port; childStarted = Date(); childStartedAt = startedAt; starts += 1 }
+        lock.withLock {
+            child = process; childSetup = key; childPort = port; childStarted = Date(); childStartedAt = startedAt; starts += 1
+            childIsMember = memberRoute
+            if !memberRoute { memberQuickEnds = 0 }
+        }
         say("started \(what) (pid \(process.processIdentifier))")
+    }
+
+    /// Saves this Mac's setup without its cluster approval (it ended, or the cluster serves locally only). A save
+    /// that cannot run yet (the device lease of the part that just ended) is tried again after the restart backoff.
+    private func removeEndedApproval(key: String, localOnly: Bool, say: @Sendable (String) -> Void) {
+        do {
+            guard let saved = try ClusterApprovalAttachment.savedSetup(paths: context.paths,
+                    providerConfiguration: settings.wizard.providerConfiguration) else { return }
+            try ClusterApprovalAttachment.save(nil, saved: saved, paths: context.paths,
+                providerConfiguration: settings.wizard.providerConfiguration, scratch: store.paths.directory)
+            let line = localOnly ? "saved this Mac's setup without its cluster approval: the cluster serves locally only"
+                : "the cluster approval \(saved.configuration.nativeMember?.clusterApproval?.id ?? "") expired: saved this Mac's setup without it; "
+                    + "the pair serves on the leader's local API"
+            say(line)
+            if !localOnly, saved.configuration.role == .leader { try? store.updateRecord { $0.approvalNote = line } }
+        } catch {
+            say("could not save this Mac's setup without its cluster approval yet: \(ClusterApprovalSync.refusal(error))")
+            lock.withLock { nextStart = Date().addingTimeInterval(backoff); backoff = min(backoff * 2, 30); endedKey = key }
+        }
     }
 
     /// The port rank 0's API takes on this Mac (another local server may hold 8000). Local only on every address (where

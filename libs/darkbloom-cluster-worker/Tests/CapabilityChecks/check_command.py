@@ -72,6 +72,20 @@ def main(binary, fixtures):
     assert unknown.returncode != 0 and unknown.stdout == b""
     cases += ["actual-cpu-child-private-image-canonical-golden", "text-capability-unchanged-without-profile",
               "candidate-profile-refuses-foreign-artifact", "unknown-private-profile-refused"]
+    # GLM: the CDN's manifest.json and config.json, the bytes a download saves and the cluster store clones in.
+    glm_names = ["registered-glm53-flash.configuration.json", "registered-glm53-flash.manifest.json"]
+    glm_argv = [str(binary), "--describe-runtime", "--config", str(fixtures / glm_names[0]),
+                "--manifest", str(fixtures / glm_names[1]), "--expected-executable-sha256", digest]
+    glm_manifest = hashlib.sha256((fixtures / glm_names[1]).read_bytes()).hexdigest()
+    glm_text = subprocess.run(glm_argv, capture_output=True, timeout=20)
+    glm_image = subprocess.run(glm_argv + ["--runtime-profile", "registered_glm53_flash_greedy_generation_v1_image_candidate_v1"],
+                               capture_output=True, timeout=20)
+    assert glm_text.returncode == glm_image.returncode == 0, (glm_text.stderr, glm_image.stderr)
+    assert glm_text.stderr == glm_image.stderr == b""
+    for value in (json.loads(glm_text.stdout), json.loads(glm_image.stdout)):
+        assert value["runtimeModelID"] == "registered_glm53_flash" and value["manifestSHA256"] == glm_manifest
+        assert value["runtimeBinarySHA256"] == digest and len(value["partitions"]) == 44
+    cases += ["actual-cpu-child-glm-downloaded-manifest-text-and-image-candidate"]
     assert [(fixtures / name).read_bytes() for name in names] == originals
     assert hashlib.sha256(binary.read_bytes()).hexdigest() == digest
     print(json.dumps({"passed": True, "actualCPUChildren": len(cases), "cases": cases,

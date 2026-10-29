@@ -49,6 +49,7 @@ ROUTED = {
         "test-provider": ("macos_arm64", MACOS_FALLBACK, PROVIDER),
         "test-provider-sdk": ("macos_arm64", MACOS_FALLBACK, PROVIDER),
         "test-provider-parity": ("macos_arm64", MACOS_FALLBACK, PROVIDER),
+        "test-cluster-checks": ("macos_arm64", MACOS_FALLBACK, PROVIDER),
     },
     "docs-impact.yml": {
         "commit-signatures": ("linux_arm64", LINUX_FALLBACK, None),

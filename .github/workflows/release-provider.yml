@@ -181,7 +181,8 @@ jobs:
     env:
       VERSION: ${{ needs.resolve-env.outputs.version }}
       # Package.swift compiles ProviderCore with this environment's defaults.
-      # qualify-sdk does not set it: tests must see production defaults.
+      # qualify-sdk sets prod: tests must see production defaults on every
+      # branch (on dev, an unset value compiles the dev identity).
       DARKBLOOM_RELEASE_ENVIRONMENT: ${{ needs.resolve-env.outputs.environment }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
@@ -240,6 +241,10 @@ jobs:
     timeout-minutes: 60
     permissions:
       contents: read
+    env:
+      # The test suite pins production names and defaults. Package.swift
+      # defaults to dev on the dev branch, so name prod here, as ci.yml does.
+      DARKBLOOM_RELEASE_ENVIRONMENT: prod
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
@@ -915,45 +920,6 @@ jobs:
           echo "Bundle hash:   $BUNDLE_HASH"
           echo "Metallib hash: $METALLIB_HASH"
 
-      # dev only: the cluster runtime facts (cluster_runtime) the dev
-      # coordinator derives its cluster approvals from, computed by the final
-      # signed app's own CLI and worker after every signing, notarization and
-      # final-bytes check above. No secret is in this step: it reads no
-      # secrets.*, removes the two secret-derived values the job's
-      # GITHUB_ENV holds and the signing keychain (and proves the identity
-      # is gone) before any release code runs, and runs that code with an
-      # empty environment.
-      - name: Compute dev cluster runtime facts from the final signed app
-        if: needs.resolve-env.outputs.environment == 'dev'
-        run: |
-          set -euo pipefail
-          unset r2_public_url coordinator_url
-          # The signing keychain must be gone, and no keychain may still list
-          # the signing identity, before any release code runs.
-          security delete-keychain "$KEYCHAIN_PATH"
-          test ! -e "$KEYCHAIN_PATH"
-          test -n "$DEVELOPER_ID"
-          # Without -v: every identity, valid or not, so a key left behind is found.
-          IDENTITIES=$(security find-identity -p codesigning)
-          if grep -F -q -- "$DEVELOPER_ID" <<< "$IDENTITIES"; then
-            echo "::error::The signing identity is still readable after the signing keychain was deleted"
-            exit 1
-          fi
-          test "$(shasum -a 256 /tmp/darkbloom-bundle-macos-arm64.tar.gz | cut -d' ' -f1)" = "$BUNDLE_HASH"
-          FACTS_ROOT="$RUNNER_TEMP/cluster-runtime"
-          rm -rf "$FACTS_ROOT"
-          mkdir -p "$FACTS_ROOT/app"
-          /usr/bin/tar -xzf /tmp/darkbloom-bundle-macos-arm64.tar.gz -C "$FACTS_ROOT/app"
-          # The same script the pull-request build runs on its unsigned app.
-          scripts/provider-cluster-runtime-facts.sh "$FACTS_ROOT/app/$APP_NAME" "$CLI_NAME" "$FACTS_ROOT/facts"
-          echo "CLUSTER_RUNTIME_FILE=$FACTS_ROOT/facts/cluster-runtime.json" >> "$GITHUB_ENV"
-          {
-            echo '### Cluster runtime facts (dev)'
-            echo '```json'
-            python3 -m json.tool --sort-keys "$FACTS_ROOT/facts/cluster-runtime.json"
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
-
       - name: Record signed validation identity
         id: validation_identity
         if: needs.resolve-env.outputs.publish == 'false'
@@ -1008,10 +974,8 @@ jobs:
           COORDINATOR_URL: ${{ env.coordinator_url }}
         run: |
           set -euo pipefail
-          # A dev release carries cluster_runtime; prod and staging never do.
           python3 scripts/provider-release-publication.py prepare \
-            --directory "$RUNNER_TEMP/provider-publication" --bundle /tmp/darkbloom-bundle-macos-arm64.tar.gz \
-            ${CLUSTER_RUNTIME_FILE:+--cluster-runtime "$CLUSTER_RUNTIME_FILE"}
+            --directory "$RUNNER_TEMP/provider-publication" --bundle /tmp/darkbloom-bundle-macos-arm64.tar.gz
           # dev and staging names carry the environment, so two lanes in one
           # GitHub run never collide; prod keeps the unqualified
           # name the resume path (provider_release_resume) reconstructs and the

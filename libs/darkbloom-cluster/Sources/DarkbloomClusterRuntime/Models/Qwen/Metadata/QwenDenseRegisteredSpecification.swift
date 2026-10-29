@@ -69,7 +69,7 @@ struct QwenDenseRegisteredSpecification {
         // gate and up halves counted as the one fused tensor they load as.
         .init(model: .qwen35ThirtyFiveBA3B,
             configurationSHA256: "58a2b700bbe36066bc3e8bac65341a7f886c8dbe4db510553150004cfb0294f7",
-            manifestSHA256: "db0a8dd2902473c4b6dcd4eab9511212b52fe7bf9cb8e043aebfc47a900d21ff",
+            manifestSHA256: "1807c0cc834ac472a71013f6951ab82a620e7bc6b004a24866c9340d90dc5abb",
             artifactSHA256: "95811153b3bb2ed78bf44b3248b07b52fce637706107de8b0fddf21796ade01c",
             inventorySHA256: "6d40ee61eead498b1b5863a3c975a0b57a7e2e03a59cfe287f88818acdfd54d9",
             manifestBytes: 20_893_747_852, manifestFileCount: 14, sourceBytes: 19_498_262_656,
@@ -83,7 +83,7 @@ struct QwenDenseRegisteredSpecification {
         // tensors that are not affine, are in the same files and are never read.
         .init(model: .qwen36ThirtyFiveBA3B,
             configurationSHA256: "b852ada32203b112e217e5cb48afeadaf16594c0f5d3f5f7a380897e5e8732c2",
-            manifestSHA256: "54ba4df3022077a69974cfd4de91196622c865b45ae361e1051c1cda405bc7cc",
+            manifestSHA256: "19a69c0c992dc4fda29d72f4f18a039865bccd8d9c6e0efe1104c4fa8b8b0ffc",
             artifactSHA256: "d932e96b00404b0575fff47e2dac8ed113056b3f22d0040c3c8d3f9ef25b09ed",
             inventorySHA256: "9f18359fe9a49c2b07f490154ca5771990432f34cc86aaf3e0ad5e85e485d0d3",
             manifestBytes: 21_308_856_601, manifestFileCount: 13, sourceBytes: 19_508_787_456,
@@ -126,7 +126,7 @@ struct QwenDenseRegisteredSpecification {
         // Mamba head count that geometry uses in the same place.
         .init(model: .nemotron35Lightning,
             configurationSHA256: "c75cadc4b4ddff18c8f84d24584092528f9ffc3b723a4bcf29c3c51505dd5643",
-            manifestSHA256: "7a3486d633ae181dbdf0e955e24e10a143de86cdf1e91cfb3345f7978a0b4e8a",
+            manifestSHA256: "fd6491377ed831c22ccb168ce1cc71b003a3b9a0dccdcb53a08f31e8208cee78",
             artifactSHA256: "366d9285ec367633c25b5c064ad94482e04be043c2a515a16e4fcf12c0a8f85b",
             inventorySHA256: "0701da0c94e0eacf20249691a387322807f9a6fac72e72fb014fa814a3c31a85",
             manifestBytes: 19_059_595_830, manifestFileCount: 10, sourceBytes: 18_290_661_248,

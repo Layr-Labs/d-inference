@@ -1,19 +1,16 @@
-import CryptoKit
 import Foundation
 import Testing
 import DarkbloomClusterProtocol
 import DarkbloomClusterRuntime
 @testable import ProviderCore
 
-/// The cluster runtime facts a dev release registers. The capability bytes are
+/// The cluster runtime facts the guided setup registers. The capability bytes are
 /// the runtime catalog's real description of the pinned Qwen3.5-9B and MiMo
 /// metadata fixtures; a shell child stands in for the worker process at the
 /// process seam and prints them. No model, GPU or network.
 @Suite("Cluster runtime approval facts")
 struct ClusterRuntimeApprovalFactsTests {
     static let qwenArtifact = "127de76b4ef82b7aaa0acaac0ee31c784cff066eda64291f521f051469b7c24b"
-    /// The release version the decoder rows name (`init(canonical:releaseVersion:)`).
-    static let releaseVersion = "1.2.3"
 
     @Test func everyDigestIsTheOneTheMembersChecksCompare() throws {
         let f = try Fixture()
@@ -56,7 +53,7 @@ struct ClusterRuntimeApprovalFactsTests {
         #expect(try f.calls() == ["--describe-runtime --config \(configuration) --manifest \(manifest) --expected-executable-sha256 \(facts.nativeRuntimeSHA256)"])
     }
 
-    @Test func canonicalBytesRoundTripAndAreSortedWithoutWhitespace() throws {
+    @Test func canonicalBytesAreSortedWithoutWhitespace() throws {
         let facts = try Self.facts()
         let bytes = try facts.canonicalBytes()
         let text = String(decoding: bytes, as: UTF8.self)
@@ -65,68 +62,6 @@ struct ClusterRuntimeApprovalFactsTests {
         #expect(text.contains(#""model":"EigenLabs/Qwen3.8-27B-4bit-mtp""#))
         #expect(text.hasSuffix(#""schema":"darkbloom_cluster_runtime_v1"}"#))
         #expect(!text.contains(" ") && !text.contains("\n") && !text.contains(#"\/"#))
-        let decoded = try ClusterRuntimeApprovalFacts(canonical: bytes, releaseVersion: Self.releaseVersion)
-        #expect(decoded == facts)
-        #expect(try decoded.canonicalBytes() == bytes)
-    }
-
-    @Test func decoderRefusesUnknownMissingOrMistypedFields() throws {
-        let object = try JSONSerialization.jsonObject(with: Self.facts().canonicalBytes()) as! [String: Any]
-        var rows: [String: Any] = [:]
-        func edited(_ change: (inout [String: Any]) -> Void) -> [String: Any] { var copy = object; change(&copy); return copy }
-        func editedModel(_ change: (inout [String: Any]) -> Void) -> [String: Any] {
-            edited { block in var models = block["models"] as! [[String: Any]]; change(&models[0]); block["models"] = models }
-        }
-        rows["unknown field"] = edited { $0["extra"] = 1 }
-        rows["missing field"] = edited { $0.removeValue(forKey: "placement_policy_sha256") }
-        rows["another schema"] = edited { $0["schema"] = "darkbloom_cluster_runtime_v2" }
-        rows["unknown model field"] = editedModel { $0["extra"] = 1 }
-        rows["missing model field"] = editedModel { $0.removeValue(forKey: "profile_sha256") }
-        rows["mistyped digest"] = edited { $0["metallib_sha256"] = 7 }
-        rows["models not a list"] = edited { $0["models"] = [:] as [String: Any] }
-        for (label, value) in rows {
-            let data = try JSONSerialization.data(withJSONObject: value)
-            #expect(throws: ClusterConfigurationError.self, "\(label)") { try ClusterRuntimeApprovalFacts(canonical: data, releaseVersion: Self.releaseVersion) }
-        }
-        // A repeated key, also one spelled with an escape, at the top or in a model.
-        let text = String(decoding: try Self.facts().canonicalBytes(), as: UTF8.self)
-        for (label, repeated) in [
-            ("top", text.replacingOccurrences(of: #"{"metallib_sha256":"#,
-                                              with: #"{"schema":"darkbloom_cluster_runtime_v1","metallib_sha256":"#)),
-            ("escaped", text.replacingOccurrences(of: #"{"metallib_sha256":"#,
-                                                  with: #"{"sch\u0065ma":"darkbloom_cluster_runtime_v1","metallib_sha256":"#)),
-            ("model", text.replacingOccurrences(of: #"[{"artifact_sha256":"#, with: #"[{"model":"Z","artifact_sha256":"#)),
-        ] {
-            #expect(repeated != text, "\(label)")
-            #expect(throws: ClusterConfigurationError.self, "\(label)") { try ClusterRuntimeApprovalFacts(canonical: Data(repeated.utf8), releaseVersion: Self.releaseVersion) }
-        }
-        for data in [Data("{".utf8), Data("[]".utf8), Data(repeating: 32, count: ClusterRuntimeApprovalFacts.maximumEncodedBytes + 1)] {
-            #expect(throws: ClusterConfigurationError.self) { try ClusterRuntimeApprovalFacts(canonical: data, releaseVersion: Self.releaseVersion) }
-        }
-    }
-
-    @Test func decoderRefusesFactsWhoseDerivedApprovalIDsExceedTheirBound() throws {
-        // release/1.2.3/<model>/s2: 17 bytes plus the model ID.
-        func block(_ model: String) throws -> Data {
-            var object = try JSONSerialization.jsonObject(with: Self.facts().canonicalBytes()) as! [String: Any]
-            var models = object["models"] as! [[String: Any]]
-            models = [models[0]]; models[0]["model"] = model
-            object["models"] = models
-            return try JSONSerialization.data(withJSONObject: object)
-        }
-        let fits = String(repeating: "m", count: 111), over = String(repeating: "m", count: 112)
-        #expect("release/1.2.3/\(fits)/s2".utf8.count == ClusterRuntimeApprovalFacts.maximumApprovalIDBytes)
-        #expect(try ClusterRuntimeApprovalFacts(canonical: block(fits), releaseVersion: "1.2.3").models.map(\.model) == [fits])
-        #expect(throws: ClusterConfigurationError.self) {
-            try ClusterRuntimeApprovalFacts(canonical: block(over), releaseVersion: "1.2.3")
-        }
-        // The bound follows the version the caller names: a dev release
-        // version (30 bytes of ID before the model) leaves 98 bytes.
-        let dev = "1.2.3-dev.branch.7"
-        _ = try ClusterRuntimeApprovalFacts(canonical: block(String(repeating: "m", count: 98)), releaseVersion: dev)
-        #expect(throws: ClusterConfigurationError.self) {
-            try ClusterRuntimeApprovalFacts(canonical: block(String(repeating: "m", count: 99)), releaseVersion: dev)
-        }
     }
 
     @Test func rulesRefuseDigestsCountsOrderAndModelIDs() throws {
@@ -161,19 +96,6 @@ struct ClusterRuntimeApprovalFactsTests {
         }
         // The bounds themselves are accepted, in byte order (uppercase first).
         _ = try make(models: (0..<32).map { named(String(format: "m%02d", $0)) })
-        // The decoder applies the same bound: 32 models decode, 33 do not.
-        func encoded(_ count: Int) throws -> Data {
-            var object = try JSONSerialization.jsonObject(with: facts.canonicalBytes()) as! [String: Any]
-            let model = (object["models"] as! [[String: Any]])[0]
-            object["models"] = (0..<count).map { index -> [String: Any] in
-                var copy = model; copy["model"] = String(format: "m%02d", index); return copy
-            }
-            return try JSONSerialization.data(withJSONObject: object)
-        }
-        #expect(try ClusterRuntimeApprovalFacts(canonical: encoded(32), releaseVersion: Self.releaseVersion).models.count == 32)
-        #expect(throws: ClusterConfigurationError.self) {
-            try ClusterRuntimeApprovalFacts(canonical: encoded(33), releaseVersion: Self.releaseVersion)
-        }
         _ = try make(models: [named(" " + String(repeating: "~", count: 127))])
         _ = try make(models: [named("Z"), named("a")])
     }
@@ -239,111 +161,6 @@ struct ClusterRuntimeApprovalFactsTests {
         }
     }
 
-    @Test func releaseChoosesTheCandidateTheWorkerDescribesAsEachListedModel() throws {
-        let f = try Fixture()
-        let candidates = f.root.appendingPathComponent("candidates", isDirectory: true)
-        _ = try f.model("0-refused", parent: candidates, refused: true)
-        _ = try f.model("1-accepted", parent: candidates)
-        _ = try f.model("2-later", parent: candidates)
-        let listed = ClusterRuntimeApprovalFacts.ReleaseModel(runtimeModelID: "registered_qwen35_9b", artifactSHA256: Self.qwenArtifact)
-        let facts = try ClusterRuntimeApprovalFacts.release(installation: f.installation,
-            candidates: try ClusterRuntimeApprovalFacts.candidates(in: candidates), required: ["Qwen3.5-9B"], models: [listed])
-        #expect(facts.models.map(\.model) == ["Qwen3.5-9B"])
-        // The refused candidate was tried, the accepted one chosen, the rest not run.
-        #expect(try f.calls().count == 2)
-        #expect(try f.calls().last?.contains("1-accepted") == true)
-    }
-
-    @Test func releaseNamesEveryModelItCannotDescribeAndEveryRequiredModelItLacks() throws {
-        let f = try Fixture()
-        let candidates = f.root.appendingPathComponent("candidates", isDirectory: true)
-        _ = try f.model("refused", parent: candidates, refused: true)
-        let all = try ClusterRuntimeApprovalFacts.candidates(in: candidates)
-        let qwen = ClusterRuntimeApprovalFacts.ReleaseModel(runtimeModelID: "registered_qwen35_9b", artifactSHA256: Self.qwenArtifact)
-        let absent = ClusterRuntimeApprovalFacts.ReleaseModel(runtimeModelID: "registered_glm53_flash",
-                                                              artifactSHA256: ClusterGLMImageCandidate.artifactSHA256)
-        func message(_ body: () throws -> Void) -> String {
-            do { try body(); return "" } catch { return String(describing: error) }
-        }
-        let refused = message { _ = try ClusterRuntimeApprovalFacts.release(installation: f.installation, candidates: all,
-                                                                             required: [], models: [qwen, absent]) }
-        #expect(refused.contains("registered_qwen35_9b") && refused.contains("refused/manifest.json"))
-        #expect(refused.contains("registered_glm53_flash") && refused.contains("no candidate folder has this artifact"))
-
-        _ = try f.model("accepted", parent: candidates)
-        let another = ClusterRuntimeApprovalFacts.ReleaseModel(runtimeModelID: "registered_other", artifactSHA256: Self.qwenArtifact)
-        let foreign = message { _ = try ClusterRuntimeApprovalFacts.release(installation: f.installation,
-            candidates: try ClusterRuntimeApprovalFacts.candidates(in: candidates), required: [], models: [another]) }
-        #expect(foreign.contains("is registered_qwen35_9b"))
-
-        let lacking = message { _ = try ClusterRuntimeApprovalFacts.release(installation: f.installation,
-            candidates: try ClusterRuntimeApprovalFacts.candidates(in: candidates), required: ["Qwen3.5-9B", "glm-5.3-flash"],
-            models: [qwen]) }
-        #expect(lacking.contains("lack required models: glm-5.3-flash"))
-        #expect(!lacking.contains("Qwen3.5-9B"))
-    }
-
-    /// glm-5.3-flash is hard-required like Qwen3.5-9B: the worker refusing
-    /// every GLM candidate fails the release (the call the CLI makes), and the
-    /// release fails when either required model is missing.
-    @Test func releaseFailsWhenTheWorkerRefusesGLMAndRequiresBothModels() throws {
-        let f = try Fixture()
-        let candidates = f.root.appendingPathComponent("candidates", isDirectory: true)
-        _ = try f.model("qwen", parent: candidates)
-        _ = try f.model("glm", parent: candidates, fixture: "registered-qwen38-27b", refused: true)
-        let all = try ClusterRuntimeApprovalFacts.candidates(in: candidates)
-        let qwen = ClusterRuntimeApprovalFacts.ReleaseModel(runtimeModelID: "registered_qwen35_9b", artifactSHA256: Self.qwenArtifact)
-        let glm = ClusterRuntimeApprovalFacts.ReleaseModel(runtimeModelID: "registered_glm53_flash",
-                                                           artifactSHA256: try Self.aggregate(of: "registered-qwen38-27b"))
-        let required = ["Qwen3.5-9B", "glm-5.3-flash"]
-        func failure(_ models: [ClusterRuntimeApprovalFacts.ReleaseModel]) -> String {
-            do { _ = try ClusterRuntimeApprovalFacts.release(installation: f.installation, candidates: all, required: required, models: models); return "" }
-            catch { return String(describing: error) }
-        }
-        let refused = failure([qwen, glm])
-        #expect(refused.contains("registered_glm53_flash") && refused.contains("glm/manifest.json"))
-        #expect(!refused.contains("registered_qwen35_9b ("))
-        #expect(failure([qwen]).contains("lack required models: glm-5.3-flash"))
-        #expect(failure([]).contains("lack required models: Qwen3.5-9B, glm-5.3-flash"))
-        // Qwen alone is described: only the GLM requirement fails above.
-        let facts = try ClusterRuntimeApprovalFacts.release(installation: f.installation, candidates: all,
-                                                            required: ["Qwen3.5-9B"], models: [qwen])
-        #expect(facts.models.map(\.model) == ["Qwen3.5-9B"])
-    }
-
-    @Test func releaseModelsComeFromPassingRecordsOfModelsWithAStageAdapter() throws {
-        let bundled = ClusterRuntimeApprovalFacts.releaseModels
-        for required in [ClusterRuntimeApprovalFacts.ReleaseModel(runtimeModelID: "registered_qwen35_9b", artifactSHA256: Self.qwenArtifact),
-                         .init(runtimeModelID: "registered_glm53_flash", artifactSHA256: ClusterGLMImageCandidate.artifactSHA256)] {
-            #expect(bundled.contains(required))
-        }
-        #expect(bundled == bundled.sorted { ($0.runtimeModelID, $0.artifactSHA256) < ($1.runtimeModelID, $1.artifactSHA256) })
-        #expect(Set(bundled).count == bundled.count)
-
-        let line = try #require(ClusterPairQualificationRecordsBundled.jsonLines.split(separator: "\n")
-            .first { $0.contains("registered_qwen35_9b") && $0.contains(#""passed":true"#) })
-        let base = try JSONSerialization.jsonObject(with: Data(line.utf8)) as! [String: Any]
-        func record(_ change: (inout [String: Any]) -> Void = { _ in }) throws -> ClusterPairQualificationRecord {
-            var object = base; change(&object)
-            return try JSONDecoder().decode(ClusterPairQualificationRecord.self, from: JSONSerialization.data(withJSONObject: object))
-        }
-        let passing = try record()
-        #expect(ClusterRuntimeApprovalFacts.qualifiedModels(records: [passing])
-                == [.init(runtimeModelID: "registered_qwen35_9b", artifactSHA256: Self.qwenArtifact)])
-        let excluded: [(String, ClusterPairQualificationRecord)] = [
-            ("no stage adapter", try record { $0["runtimeModelID"] = "registered_unknown_model" }),
-            ("diverged", try record { object in
-                var comparisons = object["comparisons"] as! [[String: Any]]
-                comparisons[0]["verdict"] = "diverged"; comparisons[0].removeValue(forKey: "gapInULPs")
-                object["comparisons"] = comparisons; object["passed"] = false
-            }),
-            ("inconsistent", try record { $0["schema"] = "another_schema" }),
-        ]
-        for (label, excludedRecord) in excluded {
-            #expect(ClusterRuntimeApprovalFacts.qualifiedModels(records: [excludedRecord]).isEmpty, "\(label)")
-        }
-    }
-
     @Test func commandLineFormsParseOrRefuse() throws {
         let directory = try ClusterRuntimeApprovalFacts.modelArgument("Qwen3.5-9B=/models/qwen")
         #expect(directory.model == "Qwen3.5-9B")
@@ -353,21 +170,6 @@ struct ClusterRuntimeApprovalFactsTests {
         for text in ["no-equals", "=/m", "id=", "id=/a,", "id=,/b", "id=/a,/b,/c"] {
             #expect(throws: ClusterConfigurationError.self, "\(text)") { _ = try ClusterRuntimeApprovalFacts.modelArgument(text) }
         }
-
-        let f = try Fixture()
-        let folder = f.root.appendingPathComponent("listing", isDirectory: true)
-        for name in ["b", "a", ".hidden"] {
-            try FileManager.default.createDirectory(at: folder.appendingPathComponent(name), withIntermediateDirectories: true)
-        }
-        #expect(try ClusterRuntimeApprovalFacts.candidates(in: folder).map { $0.manifest.deletingLastPathComponent().lastPathComponent } == ["a", "b"])
-        #expect(throws: ClusterConfigurationError.self) { _ = try ClusterRuntimeApprovalFacts.candidates(in: f.root.appendingPathComponent("none")) }
-    }
-
-    /// The catalog aggregate a metadata fixture's manifest names.
-    static func aggregate(of fixture: String) throws -> String {
-        let data = try Data(contentsOf: Fixture.metadataFixtures.appendingPathComponent("\(fixture).manifest.json"))
-        let object = try JSONSerialization.jsonObject(with: data) as? [String: Any]
-        return try #require(object?["aggregate_sha256"] as? String)
     }
 
     /// Facts with three models (byte order: uppercase before lowercase), for the codec rows.
@@ -435,10 +237,9 @@ private struct Fixture {
 
     /// One model folder: a pinned fixture's config.json and manifest.json (or
     /// replacements), and the capability the runtime catalog describes for them.
-    func model(_ name: String, parent: URL? = nil, fixture: String = "registered-qwen35-9b", capabilityFixture: String? = nil,
-               workerSHA256: String? = nil, imageCandidate: Bool = false, manifest: Data? = nil, modelID: String? = nil,
-               refused: Bool = false) throws -> URL {
-        let folder = (parent ?? root.appendingPathComponent("models", isDirectory: true)).appendingPathComponent(name, isDirectory: true)
+    func model(_ name: String, fixture: String = "registered-qwen35-9b", capabilityFixture: String? = nil,
+               workerSHA256: String? = nil, imageCandidate: Bool = false, manifest: Data? = nil, modelID: String? = nil) throws -> URL {
+        let folder = root.appendingPathComponent("models", isDirectory: true).appendingPathComponent(name, isDirectory: true)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         func read(_ fixture: String, _ kind: String) throws -> Data {
             try Data(contentsOf: Self.metadataFixtures.appendingPathComponent("\(fixture).\(kind).json"))
@@ -459,7 +260,6 @@ private struct Fixture {
             : ClusterResidentModelCatalog.describe(configuration: read(source, "configuration"),
                 manifest: read(source, "manifest"), runtimeBinarySHA256: pin)
         try ClusterRuntimeCapabilityCodec.encode(capability).write(to: folder.appendingPathComponent("capability.out"))
-        if refused { try Data().write(to: folder.appendingPathComponent("refuse")) }
         return folder
     }
 

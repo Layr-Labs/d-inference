@@ -92,7 +92,8 @@ extension Cluster.Setup {
         // Degraded serving on this Mac alone (failover): the ordinary single-Mac local server with this Mac's own
         // configuration and identity; the cluster service adds the model and the port.
         return ClusterService.Settings(wizard: wizard, leaderArguments: wizard.sessionArguments, followerArguments: wizard.followerSessionArguments,
-            soloArguments: ["start", "--local"] + (config.map { ["--config", $0] } ?? []))
+            soloArguments: ["start", "--local"] + (config.map { ["--config", $0] } ?? []),
+            memberArguments: ["start", "--foreground", "--cluster-member"] + (config.map { ["--config", $0] } ?? []))
     }
 
     /// Pure CLI-to-live-settings binding, before creating stores, services or children.

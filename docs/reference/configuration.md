@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-10-28
+> Last updated: 2026-10-29
 
 Provider CLI and native-runtime environment variables, compiled defaults and reading symbols. Secrets are named, never valued. Unless specified otherwise, values are read at process start.
 
@@ -914,18 +914,20 @@ policy, and their SHA-256 is the `policy_sha256` it registers
 different policy: members that installed the old one are no longer offered a
 pair.
 
-### Cluster runtime facts of a dev release
+### Cluster runtime facts
 
-A dev release carries `cluster_runtime` in its `POST /v1/releases` payload: the
-facts of its final signed app from which the dev coordinator derives cluster
-approvals. Only the dev release lane computes it, on the signing runner after
-signing, with no secret in the step
-([release lane](../operations/provider-release.md#dev-cluster-runtime-facts)).
-A prod or staging payload never carries it, so only the dev coordinator
-receives it. One type computes every value:
+The cluster runtime facts are the digests of one installed app's cluster
+helpers and, for each model, of the capability its own worker describes. The
+coordinator operator copies them into a cluster approval in the operator
+approval file. After the Test stage, the guided setup reads the approvals the
+coordinator serves (`GET /v1/cluster/approvals`) and takes the one whose
+digests equal this Mac's facts
+([coordinator-paired member](#coordinator-paired-member)), and each member
+checks it against its own installed files with the same computation. One type computes every value:
 `provider-swift/Sources/ProviderCore/Config/ClusterRuntimeApprovalFacts.swift`
-(`ClusterRuntimeApprovalFacts`), run as the hidden command
-`darkbloom cluster runtime-facts`. No value is typed by hand.
+(`ClusterRuntimeApprovalFacts`). The hidden command
+`darkbloom cluster runtime-facts --app <app> --model <id>=<folder>` prints them
+in their canonical form. No value is typed by hand.
 
 | Field | Value |
 |---|---|
@@ -934,18 +936,16 @@ receives it. One type computes every value:
 | `metallib_sha256` | SHA-256 of `Contents/Helpers/mlx.metallib` |
 | `resource_library_sha256` | SHA-256 of `Contents/Helpers/pagedattention.metal` |
 | `placement_policy_sha256` | SHA-256 of the signed `Contents/Helpers/darkbloom-cluster-plan` |
-| `models` | 1 to 32 entries (`ClusterRuntimeApprovalFacts.maximumModels`), sorted by `model` in byte order, unique; two approvals per model fit the coordinator's 64-entry catalog |
+| `models` | 1 to 32 entries, sorted by `model` in byte order, unique |
 | `models[].model` | the catalog model ID the manifest names (`model_id`); 1 to 128 printable ASCII bytes |
 | `models[].artifact_sha256` | the capability's `artifactSHA256`, the catalog aggregate |
 | `models[].capability_sha256` | SHA-256 of the exact output of `darkbloom-cluster-worker --describe-runtime` |
 | `models[].profile_sha256` | the capability's `profileFingerprint` |
 | `models[].resource_policy_sha256` | `DistributedInstalledNativeStart.resourcePolicySHA256` of the capability, the value a native start carries |
 
-Every digest is 64 lowercase hex and nonzero. Unknown and missing fields are
-refused. The canonical form is JSON with sorted keys and no whitespace.
-`scripts/provider-release-publication.py` checks the block but computes no
-digest. Why each digest is the one a member compares:
-[cluster runtime facts of a build](../architecture/inference.md#cluster-runtime-facts-of-a-build).
+Every digest is 64 lowercase hex and nonzero. The canonical form is JSON with
+sorted keys and no whitespace. Why each digest is the one a member compares:
+[cluster runtime facts of an installed app](../architecture/inference.md#cluster-runtime-facts-of-an-installed-app).
 
 ### Sharded placement and the hand-off opt-in
 
@@ -1006,6 +1006,38 @@ with an optional `nativeMember` object and runs `darkbloom start
 selector matches the two registrations itself (see
 [pair formation](cluster-control-protocol.md#pair-formation)).
 
+**Automatic (guided setup).** The coordinator operator adds a cluster approval
+by hand to the operator approval file
+([`EIGENINFERENCE_CLUSTER_PAIR_CATALOG`](#experimental-cluster-pairs)), with the
+digests that `darkbloom cluster runtime-facts --app <app> --model
+<id>=<config>,<manifest>` prints ([cluster runtime facts](#cluster-runtime-facts)).
+The coordinator serves the loaded entries. After the Test stage of
+`darkbloom cluster` passes, the control leader takes the entry for this pair and
+saves it on both Macs. The cluster service then runs each Mac's part as
+`darkbloom start --foreground --cluster-member`
+(`provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/ClusterService.swift`,
+`memberArguments`). Pairs are owner-only.
+
+| Step | Rule | Source |
+|---|---|---|
+| Fetch | `GET <coordinator>/v1/cluster/approvals`, no query, no credential; HTTPS only (plain HTTP only to this Mac's loopback); no redirect; at most `maximumBytes = 512 * 1024` bytes and `maximumApprovals = 128` entries; `timeoutSeconds = 10`. The body is `darkbloom_cluster_catalog_v2` with `cluster_approvals`; one unknown, missing or malformed field refuses the whole answer. 404 (pair control off: production, staging) and every failure mean no approval. A read error after an HTTP answer is an answer that cannot be used, not "no answer" | `provider-swift/Sources/ProviderCore/Inference/Distributed/Membership/ClusterApproval/ClusterApprovalFetch.swift` (`ClusterApprovalFetch`) |
+| Match | The entry whose `model` is the setup's `publicModelID`, whose `schedule` is its prefill schedule (`1` serial, `2` one-chunk lookahead), that is still current, and whose eight digests all equal this Mac's own cluster runtime facts (computed from the helpers beside the setup's worker and the setup's model folder); latest `not_after` first. An entry for another build or another copy of the model does not match | `provider-swift/Sources/ProviderCore/Inference/Distributed/Membership/ClusterApproval/ClusterApprovalLifetime.swift` (`select`) |
+| Check | On each Mac, against its own files: every digest (`ClusterApprovalAttachment.mismatches`); the member's own start refusals (`requireLocalRankGranted`); the roster of this Mac's pairing (S17); `validate` below | `provider-swift/Sources/ProviderCore/Inference/Distributed/Membership/ClusterApproval/ClusterApprovalAttachment.swift` (`attachment`) |
+| Save | Both parts stop. The leader checks the entry, sends it to the other Mac over the cable (service command `approval`), and saves it only after the other Mac checked and saved it. A refusal on either Mac saves it on neither. Both parts then start as cluster members | `provider-swift/Sources/ProviderCore/Inference/Distributed/Membership/ClusterApproval/ClusterApprovalSync.swift` (`run`, `receive`) |
+| When | After the guided setup's Test stage passed (control operation `register`, run by the control leader: `OnboardingLive.localRegister`), once at each start of the control leader's cluster service and after an update re-adopted the setups, and every minute while a serving pair is offered or has its approval kept aside (`ClusterService.checkApproval`). A local-only cluster never asks (`ClusterApprovalSync.asks`) | as named |
+| Lifetime | A saved approval with more than `renewWithinSeconds = 86_400` left is kept. Within that day a later matching entry replaces it. An ended one is removed: each Mac saves its setup without it before its part starts, and its part then serves on the leader's local API (`ClusterService.supervise`) | `ClusterApprovalLifetime.decide` |
+| Serve locally | Both Macs save their setups without the approval, the other Mac first, and the pair serves on the leader's local API, when: no request gets an HTTP answer for the absence grace (`ClusterService.soloGraceSeconds`: 600 s; `DARKBLOOM_DEBUG_CLUSTER_SOLO_GRACE_SECONDS` in a development build); the coordinator answers (a 404, or a list) without the saved approval and serves no other matching entry; or either Mac's coordinator-paired parts ended `ClusterControlSoloAdmission.maximumQuickEnds = 3` times in a row right after starting (each Mac's status, `memberQuickEnds`; an end because the coordinator was out of reach is not counted). When either Mac cannot save, both keep the approval and the next check tries again. The leader keeps the approval and the reason in its setup record (`approvalSetAside`). When an answer lists a matching entry, the pair is registered again through the Save step; after repeated failures, only a later entry | `ClusterApprovalCheck.step`, `ClusterApprovalSync.serveLocally`; `ClusterService.checkApproval` |
+| Both or neither | A send whose reply is lost may come after the other Mac saved: the leader gives it its setup back. Each Mac's status names its saved cluster approval (`approvalID`). On every check the leader compares it with its own; while they differ, it gives the other Mac its approval (while offered) or none, and when the other Mac refuses its approval, it saves its own setup without it too | `ClusterApprovalCheck.macsDiffer`, `ClusterApprovalSync.converge` |
+
+A coordinator that answers 404, serves no matching entry or serves only ended
+entries leaves both saved setups byte for byte as they were: nothing is sent
+over the cable and no part stops. `darkbloom cluster local` serves without the
+object (a cluster approval is removed; a pair approval saved by hand stays, and
+the local session refuses beside it, below).
+
+**By hand.** The steps below stay available for an approval file the
+coordinator operator keeps:
+
 1. The coordinator operator adds one entry to the approval file named by
    [`EIGENINFERENCE_CLUSTER_PAIR_CATALOG`](#experimental-cluster-pairs) and
    gives both Mac operators that same entry.
@@ -1024,6 +1056,14 @@ selector matches the two registrations itself (see
 | `ownerSHA256` | string | 64 lowercase hex: SHA-256 of this Mac's `peers[local].ownerExecutable` |
 | `metallibPath`, `resourceLibraryPath` | string | absolute shell-safe paths of the installed files whose digests the approval pins; distinct from each other and from the owner and worker executables |
 | `approval` | object | the coordinator's approval entry, field for field ([fields](#experimental-cluster-pairs)); unknown or missing fields are refused |
+
+The automatic path saves `schema` `darkbloom_cluster_native_member_v2` (the
+roster registration) instead: `ownerSHA256`, `metallibPath` and
+`resourceLibraryPath` as above (the setup worker's `mlx.metallib` and
+`pagedattention.metal`), `clusterApproval` (one `cluster_approvals` entry,
+field for field), `roster` (the roster both Macs countersigned when they
+paired), `memberPins` (the members' pins in rank order) and `edges` (the link
+the serving leader last measured, as `rdma`; omitted when none was measured).
 
 The object is validated when the setup is saved and again whenever it is
 loaded (`provider-swift/Sources/ProviderCore/Config/ClusterNativeMemberAttachment.swift`,
@@ -1050,10 +1090,11 @@ A setup with `nativeMember` cannot run `darkbloom start --local --distributed`
 both owners itself over SSH and would contend with a coordinator-formed pair
 for the same device. Save a setup without the object for a local session.
 
-In this build a paired member declines the coordinator's preparation and no
-pair serves a request; see [provider member
-control](cluster-control-protocol.md#provider-member-control) for the reason
-and for what the member answers.
+A member whose setup reaches the other Mac over the cable (`linkControl`)
+serves the pair's committed starts: the leader hosts the link listener and the
+pair's slot, the follower dials it. A member without `linkControl` declines the
+coordinator's preparation; see [provider member
+control](cluster-control-protocol.md#provider-member-control).
 
 ### Guided link setup
 

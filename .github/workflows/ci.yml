@@ -40,6 +40,7 @@ jobs:
         test-provider macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.changes.outputs.provider == 'true' && 1 || 0 }}
         test-provider-sdk macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.changes.outputs.provider == 'true' && 1 || 0 }}
         test-provider-parity macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.changes.outputs.provider == 'true' && 1 || 0 }}
+        test-cluster-checks macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.changes.outputs.provider == 'true' && 1 || 0 }}
 
   release-integrity:
     name: Release Integrity
@@ -62,7 +63,6 @@ jobs:
           python3 scripts/test-prepare-metal-toolchain.py
           python3 scripts/test-provider-release-pipeline.py
           python3 scripts/test-provider-release-publication.py
-          python3 scripts/test-provider-cluster-runtime-models.py
           python3 scripts/test-release-dev-branch.py
           python3 scripts/test-provider-release-artifact.py
           python3 scripts/test-provider-signing-validation.py
@@ -575,6 +575,45 @@ jobs:
       - name: Verify pinned Nemotron prompts and numeric cache plans
         if: ${{ !cancelled() && steps.provider-ci-build.outcome == 'success' }}
         run: ./scripts/verify-nemotron-prompt-parity.sh
+
+  test-cluster-checks:
+    # The model-free cluster check runners. Each compiles its own source closure
+    # (the capability runner links the actual Runtime and MLX, but executes only
+    # metadata and argument checks) and runs it on the retained fixtures: no GPU,
+    # no model load, no weights. Every runner runs even after another fails.
+    name: Cluster Metadata Checks
+    needs: [changes, route]
+    if: ${{ needs.changes.outputs.provider == 'true' }}
+    runs-on: ${{ fromJSON(needs.route.outputs.routes)['test-cluster-checks'] }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          submodules: recursive
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12.10'
+      - name: Select SDK 27 provider toolchain
+        id: toolchain
+        run: ./scripts/prepare-provider-release-toolchain.sh
+      - name: Run worker capability checks
+        if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
+        run: bash libs/darkbloom-cluster-worker/Tests/CapabilityChecks/run.sh
+      - name: Run stage metadata checks
+        if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
+        run: python3 libs/darkbloom-cluster/Tests/StageMetadataChecks/run.py --output "$RUNNER_TEMP/stage-metadata-checks"
+      - name: Run GPT-OSS stage checks
+        if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
+        run: bash libs/darkbloom-cluster/Tests/GPTOSSStageChecks/run.sh
+      - name: Run Nemotron stage checks
+        if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
+        run: bash libs/darkbloom-cluster/Tests/NemotronStageChecks/run.sh
+      # The download cache-policy check of the same runner stays on a Mac: on the
+      # hosted VM, 0.75 of the pages written with F_NOCACHE stayed resident
+      # (run 40804083002), which the VM's kernel and disk decide, not the code.
+      - name: Run cluster model provisioning checks
+        if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
+        run: bash provider-swift/Tests/ClusterModelProvisioningChecks/run.sh provisioning
 
   provider-test-gate:
     name: Provider Tests

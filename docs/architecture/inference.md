@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-10-28
+> Last updated: 2026-10-29
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -224,7 +224,16 @@ and `libs/darkbloom-cluster/Sources/DarkbloomClusterPlacement/ClusterPlacementBa
 
 `ClusterOnboardingDriver` presents connection, pairing, model choice, startup
 and a test response as five stages. Completion requires the test response to
-succeed; a failed response retains the saved setup for a later retry.
+succeed; a failed response retains the saved setup for a later retry. After
+the test response succeeds, the control leader registers the pair with the
+coordinator when the coordinator serves a cluster approval for this pair
+(`ClusterOnboardingDriver.register`, control operation `register`). Both parts
+then run as coordinator-paired members
+(`ClusterService.Settings.memberArguments`), which have no local API, and the
+ready screen shows the registered line (`ClusterOnboardingReady.offered`,
+`OnboardingLive.offeredReadiness`). How the approval is fetched, matched,
+checked on each Mac and saved:
+[coordinator-paired member](../reference/configuration.md#coordinator-paired-member).
 `OnboardingLive` uses fresh peer display facts only while their authenticated
 member identity matches the current pairing. These labels do not rewrite saved
 serving intent or change model eligibility and placement. See the
@@ -4427,6 +4436,47 @@ record or serving grant for the other: `ClusterPairServingDecisions` in
 `provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledPairServingGrant.swift`
 continues to scope decisions by runtime identity and artifact.
 
+### Registered manifest pins
+
+Each registered cluster model pins the SHA-256 of its manifest's exact bytes
+(`manifestSHA256` in the model's registered specification under
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/`, and
+`PromptTokenizer.registeredManifests` in
+`libs/darkbloom-cluster-worker/Sources/DarkbloomClusterPrompt/PromptTokenizer.swift`).
+The pinned bytes are the model CDN's `manifest.json` at the catalog row's
+`r2_prefix`. Every build environment reads the same CDN
+(`BuildEnvironment.modelCDNURL`), so the bytes are the same on production,
+staging and DevNet. The coordinator's
+`/v1/models/catalog/manifest/{id}` answer names the same files, but its
+`created_at` is the time of each environment's own registration, so its bytes
+are different on each environment and are not a pin.
+
+The product's download keeps only a re-encoded receipt
+(`.darkbloom-manifest.json`, `ModelDownloader.writeRevisionReceipt`). When a
+model is cloned into the cluster store, `ClusterProductModelStore.catalogManifest`
+in `provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/ClusterModelProvisioningStore.swift`
+fetches the CDN's file first and writes the first encoding this Mac's worker
+describes as `manifest.json`. A copy over the cable sends those same bytes, and
+the receiving Mac's worker checks them before the folder is renamed into place.
+
+A folder whose manifest this Mac's worker refuses, for example a folder that
+was copied over the cable before a pin change, is repaired by
+`ClusterProductModelStore.repairStoreManifests`. Each Mac runs it after the
+clone-in when its setup report lists the models, and the leader runs it before
+it plans (`ClusterProductModelStore.updateClusterStore`). It fetches the
+published manifest in the same order and replaces `manifest.json` atomically
+only when the fetched bytes name the same model, version, aggregate and files
+(`ClusterCatalogArtifact.sameArtifact`) and the worker describes them. It never
+writes the weight files. When nothing answers, or the worker refuses the
+fetched bytes, the folder is unchanged and the next attempt for it comes
+`ClusterOnboardingUpdate.checkEverySeconds` (60 s) later. When the bytes name
+other files or another catalog entry, the folder is unchanged, the worker
+refuses it, and the provider does not ask for it again until it restarts.
+A setup report spends at most `ClusterSetupOperations.reportRepairSeconds`
+(10 s) on repairs, so the Mac still answers the other Mac's question within
+`ClusterSetupOperations.peerSeconds` (30 s). Folders left over are repaired on
+the next report or before the next plan.
+
 
 ## GPT-OSS independent-history batch forward
 
@@ -5105,12 +5155,13 @@ The exact registered Qwen3.8 27B dense adapter/profile requires images, video an
 
 New saves and installed startup enforce the same mode rule. Old pipeline records remain strictly readable so ordinary onboarding can replan them; startup explains that replan is required. If the current measured link, supported shape or memory cannot admit tensor parallel, no reduced-feature setup is produced. After LOAD, the actual owner identity/profile, Qwen media READY contract and logprob execution profile must match before `DistributedEngineFactory.makeBridge` constructs the serving bridge. No artifact digest, shape or READY check is bypassed. This mode policy does not add grammar constraints or change JSON/schema post-validation; standalone model behavior remains the reference for those capabilities.
 
-## Cluster runtime facts of a build
+## Cluster runtime facts of an installed app
 
 A coordinator-formed cluster session is admitted when its committed native start
-matches the approval each member installed. A dev release supplies the digests
-of such an approval from its own final signed app, so that no person types them
-([block format](../reference/configuration.md#cluster-runtime-facts-of-a-dev-release)).
+matches the approval each member installed. The guided setup registers the
+digests of such an approval from the installed app and the chosen model, so
+that no person types them
+([fields](../reference/configuration.md#cluster-runtime-facts)).
 
 1. The file digests (worker, metallib, paged-attention source, placement tool)
    come from `DistributedInstalledFiles.digest`. `DistributedInstalledFiles.verify`,

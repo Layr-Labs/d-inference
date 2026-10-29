@@ -5,7 +5,7 @@ import Foundation
 /// A TERM records the request; a private gate lets the test finish retirement.
 func memberFixtureServicePart(arguments: [String]) throws {
     guard arguments.count >= 3, arguments[0] == "--service-part-fixture",
-          arguments[1].hasPrefix("/"), ["leftover", "replacement"].contains(arguments[2]) else {
+          arguments[1].hasPrefix("/"), ["leftover", "replacement", "leader", "member"].contains(arguments[2]) else {
         throw MemberFixtureError.invalid
     }
     let directory = URL(fileURLWithPath: arguments[1], isDirectory: true)

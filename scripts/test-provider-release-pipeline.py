@@ -13,7 +13,6 @@ CALLER = (ROOT / '.github/workflows/release-swift.yml').read_text()
 RELEASE = (ROOT / '.github/workflows/release-provider.yml').read_text()
 WARM = (ROOT / '.github/workflows/provider-release-cache.yml').read_text()
 ACTION = (ROOT / '.github/actions/provider-release-build/action.yml').read_text()
-FACTS_SCRIPT = (ROOT / 'scripts/provider-cluster-runtime-facts.sh').read_text()
 
 
 def caller_lanes():
@@ -178,7 +177,12 @@ class ReleasePipelineTests(unittest.TestCase):
     def test_only_the_release_lane_compiles_the_release_environment(self):
         selector = 'DARKBLOOM_RELEASE_ENVIRONMENT: ${{ needs.resolve-env.outputs.environment }}'
         self.assertIn(selector, job(RELEASE, 'build-provider'))
-        self.assertNotIn('DARKBLOOM_RELEASE_ENVIRONMENT', job(RELEASE, 'qualify-sdk'))
+        qualify = job(RELEASE, 'qualify-sdk')
+        self.assertNotIn(selector, qualify)
+        self.assertEqual(re.findall(r'DARKBLOOM_RELEASE_ENVIRONMENT: (\S+)', qualify), ['prod'])
+        # Named once, in the job-level env: (no step or shell override).
+        self.assertEqual(qualify.count('DARKBLOOM_RELEASE_ENVIRONMENT'), 1)
+        self.assertRegex(qualify, r'(?m)^    env:\n(?:      #.*\n)*      DARKBLOOM_RELEASE_ENVIRONMENT: prod$')
         signing = job(RELEASE, 'build-and-release')
         for output in ['PRE_SIGN_SMOKE_OUTPUT', 'FINAL_SMOKE_OUTPUT']:
             self.assertIn(f'printf \'%s\\n\' "${output}" \\\n'
@@ -417,93 +421,6 @@ class ReleasePipelineTests(unittest.TestCase):
         self.assertIn('Master pushes publish staging only', resolver)
         sign = job(RELEASE, 'build-and-release')
         self.assertIn("needs.resolve-env.result == 'success'", sign)
-
-    def test_dev_cluster_runtime_facts_come_from_the_final_signed_app_without_secrets(self):
-        sign = job(RELEASE, 'build-and-release')
-        name = '- name: Compute dev cluster runtime facts from the final signed app\n'
-        step = sign.split(name, 1)[1].split('\n      - name:', 1)[0]
-        self.assertIn("if: needs.resolve-env.outputs.environment == 'dev'\n", step)
-        # After signing, notarization, the final tar and its hashes; before the
-        # payload is prepared and the keychain is cleaned up.
-        self.assertLess(sign.index('xcrun notarytool submit'), sign.index(name))
-        self.assertLess(sign.index('echo "BUNDLE_HASH=$BUNDLE_HASH"'), sign.index(name))
-        self.assertLess(sign.index(name), sign.index('- name: Prepare exact signed release identity'))
-        self.assertLess(sign.index(name), sign.index('- name: Cleanup keychain'))
-        # No secret: none referenced, the two secret-derived GITHUB_ENV values
-        # and the signing keychain removed before release code runs, which then
-        # runs with an empty environment.
-        self.assertNotIn('secrets.', step)
-        self.assertNotIn('env:', step)
-        first_run = step.index('scripts/provider-cluster-runtime-facts.sh "$FACTS_ROOT/app/$APP_NAME" "$CLI_NAME"')
-        for removal in ('unset r2_public_url coordinator_url', 'security delete-keychain "$KEYCHAIN_PATH"\n',
-                        'test ! -e "$KEYCHAIN_PATH"', 'IDENTITIES=$(security find-identity -p codesigning)',
-                        'if grep -F -q -- "$DEVELOPER_ID" <<< "$IDENTITIES"; then'):
-            self.assertLess(step.index(removal), first_run)
-        # A keychain that cannot be deleted, or an identity still listed, fails the step.
-        self.assertNotIn('|| true', step)
-        self.assertNotIn('2>/dev/null', step)
-        # Every identity, not only valid ones: a revoked or expired key left behind is found too.
-        self.assertNotIn('find-identity -v', step)
-        self.assertLess(step.index('security delete-keychain'), step.index('IDENTITIES='))
-        # The final archived bytes, extracted afresh after their hash is checked.
-        self.assertLess(step.index('= "$BUNDLE_HASH"'), step.index('tar -xzf /tmp/darkbloom-bundle-macos-arm64.tar.gz'))
-        self.assertLess(step.index('tar -xzf /tmp/darkbloom-bundle-macos-arm64.tar.gz'), first_run)
-        self.assertIn('echo "CLUSTER_RUNTIME_FILE=$FACTS_ROOT/facts/cluster-runtime.json" >> "$GITHUB_ENV"', step)
-        # The shared script: the app's CLI only ever runs with an empty
-        # environment, the metadata comes from the fetch script, and both
-        # required models are required.
-        self.assertIn('set -euo pipefail', FACTS_SCRIPT)
-        self.assertEqual(FACTS_SCRIPT.count('/Contents/MacOS/'), 1)
-        self.assertIn('  env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin HOME="$root/home" DARKBLOOM_NO_UPDATE_CHECK=1 \\\n'
-                      '    "$app/Contents/MacOS/$cli" cluster runtime-facts "$@"\n', FACTS_SCRIPT)
-        self.assertLess(FACTS_SCRIPT.index('runtime_facts --list-release-models'),
-                        FACTS_SCRIPT.index('python3 "$scripts/provider-cluster-runtime-models.py"'))
-        self.assertLess(FACTS_SCRIPT.index('python3 "$scripts/provider-cluster-runtime-models.py"'),
-                        FACTS_SCRIPT.index('runtime_facts --app "$app" --release-candidates'))
-        for model in ('Qwen3.5-9B', 'glm-5.3-flash'):
-            self.assertIn('--require-model ' + model, FACTS_SCRIPT)
-        prepare = sign.split('- name: Prepare exact signed release identity\n', 1)[1].split('\n      - name:', 1)[0]
-        self.assertIn('${CLUSTER_RUNTIME_FILE:+--cluster-runtime "$CLUSTER_RUNTIME_FILE"}', prepare)
-        # Only the dev lane computes the file, so prod and staging prepare without it.
-        self.assertEqual(RELEASE.count('CLUSTER_RUNTIME_FILE='), 1)
-
-    def test_pull_requests_describe_the_qualified_models_with_their_built_app(self):
-        # Evidence before merge: the release lane of PR warming runs the release
-        # script on the app it staged and unpacked, never on master or dispatch.
-        name = '- name: Describe the qualified cluster models with the built app\n'
-        steps = WARM.split('\n    steps:\n', 1)[1]
-        step = steps.split(name, 1)[1].split('\n      - name:', 1)[0]
-        self.assertIn("if: matrix.lane == 'release' && github.event_name == 'pull_request'\n", step)
-        self.assertLess(steps.index('provider-signing-validation.py unpack'), steps.index(name))
-        self.assertIn('scripts/provider-cluster-runtime-facts.sh "$ROUNDTRIP/$APP_NAME" "$CLI_NAME"', step)
-        self.assertIn('ROUNDTRIP="$RUNNER_TEMP/verified-roundtrip"', step)
-        self.assertNotIn('continue-on-error', step)
-        # The step runs whenever a pull request changes the facts code or scripts.
-        paths = WARM.split('  pull_request:\n', 1)[1].split('  workflow_dispatch:', 1)[0]
-        for path in ('scripts/provider-cluster-runtime-facts.sh', 'scripts/provider-cluster-runtime-models.py',
-                     'provider-swift/Sources/ProviderCore/Config/ClusterRuntimeApprovalFacts.swift',
-                     'provider-swift/Sources/darkbloom/ClusterRuntimeFactsCommand.swift'):
-            self.assertIn(f"      - '{path}'\n", paths)
-        # A release that changes only the script still triggers the release lanes.
-        for caller in (CALLER, (ROOT / '.github/workflows/release-dev-branch.yml').read_text()):
-            self.assertIn("      - 'scripts/provider-cluster-runtime-facts.sh'\n", caller)
-
-    def test_glm_and_qwen_are_both_hard_required(self):
-        # Any failure of the facts command fails the script, so the step: no
-        # captured exit status, no captured error output, no left-out list.
-        for model in ('Qwen3.5-9B', 'glm-5.3-flash'):
-            self.assertEqual(FACTS_SCRIPT.count('--require-model ' + model), 1)
-        for soft in ('|| status', 'LEFT_OUT', 'left-out', '::warning::', '2>'):
-            self.assertNotIn(soft, FACTS_SCRIPT)
-        self.assertTrue(FACTS_SCRIPT.startswith('#!/usr/bin/env bash\n') and 'set -euo pipefail\n' in FACTS_SCRIPT)
-        # The CLI calls release with no omission reporter and the facts type
-        # has no list of models it may leave out.
-        command = (ROOT / 'provider-swift/Sources/darkbloom/ClusterRuntimeFactsCommand.swift').read_text()
-        facts = (ROOT / 'provider-swift/Sources/ProviderCore/Config/ClusterRuntimeApprovalFacts.swift').read_text()
-        self.assertNotIn('omitted', command)
-        self.assertNotIn('softReleaseModels', facts)
-        for workflow in (RELEASE, WARM):
-            self.assertNotIn('left-out.md', workflow)
 
     def test_dev_and_staging_artifacts_avoid_collision_but_prod_stays_unqualified(self):
         # dev and staging unsigned and publication artifact names carry the

@@ -198,7 +198,7 @@ jobs:
               catalogs[name] = {m['id']: m for m in json.load(open(path, encoding='utf-8'))['models']}
               note(f'catalog {name}: {len(catalogs[name])} models: {" ".join(catalogs[name])}')
 
-          # The build's own qualification records first; this branch's CLI only when the bundle's CLI cannot list them.
+          # The build's own qualification records first, then this branch's CLI; neither when no CLI lists them.
           bundle_cli = next((os.path.join(app, 'Contents/MacOS', n) for n in ('darkbloom-dev', 'darkbloom')
                              if os.access(os.path.join(app, 'Contents/MacOS', n), os.X_OK)), None)
           qualified, qualified_source = None, None
@@ -214,7 +214,10 @@ jobs:
               if qualified is None:
                   qualified, qualified_source = json.loads(out), label
           if qualified is None:
-              raise SystemExit('::error::neither CLI lists the qualified models')
+              # A build without --list-release-models: every model its worker accepts is kept.
+              qualified_source = 'none (no CLI lists the qualified models: every accepted model is kept)'
+              qualified = []
+          filter_qualified = bool(qualified)
           qualified_artifacts = {}
           for item in qualified:
               qualified_artifacts.setdefault(item['artifact_sha256'], []).append(item['runtime_model_id'])
@@ -292,7 +295,7 @@ jobs:
                       record.update(outcome='refused', message=f'{err[-500:]} / {worker_says}')
                       continue
                   record.update(outcome='accepted', entry=json.loads(out)['models'][0])
-                  if model not in chosen and record['qualified_runtime_models']:
+                  if model not in chosen and (record['qualified_runtime_models'] or not filter_qualified):
                       chosen[model] = (config_path, manifest_path)
                       record['chosen'] = True
               for record in results:

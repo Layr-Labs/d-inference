@@ -1,6 +1,6 @@
 # Test Provider And Native Contracts
 
-> Last updated: 2026-10-28
+> Last updated: 2026-10-29
 
 Run isolated Swift, native-resource, public-fixture and landing tests here.
 Backend integration and cross-implementation qualification are platform-owned.
@@ -1064,7 +1064,18 @@ Cluster logic that needs no model or GPU is covered by check runners compiled
 with isolated fixture runners: each `provider-swift/Tests/Cluster*Checks/run.sh`,
 `libs/darkbloom-cluster/Tests/*Checks/run.sh` and
 `libs/darkbloom-cluster-worker/Tests/*Checks/run.sh` prints its pass count and
-exits non-zero on a failure. The library's XCTest targets
+exits non-zero on a failure. The CI job `test-cluster-checks` (Cluster Metadata
+Checks, `.github/workflows/ci.yml`) runs five of them on every pull request that
+changes provider code: `libs/darkbloom-cluster-worker/Tests/CapabilityChecks/run.sh`,
+`libs/darkbloom-cluster/Tests/StageMetadataChecks/run.py`,
+`libs/darkbloom-cluster/Tests/GPTOSSStageChecks/run.sh`,
+`libs/darkbloom-cluster/Tests/NemotronStageChecks/run.sh` and
+`provider-swift/Tests/ClusterModelProvisioningChecks/run.sh provisioning`. The
+last one runs the provisioning checks only. Its download cache-policy check
+reads how many written pages stay in the file cache, which the host's kernel
+and disk decide: on the hosted CI VM 0.75 of the pages written with
+`F_NOCACHE` stayed resident. Run `run.sh` with no argument on a Mac for that
+check. The library's XCTest targets
 (`swift test --package-path libs/darkbloom-cluster`) and the worker package's
 tests (built for macOS 26.2) need the GPU and exclusive device access. A
 loopback or fixture pass never counts as a two-Mac hardware pass.
@@ -1245,7 +1256,6 @@ make changelog-check
 python3 scripts/test-provider-release-resolution.py
 python3 scripts/test-provider-release-resume.py
 python3 scripts/test-provider-release-publication.py
-python3 scripts/test-provider-cluster-runtime-models.py
 python3 scripts/test-release-dev-branch.py
 python3 scripts/test-provider-release-pipeline.py
 python3 scripts/test-provider-release-artifact.py
@@ -1281,18 +1291,7 @@ prove Apple runtime behavior.
 with verbatim annotations, including multiline opening paragraphs, extra blank
 lines, CRLFs and synthetic SSH/PGP signature armor. It checks exact retained note
 text and payload/provenance digest guards without invoking signing or live
-publication. Its cluster runtime rows check that a dev payload carries a valid
-`cluster_runtime`, that a malformed or missing block is refused for dev, that
-prod and staging refuse one, and that the prod payload bytes are unchanged.
-`scripts/test-provider-cluster-runtime-models.py` runs the release's
-model-metadata fetch against a local HTTP registry: candidate selection, the
-manifest and `config.json` checks, retries and refusals. It reads no weights and
-uses no network.
-`scripts/provider-cluster-runtime-facts.sh` has no fake-driven test: the step
-`Describe the qualified cluster models with the built app` of the pull-request
-release build runs it on the real built app against the public model registry.
-The `SDK 27 release` check therefore reads the dev and prod model catalogs and the
-model CDN over the network.
+publication.
 
 `scripts/test-provider-release-pipeline.py` and
 `scripts/test-provider-release-resolution.py` pin the routing of

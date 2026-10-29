@@ -48,7 +48,8 @@ extension ClusterOnboardingOperations {
             afterRestart: { live.afterRestart() },
             saveDiagnostics: { live.saveDiagnostics() },
             developerNotice: { ClusterForcedModeSetting.notice(environment: ProcessInfo.processInfo.environment) },
-            setScope: { live.setScope($0) })
+            setScope: { live.setScope($0) },
+            register: { live.register() })
     }
 }
 
@@ -283,6 +284,7 @@ final class OnboardingLive: @unchecked Sendable {
         case .scope:
             guard let scope = request.scope else { return lines(.failure(.init("No way of serving was named, or its address is not one the API takes."))) }
             return lines(localSetScope(scope))
+        case .register: return lines(localRegister())
         }
     }
 
@@ -616,10 +618,9 @@ final class OnboardingLive: @unchecked Sendable {
         let store = URL(fileURLWithPath: context.modelsDirectory() ?? ClusterModelStoreLocation.defaultDirectory().path)
         // Models' pages stay in the file cache: the plan judges each Mac by what its load gate counts, which is all
         // of the cache (58d7371a, de782ff1), and the start that follows reads the cached part at memory speed.
-        for installed in ClusterProductModelStore.installed() where ClusterModelCopyTrust.servableArtifacts.contains(installed.artifact.aggregateSHA256) {
-            _ = try? ClusterProductModelStore.cloneIntoClusterStore(installed, store: store, providerConfiguration: settings.service.wizard.providerConfiguration,
-                                                                    accepts: context.workerAcceptsManifest)
-        }
+        // Folders copied over the cable (no receipt on this Mac) are repaired before the plan describes them.
+        ClusterProductModelStore.updateClusterStore(store, providerConfiguration: settings.service.wizard.providerConfiguration,
+                                                    accepts: context.workerAcceptsManifest)
         switch context.plan(peer: peer, keeping: keeping) {
         case .failed(let reason): return .failure(.init("Planning failed: \(reason)"))
         case .ready(let options):
@@ -1094,6 +1095,41 @@ final class OnboardingLive: @unchecked Sendable {
         return .success(lines + result.lines)
     }
 
+    /// After the Test stage passed: registers the pair with the coordinator as a cluster member when the coordinator
+    /// serves a cluster approval whose digests are this Mac's own facts (`ClusterApprovalSync`), on the control leader.
+    func register() -> Result<[String], ClusterOnboardingFailure> {
+        routed(.init(op: .register), seconds: 900, acting: true, local: { localRegister() }) { $0.lines }
+    }
+
+    /// The leader's half of `register`. A local-only cluster never asks; a coordinator that serves no matching entry
+    /// (404, none listed, any failure) changes nothing and stops nothing. Otherwise both parts stop (each save needs
+    /// its device journal empty), each Mac checks the entry against its own files and saves it, the other Mac first,
+    /// and both parts start again as cluster members.
+    func localRegister() -> Result<[String], ClusterOnboardingFailure> {
+        guard leadership?.scope.isLocalOnly != true else { return .success([]) }
+        let providerConfiguration = settings.service.wizard.providerConfiguration
+        guard let saved = try? ClusterApprovalAttachment.savedSetup(paths: context.paths, providerConfiguration: providerConfiguration),
+              let fetched = ClusterApprovalFetch.fetchBlocking(providerConfiguration: providerConfiguration),
+              case .save(let approval) = ClusterApprovalSync.decision(saved: saved, fetched: fetched, now: Date().timeIntervalSince1970,
+                                                                         facts: ClusterApprovalAttachment.installedFacts) else {
+            return .success([])
+        }
+        if case .failure(let failure) = localStop() { return .failure(failure) }
+        guard drained(seconds: 300) else {
+            // The services start the parts again by themselves, with the setups as they were.
+            try? store.updateRecord { $0.leadership?.serving = true }
+            return .failure(.init("A part did not stop within 5 minutes, so the cluster was not registered with the coordinator."))
+        }
+        let result = ClusterApprovalSync.run(fetched: .approvals([approval]), paths: context.paths,
+            providerConfiguration: providerConfiguration, pairingStore: .default(home: context.paths.homeDirectory),
+            scratch: store.paths.directory, now: Date().timeIntervalSince1970) { request in
+            _ = try command(request, seconds: 180)
+        }
+        if let note = result.note { try? store.updateRecord { $0.approvalNote = note } }
+        if case .failure(let failure) = localServe() { return .failure(.init((result.line.map { [$0 + "."] } ?? []) + failure.lines)) }
+        return .success(result.line.map { [$0 + "."] } ?? [])
+    }
+
     /// Both Macs' parts ended (this Mac's service publishes its own; the other Mac's is asked over the link).
     func drained(seconds: Double) -> Bool {
         let deadline = Date().addingTimeInterval(seconds)
@@ -1344,6 +1380,7 @@ final class OnboardingLive: @unchecked Sendable {
         if let updating = published?.updating { return (nil, updating) }
         // Inside the absence grace: not ready, and the line says how long until this Mac serves alone.
         if let control = published?.control, control.mode == "waiting" { return (nil, control.line) }
+        if let offered = offeredLine() { return offeredReadiness(offered, own: published?.child) }
         let now = session()
         var line: String
         if let session = now.session, session.observed {
@@ -1370,14 +1407,43 @@ final class OnboardingLive: @unchecked Sendable {
         return (nil, line)
     }
 
+    /// The offered line when the saved setup carries a current approval and the cluster serves publicly: both Macs
+    /// then run the coordinator-formed pair's members (`ClusterService`, `memberArguments`), with no local API.
+    func offeredLine() -> String? {
+        guard let member = context.savedConfiguration().configuration?.nativeMember,
+              ClusterApprovalLifetime.offers(member, scope: leadership?.scope ?? .publicServing, now: Date().timeIntervalSince1970)
+        else { return nil }
+        return ClusterApprovalLifetime.offeredLine(member)
+    }
+
+    /// Ready once both Macs' members are registered with the coordinator (each part's notice says so).
+    func offeredReadiness(_ offered: String, own: ClusterServiceStatus.Child?) -> (ready: ClusterOnboardingReady?, line: String) {
+        let peer = (try? JSONDecoder().decode(ClusterServiceStatus.self, from: command(.init(op: .status), seconds: 10)))?.child
+        func registered(_ child: ClusterServiceStatus.Child?) -> Bool {
+            child?.running == true && child?.notice == ClusterLocalServing.offeredNotice
+        }
+        if registered(own), registered(peer) {
+            return (.init(servedBy: here, port: 0, deployment: savedDeployment(perspective: true) ?? leadership?.deployment,
+                          offered: offered), "ready")
+        }
+        var line = "registering both Macs with the coordinator for pairing"
+        for (mac, child) in [(hereShort, own), (thereShort, peer)] where child?.running == false {
+            if let end = child?.lastEnd { line += "; \(mac)'s part ended (\(end)\(child?.lastError.map { ": " + $0 } ?? "")) and starts again by itself" }
+        }
+        return (nil, line)
+    }
+
     func testRequest() -> Result<[String], ClusterOnboardingFailure> {
         routed(.init(op: .test), seconds: 240, acting: false, local: { localTestRequest() }) { $0.lines }
     }
 
     func localTestRequest() -> Result<[String], ClusterOnboardingFailure> {
+        let alone = ClusterService.published()?.control?.mode == "alone"
+        // A pair offered for pairing has no local API to send the test request to.
+        if !alone, offeredLine() != nil { return .failure(.init(ClusterOnboardingReady.offeredTestLine)) }
         let text = "Name three colors."
         let answer: ClusterServicePromptAnswer
-        if ClusterService.published()?.control?.mode == "alone" {
+        if alone {
             // Degraded: this Mac serves alone on its own loopback, once its own solo server holds the port.
             guard ClusterService.soloReadiness(ClusterService.published()) == .ready else {
                 return .failure(.init("\(Self.sentence(here)) serves alone, but its solo server is not answering on port \(ClusterService.soloPort) yet."))
@@ -1428,6 +1494,9 @@ final class OnboardingLive: @unchecked Sendable {
         if leadership?.serving != true {
             lines.append("Not serving (stopped)\(leadership?.modelName.map { "; the last model was " + $0 } ?? "").")
             if let scope = leadership?.scope, scope.isLocalOnly { lines.append("When it starts: " + scope.line + ".") }
+        } else if let offered = offeredLine() {
+            let ready = offeredReadiness(offered, own: ClusterService.published()?.child)
+            lines.append((ready.ready?.lines(model: model) ?? ["\(model): \(ready.line)"]).joined(separator: ". ") + ".")
         } else if let session = now.session, session.observed {
             if session.ready {
                 // The deployment first, then where the API is.
@@ -1437,6 +1506,8 @@ final class OnboardingLive: @unchecked Sendable {
                 lines.append(ready.lines(model: model)[0] + ".")
                 lines.append(ready.apiLine + "; \(session.readyRanks) of \(session.ranks) parts ready.")
                 if let notice = ready.noticeLine { lines.append(notice + ".") }
+                // Why the pair serves locally although its coordinator offers a cluster approval (one line).
+                if leadership?.scope.isLocalOnly != true, let note = (try? store.readRecord())?.approvalNote { lines.append(note + ".") }
             } else {
                 lines.append("\(model): \(session.readyRanks) of \(session.ranks) parts ready" + (session.detail.map { " (\($0))" } ?? "") + ".")
             }

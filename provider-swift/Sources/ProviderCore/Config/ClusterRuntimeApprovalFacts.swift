@@ -2,26 +2,22 @@ import Darwin
 import Foundation
 import DarkbloomClusterProtocol
 
-/// The cluster runtime facts of one signed build (`darkbloom_cluster_runtime_v1`):
+/// The cluster runtime facts of one installed app (`darkbloom_cluster_runtime_v1`):
 /// the digests of the cluster helpers it ships and, for each model, the
-/// digests of the capability its own worker describes. A dev release registers
-/// them as `cluster_runtime`; the coordinator derives its cluster approvals
-/// from them, and a member checks a fetched approval against its own installed
-/// files with the same computation. Every digest is computed by the code the
+/// digests of the capability its own worker describes. The coordinator operator
+/// copies them into a cluster approval (`darkbloom cluster runtime-facts`); the
+/// guided setup takes the served approval whose digests equal this Mac's facts
+/// (`ClusterApprovalLifetime.select`), and each member checks it against its own
+/// installed files with the same computation. Every digest is computed by the code the
 /// member's checks use (`DistributedInstalledFiles.digest`, the worker's
 /// `--describe-runtime`, `DistributedInstalledNativeStart.resourcePolicySHA256`).
 /// The facts approve nothing by themselves.
 public struct ClusterRuntimeApprovalFacts: Equatable, Sendable {
     public static let schema = "darkbloom_cluster_runtime_v1"
-    /// Each model gives two approvals (schedules 1 and 2), so one release
-    /// always fits the coordinator's 64-entry cluster catalog.
+    /// Each model gives two approvals (schedules 1 and 2): 64 at most, the
+    /// coordinator's cluster catalog bound for one file.
     public static let maximumModels = 32
     public static let maximumModelBytes = 128
-    /// The canonical form is far smaller; anything larger is refused unread.
-    public static let maximumEncodedBytes = 64 * 1024
-    /// The longest cluster approval ID the coordinator derives from the facts
-    /// (`release/<version>/<model>/s<1|2>`) and registers.
-    public static let maximumApprovalIDBytes = 128
 
     /// One model: what a member's saved setup pins for it.
     public struct Model: Codable, Equatable, Sendable {
@@ -42,14 +38,13 @@ public struct ClusterRuntimeApprovalFacts: Equatable, Sendable {
             self.profileSHA256 = profileSHA256; self.resourcePolicySHA256 = resourcePolicySHA256
         }
 
-        enum CodingKeys: String, CodingKey, CaseIterable {
+        enum CodingKeys: String, CodingKey {
             case model
             case artifactSHA256 = "artifact_sha256"
             case capabilitySHA256 = "capability_sha256"
             case profileSHA256 = "profile_sha256"
             case resourcePolicySHA256 = "resource_policy_sha256"
         }
-        static let fields = Set(CodingKeys.allCases.map(\.rawValue))
     }
 
     /// SHA-256 of the signed `Contents/Helpers/darkbloom-cluster-worker`.
@@ -110,83 +105,14 @@ public struct ClusterRuntimeApprovalFacts: Equatable, Sendable {
         }
     }
 
-    /// A model a release must describe: a registered model with a cluster
-    /// stage adapter and a passing pair qualification record on this artifact.
-    public struct ReleaseModel: Codable, Hashable, Sendable {
-        public let runtimeModelID: String
-        public let artifactSHA256: String
-
-        public init(runtimeModelID: String, artifactSHA256: String) {
-            self.runtimeModelID = runtimeModelID; self.artifactSHA256 = artifactSHA256
-        }
-
-        enum CodingKeys: String, CodingKey {
-            case runtimeModelID = "runtime_model_id"
-            case artifactSHA256 = "artifact_sha256"
-        }
-    }
-
-    /// One model as this build's worker describes it.
-    public struct Described: Equatable, Sendable {
-        public let entry: Model
-        public let runtimeModelID: String
-    }
-
-    /// The models this build qualifies on a cluster, from its own bundled
-    /// qualification records (`ClusterPairServingGrants.records`): the one
-    /// source of the release's model list.
-    public static var releaseModels: [ReleaseModel] { qualifiedModels(records: ClusterPairServingGrants.records) }
-
-    static func qualifiedModels(records: [ClusterPairQualificationRecord]) -> [ReleaseModel] {
-        Set(records.filter {
-            $0.isConsistent && $0.outcome == .passed && ClusterPairServingGrants.hasStageAdapter(runtimeModelID: $0.runtimeModelID)
-        }.map { ReleaseModel(runtimeModelID: $0.runtimeModelID, artifactSHA256: $0.artifactSHA256) })
-            .sorted { ($0.runtimeModelID, $0.artifactSHA256) < ($1.runtimeModelID, $1.artifactSHA256) }
-    }
-
     /// The facts of `installation` for exactly `models`.
     public static func compute(installation: Installation, models: [ModelFiles]) throws -> Self {
         let installed = try HashedInstallation(installation)
-        return try installed.facts(models.map { try installed.describe($0).entry })
-    }
-
-    /// The facts a release registers: for every model in `models`, the first
-    /// candidate folder with its artifact that the worker describes as that
-    /// model. Fails naming every model that has none, and when a model in
-    /// `required` (catalog IDs) is not among the result.
-    public static func release(installation: Installation, candidates: [ModelFiles], required: [String],
-                               models: [ReleaseModel] = ClusterRuntimeApprovalFacts.releaseModels) throws -> Self {
-        let installed = try HashedInstallation(installation)
-        let parsed = try candidates.map { ($0, try catalogArtifact($0)) }
-        var entries: [Model] = [], failures: [String] = []
-        for listed in models {
-            var refusals: [String] = [], chosen: Model?
-            for (files, artifact) in parsed where artifact.aggregateSHA256 == listed.artifactSHA256 {
-                do {
-                    let described = try installed.describe(files)
-                    if described.runtimeModelID == listed.runtimeModelID { chosen = described.entry; break }
-                    refusals.append("\(files.manifest.path) is \(described.runtimeModelID)")
-                } catch {
-                    refusals.append("\(files.manifest.path): \(error)")
-                }
-            }
-            if let chosen { entries.append(chosen); continue }
-            failures.append("\(listed.runtimeModelID) (\(listed.artifactSHA256)): "
-                + (refusals.isEmpty ? "no candidate folder has this artifact" : refusals.joined(separator: "; ")))
-        }
-        guard failures.isEmpty else {
-            throw ClusterConfigurationError.invalid("Qualified cluster models the release cannot describe: " + failures.joined(separator: " | "))
-        }
-        let names = Set(entries.map(\.model))
-        let missing = required.filter { !names.contains($0) }
-        guard missing.isEmpty else {
-            throw ClusterConfigurationError.invalid("The release's cluster models lack required models: " + missing.joined(separator: ", "))
-        }
-        return try installed.facts(entries)
+        return try installed.facts(models.map { try installed.describe($0) })
     }
 
     /// One model's entry, described by `worker` pinned to `workerSHA256`.
-    public static func describe(_ files: ModelFiles, worker: URL, workerSHA256: String, deadline: UInt64) throws -> Described {
+    static func describe(_ files: ModelFiles, worker: URL, workerSHA256: String, deadline: UInt64) throws -> Model {
         let configuration = try canonical(files.configuration), manifest = try canonical(files.manifest)
         let artifact = try catalogArtifact(ModelFiles(configuration: configuration, manifest: manifest))
         guard modelIDIsValid(artifact.modelID) else {
@@ -200,15 +126,14 @@ public struct ClusterRuntimeApprovalFacts: Equatable, Sendable {
               !capability.hasPrivateImages else {
             throw ClusterConfigurationError.invalid("The worker described another build, artifact or profile than \(manifest.path) names")
         }
-        return Described(entry: Model(model: artifact.modelID, artifactSHA256: capability.artifactSHA256,
+        return Model(model: artifact.modelID, artifactSHA256: capability.artifactSHA256,
             capabilitySHA256: ClusterConfigurationCodec.sha256(bytes), profileSHA256: capability.profileFingerprint,
-            resourcePolicySHA256: NativePairMemberInstallation.hex(DistributedInstalledNativeStart.resourcePolicySHA256(capability))),
-            runtimeModelID: capability.runtimeModelID)
+            resourcePolicySHA256: NativePairMemberInstallation.hex(DistributedInstalledNativeStart.resourcePolicySHA256(capability)))
     }
 
     // MARK: - Canonical form
 
-    private struct Document: Codable {
+    private struct Document: Encodable {
         let schema: String
         let nativeRuntimeSHA256: String
         let metallibSHA256: String
@@ -216,14 +141,13 @@ public struct ClusterRuntimeApprovalFacts: Equatable, Sendable {
         let placementPolicySHA256: String
         let models: [Model]
 
-        enum CodingKeys: String, CodingKey, CaseIterable {
+        enum CodingKeys: String, CodingKey {
             case schema, models
             case nativeRuntimeSHA256 = "native_runtime_sha256"
             case metallibSHA256 = "metallib_sha256"
             case resourceLibrarySHA256 = "resource_library_sha256"
             case placementPolicySHA256 = "placement_policy_sha256"
         }
-        static let fields = Set(CodingKeys.allCases.map(\.rawValue))
     }
 
     /// The canonical bytes: JSON with sorted keys, no whitespace, no escaped
@@ -235,33 +159,6 @@ public struct ClusterRuntimeApprovalFacts: Equatable, Sendable {
         return try encoder.encode(Document(schema: Self.schema, nativeRuntimeSHA256: nativeRuntimeSHA256,
             metallibSHA256: metallibSHA256, resourceLibrarySHA256: resourceLibrarySHA256,
             placementPolicySHA256: placementPolicySHA256, models: models))
-    }
-
-    /// Strict: an unknown, missing or repeated field, another schema, a value outside
-    /// the rules or a model whose derived approval ID for `releaseVersion`
-    /// exceeds `maximumApprovalIDBytes` is refused. `releaseVersion` is the
-    /// version of the release the facts belong to, which the caller must name.
-    public init(canonical data: Data, releaseVersion: String) throws {
-        guard data.count <= Self.maximumEncodedBytes,
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              Set(object.keys) == Document.fields, object["schema"] as? String == Self.schema,
-              let models = object["models"] as? [[String: Any]],
-              models.allSatisfy({ Set($0.keys) == Model.fields }) else {
-            throw ClusterConfigurationError.invalid("Cluster runtime facts have unknown or missing fields or another schema")
-        }
-        guard !Self.repeatsAKey(data) else {
-            throw ClusterConfigurationError.invalid("Cluster runtime facts repeat a field")
-        }
-        let document: Document
-        do { document = try JSONDecoder().decode(Document.self, from: data) }
-        catch { throw ClusterConfigurationError.invalid("Cluster runtime facts have a field of the wrong type") }
-        try self.init(nativeRuntimeSHA256: document.nativeRuntimeSHA256, metallibSHA256: document.metallibSHA256,
-                      resourceLibrarySHA256: document.resourceLibrarySHA256,
-                      placementPolicySHA256: document.placementPolicySHA256, models: document.models)
-        guard self.models.allSatisfy({ "release/\(releaseVersion)/\($0.model)/s2".utf8.count <= Self.maximumApprovalIDBytes }) else {
-            throw ClusterConfigurationError.invalid(
-                "A cluster approval ID derived from these facts exceeds \(Self.maximumApprovalIDBytes) bytes")
-        }
     }
 
     /// Every digest 64 lowercase hex and nonzero; 1 to 32 models with valid,
@@ -297,47 +194,7 @@ public struct ClusterRuntimeApprovalFacts: Equatable, Sendable {
         }
     }
 
-    /// The candidate folders of a release: every subfolder of `directory`, in
-    /// name order, each with its `config.json` and `manifest.json`.
-    public static func candidates(in directory: URL) throws -> [ModelFiles] {
-        let names: [String]
-        do { names = try FileManager.default.contentsOfDirectory(atPath: directory.path) }
-        catch { throw ClusterConfigurationError.invalid("Cannot list the candidate folder \(directory.path)") }
-        return names.filter { !$0.hasPrefix(".") }.sorted().map {
-            ModelFiles(directory: directory.appendingPathComponent($0, isDirectory: true))
-        }
-    }
-
     // MARK: - Helpers
-
-    /// True when an object in `data` (already parsed as JSON) names one key
-    /// twice. Keys compare after unescaping, as a JSON reader sees them.
-    private static func repeatsAKey(_ data: Data) -> Bool {
-        let bytes = [UInt8](data)
-        var open: [(isObject: Bool, keys: Set<String>)] = [], expectingKey = false, index = 0
-        while index < bytes.count {
-            switch bytes[index] {
-            case UInt8(ascii: "{"): open.append((true, [])); expectingKey = true
-            case UInt8(ascii: "["): open.append((false, [])); expectingKey = false
-            case UInt8(ascii: "}"), UInt8(ascii: "]"): _ = open.popLast(); expectingKey = false
-            case UInt8(ascii: ","): expectingKey = open.last?.isObject == true
-            case UInt8(ascii: "\""):
-                let start = index
-                index += 1
-                while index < bytes.count, bytes[index] != UInt8(ascii: "\"") {
-                    index += bytes[index] == UInt8(ascii: "\\") ? 2 : 1
-                }
-                guard expectingKey, !open.isEmpty else { break }
-                expectingKey = false
-                guard index < bytes.count,
-                      let key = try? JSONSerialization.jsonObject(with: Data(bytes[start...index]), options: .fragmentsAllowed) as? String,
-                      open[open.count - 1].keys.insert(key).inserted else { return true }
-            default: break
-            }
-            index += 1
-        }
-        return false
-    }
 
     /// An installation's four helpers, each resolved to its real path and
     /// then hashed under the installed-file rules, and the worker that
@@ -359,7 +216,7 @@ public struct ClusterRuntimeApprovalFacts: Equatable, Sendable {
             resourceLibrarySHA256 = digests[2]; placementPolicySHA256 = digests[3]
         }
 
-        func describe(_ files: ModelFiles) throws -> Described {
+        func describe(_ files: ModelFiles) throws -> Model {
             try ClusterRuntimeApprovalFacts.describe(files, worker: worker, workerSHA256: nativeRuntimeSHA256,
                                                      deadline: ClusterRuntimeApprovalFacts.deadline(seconds: 30))
         }

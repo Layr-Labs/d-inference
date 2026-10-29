@@ -47,7 +47,7 @@ struct GLM5NextRegisteredSpecification {
         .init(model: .glm53Flash, profileID: "registered_glm53_flash_greedy_generation_v1",
             repository: GLM5NextArtifactPin.repository, revision: GLM5NextArtifactPin.revision,
             configurationSHA256: GLM5NextArtifactPin.configurationSHA256,
-            manifestSHA256: "daee0b1bef9258ae0d8ed98b7a489586f2eb8453453302be057b12008d249649",
+            manifestSHA256: "ae8750273ae85bbcc9d77dfb3b8af8dd11bfb25622524689be2ee3a71bece570",
             artifactSHA256: GLM5NextArtifactPin.artifactSHA256,
             inventorySHA256: GLM5NextArtifactPin.inventorySHA256,
             manifestBytes: GLM5NextArtifactPin.manifestBytes, manifestFileCount: GLM5NextArtifactPin.manifestFileCount,

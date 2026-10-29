@@ -62,6 +62,8 @@ public struct CapturedMessages: Sendable {
     public var telemetryPosts: [Data] = []
     public var enrollmentPosts: [Data] = []
     public var enrollmentAuthorizations: [String] = []
+    /// The query of each `GET /v1/cluster/approvals`, in arrival order.
+    public var clusterApprovalQueries: [String] = []
 
     public init() {}
 }
@@ -191,6 +193,8 @@ public final class MockCoordinator: @unchecked Sendable {
     private let lock = NSLock()
     private var captured = CapturedMessages()
     private var acknowledgedReadiness = Set<String>()
+    /// `GET /v1/cluster/approvals`: the status and exact body bytes answered; nil answers 404 (pair control off).
+    private var clusterApprovals: (status: Int, body: Data, location: String?)?
     private var activeOutbound: WebSocketOutboundWriter?
     private var bound: BoundServer?
 
@@ -248,6 +252,12 @@ public final class MockCoordinator: @unchecked Sendable {
     /// stream only finishes when `shutdown()` is called.
     public var events: AsyncStream<MockEvent> { eventStream }
 
+    /// What `GET /v1/cluster/approvals` answers from now on; nil answers 404, as a coordinator without pairing does.
+    /// `location` adds a `Location` header (a redirect the provider must not follow).
+    public func setClusterApprovals(status: Int = 200, body: Data?, location: String? = nil) {
+        lock.withLock { clusterApprovals = body.map { (status, $0, location) } }
+    }
+
     /// Return a snapshot of all messages captured so far. Each call clones the
     /// underlying state, so the returned value is safe to inspect without
     /// holding any locks.
@@ -280,7 +290,7 @@ public final class MockCoordinator: @unchecked Sendable {
         // actual port via onServerRunning. Funneled through a one-shot
         // continuation so start() can resolve only once the listening socket
         // is up.
-        let portBox = PortBox()
+        let portBox = OneShotPortBox()
 
         let app = Application(
             router: router,
@@ -531,6 +541,23 @@ public final class MockCoordinator: @unchecked Sendable {
                 )
             }
             return MockCoordinator.makeJSONResponse(body: ["models": self.catalog])
+        }
+
+        // ----- HTTP: /v1/cluster/approvals -----
+        router.get("/v1/cluster/approvals") { [weak self] request, _ -> Response in
+            guard let self else {
+                return MockCoordinator.makeJSONResponse(body: ["error": "mock dead"], status: .internalServerError)
+            }
+            let query = request.uri.query ?? ""
+            let answer = self.lock.withLock { () -> (status: Int, body: Data, location: String?)? in
+                self.captured.clusterApprovalQueries.append(query)
+                return self.clusterApprovals
+            }
+            guard let answer else { return MockCoordinator.makeJSONResponse(body: ["error": "not found"], status: .notFound) }
+            var headers: HTTPFields = [.contentType: "application/json"]
+            if let location = answer.location { headers[.location] = location }
+            return Response(status: .init(code: answer.status), headers: headers,
+                body: .init(byteBuffer: ByteBuffer(bytes: answer.body)))
         }
 
         // ----- HTTP: /v1/releases/latest -----
@@ -789,42 +816,6 @@ public enum MockCoordinatorError: Error, CustomStringConvertible, Sendable {
         case .noActiveWebSocket:          "No active provider WebSocket on the mock"
         case .invalidProviderPublicKey:   "Provider public key was not a 32-byte X25519 key"
         }
-    }
-}
-
-// MARK: - One-shot port box
-
-/// One-shot async box for the bound port. `complete(_:)` is fired from
-/// Hummingbird's `onServerRunning` callback; `value` is awaited from
-/// `start()`.
-private final class PortBox: @unchecked Sendable {
-    private let lock = NSLock()
-    private var port: Int?
-    private var continuation: CheckedContinuation<Int, Never>?
-
-    var value: Int {
-        get async {
-            await withCheckedContinuation { (cont: CheckedContinuation<Int, Never>) in
-                lock.withLock {
-                    if let p = port {
-                        cont.resume(returning: p)
-                    } else {
-                        continuation = cont
-                    }
-                }
-            }
-        }
-    }
-
-    func complete(_ port: Int) {
-        let cont: CheckedContinuation<Int, Never>? = lock.withLock {
-            if self.port != nil { return nil }
-            self.port = port
-            let cont = continuation
-            continuation = nil
-            return cont
-        }
-        cont?.resume(returning: port)
     }
 }
 

@@ -104,15 +104,11 @@ public struct ClusterCatalogArtifact: Sendable, Equatable {
         return hasher.finalize().map { String(format: "%02x", $0) }.joined()
     }
 
-    /// The same entry with the same files under the same names (`sameEntry` plus `filesDigest`).
-    /// The same files (path, size, digest) in any order. The CDN's manifest lists them in another order than the
-    /// product store's receipt and the coordinator's re-encoding: compared in order, the CDN's exact bytes were refused
-    /// and the coordinator's re-encoded manifest was written instead, which the worker's manifest pin then refused
-    /// (Qwen 3.5 9B and Qwen 3.8 27B on the 2x Mac pair, 2026-10-15).
-    public static func sameFiles(_ a: [File], _ b: [File]) -> Bool {
-        a.count == b.count && a.sorted(by: { $0.path < $1.path }) == b.sorted(by: { $0.path < $1.path })
-    }
-
+    /// The same entry with the same files (path, size, digest) under the same names, in any order (`sameEntry` plus
+    /// `filesDigest`). The CDN's manifest lists the files in another order than the product store's receipt and the
+    /// coordinator's re-encoding: compared in order, the CDN's exact bytes were refused and the coordinator's
+    /// re-encoded manifest was written instead, which the worker's manifest pin then refused (Qwen 3.5 9B and
+    /// Qwen 3.8 27B on the 2x Mac pair, 2026-10-15).
     public func sameArtifact(_ other: ClusterCatalogArtifact) -> Bool {
         sameEntry(modelID: other.modelID, version: other.version, aggregate: other.aggregateSHA256) && filesDigest == other.filesDigest
     }

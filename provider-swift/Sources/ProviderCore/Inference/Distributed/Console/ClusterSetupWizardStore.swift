@@ -90,6 +90,19 @@ public struct ClusterSetupRecord: Codable, Sendable, Equatable {
     public var aloneHolders: [String]? = nil
     /// The plan (the saved setup's selected plan SHA-256) `aloneHolders` is for: verdicts for any other plan never count.
     public var aloneHoldersPlan: String? = nil
+    /// Why the pair serves on the leader's local API although its coordinator offers a cluster approval (one line,
+    /// `ClusterApprovalSync`); nil when it is offered for pairing or the coordinator offers none.
+    public var approvalNote: String? = nil
+    /// The approval set aside while the pair serves locally (`ApprovalSetAside`); nil otherwise.
+    public var approvalSetAside: ApprovalSetAside? = nil
+
+    /// The cluster approval both Macs saved their setups without, and why (`ClusterApprovalCheck`): the leader checks
+    /// the coordinator every minute while it is set, and does not take an approval its parts kept failing with again.
+    public struct ApprovalSetAside: Codable, Sendable, Equatable {
+        public var approval: ClusterRuntimeApproval
+        public var reason: ClusterApprovalFallback
+        public init(approval: ClusterRuntimeApproval, reason: ClusterApprovalFallback) { self.approval = approval; self.reason = reason }
+    }
 
     public init(pair: Pair? = nil) { self.pair = pair }
 

@@ -536,6 +536,38 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         self.assertEqual(field(gate, "MIMO_V26_MANAGED_AUDIO_PROVIDER_TESTS", indent=10), "'1'")
         self.assertNotIn("continue-on-error:", gate)
 
+    def test_cluster_metadata_runners_run_every_runner_and_fail_on_any(self):
+        job = self.jobs["test-cluster-checks"]
+        self.assertIn("    name: Cluster Metadata Checks\n", job)
+        self.assertIn("    needs: [changes, route]\n", job)
+        self.assertIn("    if: ${{ needs.changes.outputs.provider == 'true' }}\n", job)
+        self.assertIn("    runs-on: ${{ fromJSON(needs.route.outputs.routes)['test-cluster-checks'] }}\n", job)
+        self.assertIn("        test-cluster-checks macos_arm64 blacksmith-12vcpu-macos-27 "
+                      "${{ needs.changes.outputs.provider == 'true' && 1 || 0 }}\n", self.jobs["route"])
+        for forbidden in ("continue-on-error:", "secrets.", "DARKBLOOM_EXCLUSIVE_NATIVE_GPU_TEST:"):
+            self.assertNotIn(forbidden, job)
+        steps = step_blocks(job)
+        self.assertIn("actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683", steps[0])
+        self.assertEqual(field(steps[0], "submodules", indent=10), "recursive")
+        toolchain = next(step for step in steps if field(step, "id") == "toolchain")
+        self.assertEqual(run_command(toolchain), "./scripts/prepare-provider-release-toolchain.sh")
+        runners = {
+            "Run worker capability checks": "bash libs/darkbloom-cluster-worker/Tests/CapabilityChecks/run.sh",
+            "Run stage metadata checks": 'python3 libs/darkbloom-cluster/Tests/StageMetadataChecks/run.py '
+                                         '--output "$RUNNER_TEMP/stage-metadata-checks"',
+            "Run GPT-OSS stage checks": "bash libs/darkbloom-cluster/Tests/GPTOSSStageChecks/run.sh",
+            "Run Nemotron stage checks": "bash libs/darkbloom-cluster/Tests/NemotronStageChecks/run.sh",
+            "Run cluster model provisioning checks": "bash provider-swift/Tests/ClusterModelProvisioningChecks/run.sh provisioning",
+        }
+        named = {field(step, "name", indent=6): step for step in steps}
+        for name, command in runners.items():
+            with self.subTest(runner=name):
+                step = named[name]
+                self.assertEqual(run_command(step), command)
+                # Each runner needs only the toolchain, not an earlier runner's success.
+                self.assertEqual(field(step, "if"), "${{ !cancelled() && steps.toolchain.outcome == 'success' }}")
+                self.assertTrue((ROOT / command.split()[1]).is_file())
+
     def test_parity_has_no_backend_caches_or_credentials(self):
         steps = step_blocks(self.jobs["test-provider-parity"])
         saves = [step for step in steps if "actions/cache/save@" in step]

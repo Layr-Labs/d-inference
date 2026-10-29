@@ -1,6 +1,6 @@
 # Two Macs as one provider (guided setup)
 
-> Last updated: 2026-10-26
+> Last updated: 2026-10-29
 
 Two Apple Silicon Macs joined by one Thunderbolt 5 cable serve a model together:
 each Mac holds part of its layers, and the pair serves as one provider. Setting
@@ -179,8 +179,9 @@ plaintext fallback; see the [cluster encryption contract](../architecture/securi
 
 - **Clone in.** Every model the single-Mac product installed and verified
   (`darkbloom models download`, its manifest receipt) is cloned into the cluster
-  store with APFS clones, so it costs no disk space and keeps the catalog's
-  exact manifest bytes (the cluster worker pins them).
+  store with APFS clones, so it costs no disk space. Beside the files it writes
+  the model CDN's exact `manifest.json` bytes, which the cluster worker pins
+  ([registered manifest pins](../architecture/inference.md#registered-manifest-pins)).
 - **Copy over the cable.** A model one Mac lacks is sent by the Mac that has it
   over the link control channel: keyed by the pairing (S17), encrypted and
   authenticated records, 4 MiB chunks acknowledged only after the receiver wrote

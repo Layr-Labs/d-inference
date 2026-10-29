@@ -3,7 +3,7 @@ import Foundation
 /// An exact retained-header profile. It is never a payload or native execution permit.
 struct Gemma4ArtifactMetadata {
     static let configurationSHA256 = "29910322dd085f45c8f95c6c0f1611b20f722d6f6c8394321b34817e98a972fa"
-    static let manifestSHA256 = "c1fefb1fa593fa3ca83e72a1124fb3afca10a59eed272c7ac2ac4a57f8018dfd"
+    static let manifestSHA256 = "e1bd0a99f0eeb451bd1be9baf700c7563816e3375bb24cdc6d1c8933cb36799e"
     static let indexSHA256 = "5455e83705bbdd4e3702c7d4f9d49d4900e84533036628f74500538075dd5c80"
     static let artifactAggregateSHA256 = "2468a0cb3049a871f42052f4d9f9380bf12a0792f64c7a29f768559fc7d28785"
     static let headerSHA256 = [

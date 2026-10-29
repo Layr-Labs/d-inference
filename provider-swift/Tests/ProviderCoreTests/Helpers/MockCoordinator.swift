@@ -280,7 +280,7 @@ public final class MockCoordinator: @unchecked Sendable {
         // actual port via onServerRunning. Funneled through a one-shot
         // continuation so start() can resolve only once the listening socket
         // is up.
-        let portBox = PortBox()
+        let portBox = OneShotPortBox()
 
         let app = Application(
             router: router,
@@ -789,42 +789,6 @@ public enum MockCoordinatorError: Error, CustomStringConvertible, Sendable {
         case .noActiveWebSocket:          "No active provider WebSocket on the mock"
         case .invalidProviderPublicKey:   "Provider public key was not a 32-byte X25519 key"
         }
-    }
-}
-
-// MARK: - One-shot port box
-
-/// One-shot async box for the bound port. `complete(_:)` is fired from
-/// Hummingbird's `onServerRunning` callback; `value` is awaited from
-/// `start()`.
-private final class PortBox: @unchecked Sendable {
-    private let lock = NSLock()
-    private var port: Int?
-    private var continuation: CheckedContinuation<Int, Never>?
-
-    var value: Int {
-        get async {
-            await withCheckedContinuation { (cont: CheckedContinuation<Int, Never>) in
-                lock.withLock {
-                    if let p = port {
-                        cont.resume(returning: p)
-                    } else {
-                        continuation = cont
-                    }
-                }
-            }
-        }
-    }
-
-    func complete(_ port: Int) {
-        let cont: CheckedContinuation<Int, Never>? = lock.withLock {
-            if self.port != nil { return nil }
-            self.port = port
-            let cont = continuation
-            continuation = nil
-            return cont
-        }
-        cont?.resume(returning: port)
     }
 }
 

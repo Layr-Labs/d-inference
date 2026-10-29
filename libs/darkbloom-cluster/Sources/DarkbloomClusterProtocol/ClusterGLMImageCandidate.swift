@@ -9,7 +9,7 @@ public struct ClusterGLMImageCandidate: Equatable, Sendable {
     public static let runtimeModelID = "registered_glm53_flash"
     public static let artifactSHA256 = "3aae613ff188bb0f72e880774a84e4d8e9943ab20c929d8a302af9c57b97d5ac"
     public static let configurationSHA256 = "949a3db19177feacc434abe791f0d73f24f34ad577334d8773ac5a0afbfd2e8b"
-    public static let manifestSHA256 = "daee0b1bef9258ae0d8ed98b7a489586f2eb8453453302be057b12008d249649"
+    public static let manifestSHA256 = "ae8750273ae85bbcc9d77dfb3b8af8dd11bfb25622524689be2ee3a71bece570"
     public init() {}
     public static var fields: [String: Any] { [
         "schema": schema, "qualification": "privateUnqualified", "input": ["image/png"], "output": "text",

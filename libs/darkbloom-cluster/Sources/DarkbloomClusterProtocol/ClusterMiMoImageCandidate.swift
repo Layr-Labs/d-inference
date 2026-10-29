@@ -10,7 +10,7 @@ public struct ClusterMiMoImageCandidate: Equatable, Sendable {
     public static let runtimeModelID = "registered_mimo_v26_flash_mopd"
     public static let artifactSHA256 = "2334547d8acc9898ad4a74570ce44d2b12390bbac8d4bc52c092eb5ad5cfe034"
     public static let configurationSHA256 = "35b6e3d4543b65e6fa9d6174e2260d9ac1d3ea1e5acb9955d9fe9f2b815d13d4"
-    public static let manifestSHA256 = "de1bd701115a9ee7e4a99ac85307b31285c63a0b0b1c22ef0c69e9b4ac10f346"
+    public static let manifestSHA256 = "56c0a624037457a7e9705f765e50ff346c5fb4eec410bdfee443b20dbca56565"
     /// Read from the pinned converted tensor metadata; LOAD recomputes this
     /// inventory from verified descriptors before reading any vision payload.
     public static let visionTensorCount = 364

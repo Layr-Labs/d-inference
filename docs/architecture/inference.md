@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-10-28
+> Last updated: 2026-10-29
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -4426,6 +4426,47 @@ multiple-identity aggregates remain refused. A run of one alias supplies no
 record or serving grant for the other: `ClusterPairServingDecisions` in
 `provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledPairServingGrant.swift`
 continues to scope decisions by runtime identity and artifact.
+
+### Registered manifest pins
+
+Each registered cluster model pins the SHA-256 of its manifest's exact bytes
+(`manifestSHA256` in the model's registered specification under
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/`, and
+`PromptTokenizer.registeredManifests` in
+`libs/darkbloom-cluster-worker/Sources/DarkbloomClusterPrompt/PromptTokenizer.swift`).
+The pinned bytes are the model CDN's `manifest.json` at the catalog row's
+`r2_prefix`. Every build environment reads the same CDN
+(`BuildEnvironment.modelCDNURL`), so the bytes are the same on production,
+staging and DevNet. The coordinator's
+`/v1/models/catalog/manifest/{id}` answer names the same files, but its
+`created_at` is the time of each environment's own registration, so its bytes
+are different on each environment and are not a pin.
+
+The product's download keeps only a re-encoded receipt
+(`.darkbloom-manifest.json`, `ModelDownloader.writeRevisionReceipt`). When a
+model is cloned into the cluster store, `ClusterProductModelStore.catalogManifest`
+in `provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/ClusterModelProvisioningStore.swift`
+fetches the CDN's file first and writes the first encoding this Mac's worker
+describes as `manifest.json`. A copy over the cable sends those same bytes, and
+the receiving Mac's worker checks them before the folder is renamed into place.
+
+A folder whose manifest this Mac's worker refuses, for example a folder that
+was copied over the cable before a pin change, is repaired by
+`ClusterProductModelStore.repairStoreManifests`. Each Mac runs it after the
+clone-in when its setup report lists the models, and the leader runs it before
+it plans (`ClusterProductModelStore.updateClusterStore`). It fetches the
+published manifest in the same order and replaces `manifest.json` atomically
+only when the fetched bytes name the same model, version, aggregate and files
+(`ClusterCatalogArtifact.sameArtifact`) and the worker describes them. It never
+writes the weight files. When nothing answers, or the worker refuses the
+fetched bytes, the folder is unchanged and the next attempt for it comes
+`ClusterOnboardingUpdate.checkEverySeconds` (60 s) later. When the bytes name
+other files or another catalog entry, the folder is unchanged, the worker
+refuses it, and the provider does not ask for it again until it restarts.
+A setup report spends at most `ClusterSetupOperations.reportRepairSeconds`
+(10 s) on repairs, so the Mac still answers the other Mac's question within
+`ClusterSetupOperations.peerSeconds` (30 s). Folders left over are repaired on
+the next report or before the next plan.
 
 
 ## GPT-OSS independent-history batch forward

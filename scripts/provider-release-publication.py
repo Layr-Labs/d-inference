@@ -31,6 +31,8 @@ CLUSTER_RUNTIME_DIGESTS = ('native_runtime_sha256', 'metallib_sha256', 'resource
                            'placement_policy_sha256')
 CLUSTER_RUNTIME_MODEL_DIGESTS = ('artifact_sha256', 'capability_sha256', 'profile_sha256', 'resource_policy_sha256')
 CLUSTER_RUNTIME_MAXIMUM_BYTES = 64 * 1024
+# Two approvals per model (schedules 1 and 2) fit the coordinator's 64-entry catalog.
+CLUSTER_RUNTIME_MAXIMUM_MODELS = 32
 # The coordinator derives approvals `release/<version>/<model>/s<1|2>` from the
 # block and refuses an ID over this bound at registration.
 CLUSTER_APPROVAL_ID_MAXIMUM_BYTES = 128
@@ -41,8 +43,8 @@ def check_cluster_runtime(block):
             or block['schema'] != CLUSTER_RUNTIME_SCHEMA:
         raise ValueError('Invalid cluster_runtime: unknown or missing fields or another schema')
     models = block['models']
-    if not isinstance(models, list) or not 1 <= len(models) <= 64:
-        raise ValueError('Invalid cluster_runtime: 1 to 64 models are required')
+    if not isinstance(models, list) or not 1 <= len(models) <= CLUSTER_RUNTIME_MAXIMUM_MODELS:
+        raise ValueError(f'Invalid cluster_runtime: 1 to {CLUSTER_RUNTIME_MAXIMUM_MODELS} models are required')
     digests, names = [block[key] for key in CLUSTER_RUNTIME_DIGESTS], []
     for model in models:
         if not isinstance(model, dict) or set(model) != {'model', *CLUSTER_RUNTIME_MODEL_DIGESTS}:

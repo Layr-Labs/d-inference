@@ -148,7 +148,7 @@ struct ClusterRuntimeApprovalFactsTests {
             ("zero model digest", { try make(models: [.init(model: "a", artifactSHA256: zero, capabilitySHA256: good[0].capabilitySHA256,
                 profileSHA256: good[0].profileSHA256, resourcePolicySHA256: good[0].resourcePolicySHA256)]) }),
             ("no models", { try make(models: []) }),
-            ("too many models", { try make(models: (0..<65).map { named(String(format: "m%02d", $0)) }) }),
+            ("too many models", { try make(models: (0..<33).map { named(String(format: "m%02d", $0)) }) }),
             ("unsorted", { try make(models: Array(good.reversed())) }),
             ("repeated", { try make(models: [good[0], good[0]]) }),
             ("empty ID", { try make(models: [named("")]) }),
@@ -160,7 +160,20 @@ struct ClusterRuntimeApprovalFactsTests {
             #expect(throws: ClusterConfigurationError.self, "\(label)") { _ = try row() }
         }
         // The bounds themselves are accepted, in byte order (uppercase first).
-        _ = try make(models: (0..<64).map { named(String(format: "m%02d", $0)) })
+        _ = try make(models: (0..<32).map { named(String(format: "m%02d", $0)) })
+        // The decoder applies the same bound: 32 models decode, 33 do not.
+        func encoded(_ count: Int) throws -> Data {
+            var object = try JSONSerialization.jsonObject(with: facts.canonicalBytes()) as! [String: Any]
+            let model = (object["models"] as! [[String: Any]])[0]
+            object["models"] = (0..<count).map { index -> [String: Any] in
+                var copy = model; copy["model"] = String(format: "m%02d", index); return copy
+            }
+            return try JSONSerialization.data(withJSONObject: object)
+        }
+        #expect(try ClusterRuntimeApprovalFacts(canonical: encoded(32), releaseVersion: Self.releaseVersion).models.count == 32)
+        #expect(throws: ClusterConfigurationError.self) {
+            try ClusterRuntimeApprovalFacts(canonical: encoded(33), releaseVersion: Self.releaseVersion)
+        }
         _ = try make(models: [named(" " + String(repeating: "~", count: 127))])
         _ = try make(models: [named("Z"), named("a")])
     }

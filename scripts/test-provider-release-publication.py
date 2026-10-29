@@ -368,7 +368,7 @@ class ClusterRuntimeTests(PublicationFixture):
             block = cluster_runtime_block()
             change(block)
             return block
-        many = [dict(cluster_runtime_block()['models'][0], model=f'model-{index:02d}') for index in range(65)]
+        many = [dict(cluster_runtime_block()['models'][0], model=f'model-{index:02d}') for index in range(33)]
         rows = {
             'unknown field': edited(lambda b: b.update(extra='x')),
             'missing field': edited(lambda b: b.pop('metallib_sha256')),
@@ -423,8 +423,11 @@ class ClusterRuntimeTests(PublicationFixture):
 
     def test_boundary_values_are_accepted(self):
         block = cluster_runtime_block()
-        block['models'] = [dict(block['models'][0], model=f'm{index:02d}') for index in range(64)]
+        block['models'] = [dict(block['models'][0], model=f'm{index:02d}') for index in range(32)]
         PUB.check_cluster_runtime(block)
+        PUB.validate(dict(self.payload, version='0.9.8-dev.branch.7', require_app_attest_qualification=False,
+                          url='https://releases.example/' + PUB.object_key(dict(self.payload, version='0.9.8-dev.branch.7')),
+                          cluster_runtime=block), dict(self.env, ENV_PREFIX='dev', VERSION='0.9.8-dev.branch.7'))
         block['models'] = [dict(block['models'][0], model=' ' + '~' * 127)]
         PUB.check_cluster_runtime(block)
 

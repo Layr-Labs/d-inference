@@ -13,7 +13,9 @@ import DarkbloomClusterProtocol
 /// The facts approve nothing by themselves.
 public struct ClusterRuntimeApprovalFacts: Equatable, Sendable {
     public static let schema = "darkbloom_cluster_runtime_v1"
-    public static let maximumModels = 64
+    /// Each model gives two approvals (schedules 1 and 2), so one release
+    /// always fits the coordinator's 64-entry cluster catalog.
+    public static let maximumModels = 32
     public static let maximumModelBytes = 128
     /// The canonical form is far smaller; anything larger is refused unread.
     public static let maximumEncodedBytes = 64 * 1024
@@ -262,7 +264,7 @@ public struct ClusterRuntimeApprovalFacts: Equatable, Sendable {
         }
     }
 
-    /// Every digest 64 lowercase hex and nonzero; 1 to 64 models with valid,
+    /// Every digest 64 lowercase hex and nonzero; 1 to 32 models with valid,
     /// strictly ascending (byte order, so unique) model IDs.
     func validate() throws {
         let digests = [nativeRuntimeSHA256, metallibSHA256, resourceLibrarySHA256, placementPolicySHA256]

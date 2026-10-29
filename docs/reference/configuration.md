@@ -934,7 +934,7 @@ receives it. One type computes every value:
 | `metallib_sha256` | SHA-256 of `Contents/Helpers/mlx.metallib` |
 | `resource_library_sha256` | SHA-256 of `Contents/Helpers/pagedattention.metal` |
 | `placement_policy_sha256` | SHA-256 of the signed `Contents/Helpers/darkbloom-cluster-plan` |
-| `models` | 1 to 64 entries, sorted by `model` in byte order, unique |
+| `models` | 1 to 32 entries (`ClusterRuntimeApprovalFacts.maximumModels`), sorted by `model` in byte order, unique; two approvals per model fit the coordinator's 64-entry catalog |
 | `models[].model` | the catalog model ID the manifest names (`model_id`); 1 to 128 printable ASCII bytes |
 | `models[].artifact_sha256` | the capability's `artifactSHA256`, the catalog aggregate |
 | `models[].capability_sha256` | SHA-256 of the exact output of `darkbloom-cluster-worker --describe-runtime` |

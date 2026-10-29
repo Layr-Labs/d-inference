@@ -1,0 +1,239 @@
+name: DevNet Approval Facts
+
+# Computes `darkbloom cluster runtime-facts` for published signed dev bundles
+# and the DevNet catalog models they serve. Metadata only: no weights, no
+# secrets, no publication.
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/devnet-approval-facts.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+env:
+  # One line per published dev bundle: <version> <bundle SHA-256> <catalog model ID>...
+  # The SHA-256 is the bundle_hash that the DevNet coordinator registered.
+  RELEASES: |
+    0.10.4-dev.branch.4 54a8594174eaf41310761bd1e52786b4c4e974d98c1f03185b481f19b2284ba0 Qwen3.5-9B
+  BUNDLE_BASE_URL: https://pub-ca91d8c638d54ea7a9bca8ddd1134828.r2.dev/releases
+  CATALOG_URL: https://api.dev.darkbloom.dev/v1/models/catalog
+  MODEL_CDN_URL: https://models.darkbloom.ai
+
+jobs:
+  plan:
+    name: Plan Releases
+    runs-on: ubuntu-24.04
+    permissions: {}
+    timeout-minutes: 3
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      count: ${{ steps.plan.outputs.count }}
+    steps:
+      - name: Parse the release list
+        id: plan
+        shell: bash
+        run: |
+          set -euo pipefail
+          entries='[]'
+          while read -r version sha models; do
+            [ -n "$version" ] || continue
+            [[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+-dev\.[A-Za-z0-9.]+$ ]] || { echo "::error::invalid version: $version"; exit 1; }
+            [[ $sha =~ ^[0-9a-f]{64}$ ]] || { echo "::error::invalid bundle SHA-256 for $version"; exit 1; }
+            [ -n "$models" ] || { echo "::error::$version names no model"; exit 1; }
+            for model in $models; do
+              [[ $model =~ ^[A-Za-z0-9._-]+$ ]] || { echo "::error::invalid model ID for $version: $model"; exit 1; }
+            done
+            entries=$(jq -c --arg version "$version" --arg sha "$sha" --arg models "$models" \
+              '. + [{$version, bundle_sha256: $sha, $models}]' <<<"$entries")
+          done <<<"$RELEASES"
+          count=$(jq length <<<"$entries")
+          [ "$count" -ge 1 ] || { echo "::error::no release is listed"; exit 1; }
+          [ "$(jq '[.[].version] | unique | length' <<<"$entries")" = "$count" ] \
+            || { echo "::error::a version is listed twice"; exit 1; }
+          echo "matrix=$(jq -c '{include: .}' <<<"$entries")" >> "$GITHUB_OUTPUT"
+          echo "count=$count" >> "$GITHUB_OUTPUT"
+          jq . <<<"$entries"
+
+  route:
+    needs: plan
+    uses: ./.github/workflows/darkbloom-route.yml
+    permissions: {}
+    with:
+      lanes: |
+        approval-facts macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.plan.outputs.count }}
+
+  facts:
+    name: Facts ${{ matrix.version }}
+    needs: [plan, route]
+    runs-on: ${{ fromJSON(needs.route.outputs.routes)['approval-facts'] }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    env:
+      VERSION: ${{ matrix.version }}
+      BUNDLE_SHA256: ${{ matrix.bundle_sha256 }}
+      MODELS: ${{ matrix.models }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          submodules: recursive
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12.10'
+      - name: Select SDK 27 provider toolchain
+        shell: bash
+        run: ./scripts/prepare-provider-release-toolchain.sh
+      - name: Build the darkbloom CLI (release)
+        shell: bash
+        working-directory: provider-swift
+        env:
+          DARKBLOOM_RELEASE_ENVIRONMENT: dev
+        run: |
+          set -euo pipefail
+          swift --version
+          swift build -c release --product darkbloom
+          cli="$(swift build -c release --show-bin-path)/darkbloom"
+          test -x "$cli"
+          echo "FACTS_CLI=$cli" >> "$GITHUB_ENV"
+      - name: Download and check the published bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/approval-facts/$VERSION"
+          mkdir -p "$work"
+          url="$BUNDLE_BASE_URL/v$VERSION/artifacts/$BUNDLE_SHA256/darkbloom-bundle-macos-arm64.tar.gz"
+          curl --disable --fail --silent --show-error --proto '=https' --retry 2 --max-time 900 \
+            --output "$work/bundle.tar.gz" "$url"
+          actual=$(shasum -a 256 "$work/bundle.tar.gz" | awk '{print $1}')
+          {
+            echo "bundle_url=$url"
+            echo "bundle_sha256_expected=$BUNDLE_SHA256"
+            echo "bundle_sha256_actual=$actual"
+          } | tee "$work/checks.txt"
+          if [ "$actual" != "$BUNDLE_SHA256" ]; then
+            echo "bundle_sha256_check=FAIL" >> "$work/checks.txt"
+            echo "::error::bundle SHA-256 $actual is not $BUNDLE_SHA256"
+            exit 1
+          fi
+          echo "bundle_sha256_check=PASS" | tee -a "$work/checks.txt"
+          extracted="$work/bundle"
+          test ! -e "$extracted"
+          mkdir "$extracted"
+          tar -xzf "$work/bundle.tar.gz" -C "$extracted"
+          apps=()
+          while IFS= read -r app; do apps+=("$app"); done \
+            < <(find "$extracted" -mindepth 1 -maxdepth 1 -type d -name '*.app')
+          [ "${#apps[@]}" = 1 ] || { echo "::error::the bundle holds ${#apps[@]} apps, not 1"; exit 1; }
+          app="${apps[0]}"
+          for helper in darkbloom-cluster-worker darkbloom-cluster-plan mlx.metallib pagedattention.metal; do
+            test -f "$app/Contents/Helpers/$helper" || { echo "::error::$helper is missing from $app"; exit 1; }
+          done
+          ls -l "$app/Contents/Helpers"
+          echo "app=${app#"$extracted"/}" | tee -a "$work/checks.txt"
+          echo "FACTS_APP=$app" >> "$GITHUB_ENV"
+          echo "FACTS_WORK=$work" >> "$GITHUB_ENV"
+      - name: Fetch and check model metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --disable --fail --silent --show-error --proto '=https' --retry 2 --max-time 60 \
+            --output "$FACTS_WORK/catalog.json" "$CATALOG_URL"
+          for model in $MODELS; do
+            entry=$(jq -c --arg id "$model" '[.models[] | select(.id == $id)]' "$FACTS_WORK/catalog.json")
+            [ "$(jq length <<<"$entry")" = 1 ] || { echo "::error::the catalog lists $model $(jq length <<<"$entry") times"; exit 1; }
+            prefix=$(jq -r '.[0].r2_prefix' <<<"$entry")
+            aggregate=$(jq -r '.[0].aggregate_sha256' <<<"$entry")
+            [[ $prefix =~ ^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$ && $prefix != *..* ]] \
+              || { echo "::error::$model has an unsafe r2_prefix: $prefix"; exit 1; }
+            [[ $aggregate =~ ^[0-9a-f]{64}$ ]] || { echo "::error::$model has an invalid aggregate_sha256"; exit 1; }
+            dir="$FACTS_WORK/models/$model"
+            mkdir -p "$dir"
+            for name in manifest.json config.json; do
+              curl --disable --fail --silent --show-error --proto '=https' --retry 2 --max-time 120 \
+                --max-filesize 33554432 --output "$dir/$name" "$MODEL_CDN_URL/$prefix/$name"
+            done
+            python3 -I - "$model" "$prefix" "$aggregate" "$dir" <<'PY' | tee -a "$FACTS_WORK/checks.txt"
+          import hashlib, json, os, sys
+          model, prefix, catalog_aggregate, folder = sys.argv[1:5]
+          manifest = json.load(open(os.path.join(folder, 'manifest.json'), encoding='utf-8'))
+          files = sorted(manifest['files'], key=lambda f: f['path'])
+          recomputed = hashlib.sha256(b''.join(bytes.fromhex(f['sha256']) for f in files)).hexdigest()
+          configs = [f for f in files if f['path'] == 'config.json']
+          config = open(os.path.join(folder, 'config.json'), 'rb').read()
+          config_sha = hashlib.sha256(config).hexdigest()
+          checks = {
+              'manifest_model_id': manifest['model_id'] == model,
+              'manifest_aggregate_equals_catalog': manifest['aggregate_sha256'] == catalog_aggregate,
+              'manifest_aggregate_equals_files': recomputed == manifest['aggregate_sha256'],
+              'config_sha256_equals_manifest': len(configs) == 1 and configs[0]['sha256'] == config_sha,
+              'config_size_equals_manifest': len(configs) == 1 and configs[0]['size_bytes'] == len(config),
+          }
+          print(f'model={model} r2_prefix={prefix} catalog_aggregate_sha256={catalog_aggregate} '
+                f'manifest_version={manifest.get("version")} config_sha256={config_sha}')
+          for name, passed in checks.items():
+              print(f'{model} {name}={"PASS" if passed else "FAIL"}')
+          if not all(checks.values()):
+              raise SystemExit(f'::error::{model} metadata does not match the catalog')
+          PY
+          done
+      - name: Compute the runtime facts
+        shell: bash
+        run: |
+          set -euo pipefail
+          arguments=()
+          for model in $MODELS; do
+            dir="$FACTS_WORK/models/$model"
+            arguments+=(--model "$model=$dir/config.json,$dir/manifest.json")
+          done
+          home="$RUNNER_TEMP/approval-facts-home"
+          mkdir -p "$home"
+          started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin HOME="$home" \
+            "$FACTS_CLI" cluster runtime-facts --app "$FACTS_APP" "${arguments[@]}" > "$FACTS_WORK/facts.json"
+          finished=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          python3 -I -c 'import json, sys; json.load(open(sys.argv[1], encoding="utf-8"))' "$FACTS_WORK/facts.json"
+          {
+            echo "facts_started=$started"
+            echo "facts_finished=$finished"
+          } | tee -a "$FACTS_WORK/checks.txt"
+          echo "facts.json:"
+          cat "$FACTS_WORK/facts.json"
+          echo
+      - name: Write the job summary
+        if: ${{ always() && env.FACTS_WORK != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "### Cluster approval facts: $VERSION"
+            echo
+            echo '```text'
+            cat "$FACTS_WORK/checks.txt" 2>/dev/null || true
+            echo '```'
+            if [ -s "$FACTS_WORK/facts.json" ]; then
+              echo
+              echo '```json'
+              cat "$FACTS_WORK/facts.json"
+              echo
+              echo '```'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload the facts
+        if: ${{ always() && env.FACTS_WORK != '' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: approval-facts-${{ matrix.version }}
+          path: |
+            ${{ env.FACTS_WORK }}/facts.json
+            ${{ env.FACTS_WORK }}/checks.txt
+            ${{ env.FACTS_WORK }}/catalog.json
+            ${{ env.FACTS_WORK }}/models/
+          if-no-files-found: warn
+          retention-days: 14

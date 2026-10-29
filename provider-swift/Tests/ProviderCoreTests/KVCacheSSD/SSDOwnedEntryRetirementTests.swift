@@ -35,7 +35,7 @@ struct SSDOwnedEntryRetirementTests {
         }
 
         func evictOldest() -> Int {
-            SSDOwnedEntryRetirement.evictOldest(index: index) { tag in
+            SSDOwnedEntryRetirement.evictOldest(index: index, isClosed: { false }) { tag in
                 let url = SSDBlockStore.fileURL(root: model, tag16Hex: tag.hexString)
                 return retire([url])
             }
@@ -199,7 +199,7 @@ struct SSDOwnedEntryRetirementTests {
     func boundedFallback() {
         let index = SSDBlockIndex()
         var attempts: [Data] = []
-        #expect(SSDOwnedEntryRetirement.evictOldest(index: index) { tag in
+        #expect(SSDOwnedEntryRetirement.evictOldest(index: index, isClosed: { false }) { tag in
             attempts.append(tag)
             return .init()
         } == 0)
@@ -207,7 +207,7 @@ struct SSDOwnedEntryRetirementTests {
         for byte: UInt8 in [1, 2, 3] {
             index.insert(tag16: Data(repeating: byte, count: 16), fileBytes: 64, lastAccess: Int64(byte))
         }
-        #expect(SSDOwnedEntryRetirement.evictOldest(index: index) { tag in
+        #expect(SSDOwnedEntryRetirement.evictOldest(index: index, isClosed: { false }) { tag in
             attempts.append(tag)
             // This also verifies the callback does not hold the index lock.
             index.touch(tags16: [Data(repeating: 1, count: 16)], now: 100)
@@ -228,7 +228,7 @@ struct SSDOwnedEntryRetirementTests {
             index.insert(tag16: tag(byte), fileBytes: 64, lastAccess: Int64(byte))
         }
         var attempts: [Data] = []
-        #expect(SSDOwnedEntryRetirement.evictOldest(index: index) { candidate in
+        #expect(SSDOwnedEntryRetirement.evictOldest(index: index, isClosed: { false }) { candidate in
             attempts.append(candidate)
             if attempts.count == 1 {
                 index.touch(tags16: [tag(1), tag(2)], now: 100)
@@ -373,5 +373,64 @@ struct SSDOwnedEntryRetirementTests {
         #expect(f.epoch.current == nil)
         #expect(FileManager.default.fileExists(atPath: victim.path))
         #expect(f.index.count == 1)
+    }
+
+    @Test("a store found closed after an attempt that freed nothing ends the pass", arguments: [1, 2, 4])
+    func closedStoreEndsThePass(closesOnAttempt: Int) {
+        let index = SSDBlockIndex()
+        for byte: UInt8 in 1 ... 6 {
+            index.insert(tag16: Data(repeating: byte, count: 16), fileBytes: 64, lastAccess: Int64(byte))
+        }
+        final class Store { var closed = false }
+        let store = Store()
+        var attempts: [Data] = []
+        let freed = SSDOwnedEntryRetirement.evictOldest(index: index, isClosed: { store.closed }) { tag in
+            attempts.append(tag)
+            // Busy or refused: this attempt frees nothing. The store closes
+            // during it, so every later attempt would be refused too.
+            if attempts.count == closesOnAttempt { store.closed = true }
+            return .init()
+        }
+        #expect(freed == 0)
+        #expect(attempts == (1 ... closesOnAttempt).map { Data(repeating: UInt8($0), count: 16) })
+        #expect(index.count == 6)
+    }
+
+    @Test("refusals by an open store do not end the pass")
+    func openStoreRefusalsKeepWalking() {
+        let index = SSDBlockIndex()
+        for byte: UInt8 in 1 ... 6 {
+            index.insert(tag16: Data(repeating: byte, count: 16), fileBytes: 64, lastAccess: Int64(byte))
+        }
+        var attempts = 0
+        var closedReads = 0
+        let freed = SSDOwnedEntryRetirement.evictOldest(index: index, isClosed: {
+            closedReads += 1
+            return false
+        }) { _ in
+            attempts += 1
+            // An unsafe root or an unreadable epoch record refuses, then clears.
+            return attempts < 5 ? .init() : .init(removed: ["victim"], indexedBytesFreed: 64)
+        }
+        #expect(freed == 64)
+        #expect(attempts == 5)
+        #expect(closedReads == 4, "read only after attempts that freed nothing")
+    }
+
+    @Test("closedness is not read after a freeing or reconciling attempt")
+    func closedReadOnlyAfterFruitlessAttempts() {
+        let index = SSDBlockIndex()
+        index.insert(tag16: Data(repeating: 1, count: 16), fileBytes: 64, lastAccess: 1)
+        index.insert(tag16: Data(repeating: 2, count: 16), fileBytes: 64, lastAccess: 2)
+        var closedReads = 0
+        #expect(SSDOwnedEntryRetirement.evictOldest(index: index, isClosed: {
+            closedReads += 1
+            return true
+        }) { _ in .init(removed: ["victim"], indexedBytesFreed: 64) } == 64)
+        #expect(SSDOwnedEntryRetirement.evictOldest(index: index, isClosed: {
+            closedReads += 1
+            return true
+        }) { _ in .init(externalChange: true) } == 0)
+        #expect(closedReads == 0)
     }
 }

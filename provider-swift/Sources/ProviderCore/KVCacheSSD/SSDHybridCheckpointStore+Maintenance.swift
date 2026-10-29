@@ -11,7 +11,9 @@ extension SSDHybridCheckpointStore: SSDEvictableStore, DurablePrefixCacheEvidenc
     func oldestEntryAccess() -> Int64? { index.oldest()?.lastAccess }
 
     func evictOldestEntry() -> Int {
-        let freed = SSDOwnedEntryRetirement.evictOldest(index: index) { tag in
+        // A closed store refuses every removal and is never reopened.
+        guard !isClosed else { return 0 }
+        let freed = SSDOwnedEntryRetirement.evictOldest(index: index, isClosed: { isClosed }) { tag in
             let url = SSDBlockStore.fileURL(root: config.root, tag16Hex: tag.hexString)
             return retireIndexedEntries([url])
         }

@@ -8,3 +8,6 @@
   before. The pass past busy or undeletable files stays bounded, and
   external-removal reconciliation still returns control to the disk budget
   before another file is removed.
+- A store that is closed, or that closes during an eviction pass, ends the
+  pass instead of refusing every remaining candidate in turn. It frees
+  nothing either way, and other stores are still evicted.

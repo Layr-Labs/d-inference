@@ -1769,8 +1769,9 @@ public final class SSDPrefixCache:
 
     /// Unlink the LRU entry (box-wide budget enforcement).
     func evictOldestEntry() -> Int {
-        guard hasSafeRoot else { return 0 }
-        let freed = SSDOwnedEntryRetirement.evictOldest(index: index) { tag in
+        // A closed cache refuses every removal and is never reopened.
+        guard !isClosed, hasSafeRoot else { return 0 }
+        let freed = SSDOwnedEntryRetirement.evictOldest(index: index, isClosed: { isClosed }) { tag in
             let url = SSDBlockStore.fileURL(root: config.root, tag16Hex: SSDLookupKeys.hex(tag))
             return retireIndexedEntries([url])
         }

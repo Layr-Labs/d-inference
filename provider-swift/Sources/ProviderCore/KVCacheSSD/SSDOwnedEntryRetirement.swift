@@ -13,13 +13,22 @@ enum SSDOwnedEntryRetirement {
     /// Try the linear LRU probe before copying the index into a fallback
     /// snapshot. Retirement runs outside the index lock and keeps the owning
     /// store's file/epoch checks and external-removal reconciliation.
-    static func evictOldest(index: SSDBlockIndex, retire: (Data) -> Result) -> Int {
+    ///
+    /// `isClosed` is read after each attempt that freed nothing. A closed
+    /// store refuses every later attempt without side effects and is never
+    /// reopened, so stopping there returns the 0 a full pass would. Other
+    /// refusals (an unsafe root, a lost or unreadable epoch record) can
+    /// clear, so the pass continues past them.
+    static func evictOldest(
+        index: SSDBlockIndex, isClosed: () -> Bool, retire: (Data) -> Result
+    ) -> Int {
         guard let oldest = index.oldest() else { return 0 }
         let first = retire(oldest.tag16)
         // Reconciliation may already satisfy the global limit. Let the budget
         // recheck it before selecting another physical victim.
         if first.externalChange { return 0 }
         if first.indexedBytesFreed > 0 { return first.indexedBytesFreed }
+        if isClosed() { return 0 }
 
         // A busy or undeletable oldest entry must not pin newer victims. This
         // snapshot observes touches/inserts during the first attempt; later
@@ -29,6 +38,7 @@ enum SSDOwnedEntryRetirement {
             let result = retire(entry.tag16)
             if result.externalChange { return 0 }
             if result.indexedBytesFreed > 0 { return result.indexedBytesFreed }
+            if isClosed() { return 0 }
         }
         return 0
     }

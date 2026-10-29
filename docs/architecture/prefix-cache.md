@@ -542,7 +542,11 @@ concurrent schedules can select different victims from a snapshot taken
 before the first attempt. File leases, epoch validation and the store's
 removal lock still govern retirement; external loss returns control to the
 disk budget after reconciliation so it can recheck usage before deleting
-another file. Source:
+another file. A closed store refuses every removal and is never reopened, so
+eviction makes no attempt in a store that is closed when the pass starts and
+ends the pass at the first attempt that frees nothing after the store closes.
+Other refusals (an unsafe root, a lost or unreadable epoch record) can clear,
+so the pass continues past them. Source:
 `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDOwnedEntryRetirement.swift`.
 
 A natural `stop`/`length` donor exports its actual complete prompt checkpoints,

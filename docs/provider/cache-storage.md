@@ -1,6 +1,6 @@
 # Set provider cache writes and storage
 
-> Last updated: 2026-10-24
+> Last updated: 2026-10-29
 
 Set a persistent write limit and optionally store encrypted inference caches on
 a separate disk. These commands affect cache payloads; use
@@ -29,6 +29,8 @@ a separate disk. These commands affect cache payloads; use
    at most 100 GB of reserved cache-file writes in the rolling-day accounting
    window. `0` means unlimited. Failed writes consume their reservation;
    metadata writes and the drive's internal write amplification are additional.
+   Speculative first-sight checkpoints count in this same allowance; they also
+   keep a smaller ledger of their own beside the main one.
    The [accounting reference](../reference/ssd-kv-cache.md#size-and-eviction-rules)
    defines the window and disk-space safeguards.
 

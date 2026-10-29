@@ -10,13 +10,16 @@ extension SSDHybridCheckpointStore {
         let tag: Data
         let epoch: String?
         let repeated: Bool
+        /// A speculative first-sight write on its own lane.
+        let speculative: Bool
         let authenticatedFile: SSDAuthenticatedFileIdentity?
         private let settlement: PrefixCacheDonationSettlement
         private let lock = NSLock()
         private var completion: (@Sendable ([Int]) -> Void)?
 
         init(source: CBv2CompleteCheckpointExport, envelope: SSDHybridCheckpointEnvelope,
-             tag: Data, epoch: String?, repeated: Bool, authenticatedFile: SSDAuthenticatedFileIdentity?,
+             tag: Data, epoch: String?, repeated: Bool, speculative: Bool = false,
+             authenticatedFile: SSDAuthenticatedFileIdentity?,
              settlement: PrefixCacheDonationSettlement,
              hostReservation: ProcessHostBufferReservation?, stats: SSDHybridCheckpointStatsBox,
              completion: @escaping @Sendable ([Int]) -> Void) {
@@ -27,6 +30,7 @@ extension SSDHybridCheckpointStore {
             self.tag = tag
             self.epoch = epoch
             self.repeated = repeated
+            self.speculative = speculative
             self.authenticatedFile = authenticatedFile
             self.completion = completion
             self.settlement = settlement
@@ -95,7 +99,7 @@ extension SSDHybridCheckpointStore {
             settlement.settle(outcome)
             completion([])
         case .ready(let job):
-            if !pipeline.submit(job) {
+            if !(job.speculative ? speculativePipeline : pipeline).submit(job) {
                 settle(job, positions: [], outcome: isClosed ? .cacheClosed : .writeQueueFull)
             }
         }
@@ -156,23 +160,49 @@ extension SSDHybridCheckpointStore {
         let localRepeat = writeDemand.observe(short, now: config.nowSeconds())
         let demand = donationWritePolicy(requestID: requestID, localRepeat: localRepeat,
                                         checkpointPosition: manifest.position)
-        if !index.contains(tag16: short) {
+        let durable = index.contains(tag16: short)
+        // A durable duplicate only revalidates; it is never a speculative write.
+        let speculative = demand.speculative && !durable
+        if !durable {
             // Demand gate first: a fleet-novel checkpoint is skipped before any
             // budget is charged (`SSDHybridCheckpointStore+DemandAdmission`).
             // The tag was recorded above, so a local second sighting qualifies.
             if let refusal = demand.refusal {
                 return .refused(refusal)
             }
+            if speculative {
+                if let refusal = speculativeAdmissionRefusal(plaintextBytes: envelope.plaintextBytes) {
+                    return .refused(refusal)
+                }
             // Novel writes use a 90% sub-budget, leaving capacity for known
             // repeat demand. Durable duplicates consume no write budget. The
             // writer rechecks after queueing, since this admission is advisory.
-            if let refusal = Self.writeRefusal(rateLimiter.admission(bytes: envelope.plaintextBytes, repeated: demand.repeated)) {
+            } else if let refusal = Self.writeRefusal(rateLimiter.admission(bytes: envelope.plaintextBytes, repeated: demand.repeated)) {
                 return .refused(refusal)
             }
         }
         let refusal: PrefixCacheDonationOutcome? = lock.withLock {
             guard !closed else { return .cacheClosed }
             guard !writing.contains(short) else { return .alreadyQueued }
+            if speculativeWriting.contains(short) {
+                // The queued speculative job becomes this proven write: it is
+                // charged as one and never refused or withdrawn as speculative.
+                if !speculative, promotedSpeculative.updateValue(demand.repeated, forKey: short) == nil {
+                    statsBox.update { $0.speculativePromoted += 1 }
+                }
+                return .alreadyQueued
+            }
+            if speculative {
+                // Its own lane, so admission never depends on the proven
+                // writer's queue. Once that lane is full the write is
+                // refused as if it had never been admitted.
+                guard speculativeWriting.count < SSDPrefixCachePolicy.speculativeWriteQueueMaxJobs else {
+                    statsBox.update { $0.speculativeRefusedBusy += 1 }
+                    return .skippedNovel
+                }
+                speculativeWriting.insert(short)
+                return nil
+            }
             guard writing.count < SSDPrefixCachePolicy.writeQueueMaxJobs else { return .writeQueueFull }
             writing.insert(short)
             return nil
@@ -185,7 +215,7 @@ extension SSDHybridCheckpointStore {
         }
         return .ready(WriteJob(
             source: source, envelope: envelope, tag: tag, epoch: epoch, repeated: demand.repeated,
-            authenticatedFile: alreadyAuthenticated, settlement: settlement,
+            speculative: speculative, authenticatedFile: alreadyAuthenticated, settlement: settlement,
             hostReservation: hostReservation, stats: statsBox, completion: completion))
     }
 
@@ -203,6 +233,27 @@ extension SSDHybridCheckpointStore {
             return envelope
         }
         return nil
+    }
+
+    /// Advisory speculative gates; the writer repeats both before spending
+    /// anything. A refusal settles `skipped_novel`, exactly as without the
+    /// admission: no bytes or budget were spent.
+    private func speculativeAdmissionRefusal(plaintextBytes: Int) -> PrefixCacheDonationOutcome? {
+        guard rateLimiter.speculativeAdmission(bytes: plaintextBytes) == .accepted else {
+            statsBox.update { $0.speculativeRefusedBudget += 1 }
+            return .skippedNovel
+        }
+        guard speculativeFitsDiskBudget(bytes: plaintextBytes) else {
+            statsBox.update { $0.speculativeRefusedDisk += 1 }
+            return .skippedNovel
+        }
+        return nil
+    }
+
+    /// A speculative file must fit the box-wide disk budget as it stands; it
+    /// never makes room by evicting another entry.
+    private func speculativeFitsDiskBudget(bytes: Int) -> Bool {
+        diskBudget.totalBytes + bytes <= config.diskBudgetBytes()
     }
 
     private static func writeRefusal(_ decision: SSDWriteRateLimiter.Decision) -> PrefixCacheDonationOutcome? {
@@ -232,7 +283,7 @@ extension SSDHybridCheckpointStore {
             // Early exits also release. performWrite releases before budget
             // maintenance so self-eviction still works and lock order is safe.
             defer { access.release() }
-            performWrite(job, access: access, result: &result)
+            await performWrite(job, access: access, result: &result)
         } catch {
             result.outcome = .cacheClosed
         }
@@ -242,8 +293,16 @@ extension SSDHybridCheckpointStore {
         settle(job, positions: result.positions, outcome: result.outcome)
     }
 
+    /// A speculative job runs at background priority; its steps that hold a
+    /// lock other writers or lookups take run at serving priority instead, so
+    /// a starved background thread never holds one.
+    private func atServingPriority<T: Sendable>(_ speculative: Bool, _ body: @escaping @Sendable () -> T) async -> T {
+        guard speculative else { return body() }
+        return await Task.detached(priority: .medium) { body() }.value
+    }
+
     private func performWrite(_ job: WriteJob, access: SSDCheckpointFileCoordinator.Access,
-                              result: inout WriteResult) {
+                              result: inout WriteResult) async {
         guard let envelope = job.readEnvelope() else { result.outcome = .cacheClosed; return }
         let short = Data(job.tag.prefix(16))
         let url = SSDBlockStore.fileURL(root: config.root, tag16Hex: short.hexString)
@@ -253,6 +312,7 @@ extension SSDHybridCheckpointStore {
         let metadata = envelope.metadata(
             tag: job.tag, identity: identity, createdAt: config.nowSeconds(), backendLayout: config.backendLayout)
         var authenticatingExistingFile = false
+        var speculativeBytes: Int?
         do {
             let alreadyDurable = index.contains(tag16: short)
             if alreadyDurable, job.authenticatedFile?.matches(url: url) == true {
@@ -272,14 +332,36 @@ extension SSDHybridCheckpointStore {
                     }
                 }
                 let budgetBytes = try SSDBlockStore.serializedByteCount(metadata: metadata)
-                if let refusal = Self.writeRefusal(rateLimiter.consume(bytes: budgetBytes, repeated: job.repeated)) {
-                    result.outcome = refusal; return
+                let promotedRepeat = job.speculative ? lock.withLock { promotedSpeculative[short] } : nil
+                if job.speculative, promotedRepeat == nil {
+                    let refusal: PrefixCacheDonationOutcome? = await atServingPriority(true) { [self] in
+                        guard speculativeFitsDiskBudget(bytes: budgetBytes) else {
+                            statsBox.update { $0.speculativeRefusedDisk += 1 }
+                            return .skippedNovel
+                        }
+                        guard rateLimiter.consumeSpeculative(bytes: budgetBytes) == .accepted else {
+                            statsBox.update { $0.speculativeRefusedBudget += 1 }
+                            return .skippedNovel
+                        }
+                        return nil
+                    }
+                    if let refusal { result.outcome = refusal; return }
+                    speculativeBytes = 0
+                } else {
+                    let repeated = promotedRepeat ?? job.repeated
+                    let decision = await atServingPriority(job.speculative) { [self] in
+                        rateLimiter.consume(bytes: budgetBytes, repeated: repeated)
+                    }
+                    if let refusal = Self.writeRefusal(decision) { result.outcome = refusal; return }
                 }
                 let written = try SSDBlockStore.writeStreaming(
                     to: url, metadata: metadata, kekKey: kekKey,
                     maximumChunkBytes: CBv2CompleteCheckpointManifest.maximumSegmentBytes,
                     strictFsync: config.strictFsync,
                     chunk: { index in
+                        #if DEBUG
+                        self.beforeWriteChunkForTesting?(index)
+                        #endif
                         try self.checkWrite(job)
                         if index == 0 { return envelope.manifestBytes }
                         let segment = envelope.segments[index - 1]
@@ -299,31 +381,61 @@ extension SSDHybridCheckpointStore {
                 // maintenance) holds `removalLock`, so the file is either still
                 // present here and indexed before any later removal can
                 // reconcile it, or already gone and never advertised.
-                let indexed = removalLock.withLock {
-                    guard SSDBlockStore.indexedBlockFileStatus(at: url, under: config.root) == .regular else {
-                        return false
+                let parent = envelope.parent?.tag16
+                let indexed = await atServingPriority(job.speculative) { [self] in
+                    let indexed = removalLock.withLock {
+                        guard SSDBlockStore.indexedBlockFileStatus(at: url, under: config.root) == .regular else {
+                            return false
+                        }
+                        index.insert(tag16: short, fileBytes: written, lastAccess: config.nowSeconds(),
+                                     parent: parent)
+                        return true
                     }
-                    index.insert(tag16: short, fileBytes: written, lastAccess: config.nowSeconds(),
-                                 parent: envelope.parent?.tag16)
-                    return true
+                    // Keep parents as recent as their children.
+                    if indexed { index.touch(tags16: index.chain(tag16: short)?.tags ?? [], now: config.nowSeconds()) }
+                    return indexed
                 }
                 guard indexed else { result.outcome = .cacheEntryEvicted; return }
-                // Keep parents as recent as their children.
-                index.touch(tags16: index.chain(tag16: short)?.tags ?? [], now: config.nowSeconds())
                 statsBox.update { $0.filesWritten += 1; $0.bytesWritten += written }
-                if envelope.parent != nil { statsBox.update { $0.deltaFilesWritten += 1 } }
+                if parent != nil { statsBox.update { $0.deltaFilesWritten += 1 } }
+                if speculativeBytes != nil { speculativeBytes = written }
             }
             if alreadyDurable { lock.withLock { beforeWriteIndexForTesting }?(url, true) }
             // The durable file and its index entry now form one committed
             // entry. Retirement may remove both, including this new victim.
             access.release()
-            config.maintainWholeRoot()
-            _ = diskBudget.enforce(budgetBytes: config.diskBudgetBytes())
+            let speculativeFile = job.speculative && lock.withLock { promotedSpeculative[short] } == nil
+            let withdrawn = await atServingPriority(job.speculative) { [self] in
+                var withdrawn = false
+                if speculativeFile {
+                    // Whole-root maintenance evicts oldest-first, so a
+                    // speculative file leaves it to proven writes and the
+                    // periodic maintainer. If this file, or a write that landed
+                    // meanwhile, left the budget exceeded, withdraw it rather
+                    // than evict an older entry. Retirement skips a file a
+                    // reader holds; that rare case falls to enforcement.
+                    withdrawn = diskBudget.totalBytes > config.diskBudgetBytes()
+                        && !retireOwnedEntries([url]).isEmpty
+                } else {
+                    config.maintainWholeRoot()
+                }
+                _ = diskBudget.enforce(budgetBytes: config.diskBudgetBytes())
+                return withdrawn
+            }
+            if withdrawn {
+                speculativeBytes = nil
+                statsBox.update { $0.speculativeWithdrawn += 1 }
+            } else if !speculativeFile {
+                speculativeBytes = nil
+            }
             let durable = index.contains(tag16: short)
                 && SSDBlockStore.indexedBlockFileStatus(at: url, under: config.root) == .regular
             if !isClosed, epochMatches(job.epoch), durable {
                 result.positions = [job.source.manifest.position]
                 result.outcome = alreadyDurable ? .alreadyDurable : .donated
+                if let speculativeBytes {
+                    statsBox.update { $0.speculativeFilesWritten += 1; $0.speculativeBytesWritten += speculativeBytes }
+                }
             } else if isClosed {
                 result.outcome = .cacheClosed
             } else if !durable {
@@ -361,7 +473,15 @@ extension SSDHybridCheckpointStore {
     }
 
     func settle(_ job: WriteJob, positions: [Int], outcome: PrefixCacheDonationOutcome = .cacheClosed) {
-        lock.withLock { _ = writing.remove(Data(job.tag.prefix(16))) }
+        lock.withLock {
+            let short = Data(job.tag.prefix(16))
+            if job.speculative {
+                speculativeWriting.remove(short)
+                promotedSpeculative.removeValue(forKey: short)
+            } else {
+                writing.remove(short)
+            }
+        }
         if positions.isEmpty { statsBox.update { $0.writesDropped += 1 } }
         // The engine owns the later post-release ready notification. It must
         // first release the donor's backend and checkpoint aliases.

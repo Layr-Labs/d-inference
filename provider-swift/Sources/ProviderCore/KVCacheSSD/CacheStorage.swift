@@ -115,11 +115,12 @@ public enum CacheStorage {
     }
 
     static func makeWriteBudget(
-        maxWriteBytesPerDay: Int, payloadRoot: URL, isolated: Bool
+        maxWriteBytesPerDay: Int, payloadRoot: URL, isolated: Bool,
+        fileName: String = SSDWriteBudget.defaultFileName
     ) throws -> SSDWriteBudget? {
         guard maxWriteBytesPerDay > 0 else { return nil }
         let root = try writeBudgetRoot(payloadRoot: payloadRoot, isolated: isolated)
-        return try SSDWriteBudget(root: root)
+        return try SSDWriteBudget(root: root, fileName: fileName)
     }
 
     static func writeBudgetRoot(

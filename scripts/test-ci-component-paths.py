@@ -37,11 +37,16 @@ class ComponentPathsTests(unittest.TestCase):
     def test_component_and_shared_dependency_matrix(self):
         cases = {
             "provider-swift/Sources/ProviderCore/ProviderCore.swift": {"provider"},
-            "libs/mlx-swift-lm": {"provider"},
-            "libs/mlx-swift": {"provider"},
+            "libs/mlx-swift-lm": {"provider", "sdk"},
+            "libs/mlx-swift-lm/Libraries/MLXLMCommon/Generate.swift": {"provider", "sdk"},
+            "libs/mlx-swift": {"provider", "sdk"},
+            "libs/mlx": {"provider"},
+            "libs/darkbloom-cluster/Package.swift": {"provider"},
             "fixtures/prompt-contract/v1/corpus.json": {"provider"},
-            ".github/actions/provider-ci-build/action.yml": {"provider"},
-            ".github/workflows/ci.yml": {"provider"},
+            ".github/actions/provider-ci-build/action.yml": {"provider", "sdk"},
+            ".github/workflows/ci.yml": {"provider", "sdk"},
+            "scripts/run-paged-kernel-tests.sh": {"provider", "sdk"},
+            "scripts/run-provider-tests.sh": {"provider"},
             "coordinator/store/postgres/users.go": set(),
             "coordinator/protocol/messages.go": set(),
             "console-ui/package-lock.json": set(),
@@ -55,6 +60,10 @@ class ComponentPathsTests(unittest.TestCase):
                 self.assertEqual({name for name, value in routing.classify([path]).items() if value}, expected)
         for path in routing.COMMON:
             self.assertTrue(all(routing.classify([path]).values()), path)
+        # Every SDK-lane input is also a provider input.
+        for pattern in routing.SDK:
+            path = pattern.replace("**", "x")
+            self.assertTrue(routing.classify([path])["provider"], path)
 
     def test_swift_prompt_corpora_select_provider(self):
         for filename in ("nemotron-prompt-edge-corpus.json", "nemotron-reference-corpus.json"):
@@ -220,7 +229,7 @@ class WorkflowRoutingTests(unittest.TestCase):
 
     def test_expensive_jobs_depend_on_successful_classifier(self):
         expected = {
-            "ci.yml": {"test-provider": "provider", "test-provider-sdk": "provider",
+            "ci.yml": {"test-provider": "provider",
                        "test-provider-parity": "provider", "test-cluster-checks": "provider"},
         }
         for name, lanes in expected.items():
@@ -234,6 +243,11 @@ class WorkflowRoutingTests(unittest.TestCase):
                 self.assertIn("    if: ${{ needs.changes.outputs." + component + " == 'true' }}\n", jobs[lane])
                 self.assertNotIn("continue-on-error:", jobs[lane])
         ci = workflow.job_blocks((ROOT / ".github/workflows/ci.yml").read_text())
+        # The SDK lane runs on every push and on pull requests that change its inputs.
+        self.assertIn("    needs: [changes, route]\n", ci["test-provider-sdk"])
+        self.assertIn("    if: ${{ github.event_name == 'push' || needs.changes.outputs.sdk == 'true' }}\n",
+                      ci["test-provider-sdk"])
+        self.assertNotIn("continue-on-error:", ci["test-provider-sdk"])
         # The summary runs after failed shards too, but only when the shards were selected.
         self.assertIn("    needs: [changes, route, test-provider]\n", ci["test-provider-summary"])
         self.assertIn("    if: ${{ !cancelled() && needs.changes.outputs.provider == 'true' }}\n",
@@ -259,26 +273,25 @@ class WorkflowRoutingTests(unittest.TestCase):
     def test_provider_aggregate_exhaustive_truth_table(self):
         jobs = workflow.job_blocks((ROOT / ".github/workflows/ci.yml").read_text())
         gate = jobs["provider-test-gate"]
-        self.assertIn("needs: [changes, test-provider, test-provider-summary, test-provider-sdk, test-provider-parity]", gate)
+        self.assertIn("needs: [changes, test-provider, test-provider-summary, test-provider-parity]", gate)
+        self.assertNotIn("test-provider-sdk", gate)
         self.assertIn("if: ${{ always() }}", gate)
         self.assertNotIn("continue-on-error:", gate)
         step = workflow.step_blocks(gate)[0]
         for name, expression in {
             "CHANGES_RESULT": "needs.changes.result", "PROVIDER_CHANGED": "needs.changes.outputs.provider",
             "UNIT_RESULT": "needs.test-provider.result", "SUMMARY_RESULT": "needs.test-provider-summary.result",
-            "SDK_RESULT": "needs.test-provider-sdk.result",
             "PARITY_RESULT": "needs.test-provider-parity.result",
         }.items():
             self.assertIn(name + ": ${{ " + expression + " }}", step)
         command = workflow.run_command(step)
         results = ("success", "skipped", "failure", "cancelled")
-        for detector, changed, unit, summary, sdk, parity in itertools.product(
-                results, ("true", "false", ""), results, results, results, results):
+        for detector, changed, unit, summary, parity in itertools.product(
+                results, ("true", "false", ""), results, results, results):
             result = subprocess.run(["bash", "-e", "-c", command], capture_output=True, timeout=5,
                                     env={**os.environ, "CHANGES_RESULT": detector, "PROVIDER_CHANGED": changed,
-                                         "UNIT_RESULT": unit, "SUMMARY_RESULT": summary,
-                                         "SDK_RESULT": sdk, "PARITY_RESULT": parity})
-            lanes = (unit, summary, sdk, parity)
+                                         "UNIT_RESULT": unit, "SUMMARY_RESULT": summary, "PARITY_RESULT": parity})
+            lanes = (unit, summary, parity)
             expected = detector == "success" and ((changed == "true" and set(lanes) == {"success"}) or
                                                   (changed == "false" and set(lanes) == {"skipped"}))
             self.assertEqual(result.returncode == 0, expected, (detector, changed, *lanes))

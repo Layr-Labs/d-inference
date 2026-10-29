@@ -10,7 +10,7 @@ import re
 import subprocess
 
 
-COMPONENTS = ("provider",)
+COMPONENTS = ("provider", "sdk")
 COMMON = (
     "Makefile", "mise.toml", ".gitmodules", ".github/workflows/component-changes.yml",
     ".github/workflows/darkbloom-route.yml",
@@ -36,6 +36,21 @@ PROVIDER = (
 )
 
 
+# Inputs of the Provider SDK Tests lane: the SDK and MLX pins it builds, its
+# build recipe and its runner scripts. Its suites also run in the SDK fork's CI.
+SDK = (
+    "libs/mlx-swift-lm", "libs/mlx-swift-lm/**", "libs/mlx-swift", "libs/mlx-swift/**",
+    ".github/workflows/ci.yml", ".github/actions/provider-ci-build/**",
+    "scripts/provider-ci-cache.py", "scripts/provider_ci_cache/**",
+    "scripts/provider-release-cache.py", "scripts/provider_release_cache/**",
+    "scripts/provider-release-swift.sh", "scripts/prepare-provider-release-toolchain.sh",
+    "scripts/install-release-cmake.sh", "scripts/prepare-metal-toolchain.py",
+    "scripts/fetch-metallib.sh", "scripts/stage-test-metallib.sh",
+    "scripts/run-nested-suite.sh", "scripts/run-paged-kernel-tests.sh",
+    "scripts/run-exclusive-native-gpu-test.sh", "scripts/prepare-mimo-provider-fixtures.py",
+)
+
+
 def matches(path, patterns):
     return any(fnmatchcase(path, pattern) for pattern in patterns)
 
@@ -50,6 +65,7 @@ def classify(paths):
         if matches(path, COMMON):
             return dict.fromkeys(COMPONENTS, True)
         selected["provider"] |= matches(path, PROVIDER)
+        selected["sdk"] |= matches(path, SDK)
     return selected
 
 

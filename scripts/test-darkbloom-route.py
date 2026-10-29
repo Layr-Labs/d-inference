@@ -41,6 +41,7 @@ GRANTED = {"release-integrity": LINUX, "test-provider": MACOS,
            "warm": MACOS, "docs": LINUX_FALLBACK}
 PROVIDER = "${{ needs.changes.outputs.provider == 'true' && 1 || 0 }}"
 PROVIDER_SHARDS = "${{ needs.changes.outputs.provider == 'true' && 4 || 0 }}"
+SDK = "${{ (github.event_name == 'push' || needs.changes.outputs.sdk == 'true') && 1 || 0 }}"
 PULL_REQUEST_WARM = "${{ github.event_name == 'pull_request' && 2 || 0 }}"
 # Every routed job: (profile, fallback label, count expression or None for 1).
 ROUTED = {
@@ -49,7 +50,7 @@ ROUTED = {
         "docs": ("linux_arm64", LINUX_FALLBACK, None),
         "test-provider": ("macos_arm64", MACOS_FALLBACK, PROVIDER_SHARDS),
         "test-provider-summary": ("macos_arm64", MACOS_FALLBACK, PROVIDER),
-        "test-provider-sdk": ("macos_arm64", MACOS_FALLBACK, PROVIDER),
+        "test-provider-sdk": ("macos_arm64", MACOS_FALLBACK, SDK),
         "test-provider-parity": ("macos_arm64", MACOS_FALLBACK, PROVIDER),
         "test-cluster-checks": ("macos_arm64", MACOS_FALLBACK, PROVIDER),
     },
@@ -488,9 +489,15 @@ class RouteWorkflowTests(unittest.TestCase):
                         # route job and is true there.
                         matrix = re.search(r"(?m)^        shard: \[([0-9, ]+)\]$", job)
                         jobs_requested = len(matrix.group(1).split(",")) if matrix else 1
-                        self.assertEqual(count, None if condition is None
-                                         else condition.replace("!cancelled() && ", "").replace(
-                                             " }}", f" && {jobs_requested} || 0 }}}}"))
+                        expected_count = None
+                        if condition is not None:
+                            inner = condition.removeprefix("${{ ").removesuffix(" }}")
+                            inner = inner.replace("!cancelled() && ", "")
+                            # `a || b && N` would evaluate to `a`; group an alternative.
+                            if "||" in inner:
+                                inner = f"({inner})"
+                            expected_count = f"${{{{ {inner} && {jobs_requested} || 0 }}}}"
+                        self.assertEqual(count, expected_count)
         warm = jobs(self.texts["provider-release-cache.yml"])["warm"]
         self.assertIn("lane: [release, qualification]", warm)
         self.assertEqual(job_field(warm, "if"),

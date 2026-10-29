@@ -40,7 +40,7 @@ jobs:
         docs linux_arm64 blacksmith-4vcpu-ubuntu-2404
         test-provider macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.changes.outputs.provider == 'true' && 4 || 0 }}
         test-provider-summary macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.changes.outputs.provider == 'true' && 1 || 0 }}
-        test-provider-sdk macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.changes.outputs.provider == 'true' && 1 || 0 }}
+        test-provider-sdk macos_arm64 blacksmith-12vcpu-macos-27 ${{ (github.event_name == 'push' || needs.changes.outputs.sdk == 'true') && 1 || 0 }}
         test-provider-parity macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.changes.outputs.provider == 'true' && 1 || 0 }}
         test-cluster-checks macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.changes.outputs.provider == 'true' && 1 || 0 }}
 
@@ -476,9 +476,12 @@ jobs:
           retention-days: 14
 
   test-provider-sdk:
+    # Not part of the Provider Tests gate. A pull request runs it only when an
+    # SDK-lane input changes (scripts/ci-component-paths.py SDK); every push to
+    # dev or master runs it, and a failure there notifies without blocking.
     name: Provider SDK Tests
     needs: [changes, route]
-    if: ${{ needs.changes.outputs.provider == 'true' }}
+    if: ${{ github.event_name == 'push' || needs.changes.outputs.sdk == 'true' }}
     runs-on: ${{ fromJSON(needs.route.outputs.routes)['test-provider-sdk'] }}
     timeout-minutes: 60
     steps:
@@ -763,7 +766,7 @@ jobs:
   provider-test-gate:
     name: Provider Tests
     runs-on: ubuntu-24.04
-    needs: [changes, test-provider, test-provider-summary, test-provider-sdk, test-provider-parity]
+    needs: [changes, test-provider, test-provider-summary, test-provider-parity]
     if: ${{ always() }}
     steps:
       - name: Require selected provider lanes or verified intentional skips
@@ -772,7 +775,6 @@ jobs:
           PROVIDER_CHANGED: ${{ needs.changes.outputs.provider }}
           UNIT_RESULT: ${{ needs.test-provider.result }}
           SUMMARY_RESULT: ${{ needs.test-provider-summary.result }}
-          SDK_RESULT: ${{ needs.test-provider-sdk.result }}
           PARITY_RESULT: ${{ needs.test-provider-parity.result }}
         run: |
           test "$CHANGES_RESULT" = success
@@ -783,7 +785,6 @@ jobs:
           esac
           test "$UNIT_RESULT" = "$expected"
           test "$SUMMARY_RESULT" = "$expected"
-          test "$SDK_RESULT" = "$expected"
           test "$PARITY_RESULT" = "$expected"
 
   cache-swift:

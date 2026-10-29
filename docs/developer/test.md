@@ -115,7 +115,11 @@ in parallel; when in doubt, a suite stays serial.
 
 The SDK has independent test products under `libs/mlx-swift-lm`. CI validates
 native memory ownership, cancellation, media decoding, paged KV and resource
-packaging there as well as provider behavior. Preserve all retained lane gates;
+packaging there as well as provider behavior. `Provider SDK Tests` is not part
+of the `Provider Tests` gate: a pull request runs it only when an SDK-lane input
+changes (`SDK` in `scripts/ci-component-paths.py`: the `libs/mlx-swift-lm` and
+`libs/mlx-swift` pins, the build recipe and the nested-suite runners), and every
+push to `dev` or `master` runs it, where a failure notifies without blocking. Preserve all retained lane gates;
 do not treat the repository split as permission to skip native regressions.
 
 ### Download completion ownership

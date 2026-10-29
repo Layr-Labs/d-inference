@@ -24,6 +24,7 @@ PROVIDER_TEST_COMMAND = ('python3 ../scripts/run-provider-test-watchdog.py \\\n'
                          '  -- ../scripts/run-provider-tests.sh')
 READY = "${{ !cancelled() && steps.provider-ci-build.outcome == 'success' }}"
 MIMO_READY = "${{ !cancelled() && steps.provider-ci-build.outcome == 'success' && steps.mimo-fixtures.outcome == 'success' }}"
+SDK_CONDITION = "github.event_name == 'push' || needs.changes.outputs.sdk == 'true'"
 # Steps that run once, in the last provider shard.
 LAST_SHARD = "matrix.shard == strategy.job-total"
 LAST_SHARD_READY = READY.replace("!cancelled() && ", f"!cancelled() && {LAST_SHARD} && ")
@@ -188,14 +189,18 @@ class ProviderCIWorkflowTests(unittest.TestCase):
                 # A Darkbloom macOS sandbox when granted, otherwise the same
                 # dedicated Blacksmith runner; requested only when the lane runs.
                 self.assertIn("    runs-on: ${{ fromJSON(needs.route.outputs.routes)['%s'] }}\n" % job_id, job)
-                # The provider lane asks for one runner per shard.
+                # The provider lane asks for one runner per shard. The SDK lane
+                # runs on every push and on pull requests that change its inputs.
                 count = 4 if job_id == "test-provider" else 1
+                condition = (SDK_CONDITION if job_id == "test-provider-sdk"
+                             else "needs.changes.outputs.provider == 'true'")
+                requested = f"({condition})" if "||" in condition else condition
                 self.assertIn("        %s macos_arm64 blacksmith-12vcpu-macos-27 "
-                              "${{ needs.changes.outputs.provider == 'true' && %d || 0 }}\n" % (job_id, count),
+                              "${{ %s && %d || 0 }}\n" % (job_id, requested, count),
                               self.jobs["route"])
                 self.assertIn("    timeout-minutes: 60\n", job)
                 self.assertIn("    needs: [changes, route]\n", job)
-                self.assertIn("    if: ${{ needs.changes.outputs.provider == 'true' }}\n", job)
+                self.assertIn("    if: ${{ %s }}\n" % condition, job)
                 if job_id == "test-provider":
                     # Shards are independent: a failed shard never cancels another.
                     self.assertIn("    strategy:\n      # A failed shard does not cancel the other shards.\n"
@@ -209,24 +214,25 @@ class ProviderCIWorkflowTests(unittest.TestCase):
     def test_existing_required_check_requires_every_lane_even_after_failures(self):
         job = self.jobs["provider-test-gate"]
         self.assertIn("    name: Provider Tests\n", job)
-        self.assertIn("    needs: [changes, test-provider, test-provider-summary, test-provider-sdk, test-provider-parity]\n", job)
+        self.assertIn("    needs: [changes, test-provider, test-provider-summary, test-provider-parity]\n", job)
+        # Provider SDK Tests notifies after merge and never blocks this gate.
+        self.assertNotIn("test-provider-sdk", job)
         self.assertIn("    if: ${{ always() }}\n", job)
         self.assertNotIn("continue-on-error:", job)
         step = step_blocks(job)[0]
         command = run_command(step)
-        for unit, summary, sdk, parity in (("success", "success", "success", "success"),
-                                           ("failure", "success", "success", "success"),
-                                           ("success", "failure", "success", "success"),
-                                           ("success", "success", "failure", "success"),
-                                           ("success", "success", "success", "failure"),
-                                           ("skipped", "success", "success", "success"),
-                                           ("success", "skipped", "success", "success"),
-                                           ("success", "success", "cancelled", "success")):
+        for unit, summary, parity in (("success", "success", "success"),
+                                      ("failure", "success", "success"),
+                                      ("success", "failure", "success"),
+                                      ("success", "success", "failure"),
+                                      ("skipped", "success", "success"),
+                                      ("success", "skipped", "success"),
+                                      ("success", "success", "cancelled")):
             result = subprocess.run(["bash", "-e", "-c", command],
                                     env={**os.environ, "CHANGES_RESULT": "success", "PROVIDER_CHANGED": "true", "UNIT_RESULT": unit,
-                                         "SUMMARY_RESULT": summary, "SDK_RESULT": sdk, "PARITY_RESULT": parity},
+                                         "SUMMARY_RESULT": summary, "PARITY_RESULT": parity},
                                     capture_output=True, timeout=5)
-            self.assertEqual(result.returncode == 0, unit == summary == sdk == parity == "success")
+            self.assertEqual(result.returncode == 0, unit == summary == parity == "success")
 
     def test_each_lane_checks_out_recursive_sources_before_its_build(self):
         for job_id, lane in LANES.items():

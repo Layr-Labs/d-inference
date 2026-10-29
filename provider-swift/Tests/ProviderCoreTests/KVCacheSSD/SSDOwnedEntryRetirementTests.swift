@@ -246,6 +246,39 @@ struct SSDOwnedEntryRetirementTests {
         #expect(attempts == [1, 4, 3, 2].map { tag($0) })
     }
 
+    @Test("TTL retirement keeps an entry hit after its cutoff and records the hit without moving an mtime back")
+    func liveEntriesSurviveTTLRetirement() throws {
+        let f = try Fixture()
+        let stale = try f.file(1), live = try f.file(2), current = try f.file(3)
+        func modified(_ url: URL) throws -> Date? {
+            try FileManager.default.attributesOfItem(atPath: url.path)[.modificationDate] as? Date
+        }
+        func identity(_ url: URL) throws -> SSDAuthenticatedFileIdentity {
+            let handle = try FileHandle(forReadingFrom: url)
+            defer { try? handle.close() }
+            return try SSDAuthenticatedFileIdentity(handle: handle)
+        }
+        // The mtimes maintenance read are older than the cutoff; `current`'s
+        // already records a time after its in-memory hit.
+        for url in [stale, live] {
+            SSDBlockStore.setAttributesIfSafe([.modificationDate: Date(timeIntervalSince1970: 100)], at: url, under: f.model)
+        }
+        SSDBlockStore.setAttributesIfSafe([.modificationDate: Date(timeIntervalSince1970: 5000)], at: current, under: f.model)
+        f.index.touch(tags16: [Data(repeating: 2, count: 16), Data(repeating: 3, count: 16)], now: 2000)
+        let pinned = try identity(current)
+        let result = try #require(SSDOwnedEntryRetirement.remove(
+            urls: [stale, live, current], root: f.model, index: f.index, epochStore: f.epoch, unusedSince: 1000))
+        #expect(result.removed == [stale.path] && !result.externalChange)
+        #expect(f.index.lastAccess(tag16: Data(repeating: 2, count: 16)) == 2000)
+        #expect(try modified(live) == Date(timeIntervalSince1970: 2000))
+        #expect(try modified(current) == Date(timeIntervalSince1970: 5000))
+        #expect(try identity(current) == pinned, "a current mtime is not rewritten, so its receipts stay valid")
+        // Without a cutoff, retirement stays unconditional.
+        let budget = try #require(SSDOwnedEntryRetirement.remove(
+            urls: [live], root: f.model, index: f.index, epochStore: f.epoch))
+        #expect(budget.removed == [live.path] && f.index.lastAccess(tag16: Data(repeating: 2, count: 16)) == nil)
+    }
+
     @Test("known retirement preserves durable identity, sequence and survivor bytes")
     func preservesIdentity() throws {
         let f = try Fixture()

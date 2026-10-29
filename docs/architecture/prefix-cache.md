@@ -819,6 +819,15 @@ reads each candidate's size and recency under one lock, so request lookup visits
 only its prefix candidates and does not scan unrelated cached entries. A probe
 does not extend TTL; authenticated use still controls recency updates and
 validates replacements or evictions (`SSDHybridCheckpointStore+Read.swift`).
+Restores of one checkpoint share its per-file lease and read it in parallel;
+its writer and duplicate validation take the lease exclusively, in arrival
+order, and maintenance takes it only when no request holds or awaits it. A
+reader rewrites the file's mtime or removes a corrupt file only while it holds
+the file alone
+([same-file coordination](../reference/ssd-kv-cache.md#complete-checkpoint-payload)),
+so that mtime can trail the last hit. Whole-root TTL expiry therefore checks a
+loaded store's in-memory last hit before deleting its file and records a newer
+hit as the mtime (`SSDOwnedEntryRetirement.swift`).
 Before file I/O, the provider reserves bounded host read scratch. A shared
 native process owner prices destinations, zero-fill scratch, metadata and full
 request promises through Admission; it does not duplicate the provider's host

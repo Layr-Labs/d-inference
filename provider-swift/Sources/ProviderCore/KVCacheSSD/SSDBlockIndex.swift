@@ -10,7 +10,10 @@
 //
 // TTL is SLIDING on hit (30-minute max, `SSDPrefixCachePolicy`): a hit
 // bumps `lastAccess` AND touches the file's mtime, so recency survives a
-// process restart (the scan seeds `lastAccess` from mtime).
+// process restart (the scan seeds `lastAccess` from mtime). A complete
+// checkpoint's touch needs a reader holding the file alone and an mtime at
+// least `ttlSeconds / 30` old, so that mtime can trail `lastAccess`. Whole-root
+// TTL expiry of a loaded store's file checks `lastAccess` first and persists it.
 //
 // Eviction is `unlink` + index removal, oldest-by-last-hit first (LRU),
 // coordinated across models by `SSDDiskBudget` under one box-wide budget.
@@ -129,6 +132,11 @@ final class SSDBlockIndex: @unchecked Sendable {
             }
             return sizes
         }
+    }
+
+    /// The entry's last hit or write, nil when it is not indexed.
+    func lastAccess(tag16: Data) -> Int64? {
+        lock.withLock { entries[tag16]?.lastAccess }
     }
 
     /// Sliding-TTL bump for a hit run.
@@ -263,8 +271,9 @@ protocol SSDEvictableStore: AnyObject, Sendable {
     func performExternalDestructiveChange(_ body: () -> Void) -> Bool
     /// Retire only the named owned files, preserving the generation of survivors.
     /// Return paths actually unlinked; arbitrary external destruction uses the
-    /// separate index-reconciliation method above.
-    func retireOwnedEntries(_ urls: [URL]) -> Set<String>
+    /// separate index-reconciliation method above. With `unusedSince`, a file
+    /// the index saw hit after that time stays, and that hit becomes its mtime.
+    func retireOwnedEntries(_ urls: [URL], unusedSince: Int64?) -> Set<String>
 }
 
 /// Process-wide disk budget across all models, resolved by `PrefixCachePolicy`.
@@ -321,14 +330,14 @@ final class SSDDiskBudget: @unchecked Sendable {
     }
 
     /// nil means no active owner; an empty set means the owner removed nothing.
-    func retireActiveEntries(root: URL, urls: [URL]) -> Set<String>? {
+    func retireActiveEntries(root: URL, urls: [URL], unusedSince: Int64? = nil) -> Set<String>? {
         let key = root.standardizedFileURL.resolvingSymlinksInPath().path
         return lock.withLock {
             guard let store = stores.values.first(where: {
                 $0.evictionRoot.standardizedFileURL.resolvingSymlinksInPath().path == key
                     && $0.ownsEvictionRoot
             }) else { return nil }
-            return store.retireOwnedEntries(urls)
+            return store.retireOwnedEntries(urls, unusedSince: unusedSince)
         }
     }
 

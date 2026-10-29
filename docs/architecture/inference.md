@@ -4450,6 +4450,16 @@ fetches the CDN's file first and writes the first encoding this Mac's worker
 describes as `manifest.json`. A copy over the cable sends those same bytes, and
 the receiving Mac's worker checks them before the folder is renamed into place.
 
+A folder whose manifest this Mac's worker refuses, for example a folder that
+was copied over the cable before a pin change, is repaired by
+`ClusterProductModelStore.repairStoreManifests`. Each Mac runs it when its
+setup report lists the models, and the leader runs it before it plans. It
+fetches the published manifest in the same order and replaces `manifest.json`
+atomically only when the fetched bytes name the same model, version and files
+(`ClusterCatalogArtifact.sameArtifact`) and the worker describes them. It never
+writes the weight files. When nothing answers, or the bytes name other files or
+another catalog entry, the folder is unchanged and the worker refuses it.
+
 
 ## GPT-OSS independent-history batch forward
 

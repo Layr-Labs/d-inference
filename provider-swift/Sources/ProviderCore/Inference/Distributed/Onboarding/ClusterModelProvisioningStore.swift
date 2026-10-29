@@ -43,11 +43,11 @@ enum ClusterProductModelStore {
     /// The worker pins the CDN's file for every registered model (2026-10-28), so the CDN is asked first. The first
     /// one the worker takes is used; without `accepts` (or when it takes neither), the first that answers.
     static func catalogManifest(providerConfiguration: URL, artifact: ClusterCatalogArtifact, seconds: Double = 5,
+                                environment: [String: String] = ProcessInfo.processInfo.environment,
                                 accepts: ((Data) -> Bool)? = nil) -> Data? {
         var urls = [URL]()
         if let prefix = artifact.r2Prefix {
-            let cdn = (ProcessInfo.processInfo.environment["DARKBLOOM_R2_CDN_URL"].flatMap { $0.isEmpty ? nil : $0 } ?? ModelDownloader.defaultR2CDNURL)
-                .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            let cdn = ModelDownloader.resolveCDNURL(environment: environment)
             if let url = URL(string: "\(cdn)/\(ModelDownloader.escapeR2Path(prefix))/manifest.json") { urls.append(url) }
         }
         if let config = try? ConfigManager.loadOrDefaults(from: providerConfiguration), let escaped = ModelCatalogClient.escapeModelIDForPath(artifact.modelID),
@@ -71,8 +71,7 @@ enum ClusterProductModelStore {
             done.signal()
         }.resume()
         guard done.wait(timeout: .now() + seconds + 1) == .success, let data = box.take().first,
-              let parsed = try? ClusterCatalogArtifact.parse(manifest: data), parsed.aggregateSHA256 == artifact.aggregateSHA256,
-              ClusterCatalogArtifact.sameFiles(parsed.files, artifact.files) else { return nil }
+              let parsed = try? ClusterCatalogArtifact.parse(manifest: data), parsed.sameArtifact(artifact) else { return nil }
         return data
     }
 
@@ -85,7 +84,7 @@ enum ClusterProductModelStore {
         if case .complete(let folder) = ClusterModelStore.holding(store: store, artifact: artifact) {
             if let providerConfiguration {
                 let directory = store.appendingPathComponent(folder)
-                repairManifest(directory, installed: installed, providerConfiguration: providerConfiguration,
+                repairManifest(directory, artifact: artifact, providerConfiguration: providerConfiguration,
                                accepts: accepts.map { check in { check($0, directory) } })
             }
             return nil
@@ -105,22 +104,45 @@ enum ClusterProductModelStore {
     /// A model cloned in while the catalog did not answer kept the product store's re-encoded receipt as its
     /// manifest; the worker pins the catalog's exact bytes, so the cluster said "not supported" for a verified model
     /// forever (Qwen 3.5 9B, 2026-10-15: the two differed only in `created_at`). When the folder's manifest names
-    /// the same artifact and files but is not the catalog's bytes, the catalog's bytes replace it, once they name exactly the same files (`fetchManifest`).
-    static func repairManifest(_ folder: URL, installed: Installed, providerConfiguration: URL, accepts: ((Data) -> Bool)? = nil) {
+    /// `artifact` (model, version, aggregate and files) but is not bytes the worker takes, the catalog's bytes replace
+    /// it, once they name exactly that artifact too (`fetchManifest`) and the worker takes them. Only `manifest.json`
+    /// is replaced (atomically); the weight files are never opened. Otherwise the folder is left as it is.
+    static func repairManifest(_ folder: URL, artifact: ClusterCatalogArtifact, providerConfiguration: URL,
+                               environment: [String: String] = ProcessInfo.processInfo.environment,
+                               accepts: ((Data) -> Bool)? = nil) {
         let manifest = folder.appendingPathComponent("manifest.json")
         // Asked once per folder per process: the catalog is read only for a model it has not been checked against;
         // a manifest this Mac's worker already takes is left as it is.
         // Only with the worker's own answer: without it the catalog's two encodings could replace one the worker takes.
         guard let accepts, repairLock.withLock({ repairChecked.insert(folder.path).inserted }),
               let current = ClusterModelStore.readSmall(manifest), !accepts(current),
-              let parsed = try? ClusterCatalogArtifact.parse(manifest: current),
-              parsed.aggregateSHA256 == installed.artifact.aggregateSHA256, ClusterCatalogArtifact.sameFiles(parsed.files, installed.artifact.files),
-              let exact = catalogManifest(providerConfiguration: providerConfiguration, artifact: installed.artifact, accepts: accepts),
+              let parsed = try? ClusterCatalogArtifact.parse(manifest: current), parsed.sameArtifact(artifact),
+              let exact = catalogManifest(providerConfiguration: providerConfiguration, artifact: artifact,
+                                          environment: environment, accepts: accepts),
               exact != current, accepts(exact) else { return }
         var information = stat()
         guard lstat(folder.path, &information) == 0, information.st_mode & S_IFMT == S_IFDIR, information.st_uid == geteuid() else { return }
         try? exact.write(to: manifest, options: [.atomic])
         _ = chmod(manifest.path, 0o600)
+    }
+
+    /// The same repair for every folder of the cluster's store whose artifact a pair may serve (`servable`), each
+    /// against its own manifest. A folder copied over the cable has no product-store receipt here, so clone-in never
+    /// repairs it: after the pin change of 2026-10-28 (every registered model pins the CDN's `manifest.json`) this
+    /// Mac's worker refuses a copied folder that kept the production coordinator's bytes, and without this repair only
+    /// removing the folder by hand would bring the model back. Runs where each Mac lists its models (its setup report,
+    /// which also answers the other Mac) and before the leader plans, so an update needs no hand step.
+    static func repairStoreManifests(store: URL, servable: Set<String>, providerConfiguration: URL,
+                                     environment: [String: String] = ProcessInfo.processInfo.environment,
+                                     accepts: @escaping (_ manifest: Data, _ folder: URL) -> Bool) {
+        let names = ((try? FileManager.default.contentsOfDirectory(atPath: store.path)) ?? []).sorted()
+        for name in names.prefix(256) where !name.hasPrefix(".") {
+            let folder = store.appendingPathComponent(name)
+            guard let data = ClusterModelStore.readSmall(folder.appendingPathComponent("manifest.json")),
+                  let held = try? ClusterCatalogArtifact.parse(manifest: data), servable.contains(held.aggregateSHA256) else { continue }
+            repairManifest(folder, artifact: held, providerConfiguration: providerConfiguration, environment: environment,
+                           accepts: { accepts($0, folder) })
+        }
     }
 }
 

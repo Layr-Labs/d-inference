@@ -620,6 +620,10 @@ final class OnboardingLive: @unchecked Sendable {
             _ = try? ClusterProductModelStore.cloneIntoClusterStore(installed, store: store, providerConfiguration: settings.service.wizard.providerConfiguration,
                                                                     accepts: context.workerAcceptsManifest)
         }
+        // Folders copied over the cable (no receipt on this Mac) are repaired before the plan describes them.
+        ClusterProductModelStore.repairStoreManifests(store: store, servable: ClusterModelCopyTrust.servableArtifacts,
+                                                      providerConfiguration: settings.service.wizard.providerConfiguration,
+                                                      accepts: context.workerAcceptsManifest)
         switch context.plan(peer: peer, keeping: keeping) {
         case .failed(let reason): return .failure(.init("Planning failed: \(reason)"))
         case .ready(let options):

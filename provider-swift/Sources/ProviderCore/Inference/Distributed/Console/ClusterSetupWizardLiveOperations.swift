@@ -438,6 +438,9 @@ final class LiveContext: @unchecked Sendable {
                 _ = try? ClusterProductModelStore.cloneIntoClusterStore(installed, store: URL(fileURLWithPath: store), providerConfiguration: configuration,
                                                                         accepts: workerAcceptsManifest)
             }
+            // A folder copied over the cable has no receipt here: its manifest is repaired against the catalog too.
+            ClusterProductModelStore.repairStoreManifests(store: URL(fileURLWithPath: store), servable: ClusterModelCopyTrust.servableArtifacts,
+                                                          providerConfiguration: configuration, accepts: workerAcceptsManifest)
         }
         let doctor = blockingWizard { await ClusterDiagnostics.doctor(providerConfiguration: self.configuration, localLink: link) }
         let savedSetup: ClusterConsoleSavedSetup

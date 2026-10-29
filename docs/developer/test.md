@@ -1070,7 +1070,12 @@ changes provider code: `libs/darkbloom-cluster-worker/Tests/CapabilityChecks/run
 `libs/darkbloom-cluster/Tests/StageMetadataChecks/run.py`,
 `libs/darkbloom-cluster/Tests/GPTOSSStageChecks/run.sh`,
 `libs/darkbloom-cluster/Tests/NemotronStageChecks/run.sh` and
-`provider-swift/Tests/ClusterModelProvisioningChecks/run.sh`. The library's XCTest targets
+`provider-swift/Tests/ClusterModelProvisioningChecks/run.sh provisioning`. The
+last one runs the provisioning checks only. Its download cache-policy check
+reads how many written pages stay in the file cache, which the host's kernel
+and disk decide: on the hosted CI VM 0.75 of the pages written with
+`F_NOCACHE` stayed resident. Run `run.sh` with no argument on a Mac for that
+check. The library's XCTest targets
 (`swift test --package-path libs/darkbloom-cluster`) and the worker package's
 tests (built for macOS 26.2) need the GPU and exclusive device access. A
 loopback or fixture pass never counts as a two-Mac hardware pass.

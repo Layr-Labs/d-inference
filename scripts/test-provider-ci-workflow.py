@@ -557,7 +557,7 @@ class ProviderCIWorkflowTests(unittest.TestCase):
                                          '--output "$RUNNER_TEMP/stage-metadata-checks"',
             "Run GPT-OSS stage checks": "bash libs/darkbloom-cluster/Tests/GPTOSSStageChecks/run.sh",
             "Run Nemotron stage checks": "bash libs/darkbloom-cluster/Tests/NemotronStageChecks/run.sh",
-            "Run cluster model provisioning checks": "bash provider-swift/Tests/ClusterModelProvisioningChecks/run.sh",
+            "Run cluster model provisioning checks": "bash provider-swift/Tests/ClusterModelProvisioningChecks/run.sh provisioning",
         }
         named = {field(step, "name", indent=6): step for step in steps}
         for name, command in runners.items():

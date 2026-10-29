@@ -608,9 +608,12 @@ jobs:
       - name: Run Nemotron stage checks
         if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
         run: bash libs/darkbloom-cluster/Tests/NemotronStageChecks/run.sh
+      # The download cache-policy check of the same runner stays on a Mac: on the
+      # hosted VM, 0.75 of the pages written with F_NOCACHE stayed resident
+      # (run 40804083002), which the VM's kernel and disk decide, not the code.
       - name: Run cluster model provisioning checks
         if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
-        run: bash provider-swift/Tests/ClusterModelProvisioningChecks/run.sh
+        run: bash provider-swift/Tests/ClusterModelProvisioningChecks/run.sh provisioning
 
   provider-test-gate:
     name: Provider Tests

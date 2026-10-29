@@ -109,51 +109,51 @@ clusters. A coordinator that refuses this pair is not treated this way; the
 start fails and says why. To serve without any coordinator, use
 [`darkbloom cluster local`](#serving-locally-only).
 
-## Offered to the coordinator for pairing (DevNet)
+## Registered with the coordinator as a cluster member (DevNet)
 
-On a coordinator that approves cluster runtimes (DevNet only), the pair is
-offered to the coordinator by itself. Nothing is typed and no file is copied.
-Production and staging answer that they have no approval, and the pair serves
-as described above.
+When the coordinator's operator approval file holds a cluster approval for this
+pair's installed app and model (DevNet only), the pair registers with the
+coordinator by itself. Nothing is typed and no file is copied. Production and
+staging serve no approvals, and the pair serves as described above. The pair is
+owner-only: it serves only its owner's own requests.
 
 1. Run `darkbloom cluster` and choose a model, as in [the steps](#the-steps-once).
-   After the Start stage saves the setup, the leader asks the coordinator for
-   the approval of the installed Darkbloom version (`GET /v1/cluster/approvals`). Each
-   Mac checks the approval against its own installed app and model, and both
-   Macs save it, or neither does.
+   After the Test stage passes, the leader reads the approvals the coordinator
+   serves (`GET /v1/cluster/approvals`) and takes the one whose model, prefill
+   schedule and eight digests match this pair's installed app and model. Each
+   Mac checks it against its own files, and both Macs save it, or neither
+   does. Both Macs then start their parts again as cluster members.
 2. Read the ready screen. Instead of the API line it says:
 
    ```
-   Offered to the coordinator for pairing: approval release/<version>/<model>/s1, until <date>.
-   This pair has no local API while it is offered for pairing: requests from your own account reach it through Darkbloom.
+   Registered with the coordinator as a cluster member: approval <id>, until <date>.
    ```
 
-   There is no test request in this mode. `darkbloom cluster` status shows the
+   There is no local API in this mode. `darkbloom cluster` status shows the
    same line.
 
-An approval ends 14 days after its release. The leader asks again at each start
-of its cluster service and after each Darkbloom update, and takes a later
-approval when the saved one ends within a day. A Mac whose approval ended
-saves its setup without it before its part starts, and the pair serves on the
-leader's local API again. `darkbloom cluster local` also serves without the
-approval.
+An approval ends at its `not_after` (14 days after the operator added it). The
+leader asks again at each start of its cluster service, after each Darkbloom
+update and every minute while the pair is registered, and takes a later
+matching approval when the saved one ends within a day. A Mac whose approval
+ended saves its setup without it before its part starts, and the pair serves on
+the leader's local API again. `darkbloom cluster local` never asks the
+coordinator and serves without the approval.
 
-While the pair is offered, the leader asks the coordinator once a minute. When
-the coordinator gives no answer for the absence grace (10 minutes, the same
-grace as in [if a Mac goes away](#if-a-mac-goes-away)), both Macs save their
-setups without the approval and the pair serves on the leader's local API. The
-leader keeps the approval aside. When the coordinator answers again, each Mac
-checks the approval again and the pair is offered again, while the approval is
-current.
+When the coordinator gives no answer for the absence grace (10 minutes, the
+same grace as in [if a Mac goes away](#if-a-mac-goes-away)), both Macs save
+their setups without the approval and the pair serves on the leader's local
+API. When the coordinator answers again with a matching approval, the pair
+registers again.
 
 What `darkbloom cluster` status says in each mode:
 
 | Mode | Status line |
 |---|---|
-| Offered | `Offered to the coordinator for pairing: approval <id>, until <date>.` |
+| Registered | `Registered with the coordinator as a cluster member: approval <id>, until <date>.` |
 | Coordinator gave no answer for the grace | The API line, then `The coordinator has not answered for 10 minutes: the pair serves on the leader's local API until it answers again, then it is offered again with approval <id>.` |
 | Approval ended | The API line, then one line that says the cluster approval `<id>` expired and the pair serves on the leader's local API |
-| Not offered (production, staging, a refusal) | The API line, then (only after a refusal) `Not offered for pairing: <reason>.` |
+| No approval (production, staging, no matching entry) | The API line, then (only after a refusal) `Not offered for pairing: <reason>.` |
 
 Approval sources, checks and saved fields:
 [coordinator-paired member](../reference/configuration.md#coordinator-paired-member).
@@ -536,7 +536,8 @@ and they must match.
 - The login agent and macOS's one Local Network approval need the signed
   Darkbloom.app ([always on](cluster-always-on.md)).
 - Public serving through Darkbloom is not offered by the onboarding. A pair
-  offered for pairing serves only its owner's own requests.
+  registers with a coordinator that serves a matching cluster approval, and
+  then serves only its owner's own requests (owner-only).
 - A member cannot yet download a catalog model itself (the leader downloads and
   copies), and a model change typed on a Mac that does not lead cannot copy a
   model (run it on the leader).

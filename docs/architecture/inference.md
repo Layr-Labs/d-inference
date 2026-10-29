@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-10-28
+> Last updated: 2026-10-29
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -224,13 +224,15 @@ and `libs/darkbloom-cluster/Sources/DarkbloomClusterPlacement/ClusterPlacementBa
 
 `ClusterOnboardingDriver` presents connection, pairing, model choice, startup
 and a test response as five stages. Completion requires the test response to
-succeed; a failed response retains the saved setup for a later retry. A pair
-whose saved setups carry a current cluster approval is offered to the
-coordinator instead: the cluster service runs both parts as coordinator-paired
-members (`ClusterService.Settings.memberArguments`), which have no local API,
-so the Test stage is replaced by the offered line
-(`ClusterOnboardingReady.offered`, `OnboardingLive.offeredReadiness`). How the
-approval is fetched, checked on each Mac and saved:
+succeed; a failed response retains the saved setup for a later retry. After
+the test response succeeds, the control leader registers the pair with the
+coordinator when the coordinator serves a cluster approval for this pair
+(`ClusterOnboardingDriver.register`, control operation `register`). Both parts
+then run as coordinator-paired members
+(`ClusterService.Settings.memberArguments`), which have no local API, and the
+ready screen shows the registered line (`ClusterOnboardingReady.offered`,
+`OnboardingLive.offeredReadiness`). How the approval is fetched, matched,
+checked on each Mac and saved:
 [coordinator-paired member](../reference/configuration.md#coordinator-paired-member).
 `OnboardingLive` uses fresh peer display facts only while their authenticated
 member identity matches the current pairing. These labels do not rewrite saved

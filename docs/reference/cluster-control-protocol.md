@@ -1,6 +1,6 @@
 # Experimental cluster control protocol
 
-> Last updated: 2026-10-28
+> Last updated: 2026-10-29
 
 Exact member-role and native-pair public-control shapes on the provider
 WebSocket, as staged in draft pull requests: the provider side in this
@@ -185,9 +185,10 @@ verify the peer's hello against the peer's attested key before deriving a key.
 
 A member registers a `cluster_membership` only when its saved setup carries a
 [pair approval](configuration.md#coordinator-paired-member). The guided setup
-saves one by itself from the coordinator's `GET /v1/cluster/approvals` when
-that coordinator approves the release's cluster runtime (each Mac checks it
-against its own files first), and removes it when it ends. The claim is
+saves one by itself, after its Test stage, from the coordinator's
+`GET /v1/cluster/approvals` when the operator approval file holds an entry
+whose digests are this pair's own (each Mac checks it against its own files
+first), and removes it when it ends. The claim is
 derived from the installed control, so its `policy_sha256` names exactly the
 policy bytes the control requires in a prepare frame
 (`provider-swift/Sources/ProviderCore/ProviderLoop+Serve.swift`, `serve`;

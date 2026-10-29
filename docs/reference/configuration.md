@@ -1004,27 +1004,33 @@ with an optional `nativeMember` object and runs `darkbloom start
 selector matches the two registrations itself (see
 [pair formation](cluster-control-protocol.md#pair-formation)).
 
-**Automatic (guided setup).** `darkbloom cluster` saves the object by itself
-when the provider configuration's coordinator approves this release's cluster
-runtime (DevNet only). The cluster service then runs each Mac's part as
+**Automatic (guided setup).** The coordinator operator adds a cluster approval
+by hand to the operator approval file
+([`EIGENINFERENCE_CLUSTER_PAIR_CATALOG`](#experimental-cluster-pairs)), with the
+digests that `darkbloom cluster runtime-facts --app <app> --model
+<id>=<config>,<manifest>` prints ([cluster runtime facts](#cluster-runtime-facts)).
+The coordinator serves the loaded entries. After the Test stage of
+`darkbloom cluster` passes, the control leader takes the entry for this pair and
+saves it on both Macs. The cluster service then runs each Mac's part as
 `darkbloom start --foreground --cluster-member`
 (`provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/ClusterService.swift`,
-`memberArguments`).
+`memberArguments`). Pairs are owner-only.
 
 | Step | Rule | Source |
 |---|---|---|
-| Fetch | `GET <coordinator>/v1/cluster/approvals?version=<installed version>&platform=macos-arm64`, no credential. The installed version is `CFBundleShortVersionString` of the `Contents/Info.plist` above the setup worker's `Contents/Helpers`, so a cluster service that an update did not restart asks for the installed release; it is `ProviderCore.version` only when the worker is not inside an app or the app names no valid version (`installedVersion`); HTTPS only (plain HTTP only to this Mac's loopback); no redirect; at most `maximumBytes = 512 * 1024` bytes and `maximumApprovals = 128` entries; `timeoutSeconds = 10`. The body is `darkbloom_cluster_catalog_v2` with `cluster_approvals`; one unknown, missing or malformed field refuses the whole answer. 404 and every failure mean no approval | `provider-swift/Sources/ProviderCore/Inference/Distributed/Membership/ClusterApproval/ClusterApprovalFetch.swift` (`ClusterApprovalFetch`) |
-| Select | The entry whose `model` is the setup's `publicModelID` and whose `schedule` is its prefill schedule (`1` serial, `2` one-chunk lookahead), still current, latest `not_after` first | `provider-swift/Sources/ProviderCore/Inference/Distributed/Membership/ClusterApproval/ClusterApprovalLifetime.swift` (`select`) |
-| Check | On each Mac, against its own files: every digest of the release's cluster runtime facts (`ClusterRuntimeApprovalFacts`, computed from the helpers beside the setup's worker and the setup's model folder); the member's own start refusals (`requireLocalRankGranted`); the roster of this Mac's pairing (S17); `validate` below | `provider-swift/Sources/ProviderCore/Inference/Distributed/Membership/ClusterApproval/ClusterApprovalAttachment.swift` (`attachment`) |
-| Save | The leader checks the entry, sends it to the other Mac over the cable (service command `approval`), and saves it only after the other Mac checked and saved it. A refusal on either Mac saves it on neither | `provider-swift/Sources/ProviderCore/Inference/Distributed/Membership/ClusterApproval/ClusterApprovalSync.swift` (`run`, `receive`) |
-| When | After the guided setup's Start stage saved both setups and after an update re-adopted them (`OnboardingLive.syncApproval`), once at each start of the control leader's cluster service, and every minute while a serving pair is offered or has its approval kept aside (`ClusterService.checkApproval`) | as named |
-| Lifetime | A saved approval with more than `renewWithinSeconds = 86_400` left is kept. Within that day a later entry replaces it. An ended one is removed: each Mac saves its setup without it before its part starts, and its part then serves on the leader's local API (`ClusterService.supervise`) | `ClusterApprovalLifetime.decide` |
-| No answer | While a serving pair is offered, the leader asks again every `ClusterOnboardingUpdate.checkEverySeconds = 60`. When no request gets an HTTP answer for the absence grace (`ClusterService.soloGraceSeconds`: 600 s; `DARKBLOOM_DEBUG_CLUSTER_SOLO_GRACE_SECONDS` in a development build), both Macs save their setups without the approval, the other Mac first; when the other Mac cannot be told, nothing changes and the next check tries again. The leader keeps the approval in its setup record (`parkedApproval`). At the next HTTP answer, that approval (or a later one) is saved on both Macs again through the Save step, while it is current. Any HTTP answer counts, also an error status | `ClusterApprovalSync.step`, `serveLocally`; `ClusterService.checkApproval` |
+| Fetch | `GET <coordinator>/v1/cluster/approvals`, no query, no credential; HTTPS only (plain HTTP only to this Mac's loopback); no redirect; at most `maximumBytes = 512 * 1024` bytes and `maximumApprovals = 128` entries; `timeoutSeconds = 10`. The body is `darkbloom_cluster_catalog_v2` with `cluster_approvals`; one unknown, missing or malformed field refuses the whole answer. 404 (pair control off: production, staging) and every failure mean no approval. A read error after an HTTP answer is an answer that cannot be used, not "no answer" | `provider-swift/Sources/ProviderCore/Inference/Distributed/Membership/ClusterApproval/ClusterApprovalFetch.swift` (`ClusterApprovalFetch`) |
+| Match | The entry whose `model` is the setup's `publicModelID`, whose `schedule` is its prefill schedule (`1` serial, `2` one-chunk lookahead), that is still current, and whose eight digests all equal this Mac's own cluster runtime facts (computed from the helpers beside the setup's worker and the setup's model folder); latest `not_after` first. An entry for another build or another copy of the model does not match | `provider-swift/Sources/ProviderCore/Inference/Distributed/Membership/ClusterApproval/ClusterApprovalLifetime.swift` (`select`) |
+| Check | On each Mac, against its own files: every digest (`ClusterApprovalAttachment.mismatches`); the member's own start refusals (`requireLocalRankGranted`); the roster of this Mac's pairing (S17); `validate` below | `provider-swift/Sources/ProviderCore/Inference/Distributed/Membership/ClusterApproval/ClusterApprovalAttachment.swift` (`attachment`) |
+| Save | Both parts stop. The leader checks the entry, sends it to the other Mac over the cable (service command `approval`), and saves it only after the other Mac checked and saved it. A refusal on either Mac saves it on neither. Both parts then start as cluster members | `provider-swift/Sources/ProviderCore/Inference/Distributed/Membership/ClusterApproval/ClusterApprovalSync.swift` (`run`, `receive`) |
+| When | After the guided setup's Test stage passed (control operation `register`, run by the control leader: `OnboardingLive.localRegister`), once at each start of the control leader's cluster service and after an update re-adopted the setups, and every minute while a serving pair is offered or has its approval kept aside (`ClusterService.checkApproval`). A local-only cluster never asks (`ClusterApprovalSync.asks`) | as named |
+| Lifetime | A saved approval with more than `renewWithinSeconds = 86_400` left is kept. Within that day a later matching entry replaces it. An ended one is removed: each Mac saves its setup without it before its part starts, and its part then serves on the leader's local API (`ClusterService.supervise`) | `ClusterApprovalLifetime.decide` |
+| No answer | When no request gets an HTTP answer for the absence grace (`ClusterService.soloGraceSeconds`: 600 s; `DARKBLOOM_DEBUG_CLUSTER_SOLO_GRACE_SECONDS` in a development build), both Macs save their setups without the approval, the other Mac first; when either Mac cannot save, both keep it and the next check tries again. The leader keeps the approval in its setup record (`parkedApproval`). At the next HTTP answer with a matching entry, the pair is offered again through the Save step | `ClusterApprovalSync.step`, `serveLocally`; `ClusterService.checkApproval` |
 
-A coordinator that answers 404 (pairing off, production, staging) leaves both
-saved setups byte for byte as they were, and nothing is sent over the cable.
-`darkbloom cluster local` saves the setups without the object, because a local
-session cannot run with it (below).
+A coordinator that answers 404, serves no matching entry or serves only ended
+entries leaves both saved setups byte for byte as they were: nothing is sent
+over the cable and no part stops. `darkbloom cluster local` serves without the
+object (a cluster approval is removed; a pair approval saved by hand stays, and
+the local session refuses beside it, below).
 
 **By hand.** The steps below stay available for an approval file the
 coordinator operator keeps:

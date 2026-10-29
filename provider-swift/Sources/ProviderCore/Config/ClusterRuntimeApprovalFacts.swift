@@ -130,9 +130,9 @@ public struct ClusterRuntimeApprovalFacts: Equatable, Sendable {
     /// The models this build qualifies on a cluster, from its own bundled
     /// qualification records (`ClusterPairServingGrants.records`): the one
     /// source of the release's model list.
-    public static var releaseModels: [ReleaseModel] { releaseModels(records: ClusterPairServingGrants.records) }
+    public static var releaseModels: [ReleaseModel] { qualifiedModels(records: ClusterPairServingGrants.records) }
 
-    static func releaseModels(records: [ClusterPairQualificationRecord]) -> [ReleaseModel] {
+    static func qualifiedModels(records: [ClusterPairQualificationRecord]) -> [ReleaseModel] {
         Set(records.filter {
             $0.isConsistent && $0.outcome == .passed && ClusterPairServingGrants.hasStageAdapter(runtimeModelID: $0.runtimeModelID)
         }.map { ReleaseModel(runtimeModelID: $0.runtimeModelID, artifactSHA256: $0.artifactSHA256) })
@@ -141,47 +141,73 @@ public struct ClusterRuntimeApprovalFacts: Equatable, Sendable {
 
     /// The facts of `installation` for exactly `models`.
     public static func compute(installation: Installation, models: [ModelFiles]) throws -> Self {
-        let installed = try hashed(installation)
-        let entries = try models.map {
-            try describe($0, worker: installed.worker, workerSHA256: installed.digests[0], deadline: deadline(seconds: 30)).entry
-        }
-        return try .init(installed: installed.digests, models: entries)
+        let installed = try HashedInstallation(installation)
+        return try installed.facts(models.map { try installed.describe($0).entry })
+    }
+
+    /// The qualified models a release may leave out, by runtime model ID with
+    /// their catalog model ID, when the build's own worker refuses every
+    /// candidate of the model. Until the GLM manifest repin PR lands, then
+    /// remove. Fixed in code: no argument or input file adds to it.
+    static let softReleaseModels = ["registered_glm53_flash": "glm-5.3-flash"]
+
+    /// A model of `softReleaseModels` that a release left out, and why.
+    public struct Omission: Equatable, Sendable {
+        /// The catalog model ID.
+        public let model: String
+        public let runtimeModelID: String
+        public let reason: String
     }
 
     /// The facts a release registers: for every model in `models`, the first
     /// candidate folder with its artifact that the worker describes as that
     /// model. Fails naming every model that has none, and when a model in
     /// `required` (catalog IDs) is not among the result.
+    ///
+    /// Only a caller that gives `omitted` lets a model of `softReleaseModels`
+    /// whose candidates the worker all refused (`DistributedCapabilityProbe.commandFailed`)
+    /// be left out: `omitted` receives it once the facts are complete, and a
+    /// required model left out so does not fail. Any other failure of that
+    /// model (no candidate, a candidate of another model, a file or integrity
+    /// refusal) still fails.
     public static func release(installation: Installation, candidates: [ModelFiles], required: [String],
-                               models: [ReleaseModel] = ClusterRuntimeApprovalFacts.releaseModels) throws -> Self {
-        let installed = try hashed(installation)
+                               models: [ReleaseModel] = ClusterRuntimeApprovalFacts.releaseModels,
+                               omitted: ((Omission) -> Void)? = nil) throws -> Self {
+        let installed = try HashedInstallation(installation)
         let parsed = try candidates.map { ($0, try catalogArtifact($0)) }
-        var entries: [Model] = [], failures: [String] = []
+        var entries: [Model] = [], failures: [String] = [], omissions: [Omission] = []
         for listed in models {
-            var refusals: [String] = [], chosen: Model?
+            var refusals: [String] = [], workerRefusedAll = true, chosen: Model?
             for (files, artifact) in parsed where artifact.aggregateSHA256 == listed.artifactSHA256 {
                 do {
-                    let described = try describe(files, worker: installed.worker, workerSHA256: installed.digests[0],
-                                                 deadline: deadline(seconds: 30))
+                    let described = try installed.describe(files)
                     if described.runtimeModelID == listed.runtimeModelID { chosen = described.entry; break }
                     refusals.append("\(files.manifest.path) is \(described.runtimeModelID)")
+                    workerRefusedAll = false
                 } catch {
                     refusals.append("\(files.manifest.path): \(error)")
+                    if (error as? ClusterConfigurationError) != DistributedCapabilityProbe.commandFailed { workerRefusedAll = false }
                 }
             }
             if let chosen { entries.append(chosen); continue }
-            failures.append("\(listed.runtimeModelID) (\(listed.artifactSHA256)): "
-                + (refusals.isEmpty ? "no candidate folder has this artifact" : refusals.joined(separator: "; ")))
+            let reason = refusals.isEmpty ? "no candidate folder has this artifact" : refusals.joined(separator: "; ")
+            if omitted != nil, !refusals.isEmpty, workerRefusedAll, let model = softReleaseModels[listed.runtimeModelID] {
+                omissions.append(Omission(model: model, runtimeModelID: listed.runtimeModelID, reason: reason))
+                continue
+            }
+            failures.append("\(listed.runtimeModelID) (\(listed.artifactSHA256)): " + reason)
         }
         guard failures.isEmpty else {
             throw ClusterConfigurationError.invalid("Qualified cluster models the release cannot describe: " + failures.joined(separator: " | "))
         }
-        let names = Set(entries.map(\.model))
+        let names = Set(entries.map(\.model) + omissions.map(\.model))
         let missing = required.filter { !names.contains($0) }
         guard missing.isEmpty else {
             throw ClusterConfigurationError.invalid("The release's cluster models lack required models: " + missing.joined(separator: ", "))
         }
-        return try .init(installed: installed.digests, models: entries)
+        let facts = try installed.facts(entries)
+        omissions.forEach { omitted?($0) }
+        return facts
     }
 
     /// One model's entry, described by `worker` pinned to `workerSHA256`.
@@ -265,7 +291,7 @@ public struct ClusterRuntimeApprovalFacts: Equatable, Sendable {
         guard (1...Self.maximumModels).contains(models.count), models.allSatisfy({ Self.modelIDIsValid($0.model) }) else {
             throw ClusterConfigurationError.invalid("Cluster runtime facts need 1 to \(Self.maximumModels) models with printable ASCII IDs")
         }
-        guard zip(models, models.dropFirst()).allSatisfy({ Array($0.model.utf8).lexicographicallyPrecedes(Array($1.model.utf8)) }) else {
+        guard zip(models, models.dropFirst()).allSatisfy({ Self.inByteOrder($0, $1) }) else {
             throw ClusterConfigurationError.invalid("Cluster runtime facts models must be sorted by model ID and unique")
         }
     }
@@ -275,16 +301,15 @@ public struct ClusterRuntimeApprovalFacts: Equatable, Sendable {
     /// `ID=DIRECTORY` or `ID=CONFIG,MANIFEST`: a model given by hand. The ID
     /// is checked against the manifest when the model is described.
     public static func modelArgument(_ text: String) throws -> (model: String, files: ModelFiles) {
+        let malformed = ClusterConfigurationError.invalid("Expected --model ID=DIRECTORY or ID=CONFIG,MANIFEST")
         let parts = text.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false).map(String.init)
-        guard parts.count == 2, !parts[0].isEmpty, !parts[1].isEmpty else {
-            throw ClusterConfigurationError.invalid("Expected --model ID=DIRECTORY or ID=CONFIG,MANIFEST")
-        }
+        guard parts.count == 2, !parts[0].isEmpty, !parts[1].isEmpty else { throw malformed }
         let paths = parts[1].split(separator: ",", omittingEmptySubsequences: false).map(String.init)
         switch paths.count {
         case 1: return (parts[0], ModelFiles(directory: URL(fileURLWithPath: paths[0], isDirectory: true)))
         case 2 where !paths[0].isEmpty && !paths[1].isEmpty:
             return (parts[0], ModelFiles(configuration: URL(fileURLWithPath: paths[0]), manifest: URL(fileURLWithPath: paths[1])))
-        default: throw ClusterConfigurationError.invalid("Expected --model ID=DIRECTORY or ID=CONFIG,MANIFEST")
+        default: throw malformed
         }
     }
 
@@ -301,23 +326,42 @@ public struct ClusterRuntimeApprovalFacts: Equatable, Sendable {
 
     // MARK: - Helpers
 
-    /// The installation's four digests (native runtime, metallib, resource
-    /// library, placement policy) and its canonical worker path.
-    private static func hashed(_ installation: Installation) throws -> (worker: URL, digests: [String]) {
-        let until = deadline(seconds: 120)
-        let files = [(installation.worker, true), (installation.metallib, false),
-                     (installation.resourceLibrary, false), (installation.placementTool, true)]
-        let canonicalFiles = try files.map { (try canonical($0.0), $0.1) }
-        let digests = try canonicalFiles.map {
-            try DistributedInstalledFiles.digest($0.0, maximumBytes: 256 * 1024 * 1024, executable: $0.1, deadline: until).sha256
+    /// An installation's four helpers, each resolved to its real path and
+    /// then hashed under the installed-file rules, and the worker that
+    /// describes models pinned to the digest just computed.
+    private struct HashedInstallation {
+        let worker: URL
+        let nativeRuntimeSHA256, metallibSHA256, resourceLibrarySHA256, placementPolicySHA256: String
+
+        init(_ installation: Installation) throws {
+            let until = ClusterRuntimeApprovalFacts.deadline(seconds: 120)
+            let files = try [(installation.worker, true), (installation.metallib, false),
+                             (installation.resourceLibrary, false), (installation.placementTool, true)]
+                .map { (try ClusterRuntimeApprovalFacts.canonical($0.0), $0.1) }
+            let digests = try files.map {
+                try DistributedInstalledFiles.digest($0.0, maximumBytes: 256 * 1024 * 1024, executable: $0.1, deadline: until).sha256
+            }
+            worker = files[0].0
+            nativeRuntimeSHA256 = digests[0]; metallibSHA256 = digests[1]
+            resourceLibrarySHA256 = digests[2]; placementPolicySHA256 = digests[3]
         }
-        return (canonicalFiles[0].0, digests)
+
+        func describe(_ files: ModelFiles) throws -> Described {
+            try ClusterRuntimeApprovalFacts.describe(files, worker: worker, workerSHA256: nativeRuntimeSHA256,
+                                                     deadline: ClusterRuntimeApprovalFacts.deadline(seconds: 30))
+        }
+
+        /// The facts of this installation for `models`, in byte order.
+        func facts(_ models: [Model]) throws -> ClusterRuntimeApprovalFacts {
+            try .init(nativeRuntimeSHA256: nativeRuntimeSHA256, metallibSHA256: metallibSHA256,
+                      resourceLibrarySHA256: resourceLibrarySHA256, placementPolicySHA256: placementPolicySHA256,
+                      models: models.sorted(by: ClusterRuntimeApprovalFacts.inByteOrder))
+        }
     }
 
-    private init(installed digests: [String], models: [Model]) throws {
-        try self.init(nativeRuntimeSHA256: digests[0], metallibSHA256: digests[1], resourceLibrarySHA256: digests[2],
-                      placementPolicySHA256: digests[3],
-                      models: models.sorted { Array($0.model.utf8).lexicographicallyPrecedes(Array($1.model.utf8)) })
+    /// The order of `models`: model IDs compared byte by byte.
+    private static func inByteOrder(_ first: Model, _ second: Model) -> Bool {
+        first.model.utf8.lexicographicallyPrecedes(second.model.utf8)
     }
 
     /// The catalog identity a model folder's manifest names, bounded and

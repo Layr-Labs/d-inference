@@ -1245,6 +1245,7 @@ make changelog-check
 python3 scripts/test-provider-release-resolution.py
 python3 scripts/test-provider-release-resume.py
 python3 scripts/test-provider-release-publication.py
+python3 scripts/test-provider-cluster-runtime-models.py
 python3 scripts/test-release-dev-branch.py
 python3 scripts/test-provider-release-pipeline.py
 python3 scripts/test-provider-release-artifact.py
@@ -1280,7 +1281,13 @@ prove Apple runtime behavior.
 with verbatim annotations, including multiline opening paragraphs, extra blank
 lines, CRLFs and synthetic SSH/PGP signature armor. It checks exact retained note
 text and payload/provenance digest guards without invoking signing or live
-publication.
+publication. Its cluster runtime rows check that a dev payload carries a valid
+`cluster_runtime`, that a malformed or missing block is refused for dev, that
+prod and staging refuse one, and that the prod payload bytes are unchanged.
+`scripts/test-provider-cluster-runtime-models.py` runs the release's
+model-metadata fetch against a local HTTP registry: candidate selection, the
+manifest and `config.json` checks, retries and refusals. It reads no weights and
+uses no network.
 
 `scripts/test-provider-release-pipeline.py` and
 `scripts/test-provider-release-resolution.py` pin the routing of

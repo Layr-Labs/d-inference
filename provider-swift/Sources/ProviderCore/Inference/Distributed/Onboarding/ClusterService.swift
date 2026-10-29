@@ -926,7 +926,7 @@ public final class ClusterService: @unchecked Sendable {
             value.updating = updatingLine
             value.localOnly = record?.leadership.map { $0.scope.isLocalOnly }
             value.memberQuickEnds = memberQuickEnds
-            value.approvalID = configuration?.nativeMember?.clusterApproval?.id
+            value.approvalID = configuration?.nativeMember?.clusterApproval?.id ?? ""
             return value
         }
     }
@@ -1045,7 +1045,7 @@ public final class ClusterService: @unchecked Sendable {
             // The other Mac's saved cluster approval and its coordinator-paired parts' quick ends, from its status (nil
             // when it does not answer): both Macs carry the same approval, or neither does.
             let peer = try? JSONDecoder().decode(ClusterServiceStatus.self, from: live.command(.init(op: .status), seconds: 10))
-            let peerApprovalID: String?? = peer.map { $0.approvalID }
+            let peerApprovalID = ClusterApprovalCheck.peerApprovalID(peer)
             let macsDiffer = ClusterApprovalCheck.macsDiffer(saved, peerApprovalID: peerApprovalID)
             let asks = ClusterApprovalCheck.asks(first: first, serving: record?.leadership?.serving == true, scope: scope,
                                                  offered: offered, setAside: setAside != nil, macsDiffer: macsDiffer)

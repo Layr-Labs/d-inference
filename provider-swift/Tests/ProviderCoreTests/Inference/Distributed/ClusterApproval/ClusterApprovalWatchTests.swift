@@ -277,4 +277,28 @@ struct ClusterApprovalWatchTests {
         #expect(ClusterService.lastError(in: log, from: offset + 4_096)?.hasPrefix("Saved cluster approval") == true,
                 "a log shorter than the offset was replaced and is read whole")
     }
+
+    @Test func aFollowerThatDoesNotReportItsApprovalIsNeverTakenForOneWithout() throws {
+        let macs = try ClusterApprovalMacs(coordinatorURL: "ws://127.0.0.1:9/ws/provider")
+        let approval = macs.approval(), facts = try macs.facts()
+        #expect(macs.sync(.approvals([approval]), leaderFacts: facts, followerFacts: facts).changed)
+        let leaderSaved = try macs.saved(macs.leader)
+        func status(_ approvalID: String?) throws -> ClusterServiceStatus {
+            var object: [String: Any] = ["serving": true, "sessionLeader": false, "child": ["running": true, "starts": 1]]
+            if let approvalID { object["approvalID"] = approvalID }
+            return try JSONDecoder().decode(ClusterServiceStatus.self, from: JSONSerialization.data(withJSONObject: object))
+        }
+        // An older follower build sends no field: unknown, never "no approval", so nothing converges.
+        let older = ClusterApprovalCheck.peerApprovalID(try status(nil))
+        #expect(older == nil)
+        #expect(!ClusterApprovalCheck.macsDiffer(leaderSaved, peerApprovalID: older))
+        #expect(try step(macs, .approvals([approval]), peer: older, Watched(), clock: 0) == .keep)
+        // A follower that reports none ("") differs from the leader's approval; one that reports the same ID does not.
+        let none = ClusterApprovalCheck.peerApprovalID(try status(""))
+        #expect(none == .some(nil) && ClusterApprovalCheck.macsDiffer(leaderSaved, peerApprovalID: none))
+        let same = ClusterApprovalCheck.peerApprovalID(try status(approval.id))
+        #expect(same == .some(approval.id) && !ClusterApprovalCheck.macsDiffer(leaderSaved, peerApprovalID: same))
+        // No answer at all is unknown too.
+        #expect(ClusterApprovalCheck.peerApprovalID(nil) == nil)
+    }
 }

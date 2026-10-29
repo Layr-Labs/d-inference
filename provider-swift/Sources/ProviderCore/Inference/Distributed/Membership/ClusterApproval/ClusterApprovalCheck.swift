@@ -43,7 +43,14 @@ enum ClusterApprovalCheck {
         return first || macsDiffer || (serving && (offered || setAside))
     }
 
-    /// Whether the other Mac's saved cluster approval (`peerApprovalID`, from its status; nil: it did not answer) is not
+    /// The other Mac's saved cluster approval as its status reports it: `.some(id)`, `.some(nil)` for none, and nil when
+    /// it did not answer or its build does not report the field (an older follower), which is never compared.
+    static func peerApprovalID(_ status: ClusterServiceStatus?) -> String?? {
+        guard let reported = status?.approvalID else { return nil }
+        return .some(reported.isEmpty ? nil : reported)
+    }
+
+    /// Whether the other Mac's saved cluster approval (`peerApprovalID`, from its status; nil: unknown) is not
     /// this Mac's. A pair approval saved by hand on this Mac is the operator's and never compared.
     static func macsDiffer(_ saved: ClusterConfigurationStore.Saved, peerApprovalID: String??) -> Bool {
         guard saved.configuration.nativeMember?.approval == nil, let peer = peerApprovalID else { return false }

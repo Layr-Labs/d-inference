@@ -613,6 +613,9 @@ import Darwin
         run.type("\r")
         // The choice is the start: one stated line with a moment to stop, no second question.
         expect(run.waitFor("Starting Qwen3.5-9B on both Macs in 3 s; press n to stop here."), "leader: the timed start")
+        expect(run.text.contains("Options: always on (each Mac starts its part again by itself); serves your own requests through "
+            + "Darkbloom, and public requests where Darkbloom has qualified this model and split.\n"),
+            "leader: a cluster serving through Darkbloom says who it serves")
         let code = run.finish()
         expect(code == 0, "leader: exit 0, got \(String(describing: code))")
         let text = run.text

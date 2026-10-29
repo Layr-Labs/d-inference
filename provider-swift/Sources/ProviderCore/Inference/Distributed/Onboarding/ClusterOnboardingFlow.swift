@@ -1130,7 +1130,8 @@ public enum ClusterOnboardingDriver {
         console.heading("4 / 5  Start the model")
         console.say(scope.isLocalOnly
             ? "Options: always on (each Mac starts its part again by itself); \(scope.line.prefix(1).lowercased() + scope.line.dropFirst())."
-            : "Options: always on (each Mac starts its part again by itself); public serving through Darkbloom is off in this build.")
+            : "Options: always on (each Mac starts its part again by itself); serves your own requests through Darkbloom, "
+                + "and public requests where Darkbloom has qualified this model and split.")
         // The choice is the start: a moment to stop it, no second question.
         console.say("Starting \(choice.title) on both Macs in \(startSeconds) s; press n to stop here.")
         let deadline = Date().addingTimeInterval(Double(startSeconds))

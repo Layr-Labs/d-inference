@@ -1016,7 +1016,9 @@ The coordinator serves the loaded entries. After the Test stage of
 saves it on both Macs. The cluster service then runs each Mac's part as
 `darkbloom start --foreground --cluster-member`
 (`provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/ClusterService.swift`,
-`memberArguments`). Pairs are owner-only.
+`memberArguments`). A pair serves its owner's requests; the coordinator decides
+public serving (its public cluster routing and a parity qualification of the
+pair's placement; [serving a pair](cluster-control-protocol.md#serving-a-pair)).
 
 | Step | Rule | Source |
 |---|---|---|

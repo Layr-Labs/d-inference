@@ -1,4 +1,5 @@
 import CryptoKit
+import DarkbloomClusterProtocol
 import Foundation
 
 // The roster registration (`cluster_membership` version 3, N18), member side.
@@ -245,7 +246,8 @@ public struct ClusterPlan: Codable, Sendable, Equatable {
     /// Member pins in rank order; the first leads. May name a subset of the roster.
     public let members: [String]
     /// Layer boundaries between consecutive members: rank i holds
-    /// [cuts[i-1], cuts[i]). One fewer than `members`, ascending, positive.
+    /// [cuts[i-1], cuts[i]). As many as the plan's mode has (`cutCount`),
+    /// ascending, positive.
     public let cuts: [UInt32]
     /// The generation mode the plan runs (`ClusterGenerationMode` raw value);
     /// omitted means the pipeline. Part of the placement: plans that differ in
@@ -277,11 +279,18 @@ public struct ClusterPlan: Codable, Sendable, Equatable {
         }
     }
 
-    /// The generation modes a plan may name (`protocol.ClusterPlanModes`).
-    /// `pipeline_mtp_v1` (a pipeline's speculative rounds, planned by default
-    /// where its records pass and measured it faster) needs the coordinator's
-    /// list to name it too before a role-aware coordinator accepts such a plan.
-    public static let modes = ["pipeline_v1", "pipeline_compact_decode_v1", "phase_split_v1", "phase_split_mtp_v1", "pipeline_mtp_v1"]
+    /// The generation modes a plan may name: those of `protocol.ClusterPlanModes`
+    /// a setup can select. A role-aware coordinator refuses a plan naming a mode
+    /// its list does not, so a mode is added here only once that list names it.
+    public static let modes = ["pipeline_v1", "pipeline_compact_decode_v1", "phase_split_v1", "phase_split_mtp_v1", "pipeline_mtp_v1",
+                               "tensor_parallel_v1", "pipeline_prefill_tensor_decode_v1"]
+
+    /// The layer cuts a plan of `members` names in `mode` (`protocol.ClusterPlanModeCutCount`), as the mode counts
+    /// them (`ClusterGenerationMode.layerCutCount`), so a member checks its plan by the rule it derived it with: none
+    /// for tensor parallel, where every member holds a share of every layer, and one fewer than the members otherwise.
+    public static func cutCount(mode: String, members: Int) -> Int {
+        (ClusterGenerationMode(rawValue: mode) ?? .pipeline).layerCutCount(ranks: members)
+    }
 
     enum CodingKeys: String, CodingKey {
         case policySHA256 = "policy_sha256"
@@ -310,7 +319,7 @@ public struct ClusterPlan: Codable, Sendable, Equatable {
         guard ClusterConfigurationSyntax.hash(policySHA256), ClusterConfigurationSyntax.hash(planSHA256),
               ClusterRosterSyntax.modelName(model),
               (ClusterRoster.minimumMembers...ClusterRoster.maximumMembers).contains(members.count),
-              cuts.count == members.count - 1, Set(members).count == members.count,
+              cuts.count == Self.cutCount(mode: effectiveMode, members: members.count), Set(members).count == members.count,
               members.allSatisfy(roster.hasMember),
               cuts.allSatisfy({ $0 > 0 }), zip(cuts, cuts.dropFirst()).allSatisfy({ $0 < $1 }),
               mode.map({ Self.modes.contains($0) }) ?? true else {

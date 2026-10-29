@@ -130,6 +130,7 @@ public struct ClusterMemberPreparation: Sendable {
                     roster: saved, rankPins: pins, policyBytes: policy.bytes, model: policy.model,
                     artifactSHA256: plan.identity(epoch: UUID()).artifactSHA256, planSHA256: plan.partition.planSHA256,
                     cut: plan.partition.stages[0].sourceLayerEnd, mode: configuration.selectedGenerationMode,
+                    tensorShares: configuration.tensorShares,
                     deviceProfile: try device(NativePairMemberInstallation.hex(policy.hashes[3])), edges: attachment.edges ?? [])
             } catch {
                 throw ClusterConfigurationError.invalid("The saved roster registration is not valid for this Mac: \(error)")

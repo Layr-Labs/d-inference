@@ -283,7 +283,7 @@ public struct ClusterPlan: Codable, Sendable, Equatable {
     /// a setup can select. A role-aware coordinator refuses a plan naming a mode
     /// its list does not, so a mode is added here only once that list names it.
     public static let modes = ["pipeline_v1", "pipeline_compact_decode_v1", "phase_split_v1", "phase_split_mtp_v1", "pipeline_mtp_v1",
-                               "tensor_parallel_v1"]
+                               "tensor_parallel_v1", "pipeline_prefill_tensor_decode_v1"]
 
     /// The layer cuts a plan of `members` names in `mode` (`protocol.ClusterPlanModeCutCount`), as the mode counts
     /// them (`ClusterGenerationMode.layerCutCount`), so a member checks its plan by the rule it derived it with: none

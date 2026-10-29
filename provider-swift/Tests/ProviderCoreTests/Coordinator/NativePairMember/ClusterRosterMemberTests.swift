@@ -126,6 +126,9 @@ struct ClusterRosterMemberTests {
         _ = try membership(cuts: [16], mode: nil)
         #expect(throws: ClusterRosterError.invalidPlan) { _ = try membership(cuts: [16], mode: "tensor_parallel_v1") }
         #expect(throws: ClusterRosterError.invalidPlan) { _ = try membership(cuts: [], mode: nil) }
+        // Pipeline prefill keeps its cut; the coordinator's list names the mode.
+        _ = try membership(cuts: [16], mode: "pipeline_prefill_tensor_decode_v1")
+        #expect(throws: ClusterRosterError.invalidPlan) { _ = try membership(cuts: [], mode: "pipeline_prefill_tensor_decode_v1") }
     }
 
     @Test func eachMemberCertifiesItsWorkerAndPinsThePeer() throws {

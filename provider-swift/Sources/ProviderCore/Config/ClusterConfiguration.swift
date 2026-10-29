@@ -126,8 +126,8 @@ public struct ClusterConfiguration: Codable, Sendable, Equatable {
         for peer in peers {
             try require(ClusterConfigurationSyntax.label(peer.id) && ClusterConfigurationSyntax.host(peer.host)
                 && ClusterConfigurationSyntax.label(peer.user, maximum: 64) && (1...65535).contains(peer.port), "Invalid SSH peer endpoint")
-            try require([peer.ownerExecutable, peer.workerExecutable, peer.modelDirectory].allSatisfy(ClusterConfigurationSyntax.sshPath),
-                        "Peer installation paths must be absolute and shell-safe")
+            try require([peer.ownerExecutable, peer.workerExecutable, peer.modelDirectory].allSatisfy(ClusterConfigurationSyntax.installedPath),
+                        "Peer installation paths must be absolute and normalized")
             // The first compatibility contract is one installed native build on
             // both hosts. This pin is checked on installation/start, not here.
             try require(peer.runtimeBinarySHA256 == capability.runtimeBinarySHA256, Self.peerBuildDiffers)

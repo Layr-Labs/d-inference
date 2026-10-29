@@ -260,6 +260,10 @@ import Foundation
             let unsafe = try routed(peerWorker: "/Users/fixture/bin; touch x/darkbloom-cluster-worker")
             _ = try ClusterPlacementFlow.peerProfileCommand(local: unsafe.members[0], peer: unsafe.members[1])
         }
+        refused("an installed path with a space (a DevNet build's app) is refused on the SSH route", because: "Unsafe SSH configuration") {
+            let spaced = try routed(peerWorker: "/Users/fixture/Darkbloom Dev.app/Contents/MacOS/darkbloom-cluster-worker")
+            _ = try ClusterPlacementFlow.peerProfileCommand(local: spaced.members[0], peer: spaced.members[1])
+        }
         refused("an identity file that is not this user's own regular file is refused before anything connects", because: "Unsafe configured SSH trust file") {
             let missing = try routed(peerWorker: "/Users/fixture/bin/darkbloom-cluster-worker", identityFile: root.appendingPathComponent("absent").path)
             _ = try ClusterPlacementFlow.peerProfileCommand(local: missing.members[0], peer: missing.members[1])

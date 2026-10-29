@@ -1055,7 +1055,7 @@ coordinator operator keeps:
 |---|---|---|
 | `schema` | string | exactly `darkbloom_cluster_native_member_v1` |
 | `ownerSHA256` | string | 64 lowercase hex: SHA-256 of this Mac's `peers[local].ownerExecutable` |
-| `metallibPath`, `resourceLibraryPath` | string | absolute shell-safe paths of the installed files whose digests the approval pins; distinct from each other and from the owner and worker executables |
+| `metallibPath`, `resourceLibraryPath` | string | absolute, normalized paths (a space is allowed, as in a DevNet build's `Darkbloom Dev.app`) of the installed files whose digests the approval pins; distinct from each other and from the owner and worker executables |
 | `approval` | object | the coordinator's approval entry, field for field ([fields](#experimental-cluster-pairs)); unknown or missing fields are refused |
 
 The automatic path saves `schema` `darkbloom_cluster_native_member_v2` (the

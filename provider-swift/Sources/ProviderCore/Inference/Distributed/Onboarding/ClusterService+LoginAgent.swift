@@ -82,11 +82,11 @@ extension ClusterService {
         }
     }
 
-    /// Whether `pid` is a `darkbloom cluster service` of this user (its argv, read from the kernel).
+    /// Whether `pid` is a `<this build's CLI> cluster service` of this user (its argv, read from the kernel).
     static func isClusterService(pid: Int32) -> Bool {
         guard let arguments = processArguments(pid: pid) else { return false }
         let name = arguments.first.map { URL(fileURLWithPath: $0).lastPathComponent }
-        return name == "darkbloom" && arguments.count >= 3 && arguments[1] == "cluster" && arguments[2] == "service"
+        return name == BuildEnvironment.current.cliName && arguments.count >= 3 && arguments[1] == "cluster" && arguments[2] == "service"
     }
 
     private static func processArguments(pid: Int32) -> [String]? {

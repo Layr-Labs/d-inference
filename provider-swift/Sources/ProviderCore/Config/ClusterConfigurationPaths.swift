@@ -76,10 +76,18 @@ enum ClusterConfigurationSyntax {
         }
     }
 
-    static func sshPath(_ value: String) -> Bool {
+    static func sshPath(_ value: String) -> Bool { normalizedAbsolutePath(value, allowingSpaces: false) }
+
+    /// A file or directory of an installed build that its own Mac opens directly, never through a shell. An
+    /// environment's app name can contain a space (`Darkbloom Dev.app`). Every command line the developer SSH route
+    /// sends to a remote shell checks its paths again (`ClusterSSHConfiguration.safePath`).
+    static func installedPath(_ value: String) -> Bool { normalizedAbsolutePath(value, allowingSpaces: true) }
+
+    private static func normalizedAbsolutePath(_ value: String, allowingSpaces: Bool) -> Bool {
         value.hasPrefix("/") && value.utf8.count <= 1024 && !value.split(separator: "/").contains("..") &&
         !value.split(separator: "/").contains(".") && !value.contains("//") && !value.hasSuffix("/") && value.utf8.allSatisfy {
             (48...57).contains($0) || (65...90).contains($0) || (97...122).contains($0) || [45, 46, 47, 95].contains($0)
+                || (allowingSpaces && $0 == 32)
         }
     }
 

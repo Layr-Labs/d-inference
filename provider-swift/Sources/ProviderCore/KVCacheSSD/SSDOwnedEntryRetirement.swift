@@ -10,7 +10,7 @@ enum SSDOwnedEntryRetirement {
         var externalChange = false
     }
 
-    /// Try the linear LRU probe before allocating and sorting a fallback
+    /// Try the linear LRU probe before copying the index into a fallback
     /// snapshot. Retirement runs outside the index lock and keeps the owning
     /// store's file/epoch checks and external-removal reconciliation.
     static func evictOldest(index: SSDBlockIndex, retire: (Data) -> Result) -> Int {
@@ -25,8 +25,7 @@ enum SSDOwnedEntryRetirement {
         // snapshot observes touches/inserts during the first attempt; later
         // changes cannot extend or reorder it. Never retry the first tag,
         // even if it was touched or replaced. No index lock spans retirement.
-        let fallback = index.oldestEntries()
-        for entry in fallback where entry.tag16 != oldest.tag16 {
+        for entry in index.oldestFirstSnapshot() where entry.tag16 != oldest.tag16 {
             let result = retire(entry.tag16)
             if result.externalChange { return 0 }
             if result.indexedBytesFreed > 0 { return result.indexedBytesFreed }

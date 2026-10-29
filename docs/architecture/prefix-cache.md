@@ -530,15 +530,18 @@ See [routing evidence lifecycle](https://github.com/Layr-Labs/darkbloom-platform
 [eviction rules](../reference/ssd-kv-cache.md#size-and-eviction-rules).
 
 Both active SSD stores use `SSDOwnedEntryRetirement.evictOldest` to try one
-linear `SSDBlockIndex.oldest` probe before allocating a sorted fallback.
-If that file is busy or cannot be unlinked, one oldest-first snapshot bounds
-the remaining attempts. That snapshot includes recency and membership changes
-during the first attempt; later changes cannot extend or reorder the pass.
-The first tag is excluded, even if it was touched or replaced. Stable inputs
-keep the same LRU order; concurrent schedules can select different victims
-from a snapshot taken before the first attempt. File leases, epoch validation and
-the store's removal lock still govern retirement; external loss returns control
-to the disk budget after reconciliation so it can recheck usage before deleting
+linear `SSDBlockIndex.oldest` probe before copying the index. If that file is
+busy or cannot be unlinked, one `SSDBlockIndex.oldestFirstSnapshot` bounds the
+remaining attempts. It yields the probe's order (last hit, then
+lexicographic tag) from a binary heap: O(n) to copy and build, then O(log n)
+per candidate tried, so the pass orders only as many entries as it walks. The
+snapshot includes recency and membership changes during the first attempt;
+later changes cannot extend or reorder the pass. The first tag is excluded,
+even if it was touched or replaced. Stable inputs keep the same LRU order;
+concurrent schedules can select different victims from a snapshot taken
+before the first attempt. File leases, epoch validation and the store's
+removal lock still govern retirement; external loss returns control to the
+disk budget after reconciliation so it can recheck usage before deleting
 another file. Source:
 `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDOwnedEntryRetirement.swift`.
 

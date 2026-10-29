@@ -167,7 +167,8 @@ class GitDiffTests(unittest.TestCase):
         head = self.commit()
         selected = self.pr(base, head)
         self.assertTrue(selected["provider"], "rename source must be considered")
-        self.assertEqual(set(selected), {"provider"})
+        self.assertEqual(set(selected), set(routing.COMPONENTS))
+        self.assertFalse(selected["sdk"], "provider sources are not SDK-lane inputs")
         base = head
         self.git("mv", "docs/moved.md", "provider-swift/new.swift")
         head = self.commit()

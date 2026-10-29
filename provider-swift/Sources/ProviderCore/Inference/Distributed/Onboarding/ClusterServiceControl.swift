@@ -412,7 +412,7 @@ extension ClusterService {
     /// Commands that change what the cluster runs or its setup: run only by a confirmed leader.
     static func actsAsLeader(_ op: ClusterControlRequest.Operation) -> Bool {
         switch op {
-        case .reachMembers, .adopt, .serve, .stop, .scope: return true
+        case .reachMembers, .adopt, .serve, .stop, .scope, .register: return true
         case .status, .planModels, .readiness, .test, .verifyTeardown: return false
         }
     }

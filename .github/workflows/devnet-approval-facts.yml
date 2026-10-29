@@ -276,7 +276,19 @@ jobs:
                   code, out, err = run([cli, 'cluster', 'runtime-facts', '--app', app,
                                         '--model', f'{model}={config_path},{manifest_path}'])
                   if code != 0:
-                      record.update(outcome='refused', message=err[-2000:])
+                      # The CLI does not print the worker's own refusal: repeat its exact worker call to read it.
+                      worker = os.path.realpath(os.path.join(app, 'Contents/Helpers/darkbloom-cluster-worker'))
+                      try:
+                          probe = subprocess.run([worker, '--describe-runtime', '--config', os.path.realpath(config_path),
+                                                  '--manifest', os.path.realpath(manifest_path),
+                                                  '--expected-executable-sha256', sha(open(worker, 'rb').read())],
+                                                 env={'PATH': clean_env['PATH'], 'LANG': 'C', 'LC_ALL': 'C'},
+                                                 stdin=subprocess.DEVNULL, capture_output=True, timeout=60)
+                          worker_says = (f'worker exit {probe.returncode}: '
+                                         + probe.stderr.decode('utf-8', 'replace').strip()[-1500:])
+                      except subprocess.TimeoutExpired:
+                          worker_says = 'worker: no answer in 60 s'
+                      record.update(outcome='refused', message=f'{err[-500:]} / {worker_says}')
                       continue
                   record.update(outcome='accepted', entry=json.loads(out)['models'][0])
                   if model not in chosen and record['qualified_runtime_models']:
@@ -286,7 +298,7 @@ jobs:
                   if record['model'] == model:
                       note(f"{model} | {record['source']} | {record['outcome']} | aggregate {record.get('aggregate_sha256', '-')} "
                            f"| qualified {','.join(record.get('qualified_runtime_models', [])) or '-'} "
-                           f"| {'chosen' if record.get('chosen') else ''} {record.get('message', '')[:600]}")
+                           f"| {'chosen' if record.get('chosen') else ''} {record.get('message', '')[:2000]}")
 
           described = {r['aggregate_sha256'] for r in results if r.get('chosen')}
           for artifact, runtime_models in sorted(qualified_artifacts.items()):
@@ -296,7 +308,7 @@ jobs:
                     open(os.path.join(work, 'report.json'), 'w', encoding='utf-8'), indent=2)
 
           def cell(value):
-              return str(value).replace('|', '/').replace('\n', ' ').replace('`', "'")[:400]
+              return str(value).replace('|', '/').replace('\n', ' ').replace('`', "'")[:1500]
 
           with open(os.path.join(work, 'report.md'), 'w', encoding='utf-8') as report:
               report.write(f'Qualified models from: {qualified_source}\n\n')

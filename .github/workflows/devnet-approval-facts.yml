@@ -17,11 +17,11 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # One line per published dev bundle: <version> <bundle SHA-256>.
-  # The SHA-256 is the bundle_hash that the DevNet coordinator registered.
+  # One line per published dev bundle: <version> <bundle_hash> <url>, as the
+  # DevNet coordinator's /v1/releases/latest gave them.
   RELEASES: |
-    0.10.4-dev.branch.4 54a8594174eaf41310761bd1e52786b4c4e974d98c1f03185b481f19b2284ba0
-  BUNDLE_BASE_URL: https://pub-ca91d8c638d54ea7a9bca8ddd1134828.r2.dev/releases
+    0.10.4-dev.branch.4 54a8594174eaf41310761bd1e52786b4c4e974d98c1f03185b481f19b2284ba0 https://pub-ca91d8c638d54ea7a9bca8ddd1134828.r2.dev/releases/v0.10.4-dev.branch.4/artifacts/54a8594174eaf41310761bd1e52786b4c4e974d98c1f03185b481f19b2284ba0/darkbloom-bundle-macos-arm64.tar.gz
+    0.10.4-dev.branch.5 817e993ae39647e5523bfa39718c11cb34d3b3509198df6bd83624fb7eb4e46b https://pub-ca91d8c638d54ea7a9bca8ddd1134828.r2.dev/releases/v0.10.4-dev.branch.5/artifacts/817e993ae39647e5523bfa39718c11cb34d3b3509198df6bd83624fb7eb4e46b/darkbloom-bundle-macos-arm64.tar.gz
   DEVNET_URL: https://api.dev.darkbloom.dev
   PROD_URL: https://api.darkbloom.dev
   MODEL_CDN_URL: https://models.darkbloom.ai
@@ -42,13 +42,14 @@ jobs:
         run: |
           set -euo pipefail
           entries='[]'
-          while read -r version sha extra; do
+          while read -r version sha url extra; do
             [ -n "$version" ] || continue
             [[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+-dev\.[A-Za-z0-9.]+$ ]] || { echo "::error::invalid version: $version"; exit 1; }
             [[ $sha =~ ^[0-9a-f]{64}$ ]] || { echo "::error::invalid bundle SHA-256 for $version"; exit 1; }
-            [ -z "$extra" ] || { echo "::error::the line of $version has more than two fields"; exit 1; }
-            entries=$(jq -c --arg version "$version" --arg sha "$sha" \
-              '. + [{$version, bundle_sha256: $sha}]' <<<"$entries")
+            [[ $url =~ ^https://[A-Za-z0-9./_-]+\.tar\.gz$ ]] || { echo "::error::invalid bundle URL for $version"; exit 1; }
+            [ -z "$extra" ] || { echo "::error::the line of $version has more than three fields"; exit 1; }
+            entries=$(jq -c --arg version "$version" --arg sha "$sha" --arg url "$url" \
+              '. + [{$version, bundle_sha256: $sha, bundle_url: $url}]' <<<"$entries")
           done <<<"$RELEASES"
           count=$(jq length <<<"$entries")
           [ "$count" -ge 1 ] || { echo "::error::no release is listed"; exit 1; }
@@ -77,6 +78,7 @@ jobs:
     env:
       VERSION: ${{ matrix.version }}
       BUNDLE_SHA256: ${{ matrix.bundle_sha256 }}
+      BUNDLE_URL: ${{ matrix.bundle_url }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
@@ -106,7 +108,7 @@ jobs:
           set -euo pipefail
           work="$RUNNER_TEMP/approval-facts/$VERSION"
           mkdir -p "$work"
-          url="$BUNDLE_BASE_URL/v$VERSION/artifacts/$BUNDLE_SHA256/darkbloom-bundle-macos-arm64.tar.gz"
+          url="$BUNDLE_URL"
           curl --disable --fail --silent --show-error --proto '=https' --retry 2 --max-time 900 \
             --output "$work/bundle.tar.gz" "$url"
           actual=$(shasum -a 256 "$work/bundle.tar.gz" | awk '{print $1}')

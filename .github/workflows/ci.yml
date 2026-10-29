@@ -614,6 +614,9 @@ jobs:
       - name: Run cluster model provisioning checks
         if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
         run: bash provider-swift/Tests/ClusterModelProvisioningChecks/run.sh provisioning
+      - name: Run cluster onboarding checks
+        if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
+        run: bash provider-swift/Tests/ClusterOnboardingChecks/run.sh
 
   provider-test-gate:
     name: Provider Tests

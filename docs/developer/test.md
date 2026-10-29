@@ -1643,7 +1643,11 @@ root for model-free pseudo-terminal checks of setup stages, menu selection,
 failed test responses, terminal restoration and plain output. Set
 `ONBOARDING_TRANSCRIPTS` to a private output directory to retain screen text.
 The harness compiles only the onboarding flow, terminal and scripted operations;
-it does not configure a network port, start a service or load a model.
+it does not configure a network port, start a service or load a model. CI runs
+it in the `Cluster Metadata Checks` job (step `Run cluster onboarding checks`).
+Its rows include the end of the setup after the cluster registers with the
+coordinator: the screen waits for both parts to serve again before it says
+Done (`leaderWaitsForThePartsAfterTheRegistration`).
 
 `ClusterOnboardingPeerLabelTests` checks the live adapter with injected pairing
 facts: fresh authenticated peer labels replace saved display names, changed

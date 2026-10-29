@@ -687,6 +687,27 @@ live in `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/Dem
 `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineLoopV2.swift`
 (`executeMixed`). Existing checkpoint count/byte and storage floors remain.
 
+A dense Qwen donor's deepest boundary is otherwise the last full solo stripe
+end, up to 4,095 tokens below the prompt end. The next turn of a growing
+conversation re-prefills that gap. The engine with its paged complete store
+therefore also sets
+`CBv2SchedulerConfig.demandedLatestCheckpointMinimumTokens` to the store floor
+(`EngineV2Factory.demandedLatestCheckpointMinimumTokens`). A request the store
+would write then ends one range at the deepest aligned boundary at least
+`demandedLatestPromptEndMarginTokens = 64` tokens below its prompt end. The
+margin keeps the boundary inside the prefix the next turn shares even after
+the template re-renders the generation prompt. The cut is made only when it
+saves at least the floor over the start of the range it shortens. Beside
+decoding requests (512-token chunks) no cut qualifies at the default floor, so
+the ordinary geometry stays. The short-prompt fork target, the retained
+first/target/latest roles and fleet-novel refusal are unchanged; the cut
+boundary becomes the rolling latest. Dense Qwen restores token-exactly under
+any partition, as the parity rule above records. The partition is
+`demandedLatestCheckpointRange` in
+`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/DemandedShortCheckpointRange.swift`;
+scheduling and the first-token projection share it through
+`demandedCheckpointRange`.
+
 GLM-5.3-Flash captures its KDA state under the same range-end rule, but it has
 no solo stripe and its prefill chunk shares one 2,048-token step budget with
 the decode rows of other requests (`EngineV2Factory.glm5NextMaximumStepTokens`).

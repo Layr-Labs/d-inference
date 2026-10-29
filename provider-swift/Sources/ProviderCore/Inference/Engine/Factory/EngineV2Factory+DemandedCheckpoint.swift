@@ -58,6 +58,25 @@ extension EngineV2Factory {
     return store.config.minEffectiveTokens
   }
 
+  /// Dense Qwen's deepest boundary is otherwise the last full stripe or chunk
+  /// end, up to 4,095 tokens below the prompt end that the next turn of a
+  /// growing conversation extends. Its restore is exact under any prefill
+  /// partition, so with its paged complete store a range also ends just below
+  /// the prompt end (SDK `CBv2SchedulerConfig.demandedLatestCheckpointMinimumTokens`).
+  /// GLM's capture-boundary partition is not reused: its cut at the fork
+  /// hint would replace the retained stripe end below it, which a shorter
+  /// fork restores.
+  static func demandedLatestCheckpointMinimumTokens(
+    model: any LanguageModel, backend: EngineV2KVBackendKind,
+    store: (any CBv2CompletePrefixCache)?
+  ) -> Int? {
+    guard backend == .paged, isDenseQwen35(model), let store = store as? SSDHybridCheckpointStore,
+      store.config.backendLayout == CBv2CompleteCheckpointManifest.pagedLayout
+        || store.config.backendLayout == CBv2CompleteCheckpointManifest.nativeQuantizedPagedLayout
+    else { return nil }
+    return store.config.minEffectiveTokens
+  }
+
   /// Host-only policy shared by the actual assembly and qualification tests.
   /// A benchmark request cannot qualify another backend or lower a floor.
   static func benchmarkRecurrentShortCheckpointMinimumTokens(

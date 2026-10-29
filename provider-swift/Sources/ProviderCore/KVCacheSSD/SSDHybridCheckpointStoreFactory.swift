@@ -113,12 +113,16 @@ enum SSDHybridCheckpointStoreFactory {
         }
         let maxWriteBytesPerDay = SSDPrefixCachePolicy.maxWriteBytesPerDay(environment: environment)
         let writeBudget: SSDWriteBudget?
+        let isolated = SSDPrefixCacheFactory.isolatedTestRoot(environment: environment) != nil
         do {
             writeBudget = try CacheStorage.makeWriteBudget(
-                maxWriteBytesPerDay: maxWriteBytesPerDay,
-                payloadRoot: wholeRoot,
-                isolated: SSDPrefixCacheFactory.isolatedTestRoot(environment: environment) != nil)
+                maxWriteBytesPerDay: maxWriteBytesPerDay, payloadRoot: wholeRoot, isolated: isolated)
         } catch { return refuse(.writeBudgetUnavailable, error) }
+        // Without its own persistent ledger a speculative allowance could
+        // refill at every store build, so the store then admits none.
+        let speculativeWriteBudget = try? CacheStorage.makeWriteBudget(
+            maxWriteBytesPerDay: maxWriteBytesPerDay, payloadRoot: wholeRoot, isolated: isolated,
+            fileName: SSDWriteBudget.speculativeFileName)
         let cache = SSDHybridCheckpointStore(config: .init(
             modelId: modelId, identity: identity, backendLayout: backendLayout,
             nativePrefillChunkSize: nativePrefillChunkSize,
@@ -134,7 +138,8 @@ enum SSDHybridCheckpointStoreFactory {
             kekKey: material.key, kvBudget: kvBudget,
             maxWriteBytesPerDay: maxWriteBytesPerDay,
             usesEphemeralKey: material.ephemeral,
-            writeBudget: writeBudget)
+            writeBudget: writeBudget, speculativeWriteBudget: speculativeWriteBudget,
+            requiresSpeculativeLedger: true)
         await Task.detached(priority: .utility) {
             cache.scanOnDisk()
             maintain()

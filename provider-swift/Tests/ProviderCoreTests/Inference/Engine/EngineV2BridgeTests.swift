@@ -861,6 +861,34 @@ struct EngineV2TranslationTests {
             #expect(engine.submitted.map(\.terminalPrecedesCheckpointPublication) == [enabled, false])
         }
     }
+
+    @Test("a first-sight donor takes the early terminal; a seeded one is admitted no first-sight write")
+    func firstSightDonorTerminalOrder() async throws {
+        let fixture = try SSDHybridCheckpointTestFixture()
+        defer { fixture.remove() }
+        let store = try fixture.makeStore(useGlobalBudget: false)
+        defer { store.close() }
+        let demand = SSDCheckpointDonationDemand(repeatedPrefixTokens: 0, firstSightTokens: 2048)
+        var early: [Bool] = []
+        var admitted: [Int?] = []
+        for seed in [nil, 7] as [UInt64?] {
+            let engine = ScriptedCBv2Engine(script: .manual)
+            let bridge = makeBridge(engine: engine, ssdHybridCheckpointStore: store)
+            let stream = await bridge.submitTokenized(
+                promptTokens: [1, 2], request: makeRequest(seed: seed), requestId: "first-sight",
+                cacheScope: "session", donationDemand: demand)
+            let submitted = try #require(engine.submitted.first)
+            early.append(submitted.terminalPrecedesCheckpointPublication)
+            admitted.append(store.donationDemandHints.demand(for: submitted.prefixCacheReceiptID)?.firstSightTokens)
+            engine.manualContinuation?.yield(
+                .finished(reason: .stop, usage: CBv2Usage(promptTokens: 2, completionTokens: 0)))
+            engine.manualContinuation?.finish()
+            _ = await record(stream)
+            await bridge.shutdown()
+        }
+        #expect(early == [true, false])
+        #expect(admitted == [2048, 0])
+    }
 }
 
 @Suite("EngineV2 matched stop sequence")

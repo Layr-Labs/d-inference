@@ -250,6 +250,11 @@ extension EngineV2Bridge {
         )
         cbv2Request.positionState = positionState ?? multimodal?.positionState
         cbv2Request.hybridPrefixIdentity = hybridPrefixIdentity
+        // A seeded request keeps the ordinary terminal order (below), so a
+        // speculative write would extend its response: it gets none.
+        let writeDemand = cbv2Request.sampling.seed == nil
+            ? donationDemand
+            : donationDemand.map { SSDCheckpointDonationDemand(repeatedPrefixTokens: $0.repeatedPrefixTokens) }
         let checkpointScope = cbv2Request.checkpointCacheSalt ?? ""
         try await checkFirstContentDeadline(
             firstContentDeadline,
@@ -356,8 +361,8 @@ extension EngineV2Bridge {
             // demand hint rides the receipt ID. It survives an abandoned stage
             // (the same receipt retries cold) and clears at terminal or when the
             // request ends in error below.
-            if let donationDemand, let store = ssdHybridCheckpointStore {
-                store.registerDonationDemand(donationDemand, requestID: receiptID)
+            if let writeDemand, let store = ssdHybridCheckpointStore {
+                store.registerDonationDemand(writeDemand, requestID: receiptID)
             }
             if multimodal == nil, let evidence = residentPrefixCacheEvidence, let usageSignal,
                 let proof = evidence.promptProof(tokens: promptTokens, scope: cacheScope)
@@ -616,9 +621,11 @@ extension EngineV2Bridge {
             if active[id]?.prefillReceipt !== prefillReceipt { prefillReceipt.end() }
         }
         // Seeded sampling reuses a stable engine ID, which stays fenced until
-        // publication, so only unseeded requests take the early terminal.
+        // publication, so only unseeded requests take the early terminal. A
+        // first-sight donor always does: no client waits for a speculative write.
         cbv2Request.terminalPrecedesCheckpointPublication =
-            terminalBeforeCheckpointPublication && cbv2Request.sampling.seed == nil
+            (terminalBeforeCheckpointPublication || (writeDemand?.firstSightTokens ?? 0) > 0)
+            && cbv2Request.sampling.seed == nil
         let engineRequest = cbv2Request
         pendingEngineIDs.insert(cbv2Id)
         idMap[id] = cbv2Id

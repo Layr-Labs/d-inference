@@ -110,6 +110,9 @@ public enum CoordinatorEvent: Sendable {
         /// Coordinator-observed fleet-wide repeat demand (token count); nil
         /// from an older coordinator. See `InferenceRequest.cacheRepeatedPrefixTokens`.
         cacheRepeatedPrefixTokens: Int? = nil,
+        /// Speculative first-sight admission (token count); nil when absent.
+        /// See `InferenceRequest.cacheFirstSightTokens`.
+        cacheFirstSightTokens: Int? = nil,
         toolSchemaMetadataProtocol: Int?,
         firstContentDeadline: FirstContentDeadline?,
         receivedAt: ContinuousClock.Instant,

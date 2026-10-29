@@ -1296,6 +1296,20 @@ import Testing
     #expect(CoordinatorMessage.InferenceRequest(requestId: "neg", cacheRepeatedPrefixTokens: -3)
         .cacheRepeatedPrefixTokens == 0)
 
+    // A first-sight admission is a positive count; anything else means none.
+    let firstSight = #"{"type":"inference_request","request_id":"r","body":null,"cache_scope":"s","cache_repeated_prefix_tokens":0,"cache_first_sight_tokens":1537}"#
+    guard case .inferenceRequest(let firstSightRequest) = try ProviderProtocolCodec.decodeCoordinatorMessage(
+        from: Data(firstSight.utf8))
+    else { throw TestFailure.unexpectedMessage }
+    #expect(firstSightRequest.cacheFirstSightTokens == 1537)
+    #expect(try jsonObject(ProviderProtocolCodec.encodeCoordinatorMessage(.inferenceRequest(firstSightRequest)))[
+        "cache_first_sight_tokens"] as? Int == 1537)
+    for invalid in [0, -4] {
+        #expect(CoordinatorMessage.InferenceRequest(requestId: "x", cacheFirstSightTokens: invalid)
+            .cacheFirstSightTokens == nil)
+    }
+    #expect(object["cache_first_sight_tokens"] == nil)
+
     let legacy = #"{"type":"inference_request","request_id":"r","body":null}"#
     guard case .inferenceRequest(let decoded) = try ProviderProtocolCodec.decodeCoordinatorMessage(
         from: Data(legacy.utf8))
@@ -1305,6 +1319,7 @@ import Testing
     #expect(decoded.prefixCacheProtocol == nil)
     #expect(decoded.cacheReceiptBoundaryMode == nil)
     #expect(decoded.cacheRepeatedPrefixTokens == nil)
+    #expect(decoded.cacheFirstSightTokens == nil)
     #expect(decoded.toolSchemaMetadataProtocol == nil)
 }
 

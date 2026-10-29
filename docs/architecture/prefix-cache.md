@@ -1,6 +1,6 @@
 # KV cache layouts and prefix caching
 
-> Last updated: 2026-10-28
+> Last updated: 2026-10-29
 
 How the provider lays out a request's KV cache, how it decides whether a
 previously computed prefix can be reused, and where reusable state lives:
@@ -535,7 +535,11 @@ coordinator's `cache_repeated_prefix_tokens` at or above the effective-token
 floor, or a prior local sighting of the tag; fleet-novel checkpoints settle
 `skipped_novel` without touching disk. Older coordinators and local serving
 write unconditionally (`SSDCheckpointDemand.admitsWrite`; policy in the
-[SSD reference](../reference/ssd-kv-cache.md#size-and-eviction-rules)). Qwen includes attention KV, recurrent state and normalized typed
+[SSD reference](../reference/ssd-kv-cache.md#size-and-eviction-rules)). A
+coordinator may instead admit one speculative first-sight checkpoint
+(`cache_first_sight_tokens`, sent only with a narrowed `cache_scope`); the store
+writes it on its own background lane, inside a bounded budget share and
+without evicting anything, so no proven write waits for it. Qwen includes attention KV, recurrent state and normalized typed
 MTP history. Historical capture includes owning full rows and the window
 contents at the captured boundary, preserving borrower relationships. The
 effective checkpoint encoder may compress older attention rows; native recent

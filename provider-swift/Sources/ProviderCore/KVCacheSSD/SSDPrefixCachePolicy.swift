@@ -45,6 +45,17 @@ enum SSDPrefixCachePolicy {
         return n
     }
 
+    // MARK: - Speculative first-sight writes
+
+    /// Speculative first-sight checkpoints' own daily share: one TTL's worth
+    /// of the daily cap (2.08% at the 30-minute TTL), in a separate ledger.
+    /// They still count in the shared budget but never spend its last share,
+    /// and pause for a day after a proven or novel write finds the total
+    /// budget exhausted (`SSDWriteRateLimiter.consumeSpeculative`).
+    static func speculativeHeadroomFraction(ttlSeconds: Int64) -> Double {
+        Double(min(max(0, ttlSeconds), maxTTLSeconds)) / 86_400
+    }
+
     // MARK: - Endurance (daily write cap)
 
     /// Root-wide rolling-day budget for SSD write endurance. `0` ⇒ unlimited;
@@ -262,6 +273,11 @@ enum SSDPrefixCachePolicy {
     /// deeper queue trades stream-end latency and longer-held donor memory
     /// for fewer dropped checkpoints.
     static let writeQueueMaxJobs = 6
+    /// Unsettled speculative first-sight jobs on their own writer lane, the
+    /// one being written included. A queued job holds its donor's checkpoint
+    /// state, so the lane stays shallow; overflow is refused as
+    /// `skipped_novel`.
+    static let speculativeWriteQueueMaxJobs = 2
     /// Floor on host bytes queued across buffered donation jobs. The
     /// effective cap is `max(this, maxStageBytes + writeQueueSlackBytes)`
     /// (SSDPrefixCache init) so ONE full max-size donation — a ~600 MB

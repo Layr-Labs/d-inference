@@ -1,8 +1,9 @@
 name: DevNet Approval Facts
 
-# Computes `darkbloom cluster runtime-facts` for published signed dev bundles
-# and the DevNet catalog models they serve. Metadata only: no weights, no
-# secrets, no publication.
+# Computes `darkbloom cluster runtime-facts` for published signed dev bundles,
+# for every catalog model the bundle's worker accepts whose artifact the
+# build's qualification records list. Metadata only: no weights, no secrets,
+# no publication.
 on:
   pull_request:
     paths:
@@ -16,12 +17,13 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # One line per published dev bundle: <version> <bundle SHA-256> <catalog model ID>...
+  # One line per published dev bundle: <version> <bundle SHA-256>.
   # The SHA-256 is the bundle_hash that the DevNet coordinator registered.
   RELEASES: |
-    0.10.4-dev.branch.4 54a8594174eaf41310761bd1e52786b4c4e974d98c1f03185b481f19b2284ba0 Qwen3.5-9B
+    0.10.4-dev.branch.4 54a8594174eaf41310761bd1e52786b4c4e974d98c1f03185b481f19b2284ba0
   BUNDLE_BASE_URL: https://pub-ca91d8c638d54ea7a9bca8ddd1134828.r2.dev/releases
-  CATALOG_URL: https://api.dev.darkbloom.dev/v1/models/catalog
+  DEVNET_URL: https://api.dev.darkbloom.dev
+  PROD_URL: https://api.darkbloom.dev
   MODEL_CDN_URL: https://models.darkbloom.ai
 
 jobs:
@@ -40,16 +42,13 @@ jobs:
         run: |
           set -euo pipefail
           entries='[]'
-          while read -r version sha models; do
+          while read -r version sha extra; do
             [ -n "$version" ] || continue
             [[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+-dev\.[A-Za-z0-9.]+$ ]] || { echo "::error::invalid version: $version"; exit 1; }
             [[ $sha =~ ^[0-9a-f]{64}$ ]] || { echo "::error::invalid bundle SHA-256 for $version"; exit 1; }
-            [ -n "$models" ] || { echo "::error::$version names no model"; exit 1; }
-            for model in $models; do
-              [[ $model =~ ^[A-Za-z0-9._-]+$ ]] || { echo "::error::invalid model ID for $version: $model"; exit 1; }
-            done
-            entries=$(jq -c --arg version "$version" --arg sha "$sha" --arg models "$models" \
-              '. + [{$version, bundle_sha256: $sha, $models}]' <<<"$entries")
+            [ -z "$extra" ] || { echo "::error::the line of $version has more than two fields"; exit 1; }
+            entries=$(jq -c --arg version "$version" --arg sha "$sha" \
+              '. + [{$version, bundle_sha256: $sha}]' <<<"$entries")
           done <<<"$RELEASES"
           count=$(jq length <<<"$entries")
           [ "$count" -ge 1 ] || { echo "::error::no release is listed"; exit 1; }
@@ -78,7 +77,6 @@ jobs:
     env:
       VERSION: ${{ matrix.version }}
       BUNDLE_SHA256: ${{ matrix.bundle_sha256 }}
-      MODELS: ${{ matrix.models }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
@@ -139,73 +137,193 @@ jobs:
           echo "app=${app#"$extracted"/}" | tee -a "$work/checks.txt"
           echo "FACTS_APP=$app" >> "$GITHUB_ENV"
           echo "FACTS_WORK=$work" >> "$GITHUB_ENV"
-      - name: Fetch and check model metadata
+      - name: Describe every catalog model with the bundle's worker
         shell: bash
         run: |
           set -euo pipefail
-          curl --disable --fail --silent --show-error --proto '=https' --retry 2 --max-time 60 \
-            --output "$FACTS_WORK/catalog.json" "$CATALOG_URL"
-          for model in $MODELS; do
-            entry=$(jq -c --arg id "$model" '[.models[] | select(.id == $id)]' "$FACTS_WORK/catalog.json")
-            [ "$(jq length <<<"$entry")" = 1 ] || { echo "::error::the catalog lists $model $(jq length <<<"$entry") times"; exit 1; }
-            prefix=$(jq -r '.[0].r2_prefix' <<<"$entry")
-            aggregate=$(jq -r '.[0].aggregate_sha256' <<<"$entry")
-            [[ $prefix =~ ^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$ && $prefix != *..* ]] \
-              || { echo "::error::$model has an unsafe r2_prefix: $prefix"; exit 1; }
-            [[ $aggregate =~ ^[0-9a-f]{64}$ ]] || { echo "::error::$model has an invalid aggregate_sha256"; exit 1; }
-            dir="$FACTS_WORK/models/$model"
-            mkdir -p "$dir"
-            for name in manifest.json config.json; do
-              curl --disable --fail --silent --show-error --proto '=https' --retry 2 --max-time 120 \
-                --max-filesize 33554432 --output "$dir/$name" "$MODEL_CDN_URL/$prefix/$name"
-            done
-            python3 -I - "$model" "$prefix" "$aggregate" "$dir" <<'PY' | tee -a "$FACTS_WORK/checks.txt"
-          import hashlib, json, os, sys
-          model, prefix, catalog_aggregate, folder = sys.argv[1:5]
-          manifest = json.load(open(os.path.join(folder, 'manifest.json'), encoding='utf-8'))
-          files = sorted(manifest['files'], key=lambda f: f['path'])
-          recomputed = hashlib.sha256(b''.join(bytes.fromhex(f['sha256']) for f in files)).hexdigest()
-          configs = [f for f in files if f['path'] == 'config.json']
-          config = open(os.path.join(folder, 'config.json'), 'rb').read()
-          config_sha = hashlib.sha256(config).hexdigest()
-          checks = {
-              'manifest_model_id': manifest['model_id'] == model,
-              'manifest_aggregate_equals_catalog': manifest['aggregate_sha256'] == catalog_aggregate,
-              'manifest_aggregate_equals_files': recomputed == manifest['aggregate_sha256'],
-              'config_sha256_equals_manifest': len(configs) == 1 and configs[0]['sha256'] == config_sha,
-              'config_size_equals_manifest': len(configs) == 1 and configs[0]['size_bytes'] == len(config),
-          }
-          print(f'model={model} r2_prefix={prefix} catalog_aggregate_sha256={catalog_aggregate} '
-                f'manifest_version={manifest.get("version")} config_sha256={config_sha}')
-          for name, passed in checks.items():
-              print(f'{model} {name}={"PASS" if passed else "FAIL"}')
-          if not all(checks.values()):
-              raise SystemExit(f'::error::{model} metadata does not match the catalog')
+          python3 -I - <<'PY'
+          import hashlib, json, os, re, subprocess, urllib.parse
+          from datetime import datetime, timezone
+
+          work, app, cli = os.environ['FACTS_WORK'], os.environ['FACTS_APP'], os.environ['FACTS_CLI']
+          cdn, devnet, prod = os.environ['MODEL_CDN_URL'], os.environ['DEVNET_URL'], os.environ['PROD_URL']
+          home = os.path.join(os.environ['RUNNER_TEMP'], 'approval-facts-home')
+          os.makedirs(home, exist_ok=True)
+          clean_env = {'PATH': '/usr/bin:/bin:/usr/sbin:/sbin', 'HOME': home}
+          PREFIX = re.compile(r'^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$')
+          log = open(os.path.join(work, 'checks.txt'), 'a', encoding='utf-8')
+
+
+          def note(line):
+              print(line, flush=True)
+              log.write(line + '\n')
+              log.flush()
+
+
+          def now():
+              return datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+
+
+          def sha(data):
+              return hashlib.sha256(data).hexdigest()
+
+
+          def safe_prefix(value):
+              return isinstance(value, str) and PREFIX.match(value) is not None and '..' not in value
+
+
+          def fetch(url, path, limit):
+              os.makedirs(os.path.dirname(path), exist_ok=True)
+              result = subprocess.run(['curl', '--disable', '--fail', '--silent', '--show-error', '--proto', '=https',
+                                       '--retry', '2', '--max-time', '300', '--max-filesize', str(limit),
+                                       '--output', path, url], capture_output=True, text=True)
+              return None if result.returncode == 0 else f'GET {url} failed: {result.stderr.strip()}'
+
+
+          def run(arguments, timeout=300):
+              try:
+                  result = subprocess.run(arguments, env=clean_env, capture_output=True, timeout=timeout)
+              except subprocess.TimeoutExpired:
+                  return -1, b'', f'no answer in {timeout} s'
+              return result.returncode, result.stdout, result.stderr.decode('utf-8', 'replace').strip()
+
+
+          catalogs = {}
+          for name, base in (('devnet', devnet), ('prod', prod)):
+              path = os.path.join(work, f'catalog-{name}.json')
+              error = fetch(base + '/v1/models/catalog', path, 16 << 20)
+              if error:
+                  raise SystemExit('::error::' + error)
+              catalogs[name] = {m['id']: m for m in json.load(open(path, encoding='utf-8'))['models']}
+              note(f'catalog {name}: {len(catalogs[name])} models: {" ".join(catalogs[name])}')
+
+          # The build's own qualification records first; this branch's CLI only when the bundle's CLI cannot list them.
+          bundle_cli = next((os.path.join(app, 'Contents/MacOS', n) for n in ('darkbloom-dev', 'darkbloom')
+                             if os.access(os.path.join(app, 'Contents/MacOS', n), os.X_OK)), None)
+          qualified, qualified_source = None, None
+          for label, binary in (('bundle', bundle_cli), ('built-cli', cli)):
+              if binary is None:
+                  continue
+              code, out, err = run([binary, 'cluster', 'runtime-facts', '--list-release-models'], 60)
+              note(f'list-release-models via {label} ({binary}): exit {code} {err[:400]}')
+              if code != 0:
+                  continue
+              open(os.path.join(work, f'release-models-{label}.json'), 'wb').write(out)
+              note(f'release models via {label}: {out.decode("utf-8", "replace")}')
+              if qualified is None:
+                  qualified, qualified_source = json.loads(out), label
+          if qualified is None:
+              raise SystemExit('::error::neither CLI lists the qualified models')
+          qualified_artifacts = {}
+          for item in qualified:
+              qualified_artifacts.setdefault(item['artifact_sha256'], []).append(item['runtime_model_id'])
+          note(f'qualified models from {qualified_source}: {len(qualified)}')
+
+          results, chosen = [], {}
+          for model in dict.fromkeys(list(catalogs['devnet']) + list(catalogs['prod'])):
+              folder_name = re.sub(r'[^A-Za-z0-9._-]', '_', model)
+              prefixes = [catalogs[c][model]['r2_prefix'] for c in ('devnet', 'prod')
+                          if model in catalogs[c] and safe_prefix(catalogs[c][model].get('r2_prefix'))]
+              candidates = [(f'cdn ({c} catalog r2_prefix)', f'{cdn}/{catalogs[c][model]["r2_prefix"]}/manifest.json')
+                            for c in ('devnet', 'prod')
+                            if model in catalogs[c] and safe_prefix(catalogs[c][model].get('r2_prefix'))]
+              candidates.append(('prod coordinator manifest copy',
+                                 f'{prod}/v1/models/catalog/manifest/{urllib.parse.quote(model, safe="")}'))
+              seen = {}
+              for index, (source, url) in enumerate(candidates):
+                  record = {'model': model, 'source': source, 'manifest_url': url}
+                  results.append(record)
+                  folder = os.path.join(work, 'models', folder_name, str(index))
+                  manifest_path, config_path = os.path.join(folder, 'manifest.json'), os.path.join(folder, 'config.json')
+                  error = fetch(url, manifest_path, 1 << 20)
+                  if error:
+                      record.update(outcome='unavailable', message=error)
+                      continue
+                  data = open(manifest_path, 'rb').read()
+                  record['manifest_sha256'] = sha(data)
+                  if record['manifest_sha256'] in seen:
+                      record.update(outcome='duplicate', message='same bytes as ' + seen[record['manifest_sha256']])
+                      continue
+                  seen[record['manifest_sha256']] = source
+                  try:
+                      manifest = json.loads(data)
+                      files = sorted(manifest['files'], key=lambda f: f['path'])
+                      aggregate = manifest['aggregate_sha256']
+                      recomputed = sha(b''.join(bytes.fromhex(f['sha256']) for f in files))
+                      config_entries = [f for f in files if f['path'] == 'config.json']
+                  except (ValueError, KeyError, TypeError, AttributeError) as error:
+                      record.update(outcome='refused', message=f'not a catalog manifest: {error!r}')
+                      continue
+                  record.update(manifest_model_id=manifest.get('model_id'), manifest_version=manifest.get('version'),
+                                aggregate_sha256=aggregate, aggregate_matches_files=recomputed == aggregate,
+                                equals_devnet_catalog=catalogs['devnet'].get(model, {}).get('aggregate_sha256') == aggregate,
+                                equals_prod_catalog=catalogs['prod'].get(model, {}).get('aggregate_sha256') == aggregate,
+                                qualified_runtime_models=qualified_artifacts.get(aggregate, []))
+                  if recomputed != aggregate or len(config_entries) != 1:
+                      record.update(outcome='refused', message='the file digests do not give the aggregate, or config.json is not listed once')
+                      continue
+                  expected = config_entries[0]
+                  own = [manifest['r2_prefix']] if safe_prefix(manifest.get('r2_prefix')) else []
+                  for prefix in dict.fromkeys(own + prefixes):
+                      if fetch(f'{cdn}/{prefix}/config.json', config_path, 32 << 20) is None:
+                          body = open(config_path, 'rb').read()
+                          if sha(body) == expected['sha256'] and len(body) == expected['size_bytes']:
+                              record.update(config_sha256=sha(body), config_prefix=prefix)
+                              break
+                  if 'config_sha256' not in record:
+                      record.update(outcome='refused', message='no CDN config.json has the digest and size the manifest names')
+                      continue
+                  code, out, err = run([cli, 'cluster', 'runtime-facts', '--app', app,
+                                        '--model', f'{model}={config_path},{manifest_path}'])
+                  if code != 0:
+                      record.update(outcome='refused', message=err[-2000:])
+                      continue
+                  record.update(outcome='accepted', entry=json.loads(out)['models'][0])
+                  if model not in chosen and record['qualified_runtime_models']:
+                      chosen[model] = (config_path, manifest_path)
+                      record['chosen'] = True
+              for record in results:
+                  if record['model'] == model:
+                      note(f"{model} | {record['source']} | {record['outcome']} | aggregate {record.get('aggregate_sha256', '-')} "
+                           f"| qualified {','.join(record.get('qualified_runtime_models', [])) or '-'} "
+                           f"| {'chosen' if record.get('chosen') else ''} {record.get('message', '')[:600]}")
+
+          described = {r['aggregate_sha256'] for r in results if r.get('chosen')}
+          for artifact, runtime_models in sorted(qualified_artifacts.items()):
+              if artifact not in described:
+                  note(f'qualified but not described: {",".join(runtime_models)} {artifact}')
+          json.dump({'qualified_source': qualified_source, 'qualified': qualified, 'results': results},
+                    open(os.path.join(work, 'report.json'), 'w', encoding='utf-8'), indent=2)
+
+          def cell(value):
+              return str(value).replace('|', '/').replace('\n', ' ').replace('`', "'")[:400]
+
+          with open(os.path.join(work, 'report.md'), 'w', encoding='utf-8') as report:
+              report.write(f'Qualified models from: {qualified_source}\n\n')
+              report.write('| Model | Bytes from | Outcome | Manifest aggregate | Config SHA-256 | Qualified as | In facts | Message |\n')
+              report.write('| --- | --- | --- | --- | --- | --- | --- | --- |\n')
+              for r in results:
+                  report.write(f"| {cell(r['model'])} | {cell(r['source'])} | {r['outcome']} | {r.get('aggregate_sha256', '-')} "
+                               f"| {r.get('config_sha256', '-')} | {cell(','.join(r.get('qualified_runtime_models', [])) or '-')} "
+                               f"| {'yes' if r.get('chosen') else 'no'} | {cell(r.get('message', ''))} |\n")
+
+          if not chosen:
+              raise SystemExit('::error::the worker accepted no qualified model')
+          arguments = [cli, 'cluster', 'runtime-facts', '--app', app]
+          for model, (config_path, manifest_path) in chosen.items():
+              arguments += ['--model', f'{model}={config_path},{manifest_path}']
+          started = now()
+          code, out, err = run(arguments, 600)
+          finished = now()
+          note(f'facts_started={started}')
+          note(f'facts_finished={finished}')
+          if code != 0:
+              raise SystemExit('::error::the facts of the chosen models failed: ' + err[-2000:])
+          json.loads(out)
+          open(os.path.join(work, 'facts.json'), 'wb').write(out)
+          print('facts.json:')
+          print(out.decode('utf-8'))
           PY
-          done
-      - name: Compute the runtime facts
-        shell: bash
-        run: |
-          set -euo pipefail
-          arguments=()
-          for model in $MODELS; do
-            dir="$FACTS_WORK/models/$model"
-            arguments+=(--model "$model=$dir/config.json,$dir/manifest.json")
-          done
-          home="$RUNNER_TEMP/approval-facts-home"
-          mkdir -p "$home"
-          started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-          env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin HOME="$home" \
-            "$FACTS_CLI" cluster runtime-facts --app "$FACTS_APP" "${arguments[@]}" > "$FACTS_WORK/facts.json"
-          finished=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-          python3 -I -c 'import json, sys; json.load(open(sys.argv[1], encoding="utf-8"))' "$FACTS_WORK/facts.json"
-          {
-            echo "facts_started=$started"
-            echo "facts_finished=$finished"
-          } | tee -a "$FACTS_WORK/checks.txt"
-          echo "facts.json:"
-          cat "$FACTS_WORK/facts.json"
-          echo
       - name: Write the job summary
         if: ${{ always() && env.FACTS_WORK != '' }}
         shell: bash
@@ -217,6 +335,10 @@ jobs:
             echo '```text'
             cat "$FACTS_WORK/checks.txt" 2>/dev/null || true
             echo '```'
+            if [ -s "$FACTS_WORK/report.md" ]; then
+              echo
+              cat "$FACTS_WORK/report.md"
+            fi
             if [ -s "$FACTS_WORK/facts.json" ]; then
               echo
               echo '```json'
@@ -233,7 +355,10 @@ jobs:
           path: |
             ${{ env.FACTS_WORK }}/facts.json
             ${{ env.FACTS_WORK }}/checks.txt
-            ${{ env.FACTS_WORK }}/catalog.json
+            ${{ env.FACTS_WORK }}/report.json
+            ${{ env.FACTS_WORK }}/report.md
+            ${{ env.FACTS_WORK }}/catalog-*.json
+            ${{ env.FACTS_WORK }}/release-models-*.json
             ${{ env.FACTS_WORK }}/models/
           if-no-files-found: warn
           retention-days: 14

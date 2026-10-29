@@ -160,6 +160,30 @@ class FetchTests(unittest.TestCase):
         found, failures = MODELS.candidates(self.listed, self.registries)
         self.assertIn('HTTP 404', failures[0])
 
+    def test_glm_transport_and_integrity_errors_fail_like_any_model(self):
+        # glm-5.3-flash is hard-required: its fetch failures fail like any model's.
+        glm = [{'runtime_model_id': 'registered_glm53_flash', 'artifact_sha256': ARTIFACT}]
+        rows = {
+            'server error': lambda: Registry.routes.update({
+                '/cdn/v2/glm/r1/manifest.json': [(503, b'', {})],
+                '/prod/v1/models/catalog/manifest/glm-5.3-flash': [(503, b'', {})]}),
+            'config.json differs from the manifest': lambda: self.route('/cdn/v2/glm/r1/config.json', CONFIG + b' '),
+            'manifest names another aggregate': lambda: Registry.routes.update({
+                '/cdn/v2/glm/r1/manifest.json': [(200, manifest('glm-5.3-flash', aggregate=OTHER), {})],
+                '/prod/v1/models/catalog/manifest/glm-5.3-flash': [(200, manifest('glm-5.3-flash', aggregate=OTHER), {})]}),
+        }
+        for label, break_metadata in rows.items():
+            with self.subTest(row=label):
+                Registry.routes = {}
+                entry = self.entry('glm-5.3-flash', 'v2/glm/r1')
+                self.catalog('dev')
+                self.catalog('prod', entry)
+                break_metadata()
+                found, failures = MODELS.candidates(glm, self.registries)
+                self.assertEqual(found[ARTIFACT], [])
+                self.assertEqual(len(failures), 1)
+                self.assertTrue(failures[0].startswith(f'registered_glm53_flash ({ARTIFACT}): '))
+
     def test_server_errors_are_retried_and_client_errors_are_not(self):
         url = self.base + '/flaky'
         Registry.routes['/flaky'] = [(503, b'', {}), (200, b'ok', {})]

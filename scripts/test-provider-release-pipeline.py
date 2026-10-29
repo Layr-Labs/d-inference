@@ -486,6 +486,23 @@ class ReleasePipelineTests(unittest.TestCase):
         for caller in (CALLER, (ROOT / '.github/workflows/release-dev-branch.yml').read_text()):
             self.assertIn("      - 'scripts/provider-cluster-runtime-facts.sh'\n", caller)
 
+    def test_glm_and_qwen_are_both_hard_required(self):
+        # Any failure of the facts command fails the script, so the step: no
+        # captured exit status, no captured error output, no left-out list.
+        for model in ('Qwen3.5-9B', 'glm-5.3-flash'):
+            self.assertEqual(FACTS_SCRIPT.count('--require-model ' + model), 1)
+        for soft in ('|| status', 'LEFT_OUT', 'left-out', '::warning::', '2>'):
+            self.assertNotIn(soft, FACTS_SCRIPT)
+        self.assertTrue(FACTS_SCRIPT.startswith('#!/usr/bin/env bash\n') and 'set -euo pipefail\n' in FACTS_SCRIPT)
+        # The CLI calls release with no omission reporter and the facts type
+        # has no list of models it may leave out.
+        command = (ROOT / 'provider-swift/Sources/darkbloom/ClusterRuntimeFactsCommand.swift').read_text()
+        facts = (ROOT / 'provider-swift/Sources/ProviderCore/Config/ClusterRuntimeApprovalFacts.swift').read_text()
+        self.assertNotIn('omitted', command)
+        self.assertNotIn('softReleaseModels', facts)
+        for workflow in (RELEASE, WARM):
+            self.assertNotIn('left-out.md', workflow)
+
     def test_dev_and_staging_artifacts_avoid_collision_but_prod_stays_unqualified(self):
         # dev and staging unsigned and publication artifact names carry the
         # environment, so two lanes in one run never collide; prod

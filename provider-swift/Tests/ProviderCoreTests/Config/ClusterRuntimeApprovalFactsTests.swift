@@ -267,6 +267,34 @@ struct ClusterRuntimeApprovalFactsTests {
         #expect(!lacking.contains("Qwen3.5-9B"))
     }
 
+    /// glm-5.3-flash is hard-required like Qwen3.5-9B: the worker refusing
+    /// every GLM candidate fails the release (the call the CLI makes), and the
+    /// release fails when either required model is missing.
+    @Test func releaseFailsWhenTheWorkerRefusesGLMAndRequiresBothModels() throws {
+        let f = try Fixture()
+        let candidates = f.root.appendingPathComponent("candidates", isDirectory: true)
+        _ = try f.model("qwen", parent: candidates)
+        _ = try f.model("glm", parent: candidates, fixture: "registered-qwen38-27b", refused: true)
+        let all = try ClusterRuntimeApprovalFacts.candidates(in: candidates)
+        let qwen = ClusterRuntimeApprovalFacts.ReleaseModel(runtimeModelID: "registered_qwen35_9b", artifactSHA256: Self.qwenArtifact)
+        let glm = ClusterRuntimeApprovalFacts.ReleaseModel(runtimeModelID: "registered_glm53_flash",
+                                                           artifactSHA256: try Self.aggregate(of: "registered-qwen38-27b"))
+        let required = ["Qwen3.5-9B", "glm-5.3-flash"]
+        func failure(_ models: [ClusterRuntimeApprovalFacts.ReleaseModel]) -> String {
+            do { _ = try ClusterRuntimeApprovalFacts.release(installation: f.installation, candidates: all, required: required, models: models); return "" }
+            catch { return String(describing: error) }
+        }
+        let refused = failure([qwen, glm])
+        #expect(refused.contains("registered_glm53_flash") && refused.contains("glm/manifest.json"))
+        #expect(!refused.contains("registered_qwen35_9b ("))
+        #expect(failure([qwen]).contains("lack required models: glm-5.3-flash"))
+        #expect(failure([]).contains("lack required models: Qwen3.5-9B, glm-5.3-flash"))
+        // Qwen alone is described: only the GLM requirement fails above.
+        let facts = try ClusterRuntimeApprovalFacts.release(installation: f.installation, candidates: all,
+                                                            required: ["Qwen3.5-9B"], models: [qwen])
+        #expect(facts.models.map(\.model) == ["Qwen3.5-9B"])
+    }
+
     @Test func releaseModelsComeFromPassingRecordsOfModelsWithAStageAdapter() throws {
         let bundled = ClusterRuntimeApprovalFacts.releaseModels
         for required in [ClusterRuntimeApprovalFacts.ReleaseModel(runtimeModelID: "registered_qwen35_9b", artifactSHA256: Self.qwenArtifact),
@@ -317,6 +345,13 @@ struct ClusterRuntimeApprovalFactsTests {
         }
         #expect(try ClusterRuntimeApprovalFacts.candidates(in: folder).map { $0.manifest.deletingLastPathComponent().lastPathComponent } == ["a", "b"])
         #expect(throws: ClusterConfigurationError.self) { _ = try ClusterRuntimeApprovalFacts.candidates(in: f.root.appendingPathComponent("none")) }
+    }
+
+    /// The catalog aggregate a metadata fixture's manifest names.
+    static func aggregate(of fixture: String) throws -> String {
+        let data = try Data(contentsOf: Fixture.metadataFixtures.appendingPathComponent("\(fixture).manifest.json"))
+        let object = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        return try #require(object?["aggregate_sha256"] as? String)
     }
 
     /// Facts with three models (byte order: uppercase before lowercase), for the codec rows.

@@ -226,6 +226,10 @@ private func record(
     return (events, tps)
 }
 
+private func blockingWait(_ semaphore: DispatchSemaphore, seconds: Double) -> Bool {
+    semaphore.wait(timeout: .now() + seconds) == .success
+}
+
 private func waitForBudgetRelease(
     _ budget: GlobalKVCacheBudget,
     timeout: Duration = .seconds(1)
@@ -464,7 +468,7 @@ private struct EngineV2BridgePumpReceiptTests {
         // Without the opt-in this returns only after the blocked write times out.
         let recorded = await record(stream)
         #expect(recorded.events.contains { if case .info = $0 { true } else { false } })
-        let writing = await Task.detached { entered.wait(timeout: .now() + 10) == .success }.value
+        let writing = await Task.detached { blockingWait(entered, seconds: 10) }.value
         #expect(writing)
         #expect(store.stats().filesWritten == 0)
         #expect(received.snapshot.isEmpty)

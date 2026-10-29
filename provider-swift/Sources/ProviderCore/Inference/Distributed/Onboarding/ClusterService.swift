@@ -110,6 +110,8 @@ public final class ClusterService: @unchecked Sendable {
     // and whether the running part is one.
     private var memberQuickEnds = 0
     private var childIsMember = false
+    // Where the running part began writing its log (`lastError(in:from:)`).
+    private var childLogOffset: UInt64 = 0
     // Derived control (ClusterServiceControl.swift).
     var control: ClusterControlNode?
     var controlResponder: ClusterSetupLinkExchange.Responder?
@@ -924,7 +926,7 @@ public final class ClusterService: @unchecked Sendable {
             value.updating = updatingLine
             value.localOnly = record?.leadership.map { $0.scope.isLocalOnly }
             value.memberQuickEnds = memberQuickEnds
-            value.approvalID = configuration?.nativeMember?.clusterApproval?.id
+            value.approvalID = configuration?.nativeMember?.clusterApproval?.id ?? ""
             return value
         }
     }
@@ -1030,68 +1032,88 @@ public final class ClusterService: @unchecked Sendable {
                     self.nextApprovalCheck = Date().addingTimeInterval(ClusterOnboardingUpdate.checkEverySeconds)
                 }
             }
-            let record = try? self.store.readRecord()
-            let scope = record?.leadership?.scope ?? .publicServing
-            var setAside = record?.approvalSetAside
-            guard let saved = try? ClusterApprovalAttachment.savedSetup(paths: paths, providerConfiguration: configuration) else {
+            let live = self.controlLive
+            let watchBefore = self.lock.withLock { self.approvalWatch }
+            /// The step for the setup, record and other Mac as they are now, for one answer of the coordinator.
+            struct Decided {
+                let step: ClusterApprovalCheck.Step
+                let watch: ClusterApprovalCheck.Watch
+                let serving: Bool
+            }
+            func decide(_ answer: () -> ClusterApprovalFetch.Outcome?) -> Decided? {
+                let record = try? self.store.readRecord()
+                let scope = record?.leadership?.scope ?? .publicServing
+                var setAside = record?.approvalSetAside
+                guard let saved = try? ClusterApprovalAttachment.savedSetup(paths: paths, providerConfiguration: configuration) else {
+                    return nil
+                }
+                let now = Date().timeIntervalSince1970
+                let offered = saved.configuration.nativeMember.map { ClusterApprovalLifetime.offers($0, scope: scope, now: now) } ?? false
+                // The other Mac's saved cluster approval and its coordinator-paired parts' quick ends, from its status
+                // (unknown when it does not answer or does not report them): both Macs carry the same approval, or neither.
+                let peer = try? JSONDecoder().decode(ClusterServiceStatus.self, from: live.command(.init(op: .status), seconds: 10))
+                let peerApprovalID = ClusterApprovalCheck.peerApprovalID(peer)
+                let macsDiffer = ClusterApprovalCheck.macsDiffer(saved, peerApprovalID: peerApprovalID)
+                let asks = ClusterApprovalCheck.asks(first: first, serving: record?.leadership?.serving == true, scope: scope,
+                                                     offered: offered, setAside: setAside != nil, macsDiffer: macsDiffer)
+                guard asks || macsDiffer else { return nil }
+                // A local-only cluster settles a difference between the Macs without asking the coordinator.
+                guard let fetched = asks ? answer() : .unavailable("not asked") else { return nil }
+                if let ended = setAside, !ClusterApprovalLifetime.current(ended.approval, now: now) {
+                    try? self.store.updateRecord { $0.approvalSetAside = nil }
+                    setAside = nil
+                }
+                let quickEnds = max(self.lock.withLock { self.memberQuickEnds }, peer?.memberQuickEnds ?? 0)
+                var watch = watchBefore
+                let step = ClusterApprovalCheck.step(saved: saved, fetched: fetched, setAside: setAside, scope: scope,
+                    memberQuickEnds: quickEnds, peerApprovalID: peerApprovalID, watch: &watch, clock: ClusterService.monotonicSeconds(),
+                    grace: ClusterService.soloGraceSeconds, now: now)
+                return Decided(step: step, watch: watch, serving: record?.leadership?.serving == true)
+            }
+            var fetched: ClusterApprovalFetch.Outcome?
+            func answer() -> ClusterApprovalFetch.Outcome? {
+                if fetched == nil {
+                    fetched = ClusterApprovalFetch.fetchBlocking(providerConfiguration: configuration) ?? .unavailable("no coordinator is configured")
+                }
+                return fetched
+            }
+            guard let initial = decide(answer) else { return checked() }
+            self.lock.withLock { self.approvalWatch = initial.watch }
+            guard initial.step != .keep else { return checked() }
+            // A person's command and this never run at once. A busy lock is tried again at the next check, a minute on,
+            // not at every tick.
+            guard let held = ClusterControlCommandLock.acquire(seconds: 5) else {
+                say("another cluster command is running: the cluster approval is checked again in a minute")
                 return checked()
             }
-            let offered = saved.configuration.nativeMember.map {
-                ClusterApprovalLifetime.offers($0, scope: scope, now: Date().timeIntervalSince1970)
-            } ?? false
-            let live = self.controlLive
-            // The other Mac's saved cluster approval and its coordinator-paired parts' quick ends, from its status (nil
-            // when it does not answer): both Macs carry the same approval, or neither does.
-            let peer = try? JSONDecoder().decode(ClusterServiceStatus.self, from: live.command(.init(op: .status), seconds: 10))
-            let peerApprovalID: String?? = peer.map { $0.approvalID }
-            let macsDiffer = ClusterApprovalCheck.macsDiffer(saved, peerApprovalID: peerApprovalID)
-            let asks = ClusterApprovalCheck.asks(first: first, serving: record?.leadership?.serving == true, scope: scope,
-                                                 offered: offered, setAside: setAside != nil, macsDiffer: macsDiffer)
-            guard asks || macsDiffer else { return checked() }
-            // A local-only cluster settles a difference between the Macs without asking the coordinator.
-            let fetched = asks ? ClusterApprovalFetch.fetchBlocking(providerConfiguration: configuration)
-                ?? .unavailable("no coordinator is configured") : .unavailable("not asked")
-            let now = Date().timeIntervalSince1970
-            if let ended = setAside, !ClusterApprovalLifetime.current(ended.approval, now: now) {
-                try? self.store.updateRecord { $0.approvalSetAside = nil }
-                setAside = nil
-            }
-            // Both Macs' coordinator-paired parts that ended in a row right after starting.
-            let quickEnds = max(self.lock.withLock { self.memberQuickEnds }, peer?.memberQuickEnds ?? 0)
-            var watch = self.lock.withLock { self.approvalWatch }
-            let step = ClusterApprovalCheck.step(saved: saved, fetched: fetched, setAside: setAside, scope: scope,
-                memberQuickEnds: quickEnds, peerApprovalID: peerApprovalID, watch: &watch, clock: ClusterService.monotonicSeconds(),
-                grace: ClusterService.soloGraceSeconds, now: now)
-            self.lock.withLock { self.approvalWatch = watch }
-            guard step != .keep else { return checked() }
-            // A person's command and this never run at once; a busy lock is tried again at the next tick.
-            guard let held = ClusterControlCommandLock.acquire(seconds: 5) else { return }
             defer { held.release() }
             checked()
-            let serving = (try? self.store.readRecord())?.leadership?.serving == true
-            if serving {
-                if case .failure(let failure) = live.localStop() {
-                    return say("could not stop the parts to change the cluster approval: " + failure.lines.joined(separator: " "))
-                }
-                guard live.drained(seconds: 300) else {
-                    try? self.store.updateRecord { $0.leadership?.serving = true }
-                    return say("a part did not stop within 5 minutes: the cluster approval stays as it is")
-                }
-            }
+            // Decided again under the lock, with the same answer: a person's command may have changed the setup, the
+            // scope or the other Mac while this check waited.
+            guard let decided = decide(answer) else { return }
+            self.lock.withLock { self.approvalWatch = decided.watch }
+            let step = decided.step, serving = decided.serving
+            guard step != .keep else { return }
             let send: (ClusterServiceCommand) throws -> Void = { request in _ = try live.command(request, seconds: 180) }
-            let result: ClusterApprovalSync.Result
-            switch step {
-            case .keep: return
-            case .save(let approval):
-                result = ClusterApprovalSync.run(fetched: .approvals([approval]), paths: paths, providerConfiguration: configuration,
-                    pairingStore: pairingStore, scratch: scratch, now: Date().timeIntervalSince1970, sendToPeer: send)
-            case .serveLocally(let approval, let reason):
-                result = ClusterApprovalSync.serveLocally(approval, line: reason.line(approval, grace: ClusterService.soloGraceSeconds),
-                    paths: paths, providerConfiguration: configuration, pairingStore: pairingStore, scratch: scratch, sendToPeer: send)
-            case .converge(let target):
-                result = ClusterApprovalSync.converge(target, paths: paths, providerConfiguration: configuration,
-                    pairingStore: pairingStore, scratch: scratch, sendToPeer: send)
-            }
+            let result = ClusterApprovalSync.apply(step, grace: ClusterService.soloGraceSeconds, paths: paths,
+                providerConfiguration: configuration, pairingStore: pairingStore, scratch: scratch, now: Date().timeIntervalSince1970,
+                stop: {
+                    guard serving else { return nil }
+                    if case .failure(let failure) = live.localStop() {
+                        return "could not stop the parts to change the cluster approval: " + failure.lines.joined(separator: " ")
+                    }
+                    guard live.drained(seconds: 300) else {
+                        try? self.store.updateRecord { $0.leadership?.serving = true }
+                        return "a part did not stop within 5 minutes: the cluster approval stays as it is"
+                    }
+                    return nil
+                },
+                serve: {
+                    guard serving, case .failure(let failure) = live.localServe() else { return }
+                    try? self.store.updateRecord { $0.leadership?.serving = true }
+                    say("could not start the parts again after the cluster approval changed: " + failure.lines.joined(separator: " "))
+                },
+                sendToPeer: send)
             try? self.store.updateRecord { stored in
                 if let note = result.note { stored.approvalNote = note }
                 // The approval set aside is kept while the pair serves locally and dropped once one is saved again.
@@ -1101,10 +1123,6 @@ public final class ClusterService: @unchecked Sendable {
                 if case .save = step, result.changed { stored.approvalSetAside = nil }
             }
             if let line = result.line { say(line) }
-            if serving, case .failure(let failure) = live.localServe() {
-                try? self.store.updateRecord { $0.leadership?.serving = true }
-                say("could not start the parts again after the cluster approval changed: " + failure.lines.joined(separator: " "))
-            }
         }
     }
 
@@ -1113,11 +1131,14 @@ public final class ClusterService: @unchecked Sendable {
         (try? paths().rankLog).flatMap { lastError(in: $0) }
     }
 
-    private static func lastError(in log: URL) -> String? {
+    /// The same in `log`, reading only from `offset` on (where the part that ended began writing), so an error an
+    /// earlier part wrote is never taken for this part's. A log shorter than `offset` was replaced: it is read whole.
+    static func lastError(in log: URL, from offset: UInt64 = 0) -> String? {
         guard let handle = FileHandle(forReadingAtPath: log.path) else { return nil }
         defer { try? handle.close() }
         let size = (try? handle.seekToEnd()) ?? 0
-        try? handle.seek(toOffset: size > 16_384 ? size - 16_384 : 0)
+        let window: UInt64 = size > 16_384 ? size - 16_384 : 0
+        try? handle.seek(toOffset: offset <= size ? max(offset, window) : window)
         let tail = String(decoding: handle.readDataToEndOfFile(), as: UTF8.self)
         guard let line = tail.split(whereSeparator: \.isNewline).last(where: { $0.hasPrefix("Error:") }) else { return nil }
         return ClusterConsoleText.plain(ClusterConsoleText.bounded(String(line.dropFirst(6)).trimmingCharacters(in: .whitespaces), maximum: 240))
@@ -1267,7 +1288,7 @@ public final class ClusterService: @unchecked Sendable {
             // A coordinator-paired part that keeps ending right after its start makes the leader serve locally
             // (`ClusterApprovalCheck.step`); an end because the coordinator was out of reach is not counted.
             if lock.withLock({ childIsMember }) {
-                let lastError = Self.lastError(in: serviceFiles.rankLog)
+                let lastError = Self.lastError(in: serviceFiles.rankLog, from: lock.withLock { childLogOffset })
                 lock.withLock { memberQuickEnds = ClusterApprovalCheck.memberQuickEnds(after: memberQuickEnds, ranSeconds: ran, lastError: lastError) }
             }
             // F14: a solo server that keeps ending right after its start is not started again for this plan and model
@@ -1394,7 +1415,8 @@ public final class ClusterService: @unchecked Sendable {
         process.standardInput = FileHandle.nullDevice
         let log = serviceFiles.rankLog
         if !FileManager.default.fileExists(atPath: log.path) { FileManager.default.createFile(atPath: log.path, contents: nil, attributes: [.posixPermissions: 0o600]) }
-        if let handle = try? FileHandle(forWritingTo: log) { handle.seekToEndOfFile(); process.standardOutput = handle; process.standardError = handle }
+        var logOffset: UInt64 = 0
+        if let handle = try? FileHandle(forWritingTo: log) { logOffset = handle.seekToEndOfFile(); process.standardOutput = handle; process.standardError = handle }
         beforePartStart?()
         do { try process.run() } catch {
             say("\(what) could not start: \(error)")
@@ -1404,7 +1426,7 @@ public final class ClusterService: @unchecked Sendable {
         let startedAt = ClusterProcessTable.startTime(of: process.processIdentifier)
         lock.withLock {
             child = process; childSetup = key; childPort = port; childStarted = Date(); childStartedAt = startedAt; starts += 1
-            childIsMember = memberRoute
+            childIsMember = memberRoute; childLogOffset = logOffset
             if !memberRoute { memberQuickEnds = 0 }
         }
         say("started \(what) (pid \(process.processIdentifier))")

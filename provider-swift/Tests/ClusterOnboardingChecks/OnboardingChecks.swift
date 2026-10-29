@@ -156,7 +156,7 @@ import Darwin
             expect(run.text.contains("\u{1B}[\(ClusterOnboardingBrand.height)A") == animated, "colour: the mark blooms only when animating")
             expect(!run.text.contains("\u{1B}[2J") && !run.text.contains("\u{1B}[H"), "colour: no screen clearing")
             expect(recorder.all == ["checkLink", "pair", "answer y", "ensureService", "reachMembers", "planModels", "recheckFit 0", "adopt 0",
-                "serve", "waitReady", "testRequest"], "colour: operations in order: \(recorder.all)")
+                "serve", "waitReady", "testRequest", "register"], "colour: operations in order: \(recorder.all)")
         }
         // The mark and the meter themselves.
         expect(ClusterOnboardingBrand.rows() == ["\u{2588}\u{2588}\u{2588}\u{2588}  \u{2580}\u{2580}\u{2588}\u{2588}  \u{2588}\u{2588}",
@@ -202,7 +202,7 @@ import Darwin
             let stages = ["1 / 5  Connect the Macs", "2 / 5  Pair securely", "3 / 5  Choose a model", "4 / 5  Start the model", "5 / 5  Test a response"]
             let rows = stages.compactMap { stage in screen.firstIndex { $0.contains(stage) } }
             expect(rows.count == stages.count && rows == rows.sorted(), "\(label): stages in order")
-            expect(recorder.all.last == "testRequest", "\(label): the setup ran to its test: \(recorder.all)")
+            expect(Array(recorder.all.suffix(2)) == ["testRequest", "register"], "\(label): the setup ran to its test: \(recorder.all)")
         }
     }
 
@@ -228,7 +228,7 @@ import Darwin
             "45 columns: no mark and no bloom climb")
         expect(screen.contains { $0.contains("1 / 5  Connect the Macs") && $0.contains("\u{25CF}\u{25CB}\u{25CB}\u{25CB}\u{25CB}") },
             "45 columns: headings keep the meter")
-        expect(recorder.all.last == "testRequest", "45 columns: the setup ran to its test: \(recorder.all)")
+        expect(Array(recorder.all.suffix(2)) == ["testRequest", "register"], "45 columns: the setup ran to its test: \(recorder.all)")
         // A live line wider than a 44-column window, drawn directly.
         var primary: Int32 = -1, secondary: Int32 = -1
         var window = winsize(ws_row: 24, ws_col: 44, ws_xpixel: 0, ws_ypixel: 0)
@@ -836,8 +836,8 @@ import Darwin
         run.type("2\r")
         expect(run.waitFor("Starting Qwen3.8-27B-4bit-mtp on both Macs in 3 s"), "member model change: second model")
         expect(run.finish() == 0, "member model change: served")
-        expect(recorder.all == ["ensureService", "status", "reachMembers", "planModels", "recheckFit 1", "adopt 1", "serve", "waitReady", "testRequest"],
-               "member model change: every step through the operations (forwarded live): \(recorder.all)")
+        expect(recorder.all == ["ensureService", "status", "reachMembers", "planModels", "recheckFit 1", "adopt 1", "serve", "waitReady", "testRequest",
+                                "register"], "member model change: every step through the operations (forwarded live): \(recorder.all)")
         expect(run.text.contains("Done. Run `darkbloom cluster` on any of these Macs"), "member model change: any Mac")
         // The leader saves the setup and sends it here: said from this Mac's side.
         expect(run.text.contains("Saving the setup on the other Mac, which sends it to this Mac over the cable…\n")
@@ -955,8 +955,8 @@ import Darwin
         expect(run.waitFor("every file matched its manifest digest."), "copy: verified")
         expect(run.waitFor("Starting Qwen3.5-9B on both Macs in 3 s; press n to stop here."), "copy: then the timed start")
         expect(run.finish() == 0, "copy: served")
-        expect(recorder.all == ["ensureService", "reachMembers", "planModels", "provision 0 copy", "recheckFit 0", "adopt 0", "serve", "waitReady", "testRequest"],
-            "copy: copied before the setup is synced: \(recorder.all)")
+        expect(recorder.all == ["ensureService", "reachMembers", "planModels", "provision 0 copy", "recheckFit 0", "adopt 0", "serve", "waitReady", "testRequest",
+                                "register"], "copy: copied before the setup is synced: \(recorder.all)")
         expect(run.keys == 2, "copy: enter (model), enter (copy); got \(run.keys)")
         expect(!run.text.lowercased().contains("ssh") && !run.text.contains("--model-dir"), "copy: no SSH, no model folder to type")
         transcript("leader-copies-missing-model", run.text, keys: run.keys)
@@ -989,8 +989,8 @@ import Darwin
         expect(run.waitFor("  rank 1 (decodes): Apple M5 Ultra, 256 GB (this Mac), layers 32-63"), "download: the plan shown")
         expect(run.waitFor("Starting Qwen3.8-27B-4bit-mtp on both Macs in 3 s"), "download: timed start")
         expect(run.finish() == 0, "download: served")
-        expect(recorder.all == ["ensureService", "reachMembers", "planModels", "provision 0 copy", "planModels", "recheckFit 0", "adopt 0", "serve", "waitReady", "testRequest"],
-            "download: downloaded, planned again, then adopted: \(recorder.all)")
+        expect(recorder.all == ["ensureService", "reachMembers", "planModels", "provision 0 copy", "planModels", "recheckFit 0", "adopt 0", "serve", "waitReady",
+                                "testRequest", "register"], "download: downloaded, planned again, then adopted: \(recorder.all)")
         transcript("leader-downloads-model", run.text, keys: run.keys)
     }
 
@@ -1047,8 +1047,8 @@ import Darwin
         expect(run.waitFor("Starting Qwen3.5-9B on both Macs in 3 s; press n to stop here."), "short copy: copied without a key, then the timed start")
         expect(run.finish() == 0, "short copy: served")
         expect(!run.text.contains("Press enter to copy it over the Thunderbolt cable"), "short copy: not asked")
-        expect(recorder.all == ["ensureService", "reachMembers", "planModels", "provision 0 copy", "recheckFit 0", "adopt 0", "serve", "waitReady", "testRequest"],
-            "short copy: copied before the setup is synced: \(recorder.all)")
+        expect(recorder.all == ["ensureService", "reachMembers", "planModels", "provision 0 copy", "recheckFit 0", "adopt 0", "serve", "waitReady", "testRequest",
+                                "register"], "short copy: copied before the setup is synced: \(recorder.all)")
         expect(run.keys == 1, "short copy: enter (model) only; got \(run.keys)")
         transcript("leader-short-copy-not-asked", run.text, keys: run.keys)
     }

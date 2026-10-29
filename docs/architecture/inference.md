@@ -234,6 +234,12 @@ ready screen shows the registered line (`ClusterOnboardingReady.offered`,
 `OnboardingLive.offeredReadiness`). How the approval is fetched, matched,
 checked on each Mac and saved:
 [coordinator-paired member](../reference/configuration.md#coordinator-paired-member).
+The control leader checks the approval again under the command lock
+(`ClusterService.checkApproval`) and checks a save against its own files
+before any part stops (`ClusterApprovalSync.apply`). It compares the other
+Mac's approval only when that Mac reports one
+(`ClusterApprovalCheck.peerApprovalID`). It counts the quick ends of a part
+only from that part's own rank-log lines (`ClusterService.lastError(in:from:)`).
 `OnboardingLive` uses fresh peer display facts only while their authenticated
 member identity matches the current pairing. These labels do not rewrite saved
 serving intent or change model eligibility and placement. See the

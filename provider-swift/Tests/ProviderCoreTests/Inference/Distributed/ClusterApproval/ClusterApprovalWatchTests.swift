@@ -253,4 +253,93 @@ struct ClusterApprovalWatchTests {
         #expect(refused.changed && refused.line?.contains("neither Mac carries cluster approval") == true, "\(refused.line ?? "")")
         for mac in macs.macs { #expect(try macs.saved(mac).configuration.nativeMember == nil, "rank \(mac.rank)") }
     }
+
+    @Test func aPartsQuickEndsAreCountedFromItsOwnLogLinesOnly() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("rank-log-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let log = folder.appendingPathComponent("rank.log")
+        // An earlier part ended because the coordinator was out of reach; then the next part starts writing here.
+        try Data(("Error: " + ClusterMemberControlError.coordinatorUnreachable.rawValue + "\n").utf8).write(to: log)
+        let offset = UInt64(try Data(contentsOf: log).count)
+        // The next part ends quickly without an error line of its own: its end is not the coordinator's and counts.
+        #expect(ClusterService.lastError(in: log, from: offset) == nil)
+        #expect(ClusterApprovalCheck.memberQuickEnds(after: 1, ranSeconds: 5,
+                                                     lastError: ClusterService.lastError(in: log, from: offset)) == 2)
+        // Its own error line is the one read.
+        let handle = try FileHandle(forWritingTo: log)
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data("Error: Saved cluster approval does not cover this Mac's chip\n".utf8))
+        try handle.close()
+        #expect(ClusterService.lastError(in: log, from: offset) == "Saved cluster approval does not cover this Mac's chip")
+        // The whole log still names the earlier part's line before it.
+        #expect(ClusterService.lastError(in: log)?.hasPrefix("Saved cluster approval") == true)
+        #expect(ClusterService.lastError(in: log, from: offset + 4_096)?.hasPrefix("Saved cluster approval") == true,
+                "a log shorter than the offset was replaced and is read whole")
+    }
+
+    @Test func aFollowerThatDoesNotReportItsApprovalIsNeverTakenForOneWithout() throws {
+        let macs = try ClusterApprovalMacs(coordinatorURL: "ws://127.0.0.1:9/ws/provider")
+        let approval = macs.approval(), facts = try macs.facts()
+        #expect(macs.sync(.approvals([approval]), leaderFacts: facts, followerFacts: facts).changed)
+        let leaderSaved = try macs.saved(macs.leader)
+        func status(_ approvalID: String?) throws -> ClusterServiceStatus {
+            var object: [String: Any] = ["serving": true, "sessionLeader": false, "child": ["running": true, "starts": 1]]
+            if let approvalID { object["approvalID"] = approvalID }
+            return try JSONDecoder().decode(ClusterServiceStatus.self, from: JSONSerialization.data(withJSONObject: object))
+        }
+        // An older follower build sends no field: unknown, never "no approval", so nothing converges.
+        let older = ClusterApprovalCheck.peerApprovalID(try status(nil))
+        #expect(older == nil)
+        #expect(!ClusterApprovalCheck.macsDiffer(leaderSaved, peerApprovalID: older))
+        #expect(try step(macs, .approvals([approval]), peer: older, Watched(), clock: 0) == .keep)
+        // A follower that reports none ("") differs from the leader's approval; one that reports the same ID does not.
+        let none = ClusterApprovalCheck.peerApprovalID(try status(""))
+        #expect(none == .some(nil) && ClusterApprovalCheck.macsDiffer(leaderSaved, peerApprovalID: none))
+        let same = ClusterApprovalCheck.peerApprovalID(try status(approval.id))
+        #expect(same == .some(approval.id) && !ClusterApprovalCheck.macsDiffer(leaderSaved, peerApprovalID: same))
+        // No answer at all is unknown too.
+        #expect(ClusterApprovalCheck.peerApprovalID(nil) == nil)
+    }
+
+    @Test func convergingOnNoneAlsoClearsTheLeadersApprovalThatIsNotOffered() throws {
+        let macs = try ClusterApprovalMacs(coordinatorURL: "ws://127.0.0.1:9/ws/provider")
+        let facts = try macs.facts(), approval = macs.approval()
+        #expect(macs.sync(.approvals([approval]), leaderFacts: facts, followerFacts: facts).changed)
+        // The other Mac lost its copy; the leader serves locally only now, so its own approval is not offered.
+        try macs.cable(facts: facts)(ClusterServiceCommand(op: .approval))
+        let local = ClusterServingScope.localOnly(bind: "127.0.0.1"), lost = try peerID(macs)
+        #expect(try step(macs, .unavailable("not asked"), peer: lost, scope: local, Watched(), clock: 0) == .converge(nil))
+        let result = converge(macs, nil, followerFacts: facts)
+        #expect(result.changed && result.line?.hasSuffix("neither Mac carries one now") == true, "\(result.line ?? "")")
+        // Both Macs hold none, so the next check finds no difference and does not repeat.
+        for mac in macs.macs { #expect(try macs.saved(mac).configuration.nativeMember == nil, "rank \(mac.rank)") }
+        let leaderSaved = try macs.saved(macs.leader), settled = try peerID(macs)
+        #expect(!ClusterApprovalCheck.macsDiffer(leaderSaved, peerApprovalID: settled))
+    }
+
+    @Test func noPartStopsForAnApprovalTheLeadersOwnCheckRefuses() throws {
+        let macs = try ClusterApprovalMacs(coordinatorURL: "ws://127.0.0.1:9/ws/provider")
+        let approval = macs.approval(), facts = try macs.facts(), before = try macs.macs.map(macs.bytes)
+        var stops = 0, serves = 0
+        func apply(stop: () -> String?, leaderFacts: ClusterRuntimeApprovalFacts) -> ClusterApprovalSync.Result {
+            ClusterApprovalSync.apply(.save(approval), grace: grace, paths: macs.leader.paths, providerConfiguration: macs.leader.provider,
+                pairingStore: macs.leader.pairing, scratch: macs.leader.scratch, now: Date().timeIntervalSince1970,
+                stop: stop, serve: { serves += 1 }, sendToPeer: macs.cable(facts: facts), chipClass: ClusterApprovalMacs.chip,
+                facts: { _ in leaderFacts })
+        }
+        // The leader's own check refuses the entry: no part stops, nothing is sent, nothing starts again.
+        let refused = apply(stop: { stops += 1; return nil }, leaderFacts: try macs.facts(differing: "metallib_sha256"))
+        #expect(!refused.changed && stops == 0 && serves == 0)
+        #expect(refused.line?.contains("this Mac's check refused it") == true, "\(refused.line ?? "")")
+        #expect(try macs.macs.map(macs.bytes) == before)
+        // The parts do not stop: nothing changes and nothing starts.
+        let unstopped = apply(stop: { "a part did not stop within 5 minutes" }, leaderFacts: facts)
+        #expect(!unstopped.changed && unstopped.line == "a part did not stop within 5 minutes" && serves == 0)
+        #expect(try macs.macs.map(macs.bytes) == before)
+        // Accepted: both parts stop once, both Macs save it, both parts start once.
+        let saved = apply(stop: { stops += 1; return nil }, leaderFacts: facts)
+        #expect(saved.changed && stops == 1 && serves == 1)
+        for mac in macs.macs { #expect(try macs.saved(mac).configuration.nativeMember?.clusterApproval == approval, "rank \(mac.rank)") }
+    }
 }

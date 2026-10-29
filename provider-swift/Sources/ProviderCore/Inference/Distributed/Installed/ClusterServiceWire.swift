@@ -68,8 +68,9 @@ public struct ClusterServiceStatus: Codable, Sendable, Equatable {
     /// control leader makes the pair serve locally when either Mac's count reaches the solo server's limit. Nil from an
     /// older build.
     public var memberQuickEnds: Int? = nil
-    /// The ID of the cluster approval this Mac's saved setup carries (none: absent). The control leader compares it
-    /// with its own on each check and gives this Mac its own, or none, when they differ (`ClusterApprovalCheck`).
+    /// The ID of the cluster approval this Mac's saved setup carries, "" for none. Absent (nil) from a build that does
+    /// not report it, which the control leader never reads as "none" (`ClusterApprovalCheck.peerApprovalID`). The
+    /// leader compares it with its own on each check and gives this Mac its own, or none, when they differ.
     public var approvalID: String? = nil
     public struct Control: Codable, Sendable, Equatable {
         public var leaderID: String

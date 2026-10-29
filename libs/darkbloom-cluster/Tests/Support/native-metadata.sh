@@ -75,8 +75,11 @@ pinned = worker / 'Package.resolved'
 if not resolved.exists() or resolved.read_bytes() != pinned.read_bytes():
     shutil.copyfile(pinned, resolved)
 PY
+# Four jobs by default keeps a developer Mac usable; a dedicated CI runner sets more.
+task_jobs="${DARKBLOOM_CLUSTER_METADATA_BUILD_JOBS:-4}"
+[[ "$task_jobs" =~ ^[1-9][0-9]*$ ]] || { echo 'DARKBLOOM_CLUSTER_METADATA_BUILD_JOBS must be a positive integer' >&2; exit 2; }
 swift build --package-path "$task_build/package" --scratch-path "$task_build/build" \
-  -c release --jobs 4 --force-resolved-versions --product "$task_product"
+  -c release --jobs "$task_jobs" --force-resolved-versions --product "$task_product"
 task_binary="$task_build/build/release/$task_product"
 "$task_binary" "$@"
 if [[ "$task_product" == capability ]]; then

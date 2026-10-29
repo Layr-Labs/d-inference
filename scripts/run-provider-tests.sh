@@ -37,8 +37,42 @@ isolated_pattern="ProcessMemoryNativeIntegrationTests|${isolated_pattern}"
 # state and cooperative-executor capacity. Tests still create their own tasks
 # and controlled interleavings; only unrelated test cases run sequentially.
 # MiMo native fixtures have their own explicit, bounded CI selections.
-env -u MIMO_V26_SERIAL_NATIVE_TESTS -u DARKBLOOM_EXCLUSIVE_NATIVE_GPU_TEST -u DARKBLOOM_ISOLATED_DEADLINE_TEST \
-  swift test --skip-build --no-parallel --skip "$isolated_pattern" || provider_test_status=$?
+# CI sets PROVIDER_TEST_SHARD=K/N (scripts/provider-test-shards.py chooses the
+# suites) and PROVIDER_TEST_REPORT_DIR for each run's log, xUnit report and
+# executed counts. Shard 1 also runs the MLX-free test targets in one parallel
+# process; the last shard also runs the isolated processes below. Without a
+# shard, everything runs here as one serial suite.
+provider_test_shard=${PROVIDER_TEST_SHARD:-}
+run_provider_test_selection() {
+  local selection=$1 name=${1//\//-of-} arguments parallel_flag=(--no-parallel) status
+  local selected=() report="$PROVIDER_TEST_REPORT_DIR/shard-${1//\//-of-}"
+  arguments=$(python3 "$script_directory/provider-test-shards.py" args "$selection" "$isolated_pattern") || return 1
+  while IFS= read -r argument; do selected+=("$argument"); done <<<"$arguments"
+  # The parallel class keeps Swift Testing's default in-process parallelism.
+  [ "$selection" != parallel ] || parallel_flag=()
+  echo "Provider test selection $name: ${#arguments} characters of filters"
+  env -u MIMO_V26_SERIAL_NATIVE_TESTS -u DARKBLOOM_EXCLUSIVE_NATIVE_GPU_TEST -u DARKBLOOM_ISOLATED_DEADLINE_TEST \
+    swift test --skip-build ${parallel_flag[@]+"${parallel_flag[@]}"} "${selected[@]}" \
+    --xunit-output "$report.xml" 2>&1 | tee "$report.log"
+  status=${PIPESTATUS[0]}
+  python3 "$script_directory/provider-test-shards.py" counts "$selection" "$isolated_pattern" "$report.log" "$report.json" || status=1
+  return "$status"
+}
+if [ -z "$provider_test_shard" ]; then
+  env -u MIMO_V26_SERIAL_NATIVE_TESTS -u DARKBLOOM_EXCLUSIVE_NATIVE_GPU_TEST -u DARKBLOOM_ISOLATED_DEADLINE_TEST \
+    swift test --skip-build --no-parallel --skip "$isolated_pattern" || provider_test_status=$?
+else
+  : "${PROVIDER_TEST_REPORT_DIR:?PROVIDER_TEST_SHARD needs PROVIDER_TEST_REPORT_DIR}"
+  mkdir -p "$PROVIDER_TEST_REPORT_DIR" || exit 1
+  run_provider_test_selection "$provider_test_shard" || provider_test_status=$?
+  if [[ "$provider_test_shard" == 1/* ]]; then
+    run_provider_test_selection parallel || provider_test_status=$?
+  fi
+  # Only the last shard (K == N) continues to the isolated processes.
+  if [ "${provider_test_shard%/*}" != "${provider_test_shard#*/}" ]; then
+    exit "$provider_test_status"
+  fi
+fi
 for test_filter in "${isolated_filters[@]}"; do
   if [ "$test_filter" = acceptedThenExpired ]; then
     env -u MIMO_V26_SERIAL_NATIVE_TESTS -u DARKBLOOM_EXCLUSIVE_NATIVE_GPU_TEST DARKBLOOM_ISOLATED_DEADLINE_TEST=1 \

@@ -40,13 +40,15 @@ FALLBACKS = {"release-integrity": LINUX_FALLBACK, "test-provider": MACOS_FALLBAC
 GRANTED = {"release-integrity": LINUX, "test-provider": MACOS,
            "warm": MACOS, "docs": LINUX_FALLBACK}
 PROVIDER = "${{ needs.changes.outputs.provider == 'true' && 1 || 0 }}"
+PROVIDER_SHARDS = "${{ needs.changes.outputs.provider == 'true' && 4 || 0 }}"
 PULL_REQUEST_WARM = "${{ github.event_name == 'pull_request' && 2 || 0 }}"
 # Every routed job: (profile, fallback label, count expression or None for 1).
 ROUTED = {
     "ci.yml": {
         "release-integrity": ("linux_arm64", LINUX_FALLBACK, None),
         "docs": ("linux_arm64", LINUX_FALLBACK, None),
-        "test-provider": ("macos_arm64", MACOS_FALLBACK, PROVIDER),
+        "test-provider": ("macos_arm64", MACOS_FALLBACK, PROVIDER_SHARDS),
+        "test-provider-summary": ("macos_arm64", MACOS_FALLBACK, PROVIDER),
         "test-provider-sdk": ("macos_arm64", MACOS_FALLBACK, PROVIDER),
         "test-provider-parity": ("macos_arm64", MACOS_FALLBACK, PROVIDER),
         "test-cluster-checks": ("macos_arm64", MACOS_FALLBACK, PROVIDER),
@@ -481,9 +483,14 @@ class RouteWorkflowTests(unittest.TestCase):
                         name, f"${{{{ fromJSON(needs.route.outputs.routes)['{name}'] }}}}"))
                     condition = job_field(job, "if")
                     if name != "warm":
-                        # A lane is requested exactly when its job runs.
+                        # A lane is requested exactly when its job runs, once per
+                        # matrix entry. `!cancelled()` cannot be evaluated in the
+                        # route job and is true there.
+                        matrix = re.search(r"(?m)^        shard: \[([0-9, ]+)\]$", job)
+                        jobs_requested = len(matrix.group(1).split(",")) if matrix else 1
                         self.assertEqual(count, None if condition is None
-                                         else condition.replace(" }}", " && 1 || 0 }}"))
+                                         else condition.replace("!cancelled() && ", "").replace(
+                                             " }}", f" && {jobs_requested} || 0 }}}}"))
         warm = jobs(self.texts["provider-release-cache.yml"])["warm"]
         self.assertIn("lane: [release, qualification]", warm)
         self.assertEqual(job_field(warm, "if"),

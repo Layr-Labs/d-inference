@@ -34,21 +34,30 @@ public struct NativePairMemberInstallation: Sendable {
     /// what this member registers instead of the pair claim, the plan a
     /// committed start must name, and the peer key its data plane pins.
     let roster: NativePairMemberRoster?
+    /// The runtime a start must carry and the installed files must hash to:
+    /// the approval's own, or under a model approval this member's own (its
+    /// plan's runtime block and the digests it took of its installed files).
+    let runtime: NativePairMemberPolicy.Runtime
 
     /// `meshOverLink`: the saved setup reaches the follower over the link
     /// control channel, the only way a committed start can serve in this
-    /// build. Without it the member declines preparation.
+    /// build. Without it the member declines preparation. `installedDigests`:
+    /// under a model approval, the digests this member took of its installed
+    /// metallib and resource library when it built its registration (the
+    /// metallib's also gave its numerics class); unused otherwise.
     public init(expectedCoordinatorPolicy: Data, rank: Int, clusterID: String,
                 identity: ClusterWorkerIdentity, profile: ClusterWorkerProfile,
                 installedOwner: URL, ownerSHA256: String, nativeExecutable: URL,
                 metallib: URL, resourceLibrary: URL, chip: String, meshOverLink: Bool = false,
-                roster: NativePairMemberRoster? = nil, batchLanes: Int? = nil) throws {
+                roster: NativePairMemberRoster? = nil, batchLanes: Int? = nil,
+                installedDigests: (metallib: String, resourceLibrary: String)? = nil) throws {
         try self.init(expectedCoordinatorPolicy: expectedCoordinatorPolicy, rank: rank, clusterID: clusterID,
             identity: identity, profile: profile, installedOwner: installedOwner, ownerSHA256: ownerSHA256,
             nativeExecutable: nativeExecutable, metallib: metallib, resourceLibrary: resourceLibrary,
             chip: chip, leaseDirectory: ClusterUserPaths().deviceDirectory,
             ownerServesCommittedStart: DistributedInstalledOwner.servesCommittedNativeStart && meshOverLink,
-            bootstrap: meshOverLink ? .preludeThenMesh : .nativeKeyPrelude, roster: roster, batchLanes: batchLanes)
+            bootstrap: meshOverLink ? .preludeThenMesh : .nativeKeyPrelude, roster: roster, batchLanes: batchLanes,
+            installedDigests: installedDigests)
     }
     // Same existing canonical-style private directory checks; only fixtures
     // select a temporary scope and their own owner. Production uses
@@ -58,8 +67,21 @@ public struct NativePairMemberInstallation: Sendable {
          installedOwner: URL, ownerSHA256: String, nativeExecutable: URL,
          metallib: URL, resourceLibrary: URL, chip: String, leaseDirectory: URL,
          ownerServesCommittedStart: Bool = true, bootstrap: Bootstrap = .nativeKeyPrelude,
-         roster: NativePairMemberRoster? = nil, batchLanes: Int? = nil) throws {
+         roster: NativePairMemberRoster? = nil, batchLanes: Int? = nil,
+         installedDigests: (metallib: String, resourceLibrary: String)? = nil) throws {
         let policy = try NativePairMemberPolicy(expectedCoordinatorPolicy)
+        // A model approval pins no runtime: this member's plan names its own
+        // (`runtime` block), and a plan for a build-pinned approval names none.
+        let runtime: NativePairMemberPolicy.Runtime
+        if let pinned = policy.runtime {
+            guard roster?.plan.runtime == nil else { throw NativePairMemberError.binding }
+            runtime = pinned
+        } else {
+            guard let block = roster?.plan.runtime, let installedDigests,
+                  let own = NativePairMemberPolicy.Runtime(block, metallibSHA256: installedDigests.metallib,
+                      resourceLibrarySHA256: installedDigests.resourceLibrary) else { throw NativePairMemberError.binding }
+            runtime = own
+        }
         // A pair approval lists the chips it covers; a cluster approval the
         // numerics classes (none listed: any class) and the usable memory a
         // member must have, and only a roster registration is offered under it.
@@ -71,21 +93,23 @@ public struct NativePairMemberInstallation: Sendable {
                 && (device?.usableWiredBytes ?? 0) >= terms.minimumMemberUsableBytes
                 && roster?.plan.policySHA256 == Self.hex(Data(SHA256.hash(data: expectedCoordinatorPolicy)))
                 && roster?.plan.model == policy.model
-                && roster?.membership.artifact(for: policy.model) == Self.hex(policy.hashes[1])
+                && roster?.membership.artifact(for: policy.model) == Self.hex(policy.artifact)
         } else { covered = roster == nil && policy.chips.contains(chip) }
         guard (0...1).contains(rank), identity.peers.count == 2,
               ClusterConfigurationSyntax.hash(ownerSHA256), covered,
-              identity.artifactSHA256 == Self.hex(policy.hashes[1]),
-              identity.peers[rank].buildSHA256 == Self.hex(policy.hashes[2]) else { throw NativePairMemberError.binding }
+              identity.artifactSHA256 == Self.hex(policy.artifact),
+              identity.peers[rank].buildSHA256 == Self.hex(runtime.nativeRuntime),
+              let executionPlanSHA256 = roster?.plan.planSHA256 ?? policy.pinnedPlan.map(Self.hex) else {
+            throw NativePairMemberError.binding
+        }
         _ = try ClusterOwnerBinding(clusterID: clusterID, ownerIncarnation: UUID(), leaseID: UUID(),
-            identity: identity, profile: profile, rank: rank,
-            executionPlanSHA256: roster?.plan.planSHA256 ?? Self.hex(policy.hashes[0]))
+            identity: identity, profile: profile, rank: rank, executionPlanSHA256: executionPlanSHA256)
         self.policy = policy; self.rank = rank; self.clusterID = clusterID
         self.identity = identity; self.profile = profile
         localOwner = try .init(installedDarkbloom: installedOwner, batchLanes: batchLanes); self.ownerSHA256 = ownerSHA256
         artifacts = [nativeExecutable, metallib, resourceLibrary]; self.chip = chip; self.leaseDirectory = leaseDirectory
         self.ownerServesCommittedStart = ownerServesCommittedStart; self.bootstrap = bootstrap
-        self.roster = roster
+        self.roster = roster; self.runtime = runtime
     }
     /// The claim this member registers. Its `policySHA256` is the digest of
     /// exactly the policy bytes a prepare frame must carry.
@@ -97,9 +121,10 @@ public struct NativePairMemberInstallation: Sendable {
         }
     }
     /// A committed start under this member's approval: for a cluster
-    /// approval, it must name the plan this member derived and registered.
+    /// approval, it must name the plan this member derived and registered,
+    /// and under a model approval the runtime this member registered with it.
     func requireStart(_ start: ClusterNativeAuthorizationStart) throws {
-        try policy.require(start, plan: roster?.planDigest)
+        try policy.require(start, plan: roster?.planDigest, runtime: runtime.block)
         if roster != nil, policy.cluster == nil { throw NativePairMemberError.binding }
     }
     func prepare(start: ClusterNativeAuthorizationStart, deadline: UInt64) throws -> [DistributedInstalledFiles.Identity] {
@@ -109,12 +134,14 @@ public struct NativePairMemberInstallation: Sendable {
         return try withExtendedLifetime(gate) { try verifyInstalledFiles(deadline: deadline) }
     }
     /// Hashes the owner against its saved pin, and the native executable,
-    /// metallib and resource library against the policy's own digests.
+    /// metallib and resource library against the runtime's digests: the
+    /// policy's own, or under a model approval this member's setup's worker
+    /// pin and the digests it took when it built its registration.
     func verifyInstalledFiles(deadline: UInt64) throws -> [DistributedInstalledFiles.Identity] {
         var files = [try DistributedInstalledFiles.verify(localOwner.installedDarkbloom,
             expectedSHA256: ownerSHA256, maximumBytes: 256 * 1024 * 1024, executable: true, deadline: deadline)]
-        for i in 0..<3 {
-            files.append(try DistributedInstalledFiles.verify(artifacts[i], expectedSHA256: Self.hex(policy.hashes[i + 2]),
+        for (i, digest) in [runtime.nativeRuntime, runtime.metallib, runtime.resourceLibrary].enumerated() {
+            files.append(try DistributedInstalledFiles.verify(artifacts[i], expectedSHA256: Self.hex(digest),
                 maximumBytes: 256 * 1024 * 1024, executable: i == 0, deadline: deadline))
         }
         for file in files { try file.requireUnchanged() }
@@ -140,6 +167,7 @@ public struct NativePairMemberInstallation: Sendable {
         ClusterWorkerIdentity(membershipEpoch: start.common.epoch, modelID: identity.modelID,
             artifactSHA256: identity.artifactSHA256, configurationSHA256: identity.configurationSHA256, peers: identity.peers)
     }
-    var executionPlanSHA256: String { roster?.plan.planSHA256 ?? Self.hex(policy.hashes[0]) }
-    static func hex(_ bytes: Data) -> String { bytes.map { String(format: "%02x", $0) }.joined() }
+    /// The registered plan, or a pair approval's fixed plan (the initializer refuses neither).
+    var executionPlanSHA256: String { roster?.plan.planSHA256 ?? policy.pinnedPlan.map(Self.hex) ?? "" }
+    static func hex(_ bytes: Data) -> String { NativePairMemberPolicy.hex(bytes) }
 }

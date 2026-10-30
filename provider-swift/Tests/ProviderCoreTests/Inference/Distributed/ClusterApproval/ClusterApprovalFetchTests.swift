@@ -14,7 +14,7 @@ struct ClusterApprovalFetchTests {
 
     private func approvals() throws -> [ClusterRuntimeApproval] {
         let macs = try ClusterApprovalMacs(coordinatorURL: "ws://127.0.0.1:9/ws/provider")
-        return [macs.approval(schedule: 1), macs.approval(schedule: 2)]
+        return [macs.approval(schedule: 1), macs.approval(schedule: 2), macs.modelApproval()]
     }
 
     @Test func aStrictListIsTakenAndTheRequestHasNoQuery() async throws {
@@ -34,7 +34,8 @@ struct ClusterApprovalFetchTests {
 
     @Test func everyOtherAnswerIsNoApproval() async throws {
         let (mock, url) = try await coordinator()
-        let entry = try JSONSerialization.jsonObject(with: JSONEncoder().encode(try approvals()[0])) as! [String: Any]
+        let all = try approvals()
+        let entry = try JSONSerialization.jsonObject(with: JSONEncoder().encode(all[0])) as! [String: Any]
         func list(_ entries: [[String: Any]], schema: String = ClusterApprovalFetch.schemaName, extra: [String: Any] = [:]) throws -> Data {
             var object: [String: Any] = ["schema": schema, "cluster_approvals": entries]
             extra.forEach { object[$0] = $1 }
@@ -44,6 +45,13 @@ struct ClusterApprovalFetchTests {
         var missing = entry; missing.removeValue(forKey: "resource_policy_sha256")
         var badDigest = entry; badDigest["metallib_sha256"] = "ABC"
         var badExpiry = entry; badExpiry["not_after"] = "in two weeks"
+        // A model approval (no runtime digests) with one runtime digest, or without one of its own fields; a
+        // build-pinned entry whose runtime digests are null.
+        let model = try JSONSerialization.jsonObject(with: JSONEncoder().encode(all[2])) as! [String: Any]
+        var partial = model; partial["native_runtime_sha256"] = entry["native_runtime_sha256"]
+        var modelMissing = model; modelMissing.removeValue(forKey: "allowed_numerics_classes")
+        var nulls = entry
+        for key in ClusterRuntimeApproval.runtimeKeys { nulls[key.rawValue] = NSNull() }
         let refused: [(String, Int, Data, String?)] = [
             ("a server error", 500, Data("{}".utf8), nil),
             ("a redirect", 302, Data(), "https://elsewhere.invalid/v1/cluster/approvals"),
@@ -54,6 +62,9 @@ struct ClusterApprovalFetchTests {
             ("a missing entry field", 200, try list([missing]), nil),
             ("a malformed digest", 200, try list([badDigest]), nil),
             ("a malformed not_after", 200, try list([badExpiry]), nil),
+            ("a model approval with one runtime digest", 200, try list([model, partial]), nil),
+            ("a model approval without its numerics classes", 200, try list([entry, modelMissing]), nil),
+            ("a build-pinned entry with null runtime digests", 200, try list([nulls]), nil),
             ("too many entries", 200, try list(Array(repeating: entry, count: ClusterApprovalFetch.maximumApprovals + 1)), nil),
             ("an answer over its bound", 200, Data(repeating: 32, count: ClusterApprovalFetch.maximumBytes + 1), nil),
         ]

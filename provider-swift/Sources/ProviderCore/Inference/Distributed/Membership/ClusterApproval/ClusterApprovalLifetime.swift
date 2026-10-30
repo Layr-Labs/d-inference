@@ -32,14 +32,23 @@ public enum ClusterApprovalLifetime {
     /// The schedule number an approval names for a setup's prefill schedule (1 serial, 2 one-chunk lookahead).
     static func schedule(_ value: ClusterPrefillSchedule) -> UInt8 { value == .serial ? 1 : 2 }
 
-    /// The entry for this setup: its model and its prefill schedule, all eight digests this Mac's own cluster runtime
-    /// facts (`ClusterApprovalAttachment.mismatches`), still current, the latest `not_after` first. An entry for
-    /// another build or another copy of the model is simply not this setup's.
+    /// The entry for this setup: its model and its prefill schedule, still current, the latest `not_after` first, and
+    /// either a model approval for the saved setup's own `artifact` (`capability.artifactSHA256`), or a build-pinned
+    /// entry whose eight digests are this Mac's own cluster runtime facts (`ClusterApprovalAttachment.mismatches`). An
+    /// entry for another build or another copy of the model is simply not this setup's. `facts` runs at most once,
+    /// and only for a build-pinned entry of this model and schedule: a model approval needs no facts (nil: they could
+    /// not be computed, so no build-pinned entry is this setup's).
     static func select(_ approvals: [ClusterRuntimeApproval], model: String, schedule: ClusterPrefillSchedule,
-                       facts: ClusterRuntimeApprovalFacts, now: Double) -> ClusterRuntimeApproval? {
-        approvals.filter {
-            $0.model == model && $0.schedule == Self.schedule(schedule) && current($0, now: now)
-                && ClusterApprovalAttachment.mismatches($0, facts: facts).isEmpty
+                       artifact: String, facts: () -> ClusterRuntimeApprovalFacts?, now: Double) -> ClusterRuntimeApproval? {
+        var computed: ClusterRuntimeApprovalFacts??
+        return approvals.filter { approval in
+            guard approval.model == model, approval.schedule == Self.schedule(schedule), current(approval, now: now) else {
+                return false
+            }
+            if approval.isModelApproval { return approval.artifactSHA256 == artifact }
+            if computed == nil { computed = .some(facts()) }
+            guard let installed = computed ?? nil else { return false }
+            return ClusterApprovalAttachment.mismatches(approval, facts: installed).isEmpty
         }.max { (expiry($0) ?? 0) < (expiry($1) ?? 0) }
     }
 
@@ -57,11 +66,12 @@ public enum ClusterApprovalLifetime {
     }
 
     /// What to do with the setup's saved approval (`saved`, nil for none) after asking the coordinator (`fetched`).
-    /// Only a list (200) or 404 says anything about the saved approval; any other outcome keeps it. `facts` are this
-    /// Mac's own cluster runtime facts for the setup's model; they are computed only when an entry must be chosen
-    /// (nil: they could not be, so no entry is this setup's).
+    /// Only a list (200) or 404 says anything about the saved approval; any other outcome keeps it. `artifact` is the
+    /// saved setup's artifact; `facts` are this Mac's own cluster runtime facts for the setup's model, computed only
+    /// when a build-pinned entry must be checked (`select`).
     static func decide(saved: ClusterRuntimeApproval?, fetched: ClusterApprovalFetch.Outcome, model: String,
-                       schedule: ClusterPrefillSchedule, facts: () -> ClusterRuntimeApprovalFacts?, now: Double) -> Decision {
+                       schedule: ClusterPrefillSchedule, artifact: String, facts: () -> ClusterRuntimeApprovalFacts?,
+                       now: Double) -> Decision {
         let listed: [ClusterRuntimeApproval]?
         switch fetched {
         case .approvals(let approvals): listed = approvals
@@ -69,8 +79,8 @@ public enum ClusterApprovalLifetime {
         case .unavailable, .unreachable: listed = nil
         }
         func candidate() -> ClusterRuntimeApproval? {
-            guard let listed, !listed.isEmpty, let facts = facts() else { return nil }
-            return select(listed, model: model, schedule: schedule, facts: facts, now: now)
+            guard let listed, !listed.isEmpty else { return nil }
+            return select(listed, model: model, schedule: schedule, artifact: artifact, facts: facts, now: now)
         }
         guard let saved else { return candidate().map(Decision.save) ?? .keep }
         let savedEnd = expiry(saved) ?? 0

@@ -5,7 +5,7 @@ import DarkbloomClusterSecurity
 /// The control leader's step that keeps both Macs' setups on the same cluster approval: after the guided setup's Test
 /// stage passed, once at each start of its cluster service and after an update re-adopted the setups, and every
 /// minute while the pair is offered. The leader asks its coordinator, takes the entry whose digests are its own
-/// facts, sends it to the other Mac over the cable (which checks it against its own files and saves it, or refuses),
+/// facts (or a model approval for its setup's model, schedule and artifact, which a new build does not change), sends it to the other Mac over the cable (which checks it against its own files and saves it, or refuses),
 /// and saves it itself only after the other Mac did. Both Macs so carry the approval, or neither does. A coordinator
 /// that serves none (404, no matching entry, any failure) changes nothing.
 public enum ClusterApprovalSync {
@@ -33,7 +33,7 @@ public enum ClusterApprovalSync {
     }
 
     /// What the step would do with this saved setup and this answer. `facts` describes this Mac's installed app for
-    /// the setup's model; it runs only when an entry must be chosen.
+    /// the setup's model; it runs only when a build-pinned entry must be checked, never for a model approval.
     static func decision(saved: ClusterConfigurationStore.Saved, fetched: ClusterApprovalFetch.Outcome, now: Double,
                          facts: (ClusterConfiguration) throws -> ClusterRuntimeApprovalFacts) -> ClusterApprovalLifetime.Decision {
         let configuration = saved.configuration
@@ -41,7 +41,7 @@ public enum ClusterApprovalSync {
         guard configuration.nativeMember?.approval == nil else { return .keep }
         return ClusterApprovalLifetime.decide(saved: configuration.nativeMember?.clusterApproval, fetched: fetched,
             model: configuration.publicModelID, schedule: configuration.selectedPrefillSchedule,
-            facts: { try? facts(configuration) }, now: now)
+            artifact: saved.capability.artifactSHA256, facts: { try? facts(configuration) }, now: now)
     }
 
     /// `ClusterApprovalCheck.Step.serveLocally`: the other Mac saves its setup without the approval first, then this

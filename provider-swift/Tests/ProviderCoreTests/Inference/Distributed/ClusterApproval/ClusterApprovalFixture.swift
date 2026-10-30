@@ -30,27 +30,21 @@ final class ClusterApprovalMacs: @unchecked Sendable {
     static let chip = ClusterChipClass(chipName: "Apple M3 Ultra")
 
     let root: URL
-    let capability: ClusterRuntimeCapability
-    let capabilitySHA256: String
+    /// The setups' capability: the installed build's (`readopt` saves the setups of a new build).
+    private(set) var capability: ClusterRuntimeCapability
+    private(set) var capabilitySHA256: String
     let macs: [Mac]
+    private let records: [ClusterPairingRecord]
     var leader: Mac { macs[0] }
     var follower: Mac { macs[1] }
 
     /// `coordinatorURL`: the coordinator both provider configurations name.
     init(coordinatorURL: String) throws {
-        let h = Self.hash
         let base = try NativePairMemberFixture.privateRoot()
         root = base
-        let profile = ClusterWorkerProfile(id: "registered_qwen35_9b_greedy_generation_v1", vocabularySize: 248320,
-            maximumPromptTokens: 8192, maximumOutputTokens: 128, maximumChunkTokens: 512, maximumContextTokens: 8320)
-        capability = try ClusterRuntimeCapability(runtimeBinarySHA256: h("a"), adapterID: "qwen35-dense-layer-stage", adapterVersion: 1,
-            runtimeModelID: "registered_qwen35_9b", artifactSHA256: h("b"), configurationSHA256: h("c"), manifestSHA256: h("d"),
-            profile: profile, profileFingerprint: h("e"), partitions: [.init(planSHA256: h("f"), stages: [
-                .init(rank: 0, sourceLayerStart: 0, sourceLayerEnd: 16, stagePlanSHA256: h("1"), constructionConfigurationSHA256: h("2")),
-                .init(rank: 1, sourceLayerStart: 16, sourceLayerEnd: 32, stagePlanSHA256: h("3"), constructionConfigurationSHA256: h("4"))])],
-            arithmeticPolicyID: "qwen_cbv2_query128_bf16_tf32_default_v1", arithmeticPolicySHA256: h("5"))
-        let capabilityData = try ClusterRuntimeCapabilityCodec.encode(capability)
-        capabilitySHA256 = ClusterConfigurationCodec.sha256(capabilityData)
+        let installed = try Self.capability(runtime: Self.hash("a"))
+        capability = installed
+        capabilitySHA256 = ClusterConfigurationCodec.sha256(try ClusterRuntimeCapabilityCodec.encode(installed))
 
         let homes = try (0..<2).map { rank -> URL in
             let home = base.appendingPathComponent("mac-\(rank)", isDirectory: true)
@@ -63,7 +57,7 @@ final class ClusterApprovalMacs: @unchecked Sendable {
         let stores = homes.map { ClusterPairingStore.default(home: $0) }
         let signers = [ClusterPairingProviderTests.SoftwareSigner(), ClusterPairingProviderTests.SoftwareSigner()]
         let (leaderRecord, followerRecord) = try ClusterPairingProviderTests.pair(signers[0], signers[1], stores: (stores[0], stores[1]))
-        let records = [leaderRecord, followerRecord]
+        records = [leaderRecord, followerRecord]
         let pins = signers.map { ClusterMemberPin.of(uncompressedKey: $0.x963) }
 
         func file(_ url: URL, _ text: String, executable: Bool) throws {
@@ -92,11 +86,41 @@ final class ClusterApprovalMacs: @unchecked Sendable {
             let secret = mac.home.appendingPathComponent("link.secret")
             try Data(repeating: 7, count: 32).write(to: secret, options: .withoutOverwriting)
             try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: secret.path)
+        }
+        try saveSetups()
+    }
+
+    /// The capability the worker of the build whose worker digest is `runtime` describes for the fixture model.
+    static func capability(runtime: String) throws -> ClusterRuntimeCapability {
+        let h = Self.hash
+        let profile = ClusterWorkerProfile(id: "registered_qwen35_9b_greedy_generation_v1", vocabularySize: 248320,
+            maximumPromptTokens: 8192, maximumOutputTokens: 128, maximumChunkTokens: 512, maximumContextTokens: 8320)
+        return try ClusterRuntimeCapability(runtimeBinarySHA256: runtime, adapterID: "qwen35-dense-layer-stage", adapterVersion: 1,
+            runtimeModelID: "registered_qwen35_9b", artifactSHA256: h("b"), configurationSHA256: h("c"), manifestSHA256: h("d"),
+            profile: profile, profileFingerprint: h("e"), partitions: [.init(planSHA256: h("f"), stages: [
+                .init(rank: 0, sourceLayerStart: 0, sourceLayerEnd: 16, stagePlanSHA256: h("1"), constructionConfigurationSHA256: h("2")),
+                .init(rank: 1, sourceLayerStart: 16, sourceLayerEnd: 32, stagePlanSHA256: h("3"), constructionConfigurationSHA256: h("4"))])],
+            arithmeticPolicyID: "qwen_cbv2_query128_bf16_tf32_default_v1", arithmeticPolicySHA256: h("5"))
+    }
+
+    /// What an update does to both Macs' setups (`ClusterService`, "set the cluster up again after the update"): the
+    /// same model and placement re-adopted for the new build's worker `runtime`, with no cluster approval.
+    func readopt(runtime: String) throws {
+        capability = try Self.capability(runtime: runtime)
+        capabilitySHA256 = ClusterConfigurationCodec.sha256(try ClusterRuntimeCapabilityCodec.encode(capability))
+        try saveSetups()
+    }
+
+    /// Saves each Mac's setup for `capability`, without a cluster approval.
+    private func saveSetups() throws {
+        let h = Self.hash, capabilityData = try ClusterRuntimeCapabilityCodec.encode(capability)
+        for mac in macs {
+            let secret = mac.home.appendingPathComponent("link.secret")
             let record = records[mac.rank]
             func peer(_ other: Mac) -> [String: Any] {
                 ["id": other.memberID, "rank": other.rank, "host": "192.0.2.\(other.rank + 1)", "port": 22, "user": "fixture",
                  "ownerExecutable": other.owner.path, "workerExecutable": other.worker.path, "modelDirectory": other.model.path,
-                 "runtimeBinarySHA256": h("a"), "jacclDevice": "rdma_en7"]
+                 "runtimeBinarySHA256": capability.runtimeBinarySHA256, "jacclDevice": "rdma_en7"]
             }
             let configuration: [String: Any] = ["schema": ClusterConfiguration.schemaName, "clusterID": record.clusterID,
                 "memberID": mac.memberID, "role": mac.rank == 0 ? "leader" : "follower", "publicModelID": Self.model,
@@ -143,6 +167,19 @@ final class ClusterApprovalMacs: @unchecked Sendable {
     static let blockFields = ["native_runtime_sha256", "metallib_sha256", "resource_library_sha256", "placement_policy_sha256",
                               "artifact_sha256", "capability_sha256", "profile_sha256", "resource_policy_sha256"]
 
+    /// A model approval (contract M1) for the fixture model's artifact (`artifact`, default the setups'), ending
+    /// `seconds` from now: no runtime digests, so a new build keeps it.
+    func modelApproval(endsIn seconds: Double = 14 * 86_400, schedule: UInt8 = 1, model: String = ClusterApprovalMacs.model,
+                       id: String? = nil, artifact: String = ClusterApprovalMacs.hash("b")) -> ClusterRuntimeApproval {
+        let end = ISO8601DateFormatter().string(from: Date(timeIntervalSince1970: (Date().timeIntervalSince1970 + seconds).rounded(.down)))
+        return ClusterRuntimeApproval(id: id ?? "devnet/\(model)/s\(schedule)", model: model, generation: 1,
+            placementPolicySHA256: nil, artifactSHA256: artifact, nativeRuntimeSHA256: nil, metallibSHA256: nil,
+            resourceLibrarySHA256: nil, capabilitySHA256: nil, resourcePolicySHA256: nil, profileSHA256: nil,
+            schedule: schedule, maximumTransportFrame: 1_048_616, maximumPlaintext: 1_048_576, maximumRecords: 1_048_576,
+            maximumCumulativePlaintext: 4_294_967_296, allowedNumericsClasses: [], minimumMembers: 2, maximumMembers: 4,
+            minimumMemberUsableBytes: 1, notAfter: end)
+    }
+
     /// The approval the coordinator derives from those facts (contract B), ending `seconds` from now.
     func approval(endsIn seconds: Double = 14 * 86_400, schedule: UInt8 = 1, model: String = ClusterApprovalMacs.model,
                   id: String? = nil) -> ClusterRuntimeApproval {
@@ -166,13 +203,19 @@ final class ClusterApprovalMacs: @unchecked Sendable {
     /// The cable to the follower: its cluster service's own `approval` handling against its own home, wrapped as the
     /// link exchange wraps a refusal. `facts` are the follower installation's facts.
     func cable(facts: ClusterRuntimeApprovalFacts, sent: ClusterApprovalRecorder<ClusterServiceCommand>? = nil) -> (ClusterServiceCommand) throws -> Void {
+        cable(describe: { _ in facts }, sent: sent)
+    }
+
+    /// The same, with the follower's installation described by `describe` (which may record that it ran).
+    func cable(describe: @escaping (ClusterConfiguration) throws -> ClusterRuntimeApprovalFacts,
+               sent: ClusterApprovalRecorder<ClusterServiceCommand>? = nil) -> (ClusterServiceCommand) throws -> Void {
         let mac = follower
         return { command in
             sent?.append(command)
             do {
                 _ = try ClusterApprovalSync.receive(command, paths: mac.paths, providerConfiguration: mac.provider,
                     pairingStore: mac.pairing, scratch: mac.scratch, now: Date().timeIntervalSince1970, say: { _ in },
-                    chipClass: Self.chip, facts: { _ in facts })
+                    chipClass: Self.chip, facts: describe)
             } catch {
                 throw ClusterSetupFailure("the other Mac refused: " + ClusterApprovalSync.refusal(error))
             }
@@ -183,9 +226,17 @@ final class ClusterApprovalMacs: @unchecked Sendable {
     func sync(_ fetched: ClusterApprovalFetch.Outcome, leaderFacts: ClusterRuntimeApprovalFacts,
               followerFacts: ClusterRuntimeApprovalFacts, sent: ClusterApprovalRecorder<ClusterServiceCommand>? = nil,
               now: Double = Date().timeIntervalSince1970) -> ClusterApprovalSync.Result {
+        sync(fetched, describe: { _ in leaderFacts }, followerDescribe: { _ in followerFacts }, sent: sent, now: now)
+    }
+
+    /// The same, with each Mac's installation described by its own closure (which may record that it ran).
+    func sync(_ fetched: ClusterApprovalFetch.Outcome, describe: (ClusterConfiguration) throws -> ClusterRuntimeApprovalFacts,
+              followerDescribe: @escaping (ClusterConfiguration) throws -> ClusterRuntimeApprovalFacts,
+              sent: ClusterApprovalRecorder<ClusterServiceCommand>? = nil,
+              now: Double = Date().timeIntervalSince1970) -> ClusterApprovalSync.Result {
         ClusterApprovalSync.run(fetched: fetched, paths: leader.paths, providerConfiguration: leader.provider,
             pairingStore: leader.pairing, scratch: leader.scratch, now: now,
-            sendToPeer: cable(facts: followerFacts, sent: sent), chipClass: Self.chip, facts: { _ in leaderFacts })
+            sendToPeer: cable(describe: followerDescribe, sent: sent), chipClass: Self.chip, facts: describe)
     }
 
     /// The probe a serving leader records for the pair after a load.

@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-10-29
+> Last updated: 2026-10-30
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -3717,6 +3717,19 @@ at 6-16 rows; #4682: affine split-K from 8 rows), whose bits change with the
 row count. One row still takes qmv, whose bits differ from qmv_wide's, so a path
 that must equal a single row keeps it in a launch of single rows, as before.
 Single-Mac serving leaves the switch off and keeps MLX main's kernels.
+
+Attention needs no switch, but it has its own condition. Since the 2026-10-30
+core (upstream MLX main `1ba7f969`), MLX runs an attention call on `sdpa_split`
+(upstream #4723) when it has up to eight query tokens, 33 to 128 rows per KV
+head (tokens times query heads per KV head), at least 128 keys and no array
+mask or sinks (`has_fused_kernel` and `use_split` in
+`libs/mlx-swift/Source/Cmlx/mlx/mlx/backend/metal/scaled_dot_product_attention.cpp`
+hold the full condition). `sdpa_split` picks its number of key blocks, and so
+its rounding, from the batch size. The cluster's
+`MLXFast.scaledDotProductAttention` calls carry one sequence each (one row's
+prompt chunk, verify window or decode column), so a row's attention bits do not
+depend on its batchmates. A change that stacks several sequences into one call
+has to keep that property.
 
 The arithmetic is one per process, resolved at start from the GPU family and the
 weight's packing only, never from timing: its form (MLX qmv's scaled inputs, or

@@ -52,7 +52,7 @@ PARITY_SHARD = 2
 # process runs in shard 1, Prompt Parity in shard PARITY_SHARD, and the
 # isolated processes and native gates in the last shard.
 FIRST_SHARD_EXTRA_SECONDS = 31.0
-PARITY_SHARD_EXTRA_SECONDS = 120.0
+PARITY_SHARD_EXTRA_SECONDS = 65.0
 LAST_SHARD_EXTRA_SECONDS = 150.0
 # A test identifier starts with its module and its top-level suite or function.
 SUITE = re.compile(r"^([^./]+)[./]([^./]+)")

@@ -129,7 +129,11 @@ public enum DistributedEngineFactory {
         }
         return EngineV2Bridge(
             engine: engine, modelId: modelID, tokenizer: tokenizer,
-            eosTokenIds: stopTokenIDs, samplingDefaults: samplingDefaults,
+            eosTokenIds: stopTokenIDs,
+            // The same client stop-string scope as the single-Mac slot: on
+            // GPT-OSS, only the Harmony final message can end a request.
+            stopStringScope: ModelEOSPolicy.stopStringScope(modelId: modelID, modelType: modelType),
+            samplingDefaults: samplingDefaults,
             defaultMaxTokens: min(defaultOutputTokens, profile.maxOutputTokens),
             defaultMaxTokensContextLimit: profile.maxContextTokens,
             // As many requests at once as the pair batches (its lanes); the

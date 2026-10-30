@@ -73,7 +73,7 @@ struct ClusterServiceRecoveryTests {
                 darkbloomExecutable: helper, sessionArguments: [], pair: nil, dryRun: true, version: "fixture")
             let service = ClusterService(settings: .init(wizard: wizard, leaderArguments: [], followerArguments: [],
                 soloArguments: ["--service-part-fixture", directory.path, "replacement"]),
-                paths: paths, recoveryGraceSeconds: 0.2)
+                paths: paths, recoveryGraceSeconds: 0.2, supervisionIntervalSeconds: serviceSupervisionInterval)
             // Existing collaborator: a real control node already past its peer
             // absence grace. No fake launch/supervise/power/publication methods.
             let local = "mac-aaaaaaaaaaaa", peer = "mac-bbbbbbbbbbbb"
@@ -183,7 +183,8 @@ struct ClusterServiceRecoveryTests {
             let wizard = ClusterSetupOperations.LiveSettings(providerConfiguration: home.appendingPathComponent("provider.toml"),
                 darkbloomExecutable: helper, sessionArguments: [], pair: nil, dryRun: true, version: "fixture")
             let service = ClusterService(settings: .init(wizard: wizard, leaderArguments: [], followerArguments: [],
-                soloArguments: ["--service-part-fixture", directory.path, "replacement"]), paths: paths)
+                soloArguments: ["--service-part-fixture", directory.path, "replacement"]), paths: paths,
+                supervisionIntervalSeconds: serviceSupervisionInterval)
             var leadership = ClusterOnboardingLeadership(role: "leader", leaderPin: "fixture-local",
                 peerPin: "fixture-peer", peerName: "fixture peer", since: "fixture")
             leadership.serving = true; leadership.modelName = "fixture-model"
@@ -456,6 +457,14 @@ private final class ServiceRecoveryRun: @unchecked Sendable {
     }
     var log: String { lock.withLock { lines.joined(separator: "\n") } }
 }
+
+/// The service loops here run their real supervision cycle every 0.1 s, not
+/// every second. Those tests count cycles or wait on a published state, so a
+/// shorter period changes no outcome, only the wall time.
+/// `plannedStopRejectsStaleIdleWhileActualServiceStartsItsChild` keeps the
+/// production second: it reads one idle acknowledgement and needs no further
+/// cycle to replace it before the supervisor blocks.
+private let serviceSupervisionInterval: Double = 0.1
 
 private func waitForRecovery(seconds: Double = 10, _ predicate: () -> Bool) -> Bool {
     let deadline = DispatchTime.now().uptimeNanoseconds + UInt64(seconds * 1_000_000_000)

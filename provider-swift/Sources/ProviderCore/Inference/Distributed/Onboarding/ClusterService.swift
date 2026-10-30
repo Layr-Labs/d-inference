@@ -74,6 +74,8 @@ public final class ClusterService: @unchecked Sendable {
     let store: ClusterSetupStore
     let pairingStore: ClusterPairingStore
     private let recoveryGraceSeconds: Double
+    /// The supervision loop's period: one supervise/publish cycle per interval.
+    private let supervisionIntervalSeconds: Double
     private let beforePartStart: (@Sendable () -> Void)?
     /// Main supervision thread only; a pending stop cannot be acknowledged by
     /// a cycle that read the preceding serving intent.
@@ -157,11 +159,13 @@ public final class ClusterService: @unchecked Sendable {
     }
 
     /// Internal composition of the service's existing stores. Public callers keep
-    /// the canonical user namespace and the normal recovery deadline.
+    /// the canonical user namespace, the normal recovery deadline and the one-second supervision interval.
     init(settings: Settings, paths: ClusterUserPaths, recoveryGraceSeconds: Double = 300,
-         beforePartStart: (@Sendable () -> Void)? = nil) {
+         supervisionIntervalSeconds: Double = 1, beforePartStart: (@Sendable () -> Void)? = nil) {
         precondition(recoveryGraceSeconds.isFinite && recoveryGraceSeconds >= 0)
+        precondition(supervisionIntervalSeconds.isFinite && supervisionIntervalSeconds > 0)
         self.recoveryGraceSeconds = recoveryGraceSeconds
+        self.supervisionIntervalSeconds = supervisionIntervalSeconds
         self.beforePartStart = beforePartStart
         pairingStore = .default(home: paths.homeDirectory)
         var wizard = settings.wizard
@@ -292,7 +296,7 @@ public final class ClusterService: @unchecked Sendable {
                 checkApproval(say: say)
                 publish(afterSupervision: true)
             }
-            if ticker.wait(timeout: .now() + 1) == .success { stopped = true }
+            if ticker.wait(timeout: .now() + supervisionIntervalSeconds) == .success { stopped = true }
         }
         lock.withLock { stopping = true }
         _ = controlDone.wait(timeout: .now() + 5)

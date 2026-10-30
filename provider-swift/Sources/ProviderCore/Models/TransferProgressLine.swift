@@ -3,7 +3,7 @@ import Foundation
 /// One line showing how far a transfer of known size is: its label, a bar, the
 /// percent, the bytes on disk, the rate and the time left.
 ///
-///     Downloading EigenLabs/Qwen3.8-27B-4bit-mtp  [██████░░░░░░░░]  43%  7.0/16.3 GB  125 MB/s  1m 14s left
+///     Downloading EigenLabs/Qwen3.8-27B-4bit-mtp  [██████░░░░░░░░]   43%   7.0/16.3 GB   125 MB/s   1m 14s left
 ///
 /// Model downloads in the CLI (`DownloadProgressRenderer`) and the cluster
 /// setup's downloads and cable copies show it. It is pure: the caller passes
@@ -17,10 +17,30 @@ struct TransferProgressLine: Sendable {
     /// long and `logPercentStep` points have passed since the last one.
     static let logInterval: TimeInterval = 30
     static let logPercentStep = 10
+    /// The rate and the time left wait this long after the start: the first
+    /// moments of a transfer say little about the rest of it.
+    static let estimateDelay: TimeInterval = 2
+    /// A longer time left is not shown.
+    static let maximumTimeLeft: TimeInterval = 24 * 60 * 60
+    /// A faster rate is shown as this one, so the rate has a widest form.
+    static let maximumRate = 99.9e9
 
     static let minimumLabelWidth = 24
     static let minimumBarWidth = 10
     static let maximumBarWidth = 30
+
+    /// Where the parts of the line go in `width` columns: the label's and the
+    /// bar's widths and the figures that have a column. It comes from each
+    /// figure's widest form for this transfer, never from the figures of the
+    /// moment, so every redraw at one width has the same shape.
+    struct Layout: Equatable, Sendable {
+        let width: Int
+        let labelWidth: Int
+        let barWidth: Int?
+        let showsBytes: Bool
+        let showsRate: Bool
+        let showsTimeLeft: Bool
+    }
 
     let label: String
     let totalBytes: Int64
@@ -44,11 +64,12 @@ struct TransferProgressLine: Sendable {
     /// Rounded down, so 100% means every byte is there.
     func percent(done: Int64) -> Int { Int(fraction(done: done) * 100) }
 
-    /// Bytes per second since the start; nil until time passed and bytes arrived.
+    /// Bytes per second since the start, once `estimateDelay` has passed and
+    /// bytes have arrived; nil before.
     func bytesPerSecond(done: Int64, now: TimeInterval) -> Double? {
         let elapsed = now - startTime
         let arrived = done - startBytes
-        guard elapsed > 0, arrived > 0 else { return nil }
+        guard elapsed >= Self.estimateDelay, arrived > 0 else { return nil }
         return Double(arrived) / elapsed
     }
 
@@ -61,8 +82,9 @@ struct TransferProgressLine: Sendable {
 
     /// Whether a line for a log is due at `now`: the first one, then one once
     /// both `logInterval` and `logPercentStep` have passed since the last,
-    /// whichever comes later. When the transfer `ended`, one is due unless the
-    /// last one already showed this percent. A due line is recorded.
+    /// whichever comes later. When the transfer `ended`, one is due if lines
+    /// came before and none showed this percent; with none before, nothing
+    /// was transferred to show. A due line is recorded.
     mutating func takeLogLine(done: Int64, now: TimeInterval, ended: Bool = false) -> Bool {
         let percent = percent(done: done)
         if let lastLog {
@@ -70,29 +92,82 @@ struct TransferProgressLine: Sendable {
                 ? percent != lastLog.percent
                 : now - lastLog.time >= Self.logInterval && percent - lastLog.percent >= Self.logPercentStep
             guard due else { return false }
+        } else if ended {
+            return false
         }
         lastLog = (now, percent)
         return true
     }
 
-    /// The line laid out in at most `width` columns, or without a width the
-    /// plain form for logs and transcripts: the same figures, no bar.
+    /// The line in at most `width` columns, laid out by `layout(width:)`, or
+    /// without a width the plain form for logs and transcripts: the figures of
+    /// the moment, no bar and no padding.
     func text(done: Int64, now: TimeInterval, width: Int? = nil) -> String {
-        let rate = bytesPerSecond(done: done, now: now)
-        let remaining = totalBytes - done
-        let figures = Figures(
-            percent: "\(percent(done: done))%",
-            bytes: Self.bytes(done, of: totalBytes),
-            rate: rate.map(Self.rate),
-            timeLeft: rate.flatMap { remaining > 0 ? Self.duration(Double(remaining) / $0) + " left" : nil })
         guard let width else {
+            let figures = figures(done: done, now: now)
             return ([label, figures.percent, figures.bytes] + [figures.rate, figures.timeLeft].compactMap { $0 })
                 .joined(separator: "  ")
         }
-        return layOut(figures, fraction: fraction(done: done), width: width)
+        return text(done: done, now: now, layout: layout(width: width))
     }
 
-    // MARK: - Layout
+    /// The line in `layout`'s columns: each figure right-aligned in the column
+    /// its widest form needs, a figure not known yet left blank, and blanks at
+    /// the end of the line trimmed.
+    func text(done: Int64, now: TimeInterval, layout: Layout) -> String {
+        let figures = figures(done: done, now: now)
+        let widest = widest
+        func column(_ figure: String?, _ width: Int) -> String {
+            let figure = figure ?? ""
+            return String(repeating: " ", count: max(0, width - figure.count)) + figure
+        }
+        var parts = [Self.clipped(label, to: layout.labelWidth)]
+        if let cells = layout.barWidth {
+            let filled = min(cells, Int(fraction(done: done) * Double(cells)))
+            parts.append("[" + String(repeating: "\u{2588}", count: filled)
+                + String(repeating: "\u{2591}", count: cells - filled) + "]")
+        }
+        parts.append(column(figures.percent, widest.percent))
+        if layout.showsBytes { parts.append(column(figures.bytes, widest.bytes)) }
+        if layout.showsRate { parts.append(column(figures.rate, widest.rate)) }
+        if layout.showsTimeLeft { parts.append(column(figures.timeLeft, widest.timeLeft)) }
+        var line = parts.joined(separator: "  ")
+        while line.last == " " { line.removeLast() }
+        return Self.clipped(line, to: max(0, layout.width))
+    }
+
+    /// The percent always has a column. Then, while they fit at their widest
+    /// and in this order: the start of the label, a bar of `minimumBarWidth`
+    /// cells, the time left, the rest of the label, the bytes, the rate, and a
+    /// wider bar. Whatever is left out, the parts keep their order on the line.
+    func layout(width: Int) -> Layout {
+        let widest = widest
+        var labelWidth = min(label.count, Self.minimumLabelWidth)
+        var barWidth: Int? = Self.minimumBarWidth
+        var showsBytes = false, showsRate = false, showsTimeLeft = false
+        func length() -> Int {
+            var columns = [labelWidth, widest.percent]
+            if let barWidth { columns.append(barWidth + 2) }
+            if showsBytes { columns.append(widest.bytes) }
+            if showsRate { columns.append(widest.rate) }
+            if showsTimeLeft { columns.append(widest.timeLeft) }
+            return columns.reduce(0, +) + 2 * (columns.count - 1)
+        }
+        if length() > width { barWidth = nil }
+        showsTimeLeft = true
+        if length() > width { showsTimeLeft = false }
+        // The label takes the room left, or gives some up when even its start does not fit.
+        labelWidth = max(1, min(label.count, labelWidth + width - length()))
+        showsBytes = true
+        if length() > width { showsBytes = false }
+        showsRate = true
+        if length() > width { showsRate = false }
+        if let cells = barWidth { barWidth = min(Self.maximumBarWidth, cells + max(0, width - length())) }
+        return Layout(width: width, labelWidth: labelWidth, barWidth: barWidth,
+                      showsBytes: showsBytes, showsRate: showsRate, showsTimeLeft: showsTimeLeft)
+    }
+
+    // MARK: - Figures
 
     private struct Figures {
         let percent: String
@@ -101,55 +176,23 @@ struct TransferProgressLine: Sendable {
         let timeLeft: String?
     }
 
-    private struct Layout {
-        var labelWidth: Int
-        var barWidth: Int?
-        var showsTimeLeft = false
-        var showsBytes = false
-        var showsRate = false
+    private func figures(done: Int64, now: TimeInterval) -> Figures {
+        let onDisk = min(max(done, 0), totalBytes)
+        let rate = bytesPerSecond(done: done, now: now)
+        let secondsLeft = rate.map { Double(totalBytes - onDisk) / $0 }
+        let timeLeft = secondsLeft.flatMap { $0 > 0 && $0 <= Self.maximumTimeLeft ? Self.duration($0) + " left" : nil }
+        return Figures(percent: "\(percent(done: done))%", bytes: Self.bytes(onDisk, of: totalBytes),
+                       rate: rate.map(Self.rate), timeLeft: timeLeft)
     }
 
-    /// The percent always shows. Then, while they fit and in this order: the
-    /// start of the label, a bar of `minimumBarWidth` cells, the time left,
-    /// the rest of the label, the bytes, the rate, and a wider bar. Whatever is
-    /// left out, the shown parts keep their order on the line.
-    private func layOut(_ figures: Figures, fraction: Double, width: Int) -> String {
-        // Padded so the figures after it do not shift when it reaches 10%.
-        let percent = String(repeating: " ", count: max(0, 3 - figures.percent.count)) + figures.percent
-        func parts(_ layout: Layout) -> [String] {
-            var parts = [Self.clipped(label, to: layout.labelWidth)]
-            if let cells = layout.barWidth {
-                let filled = min(cells, Int(fraction * Double(cells)))
-                parts.append("[" + String(repeating: "\u{2588}", count: filled)
-                    + String(repeating: "\u{2591}", count: cells - filled) + "]")
-            }
-            parts.append(percent)
-            if layout.showsBytes { parts.append(figures.bytes) }
-            if layout.showsRate, let rate = figures.rate { parts.append(rate) }
-            if layout.showsTimeLeft, let timeLeft = figures.timeLeft { parts.append(timeLeft) }
-            return parts
-        }
-        func length(_ layout: Layout) -> Int {
-            let parts = parts(layout)
-            return parts.reduce(0) { $0 + $1.count } + 2 * (parts.count - 1)
-        }
-        var layout = Layout(labelWidth: min(label.count, Self.minimumLabelWidth), barWidth: Self.minimumBarWidth)
-        if length(layout) > width { layout.barWidth = nil }
-        func add(_ change: (inout Layout) -> Void) {
-            var wider = layout
-            change(&wider)
-            if length(wider) <= width { layout = wider }
-        }
-        if figures.timeLeft != nil { add { $0.showsTimeLeft = true } }
-        // The label takes the room left, or gives some up when even its start does not fit.
-        layout.labelWidth = max(1, min(label.count, layout.labelWidth + width - length(layout)))
-        add { $0.showsBytes = true }
-        if figures.rate != nil { add { $0.showsRate = true } }
-        if let cells = layout.barWidth {
-            layout.barWidth = min(Self.maximumBarWidth, cells + max(0, width - length(layout)))
-        }
-        return Self.clipped(parts(layout).joined(separator: "  "), to: max(0, width))
+    /// The widths of each figure's widest form for this transfer.
+    private var widest: (percent: Int, bytes: Int, rate: Int, timeLeft: Int) {
+        ("100%".count, Self.bytes(totalBytes, of: totalBytes).count, Self.widestRate, Self.widestTimeLeft)
     }
+
+    private static let widestRate = [999, 999e3, 999e6, maximumRate].map { rate($0).count }.max() ?? 0
+    private static let widestTimeLeft = [59, 3_599, maximumTimeLeft - 1, maximumTimeLeft]
+        .map { (duration($0) + " left").count }.max() ?? 0
 
     // MARK: - Formatting
 
@@ -173,13 +216,15 @@ struct TransferProgressLine: Sendable {
         return unit.number(done) + "/" + unit.number(total) + " " + unit.name
     }
 
-    /// "125 MB/s", "2.4 GB/s".
+    /// "125 MB/s", "2.4 GB/s". Each unit stops below the rounding into the
+    /// next one ("1.0 GB/s", never "1000 MB/s"), and `maximumRate` caps it.
     static func rate(_ bytesPerSecond: Double) -> String {
-        switch bytesPerSecond {
-        case 1e9...: return String(format: "%.1f GB/s", bytesPerSecond / 1e9)
-        case 1e6...: return String(format: "%.0f MB/s", bytesPerSecond / 1e6)
-        case 1e3...: return String(format: "%.0f KB/s", bytesPerSecond / 1e3)
-        default: return String(format: "%.0f B/s", bytesPerSecond)
+        let rate = min(bytesPerSecond, maximumRate)
+        switch rate {
+        case 999.5e6...: return String(format: "%.1f GB/s", rate / 1e9)
+        case 999.5e3...: return String(format: "%.0f MB/s", rate / 1e6)
+        case 999.5...: return String(format: "%.0f KB/s", rate / 1e3)
+        default: return String(format: "%.0f B/s", rate)
         }
     }
 

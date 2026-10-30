@@ -58,6 +58,7 @@ extension ModelDownloader {
         let cacheDir = try Self.revisionSnapshotDirectory(manifest: manifest)
         if try Self.verifyRevisionAndRepairReceipt(at: cacheDir, manifest: manifest) {
             try Self.activateRevision(modelID: model.id, directory: cacheDir)
+            progressRenderer(model: model, manifest: manifest, startBytes: manifest.totalSizeBytes)?.alreadyDownloaded()
             onProgress?(ProgressEvent(file: model.id, bytesDownloaded: manifest.totalSizeBytes, bytesTotal: manifest.totalSizeBytes))
             return
         }
@@ -100,7 +101,8 @@ extension ModelDownloader {
         // the scanner, so the picker showed "not downloaded"). Don't re-download —
         // verify the aggregate and publish.
         if pending.isEmpty {
-            try finalizeStagedManifest(model: model, manifest: manifest, jobs: jobs, stagingDir: stagingDir, cacheDir: cacheDir)
+            try finalizeAndReport(model: model, manifest: manifest, jobs: jobs, stagingDir: stagingDir, cacheDir: cacheDir,
+                                  renderer: progressRenderer(model: model, manifest: manifest, startBytes: manifest.totalSizeBytes))
             onProgress?(ProgressEvent(file: model.id, bytesDownloaded: manifest.totalSizeBytes, bytesTotal: manifest.totalSizeBytes))
             return
         }
@@ -119,10 +121,7 @@ extension ModelDownloader {
         let alreadyValidBytes = zip(jobs, alreadyValid).reduce(Int64(0)) { $0 + ($1.1 ? $1.0.file.sizeBytes : 0) }
         let downloadedBytes: @Sendable () -> Int64 = { alreadyValidBytes + progress.downloadedBytes }
         let byteProgress = self.byteProgress
-        let renderer = byteProgress == nil
-            ? DownloadProgressRenderer(modelID: model.id, totalBytes: manifest.totalSizeBytes,
-                                       startBytes: downloadedBytes(), terminal: progressTerminal)
-            : nil
+        let renderer = progressRenderer(model: model, manifest: manifest, startBytes: downloadedBytes())
         let renderTask = Task.detached {
             while !Task.isCancelled {
                 let done = downloadedBytes()
@@ -184,14 +183,37 @@ extension ModelDownloader {
         // The loop's last sample can predate the last bytes; checking every file
         // takes a while on a large model, so report the complete count first.
         byteProgress?(downloadedBytes(), manifest.totalSizeBytes)
+        try finalizeAndReport(model: model, manifest: manifest, jobs: jobs, stagingDir: stagingDir, cacheDir: cacheDir,
+                              renderer: renderer)
+        onProgress?(ProgressEvent(file: model.id, bytesDownloaded: manifest.totalSizeBytes, bytesTotal: manifest.totalSizeBytes))
+    }
+
+    /// The foreground download's progress line, unless a caller that shows the
+    /// progress itself takes the counts (`byteProgress`).
+    private func progressRenderer(model: CatalogModel, manifest: ModelManifest, startBytes: Int64) -> DownloadProgressRenderer? {
+        guard byteProgress == nil else { return nil }
+        return DownloadProgressRenderer(modelID: model.id, displayName: model.displayName,
+                                        totalBytes: manifest.totalSizeBytes, startBytes: startBytes, terminal: progressTerminal)
+    }
+
+    /// Checks the staged files and publishes them (`finalizeStagedManifest`),
+    /// with "Verifying …" and then the download's completion line or the failed
+    /// check on `renderer`.
+    private func finalizeAndReport(
+        model: CatalogModel,
+        manifest: ModelManifest,
+        jobs: [(file: ManifestFile, destination: URL, url: String)],
+        stagingDir: URL,
+        cacheDir: URL,
+        renderer: DownloadProgressRenderer?
+    ) throws {
         renderer?.verifying()
         do {
             try finalizeStagedManifest(model: model, manifest: manifest, jobs: jobs, stagingDir: stagingDir, cacheDir: cacheDir)
         } catch {
-            renderer?.fail(done: downloadedBytes())
+            renderer?.verificationFailed(error)
             throw error
         }
         renderer?.finish()
-        onProgress?(ProgressEvent(file: model.id, bytesDownloaded: manifest.totalSizeBytes, bytesTotal: manifest.totalSizeBytes))
     }
 }

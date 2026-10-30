@@ -22,7 +22,7 @@ struct DesktopDownloadProgressTests {
     @Test func desktopReadsTheProgressOfAPipedDownload() {
         let output = Output()
         let renderer = DownloadProgressRenderer(
-            modelID: "mlx-community/gpt-oss-20b-MXFP4-Q8", totalBytes: 12_000_000_000, startBytes: 0,
+            modelID: "mlx-community/gpt-oss-20b-MXFP4-Q8", displayName: "GPT-OSS 20B", totalBytes: 12_000_000_000, startBytes: 0,
             terminal: DownloadProgressTerminal(isTerminal: false, columns: { 80 }, clock: { output.now },
                                                output: { output.append($0) }))
         renderer.update(done: 0)

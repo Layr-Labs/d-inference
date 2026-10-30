@@ -245,7 +245,7 @@ extension Models {
                 throw ExitCode.failure
             }
 
-            print("Done. Cached at \(ModelDownloader.cacheModelDirectory(for: entry.id).path)")
+            print("Cached at \(ModelDownloader.cacheModelDirectory(for: entry.id).path)")
         }
     }
 }

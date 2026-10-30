@@ -375,7 +375,6 @@ extension Start {
                 print("  Downloading \(entry.displayName) (\(String(format: "%.1f GB", entry.catalogModel.sizeGb)))...")
                 do {
                     try await downloader.download(model: entry.catalogModel)
-                    print("  \u{2713} Downloaded \(entry.displayName)")
                 } catch {
                     printError("Failed to download \(entry.displayName): \(error)")
                     printError("hint: download manually with `\(BuildEnvironment.current.cliName) models download \(entry.id)`")
@@ -448,7 +447,6 @@ extension Start {
                 print("  Downloading \(entry.displayName) (\(String(format: "%.1f GB", entry.catalogModel.sizeGb)))...")
                 do {
                     try await downloader.download(model: entry.catalogModel)
-                    print("  \(entry.displayName) downloaded.")
                 } catch {
                     printError("Failed to download \(entry.displayName): \(error)")
                     printError("hint: download manually with `\(BuildEnvironment.current.cliName) models download \(entry.id)`")

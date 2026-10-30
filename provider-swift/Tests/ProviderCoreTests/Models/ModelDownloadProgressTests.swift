@@ -115,27 +115,53 @@ struct ModelDownloadProgressTests {
 
     // MARK: - The line
 
-    @Test("the line shows the label, bar, percent, bytes, rate and time left that its width allows")
+    @Test("each figure that fits at its widest gets a column, right-aligned in it")
     func layoutByWidth() {
         let line = Self.line()
-        let figures = "43%  7.0/16.3 GB  125 MB/s  1m 14s left"
+        // "100%", "16.3/16.3 GB", "99.9 GB/s" and "23h 59m left" size the columns.
         #expect(line.text(done: Self.done, now: Self.now, width: 131)
-            == "Downloading \(Self.modelID)  \(Self.bar(filled: 12, of: 30))  \(figures)")
+            == "Downloading \(Self.modelID)  \(Self.bar(filled: 12, of: 30))   43%   7.0/16.3 GB   125 MB/s   1m 14s left")
         #expect(line.text(done: Self.done, now: Self.now, width: 99)
-            == "Downloading \(Self.modelID)  \(Self.bar(filled: 5, of: 12))  \(figures)")
+            == "Downloading \(Self.modelID)  \(Self.bar(filled: 8, of: 19))   43%   7.0/16.3 GB   1m 14s left")
         // An 80-column window (77 columns after the indent and the last column)
         // keeps the whole label and the time left, without the bytes and the rate.
         #expect(line.text(done: Self.done, now: Self.now, width: 77)
-            == "Downloading \(Self.modelID)  \(Self.bar(filled: 5, of: 13))  43%  1m 14s left")
+            == "Downloading \(Self.modelID)  \(Self.bar(filled: 4, of: 11))   43%   1m 14s left")
     }
 
     @Test("a laid-out line never passes its width and keeps the percent while there is room",
-          arguments: [131, 99, 77, 60, 43, 42, 30, 20, 10, 6, 5, 1, 0])
+          arguments: [131, 99, 77, 60, 44, 43, 30, 20, 10, 7, 6, 1, 0])
     func layoutFitsWidth(width: Int) {
         let text = Self.line().text(done: Self.done, now: Self.now, width: width)
         #expect(text.count <= width)
-        #expect(text.contains("43%") == (width >= 6))
-        #expect(text.contains("[") == (width >= 43))
+        #expect(text.contains("43%") == (width >= 7))
+        #expect(text.contains("[") == (width >= 44))
+    }
+
+    @Test("the layout depends on the width only, not on the figures of the moment")
+    func layoutIsTheWidths() {
+        let line = Self.line()
+        func column(of character: Character, in text: String) -> Int? {
+            text.firstIndex(of: character).map { text.distance(from: text.startIndex, to: $0) }
+        }
+        for width in [57, 77, 97, 117] {
+            // Before there is a rate, and later with every figure at a different length.
+            let first = line.text(done: 0, now: 1_000, width: width)
+            let later = line.text(done: Self.done, now: Self.now, width: width)
+            #expect(column(of: "]", in: first) != nil)
+            #expect(column(of: "]", in: first) == column(of: "]", in: later))
+            #expect(column(of: "%", in: first) == column(of: "%", in: later))
+        }
+    }
+
+    @Test("the rate and the time left wait until the estimate means something; a time left over a day is not shown")
+    func estimatesWait() {
+        let line = Self.line()
+        #expect(line.text(done: 40_000_000, now: 1_001.9) == "Downloading \(Self.modelID)  0%  0.0/16.3 GB")
+        #expect(line.text(done: 240_000_000, now: 1_002)
+            == "Downloading \(Self.modelID)  1%  0.2/16.3 GB  120 MB/s  2m 13s left")
+        // Stalled at 100 KB/s, the rest would take 45 hours.
+        #expect(line.text(done: 1_000_000, now: 1_010) == "Downloading \(Self.modelID)  0%  0.0/16.3 GB  100 KB/s")
     }
 
     @Test("without a width the line is the plain form for logs: the same figures and no bar")
@@ -179,6 +205,10 @@ struct ModelDownloadProgressTests {
         ]
         let due = samples.map { line.takeLogLine(done: $0.done, now: $0.now, ended: $0.ended) }
         #expect(due == [true, false, true, false, true, false, true, false])
+        // Nothing was logged before the end (nothing was transferred): no line for it.
+        var untransferred = Self.line()
+        let endedFirst = untransferred.takeLogLine(done: Self.total, now: 1_000, ended: true)
+        #expect(!endedFirst)
     }
 
     @Test("sizes and rates use decimal units, as the catalog gives model sizes")
@@ -191,6 +221,11 @@ struct ModelDownloadProgressTests {
         #expect(TransferProgressLine.rate(125_000_000) == "125 MB/s")
         #expect(TransferProgressLine.rate(2_400_000_000) == "2.4 GB/s")
         #expect(TransferProgressLine.rate(512_000) == "512 KB/s")
+        // A unit stops below its rounding into the next, and the rate has a widest form.
+        #expect(TransferProgressLine.rate(999_400) == "999 KB/s")
+        #expect(TransferProgressLine.rate(999_600) == "1 MB/s")
+        #expect(TransferProgressLine.rate(999_600_000) == "1.0 GB/s")
+        #expect(TransferProgressLine.rate(1e12) == "99.9 GB/s")
         #expect(TransferProgressLine.duration(45) == "45s")
         #expect(TransferProgressLine.duration(74.24) == "1m 14s")
         #expect(TransferProgressLine.duration(7_500) == "2h 5m")
@@ -222,29 +257,34 @@ struct ModelDownloadProgressTests {
         [(label: "config.json", bytes: 8_700), (label: "tokenizer.json", bytes: 17_000_000)]
         + (1...5).map { (label: String(format: "model-%05d-of-00005.safetensors", $0), bytes: Int64(3_256_598_260)) }
 
+    private static let displayName = "Qwen 3.8 27B"
+
     private static func renderer(isTerminal: Bool, columns: Int = 100, startBytes: Int64 = 0,
                                  clock: ManualClock, into output: CapturedOutput) -> DownloadProgressRenderer {
         DownloadProgressRenderer(
-            modelID: modelID, totalBytes: total, startBytes: startBytes,
+            modelID: modelID, displayName: displayName, totalBytes: total, startBytes: startBytes,
             terminal: DownloadProgressTerminal(isTerminal: isTerminal, columns: { columns }, clock: { clock.now },
                                                output: { output.append($0) }))
     }
 
-    /// Fetches `checkpoint` four files at a time at 125 MB/s in all through the
-    /// downloader's byte tracker, which the render loop samples every 0.1 s
-    /// here, until `share` of the bytes are on disk.
+    /// Fetches `checkpoint` four files at a time at 125 MB/s in all, after
+    /// `stalled` seconds at 100 KB/s, through the downloader's byte tracker,
+    /// which the render loop samples every 0.1 s here, until `share` of the
+    /// bytes are on disk.
     @discardableResult
     private static func download(_ renderer: DownloadProgressRenderer, clock: ManualClock,
-                                 until share: Double = 1) -> ManifestDownloadProgress {
+                                 until share: Double = 1, stalled: TimeInterval = 0) -> ManifestDownloadProgress {
         let progress = ManifestDownloadProgress()
         for file in checkpoint { progress.register(label: file.label, expectedBytes: file.bytes) }
         var queued = checkpoint[...]
         var inFlight: [(label: String, bytes: Int64, done: Int64)] = []
+        var elapsed: TimeInterval = 0
         while Double(progress.downloadedBytes) < Double(total) * share {
             while inFlight.count < 4, let next = queued.popFirst() { inFlight.append((next.label, next.bytes, 0)) }
             guard !inFlight.isEmpty else { break }
             clock.advance(0.1)
-            let each = 12_500_000 / Int64(inFlight.count)
+            elapsed += 0.1
+            let each = (elapsed < stalled ? 10_000 : 12_500_000) / Int64(inFlight.count)
             for index in inFlight.indices {
                 inFlight[index].done = min(inFlight[index].bytes, inFlight[index].done + each)
                 progress.update(label: inFlight[index].label, downloadedBytes: inFlight[index].done)
@@ -284,8 +324,44 @@ struct ModelDownloadProgressTests {
         #expect(terminal.visibleLines.count == 1)
         let row = terminal.visibleLines.first ?? ""
         #expect(row.hasPrefix("  Downloading \(Self.modelID)  ["))
-        #expect(row.contains("  \(Int(Double(done) / Double(Self.total) * 100))%  \(TransferProgressLine.bytes(done, of: Self.total))  "))
+        #expect(row.contains(" \(Int(Double(done) / Double(Self.total) * 100))%  "))
+        #expect(row.contains(" \(TransferProgressLine.bytes(done, of: Self.total))  "))
         #expect(!row.contains("safetensors"))
+    }
+
+    @Test("every redraw of a download keeps the bar's width and each figure's column, from the first frame on",
+          arguments: [60, 80, 100, 120])
+    func columnsStayPut(columns: Int) throws {
+        let clock = ManualClock()
+        let output = CapturedOutput()
+        let renderer = Self.renderer(isTerminal: true, columns: columns, clock: clock, into: output)
+        // A slow start, so every figure changes its length on the way.
+        Self.download(renderer, clock: clock, stalled: 5)
+        let frames = Self.redraws(output.value)
+        try #require(frames.count > 100)
+        // The first frame comes before there is a rate or a time left.
+        #expect(!frames[0].contains("B/s") && !frames[0].contains("left"))
+        if columns >= 120 {
+            // While the start is slow the rate shows, but not a time left of more than a day.
+            #expect(frames.contains { $0.contains(" KB/s") && !$0.contains(" left") })
+        }
+        /// The columns where `pattern` ends, in the frames that show it.
+        func ends(_ pattern: String) -> Set<Int> {
+            Set(frames.compactMap { frame in
+                frame.range(of: pattern, options: .regularExpression).map { frame.distance(from: frame.startIndex, to: $0.upperBound) }
+            })
+        }
+        let barWidths = Set(frames.compactMap { frame -> Int? in
+            guard let open = frame.firstIndex(of: "["), let close = frame.firstIndex(of: "]") else { return nil }
+            return frame.distance(from: open, to: close) - 1
+        })
+        #expect(barWidths.count == 1, "bar widths: \(barWidths)")
+        #expect(Set(frames.map { $0.prefix { $0 != "[" } }).count == 1)
+        #expect(ends(#"\d+%"#).count == 1)
+        for figure in [#"\d+\.\d/\d+\.\d GB"#, #"\d+(\.\d)? [KMG]?B/s"#, " left"] {
+            #expect(ends(figure).count <= 1, "\(figure) ends at \(ends(figure))")
+        }
+        if columns >= 80 { #expect(ends(" left").count == 1) }
     }
 
     @Test("the summary replaces the line when the download is verified, and the next output goes below it")
@@ -305,7 +381,7 @@ struct ModelDownloadProgressTests {
         terminal = VirtualTerminal(columns: 100)
         terminal.feed(output.value)
         let elapsed = TransferProgressLine.duration(clock.now - 1_000)
-        #expect(terminal.transcript == ["  Downloaded \(Self.modelID) (16.3 GB in \(elapsed))", "next"])
+        #expect(terminal.transcript == ["  \u{2713} Downloaded \(Self.displayName) (16.3 GB in \(elapsed))", "next"])
         #expect(output.value.filter { $0 == "\n" }.count == 2)
     }
 
@@ -346,7 +422,7 @@ struct ModelDownloadProgressTests {
         #expect(progress.count <= Int(downloading / TransferProgressLine.logInterval) + 2)
         #expect(Array(lines.dropFirst(progress.count)) == [
             "  Verifying \(Self.modelID) (16.3 GB)\u{2026}",
-            "  Downloaded \(Self.modelID) (16.3 GB in \(TransferProgressLine.duration(downloading)))",
+            "  \u{2713} Downloaded \(Self.displayName) (16.3 GB in \(TransferProgressLine.duration(downloading)))",
         ])
     }
 
@@ -374,7 +450,7 @@ struct ModelDownloadProgressTests {
         let renderer = Self.renderer(isTerminal: false, startBytes: 7_000_000_000, clock: clock, into: output)
         clock.advance(60)
         renderer.finish()
-        #expect(output.lines == ["  Downloaded \(Self.modelID) (16.3 GB in 1m 0s; 7.0 GB of it was already on disk)"])
+        #expect(output.lines == ["  \u{2713} Downloaded \(Self.displayName) (16.3 GB in 1m 0s; 7.0 GB of it was already on disk)"])
     }
 }
 
@@ -434,10 +510,17 @@ private final class ByteSamples: @unchecked Sendable {
 struct ModelDownloadProgressDownloaderTests {
     private static let cdn = "https://cdn.progress-line.test"
 
+    /// A model on the fake CDN: its catalog entry, where its files live and the files.
+    private struct Published {
+        let model: CatalogModel
+        let prefix: String
+        let files: [(path: String, bytes: Data)]
+    }
+
     /// A three-file model on the fake CDN, 300,022 bytes. The weights arrive
     /// half a second after they are asked for, so the render loop runs first.
     /// `aggregateSHA256` replaces the digest of the files in the manifest.
-    private static func publishedModel(missing: String? = nil, aggregateSHA256: String? = nil) throws -> CatalogModel {
+    private static func publishedModel(missing: String? = nil, aggregateSHA256: String? = nil) throws -> Published {
         let id = UUID().uuidString
         let prefix = "v2/progress-line/\(id)"
         let files: [(path: String, bytes: Data)] = [
@@ -464,8 +547,9 @@ struct ModelDownloadProgressDownloaderTests {
         for file in files where file.path != missing { bodies["/\(prefix)/\(file.path)"] = file.bytes }
         ProgressCDNProtocol.serve(bodies, delays: Dictionary(uniqueKeysWithValues: files.filter { $0.path.hasSuffix(".safetensors") }
             .map { ("/\(prefix)/\($0.path)", 0.5) }))
-        return CatalogModel(id: manifest.modelID, s3Name: "unused", displayName: "Progress line", sizeGb: 0.0003,
-                            r2Prefix: prefix, aggregateSHA256: manifest.aggregateSHA256)
+        let model = CatalogModel(id: manifest.modelID, s3Name: "unused", displayName: "Progress line", sizeGb: 0.0003,
+                                 r2Prefix: prefix, aggregateSHA256: manifest.aggregateSHA256)
+        return Published(model: model, prefix: prefix, files: files)
     }
 
     private static func downloader(isTerminal: Bool, into output: CapturedOutput) -> ModelDownloader {
@@ -479,9 +563,9 @@ struct ModelDownloadProgressDownloaderTests {
         return downloader
     }
 
-    @Test("off a terminal a download prints its start, its end, the check and the summary, and nothing per file")
+    @Test("off a terminal a download prints its start, its end, the check and its one completion line, and nothing per file")
     func plainDownload() async throws {
-        let model = try Self.publishedModel()
+        let model = try Self.publishedModel().model
         defer { try? FileManager.default.removeItem(at: ModelDownloader.cacheModelDirectory(for: model.id)) }
         let output = CapturedOutput()
         try await Self.downloader(isTerminal: false, into: output).download(model: model)
@@ -489,25 +573,55 @@ struct ModelDownloadProgressDownloaderTests {
             "  Downloading \(model.id)  0%  0/300 KB",
             "  Downloading \(model.id)  100%  300/300 KB",
             "  Verifying \(model.id) (300 KB)\u{2026}",
-            "  Downloaded \(model.id) (300 KB in 0s)",
+            "  \u{2713} Downloaded Progress line (300 KB in 0s)",
         ])
     }
 
-    @Test("on a terminal a download leaves only its summary on screen")
+    @Test("on a terminal a download leaves only its completion line on screen")
     func terminalDownload() async throws {
-        let model = try Self.publishedModel()
+        let model = try Self.publishedModel().model
         defer { try? FileManager.default.removeItem(at: ModelDownloader.cacheModelDirectory(for: model.id)) }
         let output = CapturedOutput()
         try await Self.downloader(isTerminal: true, into: output).download(model: model)
         #expect(output.value.filter { $0 == "\n" }.count == 1 && output.value.hasSuffix("\n"))
         var terminal = VirtualTerminal(columns: 120)
         terminal.feed(output.value)
-        #expect(terminal.transcript == ["  Downloaded \(model.id) (300 KB in 0s)"])
+        #expect(terminal.transcript == ["  \u{2713} Downloaded Progress line (300 KB in 0s)"])
+    }
+
+    @Test("a model whose files are already there and verified gets one line that says so")
+    func alreadyDownloaded() async throws {
+        let model = try Self.publishedModel().model
+        defer { try? FileManager.default.removeItem(at: ModelDownloader.cacheModelDirectory(for: model.id)) }
+        try await Self.downloader(isTerminal: false, into: CapturedOutput()).download(model: model)
+        let output = CapturedOutput()
+        try await Self.downloader(isTerminal: false, into: output).download(model: model)
+        #expect(output.lines == ["  \u{2713} Progress line is already downloaded (300 KB)"])
+    }
+
+    @Test("files an earlier run left staged are checked and published with one completion line")
+    func finishedFromStaging() async throws {
+        let published = try Self.publishedModel()
+        let model = published.model
+        defer { try? FileManager.default.removeItem(at: ModelDownloader.cacheModelDirectory(for: model.id)) }
+        let staging = ModelDownloader.cacheSnapshotDirectory(for: model.id).deletingLastPathComponent()
+            .appendingPathComponent(ModelDownloader.localStagingDirName(r2Prefix: published.prefix), isDirectory: true)
+        for file in published.files {
+            let destination = staging.appendingPathComponent(file.path)
+            try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try file.bytes.write(to: destination)
+        }
+        let output = CapturedOutput()
+        try await Self.downloader(isTerminal: false, into: output).download(model: model)
+        #expect(output.lines == [
+            "  Verifying \(model.id) (300 KB)\u{2026}",
+            "  \u{2713} Downloaded Progress line (300 KB in 0s; 300 KB of it was already on disk)",
+        ])
     }
 
     @Test("a caller that shows the progress itself gets every count, the complete one last, and no line is drawn")
     func callerOwnsTheScreen() async throws {
-        let model = try Self.publishedModel()
+        let model = try Self.publishedModel().model
         defer { try? FileManager.default.removeItem(at: ModelDownloader.cacheModelDirectory(for: model.id)) }
         let output = CapturedOutput()
         let samples = ByteSamples()
@@ -521,7 +635,7 @@ struct ModelDownloadProgressDownloaderTests {
 
     @Test("a download that fails ends its line with where it stopped, then throws")
     func failedDownload() async throws {
-        let model = try Self.publishedModel(missing: "model-00002-of-00002.safetensors")
+        let model = try Self.publishedModel(missing: "model-00002-of-00002.safetensors").model
         defer { try? FileManager.default.removeItem(at: ModelDownloader.cacheModelDirectory(for: model.id)) }
         let output = CapturedOutput()
         await #expect(throws: ModelCatalogError.self) {
@@ -532,9 +646,9 @@ struct ModelDownloadProgressDownloaderTests {
         #expect(output.lines.count == 2)
     }
 
-    @Test("a download whose files fail the check against the manifest replaces its line with where it stopped, then throws")
+    @Test("a download whose files fail the check against the manifest replaces its line with the failed check and why, then throws")
     func failedCheck() async throws {
-        let model = try Self.publishedModel(aggregateSHA256: String(repeating: "0", count: 64))
+        let model = try Self.publishedModel(aggregateSHA256: String(repeating: "0", count: 64)).model
         defer { try? FileManager.default.removeItem(at: ModelDownloader.cacheModelDirectory(for: model.id)) }
         let output = CapturedOutput()
         await #expect(throws: ModelCatalogError.self) {
@@ -543,6 +657,7 @@ struct ModelDownloadProgressDownloaderTests {
         #expect(output.value.contains("Verifying \(model.id) (300 KB)\u{2026}"))
         var terminal = VirtualTerminal(columns: 120)
         terminal.feed(output.value)
-        #expect(terminal.transcript == ["  Download of \(model.id) stopped at 100% (300/300 KB)"])
+        // The line is longer than the window and wraps onto a second row.
+        #expect(terminal.transcript.joined() == "  Verification of \(model.id) failed: aggregate hash mismatch for \(model.id)")
     }
 }

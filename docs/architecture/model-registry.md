@@ -19,13 +19,22 @@ picker) show one progress line for the whole model, never a line per file:
 `ManifestDownloadProgress` sums each file's bytes on disk and
 `DownloadProgressRenderer` draws the sum
 (`provider-swift/Sources/ProviderCore/Models/ModelDownloadProgress.swift`).
-The line's layout, rate and pacing are pure functions of the bytes, the time
+The line's text, rate and pacing are pure functions of the bytes, the time
 and the width (`TransferProgressLine` in
-`provider-swift/Sources/ProviderCore/Models/TransferProgressLine.swift`); the
-rate leaves out bytes a resumed download already had on disk. On a terminal
-the line is redrawn in place with a carriage return and an erase to its end,
-one column short of the window so it never wraps; elsewhere it is printed
-rarely and plainly. The [CLI reference](../provider/cli-reference.md#darkbloom-models-download-id)
+`provider-swift/Sources/ProviderCore/Models/TransferProgressLine.swift`). Its
+layout depends on the width alone (`TransferProgressLine.layout(width:)`): each
+figure's column is sized for that figure's widest form in this download, so
+redraws at one width never move the bar or a figure, and the renderer keeps the
+layout until the width changes. The rate leaves out bytes a resumed download
+already had on disk; the rate and the time left wait for
+`TransferProgressLine.estimateDelay`, and a time left over
+`TransferProgressLine.maximumTimeLeft` is not shown. On a terminal the line is
+redrawn in place with a carriage return and an erase to its end, one column
+short of the window so it never wraps; elsewhere it is printed rarely and
+plainly. The renderer also prints each download's one last line: the
+completion, the model already being on disk, where the transfer stopped or the
+failed check, so its callers print no completion line of their own. The
+[CLI reference](../provider/cli-reference.md#darkbloom-models-download-id)
 gives what is printed and when. A caller that shows progress itself sets
 `ModelDownloader.byteProgress`, and then nothing is drawn: `darkbloom cluster`
 shows the line on its own live row (`ClusterTransferReports`).

@@ -92,24 +92,30 @@ struct DownloadProgressTerminal: Sendable {
 /// A foreground model download as one line (`TransferProgressLine`), indented
 /// under the command's own lines.
 ///
-/// On a terminal the line is redrawn in place (a carriage return, the line cut
-/// to the window, erase to its end) at most every
-/// `TransferProgressLine.redrawInterval`. It reads "Verifying …" while the files
-/// are checked, and the summary or the point where the download stopped then
-/// takes its place and ends it. Elsewhere (a pipe, a log, the desktop app)
-/// nothing is redrawn: plain lines, the first at once, the next only after 10
-/// points and 30 s, and one when the last byte arrived, then the same last lines.
+/// On a terminal the line is redrawn in place (a carriage return, the line,
+/// erase to its end) at most every `TransferProgressLine.redrawInterval`, in
+/// columns that stay put while the window keeps its width. It reads
+/// "Verifying …" while the files are checked; the download's one completion
+/// line, or where it stopped, then takes its place and ends it. Elsewhere (a
+/// pipe, a log, the desktop app) nothing is redrawn: plain lines, the first at
+/// once, the next only after 10 points and 30 s, and one when the last byte
+/// arrived, then the same last lines.
 final class DownloadProgressRenderer: @unchecked Sendable {
     private static let indent = "  "
 
     private let modelID: String
+    private let displayName: String
     private let terminal: DownloadProgressTerminal
     private let lock = NSLock()
     private var line: TransferProgressLine
+    /// The layout for the window's width at the last redraw.
+    private var layout: TransferProgressLine.Layout?
 
     /// `startBytes`: the download's bytes already on disk, which the rate leaves out.
-    init(modelID: String, totalBytes: Int64, startBytes: Int64, terminal: DownloadProgressTerminal = .standardOutput) {
+    init(modelID: String, displayName: String, totalBytes: Int64, startBytes: Int64,
+         terminal: DownloadProgressTerminal = .standardOutput) {
         self.modelID = modelID
+        self.displayName = displayName
         self.terminal = terminal
         line = TransferProgressLine(label: "Downloading \(modelID)", totalBytes: totalBytes,
                                     startBytes: startBytes, startTime: terminal.clock())
@@ -121,7 +127,10 @@ final class DownloadProgressRenderer: @unchecked Sendable {
             let now = terminal.clock()
             if terminal.isTerminal {
                 guard line.takeRedraw(now: now) else { return }
-                terminal.output("\r" + Self.indent + line.text(done: done, now: now, width: liveWidth) + "\u{1B}[K")
+                let width = liveWidth
+                let layout = self.layout.flatMap { $0.width == width ? $0 : nil } ?? line.layout(width: width)
+                self.layout = layout
+                terminal.output("\r" + Self.indent + line.text(done: done, now: now, layout: layout) + "\u{1B}[K")
             } else if line.takeLogLine(done: done, now: now) {
                 terminal.output(Self.indent + line.text(done: done, now: now) + "\n")
             }
@@ -145,10 +154,10 @@ final class DownloadProgressRenderer: @unchecked Sendable {
         }
     }
 
-    /// "Downloaded <model> (16.3 GB in 2m 10s)".
+    /// The download's completion line: "✓ Downloaded <name> (16.3 GB in 2m 10s)".
     func finish() {
         lock.withLock {
-            var summary = "Downloaded \(modelID) (\(TransferProgressLine.bytes(line.totalBytes)) in "
+            var summary = "\u{2713} Downloaded \(displayName) (\(TransferProgressLine.bytes(line.totalBytes)) in "
                 + TransferProgressLine.duration(terminal.clock() - line.startTime)
             if line.startBytes > 0 {
                 summary += "; \(TransferProgressLine.bytes(line.startBytes)) of it was already on disk"
@@ -157,12 +166,29 @@ final class DownloadProgressRenderer: @unchecked Sendable {
         }
     }
 
+    /// The completion line when the model's files were already there and verified.
+    func alreadyDownloaded() {
+        lock.withLock { end("\u{2713} \(displayName) is already downloaded (\(TransferProgressLine.bytes(line.totalBytes)))") }
+    }
+
     /// Where the download stopped. The caller says why.
     func fail(done: Int64) {
         lock.withLock {
             end("Download of \(modelID) stopped at \(line.percent(done: done))% "
                 + "(\(TransferProgressLine.bytes(done, of: line.totalBytes)))")
         }
+    }
+
+    /// The files did not pass their check against the manifest, or could not
+    /// be published after it; `error` says why.
+    func verificationFailed(_ error: any Error) {
+        let reason: String
+        if case .downloadFailed(let detail) = error as? ModelCatalogError {
+            reason = detail
+        } else {
+            reason = error.localizedDescription
+        }
+        lock.withLock { end("Verification of \(modelID) failed: \(reason)") }
     }
 
     /// Leaves the window's last column free, so a full line never wraps.

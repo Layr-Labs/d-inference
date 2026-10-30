@@ -39,7 +39,7 @@ struct ClusterTransferReportsTests {
                                              send: { sent.append($0) })
         let total: Int64 = 6_100_000_000
         reports.report(done: 1_000_000_000, total: total)
-        clock.advance(1)
+        clock.advance(2)
         reports.report(done: 3_400_000_000, total: total)
         clock.advance(30)
         reports.report(done: 6_000_000_000, total: total)
@@ -49,7 +49,11 @@ struct ClusterTransferReportsTests {
         #expect(live.map(\.logged) == [true, false, true])
         // The bytes already there when the first count came are not credited to the rate.
         #expect(live[0].text(nil) == "Copying Qwen3.5-9B to the other Mac  16%  1.0/6.1 GB")
-        #expect(live[1].text(nil) == "Copying Qwen3.5-9B to the other Mac  55%  3.4/6.1 GB  2.4 GB/s  1s left")
-        #expect(live[1].text(40) == "Copying Qwen3.5-9B to the\u{2026}  55%  1s left")
+        #expect(live[1].text(nil) == "Copying Qwen3.5-9B to the other Mac  55%  3.4/6.1 GB  1.2 GB/s  2s left")
+        // At 40 columns the time left, at its widest, no longer fits beside the label's start.
+        #expect(live[1].text(40) == "Copying Qwen3.5-9B to the other M\u{2026}   55%")
+        // At 80 the bytes' column does not fit beside the whole label; the narrower rate's does.
+        #expect(live[1].text(80) == "Copying Qwen3.5-9B to the other Mac  [" + String(repeating: "\u{2588}", count: 5)
+            + String(repeating: "\u{2591}", count: 5) + "]   55%   1.2 GB/s       2s left")
     }
 }

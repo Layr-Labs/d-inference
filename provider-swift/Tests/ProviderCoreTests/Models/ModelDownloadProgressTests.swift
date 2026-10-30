@@ -436,7 +436,8 @@ struct ModelDownloadProgressDownloaderTests {
 
     /// A three-file model on the fake CDN, 300,022 bytes. The weights arrive
     /// half a second after they are asked for, so the render loop runs first.
-    private static func publishedModel(missing: String? = nil) throws -> CatalogModel {
+    /// `aggregateSHA256` replaces the digest of the files in the manifest.
+    private static func publishedModel(missing: String? = nil, aggregateSHA256: String? = nil) throws -> CatalogModel {
         let id = UUID().uuidString
         let prefix = "v2/progress-line/\(id)"
         let files: [(path: String, bytes: Data)] = [
@@ -449,7 +450,8 @@ struct ModelDownloadProgressDownloaderTests {
         for file in files.sorted(by: { $0.path < $1.path }) { aggregate.update(data: Data(SHA256.hash(data: file.bytes))) }
         let manifest = ModelManifest(
             schemaVersion: 1, modelID: "test-org/progress-line-\(id)", version: "v1", r2Prefix: prefix,
-            aggregateSHA256: hex(aggregate.finalize()), totalSizeBytes: files.reduce(0) { $0 + Int64($1.bytes.count) },
+            aggregateSHA256: aggregateSHA256 ?? hex(aggregate.finalize()),
+            totalSizeBytes: files.reduce(0) { $0 + Int64($1.bytes.count) },
             fileCount: files.count,
             files: files.map {
                 ManifestFile(path: $0.path, sizeBytes: Int64($0.bytes.count), sha256: hex(SHA256.hash(data: $0.bytes)),
@@ -528,5 +530,19 @@ struct ModelDownloadProgressDownloaderTests {
         #expect(output.lines.first == "  Downloading \(model.id)  0%  0/300 KB")
         #expect(output.lines.last?.hasPrefix("  Download of \(model.id) stopped at ") == true)
         #expect(output.lines.count == 2)
+    }
+
+    @Test("a download whose files fail the check against the manifest replaces its line with where it stopped, then throws")
+    func failedCheck() async throws {
+        let model = try Self.publishedModel(aggregateSHA256: String(repeating: "0", count: 64))
+        defer { try? FileManager.default.removeItem(at: ModelDownloader.cacheModelDirectory(for: model.id)) }
+        let output = CapturedOutput()
+        await #expect(throws: ModelCatalogError.self) {
+            try await Self.downloader(isTerminal: true, into: output).download(model: model)
+        }
+        #expect(output.value.contains("Verifying \(model.id) (300 KB)\u{2026}"))
+        var terminal = VirtualTerminal(columns: 120)
+        terminal.feed(output.value)
+        #expect(terminal.transcript == ["  Download of \(model.id) stopped at 100% (300/300 KB)"])
     }
 }

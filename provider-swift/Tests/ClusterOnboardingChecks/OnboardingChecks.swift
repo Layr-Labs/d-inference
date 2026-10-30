@@ -363,6 +363,7 @@ import Darwin
                            replanned: [ClusterOnboardingModelChoice]? = nil,
                            provisionResult: Result<[String], ClusterOnboardingFailure> = .success(["The other Mac (Apple M3 Ultra, 256 GB) has Qwen3.5-9B now: 12 files verified against the catalog manifest."]),
                            provisionReports: [ClusterOnboardingProgress] = copyReports,
+                           provisionReportPause: useconds_t = 30_000,
                            linkPorts: [String] = [],
                            approvalGate: DispatchSemaphore? = nil,
                            recheck: String? = nil,
@@ -441,7 +442,7 @@ import Darwin
                 recorder.note("provision \(index) \(download ? "download" : "copy")")
                 for report in provisionReports {
                     progress(report)
-                    usleep(provisionReports.count > 2 ? 2_000 : 30_000)
+                    usleep(provisionReportPause)
                 }
                 return provisionResult
             },
@@ -1030,7 +1031,8 @@ import Darwin
             let widths = Recorder()
             let environment = colour ? ["TERM": "xterm-256color", "LANG": "en_US.UTF-8", "DARKBLOOM_NO_ANIMATION": "1"] : ["NO_COLOR": "1"]
             let run = TerminalRun(operations(Recorder(), resume: .init(role: .leader, peerName: "Apple M3 Ultra, 256 GB"), pairEvents: [],
-                pairResult: .failed([]), choices: before, replanned: after, provisionReports: downloadReports(widths: widths)),
+                pairResult: .failed([]), choices: before, replanned: after, provisionReports: downloadReports(widths: widths),
+                provisionReportPause: 2_000),
                 environment: environment, columns: 100)
             expect(run.waitFor("Choose a model [1-1, enter = 1]: "), "\(label): the choice"); run.type("\r")
             expect(run.waitFor("Press enter to get it, n to stop here."), "\(label): one key"); run.type("\r")

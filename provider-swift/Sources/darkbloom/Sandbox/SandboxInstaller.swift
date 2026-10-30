@@ -20,6 +20,10 @@ enum SandboxInstaller {
     /// Installers that render their stages for the CLI accept this option and
     /// name it in their text; older ones reject unknown options.
     static let jsonProgressOption = "--json-progress"
+    /// Installers from add-on 1.1.1 on accept this option and name it in their
+    /// text: they check this Mac and print the add-on's slot plan, installing
+    /// nothing. An installer is run with it only when its text names it.
+    static let planOption = "--plan"
 
     enum Failure: Error, Equatable, CustomStringConvertible {
         case download(URL, String)
@@ -95,6 +99,10 @@ enum SandboxInstaller {
         String(decoding: script, as: UTF8.self).contains(jsonProgressOption)
     }
 
+    static func supportsPlan(_ script: Data) -> Bool {
+        String(decoding: script, as: UTF8.self).contains(planOption)
+    }
+
     /// The installer's arguments. An installer without `--json-progress`
     /// knows only the slot options, so the others are left out for it.
     static func arguments(_ options: SandboxSetupOptions, jsonProgress: Bool) -> [String] {
@@ -105,6 +113,17 @@ enum SandboxInstaller {
             if options.noBrowser { arguments.append("--no-browser") }
             if options.waitReady { arguments.append("--wait-ready") }
         }
+        return arguments + slotArguments(options)
+    }
+
+    /// The arguments that ask for the add-on's plan for the owner's slot
+    /// counts. No `--yes`: the plan installs nothing.
+    static func planArguments(_ options: SandboxSetupOptions) -> [String] {
+        [planOption, jsonProgressOption] + slotArguments(options)
+    }
+
+    private static func slotArguments(_ options: SandboxSetupOptions) -> [String] {
+        var arguments: [String] = []
         if let linux = options.linuxSlots { arguments += ["--linux-slots", String(linux)] }
         if let macOS = options.macOSSlots { arguments += ["--macos-slots", String(macOS)] }
         return arguments

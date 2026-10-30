@@ -32,42 +32,36 @@ struct SandboxEligibilityTests {
         Case(cores: 10, memoryGiB: 24, provider: false, linux: 1, macOS: 0),
     ])
     func sizing(_ example: Case) {
-        let eligibility = SandboxEligibility(.mac(cores: example.cores, memoryGiB: example.memoryGiB,
-                                                  provider: example.provider))
-        #expect(eligibility.linuxSlots == example.linux)
-        #expect(eligibility.macOSSlots == example.macOS)
-        #expect(eligibility.eligible == (example.linux + example.macOS > 0))
+        let plan = SandboxEligibility(.mac(cores: example.cores, memoryGiB: example.memoryGiB,
+                                           provider: example.provider)).estimatedPlan()
+        #expect(plan.linux.slots == example.linux)
+        #expect(plan.macOS.slots == example.macOS)
+        #expect(plan.runsJobs == (example.linux + example.macOS > 0))
     }
 
     @Test("16 cores and 128 GB runs macOS and Linux jobs, including the 12-core, 32 GB macOS size")
     func largeMac() {
-        let eligibility = SandboxEligibility(.mac(cores: 16, memoryGiB: 128))
-        #expect(eligibility.keptCores == 4)
-        #expect(eligibility.keptMemory == 32 << 30)
-        #expect(eligibility.providerMemory == 32 << 30)
-        #expect(eligibility.largeMacOSFits)
-        #expect(eligibility.verdict() == [
+        let plan = SandboxEligibility(.mac(cores: 16, memoryGiB: 128)).estimatedPlan()
+        #expect(plan.coresKept == 4)
+        #expect(plan.memoryKeptBytes == 32 << 30)
+        #expect(plan.providerMemoryBytes == 32 << 30)
+        #expect(plan.verdict == [
             "Eligible. At a time, this Mac can run:",
             "  1 Linux job (limited by cores)",
             "  1 macOS job (limited by cores)",
             "  The most requested macOS size, 12 cores and 32 GB, fits.",
         ])
         // 16 cores and about 64 GB is the smallest Mac for it beside inference.
-        #expect(SandboxEligibility(.mac(cores: 16, memoryGiB: 64)).largeMacOSFits)
-        #expect(!SandboxEligibility(.mac(cores: 16, memoryGiB: 48)).largeMacOSFits)
-        #expect(!SandboxEligibility(.mac(cores: 14, memoryGiB: 128)).largeMacOSFits)
-        // No room for a Linux scratch disk leaves 12 cores and 32 GB with a macOS slot.
-        let macOSOnly = SandboxEligibility(.mac(cores: 12, memoryGiB: 32, freeGiB: 160))
-        #expect((macOSOnly.linuxSlots, macOSOnly.macOSSlots) == (0, 1))
-        #expect(macOSOnly.verdict().last
-            == "  The most requested macOS size, 12 cores and 32 GB, does not fit: it needs a Mac with at least "
-                + "16 cores and about 64 GB.")
+        #expect(SandboxEligibility(.mac(cores: 16, memoryGiB: 64)).estimatedPlan().verdict.last
+            == "  The most requested macOS size, 12 cores and 32 GB, fits.")
+        #expect(SandboxEligibility(.mac(cores: 12, memoryGiB: 32)).estimatedPlan(linuxRequested: 0, macOSRequested: 1)
+            .verdict.last == "  The most requested macOS size, 12 cores and 32 GB, does not fit: it needs a Mac with "
+                + "at least 16 cores and about 64 GB.")
     }
 
     @Test("12 cores and 32 GB runs Linux jobs only")
     func linuxOnly() {
-        let eligibility = SandboxEligibility(.mac(cores: 12, memoryGiB: 32))
-        #expect(eligibility.verdict() == [
+        #expect(SandboxEligibility(.mac(cores: 12, memoryGiB: 32)).estimatedPlan().verdict == [
             "Eligible. At a time, this Mac can run:",
             "  1 Linux job (limited by memory)",
             "  no macOS jobs (limited by cores)",
@@ -76,17 +70,19 @@ struct SandboxEligibilityTests {
 
     @Test("8 cores and 16 GB is not eligible, and says what is short")
     func tooSmall() {
-        let withInference = SandboxEligibility(.mac(cores: 8, memoryGiB: 16))
-        #expect(!withInference.eligible)
-        #expect(withInference.verdict() == [
+        let withInference = SandboxEligibility(.mac(cores: 8, memoryGiB: 16)).estimatedPlan()
+        #expect(!withInference.runsJobs)
+        #expect(withInference.verdict == [
             "Not eligible: each job needs 16 GB of memory besides the 8 GB kept for you and the 4 GB kept for "
                 + "inference; this Mac has 4 GB left.",
         ])
         let checks = Dictionary(uniqueKeysWithValues: withInference.checks.map { ($0.name, $0) })
         #expect(checks["Memory"]?.level == .fail)
         #expect(checks["Memory"]?.detail == "16 GB; you keep 8 GB, inference keeps 4 GB")
-        #expect(checks["CPU"]?.level == .pass)
-        #expect(SandboxEligibility(.mac(cores: 4, memoryGiB: 64)).verdict()
+        // A macOS job's 8 cores do not fit either; the disk does.
+        #expect(checks["CPU"]?.level == .fail)
+        #expect(checks["Disk"]?.level == .pass)
+        #expect(SandboxEligibility(.mac(cores: 4, memoryGiB: 64)).estimatedPlan().verdict
             == ["Not eligible: each job needs 4 cores besides the 2 kept for you; this Mac has 2 left."])
     }
 
@@ -97,33 +93,34 @@ struct SandboxEligibilityTests {
         #expect(SandboxEligibility.freeSpaceFloor(volumeBytes: 4_000 << 30) == 100 << 30)
     }
 
-    @Test("disk: images and each Linux job need room above the floor; how much to free is exact")
-    func disk() {
-        // 2 TB disk: 100 GiB floor + 50 GiB images; 119 GiB free is 31 GiB short.
-        let short = SandboxEligibility(.mac(cores: 16, memoryGiB: 128, freeGiB: 119))
-        #expect(!short.eligible)
-        #expect(short.verdict() == [
-            "Not eligible: free up 61 GiB of disk, then this Mac can run 1 Linux job and 1 macOS job at a time. "
-                + "100 GiB stays free for you, the VM images need 50 GiB and each Linux job 30 GiB.",
+    @Test("fallback disk: a platform's first slot brings its images, each slot its job's disk, above the floor")
+    func disk() throws {
+        // The add-on's own plan for this Mac: 57 GiB above the floor fits Linux images (4) and one Linux
+        // job (30), not another (30) nor macOS images (46) and a macOS job (40).
+        let small = SandboxEligibility(.mac(cores: 16, memoryGiB: 128, freeGiB: 157, volumeGiB: 1_858))
+        var addon = try #require(SandboxSizingPlan(line: FakeSandboxInstaller.plan()))
+        addon.message = nil
+        #expect(small.estimatedPlan() == addon)
+        // 2 TB disk, 100 GiB floor: 119 GiB free fits no job and says how much to free for one.
+        let short = SandboxEligibility(.mac(cores: 16, memoryGiB: 128, freeGiB: 119)).estimatedPlan()
+        #expect(short.verdict == [
+            "Not eligible: no job fits on this Mac.",
+            "  Free up 15 GiB of disk for one Linux job, or 67 GiB of disk for one macOS job.",
         ])
-        #expect(short.checks.first { $0.name == "Disk" }?.level == .fail)
-        // Room for the images but no Linux scratch disk: macOS only.
-        let macOSOnly = SandboxEligibility(.mac(cores: 16, memoryGiB: 128, freeGiB: 160))
-        #expect((macOSOnly.linuxSlots, macOSOnly.macOSSlots) == (0, 1))
-        #expect(macOSOnly.verdict()[1] == "  no Linux jobs (limited by free disk)")
-        // 30 GiB per Linux job above floor and images: 2 cores-and-memory-wise, 1 by disk.
-        let oneByDisk = SandboxEligibility(.mac(cores: 32, memoryGiB: 512, freeGiB: 185))
-        #expect((oneByDisk.linuxSlots, oneByDisk.linuxLimit) == (1, .disk))
-        // Images already installed need no space.
+        #expect(short.checks.map(\.level) == [.pass, .pass, .fail])
+        // Both first slots fit; the rest of the disk holds no further job.
+        let both = SandboxEligibility(.mac(cores: 32, memoryGiB: 512, freeGiB: 220)).estimatedPlan()
+        #expect((both.linux.slots, both.macOS.slots, both.linux.limit) == (1, 1, "free disk space"))
+        // Later Linux slots cost 30 GiB each: 85 GiB holds two, not a macOS slot's 86.
+        let linuxByDisk = SandboxEligibility(.mac(cores: 32, memoryGiB: 512, freeGiB: 185)).estimatedPlan()
+        #expect((linuxByDisk.linux.slots, linuxByDisk.macOS.slots) == (2, 0))
+        // Installed images need no space.
         var rerun = SandboxHostFacts.mac(cores: 16, memoryGiB: 128, freeGiB: 135)
         rerun.imagesInstalled = true
-        #expect(SandboxEligibility(rerun).linuxSlots == 1)
-        // Only a Linux scratch disk is short on a Mac too small for macOS jobs.
-        let linuxScratch = SandboxEligibility(.mac(cores: 8, memoryGiB: 64, freeGiB: 160))
-        #expect(linuxScratch.verdict() == [
-            "Not eligible: free up 20 GiB of disk, then this Mac can run 1 Linux job at a time. "
-                + "100 GiB stays free for you, the VM images need 50 GiB and each Linux job 30 GiB.",
-        ])
+        let installed = SandboxEligibility(rerun).estimatedPlan()
+        #expect((installed.linux.slots, installed.macOS.slots) == (1, 0))
+        #expect(installed.checks.last?.detail == "135 GiB free; 100 GiB stays free for you; Linux images installed "
+            + "+ 30 GiB per Linux job; macOS images installed + 40 GiB per macOS job")
     }
 
     @Test("Intel, macOS before 27 and no network are refused outright")
@@ -131,15 +128,14 @@ struct SandboxEligibilityTests {
         var intel = SandboxHostFacts.mac(cores: 16, memoryGiB: 64)
         intel.appleSilicon = false
         intel.chip = "Intel(R) Core(TM) i9"
-        #expect(SandboxEligibility(intel).verdict()
-            == ["Not eligible: Darkbloom Sandbox needs a Mac with Apple silicon (this one has Intel(R) Core(TM) i9)."])
+        #expect(SandboxEligibility(intel).refusal
+            == "Darkbloom Sandbox needs a Mac with Apple silicon (this one has Intel(R) Core(TM) i9).")
         var old = SandboxHostFacts.mac(cores: 16, memoryGiB: 64)
         old.macOSMajor = 26
         old.macOSVersion = "26.4"
         let refused = SandboxEligibility(old)
-        #expect(!refused.eligible)
-        #expect(refused.verdict() == ["Not eligible: Darkbloom Sandbox needs macOS 27 or later; this Mac runs "
-            + "macOS 26.4. Update it in System Settings → General → Software Update first."])
+        #expect(refused.refusal == "Darkbloom Sandbox needs macOS 27 or later; this Mac runs "
+            + "macOS 26.4. Update it in System Settings → General → Software Update first.")
         #expect(refused.checks.first { $0.name == "macOS" }?.level == .fail)
         var offline = SandboxHostFacts.mac(cores: 16, memoryGiB: 64)
         offline.network = .offline
@@ -148,8 +144,10 @@ struct SandboxEligibilityTests {
         remote.desktopSession = false
         remote.userName = "ada"
         let away = SandboxEligibility(remote)
-        #expect(away.verdict() == ["Not eligible: Log in to this Mac's desktop as ada and run setup there: the add-on "
-            + "runs in your login session."])
+        #expect(away.refusal == "Log in to this Mac's desktop as ada and run setup there: the add-on "
+            + "runs in your login session.")
+        // Setup's own checks, before it asks the installer for the sizing lines.
+        #expect(away.checks.map(\.name) == ["Chip", "macOS", "Session", "Network", "Power", "Sleep"])
         #expect(away.checks.first { $0.name == "Session" } == .init(
             level: .fail, name: "Session", detail: "not logged in at this Mac's desktop",
             fix: "log in at the desktop as ada; the add-on runs in that session"))
@@ -162,7 +160,7 @@ struct SandboxEligibilityTests {
         facts.power = .battery
         facts.sleepMinutes = 10
         let eligibility = SandboxEligibility(facts)
-        #expect(eligibility.eligible)
+        #expect(eligibility.refusal == nil)
         let warnings = eligibility.checks.filter { $0.level == .warn }.map(\.name)
         #expect(warnings == ["Network", "Power", "Sleep"])
         #expect(eligibility.checks.last == .init(
@@ -180,30 +178,23 @@ struct SandboxEligibilityTests {
         #expect(unknown.first { $0.name == "Network" }?.level == .info)
     }
 
-    @Test("slot counts the owner chose replace the estimate; counts that do not fit are flagged")
+    @Test("fallback: slot counts the owner chose replace the estimate")
     func requestedSlots() {
         let eligibility = SandboxEligibility(.mac(cores: 32, memoryGiB: 512))
-        // 4 Linux and 1 macOS take 24 of the 24 cores left for jobs: they fit.
-        #expect(eligibility.verdict(linuxRequested: 4, macOSRequested: 1) == [
+        #expect(eligibility.estimatedPlan(linuxRequested: 4, macOSRequested: 1).verdict == [
             "Eligible. At a time, this Mac can run:",
             "  4 Linux jobs (your choice)",
             "  1 macOS job (your choice)",
             "  The most requested macOS size, 12 cores and 32 GB, fits.",
         ])
-        #expect(eligibility.verdict(linuxRequested: 8).contains(
-            "  Those counts need more cores, memory or disk than this Mac has left for jobs; jobs may run slowly."))
-        #expect(eligibility.verdict().last
+        #expect(eligibility.estimatedPlan().verdict.last
             == "  macOS runs at most 2 macOS VMs at once, yours included; `--macos-slots 1` keeps one for you.")
-        #expect(eligibility.slots(linuxRequested: 0, macOSRequested: nil) == (0, 2))
-        // Giving up the Linux job leaves 12 cores and 32 GB room for a macOS one.
-        let small = SandboxEligibility(.mac(cores: 12, memoryGiB: 32))
-        #expect(small.fits(linux: 0, macOS: 1) && !small.fits(linux: 1, macOS: 1))
-        #expect(small.verdict(linuxRequested: 0, macOSRequested: 1) == [
-            "Eligible. At a time, this Mac can run:",
-            "  no Linux jobs (your choice)",
-            "  1 macOS job (your choice)",
-            "  The most requested macOS size, 12 cores and 32 GB, does not fit: it needs a Mac with at least "
-                + "16 cores and about 64 GB.",
+        let noLinux = eligibility.estimatedPlan(linuxRequested: 0)
+        #expect((noLinux.linux.slots, noLinux.linux.automatic, noLinux.macOS.slots) == (0, false, 2))
+        // The automatic macOS estimate leaves the cores to Linux, so choosing no Linux runs nothing.
+        #expect(SandboxEligibility(.mac(cores: 12, memoryGiB: 32)).estimatedPlan(linuxRequested: 0).verdict == [
+            "Not eligible: no job fits on this Mac.",
+            "  That is with the slot counts you chose; change --linux-slots or --macos-slots.",
         ])
     }
 

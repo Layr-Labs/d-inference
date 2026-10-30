@@ -123,6 +123,62 @@ struct SandboxInstallerEvent: Equatable, Sendable {
     }
 }
 
+/// The add-on's own slot plan: the one `{"schema":1,"event":"plan",…}` line
+/// that `install.sh --plan --json-progress` (add-on 1.1.1 and later) prints
+/// once it has verified the release and run the add-on's checks and sizing,
+/// installing nothing. Disk: the floor stays free, a platform's first slot
+/// costs its VM images and one job's disk, each further slot one job's disk.
+struct SandboxSizingPlan: Equatable, Sendable {
+    struct Platform: Equatable, Sendable {
+        var slots: Int
+        /// False when the owner chose `slots`.
+        var automatic = true
+        /// What capped `slots`, in the add-on's words (`free disk space`).
+        var limit: String?
+        /// Disk its VM images take; 0 when they are installed.
+        var imagesBytes: Int64
+        /// Disk each job takes: a Linux job's scratch disk, a macOS job's budget.
+        var slotBytes: Int64
+    }
+
+    /// The add-on's one-line result, such as `1 Linux slot`.
+    var message: String?
+    var linux: Platform
+    var macOS: Platform
+    var freeBytes: Int64
+    /// Free space that stays the owner's.
+    var floorBytes: Int64
+    var cores: Int
+    var coresKept: Int
+    var memoryBytes: Int64
+    var memoryKeptBytes: Int64
+    /// Memory kept for a running inference provider.
+    var providerMemoryBytes: Int64
+}
+
+extension SandboxSizingPlan {
+    /// The `plan` event in one stdout line. Unknown members are ignored;
+    /// another schema or event, or a missing number, is not a plan.
+    init?(line: String) {
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(line.utf8))) as? [String: Any],
+              object["schema"] as? Int == 1, object["event"] as? String == "plan" else { return nil }
+        func platform(_ name: String) -> Platform? {
+            guard let slots = object["\(name)_slots"] as? Int, let images = object["\(name)_images_bytes"] as? Int64,
+                  let slot = object["\(name)_slot_bytes"] as? Int64 else { return nil }
+            return Platform(slots: slots, automatic: object["\(name)_automatic"] as? Bool ?? true,
+                            limit: object["\(name)_limit"] as? String, imagesBytes: images, slotBytes: slot)
+        }
+        guard let linux = platform("linux"), let macOS = platform("macos"),
+              let free = object["free_bytes"] as? Int64, let floor = object["floor_bytes"] as? Int64,
+              let cores = object["cores"] as? Int, let coresKept = object["cores_kept"] as? Int,
+              let memory = object["memory_bytes"] as? Int64, let memoryKept = object["memory_kept_bytes"] as? Int64,
+              let providerMemory = object["provider_memory_bytes"] as? Int64 else { return nil }
+        self.init(message: object["message"] as? String, linux: linux, macOS: macOS, freeBytes: free,
+                  floorBytes: floor, cores: cores, coresKept: coresKept, memoryBytes: memory,
+                  memoryKeptBytes: memoryKept, providerMemoryBytes: providerMemory)
+    }
+}
+
 /// Renders installer events as the CLI's stage list, each stage's one-line
 /// results under it:
 ///

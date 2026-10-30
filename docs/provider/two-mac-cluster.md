@@ -1,6 +1,6 @@
 # Two Macs as one provider (guided setup)
 
-> Last updated: 2026-10-29
+> Last updated: 2026-10-30
 
 Two Apple Silicon Macs joined by one Thunderbolt 5 cable serve a model together:
 each Mac holds part of its layers, and the pair serves as one provider. Setting
@@ -23,6 +23,24 @@ Remote Login, no IP address and no network setting is typed anywhere.
   new disk blocks). A model only one Mac has is copied to the other Mac over the
   cable; a catalog model neither Mac has is downloaded once on the leader, then
   copied ([Models](#models) below).
+
+## The cluster waitlist
+
+Darkbloom approves accounts for clusters from a waitlist. From either Mac,
+linked to your account with `darkbloom login`, join it and check where you
+stand:
+
+```bash
+darkbloom cluster waitlist join --macs 2
+darkbloom cluster waitlist
+```
+
+`join` sends this Mac's chip and memory and how many Macs you plan to cluster
+(2 to 4), and prints your place in line; Darkbloom reviews accounts in the
+order they joined and approves them by hand. Once approved,
+`darkbloom cluster waitlist` says so. The approval is recorded for your
+account; `darkbloom cluster` itself works as before. Details:
+[CLI reference: waitlists](./cli-reference.md#waitlists-cluster-waitlist-and-sandbox-waitlist).
 
 ## The steps, once
 

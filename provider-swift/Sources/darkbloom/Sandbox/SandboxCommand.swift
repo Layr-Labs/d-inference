@@ -25,10 +25,12 @@ struct Sandbox: AsyncParsableCommand {
         on this Mac, pausing inference while a job runs and paying each job's price minus a 10% fee into \
         your Darkbloom balance. Docs: \(docsURL)
 
-        Start with `\(BuildEnvironment.current.cliName) sandbox setup`. Without a subcommand, shows this \
-        Mac's sandbox status. The add-on is a separate app in ~/DarkbloomSandbox that keeps itself up to date.
+        Darkbloom Sandbox is open to the accounts Darkbloom approves from its waitlist: join it with \
+        `\(BuildEnvironment.current.cliName) sandbox waitlist join`. Start with \
+        `\(BuildEnvironment.current.cliName) sandbox setup`. Without a subcommand, shows this Mac's sandbox \
+        status. The add-on is a separate app in ~/DarkbloomSandbox that keeps itself up to date.
         """,
-        subcommands: [Setup.self, Status.self, Pause.self, Resume.self, Logs.self, Uninstall.self])
+        subcommands: [Setup.self, Status.self, Pause.self, Resume.self, Logs.self, Uninstall.self, Waitlist.self])
 
     /// Bare `darkbloom sandbox` shows the status, while `--help` still shows
     /// this group's help (a default subcommand would answer `--help` itself).

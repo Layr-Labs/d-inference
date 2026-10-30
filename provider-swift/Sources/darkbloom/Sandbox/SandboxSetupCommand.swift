@@ -8,7 +8,8 @@ extension Sandbox {
         static let configuration = CommandConfiguration(
             abstract: "Check this Mac, then install the add-on and enroll this Mac. Safe to run again.",
             discussion: """
-            Checks whether this Mac can host sandboxes and how many jobs it can run at a time, explains \
+            Checks that Darkbloom approved your account from the Darkbloom Sandbox waitlist (and offers to \
+            join it), then whether this Mac can host sandboxes and how many jobs it can run at a time, explains \
             what changes and asks before installing anything. It then downloads the add-on's installer \
             from the Darkbloom Sandbox service over HTTPS and runs it: the installer verifies the release, \
             installs it in ~/DarkbloomSandbox, and enrolls this Mac once you approve it in your browser.
@@ -124,6 +125,9 @@ struct SandboxSetupFlow {
     var probe: @Sendable (SandboxAddon) async -> SandboxHostFacts = {
         await SandboxHostProbe.live(addon: $0, imagesInstalled: false)
     }
+    /// The account's place on the Darkbloom Sandbox waitlist, which a first
+    /// setup requires to be approved.
+    var waitlist: FeatureWaitlistAccess = .live(.sandbox)
 
     private var cli: String { Sandbox.cli }
 
@@ -141,9 +145,44 @@ struct SandboxSetupFlow {
         case .rerun(let reason):
             print(reason)
         case .fresh:
+            try await requireApproval()
             guard try await checkAndConfirm() else { return }
         }
         try await install()
+    }
+
+    // MARK: - Waitlist
+
+    /// Darkbloom Sandbox is open to the accounts Darkbloom approves from its
+    /// waitlist, so a first setup goes on only for an approved account, or
+    /// when the coordinator has no waitlists yet. An account that is not on
+    /// the waitlist may join it here; nothing is installed until Darkbloom
+    /// approves it.
+    private func requireApproval() async throws {
+        let view = FeatureWaitlistView(feature: .sandbox, cli: cli, coordinator: waitlist.coordinator)
+        var lookup = await waitlist.place()
+        if case .place(let place) = lookup, place.status == .none {
+            print("Darkbloom Sandbox is open to the accounts Darkbloom approves from its waitlist.")
+            guard confirmed || (interactiveInput && SandboxTerminal.confirm("Join the Darkbloom Sandbox waitlist now?")) else {
+                print("  Join it: \(cli) sandbox waitlist join")
+                throw ExitCode.failure
+            }
+            lookup = await waitlist.join(1)
+        }
+        switch lookup {
+        case .notOffered:
+            return
+        case .place(let place):
+            guard place.status != .approved else { return }
+            view.lines(place).forEach { print($0) }
+            if place.status == .waitlisted {
+                print("  Nothing was installed. Run `\(cli) sandbox setup` again once Darkbloom approves your account.")
+            }
+            throw ExitCode.failure
+        case .needsLogin, .unavailable:
+            view.problem(lookup).forEach { printError($0) }
+            throw ExitCode.failure
+        }
     }
 
     // MARK: - Check and confirm

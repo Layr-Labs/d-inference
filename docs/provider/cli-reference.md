@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-10-28
+> Last updated: 2026-10-30
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -154,14 +154,14 @@ Subcommands declared by `Darkbloom.configuration.subcommands`:
 | `schedule` | Edit, show or disable saved weekly availability and startup loading; never start/stop the service | ✓ | `Scheduling/ScheduleCommand.swift` (`AvailabilitySchedule`) |
 | `switch` | Gracefully replace hosted models in the running coordinator-connected provider, without restart or reconnect | | `SwitchCommand.swift` (`Switch`) |
 | `addon` | Debug add-on holds on the running provider: `status` (default), `hold`, `release` | | `AddonCommand.swift` (`Addon`) |
-| `sandbox` | Set up and manage [Darkbloom Sandbox](./sandboxes.md) CI jobs through its add-on: status (bare), `setup`, `pause`, `resume`, `logs`, `uninstall` | | `Sandbox/SandboxCommand.swift` (`Sandbox`) |
+| `sandbox` | Set up and manage [Darkbloom Sandbox](./sandboxes.md) CI jobs through its add-on: status (bare), `setup`, `pause`, `resume`, `logs`, `uninstall`; `waitlist` joins the [waitlist](#waitlists-cluster-waitlist-and-sandbox-waitlist) that `setup` requires an approval from | | `Sandbox/SandboxCommand.swift` (`Sandbox`) |
 | `stop` | Drain accepted requests, then stop the LaunchAgent; `--uninstall` removes the provider, watchdog and desktop API agents | | `StopCommand.swift` (`Stop`) |
 | `restart` | Drain, restart with recorded configuration, and confirm fresh authorization | ✓ | `RestartCommand.swift` (`Restart`) |
 | `status` | Config, hardware, schedule, live daemon state (including the coordinator's last `Trust: <level> / <status>` message), per-slot KV/MTP posture | ✓ | `StatusCommand.swift` (`Status`) |
 | `doctor` | Diagnostics (see [troubleshooting](./troubleshooting.md#doctor-checks)) | ✓ | `DoctorCommand.swift` (`Doctor`) |
 | `models` | `list`, `catalog`, `download`, `remove` | ✓ | `ModelsCommand.swift` (`Models`) |
 | `local` | Print the direct-mode endpoint and API key | | `LocalCommand.swift` (`Local`) |
-| `cluster` | Set up two Macs to serve one model together ([guided setup](./two-mac-cluster.md)); `cluster local` serves without a coordinator | ✓ | `ClusterCommand.swift` (`Cluster`) |
+| `cluster` | Set up two Macs to serve one model together ([guided setup](./two-mac-cluster.md)); `cluster local` serves without a coordinator; `cluster waitlist` joins the cluster [waitlist](#waitlists-cluster-waitlist-and-sandbox-waitlist) | ✓ | `ClusterCommand.swift` (`Cluster`) |
 | `login` | Link the machine to an account (RFC 8628 device code) | ✓ | `LoginCommand.swift` (`Login`) |
 | `logout` | Stop the provider, revoke its current saved token, then remove the local credential | ✓ | `LogoutCommand.swift` (`Logout`) |
 | `benchmark` | Inference benchmarks and harnesses | ✓ | `BenchmarkCommand.swift` (`Benchmark`) |
@@ -1023,6 +1023,7 @@ darkbloom sandbox setup [--yes] [--no-browser] [--linux-slots <n>] [--macos-slot
 darkbloom sandbox pause | resume
 darkbloom sandbox logs [-f] [-n <lines>]
 darkbloom sandbox uninstall [--yes]
+darkbloom sandbox waitlist [join | status [--json]] [--config <path>]
 ```
 
 | Subcommand / flag | Default | Effect |
@@ -1039,10 +1040,22 @@ darkbloom sandbox uninstall [--yes]
 | `resume` | — | `darkbloom-sandbox resume` |
 | `logs` | `-n 50` | `tail` of `~/DarkbloomSandbox/agent/agent.log`; `-f`/`--follow` runs `tail -F`; `-l` is the same as `-n`/`--lines` |
 | `uninstall` | — | Says what stops (running jobs end unpaid), asks, then runs `darkbloom-sandbox uninstall --yes` with the terminal. `--yes`/`-y` skips the question; without a terminal it is required |
+| `waitlist` | — | Join the Darkbloom Sandbox waitlist or read your place; see [Waitlists](#waitlists-cluster-waitlist-and-sandbox-waitlist) |
 
 ### Setup
 
-1. **Check.** Refuses `sudo`, then prints chip, macOS, cores, memory, free disk,
+1. **Waitlist.** Setup refuses `sudo`. A first setup then asks the coordinator of `provider.toml`
+   whether Darkbloom approved this account for Darkbloom Sandbox
+   (`GET /v1/waitlists/sandbox` with the `darkbloom login` token) before it
+   checks or installs anything. Approved: setup goes on. Not on the
+   waitlist: setup offers to join it (`--yes` joins without asking), shows the
+   place and stops. Waitlisted or revoked: setup shows the status and stops.
+   No login: setup says to run `darkbloom login` and stops. A coordinator that
+   has no waitlists (it answers `404`) lets setup go on. Each stop exits `1`;
+   a setup that continues, repairs or updates an installed add-on does not
+   ask (`provider-swift/Sources/darkbloom/Sandbox/SandboxSetupCommand.swift`,
+   `SandboxSetupFlow.requireApproval`).
+2. **Check.** Prints chip, macOS, cores, memory, free disk,
    desktop session, network, power and sleep in the `doctor` style (`[PASS]`, `[WARN]` with a `↳ fix:` line,
    `[FAIL]`), then a verdict and the jobs this Mac can run at a time. The
    rules are the add-on installer's own slot sizing, so the estimate matches
@@ -1066,11 +1079,11 @@ darkbloom sandbox uninstall [--yes]
    Examples: 16 cores and 128 GB run 1 Linux and 1 macOS job; 12 cores and
    32 GB run 1 Linux job; 8 cores and 16 GB are not eligible. When only disk
    is short, the verdict says how many GiB to free and what the Mac then runs.
-2. **Confirm.** Explains that inference pauses while a job runs, that each job
+3. **Confirm.** Explains that inference pauses while a job runs, that each job
    pays its price minus a 10% fee into the Darkbloom balance, the 50 GiB of
    images and the one browser approval, then asks `[y/N]`. `--yes` skips it;
    without a terminal and without `--yes`, setup stops before downloading.
-3. **Install.** Downloads `<server>/install.sh` over HTTPS: a redirect is
+4. **Install.** Downloads `<server>/install.sh` over HTTPS: a redirect is
    followed only to another `https` URL, and the response must be HTTP 200 over
    `https`, at most 1 MiB, with a `#!` first line naming a shell. The script is
    written as a `0600` file in a new `0700` directory, run with `/bin/sh` and
@@ -1083,7 +1096,7 @@ darkbloom sandbox uninstall [--yes]
    [progress events](#installer-progress-events). Any other script is an older
    installer: it runs with the terminal and only the slot options, and the CLI
    says so.
-4. **Summarize.** Reads `status --json` again: the state, the jobs at a time and
+5. **Summarize.** Reads `status --json` again: the state, the jobs at a time and
    the next commands.
 
 While the installer runs, Ctrl-C reaches the installer, not the CLI, and setup
@@ -1184,6 +1197,49 @@ An add-on that answers with exit status `64` or its usage on stderr predates
 the option or action: `status` then shows the add-on's own `status` output,
 `pause` and `resume` say to update it with `setup`, and `darkbloom status` says
 it is installed.
+
+## Waitlists: `cluster waitlist` and `sandbox waitlist`
+
+Darkbloom opens clusters and Darkbloom Sandbox to the accounts it approves from
+a waitlist per feature. These commands join a waitlist with this Mac and show
+where the account stands; admins approve accounts on the coordinator. Code:
+`provider-swift/Sources/darkbloom/Waitlist/WaitlistCommand.swift`
+(`Cluster.Waitlist`, `Sandbox.Waitlist`, `FeatureWaitlistCommand`),
+`FeatureWaitlist.swift` (`FeatureWaitlistClient`) and `FeatureWaitlistView.swift`.
+
+```bash
+darkbloom cluster waitlist [status [--json]] [--config <path>]
+darkbloom cluster waitlist join [--macs <2-4>] [--json] [--config <path>]
+darkbloom sandbox waitlist [status [--json]] [--config <path>]
+darkbloom sandbox waitlist join [--json] [--config <path>]
+```
+
+| Subcommand / flag | Default | Effect |
+|---|---|---|
+| none, `status` | — | The account's status and, while it waits, its place in line. `--help` on the bare group shows the group's help |
+| `join` | — | Joins with this Mac's chip and memory (as `darkbloom doctor` reads them). Joining again keeps the place and updates the Mac; an approved or revoked account stays as it is, and a revoked account's `join` exits `1` |
+| `join --macs <n>` (cluster only) | `2` | How many Macs the account plans to cluster, `2`–`4`. `sandbox waitlist join` sends `1` |
+| `--json` | `false` | The coordinator's answer `{feature, status, position?, requested_at?, decided_at?}` as JSON, times in ISO 8601 |
+| `--config`, `-c` | the default `provider.toml` | Which coordinator to ask (`[coordinator] url`) |
+
+| Status | Shown |
+|---|---|
+| `none` | Not on the waitlist, and the command that joins it |
+| `waitlisted` | `#<n> in line` and the day it joined; Darkbloom reviews accounts in the order they joined |
+| `approved` | Approved since the day of the decision, and the command that starts the feature (`darkbloom cluster`, `darkbloom sandbox setup`) |
+| `revoked` | Revoked on the day of the decision; joining again does not restore it |
+
+The request goes to the coordinator of `provider.toml` with the token of
+`darkbloom login` as a Bearer credential: `GET` or `POST /v1/waitlists/cluster`
+or `/v1/waitlists/sandbox`. Only an `https` coordinator, or plain `http` to this
+Mac's loopback, is asked; no redirect is followed, the call times out after 10
+seconds and an answer over 64 KiB is refused. Without a token, or when the
+coordinator does not take it (`401`), the command says to run `darkbloom login`
+and exits `1`. A coordinator without waitlists answers `404`: the command says
+there is nothing to join there and exits `1`. Any other answer exits `1` with
+its HTTP status and message. [Darkbloom Sandbox setup](#setup) requires an
+approved `sandbox` entry; `darkbloom cluster` itself does not check the cluster
+waitlist.
 
 ## `darkbloom stop`
 

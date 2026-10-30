@@ -1,6 +1,6 @@
 # Host Darkbloom Sandbox CI jobs
 
-> Last updated: 2026-10-28
+> Last updated: 2026-10-30
 
 How to let this Mac run Darkbloom Sandbox jobs, approved GitHub Actions jobs in
 Linux and macOS virtual machines, beside the inference provider: set it up,
@@ -14,15 +14,29 @@ into your Darkbloom balance.
   after what stays yours and what inference keeps. `darkbloom sandbox setup`
   checks this before it installs anything; the rules are in the
   [CLI reference](./cli-reference.md#setup).
-- A Darkbloom account that Darkbloom approved to host sandboxes. An account not
-  approved yet joins a waitlist, and the Mac enrolls once it is approved.
+- A Darkbloom account that Darkbloom approved for Darkbloom Sandbox from its
+  waitlist, and this Mac linked to it with `darkbloom login`. `darkbloom sandbox
+  setup` installs nothing until the account is approved (step 1).
 - The Mac plugged in, never sleeping on its power adapter, and logged in at the
   desktop, where the add-on runs. Ethernet works better than Wi-Fi.
 - Outbound HTTPS to `api-sandbox.darkbloom.dev`.
 
 ## Steps
 
-1. Check this Mac and set it up:
+1. Join the Darkbloom Sandbox waitlist, then wait for Darkbloom to approve your
+   account:
+
+   ```bash
+   darkbloom sandbox waitlist join
+   darkbloom sandbox waitlist
+   ```
+
+   The first command joins with this Mac's chip and memory and prints your place
+   in line; the second shows where you stand. Darkbloom reviews accounts in the
+   order they joined. `darkbloom sandbox setup` also offers to join when your
+   account is not on the waitlist, and stops until it is approved.
+
+2. Check this Mac and set it up:
 
    ```bash
    darkbloom sandbox setup
@@ -35,15 +49,15 @@ into your Darkbloom balance.
    To choose the number of jobs, add `--linux-slots <n>` and `--macos-slots <n>`;
    `--macos-slots 1` keeps one of macOS's two macOS VMs for your own use.
 
-2. Approve this Mac in your browser. The installer opens the approval page with
+3. Approve this Mac in your browser. The installer opens the approval page with
    the code filled in, and setup prints the link and code as well. Sign in with
    the Darkbloom account that should receive the earnings and approve. Your
    `darkbloom login` session cannot approve a Mac. To approve from another
-   device, add `--no-browser` to step 1 and open the printed link there.
+   device, add `--no-browser` to step 2 and open the printed link there.
 
-3. Let the VM images download. After enrollment the add-on starts and downloads
+4. Let the VM images download. After enrollment the add-on starts and downloads
    about 50 GiB of VM images in the background; the Mac takes jobs once an image
-   is installed. To keep setup open until then, add `--wait-ready` to step 1.
+   is installed. To keep setup open until then, add `--wait-ready` to step 2.
 
 ## Verify
 
@@ -73,6 +87,14 @@ state, continues an unfinished setup or repairs the add-on.
 
 ## Troubleshooting
 
+- **`You're on the Darkbloom Sandbox waitlist: #N in line`** (setup exits 1).
+  Darkbloom has not approved your account for Darkbloom Sandbox yet; nothing
+  was installed. Run setup again once `darkbloom sandbox waitlist` says your
+  account is approved.
+- **`Link this Mac to your Darkbloom account first`**. The waitlist needs your
+  account: run `darkbloom login`, then setup again.
+- **`Darkbloom revoked your account's access to Darkbloom Sandbox`**. Joining
+  again does not restore it; contact Darkbloom.
 - **`Not eligible: free up N GiB of disk`.** A tenth of the disk (50 to
   100 GiB) stays free for you and the images need 50 GiB more. Free the space
   it names, then run setup again.
@@ -95,5 +117,6 @@ state, continues an unfinished setup or repairs the add-on.
 ## Related
 
 - [CLI reference: `darkbloom sandbox`](./cli-reference.md#darkbloom-sandbox): flags, eligibility rules and the installer and add-on contracts
+- [CLI reference: waitlists](./cli-reference.md#waitlists-cluster-waitlist-and-sandbox-waitlist): the waitlist commands and the request they make
 - [Add-on hold](../architecture/addon-hold.md): how the provider pauses inference for jobs
 - [Configuration](../reference/configuration.md#darkbloom-sandbox-cli): bounds and the test override

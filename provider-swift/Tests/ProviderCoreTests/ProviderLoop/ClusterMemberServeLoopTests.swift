@@ -217,7 +217,9 @@ struct ClusterMemberServeLoopTests {
     /// that this member was refused: the wait says so, so the leader can
     /// serve locally instead of restarting every 38 s.
     /// A two-second window stands in for the production ten: the wait's
-    /// deadline (6 s) lies past the bound (4 s), which lies past the window.
+    /// deadline (8 s) lies past the bound (6 s), which lies past the window.
+    /// The bound leaves the startup and connect before the window as much
+    /// slack (4 s) as the ten-second version had (5 s), give or take a second.
     @Test func aCoordinatorWithoutTheMemberRoleIsReportedAsUnsupported() async throws {
         try await withMemberServeLoop(stopOnDisconnect: true, negotiationWindow: .seconds(2)) { fixture, _ in
             let started = ContinuousClock.now
@@ -226,11 +228,11 @@ struct ClusterMemberServeLoopTests {
                 try await fixture.mock.pushDesiredModels([])
             }
             await #expect(throws: ClusterMemberControlError.roleUnsupported) {
-                try await fixture.loop.waitForClusterMemberRegistration(until: started.advanced(by: .seconds(6)))
+                try await fixture.loop.waitForClusterMemberRegistration(until: started.advanced(by: .seconds(8)))
             }
             try await coordinator.value
             // Ended by this connection's negotiation window, not the wait's deadline.
-            #expect(ContinuousClock.now - started < .seconds(4))
+            #expect(ContinuousClock.now - started < .seconds(6))
             #expect(await fixture.loop.memberConnectionID == nil)
         }
     }

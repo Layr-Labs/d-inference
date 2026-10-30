@@ -182,11 +182,15 @@ class CountAndAuditTests(unittest.TestCase):
         self.assertEqual(shards.counts(failed), {"swift_testing": 4, "xctest": 3})
         self.assertEqual(shards.counts("✔ Test run with 1 test in 1 suite passed after 0.1 seconds."),
                          {"swift_testing": 1, "xctest": 0})
-        # An XCTest-only selection (Nemotron parity) prints no Swift Testing summary.
-        self.assertEqual(shards.counts("Test Suite 'Selected tests' passed at x\n Executed 2 tests, with 0 failures"),
-                         {"swift_testing": 0, "xctest": 2})
+        # A shard run without a Swift Testing summary did not finish, even
+        # when its XCTest pass did.
+        xctest_only = "Test Suite 'Selected tests' passed at x\n Executed 2 tests, with 0 failures"
         with self.assertRaisesRegex(ValueError, "did not finish"):
-            shards.counts("Test Suite 'Selected tests' started at x\nfatal error")
+            shards.counts(xctest_only)
+        # A parity selection of only XCTest cases (Nemotron) prints no Swift Testing summary.
+        self.assertEqual(shards.counts(xctest_only, xctest_only=True), {"swift_testing": 0, "xctest": 2})
+        with self.assertRaisesRegex(ValueError, "did not finish"):
+            shards.counts("Test Suite 'Selected tests' started at x\nfatal error", xctest_only=True)
         with self.assertRaisesRegex(ValueError, "zero tests"):
             shards.counts("✔ Test run with 0 tests passed after 0.001 seconds.")
 

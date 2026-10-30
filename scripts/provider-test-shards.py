@@ -136,8 +136,13 @@ def planned(test_ids, shard, isolated, weights):
             if (selected is None or re.search(selected, test_id)) and not re.search(skipped, test_id)]
 
 
-def counts(log_text):
-    """Executed totals of one `swift test` run: Swift Testing and XCTest."""
+def counts(log_text, xctest_only=False):
+    """Executed totals of one `swift test` run: Swift Testing and XCTest.
+
+    A shard run always prints a Swift Testing summary; without one it did not
+    finish. A parity selection of only XCTest cases (`xctest_only`) prints
+    none, so there the XCTest summary is enough.
+    """
     swift_testing = re.findall(r"Test run with (\d+) tests?\b", log_text)
     lines = log_text.splitlines()
     xctest = None
@@ -148,11 +153,8 @@ def counts(log_text):
                 if match:
                     xctest = int(match.group(1))
                     break
-    # A selection of only XCTest cases prints no Swift Testing summary. A run
-    # that stops early reports fewer tests than its selection lists, which the
-    # audit refuses.
-    if not swift_testing and xctest is None:
-        raise ValueError("The log has no test run summary; the run did not finish")
+    if not swift_testing and not (xctest_only and xctest is not None):
+        raise ValueError("The log has no Swift Testing summary; the run did not finish")
     result = {"swift_testing": int(swift_testing[-1]) if swift_testing else 0, "xctest": xctest or 0}
     if not result["swift_testing"] + result["xctest"]:
         raise ValueError("The selection executed zero tests; the gate did not run")
@@ -250,7 +252,7 @@ def main():
         if args.shard not in ("parallel", "parity"):
             parse_shard(args.shard)
         report = {"shard": args.shard, "pattern": args.pattern,
-                  **counts(args.log.read_text(errors="replace"))}
+                  **counts(args.log.read_text(errors="replace"), xctest_only=args.shard == "parity")}
         args.output.write_text(json.dumps(report))
     elif args.command == "audit":
         reports = [json.loads(path.read_text()) for path in sorted(args.reports.glob("*/shard-*.json"))]

@@ -1,0 +1,3 @@
+### Cluster pairs register GLM-5.3-Flash and Qwen3.8 27B with the coordinator
+
+A pair started with a coordinator approval (DevNet) registers both Macs as cluster members again for GLM-5.3-Flash and Qwen3.8 27B. Each Mac's member part ended about a second after it started, with "Cluster member control connection ended", and after three tries the pair served on the leader's local API only. Before connecting, the member checked the model against the single-Mac requirements (`mlx_nax`, and `glm5_next_v1` for GLM). A member reports hardware-only capabilities, and the pair-serving grant admits its model, so that check refused both models.

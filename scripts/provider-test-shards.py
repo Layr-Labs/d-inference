@@ -131,8 +131,6 @@ def arguments(shard, isolated, weights):
 
 
 def planned(test_ids, shard, isolated, weights):
-    if shard == "parity":
-        return [test_id for test_id in test_ids if re.search(isolated, test_id)]
     selected, skipped = selection(shard, isolated, weights)
     return [test_id for test_id in test_ids
             if (selected is None or re.search(selected, test_id)) and not re.search(skipped, test_id)]
@@ -210,7 +208,7 @@ def audit_parity(test_ids, reports):
     if filters != sorted(PARITY_FILTERS):
         errors.append(f"Expected one Prompt Parity report per suite {sorted(PARITY_FILTERS)}, got {filters}")
     for report in reports:
-        plan = planned(test_ids, "parity", report["pattern"], None)
+        plan = [test_id for test_id in test_ids if re.search(report["pattern"], test_id)]
         ran = report["swift_testing"] + report["xctest"]
         print(f"parity {report['pattern']}: listed {len(plan)}, executed {ran}")
         if not plan or ran != len(plan):

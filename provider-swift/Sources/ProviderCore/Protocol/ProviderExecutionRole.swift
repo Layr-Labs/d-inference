@@ -21,8 +21,8 @@ public struct ClusterMemberAccepted: Codable, Sendable, Equatable {
 /// One connection's negotiation; discarded before every reconnect. The nonce
 /// prevents a late prior acknowledgment from opening the new connection.
 struct ClusterMemberNegotiation: Sendable {
-    /// How long one connection's acceptance may take after its registration
-    /// (production; `CoordinatorClientConfig.memberNegotiationWindow`).
+    /// How long one connection's acceptance may take after its registration,
+    /// in production. `CoordinatorClientConfig.memberNegotiationWindow` defaults to it.
     static let window: Duration = .seconds(10)
 
     let nonce: String

@@ -20,7 +20,7 @@ env:
   # One line per published dev bundle: <version> <bundle_hash> <url>, as the
   # DevNet coordinator's /v1/releases/latest gave them.
   RELEASES: |
-    0.10.4-dev.branch.10 aae29a818cde91c08080b9b0857bab1dd0707799effb5fa2f309c6ce125deb92 https://pub-ca91d8c638d54ea7a9bca8ddd1134828.r2.dev/releases/v0.10.4-dev.branch.10/artifacts/aae29a818cde91c08080b9b0857bab1dd0707799effb5fa2f309c6ce125deb92/darkbloom-bundle-macos-arm64.tar.gz
+    0.10.4-dev.branch.11 e28e4e6db04b353ab2ed54b60c157dd833b394b36eef5d8917712cebdfa10a03 https://pub-ca91d8c638d54ea7a9bca8ddd1134828.r2.dev/releases/v0.10.4-dev.branch.11/artifacts/e28e4e6db04b353ab2ed54b60c157dd833b394b36eef5d8917712cebdfa10a03/darkbloom-bundle-macos-arm64.tar.gz
   DEVNET_URL: https://api.dev.darkbloom.dev
   PROD_URL: https://api.darkbloom.dev
   MODEL_CDN_URL: https://models.darkbloom.ai

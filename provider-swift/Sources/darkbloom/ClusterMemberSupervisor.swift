@@ -38,6 +38,8 @@ final class ClusterMemberSupervisor: @unchecked Sendable {
         var logName: String = "cluster-member supervisor"
         /// What the operator runs to start again after the budget is spent.
         var restartHint: String = "`darkbloom restart` (or `darkbloom stop` then start)"
+        /// How often a running member is checked for its end and its next probe.
+        var childPollSeconds: Double = 0.5
     }
 
     private let configuration: Configuration
@@ -235,7 +237,7 @@ final class ClusterMemberSupervisor: @unchecked Sendable {
         while process.isRunning {
             // A plain sleep: during an operator stop the member may take long
             // to drain, and an interruptible sleep would spin.
-            try? await Task.sleep(nanoseconds: 500_000_000)
+            try? await Task.sleep(nanoseconds: UInt64(configuration.childPollSeconds * 1_000_000_000))
             let now = Date().timeIntervalSince1970
             guard process.isRunning, now >= nextProbe else { continue }
             nextProbe = now + configuration.guardLimits.intervalSeconds

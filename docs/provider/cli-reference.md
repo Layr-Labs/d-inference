@@ -2319,8 +2319,10 @@ automatic updates with `darkbloom autoupdate disable`.
 
 | Constant | Value | Source |
 |---|---|---|
-| Coordinator reconnect backoff | `ExponentialBackoff(base: 1.0, max: 30.0)` s | `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient+Connection.swift` |
-| WebSocket ping interval / pong timeout | `pingInterval = 10.0` s / `pongTimeout = 30.0` s | same |
+| Coordinator reconnect backoff | `ExponentialBackoff(base: 1.0, max: 30.0)` s | `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorReconnectPolicy.swift` (`CoordinatorReconnectPolicy`) |
+| Backoff reset after a stable session | `stableSessionDuration = .seconds(60)`, counted from the `register` frame | same |
+| Reconnect wait after close code `1012` (service restart) | `serviceRestartDelayRange = 0...1` s, drawn at random; the backoff does not grow | same |
+| WebSocket ping interval / pong timeout | `pingInterval = 10.0` s / `pongTimeout = 30.0` s | `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient+Connection.swift` |
 | Coordinator handshake deadline (TCP, TLS and WebSocket upgrade to `.ready`) | `defaultTimeout = 30` s; a stalled handshake is cancelled and retried with the reconnect backoff | `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorConnectionHandshake.swift` (`CoordinatorConnectionHandshake`) |
 | State-file and capacity refresh | every `max(1, heartbeat_interval_secs / 2)` s; the heartbeat default is in the [`provider.toml` table](#providertoml-keys-read-by-the-cli) | `provider-swift/Sources/ProviderCore/ProviderLoop+Capacity.swift` |
 | State-file stale threshold | `isStale(maxAge: 90)` s; `doctor` calls the daemon wedged after `max(8 × refresh period, 90)` s | `provider-swift/Sources/ProviderCore/Service/DaemonStateFile.swift`; `provider-swift/Sources/darkbloom/Diagnostics/KVBackendPosture.swift` (`wedgedAfterSeconds`) |

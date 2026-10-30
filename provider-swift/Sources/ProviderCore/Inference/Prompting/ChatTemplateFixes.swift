@@ -5,6 +5,7 @@
 // after the model family so future fixes do not bleed across templates.
 
 import Foundation
+import MLXLMCommon
 import MLXLMServer
 
 struct ChatTemplateFixContext: Sendable {
@@ -130,6 +131,11 @@ enum ChatTemplateFixes {
             ids.formUnion(Gemma4TemplateFix.extraEOSTokenIds(tokenToId: tokenToId))
         }
         return ids
+    }
+
+    static func stopStringScope(context: ChatTemplateFixContext) -> CBv2StopStringScope? {
+        GPTOSSHarmonyTemplateFix.applies(to: context)
+            ? GPTOSSHarmonyTemplateFix.finalChannelStopScope : nil
     }
 
     static func validateGenericToolHistory(

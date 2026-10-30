@@ -146,6 +146,14 @@ final class DistributedTestDetokenizers: CBv2DetokenizerFactory {
         func flush() -> String { matchedStopString ? "" : holdback.flush() }
     }
     func makeDetokenizer(stopStrings: [String]) -> any CBv2IncrementalDetokenizer { Decoder(stopStrings) }
+    /// The stop-string scope of each detokenizer made, in order.
+    private let lock = NSLock()
+    private var madeScopes: [CBv2StopStringScope?] = []
+    var scopes: [CBv2StopStringScope?] { lock.withLock { madeScopes } }
+    func makeDetokenizer(stopStrings: [String], scope: CBv2StopStringScope?) -> any CBv2IncrementalDetokenizer {
+        lock.withLock { madeScopes.append(scope) }
+        return Decoder(stopStrings)
+    }
 }
 
 func distributedTestProfile(maxPrompt: Int = 8192, maxOutput: Int = 128,

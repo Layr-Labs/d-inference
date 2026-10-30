@@ -2,6 +2,7 @@ import CryptoKit
 import Foundation
 import Testing
 import DarkbloomClusterProtocol
+import DarkbloomClusterSecurity
 @testable import ProviderCore
 
 /// The leader's step that saves a fetched cluster approval on both Macs (`ClusterApprovalSync`), with each Mac's real
@@ -223,6 +224,43 @@ struct ClusterApprovalSyncTests {
             #expect(saved.capability.runtimeBinarySHA256 == newWorker)
         }
         await mock.shutdown()
+    }
+
+    /// The owner's own admission of a committed start (`DistributedInstalledOwner.memberAuthorizer`) under a saved
+    /// model approval: the start must carry this Mac's own setup's runtime block, the one its member registers.
+    @Test func theOwnerAdmitsAStartUnderAModelApprovalOnlyWithItsSetupsRuntime() throws {
+        let macs = try ClusterApprovalMacs(coordinatorURL: "ws://127.0.0.1:9/ws/provider")
+        let model = macs.modelApproval(), facts = try macs.facts()
+        #expect(macs.sync(.approvals([model]), leaderFacts: facts, followerFacts: facts).changed)
+        let saved = try macs.saved(macs.leader), member = try #require(saved.configuration.nativeMember)
+        let plan = try DistributedInstalledPlan(saved: saved, paths: macs.leader.paths)
+        let admit = try DistributedInstalledOwner.memberAuthorizer(plan: plan, attachment: member)
+        let own = DistributedInstalledNativeStart.runtimeBlock(plan: plan)
+        #expect(own.nativeRuntimeSHA256 == saved.capability.runtimeBinarySHA256)
+        func start(_ runtime: ClusterPlan.Runtime) throws -> ClusterNativeAuthorizationStart {
+            func bytes(_ hex: String) throws -> Data { try #require(NativePairMemberPolicy.digest(hex: hex)) }
+            let common = try ClusterNativeAuthorizationCommon(epoch: UUID(), membershipGeneration: 7, nativePolicyGeneration: model.generation,
+                membershipTranscriptSHA256: memberDigest("model-approval-membership"),
+                approvedNativeBindingSHA256: Data(SHA256.hash(data: try member.policyBytes)),
+                planSHA256: try bytes(plan.partition.planSHA256), artifactSHA256: try bytes(model.artifactSHA256),
+                nativeRuntimeSHA256: try bytes(runtime.nativeRuntimeSHA256), capabilitySHA256: try bytes(runtime.capabilitySHA256),
+                resourcePolicySHA256: try bytes(runtime.resourcePolicySHA256), profileSHA256: try bytes(runtime.profileSHA256),
+                schedule: .serial, maximumTransportFrameBytes: Int(model.maximumTransportFrame),
+                limits: .init(maximumPlaintextBytes: Int(model.maximumPlaintext), maximumRecordsPerDirection: model.maximumRecords,
+                              maximumCumulativePlaintextBytesPerDirection: model.maximumCumulativePlaintext))
+            return try .init(common: common, rank: plan.configuration.localRank, ownerIncarnation: UUID(), leaseID: UUID(),
+                             launchID: UUID())
+        }
+        try admit(try start(own))
+        let other = ClusterApprovalMacs.hash("9")
+        for runtime in [
+            ClusterPlan.Runtime(nativeRuntimeSHA256: other, capabilitySHA256: own.capabilitySHA256,
+                                resourcePolicySHA256: own.resourcePolicySHA256, profileSHA256: own.profileSHA256),
+            ClusterPlan.Runtime(nativeRuntimeSHA256: own.nativeRuntimeSHA256, capabilitySHA256: own.capabilitySHA256,
+                                resourcePolicySHA256: other, profileSHA256: own.profileSHA256),
+        ] {
+            #expect(throws: ClusterConfigurationError.self) { try admit(try start(runtime)) }
+        }
     }
 
     @Test func aModelApprovalForAnotherArtifactIsSavedOnNeitherMac() throws {

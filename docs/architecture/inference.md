@@ -3729,8 +3729,9 @@ four (`a:2:4:4`) past five. The M5 Ultra (`applegpu_g17d`, family 17) has its
 own table in `architectureLayouts`, read before the family's: rows in registers
 for two to five vectors (`b:2:2:4`, `b:2:2:5`) and family 17's for the rest.
 On two M5 Ultra 256 GB serving the 27B pair the table cut the one-request round
-from 35.3 to 33.2 ms and raised decode from 75.8 to 80.5 tok/s at 256 tokens
-(62.7 to 66.8 at 1,024), with identical outputs.
+from 35.3 ms (family 17's layout, same build) to 33.2 ms. Against the
+`0.10.4-dev.branch.9` release (34.5 ms) it raised decode from 75.8 to 80.5 tok/s
+at 256 tokens (62.7 to 66.8 at 1,024), with identical outputs.
 The kernel also serves whole-cohort tiles (one tile
 of eight, `b:4:4:8`, or tiles of sixteen, `b:2:4:16`, reading the weights once
 for up to 32 vectors; a tile that runs past the call's end skips its missing

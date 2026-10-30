@@ -105,9 +105,8 @@ extension ModelDownloader {
             return
         }
 
-        // Live per-shard progress. Seed each pending file's bar with any bytes
-        // already saved in its `.part` (a resumed prefix) so the display reflects
-        // real on-disk progress instead of restarting the bar at 0%.
+        // Seed each pending file with any bytes already saved in its `.part` (a
+        // resumed prefix) so progress starts from the real bytes on disk.
         let progress = ManifestDownloadProgress()
         for job in pending {
             progress.register(
@@ -117,26 +116,23 @@ extension ModelDownloader {
             )
         }
 
-        let renderer = ProgressRenderer()
-        let byteProgress = self.byteProgress
         let alreadyValidBytes = zip(jobs, alreadyValid).reduce(Int64(0)) { $0 + ($1.1 ? $1.0.file.sizeBytes : 0) }
-        // Start the render loop as a detached task.
-        let renderTask = Task.detached { [renderer, progress] in
+        let downloadedBytes: @Sendable () -> Int64 = { alreadyValidBytes + progress.downloadedBytes }
+        let byteProgress = self.byteProgress
+        let renderer = byteProgress == nil
+            ? DownloadProgressRenderer(modelID: model.id, totalBytes: manifest.totalSizeBytes,
+                                       startBytes: downloadedBytes(), terminal: progressTerminal)
+            : nil
+        let renderTask = Task.detached {
             while !Task.isCancelled {
-                if let byteProgress {
-                    let files = progress.allProgress
-                    byteProgress(alreadyValidBytes + files.reduce(Int64(0)) { $0 + $1.downloadedBytes }, manifest.totalSizeBytes)
-                } else {
-                    renderer.render(progress.allProgress)
-                }
+                let done = downloadedBytes()
+                byteProgress?(done, manifest.totalSizeBytes)
+                renderer?.update(done: done)
                 try? await Task.sleep(nanoseconds: 250_000_000)  // 250ms
             }
         }
 
-        // A file's rate clock starts when its transfer does, not when it was
-        // queued behind the concurrency limit.
         let transfer: @Sendable ((file: ManifestFile, destination: URL, url: String)) async throws -> Void = { job in
-            progress.start(label: job.file.path)
             try await self.downloadManifestFileWithResume(job, huggingFaceArtifact: model.huggingFaceArtifact, onChunk: { bytes in
                 progress.update(label: job.file.path, downloadedBytes: bytes)
             })
@@ -164,15 +160,13 @@ extension ModelDownloader {
             }
 
             // Stop the render loop, waiting out an in-flight frame so none can
-            // land below the final summary, then print it.
+            // land below the lines that follow.
             renderTask.cancel()
             await renderTask.value
-            if byteProgress == nil { renderer.finish(progress.allProgress) }
         } catch {
             renderTask.cancel()
             await renderTask.value
-            // One last render so the user sees where things stopped.
-            if byteProgress == nil { renderer.render(progress.allProgress) }
+            renderer?.fail(done: downloadedBytes())
             // Keep staging ONLY if it holds resumable content (a completed file or
             // a `.part` prefix); otherwise remove the empty husk so a first-file
             // failure doesn't leave a stray staging dir behind. (A promoted file is
@@ -187,7 +181,17 @@ extension ModelDownloader {
             throw error
         }
 
-        try finalizeStagedManifest(model: model, manifest: manifest, jobs: jobs, stagingDir: stagingDir, cacheDir: cacheDir)
+        // The loop's last sample can predate the last bytes; checking every file
+        // takes a while on a large model, so report the complete count first.
+        byteProgress?(downloadedBytes(), manifest.totalSizeBytes)
+        renderer?.verifying()
+        do {
+            try finalizeStagedManifest(model: model, manifest: manifest, jobs: jobs, stagingDir: stagingDir, cacheDir: cacheDir)
+        } catch {
+            renderer?.fail(done: downloadedBytes())
+            throw error
+        }
+        renderer?.finish()
         onProgress?(ProgressEvent(file: model.id, bytesDownloaded: manifest.totalSizeBytes, bytesTotal: manifest.totalSizeBytes))
     }
 }

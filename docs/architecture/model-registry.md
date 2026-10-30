@@ -1,6 +1,6 @@
 # Provider Model Registry Boundary
 
-> Last updated: 2026-10-28
+> Last updated: 2026-10-30
 
 Providers discover model identity through external registry manifests, then
 download and verify model bytes locally. The database and catalog API are owned
@@ -15,13 +15,20 @@ hashing: retain fast startup scans and on-demand verification. Broken templates
 must be reported rather than silently repaired.
 
 Foreground downloads (`darkbloom models download` and the `darkbloom start`
-picker) report progress through `provider-swift/Sources/ProviderCore/Models/ModelDownloadProgress.swift`
-(`ProgressRenderer`). On a terminal it redraws a block of one row per in-flight
-file plus a total row, limited to the terminal's height and to one column less
-than its width: each redraw moves the cursor back over the previous block,
-which cannot reach rows that have scrolled off screen. Each completed file is
-printed once above that block. Without a terminal only the completion lines are
-printed.
+picker) show one progress line for the whole model, never a line per file:
+`ManifestDownloadProgress` sums each file's bytes on disk and
+`DownloadProgressRenderer` draws the sum
+(`provider-swift/Sources/ProviderCore/Models/ModelDownloadProgress.swift`).
+The line's layout, rate and pacing are pure functions of the bytes, the time
+and the width (`TransferProgressLine` in
+`provider-swift/Sources/ProviderCore/Models/TransferProgressLine.swift`); the
+rate leaves out bytes a resumed download already had on disk. On a terminal
+the line is redrawn in place with a carriage return and an erase to its end,
+one column short of the window so it never wraps; elsewhere it is printed
+rarely and plainly. The [CLI reference](../provider/cli-reference.md#darkbloom-models-download-id)
+gives what is printed and when. A caller that shows progress itself sets
+`ModelDownloader.byteProgress`, and then nothing is drawn: `darkbloom cluster`
+shows the line on its own live row (`ClusterTransferReports`).
 
 `StreamingFileDownloadDelegate` in
 `provider-swift/Sources/ProviderCore/Models/StreamingFileDownloadDelegate.swift`

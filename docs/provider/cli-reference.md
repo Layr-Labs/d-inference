@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-10-28
+> Last updated: 2026-10-30
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -1555,6 +1555,25 @@ Download a model from the coordinator catalog.
 ```bash
 darkbloom models download <id> [--coordinator <url>] [--r2-cdn <url>]
 ```
+
+The download shows one progress line for the whole model, not one per file.
+Downloads chosen in the `darkbloom start` picker print the same lines:
+
+```text
+  Downloading EigenLabs/Qwen3.8-27B-4bit-mtp  [██████░░░░░░░░]  43%  7.0/16.3 GB  125 MB/s  1m 14s left
+```
+
+| Standard output | What is printed |
+|---|---|
+| A terminal | That line, redrawn in place at most every `TransferProgressLine.redrawInterval` (`0.25` s) and cut to the window's width. While the files are checked against the manifest it reads `Verifying <id> (<size>)…`; it ends as `Downloaded <id> (<size> in <time>)` or `Download of <id> stopped at <percent> (<bytes>)` |
+| Not a terminal (a pipe, a log, `TERM=dumb`) | Plain lines without a bar or carriage returns: the first at once, the next only when both `TransferProgressLine.logInterval` (`30` s) and `TransferProgressLine.logPercentStep` (`10` points) have passed, one at 100%, then the same verifying and final lines. The desktop app takes its progress from the last percent (`DesktopBackend.downloadProgress`) |
+
+Sizes are decimal, as the catalog gives them. The rate leaves out bytes that an
+interrupted download already had on disk; the download resumes from them. Code:
+`provider-swift/Sources/ProviderCore/Models/ModelDownloadProgress.swift`
+(`DownloadProgressRenderer`),
+`provider-swift/Sources/ProviderCore/Models/TransferProgressLine.swift`
+(`TransferProgressLine`).
 
 If the model's `models--<id>` cache entry is a dangling symlink (for example,
 to an unavailable external drive), downloading preserves it as a hidden sibling

@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-10-29
+> Last updated: 2026-10-30
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -2945,6 +2945,11 @@ shows the adopted plan as one deployment line (`ClusterOnboardingDeployment`:
 the plan's mode in words, each Mac's layers or tensor-parallel share), lists
 the choices that fit in free memory first and measures the fit again before
 the start, and never offers a model whose pair-serving grant refuses the pair.
+A copy or download of the chosen model shows its progress on the console's
+live line (`ClusterOnboardingDriver.move`, `ClusterOnboardingProgress.live`),
+laid out by `TransferProgressLine` through `ClusterTransferReports`; a
+transcript without a live line keeps only the reports
+`TransferProgressLine.takeLogLine` marks and the lines for the record.
 After a Darkbloom update changes a Mac's worker digest, the control leader's
 cluster service re-plans and re-adopts the same model by itself
 (`ClusterService.checkForUpdate`, `ClusterOnboardingUpdate`). The stage memory

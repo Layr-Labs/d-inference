@@ -545,6 +545,16 @@ public struct ClusterOnboardingFailure: Error, Sendable, Equatable {
     public init(_ line: String) { self.lines = [line] }
 }
 
+/// What a model copy or download reports while it runs.
+public enum ClusterOnboardingProgress: Sendable {
+    /// A line for the record. It ends the live report.
+    case line(String)
+    /// How far it is, laid out for a width (nil: the plain form, no limit). Each report replaces the last: a live
+    /// terminal redraws it in place, and a transcript says only the reports marked `logged` (the first, then about
+    /// one per 10% and 30 s), so a long download leaves a few lines rather than one a second.
+    case live(@Sendable (_ width: Int?) -> String, logged: Bool)
+}
+
 /// Everything the onboarding does, as blocking calls.
 public struct ClusterOnboardingOperations: Sendable {
     public var resume: @Sendable () -> ClusterOnboardingResume
@@ -568,8 +578,8 @@ public struct ClusterOnboardingOperations: Sendable {
     public var status: @Sendable () -> [String]
     public var stop: @Sendable () -> Result<[String], ClusterOnboardingFailure>
     /// Puts the chosen model on every Mac that lacks it (choice `index`): copied over the cable from a Mac that has
-    /// it, or from the catalog when `download` (or when no Mac has it); says its progress as it goes.
-    public var provision: @Sendable (_ index: Int, _ download: Bool, _ progress: @escaping @Sendable (String) -> Void) -> Result<[String], ClusterOnboardingFailure>
+    /// it, or from the catalog when `download` (or when no Mac has it); reports its progress as it goes.
+    public var provision: @Sendable (_ index: Int, _ download: Bool, _ progress: @escaping @Sendable (ClusterOnboardingProgress) -> Void) -> Result<[String], ClusterOnboardingFailure>
     /// Each Mac's verify-teardown summary (after a stop: no cluster process, wired memory at baseline).
     public var verifyTeardown: @Sendable () -> Result<[String], ClusterOnboardingFailure>
     /// The cable port the person chose when more than one is active; the next `checkLink` sets that one up.
@@ -604,7 +614,7 @@ public struct ClusterOnboardingOperations: Sendable {
                 testRequest: @escaping @Sendable () -> Result<[String], ClusterOnboardingFailure>,
                 status: @escaping @Sendable () -> [String],
                 stop: @escaping @Sendable () -> Result<[String], ClusterOnboardingFailure>,
-                provision: @escaping @Sendable (Int, Bool, @escaping @Sendable (String) -> Void) -> Result<[String], ClusterOnboardingFailure>
+                provision: @escaping @Sendable (Int, Bool, @escaping @Sendable (ClusterOnboardingProgress) -> Void) -> Result<[String], ClusterOnboardingFailure>
                     = { _, _, _ in .success([]) },
                 verifyTeardown: @escaping @Sendable () -> Result<[String], ClusterOnboardingFailure> = { .success([]) },
                 useLinkPort: @escaping @Sendable (String) -> Void = { _ in },
@@ -720,6 +730,9 @@ public protocol ClusterOnboardingConsole: AnyObject {
     func working(_ text: String)
     /// The work said by `working` finished.
     func settle()
+    /// A copy's or download's live report (`ClusterOnboardingProgress.live`): redrawn in place where `working`
+    /// lines show; otherwise said only when `logged`.
+    func progress(_ text: (_ width: Int?) -> String, logged: Bool)
     /// One key, or nil when `milliseconds` passed with none. "\r" is enter.
     func key(milliseconds: Int) -> Character?
     /// A line typed after `prompt` (echoed as typed), or nil when the input closed.
@@ -734,6 +747,7 @@ public extension ClusterOnboardingConsole {
     func banner(_ title: String, _ subtitle: String) { heading(title); say(subtitle) }
     func working(_ text: String) {}
     func settle() {}
+    func progress(_ text: (_ width: Int?) -> String, logged: Bool) { if logged { say("  " + text(nil)) } }
 }
 
 /// Runs the onboarding on a console with the operations given; returns the exit status.
@@ -1323,19 +1337,37 @@ public enum ClusterOnboardingDriver {
         seconds < 90 ? "about \(max(1, Int(seconds.rounded()))) s" : "about \(Int((seconds / 60).rounded())) min"
     }
 
-    /// Moves the chosen model with progress until it is done or failed.
+    /// Moves the chosen model until it is done or failed. Its progress is one live line where the console shows
+    /// one; a transcript keeps the lines and the logged reports.
     static func move(index: Int, download: Bool, _ operations: ClusterOnboardingOperations, _ console: ClusterOnboardingConsole) -> ProvisionOutcome {
-        let progress = ClusterOnboardingMailbox<String>()
+        let progress = ClusterOnboardingMailbox<ClusterOnboardingProgress>()
         let finished = ClusterOnboardingMailbox<Result<[String], ClusterOnboardingFailure>>()
         let chosenDownload = download
         Thread.detachNewThread { finished.post(operations.provision(index, chosenDownload) { progress.post($0) }) }
+        var live: (@Sendable (Int?) -> String)?
+        func show() {
+            for report in progress.take() {
+                switch report {
+                case .line(let line):
+                    live = nil
+                    console.settle()
+                    console.say("  " + line)
+                case .live(let text, let logged):
+                    live = text
+                    console.progress(text, logged: logged)
+                }
+            }
+        }
         var result: Result<[String], ClusterOnboardingFailure>?
         while result == nil {
-            for line in progress.take() { console.say("  " + line) }
+            show()
             if let value = finished.take().first { result = value; break }
+            // The petal keeps turning while a step reports nothing new (the check of every file after a download).
+            if let live { console.progress(live, logged: false) }
             _ = console.key(milliseconds: 200)
         }
-        for line in progress.take() { console.say("  " + line) }
+        show()
+        console.settle()
         switch result! {
         case .success(let lines):
             for line in lines { console.say("  " + line) }

@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-10-28
+> Last updated: 2026-10-30
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -971,48 +971,64 @@ darkbloom sandbox uninstall [--yes]
 
 ### Setup
 
-1. **Check.** Refuses `sudo`, then prints chip, macOS, cores, memory, free disk,
-   desktop session, network, power and sleep in the `doctor` style (`[PASS]`, `[WARN]` with a `↳ fix:` line,
-   `[FAIL]`), then a verdict and the jobs this Mac can run at a time. The
-   rules are the add-on installer's own slot sizing, so the estimate matches
-   the slots the installer then chooses
+1. **Check.** Refuses `sudo`, then prints chip, macOS, desktop session,
+   network, power and sleep in the `doctor` style (`[PASS]`, `[WARN]` with a
+   `↳ fix:` line, `[FAIL]`). A refusal (table below) prints `Not eligible` and
+   stops before anything is downloaded
    (`provider-swift/Sources/darkbloom/Sandbox/SandboxEligibility.swift`,
-   `SandboxEligibility`; measurements in `SandboxHostProbe`):
+   `SandboxEligibility`; measurements in `SandboxHostProbe`).
+2. **Download.** Downloads `<server>/install.sh` over HTTPS: a redirect is
+   followed only to another `https` URL, and the response must be HTTP 200 over
+   `https`, at most 1 MiB, with a `#!` first line naming a shell. The script is
+   written as a `0600` file in a new `0700` directory, run with `/bin/sh` for
+   the plan and the install, and removed afterwards. The installer verifies the
+   add-on release before it installs it; the CLI does not verify the script
+   beyond TLS (`provider-swift/Sources/darkbloom/Sandbox/SandboxInstaller.swift`,
+   `SandboxInstaller`).
+3. **Plan.** A script that names `--plan` (add-on 1.1.1 and later) runs with
+   `--plan --json-progress` and the owner's slot options, without `--yes` and
+   with stdin closed. It verifies the release, runs the add-on's own checks and
+   sizing, installs nothing and prints one
+   [`plan` event](#installer-progress-events). The CLI prints the plan's CPU,
+   memory and disk lines, such as `Disk: 157 GiB free; 100 GiB stays free for
+   you; Linux images 4 GiB + 30 GiB per Linux job; macOS images 46 GiB + 40 GiB
+   per macOS job`, then a verdict and the jobs this Mac can run at a time
+   (`SandboxSizingPlan`). Ctrl-C or a signal during the plan stops setup. An
+   installer without plan mode, a failed plan or a run without a `plan` event
+   gets the CLI's fallback estimate instead, after an `[INFO] Sizing` line
+   (`SandboxEligibility.estimatedPlan`). The add-on's rules as of 1.1.1, which
+   the fallback repeats:
 
    | Rule | Value |
    |---|---|
    | Kept for the owner | A quarter of the cores (at least 2) and of the memory (at least 8 GiB) |
    | Kept for inference | Another quarter of the memory, when the provider runs or its add-on socket exists |
    | Linux job | 4 cores, 16 GiB and a 30 GiB scratch disk; at most 16 |
-   | macOS job | 8 cores and 16 GiB; at most 2, macOS's limit, which counts the owner's own macOS VMs |
+   | macOS job | 8 cores, 16 GiB and a 40 GiB disk budget; at most 2, macOS's limit, which counts the owner's own macOS VMs |
    | Order | Linux, macOS, Linux, macOS, then Linux only, while cores, memory and disk last |
    | Free-space floor | A tenth of the home folder's volume, between 50 and 100 GiB, stays free |
-   | VM images | 50 GiB above the floor, unless already installed |
+   | VM images | Charged with a platform's first job: Linux 4 GiB, macOS 46 GiB; nothing once installed |
    | Most requested macOS size | 12 cores and 32 GB: reported as fitting when 12 cores and 32 GiB are left for jobs, which takes 16 cores and about 64 GB beside inference |
    | Refused | Not Apple silicon, macOS before 27, no network, or this user not logged in at the Mac's desktop (`/dev/console` owner), where the add-on runs |
    | Warned, not refused | Wi-Fi, a laptop on battery, system sleep on the power adapter (`pmset -g custom`; `SleepDisabled 1` counts as off) |
 
    Examples: 16 cores and 128 GB run 1 Linux and 1 macOS job; 12 cores and
-   32 GB run 1 Linux job; 8 cores and 16 GB are not eligible. When only disk
-   is short, the verdict says how many GiB to free and what the Mac then runs.
-2. **Confirm.** Explains that inference pauses while a job runs, that each job
-   pays its price minus a 10% fee into the Darkbloom balance, the 50 GiB of
-   images and the one browser approval, then asks `[y/N]`. `--yes` skips it;
-   without a terminal and without `--yes`, setup stops before downloading.
-3. **Install.** Downloads `<server>/install.sh` over HTTPS: a redirect is
-   followed only to another `https` URL, and the response must be HTTP 200 over
-   `https`, at most 1 MiB, with a `#!` first line naming a shell. The script is
-   written as a `0600` file in a new `0700` directory, run with `/bin/sh` and
-   removed afterwards. The installer verifies the add-on release before it
-   installs it; the CLI does not verify the script beyond TLS
-   (`provider-swift/Sources/darkbloom/Sandbox/SandboxInstaller.swift`,
-   `SandboxInstaller`). A script that names `--json-progress` runs with
+   32 GB run 1 Linux job; 8 cores and 16 GB are not eligible. With 157 GiB free
+   on a 1858 GiB volume, 100 GiB stays free and the other 57 GiB hold the Linux
+   images and one Linux job: 1 Linux job, no macOS job. When no job fits, the
+   verdict gives the plan's message and the GiB to free for one Linux job and
+   for one macOS job, and setup stops before installing.
+4. **Confirm.** Explains that inference pauses while a job runs, that each job
+   pays its price minus a 10% fee into the Darkbloom balance, the VM images and
+   the one browser approval, then asks `[y/N]`. `--yes` skips it; without a
+   terminal and without `--yes`, setup stops before installing.
+5. **Install.** A script that names `--json-progress` runs with
    `--json-progress --yes` and the owner's `--no-browser`, `--wait-ready` and
    slot options, with stdin closed, and its stages render as
    [progress events](#installer-progress-events). Any other script is an older
    installer: it runs with the terminal and only the slot options, and the CLI
    says so.
-4. **Summarize.** Reads `status --json` again: the state, the jobs at a time and
+6. **Summarize.** Reads `status --json` again: the state, the jobs at a time and
    the next commands.
 
 While the installer runs, Ctrl-C reaches the installer, not the CLI, and setup
@@ -1026,7 +1042,7 @@ Rerunning `setup` decides from the add-on's answer
 
 | Add-on answer | `setup` |
 |---|---|
-| No add-on, or `not_installed` | A first setup: check, explain, confirm, install |
+| No add-on, or `not_installed` | A first setup: check, plan, explain, confirm, install |
 | `waiting_for_approval`, `waitlisted`, `enrolling` | Runs the installer again to continue, without the check or the question |
 | `stopped`, `error`, no answer within 10 s, a failed status, an add-on older than `status --json` | Runs the installer again to repair or update the add-on |
 | `ready`, `running`, `paused`, `downloading_images`, `updating`, an unknown state | Reports the state and changes nothing; with `--linux-slots` or `--macos-slots` it runs the installer to apply them |
@@ -1041,6 +1057,15 @@ report (`provider-swift/Sources/darkbloom/Sandbox/SandboxSetupProgress.swift`,
 installer writes one object per line: `{"schema":1,"event":"stage","stage":…,
 "step":n,"steps":8,"status":…,"message":…}` with the stage's own fields beside
 them, and a successful run ends with one `{"event":"summary",…}`.
+
+With `--plan --json-progress` (add-on 1.1.1) the installer exits 0 after one
+`{"schema":1,"event":"plan",…}` line. The CLI reads `message`, `linux_slots`,
+`macos_slots`, `linux_automatic`, `macos_automatic`, `linux_limit`,
+`macos_limit`, `free_bytes`, `floor_bytes`, `linux_images_bytes`,
+`macos_images_bytes`, `linux_slot_bytes`, `macos_slot_bytes`, `cores`,
+`cores_kept`, `memory_bytes`, `memory_kept_bytes` and `provider_memory_bytes`
+(`SandboxSizingPlan`). It ignores `root`, `volume_bytes` and unknown members. A
+line with another schema or without one of the numbers is not a plan.
 
 | `status` | Meaning | The CLI |
 |---|---|---|

@@ -95,7 +95,7 @@ snapshots. Preserve its watchdog, cleanup and state isolation when using a focus
 selector. Use `scripts/run-nested-suite.sh` for documented nested Swift Testing
 cases and `scripts/run-exclusive-native-gpu-test.sh` for exclusive native work.
 
-CI runs the provider suite in four shards (`Provider Unit Tests (shard K)`), one
+CI runs the provider suite in five shards (`Provider Unit Tests (shard K)`), one
 Mac each. `PROVIDER_TEST_SHARD=K/N` selects a shard in `scripts/run-provider-tests.sh`,
 and `scripts/provider-test-shards.py` chooses its suites:
 
@@ -104,10 +104,14 @@ and `scripts/provider-test-shards.py` chooses its suites:
 | Parallel | Shard 1, one process with Swift Testing's default parallelism | The test targets whose dependency closure has no MLX, Metal or cluster runtime (`PARALLEL_MODULES`) |
 | Serial | One `--no-parallel` process per shard | All other suites. Shards 1 to N-1 take suites by measured seconds (`scripts/provider-test-shard-weights.json`). The last shard runs every suite that no other shard selects, so a new suite always runs |
 
-The last shard also runs the isolated processes and the native MiMo, desktop and
-installer gates. `Provider Unit Tests Summary` lists the suite with
+Shard 2 also runs Prompt Parity (`scripts/verify-prompt-parity.sh` with
+`PROMPT_PARITY_SKIP_BUILD=1`, and `scripts/verify-nemotron-prompt-parity.sh`)
+against its own build; a parity failure fails that shard and the
+`Provider Tests` gate. The last shard also runs the isolated processes and the
+native MiMo, desktop and installer gates. `Provider Unit Tests Summary` lists the suite with
 `swift test list`, fails unless each shard executed exactly its selection and
-the shards together executed the full list, merges the shards' coverage
+the shards together executed the full list, checks that each Prompt Parity run
+executed every listed test of its suite, merges the shards' coverage
 profiles and uploads measured seconds per suite (`provider-test-shard-weights`).
 When the shards drift apart, replace the weights file with that artifact. A
 suite moves from the parallel class to the serial class when it fails or flakes

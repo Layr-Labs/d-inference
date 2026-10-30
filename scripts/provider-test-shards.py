@@ -4,6 +4,8 @@
 The parallel class is the test targets whose dependency closure has no MLX or
 Metal (`PARALLEL_MODULES`); it runs in one process with Swift Testing's default
 in-process parallelism. Every other suite stays serial (`--no-parallel`).
+Prompt Parity runs in shard `PARITY_SHARD` against that shard's build; the
+audit checks each parity run's executed count against the suite list.
 Serial suites are assigned to shards by measured seconds
 (`provider-test-shard-weights.json`, longest first onto the least loaded
 shard). Shards 1..N-1 select their assigned suites with `--filter`; the last
@@ -14,8 +16,10 @@ Subcommands:
   args SHARD ISOLATED    print the `swift test` selection for SHARD (`K/N` or
                          `parallel`), one argument per line; ISOLATED is the
                          run-provider-tests.sh isolated-process pattern
-  counts SHARD ISOLATED LOG OUTPUT
-                         write the executed test counts of one `swift test` run
+  counts SELECTION PATTERN LOG OUTPUT
+                         write the executed test counts of one `swift test` run;
+                         SELECTION is `K/N` or `parallel` with the isolated
+                         pattern, or `parity` with the parity suite filter
   audit LIST REPORTS     check each shard executed exactly its planned tests and
                          that all shards together executed the full list
   weights XUNIT...       print measured seconds per suite from xUnit reports;
@@ -41,10 +45,14 @@ PARALLEL_MODULES = (
     "DarkbloomHardwareLoadTests", "DarkbloomPublishTests", "ProviderAppAttestTests",
     "ProviderCoreFoundationTests",
 )
-# Seconds of fixed work outside the assigned suites: the parallel process runs
-# in shard 1; the catch-all suites, isolated processes and native gates run in
-# the last shard.
-FIRST_SHARD_EXTRA_SECONDS = 15.0
+# Prompt Parity's suites, run with their artifacts required (scripts/verify-*-parity.sh).
+PARITY_FILTERS = ("ProductionPromptParityTests", "NemotronTemplateParityLiveTests")
+PARITY_SHARD = 2
+# Measured seconds of fixed work outside the assigned suites: the parallel
+# process runs in shard 1, Prompt Parity in shard PARITY_SHARD, and the
+# isolated processes and native gates in the last shard.
+FIRST_SHARD_EXTRA_SECONDS = 31.0
+PARITY_SHARD_EXTRA_SECONDS = 120.0
 LAST_SHARD_EXTRA_SECONDS = 150.0
 # A test identifier starts with its module and its top-level suite or function.
 SUITE = re.compile(r"^([^./]+)[./]([^./]+)")
@@ -70,6 +78,7 @@ def assignment(shards, weights):
     """
     loads = [0.0] * shards
     loads[0] += FIRST_SHARD_EXTRA_SECONDS
+    loads[min(PARITY_SHARD, shards) - 1] += PARITY_SHARD_EXTRA_SECONDS
     loads[-1] += LAST_SHARD_EXTRA_SECONDS
     assigned = [[] for _ in range(shards)]
     serial = {key: seconds for key, seconds in weights.items()
@@ -122,6 +131,8 @@ def arguments(shard, isolated, weights):
 
 
 def planned(test_ids, shard, isolated, weights):
+    if shard == "parity":
+        return [test_id for test_id in test_ids if re.search(isolated, test_id)]
     selected, skipped = selection(shard, isolated, weights)
     return [test_id for test_id in test_ids
             if (selected is None or re.search(selected, test_id)) and not re.search(skipped, test_id)]
@@ -155,12 +166,13 @@ def listed_tests(list_text):
 
 def audit(test_ids, reports, isolated, weights):
     """Return error lines; empty when every shard ran exactly its planned tests."""
-    errors = []
+    errors = audit_parity(test_ids, [report for report in reports if report["shard"] == "parity"])
+    reports = [report for report in reports if report["shard"] != "parity"]
     expected = [test_id for test_id in test_ids if not re.search(isolated, test_id)]
     shards = {report["shard"] for report in reports}
     totals = {parse_shard(shard)[1] for shard in shards if shard != "parallel"}
     if len(totals) != 1:
-        return [f"Shard reports disagree on the shard count: {sorted(shards)}"]
+        return errors + [f"Shard reports disagree on the shard count: {sorted(shards)}"]
     total = totals.pop()
     wanted = {"parallel", *(f"{index}/{total}" for index in range(1, total + 1))}
     if shards != wanted or len(reports) != len(wanted):
@@ -188,6 +200,21 @@ def audit(test_ids, reports, isolated, weights):
     return errors
 
 
+def audit_parity(test_ids, reports):
+    """Each Prompt Parity suite ran once, with every listed test of that suite."""
+    errors = []
+    filters = sorted(report["pattern"] for report in reports)
+    if filters != sorted(PARITY_FILTERS):
+        errors.append(f"Expected one Prompt Parity report per suite {sorted(PARITY_FILTERS)}, got {filters}")
+    for report in reports:
+        plan = planned(test_ids, "parity", report["pattern"], None)
+        ran = report["swift_testing"] + report["xctest"]
+        print(f"parity {report['pattern']}: listed {len(plan)}, executed {ran}")
+        if not plan or ran != len(plan):
+            errors.append(f"Prompt Parity {report['pattern']} executed {ran} tests; the suite lists {len(plan)}")
+    return errors
+
+
 def measured_weights(paths, base=None):
     seconds = defaultdict(float)
     for path in paths:
@@ -207,7 +234,7 @@ def main():
     command.add_argument("isolated")
     command = commands.add_parser("counts")
     command.add_argument("shard")
-    command.add_argument("isolated")
+    command.add_argument("pattern")
     command.add_argument("log", type=Path)
     command.add_argument("output", type=Path)
     command = commands.add_parser("audit")
@@ -219,14 +246,14 @@ def main():
     if args.command == "args":
         print("\n".join(arguments(args.shard, args.isolated, load_weights())))
     elif args.command == "counts":
-        if args.shard != "parallel":
+        if args.shard not in ("parallel", "parity"):
             parse_shard(args.shard)
-        report = {"shard": args.shard, "isolated": args.isolated,
+        report = {"shard": args.shard, "pattern": args.pattern,
                   **counts(args.log.read_text(errors="replace"))}
         args.output.write_text(json.dumps(report))
     elif args.command == "audit":
         reports = [json.loads(path.read_text()) for path in sorted(args.reports.glob("*/shard-*.json"))]
-        patterns = {report["isolated"] for report in reports}
+        patterns = {report["pattern"] for report in reports if report["shard"] != "parity"}
         if len(patterns) != 1:
             print(f"::error::Shard reports disagree on the isolated-process pattern: {sorted(patterns)}")
             return 1

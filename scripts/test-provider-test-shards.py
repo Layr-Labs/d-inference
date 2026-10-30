@@ -134,7 +134,12 @@ class PartitionTests(unittest.TestCase):
         # Weights well above the fixed extra seconds of shards 1 and N.
         assigned, loads = shards.assignment(2, {"M.A": 1000.0, "M.B": 900.0, "M.C": 200.0, "M.D": 100.0})
         self.assertEqual([sorted(keys) for keys in assigned], [["M.A", "M.C"], ["M.B", "M.D"]])
-        self.assertEqual(loads, [1200.0 + shards.FIRST_SHARD_EXTRA_SECONDS, 1000.0 + shards.LAST_SHARD_EXTRA_SECONDS])
+        # Shard 2 is both the parity shard and the last shard here.
+        self.assertEqual(loads, [1200.0 + shards.FIRST_SHARD_EXTRA_SECONDS,
+                                 1000.0 + shards.PARITY_SHARD_EXTRA_SECONDS + shards.LAST_SHARD_EXTRA_SECONDS])
+        _, loads = shards.assignment(1, {})
+        self.assertEqual(loads, [shards.FIRST_SHARD_EXTRA_SECONDS + shards.PARITY_SHARD_EXTRA_SECONDS
+                                 + shards.LAST_SHARD_EXTRA_SECONDS])
 
     def test_arguments_and_shard_validation(self):
         self.assertEqual(shards.arguments("parallel", ISOLATED, self.weights),
@@ -185,23 +190,36 @@ class CountAndAuditTests(unittest.TestCase):
         weights = {"ProviderCoreTests.A": 10.0, "ProviderCoreTests.B": 10.0}
         tests = ["ProviderCoreTests.A/a()", "ProviderCoreTests.A/b()", "ProviderCoreTests.B/c()",
                  "ProviderCoreTests.New/d()", "ProviderCoreTests.ProcessMemoryNativeIntegrationTests/e()",
-                 "ProviderCoreFoundationTests.Pure/f()"]
+                 "ProviderCoreFoundationTests.Pure/f()", "ProviderCoreTests.ProductionPromptParityTests/p()",
+                 "ProviderCoreTests.ProductionPromptParityTests/q()",
+                 "ProviderCoreTests.NemotronTemplateParityLiveTests/n()"]
+        parity_counts = {"ProductionPromptParityTests": 2, "NemotronTemplateParityLiveTests": 1}
 
-        def reports(**changed):
+        def reports(parity=None, **changed):
             result = []
             for selection in ("parallel", "1/2", "2/2"):
                 count = len(shards.planned(tests, selection, ISOLATED, weights))
                 count = changed.get(selection, count)
-                result.append({"shard": selection, "isolated": ISOLATED, "swift_testing": count, "xctest": 0})
+                result.append({"shard": selection, "pattern": ISOLATED, "swift_testing": count, "xctest": 0})
+            for pattern, count in (parity_counts if parity is None else parity).items():
+                result.append({"shard": "parity", "pattern": pattern, "swift_testing": count, "xctest": 0})
             return result
 
         self.assertEqual(shards.audit(tests, reports(), ISOLATED, weights), [])
+        # Prompt Parity: each suite ran once, with every listed test.
+        partial = shards.audit(tests, reports({**parity_counts, "ProductionPromptParityTests": 1}), ISOLATED, weights)
+        self.assertEqual(partial, ["Prompt Parity ProductionPromptParityTests executed 1 tests; the suite lists 2"])
+        absent = shards.audit(tests, reports({"ProductionPromptParityTests": 2}), ISOLATED, weights)
+        self.assertTrue(any("one Prompt Parity report per suite" in error for error in absent), absent)
+        unlisted = [test for test in tests if "Nemotron" not in test]
+        self.assertTrue(any("NemotronTemplateParityLiveTests executed 1 tests; the suite lists 0" in error
+                            for error in shards.audit(unlisted, reports(), ISOLATED, weights)))
         short = shards.audit(tests, reports(**{"2/2": 5}), ISOLATED, weights)
         self.assertTrue(any("Shard 2/2 executed 5 tests" in error for error in short), short)
         self.assertTrue(any("The shards executed" in error for error in short), short)
         missing = shards.audit(tests, [r for r in reports() if r["shard"] != "1/2"], ISOLATED, weights)
         self.assertTrue(any("Expected one report per shard" in error for error in missing), missing)
-        mixed = reports() + [{"shard": "1/3", "isolated": ISOLATED, "swift_testing": 1, "xctest": 0}]
+        mixed = reports() + [{"shard": "1/3", "pattern": ISOLATED, "swift_testing": 1, "xctest": 0}]
         self.assertTrue(shards.audit(tests, mixed, ISOLATED, weights))
 
     def test_listed_tests_ignore_build_and_warning_lines(self):

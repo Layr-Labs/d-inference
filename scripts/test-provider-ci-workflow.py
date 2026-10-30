@@ -2,6 +2,7 @@
 """Offline CI lane/gate checks; actionlint validates the complete YAML syntax."""
 
 from collections import Counter
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -15,6 +16,9 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parent.parent
+_SPEC = importlib.util.spec_from_file_location("provider_test_shards", ROOT / "scripts/provider-test-shards.py")
+shards = importlib.util.module_from_spec(_SPEC)
+_SPEC.loader.exec_module(shards)
 WORKFLOW = ROOT / ".github/workflows/ci.yml"
 ACTION = ROOT / ".github/actions/provider-ci-build/action.yml"
 BUILD_ACTION = "./.github/actions/provider-ci-build"
@@ -73,7 +77,12 @@ SHARD_UPLOAD = "Upload shard counts, timings and coverage"
 LANES = {
     "test-provider": "provider",
     "test-provider-sdk": "sdk",
-    "test-provider-parity": "parity",
+}
+# Prompt Parity runs in a provider shard (scripts/provider-test-shards.py PARITY_SHARD).
+PARITY_STEPS = {
+    "Verify public prompt golden vectors": ("./scripts/verify-prompt-parity.sh", "ProductionPromptParityTests", "prompt"),
+    "Verify pinned Nemotron prompts and numeric cache plans":
+        ("./scripts/verify-nemotron-prompt-parity.sh", "NemotronTemplateParityLiveTests", "nemotron"),
 }
 SDK_COMMANDS = {
     **SDK_RETENTION_HOST_COMMANDS,
@@ -191,7 +200,7 @@ class ProviderCIWorkflowTests(unittest.TestCase):
                 self.assertIn("    runs-on: ${{ fromJSON(needs.route.outputs.routes)['%s'] }}\n" % job_id, job)
                 # The provider lane asks for one runner per shard. The SDK lane
                 # runs on every push and on pull requests that change its inputs.
-                count = 4 if job_id == "test-provider" else 1
+                count = 5 if job_id == "test-provider" else 1
                 condition = (SDK_CONDITION if job_id == "test-provider-sdk"
                              else "needs.changes.outputs.provider == 'true'")
                 requested = f"({condition})" if "||" in condition else condition
@@ -204,7 +213,7 @@ class ProviderCIWorkflowTests(unittest.TestCase):
                 if job_id == "test-provider":
                     # Shards are independent: a failed shard never cancels another.
                     self.assertIn("    strategy:\n      # A failed shard does not cancel the other shards.\n"
-                                  "      fail-fast: false\n      matrix:\n        shard: [1, 2, 3, 4]\n", job)
+                                  "      fail-fast: false\n      matrix:\n        shard: [1, 2, 3, 4, 5]\n", job)
                 else:
                     self.assertNotRegex(job, re.compile(r"^    strategy:", re.MULTILINE), msg=job)
                 self.assertNotIn("continue-on-error:", job)
@@ -214,25 +223,23 @@ class ProviderCIWorkflowTests(unittest.TestCase):
     def test_existing_required_check_requires_every_lane_even_after_failures(self):
         job = self.jobs["provider-test-gate"]
         self.assertIn("    name: Provider Tests\n", job)
-        self.assertIn("    needs: [changes, test-provider, test-provider-summary, test-provider-parity]\n", job)
+        self.assertIn("    needs: [changes, test-provider, test-provider-summary]\n", job)
         # Provider SDK Tests notifies after merge and never blocks this gate.
         self.assertNotIn("test-provider-sdk", job)
         self.assertIn("    if: ${{ always() }}\n", job)
         self.assertNotIn("continue-on-error:", job)
         step = step_blocks(job)[0]
         command = run_command(step)
-        for unit, summary, parity in (("success", "success", "success"),
-                                      ("failure", "success", "success"),
-                                      ("success", "failure", "success"),
-                                      ("success", "success", "failure"),
-                                      ("skipped", "success", "success"),
-                                      ("success", "skipped", "success"),
-                                      ("success", "success", "cancelled")):
+        # Prompt Parity is a step of a provider shard: its failure is UNIT_RESULT's.
+        self.assertNotIn("test-provider-parity", job)
+        for unit, summary in (("success", "success"), ("failure", "success"), ("success", "failure"),
+                              ("skipped", "success"), ("success", "skipped"), ("cancelled", "success"),
+                              ("success", "cancelled")):
             result = subprocess.run(["bash", "-e", "-c", command],
                                     env={**os.environ, "CHANGES_RESULT": "success", "PROVIDER_CHANGED": "true", "UNIT_RESULT": unit,
-                                         "SUMMARY_RESULT": summary, "PARITY_RESULT": parity},
+                                         "SUMMARY_RESULT": summary},
                                     capture_output=True, timeout=5)
-            self.assertEqual(result.returncode == 0, unit == summary == parity == "success")
+            self.assertEqual(result.returncode == 0, unit == summary == "success")
 
     def test_each_lane_checks_out_recursive_sources_before_its_build(self):
         for job_id, lane in LANES.items():
@@ -313,13 +320,13 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         test_step = next(step for step in steps if run_command(step) == PROVIDER_TEST_COMMAND)
         self.assertEqual(field(test_step, "id"), "provider-unit-tests")
         self.assertNotIn("LLVM_PROFILE_FILE", summary)
-        for job_id in ("test-provider-sdk", "test-provider-parity"):
-            self.assertNotIn("LLVM_PROFILE_FILE", self.jobs[job_id])
-            self.assertNotIn("PROVIDER_COVERAGE_DIR", self.jobs[job_id])
+        self.assertNotIn("LLVM_PROFILE_FILE", self.jobs["test-provider-sdk"])
+        self.assertNotIn("PROVIDER_COVERAGE_DIR", self.jobs["test-provider-sdk"])
         build_step = next(step for step in step_blocks(ACTION.read_text(), indent=4)
                           if field(step, "id", indent=6) == "provider-build")
-        self.assertIn('if [ "$LANE" = provider ]; then\n  coverage=(--enable-code-coverage)',
-                      textwrap.dedent(build_step.split("run: |\n", 1)[1]))
+        self.assertEqual(textwrap.dedent(build_step.split("run: |\n", 1)[1]).strip(),
+                         "swift build --build-tests --enable-code-coverage\n"
+                         "swift build --product darkbloom-fan-helper --enable-code-coverage")
 
     def test_provider_entrypoint_and_resource_installer_checks_are_retained(self):
         steps = step_blocks(self.jobs["test-provider"])
@@ -337,7 +344,7 @@ class ProviderCIWorkflowTests(unittest.TestCase):
             "./scripts/test-install-atomic.sh",
         )
         runs = [run_command(step) for step in steps
-                if field(step, "run") and field(step, "name", indent=6) not in COVERAGE_STEPS]
+                if field(step, "run") and field(step, "name", indent=6) not in (*COVERAGE_STEPS, *PARITY_STEPS)]
         self.assertEqual(runs, list(expected))
         test_step = next(step for step in steps if run_command(step) == PROVIDER_TEST_COMMAND)
         self.assertEqual(field(test_step, "id"), "provider-unit-tests")
@@ -537,32 +544,62 @@ class ProviderCIWorkflowTests(unittest.TestCase):
             with self.subTest(selector=selector):
                 self.assertEqual(sdk.count(selector), 1)
                 self.assertNotIn(selector, self.jobs["test-provider"])
-                self.assertNotIn(selector, self.jobs["test-provider-parity"])
         commands = Counter(run_command(step) for job in self.jobs.values() for step in step_blocks(job))
         self.assertEqual(commands["../../scripts/run-paged-kernel-tests.sh"], 1)
         self.assertEqual(commands[PROVIDER_TEST_COMMAND], 1)
-        self.assertEqual(commands["./scripts/verify-prompt-parity.sh"], 1)
+        workflow = WORKFLOW.read_text()
+        for script, _, _ in PARITY_STEPS.values():
+            self.assertEqual(workflow.count(script), 1, script)
 
     def test_parity_retains_public_swift_golden_vector_scripts(self):
-        steps = step_blocks(self.jobs["test-provider-parity"])
-        go = [step for step in steps if "actions/setup-go@" in step]
-        self.assertEqual(go, [])
-        runs = [step for step in steps if field(step, "run")]
-        self.assertEqual([run_command(step) for step in runs],
-                         [MIMO_PREPARE, "./scripts/verify-prompt-parity.sh",
-                          "./scripts/verify-nemotron-prompt-parity.sh"])
-        self.assertEqual(field(runs[-2], "if"), MIMO_READY)
-        self.assertEqual(field(runs[-1], "if"), READY)
+        steps = step_blocks(self.jobs["test-provider"])
+        self.assertEqual([step for step in steps if "actions/setup-go@" in step], [])
+        names = [field(step, "name", indent=6) for step in steps]
+        tests = names.index("Run Swift tests")
+        shard = f"matrix.shard == {shards.PARITY_SHARD}"
+        conditions = {
+            "Verify public prompt golden vectors":
+                "${{ !cancelled() && %s && steps.provider-ci-build.outcome == 'success' && "
+                "steps.mimo-prompt-fixtures.outcome == 'success' }}" % shard,
+            "Verify pinned Nemotron prompts and numeric cache plans":
+                "${{ !cancelled() && %s && steps.provider-ci-build.outcome == 'success' }}" % shard,
+        }
+        self.assertEqual(sorted(filter_ for _, filter_, _ in PARITY_STEPS.values()),
+                         sorted(shards.PARITY_FILTERS))
+        for name, (script, filter_, label) in PARITY_STEPS.items():
+            with self.subTest(step=name):
+                step = steps[names.index(name)]
+                # Parity runs in one shard, after its suite, and fails that shard
+                # (no continue-on-error), which fails the Provider Tests gate.
+                self.assertGreater(names.index(name), tests)
+                self.assertEqual(field(step, "if"), conditions[name])
+                self.assertNotIn("continue-on-error:", step)
+                command = run_command(step)
+                self.assertTrue(command.startswith("set -o pipefail\n"), command)
+                self.assertIn(f'{script} 2>&1 | tee "$report/parity-{label}.log"', command)
+                self.assertIn(f"provider-test-shards.py counts parity {filter_} \\\n"
+                              f'  "$report/parity-{label}.log" "$report/shard-parity-{label}.json"', command)
+                # Each script still runs exactly its suite, with its artifacts required.
+                source = (ROOT / script).read_text()
+                self.assertIn("PROMPT_PARITY_REQUIRED=1", source)
+                self.assertIn(filter_, source)
+        prompt = steps[names.index("Verify public prompt golden vectors")]
+        self.assertEqual(field(prompt, "id"), "prompt-parity")
+        self.assertEqual(field(prompt, "PROMPT_PARITY_SKIP_BUILD", indent=10), "'1'")
+        # Without the opt-in (the release qualification lane), the script builds as before.
+        source = (ROOT / "scripts/verify-prompt-parity.sh").read_text()
+        self.assertIn('[[ "${PROMPT_PARITY_SKIP_BUILD:-0}" == 0 ]] || skip_build=(--skip-build)', source)
+        self.assertIn("run-nested-suite.sh NemotronTemplateParityLiveTests",
+                      (ROOT / "scripts/verify-nemotron-prompt-parity.sh").read_text())
 
-    def test_fixture_prerequisites_are_fail_closed_in_provider_and_parity(self):
-        for job_id in ("test-provider", "test-provider-parity"):
-            steps = step_blocks(self.jobs[job_id])
-            expected_prepare = MIMO_HTTP_PREPARE if job_id == "test-provider" else MIMO_PREPARE
-            fixtures = [step for step in steps if run_command(step) == expected_prepare]
-            self.assertEqual(len(fixtures), 1)
-            expected_id = "mimo-prompt-fixtures" if job_id == "test-provider" else "mimo-fixtures"
-            self.assertEqual(field(fixtures[0], "id"), expected_id)
-            self.assertEqual(field(fixtures[0], "if"), READY)
+    def test_fixture_prerequisites_are_fail_closed_in_provider(self):
+        steps = step_blocks(self.jobs["test-provider"])
+        fixtures = [step for step in steps if run_command(step) == MIMO_HTTP_PREPARE]
+        self.assertEqual(len(fixtures), 1)
+        self.assertEqual(field(fixtures[0], "id"), "mimo-prompt-fixtures")
+        self.assertEqual(field(fixtures[0], "if"), READY)
+        # The HTTP preparation includes the plain prompt-fixture preparation.
+        self.assertIn(MIMO_PREPARE, MIMO_HTTP_PREPARE)
 
     def test_native_mimo_gates_keep_isolated_processes_and_fixture_guards(self):
         steps = step_blocks(self.jobs["test-provider"])
@@ -663,11 +700,14 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         self.assertIn('--jobs "$task_jobs"', support)
 
     def test_parity_has_no_backend_caches_or_credentials(self):
-        steps = step_blocks(self.jobs["test-provider-parity"])
+        # Prompt Parity now runs in the provider shards; the only cache that
+        # job saves directly is the verified MiMo audio codec.
+        steps = step_blocks(self.jobs["test-provider"])
         saves = [step for step in steps if "actions/cache/save@" in step]
-        self.assertEqual(saves, [])
+        self.assertEqual([field(step, "name", indent=6) for step in saves], ["Cache verified MiMo audio codec"])
+        self.assertNotIn("test-provider-parity", WORKFLOW.read_text())
         for forbidden in ("coordinator/", "cargo ", "rust-key", "secrets.", "darkbloom-platform"):
-            self.assertNotIn(forbidden, self.jobs["test-provider-parity"])
+            self.assertNotIn(forbidden, self.jobs["test-provider"])
 
     def test_push_only_release_build_no_longer_warms_sdk_debug_tests(self):
         job = self.jobs["cache-swift"]
@@ -696,7 +736,7 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         provider = by_id["provider-build"]
         sdk = by_id["sdk-build"]
         metallib = by_id["metallib"]
-        self.assertEqual(field(provider, "if", indent=6), "inputs.lane != 'sdk'")
+        self.assertEqual(field(provider, "if", indent=6), "inputs.lane == 'provider'")
         self.assertEqual(field(provider, "working-directory", indent=6), "provider-swift")
         self.assertIn("swift build --build-tests", provider)
         self.assertIn("swift build --product darkbloom-fan-helper", provider)

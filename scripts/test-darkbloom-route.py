@@ -40,7 +40,7 @@ FALLBACKS = {"release-integrity": LINUX_FALLBACK, "test-provider": MACOS_FALLBAC
 GRANTED = {"release-integrity": LINUX, "test-provider": MACOS,
            "warm": MACOS, "docs": LINUX_FALLBACK}
 PROVIDER = "${{ needs.changes.outputs.provider == 'true' && 1 || 0 }}"
-PROVIDER_SHARDS = "${{ needs.changes.outputs.provider == 'true' && 4 || 0 }}"
+PROVIDER_SHARDS = "${{ needs.changes.outputs.provider == 'true' && 5 || 0 }}"
 SDK = "${{ (github.event_name == 'push' || needs.changes.outputs.sdk == 'true') && 1 || 0 }}"
 PULL_REQUEST_WARM = "${{ github.event_name == 'pull_request' && 2 || 0 }}"
 # Every routed job: (profile, fallback label, count expression or None for 1).
@@ -51,7 +51,6 @@ ROUTED = {
         "test-provider": ("macos_arm64", MACOS_FALLBACK, PROVIDER_SHARDS),
         "test-provider-summary": ("macos_arm64", MACOS_FALLBACK, PROVIDER),
         "test-provider-sdk": ("macos_arm64", MACOS_FALLBACK, SDK),
-        "test-provider-parity": ("macos_arm64", MACOS_FALLBACK, PROVIDER),
         "test-cluster-checks": ("macos_arm64", MACOS_FALLBACK, PROVIDER),
     },
     "docs-impact.yml": {

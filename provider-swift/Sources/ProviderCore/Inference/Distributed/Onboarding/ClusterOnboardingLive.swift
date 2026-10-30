@@ -1049,7 +1049,9 @@ final class OnboardingLive: @unchecked Sendable {
     func adopt(_ index: Int) -> Result<[String], ClusterOnboardingFailure> {
         // The choice travels with its model's id: a leader that restarted since it made the list plans again and finds it.
         let model = lock.withLock { listedChoices.indices.contains(index) ? (listedChoices[index].modelID ?? listedChoices[index].title) : nil }
-        return routed(.init(op: .adopt, index: index, model: model), seconds: 240, acting: true, local: { localAdopt(index) }) { $0.lines }
+        // The leader may stop both parts (up to 5 minutes to drain), wait for their memory (`releaseWaitSeconds`), plan
+        // again and retry the device lease: the reply can take that long.
+        return routed(.init(op: .adopt, index: index, model: model), seconds: 600, acting: true, local: { localAdopt(index) }) { $0.lines }
     }
 
     /// `model`: the id of the model the list showed at `index` (a choice forwarded from another Mac). When this Mac's
@@ -1084,16 +1086,23 @@ final class OnboardingLive: @unchecked Sendable {
             // priced with less memory than there is now.
             awaitReleased()
             if case .success(let replanned) = localPlanModels() {
-                // `localPlanModels` set `choices` in the order of the list it returned.
-                guard let found = ClusterOnboardingUpdate.servableIndex(of: choice.title, in: replanned),
-                      let again = lock.withLock({ choices.indices.contains(found) ? choices[found] : nil }) else {
+                // `localPlanModels` set `choices` in the order of the list it returned. Both are read under one lock,
+                // and the entry must still name the chosen model: a plan forwarded from the other Mac may replace
+                // `choices` meanwhile.
+                let picked = lock.withLock { () -> (index: Int, again: ChoiceKey)? in
+                    guard let found = ClusterOnboardingUpdate.servableIndex(of: choice.title, folder: choice.folder, in: replanned,
+                                                                            folders: choices.map { $0.folder }),
+                          choices.indices.contains(found), choices[found].title == choice.title else { return nil }
+                    return (found, choices[found])
+                }
+                guard let picked else {
                     let reason = replanned.first { ($0.modelID ?? $0.title) == choice.title }?.blocker ?? "not found"
                     return .failure(.init(lines + ["\(choice.title) is not offered on these Macs now (\(reason)); run `darkbloom cluster` again to choose."]))
                 }
-                if again.key != choice.key, let line = replanned[found].lines.first {
+                if picked.again.key != choice.key, let line = replanned[picked.index].lines.first {
                     lines.append("Planned again with both Macs' memory given back: \(line).")
                 }
-                choice = again
+                choice = picked.again
                 peer = lock.withLock { peerReport } ?? peer
             }
         }

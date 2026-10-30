@@ -24,7 +24,7 @@ final class SSDWholeRootMaintainer: @unchecked Sendable {
         let url: URL
         let modelRoot: URL
         let bytes: Int
-        let modifiedAt: Int64
+        var modifiedAt: Int64
         let metadataReadable: Bool
     }
 
@@ -116,7 +116,7 @@ final class SSDWholeRootMaintainer: @unchecked Sendable {
             var files = contents.blocks.filter(\.metadataReadable)
             result.filesSeen = files.count
 
-            func removeOwned(_ candidates: [OwnedFile]) -> Set<String> {
+            func removeOwned(_ candidates: [OwnedFile], unusedSince: Int64? = nil) -> Set<String> {
                 var removed = Set<String>()
                 let groups = Dictionary(grouping: candidates) {
                     $0.modelRoot.standardizedFileURL.resolvingSymlinksInPath().path
@@ -124,7 +124,7 @@ final class SSDWholeRootMaintainer: @unchecked Sendable {
                 for group in groups.values {
                     guard let modelRoot = group.first?.modelRoot else { continue }
                     if let retired = SSDDiskBudget.shared.retireActiveEntries(
-                        root: modelRoot, urls: group.map(\.url)) {
+                        root: modelRoot, urls: group.map(\.url), unusedSince: unusedSince) {
                         removed.formUnion(retired)
                         continue
                     }
@@ -149,10 +149,19 @@ final class SSDWholeRootMaintainer: @unchecked Sendable {
                 let expired = files.filter {
                     nowSeconds - $0.modifiedAt >= ttlSeconds
                 }
-                let removed = removeOwned(expired)
+                // A loaded store keeps a file its index saw hit after the
+                // cutoff: the mtime read above can trail its last hit.
+                let removed = removeOwned(expired, unusedSince: nowSeconds - ttlSeconds)
                 result.ttlExpired = removed.count
                 files.removeAll {
                     removed.contains($0.url.standardizedFileURL.path)
+                }
+                // Such a survivor now carries that hit as its mtime; order
+                // the budget pass by it, not by the stale scan.
+                for index in files.indices where nowSeconds - files[index].modifiedAt >= ttlSeconds {
+                    let modified = (try? FileManager.default.attributesOfItem(
+                        atPath: files[index].url.path))?[.modificationDate] as? Date
+                    if let modified { files[index].modifiedAt = Int64(modified.timeIntervalSince1970) }
                 }
             }
 

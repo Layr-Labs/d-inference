@@ -11,19 +11,19 @@ public struct ExponentialBackoff: Sendable {
         self.max = max
     }
 
-    /// Returns the next backoff delay using "equal jitter": half the
-    /// deterministic exponential delay, plus a random amount up to the other
-    /// half. The deterministic component still doubles (capped at `max`).
+    /// Returns the range of the next backoff delay using "equal jitter": from
+    /// half the deterministic exponential delay to all of it. The caller draws
+    /// the delay uniformly from the range. The deterministic component still
+    /// doubles (capped at `max`).
     ///
     /// Jitter matters at fleet scale: without it, every provider that dropped on
     /// the same coordinator blip reconnects in lockstep (1s, 2s, 4s, …), and the
     /// synchronized reconnect herd can knock the coordinator straight back over.
     /// Spreading reconnects across the window breaks that resonance.
-    public mutating func nextDelay() -> TimeInterval {
+    public mutating func nextDelayRange() -> ClosedRange<TimeInterval> {
         let deterministic = current
         current = Swift.min(current * 2, max)
-        let half = deterministic / 2
-        return half + Double.random(in: 0...half)
+        return (deterministic / 2)...deterministic
     }
 
     public mutating func reset() {

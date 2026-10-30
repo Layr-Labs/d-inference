@@ -74,9 +74,10 @@ class ParallelClassTests(unittest.TestCase):
 
 class PartitionTests(unittest.TestCase):
     def setUp(self):
-        self.weights = {"ProviderCoreTests.Heavy": 50.0, "ProviderCoreTests.Medium": 20.0,
-                        "ProviderCoreTests.Light": 1.0, "DarkbloomCLITests.Commands": 30.0,
-                        "ProviderCoreTests.HeavyTail": 5.0, "ProviderCoreFoundationTests.Pure": 9.0}
+        # Seconds well above each shard's fixed extra seconds, so every shard gets a suite.
+        self.weights = {"ProviderCoreTests.Heavy": 5000.0, "ProviderCoreTests.Medium": 2000.0,
+                        "ProviderCoreTests.Light": 100.0, "DarkbloomCLITests.Commands": 3000.0,
+                        "ProviderCoreTests.HeavyTail": 500.0, "ProviderCoreFoundationTests.Pure": 900.0}
         self.tests = [
             *identifiers("ProviderCoreTests", "Heavy", ["a()", "b()"], "."),
             # Swift Testing may print the module separator as a slash.
@@ -181,8 +182,11 @@ class CountAndAuditTests(unittest.TestCase):
         self.assertEqual(shards.counts(failed), {"swift_testing": 4, "xctest": 3})
         self.assertEqual(shards.counts("✔ Test run with 1 test in 1 suite passed after 0.1 seconds."),
                          {"swift_testing": 1, "xctest": 0})
+        # An XCTest-only selection (Nemotron parity) prints no Swift Testing summary.
+        self.assertEqual(shards.counts("Test Suite 'Selected tests' passed at x\n Executed 2 tests, with 0 failures"),
+                         {"swift_testing": 0, "xctest": 2})
         with self.assertRaisesRegex(ValueError, "did not finish"):
-            shards.counts("Test Suite 'Selected tests' passed at x\n Executed 3 tests")
+            shards.counts("Test Suite 'Selected tests' started at x\nfatal error")
         with self.assertRaisesRegex(ValueError, "zero tests"):
             shards.counts("✔ Test run with 0 tests passed after 0.001 seconds.")
 

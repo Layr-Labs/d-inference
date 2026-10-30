@@ -150,9 +150,12 @@ def counts(log_text):
                 if match:
                     xctest = int(match.group(1))
                     break
-    if not swift_testing:
-        raise ValueError("The log has no Swift Testing summary; the run did not finish")
-    result = {"swift_testing": int(swift_testing[-1]), "xctest": xctest or 0}
+    # A selection of only XCTest cases prints no Swift Testing summary. A run
+    # that stops early reports fewer tests than its selection lists, which the
+    # audit refuses.
+    if not swift_testing and xctest is None:
+        raise ValueError("The log has no test run summary; the run did not finish")
+    result = {"swift_testing": int(swift_testing[-1]) if swift_testing else 0, "xctest": xctest or 0}
     if not result["swift_testing"] + result["xctest"]:
         raise ValueError("The selection executed zero tests; the gate did not run")
     return result

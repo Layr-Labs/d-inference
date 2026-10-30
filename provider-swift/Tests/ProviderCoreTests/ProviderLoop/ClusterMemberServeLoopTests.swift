@@ -17,9 +17,12 @@ private struct ClusterMemberServeFixture: Sendable {
     /// then report, exactly as a saved setup with a pair approval does.
     /// `absentOnPort`: the coordinator is not up yet (a restart while it is
     /// away); the test brings the mock up on that port when it returns.
+    /// `negotiationWindow` shortens each connection's window (production
+    /// ten seconds) for a test that waits one out.
     static func make(stopOnDisconnect: Bool, heartbeatSeconds: UInt64 = 60,
                      pairing: NativePairMemberInstallation? = nil,
-                     absentOnPort: Int? = nil) async throws -> ClusterMemberServeFixture {
+                     absentOnPort: Int? = nil,
+                     negotiationWindow: Duration? = nil) async throws -> ClusterMemberServeFixture {
         let mock = MockCoordinator()
         let coordinatorURL: String
         if let absentOnPort {
@@ -48,6 +51,7 @@ private struct ClusterMemberServeFixture: Sendable {
             attestationSigner: ServeLoopTestSigner())
         await loop.setServeUsesHostServicesForTesting(false)
         await loop.setDaemonStateFileForTesting(directory.appendingPathComponent("state.json"))
+        if let negotiationWindow { await loop.setClusterMemberNegotiationWindowForTesting(negotiationWindow) }
         if let pairing { try await loop.installNativePairMember(pairing) }
         return ClusterMemberServeFixture(mock: mock, loop: loop, directory: directory)
     }
@@ -79,9 +83,11 @@ private struct ClusterMemberServeFixture: Sendable {
 /// removes everything the fixture made, whether or not `body` threw.
 private func withMemberServeLoop(
     stopOnDisconnect: Bool,
+    negotiationWindow: Duration? = nil,
     _ body: (ClusterMemberServeFixture, Task<Void, Error>) async throws -> Void
 ) async throws {
-    let fixture = try await ClusterMemberServeFixture.make(stopOnDisconnect: stopOnDisconnect)
+    let fixture = try await ClusterMemberServeFixture.make(stopOnDisconnect: stopOnDisconnect,
+                                                           negotiationWindow: negotiationWindow)
     let task = fixture.start()
     do { try await body(fixture, task) } catch {
         await fixture.cleanUp(task)
@@ -210,19 +216,21 @@ struct ClusterMemberServeLoopTests {
     /// the acknowledgement. That answer means the role is unknown there, not
     /// that this member was refused: the wait says so, so the leader can
     /// serve locally instead of restarting every 38 s.
+    /// A two-second window stands in for the production ten: the wait's
+    /// deadline (6 s) lies past the bound (4 s), which lies past the window.
     @Test func aCoordinatorWithoutTheMemberRoleIsReportedAsUnsupported() async throws {
-        try await withMemberServeLoop(stopOnDisconnect: true) { fixture, _ in
+        try await withMemberServeLoop(stopOnDisconnect: true, negotiationWindow: .seconds(2)) { fixture, _ in
             let started = ContinuousClock.now
             let coordinator = Task {
                 _ = try await fixture.awaitRegistration()
                 try await fixture.mock.pushDesiredModels([])
             }
             await #expect(throws: ClusterMemberControlError.roleUnsupported) {
-                try await fixture.loop.waitForClusterMemberRegistration(until: started.advanced(by: .seconds(20)))
+                try await fixture.loop.waitForClusterMemberRegistration(until: started.advanced(by: .seconds(6)))
             }
             try await coordinator.value
             // Ended by this connection's negotiation window, not the wait's deadline.
-            #expect(ContinuousClock.now - started < .seconds(15))
+            #expect(ContinuousClock.now - started < .seconds(4))
             #expect(await fixture.loop.memberConnectionID == nil)
         }
     }
@@ -230,9 +238,10 @@ struct ClusterMemberServeLoopTests {
     /// A coordinator that knows the role and refuses THIS member closes the
     /// connection (or never answers it): that stays a refusal even when it
     /// had answered the registration first. Each connection is judged on its
-    /// own answer.
+    /// own answer. The reconnect that follows the close waits out its own
+    /// window, shortened here from ten seconds to two.
     @Test func aCoordinatorThatClosesTheMemberConnectionStillRefusesIt() async throws {
-        try await withMemberServeLoop(stopOnDisconnect: true) { fixture, _ in
+        try await withMemberServeLoop(stopOnDisconnect: true, negotiationWindow: .seconds(2)) { fixture, _ in
             let started = ContinuousClock.now
             let coordinator = Task {
                 _ = try await fixture.awaitRegistration()

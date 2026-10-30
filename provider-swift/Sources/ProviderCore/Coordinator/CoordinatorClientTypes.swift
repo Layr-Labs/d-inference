@@ -187,6 +187,9 @@ public struct CoordinatorClientConfig: Sendable {
     /// Deadline for one connection to reach `.ready`
     /// (`CoordinatorConnectionHandshake`).
     public let handshakeTimeout: TimeInterval
+    /// How long one member connection's acceptance may take after its
+    /// registration (`ClusterMemberNegotiation.window` unless set).
+    public let memberNegotiationWindow: Duration
 
     public init(
         url: String,
@@ -209,7 +212,8 @@ public struct CoordinatorClientConfig: Sendable {
         autopilotInventory: [ModelInfo] = [],
         executionRole: ProviderExecutionRole = .solo,
         clusterMembership: ClusterMembership? = nil,
-        handshakeTimeout: TimeInterval? = nil
+        handshakeTimeout: TimeInterval? = nil,
+        memberNegotiationWindow: Duration? = nil
     ) {
         self.url = url
         self.hardware = hardware
@@ -232,6 +236,7 @@ public struct CoordinatorClientConfig: Sendable {
         self.executionRole = executionRole
         self.clusterMembership = clusterMembership
         self.handshakeTimeout = handshakeTimeout ?? CoordinatorConnectionHandshake.defaultTimeout
+        self.memberNegotiationWindow = memberNegotiationWindow ?? ClusterMemberNegotiation.window
     }
 }
 

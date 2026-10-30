@@ -21,17 +21,18 @@ public struct ClusterMemberAccepted: Codable, Sendable, Equatable {
 /// One connection's negotiation; discarded before every reconnect. The nonce
 /// prevents a late prior acknowledgment from opening the new connection.
 struct ClusterMemberNegotiation: Sendable {
-    /// How long one connection's acceptance may take after its registration.
+    /// How long one connection's acceptance may take after its registration
+    /// (production; `CoordinatorClientConfig.memberNegotiationWindow`).
     static let window: Duration = .seconds(10)
 
     let nonce: String
     let deadline: ContinuousClock.Instant
     private(set) var providerID: String?
 
-    init(now: ContinuousClock.Instant = .now) {
+    init(now: ContinuousClock.Instant = .now, window: Duration = ClusterMemberNegotiation.window) {
         nonce = (UUID().uuidString + UUID().uuidString)
             .replacingOccurrences(of: "-", with: "").lowercased()
-        deadline = now.advanced(by: Self.window)
+        deadline = now.advanced(by: window)
     }
 
     mutating func accept(_ message: ClusterMemberAccepted,

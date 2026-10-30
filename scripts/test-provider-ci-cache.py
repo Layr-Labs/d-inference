@@ -129,7 +129,7 @@ class CacheIdentityTests(unittest.TestCase):
 
     def test_lanes_and_release_are_isolated_but_metallib_is_shared(self):
         outputs = [self.keys(lane) for lane in cache.LANE_PURPOSES]
-        self.assertEqual(len({output["swift-prefix"] for output in outputs}), 3)
+        self.assertEqual(len({output["swift-prefix"] for output in outputs}), len(cache.LANE_PURPOSES))
         self.assertEqual(len({output["metallib-key"] for output in outputs}), 1)
         for lane in ("release", "qualification"):
             release = identity.keys(self.root, lane, self.metadata)

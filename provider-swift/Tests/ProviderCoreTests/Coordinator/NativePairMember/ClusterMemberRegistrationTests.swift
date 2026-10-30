@@ -7,6 +7,11 @@ private func memberHardware() -> HardwareInfo {
           memoryGb: 24, memoryAvailableGb: 20,
           cpuCores: .init(total: 12, performance: 8, efficiency: 4), gpuCores: 16, memoryBandwidthGbs: 200)
 }
+private func m5UltraHardware() -> HardwareInfo {
+    .init(machineModel: "fixture", chipName: "Apple M5 Ultra", chipFamily: .m5, chipTier: .ultra,
+          memoryGb: 256, memoryAvailableGb: 240,
+          cpuCores: .init(total: 32, performance: 24, efficiency: 8), gpuCores: 80, memoryBandwidthGbs: 1200)
+}
 private func memberConfig(role: ProviderExecutionRole) -> CoordinatorClientConfig {
     .init(url: "wss://coordinator.invalid/ws", hardware: memberHardware(),
           models: [.init(id: "fixture-model", modelType: "qwen3", sizeBytes: 1, estimatedMemoryGb: 1)],
@@ -33,6 +38,36 @@ struct ClusterMemberRegistrationTests {
         }
         #expect(decoded.executionRole == .clusterMember && decoded.models.isEmpty)
         #expect(decoded.memberRegistrationNonce == negotiation.nonce && decoded.clusterModels?.count == 1)
+    }
+
+    /// A member registers the model its pair-serving grant admitted, although
+    /// its hardware-only capabilities lack GLM-5.3-Flash's single-Mac
+    /// requirements; a solo provider with the same capabilities still does not.
+    @Test func aMemberRegistersItsGrantedModelThatTheSingleMacRuleWouldDrop() async throws {
+        let model = GLM5NextCoordinatorServing.catalogModelID
+        let capabilities = DistributedServingEligibility.memberCapabilities(chipFamily: .m5)
+        try #require(!ModelRuntimeRequirements.isEligible(modelID: model, available: capabilities))
+        func config(_ role: ProviderExecutionRole) -> CoordinatorClientConfig {
+            .init(url: "wss://coordinator.invalid/ws", hardware: m5UltraHardware(),
+                  models: [.init(id: model, modelType: "glm5_next", sizeBytes: 1, estimatedMemoryGb: 1)],
+                  backendName: "mlx-swift", attestation: .init(rawBytes: Data(#"{"signed":"fixture"}"#.utf8)),
+                  runtimeCapabilities: capabilities, executionRole: role)
+        }
+        let member = try CoordinatorClientCodec.encodeRegistration(from: config(.clusterMember),
+            memberRegistrationNonce: ClusterMemberNegotiation().nonce)
+        guard case .register(let registration) = try ProviderProtocolCodec.decodeProviderMessage(from: member) else {
+            Issue.record("wrong registration type"); return
+        }
+        #expect(registration.clusterModels?.map(\.id) == [model] && registration.models.isEmpty)
+        let client = CoordinatorClient(config: config(.clusterMember), stats: .init(), state: .init(), liveAPNsToken: { nil })
+        #expect(await client.currentAdvertisedModels().map(\.id) == [model])
+        let solo = try CoordinatorClientCodec.encodeRegistration(from: config(.solo))
+        guard case .register(let soloRegistration) = try ProviderProtocolCodec.decodeProviderMessage(from: solo) else {
+            Issue.record("wrong registration type"); return
+        }
+        #expect(soloRegistration.models.isEmpty && soloRegistration.clusterModels == nil)
+        let soloClient = CoordinatorClient(config: config(.solo), stats: .init(), state: .init(), liveAPNsToken: { nil })
+        #expect(await soloClient.currentAdvertisedModels().isEmpty)
     }
 
     @Test func explicitAckRejectsWrongNonceRoleLateAndDuplicate() throws {

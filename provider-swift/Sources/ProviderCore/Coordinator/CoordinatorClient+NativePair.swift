@@ -16,11 +16,11 @@ extension CoordinatorClient {
     /// The existing signer and transport remain responsible for member
     /// identity; installing grants no trust or runtime approval.
     ///
-    /// The model is the one the member registers (`config.models`), which the
-    /// pair-serving grant admitted (`ProviderLoopConfig.admitsModel`). A
-    /// member reports hardware-only capabilities
-    /// (`DistributedServingEligibility.memberCapabilities`), so the single-Mac
-    /// runtime requirements of GLM-5.3-Flash or Qwen3.8 27B are not checked here.
+    /// The model must be one this member registers (`config.models`,
+    /// `CoordinatorClientConfig.registers(modelID:)`): its pair-serving grant
+    /// decides that, not the single-Mac runtime requirements, which a
+    /// member's hardware-only capabilities do not meet
+    /// (`DistributedServingEligibility`).
     internal func installNativePairMember(_ control: NativePairMemberControl) throws {
         let installation = control.installation
         guard config.executionRole == .clusterMember, !sessionRegistered, nwConnection == nil,

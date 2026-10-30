@@ -393,3 +393,16 @@ public enum CoordinatorError: Error, CustomStringConvertible {
         }
     }
 }
+
+extension CoordinatorClientConfig {
+    /// Whether a registration carries `modelID`. A solo provider registers a
+    /// model its runtime capabilities serve (`ModelRuntimeRequirements`). A
+    /// cluster member registers the models it was configured with: its
+    /// pair-serving grant admitted them (`ProviderLoopConfig.admitsModel`),
+    /// and its capabilities are hardware-only by design
+    /// (`DistributedServingEligibility.memberCapabilities`).
+    func registers(modelID: String) -> Bool {
+        executionRole == .clusterMember
+            || ModelRuntimeRequirements.isEligible(modelID: modelID, available: runtimeCapabilities)
+    }
+}

@@ -34,10 +34,7 @@ public enum CoordinatorClientCodec {
         // authoritative: missing entries clear daemon-start hashes that could
         // no longer be verified. The advertised set may still be overridden on
         // reconnect; the live snapshot is applied to whichever set we send.
-        let baseModels = (models ?? config.models).filter {
-            ModelRuntimeRequirements.isEligible(
-                modelID: $0.id, available: config.runtimeCapabilities)
-        }
+        let baseModels = (models ?? config.models).filter { config.registers(modelID: $0.id) }
         let effectiveModels: [ModelInfo]
         if let modelWeightHashOverrides {
             effectiveModels = baseModels.map { model in

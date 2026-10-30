@@ -124,6 +124,17 @@ public final class ClusterOnboardingTerminal: ClusterOnboardingConsole {
         write("\r\u{1B}[K")
     }
 
+    /// A copy's or download's report: the live line, laid out for its room, where
+    /// one shows; in a transcript only the logged reports, as plain lines.
+    public func progress(_ text: (_ width: Int?) -> String, logged: Bool) {
+        if decorates { working(text(liveRoom)) } else if logged { say("  " + text(nil)) }
+    }
+
+    /// One row only: the return and erase that replace the live line reach just
+    /// the cursor's row, so a wrapped line would leave its start behind.
+    /// Room: the indent, petal and space, the ellipsis and the last column.
+    private var liveRoom: Int { max(1, columns - 6) }
+
     private func drawWorking(_ text: String, force: Bool) {
         let now = DispatchTime.now().uptimeNanoseconds
         let frame = animates ? Int((now / 125_000_000) % 4) : 0
@@ -131,11 +142,7 @@ public final class ClusterOnboardingTerminal: ClusterOnboardingConsole {
         guard force || frame != drawnFrame else { return }
         drawnFrame = frame
         let petal = animates ? ClusterOnboardingBrand.spin(now) : ClusterOnboardingBrand.spinner[0]
-        // One row only: the return and erase that replace the line reach just
-        // the cursor's row, so a wrapped line would leave its start behind.
-        // Room: the indent, petal and space, the ellipsis and the last column.
-        let room = max(1, columns - 6)
-        let shown = text.count > room ? String(text.prefix(room)) : text
+        let shown = text.count > liveRoom ? String(text.prefix(liveRoom)) : text
         write("\r\u{1B}[K  \u{1B}[\(brand)m\(petal)\u{1B}[0m \u{1B}[2m\(shown)\u{2026}\u{1B}[0m")
     }
 

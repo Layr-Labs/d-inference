@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-10-28
+> Last updated: 2026-10-30
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -1555,6 +1555,44 @@ Download a model from the coordinator catalog.
 ```bash
 darkbloom models download <id> [--coordinator <url>] [--r2-cdn <url>]
 ```
+
+The download shows one progress line for the whole model, not one per file.
+Downloads chosen in the `darkbloom start` picker print the same lines. In a
+120-column window:
+
+```text
+  Downloading EigenLabs/Qwen3.8-27B-4bit-mtp  [███████████░░░░░░░░░░░░░░░]   43%   7.0/16.3 GB   125 MB/s   1m 14s left
+```
+
+| Standard output | What is printed |
+|---|---|
+| A terminal | That line, redrawn in place at most every `TransferProgressLine.redrawInterval` (`0.25` s). Its columns are set once for the window's width (`TransferProgressLine.layout(width:)`): each figure has a column as wide as its widest form for this download (`100%`, the total's bytes, `99.9 GB/s`, `23h 59m left`), right-aligned, so the bar and the figures stay put while the width stays the same. The figures whose columns do not fit are left out. While the files are checked against the manifest it reads `Verifying <id> (<size>)…`; then the last line (below) takes its place |
+| Not a terminal (a pipe, a log, `TERM=dumb`) | Plain lines without a bar, padding or carriage returns: the first at once, the next only when both `TransferProgressLine.logInterval` (`30` s) and `TransferProgressLine.logPercentStep` (`10` points) have passed, one at 100% when bytes were transferred, then the same verifying and last lines. The desktop app takes its progress from the last percent (`DesktopBackend.downloadProgress`) |
+
+The rate and the time left are blank for the first
+`TransferProgressLine.estimateDelay` (`2` s) and until bytes arrive, and a time
+left over `TransferProgressLine.maximumTimeLeft` (`24 * 60 * 60` s) is not
+shown. Their columns stay reserved, so the line does not move when they appear.
+
+Each download ends with one last line (`DownloadProgressRenderer`); `<name>` is
+the catalog's display name:
+
+| Outcome | Last line |
+|---|---|
+| Downloaded | `✓ Downloaded <name> (<size> in <time>)`; after a resumed download, `✓ Downloaded <name> (<size> in <time>; <size> of it was already on disk)` |
+| Already on disk and verified | `✓ <name> is already downloaded (<size>)` |
+| The transfer failed | `Download of <id> stopped at <percent> (<bytes>)`, then the error |
+| The files failed their check against the manifest | `Verification of <id> failed: <reason>` |
+
+`darkbloom models download` then prints `Cached at <path>`. The picker prints
+nothing more for the model.
+
+Sizes are decimal, as the catalog gives them. The rate leaves out bytes that an
+interrupted download already had on disk; the download resumes from them. Code:
+`provider-swift/Sources/ProviderCore/Models/ModelDownloadProgress.swift`
+(`DownloadProgressRenderer`),
+`provider-swift/Sources/ProviderCore/Models/TransferProgressLine.swift`
+(`TransferProgressLine`).
 
 If the model's `models--<id>` cache entry is a dangling symlink (for example,
 to an unavailable external drive), downloading preserves it as a hidden sibling

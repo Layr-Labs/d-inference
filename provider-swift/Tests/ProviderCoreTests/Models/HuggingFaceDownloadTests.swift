@@ -65,7 +65,9 @@ struct HuggingFaceDownloadTests {
     private func downloader() -> ModelDownloader {
         let config = URLSessionConfiguration.ephemeral
         config.protocolClasses = [HFDownloadProtocol.self]
-        return ModelDownloader(r2CDNURL: "https://r2.test", urlSession: URLSession(configuration: config))
+        // R2 keeps its three attempts per file; the wait between them is short.
+        return ModelDownloader(r2CDNURL: "https://r2.test", urlSession: URLSession(configuration: config),
+                               retryBackoff: .milliseconds(1))
     }
     private func job(_ destination: URL) -> (file: ManifestFile, destination: URL, url: String) {
         (ManifestFile(path: "weights/model.safetensors", sizeBytes: Int64(bytes.count),

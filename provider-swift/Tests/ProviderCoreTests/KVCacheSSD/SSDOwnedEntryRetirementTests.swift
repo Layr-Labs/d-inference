@@ -46,7 +46,9 @@ struct SSDOwnedEntryRetirementTests {
         var diskBytesOnDisk: Int { index.totalBytes }
         func oldestEntryAccess() -> Int64? { index.oldest()?.lastAccess }
         func evictOldestEntry() -> Int { evictOldest() }
-        func retireOwnedEntries(_ urls: [URL]) -> Set<String> { retire(urls).removed }
+        func retireOwnedEntries(_ urls: [URL], unusedSince: Int64?) -> Set<String> {
+            retire(urls, unusedSince: unusedSince).removed
+        }
         func reconcileExternalRemovals() {
             SSDOwnedEntryRetirement.reconcileMissingEntries(root: model, index: index)
         }
@@ -57,9 +59,9 @@ struct SSDOwnedEntryRetirementTests {
             }
             return completed != nil
         }
-        private func retire(_ urls: [URL]) -> SSDOwnedEntryRetirement.Result {
+        private func retire(_ urls: [URL], unusedSince: Int64? = nil) -> SSDOwnedEntryRetirement.Result {
             let result = SSDOwnedEntryRetirement.remove(
-                urls: urls, root: model, index: index, epochStore: epoch) ?? .init()
+                urls: urls, root: model, index: index, epochStore: epoch, unusedSince: unusedSince) ?? .init()
             if result.externalChange { reconcileExternalRemovals() }
             return result
         }

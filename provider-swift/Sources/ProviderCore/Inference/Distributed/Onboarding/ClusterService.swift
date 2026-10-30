@@ -1043,6 +1043,8 @@ public final class ClusterService: @unchecked Sendable {
                 let step: ClusterApprovalCheck.Step
                 let watch: ClusterApprovalCheck.Watch
                 let serving: Bool
+                /// The saved setup's worker digest, recorded with an approval set aside.
+                let worker: String
             }
             func decide(_ answer: () -> ClusterApprovalFetch.Outcome?) -> Decided? {
                 let record = try? self.store.readRecord()
@@ -1072,7 +1074,8 @@ public final class ClusterService: @unchecked Sendable {
                 let step = ClusterApprovalCheck.step(saved: saved, fetched: fetched, setAside: setAside, scope: scope,
                     memberQuickEnds: quickEnds, peerApprovalID: peerApprovalID, watch: &watch, clock: ClusterService.monotonicSeconds(),
                     grace: ClusterService.soloGraceSeconds, now: now)
-                return Decided(step: step, watch: watch, serving: record?.leadership?.serving == true)
+                return Decided(step: step, watch: watch, serving: record?.leadership?.serving == true,
+                               worker: saved.capability.runtimeBinarySHA256)
             }
             var fetched: ClusterApprovalFetch.Outcome?
             func answer() -> ClusterApprovalFetch.Outcome? {
@@ -1122,7 +1125,7 @@ public final class ClusterService: @unchecked Sendable {
                 if let note = result.note { stored.approvalNote = note }
                 // The approval set aside is kept while the pair serves locally and dropped once one is saved again.
                 if case .serveLocally(let approval, let reason) = step, result.changed {
-                    stored.approvalSetAside = .init(approval: approval, reason: reason)
+                    stored.approvalSetAside = .init(approval: approval, reason: reason, runtimeBinarySHA256: decided.worker)
                 }
                 if case .save = step, result.changed { stored.approvalSetAside = nil }
             }

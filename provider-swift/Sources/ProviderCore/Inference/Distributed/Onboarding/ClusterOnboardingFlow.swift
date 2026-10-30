@@ -419,6 +419,13 @@ public enum ClusterOnboardingUpdate {
         return reportedAt > partsStoppedAt
     }
 
+    /// The choice of `model` (its id; the screens show catalog names) that can start as listed: offered on these Macs,
+    /// with nothing to copy or download first. A list planned again after the parts stopped (an update, or a model
+    /// change of a serving cluster) is searched by the model, not by the earlier list's index.
+    public static func servableIndex(of model: String, in choices: [ClusterOnboardingModelChoice]) -> Int? {
+        choices.firstIndex { ($0.modelID ?? $0.title) == model && $0.blocker == nil && $0.provision == nil }
+    }
+
     /// The members whose running worker differs from the digest the saved setup pins. A member whose current digest
     /// is not known now (it did not answer) is not counted: nothing is re-planned on a guess.
     public static func changed(pinned: [String: String], current: [String: String?]) -> [String] {

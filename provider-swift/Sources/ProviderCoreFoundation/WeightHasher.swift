@@ -241,9 +241,12 @@ public struct WeightHasher: Sendable {
     }
 
     #if canImport(Darwin)
-    /// One reusable page-aligned 1 MiB buffer and `F_NOCACHE`; nil on any
-    /// failure so the caller's existing readers run. The file's cached pages
-    /// are dropped afterwards (`PageCache`).
+    /// Bytes per uncached read. Each file being hashed holds two such buffers.
+    static let uncachedChunkBytes = 4 << 20
+
+    /// Page-aligned `F_NOCACHE` reads, one chunk ahead of the hash
+    /// (`OverlappedFileDigest`); nil on any failure so the caller's existing
+    /// readers run. The file's cached pages are dropped afterwards (`PageCache`).
     static func hashSingleFileUncached(at url: URL) -> SHA256Digest? {
         let descriptor = open(url.path, O_RDONLY | O_CLOEXEC)
         guard descriptor >= 0 else { return nil }
@@ -252,20 +255,7 @@ public struct WeightHasher: Sendable {
             close(descriptor)
         }
         guard fcntl(descriptor, F_NOCACHE, 1) != -1 else { return nil }
-        let capacity = 1 << 20
-        let buffer = UnsafeMutableRawPointer.allocate(byteCount: capacity, alignment: Int(getpagesize()))
-        defer { buffer.deallocate() }
-        var hasher = SHA256()
-        while true {
-            let count = read(descriptor, buffer, capacity)
-            if count == 0 { break }
-            if count < 0 {
-                if errno == EINTR { continue }
-                return nil
-            }
-            hasher.update(bufferPointer: UnsafeRawBufferPointer(start: buffer, count: count))
-        }
-        return hasher.finalize()
+        return OverlappedFileDigest.sha256(descriptor: descriptor, chunkBytes: uncachedChunkBytes)
     }
     #endif
 

@@ -106,6 +106,9 @@ public actor EngineV2Bridge {
     /// tokens) — `buildStopTokenIds` semantics, computed ONCE at bridge
     /// construction so B=1 and batched behavior stay identical.
     let stopTokenIds: Set<Int>
+    /// Where client stop strings apply (`ModelEOSPolicy.stopStringScope`);
+    /// nil matches the whole generated text.
+    let stopStringScope: CBv2StopStringScope?
     /// Artifact sampling defaults resolved once at construction
     /// (`EngineV2SamplingDefaults.resolve`); `.legacy` for every family
     /// that has not been admitted.
@@ -370,6 +373,7 @@ public actor EngineV2Bridge {
         tokenizer: TokenizerHandle,
         eosTokenIds: Set<Int>,
         extraEOSTokens: [String] = [],
+        stopStringScope: CBv2StopStringScope? = nil,
         samplingDefaults: EngineV2SamplingDefaults = .legacy,
         defaultMaxTokens: Int = 4096,
         maxConcurrentRequests: Int = 4,
@@ -433,6 +437,7 @@ public actor EngineV2Bridge {
             extraEOSTokens: extraEOSTokens,
             convertTokenToId: { [inner = tokenizer.inner] in inner.convertTokenToId($0) }
         )
+        self.stopStringScope = stopStringScope
         self.samplingDefaults = samplingDefaults
         self.defaultMaxTokens = defaultMaxTokens
         self.maxConcurrentRequests = maxConcurrentRequests

@@ -937,6 +937,39 @@ struct EngineV2MatchedStopSequenceTests {
         ) == nil)
     }
 
+    @Test("a scoped model reports only the stop that ended its answer")
+    func scopedMatchedSequence() {
+        let scope = ModelEOSPolicy.stopStringScope(modelId: "gpt-oss-20b")
+        let analysis = "<|channel|>analysis<|message|>The answer: Canberra. Done.<|end|>"
+        #expect(EngineV2Bridge.matchedStopSequence(
+            candidates: ["."],
+            generatedText: analysis + "<|start|>assistant<|channel|>final<|message|>It is Canberra",
+            scope: scope
+        ) == nil, "a period in the analysis did not stop the request")
+        #expect(EngineV2Bridge.matchedStopSequence(
+            candidates: ["!", "."],
+            generatedText: analysis + "<|start|>assistant<|channel|>final<|message|>It is Canberra. More",
+            scope: scope
+        ) == ".")
+    }
+
+    @Test("GPT-OSS requests carry the bridge's stop-string scope")
+    func translationCarriesStopScope() {
+        let scope = ModelEOSPolicy.stopStringScope(modelId: "gpt-oss-20b")
+        let request = ChatCompletionRequest(
+            model: "gpt-oss-20b", messages: [ChatMessage(role: "user", content: "hi")],
+            stop: .multiple(["\n\n"]))
+        let scoped = EngineV2Translation.cbv2Request(
+            id: CBv2RequestID(1), promptTokens: [1], request: request, defaultMaxTokens: 16,
+            stopTokenIds: [], stopStringScope: scope)
+        #expect(scoped.stopStrings == ["\n\n"])
+        #expect(scoped.stopStringScope == scope)
+        let unscoped = EngineV2Translation.cbv2Request(
+            id: CBv2RequestID(2), promptTokens: [1], request: request, defaultMaxTokens: 16,
+            stopTokenIds: [])
+        #expect(unscoped.stopStringScope == nil)
+    }
+
     @Test("compares Unicode scalars exactly rather than canonically")
     func unicodeScalarExactness() {
         #expect(EngineV2Bridge.matchedStopSequence(

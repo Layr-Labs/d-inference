@@ -178,7 +178,8 @@ jobs:
     env:
       VERSION: ${{ needs.resolve-env.outputs.version }}
       # Package.swift compiles ProviderCore with this environment's defaults.
-      # qualify-sdk does not set it: tests must see production defaults.
+      # qualify-sdk sets prod: tests must see production defaults on every
+      # branch (on dev, an unset value compiles the dev identity).
       DARKBLOOM_RELEASE_ENVIRONMENT: ${{ needs.resolve-env.outputs.environment }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
@@ -235,6 +236,10 @@ jobs:
     timeout-minutes: 60
     permissions:
       contents: read
+    env:
+      # The test suite pins production names and defaults. Package.swift
+      # defaults to dev on the dev branch, so name prod here, as ci.yml does.
+      DARKBLOOM_RELEASE_ENVIRONMENT: prod
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:

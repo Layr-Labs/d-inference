@@ -1004,7 +1004,8 @@ public final class ClusterService: @unchecked Sendable {
             // The plan's own line and its reason for the mode (tensor parallel or a pipeline), so the log says why.
             say("set the cluster up again after the update: \(model) is starting on both Macs ("
                 + choices[index].lines.joined(separator: " ") + ")")
-            // The re-adopted setups carry no cluster approval: the next check looks for the entry of the updated app.
+            // The re-adopted setups carry no cluster approval: the next check finds the same model approval again, or the
+            // build-pinned entry of the updated app.
             self.lock.withLock { self.approvalChecked = false; self.nextApprovalCheck = .distantPast }
         }
     }

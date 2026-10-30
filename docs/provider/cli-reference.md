@@ -1565,7 +1565,7 @@ Downloads chosen in the `darkbloom start` picker print the same lines:
 
 | Standard output | What is printed |
 |---|---|
-| A terminal | That line, redrawn in place at most every `TransferProgressLine.redrawInterval` (`0.25` s) and cut to the window's width. While the files are checked against the manifest it reads `Verifying <id> (<size>)…`; it ends as `Downloaded <id> (<size> in <time>)` or `Download of <id> stopped at <percent> (<bytes>)` |
+| A terminal | That line, redrawn in place at most every `TransferProgressLine.redrawInterval` (`0.25` s) and fitted to the window's width: the figures that do not fit are left out (`TransferProgressLine.text`). While the files are checked against the manifest it reads `Verifying <id> (<size>)…`; it ends as `Downloaded <id> (<size> in <time>)` (after a resumed download, `Downloaded <id> (<size> in <time>; <size> of it was already on disk)`) or as `Download of <id> stopped at <percent> (<bytes>)` |
 | Not a terminal (a pipe, a log, `TERM=dumb`) | Plain lines without a bar or carriage returns: the first at once, the next only when both `TransferProgressLine.logInterval` (`30` s) and `TransferProgressLine.logPercentStep` (`10` points) have passed, one at 100%, then the same verifying and final lines. The desktop app takes its progress from the last percent (`DesktopBackend.downloadProgress`) |
 
 Sizes are decimal, as the catalog gives them. The rate leaves out bytes that an

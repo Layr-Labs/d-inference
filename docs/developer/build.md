@@ -23,6 +23,12 @@ an arbitrary prebuilt metallib or infer GPU qualification from compilation.
 Keep separate worktrees/output directories for independent native builds;
 never share an active Swift scratch path or another suite's GPU reservation.
 
+After changing provider authorization summaries, rebuild the provider test
+product before running the [authorization guidance tests](test.md#provider-authorization-guidance).
+They exercise shared production decisions without invoking status/doctor's
+host probes or native Apple operations; signed-release qualification remains
+separate.
+
 ## Build
 
 ```bash

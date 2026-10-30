@@ -1200,6 +1200,7 @@ Output includes:
   GLM-5.3-Flash error that reports a Metal command buffer out of memory adds
   the `→ fix:` line from
   [GLM-5.3-Flash GPU wired-memory limit](#glm-53-flash-gpu-wired-memory-limit).
+- App Attest serving authorization can remain visible through its unexpired lease, while MDM removal advice requires a matching fresh coordinator decision. The same distinction applies to both doctor summaries; see [provider authorization](../reference/provider-authorization.md).
 - `Requests served since the daemon started (… ago)`: coordinator requests
   this daemon finished since it started, with output tokens only. The count
   restarts at zero when the daemon restarts or a scheduled availability window

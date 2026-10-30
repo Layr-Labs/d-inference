@@ -5,7 +5,43 @@ import Foundation
 public enum ProviderAuthorizationReadiness {
     public static let snapshotMaxAge: Double = 10
 
+    /// Removal guidance: the coordinator decision itself must be fresh, so a
+    /// delayed revocation cannot be hidden behind a lease that has time left.
     public static func currentStatus(
+        _ authorization: ProviderAuthorizationStatus?,
+        status: String?, writtenAt: Double, receivedAt: Double,
+        startedAt: Double, now: Double, processMatches: Bool,
+        coordinatorMatches: Bool
+    ) -> ProviderAuthorizationStatus? {
+        guard let live = liveDecision(authorization, status: status, writtenAt: writtenAt,
+                                      receivedAt: receivedAt, startedAt: startedAt, now: now,
+                                      processMatches: processMatches, coordinatorMatches: coordinatorMatches),
+              now - receivedAt <= snapshotMaxAge
+        else { return nil }
+        return live
+    }
+
+    /// Status and doctor: an unexpired App Attest lease is still the
+    /// coordinator's grant when its latest renewal arrived more than
+    /// `snapshotMaxAge` ago, so one delayed renewal does not show legacy trust.
+    /// Other decisions keep the renewal window.
+    public static func displayedStatus(
+        _ authorization: ProviderAuthorizationStatus?,
+        status: String?, writtenAt: Double, receivedAt: Double,
+        startedAt: Double, now: Double, processMatches: Bool,
+        coordinatorMatches: Bool
+    ) -> ProviderAuthorizationStatus? {
+        guard let live = liveDecision(authorization, status: status, writtenAt: writtenAt,
+                                      receivedAt: receivedAt, startedAt: startedAt, now: now,
+                                      processMatches: processMatches, coordinatorMatches: coordinatorMatches),
+              now - receivedAt <= snapshotMaxAge || live.hasCurrentAppAttestAuthorization(now: now)
+        else { return nil }
+        return live
+    }
+
+    /// The latest decision this live process received from the expected
+    /// coordinator, written by a daemon that is still updating its snapshot.
+    private static func liveDecision(
         _ authorization: ProviderAuthorizationStatus?,
         status: String?, writtenAt: Double, receivedAt: Double,
         startedAt: Double, now: Double, processMatches: Bool,
@@ -15,7 +51,6 @@ public enum ProviderAuthorizationReadiness {
               writtenAt.isFinite, receivedAt.isFinite, startedAt.isFinite,
               writtenAt <= now + 2, now - writtenAt <= snapshotMaxAge,
               receivedAt >= startedAt, receivedAt <= now + 2,
-              now - receivedAt <= snapshotMaxAge,
               status == "online", let authorization,
               authorization.protocolVersion == 1
         else { return nil }
@@ -28,17 +63,26 @@ public enum ProviderAuthorizationReadiness {
             && authorization.hasCurrentAppAttestAuthorization(now: now)
     }
 
+    /// Displayed serving leases can outlast removal readiness. Callers provide
+    /// the strict current decision from the same snapshot and time separately.
     public static func summary(
-        _ authorization: ProviderAuthorizationStatus?, now: Double,
+        _ authorization: ProviderAuthorizationStatus?,
+        removalAuthorization: ProviderAuthorizationStatus?, now: Double,
         macOSMajorVersion: Int = ProcessInfo.processInfo.operatingSystemVersion.majorVersion
     ) -> String {
         guard let authorization else {
             return "App Attest authorization is unconfirmed; keep any existing management profiles installed until this running provider receives fresh coordinator readiness."
         }
         if authorization.hasCurrentAppAttestAuthorization(now: now) {
-            return "App Attest authorizes this connection. " + (authorization.mdmRemovalReady
-                ? "Darkbloom MDM removal is available: run \(BuildEnvironment.current.cliName) unenroll and choose App Attest."
-                : "Darkbloom MDM removal is not enabled for this machine yet.")
+            let serving = "App Attest authorizes this connection. "
+            guard authorization.mdmRemovalReady else {
+                return serving + "Darkbloom MDM removal is not enabled for this machine yet."
+            }
+            guard removalAuthorization == authorization,
+                  removalReady(removalAuthorization, now: now) else {
+                return serving + "Darkbloom MDM removal needs fresh coordinator readiness; keep existing management profiles installed."
+            }
+            return serving + "Darkbloom MDM removal is available: run \(BuildEnvironment.current.cliName) unenroll and choose App Attest."
         }
         if authorization.path == "legacy" {
             return "Serving through legacy verification; keep the Darkbloom MDM profile."
@@ -64,16 +108,41 @@ extension DaemonState {
         now: Double = Date().timeIntervalSince1970,
         readProcessIdentity: (Int32) -> ProcessIdentity? = ProcessIdentity.read
     ) -> ProviderAuthorizationStatus? {
-        let processMatches = processIdentity.map {
-            $0.pid == pid && readProcessIdentity(pid) == $0
-        } ?? false
-        let coordinatorMatches = coordinatorUrl.map {
-            coordinatorHTTPBase($0) == coordinatorHTTPBase(expectedCoordinator)
-        } ?? false
+        let matches = snapshotMatches(coordinatorURL: expectedCoordinator, readProcessIdentity: readProcessIdentity)
         return ProviderAuthorizationReadiness.currentStatus(
             trust?.authorization, status: trust?.status,
             writtenAt: writtenAt, receivedAt: trust?.receivedAt ?? 0,
             startedAt: startedAt, now: now,
-            processMatches: processMatches, coordinatorMatches: coordinatorMatches)
+            processMatches: matches.process, coordinatorMatches: matches.coordinator)
+    }
+
+    /// For `status` and `doctor` output; removal decisions use
+    /// `currentProviderAuthorization`.
+    public func displayedProviderAuthorization(
+        coordinatorURL expectedCoordinator: String,
+        now: Double = Date().timeIntervalSince1970,
+        readProcessIdentity: (Int32) -> ProcessIdentity? = ProcessIdentity.read
+    ) -> ProviderAuthorizationStatus? {
+        let matches = snapshotMatches(coordinatorURL: expectedCoordinator, readProcessIdentity: readProcessIdentity)
+        return ProviderAuthorizationReadiness.displayedStatus(
+            trust?.authorization, status: trust?.status,
+            writtenAt: writtenAt, receivedAt: trust?.receivedAt ?? 0,
+            startedAt: startedAt, now: now,
+            processMatches: matches.process, coordinatorMatches: matches.coordinator)
+    }
+
+    /// Whether this snapshot was written by the still-running daemon process
+    /// and describes a connection to the expected coordinator.
+    private func snapshotMatches(
+        coordinatorURL expectedCoordinator: String,
+        readProcessIdentity: (Int32) -> ProcessIdentity?
+    ) -> (process: Bool, coordinator: Bool) {
+        let process = processIdentity.map {
+            $0.pid == pid && readProcessIdentity(pid) == $0
+        } ?? false
+        let coordinator = coordinatorUrl.map {
+            coordinatorHTTPBase($0) == coordinatorHTTPBase(expectedCoordinator)
+        } ?? false
+        return (process, coordinator)
     }
 }

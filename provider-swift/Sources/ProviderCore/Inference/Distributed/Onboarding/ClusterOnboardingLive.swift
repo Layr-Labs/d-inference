@@ -1034,7 +1034,9 @@ final class OnboardingLive: @unchecked Sendable {
     func adopt(_ index: Int) -> Result<[String], ClusterOnboardingFailure> {
         // The choice travels with its model's id: a leader that restarted since it made the list plans again and finds it.
         let model = lock.withLock { listedChoices.indices.contains(index) ? (listedChoices[index].modelID ?? listedChoices[index].title) : nil }
-        return routed(.init(op: .adopt, index: index, model: model), seconds: 240, acting: true, local: { localAdopt(index) }) { $0.lines }
+        // The leader may stop both parts (up to 5 minutes to drain), wait for their memory (`releaseWaitSeconds`), plan
+        // again and retry the device lease: the reply can take that long.
+        return routed(.init(op: .adopt, index: index, model: model), seconds: 600, acting: true, local: { localAdopt(index) }) { $0.lines }
     }
 
     /// `model`: the id of the model the list showed at `index` (a choice forwarded from another Mac). When this Mac's
@@ -1049,7 +1051,7 @@ final class OnboardingLive: @unchecked Sendable {
             }
             index = found
         }
-        guard let peer = lock.withLock({ peerReport }), let choice = lock.withLock({ choices.indices.contains(index) ? choices[index] : nil }) else {
+        guard var peer = lock.withLock({ peerReport }), var choice = lock.withLock({ choices.indices.contains(index) ? choices[index] : nil }) else {
             return .failure(.init("The list of models is out of date; run `darkbloom cluster` again to choose."))
         }
         var lines = [String]()
@@ -1060,6 +1062,33 @@ final class OnboardingLive: @unchecked Sendable {
             lines.append("Stopped both Macs' parts to change the model (each released its memory first).")
             guard drained(seconds: 300) else {
                 return .failure(.init(lines + ["A part did not stop within 5 minutes, so the setup was not changed; run `darkbloom cluster` again."]))
+            }
+            // The list was planned while the parts held their memory, where a tensor-parallel split may not fit "now"
+            // and a pipeline is listed in its place (2026-10-29: GLM-5.3-Flash came back as a pipeline at half the
+            // speed, serving the pipeline's context instead of its native one). Plan again once that memory is back,
+            // as the re-plan after an update does, and adopt the model's new plan. When planning fails, the listed
+            // plan stands (a failed plan replaces neither `choices` nor the decisions `context.adopt` reads): it was
+            // priced with less memory than there is now.
+            awaitReleased()
+            if case .success(let replanned) = localPlanModels() {
+                // `localPlanModels` set `choices` in the order of the list it returned. Both are read under one lock,
+                // and the entry must still name the chosen model: a plan forwarded from the other Mac may replace
+                // `choices` meanwhile.
+                let picked = lock.withLock { () -> (index: Int, again: ChoiceKey)? in
+                    guard let found = ClusterOnboardingUpdate.servableIndex(of: choice.title, folder: choice.folder, in: replanned,
+                                                                            folders: choices.map { $0.folder }),
+                          choices.indices.contains(found), choices[found].title == choice.title else { return nil }
+                    return (found, choices[found])
+                }
+                guard let picked else {
+                    let reason = replanned.first { ($0.modelID ?? $0.title) == choice.title }?.blocker ?? "not found"
+                    return .failure(.init(lines + ["\(choice.title) is not offered on these Macs now (\(reason)); run `darkbloom cluster` again to choose."]))
+                }
+                if picked.again.key != choice.key, let line = replanned[picked.index].lines.first {
+                    lines.append("Planned again with both Macs' memory given back: \(line).")
+                }
+                choice = picked.again
+                peer = lock.withLock { peerReport } ?? peer
             }
         }
         let macs = (here: hereShort, there: thereShort)
@@ -1113,6 +1142,16 @@ final class OnboardingLive: @unchecked Sendable {
         if let note = result.note { try? store.updateRecord { $0.approvalNote = note } }
         if case .failure(let failure) = localServe() { return .failure(.init((result.line.map { [$0 + "."] } ?? []) + failure.lines)) }
         return .success(result.line.map { [$0 + "."] } ?? [])
+    }
+
+    /// After `localStop`: waits until both Macs say nothing is left running (at most
+    /// `ClusterOnboardingUpdate.releaseWaitSeconds`), so the plan made next prices the memory the new parts will have,
+    /// not what the stopped ones held.
+    func awaitReleased() {
+        let releasedBy = Date().addingTimeInterval(ClusterOnboardingUpdate.releaseWaitSeconds)
+        while Date() < releasedBy, case .success(let lines) = localVerifyTeardown(), !ClusterOnboardingUpdate.released(lines) {
+            Thread.sleep(forTimeInterval: 2)
+        }
     }
 
     /// Both Macs' parts ended (this Mac's service publishes its own; the other Mac's is asked over the link).

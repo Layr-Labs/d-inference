@@ -1272,6 +1272,37 @@ import Darwin
         expect(U.reportPricesPlan(reportedAt: stoppedAt.addingTimeInterval(40), partsStoppedAt: stoppedAt),
                "update: a report taken after the stop prices the plan")
         expect(U.reportPricesPlan(reportedAt: stoppedAt, partsStoppedAt: nil), "update: without a stop, the report taken before the list prices it")
+        // A list planned again after the parts stopped (an update, or a model change of a serving cluster) is searched
+        // by the model's id, not the earlier list's index (2026-10-29: `darkbloom cluster local` on a serving pair
+        // adopted the pipeline listed while its tensor-parallel part still held the memory).
+        let copy = ClusterOnboardingProvisionOffer(lines: ["copy over the cable"], downloadAlternative: false, leaderDownloads: false)
+        let replanned = [
+            ClusterOnboardingModelChoice(title: "Qwen 3.5 9B", lines: [], blocker: nil, provision: copy, modelID: "Qwen3.5-9B"),
+            ClusterOnboardingModelChoice(title: "PrismML Bonsai 2 27B", lines: [], blocker: "does not fit", modelID: "bonsai-2-27b"),
+            ClusterOnboardingModelChoice(title: "Z.ai: GLM-5.3-Flash", lines: ["181.8 GB · tensor parallel"], blocker: nil,
+                                         modelID: "glm-5.3-flash"),
+            ClusterOnboardingModelChoice(title: "local-folder", lines: [], blocker: nil),
+        ]
+        expect(U.servableIndex(of: "glm-5.3-flash", in: replanned) == 2, "re-plan: the model found by its id where the new list put it")
+        expect(U.servableIndex(of: "Z.ai: GLM-5.3-Flash", in: replanned) == nil, "re-plan: a catalog name is not the model's id")
+        expect(U.servableIndex(of: "local-folder", in: replanned) == 3, "re-plan: a choice without an id is found by its title")
+        expect(U.servableIndex(of: "bonsai-2-27b", in: replanned) == nil, "re-plan: a blocked model cannot start")
+        expect(U.servableIndex(of: "Qwen3.5-9B", in: replanned) == nil, "re-plan: a model to copy first cannot start as listed")
+        expect(U.servableIndex(of: "gone", in: replanned) == nil, "re-plan: a model no longer listed")
+        let both = replanned + [ClusterOnboardingModelChoice(title: "Qwen 3.5 9B", lines: ["6.1 GB · pipeline"], blocker: nil, modelID: "Qwen3.5-9B")]
+        expect(U.servableIndex(of: "Qwen3.5-9B", in: both) == 4, "re-plan: an entry of the model that can start is found past one to copy first")
+        let twoFolders = [
+            ClusterOnboardingModelChoice(title: "GLM-5.3-Flash", lines: ["tensor parallel"], blocker: nil, modelID: "glm-5.3-flash"),
+            ClusterOnboardingModelChoice(title: "GLM-5.3-Flash", lines: ["tensor parallel"], blocker: nil, modelID: "glm-5.3-flash"),
+        ]
+        expect(U.servableIndex(of: "glm-5.3-flash", folder: "/models/b", in: twoFolders, folders: ["/models/a", "/models/b"]) == 1,
+               "re-plan: of two folders with one model id, the chosen folder's entry")
+        expect(U.servableIndex(of: "glm-5.3-flash", folder: "/models/gone", in: twoFolders, folders: ["/models/a", "/models/b"]) == 0,
+               "re-plan: the chosen folder is gone, so the model's first entry that can start")
+        expect(U.servableIndex(of: "Qwen3.5-9B", folder: "/models/q", in: both, folders: ["", "", "", "", "/models/q"]) == 4,
+               "re-plan: the chosen folder's entry, found past one to copy first")
+        expect(U.servableIndex(of: "Qwen3.5-9B", folder: "/models/copy", in: both, folders: ["/models/copy", "", "", "", "/models/q"]) == 4,
+               "re-plan: the chosen folder's entry needs a copy first, so the entry that can start")
     }
 
     /// The exact text and key count of a flow, for the evidence.

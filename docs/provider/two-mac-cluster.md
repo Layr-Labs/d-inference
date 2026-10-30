@@ -272,7 +272,10 @@ to pipeline when eligible and fitting, without requesting a link measurement.
 Where tensor parallel fits both Macs' memory as they are now, it is chosen,
 also on a new pair whose link no load has measured yet. A pipeline is chosen
 when only a pipeline fits now, and stays until the pair is planned again (`m`
-in `darkbloom cluster`, or after a Darkbloom update). Every load records the
+in `darkbloom cluster`, or after a Darkbloom update). Changing the model of a
+serving cluster (`m`, or `darkbloom cluster local <model>`) plans again once both
+Macs have stopped their parts and given back their memory, so the memory the
+running model held does not turn tensor parallel into a pipeline. Every load records the
 encrypted link's cost for later predictions; plans use the median of the
 pair's last eight measurements from the last 30 days. GLM-5.3-Flash on two M5
 Ultra 256 GB runs tensor parallel on equal shares with eight concurrent

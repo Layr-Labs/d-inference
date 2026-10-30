@@ -2958,7 +2958,17 @@ transcript without a live line keeps only the reports
 `TransferProgressLine.takeLogLine` marks and the lines for the record.
 After a Darkbloom update changes a Mac's worker digest, the control leader's
 cluster service re-plans and re-adopts the same model by itself
-(`ClusterService.checkForUpdate`, `ClusterOnboardingUpdate`). The stage memory
+(`ClusterService.checkForUpdate`, `ClusterOnboardingUpdate`). A model change of
+a serving cluster (`m`, or `darkbloom cluster local <model>`) plans the same way:
+its list was priced while the running parts held their memory, where tensor
+parallel may not fit now, so once both parts stopped and both Macs gave the
+memory back (`OnboardingLive.awaitReleased`) it plans again and adopts the
+chosen model's new plan, found by its id (`OnboardingLive.localAdopt`,
+`ClusterOnboardingUpdate.servableIndex`). When planning again fails, the listed
+plan stands (it was priced with less memory than the Macs then have); a model
+the new plan does not offer is not started, and the screen says why. The
+automatic re-plan after repeated memory refusals at load adopts through the
+same path (`ClusterService.noteMemoryRefusal`). The stage memory
 gate's two fixed margins (the admissible floor, 6 GiB, and the loading
 headroom, 4 GiB, measured on 256 GiB Macs) apply on Macs with 96 GiB or more;
 below that they are the same share of the observed Mac's memory, never under
@@ -3736,10 +3746,17 @@ multiply-add per weight and vector) and the words a lane takes per step (capped
 to the weight's quantization group). The M3 Ultra (family 15) and the M5 Max
 (17) take the dequantized weights at one word per lane, with layouts `a:4:4:1`
 for one vector, `a:2:4:4` for two to four and `a:2:4:5` for five, and tiles of
-four (`a:2:4:4`) past five. The kernel also serves whole-cohort tiles (one tile
+four (`a:2:4:4`) past five. The M5 Ultra (`applegpu_g17d`, family 17) has its
+own table in `architectureLayouts`, read before the family's: rows in registers
+for two to five vectors (`b:2:2:4`, `b:2:2:5`) and family 17's for the rest.
+On two M5 Ultra 256 GB serving the 27B pair the table cut the one-request round
+from 35.3 ms (family 17's layout, same build) to 33.2 ms. Against the
+`0.10.4-dev.branch.9` release (34.5 ms) it raised decode from 75.8 to 80.5 tok/s
+at 256 tokens (62.7 to 66.8 at 1,024), with identical outputs.
+The kernel also serves whole-cohort tiles (one tile
 of eight, `b:4:4:8`, or tiles of sixteen, `b:2:4:16`, reading the weights once
 for up to 32 vectors; a tile that runs past the call's end skips its missing
-vectors), but no family selects them: on two M5 Ultra 256 GB serving the 27B
+vectors), but no table selects them: on two M5 Ultra 256 GB serving the 27B
 pair they lowered the four-request aggregate by 19 % (73.1 against 90.1 tok/s,
 identical outputs). Other families take the scaled inputs and the generic
 layouts. A layout (rows per SIMD group, SIMD groups, vectors per weight read,

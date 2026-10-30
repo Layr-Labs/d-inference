@@ -450,15 +450,18 @@ public final class ClusterService: @unchecked Sendable {
             case .success(let value): choices = value
             case .failure(let failure): return failed(failure.lines)
             }
-            guard let index = choices.firstIndex(where: { ($0.modelID ?? $0.title) == model && $0.blocker == nil && $0.provision == nil }) else {
+            guard let index = ClusterOnboardingUpdate.servableIndex(of: model, in: choices) else {
                 return failed(["\(model) does not fit these Macs' memory now: \(choices.first { ($0.modelID ?? $0.title) == model }?.blocker ?? "not offered")"])
             }
             if case .failure(let failure) = live.localAdopt(index) { return failed(failure.lines) }
             if case .failure(let failure) = live.localServe() { return failed(failure.lines) }
             let after = try? self.context.savedConfiguration().reference.get()?.sha256
             self.lock.withLock { self.sameSplitReplans = before == after ? self.sameSplitReplans + 1 : 0 }
+            // `localAdopt` stops the serving parts and plans once more when their memory is back, so the split adopted
+            // need not be `choices[index]` (planned while they ran): it is said from the setup the start recorded.
+            let deployment = (try? self.store.readRecord())?.leadership?.deployment
             say(before == after ? "planned \(model) again: the same split is still the one that fits; trying it again"
-                                : "planned \(model) again on the memory now: \(choices[index].lines.first ?? "a new split") is starting on both Macs")
+                                : "planned \(model) again on the memory now: a new split is starting on both Macs" + (deployment.map { " (\($0))" } ?? ""))
         }
     }
 
@@ -978,11 +981,7 @@ public final class ClusterService: @unchecked Sendable {
             // pair does not fit "now" and a pipeline is chosen in its place. A failure from here on keeps the
             // serving intent, so the next check tries again.
             if case .failure(let failure) = live.localStop() { return failed(failure.lines) }
-            let releasedBy = Date().addingTimeInterval(ClusterOnboardingUpdate.releaseWaitSeconds)
-            while Date() < releasedBy, case .success(let lines) = live.localVerifyTeardown(),
-                  !ClusterOnboardingUpdate.released(lines) {
-                Thread.sleep(forTimeInterval: 2)
-            }
+            live.awaitReleased()
             func failedStopped(_ lines: [String]) {
                 try? self.store.updateRecord { $0.leadership?.serving = true }
                 failed(lines)
@@ -997,7 +996,7 @@ public final class ClusterService: @unchecked Sendable {
             case .failure(let failure): return failedStopped(failure.lines)
             }
             // `model` is the model's id (the record keeps ids; the screens show catalog names).
-            guard let index = choices.firstIndex(where: { ($0.modelID ?? $0.title) == model && $0.blocker == nil && $0.provision == nil }) else {
+            guard let index = ClusterOnboardingUpdate.servableIndex(of: model, in: choices) else {
                 return failedStopped(["\(model) is not offered on these Macs with this release: \(choices.first { ($0.modelID ?? $0.title) == model }?.blocker ?? "not found")"])
             }
             if case .failure(let failure) = live.localAdopt(index) { return failedStopped(failure.lines) }

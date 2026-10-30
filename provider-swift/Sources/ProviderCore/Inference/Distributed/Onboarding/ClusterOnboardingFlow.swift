@@ -419,6 +419,25 @@ public enum ClusterOnboardingUpdate {
         return reportedAt > partsStoppedAt
     }
 
+    /// The choice of `model` (its id; the screens show catalog names) that can start as listed: offered on these Macs,
+    /// with nothing to copy or download first. A list planned again after the parts stopped (an update, or a model
+    /// change of a serving cluster) is searched by the model, not by the earlier list's index.
+    public static func servableIndex(of model: String, in choices: [ClusterOnboardingModelChoice]) -> Int? {
+        choices.firstIndex { servable($0, model) }
+    }
+
+    /// As `servableIndex(of:in:)`, but the entry in `folder` comes first (`folders[i]` is entry i's folder): two
+    /// folders can hold different artifacts under one model id, and a re-plan keeps the one that was chosen.
+    public static func servableIndex(of model: String, folder: String, in choices: [ClusterOnboardingModelChoice],
+                                     folders: [String]) -> Int? {
+        choices.indices.first { folders.indices.contains($0) && folders[$0] == folder && servable(choices[$0], model) }
+            ?? servableIndex(of: model, in: choices)
+    }
+
+    static func servable(_ choice: ClusterOnboardingModelChoice, _ model: String) -> Bool {
+        (choice.modelID ?? choice.title) == model && choice.blocker == nil && choice.provision == nil
+    }
+
     /// The members whose running worker differs from the digest the saved setup pins. A member whose current digest
     /// is not known now (it did not answer) is not counted: nothing is re-planned on a guess.
     public static func changed(pinned: [String: String], current: [String: String?]) -> [String] {

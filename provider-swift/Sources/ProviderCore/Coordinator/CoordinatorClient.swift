@@ -152,12 +152,16 @@ public actor CoordinatorClient {
     internal let advertisedModelStore: AdvertisedModelStore
     internal var ordinaryServingModelIDs: Set<String>
 
+    /// Initial reconnect policy; `runLoop` owns the working copy.
+    internal let reconnectPolicy: CoordinatorReconnectPolicy
+
     public init(
         config: CoordinatorClientConfig,
         stats: AtomicProviderStats,
         state: ProviderState,
         liveAPNsToken: (@Sendable () -> String?)? = nil,
-        appAttestResumeResponder: (@Sendable (AppAttestResumeChallenge, String) throws -> AppAttestResumeResponse)? = nil
+        appAttestResumeResponder: (@Sendable (AppAttestResumeChallenge, String) throws -> AppAttestResumeResponse)? = nil,
+        reconnectPolicy: CoordinatorReconnectPolicy = CoordinatorReconnectPolicy()
     ) {
         self.config = config
         self.ordinaryServingModelIDs = Set(config.models.map(\.id))
@@ -169,6 +173,7 @@ public actor CoordinatorClient {
         })
         self.liveAPNsToken = liveAPNsToken ?? { APNsBridge.shared.currentDeviceToken() }
         self.appAttestResumeResponder = appAttestResumeResponder
+        self.reconnectPolicy = reconnectPolicy
 
         // Inference-chunk fast path. The encode closure is the same pure static
         // codec the control path uses; on the (effectively impossible) encode

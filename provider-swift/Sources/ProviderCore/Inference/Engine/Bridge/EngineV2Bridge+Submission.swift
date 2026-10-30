@@ -316,7 +316,8 @@ extension EngineV2Bridge {
             // The same coordinator hint that gates the write also tells the
             // engine which fork boundary is worth staging.
             prefixCheckpointTargetTokens: donationDemand?.repeatedPrefixTokens,
-            defaultMaxTokensContextLimit: defaultMaxTokensContextLimit
+            defaultMaxTokensContextLimit: defaultMaxTokensContextLimit,
+            stopStringScope: stopStringScope
         )
         cbv2Request.mimoClusterImages = mimoClusterImages
         cbv2Request.clusterStillImages = clusterStillImages

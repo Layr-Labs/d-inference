@@ -924,6 +924,8 @@ class LifecycleTests(unittest.TestCase):
         self.root = Path(self.temp.name)
         (self.root / "docs").mkdir()
         (self.root / "docs/threat-model.yaml").write_text(fixtures.THREAT)
+        # Pin the attempt: patch.dict keeps the runner's own GITHUB_RUN_ATTEMPT,
+        # which is "2" on a re-run and turns every scan into a disabled rerun.
         self.env = {"GH_TOKEN": "synthetic", "OPENROUTER_API_KEY": "synthetic",
                     "GITHUB_RUN_ID": "123", "GITHUB_RUN_ATTEMPT": "1", "THREAT_REVIEW_ENABLED": "true"}
         self.github = fixtures.FakeGitHub()

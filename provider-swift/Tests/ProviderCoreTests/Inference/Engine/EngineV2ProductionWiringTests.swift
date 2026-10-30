@@ -312,7 +312,7 @@ private func recordServerStream(
             events.append(.parsed(parsed))
         case .info(let info):
             events.append(.info(prompt: info.promptTokens, completion: info.completionTokens))
-        case .toolCall, .toolCallDelta:
+        case .toolCall, .toolCallDelta, .logprobs:
             continue
         }
     }

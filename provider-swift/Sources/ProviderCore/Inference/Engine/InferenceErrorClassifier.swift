@@ -39,7 +39,7 @@ func classifyTypedInferenceErrorReason(_ error: Error) -> InferenceErrorReason? 
     }
     if let serviceError = error as? MLXOpenAIServiceError {
         switch serviceError {
-        case .invalidResponseFormatOutput, .multipleToolCallsNotAllowed:
+        case .invalidResponseFormatOutput, .responseFormatCutOffByMaxTokens, .multipleToolCallsNotAllowed:
             // Response-format validation and parallel-tool enforcement inspect
             // sampled model output. Another sample/provider can comply, so
             // these share the retryable non-provider-fault reason above.

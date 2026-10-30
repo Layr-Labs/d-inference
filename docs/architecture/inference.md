@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-10-29
+> Last updated: 2026-10-30
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -3725,10 +3725,16 @@ multiply-add per weight and vector) and the words a lane takes per step (capped
 to the weight's quantization group). The M3 Ultra (family 15) and the M5 Max
 (17) take the dequantized weights at one word per lane, with layouts `a:4:4:1`
 for one vector, `a:2:4:4` for two to four and `a:2:4:5` for five, and tiles of
-four (`a:2:4:4`) past five. The kernel also serves whole-cohort tiles (one tile
+four (`a:2:4:4`) past five. The M5 Ultra (`applegpu_g17d`, family 17) has its
+own table in `architectureLayouts`, read before the family's: rows in registers
+for two to five vectors (`b:2:2:4`, `b:2:2:5`) and family 17's for the rest.
+On two M5 Ultra 256 GB serving the 27B pair the table cut the one-request round
+from 35.3 to 33.2 ms and raised decode from 75.8 to 80.5 tok/s at 256 tokens
+(62.7 to 66.8 at 1,024), with identical outputs.
+The kernel also serves whole-cohort tiles (one tile
 of eight, `b:4:4:8`, or tiles of sixteen, `b:2:4:16`, reading the weights once
 for up to 32 vectors; a tile that runs past the call's end skips its missing
-vectors), but no family selects them: on two M5 Ultra 256 GB serving the 27B
+vectors), but no table selects them: on two M5 Ultra 256 GB serving the 27B
 pair they lowered the four-request aggregate by 19 % (73.1 against 90.1 tok/s,
 identical outputs). Other families take the scaled inputs and the generic
 layouts. A layout (rows per SIMD group, SIMD groups, vectors per weight read,

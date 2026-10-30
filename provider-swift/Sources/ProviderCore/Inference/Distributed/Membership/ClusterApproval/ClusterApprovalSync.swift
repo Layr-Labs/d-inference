@@ -5,9 +5,10 @@ import DarkbloomClusterSecurity
 /// The control leader's step that keeps both Macs' setups on the same cluster approval: after the guided setup's Test
 /// stage passed, once at each start of its cluster service and after an update re-adopted the setups, and every
 /// minute while the pair is offered. The leader asks its coordinator, takes the entry whose digests are its own
-/// facts (or a model approval for its setup's model, schedule and artifact, which a new build does not change), sends it to the other Mac over the cable (which checks it against its own files and saves it, or refuses),
-/// and saves it itself only after the other Mac did. Both Macs so carry the approval, or neither does. A coordinator
-/// that serves none (404, no matching entry, any failure) changes nothing.
+/// facts (or a model approval for its setup's model, schedule and artifact, which a new build does not change), sends
+/// it to the other Mac over the cable (which checks it against its own files and saves it, or refuses), and saves it
+/// itself only after the other Mac did. Both Macs so carry the approval, or neither does. A coordinator that serves
+/// none (404, no matching entry, any failure) changes nothing.
 public enum ClusterApprovalSync {
     /// How the other Mac's refusal starts, so the leader's line names the Mac that refused.
     public static let peerRefusalPrefix = "the other Mac refused the cluster approval: "

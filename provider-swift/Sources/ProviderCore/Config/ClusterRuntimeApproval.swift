@@ -108,11 +108,10 @@ public struct ClusterRuntimeApproval: Codable, Sendable, Equatable {
         func text(_ value: String) { integer(UInt32(value.utf8.count)); bytes.append(contentsOf: value.utf8) }
         text(id); text(model); integer(generation)
         for digest in digests {
-            guard ClusterConfigurationSyntax.hash(digest) else {
+            guard let value = NativePairMemberPolicy.digest(hex: digest) else {
                 throw ClusterConfigurationError.invalid("Cluster approval digests must be 64 lowercase hex characters")
             }
-            let digits = Array(digest.utf8).map { $0 < 58 ? $0 - 48 : $0 - 87 }
-            for index in stride(from: 0, to: 64, by: 2) { bytes.append(digits[index] << 4 | digits[index + 1]) }
+            bytes.append(value)
         }
         bytes.append(contentsOf: [1, 1, schedule])
         integer(maximumTransportFrame); integer(maximumPlaintext)

@@ -38,6 +38,8 @@ public struct NativePairMemberInstallation: Sendable {
     /// the approval's own, or under a model approval this member's own (its
     /// plan's runtime block and the digests it took of its installed files).
     let runtime: NativePairMemberPolicy.Runtime
+    /// The plan the owner runs: the registered plan, or a pair approval's fixed plan.
+    let executionPlanSHA256: String
 
     /// `meshOverLink`: the saved setup reaches the follower over the link
     /// control channel, the only way a committed start can serve in this
@@ -91,15 +93,15 @@ public struct NativePairMemberInstallation: Sendable {
             covered = roster != nil && device?.chipName == chip
                 && terms.admits(numericsClass: device?.numericsClass ?? "")
                 && (device?.usableWiredBytes ?? 0) >= terms.minimumMemberUsableBytes
-                && roster?.plan.policySHA256 == Self.hex(Data(SHA256.hash(data: expectedCoordinatorPolicy)))
+                && roster?.plan.policySHA256 == ClusterConfigurationCodec.sha256(expectedCoordinatorPolicy)
                 && roster?.plan.model == policy.model
-                && roster?.membership.artifact(for: policy.model) == Self.hex(policy.artifact)
+                && roster?.membership.artifact(for: policy.model) == NativePairMemberPolicy.hex(policy.artifact)
         } else { covered = roster == nil && policy.chips.contains(chip) }
         guard (0...1).contains(rank), identity.peers.count == 2,
               ClusterConfigurationSyntax.hash(ownerSHA256), covered,
-              identity.artifactSHA256 == Self.hex(policy.artifact),
-              identity.peers[rank].buildSHA256 == Self.hex(runtime.nativeRuntime),
-              let executionPlanSHA256 = roster?.plan.planSHA256 ?? policy.pinnedPlan.map(Self.hex) else {
+              identity.artifactSHA256 == NativePairMemberPolicy.hex(policy.artifact),
+              identity.peers[rank].buildSHA256 == NativePairMemberPolicy.hex(runtime.nativeRuntime),
+              let executionPlanSHA256 = roster?.plan.planSHA256 ?? policy.pinnedPlan.map(NativePairMemberPolicy.hex) else {
             throw NativePairMemberError.binding
         }
         _ = try ClusterOwnerBinding(clusterID: clusterID, ownerIncarnation: UUID(), leaseID: UUID(),
@@ -109,7 +111,7 @@ public struct NativePairMemberInstallation: Sendable {
         localOwner = try .init(installedDarkbloom: installedOwner, batchLanes: batchLanes); self.ownerSHA256 = ownerSHA256
         artifacts = [nativeExecutable, metallib, resourceLibrary]; self.chip = chip; self.leaseDirectory = leaseDirectory
         self.ownerServesCommittedStart = ownerServesCommittedStart; self.bootstrap = bootstrap
-        self.roster = roster; self.runtime = runtime
+        self.roster = roster; self.runtime = runtime; self.executionPlanSHA256 = executionPlanSHA256
     }
     /// The claim this member registers. Its `policySHA256` is the digest of
     /// exactly the policy bytes a prepare frame must carry.
@@ -141,7 +143,7 @@ public struct NativePairMemberInstallation: Sendable {
         var files = [try DistributedInstalledFiles.verify(localOwner.installedDarkbloom,
             expectedSHA256: ownerSHA256, maximumBytes: 256 * 1024 * 1024, executable: true, deadline: deadline)]
         for (i, digest) in [runtime.nativeRuntime, runtime.metallib, runtime.resourceLibrary].enumerated() {
-            files.append(try DistributedInstalledFiles.verify(artifacts[i], expectedSHA256: Self.hex(digest),
+            files.append(try DistributedInstalledFiles.verify(artifacts[i], expectedSHA256: NativePairMemberPolicy.hex(digest),
                 maximumBytes: 256 * 1024 * 1024, executable: i == 0, deadline: deadline))
         }
         for file in files { try file.requireUnchanged() }
@@ -167,7 +169,4 @@ public struct NativePairMemberInstallation: Sendable {
         ClusterWorkerIdentity(membershipEpoch: start.common.epoch, modelID: identity.modelID,
             artifactSHA256: identity.artifactSHA256, configurationSHA256: identity.configurationSHA256, peers: identity.peers)
     }
-    /// The registered plan, or a pair approval's fixed plan (the initializer refuses neither).
-    var executionPlanSHA256: String { roster?.plan.planSHA256 ?? policy.pinnedPlan.map(Self.hex) ?? "" }
-    static func hex(_ bytes: Data) -> String { NativePairMemberPolicy.hex(bytes) }
 }

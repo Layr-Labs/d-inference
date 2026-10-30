@@ -113,17 +113,23 @@ public struct ClusterMemberPreparation: Sendable {
         guard Date().timeIntervalSince1970 * 1_000_000_000 < Double(policy.notAfter) else {
             throw ClusterConfigurationError.invalid("Saved pair approval has expired")
         }
-        // A model approval pins no files: hash this Mac's own once, here.
-        var installedDigests: (metallib: String, resourceLibrary: String)?
-        if policy.runtime == nil {
+        // The metallib digest the device profile names: the approval's, or under a model approval, which pins no
+        // files, the digest this Mac takes of its own metallib here, once, with its resource library's.
+        let installedDigests: (metallib: String, resourceLibrary: String)?
+        let metallibSHA256: String
+        if let pinned = policy.runtime {
+            installedDigests = nil
+            metallibSHA256 = NativePairMemberPolicy.hex(pinned.metallib)
+        } else {
             let deadline = DispatchTime.now().uptimeNanoseconds + 15_000_000_000
             func digest(_ path: String) throws -> String {
                 try DistributedInstalledFiles.digest(URL(fileURLWithPath: path), maximumBytes: 256 * 1024 * 1024,
                     deadline: deadline).sha256
             }
-            installedDigests = (try digest(attachment.metallibPath), try digest(attachment.resourceLibraryPath))
+            let own = (metallib: try digest(attachment.metallibPath), resourceLibrary: try digest(attachment.resourceLibraryPath))
+            installedDigests = own
+            metallibSHA256 = own.metallib
         }
-        let metallibSHA256 = installedDigests?.metallib ?? policy.runtime.map { NativePairMemberPolicy.hex($0.metallib) } ?? ""
         var roster: NativePairMemberRoster?
         if attachment.isRoster, let saved = attachment.roster, let pins = attachment.memberPins {
             guard let device else { throw ClusterConfigurationError.invalid("A roster registration needs this Mac's device profile") }

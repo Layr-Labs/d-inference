@@ -40,7 +40,7 @@ public struct NativePairMemberRoster: Sendable, Equatable {
             throw ClusterRosterError.invalidMembership
         }
         guard tensorShares == nil else { throw ClusterRosterError.invalidPlan }
-        let policy = Data(SHA256.hash(data: policyBytes)).map { String(format: "%02x", $0) }.joined()
+        let policy = ClusterConfigurationCodec.sha256(policyBytes)
         plan = ClusterPlan(policySHA256: policy, model: model, planSHA256: planSHA256, members: rankPins,
             cuts: mode.layerCutCount(ranks: rankPins.count) == 0 ? [] : [UInt32(cut)],
             mode: mode == .pipeline ? nil : mode.rawValue, runtime: runtime)

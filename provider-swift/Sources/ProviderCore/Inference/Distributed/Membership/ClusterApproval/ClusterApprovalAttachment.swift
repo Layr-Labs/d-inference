@@ -15,14 +15,15 @@ enum ClusterApprovalAttachment {
     /// when the facts describe no entry for the approval's model. A model approval is never compared with facts.
     static func mismatches(_ approval: ClusterRuntimeApproval, facts: ClusterRuntimeApprovalFacts) -> [String] {
         guard let entry = facts.models.first(where: { $0.model == approval.model }) else { return ["model"] }
-        let pairs: [(String, String?, String)] = [("native_runtime_sha256", approval.nativeRuntimeSHA256, facts.nativeRuntimeSHA256),
-                     ("metallib_sha256", approval.metallibSHA256, facts.metallibSHA256),
-                     ("resource_library_sha256", approval.resourceLibrarySHA256, facts.resourceLibrarySHA256),
-                     ("placement_policy_sha256", approval.placementPolicySHA256, facts.placementPolicySHA256),
-                     ("artifact_sha256", approval.artifactSHA256, entry.artifactSHA256),
-                     ("capability_sha256", approval.capabilitySHA256, entry.capabilitySHA256),
-                     ("profile_sha256", approval.profileSHA256, entry.profileSHA256),
-                     ("resource_policy_sha256", approval.resourcePolicySHA256, entry.resourcePolicySHA256)]
+        let pairs: [(String, String?, String)] = [
+            ("native_runtime_sha256", approval.nativeRuntimeSHA256, facts.nativeRuntimeSHA256),
+            ("metallib_sha256", approval.metallibSHA256, facts.metallibSHA256),
+            ("resource_library_sha256", approval.resourceLibrarySHA256, facts.resourceLibrarySHA256),
+            ("placement_policy_sha256", approval.placementPolicySHA256, facts.placementPolicySHA256),
+            ("artifact_sha256", approval.artifactSHA256, entry.artifactSHA256),
+            ("capability_sha256", approval.capabilitySHA256, entry.capabilitySHA256),
+            ("profile_sha256", approval.profileSHA256, entry.profileSHA256),
+            ("resource_policy_sha256", approval.resourcePolicySHA256, entry.resourcePolicySHA256)]
         return pairs.filter { $0.1 != $0.2 }.map(\.0)
     }
 

@@ -3,9 +3,9 @@ import Foundation
 /// The cluster approvals the provider's coordinator serves (`GET /v1/cluster/approvals`): every unexpired entry of
 /// the coordinator operator's approval file, public build facts, so the request carries no credential. The answer
 /// approves nothing by itself: the leader takes only an entry whose digests are this Mac's own cluster runtime facts
-/// (or a model approval for its saved setup's model, schedule and artifact), and each Mac checks it against its own installed files before it saves it (`ClusterApprovalAttachment`). A
-/// coordinator without pair control answers 404, and every failure means "no approval": nothing here can stop a Mac
-/// from serving.
+/// (or a model approval for its saved setup's model, schedule and artifact), and each Mac checks it against its own
+/// installed files before it saves it (`ClusterApprovalAttachment`). A coordinator without pair control answers 404,
+/// and every failure means "no approval": nothing here can stop a Mac from serving.
 public enum ClusterApprovalFetch {
     public static let path = "/v1/cluster/approvals"
     public static let schemaName = "darkbloom_cluster_catalog_v2"

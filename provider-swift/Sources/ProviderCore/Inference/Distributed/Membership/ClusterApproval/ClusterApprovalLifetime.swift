@@ -1,9 +1,9 @@
 import Foundation
 import DarkbloomClusterProtocol
 
-/// Which cluster approval a pair's setup keeps, and for how long. Every approval expires (its `not_after`, 14 days
-/// after the operator computed it); one within a day of its end is replaced when the coordinator has a later one. An expired approval is removed, never
-/// kept: the Macs then serve as a pair without one does, on the leader's local API.
+/// Which cluster approval a pair's setup keeps, and for how long. Every approval expires (its `not_after`, which the
+/// operator sets); one within a day of its end is replaced when the coordinator has a later one. An expired approval
+/// is removed, never kept: the Macs then serve as a pair without one does, on the leader's local API.
 public enum ClusterApprovalLifetime {
     /// A saved approval this close to its `not_after` is replaced when the coordinator offers a later one.
     public static let renewWithinSeconds: Double = 86_400
@@ -40,14 +40,13 @@ public enum ClusterApprovalLifetime {
     /// not be computed, so no build-pinned entry is this setup's).
     static func select(_ approvals: [ClusterRuntimeApproval], model: String, schedule: ClusterPrefillSchedule,
                        artifact: String, facts: () -> ClusterRuntimeApprovalFacts?, now: Double) -> ClusterRuntimeApproval? {
-        var computed: ClusterRuntimeApprovalFacts??
-        return approvals.filter { approval in
-            guard approval.model == model, approval.schedule == Self.schedule(schedule), current(approval, now: now) else {
-                return false
-            }
+        let eligible = approvals.filter {
+            $0.model == model && $0.schedule == Self.schedule(schedule) && current($0, now: now)
+        }
+        let installed: ClusterRuntimeApprovalFacts? = eligible.allSatisfy(\.isModelApproval) ? nil : facts()
+        return eligible.filter { approval in
             if approval.isModelApproval { return approval.artifactSHA256 == artifact }
-            if computed == nil { computed = .some(facts()) }
-            guard let installed = computed ?? nil else { return false }
+            guard let installed else { return false }
             return ClusterApprovalAttachment.mismatches(approval, facts: installed).isEmpty
         }.max { (expiry($0) ?? 0) < (expiry($1) ?? 0) }
     }

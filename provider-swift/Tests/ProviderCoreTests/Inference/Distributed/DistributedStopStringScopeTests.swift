@@ -15,13 +15,15 @@ struct DistributedStopStringScopeTests {
         let gptOSS = try DistributedEngineFactory.makeBridge(owner: owner, expectedIdentity: owner.identity,
             profile: distributedTestProfile(), tokenizer: TokenizerHandle(DistributedTestTokenizer()), eosTokenIDs: [99],
             modelType: "gpt_oss")
-        #expect(gptOSS.stopStringScope == scope)
+        let gptOSSScope = await gptOSS.stopStringScope
+        #expect(gptOSSScope == scope)
         await gptOSS.shutdown()
         let plain = DistributedTestOwner()
         let other = try DistributedEngineFactory.makeBridge(owner: plain, expectedIdentity: plain.identity,
             profile: distributedTestProfile(), tokenizer: TokenizerHandle(DistributedTestTokenizer()), eosTokenIDs: [99],
             modelType: nil)
-        #expect(other.stopStringScope == nil)
+        let otherScope = await other.stopStringScope
+        #expect(otherScope == nil)
         await other.shutdown()
     }
 

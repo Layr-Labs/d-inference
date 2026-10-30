@@ -261,6 +261,8 @@ class WorkflowRoutingTests(unittest.TestCase):
     def test_detector_has_full_history_no_credentials_or_api_truncation(self):
         text = (ROOT / ".github/workflows/component-changes.yml").read_text()
         self.assertIn("fetch-depth: 0", text)
+        # Blobless: full commit and tree history, file contents on demand.
+        self.assertIn("filter: blob:none", text)
         self.assertIn("persist-credentials: false", text)
         self.assertIn("contents: read", text)
         self.assertNotIn("secrets.", text)

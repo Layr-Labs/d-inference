@@ -95,9 +95,35 @@ snapshots. Preserve its watchdog, cleanup and state isolation when using a focus
 selector. Use `scripts/run-nested-suite.sh` for documented nested Swift Testing
 cases and `scripts/run-exclusive-native-gpu-test.sh` for exclusive native work.
 
+CI runs the provider suite in five shards (`Provider Unit Tests (shard K)`), one
+Mac each. `PROVIDER_TEST_SHARD=K/N` selects a shard in `scripts/run-provider-tests.sh`,
+and `scripts/provider-test-shards.py` chooses its suites:
+
+| Class | Process | Suites |
+|---|---|---|
+| Parallel | Shard 1, one process with Swift Testing's default parallelism | The test targets whose dependency closure has no MLX, Metal or cluster runtime (`PARALLEL_MODULES`) |
+| Serial | One `--no-parallel` process per shard | All other suites. Shards 1 to N-1 take suites by measured seconds (`scripts/provider-test-shard-weights.json`). The last shard runs every suite that no other shard selects, so a new suite always runs |
+
+Shard 2 also runs Prompt Parity (`scripts/verify-prompt-parity.sh` with
+`PROMPT_PARITY_SKIP_BUILD=1`, and `scripts/verify-nemotron-prompt-parity.sh`)
+against its own build; a parity failure fails that shard and the
+`Provider Tests` gate. The last shard also runs the isolated processes and the
+native MiMo, desktop and installer gates. `Provider Unit Tests Summary` lists the suite with
+`swift test list`, fails unless each shard executed exactly its selection and
+the shards together executed the full list, checks that each Prompt Parity run
+executed every listed test of its suite, merges the shards' coverage
+profiles and uploads measured seconds per suite (`provider-test-shard-weights`).
+When the shards drift apart, replace the weights file with that artifact. A
+suite moves from the parallel class to the serial class when it fails or flakes
+in parallel; when in doubt, a suite stays serial.
+
 The SDK has independent test products under `libs/mlx-swift-lm`. CI validates
 native memory ownership, cancellation, media decoding, paged KV and resource
-packaging there as well as provider behavior. Preserve all retained lane gates;
+packaging there as well as provider behavior. `Provider SDK Tests` is not part
+of the `Provider Tests` gate: a pull request runs it only when an SDK-lane input
+changes (`SDK` in `scripts/ci-component-paths.py`: the `libs/mlx-swift-lm` and
+`libs/mlx-swift` pins, the build recipe and the nested-suite runners), and every
+push to `dev` or `master` runs it, where a failure notifies without blocking. Preserve all retained lane gates;
 do not treat the repository split as permission to skip native regressions.
 
 ### Download completion ownership
@@ -1075,7 +1101,11 @@ last one runs the provisioning checks only. Its download cache-policy check
 reads how many written pages stay in the file cache, which the host's kernel
 and disk decide: on the hosted CI VM 0.75 of the pages written with
 `F_NOCACHE` stayed resident. Run `run.sh` with no argument on a Mac for that
-check. The library's XCTest targets
+check. The capability runner compiles with
+`DARKBLOOM_CLUSTER_METADATA_BUILD_JOBS` jobs (4 by default; CI uses 12). CI
+keeps its build in `DARKBLOOM_CLUSTER_METADATA_BUILD_ROOT` between runs and
+restores source timestamps only for unchanged files, so SwiftPM rebuilds only
+what changed. The library's XCTest targets
 (`swift test --package-path libs/darkbloom-cluster`) and the worker package's
 tests (built for macOS 26.2) need the GPU and exclusive device access. A
 loopback or fixture pass never counts as a two-Mac hardware pass.

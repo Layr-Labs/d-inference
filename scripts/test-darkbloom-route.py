@@ -40,15 +40,17 @@ FALLBACKS = {"release-integrity": LINUX_FALLBACK, "test-provider": MACOS_FALLBAC
 GRANTED = {"release-integrity": LINUX, "test-provider": MACOS,
            "warm": MACOS, "docs": LINUX_FALLBACK}
 PROVIDER = "${{ needs.changes.outputs.provider == 'true' && 1 || 0 }}"
+PROVIDER_SHARDS = "${{ needs.changes.outputs.provider == 'true' && 5 || 0 }}"
+SDK = "${{ (github.event_name == 'push' || needs.changes.outputs.sdk == 'true') && 1 || 0 }}"
 PULL_REQUEST_WARM = "${{ github.event_name == 'pull_request' && 2 || 0 }}"
 # Every routed job: (profile, fallback label, count expression or None for 1).
 ROUTED = {
     "ci.yml": {
         "release-integrity": ("linux_arm64", LINUX_FALLBACK, None),
         "docs": ("linux_arm64", LINUX_FALLBACK, None),
-        "test-provider": ("macos_arm64", MACOS_FALLBACK, PROVIDER),
-        "test-provider-sdk": ("macos_arm64", MACOS_FALLBACK, PROVIDER),
-        "test-provider-parity": ("macos_arm64", MACOS_FALLBACK, PROVIDER),
+        "test-provider": ("macos_arm64", MACOS_FALLBACK, PROVIDER_SHARDS),
+        "test-provider-summary": ("macos_arm64", MACOS_FALLBACK, PROVIDER),
+        "test-provider-sdk": ("macos_arm64", MACOS_FALLBACK, SDK),
         "test-cluster-checks": ("macos_arm64", MACOS_FALLBACK, PROVIDER),
     },
     "docs-impact.yml": {
@@ -481,9 +483,20 @@ class RouteWorkflowTests(unittest.TestCase):
                         name, f"${{{{ fromJSON(needs.route.outputs.routes)['{name}'] }}}}"))
                     condition = job_field(job, "if")
                     if name != "warm":
-                        # A lane is requested exactly when its job runs.
-                        self.assertEqual(count, None if condition is None
-                                         else condition.replace(" }}", " && 1 || 0 }}"))
+                        # A lane is requested exactly when its job runs, once per
+                        # matrix entry. `!cancelled()` cannot be evaluated in the
+                        # route job and is true there.
+                        matrix = re.search(r"(?m)^        shard: \[([0-9, ]+)\]$", job)
+                        jobs_requested = len(matrix.group(1).split(",")) if matrix else 1
+                        expected_count = None
+                        if condition is not None:
+                            inner = condition.removeprefix("${{ ").removesuffix(" }}")
+                            inner = inner.replace("!cancelled() && ", "")
+                            # `a || b && N` would evaluate to `a`; group an alternative.
+                            if "||" in inner:
+                                inner = f"({inner})"
+                            expected_count = f"${{{{ {inner} && {jobs_requested} || 0 }}}}"
+                        self.assertEqual(count, expected_count)
         warm = jobs(self.texts["provider-release-cache.yml"])["warm"]
         self.assertIn("lane: [release, qualification]", warm)
         self.assertEqual(job_field(warm, "if"),

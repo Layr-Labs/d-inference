@@ -38,6 +38,9 @@ struct ClusterMemberRegistrationTests {
     @Test func explicitAckRejectsWrongNonceRoleLateAndDuplicate() throws {
         let start = ContinuousClock.now
         let original = ClusterMemberNegotiation(now: start)
+        // The production window; serve-loop tests that wait one out shorten it.
+        #expect(original.deadline == start.advanced(by: .seconds(10)))
+        #expect(memberConfig(role: .clusterMember).memberNegotiationWindow == .seconds(10))
         func ack(_ nonce: String, role: ProviderExecutionRole = .clusterMember) -> ClusterMemberAccepted {
             .init(executionRole: role, memberRegistrationNonce: nonce, providerID: "connection-1")
         }

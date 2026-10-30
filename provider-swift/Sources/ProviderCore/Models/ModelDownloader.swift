@@ -43,6 +43,8 @@ public struct ModelDownloader: Sendable {
     internal let catalogClient: ModelCatalogClient?
     internal let concurrency: Int
     internal let runtimeCapabilities: Set<ProviderRuntimeCapability>
+    /// Retry `n` of one file waits `n` times this after a failed attempt.
+    internal let retryBackoff: Duration
     /// When set, the foreground download reports (bytes so far, total bytes) here about four times a second instead
     /// of drawing its own progress bars (a caller that owns the screen, like `darkbloom cluster`, shows the progress).
     public var byteProgress: (@Sendable (Int64, Int64) -> Void)?
@@ -56,13 +58,15 @@ public struct ModelDownloader: Sendable {
         urlSession: URLSession = .shared,
         catalogClient: ModelCatalogClient? = nil,
         concurrency: Int = 4,
-        runtimeCapabilities: Set<ProviderRuntimeCapability> = []
+        runtimeCapabilities: Set<ProviderRuntimeCapability> = [],
+        retryBackoff: Duration = .seconds(1)
     ) {
         self.r2CDNURL = Self.resolveCDNURL(explicit: r2CDNURL)
         self.urlSession = urlSession
         self.catalogClient = catalogClient
         self.concurrency = max(1, concurrency)
         self.runtimeCapabilities = runtimeCapabilities
+        self.retryBackoff = retryBackoff
     }
 
     /// Download a catalog model into the local HuggingFace cache from its

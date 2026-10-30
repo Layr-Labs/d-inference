@@ -213,7 +213,8 @@ extension ProviderLoop {
             executionRole: loopConfig.executionRole,
             // Only a member with an installed control claims a membership, and
             // the claim is derived from that control's own policy bytes.
-            clusterMembership: try nativePairMemberControl?.installation.membership
+            clusterMembership: try nativePairMemberControl?.installation.membership,
+            memberNegotiationWindow: clusterMemberNegotiationWindow
         )
 
         // A termination received during the APNs/startup awaits can already

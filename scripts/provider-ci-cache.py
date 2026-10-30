@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Emit compatible cache keys for provider, nested SDK, and Swift prompt parity CI.
+"""Emit compatible cache keys for provider and nested SDK CI.
 
-Run `keys --lane provider|sdk|parity` after Metal toolchain setup.
+Run `keys --lane provider|sdk` after Metal toolchain setup.
 Redirect scalar stdout to GITHUB_OUTPUT. Swift restore prefixes retain all
 compatibility boundaries;
 the shared metallib key is exact-only. Cache hits never authorize skipping tests
@@ -22,7 +22,6 @@ CACHE_VERSION = "v1"
 LANE_PURPOSES = {
     "provider": "provider-debug-tests",
     "sdk": "sdk-nested-debug-tests",
-    "parity": "parity-swift-debug",
 }
 MLX_SOURCE = "libs/mlx-swift/Source/Cmlx/mlx"
 SWIFT_WRAPPER = Path(__file__).resolve().with_name("provider-release-swift.sh")

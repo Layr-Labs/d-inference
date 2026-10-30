@@ -179,8 +179,10 @@ extension CoordinatorClient {
         logger.info(.coordinatorTransportReady)
 
         // A member registration carries this connection's fresh negotiation
-        // nonce; the coordinator's acceptance must echo it within ten seconds.
-        memberNegotiation = config.executionRole == .clusterMember ? .init() : nil
+        // nonce; the coordinator's acceptance must echo it within the
+        // negotiation window (ten seconds in production).
+        memberNegotiation = config.executionRole == .clusterMember
+            ? .init(window: config.memberNegotiationWindow) : nil
         memberOrdinaryAnswer = false
         noteMemberTransportReady(memberNegotiation)
         if let negotiation = memberNegotiation {

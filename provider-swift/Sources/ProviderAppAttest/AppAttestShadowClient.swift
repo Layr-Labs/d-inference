@@ -9,6 +9,8 @@ public actor AppAttestShadowClient {
     private let runtimeContext: @Sendable () -> AppAttestRuntimeContext
     private let now: @Sendable () -> Date
     private let processDiagnostics: @Sendable () async -> AppAttestProcessDiagnostics
+    /// Waits between retries of an unavailable Apple service; takes seconds.
+    private let retrySleep: @Sendable (Double) async throws -> Void
     private var busy = false
     private var session: String?
     private var record: ShadowKeyRecord?
@@ -23,12 +25,15 @@ public actor AppAttestShadowClient {
 
     /// `processDiagnostics` supplies the process-level `ready` context owned
     /// by ProviderCore (run marker, SIP probes, preflight, APNs history).
+    /// `retrySleep` nil keeps the real backoff; the retry schedule itself is fixed here.
     public init(scope: String, service: any AppAttestService = AppleAppAttestService(), storage: any ShadowKeyStorage = KeychainShadowKeyStorage(),
                 runtimeContext: @escaping @Sendable () -> AppAttestRuntimeContext = { AppAttestRuntimeContext.current() },
                 now: @escaping @Sendable () -> Date = Date.init,
-                processDiagnostics: @escaping @Sendable () async -> AppAttestProcessDiagnostics = { AppAttestProcessDiagnostics() }) {
+                processDiagnostics: @escaping @Sendable () async -> AppAttestProcessDiagnostics = { AppAttestProcessDiagnostics() },
+                retrySleep: (@Sendable (Double) async throws -> Void)? = nil) {
         self.scope = scope; self.service = service; self.storage = storage
         self.runtimeContext = runtimeContext; self.now = now; self.processDiagnostics = processDiagnostics
+        self.retrySleep = retrySleep ?? { try await appAttestSleep(seconds: $0) }
     }
 
     /// Last local observation for the daemon state file; nil before any `prepare`.
@@ -213,7 +218,7 @@ public actor AppAttestShadowClient {
                             key.attestationStartedAt = nil
                             record = key
                             try storage.save(key, scope: keyScope)
-                            try await appAttestSleep(seconds: attempt == 0 ? 2 : 8)
+                            try await retrySleep(attempt == 0 ? 2 : 8)
                         }
                     }
                     guard let proof else { throw ShadowFailure.appleError }
@@ -245,7 +250,7 @@ public actor AppAttestShadowClient {
                         catch {
                             if ShadowKeyRecord.isAppleCallFailure(error) { assertionFailures += 1 }
                             guard appAttestFailure(error) == .appleUnavailable && attempt == 0 else { throw error }
-                            try await appAttestSleep(seconds: 2)
+                            try await retrySleep(2)
                         }
                     }
                     guard let proof else { throw ShadowFailure.appleError }

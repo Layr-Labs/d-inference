@@ -96,7 +96,9 @@ func multiModelDeadlineAfterReservationReleasesWithoutSubmit() async throws {
     let entry = MultiModelBatchSchedulerEngine.ModelRegistryEntry(
         tokenizer: TokenizerHandle(MultiModelDeadlineTokenizer()),
         engineV2Bridge: bridge)
-    let deadline = FirstContentDeadline(relativeBudgetMilliseconds: 10_000)
+    // The budget only has to outlast the hop to the reservation gate; the
+    // test then sleeps past it, so a shorter budget is a shorter sleep.
+    let deadline = FirstContentDeadline(relativeBudgetMilliseconds: 2_000)
     let engine = MultiModelBatchSchedulerEngine(
         registryProvider: { @Sendable in ["deadline-model": entry] },
         ensureLoaded: { @Sendable _ in },

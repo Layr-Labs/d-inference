@@ -708,6 +708,9 @@ public actor ProviderLoop {
     /// The current wait's deadline, handed to the coordinator client so its
     /// reconnects stay inside it.
     internal var memberRegistrationWaitDeadline: ContinuousClock.Instant?
+    /// Each member connection's negotiation window; nil keeps
+    /// `ClusterMemberNegotiation.window`. Tests set it per loop.
+    internal var clusterMemberNegotiationWindow: Duration?
     /// The pair slot this leader member serves (S09), at most one; nil on a
     /// follower and whenever the pair is not ready.
     internal var clusterPairSlot: ClusterPairSlotHandle?

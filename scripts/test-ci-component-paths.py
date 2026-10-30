@@ -37,11 +37,16 @@ class ComponentPathsTests(unittest.TestCase):
     def test_component_and_shared_dependency_matrix(self):
         cases = {
             "provider-swift/Sources/ProviderCore/ProviderCore.swift": {"provider"},
-            "libs/mlx-swift-lm": {"provider"},
-            "libs/mlx-swift": {"provider"},
+            "libs/mlx-swift-lm": {"provider", "sdk"},
+            "libs/mlx-swift-lm/Libraries/MLXLMCommon/Generate.swift": {"provider", "sdk"},
+            "libs/mlx-swift": {"provider", "sdk"},
+            "libs/mlx": {"provider"},
+            "libs/darkbloom-cluster/Package.swift": {"provider"},
             "fixtures/prompt-contract/v1/corpus.json": {"provider"},
-            ".github/actions/provider-ci-build/action.yml": {"provider"},
-            ".github/workflows/ci.yml": {"provider"},
+            ".github/actions/provider-ci-build/action.yml": {"provider", "sdk"},
+            ".github/workflows/ci.yml": {"provider", "sdk"},
+            "scripts/run-paged-kernel-tests.sh": {"provider", "sdk"},
+            "scripts/run-provider-tests.sh": {"provider"},
             "coordinator/store/postgres/users.go": set(),
             "coordinator/protocol/messages.go": set(),
             "console-ui/package-lock.json": set(),
@@ -55,6 +60,10 @@ class ComponentPathsTests(unittest.TestCase):
                 self.assertEqual({name for name, value in routing.classify([path]).items() if value}, expected)
         for path in routing.COMMON:
             self.assertTrue(all(routing.classify([path]).values()), path)
+        # Every SDK-lane input is also a provider input.
+        for pattern in routing.SDK:
+            path = pattern.replace("**", "x")
+            self.assertTrue(routing.classify([path])["provider"], path)
 
     def test_swift_prompt_corpora_select_provider(self):
         for filename in ("nemotron-prompt-edge-corpus.json", "nemotron-reference-corpus.json"):
@@ -72,7 +81,8 @@ class ComponentPathsTests(unittest.TestCase):
             "scripts/provider_release_cache/mtimes.py", "scripts/fetch-metallib.sh",
             "scripts/stage-test-metallib.sh", "scripts/run-provider-tests.sh",
             "scripts/run-nested-suite.sh", "scripts/run-paged-kernel-tests.sh",
-            "scripts/run-exclusive-native-gpu-test.sh",
+            "scripts/run-exclusive-native-gpu-test.sh", "scripts/provider-test-shards.py",
+            "scripts/provider-test-shard-weights.json",
             "scripts/run-provider-test-watchdog.py", "scripts/prepare-mimo-audio-fixtures.py",
             "scripts/prepare-mimo-provider-fixtures.py", "scripts/prepare-mimo-prompt-fixtures.py",
             "scripts/prepare-prompt-fixtures.py", "scripts/test-prepare-prompt-fixtures.py",
@@ -157,7 +167,8 @@ class GitDiffTests(unittest.TestCase):
         head = self.commit()
         selected = self.pr(base, head)
         self.assertTrue(selected["provider"], "rename source must be considered")
-        self.assertEqual(set(selected), {"provider"})
+        self.assertEqual(set(selected), set(routing.COMPONENTS))
+        self.assertFalse(selected["sdk"], "provider sources are not SDK-lane inputs")
         base = head
         self.git("mv", "docs/moved.md", "provider-swift/new.swift")
         head = self.commit()
@@ -219,8 +230,7 @@ class WorkflowRoutingTests(unittest.TestCase):
 
     def test_expensive_jobs_depend_on_successful_classifier(self):
         expected = {
-            "ci.yml": {"test-provider": "provider", "test-provider-sdk": "provider",
-                       "test-provider-parity": "provider", "test-cluster-checks": "provider"},
+            "ci.yml": {"test-provider": "provider", "test-cluster-checks": "provider"},
         }
         for name, lanes in expected.items():
             jobs = workflow.job_blocks((ROOT / ".github/workflows" / name).read_text())
@@ -233,6 +243,16 @@ class WorkflowRoutingTests(unittest.TestCase):
                 self.assertIn("    if: ${{ needs.changes.outputs." + component + " == 'true' }}\n", jobs[lane])
                 self.assertNotIn("continue-on-error:", jobs[lane])
         ci = workflow.job_blocks((ROOT / ".github/workflows/ci.yml").read_text())
+        # The SDK lane runs on every push and on pull requests that change its inputs.
+        self.assertIn("    needs: [changes, route]\n", ci["test-provider-sdk"])
+        self.assertIn("    if: ${{ github.event_name == 'push' || needs.changes.outputs.sdk == 'true' }}\n",
+                      ci["test-provider-sdk"])
+        self.assertNotIn("continue-on-error:", ci["test-provider-sdk"])
+        # The summary runs after failed shards too, but only when the shards were selected.
+        self.assertIn("    needs: [changes, route, test-provider]\n", ci["test-provider-summary"])
+        self.assertIn("    if: ${{ !cancelled() && needs.changes.outputs.provider == 'true' }}\n",
+                      ci["test-provider-summary"])
+        self.assertNotIn("continue-on-error:", ci["test-provider-summary"])
         for policy in ("release-integrity", "docs"):
             self.assertNotIn("    if:", ci[policy])
         self.assertIn("python3 scripts/test-ci-component-paths.py", ci["release-integrity"])
@@ -241,6 +261,8 @@ class WorkflowRoutingTests(unittest.TestCase):
     def test_detector_has_full_history_no_credentials_or_api_truncation(self):
         text = (ROOT / ".github/workflows/component-changes.yml").read_text()
         self.assertIn("fetch-depth: 0", text)
+        # Blobless: full commit and tree history, file contents on demand.
+        self.assertIn("filter: blob:none", text)
         self.assertIn("persist-credentials: false", text)
         self.assertIn("contents: read", text)
         self.assertNotIn("secrets.", text)
@@ -253,25 +275,29 @@ class WorkflowRoutingTests(unittest.TestCase):
     def test_provider_aggregate_exhaustive_truth_table(self):
         jobs = workflow.job_blocks((ROOT / ".github/workflows/ci.yml").read_text())
         gate = jobs["provider-test-gate"]
-        self.assertIn("needs: [changes, test-provider, test-provider-sdk, test-provider-parity]", gate)
+        self.assertIn("needs: [changes, test-provider, test-provider-summary]", gate)
+        self.assertNotIn("test-provider-sdk", gate)
         self.assertIn("if: ${{ always() }}", gate)
         self.assertNotIn("continue-on-error:", gate)
         step = workflow.step_blocks(gate)[0]
         for name, expression in {
             "CHANGES_RESULT": "needs.changes.result", "PROVIDER_CHANGED": "needs.changes.outputs.provider",
-            "UNIT_RESULT": "needs.test-provider.result", "SDK_RESULT": "needs.test-provider-sdk.result",
-            "PARITY_RESULT": "needs.test-provider-parity.result",
+            "UNIT_RESULT": "needs.test-provider.result", "SUMMARY_RESULT": "needs.test-provider-summary.result",
         }.items():
             self.assertIn(name + ": ${{ " + expression + " }}", step)
         command = workflow.run_command(step)
         results = ("success", "skipped", "failure", "cancelled")
-        for detector, changed, unit, sdk, parity in itertools.product(results, ("true", "false", ""), results, results, results):
+        # Prompt Parity runs in a provider shard, so UNIT_RESULT carries it.
+        self.assertNotIn("PARITY_RESULT", step)
+        for detector, changed, unit, summary in itertools.product(
+                results, ("true", "false", ""), results, results):
             result = subprocess.run(["bash", "-e", "-c", command], capture_output=True, timeout=5,
                                     env={**os.environ, "CHANGES_RESULT": detector, "PROVIDER_CHANGED": changed,
-                                         "UNIT_RESULT": unit, "SDK_RESULT": sdk, "PARITY_RESULT": parity})
-            expected = detector == "success" and ((changed == "true" and unit == sdk == parity == "success") or
-                                                  (changed == "false" and unit == sdk == parity == "skipped"))
-            self.assertEqual(result.returncode == 0, expected, (detector, changed, unit, sdk, parity))
+                                         "UNIT_RESULT": unit, "SUMMARY_RESULT": summary})
+            lanes = (unit, summary)
+            expected = detector == "success" and ((changed == "true" and set(lanes) == {"success"}) or
+                                                  (changed == "false" and set(lanes) == {"skipped"}))
+            self.assertEqual(result.returncode == 0, expected, (detector, changed, *lanes))
 
 
 if __name__ == "__main__":

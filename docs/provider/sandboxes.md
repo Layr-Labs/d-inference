@@ -27,8 +27,8 @@ into your Darkbloom balance.
    account:
 
    ```bash
-   darkbloom sandbox waitlist join
-   darkbloom sandbox waitlist
+   darkbloom waitlist sandbox join
+   darkbloom waitlist sandbox
    ```
 
    The first command joins with this Mac's chip and memory and prints your place
@@ -89,12 +89,16 @@ state, continues an unfinished setup or repairs the add-on.
 
 - **`You're on the Darkbloom Sandbox waitlist: #N in line`** (setup exits 1).
   Darkbloom has not approved your account for Darkbloom Sandbox yet; nothing
-  was installed. Run setup again once `darkbloom sandbox waitlist` says your
+  was installed. Run setup again once `darkbloom waitlist sandbox` says your
   account is approved.
 - **`Link this Mac to your Darkbloom account first`**. The waitlist needs your
   account: run `darkbloom login`, then setup again.
 - **`Darkbloom revoked your account's access to Darkbloom Sandbox`**. Joining
   again does not restore it; contact Darkbloom.
+- **`Could not reach the Darkbloom Sandbox waitlist at …`** (setup exits 1).
+  Setup could not learn whether your account is approved, so it checked and
+  installed nothing. Fix the reason it names, such as this Mac's connection,
+  then run setup again.
 - **`Not eligible: free up N GiB of disk`.** A tenth of the disk (50 to
   100 GiB) stays free for you and the images need 50 GiB more. Free the space
   it names, then run setup again.
@@ -117,6 +121,6 @@ state, continues an unfinished setup or repairs the add-on.
 ## Related
 
 - [CLI reference: `darkbloom sandbox`](./cli-reference.md#darkbloom-sandbox): flags, eligibility rules and the installer and add-on contracts
-- [CLI reference: waitlists](./cli-reference.md#waitlists-cluster-waitlist-and-sandbox-waitlist): the waitlist commands and the request they make
+- [CLI reference: waitlists](./cli-reference.md#darkbloom-waitlist): the waitlist commands and the request they make
 - [Add-on hold](../architecture/addon-hold.md): how the provider pauses inference for jobs
 - [Configuration](../reference/configuration.md#darkbloom-sandbox-cli): bounds and the test override

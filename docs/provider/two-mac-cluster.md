@@ -31,16 +31,16 @@ linked to your account with `darkbloom login`, join it and check where you
 stand:
 
 ```bash
-darkbloom cluster waitlist join --macs 2
-darkbloom cluster waitlist
+darkbloom waitlist clusters join --macs 2
+darkbloom waitlist clusters
 ```
 
 `join` sends this Mac's chip and memory and how many Macs you plan to cluster
 (2 to 4), and prints your place in line; Darkbloom reviews accounts in the
 order they joined and approves them by hand. Once approved,
-`darkbloom cluster waitlist` says so. The approval is recorded for your
+`darkbloom waitlist clusters` says so. The approval is recorded for your
 account; `darkbloom cluster` itself works as before. Details:
-[CLI reference: waitlists](./cli-reference.md#waitlists-cluster-waitlist-and-sandbox-waitlist).
+[CLI reference: waitlists](./cli-reference.md#darkbloom-waitlist).
 
 ## The steps, once
 

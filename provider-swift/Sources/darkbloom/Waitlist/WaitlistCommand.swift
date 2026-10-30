@@ -2,7 +2,7 @@ import ArgumentParser
 import Foundation
 import ProviderCore
 
-/// `darkbloom cluster waitlist` and `darkbloom sandbox waitlist`: join the
+/// `darkbloom waitlist clusters` and `darkbloom waitlist sandbox`: join the
 /// waitlist that Darkbloom approves accounts from, and read your place on it.
 
 /// The two calls a command makes to a feature's waitlist. `live` asks the
@@ -95,18 +95,26 @@ struct FeatureWaitlistCommand {
     }
 }
 
-extension Cluster {
-    struct Waitlist: AsyncParsableCommand {
+/// `darkbloom waitlist`: the waitlists Darkbloom approves accounts from,
+/// one command per feature.
+struct Waitlist: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        abstract: "Join the waitlists for clusters and Darkbloom Sandbox, or see where you stand.",
+        discussion: """
+        Darkbloom opens clusters and Darkbloom Sandbox to the accounts it approves from a waitlist per \
+        feature. Join from a Mac linked to your account (`\(BuildEnvironment.current.cliName) login`); \
+        `\(BuildEnvironment.current.cliName) sandbox setup` installs nothing until Darkbloom approves the account.
+        """,
+        subcommands: [Clusters.self, Sandboxes.self])
+
+    struct Clusters: AsyncParsableCommand {
         static let configuration = CommandConfiguration(
             abstract: "Join the waitlist for clusters, or see your place on it.",
-            discussion: """
-            Darkbloom opens clusters to the accounts it approves from this waitlist. Join from a Mac linked \
-            to your account (`\(BuildEnvironment.current.cliName) login`). Without a subcommand, shows your place.
-            """,
+            discussion: "Without a subcommand, shows your place.",
             subcommands: [Join.self, Status.self])
 
-        /// Bare `waitlist` shows the place, while `--help` still shows this
-        /// group's help.
+        /// Bare `clusters` shows the place, while `--help` still shows this
+        /// command's help.
         mutating func run() async throws {
             var status = try Status.parse([])
             try await status.run()
@@ -143,22 +151,18 @@ extension Cluster {
             }
         }
     }
-}
 
-extension Sandbox {
-    struct Waitlist: AsyncParsableCommand {
+    /// `darkbloom waitlist sandbox`; the type is plural so it does not hide
+    /// the `Sandbox` command group.
+    struct Sandboxes: AsyncParsableCommand {
         static let configuration = CommandConfiguration(
+            commandName: "sandbox",
             abstract: "Join the Darkbloom Sandbox waitlist, or see your place on it.",
-            discussion: """
-            Darkbloom Sandbox is open to the accounts Darkbloom approves from this waitlist; \
-            `\(BuildEnvironment.current.cliName) sandbox setup` installs nothing until yours is approved. Join from \
-            a Mac linked to your account (`\(BuildEnvironment.current.cliName) login`). Without a subcommand, shows \
-            your place.
-            """,
+            discussion: "Without a subcommand, shows your place.",
             subcommands: [Join.self, Status.self])
 
-        /// Bare `waitlist` shows the place, while `--help` still shows this
-        /// group's help.
+        /// Bare `sandbox` shows the place, while `--help` still shows this
+        /// command's help.
         mutating func run() async throws {
             var status = try Status.parse([])
             try await status.run()

@@ -17,6 +17,14 @@ enum FeatureWaitlistFeature: String, CaseIterable, Sendable {
         }
     }
 
+    /// The feature's command under `darkbloom waitlist`.
+    var commandName: String {
+        switch self {
+        case .cluster: "clusters"
+        case .sandbox: "sandbox"
+        }
+    }
+
     /// The waitlist as the sentences of the CLI name it: "the cluster
     /// waitlist".
     var waitlistName: String {
@@ -72,7 +80,8 @@ enum FeatureWaitlistLookup: Equatable, Sendable {
     /// The coordinator has no waitlists: one released before them answers
     /// 404 for the route.
     case notOffered
-    /// There is no login token, or the coordinator does not take it.
+    /// The coordinator answered 401: there is no login token, or it does not
+    /// take this one.
     case needsLogin
     /// The coordinator could not be asked, or answered something else.
     case unavailable(String)
@@ -82,6 +91,7 @@ enum FeatureWaitlistLookup: Equatable, Sendable {
 struct FeatureWaitlistClient: Sendable {
     typealias Transport = @Sendable (URLRequest) async throws -> (Data, HTTPURLResponse)
 
+    /// The deadline of a whole call; it is also the request's idle timeout.
     static let timeout: TimeInterval = 10
     static let maximumAnswerBytes = 64 * 1024
 
@@ -98,7 +108,7 @@ struct FeatureWaitlistClient: Sendable {
     static func base(httpBase: String) -> URL? {
         guard let components = URLComponents(string: httpBase),
               let scheme = components.scheme?.lowercased(), let host = components.host?.lowercased(),
-              scheme == "https" || (scheme == "http" && ["127.0.0.1", "localhost", "::1"].contains(host)),
+              scheme == "https" || (scheme == "http" && ["127.0.0.1", "localhost", "[::1]"].contains(host)),
               components.query == nil, components.fragment == nil
         else { return nil }
         return components.url
@@ -133,6 +143,8 @@ struct FeatureWaitlistClient: Sendable {
         let response: HTTPURLResponse
         do {
             (data, response) = try await transport(request)
+        } catch let error as URLError where error.code == .timedOut {
+            return .unavailable("no answer within \(Int(Self.timeout)) seconds")
         } catch {
             return .unavailable(error.localizedDescription)
         }
@@ -169,7 +181,7 @@ struct FeatureWaitlistClient: Sendable {
 
     /// Reads the coordinator's RFC 3339 times, with or without fractional
     /// seconds.
-    static var decoder: JSONDecoder {
+    private static var decoder: JSONDecoder {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .custom { decoder in
             let text = try decoder.singleValueContainer().decode(String.self)
@@ -184,9 +196,23 @@ struct FeatureWaitlistClient: Sendable {
     }
 
     /// The shared session, which follows no redirect, so the token goes to
-    /// the configured coordinator only. It reads at most one byte past
-    /// `maximumAnswerBytes`.
+    /// the configured coordinator only. The whole call ends after `timeout`:
+    /// a request's own timeout only bounds the time between two reads.
     static let live: Transport = { request in
+        try await withThrowingTaskGroup(of: (Data, HTTPURLResponse).self) { group in
+            group.addTask { try await read(request) }
+            group.addTask {
+                try await Task.sleep(for: .seconds(timeout))
+                throw URLError(.timedOut)
+            }
+            defer { group.cancelAll() }
+            guard let answer = try await group.next() else { throw URLError(.timedOut) }
+            return answer
+        }
+    }
+
+    /// Reads at most one byte past `maximumAnswerBytes`.
+    private static func read(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
         let (bytes, received) = try await URLSession.shared.bytes(for: request, delegate: NoRedirects())
         guard let response = received as? HTTPURLResponse else { throw URLError(.badServerResponse) }
         guard response.expectedContentLength <= Int64(maximumAnswerBytes) else { throw URLError(.dataLengthExceedsMaximum) }

@@ -26,11 +26,11 @@ struct Sandbox: AsyncParsableCommand {
         your Darkbloom balance. Docs: \(docsURL)
 
         Darkbloom Sandbox is open to the accounts Darkbloom approves from its waitlist: join it with \
-        `\(BuildEnvironment.current.cliName) sandbox waitlist join`. Start with \
+        `\(BuildEnvironment.current.cliName) waitlist sandbox join`. Start with \
         `\(BuildEnvironment.current.cliName) sandbox setup`. Without a subcommand, shows this Mac's sandbox \
         status. The add-on is a separate app in ~/DarkbloomSandbox that keeps itself up to date.
         """,
-        subcommands: [Setup.self, Status.self, Pause.self, Resume.self, Logs.self, Uninstall.self, Waitlist.self])
+        subcommands: [Setup.self, Status.self, Pause.self, Resume.self, Logs.self, Uninstall.self])
 
     /// Bare `darkbloom sandbox` shows the status, while `--help` still shows
     /// this group's help (a default subcommand would answer `--help` itself).

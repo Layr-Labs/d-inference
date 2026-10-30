@@ -9,8 +9,9 @@ struct FeatureWaitlistView: Sendable {
     let coordinator: String
     var day: @Sendable (Date) -> String = FeatureWaitlistView.mediumDate
 
-    /// What the feature's command group calls it: `cluster` or `sandbox`.
-    private var group: String { "\(cli) \(feature.rawValue)" }
+    /// The feature's waitlist command: `darkbloom waitlist clusters` or
+    /// `darkbloom waitlist sandbox`.
+    private var group: String { "\(cli) waitlist \(feature.commandName)" }
 
     /// The command that starts using the feature once the account is
     /// approved.
@@ -21,15 +22,15 @@ struct FeatureWaitlistView: Sendable {
         }
     }
 
-    /// The account's place, after `waitlist`, `waitlist status` or
-    /// `waitlist join`.
+    /// How to join the waitlist; `sandbox setup` prints it too.
+    var joinLine: String { "  Join it: \(group) join" }
+
+    /// The account's place, after `darkbloom waitlist <feature>`, its
+    /// `status` or its `join`.
     func lines(_ place: FeatureWaitlistPlace) -> [String] {
         switch place.status {
         case .none:
-            return [
-                "You're not on the \(feature.waitlistName).",
-                "  Join it: \(group) waitlist join",
-            ]
+            return ["You're not on the \(feature.waitlistName).", joinLine]
         case .waitlisted:
             var line = "You're on the \(feature.waitlistName)"
             if let position = place.position { line += ": #\(position) in line" }
@@ -37,7 +38,7 @@ struct FeatureWaitlistView: Sendable {
             return [
                 line + ".",
                 "  Darkbloom reviews accounts in the order they joined and approves them by hand.",
-                "  Check again: \(group) waitlist",
+                "  Check again: \(group)",
             ]
         case .approved:
             let since = place.decidedAt.map { " since \(day($0))" } ?? ""

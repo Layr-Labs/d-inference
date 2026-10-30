@@ -164,7 +164,7 @@ struct SandboxSetupFlow {
         if case .place(let place) = lookup, place.status == .none {
             print("Darkbloom Sandbox is open to the accounts Darkbloom approves from its waitlist.")
             guard confirmed || (interactiveInput && SandboxTerminal.confirm("Join the Darkbloom Sandbox waitlist now?")) else {
-                print("  Join it: \(cli) sandbox waitlist join")
+                print(view.joinLine)
                 throw ExitCode.failure
             }
             lookup = await waitlist.join(1)

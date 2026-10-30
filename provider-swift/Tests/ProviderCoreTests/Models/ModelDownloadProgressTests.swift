@@ -27,6 +27,18 @@ private final class ManualClock: @unchecked Sendable {
     func advance(_ interval: TimeInterval) { lock.withLock { seconds += interval } }
 }
 
+/// The renderer's window width, changed by hand.
+private final class WindowWidth: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: Int
+
+    init(_ columns: Int) { value = columns }
+
+    var columns: Int { lock.withLock { value } }
+
+    func resize(to columns: Int) { lock.withLock { value = columns } }
+}
+
 /// A VT100 screen model covering what the renderer may emit: printable text
 /// with deferred auto-wrap, LF (with the tty's carriage return), CR and
 /// `ESC[K`. Any other control sequence fails the test. Rows that scroll off
@@ -301,6 +313,12 @@ struct ModelDownloadProgressTests {
         output.replacingOccurrences(of: "\u{1B}[K", with: "").components(separatedBy: "\r").filter { !$0.isEmpty }
     }
 
+    /// The cells between the brackets of a redraw's bar, if it has one.
+    private static func barWidth(_ frame: String) -> Int? {
+        guard let open = frame.firstIndex(of: "["), let close = frame.firstIndex(of: "]") else { return nil }
+        return frame.distance(from: open, to: close) - 1
+    }
+
     @Test("on a terminal every file's progress is one line, redrawn at most four times a second")
     func terminalShowsOneLine() {
         let clock = ManualClock()
@@ -351,10 +369,7 @@ struct ModelDownloadProgressTests {
                 frame.range(of: pattern, options: .regularExpression).map { frame.distance(from: frame.startIndex, to: $0.upperBound) }
             })
         }
-        let barWidths = Set(frames.compactMap { frame -> Int? in
-            guard let open = frame.firstIndex(of: "["), let close = frame.firstIndex(of: "]") else { return nil }
-            return frame.distance(from: open, to: close) - 1
-        })
+        let barWidths = Set(frames.compactMap(Self.barWidth))
         #expect(barWidths.count == 1, "bar widths: \(barWidths)")
         #expect(Set(frames.map { $0.prefix { $0 != "[" } }).count == 1)
         #expect(ends(#"\d+%"#).count == 1)
@@ -362,6 +377,36 @@ struct ModelDownloadProgressTests {
             #expect(ends(figure).count <= 1, "\(figure) ends at \(ends(figure))")
         }
         if columns >= 80 { #expect(ends(" left").count == 1) }
+    }
+
+    @Test("a resized window gets a new layout, which then stays put until the width changes again")
+    func resizedWindow() {
+        let clock = ManualClock()
+        let output = CapturedOutput()
+        let window = WindowWidth(120)
+        let renderer = DownloadProgressRenderer(
+            modelID: Self.modelID, displayName: Self.displayName, totalBytes: Self.total, startBytes: 0,
+            terminal: DownloadProgressTerminal(isTerminal: true, columns: { window.columns }, clock: { clock.now },
+                                               output: { output.append($0) }))
+        var done: Int64 = 0
+        /// `count` redraws at 125 MB/s.
+        func redraw(_ count: Int) {
+            for _ in 0..<count {
+                clock.advance(TransferProgressLine.redrawInterval)
+                done += 31_250_000
+                renderer.update(done: done)
+            }
+        }
+        redraw(40)
+        let wide = Self.redraws(output.value)
+        window.resize(to: 80)
+        redraw(40)
+        let narrow = Array(Self.redraws(output.value).dropFirst(wide.count))
+        #expect(wide.count == 40 && narrow.count == 40)
+        // 26 cells at 120 columns, 11 at 80.
+        #expect(Set(wide.compactMap(Self.barWidth)) == [26])
+        #expect(Set(narrow.compactMap(Self.barWidth)) == [11])
+        #expect(narrow.allSatisfy { $0.count < 80 })
     }
 
     @Test("the summary replaces the line when the download is verified, and the next output goes below it")

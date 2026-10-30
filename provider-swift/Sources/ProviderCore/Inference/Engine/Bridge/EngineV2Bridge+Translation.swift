@@ -66,7 +66,8 @@ enum EngineV2Translation {
         tokenConstraint: (any CBv2TokenConstraint)? = nil,
         samplingDefaults: EngineV2SamplingDefaults = .legacy,
         prefixCheckpointTargetTokens: Int? = nil,
-        defaultMaxTokensContextLimit: Int? = nil
+        defaultMaxTokensContextLimit: Int? = nil,
+        stopStringScope: CBv2StopStringScope? = nil
     ) -> CBv2Request {
         CBv2Request(
             id: id,
@@ -81,7 +82,8 @@ enum EngineV2Translation {
             prefixCacheEnabled: cacheEnabled,
             multimodal: multimodal,
             tokenConstraint: tokenConstraint,
-            prefixCheckpointTargetTokens: cacheEnabled ? prefixCheckpointTargetTokens : nil
+            prefixCheckpointTargetTokens: cacheEnabled ? prefixCheckpointTargetTokens : nil,
+            stopStringScope: stopStringScope
         )
     }
 

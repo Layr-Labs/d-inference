@@ -1,5 +1,0 @@
-### Darkbloom Sandbox from the provider CLI
-
-- `darkbloom sandbox setup` checks whether this Mac can host Darkbloom Sandbox CI jobs (chip, macOS, cores, memory, disk, network, power and sleep) and how many Linux and macOS jobs it can run at a time, explains that inference pauses while a job runs and that each job pays its price minus a 10% fee into your Darkbloom balance, and asks before installing anything. It then downloads the add-on's installer over HTTPS and shows its stages, including the browser approval link and code. Running it again reports the state, continues an unfinished setup, repairs the add-on or applies new slot counts.
-- `darkbloom sandbox status` (with `--json`), `pause`, `resume`, `logs` and `uninstall` drive the installed add-on. `darkbloom status` adds a `Sandboxes:` line while the add-on is installed and waits at most 2 seconds for it.
-- Older installers and add-ons keep working: setup runs an installer without progress events with its own output, and `darkbloom sandbox status` shows an older add-on's own status.

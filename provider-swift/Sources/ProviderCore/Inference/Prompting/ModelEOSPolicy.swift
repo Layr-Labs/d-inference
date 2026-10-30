@@ -45,4 +45,13 @@ public enum ModelEOSPolicy {
             tokenToId: tokenToId
         )
     }
+
+    /// Where client stop strings apply; nil keeps whole-output matching.
+    public static func stopStringScope(
+        modelId: String,
+        modelType: String? = nil
+    ) -> CBv2StopStringScope? {
+        ChatTemplateFixes.stopStringScope(
+            context: ChatTemplateFixContext(modelId: modelId, modelType: modelType))
+    }
 }

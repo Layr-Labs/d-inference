@@ -256,4 +256,29 @@ struct SSDBlockStreamingTests {
         _ = try truncated.next(skip: true)
         #expect(throws: SSDBlockStoreError.self) { try truncated.next() }
     }
+
+    @Test("a span read whole or across short reads returns the same bytes and read charges")
+    func readExactlyAssemblesShortReads() throws {
+        let f = try Fixture()
+        defer { f.remove() }
+        let file = f.root.appendingPathComponent("span")
+        let span = Data((0..<64).map { UInt8($0) })
+        for available in [span.count, 24] {
+            try span.prefix(available).write(to: file)
+            let handle = try FileHandle(forReadingFrom: file)
+            defer { try? handle.close() }
+            var charges: [Int] = []
+            let read = try SSDBlockStore.readExactly(span.count, from: handle, what: "span", beforeRead: { count in
+                charges.append(count)
+                guard charges.count == 3 else { return }
+                // The first read stopped short at the file's end; grow the file before the next one.
+                let writer = try FileHandle(forWritingTo: file)
+                defer { try? writer.close() }
+                try writer.seekToEnd()
+                try writer.write(contentsOf: span.dropFirst(available))
+            })
+            #expect(read == span && read.startIndex == 0)
+            #expect(charges == (available == span.count ? [span.count, 0] : [span.count, 0, 0]))
+        }
+    }
 }

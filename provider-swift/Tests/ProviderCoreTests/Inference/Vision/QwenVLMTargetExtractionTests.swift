@@ -334,6 +334,38 @@ struct QwenVLMTargetExtractionTests {
         await store.closeAndWait()
     }
 
+    @Test("end-of-prompt boundaries require the actual dense paged SSD store and keep its floor")
+    func endOfPromptBoundaryRequiresDensePagedSSD() async throws {
+        let config = try EngineV2VLMTextExtraction.decodeQwenConfiguration(
+            configData: qwenTargetFixtureJSON(fullAttentionInterval: 2))
+        let dense = Qwen35Model(config)
+        let moe = Qwen35MoEModel(config)
+        let fixture = try SSDHybridCheckpointTestFixture(paged: true)
+        defer { fixture.remove() }
+        let store = try fixture.makeStore()
+        defer { store.close() }
+        #expect(EngineV2Factory.demandedLatestCheckpointMinimumTokens(
+            model: dense, backend: .paged, store: store) == store.config.minEffectiveTokens)
+        // The MoE target's prefill depends on its partition.
+        #expect(EngineV2Factory.demandedLatestCheckpointMinimumTokens(
+            model: moe, backend: .paged, store: store) == nil)
+        #expect(EngineV2Factory.demandedLatestCheckpointMinimumTokens(
+            model: dense, backend: .contiguous, store: store) == nil)
+        #expect(EngineV2Factory.demandedLatestCheckpointMinimumTokens(
+            model: dense, backend: .paged, store: nil) == nil)
+        // The capture-boundary partition stays GLM's.
+        #expect(EngineV2Factory.demandedCaptureBoundaryMinimumTokens(model: dense, store: store) == nil)
+        await store.closeAndWait()
+
+        let contiguousFixture = try SSDHybridCheckpointTestFixture(paged: false)
+        defer { contiguousFixture.remove() }
+        let contiguousStore = try contiguousFixture.makeStore()
+        defer { contiguousStore.close() }
+        #expect(EngineV2Factory.demandedLatestCheckpointMinimumTokens(
+            model: dense, backend: .paged, store: contiguousStore) == nil)
+        await contiguousStore.closeAndWait()
+    }
+
     @Test("benchmark resolution uses the same extracted Qwen target")
     func benchmarkServingModelUsesQwenExtraction() throws {
         let configData = qwenTargetFixtureJSON()

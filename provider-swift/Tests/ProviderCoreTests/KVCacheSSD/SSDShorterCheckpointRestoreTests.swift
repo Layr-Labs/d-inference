@@ -304,8 +304,8 @@ struct SSDShorterCheckpointRestoreTests {
     @Test("same-ID replacement owns its registration while the old attempt unwinds")
     func sameIDReplacementCannotBeErasedOrRetryAsOldWork() async throws {
         try await SSDShorterRestoreFixture.withStore { fixture, store in
-            let gate = SSDShorterRestoreGate()
-            defer { gate.open() }
+            let gate = SSDShorterRestoreGate(), replacementGate = SSDShorterRestoreGate()
+            defer { gate.open(); replacementGate.open() }
             let oldProbe = SSDShorterRestoreProbe(), newProbe = SSDShorterRestoreProbe()
             let id = CBv2RequestID(908)
             let old = Task {
@@ -327,20 +327,25 @@ struct SSDShorterCheckpointRestoreTests {
                 await store.stage(requestID: id, request: fixture.request(),
                     reserveReadScratch: { try newProbe.scratch(fixture) }) { manifest in
                         newProbe.record(manifest.position)
+                        replacementGate.block()
                         return try newProbe.cpuPlan(manifest, fixture: fixture)
                     }
             }
-            let registered = await SSDShorterRestoreGate.waitUntil {
-                store.fileCoordinator.pendingCount(for: fixture.file(store, position: 512)) == 1
-            }
-            guard registered else {
-                Issue.record("replacement did not register behind the exact first-file lease")
-                old.cancel(); replacement.cancel(); store.close(); gate.open()
+            // Both reads share the first file's lease: the replacement is
+            // registered and inside its own read while the old one still holds.
+            guard await replacementGate.waitUntilEntered() else {
+                Issue.record("replacement did not reach its plan beside the old read")
+                old.cancel(); replacement.cancel(); store.close(); gate.open(); replacementGate.open()
                 _ = await old.value; _ = await replacement.value
                 return
             }
+            #expect(store.fileCoordinator.pendingCount(for: fixture.file(store, position: 512)) == 0)
             gate.open()
-            let oldResult = await old.value, newResult = await replacement.value
+            let oldResult = await old.value
+            #expect(store.lock.withLock { store.reading[id] != nil },
+                "the old attempt unwound without erasing the replacement's registration")
+            replacementGate.open()
+            let newResult = await replacement.value
             #expect(oldResult.disposition == .skippedPolicy && oldProbe.positions == [512])
             #expect(newResult.stagedTokens == 512 && newProbe.positions == [512])
             #expect(store.lock.withLock { store.reading.isEmpty && store.stages.count == 1 })

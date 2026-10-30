@@ -58,6 +58,10 @@ extension Sandbox {
 
         mutating func run() async throws {
             Darkbloom.ensureLogging()
+            // Line-buffer stdout: piped or over ssh it is block-buffered, and the
+            // approval link (and every progress line) would appear only when the
+            // buffer fills or setup exits, long after the owner needs it.
+            setvbuf(stdout, nil, _IOLBF, 0)
             guard geteuid() != 0 else {
                 printError("Run `\(Sandbox.cli) sandbox setup` as yourself, not with sudo: the add-on runs in your "
                     + "login session.")

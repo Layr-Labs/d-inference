@@ -173,8 +173,8 @@ struct SandboxSetupFlow {
     /// fits.
     private func sizeAndConfirm(_ eligibility: SandboxEligibility, installer: URL, script: Data) async throws -> Bool {
         let plan: SandboxSizingPlan
-        if let addonPlan = try await addonPlan(installer, script: script) {
-            plan = addonPlan
+        if let reportedPlan = try await requestAddonPlan(installer, script: script) {
+            plan = reportedPlan
         } else {
             printChecks([SandboxEligibility.Check(
                 level: .info, name: "Sizing",
@@ -184,9 +184,9 @@ struct SandboxSetupFlow {
         printChecks(plan.checks)
         print("")
         let verdict = plan.verdict
-        print(DoctorTerminalStyle.verdict(verdict[0], level: plan.runsJobs ? .pass : .fail, color: color))
+        print(DoctorTerminalStyle.verdict(verdict[0], level: plan.canRunJobs ? .pass : .fail, color: color))
         verdict.dropFirst().forEach { print($0) }
-        guard plan.runsJobs else { throw ExitCode.failure }
+        guard plan.canRunJobs else { throw ExitCode.failure }
         print("")
         Self.tradeOff.forEach { print($0) }
         guard !confirmed else { return true }
@@ -213,7 +213,7 @@ struct SandboxSetupFlow {
     /// release and sizes this Mac without installing anything. Nil, for the
     /// fallback, from an installer without plan mode (it names no `--plan`),
     /// a failed run or one without a `plan` event.
-    private func addonPlan(_ installer: URL, script: Data) async throws -> SandboxSizingPlan? {
+    private func requestAddonPlan(_ installer: URL, script: Data) async throws -> SandboxSizingPlan? {
         guard SandboxInstaller.supportsPlan(script) else { return nil }
         let output = SandboxOutputTail()
         let exit = try await SandboxChildProcess.run(

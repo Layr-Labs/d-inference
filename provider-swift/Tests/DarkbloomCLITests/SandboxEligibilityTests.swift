@@ -36,7 +36,7 @@ struct SandboxEligibilityTests {
                                            provider: example.provider)).estimatedPlan()
         #expect(plan.linux.slots == example.linux)
         #expect(plan.macOS.slots == example.macOS)
-        #expect(plan.runsJobs == (example.linux + example.macOS > 0))
+        #expect(plan.canRunJobs == (example.linux + example.macOS > 0))
     }
 
     @Test("16 cores and 128 GB runs macOS and Linux jobs, including the 12-core, 32 GB macOS size")
@@ -71,7 +71,7 @@ struct SandboxEligibilityTests {
     @Test("8 cores and 16 GB is not eligible, and says what is short")
     func tooSmall() {
         let withInference = SandboxEligibility(.mac(cores: 8, memoryGiB: 16)).estimatedPlan()
-        #expect(!withInference.runsJobs)
+        #expect(!withInference.canRunJobs)
         #expect(withInference.verdict == [
             "Not eligible: each job needs 16 GB of memory besides the 8 GB kept for you and the 4 GB kept for "
                 + "inference; this Mac has 4 GB left.",

@@ -46,9 +46,6 @@ struct SandboxEligibility: Equatable, Sendable {
     static let maximumLinuxSlots = 16
     /// macOS runs at most two macOS VMs at once, the owner's own included.
     static let maximumMacOSSlots = 2
-    /// The most requested macOS runner size.
-    static let largeMacOSCores = 12
-    static let largeMacOSMemory: Int64 = 32 << 30
 
     let facts: SandboxHostFacts
 
@@ -189,12 +186,13 @@ extension SandboxEligibility {
         plan.macOS.limit = limit(plan.macOS, cores: Self.macOSCores, maximum: Self.maximumMacOSSlots)
         if let linuxRequested { (plan.linux.slots, plan.linux.automatic, plan.linux.limit) = (linuxRequested, false, nil) }
         if let macOSRequested { (plan.macOS.slots, plan.macOS.automatic, plan.macOS.limit) = (macOSRequested, false, nil) }
-        if !plan.runsJobs { plan.message = Self.noJobReason(plan) }
+        if !plan.canRunJobs { plan.message = Self.noJobReason(plan) }
         return plan
     }
 
-    /// Why the estimate fits no job: cores or memory, else what the disk and
-    /// slot lines of the report say.
+    /// Why the estimate fits no job: the core or memory shortfall, else a
+    /// generic reason; the report's `shortfall` adds the disk to free and
+    /// whether the owner's counts are why.
     private static func noJobReason(_ plan: SandboxSizingPlan) -> String {
         if plan.jobCores < linuxCores {
             return "each job needs \(linuxCores) cores besides the \(plan.coresKept) kept for you; "
@@ -213,22 +211,26 @@ extension SandboxEligibility {
 // MARK: - The plan in the report
 
 extension SandboxSizingPlan {
+    /// The most requested macOS runner size.
+    private static let largeMacOSCores = 12
+    private static let largeMacOSMemory: Int64 = 32 << 30
+
     /// Cores and memory left for jobs.
     var jobCores: Int { max(0, cores - coresKept) }
     var jobMemory: Int64 { max(0, memoryBytes - memoryKeptBytes - providerMemoryBytes) }
-    var runsJobs: Bool { linux.slots + macOS.slots > 0 }
+    var canRunJobs: Bool { linux.slots + macOS.slots > 0 }
 
     /// Free disk one job of `platform` needs beyond what is free now, its
     /// images included; 0 when it fits.
     func diskShortfall(_ platform: Platform) -> Int64 {
-        max(0, floorBytes + platform.imagesBytes + platform.slotBytes - freeBytes)
+        max(0, floorBytes + platform.firstSlotBytes - freeBytes)
     }
 
     /// The CPU, memory and disk lines, in the `doctor` style. When no job
     /// fits, the lines a limit names fail.
     var checks: [SandboxEligibility.Check] {
         func level(_ resource: String) -> DiagnosticLevel {
-            !runsJobs && [linux.limit, macOS.limit].contains(where: { $0?.contains(resource) == true }) ? .fail : .pass
+            !canRunJobs && [linux.limit, macOS.limit].contains(where: { $0?.contains(resource) == true }) ? .fail : .pass
         }
         func disk(_ name: String, _ platform: Platform) -> String {
             let images = platform.imagesBytes > 0 ? "\(gibDown(platform.imagesBytes)) GiB" : "installed"
@@ -247,11 +249,11 @@ extension SandboxSizingPlan {
 
     /// The verdict, then what this Mac can run at a time or what it lacks.
     var verdict: [String] {
-        guard runsJobs else { return shortfall }
+        guard canRunJobs else { return shortfall }
         var lines = ["Eligible. At a time, this Mac can run:",
                      "  " + Self.slotLine("Linux", linux), "  " + Self.slotLine("macOS", macOS)]
         if macOS.slots > 0 {
-            lines.append(jobCores >= SandboxEligibility.largeMacOSCores && jobMemory >= SandboxEligibility.largeMacOSMemory
+            lines.append(jobCores >= Self.largeMacOSCores && jobMemory >= Self.largeMacOSMemory
                 ? "  The most requested macOS size, 12 cores and 32 GB, fits."
                 : "  The most requested macOS size, 12 cores and 32 GB, does not fit: it needs a Mac with at "
                     + "least 16 cores and about 64 GB.")
@@ -288,8 +290,9 @@ extension SandboxSizingPlan {
 }
 
 extension SandboxSizingPlan.Platform {
-    /// Disk its next slot takes: the first one brings the images.
-    var nextSlotBytes: Int64 { (slots == 0 ? imagesBytes : 0) + slotBytes }
+    /// The first slot brings the platform's images.
+    var firstSlotBytes: Int64 { imagesBytes + slotBytes }
+    var nextSlotBytes: Int64 { slots == 0 ? firstSlotBytes : slotBytes }
 }
 
 private func gb(_ bytes: Int64) -> Int64 { bytes / SandboxEligibility.gib }

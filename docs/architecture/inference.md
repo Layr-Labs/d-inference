@@ -2952,7 +2952,17 @@ transcript without a live line keeps only the reports
 `TransferProgressLine.takeLogLine` marks and the lines for the record.
 After a Darkbloom update changes a Mac's worker digest, the control leader's
 cluster service re-plans and re-adopts the same model by itself
-(`ClusterService.checkForUpdate`, `ClusterOnboardingUpdate`). The stage memory
+(`ClusterService.checkForUpdate`, `ClusterOnboardingUpdate`). A model change of
+a serving cluster (`m`, or `darkbloom cluster local <model>`) plans the same way:
+its list was priced while the running parts held their memory, where tensor
+parallel may not fit now, so once both parts stopped and both Macs gave the
+memory back (`OnboardingLive.awaitReleased`) it plans again and adopts the
+chosen model's new plan, found by its id (`OnboardingLive.localAdopt`,
+`ClusterOnboardingUpdate.servableIndex`). When planning again fails, the listed
+plan stands (it was priced with less memory than the Macs then have); a model
+the new plan does not offer is not started, and the screen says why. The
+automatic re-plan after repeated memory refusals at load adopts through the
+same path (`ClusterService.noteMemoryRefusal`). The stage memory
 gate's two fixed margins (the admissible floor, 6 GiB, and the loading
 headroom, 4 GiB, measured on 256 GiB Macs) apply on Macs with 96 GiB or more;
 below that they are the same share of the observed Mac's memory, never under

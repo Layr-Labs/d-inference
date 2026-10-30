@@ -1115,7 +1115,14 @@ architecture and explicit operator caps. A reservation is released only after
 engine retirement, not when a caller merely requests cancellation. Atomic
 deadline admission passes its retirement acknowledgement to the event pump;
 an early terminal returns to the caller while the service and KV reservations
-remain owned until that acknowledgement completes.
+remain owned until that acknowledgement completes. With
+`DARKBLOOM_PREFIX_CACHE_SSD_TERMINAL_BEFORE_PUBLICATION`, an unseeded request on
+the ordinary path also submits through `EngineV2.submitWithRetirement` and sets
+`CBv2Request.terminalPrecedesCheckpointPublication`: its client terminal no longer
+waits for its complete-checkpoint write, while the service and KV reservations,
+staging and the ready receipt are released at retirement, after that write
+settles (`EngineV2Bridge+Submission.swift`). Seeded requests keep the default
+order because their sampling reuses a stable engine ID.
 
 For queued native requests, `CBv2NativeBlockEngine.pump` makes one cancellation
 decision for both `finishWaiting` and queue removal, so a concurrent cancellation

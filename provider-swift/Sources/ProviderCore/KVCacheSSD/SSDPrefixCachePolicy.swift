@@ -226,6 +226,19 @@ enum SSDPrefixCachePolicy {
         !["0", "false", "no", "off"].contains(environment[incrementalCheckpointsFlag]?.trimmingCharacters(in: .whitespaces).lowercased())
     }
 
+    /// Deliver a donor's response before its complete checkpoint is durable
+    /// (default off). Rows, the service allowance and the KV reservation are
+    /// still held until the write finishes; only the client stops waiting.
+    static let terminalBeforePublicationFlag = "DARKBLOOM_PREFIX_CACHE_SSD_TERMINAL_BEFORE_PUBLICATION"
+
+    static func terminalBeforePublication(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> Bool {
+        let v = environment[terminalBeforePublicationFlag]?
+            .trimmingCharacters(in: .whitespaces).lowercased()
+        return v == "1" || v == "true" || v == "yes" || v == "on"
+    }
+
     static func strictFsync(
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> Bool {

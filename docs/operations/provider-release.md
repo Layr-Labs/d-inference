@@ -38,7 +38,7 @@ expired checkpoints no longer count as corrupt and cache sweeps no longer stall
 lookups. The provider reconnects faster after a long session or a 1012 close,
 keeps prompt-cache hits across batch promotion, drops response chunks processed
 while disconnected and keeps a model download's completion. The MLX pins move to
-SDK `main`. See the [`v0.10.5` changelog entry](../../CHANGELOG.md) for the full
+their forks' `main`. See the [`v0.10.5` changelog entry](../../CHANGELOG.md) for the full
 scope.
 
 Before tagging `v0.10.5`:
@@ -86,18 +86,17 @@ Platform evidence, inspected on 2026-10-30 (recheck before tagging):
 
 | Claim | Source |
 |---|---|
-| The provider-contract snapshot pins d-inference `8effff7f` (v0.10.4), and its 34 inputs equal this preparation's except `ProviderCore.swift` | [`contracts/provider/manifest.json`](https://github.com/Layr-Labs/darkbloom-platform/blob/master/contracts/provider/manifest.json) on darkbloom-platform `master` |
+| The provider-contract snapshot pins d-inference `8effff7f` (v0.10.4), and its 34 inputs equal this preparation's except `ProviderCore.swift` | [`contracts/provider/manifest.json` at `cb31f6b4`](https://github.com/Layr-Labs/darkbloom-platform/blob/cb31f6b44af25500eab72fa0adb01eb6c69864d6/contracts/provider/manifest.json) (`source_revision`) |
 | `LatestProviderVersion` must equal the snapshotted `ProviderCore.version` | [`provider_version_sync_test.go` at `5ba280d8`](https://github.com/Layr-Labs/darkbloom-platform/blob/5ba280d89aa5e9bd4fbf05e0dfa848059cd3b585/coordinator/tests/api/provider_version_sync_test.go) (`TestLatestProviderVersionMatchesProviderCore`) |
 
 `v0.10.4` was [published on 2026-10-28](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.4)
-from `8effff7f7067fec70b2e3b58de0a4ba47ea3986c`, `v0.10.3` was [published on 2026-10-26](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.3)
+from `8effff7f7067fec70b2e3b58de0a4ba47ea3986c`, `v0.10.3` was
+[published on 2026-10-26](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.3)
 from `3ddd11ce8d7204cc5aadefd2050376c583da4ff8`, `v0.10.2` was
 [published on 2026-10-26](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.2)
 from `f9d1af3d0d3e1838974a5cfdff0a08142977b45e`, `v0.10.1` was
 [published on 2026-10-24](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.1)
-from `9034a5a0f3526dec83ab6384e5264db595cb7549`, and `v0.10.0` was
-[published on 2026-10-23](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.0)
-from `1ef9c89f465ba1299b4938c2b0359e9ae33ed454`. Publication does not establish
+from `9034a5a0f3526dec83ab6384e5264db595cb7549`. Publication does not establish
 that every optional feature or environment has been activated.
 
 ## Prerequisites

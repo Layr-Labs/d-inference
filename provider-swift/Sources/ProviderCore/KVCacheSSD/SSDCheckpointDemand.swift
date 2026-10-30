@@ -39,16 +39,21 @@ final class SSDCheckpointDemand: @unchecked Sendable {
 }
 
 /// The coordinator's fleet-wide repeat observation for one remote request,
-/// forwarded as `cache_repeated_prefix_tokens`. It is a token count only; it
-/// carries no key, hash, boundary or prompt-derived identifier.
+/// forwarded as `cache_repeated_prefix_tokens`, and its optional first-sight
+/// admission (`cache_first_sight_tokens`). Token counts only; no key, hash,
+/// boundary or prompt-derived identifier.
 public struct SSDCheckpointDonationDemand: Sendable, Equatable {
     /// Deepest boundary another plan shared within the coordinator's routing
     /// TTL, among the multiples of 1,024 tokens and final boundaries the
     /// coordinator observes; 0 when none did.
     public let repeatedPrefixTokens: Int
+    /// Prompt tokens the coordinator admitted for one speculative first-sight
+    /// checkpoint under a session-narrowed scope; 0 when not admitted.
+    public let firstSightTokens: Int
 
-    public init(repeatedPrefixTokens: Int) {
+    public init(repeatedPrefixTokens: Int, firstSightTokens: Int = 0) {
         self.repeatedPrefixTokens = max(0, repeatedPrefixTokens)
+        self.firstSightTokens = max(0, firstSightTokens)
     }
 }
 
@@ -69,6 +74,18 @@ extension SSDCheckpointDemand {
     ) -> Bool {
         guard let demand else { return true }
         return localRepeat || demand.repeatedPrefixTokens >= max(1, minEffectiveTokens)
+    }
+
+    /// A checkpoint the ordinary gate refuses may still be written as a
+    /// speculative first-sight write when the coordinator admitted one for at
+    /// least this checkpoint's position (and the store's floor). The store
+    /// then applies the speculative write class: its own bounded lane and
+    /// budget share, never displacing a proven write.
+    static func admitsSpeculativeWrite(
+        demand: SSDCheckpointDonationDemand?, checkpointPosition: Int, minEffectiveTokens: Int
+    ) -> Bool {
+        guard let demand, checkpointPosition > 0 else { return false }
+        return demand.firstSightTokens >= max(1, minEffectiveTokens, checkpointPosition)
     }
 }
 

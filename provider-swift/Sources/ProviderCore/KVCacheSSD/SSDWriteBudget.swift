@@ -6,7 +6,10 @@ import Foundation
 /// The caller creates the dedicated root and handles the cap == 0 opt-out.
 /// A reservation is durable before admission and is never refunded on write failure.
 final class SSDWriteBudget: Sendable {
-    private static let fileName = ".write-budget"
+    static let defaultFileName = ".write-budget"
+    /// Speculative first-sight bytes, a sub-allowance that still also counts
+    /// in the default ledger (`SSDWriteRateLimiter.consumeSpeculative`).
+    static let speculativeFileName = ".write-budget-speculative"
     private static let bucketCount = 25
     private static let recordBytes = (2 + bucketCount) * 8 + 32
     private let root: URL
@@ -14,13 +17,15 @@ final class SSDWriteBudget: Sendable {
     private let rootInode: ino_t
     private let ledgerDevice: dev_t
     private let ledgerInode: ino_t
+    private let fileName: String
 
     private enum Failure: Error {
         case unsafePath, unavailable, corrupt
     }
 
-    init(root: URL) throws {
+    init(root: URL, fileName: String = SSDWriteBudget.defaultFileName) throws {
         self.root = root
+        self.fileName = fileName
         let directory = try Self.openRoot(root)
         defer { close(directory) }
         var rootInfo = stat()
@@ -28,17 +33,17 @@ final class SSDWriteBudget: Sendable {
         rootDevice = rootInfo.st_dev
         rootInode = rootInfo.st_ino
         var fd = openat(
-            directory, Self.fileName,
+            directory, fileName,
             O_RDWR | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK | O_EXLOCK,
             S_IRUSR | S_IWUSR)
         let created = fd >= 0
         if fd < 0, errno == EEXIST {
             fd = openat(
-                directory, Self.fileName, O_RDWR | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
+                directory, fileName, O_RDWR | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
         }
         guard fd >= 0 else { throw Failure.unavailable }
         defer { close(fd) }
-        try Self.verify(fd, directory: directory)
+        try Self.verify(fd, directory: directory, fileName: fileName)
         var ledgerInfo = stat()
         guard fstat(fd, &ledgerInfo) == 0 else { throw Failure.unavailable }
         ledgerDevice = ledgerInfo.st_dev
@@ -58,28 +63,36 @@ final class SSDWriteBudget: Sendable {
     /// integrity failures deny admission; neither threads nor processes wait
     /// for another reservation's flush. Actual disk I/O is still synchronous.
     func admit(bytes: Int, capBytesPerDay: Int, now: Double, consume: Bool) -> Bool {
+        admission(bytes: bytes, capBytesPerDay: capBytesPerDay, now: now, consume: consume) == .admitted
+    }
+
+    enum Admission: Equatable { case admitted, overCap, unavailable }
+
+    /// `admit`, telling a full rolling day (`overCap`) apart from contention
+    /// and I/O or integrity failures (`unavailable`).
+    func admission(bytes: Int, capBytesPerDay: Int, now: Double, consume: Bool) -> Admission {
         let hour = (now / 3_600).rounded(.down)
         guard bytes >= 0, capBytesPerDay > 0, now.isFinite, now >= 0,
             hour < Double(UInt64.max)
-        else { return false }
+        else { return .unavailable }
         do {
             let directory = try Self.openRoot(root)
             defer { close(directory) }
             var rootInfo = stat()
             guard fstat(directory, &rootInfo) == 0,
-                rootInfo.st_dev == rootDevice, rootInfo.st_ino == rootInode else { return false }
+                rootInfo.st_dev == rootDevice, rootInfo.st_ino == rootInode else { return .unavailable }
             // A separate open description per call is essential: flock on a
             // shared descriptor would not exclude concurrent calls on one instance.
             let fd = openat(
-                directory, Self.fileName, O_RDWR | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
-            guard fd >= 0 else { return false }
+                directory, fileName, O_RDWR | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
+            guard fd >= 0 else { return .unavailable }
             defer { close(fd) }
             var ledgerInfo = stat()
             guard fstat(fd, &ledgerInfo) == 0,
-                ledgerInfo.st_dev == ledgerDevice, ledgerInfo.st_ino == ledgerInode else { return false }
-            guard flock(fd, LOCK_EX | LOCK_NB) == 0 else { return false }
+                ledgerInfo.st_dev == ledgerDevice, ledgerInfo.st_ino == ledgerInode else { return .unavailable }
+            guard flock(fd, LOCK_EX | LOCK_NB) == 0 else { return .unavailable }
             defer { flock(fd, LOCK_UN) }
-            try Self.verify(fd, directory: directory)
+            try Self.verify(fd, directory: directory, fileName: fileName)
             var record = try Self.read(fd)
             let currentHour = max(UInt64(hour), record[1])
             let elapsed = Int(min(currentHour - record[1], UInt64(Self.bucketCount)))
@@ -91,16 +104,16 @@ final class SSDWriteBudget: Sendable {
             // 24 hours, at the cost of up to one extra hour of conservatism.
             let total = record.dropFirst(2).reduce(UInt64(0), +)
             let cap = UInt64(capBytesPerDay)
-            guard total <= cap, UInt64(bytes) <= cap - total else { return false }
+            guard total <= cap, UInt64(bytes) <= cap - total else { return .overCap }
             if consume, bytes > 0 {
                 record[record.count - 1] += UInt64(bytes)
-                try Self.verify(fd, directory: directory)
+                try Self.verify(fd, directory: directory, fileName: fileName)
                 try Self.write(record, to: fd)
-                try Self.verify(fd, directory: directory)
+                try Self.verify(fd, directory: directory, fileName: fileName)
             }
-            return true
+            return .admitted
         } catch {
-            return false
+            return .unavailable
         }
     }
 
@@ -145,7 +158,7 @@ final class SSDWriteBudget: Sendable {
         }
     }
 
-    private static func verify(_ fd: Int32, directory: Int32) throws {
+    private static func verify(_ fd: Int32, directory: Int32, fileName: String) throws {
         var opened = stat()
         var live = stat()
         guard fstat(fd, &opened) == 0,

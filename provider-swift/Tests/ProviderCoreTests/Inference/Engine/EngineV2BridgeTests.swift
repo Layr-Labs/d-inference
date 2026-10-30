@@ -540,6 +540,65 @@ private struct EngineV2BridgePumpReceiptTests {
         #expect(store.stats().filesWritten > 0)
         await bridge.shutdown()
     }
+
+    @Test("a first-sight donor answers before its speculative write; a seeded one is admitted none")
+    func firstSightDonorWritesAfterAnsweringUnlessSeeded() async throws {
+        for seed in [nil, 7] as [UInt64?] {
+            let fixture = try SSDHybridCheckpointTestFixture()
+            defer { fixture.remove() }
+            let outcomes = PrefixCacheDonationTelemetry()
+            let store = try fixture.makeStore(useGlobalBudget: false, donationRecorder: outcomes)
+            let entered = DispatchSemaphore(value: 0)
+            let resume = DispatchSemaphore(value: 0)
+            store.lock.withLock {
+                store.beforeWriteIndexForTesting = { _, durable in
+                    guard !durable else { return }
+                    entered.signal()
+                    _ = resume.wait(timeout: .now() + 10)
+                }
+            }
+            let model = PumpReceiptModel()
+            defer {
+                model.allowForward()
+                for _ in 0 ..< 8 { resume.signal() }
+            }
+            // The opt-in stays off: the first-sight admission alone moves the terminal.
+            let bridge = makeBridge(
+                engine: engine(model: model, store: store), modelId: "fixture-model",
+                ssdHybridCheckpointStore: store)
+            let stream = await bridge.submitTokenized(
+                promptTokens: fixture.tokens, request: makeRequest(maxTokens: 1, seed: seed),
+                requestId: "first-sight-donor", cacheScope: "session-a",
+                donationDemand: .init(repeatedPrefixTokens: 0, firstSightTokens: fixture.tokens.count))
+            let finished = DispatchSemaphore(value: 0)
+            let collection = Task {
+                let recorded = await record(stream)
+                finished.signal()
+                return recorded
+            }
+            model.allowForward()
+            if seed == nil {
+                let writing = await Task.detached { blockingWait(entered, seconds: 10) }.value
+                #expect(writing)
+                let answered = await Task.detached { blockingWait(finished, seconds: 5) }.value
+                #expect(answered, "a first-sight donor waited for its speculative write")
+                #expect(store.stats().filesWritten == 0)
+                for _ in 0 ..< 8 { resume.signal() }
+            }
+            _ = await collection.value
+            await store.waitForWritesForTesting()
+            let stats = store.stats()
+            if seed == nil {
+                #expect(stats.speculativeFilesWritten > 0)
+                #expect(outcomes.snapshot().contains { $0.outcome == .donated })
+            } else {
+                #expect(stats.speculativeFilesWritten == 0)
+                #expect(outcomes.snapshot().contains { $0.outcome == .skippedNovel })
+            }
+            #expect(stats.filesWritten == stats.speculativeFilesWritten)
+            await bridge.shutdown()
+        }
+    }
 }
 
 private func makeBridge(
@@ -908,6 +967,24 @@ struct EngineV2TranslationTests {
                 cacheScope: "tenant"))
             #expect(engine.submitted.map(\.terminalPrecedesCheckpointPublication) == [enabled, false])
         }
+    }
+
+    @Test("a first-sight donor takes the early terminal without the opt-in; a seeded one keeps the ordinary order")
+    func firstSightDonorTerminalOrder() async throws {
+        let demand = SSDCheckpointDonationDemand(repeatedPrefixTokens: 0, firstSightTokens: 2048)
+        var early: [Bool] = []
+        for seed in [nil, 7] as [UInt64?] {
+            let engine = ScriptedCBv2Engine(script: .stream([
+                .finished(reason: .stop, usage: CBv2Usage(promptTokens: 2, completionTokens: 0))
+            ]))
+            let bridge = makeBridge(engine: engine)
+            _ = await record(await bridge.submitTokenized(
+                promptTokens: [1, 2], request: makeRequest(seed: seed), requestId: "first-sight",
+                cacheScope: "session", donationDemand: demand))
+            early.append(try #require(engine.submitted.first).terminalPrecedesCheckpointPublication)
+            await bridge.shutdown()
+        }
+        #expect(early == [true, false])
     }
 }
 

@@ -55,12 +55,12 @@ public enum ClusterApprovalLifetime {
         /// Nothing to write: the saved setup stays byte for byte as it is.
         case keep
         /// Save this approval on both Macs: none was saved; the saved one is near its end and this one is later; or the
-        /// coordinator no longer lists the saved one and serves this matching one.
+        /// coordinator no longer lists the saved one as saved and serves this matching one.
         case save(ClusterRuntimeApproval)
         /// The saved approval expired and the coordinator has no later one: both Macs save the setup without it.
         case remove
-        /// The coordinator answered (404, or a list without the saved approval) and serves no other matching entry: the
-        /// saved approval is withdrawn although it has not ended.
+        /// The coordinator answered (404, or a list without the saved approval as saved) and serves no other matching
+        /// entry: the saved approval is withdrawn although it has not ended.
         case withdrawn
     }
 
@@ -84,7 +84,9 @@ public enum ClusterApprovalLifetime {
         guard let saved else { return candidate().map(Decision.save) ?? .keep }
         let savedEnd = expiry(saved) ?? 0
         if savedEnd <= now { return candidate().map(Decision.save) ?? .remove }
-        if let listed, !listed.contains(where: { $0.id == saved.id }) { return candidate().map(Decision.save) ?? .withdrawn }
+        // An entry the operator replaced under the same `id` (a new `not_after`, other terms) is not the saved one: the
+        // coordinator no longer approves the saved bytes.
+        if let listed, !listed.contains(saved) { return candidate().map(Decision.save) ?? .withdrawn }
         if savedEnd - now > renewWithinSeconds { return .keep }
         if let candidate = candidate(), candidate != saved, (expiry(candidate) ?? 0) > savedEnd { return .save(candidate) }
         return .keep

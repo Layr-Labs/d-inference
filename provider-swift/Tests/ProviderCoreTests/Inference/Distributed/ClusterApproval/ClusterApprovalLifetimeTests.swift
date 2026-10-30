@@ -86,6 +86,12 @@ struct ClusterApprovalLifetimeTests {
         #expect(decide(fresh, .approvals([later])) == .save(later))
         #expect(decide(fresh, .approvals([])) == .withdrawn)
         #expect(decide(fresh, .notOffered) == .withdrawn)
+        // Replaced in place under the same `id` (a new `not_after`): the coordinator no longer approves the saved
+        // bytes, so the listed entry is saved; a replacement this setup does not match withdraws it.
+        let replaced = m.approval(endsIn: 10 * 86_400)
+        #expect(replaced.id == fresh.id && replaced != fresh)
+        #expect(decide(fresh, .approvals([replaced])) == .save(replaced))
+        #expect(decide(fresh, .approvals([m.approval(model: "other/model", id: fresh.id)])) == .withdrawn)
         // Within a day of its end: a later one replaces it; still listed without one, it stays until it ends.
         #expect(decide(near, .approvals([near, later])) == .save(later))
         #expect(decide(near, .approvals([near])) == .keep)

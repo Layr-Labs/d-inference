@@ -167,7 +167,7 @@ public actor CoordinatorClient {
         self.ordinaryServingModelIDs = Set(config.models.map(\.id))
         self.stats = stats
         self.state = state
-        self.advertisedModelStore = AdvertisedModelStore(config.models.filter { config.registers(modelID: $0.id) })
+        self.advertisedModelStore = AdvertisedModelStore(config.models.filter { config.admitsModel($0.id) })
         self.liveAPNsToken = liveAPNsToken ?? { APNsBridge.shared.currentDeviceToken() }
         self.appAttestResumeResponder = appAttestResumeResponder
         self.reconnectPolicy = reconnectPolicy

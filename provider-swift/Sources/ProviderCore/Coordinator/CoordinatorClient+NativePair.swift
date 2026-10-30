@@ -17,15 +17,14 @@ extension CoordinatorClient {
     /// identity; installing grants no trust or runtime approval.
     ///
     /// The model must be one this member registers (`config.models`,
-    /// `CoordinatorClientConfig.registers(modelID:)`): its pair-serving grant
-    /// decides that, not the single-Mac runtime requirements, which a
-    /// member's hardware-only capabilities do not meet
-    /// (`DistributedServingEligibility`).
+    /// `CoordinatorClientConfig.admitsModel`): its pair-serving grant admits
+    /// it, as `ProviderLoop.installNativePairMember` requires.
     internal func installNativePairMember(_ control: NativePairMemberControl) throws {
         let installation = control.installation
         guard config.executionRole == .clusterMember, !sessionRegistered, nwConnection == nil,
               nativePairMember == nil, config.hardware.chipName == installation.chip,
               config.models.contains(where: { $0.id == installation.policy.model }),
+              config.admitsModel(installation.policy.model),
               let membership = try? installation.membership,
               config.clusterMembership == membership else { throw NativePairMemberError.unconfigured }
         adoptNativePairMember(control)

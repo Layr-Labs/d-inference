@@ -52,14 +52,15 @@ struct NativePairMemberInstallTests {
     /// A member's model is the one its pair-serving grant admitted, not one
     /// its hardware-only capabilities would serve alone: a GLM-5.3-Flash
     /// member installs its control without `mlx_nax` or `glm5_next_v1`, and
-    /// the chip and registered-model checks still refuse.
+    /// the chip, registered-model and grant checks still refuse.
     @Test func memberInstallsAModelWhoseSingleMacRequirementsItsCapabilitiesLack() async throws {
         let model = GLM5NextCoordinatorServing.catalogModelID
         let fixture = try MemberContractFixture(model: model, chip: "Apple M5 Ultra")
         let capabilities = DistributedServingEligibility.memberCapabilities(chipFamily: .m5)
         try #require(!ModelRuntimeRequirements.isEligible(modelID: model, available: capabilities))
         let claim = try fixture.installations[0].membership
-        func member(chip: String = "Apple M5 Ultra", models: [String] = [model]) -> CoordinatorClient {
+        func member(chip: String = "Apple M5 Ultra", models: [String] = [model],
+                    granted: Set<String> = [model]) -> CoordinatorClient {
             let hardware = HardwareInfo(machineModel: "fixture", chipName: chip, chipFamily: .m5,
                 chipTier: .ultra, memoryGb: 256, memoryAvailableGb: 240,
                 cpuCores: .init(total: 32, performance: 24, efficiency: 8), gpuCores: 80, memoryBandwidthGbs: 1200)
@@ -67,7 +68,7 @@ struct NativePairMemberInstallTests {
                 config: .init(url: "wss://coordinator.invalid/ws", hardware: hardware,
                     models: models.map { .init(id: $0, modelType: "glm5_next", sizeBytes: 1, estimatedMemoryGb: 1) },
                     backendName: "mlx-swift", runtimeCapabilities: capabilities, executionRole: .clusterMember,
-                    clusterMembership: claim),
+                    clusterMembership: claim, pairServingGrantedModelIDs: granted),
                 stats: .init(), state: .init(), liveAPNsToken: { nil })
         }
         func control() -> NativePairMemberControl {
@@ -75,6 +76,7 @@ struct NativePairMemberInstallTests {
         }
         await #expect(throws: NativePairMemberError.self) { try await member(chip: "Apple M5 Max").installNativePairMember(control()) }
         await #expect(throws: NativePairMemberError.self) { try await member(models: ["fixture-model"]).installNativePairMember(control()) }
+        await #expect(throws: NativePairMemberError.self) { try await member(granted: []).installNativePairMember(control()) }
         let installed = member()
         let installedControl = control()
         try await installed.installNativePairMember(installedControl)

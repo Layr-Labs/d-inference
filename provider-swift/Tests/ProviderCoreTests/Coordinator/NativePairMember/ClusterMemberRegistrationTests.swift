@@ -42,16 +42,28 @@ struct ClusterMemberRegistrationTests {
 
     /// A member registers the model its pair-serving grant admitted, although
     /// its hardware-only capabilities lack GLM-5.3-Flash's single-Mac
-    /// requirements; a solo provider with the same capabilities still does not.
+    /// requirements; a member without that grant, and a solo provider with the
+    /// same capabilities and grant, still do not.
     @Test func aMemberRegistersItsGrantedModelThatTheSingleMacRuleWouldDrop() async throws {
         let model = GLM5NextCoordinatorServing.catalogModelID
         let capabilities = DistributedServingEligibility.memberCapabilities(chipFamily: .m5)
         try #require(!ModelRuntimeRequirements.isEligible(modelID: model, available: capabilities))
-        func config(_ role: ProviderExecutionRole) -> CoordinatorClientConfig {
+        func config(_ role: ProviderExecutionRole, granted: Set<String> = [model]) -> CoordinatorClientConfig {
             .init(url: "wss://coordinator.invalid/ws", hardware: m5UltraHardware(),
                   models: [.init(id: model, modelType: "glm5_next", sizeBytes: 1, estimatedMemoryGb: 1)],
                   backendName: "mlx-swift", attestation: .init(rawBytes: Data(#"{"signed":"fixture"}"#.utf8)),
-                  runtimeCapabilities: capabilities, executionRole: role)
+                  runtimeCapabilities: capabilities, executionRole: role, pairServingGrantedModelIDs: granted)
+        }
+        for granted: Set<String> in [[], ["another-model"]] {
+            let ungranted = try CoordinatorClientCodec.encodeRegistration(from: config(.clusterMember, granted: granted),
+                memberRegistrationNonce: ClusterMemberNegotiation().nonce)
+            guard case .register(let registration) = try ProviderProtocolCodec.decodeProviderMessage(from: ungranted) else {
+                Issue.record("wrong registration type"); return
+            }
+            #expect((registration.clusterModels ?? []).isEmpty && registration.models.isEmpty)
+            let client = CoordinatorClient(config: config(.clusterMember, granted: granted), stats: .init(), state: .init(),
+                liveAPNsToken: { nil })
+            #expect(await client.currentAdvertisedModels().isEmpty)
         }
         let member = try CoordinatorClientCodec.encodeRegistration(from: config(.clusterMember),
             memberRegistrationNonce: ClusterMemberNegotiation().nonce)

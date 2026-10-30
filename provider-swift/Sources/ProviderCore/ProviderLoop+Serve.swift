@@ -214,6 +214,7 @@ extension ProviderLoop {
             // Only a member with an installed control claims a membership, and
             // the claim is derived from that control's own policy bytes.
             clusterMembership: try nativePairMemberControl?.installation.membership,
+            pairServingGrantedModelIDs: loopConfig.pairServingGrantedModelIDs,
             memberNegotiationWindow: clusterMemberNegotiationWindow
         )
 

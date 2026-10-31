@@ -1128,8 +1128,9 @@ public final class ClusterService: @unchecked Sendable {
             try? self.store.updateRecord { stored in
                 if let note = result.note { stored.approvalNote = note }
                 // The approval set aside is kept while the pair serves locally and dropped once one is saved again.
-                if case .serveLocally(let approval, let reason) = step, result.changed {
-                    stored.approvalSetAside = .init(approval: approval, reason: reason, runtimeBinarySHA256: decided.worker)
+                if result.changed, let setAside = ClusterApprovalCheck.setAside(by: step, worker: decided.worker,
+                                                                                now: Date().timeIntervalSince1970) {
+                    stored.approvalSetAside = setAside
                 }
                 if case .save = step, result.changed { stored.approvalSetAside = nil }
             }
@@ -1297,7 +1298,8 @@ public final class ClusterService: @unchecked Sendable {
                 nextStart = Date().addingTimeInterval(ran >= 120 ? 3 : backoff)
             }
             // A coordinator-paired part that keeps ending right after its start makes the leader serve locally
-            // (`ClusterApprovalCheck.step`); an end because the coordinator was out of reach is not counted.
+            // (`ClusterApprovalCheck.step`); an end the coordinator decided (out of reach, or the member role not
+            // accepted in time) is not counted.
             if lock.withLock({ childIsMember }) {
                 let lastError = Self.lastError(in: serviceFiles.rankLog, from: lock.withLock { childLogOffset })
                 lock.withLock { memberQuickEnds = ClusterApprovalCheck.memberQuickEnds(after: memberQuickEnds, ranSeconds: ran, lastError: lastError) }

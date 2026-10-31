@@ -308,9 +308,12 @@ public enum ClusterPlacementFlow {
                 + "(\(records.restrictedFamilies.sorted().map(\.description).joined(separator: ", ")) modes): \(records.failedShapesText). "
                 + "Those exact shapes are not planned; every other placement is, on any Macs.")
         }
-        // Public traffic in one line (owner serving never waits for it): the coordinator's parity qualification decides.
+        // Public traffic in one line (owner serving never waits for it): the coordinator's parity qualification decides,
+        // and a setup that decodes with Qwen's speculative assistant is never offered to it.
+        let assistant = (batchScope?.tensorParallelQuote ?? tensorAssistantQuote)?.assistant
         let publicLine = ClusterPairServingGrants.publicTrafficLine(runtimeModelID: capability.runtimeModelID,
-            artifactSHA256: capability.artifactSHA256, mode: result.chosen?.mode)
+            artifactSHA256: capability.artifactSHA256, mode: result.chosen?.mode,
+            tensorAssistant: assistant != nil && result.chosen?.mode == .tensorParallel)
         lines.append("Public traffic")
         lines.append("  " + publicLine.prefix(1).uppercased() + publicLine.dropFirst() + ".")
         var setup: ClusterPlacementSetup?
@@ -327,8 +330,7 @@ public enum ClusterPlacementFlow {
                 lines.append("  Request deadline " + deadline.basis + ".")
             }
             let value = try ClusterPlacementSetup.synthesize(description: described, capability: capability,
-                chosen: chosen, batchLanes: batchScope?.lanes,
-                tensorAssistant: (batchScope?.tensorParallelQuote ?? tensorAssistantQuote)?.assistant?.policy)
+                chosen: chosen, batchLanes: batchScope?.lanes, tensorAssistant: assistant?.policy)
             lines.append("What happens next")
             lines += value.narration(localMemberID: localMemberID).map { "  " + $0 }
             setup = value

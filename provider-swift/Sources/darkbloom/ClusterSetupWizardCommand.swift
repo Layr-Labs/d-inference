@@ -103,6 +103,7 @@ extension Cluster.Setup {
         var service = try Self.serviceSettings(config: config, modelDir: modelDir, worker: worker)
         service.wizard.privateMiMoImageQualification = request.privateMiMoImageQualification
         service.wizard.privateGLMImageQualification = request.privateGLMImageQualification
+        service.wizard.servingScope = request.scope
         let arguments = ["cluster", "service"] + (config.map { ["--config", $0] } ?? [])
             + (worker.map { ["--worker", $0] } ?? [])
         return .init(service: service, serviceArguments: arguments)

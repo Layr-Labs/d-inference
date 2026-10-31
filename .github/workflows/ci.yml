@@ -2,11 +2,18 @@ name: CI
 
 on:
   push:
-    branches: [master, main]
+    # dev pushes save the build caches that pull requests into dev restore.
+    branches: [master, main, dev]
   pull_request:
 
 permissions:
   contents: read
+
+# A plain build of the dev branch is a DevNet build (provider-swift/Package.swift).
+# CI builds the production identity, which the provider suites pin, as on
+# master; BuildEnvironmentTests checks that the build is the one requested.
+env:
+  DARKBLOOM_RELEASE_ENVIRONMENT: prod
 
 # Only revisions of the same PR supersede each other; pushes stay independent.
 concurrency:
@@ -31,9 +38,10 @@ jobs:
       lanes: |
         release-integrity linux_arm64 blacksmith-4vcpu-ubuntu-2404
         docs linux_arm64 blacksmith-4vcpu-ubuntu-2404
-        test-provider macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.changes.outputs.provider == 'true' && 1 || 0 }}
-        test-provider-sdk macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.changes.outputs.provider == 'true' && 1 || 0 }}
-        test-provider-parity macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.changes.outputs.provider == 'true' && 1 || 0 }}
+        test-provider macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.changes.outputs.provider == 'true' && 5 || 0 }}
+        test-provider-summary macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.changes.outputs.provider == 'true' && 1 || 0 }}
+        test-provider-sdk macos_arm64 blacksmith-12vcpu-macos-27 ${{ (github.event_name == 'push' || needs.changes.outputs.sdk == 'true') && 1 || 0 }}
+        test-cluster-checks macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.changes.outputs.provider == 'true' && 1 || 0 }}
 
   release-integrity:
     name: Release Integrity
@@ -64,6 +72,7 @@ jobs:
           python3 scripts/test-stage-test-metallib.py
           python3 scripts/test-provider-ci-cache.py
           python3 scripts/test-provider-ci-workflow.py
+          python3 scripts/test-provider-test-shards.py
           python3 scripts/test-ci-component-paths.py
           python3 scripts/test-darkbloom-route.py
           python3 scripts/test-prepare-prompt-fixtures.py
@@ -113,11 +122,23 @@ jobs:
         run: ./scripts/docs-check.sh
 
   test-provider:
-    name: Provider Unit Tests
+    # The provider suite runs in shards on separate Macs
+    # (scripts/provider-test-shards.py). Each shard runs its suites serially in
+    # one process. Shard 1 also runs the MLX-free test targets in one parallel
+    # process; shard 2 also runs Prompt Parity. The last shard runs every suite
+    # that no other shard selects, the isolated processes and the native gates
+    # below. Provider Unit Tests Summary
+    # checks that the shards together executed the full suite and reports coverage.
+    name: Provider Unit Tests (shard ${{ matrix.shard }})
     needs: [changes, route]
     if: ${{ needs.changes.outputs.provider == 'true' }}
     runs-on: ${{ fromJSON(needs.route.outputs.routes)['test-provider'] }}
     timeout-minutes: 60
+    strategy:
+      # A failed shard does not cancel the other shards.
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5]
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
@@ -137,15 +158,21 @@ jobs:
           echo "PROVIDER_COVERAGE_DIR=$profiles" >> "$GITHUB_ENV"
           echo "LLVM_PROFILE_FILE=$profiles/%p-%m.profraw" >> "$GITHUB_ENV"
       - name: Test Qwen resources in a relocated app
+        if: ${{ matrix.shard == strategy.job-total }}
         run: python3 scripts/test-qwen4-packaged-resources.py
       - name: Test SwiftPM resource bundle staging
+        if: ${{ matrix.shard == strategy.job-total }}
         run: python3 scripts/test-stage-swiftpm-resource-bundles.py
       - name: Test profile inventory authentication in a terminal
+        if: ${{ matrix.shard == strategy.job-total }}
         run: python3 scripts/test-profile-inventory-auth.py
       - name: Prepare pinned public MiMo metadata and original corpus
         id: mimo-prompt-fixtures
         if: ${{ !cancelled() && steps.provider-ci-build.outcome == 'success' }}
-        run: python3 scripts/prepare-mimo-prompt-fixtures.py --output "$RUNNER_TEMP/mimo-prompt-fixtures" --github-env "$GITHUB_ENV"
+        run: |
+          python3 scripts/test-prepare-mimo-image-http-fixtures.py
+          python3 scripts/prepare-mimo-prompt-fixtures.py --output "$RUNNER_TEMP/mimo-prompt-fixtures" --github-env "$GITHUB_ENV"
+          python3 scripts/prepare-mimo-image-http-fixtures.py --output "$RUNNER_TEMP/mimo-image-http-fixtures" --github-env "$GITHUB_ENV"
       - name: Prepare bounded synthetic MiMo provider fixtures offline
         id: mimo-fixtures
         if: ${{ !cancelled() && steps.provider-ci-build.outcome == 'success' }}
@@ -155,52 +182,78 @@ jobs:
       - name: Run Swift tests
         id: provider-unit-tests
         if: ${{ !cancelled() && steps.provider-ci-build.outcome == 'success' && steps.mimo-prompt-fixtures.outcome == 'success' && steps.mimo-fixtures.outcome == 'success' }}
-        timeout-minutes: 20
+        timeout-minutes: 35
         env:
           MIMO_V26_PROVIDER_LIFETIME_METADATA_TESTS: '1'
+          PROVIDER_TEST_SHARD: ${{ matrix.shard }}/${{ strategy.job-total }}
+          PROVIDER_TEST_REPORT_DIR: ${{ runner.temp }}/provider-unit-shard
         working-directory: provider-swift
         # Reuse the built bundle and matched metallib. The exact allocator
         # suite runs in its own process even if the general suite fails.
         run: |
           python3 ../scripts/run-provider-test-watchdog.py \
             --output-dir "$RUNNER_TEMP/provider-test-diagnostics" \
-            --diagnostic-after-seconds 480 --timeout-seconds 900 \
+            --diagnostic-after-seconds 900 --timeout-seconds 1800 \
             -- ../scripts/run-provider-tests.sh
       - name: Upload provider test diagnostics
         if: ${{ !cancelled() && steps.provider-unit-tests.outcome != 'skipped' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: provider-test-diagnostics
+          name: provider-test-diagnostics-${{ matrix.shard }}
           path: ${{ runner.temp }}/provider-test-diagnostics
           if-no-files-found: warn
           retention-days: 7
+      # Prompt Parity runs once, in shard 2, against this shard's build. A
+      # failure fails the shard, and with it the Provider Tests gate. The
+      # summary checks each run's executed count against the suite list.
+      - name: Verify public prompt golden vectors
+        id: prompt-parity
+        if: ${{ !cancelled() && matrix.shard == 2 && steps.provider-ci-build.outcome == 'success' && steps.mimo-prompt-fixtures.outcome == 'success' }}
+        env:
+          PROMPT_PARITY_SKIP_BUILD: '1'
+        run: |
+          set -o pipefail
+          report="$RUNNER_TEMP/provider-unit-shard"
+          mkdir -p "$report"
+          ./scripts/verify-prompt-parity.sh 2>&1 | tee "$report/parity-prompt.log"
+          python3 scripts/provider-test-shards.py counts parity ProductionPromptParityTests \
+            "$report/parity-prompt.log" "$report/shard-parity-prompt.json"
+      - name: Verify pinned Nemotron prompts and numeric cache plans
+        if: ${{ !cancelled() && matrix.shard == 2 && steps.provider-ci-build.outcome == 'success' }}
+        run: |
+          set -o pipefail
+          report="$RUNNER_TEMP/provider-unit-shard"
+          mkdir -p "$report"
+          ./scripts/verify-nemotron-prompt-parity.sh 2>&1 | tee "$report/parity-nemotron.log"
+          python3 scripts/provider-test-shards.py counts parity NemotronTemplateParityLiveTests \
+            "$report/parity-nemotron.log" "$report/shard-parity-nemotron.json"
       - name: Test desktop control API with isolated local state
-        if: ${{ !cancelled() && steps.provider-ci-build.outcome == 'success' }}
+        if: ${{ !cancelled() && matrix.shard == strategy.job-total && steps.provider-ci-build.outcome == 'success' }}
         timeout-minutes: 3
         run: python3 scripts/test-desktop-api.py provider-swift/.build/debug/darkbloom
       - name: Run isolated native MiMo startup gates
-        if: ${{ !cancelled() && steps.provider-ci-build.outcome == 'success' && steps.mimo-fixtures.outcome == 'success' }}
+        if: ${{ !cancelled() && matrix.shard == strategy.job-total && steps.provider-ci-build.outcome == 'success' && steps.mimo-fixtures.outcome == 'success' }}
         working-directory: provider-swift
         timeout-minutes: 5
         env:
           MIMO_V26_SERIAL_NATIVE_TESTS: '1'
         run: ../scripts/run-nested-suite.sh 'MiMoV26StandaloneLifecycleTests.test(ActualScannerPreloadStartsListenerWithSameNativeOwner|StartRefusesActualUnpublishedPreloadWithoutReplacingOwner)' --no-parallel
       - name: Run isolated native MiMo memory admission gates
-        if: ${{ !cancelled() && steps.provider-ci-build.outcome == 'success' && steps.mimo-fixtures.outcome == 'success' }}
+        if: ${{ !cancelled() && matrix.shard == strategy.job-total && steps.provider-ci-build.outcome == 'success' && steps.mimo-fixtures.outcome == 'success' }}
         working-directory: provider-swift
         timeout-minutes: 5
         env:
           MIMO_V26_SERIAL_NATIVE_TESTS: '1'
         run: ../scripts/run-nested-suite.sh 'testNativeMemoryAdmission|testNativeShutdownActivitySurvivesPendingHostUntilRealQuiescentDrain' --no-parallel
       - name: Run isolated native MiMo media admission gates
-        if: ${{ !cancelled() && steps.provider-ci-build.outcome == 'success' && steps.mimo-fixtures.outcome == 'success' }}
+        if: ${{ !cancelled() && matrix.shard == strategy.job-total && steps.provider-ci-build.outcome == 'success' && steps.mimo-fixtures.outcome == 'success' }}
         working-directory: provider-swift
         timeout-minutes: 5
         env:
           MIMO_V26_SERIAL_NATIVE_TESTS: '1'
         run: ../scripts/run-nested-suite.sh 'testNativeMediaRelease|testAuthenticatedChatResponsesActuallyRouteEncodedImageThroughNativeBridge|testActualMemoryBackedVideoIndicesAndAuthenticatedNativeRoute|testNativeIdleBootstrapLearnsRealTargetRateAndKeepsTextRateIsolated|testNativePreparedSealReachesRealAtomicDeadlineRejectionWithoutLosingCharge|testTypedDeadlineGatePreservesRawTextAndOffPolicyAndRefusesForeignCapability|MiMoMediaDecodeMemoryTests' --no-parallel
       - name: Run isolated native MiMo complete-prefix gates
-        if: ${{ !cancelled() && steps.provider-ci-build.outcome == 'success' && steps.mimo-fixtures.outcome == 'success' }}
+        if: ${{ !cancelled() && matrix.shard == strategy.job-total && steps.provider-ci-build.outcome == 'success' && steps.mimo-fixtures.outcome == 'success' }}
         working-directory: provider-swift
         timeout-minutes: 5
         env:
@@ -208,7 +261,7 @@ jobs:
           MIMO_V26_SERIAL_LOAD_FIXTURES: ${{ runner.temp }}/mimo-prefix-fixtures
         run: ../scripts/run-nested-suite.sh 'MiMoV26NativeLoadTransactionTests.testNativeCompletePrefix' --no-parallel
       - name: Run isolated native MiMo retained-fault gate
-        if: ${{ !cancelled() && steps.provider-ci-build.outcome == 'success' && steps.mimo-fixtures.outcome == 'success' }}
+        if: ${{ !cancelled() && matrix.shard == strategy.job-total && steps.provider-ci-build.outcome == 'success' && steps.mimo-fixtures.outcome == 'success' }}
         working-directory: provider-swift
         timeout-minutes: 5
         env:
@@ -219,7 +272,7 @@ jobs:
           DARKBLOOM_PREFIX_CACHE_MEMORY: '0'
         run: ../scripts/run-nested-suite.sh testNativeFenceRefusalKeepsActualBundlePermitAndBlocksOtherOwnerReclaim --no-parallel
       - name: Run isolated native MiMo lifecycle drain gate
-        if: ${{ !cancelled() && steps.provider-ci-build.outcome == 'success' && steps.mimo-fixtures.outcome == 'success' }}
+        if: ${{ !cancelled() && matrix.shard == strategy.job-total && steps.provider-ci-build.outcome == 'success' && steps.mimo-fixtures.outcome == 'success' }}
         working-directory: provider-swift
         timeout-minutes: 5
         env:
@@ -229,7 +282,7 @@ jobs:
           DARKBLOOM_PREFIX_CACHE_MEMORY: '0'
         run: ../scripts/run-nested-suite.sh testGracefulDrainAfterServedRequestRetiresNativeOwnerWithinDeadline --no-parallel
       - name: Restore pinned MiMo audio codec
-        if: ${{ !cancelled() && steps.provider-ci-build.outcome == 'success' }}
+        if: ${{ !cancelled() && matrix.shard == strategy.job-total && steps.provider-ci-build.outcome == 'success' }}
         uses: actions/cache/restore@1bd1e32a3bdc45362d1e726936510720a7c30a57
         id: mimo-audio-cache
         with:
@@ -237,16 +290,16 @@ jobs:
           key: mimo-audio-source-v2-077033345d80eef3a315e8d394e0589667e80e4cdaba9bc5a7488410c6657265
       - name: Prepare selected MiMo audio fixture
         id: mimo-audio-fixtures
-        if: ${{ !cancelled() && steps.provider-ci-build.outcome == 'success' }}
+        if: ${{ !cancelled() && matrix.shard == strategy.job-total && steps.provider-ci-build.outcome == 'success' }}
         run: python3 scripts/prepare-mimo-audio-fixtures.py --cache "$RUNNER_TEMP/mimo-audio-source" --output "$RUNNER_TEMP/mimo-audio-fixtures" --github-env "$GITHUB_ENV"
       - name: Cache verified MiMo audio codec
-        if: ${{ !cancelled() && steps.mimo-audio-fixtures.outcome == 'success' && steps.mimo-audio-cache.outputs.cache-hit != 'true' }}
+        if: ${{ !cancelled() && matrix.shard == strategy.job-total && steps.mimo-audio-fixtures.outcome == 'success' && steps.mimo-audio-cache.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57
         with:
           path: ${{ runner.temp }}/mimo-audio-source
           key: mimo-audio-source-v2-077033345d80eef3a315e8d394e0589667e80e4cdaba9bc5a7488410c6657265
       - name: Run isolated native MiMo audio gate
-        if: ${{ !cancelled() && steps.provider-ci-build.outcome == 'success' && steps.mimo-audio-fixtures.outcome == 'success' }}
+        if: ${{ !cancelled() && matrix.shard == strategy.job-total && steps.provider-ci-build.outcome == 'success' && steps.mimo-audio-fixtures.outcome == 'success' }}
         working-directory: provider-swift
         timeout-minutes: 5
         env:
@@ -254,15 +307,13 @@ jobs:
           MIMO_V26_MANAGED_AUDIO_PROVIDER_TESTS: '1'
         run: ../scripts/run-nested-suite.sh testNativeAudioRelease --no-parallel
       - name: Run atomic installer artifact tests
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && matrix.shard == strategy.job-total }}
         timeout-minutes: 2
         run: ./scripts/test-install-atomic.sh
-      # Report-only. The test steps above keep their own exit codes, so a
-      # coverage failure here cannot hide or replace a test failure.
-      - name: Report provider coverage
-        id: provider-coverage
+      # Report-only coverage: each shard merges its own profiles, and Provider
+      # Unit Tests Summary merges the shards and writes the report.
+      - name: Merge shard coverage profiles
         if: ${{ !cancelled() && steps.provider-unit-tests.outcome != 'skipped' }}
-        working-directory: provider-swift
         run: |
           set -euo pipefail
           shopt -s nullglob
@@ -272,6 +323,82 @@ jobs:
             exit 1
           fi
           echo "Merging ${#profiles[@]} provider coverage profiles"
+          mkdir -p "$RUNNER_TEMP/provider-unit-shard"
+          xcrun llvm-profdata merge -sparse -o "$RUNNER_TEMP/provider-unit-shard/provider.profdata" "${profiles[@]}"
+      - name: Upload shard counts, timings and coverage
+        if: ${{ !cancelled() && steps.provider-unit-tests.outcome != 'skipped' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: provider-unit-shard-${{ matrix.shard }}
+          path: |
+            ${{ runner.temp }}/provider-unit-shard/*.json
+            ${{ runner.temp }}/provider-unit-shard/*.xml
+            ${{ runner.temp }}/provider-unit-shard/provider.profdata
+          if-no-files-found: error
+          retention-days: 14
+
+  test-provider-summary:
+    # Checks the shards against the full suite list and reports coverage.
+    name: Provider Unit Tests Summary
+    needs: [changes, route, test-provider]
+    if: ${{ !cancelled() && needs.changes.outputs.provider == 'true' }}
+    runs-on: ${{ fromJSON(needs.route.outputs.routes)['test-provider-summary'] }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          submodules: recursive
+      # The shards saved this build; restoring it gives the binaries that
+      # `swift test list` and llvm-cov read.
+      - name: Build provider CI prerequisites
+        id: provider-ci-build
+        uses: ./.github/actions/provider-ci-build
+        with:
+          lane: provider
+      - name: Download shard reports
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          pattern: provider-unit-shard-*
+          path: ${{ runner.temp }}/provider-unit-shards
+      - name: Check that the shards executed the full provider suite
+        if: ${{ !cancelled() && steps.provider-ci-build.outcome == 'success' }}
+        working-directory: provider-swift
+        run: |
+          set -euo pipefail
+          swift test list --skip-build > "$RUNNER_TEMP/provider-tests.txt"
+          python3 ../scripts/provider-test-shards.py audit "$RUNNER_TEMP/provider-tests.txt" "$RUNNER_TEMP/provider-unit-shards"
+      # Report-only: measured seconds per suite, the input for
+      # scripts/provider-test-shard-weights.json when the shards drift apart.
+      - name: Measure suite times for shard balance
+        if: ${{ !cancelled() }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/provider-test-shard-weights"
+          python3 scripts/provider-test-shards.py weights "$RUNNER_TEMP"/provider-unit-shards/*/shard-*.xml \
+            > "$RUNNER_TEMP/provider-test-shard-weights/provider-test-shard-weights.json"
+      - name: Upload measured suite times
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: provider-test-shard-weights
+          path: ${{ runner.temp }}/provider-test-shard-weights/provider-test-shard-weights.json
+          if-no-files-found: warn
+          retention-days: 14
+      # Report-only. The test steps above keep their own exit codes, so a
+      # coverage failure here cannot hide or replace a test failure.
+      - name: Report provider coverage
+        id: provider-coverage
+        if: ${{ !cancelled() && steps.provider-ci-build.outcome == 'success' }}
+        working-directory: provider-swift
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          profiles=("$RUNNER_TEMP"/provider-unit-shards/*/provider.profdata)
+          if [ "${#profiles[@]}" -eq 0 ]; then
+            echo "::error::No provider coverage profiles in $RUNNER_TEMP/provider-unit-shards"
+            exit 1
+          fi
+          echo "Merging ${#profiles[@]} shard coverage profiles"
           out="$RUNNER_TEMP/provider-coverage"
           mkdir -p "$out"
           xcrun llvm-profdata merge -sparse -o "$out/provider.profdata" "${profiles[@]}"
@@ -356,7 +483,7 @@ jobs:
           {
             cat "$out/provider-coverage-summary.md"
             echo
-            echo "Denominator: Swift lines and regions in \`provider-swift/Sources\`, from every provider test process in this job; the Provider SDK Tests and Provider Prompt Parity lanes run in other jobs and do not count."
+            echo "Denominator: Swift lines and regions in \`provider-swift/Sources\`, from every provider test process in the Provider Unit Tests shards, Prompt Parity included; the Provider SDK Tests lane runs in another job and does not count."
             echo
             echo "Excluded: \`Tests/\`, \`.build/\` (dependencies and generated code), the \`libs/\` checkouts, and the one C++ file in \`ProviderMetallibControl\`, which is not instrumented; Swift has no branch counters, so branches are not reported."
           } >> "$GITHUB_STEP_SUMMARY"
@@ -373,9 +500,12 @@ jobs:
           retention-days: 14
 
   test-provider-sdk:
+    # Not part of the Provider Tests gate. A pull request runs it only when an
+    # SDK-lane input changes (scripts/ci-component-paths.py SDK); every push to
+    # dev or master runs it, and a failure there notifies without blocking.
     name: Provider SDK Tests
     needs: [changes, route]
-    if: ${{ needs.changes.outputs.provider == 'true' }}
+    if: ${{ github.event_name == 'push' || needs.changes.outputs.sdk == 'true' }}
     runs-on: ${{ fromJSON(needs.route.outputs.routes)['test-provider-sdk'] }}
     timeout-minutes: 60
     steps:
@@ -538,38 +668,101 @@ jobs:
           done
           exit "$onboarding_failed"
 
-  test-provider-parity:
-    # Keep the check name stable; this lane now verifies public Swift golden vectors.
-    name: Provider Prompt Parity
+  test-cluster-checks:
+    # The model-free cluster check runners. Each compiles its own source closure
+    # (the capability runner links the actual Runtime and MLX, but executes only
+    # metadata and argument checks) and runs it on the retained fixtures: no GPU,
+    # no model load, no weights. Every runner runs even after another fails.
+    name: Cluster Metadata Checks
     needs: [changes, route]
     if: ${{ needs.changes.outputs.provider == 'true' }}
-    runs-on: ${{ fromJSON(needs.route.outputs.routes)['test-provider-parity'] }}
+    runs-on: ${{ fromJSON(needs.route.outputs.routes)['test-cluster-checks'] }}
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           submodules: recursive
-      - name: Build prompt parity CI prerequisites
-        id: provider-ci-build
-        uses: ./.github/actions/provider-ci-build
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          lane: parity
-      - name: Prepare pinned public MiMo metadata and original corpus
-        id: mimo-fixtures
-        if: ${{ !cancelled() && steps.provider-ci-build.outcome == 'success' }}
-        run: python3 scripts/prepare-mimo-prompt-fixtures.py --output "$RUNNER_TEMP/mimo-prompt-fixtures" --github-env "$GITHUB_ENV"
-      - name: Verify public prompt golden vectors
-        id: prompt-parity
-        if: ${{ !cancelled() && steps.provider-ci-build.outcome == 'success' && steps.mimo-fixtures.outcome == 'success' }}
-        run: ./scripts/verify-prompt-parity.sh
-      - name: Verify pinned Nemotron prompts and numeric cache plans
-        if: ${{ !cancelled() && steps.provider-ci-build.outcome == 'success' }}
-        run: ./scripts/verify-nemotron-prompt-parity.sh
+          python-version: '3.12.10'
+      - name: Select SDK 27 provider toolchain
+        id: toolchain
+        run: ./scripts/prepare-provider-release-toolchain.sh
+      # The capability runner's release build of the cluster runtime and MLX is
+      # reused across runs: SwiftPM rebuilds what changed, and source timestamps
+      # are restored only for files whose contents match the cached build's
+      # (scripts/provider-release-cache.py). The key binds the toolchain, the
+      # package manifests, the submodule pins, the runner script and the paths.
+      - name: Resolve cluster metadata build cache key
+        id: cluster-build-key
+        if: ${{ steps.toolchain.outcome == 'success' }}
+        env:
+          MANIFESTS: ${{ hashFiles('libs/darkbloom-cluster/Package.swift', 'libs/darkbloom-cluster/Package.resolved', 'libs/darkbloom-cluster-worker/Package.swift', 'libs/darkbloom-cluster-worker/Package.resolved', 'libs/darkbloom-cluster/Tests/Support/native-metadata.sh', '.gitmodules') }}
+        run: |
+          set -euo pipefail
+          identity=$( { swift --version 2>&1; xcodebuild -version; xcrun --show-sdk-path; \
+            git submodule status --recursive; echo "$GITHUB_WORKSPACE $RUNNER_TEMP $MANIFESTS"; } | shasum -a 256 | cut -c1-32)
+          echo "prefix=cluster-metadata-release-v1-$identity-" >> "$GITHUB_OUTPUT"
+          echo "key=cluster-metadata-release-v1-$identity-$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+      - name: Restore cluster metadata build
+        id: cluster-build-cache
+        if: ${{ steps.cluster-build-key.outcome == 'success' }}
+        uses: actions/cache/restore@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: ${{ runner.temp }}/cluster-native-metadata
+          key: ${{ steps.cluster-build-key.outputs.key }}
+          restore-keys: ${{ steps.cluster-build-key.outputs.prefix }}
+      - name: Restore unchanged source timestamps
+        if: ${{ steps.cluster-build-key.outcome == 'success' }}
+        run: |
+          manifest="$RUNNER_TEMP/cluster-native-metadata/provider-release-source-mtimes.json"
+          if [ -f "$manifest" ]; then
+            mkdir -p provider-swift/.build
+            cp "$manifest" provider-swift/.build/
+            python3 scripts/provider-release-cache.py restore-mtimes
+          fi
+      - name: Run worker capability checks
+        id: capability-checks
+        if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
+        # The runner is this job's alone: compile the native closure on all its cores.
+        env:
+          DARKBLOOM_CLUSTER_METADATA_BUILD_JOBS: '12'
+          DARKBLOOM_CLUSTER_METADATA_BUILD_ROOT: ${{ runner.temp }}/cluster-native-metadata
+        run: bash libs/darkbloom-cluster-worker/Tests/CapabilityChecks/run.sh
+      - name: Record source timestamps for the cluster build
+        if: ${{ !cancelled() && steps.capability-checks.outcome == 'success' && steps.cluster-build-cache.outputs.cache-hit != 'true' }}
+        run: |
+          python3 scripts/provider-release-cache.py snapshot-mtimes
+          cp provider-swift/.build/provider-release-source-mtimes.json "$RUNNER_TEMP/cluster-native-metadata/"
+      - name: Upload cluster metadata build cache
+        if: ${{ !cancelled() && steps.capability-checks.outcome == 'success' && steps.cluster-build-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: ${{ runner.temp }}/cluster-native-metadata
+          key: ${{ steps.cluster-build-key.outputs.key }}
+      - name: Run stage metadata checks
+        if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
+        run: python3 libs/darkbloom-cluster/Tests/StageMetadataChecks/run.py --output "$RUNNER_TEMP/stage-metadata-checks"
+      - name: Run GPT-OSS stage checks
+        if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
+        run: bash libs/darkbloom-cluster/Tests/GPTOSSStageChecks/run.sh
+      - name: Run Nemotron stage checks
+        if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
+        run: bash libs/darkbloom-cluster/Tests/NemotronStageChecks/run.sh
+      # The download cache-policy check of the same runner stays on a Mac: on the
+      # hosted VM, 0.75 of the pages written with F_NOCACHE stayed resident
+      # (run 40804083002), which the VM's kernel and disk decide, not the code.
+      - name: Run cluster model provisioning checks
+        if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
+        run: bash provider-swift/Tests/ClusterModelProvisioningChecks/run.sh provisioning
+      - name: Run cluster onboarding checks
+        if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
+        run: bash provider-swift/Tests/ClusterOnboardingChecks/run.sh
 
   provider-test-gate:
     name: Provider Tests
     runs-on: ubuntu-24.04
-    needs: [changes, test-provider, test-provider-sdk, test-provider-parity]
+    needs: [changes, test-provider, test-provider-summary]
     if: ${{ always() }}
     steps:
       - name: Require selected provider lanes or verified intentional skips
@@ -577,8 +770,7 @@ jobs:
           CHANGES_RESULT: ${{ needs.changes.result }}
           PROVIDER_CHANGED: ${{ needs.changes.outputs.provider }}
           UNIT_RESULT: ${{ needs.test-provider.result }}
-          SDK_RESULT: ${{ needs.test-provider-sdk.result }}
-          PARITY_RESULT: ${{ needs.test-provider-parity.result }}
+          SUMMARY_RESULT: ${{ needs.test-provider-summary.result }}
         run: |
           test "$CHANGES_RESULT" = success
           case "$PROVIDER_CHANGED" in
@@ -587,8 +779,7 @@ jobs:
             *) exit 1 ;;
           esac
           test "$UNIT_RESULT" = "$expected"
-          test "$SDK_RESULT" = "$expected"
-          test "$PARITY_RESULT" = "$expected"
+          test "$SUMMARY_RESULT" = "$expected"
 
   cache-swift:
     name: Swift Build + Cache

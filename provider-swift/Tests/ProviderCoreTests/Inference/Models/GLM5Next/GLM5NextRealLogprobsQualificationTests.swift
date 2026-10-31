@@ -7,9 +7,8 @@ import Testing
 @_spi(Benchmarking) @testable import ProviderCore
 
 /// Real-checkpoint logprobs qualification of the production GLM serving path:
-/// the managed load, production bundle and `EngineV2Bridge` relay channel used
-/// by coordinator requests (the standalone `--local` HTTP server never emits
-/// logprobs). Offline and expensive: loads the full GLM artifact. Never run on
+/// the managed load, production bundle and `EngineV2Bridge` logprob events used
+/// by coordinator requests. Offline and expensive: loads the full GLM artifact. Never run on
 /// a live provider. Needs the `GLM5NextRealModelHarness` environment plus
 /// `DARKBLOOM_TEST_GLM5_REAL_LOGPROBS=1`.
 ///
@@ -73,23 +72,23 @@ struct GLM5NextRealLogprobsQualificationTests {
             logprobs: logprobs ? true : nil, top_logprobs: logprobs ? topLogprobs : nil)
     }
 
-    /// One request through the production bridge relay path.
+    /// One request through the production bridge, which yields each delta's
+    /// entries in stream order before its text.
     static func serve(_ bridge: EngineV2Bridge, prompt: [Int], request: ChatCompletionRequest,
         id: String, onFinish: (@Sendable () -> Void)? = nil) async throws -> Served {
-        let channel = request.logprobs == true ? EngineV2LogprobsChannel() : nil
         let stream = try await bridge.submitTokenized(promptTokens: prompt, request: request,
-            requestId: id, cacheEnabled: false, logprobsChannel: channel, firstContentDeadline: nil)
+            requestId: id, cacheEnabled: false, firstContentDeadline: nil)
         var served = Served()
         for await event in stream {
             switch event {
             case .chunk(let text): served.text += text
+            case .logprobs(let entries): served.entries += entries
             case .info(_, let count, _, _): served.generated = count
             case .error(let reason): served.errors.append(reason)
             default: break
             }
         }
         onFinish?()
-        served.entries = channel?.drain() ?? []
         return served
     }
 
@@ -216,7 +215,7 @@ struct GLM5NextRealLogprobsQualificationTests {
             #expect(try #require(target.mtp).proposed == 0, "a logprobs row must never speculate")
             #expect(target.logprobs.map(\.token) == target.tokens)
 
-            // (3) The same row through the relay channel runs the same
+            // (3) The same row through the bridge's logprob events runs the same
             // one-token steps, so its tokens, text and values are identical.
             var before = try #require(engine.mtpMetricsSnapshot())
             let solo = try await Self.serve(bridge, prompt: prompt,

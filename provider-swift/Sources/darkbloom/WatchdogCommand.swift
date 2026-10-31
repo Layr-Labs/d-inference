@@ -42,6 +42,10 @@ struct Watchdog: AsyncParsableCommand {
         let tickDeadline = ContinuousClock.now
             + .seconds(Int64(Self.tickDeadlineSeconds))
         let settings = Self.settings(configPath: configPath)
+        // A cluster member's supervisor owns its update (both members drain
+        // and update together at the cluster's slot, S18); a watchdog that
+        // updated one member alone would leave the pair on mixed code.
+        let autoUpdate = settings.autoUpdate && !LaunchAgent.installedJobIsClusterMember()
         let liveness = WatchdogProbe.probeProvider(now: now)
         let daemonState = DaemonStateFile.read()
         let providerActive = WatchdogProbe.providerActive(
@@ -144,7 +148,7 @@ struct Watchdog: AsyncParsableCommand {
                 effectiveDownSince: downSince
             )
             let outcome = await recovery.recoverDownProvider(
-                autoUpdateEnabled: settings.autoUpdate,
+                autoUpdateEnabled: autoUpdate,
                 inactiveProviderIdentity: providerIdentity,
                 providerProcessAlive: liveness.running,
                 crashLoopRestartCount: crashLoopCount,
@@ -184,7 +188,7 @@ struct Watchdog: AsyncParsableCommand {
                 // exactly what .inactiveCandidate means), so the process-alive
                 // grace below is a no-op; passed for call-site consistency.
                 let outcome = await recovery.recoverDownProvider(
-                    autoUpdateEnabled: settings.autoUpdate,
+                    autoUpdateEnabled: autoUpdate,
                     inactiveProviderIdentity: providerIdentity,
                     providerProcessAlive: liveness.running,
                     now: now
@@ -198,7 +202,7 @@ struct Watchdog: AsyncParsableCommand {
                 Self.log(
                     "blocked-rollback candidate's retry backoff expired with no heartbeat — retrying restart/rollback (\(reason))")
                 let outcome = await recovery.recoverDownProvider(
-                    autoUpdateEnabled: settings.autoUpdate,
+                    autoUpdateEnabled: autoUpdate,
                     inactiveProviderIdentity: providerIdentity,
                     providerProcessAlive: liveness.running,
                     now: now

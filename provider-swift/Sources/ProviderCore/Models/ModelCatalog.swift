@@ -17,8 +17,8 @@ import Foundation
 
 // MARK: - Download progress tracking & rendering
 //
-// Progress state (`FileProgress`, `ManifestDownloadProgress`) and terminal
-// rendering (`ProgressRenderer`) live in `ModelDownloadProgress.swift` so this
+// Progress state (`ManifestDownloadProgress`) and terminal rendering
+// (`DownloadProgressRenderer`) live in `ModelDownloadProgress.swift` so this
 // file stays focused on catalog + download orchestration.
 
 // MARK: - Catalog model

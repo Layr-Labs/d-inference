@@ -5,20 +5,25 @@ import Testing
 
 @Suite("Build environment defaults")
 struct BuildEnvironmentTests {
-    private let prodCoordinator = "wss://api.darkbloom.dev/ws/provider"
-
-    @Test func testBuildsKeepProductionDefaults() {
+    /// A plain build of master is a prod build (on the dev branch it is a dev build). DARKBLOOM_RELEASE_ENVIRONMENT,
+    /// read by Package.swift when the tests are built, selects another: CI builds prod, the identity the provider
+    /// suites pin.
+    @Test func plainBuildsTakeTheBranchDefault() throws {
+        let requested = ProcessInfo.processInfo.environment["DARKBLOOM_RELEASE_ENVIRONMENT"]
+            .flatMap { $0.isEmpty ? nil : $0 } ?? "prod"
+        let built = try #require(BuildEnvironment(rawValue: requested))
+        let coordinator = built.coordinatorWebSocketURL
         let hardware = HardwareInfo(
             machineModel: "Mac16,5", chipName: "Apple M4 Max", chipFamily: .m4, chipTier: .max,
             memoryGb: 64, memoryAvailableGb: 64,
             cpuCores: CpuCores(total: 16, performance: 12, efficiency: 4),
             gpuCores: 40, memoryBandwidthGbs: 546)
-        #expect(BuildEnvironment.current == .prod)
-        #expect(CoordinatorSettings().url == prodCoordinator)
-        #expect(ConfigManager.parse("").coordinator.url == prodCoordinator)
+        #expect(BuildEnvironment.current == built)
+        #expect(CoordinatorSettings().url == coordinator)
+        #expect(ConfigManager.parse("").coordinator.url == coordinator)
         #expect(ConfigManager.parse("[coordinator]\nheartbeat_interval_secs = 5\n").coordinator.url
-            == prodCoordinator)
-        #expect(ProviderConfig.defaultForHardware(hardware).coordinator.url == prodCoordinator)
+            == coordinator)
+        #expect(ProviderConfig.defaultForHardware(hardware).coordinator.url == coordinator)
         #expect(ModelDownloader.defaultR2CDNURL == "https://models.darkbloom.ai")
     }
 
@@ -45,15 +50,21 @@ struct BuildEnvironmentTests {
         #expect(prod.encryptedCacheNamespace == "darkbloom")
         #expect(prod.modelRevisionRef == "main")
         #expect(prod.keychainServicePrefix == "io.darkbloom")
-        #expect(KeychainWrappedKEKStorage.defaultService == "io.darkbloom.kv.kek.v1")
-        #expect(PersistentEnclaveKey.defaultLabel == "io.darkbloom.provider.attestation-signing.v2")
-        #expect(LaunchAgent.label == "io.darkbloom.provider")
-        #expect(WatchdogAgent.label == "io.darkbloom.watchdog")
         #expect(BackendSettings().port == 8100)
         #expect(ConfigManager.parse("").backend.port == 8100)
+        #expect(prod.installDirectory(home: URL(fileURLWithPath: "/Users/op")).path == "/Users/op/.darkbloom")
+    }
+
+    /// Keys, agent labels and the config path follow the build's environment: production's on master, DevNet's on
+    /// the dev branch, where a plain build is a dev build.
+    @Test func installDefaultsFollowTheBuildEnvironment() {
+        let current = BuildEnvironment.current
+        #expect(KeychainWrappedKEKStorage.defaultService == "\(current.keychainServicePrefix).kv.kek.v1")
+        #expect(PersistentEnclaveKey.defaultLabel == "\(current.keychainServicePrefix).provider.attestation-signing.v2")
+        #expect(LaunchAgent.label == current.launchAgentLabel)
+        #expect(WatchdogAgent.label == current.watchdogAgentLabel)
         let home = URL(fileURLWithPath: "/Users/op")
-        #expect(ConfigManager.defaultConfigPath(home: home).path == "/Users/op/.config/darkbloom/provider.toml")
-        #expect(prod.installDirectory(home: home).path == "/Users/op/.darkbloom")
+        #expect(ConfigManager.defaultConfigPath(home: home).path == "/Users/op/\(current.configDirectoryName)/provider.toml")
     }
 
     @Test func devIdentityIsSuffixed() {

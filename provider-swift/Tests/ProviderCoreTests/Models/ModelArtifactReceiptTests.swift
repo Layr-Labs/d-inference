@@ -51,7 +51,9 @@ struct ModelArtifactReceiptTests {
         configuration.protocolClasses = [ReceiptOfflineURLProtocol.self]
         let session = URLSession(configuration: configuration)
         defer { session.invalidateAndCancel() }
-        let downloader = ModelDownloader(r2CDNURL: "https://offline.test", urlSession: session)
+        // Offline fetches still make all three attempts; only the wait between them is short.
+        let downloader = ModelDownloader(r2CDNURL: "https://offline.test", urlSession: session,
+                                         retryBackoff: .milliseconds(1))
         let model = CatalogModel(id: f.id, s3Name: manifest.r2Prefix, displayName: f.id, sizeGb: 0,
             version: manifest.version, r2Prefix: manifest.r2Prefix, aggregateSHA256: manifest.aggregateSHA256)
         switch path {

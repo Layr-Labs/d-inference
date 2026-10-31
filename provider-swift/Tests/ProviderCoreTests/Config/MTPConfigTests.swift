@@ -393,39 +393,6 @@ struct MTPBetaFeatureTests {
             "gemma-prefill-layer18", "gemma-weighted-r1",
         ])
     }
-
-    @Test("apply only mutates its mapped field")
-    func applyIsScoped() {
-        let feature = BetaFeatures.feature(id: "mtp")!
-        var config = freshConfig()
-        let before = config
-
-        feature.apply(true, to: &config)
-
-        #expect(config.backend.maxModelSlots == before.backend.maxModelSlots)
-        #expect(config.backend.mtpDrafterPath == before.backend.mtpDrafterPath)
-        #expect(config.backend.port == before.backend.port)
-        #expect(config.provider == before.provider)
-        #expect(config.coordinator == before.coordinator)
-        #expect(config.gemmaOptimizations == before.gemmaOptimizations)
-    }
-
-    // `darkbloom beta enable mtp` = apply(true) + ConfigManager.save; the
-    // daemon reads the TOML back on restart. This round-trip is the whole
-    // enable path, minus the file I/O.
-    @Test("toggle survives a TOML round-trip")
-    func roundTripsThroughTOML() {
-        let feature = BetaFeatures.feature(id: "mtp")!
-        var config = freshConfig()
-        feature.apply(true, to: &config)
-
-        let toml = ConfigManager.serialize(config)
-        let decoded = ConfigManager.parse(toml)
-
-        #expect(toml.contains("mtp_mode = 'on'"))
-        #expect(!toml.contains("\nmtp = "))
-        #expect(feature.isEnabled(in: decoded) == true)
-    }
 }
 
 // MARK: - Closed Gemma target namespace

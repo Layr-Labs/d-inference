@@ -206,9 +206,9 @@ struct FlintOpenRouterLiveTests {
             #expect((namedMessage["tool_calls"] as? [[String: Any]] ?? []).count == 1)
             #expect(reasoning(namedMessage).isEmpty)
 
-            // logprobs / top_logprobs are accepted here; only the coordinator
-            // relay emits entries (EngineV2Logprobs.swift), which
-            // FlintRelayLogprobsLiveTests checks on real weights.
+            // logprobs / top_logprobs are accepted here and return entries in
+            // stream order (EngineV2Logprobs.swift); FlintRelayLogprobsLiveTests
+            // checks the coordinator relay's on real weights.
             var logprobs = chat("What is 2 + 2? Answer with the number.", maxTokens: 512)
             logprobs["logprobs"] = true
             logprobs["top_logprobs"] = 3

@@ -1,0 +1,417 @@
+import Foundation
+import DarkbloomClusterProtocol
+import DarkbloomClusterProcess
+import DarkbloomClusterRemote
+
+/// Installed choices and exact capability values. There is deliberately no
+/// Ready value or capacity field until both native children report readiness.
+struct DistributedInstalledPlan: Sendable {
+    let configuration: ClusterConfiguration
+    let capability: ClusterRuntimeCapability
+    let partition: ClusterRuntimePartition
+    let paths: ClusterUserPaths
+    /// The owner-side time budgets, derived from this setup (its request
+    /// deadline, which the planner derived from the chosen placement's
+    /// predicted speed, and its stage shares) and, once the manifest is
+    /// verified, the artifact's size (`withArtifactBytes`); see
+    /// `DistributedInstalledTimeBudgets.derived`.
+    private(set) var budgets: DistributedInstalledTimeBudgets
+    /// How each budget was derived, in plain words.
+    private(set) var budgetBasis: [String]
+    /// The owner's serving of the selected model (owner, 2026-10-14 08:45):
+    /// refused only when no cluster stage adapter runs it. Its public grant,
+    /// if any, is what the records qualify for public traffic.
+    let serving: ClusterPairOwnerServing
+    /// What the selected model's adapter adds to a rank's environment; see
+    /// `adapterArithmeticEnvironment`.
+    let adapterEnvironment: [String: String]
+
+    /// The adapters this path starts workers for, each with what its
+    /// arithmetic policy requires of a rank's environment beyond the three
+    /// values every rank is given (the pair driver's own values for the same
+    /// models, `QualificationRequest.registeredModels`). An adapter with no
+    /// entry has not served on this path and is refused. A rank checks its
+    /// environment against its own policy before it loads, so an entry here
+    /// can stop a rank; it cannot change what the rank computes.
+    static let adapterArithmeticEnvironment: [ClusterRuntimeAdapter: [String: String]] = [
+        .qwen35Dense: [:],
+        .qwen35RoutedExperts: ["MLX_GATHER_QMM_EXPERT_SLICES": "trust"],
+        .qwen35PrismHadamard: ["DARKBLOOM_BONSAI_PREFILL_CARRY_ASYNC": "1", "DARKBLOOM_BONSAI_F16_CONSTANT_CACHE": "1"],
+        .nemotronH: [:],
+        // MiMo's contract is the product's defaults with no `DARKBLOOM_MIMO_*`
+        // switch (`MiMoArithmeticEnvironment`): nothing beyond the three values.
+        .mimoV26LayerStage: [:],
+        .mimoV26ImageCandidate: [:],
+        // GPT-OSS and Gemma 4: the pair driver's own values for the same
+        // adapters (`QualificationRequest.registeredModels`), which their
+        // cross-cable checks ran under.
+        .gptossLayerStage: [:],
+        .gemma4LayerStage: ["MLX_GATHER_QMM_EXPERT_SLICES": "trust", "MLX_GEMMA4_FUSED_WEIGHTED_UNSORT": "1"],
+        // GLM-5.3-Flash: the pair driver's own (empty) values its cross-cable check ran under.
+        .glm5NextLayerStage: [:],
+    ]
+
+    init(saved: ClusterConfigurationStore.Saved, paths: ClusterUserPaths) throws {
+        configuration = saved.configuration; capability = saved.capability; self.paths = paths
+        // No plan exists for a model no cluster stage adapter runs, so nothing
+        // below this point (owner, session, member registration) can start
+        // one. Records never refuse the owner's serving; the public grant
+        // rests only on records of the installed artifact.
+        let observedServing = try ClusterPairServingGrants.ownerServing(runtimeModelID: capability.runtimeModelID,
+            publicModelID: configuration.publicModelID, artifactSHA256: capability.artifactSHA256)
+        // Text qualifications never become an image candidate's public grant.
+        serving = !capability.hasPrivateImages ? observedServing : .init(runtimeModelID:capability.runtimeModelID,
+            publicGrant:nil,records:observedServing.records)
+        partition = try capability.selection(planSHA256: configuration.selectedPlanSHA256)
+        (budgets, budgetBasis) = Self.budgets(configuration: configuration, capability: capability, partition: partition, artifactBytes: nil)
+        try ClusterModelFeaturePolicy.requireSelectedMode(configuration.selectedGenerationMode, capability: capability)
+        try capability.requireSupport(for: configuration.selectedPrefillSchedule)
+        try ClusterGenerationSelection.requireSupport(for: configuration.selectedGenerationMode, peers: configuration.peers, capability: capability)
+        // The record's adapter must register this model, name its one
+        // arithmetic policy, and be one this path gives a rank environment.
+        let registered = saved.capability.runtimeModelID
+        guard let adapter = ClusterRuntimeAdapter(rawValue: capability.adapterID),
+              adapter.registeredProfiles.contains(where: { $0.runtimeModelID == registered }),
+              capability.arithmeticPolicyID == adapter.arithmeticPolicyID,
+              let environment = Self.adapterArithmeticEnvironment[adapter],
+              capability.stateSemantics == "requestOwnedKVAndRecurrent",
+              capability.schedulingPolicy == "serial", capability.selectionPolicy == "greedy",
+              configuration.peers.allSatisfy({ $0.jacclDevice.utf8.count <= 63 }) else {
+            throw ClusterConfigurationError.invalid("Installed worker policy or device geometry differs")
+        }
+        adapterEnvironment = environment
+    }
+
+    /// The budgets of a setup: see `DistributedInstalledTimeBudgets.derived`.
+    static func budgets(configuration: ClusterConfiguration, capability: ClusterRuntimeCapability, partition: ClusterRuntimePartition,
+                        artifactBytes: Int64?) -> (DistributedInstalledTimeBudgets, [String]) {
+        let layers = max(1, partition.stages.map(\.sourceLayerEnd).max() ?? 1)
+        let largest = partition.stages.map { $0.sourceLayerEnd - $0.sourceLayerStart }.max() ?? layers
+        let derived = DistributedInstalledTimeBudgets.derived(requestTimeoutSeconds: configuration.requestTimeoutSeconds,
+            maximumPromptTokens: capability.profile.maximumPromptTokens, artifactBytes: artifactBytes,
+            largestStageShare: Double(largest) / Double(layers), lastRankLoadsEverything: configuration.selectedGenerationMode.isPhaseSplit)
+        return (derived.budgets, derived.basis)
+    }
+
+    /// The same plan with its budgets derived from the verified manifest's
+    /// artifact size.
+    func withArtifactBytes(_ bytes: Int64) -> Self {
+        var value = self
+        (value.budgets, value.budgetBasis) = Self.budgets(configuration: configuration, capability: capability, partition: partition,
+                                                          artifactBytes: bytes)
+        return value
+    }
+
+    /// This Mac's rank, with this Mac's own chip class
+    /// (`ClusterChipClass.local()` on a real Mac). Each Mac checks the rank
+    /// it runs, right before it serves or launches it: any Apple silicon runs
+    /// any rank of any mode the model's stage adapter has (records never
+    /// refuse the owner's serving), and when the mode family has a diverged
+    /// record this rank must not be a rank-shape that diverged (its class at
+    /// its rank, the placement's cuts from the selected Plan).
+    /// A capability record, a saved setup or a peer never supplies the class.
+    func requireLocalRankGranted(chipClass: ClusterChipClass?,
+                                 decisions: ClusterPairServingDecisions = ClusterPairServingGrants.decisions) throws {
+        // Capability partitions retain a layer cut even for a tensor load.
+        // Qualification/planner shapes have no layer cut when every rank
+        // shards every layer for both prefill and decode.
+        let mode = configuration.selectedGenerationMode
+        let cuts = mode.usesTensorParallelPrefill ? [] : partition.stages.dropLast().map(\.sourceLayerEnd)
+        try ClusterPairServingGrants.requireRank(configuration.localRank, of: configuration.peers.count,
+            chipClass: chipClass, runtimeModelID: capability.runtimeModelID, publicModelID: configuration.publicModelID,
+            artifactSHA256: capability.artifactSHA256, cuts: cuts, mode: mode, decisions: decisions)
+    }
+
+    /// How this build's native ranks find each other; see the type.
+    var bootstrap: DistributedInstalledBootstrap { .installed }
+    /// The collective progress limit every native rank is started with. A rank
+    /// whose peer stops answering fails by itself after this long.
+    static let collectiveProgressLimitMilliseconds = 60_000
+
+    var localPeer: ClusterConfiguration.Peer { configuration.peers[configuration.localRank] }
+    var configurationURL: URL { URL(fileURLWithPath: localPeer.modelDirectory).appendingPathComponent("config.json") }
+    var manifestURL: URL { URL(fileURLWithPath: localPeer.modelDirectory).appendingPathComponent("manifest.json") }
+
+    func identity(epoch: UUID) -> ClusterWorkerIdentity {
+        .init(membershipEpoch: epoch, modelID: capability.runtimeModelID,
+            artifactSHA256: capability.artifactSHA256, configurationSHA256: capability.configurationSHA256,
+            peers: configuration.peers.map { .init(id: $0.id, buildSHA256: $0.runtimeBinarySHA256) })
+    }
+
+    func binding(epoch: UUID, lease: UUID, incarnation: UUID) throws -> ClusterOwnerBinding {
+        try .init(clusterID: configuration.clusterID, ownerIncarnation: incarnation, leaseID: lease,
+            identity: identity(epoch: epoch), profile: capability.profile, rank: configuration.localRank,
+            executionPlanSHA256: partition.planSHA256)
+    }
+
+    func matrix() throws -> Data {
+        let names = configuration.peers.map(\.jacclDevice)
+        let rows: [[Any]] = [[NSNull(), names[0]], [names[1], NSNull()]]
+        var result = try JSONSerialization.data(withJSONObject: rows,
+            options: [.sortedKeys, .withoutEscapingSlashes])
+        result.append(10)
+        guard result.count <= 4096 else { throw ClusterConfigurationError.invalid("Installed matrix exceeds its bound") }
+        return result
+    }
+
+    /// The local leader and link follower pass their own effective lane count,
+    /// optional typed synchronization choice, live and checkpoint KV
+    /// precision switches and GLM tensor-parallel decode switches to the fixed
+    /// owner child. No peer-supplied environment is used.
+    func localOwnerConfiguration(ownerEnvironment: [String: String] = ProcessInfo.processInfo.environment)
+        throws -> ClusterLocalOwnerConfiguration {
+        try .init(installedDarkbloom: URL(fileURLWithPath: localPeer.ownerExecutable),
+            batchLanes: batchLanes(ownerEnvironment),
+            fastSynchronization: fastSynchronization(ownerEnvironment),
+            eagerFenceCommit: eagerFenceCommit(ownerEnvironment),
+            kvQuantization: DistributedInstalledKVQuantization.forwardedSwitch(ownerEnvironment),
+            checkpointQuantization: DistributedInstalledKVQuantization.forwardedCheckpointSwitch(ownerEnvironment),
+            glmDecodeSwitches: ClusterGLMTensorParallel.forwardedDecodeSwitches(ownerEnvironment))
+    }
+
+    func nativeEnvironment(matrix: URL,
+                           ownerEnvironment: [String: String] = ProcessInfo.processInfo.environment) -> [String: String] {
+        var environment = baseNativeEnvironment(matrix: matrix)
+        if let fast = fastSynchronization(ownerEnvironment) {
+            environment[Self.fastSynchronizationSwitch] = fast ? "1" : "0"
+        }
+        if let eager = eagerFenceCommit(ownerEnvironment) {
+            environment[Self.eagerFenceCommitSwitch] = eager ? "1" : "0"
+        }
+        let prefixCacheOff = prefixCacheOff(ownerEnvironment)
+        if prefixCacheOff { environment[Self.prefixCacheSwitch] = "off" }
+        // The prefix cache's SSD tier (on with the cache; see the type). Its
+        // directory and budgets only: the key goes on the worker's input
+        // (`nativePrefixSSDKey`), never into this environment.
+        environment.merge(DistributedInstalledPrefixSSD.environment(home: paths.homeDirectory,
+            deviceDirectory: paths.deviceDirectory, ownerEnvironment: ownerEnvironment,
+            prefixCacheOff: prefixCacheOff, stopMarginNanoseconds: budgets.stopMarginNanoseconds)) { current, _ in current }
+        // How the tier's records store attention rows: main's checkpoint
+        // precision for this model (`DistributedInstalledKVQuantization`),
+        // which both ranks bind into their load agreement while they keep
+        // prefixes. Nothing without a resolver: the rank's default, balanced.
+        if !prefixCacheOff {
+            environment.merge(DistributedInstalledKVQuantization.recordsEnvironment(publicModelID: configuration.publicModelID,
+                ownerEnvironment: ownerEnvironment)) { current, _ in current }
+        }
+        // Continuous batching (the pipeline's lane adapters, Qwen and GLM tensor
+        // parallel): both owners must give their workers the same lane count
+        // (the workers' load agreement refuses a mismatch). A setup in any
+        // other mode keeps one request at a time.
+        if let lanes = batchLanes(ownerEnvironment), lanes > 1 {
+            environment[Self.batchLanesSwitch] = String(lanes)
+        }
+        // The live KV precision main resolves for this model
+        // (`DistributedInstalledKVQuantization`); native adds nothing.
+        environment.merge(DistributedInstalledKVQuantization.environment(publicModelID: configuration.publicModelID,
+            ownerEnvironment: ownerEnvironment)) { current, _ in current }
+        // Diagnosis only: how a tensor-parallel rank reads its weights, and its per-array digests (to compare load
+        // paths and builds on the real model; `GLM5NextTensorParallelLoadPath`).
+        for (name, values) in Self.loadDiagnosisSwitches {
+            if let value = ownerEnvironment[name], values.contains(value) { environment[name] = value }
+        }
+        // GLM tensor-parallel decode: how many proposals a round verifies by load
+        // (`GLM5NextTensorParallelDecodePolicy`). Both ranks bind it into their load
+        // agreement, so both owners must be given the same values.
+        environment.merge(ClusterGLMTensorParallel.forwardedDecodeSwitches(ownerEnvironment)) { current, _ in current }
+        // The owner's rank-environment guards (Metal command-buffer bounds),
+        // each yielding to a value the operator pinned in this owner's own
+        // environment.
+        return ClusterWorkerEnvironmentGuards.apply(to: environment, ownerEnvironment: ownerEnvironment)
+    }
+    /// The key of the native rank's prefix-SSD tier, which the owner sends as
+    /// a bound line of the worker's input (`--prefix-ssd-key`); nil when the
+    /// tier is off (the prefix cache off, the product's gate, or the diagnosis
+    /// switch), and then the worker is started without the argument.
+    func nativePrefixSSDKey(ownerEnvironment: [String: String] = ProcessInfo.processInfo.environment) -> Data? {
+        DistributedInstalledPrefixSSD.key(home: paths.homeDirectory, deviceDirectory: paths.deviceDirectory,
+            ownerEnvironment: ownerEnvironment, prefixCacheOff: prefixCacheOff(ownerEnvironment))
+    }
+
+    /// Diagnosis only: this owner's worker keeps no prompt prefixes and asks
+    /// its peer for none, so the pair prefills every request from zero. The
+    /// product's prefix-cache gate (`DARKBLOOM_PREFIX_CACHE`, resolved into the
+    /// installed settings) turns the pair's cache off the same way.
+    private func prefixCacheOff(_ ownerEnvironment: [String: String]) -> Bool {
+        ownerEnvironment[Self.prefixCacheSwitch]?.lowercased() == "off"
+            || !DistributedInstalledPrefixSSD.productSettings(home: paths.homeDirectory).prefixCacheEnabled
+    }
+    /// Only an explicit local binary choice reaches a TP rank; absence and
+    /// malformed values retain the worker's synchronization default.
+    private func fastSynchronization(_ environment: [String: String]) -> Bool? {
+        guard configuration.selectedGenerationMode == .tensorParallel else { return nil }
+        switch environment[Self.fastSynchronizationSwitch] {
+        case "0": return false
+        case "1": return true
+        default: return nil
+        }
+    }
+    /// A local diagnostic choice only. No value means MLX's existing default.
+    private func eagerFenceCommit(_ environment: [String: String]) -> Bool? {
+        guard configuration.selectedGenerationMode == .tensorParallel else { return nil }
+        switch environment[Self.eagerFenceCommitSwitch] {
+        case "0": return false
+        case "1": return true
+        default: return nil
+        }
+    }
+    static let eagerFenceCommitSwitch = "MLX_EAGER_FENCE_COMMIT"
+    static let fastSynchronizationSwitch = "MLX_METAL_FAST_SYNCH"
+    static let prefixCacheSwitch = "DARKBLOOM_CLUSTER_PREFIX_CACHE"
+    static let batchLanesSwitch = "DARKBLOOM_CLUSTER_BATCH_LANES"
+    static let loadDiagnosisSwitches: [String: Set<String>] = [
+        "DARKBLOOM_CLUSTER_LOAD_PATH": ["prepared", "prepared-uncached", "per-tensor"],
+        "DARKBLOOM_CLUSTER_LOAD_DIGESTS": ["1", "tensors"],
+    ]
+
+    /// The pair's batch lanes: the adapter's default in the selected mode
+    /// (`defaultBatchLanes(adapter:mode:hasPrivateImages:)`), unless the owner's
+    /// environment names 1...8 (1 serves one request at a time). A malformed
+    /// override explicitly keeps one lane, so a sanitized child cannot restore
+    /// a wider family default. Nil where the
+    /// workers serve one request at a time (a phase-split or speculative
+    /// pipeline mode, pipeline media, or a family without lanes there), so no
+    /// worker is asked for lanes it refuses. Both owners derive it from the
+    /// same saved setup. Each member forwards its locally resolved count through
+    /// the fixed owner launch; arbitrary environment values are not inherited.
+    func batchLanes(_ environment: [String: String] = ProcessInfo.processInfo.environment) -> Int? {
+        guard let adapter = ClusterRuntimeAdapter(rawValue: capability.adapterID),
+              let lanes = Self.defaultBatchLanes(adapter: adapter, mode: configuration.selectedGenerationMode,
+                  hasPrivateImages: capability.hasPrivateImages, runtimeModelID: capability.runtimeModelID) else {
+            return nil
+        }
+        // The assistant quote admits exactly this capacity. A diagnostic
+        // environment override cannot enlarge its resident histories.
+        if configuration.tensorAssistant != nil { return configuration.batchLanes ?? 1 }
+        guard let raw = environment[Self.batchLanesSwitch] else { return configuration.batchLanes ?? lanes }
+        guard let value = Int(raw), (1...8).contains(value) else { return 1 }
+        return value
+    }
+
+    /// True when the pair's workers retire a cancelled started lane alone (a
+    /// cancel or a deadline ends that request, not the pair): Qwen-family
+    /// pipeline lanes and Qwen/GLM tensor parallel. Bound to both owners' plan.
+    func lanesRetireAlone(_ environment: [String: String] = ProcessInfo.processInfo.environment) -> Bool {
+        guard let lanes = batchLanes(environment), lanes > 1,
+              let adapter = ClusterRuntimeAdapter(rawValue: capability.adapterID) else { return false }
+        return Self.lanesRetireAlone(adapter: adapter, mode: configuration.selectedGenerationMode,
+            hasPrivateImages: capability.hasPrivateImages, lanes: lanes, runtimeModelID: capability.runtimeModelID)
+    }
+
+    static func lanesRetireAlone(adapter: ClusterRuntimeAdapter, mode: ClusterGenerationMode,
+                                hasPrivateImages: Bool, lanes: Int, runtimeModelID: String? = nil) -> Bool {
+        guard (2...8).contains(lanes) else { return false }
+        switch mode {
+        case .tensorParallel:
+            return tensorParallelLaneAdapters.contains(adapter)
+                || (servesQwenTensorLanes(adapter: adapter, runtimeModelID: runtimeModelID) && !hasPrivateImages)
+        case .pipeline: return !hasPrivateImages && laneAdapters.contains(adapter)
+        default: return false
+        }
+    }
+
+    /// The lanes a pair of `adapter` serves by default in `mode`, or nil when
+    /// its workers serve one request at a time there.
+    /// - Pipeline: the lane adapters (`laneAdapters`), text only, at
+    ///   `defaultBatchLanes`.
+    /// - Qwen tensor parallel (every registered TP row, dense or routed
+    ///   experts): one by default; a priced saved width or explicit local
+    ///   diagnostic may select its native 2...8 lane owner.
+    /// - Other tensor parallel: GLM (`GLM5NextTensorParallelResidentRuntime`'s lane
+    ///   loop), at `tensorParallelBatchLanes`. Each lane keeps its request's
+    ///   own arithmetic, so a request's tokens are those it gets alone. A
+    ///   lane carrying images or video runs the same tensor-parallel media
+    ///   path as a request alone (`GLM5NextTensorParallelMedia`), so the
+    ///   capability's image candidate does not change the lanes.
+    static func defaultBatchLanes(adapter: ClusterRuntimeAdapter, mode: ClusterGenerationMode,
+                                  hasPrivateImages: Bool, runtimeModelID: String? = nil) -> Int? {
+        switch mode {
+        case .pipeline where !hasPrivateImages && laneAdapters.contains(adapter): defaultBatchLanes
+        case .tensorParallel where tensorParallelLaneAdapters.contains(adapter): tensorParallelBatchLanes
+        case .tensorParallel where servesQwenTensorLanes(adapter: adapter, runtimeModelID: runtimeModelID) && !hasPrivateImages:
+            defaultBatchLanes
+        default: nil
+        }
+    }
+
+    /// A Qwen TP row under its registered adapter, whose owner serves
+    /// request-owned lanes at every capacity.
+    static func servesQwenTensorLanes(adapter: ClusterRuntimeAdapter, runtimeModelID: String?) -> Bool {
+        runtimeModelID.map(adapter.servesQwenTensorLanes) ?? false
+    }
+
+    /// Concurrent requests a lane-serving pair batches by default. Both
+    /// owners serve them (`ClusterOwnerLeaseState.lanes`), and the leader's
+    /// session, bridge and local API admit as many; more requests wait in the
+    /// API's queue. The default stays one while the repaired joining and
+    /// cancellation paths undergo model-specific multi-lane qualification.
+    /// Earlier pair measurements (Qwen 3.5 35B A3B, 2026-10-19) preceded
+    /// those repairs and do not qualify the current loop.
+    static let defaultBatchLanes = 1
+    /// Concurrent requests GLM tensor parallel serves by default: the
+    /// protocol's lane cap (`ClusterWorkerLaneSession`, `ClusterWorkerPair`).
+    /// Its lanes run one request's unit after another (each bitwise alone), so
+    /// more lanes cost no request its own tokens; the host's memory gate
+    /// admits each lane (a lane it cannot hold is refused alone, retryably).
+    static let tensorParallelBatchLanes = 8
+    /// The adapters whose tensor-parallel workers serve batch lanes.
+    static let tensorParallelLaneAdapters: Set<ClusterRuntimeAdapter> = [.glm5NextLayerStage]
+
+    /// The adapters whose workers serve batch lanes (Qwen CBv2 or GPT-OSS independent histories).
+    static let laneAdapters: Set<ClusterRuntimeAdapter> = [.qwen35Dense, .qwen35RoutedExperts, .qwen35PrismHadamard,
+                                                           .gemma4LayerStage, .gptossLayerStage, .nemotronH, .mimoV26LayerStage]
+
+    private func baseNativeEnvironment(matrix: URL) -> [String: String] {
+        ["PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "LANG": "C", "LC_ALL": "C",
+         "DARKBLOOM_CBV2_ATTN_QUERY_BLOCK": "128", "DARKBLOOM_BF16_WEIGHTS": "1", "MLX_ENABLE_TF32": "1",
+         "JACCL_RANK": String(configuration.localRank), "JACCL_IBV_DEVICES": matrix.path,
+         "JACCL_COORDINATOR": "\(configuration.coordinator.address):\(configuration.coordinator.port)",
+         DistributedInstalledWorkerFeatures.progressGuardMarker: String(Self.collectiveProgressLimitMilliseconds)]
+            // The adapter's own values; none of them may replace one above.
+            .merging(adapterEnvironment) { fixed, _ in fixed }
+    }
+
+    /// `attachment` is present exactly when the selected bootstrap is the
+    /// owner-authenticated one; its three arguments are appended unchanged.
+    /// `startupDeadline` is passed only to a worker that knows the argument.
+    /// `dataPlane`: the owner received this worker's credential line (S16);
+    /// the worker then keys its data plane and expects that line first.
+    /// `prefixSSDKey`: the owner sends the rank's prefix-SSD key as the next
+    /// line; the argument names the scheme, never the key.
+    func nativeArguments(binding: ClusterOwnerBinding, deadline: UInt64, startupDeadline: UInt64?,
+                         attachment: ClusterOwnerBootstrapAttachment?, dataPlane: Bool = false,
+                         prefixSSDKey: Bool = false) throws -> [String] {
+        guard binding.identity == identity(epoch: binding.identity.membershipEpoch),
+              binding.rank == configuration.localRank, binding.profile == capability.profile,
+              binding.executionPlanSHA256 == partition.planSHA256,
+              deadline > DispatchTime.now().uptimeNanoseconds,
+              deadline - DispatchTime.now().uptimeNanoseconds <= ClusterWorkerLease.maximumNanoseconds,
+              // The worker's rank lease is renewed while it loads, so its
+              // startup deadline may outlast the first grant (never an hour).
+              startupDeadline.map({ $0 > DispatchTime.now().uptimeNanoseconds
+                  && $0 - DispatchTime.now().uptimeNanoseconds <= ClusterWorkerLimits.deadlineNanoseconds }) ?? true,
+              attachment?.profile == bootstrap.ownerProfile else {
+            throw ClusterConfigurationError.invalid("Native launch differs from installed owner binding")
+        }
+        guard configuration.tensorAssistant == nil || (dataPlane && startupDeadline != nil) else {
+            throw ClusterConfigurationError.invalid("A saved tensor assistant requires keyed transport and a bounded startup")
+        }
+        let mediaArguments = try ClusterMiMoPrivateImagePolicy.launchArguments(capability,keyed:dataPlane,startupGuard:startupDeadline != nil)
+        let id = binding.identity
+        return ["--model-dir", localPeer.modelDirectory, "--rank", String(binding.rank),
+            "--stage-cut", String(partition.stages[0].sourceLayerEnd),
+            "--membership-epoch", id.membershipEpoch.uuidString.lowercased(), "--model-id", id.modelID,
+            "--artifact-sha256", id.artifactSHA256, "--configuration-sha256", id.configurationSHA256,
+            "--peer0-id", id.peers[0].id, "--peer0-build-sha256", id.peers[0].buildSHA256,
+            "--peer1-id", id.peers[1].id, "--peer1-build-sha256", id.peers[1].buildSHA256,
+            "--deadline-uptime-nanoseconds", String(deadline)]
+            + (try DistributedInstalledPrefillSelection.workerArguments(capability: capability,
+                schedule: configuration.selectedPrefillSchedule))
+            + (try DistributedInstalledGenerationSelection.workerArguments(configuration: configuration, capability: capability))
+            + (startupDeadline.map { [DistributedInstalledWorkerFeatures.startupDeadlineArgument, String($0)] } ?? [])
+            + (dataPlane ? ["--data-plane", ClusterWorkerDataPlaneTrust.argument] : [])
+            + (prefixSSDKey ? ["--prefix-ssd-key", ClusterWorkerPrefixSSDKey.argument] : [])
+            + mediaArguments
+            + (attachment?.workerArguments ?? [])
+    }
+}

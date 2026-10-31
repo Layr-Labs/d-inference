@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-10-28
+> Last updated: 2026-10-30
 
 Provider CLI and native-runtime environment variables, compiled defaults and reading symbols. Secrets are named, never valued. Unless specified otherwise, values are read at process start.
 
@@ -10,6 +10,14 @@ about current platform behavior. For current settings and behavior, consult the
 latest default branch of [darkbloom-platform](https://github.com/Layr-Labs/darkbloom-platform).
 
 ## Local GLM qualification
+
+Cluster image qualification is a separate local selection:
+`darkbloom cluster local glm-5.3-flash --private-glm-image-qualification`.
+`ClusterGLMImageCandidate.profileID` binds planning, request admission and worker
+LOAD to the bounded image candidate. It requires the current paired leader and
+the exact cached source; it does not enable images for the ordinary text profile
+or admit coordinator or solo requests. The flag is defined in
+`provider-swift/Sources/darkbloom/ClusterLocalCommand.swift`.
 
 This process-local opt-in is independent of the coordinator supported-model set.
 
@@ -368,7 +376,8 @@ with the following first-valid-value precedence:
 
 No valid variable means the import fails without saving. Blank, NUL-containing
 or unexpandable `~user` values are ignored; other paths retain significant
-whitespace. The selected candidate must be an existing readable, searchable,
+whitespace. An explicit `~user` requires an existing system account, including
+when a process uses a fixed home directory (`ModelScanner.expandingTilde`). The selected candidate must be an existing readable, searchable,
 writable directory. A missing/unusable higher-priority path does not silently
 fall through to another directory. Later environment changes never redirect a
 saved path; import again explicitly if that is intended. Hugging Face tools do
@@ -422,8 +431,8 @@ and rollback are defined in the [provider configuration reference](../provider/c
 
 | Variable | Values / type | Default | Read in | Effect |
 |---|---|---|---|---|
-| `DARKBLOOM_CBV2_KV_QUANTIZATION` | `balanced`, `k8v4`, `k8v8`, `native` (aliases in the [CLI reference](../provider/cli-reference.md#providertoml-keys-read-by-the-cli)) | `native` | `provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2KVQuantizationPolicy.swift` (`resolve`, `.live`) | Overrides exact-model and global live precision settings. Only explicit live packed precision requires paged execution; native retains the model's automatic backend policy. MiMo resolves native before parsing. Forwarded to the LaunchAgent. |
-| `DARKBLOOM_CBV2_CHECKPOINT_QUANTIZATION` | Same four precision values and aliases | `balanced` | `provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2KVQuantizationPolicy.swift` (`resolve`, `.checkpoint`) | Overrides exact-model and global checkpoint settings independently. Eligible native paged/contiguous complete stores use lossy older-row encoding and native restore; unsupported cases retain native encoding, and live-packed stores keep their existing format. Does not enable caching, force a backend or grant serving RAM. MiMo resolves native before parsing. Forwarded to the LaunchAgent. |
+| `DARKBLOOM_CBV2_KV_QUANTIZATION` | `balanced`, `k8v4`, `k8v8`, `native` (aliases in the [CLI reference](../provider/cli-reference.md#providertoml-keys-read-by-the-cli)) | `native` | `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedKVQuantizationPolicy.swift` (`resolve`, `.live`), through `EngineV2KVQuantizationPolicy` | Overrides exact-model and global live precision settings. Only explicit live packed precision requires paged execution; native retains the model's automatic backend policy. MiMo resolves native before parsing. Forwarded to the LaunchAgent. A cluster pair resolves it the same way on each Mac; see [cluster stage KV precision](#cluster-stage-kv-precision). |
+| `DARKBLOOM_CBV2_CHECKPOINT_QUANTIZATION` | Same four precision values and aliases | `balanced` | `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedKVQuantizationPolicy.swift` (`resolve`, `.checkpoint`), through `EngineV2KVQuantizationPolicy` | Overrides exact-model and global checkpoint settings independently. Eligible native paged/contiguous complete stores use lossy older-row encoding and native restore; unsupported cases retain native encoding, and live-packed stores keep their existing format. Does not enable caching, force a backend or grant serving RAM. MiMo resolves native before parsing. Forwarded to the LaunchAgent. |
 | `DARKBLOOM_CBV2_PAGED_KV` | `0`, `false`, `no`, `off` disable paging | unset (policy decides) | `provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2KVBackendPolicy.swift` (`preferredBackend`, `killSwitchDisabled`) | Kill switch for paged KV; beats the backend setting. Nemotron Super, which serves paged KV only, fails its load instead (`DARKBLOOM_NEMOTRON_SUPER_KV_BACKEND`). Native live precision can serve contiguous; non-MiMo live-packed precision refuses construction when paging is unavailable. See [backend and precision controls](../provider/cli-reference.md#providertoml-keys-read-by-the-cli). A backend default is not runtime qualification. |
 | `DARKBLOOM_CBV2_PAGED_KV_DTYPE` | `float16`, `float32` | unset: observed native per-layer types | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+BackendPreparation.swift` | Optional assertion for resolved paged storage; a nonempty value must match every measured native layer. Unsupported values or mismatches refuse explicit paged construction. |
 | `DARKBLOOM_CBV2_PREFILL_CHUNK` | positive tokens | family policy: `2048` (`widePrefillChunkTokens`) for Gemma 4, otherwise the SDK's `512` | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+Configuration.swift` (`prefillChunkTokens`, `prefillGeometry`) | Plain prefill chunk, including prompt work beside decode rows, for every model except where a family policy replaces it: GLM5Next (`glm5NextServingScheduler`) and Nemotron Super local serving (`DARKBLOOM_NEMOTRON_SUPER_PREFILL_CHUNK`, `NemotronSuperLocalPrefill.Policy.apply`) set their own chunk and step, and calibrated Nemotron models cap the chunk at their calibrated prefill limit (`calibratedPrefillTokenLimit`). Requests with bidirectional media blocks (Gemma 4 images and video) keep `512` whenever the chunk is wider. On Gemma 4 a value that leaves `max(chunk, stripe)` below its largest media block is raised to `1120` (`gemma4MaximumMediaBlockTokens`), because a block rides one chunk. Zero, negative or malformed values restore `512`. The paged pool sizes windowed rings from `max(chunk, stripe)`, so a value above the default stripe raises KV charges. Set it to `512` with `DARKBLOOM_CBV2_STEP_TOKENS=2048` to roll Gemma 4 back. `2048` with `DARKBLOOM_CBV2_STEP_TOKENS=4096` opts GPT-OSS or dense Qwen into the measured wide geometry, which raises their long-context activation peaks above their floors ([prompt geometry](../architecture/inference.md#prompt-geometry)). Forwarded to the LaunchAgent. |
@@ -755,3 +764,831 @@ These library controls apply to foreground processes and benchmark runs; they ar
 | `MLX_GPTOSS_MXFP4_DECODE_FAST_TAIL` | `1` enables, other explicit values disable | enabled only on physical `applegpu_g16s` | `libs/mlx-swift/Source/Cmlx/mlx/mlx/backend/metal/quantized.cpp` (`gather_qmv`): width-2880 MXFP4 gathered matrix-vector path with a masked 320-element tail. Exact shape/dtype gates retain the general fallback. |
 | `MLX_GPTOSS_MXFP4_PREFILL_TILE` | `m32n32k32`; other values use legacy | legacy | `libs/mlx-swift/Source/Cmlx/mlx/mlx/backend/metal/gptoss_mxfp4_policy.h` (`gptoss_mxfp4_prefill_tile`): optional 32-row tile for matching sorted expert prefill shapes. Small workstation gains do not establish a universal default. |
 | `DARKBLOOM_GPTOSS_COMPILED_EXPERTS` | `1` enables | disabled | `libs/mlx-swift-lm/Libraries/MLXLLM/Models/GPTOSS+CompiledExperts.swift` (`GPTOSSCompiledExpertsPolicy`): compile single-token B=1/2/4 expert graphs for exact 20B shapes. The global `MLX_COMPILED_DECODE=0` rollback still disables this path. Batch-dependent timing is mixed; weights remain live through weak updatable state. |
+
+## Experimental cluster configuration (staging)
+
+`provider-swift/Sources/ProviderCore/Config/ClusterConfiguration{,Files,Paths}.swift`
+holds the staged cluster configuration value types: one canonical device
+namespace per user (`~/.config/darkbloom/clusters`,
+`~/.darkbloom/cluster-device`), strict path/symlink rules, and closed
+configuration validation. They carry saved expectations only — never a
+grant, runtime approval or serving capacity. `darkbloom cluster configure`
+(`provider-swift/Sources/darkbloom/ClusterCommand.swift`, `Cluster.Configure`)
+validates and saves one without enabling or starting it. `darkbloom cluster`
+saves this setup when you pick a model. The other Mac applies it, and the
+service starts the processes. `cluster configure` and `start --cluster-member`
+are developer tools. The processes that use the saved setup are
+`darkbloom start --local --distributed` and `darkbloom start --cluster-member`
+(`provider-swift/Sources/darkbloom/Start/StartCommand.swift`, `distributed`
+and `clusterMember`); both are control-only and refuse solo serving options
+when parsed. No environment variable selects one, so ordinary
+solo serving is unchanged and the whole surface stays default-off.
+
+### Persisted native batch width
+
+| Field | Meaning and bounds | Source |
+|---|---|---|
+| `batchLanes` | Optional integer 2, 4 or 8, or 6 for a Qwen TP row in `tensor_parallel_v1`; omitted in existing setups. Only registered text batch adapters in plain pipeline with serial prefill accept it. It is a requested width, never a capacity grant. | `provider-swift/Sources/ProviderCore/Config/ClusterConfiguration.swift` (`validate`) |
+| `DARKBLOOM_CLUSTER_BATCH_LANES` | An explicit diagnostic setting retains precedence; absent settings use the persisted width, then the existing family default. Malformed explicit values fail closed to one lane. | `provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledPlan.swift` (`batchLanes`) |
+
+The normal cluster API can persist a wider setup after queued demand, conservative
+memory planning and full release. No environment setting is needed for that
+path. See [automatic local cluster batching](../architecture/inference.md#automatic-local-cluster-batching)
+for exclusions, rollback and the unchanged singleton preference at initial setup.
+
+### Installed tensor-parallel synchronization
+
+| Variable | Installed behavior | Source |
+|---|---|---|
+| `MLX_METAL_FAST_SYNCH` | Exact local `0` or `1`, forwarded as a typed boolean through the fixed owner child and native launch in TP mode only. Absent or malformed values use the worker default: fast synchronization for every TP model and every lane count. | `DistributedInstalledPlan.fastSynchronization`, `ClusterLocalOwnerConfiguration.launch`, and `WorkerCollectiveSynchronization.apply` |
+| `MLX_EAGER_FENCE_COMMIT` | Exact local `0` or `1`, forwarded as a typed boolean through the fixed owner child and native launch in TP mode only. Absent or malformed values are not forwarded; MLX keeps its existing off default. Explicit values are reported before MLX initializes. | `DistributedInstalledPlan.eagerFenceCommit`, `ClusterLocalOwnerConfiguration.launch`, and `WorkerEagerFenceCommit.report` |
+
+These settings are read from each Mac's own cluster service process; they are not taken
+from its peer or an API request. A terminal export does not update an installed
+service job. Restart jobs with the intended environment, confirm fresh native
+`fast_synch=0 source=launcher` or `fast_synch=1 source=launcher` markers on both
+Macs, and restore/restart the original jobs after the comparison. This does not
+add general environment inheritance or change automatic placement. Native
+progress, width and retirement remain independent validation requirements.
+
+### Cluster stage KV precision
+
+A cluster pair's stage KV is paged only, on the provider's own segmented pool
+(`PagedKVBackend.segmented`), and stored at the single-Mac live precision.
+Each Mac's owner resolves `DARKBLOOM_CBV2_KV_QUANTIZATION`, then
+`[backend] engine_v2_kv_quantization_by_model` for the pair's public model ID,
+then `engine_v2_kv_quantization` (default `native`), exactly as the single-Mac
+engine does, and starts its rank with the resolved name; native passes nothing.
+
+| Setting | Installed behavior | Source |
+|---|---|---|
+| `[backend] engine_v2_kv_quantization`, `engine_v2_kv_quantization_by_model` | Read once by `cluster worker-owner` from the saved provider configuration on each Mac. Both ranks bind the precision into their load agreement, so Macs that resolved different precisions refuse to load before either stage is read (the load agreement differs); there is no leader sync. A per-model `native` keeps a packed global setting off the pair. | `DistributedInstalledKVQuantization` (`installProduct`, `environment`) in `provider-swift/Sources/ProviderCore/Inference/Distributed/` |
+| `DARKBLOOM_CBV2_KV_QUANTIZATION` | The provider forwards its own switch to the owner it starts (`ClusterLocalOwnerConfiguration`), where it takes precedence as on one Mac: empty selects native, a malformed value reaches the rank as `invalid`, which the rank refuses by name. | `DistributedInstalledPlan.localOwnerConfiguration` |
+| `DARKBLOOM_CLUSTER_KV_BACKEND` | Removed. `paged` is still accepted; `contiguous` or any other value stops the load by name. | `ClusterStageKVBackendKind.fromEnvironment` |
+
+A packed precision serves the Qwen 3.5 family (Bonsai included), Gemma 4 and
+Nemotron 3.5 stages and every Qwen tensor-parallel row's request-owned lanes, after the
+same in-process kernel preflight (`PagedKernelSmokePlan`). Those hosts then keep
+no prompt prefixes (memory or SSD), as the single-Mac engine keeps no snapshot
+prefixes for packed rows. A phase-split hand-off and a family without a stage KV
+host (GPT-OSS, GLM) refuse a packed precision; MiMo stays native as on one Mac. The separate checkpoint
+precision sets the pair's SSD prefix records (below). See
+[inference](../architecture/inference.md#cluster-stage-kv-precision).
+
+### Cluster SSD prefix record precision
+
+The pair's encrypted SSD prompt-prefix records store attention rows at the
+single-Mac checkpoint precision for the pair's public model: each Mac's owner
+resolves `DARKBLOOM_CBV2_CHECKPOINT_QUANTIZATION`, then
+`[backend] engine_v2_kv_checkpoint_quantization_by_model`, then
+`engine_v2_kv_checkpoint_quantization` (default `balanced`), and starts its
+rank with the resolved name while the prefix cache is on. Older rows of a
+`balanced`, `k8v4` or `k8v8` record restore approximate; `native` restores them
+byte-exact.
+
+| Setting | Installed behavior | Source |
+|---|---|---|
+| `[backend] engine_v2_kv_checkpoint_quantization`, `engine_v2_kv_checkpoint_quantization_by_model` | Read once by `cluster worker-owner` from the saved provider configuration on each Mac; the same values select the single-Mac checkpoint encoding. Both ranks bind the resolved precision into their load agreement, so Macs that resolved different precisions refuse to load; there is no leader sync | `DistributedInstalledKVQuantization` (`installProduct`, `recordsEnvironment`) in `provider-swift/Sources/ProviderCore/Inference/Distributed/` |
+| `DARKBLOOM_CBV2_CHECKPOINT_QUANTIZATION` | The provider forwards its own switch to the owner it starts (`ClusterLocalOwnerConfiguration`), where it takes precedence as on one Mac: empty selects `balanced`, a malformed value reaches the rank as `invalid` | `DistributedInstalledPlan.localOwnerConfiguration` |
+| `DARKBLOOM_CLUSTER_PREFIX_SSD_QUANTIZATION` | The rank's switch: `balanced`, `k8v4`, `k8v8`, `native` or main's aliases; absent or empty is `balanced`; any other value refuses the load by name. In an owner's own environment it is a diagnosis override of the resolved name | `QwenStagePrefixDiskEncoding.fromEnvironment` in `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Prefix/QwenStagePrefixDiskEncoding.swift` |
+| `darkbloom-cluster-pair-check --prefix-ssd-quantization` | Qualification runs: gives both workers the same value | `PairConfiguration.prefixSSDQuantization` in `libs/darkbloom-cluster-worker/Sources/DarkbloomClusterQualification/PairConfiguration.swift` |
+
+Only families whose records are qualified encoded use the precision (Qwen
+full-attention keys and values, GLM-5.3-Flash DSA latents); MiMo, Gemma 4 and
+Nemotron records stay native. See
+[cluster record encoding](../architecture/inference.md#cluster-ssd-prefix-record-encoding).
+
+### Private batch qualification diagnostics
+
+`DARKBLOOM_CLUSTER_BATCH_TRACE=1` and
+`DARKBLOOM_CLUSTER_BATCH_LOGIT_DIRECTORY=<absolute-path>` are disabled unless
+explicitly supplied. The runtime and worker refuse either without
+`--qualification-switches yes`. The pair-check helper supplies that permission
+only when its explicit diagnostic options are selected; the installed owner
+does not forward them. Trace contains aggregate scheduling counts only. The
+logit directory is rank 1's private qualification output, never normal telemetry:
+mode 0700, owned by the current user, exclusively locked, with newly created
+0600 files and a cap of 256 native rows of at most 1 MiB each. Existing raw rows
+count toward the cap across batches. Bad permissions, collisions, concurrent
+writers or exhausted capacity fail the diagnostic run. See
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Batch/QwenBatchDiagnostics.swift`
+(`QwenBatchRowCapture`) and the [pair helper options](../provider/cli-reference.md#native-pair-batch-diagnostics).
+
+### Experimental cluster pairs
+
+The coordinator side of two-Mac cluster pairs, including the settings that
+turn it on (`EIGENINFERENCE_CLUSTER_PAIR_CATALOG` and
+`EIGENINFERENCE_CLUSTER_PAIR_TRUSTED_TLS_PROXIES`), is implemented and
+documented in `Layr-Labs/darkbloom-platform`. With the catalog unset
+there, no pair is ever formed and a member registration is only acknowledged.
+What this repository shares with it is the approval entry below: a provider's
+saved cluster setup carries the same entry, field for field (see
+[coordinator-paired member](#coordinator-paired-member)).
+
+The approval file has schema `darkbloom_cluster_pair_catalog_v1` and an
+`approvals` list of at most 64 entries. Every field is required; unknown
+fields, trailing data and out-of-bounds values are errors.
+
+| Field | Type | Rule |
+|---|---|---|
+| `id` | string | 1–128 bytes, unique in the file |
+| `model` | string | the exact catalog model ID the pair serves |
+| `generation` | integer | positive policy generation |
+| `plan_sha256`, `artifact_sha256`, `native_runtime_sha256`, `metallib_sha256`, `resource_library_sha256`, `capability_sha256`, `resource_policy_sha256`, `profile_sha256` | string | 64 lowercase hex, nonzero |
+| `schedule` | integer | `1` or `2` |
+| `maximum_plaintext`, `maximum_transport_frame` | integer | plaintext 1 to 16 MiB; frame at least plaintext + 40 |
+| `maximum_records`, `maximum_cumulative_plaintext` | integer | 1 to 1,048,576 records; 1 byte to 4 GiB |
+| `allowed_chips` | list of strings | 1–16 chip names, sorted by byte, unique. Each is compared byte for byte with a member's registered `hardware.chip_name` (for example `Apple M4 Max`), so it must be that exact string; only printable ASCII is accepted |
+| `not_after` | RFC 3339 instant | approval expiry; a pair is formed only while a full session fits before it. The only accepted form is `YYYY-MM-DDTHH:MM:SS`, an optional fraction of one to nine digits, then `Z` or `±HH:MM`, naming an instant after 1970 that fits in 64-bit nanoseconds |
+
+The file is read as strictly as the provider reads the same entry in its own
+setup, so an entry one side accepts is never refused, or read differently, by
+the other: field names must be spelled exactly and appear once (Go's usual
+case-insensitive matching is not applied), and the `not_after` and
+`allowed_chips` rules above are the provider's
+(`ParseNativeRuntimeCatalog` in the coordinator;
+`provider-swift/Sources/ProviderCore/Config/ClusterPairApproval.swift` here).
+Three entries with fixed digests are pinned in both test suites
+(the coordinator's catalog golden test and the provider's
+`ClusterPairApprovalTests`), so neither encoder can change alone.
+
+Each entry's canonical bytes are what a member compares with its installed
+policy, and their SHA-256 is the `policy_sha256` it registers
+(`NativeRuntimeCatalog.PolicySHA256`). Changing any field therefore produces a
+different policy: members that installed the old one are no longer offered a
+pair.
+
+### Cluster runtime facts
+
+The cluster runtime facts are the digests of one installed app's cluster
+helpers and, for each model, of the capability its own worker describes. The
+coordinator operator copies them into a cluster approval in the operator
+approval file. After the Test stage, the guided setup reads the approvals the
+coordinator serves (`GET /v1/cluster/approvals`) and takes the one whose
+digests equal this Mac's facts
+([coordinator-paired member](#coordinator-paired-member)), and each member
+checks it against its own installed files with the same computation. One type computes every value:
+`provider-swift/Sources/ProviderCore/Config/ClusterRuntimeApprovalFacts.swift`
+(`ClusterRuntimeApprovalFacts`). The hidden command
+`darkbloom cluster runtime-facts --app <app> --model <id>=<folder>` prints them
+in their canonical form. No value is typed by hand. Only a build-pinned entry
+needs these facts. A model approval names no runtime digest, and the provider
+computes no facts for it ([model approvals](#model-approvals)).
+
+| Field | Value |
+|---|---|
+| `schema` | `darkbloom_cluster_runtime_v1` |
+| `native_runtime_sha256` | SHA-256 of the signed `Contents/Helpers/darkbloom-cluster-worker` |
+| `metallib_sha256` | SHA-256 of `Contents/Helpers/mlx.metallib` |
+| `resource_library_sha256` | SHA-256 of `Contents/Helpers/pagedattention.metal` |
+| `placement_policy_sha256` | SHA-256 of the signed `Contents/Helpers/darkbloom-cluster-plan` |
+| `models` | 1 to 32 entries, sorted by `model` in byte order, unique |
+| `models[].model` | the catalog model ID the manifest names (`model_id`); 1 to 128 printable ASCII bytes |
+| `models[].artifact_sha256` | the capability's `artifactSHA256`, the catalog aggregate |
+| `models[].capability_sha256` | SHA-256 of the exact output of `darkbloom-cluster-worker --describe-runtime` |
+| `models[].profile_sha256` | the capability's `profileFingerprint` |
+| `models[].resource_policy_sha256` | `DistributedInstalledNativeStart.resourcePolicySHA256` of the capability, the value a native start carries |
+
+Every digest is 64 lowercase hex and nonzero. The canonical form is JSON with
+sorted keys and no whitespace. Why each digest is the one a member compares:
+[cluster runtime facts of an installed app](../architecture/inference.md#cluster-runtime-facts-of-an-installed-app).
+
+### Sharded placement and the hand-off opt-in
+
+A cluster deployment shards the model across its members: tensor parallel
+(every member holds a share of every layer) or pipeline (layers split at a
+cut, with compact decode framing as a variant), chosen by the planner from
+each Mac's detected profile, the measured link and the model's own
+configuration (`ClusterPlacementPlanner`, `ClusterShardAssessment`). The guided
+setup (`darkbloom cluster`) shows the chosen deployment in one line; the optional
+diagnostic `darkbloom cluster plan` prints every sharded candidate with its
+predicted speed and the reason it was or was not chosen. Tensor parallel is
+chosen only where the runtime executes it for the model, a reduction over the
+keyed data plane has been measured, no failed qualification covers the shape,
+and it is predicted at least 5 % faster than every pipeline.
+
+The link is measured by every load over the cable. The serving leader keeps
+each pair's last eight measurements from the last 30 days in owner-only
+`~/.darkbloom/cluster/link-probes.json`, and every plan of the pair uses their
+median, so a single fast or slow load does not change the chosen mode. A file
+written by an earlier release is read as one measurement. In the setup's model
+list, a model that has tensor parallel but was split otherwise shows a short
+reason under its line (for example `tensor parallel: slower here`); a model
+without tensor parallel shows nothing extra. When the planner's policy leaves a
+mode out (Qwen3.8 27B keeps images, video and logprobs only in tensor parallel),
+the reason line says that instead of "no pipeline placement fits"
+(`provider-swift/Sources/ProviderCore/Inference/Distributed/Placement/ClusterLinkProbeHistory.swift`,
+`libs/darkbloom-cluster/Sources/DarkbloomClusterPlacement/ClusterRequestMix.swift`).
+
+Each Mac's profile carries its model-free speed index
+(`darkbloom-cluster-plan device --json --index`, about a second of GPU work),
+measured only while no model is loaded or loading on that Mac: no cluster
+worker runs there, and its cluster service runs neither its part nor its solo
+server. Otherwise (the leader's update check every minute, an automatic batch
+replacement, `darkbloom cluster plan` beside a serving model) the index the Mac
+last measured stands in, from owner-only `~/.darkbloom/cluster/device-index.json`,
+while the chip and OS build are the ones it was measured on
+(`provider-swift/Sources/ProviderCore/Inference/Distributed/Placement/ClusterLocalDeviceProfile.swift`).
+
+| Variable | Default | Effect |
+|---|---|---|
+| `DARKBLOOM_CLUSTER_HANDOFF_MODES` | unset (off) | `1` (or `on`) is the one explicit opt-in for the hand-off modes kept in the code: phase split, phase split + MTP, the pipeline-prefill/tensor-decode hybrid, and the per-request "alone" route. Read by the process that plans (`darkbloom cluster`, `darkbloom cluster plan`) and by each Mac's serving owner: a setup saved with a hand-off mode (for example by an earlier release, whose default was phase split + MTP) is refused at start without it, with the way back (`darkbloom cluster`, select the model again), and the alone route is taken only by a leader that has it. `0`, `off` or unset plan sharded deployments only; any other value is refused. Never offered in the onboarding. (`provider-swift/Sources/ProviderCore/Inference/Distributed/Placement/ClusterHandOffModes.swift`) |
+| `DARKBLOOM_DEV_BENCH_PLANNER_CAP_GIB` | unset | Developer bench only, debug builds only (a release build refuses to plan while it is set): caps what the planner believes each Mac can give a model, in whole GiB, so a pair of large bench Macs is planned as smaller Macs would be. The load gates never see it. (`ClusterPlannerBenchCap.swift`) |
+
+Explicit `--prompt-tokens` and `--output-tokens` select the planning request,
+not new runtime limits. Either axis exceeding the layout reference requires a
+family quote matching the pinned capability; see
+[placement request metadata](../provider/cli-reference.md#cluster-placement-request-metadata)
+and `ClusterPlacementFlow.decide` in
+`provider-swift/Sources/ProviderCore/Inference/Distributed/Placement/ClusterPlacementFlow.swift`.
+
+The developer plan tool takes `--hand-off-modes` for the same opt-in.
+
+### Coordinator-paired member
+
+To be offered a pair by the coordinator, each of the two Macs saves a setup
+with an optional `nativeMember` object and runs `darkbloom start
+--cluster-member`. Nothing else is needed on the provider side: the pair
+selector matches the two registrations itself (see
+[pair formation](cluster-control-protocol.md#pair-formation)).
+
+**Automatic (guided setup).** The coordinator operator adds a cluster approval
+by hand to the operator approval file
+([`EIGENINFERENCE_CLUSTER_PAIR_CATALOG`](#experimental-cluster-pairs)). A
+build-pinned entry has the digests that `darkbloom cluster runtime-facts --app
+<app> --model <id>=<config>,<manifest>` prints
+([cluster runtime facts](#cluster-runtime-facts)). A model approval has no
+runtime digests ([model approvals](#model-approvals)).
+The coordinator serves the loaded entries. After the Test stage of
+`darkbloom cluster` passes, the control leader takes the entry for this pair and
+saves it on both Macs. The cluster service then runs each Mac's part as
+`darkbloom start --foreground --cluster-member`
+(`provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/ClusterService.swift`,
+`memberArguments`). A pair serves its owner's requests; the coordinator decides
+public serving (its public cluster routing and a parity qualification of the
+pair's placement; [serving a pair](cluster-control-protocol.md#serving-a-pair)).
+
+| Step | Rule | Source |
+|---|---|---|
+| Fetch | `GET <coordinator>/v1/cluster/approvals`, no query, no credential; HTTPS only (plain HTTP only to this Mac's loopback); no redirect; at most `maximumBytes = 512 * 1024` bytes and `maximumApprovals = 128` entries; `timeoutSeconds = 10`. The body is `darkbloom_cluster_catalog_v2` with `cluster_approvals`. Each entry has the fields of one of the two shapes (build-pinned or model approval); one list can hold both. One unknown, missing or malformed field refuses the whole answer. 404 (pair control off: production, staging) and every failure mean no approval. A read error after an HTTP answer is an answer that cannot be used, not "no answer" | `provider-swift/Sources/ProviderCore/Inference/Distributed/Membership/ClusterApproval/ClusterApprovalFetch.swift` (`ClusterApprovalFetch`) |
+| Match | The entry whose `model` is the setup's `publicModelID`, whose `schedule` is its prefill schedule (`1` serial, `2` one-chunk lookahead), and that is still current. A model approval matches when its `artifact_sha256` is the saved setup's `capability.artifactSHA256`; no runtime facts are computed for it. A build-pinned entry matches when its eight digests all equal this Mac's own cluster runtime facts (computed at most once per check from the helpers beside the setup's worker and the setup's model folder). Latest `not_after` first, across both shapes. An entry for another build or another copy of the model does not match | `provider-swift/Sources/ProviderCore/Inference/Distributed/Membership/ClusterApproval/ClusterApprovalLifetime.swift` (`select`) |
+| Check | On each Mac, against its own files: every digest of a build-pinned entry (`ClusterApprovalAttachment.mismatches`), or the artifact of a model approval (refusal: "the approval's artifact_sha256 differs from this Mac's setup"); the member's own start refusals (`requireLocalRankGranted`); the roster of this Mac's pairing (S17); `validate` below | `provider-swift/Sources/ProviderCore/Inference/Distributed/Membership/ClusterApproval/ClusterApprovalAttachment.swift` (`attachment`) |
+| Save | Both parts stop. The leader checks the entry, sends it to the other Mac over the cable (service command `approval`), and saves it only after the other Mac checked and saved it. A refusal on either Mac saves it on neither. Both parts then start as cluster members | `provider-swift/Sources/ProviderCore/Inference/Distributed/Membership/ClusterApproval/ClusterApprovalSync.swift` (`run`, `receive`) |
+| When | After the guided setup's Test stage passed (control operation `register`, run by the control leader: `OnboardingLive.localRegister`), once at each start of the control leader's cluster service and after an update re-adopted the setups (the re-adopted setups find the same model approval again, because it names no build), and every minute while a serving pair is offered or has its approval kept aside (`ClusterService.checkApproval`). A local-only cluster never asks (`ClusterApprovalSync.asks`) | as named |
+| Lifetime | A saved approval with more than `renewWithinSeconds = 86_400` left is kept. Within that day a later matching entry replaces it. An entry that the operator replaced under the same `id` (other bytes, for example a new `not_after`) is no longer the saved approval: a matching entry replaces it, else it is withdrawn (Serve locally). An ended one is removed: each Mac saves its setup without it before its part starts, and its part then serves on the leader's local API (`ClusterService.supervise`) | `ClusterApprovalLifetime.decide` |
+| Serve locally | Both Macs save their setups without the approval, the other Mac first, and the pair serves on the leader's local API, when: no request gets an HTTP answer for the absence grace (`ClusterService.soloGraceSeconds`: 600 s; `DARKBLOOM_DEBUG_CLUSTER_SOLO_GRACE_SECONDS` in a development build); the coordinator answers (a 404, or a list) without the saved approval as saved and serves no other matching entry; or either Mac's coordinator-paired parts ended `ClusterControlSoloAdmission.maximumQuickEnds = 3` times in a row right after starting (each Mac's status, `memberQuickEnds`; an end because the coordinator was out of reach is not counted). When either Mac cannot save, both keep the approval and the next check tries again. The leader keeps the approval, the reason and the setup's worker digest in its setup record (`approvalSetAside`, `runtimeBinarySHA256`). When an answer lists a matching entry, the pair is registered again through the Save step; after repeated failures, only a later entry, or the same entry after an update installs another worker (a record without the worker digest keeps the same entry aside on every build) | `ClusterApprovalCheck.step`, `ClusterApprovalSync.serveLocally`; `ClusterService.checkApproval` |
+| Both or neither | A send whose reply is lost may come after the other Mac saved: the leader gives it its setup back. Each Mac's status names its saved cluster approval (`approvalID`, `""` for none; a build without the field is unknown and never compared). On every check the leader compares it with its own; while they differ, it gives the other Mac its approval (while offered) or none, and saves its own setup without an approval it does not offer; when the other Mac refuses its approval, it saves its own setup without it too | `ClusterApprovalCheck.peerApprovalID`, `macsDiffer`, `ClusterApprovalSync.converge` |
+| Changing | The leader decides under the command lock, from the setup, record and the other Mac's status as they are then. A save is first checked against the leader's own files, so no part stops for an approval it refuses. A busy command lock waits for the next check, a minute later | `ClusterService.checkApproval`, `ClusterApprovalSync.apply` |
+
+A coordinator that answers 404, serves no matching entry or serves only ended
+entries leaves both saved setups byte for byte as they were: nothing is sent
+over the cable and no part stops. `darkbloom cluster local` serves without the
+object (a cluster approval is removed; a pair approval saved by hand stays, and
+the local session refuses beside it, below).
+
+**By hand.** The steps below stay available for an approval file the
+coordinator operator keeps:
+
+1. The coordinator operator adds one entry to the approval file named by
+   [`EIGENINFERENCE_CLUSTER_PAIR_CATALOG`](#experimental-cluster-pairs) and
+   gives both Mac operators that same entry.
+2. On each Mac, add `nativeMember` to the setup JSON and save it with
+   `darkbloom cluster configure --input <setup.json> --capability <file>
+   --capability-sha256 <hex>`. The two setups share `clusterID`; one has
+   `role` `leader` (rank 0) and the other `follower` (rank 1).
+3. On each Mac, run `darkbloom start --cluster-member` with a coordinator URL
+   whose scheme is `wss`, signed in to the same account. Add `--always-on` to
+   install it as the always-on service instead of running it in the
+   foreground ([always-on members](../provider/cluster-always-on.md)).
+
+| `nativeMember` field | Type | Rule |
+|---|---|---|
+| `schema` | string | exactly `darkbloom_cluster_native_member_v1` |
+| `ownerSHA256` | string | 64 lowercase hex: SHA-256 of this Mac's `peers[local].ownerExecutable` |
+| `metallibPath`, `resourceLibraryPath` | string | absolute, normalized paths (a space is allowed, as in a DevNet build's `Darkbloom Dev.app`) of the installed files whose digests the approval pins; distinct from each other and from the owner and worker executables |
+| `approval` | object | the coordinator's approval entry, field for field ([fields](#experimental-cluster-pairs)); unknown or missing fields are refused |
+
+The automatic path saves `schema` `darkbloom_cluster_native_member_v2` (the
+roster registration) instead: `ownerSHA256`, `metallibPath` and
+`resourceLibraryPath` as above (the setup worker's `mlx.metallib` and
+`pagedattention.metal`), `clusterApproval` (one `cluster_approvals` entry of
+either shape, field for field), `roster` (the roster both Macs countersigned when they
+paired), `memberPins` (the members' pins in rank order) and `edges` (the link
+the serving leader last measured, as `rdma`; omitted when none was measured).
+
+The object is validated when the setup is saved and again whenever it is
+loaded (`provider-swift/Sources/ProviderCore/Config/ClusterNativeMemberAttachment.swift`,
+`validate`): the approval's `model`, `plan_sha256`, `artifact_sha256`,
+`native_runtime_sha256`, `capability_sha256`, `profile_sha256` and `schedule`
+must equal the saved setup's own model, selected Plan, capability pins and
+prefill schedule (`1` serial, `2` one-chunk lookahead). A cluster approval
+names no plan; a model approval names no runtime, so only its `model`,
+`artifact_sha256` and `schedule` are compared. The member derives the
+canonical policy bytes from the entry exactly as the coordinator does
+(`provider-swift/Sources/ProviderCore/Config/ClusterPairApproval.swift`,
+`canonicalPolicy`, mirroring `darkbloom-platform:coordinator/registry/native_pair_approval.go`,
+`canonicalNativeRuntimeApproval`) and registers their SHA-256 as
+`cluster_membership.policy_sha256`. `not_after` must be a strict RFC 3339
+instant (`YYYY-MM-DDTHH:MM:SS`, an optional fraction of one to nine digits,
+then `Z` or `±HH:MM`); any other spelling is refused when the setup is saved.
+
+At start (`provider-swift/Sources/ProviderCore/Inference/Distributed/Membership/ClusterMemberPreparation.swift`,
+`nativeMemberInstallation`) the approval must be unexpired and list this Mac's
+chip, and the owner, native executable, metallib and resource library must
+hash to their pins; otherwise the command stops before registering. Under a
+model approval the pins are this Mac's own (below). A member
+whose setup has no `nativeMember` registers no membership and is never paired.
+
+A setup with `nativeMember` cannot run `darkbloom start --local --distributed`
+(`ClusterConfiguration.requireOrdinarySessionRoute`): that session launches
+both owners itself over SSH and would contend with a coordinator-formed pair
+for the same device. Save a setup without the object for a local session.
+
+A member whose setup reaches the other Mac over the cable (`linkControl`)
+serves the pair's committed starts: the leader hosts the link listener and the
+pair's slot, the follower dials it. A member without `linkControl` declines the
+coordinator's preparation; see [provider member
+control](cluster-control-protocol.md#provider-member-control).
+
+### Model approvals
+
+A model approval is a `cluster_approvals` entry that names no build. A new
+build of the provider needs no new entry: after an update, the re-adopted
+setups find the same entry at the next check. The coordinator accepts one only
+in its development deployment (DevNet); see the coordinator's documentation in
+`Layr-Labs/darkbloom-platform`. Build-pinned entries keep every rule above.
+
+| Item | Rule | Source |
+|---|---|---|
+| Shape | Exactly 14 fields: `id`, `model`, `generation`, `artifact_sha256`, `schedule`, `maximum_transport_frame`, `maximum_plaintext`, `maximum_records`, `maximum_cumulative_plaintext`, `allowed_numerics_classes`, `minimum_members`, `maximum_members`, `minimum_member_usable_bytes`, `not_after`. The build-pinned shape adds `placement_policy_sha256`, `native_runtime_sha256`, `metallib_sha256`, `resource_library_sha256`, `capability_sha256`, `resource_policy_sha256` and `profile_sha256`. An entry with some but not all of these seven, or with a null one, is refused | `provider-swift/Sources/ProviderCore/Config/ClusterRuntimeApproval.swift` (`ClusterRuntimeApproval`, `isEntry`, `init(from:)`) |
+| Canonical bytes | Domain `darkbloom/coordinator-cluster-model-approval/v1` and a zero byte, then the cluster approval's layout without the placement digest and the six runtime digests: `id`, `model`, `generation`, `artifact_sha256`, bytes `1, 1, schedule`, frame, plaintext, records, cumulative, `not_after` (nanoseconds), member bounds, usable bytes, grant lease terms, numerics classes. Their SHA-256 is the `policy_sha256` the member registers. Two golden vectors are pinned in `ClusterModelApprovalTests` and in the coordinator's tests | `ClusterRuntimeApproval.canonicalPolicy`; `provider-swift/Sources/ProviderCore/Coordinator/NativePairMemberPolicy.swift` (`modelDomain`) |
+| Plan runtime block | The member's plan for a model approval carries `runtime`: `native_runtime_sha256` (the saved setup's `capability.runtimeBinarySHA256`), `capability_sha256` (the setup's `capabilitySHA256`), `resource_policy_sha256` (`DistributedInstalledNativeStart.resourcePolicySHA256` of the capability) and `profile_sha256` (`capability.profileFingerprint`). A plan for a build-pinned entry has none. The block is part of the plan, so both members must register the same one | `DistributedInstalledNativeStart.runtimeBlock`; `provider-swift/Sources/ProviderCore/Protocol/ClusterRosterRegistration.swift` (`ClusterPlan.runtime`) |
+| Metallib and resource library | Hashed once when the member builds its registration. The metallib digest also gives the device profile's numerics class. A model approval that lists numerics classes is in effect pinned to one metallib, because each class contains the first 8 hex characters of the metallib digest (`ClusterMemberDeviceProfile.numericsClass`); an empty list admits any class | `ClusterMemberPreparation.nativeMemberInstallation` |
+| Start | The start's worker, capability, resource-policy and profile digests must equal the member's own block; the artifact, schedule and limits must equal the entry's. At prepare, the worker hashes to the setup's pin and the metallib and resource library to the digests taken at registration. The owner admits the start against the same block from its own setup | `NativePairMemberPolicy.require`, `NativePairMemberInstallation` (`requireStart`, `verifyInstalledFiles`), `DistributedInstalledOwner.memberAuthorizer` |
+
+### Guided link setup
+
+`darkbloom cluster` (and `darkbloom cluster setup`) on a terminal runs the
+onboarding: it pairs the Macs and offers a model. Run `darkbloom cluster` on
+both Macs to pair them again. The line-by-line link setup described here runs
+only with `--json`, `--yes`, `--temporary`, `--dry-run` or the hidden
+`--link-only`
+(`provider-swift/Sources/darkbloom/ClusterSetupCommand.swift`, `Cluster.Setup`);
+with no terminal and none of those, `darkbloom cluster` prints one line: "Run
+`darkbloom cluster` in a Terminal window on this Mac." The link setup
+gets this Mac's link ready and keeps it ready. It prints one
+line per step as each is observed, and the only thing it asks of the person is
+approval in the macOS prompt. It runs the inspection, the change watch and the approval-gated fix
+described in the next sections; its decisions and wording are one state machine
+(`provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/Link/ClusterLinkSetupFlow.swift`,
+`ClusterLinkSetupFlow`).
+
+| Step | What must hold | When it does not |
+|---|---|---|
+| RDMA | RDMA is enabled and lists its devices | Prints the guidance for `rdmaDisabled`, `rdmaUnavailable` or `probeFailed` and stops |
+| Connection | An RDMA port is active | Waits for a Thunderbolt 5 connection, polling as `cluster link --watch` does, until a port comes up or the wait is interrupted |
+| Address | The active port publishes the IPv4-mapped GID, and an address Darkbloom assigned to it has its keeper | If the port only lacks an address: says what it is about to do, opens the macOS prompt, then installs and verifies exactly as `cluster link --fix` does, so the address is also put back whenever macOS removes it. A port that does not have the address Darkbloom has on record for it is named as such and repaired by the same one approval; when its keeper is installed and running the flow first waits `keeperWaitSeconds` (one keeper interval and 4 seconds) for the keeper to put the address back, without a prompt, and installs the keeper afresh only if it has not. A port that is ready on an address Darkbloom added but nothing keeps is reported as ready, and the same prompt installs only the keeper; a cancelled or unavailable prompt leaves the link ready. A cancelled prompt is reported with how to run the command again. More than one such port, or any other state, prints what to do and stops |
+| Done | — | Prints that this Mac's link is ready and that the other Mac needs the same command. Pairing and model steps are not part of this flow |
+
+The wait and the prompt happen on their own only when standard output is a
+terminal and `--json` is not given (`ClusterLinkSetupFlow.mayPrompt`). Otherwise
+the command prints what it found and the next step, and exits non-zero unless
+the link is ready; `--yes` allows the wait and the prompt there too.
+`--temporary` adds the address alone, as `cluster link --fix --temporary` does.
+`--dry-run` waits for nothing and opens no prompt: where the flow would ask, it
+prints the exact commands an approval would run, and exits 0. `--json`
+prints one object at the end: `schema` is `darkbloom_cluster_setup_v1`, with
+`ready`, `state` (the link state the flow last observed; `ready` after a
+verified fix) and `narration`, the lines in order. The exit status is 0 when
+the link is ready or a dry run printed its plan, the fix's own status (see [Link fix and
+removal](#link-fix-and-removal)) when the fix ended any other way, and 1 for
+every other stop, including an interrupted wait. A link that is ready on an
+address nothing keeps still exits 0 when the keeper was not installed because
+no prompt was allowed, the prompt was cancelled or it could not be shown; the
+lines say what to run. If the keeper's installation was approved and then
+failed, the exit status is the fix's own even though the link is still ready.
+
+### Local link readiness
+
+`darkbloom cluster link [--json]`
+(`provider-swift/Sources/darkbloom/ClusterLinkCommand.swift`, `Cluster.Link`)
+reads this Mac's own RDMA and network-interface state and reports whether
+JACCL could initialise on it. Without `--fix` or `--remove` it reads no
+provider configuration, changes no setting, contacts no peer and runs no
+collective, and it exits non-zero unless the state is `ready`.
+`darkbloom cluster doctor` runs the same inspection and appends its findings as
+checks; `darkbloom cluster status` does not run it.
+
+| Item | Value | Source |
+|---|---|---|
+| Tools run | `/usr/bin/rdma_ctl status`, `/usr/bin/ibv_devinfo`, `/sbin/ifconfig -a`, then `/usr/bin/ibv_devinfo -v -d <device>` for each device whose port is active; `--fix` also reads `/sbin/route -n get default`. Absolute paths, no shell, null standard input, environment limited to `PATH`, `LANG` and `LC_ALL` | `provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/Link/ClusterLinkToolCommand.swift` (`ClusterLinkToolCommand`); `provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/Link/ClusterLinkToolProcess.swift` (`ClusterLinkToolProcess.run`) |
+| Time bounds | `childTimeoutNanoseconds = 3_000_000_000` per tool, `inspectionTimeoutNanoseconds = 10_000_000_000` for all of them, `reapTimeoutNanoseconds = 1_000_000_000` to await a killed tool | `provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/Link/ClusterLinkReadinessProbe.swift` (`ClusterLinkReadinessProbe`); `ClusterLinkToolProcess` |
+| Size bounds | `maximumOutputBytes = 256 * 1024` per tool, `maximumDevices = 32` | `ClusterLinkReadinessProbe` |
+| Report | `schema` is `darkbloom_cluster_link_readiness_v1`; `state`, `guidance`, one `devices` entry per RDMA device, and the constant `physicalProbePerformed: false`. Device and interface names only: no IP address, MAC address, GID, host name or serial number. An unknown fact is omitted rather than written as `null`. A device carries `assignedAddress` (`present` or `missing`) and `addressKept` (whether the address keeper is loaded with the job definition Darkbloom writes; omitted when that could not be read) only when the record of [link fixes](#link-fix-and-removal) names its interface; those two readings are `/bin/launchctl print system/<label>` and `/usr/bin/plutil -convert json -o - <file>` | `provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/Link/ClusterLinkReadinessReport.swift` (`ClusterLinkReadinessReport`); `provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/Link/ClusterLinkName.swift` (`ClusterLinkName`) |
+| Doctor checks | `localLink` for the Mac; `localLinkDevice.<device>` for each active port and for the saved setup's port; `configuredLinkDevice` when the saved setup names a device this Mac does not list. A port that is not ready fails only where serving would use it. A ready port whose address nothing keeps passes, and its detail carries the guidance below. The doctor report sets `localLinkInspectionPerformed` and keeps `physicalProbePerformed` `false` | `provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/Link/ClusterLinkDiagnosticChecks.swift` (`diagnosticChecks`); `provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/ClusterDiagnosticsReport.swift` (`ClusterDiagnosticsReport`) |
+
+`state`, and each device's `verdict`, is one value of
+`ClusterLinkReadinessState`
+(`provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/Link/ClusterLinkReadinessState.swift`).
+Every state except `ready` carries one `guidance` sentence. For the two states
+that only lack an address (`fixableByAddingAddress`) it offers
+`darkbloom cluster link --fix`; for the others it names the change the operator
+must make and says that Darkbloom will not make it. When the port that decides
+the state has `assignedAddress: missing`, meaning the record holds an address
+for it that the port does not carry now, the guidance says exactly that and
+names the one command, `darkbloom cluster`
+(`ClusterLinkReadinessReport.addressLostGuidance`). It does not say how the
+address went missing: macOS removes one when it reconfigures the port, and an
+earlier attempt that was approved elsewhere or failed part-way leaves the same
+record. A `ready` state carries guidance in one case: the deciding port has
+`assignedAddress: present` and `addressKept: false`, an address nothing would
+put back, and the sentence names the same command
+(`ClusterLinkReadinessReport.addressTemporaryGuidance`). The text summary then
+prints that sentence before the scope line. The doctor's `localLink` and
+`localLinkDevice.<device>` checks carry the same sentences.
+
+| State | Meaning |
+|---|---|
+| `ready` | An active port publishes an IPv4-mapped GID, the condition JACCL checks before it uses a device. Local state only: it does not show that the peer is reachable |
+| `rdmaDisabled` | `rdma_ctl status` printed `disabled`. RDMA is enabled in System Settings, Privacy & Security (RDMA over Thunderbolt, after a restart) on macOS 27 or later, and from macOS Recovery with `rdma_ctl enable` on macOS 26 |
+| `rdmaUnavailable` | `rdma_ctl` or `ibv_devinfo` is missing or exited non-zero, as `ibv_devinfo` does when there is no RDMA device |
+| `noActivePort` | No RDMA device has an active port |
+| `portWithoutIPv4Address` | The active port's interface has no IPv4 address and is not a bridge member. `--fix` applies |
+| `portBridgedWithoutAddress` | The active port's interface is a bridge member, such as the Thunderbolt Bridge, and has no IPv4 address of its own. `--fix` applies |
+| `gidNotPublished` | No IPv4-mapped GID is listed although the interface has an IPv4 address, or the interface could not be identified |
+| `probeFailed` | A tool timed out, exceeded its output bound or printed unrecognized text |
+
+### Link fix and removal
+
+`darkbloom cluster link --fix [--device <rdma device>] [--temporary] [--dry-run] [--json]`
+gives the one active port that lacks an IPv4 address a link-local one, so that
+it publishes the IPv4-mapped GID, and keeps it there.
+`darkbloom cluster link --remove [--device <rdma device>] [--dry-run] [--json]`
+undoes everything a fix installed and nothing else, including a keeper whose
+record is gone. Nothing is changed without
+a person approving the macOS authorization prompt: Darkbloom passes one fixed
+command line to `/usr/bin/osascript` (`do shell script … with administrator
+privileges`) and never uses `sudo` or sees a password.
+
+An address added with `ifconfig` alone does not last. macOS removes it at a
+restart, and on a Mac that shares its internet over the Thunderbolt Bridge it
+was also seen removed, without sleep, restart or replug, at the moment another
+network device was disconnected. A fix therefore installs an address keeper: a
+root launchd job that runs every `intervalSeconds = 10` seconds and at start-up,
+and adds the address back only when the port has no IPv4 address at all, so a
+port that has any other address keeps just that one. It is
+one file under `/Library/LaunchDaemons`; it runs `/sbin/ifconfig` and
+`/usr/bin/grep` and installs no program. It leaves the bridge, its members,
+Internet Sharing and every network service as they are. macOS lists it under
+System Settings → General → Login Items & Extensions, where it can be switched
+off; `--remove` deletes it. `--temporary` adds the address without the keeper.
+
+The install writes nothing to launchd's own database of enabled and disabled
+jobs, because a removal could not take such an entry out again. If the job was
+switched off under Login Items & Extensions, macOS may refuse to start it and
+the fix then ends as `commandFailed` or `appliedButNotReady`; switch it on
+there and run `darkbloom cluster` again; the address itself is added before
+the job is started, so the link is usable meanwhile. `--remove` works from the
+record below and, for ports the record does not name, from the keepers it
+finds installed: a file named as above whose content is exactly a job
+definition Darkbloom writes names its port and address, so a keeper left
+behind by a deleted `~/.darkbloom`, or installed from another account, is
+still removed. Run `darkbloom cluster link --remove` before deleting
+`~/.darkbloom`.
+
+| Item | Value | Source |
+|---|---|---|
+| When `--fix` acts | Exactly one active port has verdict `portWithoutIPv4Address` or `portBridgedWithoutAddress`, or `--device` names such a port. A Mac that is already `ready` is left alone, with one exception unless `--temporary`: a ready port whose address is the recorded one and has no running keeper (`assignedAddress: present`, `addressKept: false`) gets the keeper, by the same commands. A ready port on any other address is never touched, and any other state stops before the prompt | `provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/Link/ClusterLinkRepair.swift` (`ClusterLinkFixPlan.make`) |
+| Address keeper | Label `io.darkbloom.cluster-link.<interface>`, file `/Library/LaunchDaemons/io.darkbloom.cluster-link.<interface>.plist` (owner `root:wheel`, mode `644`), keys `Label`, `ProgramArguments`, `RunAtLoad` and `StartInterval`. Its program is `/bin/sh -c` with `/sbin/ifconfig <interface> \| /usr/bin/grep -qw inet \|\| /sbin/ifconfig <interface> inet <address> netmask 255.255.0.0 alias` | `provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/Link/ClusterLinkAddressKeeper.swift` (`ClusterLinkAddressKeeper`) |
+| Commands approved for a fix | In order, joined with `&&`: `/bin/launchctl bootout system/<label>` (errors ignored), `/bin/rm -f <file>`, `/usr/bin/plutil -create xml1 <file>`, seven `/usr/bin/plutil -insert … <file>` commands that write the four keys, `/usr/sbin/chown root:wheel <file>`, `/bin/chmod 644 <file>`, `/bin/sh -c '<the keeper's script>'`, `/bin/launchctl bootstrap system <file>`. The script is run once before the job is started, so the address is there even where launchd refuses the job. The file is built key by key from fixed values; nothing a user could have prepared is copied into place. With `--temporary` the only command is `/sbin/ifconfig <interface> inet <address> netmask 255.255.0.0 alias` | `ClusterLinkAddressKeeper` (`installCommands`); `provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/Link/ClusterLinkPrivilegedRequest.swift` (`ClusterLinkPrivilegedRequest`) |
+| Commands approved for a removal | For one port, only those whose target is found, in this order and joined with `;` so that each runs whatever an earlier one reported: `/bin/launchctl bootout system/<label>`, `/bin/rm -f <file>`, `/sbin/ifconfig <interface> inet <address> -alias`. The last is also included whenever the keeper is loaded, because the keeper may put the address back while the prompt is open. What is found afterwards decides the outcome, not the exit status | `ClusterLinkPrivilegedRequest` (`commands`); `provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/Link/ClusterLinkFixRemnants.swift` (`ClusterLinkFixRemnants.observed`) |
+| What may enter a command | A validated interface name and a generated or recorded link-local address. `--device` is matched against the listed devices and never placed in a command | `provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/Link/ClusterLinkName.swift` (`ClusterLinkName`) |
+| Address | `169.254.x.y` with both octets in 1–254, derived from a SHA-256 of this Mac's hardware UUID and the interface name, so the same port gets the same address each time and two Macs almost never choose the same one. A recorded address that differs from the derived one, as after a home directory copied from another Mac, is used only while something of it is still on this Mac. Apart from a dry run it appears only in the commands handed to macOS, in the keeper's file and in the record below; never in output, JSON or logs | `provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/Link/ClusterLinkLocalAddress.swift` (`derived`); `provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/Link/ClusterLinkMachineIdentity.swift` (`hardwareUUID`) |
+| Verification | After the commands run, the port's device must be `ready` (up to `verificationAttempts = 10` probes one second apart), no bridge may have gained or lost a member, the default route must leave through the same interface as before, and, unless `--temporary`, the keeper must be loaded with exactly the job definition above | `ClusterLinkRepair` (`fix`, `unmetConditions`); `ClusterLinkAddressKeeper` (`isRunning`, `isDescribed`); `provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/Link/ClusterLinkTopology.swift` (`ClusterLinkTopology`) |
+| Read-only tools | `/sbin/route -n get default`, `/bin/launchctl print system/<label>`, `/usr/bin/plutil -convert json -o - <file>` and `/bin/ls /Library/LaunchDaemons` (a keeper's file counts as present by its name, whatever it holds), beside those of the readiness inspection | `provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/Link/ClusterLinkToolCommand.swift` (`ClusterLinkToolCommand`) |
+| Record | `~/.darkbloom/cluster-device/link-alias.json`, mode `0600`, schema `darkbloom_cluster_link_alias_v1`: the interface and address of each fix not yet removed. Written before the prompt, and again after an approved one, under the file lock and with the strict cluster file policy. After a cancelled prompt or a failed command an entry this fix created is dropped once the port is seen with nothing of the fix on it, and an entry from an earlier fix stays as it was; the entry is kept when no prompt could be shown, so that what is added with the printed commands can still be removed. `--remove` acts only on what the record names, or what an installed keeper's own job definition names, and only on what it finds: the port's address, the loaded keeper and the keeper's file. An entry with none of the three left is cleared without a prompt | `provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/Link/ClusterLinkAliasRecord.swift` (`ClusterLinkAliasStore`) |
+| Dry run | `--dry-run` performs every read, decides exactly as a real run would, and stops where the prompt would open: no prompt, no record change, nothing run. It prints the commands, one per line, and they are the one place besides the manual commands below where the address is shown; with `--json` they are `plannedCommands` | `ClusterLinkRepair` (`fix`, `remove`) |
+| Prompt wait | `promptTimeoutNanoseconds = 300_000_000_000` | `provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/Link/ClusterLinkApproval.swift` (`ClusterLinkApproval`) |
+| Result | `schema` is `darkbloom_cluster_link_repair_v1`; `operation`, `outcome`, `message`, and where they apply `device`, `interface`, `state`, `unmet`, `candidates`, `durable` (whether the fix includes the keeper, or found it running) and `plannedCommands` (dry run only; `/` may appear escaped as `\/`, which is the same JSON string) | `provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/Link/ClusterLinkRepairOutcome.swift` (`ClusterLinkRepairResult`) |
+
+`outcome` is one value of `ClusterLinkRepairOutcome`; the exit status is its
+`exitCode`.
+
+| Outcome | Exit status | Meaning |
+|---|---|---|
+| `dryRun` | 0 | `--dry-run`: the commands in `plannedCommands` would run after approval. Nothing was asked or changed |
+| `alreadyReady` | 0 | `--fix`: the link, or the named device, is already ready and, unless `--temporary`, has no temporary address of Darkbloom's to keep. No prompt |
+| `fixed` | 0 | `--fix`: approved, applied, and every verification condition holds |
+| `removed` | 0 | `--remove`: nothing of the fix is left on the port |
+| `alreadyAbsent` | 0 | `--remove`: nothing of the recorded fix was found. The spent record entry is cleared, except on a dry run. No prompt |
+| `nothingRecorded` | 0 | `--remove`: no recorded fix and no installed keeper of Darkbloom's, or none for the named device. No prompt |
+| `nothingFixable` | 1 | The state, given as `state`, is not one that adding an address cures; `probeFailed` here also covers a bridge, route, interface or keeper reading that could not be made before acting. No prompt |
+| `ambiguousPorts` | 1 | More than one port qualifies; `candidates` lists them for `--device`. No prompt |
+| `deviceNotListed` | 1 | `--device` names no RDMA device on this Mac. No prompt |
+| `machineIdentityUnavailable` | 1 | The hardware UUID could not be read. No prompt |
+| `recordUnavailable` | 1 | The record could not be read or written. No prompt |
+| `approvalDeclined` | 2 | The prompt was cancelled: `osascript` reported error `-128` or `-60006` |
+| `approvalUnavailable` | 3 | No prompt could be shown or answered, for example in an SSH session without a desktop: `osascript` failed in any other way or did not finish in time. The same commands, each under `sudo`, are printed on standard error |
+| `commandFailed` | 4 | Approved, but one of the commands exited non-zero. After a failed keeper installation the message also names Login Items & Extensions. For a removal this is reported only when something of the fix is still found afterwards |
+| `appliedButNotReady` | 4 | `--fix`: applied, but the conditions in `unmet` do not hold: `deviceNotReady`, `bridgeMembersChanged`, `defaultRouteChanged`, `stateUnreadable` or `addressKeeperNotRunning`. What was done stays until `--remove` |
+| `removalNotVerified` | 4 | `--remove`: approved, but something of the fix is still found, or the port could not be read afterwards |
+| `isolationRefused` | 1 | `--fix` (link setup v2): a finding in `findings` that the approval cannot cure is in the way, such as `internetSharingToPort`; the message says what the owner can do. No prompt |
+| `appliedButNotIsolated` | 4 | `--fix` (link setup v2): approved, but the findings in `findings` still hold afterwards. What was done stays until `--remove` |
+
+### Link setup v2: isolating the cluster port
+
+Where the network around an active port can be read (always, on the command
+line and in the console), `--fix` without `--temporary`, `darkbloom cluster`
+and `--remove` use link setup v2 instead of the address keeper above. Design
+and reasons: `handoff/DESIGN-link-setup-v2.md`. The end state for the active
+port `P` on hardware port `H`: `P` is in no bridge, it has one network service
+`Darkbloom Cluster Link (P)` with manual IPv4 `10.219.x.y/16` (the two octets
+the link-local address above would use), no router, no DNS and link-local IPv6
+only, other enabled services on `P` are switched off with their settings kept,
+and the first version's keeper and alias are gone. macOS keeps that address
+itself, also after a restart; no Darkbloom job runs. Internet Sharing is never
+changed.
+
+Each active port in `darkbloom cluster link --json` gains `isolation`:
+`{"isolated": <bool>, "findings": [...]}`, names only. `darkbloom cluster
+doctor` adds `localLinkIsolation.<device>`: `passed` when isolated, `failed` for
+the port serving would use when not, `notObserved` for another active port.
+
+| Finding | Read from | What the approval does |
+|---|---|---|
+| `portInBridge` | `/usr/bin/plutil -extract VirtualNetworkInterfaces.Bridge json -o - /Library/Preferences/SystemConfiguration/preferences.plist` | takes `P` out of that bridge |
+| `internetSharingOverPortBridge` | `plutil -extract NAT.Enabled raw` and `NAT.SharingDevices json` of `/Library/Preferences/SystemConfiguration/com.apple.nat.plist` name `P`'s bridge | the same; sharing over the other members is left alone |
+| `internetSharingToPort` | `NAT.SharingDevices` names `P` itself | blocks: turn `P` off under Internet Sharing in System Settings, or turn sharing off |
+| `portInUnmanagedBridge` | `ifconfig -a` shows `P` in a bridge the preferences do not list | blocks: the same owner step |
+| `defaultRouteViaPort` | `/usr/sbin/netstat -rn -f inet`: a `default` row through `P` | own service without a router |
+| `dnsViaPort` | `/usr/sbin/scutil --dns`: a resolver with name servers through `P` | own service without DNS, IPv6 link-local only |
+| `dhcpLeaseOnPort` | `/usr/sbin/ipconfig getpacket P` succeeds with a DHCP reply | own service with a fixed address |
+| `portAddressMissing` | no `inet` on `P` | own service with a fixed address |
+| `clusterServiceMissing`, `clusterServiceMisconfigured` | `/usr/sbin/networksetup -listnetworkserviceorder` and `-getinfo` (manual, recorded address, `255.255.0.0`, no router, IPv6 not `Automatic`) | the service is made, or made afresh |
+| `otherServiceOnPort` | another enabled service on `P` | switched off |
+| `clusterSubnetInUse` | another interface's address or route in `10.219/16` | blocks |
+| `serviceNameUnsafe` | a service or hardware port name outside letters, digits, spaces and `( ) - . _` | blocks |
+| `hardwarePortUnknown` | `networksetup -listallhardwareports` lists no port for `P` | blocks |
+| `stateUnreadable` | a reading failed | blocks |
+
+| Item | Value | Source |
+|---|---|---|
+| Commands approved for an isolation | Under `set -e`, in order, each only when needed: `/bin/launchctl bootout system/io.darkbloom.cluster-link.P` (errors ignored), `/bin/rm -f` its plist, `/sbin/ifconfig P inet <link-local address> -alias` (errors ignored); `/usr/libexec/PlistBuddy -c 'Print :VirtualNetworkInterfaces:Bridge:B:Interfaces:i' <preferences> \| /usr/bin/grep -qx P`, `PlistBuddy -c 'Delete …:i' <preferences>`, `/sbin/ifconfig B deletem P` (errors ignored); `networksetup -removenetworkservice` of an existing service of Darkbloom's; `networksetup -createnetworkservice 'Darkbloom Cluster Link (P)' 'H'`, `-setmanual … 10.219.x.y 255.255.0.0`, `-setdnsservers … Empty`, `-setv6LinkLocal …`; `-setnetworkserviceenabled '<service>' off` for each other enabled service on `P` | `provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/Link/ClusterLinkIsolationPlan.swift` (`ClusterLinkIsolationPlan`) |
+| Commands approved for a restore | Joined with `;`, each only when needed: the first version's keeper as above, `PlistBuddy -c 'Add …:i string P' <preferences>` (position clamped to the bridge's length), `networksetup -removenetworkservice 'Darkbloom Cluster Link (P)'`, `-setnetworkserviceenabled '<service>' on` for each service the isolation switched off that is still off, `/sbin/ifconfig P inet 10.219.x.y -alias` for an address left without its service, `/sbin/ifconfig B addm P`. What is found afterwards decides `removed` | `ClusterLinkIsolationPlan.swift` (`ClusterLinkIsolationRestore`); `provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/Link/ClusterLinkIsolationRepair.swift` (`restoreNeeded`) |
+| Verification | Up to `isolationVerificationAttempts = 15` readings one second apart: the device `ready` and no finding left | `ClusterLinkIsolationRepair.swift` (`isolate`) |
+| Record | `~/.darkbloom/cluster-device/link-isolation.json`, mode `0600`, schema `darkbloom_cluster_link_isolation_v1`: per port the address, hardware port, bridge and position, and the services switched off. Written before the prompt; an entry a declined or failed first attempt created is dropped once nothing of it is found. A service named `Darkbloom Cluster Link (P)` without an entry is still removed, and nothing else is guessed | `provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/Link/ClusterLinkIsolationRecord.swift` (`ClusterLinkIsolationStore`) |
+| Result | As above, plus `isolated: true` and, for the two outcomes of v2, `findings` | `ClusterLinkRepairOutcome.swift` (`ClusterLinkRepairResult`) |
+
+Before a rank starts, `cluster worker-owner --stdio` waits up to
+`waitSeconds = 20` for the saved setup's RDMA device to be `ready`, reading the
+link once a second: RDMA off or missing refuses at once, a port without its
+address or GID refuses after the wait with that state, and an unreadable link
+or an unlisted device lets the launch go ahead after the wait
+(`provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/Link/ClusterLinkLaunchReadiness.swift`,
+`ClusterLinkLaunchReadiness`).
+
+### Link watch
+
+`darkbloom cluster link --watch [--json]` repeats the read-only inspection
+every `pollIntervalSeconds = 2` seconds and prints one line per change until it
+receives SIGINT or SIGTERM, then exits 0
+(`provider-swift/Sources/darkbloom/ClusterLinkWatchLoop.swift`,
+`ClusterLinkWatchLoop.printChanges`). With `--json` each change is one object on one
+line, schema `darkbloom_cluster_link_watch_v1`
+(`provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/Link/ClusterLinkWatch.swift`,
+`ClusterLinkWatch.events`). It never prompts and never changes anything.
+
+| Event | When | Fields besides `event`, `state` and `fixable` |
+|---|---|---|
+| `started` | The first poll | `guidance` when `--fix` applies to the state |
+| `portUp` | A device's port became active, or an active device appeared | `device`, `interface`, `verdict` |
+| `portDown` | A device's port stopped being active, or an active device left the listing | `device`, `interface`, and `verdict` while the device is still listed |
+| `stateChanged` | The link state differs from the previous poll; emitted after that poll's port events | `previousState`, and `guidance` when `--fix` applies to the new state |
+
+### Cluster console
+
+The setup response check uses the model's default reasoning controls. It does not send a binary thinking override; if its token budget ends during reasoning, it reports that the model is still thinking. This is a liveness check, not an answer-quality benchmark. Source: `provider-swift/Sources/ProviderCore/Inference/Distributed/Console/ClusterSetupProbeRequest.swift` and `ClusterSetupWizardLiveOperations.prompt`.
+
+`darkbloom cluster console [--json | --plain] [--dry-run] [--temporary] [--config <path>]`
+(`provider-swift/Sources/darkbloom/ClusterConsoleCommand.swift`, `Cluster.Console`)
+shows this Mac's link, saved setup, model and session on one screen and runs
+the cluster commands from it (a hidden developer screen). Bare
+`darkbloom cluster` and `darkbloom cluster setup` run the onboarding on any
+terminal (it prints plain lines and reads keys through termios, so `TERM` does
+not matter); `--wizard` opens the earlier six-step wizard on a terminal that
+can draw it; `--json`, `--yes`, `--temporary`, `--dry-run` and `--link-only`
+run the line-by-line [guided link setup](#guided-link-setup)
+(`Cluster.Setup.entry`).
+
+Everything shown is read when the screen opens, when `r` is pressed and after
+each action. Between those, a probe is run again only where something is
+being waited for (`provider-swift/Sources/ProviderCore/Inference/Distributed/Console/ClusterConsoleReducer.swift`,
+`poll`): the link inspection every `pollIntervalSeconds = 2` seconds while the
+link is not `ready`, and `cluster status` at the same interval while this Mac
+leads a saved cluster or the screen started a session.
+
+| Section | Read from | Source |
+|---|---|---|
+| Readiness | The link inspection, the guided setup's sentences for it, for a port Darkbloom has on record whether it carries its assigned address and whether the system job that keeps it is loaded, the worker binary's pin and whether it carries the progress guard, the device journal's state, and the checks of `cluster doctor`. One link inspection serves the link lines and the doctor | `provider-swift/Sources/ProviderCore/Inference/Distributed/Console/ClusterConsoleLiveOperations.swift` (`ClusterConsoleOperations.live`); `provider-swift/Sources/ProviderCore/Inference/Distributed/Console/ClusterConsoleLinkObservations.swift` (`ClusterConsoleLinkSetup`) |
+| Pairing and trust | The saved setup's cluster, member and peer labels; the fingerprint of each key in its pinned known-hosts file, as a host key, a certificate authority or a revoked key, and how many further keys are not listed; whether that file still matches its pin; whether the identity file is owner-only. No host name, user name, address or path | `provider-swift/Sources/ProviderCore/Inference/Distributed/Console/ClusterConsoleSavedSetup.swift` (`ClusterConsolePairing`); `provider-swift/Sources/ProviderCore/Inference/Distributed/Console/ClusterConsoleHostKeys.swift` (`ClusterConsoleTrust.observe`) |
+| Model | The models the cluster runtime in this build accepts a setup for, the saved model and Plan, the layers each rank owns, and the manifest's files by presence and size. Weight contents are not hashed here, and the chip and runtime requirements a start applies to the model are not evaluated here. Each rank's admission is shown from the leader's status once a session reports it, and as not observed until then | `libs/darkbloom-cluster/Sources/DarkbloomClusterProtocol/ClusterRuntimeAdmittedModels.swift` (`ClusterRuntimeAdapter.admittedModels`); `provider-swift/Sources/ProviderCore/Inference/Distributed/Console/ClusterConsoleInstalled.swift` (`ClusterConsoleInstalled.inspect`) |
+| Session | The process the screen started, its output, and the leader's `GET /v1/cluster/status` report | `provider-swift/Sources/ProviderCore/Inference/Distributed/Console/ClusterConsoleSessionProcess.swift` (`ClusterConsoleSessionProcess`); `provider-swift/Sources/ProviderCore/Inference/Distributed/Console/ClusterConsoleContent.swift` (`liveSession`) |
+| Not available in this build | What the screen cannot do, each with its reason | `provider-swift/Sources/ProviderCore/Inference/Distributed/Console/ClusterConsoleWiring.swift` (`ClusterConsoleWiring.unavailable`) |
+
+Error text an operation worded is shown as worded, less anything in it that
+names this Mac, its user or a peer
+(`provider-swift/Sources/ProviderCore/Inference/Distributed/Console/ClusterConsoleSnapshotRedaction.swift`).
+
+| Key | Action | Runs |
+|---|---|---|
+| `r` | Read everything again | The probes above |
+| `f` | Fix link | `ClusterLinkRepair.fix`, as `cluster link --fix`: the address and the system job that keeps it, behind one macOS prompt. With `--temporary` the address alone; with `--dry-run` the same call's dry run, which lists the commands an approval would run and asks, records and changes nothing |
+| `a`, then `y` | Approve the setup passed with `--input`, `--capability` and `--capability-sha256` | `ClusterConfigurationStore.configure`, as `cluster configure`, on a private copy of the two files, refused unless they are still the setup whose digest was on the screen (`provider-swift/Sources/ProviderCore/Inference/Distributed/Console/ClusterConsoleCandidateSetup.swift`, `ClusterConsoleReviewedSetup.hold`) |
+| `s`, then `y` | Start the session; refused on a follower, without a saved setup, and beside a session that is already serving | `darkbloom start --local --distributed` as a child process in a session of its own, with default signal handling and none of the screen's descriptors, so closing the terminal window does not reach it (`provider-swift/Sources/ProviderCore/Inference/Distributed/Console/ClusterConsoleSessionProcess.swift`) |
+| `x` | Stop the session this screen started | SIGINT to that child, once; nothing stronger is ever sent |
+| `c`, then `y` | Recover | `ClusterDeviceRecovery.recover`, as `cluster recover` |
+| `e` | Export diagnostics | `ClusterDiagnosticExport.write` into the current directory |
+| `?` | Keys and the unavailable list with reasons | — |
+| `q`, Ctrl-C | Close. With a session this screen started still running: asks, stops it and closes when it has ended. Then waits for an action in flight. A second `q` skips either wait and says on the restored terminal what is still finishing | — |
+
+One action runs at a time; a result under Activity is the operation's own
+summary or error text. While a session is serving, whether this screen started
+it or another process did, `f`, `a` and `c` are refused with the reason: the
+link, the saved setup and the journal are that session's. `f` and `a` are
+refused as well while the device journal is not empty, which is what shows a
+session on a follower. What stood in an action's way is checked again when its
+question is answered. A session this screen started is asked to stop, with one
+interrupt, on every way the screen ends, a signal, a closed terminal and an
+error included; a second signal while the screen is still closing ends the
+process after `forcedExitGraceMilliseconds = 2000`.
+
+A question (`a`, `s`, `c`) is asked on one row, which fits an 80-column
+window, and only in a window that shows every word of it; a narrower window
+says how wide it must be. `y` answers a question only while the frame last
+drawn shows it and has shown it for `questionDwellMilliseconds = 500`
+(`ClusterConsoleState.drew`, `questionShownAt`), so a `y` typed or pasted
+ahead of the question, or before it could be read, does nothing. Any other
+key cancels. A
+question about a setup is withdrawn when a later reading finds a different
+setup, and any question is withdrawn when the window stops showing all of it.
+Pasted text is read as one key that does nothing, and a paste whose end does
+not arrive within `pasteMilliseconds = 1000` is given up on
+(`provider-swift/Sources/ProviderCore/Inference/Distributed/Console/ClusterConsoleKey.swift`, `ClusterConsoleKeyDecoder`).
+
+The one thing the screen starts by itself is the guided setup's address step,
+as the link setup takes it in a terminal: when a reading finds a
+port that only lacks an address, or whose address nothing keeps, the fix is
+started once and macOS shows its approval prompt. Where the system job is
+loaded and about to put a lost address back, the link is first read
+`keeperReadings` more times (the setup's `keeperWaitSeconds` at the poll
+interval). The step is the screen's only while it waits for a cable or for
+that job: it is taken at most once, and is spent by any other reading, by a
+fix asked for with `f`, and when a session or anything else stands in its way
+(`provider-swift/Sources/ProviderCore/Inference/Distributed/Console/ClusterConsoleReducer.swift`,
+`onboardingFix`).
+
+With `--json` or `--plain`, or when standard input or output is not a
+terminal, the command prints the same state and exits 0 without opening a
+screen, waiting or asking. `--json` prints one object, schema
+`darkbloom_cluster_console_v1`
+(`ClusterConsoleSnapshot`): `observedAt`, `link` (the
+[link report](#local-link-readiness)), `setup` (`lines`, `next`, `fixDevice`),
+`diagnostics` (the doctor's report), `saved`, `candidate` and
+`admittedModels`. A second screen for the same user is refused with status 1
+while one is open (`provider-swift/Sources/ProviderCore/Inference/Distributed/Console/ClusterConsoleInstanceLock.swift`,
+`ClusterConsoleInstanceLock`); the lock is an empty file in the user's
+temporary directory, and opening a screen writes nothing under the home
+directory.
+
+The export is one owner-only file,
+`darkbloom-cluster-diagnostics-<UTC time>.json`, schema
+`darkbloom_cluster_diagnostic_export_v1`, holding the snapshot, the activity
+list and the last `sessionOutputLines = 200` lines of session output. Each
+text value is redacted before the document is written: network and hardware
+addresses, host names, user names, serial numbers, keys, fingerprints,
+credentials, long encoded values and whole paths under any home directory,
+`~` or a volume are replaced by a placeholder in angle brackets such as
+`<ipv4>`, `<host>` or `<home-path>`; digests of public files and schema names
+are kept. Addresses are replaced before names, so a name cannot split one. A second, separately written
+look then searches every value for what the first should have removed, and
+the file is not written when it finds any. An existing file is never replaced
+(`provider-swift/Sources/ProviderCore/Inference/Distributed/Console/ClusterDiagnosticExport.swift`,
+`ClusterDiagnosticExport.render`; `provider-swift/Sources/ProviderCore/Inference/Distributed/Console/ClusterDiagnosticRedaction.swift`,
+`ClusterDiagnosticRedaction`; `provider-swift/Sources/ProviderCore/Inference/Distributed/Console/ClusterDiagnosticResidue.swift`).
+
+### Provider configuration file mode
+
+Every provider save replaces `provider.toml` atomically and owner-only (mode
+`0600`); a file an earlier release left group- or world-readable is tightened
+by the next save, and a stricter existing mode is kept
+(`provider-swift/Sources/ProviderCore/Config/ProviderConfigFile.swift`,
+`ProviderConfigFile.replace`). The cluster readers refuse a `provider.toml`
+that group or others can access
+(`provider-swift/Sources/ProviderCore/Config/ClusterConfigurationInstalledReference.swift`,
+`installedReference` and `optionalInstalledReference`), so until such a file is
+saved again or its mode is corrected by hand, `darkbloom cluster status` and
+`darkbloom cluster doctor` report the saved setup as `invalid`.
+
+## Automatic cluster chunk policy
+
+| Input / field | Meaning | Reader |
+|---|---|---|
+| Passing chunk preference | Uses matching-model/artifact passing records only when their prompt is at least their configured chunk; a preference is not proof of actual executed frame geometry or current-build speed | `ClusterPlacementRequestLimits.chunkTokens`, `provider-swift/Sources/ProviderCore/Inference/Distributed/Placement/ClusterPlacementRequestLimits.swift`; `ClusterPlacementFlow`, `provider-swift/Sources/ProviderCore/Inference/Distributed/Placement/ClusterPlacementFlow.swift` |
+| No matching long-prompt measurement | Uses the smaller of the layout and worker capability chunk caps; the plan identifies the missing measurement. This fallback adds no serving grant | Same readers |
+| Derived versus explicit request limits | Automatic descriptions derive limits; explicit diagnostic limits remain explicit. A changed worker identity triggers the existing replan/adoption path, retaining capability/build validation | `ClusterPairDescription.derivesRequestLimits`, `provider-swift/Sources/ProviderCore/Inference/Distributed/Placement/ClusterPlacementSetup.swift`; `ClusterService.checkForUpdate`, `provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/ClusterService.swift` |
+
+The registered GLM candidate's cap and resource qualification boundary live in
+[inference](../architecture/inference.md#glm-cluster-prefill-bounds). Finite
+calibration scope is listed with the
+[CLI command](../provider/cli-reference.md#glm-automatic-finite-calibration-placement).
+This policy adds no environment variable and does not rewrite qualification
+records or enable private image/MTP profiles for public traffic.
+
+## Automatic finite-placement inputs
+
+| Input | Meaning | Reader |
+|---|---|---|
+| `glm-calibration-candidates --input` | Owner-only installed quotation template; `request.selection.cut` may be absent | `GLM5NextCalibrationPlacement.candidates` |
+| `--planner-sha256` | Immutable identity of the installed plan helper | `GLM5NextCalibrationPlacement.candidates` |
+| `--speed` (repeatable) | Existing keyed speed measurement; no missing rate is treated as a measurement | `ClusterSpeedEstimator.estimate` |
+| `glm-calibration-run --placement` (exactly twice) | Same two rank snapshots on both Macs; 120-second maximum age | `ClusterGLMCalibrationPlacement.select` |
+
+All other template fields, including artifact pins, environment, finite request, native/host allowances and expiry, remain unchanged and are validated by the existing quotation owner. No new environment variable, serving capability or public admitted cut is added. See [CLI usage](../provider/cli-reference.md#glm-automatic-finite-calibration-placement).
+
+The cluster login agent derives `AssociatedBundleIdentifiers` from its actual
+enclosing app's `CFBundleIdentifier` and matching `CFBundleExecutable` in
+`Contents/Info.plist`; it is not a user setting. Unbundled executables do not
+borrow an app identity. See
+`provider-swift/Sources/ProviderCore/Service/ClusterServiceAgent.swift`
+(`ClusterServiceAgent.job`) and [background cluster setup](../provider/cluster-always-on.md).
+
+## GPT-OSS cluster batch lanes
+
+`DARKBLOOM_CLUSTER_BATCH_LANES` selects 1...8 for the GPT-OSS plain-pipeline
+owner; without a persisted automatic width or explicit override it defaults to
+one. Other generation modes retain one lane, and the
+recording worker rejects widths above one before model load. Both ranks bind
+the effective width into LOAD agreement. Installed launch carries only the
+locally resolved typed width, not arbitrary caller environment. A malformed
+installed override resolves conservatively to one; a direct native worker
+rejects malformed input. Source: `GPTOSSBatchSettings` in
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/GPTOSS/Batch/GPTOSSBatchSettings.swift`
+and `provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledPlan.swift`.
+See [lane ownership and accounting](../architecture/inference.md#gpt-oss-pipeline-lane-owner).
+
+### Native automatic batch quote
+
+The private placement helper's `batch-scope` command requires `--model-dir`,
+`--prompt-tokens`, `--output-tokens`, `--batch-lanes` and `--chunk-size`.
+Its `darkbloom_cluster_placement_batch_quote_v1` response contains the registered
+request scope, lanes (2, 4 or 8), original chunk, and a positive shared workspace
+charge for each rank. GPT-OSS and MiMo text are the supported quote families.
+The provider rejects a response for another width/chunk and binds the request
+to the same model, artifact and configuration before planning. This metadata
+neither grants native capacity nor admits images, speculative modes or GLM.
+See `libs/darkbloom-cluster/Sources/DarkbloomClusterPlacement/ClusterPlacementBatchQuote.swift`.
+
+The private `tensor-batch-scope` helper takes the same five arguments for every
+registered Qwen TP row (9B, 27B, Qwen3.5/3.6 35B A3B), each priced by its own geometry. Its `darkbloom_cluster_placement_tensor_batch_quote_v1` response
+binds the original chunk and width to the complete native LOAD allowance,
+per-lane state and shared workspace. `ClusterPlacementTensorBatchQuote` rejects
+other models (`ClusterRuntimeAdapter.qwenTensorParallelRuntimeModelIDs` names the rows), shortened LOAD scope
+and inconsistent ledger totals. It reads
+registered headers and requires the native allocator metadata bound. Saved
+`batchLanes` may select 2, 4, 6 or 8 in a Qwen TP row's `tensor_parallel_v1`; omission
+keeps one. GLM defaults remain unchanged.
+Source: `libs/darkbloom-cluster/Sources/DarkbloomClusterPlacement/ClusterPlacementTensorBatchQuote.swift`.
+
+### Qwen27 saved mode compatibility
+
+For the existing `qwen35-dense-layer-stage` / `registered_qwen38_27b` / `registered_qwen38_27b_greedy_generation_v1` tuple, new configuration saves and installed startup require `tensor_parallel_v1` to preserve the model's images, video and committed-token logprobs. Old pipeline records remain readable and immutable; rerun `darkbloom cluster` to replan them under current link and memory facts. An inadmissible TP plan produces no reduced-feature replacement. This is a provider mode restriction, not a new configuration field or evidence of native readiness. Sources: `provider-swift/Sources/ProviderCore/Inference/Distributed/Placement/ClusterModelFeaturePolicy.swift`, `provider-swift/Sources/ProviderCore/Config/ClusterConfigurationStore.swift`, and `provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledPlan.swift`.
+
+### Qwen27 TP assistant policy
+
+Normal setup discovers the embedded assistant from the native quote; the saved fields below bind that decision through both workers' actual READY.
+
+| Setting | Bound and behavior | Source |
+|---|---|---|
+| `[backend] mtp_mode` | Existing `auto`/`on` allow embedded-assistant discovery for the 9B and the 27B (`ClusterQwenTensorAssistantPolicy.runtimeModelIDs`); `off` retains the ordinary fully quoted target. Automatic discovery selects depth `3` and admitted-cohort verification. | `provider-swift/Sources/ProviderCore/Inference/Distributed/Placement/ClusterPlacementTensorAssistantSelection.swift`, `automaticCandidate`, `automaticDepth` |
+| Saved `tensorAssistant` | Optional `qwen27_tensor_assistant_v1` object containing `depth` 1...4 and native `inventorySHA256`; omitted policy preserves legacy ordinary setup bytes. | `libs/darkbloom-cluster/Sources/DarkbloomClusterProtocol/ClusterQwenTensorAssistantPolicy.swift`, `ClusterQwenTensorAssistantPolicy` |
+| Saved `tensorAssistant.verification` | `singleton_ready_set_v1` is the omitted legacy value; `admitted_target_cohort_v1` verifies eligible rows together up to the completely priced capacity. Unknown/null values are refused. | `libs/darkbloom-cluster/Sources/DarkbloomClusterProtocol/ClusterQwenTensorAssistantPolicy.swift`, `Verification` |
+| Native worker `--mtp-depth`, `--tp-mtp-inventory-sha256`, `--tp-mtp-verification` | Installed launch arguments derived from saved policy, bilaterally bound at LOAD. Normal setup does not ask the user to choose them. | `provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledGenerationSelection.swift`; `libs/darkbloom-cluster-worker/Sources/DarkbloomClusterWorker/Startup/WorkerConfiguration.swift` |
+| `DARKBLOOM_QWEN_MTP_SERIAL`, `DARKBLOOM_QWEN_MTP_DOUBLE_FORWARD`, `DARKBLOOM_QWEN_MTP_SHORTLIST` | True serial/double-forward overrides and any shortlist setting other than `0` conflict with this TP policy and are refused; complete vocabulary scores and captured target settlement remain authoritative. | `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/TensorParallel/QwenTensorParallelMTPPolicy.swift`, `require` |
+
+### Qwen27 TP capacity replacement
+
+For authenticated Qwen3.8 27B tensor-parallel setups, effective `batchLanes` one uses the same request-owned native cache and execution contract as larger capacities. Capacity-only replacement preserves the ordered `tensorShares` (omitted means equal shares), and retains the existing `tensorAssistant` policy. Complete native LOAD quotations apply at every capacity. Sources: `ClusterPlacementTensorBatchQuote`, `QwenTensorParallelBatchSettings` and `ClusterAutomaticSetupHandoff`.
+
+## Cluster stopped intent and retirement
+
+The existing saved `leadership.serving = false` intent remains set when local
+retirement or a peer stop acknowledgement fails; no new configuration field is
+introduced. The login service is retained on a failed leader stop, and a retry
+still runs the stop path even though serving intent is already false. Local
+retirement is bounded at 300 seconds, with 330 seconds allowed for a forwarded
+stop. See [planned cluster stop ordering](../architecture/inference.md#planned-cluster-stop-ordering).
+Sources: `provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/ClusterOnboardingLive.swift`
+(`OnboardingLive.localStop`, `stop`) and
+`provider-swift/Sources/darkbloom/ClusterServiceCommand.swift` (`Cluster.Stop`).
+
+The wizard’s optional local stopDrain token is saved with stopped intent and retained after a local timeout. Leases preserve the peer’s prior intent until the local supervisor retires its owned part and outstanding lease. The token is not a wire or user-facing configuration field; older records decode without it. A new serve is refused while it remains, and a model change retries the shared stop first.

@@ -102,6 +102,8 @@ def load_cluster_runtime(path):
     except json.JSONDecodeError as error:
         raise ValueError('Invalid cluster_runtime: not JSON') from error
     check_cluster_runtime(block)
+    if data != json.dumps(block, sort_keys=True, separators=(',', ':')).encode():
+        raise ValueError('Invalid cluster_runtime: not canonical (keys sorted by byte, no whitespace, no trailing newline)')
     return block
 
 
@@ -214,7 +216,11 @@ def coordinator(env, path, payload=None):
     data = None
     if payload is not None:
         headers.update({'Content-Type': 'application/json', 'Authorization': 'Bearer ' + env['RELEASE_KEY']})
-        data = json.dumps(payload).encode()
+        # A cluster_runtime block goes in its canonical form (no whitespace;
+        # its keys keep the canonical file's byte order). Without one the
+        # body is unchanged.
+        data = (json.dumps(payload, separators=(',', ':')) if 'cluster_runtime' in payload
+                else json.dumps(payload)).encode()
     request = urllib.request.Request(env['COORDINATOR_URL'].rstrip('/') + path, data=data, headers=headers)
     try:
         with urllib.request.build_opener(NoRedirect()).open(request, timeout=150) as response:

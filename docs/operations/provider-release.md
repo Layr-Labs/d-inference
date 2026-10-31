@@ -706,7 +706,9 @@ staging coordinator yet), so `STAGING_CLUSTER_RUNTIME_ENABLED` takes effect once
 staging publishes. `validate` (in `prepare`, `stage` and `publish`) accepts a valid block in any
 environment and refuses an invalid one, and one whose derived IDs
 (`release/<version>/<model>/s<1|2>`, and that ID followed by `/grant` for a
-model with a grant) exceed 128 bytes.
+model with a grant) exceed 128 bytes. `prepare` also refuses a block file that
+is not canonical, and registration sends the block in that canonical form (a
+body without the block is sent exactly as before).
 
 Turn a variable on only after the coordinator of that environment accepts the
 block (`EIGENINFERENCE_CLUSTER_PAIR_APPROVALS_FROM_RELEASES`, darkbloom-platform);

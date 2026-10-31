@@ -964,8 +964,9 @@ never omitted. The strict decoder (`init(canonical:releaseVersion:)`) refuses an
 unknown, missing or repeated field, another schema (v1 included) and a model whose
 derived IDs for the release version exceed 128 bytes: `release/<version>/<model>/s2`,
 and that ID followed by `/grant` for a model with a grant.
-`scripts/provider-release-publication.py` applies the same rules to the block
-but computes no digest. Why each digest is the one a member compares:
+`scripts/provider-release-publication.py` applies the same rules to the block,
+requires its canonical bytes and sends it in that form within the registration
+body, but computes no digest. Why each digest is the one a member compares:
 [cluster runtime facts of an installed app](../architecture/inference.md#cluster-runtime-facts-of-an-installed-app).
 
 ### Sharded placement and the hand-off opt-in

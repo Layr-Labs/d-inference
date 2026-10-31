@@ -362,14 +362,32 @@ class ClusterRuntimeTests(PublicationFixture):
             PUB.prepare(self.base / 'staging', self.root / PUB.BUNDLE, dict(self.env, ENV_PREFIX='staging'),
                         self.write_block(cluster_runtime_block()))
 
-    def test_registration_sends_the_block(self):
+    def test_registration_sends_the_block_in_its_canonical_form(self):
+        def sent(env, payload):
+            with patch.object(PUB.urllib.request, 'build_opener') as opener:
+                opener.return_value.open.return_value.__enter__.return_value.read.return_value = b'{}'
+                PUB.coordinator(env, '/v1/releases', payload)
+                return opener.return_value.open.call_args.args[0].data
+        # Read back from the retained payload, as publish does.
         root = self.base / 'dev'
-        payload = PUB.prepare(root, self.root / PUB.BUNDLE, self.dev_env(), self.write_block(cluster_runtime_block()))
-        with patch.object(PUB.urllib.request, 'build_opener') as opener:
-            opener.return_value.open.return_value.__enter__.return_value.read.return_value = b'{}'
-            PUB.coordinator(self.dev_env(), '/v1/releases', payload)
-            sent = json.loads(opener.return_value.open.call_args.args[0].data)
-        self.assertEqual(sent['cluster_runtime'], cluster_runtime_block())
+        PUB.prepare(root, self.root / PUB.BUNDLE, self.dev_env(), self.write_block(cluster_runtime_block()))
+        env = dict(self.dev_env(), RELEASE_PAYLOAD_SHA256=PUB.sha256(root / 'release-payload.json'),
+                   RELEASE_PROVENANCE_SHA256=PUB.sha256(root / 'release-provenance.json'))
+        body = sent(env, PUB.checked_payload(root, env))
+        self.assertEqual(json.loads(body)['cluster_runtime'], cluster_runtime_block())
+        canonical = json.dumps(cluster_runtime_block(), sort_keys=True, separators=(',', ':')).encode()
+        self.assertIn(b'"cluster_runtime":' + canonical + b'}', body)
+        # Without the block, the body is the one sent before cluster_runtime existed.
+        self.assertEqual(sent(self.env, self.payload), json.dumps(self.payload).encode())
+
+    def test_a_block_that_is_not_canonical_is_refused(self):
+        block = cluster_runtime_block()
+        for label, text in {'whitespace': json.dumps(block, sort_keys=True),
+                            'trailing newline': json.dumps(block, sort_keys=True, separators=(',', ':')) + '\n',
+                            'unsorted keys': json.dumps(dict(reversed(list(block.items()))), separators=(',', ':'))}.items():
+            with self.subTest(row=label), self.assertRaisesRegex(ValueError, 'not canonical'):
+                PUB.prepare(self.base / label, self.root / PUB.BUNDLE, self.dev_env(), self.write_block(text))
+            self.assertFalse((self.base / label).exists())
 
     def test_malformed_block_is_refused(self):
         def edited(change):

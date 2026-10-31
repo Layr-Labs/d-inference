@@ -93,6 +93,16 @@ the new way of serving. Public speculative decoding for Qwen pairs needs
 qualification evidence of its own, which no record holds yet. Rules:
 [Qwen27 TP assistant policy](../reference/configuration.md#qwen27-tp-assistant-policy).
 
+A JSON `response_format` request that a single Mac would answer under a grammar
+(no tools or `tool_choice`, no media, a schema the grammar covers) is refused on
+a Qwen pair before any output: a pair's ranks cannot apply the grammar
+(`constrained_decoding_unsupported`, HTTP 400). The coordinator moves a public
+request refused this way to a single Mac, which constrains it
+(darkbloom-platform `fix/coord-pair-refusal-failover`); a request to the owner's
+local cluster API gets the refusal. Other JSON requests are served with the
+format instruction only, as on one Mac
+([constrained Qwen JSON answers](../architecture/inference.md#constrained-qwen-json-answers)).
+
 | # | Where | What you do | What it asks |
 |---|---|---|---|
 | 1 | the first Mac | Run `darkbloom cluster`. It checks the Thunderbolt cable ("Cable found.", "Cable ready."). Nobody waits on the cable yet, so it says **"On your other Mac, run `darkbloom cluster`."** and waits (q cancels). With two cables it asks which one to use. | one macOS administrator approval when the selected port needs configuration ("Darkbloom needs network access for the cluster cable") |

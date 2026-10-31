@@ -435,6 +435,9 @@ passes do not qualify the shipping provider, MTP speed or full image support.
 
 ## Related
 
+- [Prepare a publisher-precision GPT-OSS checkpoint](gptoss-checkpoint.md): the
+  converter uses Python's standard library and needs no native build; large
+  checkpoint reads and writes still require a separate resource window.
 - [Provider and SDK tests](test.md)
 - [Native ownership](navigation.md)
 - [Serving-performance qualification](serving-performance-qualification.md)

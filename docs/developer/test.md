@@ -1,6 +1,6 @@
 # Test Provider And Native Contracts
 
-> Last updated: 2026-10-29
+> Last updated: 2026-10-31
 
 Run isolated Swift, native-resource, public-fixture and landing tests here.
 Backend integration and cross-implementation qualification are platform-owned.
@@ -524,8 +524,12 @@ provision test fixtures or opt into native qualification.
 ## Prompt Preparation And Admission
 
 ```bash
-swift test --skip-build --filter 'PromptTokenCacheTests|ChatTemplateLoopRewritesTests|InboundChatRequestDecodeTests|ServeLoopColdLoadTests'
+swift test --skip-build --filter 'LocalTokenizerDecodeSpacingTests|PromptTokenCacheTests|ChatTemplateLoopRewritesTests|InboundChatRequestDecodeTests|ServeLoopColdLoadTests'
 ```
+
+`LocalTokenizerDecodeSpacingTests` requires a tokenizer whose config omits
+`clean_up_tokenization_spaces` (Gemma 4's published config does) to decode and
+stream text exactly, with the same input IDs and an explicit Boolean kept.
 
 `PromptTokenCacheTests` loads synthetic tokenizers through the production
 `LocalTokenizerLoader` for the Qwen split, GPT-2 byte-level and Gemma metaspace

@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-10-30
+> Last updated: 2026-10-31
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -1576,6 +1576,15 @@ mismatch, or when the served template rejects a prompt the cache rendered. Reuse
 never crosses a cache scope; `DARKBLOOM_TTFT_PROMPT_CACHE=0` restores the
 unchanged path
 ([configuration](../reference/configuration.md#prompt-preparation-and-admission)).
+
+Decoded text keeps the spacing the tokens spell, unless the tokenizer config sets
+`clean_up_tokenization_spaces` to true. swift-transformers reads an absent key as
+true, which drops the space in sequences such as ` .`, ` ,`, ` ?`, ` !` and ` 's`,
+and can make a streamed decode repeat bytes it already sent. Gemma 4's published
+config omits the key. `LocalTokenizerLoader`
+(`provider-swift/Sources/ProviderCore/Inference/Prompting/LocalTokenizerLoader.swift`)
+resolves an absent key to false in memory, as Python Transformers does, and keeps
+an explicit Boolean. Input IDs, sampling and cache keys do not depend on it.
 
 Bridge-side order (`EngineV2Bridge.submitTokenized`): request-id
 normalisation (`maxRequestIdLength = 256`; duplicates rejected) → first

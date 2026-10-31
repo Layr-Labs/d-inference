@@ -118,19 +118,24 @@ struct ClusterApprovalServiceStartTests {
     /// DevNet it restarted a healthy registered service every 15 minutes or so (the pair dropped each time). The part
     /// beats into a file of its own, and still runs as a supervised member (the key stays set).
     @Test func aSupervisedServicesMemberPartNeverBeatsIntoTheServicesHeartbeat() throws {
-        let (_, service, parts) = try setUp(endsIn: 14 * 86_400, supervised: true)
-        let (reached, lines) = run(service, parts: parts) { started(parts, "member") }
-        #expect(reached, "the member part did not start: \(lines)")
-        let directory = service.store.paths.directory
-        #expect(heartbeatFiles(parts, "member") == [ClusterServiceAgent.partHealthPath(serviceDirectory: directory).path],
-                "the part must beat into its own file, never \(ClusterServiceAgent.healthPath(serviceDirectory: directory).path)")
+        // The fixture removes both homes (and `parts`) when it ends: it is kept until the last check.
+        let (macs, service, parts) = try setUp(endsIn: 14 * 86_400, supervised: true)
+        withExtendedLifetime(macs) {
+            let (reached, lines) = run(service, parts: parts) { started(parts, "member") }
+            #expect(reached, "the member part did not start: \(lines)")
+            let directory = service.store.paths.directory
+            #expect(heartbeatFiles(parts, "member") == [ClusterServiceAgent.partHealthPath(serviceDirectory: directory).path],
+                    "the part must beat into its own file, never \(ClusterServiceAgent.healthPath(serviceDirectory: directory).path)")
+        }
     }
 
     @Test func anUnsupervisedServicesMemberPartIsToldOfNoHeartbeatFile() throws {
-        let (_, service, parts) = try setUp(endsIn: 14 * 86_400, supervised: false)
-        let (reached, lines) = run(service, parts: parts) { started(parts, "member") }
-        #expect(reached, "the member part did not start: \(lines)")
-        #expect(heartbeatFiles(parts, "member").isEmpty)
+        let (macs, service, parts) = try setUp(endsIn: 14 * 86_400, supervised: false)
+        withExtendedLifetime(macs) {
+            let (reached, lines) = run(service, parts: parts) { started(parts, "member") }
+            #expect(reached, "the member part did not start: \(lines)")
+            #expect(heartbeatFiles(parts, "member").isEmpty)
+        }
     }
 
     /// An empty name is no supervisor to the service and to its part alike: it stays empty, never a part's file.

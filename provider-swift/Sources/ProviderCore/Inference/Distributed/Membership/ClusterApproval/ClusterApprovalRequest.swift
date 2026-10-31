@@ -51,7 +51,8 @@ enum ClusterApprovalRequest {
         /// pass (no answer, a server error). Any answer settles that need for this run of the service: a registered
         /// approval is read and saved by the same check (asking again would answer the same approval, and a save
         /// refused once would be stopped for and refused again every minute), and a refusal, or a Mac that cannot
-        /// send, waits for the next service run or update. A later need (a renewal) is asked when it comes.
+        /// send, waits for the next service run or update. A later need (a renewal) is asked when it comes, and a check
+        /// that a busy command lock kept from saving asks again at the next one.
         var retries: Bool {
             switch self {
             case .failed: return true

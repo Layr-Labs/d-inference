@@ -1090,6 +1090,12 @@ public final class ClusterService: @unchecked Sendable {
                                worker: saved.capability.runtimeBinarySHA256)
             }
             var fetched: ClusterApprovalFetch.Outcome?
+            // The owner need this check's request got an answer for (`retries` false). It is settled when the check
+            // ends, unless a busy command lock kept the check from saving what the answer registered.
+            var answeredNeed: ClusterApprovalRequest.Need?, saveDeferred = false
+            defer {
+                if let answeredNeed, !saveDeferred { self.lock.withLock { self.ownerRequestSettled = answeredNeed } }
+            }
             func answer(_ saved: ClusterConfigurationStore.Saved, _ ownerNeed: ClusterApprovalRequest.Need) -> ClusterApprovalFetch.Outcome? {
                 if fetched == nil {
                     // The owner approval request (DevNet) comes first, so the list read next holds what it registered.
@@ -1097,7 +1103,7 @@ public final class ClusterService: @unchecked Sendable {
                        let asked = ClusterApprovalRequest.ensureBlocking(saved, providerConfiguration: configuration,
                                                                          now: Date().timeIntervalSince1970) {
                         say(asked.line)
-                        if !asked.retries { self.lock.withLock { self.ownerRequestSettled = ownerNeed } }
+                        if !asked.retries { answeredNeed = ownerNeed }
                     }
                     fetched = ClusterApprovalFetch.fetchBlocking(providerConfiguration: configuration) ?? .unavailable("no coordinator is configured")
                 }
@@ -1110,6 +1116,7 @@ public final class ClusterService: @unchecked Sendable {
             // not at every tick.
             guard let held = ClusterControlCommandLock.acquire(seconds: 5) else {
                 say("another cluster command is running: the cluster approval is checked again in a minute")
+                saveDeferred = true
                 return checked()
             }
             defer { held.release() }

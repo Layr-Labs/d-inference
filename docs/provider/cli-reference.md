@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-10-28
+> Last updated: 2026-10-30
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -161,6 +161,7 @@ Subcommands declared by `Darkbloom.configuration.subcommands`:
 | `doctor` | Diagnostics (see [troubleshooting](./troubleshooting.md#doctor-checks)) | ✓ | `DoctorCommand.swift` (`Doctor`) |
 | `models` | `list`, `catalog`, `download`, `remove` | ✓ | `ModelsCommand.swift` (`Models`) |
 | `local` | Print the direct-mode endpoint and API key | | `LocalCommand.swift` (`Local`) |
+| `cluster` | Set up two Macs to serve one model together ([guided setup](./two-mac-cluster.md)); `cluster local` serves without a coordinator | ✓ | `ClusterCommand.swift` (`Cluster`) |
 | `login` | Link the machine to an account (RFC 8628 device code) | ✓ | `LoginCommand.swift` (`Login`) |
 | `logout` | Stop the provider, revoke its current saved token, then remove the local credential | ✓ | `LogoutCommand.swift` (`Logout`) |
 | `benchmark` | Inference benchmarks and harnesses | ✓ | `BenchmarkCommand.swift` (`Benchmark`) |
@@ -195,6 +196,11 @@ Subcommands declared by `Darkbloom.configuration.subcommands`:
 | `--port <n>` | `UInt16` | `8000` | Local server port |
 | `--bind <addr>` | `String` | `127.0.0.1` | Local server bind address |
 | `--no-auth` | flag | `false` | Disable the local bearer-token check |
+| `--cluster-member` | flag | `false` | Register a control-only cluster member from the saved setup, in the foreground ([coordinator-paired member](../reference/configuration.md#coordinator-paired-member)) |
+| `--always-on` | flag | `false` | With `--cluster-member`: install the member as the provider LaunchAgent run by the supervisor ([always-on members](./cluster-always-on.md)) |
+| `--supervise` | flag, **hidden** | `false` | With `--cluster-member`: run the supervisor in this process; launchd passes it for `--always-on` |
+| `--distributed` | flag | `false` | With `--local`: serve the saved cluster setup as its rank 0 and register with the coordinator as a control-only member; the cluster service starts it |
+| `--no-coordinator` | flag | `false` | With `--distributed`: never contact a coordinator; the cluster serves on the local API only (`ClusterLocalServing.leaderArguments`). Rejects `--coordinator-url`. [`darkbloom cluster local`](./two-mac-cluster.md#serving-locally-only) starts it this way |
 | `--timeout <seconds>` | integer, 0–3600 | `600` | Drain a running provider before replacing its process/configuration |
 | `--force` | flag | `false` | Explicitly permit cancellation if the old provider cannot drain |
 
@@ -439,6 +445,11 @@ the usual CORS header. Health reads and OPTIONS preflights remain available;
 already admitted response bodies retain their drain ownership.
 Signal-only shutdown disarms current watchdog recovery but preserves configured
 login startup; use `darkbloom stop` for a persistent stop.
+During distributed startup, `SIGTERM` and `SIGINT` are latched before the serving
+task is attached. Closing the startup signal owner restores each signal’s prior
+handler, flags and blocked-signal mask, including when one signal was already
+ignored. Repeated close calls leave later signal changes alone.
+Source: `provider-swift/Sources/darkbloom/DistributedStartSignals.swift`.
 With no accepted work left, a graceful drain retries native MiMo owner
 retirement until the owners retire or its deadline passes: after served
 requests, the first attempt only starts joining their finished consumers
@@ -528,6 +539,66 @@ cache precedence is specified in [model cache configuration](../reference/config
 
 Exit 1 (and `{}` in JSON mode) when no live local server is recorded
 (`LocalEndpoint.readLiveInfo`, `provider-swift/Sources/ProviderCore/Server/LocalEndpoint.swift`).
+A server bound to `0.0.0.0` or `::` also prints a `network:` line with this
+Mac's Bonjour (`.local`) URL (`Local.networkURL`).
+
+### Cluster placement request metadata
+
+The native helper accepts
+`darkbloom-cluster-plan request-scope --model-dir DIR --prompt-tokens N --output-tokens N`
+and prints JSON with the registered family limits and conservative charge for
+that request. It reads metadata only. `plan --model-dir` and the provider's
+placement flow obtain this quote automatically when either requested axis
+exceeds the layout reference. A saved `--layout` without an exact quote retains
+its original limits. Sources: `ClusterPlacementTool.run` in
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Placement/ClusterPlacementTool.swift`
+and `ClusterPlacementFlow.run` in
+`provider-swift/Sources/ProviderCore/Inference/Distributed/Placement/ClusterPlacementFlow+Run.swift`.
+
+Without `--link LINK.json`, `darkbloom-cluster-plan plan` prices the link of two
+devices as setup does: from the probes saved for that pair in owner-only
+`~/.darkbloom/cluster/link-probes.json` (the median of the pair's last eight
+loads within 30 days), or from `--link-probes FILE`. The two device labels must
+be the pair's member IDs. The plan's first lines say which probes were used, or
+why none were (no file, no probe for the pair, a file others can read), and the
+plan is then unmeasured. A named file without the pair stops the command. The
+tensor-parallel section prints the reductions' cost per decode step in ms or µs.
+Each device's tensor-parallel share steps come from owner-only
+`~/.darkbloom/cluster/share-probes.json` the same way (each Mac's newest timing
+per share of this model within 30 days, by member ID), or from
+`--share-probes FILE`; the plan's first lines name the shares used, and without
+any every share is predicted as before. A named file that is not a share probe
+history stops the command.
+
+### `darkbloom cluster local`
+
+The setup response check uses the model's default reasoning controls. It does not send a binary thinking override; if its token budget ends during reasoning, it reports that the model is still thinking. This is a liveness check, not an answer-quality benchmark. Source: `provider-swift/Sources/ProviderCore/Inference/Distributed/Console/ClusterSetupProbeRequest.swift` and `ClusterSetupWizardLiveOperations.prompt`.
+
+```bash
+darkbloom cluster local [<model>] [--bind <address>]
+```
+
+| Argument / flag | Type | Default | Effect |
+|---|---|---|---|
+| `<model>` | `String?` | none | Choose this model (its id or listed name, any case) without the list |
+| `--bind <address>` | `String?` | `0.0.0.0` (`ClusterServingScope.localOnlyDefaultBind`) | Where the leader's API listens: `localhost` or a numeric IPv4/IPv6 address (`ClusterServingScope.isValidBind`) |
+| `--model-dir`, `--worker` | `String?`, **hidden** | none | As for `darkbloom cluster` (developer) |
+| `--private-glm-image-qualification` | flag, **hidden** | `false` | Select the bounded GLM image candidate on the current paired leader for local qualification; requires the exact cached GLM artifact, uses automatic placement, and does not grant coordinator or solo serving |
+
+Runs the onboarding asking for local-only serving (`ClusterOnboardingRequest`),
+saved in the leader's setup record (`ClusterOnboardingLeadership.localOnly`,
+`localBind`) until `p` in `darkbloom cluster` serves through Darkbloom again.
+The leader part then starts with `--no-coordinator`. Needs a terminal; exit 1
+otherwise. On the Mac that joins a waiting leader it pairs, says to run it on
+the leader and ends (exit 0) like `darkbloom cluster`
+(`ClusterOnboardingDriver.joinedLocalLine`). Steps: [Serving locally only](./two-mac-cluster.md#serving-locally-only)
+(`provider-swift/Sources/darkbloom/ClusterLocalCommand.swift`).
+
+`darkbloom cluster status` prints `MTP: on (decode verifies drafts of the
+model's own speculative head)` when the saved setup decodes with a head (the
+speculative pipeline, Qwen3.8 27B's resident assistant, GLM-5.3-Flash in
+tensor parallel), otherwise `MTP off: <reason>`
+(`provider-swift/Sources/darkbloom/ClusterDiagnosticsCommand.swift`).
 
 Provider-local Chat Completions, Completions and Responses reject negative output
 token limits with HTTP 400 before model invocation or streaming headers. Explicit
@@ -1485,6 +1556,44 @@ Download a model from the coordinator catalog.
 darkbloom models download <id> [--coordinator <url>] [--r2-cdn <url>]
 ```
 
+The download shows one progress line for the whole model, not one per file.
+Downloads chosen in the `darkbloom start` picker print the same lines. In a
+120-column window:
+
+```text
+  Downloading EigenLabs/Qwen3.8-27B-4bit-mtp  [███████████░░░░░░░░░░░░░░░]   43%   7.0/16.3 GB   125 MB/s   1m 14s left
+```
+
+| Standard output | What is printed |
+|---|---|
+| A terminal | That line, redrawn in place at most every `TransferProgressLine.redrawInterval` (`0.25` s). Its columns are set once for the window's width (`TransferProgressLine.layout(width:)`): each figure has a column as wide as its widest form for this download (`100%`, the total's bytes, `99.9 GB/s`, `23h 59m left`), right-aligned, so the bar and the figures stay put while the width stays the same. The figures whose columns do not fit are left out. While the files are checked against the manifest it reads `Verifying <id> (<size>)…`; then the last line (below) takes its place |
+| Not a terminal (a pipe, a log, `TERM=dumb`) | Plain lines without a bar, padding or carriage returns: the first at once, the next only when both `TransferProgressLine.logInterval` (`30` s) and `TransferProgressLine.logPercentStep` (`10` points) have passed, one at 100% when bytes were transferred, then the same verifying and last lines. The desktop app takes its progress from the last percent (`DesktopBackend.downloadProgress`) |
+
+The rate and the time left are blank for the first
+`TransferProgressLine.estimateDelay` (`2` s) and until bytes arrive, and a time
+left over `TransferProgressLine.maximumTimeLeft` (`24 * 60 * 60` s) is not
+shown. Their columns stay reserved, so the line does not move when they appear.
+
+Each download ends with one last line (`DownloadProgressRenderer`); `<name>` is
+the catalog's display name:
+
+| Outcome | Last line |
+|---|---|
+| Downloaded | `✓ Downloaded <name> (<size> in <time>)`; after a resumed download, `✓ Downloaded <name> (<size> in <time>; <size> of it was already on disk)` |
+| Already on disk and verified | `✓ <name> is already downloaded (<size>)` |
+| The transfer failed | `Download of <id> stopped at <percent> (<bytes>)`, then the error |
+| The files failed their check against the manifest | `Verification of <id> failed: <reason>` |
+
+`darkbloom models download` then prints `Cached at <path>`. The picker prints
+nothing more for the model.
+
+Sizes are decimal, as the catalog gives them. The rate leaves out bytes that an
+interrupted download already had on disk; the download resumes from them. Code:
+`provider-swift/Sources/ProviderCore/Models/ModelDownloadProgress.swift`
+(`DownloadProgressRenderer`),
+`provider-swift/Sources/ProviderCore/Models/TransferProgressLine.swift`
+(`TransferProgressLine`).
+
 If the model's `models--<id>` cache entry is a dangling symlink (for example,
 to an unavailable external drive), downloading preserves it as a hidden sibling
 `.models--<id>.unavailable-link-<UUID>` and creates a real model directory in the
@@ -1871,7 +1980,7 @@ reason, keep the bare category, such as `Inference failure: invalid request`
 | `Inference failure: invalid request (undecryptable request)` | The body does not decrypt with this provider's key | same |
 | `Inference failure: invalid request (reserved tool schema metadata)` | Tools carry coordinator-only schema metadata without its authenticated protocol, or GLM-5.3-Flash tools carry it at all | same; `GLM5NextPromptPolicy.RawControls` |
 | `Inference failure: invalid request (malformed body)` | The body is not a JSON chat request object | `InferenceRefusalReason.init(chatDecodeFailure:)` |
-| `Inference failure: invalid request (invalid messages)` | A message does not decode, such as a content part without its URL | same |
+| `Inference failure: invalid request (invalid messages)` | A message does not decode, such as a content part without its URL, or a content part has a type no engine serves (`input_file`, `input_video`, `refusal`, ...) | same; `provider-swift/Sources/ProviderCore/ProviderLoop+InferenceHandler.swift` (`unsupportedContentPartType`) |
 | `Inference failure: invalid request (unsupported message role)` | A role other than `system`, `user`, `assistant` or `tool` and their aliases `developer` and `function` | same; `InboundChatNormalization` |
 | `Inference failure: invalid request (invalid tool history)` | A history tool call or result does not decode, such as a call without `type` or a non-object legacy `function_call` | same |
 | `Inference failure: invalid request (invalid tool arguments)` | A history call's `arguments` is not a string | same |
@@ -1960,6 +2069,22 @@ line before anything is uploaded.
 Internal command used by the launchd crash-recovery watchdog. Not intended for
 manual use.
 
+## Native pair batch diagnostics
+
+The developer helper `darkbloom-cluster-pair-check run` accepts
+`--batch-trace yes|no` (default `no`) and `--batch-logit-directory <absolute-path>`
+(default unset). Both require an eligible Qwen plain-pipeline batch with 2...8
+lanes and `--evidence none`. The trace writes one content-free geometry summary
+on rank 0. The directory belongs to rank 1's Mac, regardless of `--local-rank`;
+its parent must exist, and the helper creates a private final directory if needed.
+It holds raw native logit rows and private request/frontier metadata at fixed
+output ordinals 0, 1, 30, 37, 78 and 88. Capture is bounded and never overwrites.
+These diagnostics neither change token selection nor establish normal final-row
+qualification or performance. Sources:
+`libs/darkbloom-cluster-worker/Sources/PairCheck/PairCheck.swift` (`PairCheck.run`),
+`libs/darkbloom-cluster-worker/Sources/DarkbloomClusterQualification/PairConfiguration.swift`
+(`validate`, `launchScript`), and [test boundaries](../developer/test.md#two-mac-cluster-checks).
+
 ## Exit codes
 
 | Code | Meaning |
@@ -2025,7 +2150,7 @@ override `provider.toml` for one process, are in
 | `[backend] engine_v2_kv_backend` | `"auto"` | `auto` / `paged` / `contiguous`; per-model table `engine_v2_kv_backend_by_model` takes precedence. Only live packed precision requires paged. Native auto follows the [exact qualified-artifact allowlist](../architecture/prefix-cache.md#kv-layouts) and retains observable contiguous fallback; checkpoint compression does not change it (`EngineV2KVBackendPolicy.parseSelection`, `preferredBackend`) |
 | `[backend] engine_v2_kv_quantization` | `"native"` | Live attention precision: `balanced` K4/V4, `k8v4` K8/V4, `k8v8` K8/V8 or `native`. Explicit live packed `auto` selects paged; unavailable paging refuses rather than silently serving native. Its durable reuse remains the existing complete packed contract; legacy resident/tensor prefixes stay disabled. MiMo remains native (`EngineV2KVQuantizationPolicy.resolve`). |
 | `[backend] engine_v2_kv_quantization_by_model` | `{}` | Exact model-ID live precision overrides the global setting; `DARKBLOOM_CBV2_KV_QUANTIZATION` overrides both. Existing explicit live `balanced` settings remain live packed. MiMo exclusion precedes parsing. |
-| `[backend] engine_v2_kv_checkpoint_quantization` | `"balanced"` | Independent complete-checkpoint encoding request with the same four values. Eligible native paged and contiguous targets encode older attention rows and restore to native state. Unsupported layouts retain native encoding; live-packed targets keep their existing packed format. This does not enable caching, force paging or reduce native memory admission. See [numerical limits and fallback](../architecture/kv-cache-quantization.md#native-execution-with-quantized-checkpoints). |
+| `[backend] engine_v2_kv_checkpoint_quantization` | `"balanced"` | Independent complete-checkpoint encoding request with the same four values. Eligible native paged and contiguous targets encode older attention rows and restore to native state. Unsupported layouts retain native encoding; live-packed targets keep their existing packed format. This does not enable caching, force paging or reduce native memory admission. See [numerical limits and fallback](../architecture/kv-cache-quantization.md#native-execution-with-quantized-checkpoints). On a two-Mac cluster it also sets the pair's SSD prompt-prefix record precision for the pair's public model; both Macs must resolve the same value ([cluster record precision](../reference/configuration.md#cluster-ssd-prefix-record-precision)). |
 | `[backend] engine_v2_kv_checkpoint_quantization_by_model` | `{}` | Exact model-ID checkpoint request overrides the global setting; `DARKBLOOM_CBV2_CHECKPOINT_QUANTIZATION` overrides both. MiMo remains native before parsing. |
 | `[backend] mtp_mode` | `auto` | Written by `darkbloom beta enable|disable mtp` |
 | `[backend] mtp_acceptance` | unset (resolves to `typical`, delta `0.2`) | `exact` / `typical` draft acceptance for eligible sampled target-prefix requests. `typical` keeps a draft when the target's filtered probability for it is above `min(1, 0.2 * exp(-H))` (`H` = the target row's entropy in nats); sampled output is approximate, not distribution-exact. Greedy requests never change. Native MiMo remains exact and does not apply this preference. This setting does not enable disabled MTP or widen eligibility. Parsing ignores case and surrounding whitespace; unknown values warn and resolve to `exact` (`provider-swift/Sources/ProviderCore/Inference/MTP/MTPAcceptancePolicy.swift`, `resolve`) |
@@ -2162,8 +2287,8 @@ must support the checkpoint contract described in
 | `DARKBLOOM_TTFT_GDN_BLOCKED` | `libs/mlx-swift-lm/Libraries/MLXLMCommon/GatedDelta.swift` (`GatedDeltaPrefill.mode`); `0` keeps the stock Qwen GDN prompt kernel |
 | `DARKBLOOM_TTFT_SHAPE_WARMUP` | `provider-swift/Sources/ProviderCore/Inference/Performance/ModelCalibrationPolicy.swift` (`shapeWarmupEnvironmentKey`); `0` disables the load-time shape warmup, `always` skips its shader-cache probe |
 | `DARKBLOOM_CBV2_PAGED_KV` | `provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2KVBackendPolicy.swift` |
-| `DARKBLOOM_CBV2_KV_QUANTIZATION` | `provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2KVQuantizationPolicy.swift` (`resolve`, live) |
-| `DARKBLOOM_CBV2_CHECKPOINT_QUANTIZATION` | `provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2KVQuantizationPolicy.swift` (`resolve`, checkpoint) |
+| `DARKBLOOM_CBV2_KV_QUANTIZATION` | `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedKVQuantizationPolicy.swift` (`resolve`, live), as `EngineV2KVQuantizationPolicy`; cluster pairs: `DistributedInstalledKVQuantization` |
+| `DARKBLOOM_CBV2_CHECKPOINT_QUANTIZATION` | `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedKVQuantizationPolicy.swift` (`resolve`, checkpoint), as `EngineV2KVQuantizationPolicy` |
 | `DARKBLOOM_CBV2_MTP` | `provider-swift/Sources/ProviderCore/SpecDec/SpecDecArtifactFunnel.swift` |
 | `DARKBLOOM_MTP_MAX_RECTANGULAR_TOKENS` | MTP verification policy (tighten-only cap) |
 | `DARKBLOOM_KV_BACKEND_GUARD` | `provider-swift/Sources/ProviderCore/Service/KVBackendGuard.swift` |
@@ -2235,3 +2360,123 @@ Source: `provider-swift/Sources/ProviderCore/Autopilot/ModelAutopilotSettings.sw
 | `revision` | empty string | CLI-generated identity for the approved configuration |
 | `paused` | `false` | Suspend new automatic changes while retaining ready models |
 | `min_idle_seconds` | `60` | Inactivity guard, independent from minimum residence |
+
+## GLM automatic finite-calibration placement
+
+`darkbloom cluster glm-calibration-candidates --input /absolute/quote-template.json --planner-sha256 <installed-helper-sha256> [--speed /absolute/measurement.json ...]` scans every structural GLM boundary on this Mac using the installed plan helper. The owner-only template may omit `request.selection.cut`. The scan performs metadata reads and device queries, acquires local metadata exclusion, and loads no model. Its result is an observation, not an authorization.
+
+Collect a snapshot on each Mac, retain both as owner-only files, then pass the same two snapshots on both Macs:
+
+```sh
+darkbloom cluster glm-calibration-run --input /absolute/dispatch.json \
+  --placement /absolute/rank0.candidates.json \
+  --placement /absolute/rank1.candidates.json
+```
+
+The command chooses a cut automatically, inserts it into the local quotation in memory, and follows the existing signed quote, pair agreement, owner, live admission and finite-run path. Snapshots expire after 120 seconds; a changed local template or lack of a common feasible cut refuses before launch. The quotation worker rechecks current memory, so a changed device can refuse a previously feasible choice. Resample both Macs instead of increasing bounds or forcing a cut. Omitting `--placement` retains explicit-cut diagnostic behavior. The JSON result includes `automaticPlacement` with the selected cut, prediction provenance and separate measured-best/calibrated flags.
+
+The finite experiment accepts the following scope; these are calibration
+ceilings, separate from general serving limits:
+
+| Field | Bound | Validation source |
+|---|---|---|
+| Prompt / prefill chunk | `1...2048` each; chunk no greater than the actual prompt | `GLM5NextCalibration.Authorization.validate`, `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/GLM5Next/Qualification/GLM5NextCalibration.swift` |
+| Output | `1...16` | Same authorization and the selection validators |
+| Selected context | At least selected maximum prompt + maximum output, at most `2064` | `GLM5NextCalibrationDocument.validate`, `provider-swift/Sources/ProviderCore/Inference/Distributed/Calibration/GLM5NextCalibrationDocument.swift`; `GLM5NextAutomaticPlacement.scan`, `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/GLM5Next/Metadata/GLM5NextAutomaticPlacement.swift` |
+
+A full 2048-prompt/16-output experiment requires context 2064. Obtain fresh
+matching quotes and scope bindings from the source-matched installed helpers;
+older lower-scope quotes cannot authorize the larger request. Experimental
+workspace allowances do not become measured serving evidence. The
+[GLM cluster prefill contract](../architecture/inference.md#glm-cluster-prefill-bounds)
+retains separate logical-array, raw-frame and encrypted-record bounds.
+
+These commands do not enable a public GLM endpoint. See [placement semantics](../architecture/inference.md#exact-quote-placement).
+
+The `cluster` setup installs its background service with the enclosing app's
+Local Network identity. A signed app keeps serving after the setup terminal
+closes. A development fallback names its session lifetime limitation on screen;
+keep that Terminal or SSH session open. See [cluster service
+permissions](cluster-always-on.md#permissions-asked-once).
+
+## GPT-OSS native pair batch qualification
+
+For the registered GPT-OSS text row, `darkbloom-cluster-pair-check --batch-lanes N`
+accepts 2...8 in plain pipeline with `--evidence none`. Use the existing
+`--batch-request`, `--batch-wave`, `--batch-solo` and `--batch-cancel-after`
+options to compare requests alone and together and exercise lane retirement.
+Qwen's `--batch-trace` and `--batch-logit-directory` diagnostics remain refused
+for GPT-OSS. The default is one lane; an accepted configuration is not measured
+correctness or throughput evidence. See [owner checks](../developer/test.md#gpt-oss-batch-owner-checks)
+and [configuration](../reference/configuration.md#gpt-oss-cluster-batch-lanes).
+Sources: `libs/darkbloom-cluster-worker/Sources/DarkbloomClusterQualification/PairConfiguration.swift`
+and `PairBatchCancellation.swift`.
+
+### Automatic cluster batch selection
+
+A managed `start --local --distributed` API can widen supported text pipeline
+execution from queued demand without a batch environment setting. Explicit
+`DARKBLOOM_CLUSTER_BATCH_LANES`, `DARKBLOOM_CLUSTER_FORCE_MODE` or
+`DARKBLOOM_CLUSTER_HANDOFF_MODES` retains the selected diagnostic behavior.
+See [automatic local cluster batching](../architecture/inference.md#automatic-local-cluster-batching)
+for memory bounds, lifecycle and exclusions. Source:
+`provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/DistributedAutomaticBatchFactory.swift`.
+
+### Installed tensor-parallel synchronization diagnostic
+
+A local `MLX_METAL_FAST_SYNCH=0` or `1` in each Mac's cluster service
+process reaches its fixed owner child and native TP worker as a typed boolean.
+Only those exact values are forwarded; absence keeps the worker's normal default.
+This is a diagnostic, not a placement or batch-width setting. Installed service
+jobs do not inherit a later terminal's environment: supply the setting in each
+service job and restart the service before the comparison. Verify fresh native
+`darkbloom-collective-sync-v1` startup lines on both Macs, then restore the jobs
+and restart after the diagnostic. See the [configuration contract](../reference/configuration.md#installed-tensor-parallel-synchronization).
+
+The optional local `MLX_EAGER_FENCE_COMMIT=0|1` diagnostic uses the same restart
+and restoration procedure. It leaves the default off and requires a fresh
+`darkbloom-eager-fence-commit-v1 enabled=0|1 source=launcher` marker from each
+native TP worker. A service-job setting alone does not prove forwarding. Keep
+batch width and other guards fixed when comparing synchronization behavior.
+
+### Qwen27 tensor batch planning metadata
+
+The private `darkbloom-cluster-plan tensor-batch-scope --model-dir DIR
+--prompt-tokens N --output-tokens N --batch-lanes N --chunk-size N` helper emits
+the full native batch LOAD quotation of every registered Qwen TP row (9B, 27B,
+Qwen3.5/3.6 35B A3B); it never loads model tensors
+or selects a deployment. Automatic placement uses it before draining and
+again after old-owner release. The normal measured mode comparison remains
+authoritative. The [configuration reference](../reference/configuration.md#native-automatic-batch-quote)
+defines the response and supported saved widths. Source:
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Placement/ClusterPlacementTool.swift`.
+
+### Qwen27 TP assistant setup and native diagnostics
+
+Run the normal `darkbloom cluster` setup for the catalog Qwen3.8 27B model. Its embedded assistant is discovered and fully priced under the existing `backend.mtp_mode` setting; no internal verification or inventory option is required in the normal flow. Verify the saved policy against both workers' actual READY before serving. Explicit `off` retains the ordinary target with its complete width-one quote. See [configuration](../reference/configuration.md#qwen27-tp-assistant-policy) and [native ownership](../architecture/inference.md#qwen27-tensor-parallel-resident-assistant).
+
+The internal worker still accepts diagnostic `--mtp-depth N` in 1...4 for keyed 9B or 27B Qwen TP with paged KV (the A3B rows' heads are not loaded, so an explicit depth is refused for them). Installed launches also carry the pinned inventory and typed verification mode from the saved policy; these are implementation arguments, not user setup choices. Omitted policy preserves the legacy ordinary contract. Unsupported model, memory, backend, startup and conflicting speculative controls are refused before serving.
+
+Code: `libs/darkbloom-cluster-worker/Sources/DarkbloomClusterWorker/Startup/WorkerConfiguration.swift` (`WorkerConfiguration`) and `provider-swift/Sources/ProviderCore/Inference/Distributed/Placement/ClusterPlacementTensorAssistantSelection.swift` (`readAutomatic`).
+
+### `cluster stop`: failed retirement
+
+On a paired leader, `darkbloom cluster stop` waits for its owned part to retire
+before asking the member to stop and removing the local login service. A local
+retirement timeout or missing peer acknowledgement exits with status 1 and prints
+the pair's reason (a runtime failure, not a usage error, so no usage text follows),
+and retains the login service and saved stopped intent. Run the command again after the
+reported condition clears; retries repeat the drain/acknowledgement path. An
+already stopped local part does not require another model load.
+
+When the other Mac is gone for good (wiped, sold, or no longer cabled),
+`darkbloom cluster stop --local-only` stops only this Mac. It skips the drain and
+the member acknowledgement, removes the login service, and says that the other Mac
+was not asked to stop. If that Mac comes back, run `darkbloom cluster stop` there
+too.
+
+Source: `provider-swift/Sources/darkbloom/ClusterServiceCommand.swift`
+(`Cluster.Stop.finishStop`). See [planned stop ordering](../architecture/inference.md#planned-cluster-stop-ordering)
+for the bounds and process custody rules.
+
+Qwen3.8 27B automatic cluster capacity changes keep the current tensor split and native request execution path. Widening occurs only when the complete reservation fits that split; otherwise the current capacity remains available. No additional command or user setting is required. Implementation: `DistributedAutomaticBatchPlanner` and `ClusterPlacementFlow` in `provider-swift/Sources/ProviderCore/Inference/Distributed/`.

@@ -1,10 +1,22 @@
 # Build The Provider And Landing
 
-> Last updated: 2026-10-27
+> Last updated: 2026-10-29
 
 Build the provider, its source-matched native resources, and the independent
 landing site from this repository. Backend, sidecar, console and admin builds
 belong to the sibling platform repository.
+
+
+For the Bonsai 9B request-generation regression, build the control-only
+`darkbloom-cluster-pair-check` product in `libs/darkbloom-cluster-worker` and run
+[the tokenizer metadata check](test.md) with the exact model metadata directory.
+This executable links the prompt tokenizer and qualification driver, without
+loading the native model runtime or requiring a Metal library.
+
+The model-free local HTTP parity suite uses the normal ProviderCore test build:
+`swift test --package-path provider-swift --filter ClusterAPIParityTests`.
+It binds only loopback listeners and scripted engines, without model downloads
+or GPU execution. See [test coverage and limits](test.md).
 
 ## Prerequisites
 
@@ -23,7 +35,27 @@ an arbitrary prebuilt metallib or infer GPU qualification from compilation.
 Keep separate worktrees/output directories for independent native builds;
 never share an active Swift scratch path or another suite's GPU reservation.
 
+## Cluster metadata check builds
+
+The worker capability and worker startup-argument checks link the actual
+`DarkbloomClusterRuntime` through `libs/darkbloom-cluster/Tests/Support/native-metadata.sh`.
+GLM catalog metadata uses MLXLLM types, so these checks need the pinned native
+dependencies and Xcode toolchain even though they execute only metadata and
+argument admission. They do not construct a model, initialize a GPU group or
+prove native inference.
+
+Their default build directory is a canonical temporary directory outside the
+checkout. To reuse this build between the two serial checks, set
+`DARKBLOOM_CLUSTER_METADATA_BUILD_ROOT` to a dedicated scratch directory outside
+file-sync folders. Never reuse an active provider or worker build directory.
+See [Two-Mac Cluster Checks](test.md#two-mac-cluster-checks) for execution scope.
+
 ## Build
+
+The Bonsai 9B cluster tests link the same pinned Runtime and MLX libraries as
+the worker. Use an isolated scratch directory and source-matched MLX resources
+even for CPU lazy-shell tests; compilation is not pair qualification. The
+focused suites and their scope are listed in [the test guide](test.md#prerequisites).
 
 ```bash
 make provider-build
@@ -35,6 +67,11 @@ make landing-install landing-build
 `libs/mlx-swift/Source/Cmlx/mlx`, matching the Cmlx target. Top-level `libs/mlx`
 is a separate dependency pin. Native resources must match the compiled host
 library; a warm cache cannot waive that requirement.
+
+The pinned core orders fast Metal fence waits after earlier kernels in the
+current concurrent pass as well as prior passes. Rebuild the Cmlx host object
+when changing this pin. This fence change has no shader or C-header delta;
+continue checking resource identity against the actual nested core.
 
 The SDK has independent test products under `libs/mlx-swift-lm`; rebuild and
 stage their resources as well as the provider test product when validating a
@@ -79,6 +116,23 @@ a new CLI alone does not update an old test binary or qualify a checkpoint forma
 Next.js server runtime, not static file hosting. Follow its [README](../../landing/README.md)
 for local development; keep production credentials out of builds and tests.
 
+### Cluster Packages
+
+`provider-swift/Package.swift` depends on the local package `libs/darkbloom-cluster`
+(protocol, process, security, remote and placement products linked into
+`ProviderCore`) and declares the test-only `cluster-member-fixture-child`
+executable target. The cluster worker is its own package,
+`libs/darkbloom-cluster-worker`, built natively for macOS 26.2 with the real
+JACCL backend by `libs/darkbloom-cluster-worker/build-native-worker.sh`, or for
+a release by `scripts/build-cluster-helpers.sh`
+([cluster helpers](../operations/provider-release.md#cluster-helpers)). Build
+the worker with the same source-matched metallib as the provider.
+
+The Qwen3.5/3.6 MoE tensor-parallel path uses these same native targets and pinned
+SDK; it introduces no alternate build flags. Run its
+[focused metadata and tensor checks](test.md#focused-qwen35-moe-tensor-parallel-checks)
+before installing a worker for paired hardware qualification.
+
 ## Electron Desktop App
 
 `make desktop-install`, `make desktop-build`, and `make desktop-package` build
@@ -121,6 +175,26 @@ provider tests and isolated native gates; restoring a cache never skips them.
 Signing verifies the source, version, SDK, inventory and entitlements before
 importing its certificate. See [release qualification](test.md#sdk-27-release-qualification).
 
+## The `dev` branch
+
+The `dev` branch is master plus one commit. On it, a plain `swift build` is a
+DevNet build: `DARKBLOOM_RELEASE_ENVIRONMENT` defaults to `dev`, so the
+provider talks to `https://api.dev.darkbloom.dev` and nothing else. On master
+the default is `prod`. Set `DARKBLOOM_RELEASE_ENVIRONMENT=prod` to build a
+production binary from the `dev` branch.
+
+Use the `dev` branch to run a provider from source against the DevNet
+coordinator. Published dev providers do not come from this branch: a master
+push that changes the provider publishes one through `release-swift.yml`
+(see `docs/operations/provider-release.md`).
+
+Rules for the branch:
+
+- Merge master into `dev` to update it. Never merge `dev` into master.
+- Never tag a commit on `dev`. Tags publish production.
+- Code changes go to master through a pull request, then reach `dev` by
+  merging master. Only the default-environment commit lives on `dev` alone.
+
 `scripts/provider-release-cache.py` separates optimized and qualification Swift
 caches by compiler/SDK, architecture, absolute checkout/toolchain paths,
 dependency pins and build recipe. `DARKBLOOM_RELEASE_ENVIRONMENT` also separates
@@ -156,7 +230,7 @@ checkout. Each routed job runs on `fromJSON(needs.route.outputs.routes)['<lane>'
 | Workflow | Routed jobs | Fallback |
 |---|---|---|
 | `ci.yml` | `release-integrity`, `docs` | `blacksmith-4vcpu-ubuntu-2404` |
-| `ci.yml` | `test-provider`, `test-provider-sdk`, `test-provider-parity` | `blacksmith-12vcpu-macos-27` |
+| `ci.yml` | `test-provider` (one per shard), `test-provider-summary`, `test-provider-sdk`, `test-cluster-checks` | `blacksmith-12vcpu-macos-27` |
 | `docs-impact.yml` | `commit-signatures`, `docs-impact` | `blacksmith-4vcpu-ubuntu-2404` |
 | `landing.yml`, `desktop.yml`, `nightly-linear-package.yml` | `check`, `frontend`, `test` | `blacksmith-4vcpu-ubuntu-2404` |
 | `provider-release-cache.yml` | `warm`, pull requests only | `blacksmith-12vcpu-macos-27` |
@@ -365,3 +439,114 @@ passes do not qualify the shipping provider, MTP speed or full image support.
 - [Native ownership](navigation.md)
 - [Serving-performance qualification](serving-performance-qualification.md)
 - [Landing](../../landing/README.md)
+
+For background cluster qualification, stage the complete app and sign it with
+an available Apple-issued development identity. An ad-hoc binary's Terminal or
+SSH access does not establish background Local Network permission. Keep the
+bundle identifier and signing team consistent; record post-signing hashes.
+Development signing is separate from the Developer ID and notarization gates
+in [provider releases](../operations/provider-release.md).
+
+### Gemma batch arithmetic dependency
+
+Build the cluster runtime together with the matching MLXLLM Gemma decode-scope
+implementation; the stage calls `Gemma4BatchDecodeScope` directly. Both ranks
+include its arithmetic marker in their batch load agreement. Build and test
+against the pinned working SDK sources rather than an independently fetched
+SDK revision. See [Gemma checks](test.md#gemma-per-request-decode-equality)
+before running GPU and full-artifact qualification.
+
+### Bundle Gemma catalog alias qualifications
+
+Pass the original `darkbloom-cluster-pair-check record` JSONL files to
+`scripts/cluster-bundle-pair-qualifications.sh`. The registered plain and 8-bit
+Gemma 26B aliases may share their exact artifact digest; keep their separate
+runtime IDs and original record lines. Do not relabel an 8-bit run as a plain
+run. The script deduplicates identical lines and refuses unrelated identities
+sharing one aggregate. See [inference](../architecture/inference.md#qualification-records-for-identical-catalog-files)
+for the artifact and grant boundary.
+
+
+The GPT-OSS independent-history batch primitive requires the matching
+MLX-Swift-LM change that exports `GPTOSSPerRowAttentionCache`. Build both from a
+reviewed source snapshot; the ordinary pinned SDK does not expose that API.
+A concurrent GPT-OSS candidate must include the matching resident driver,
+worker facade and installed lane policy as well as the SDK hook. The default
+remains single-lane. Run the [native checks](test.md#gpt-oss-native-batch-prerequisite-checks)
+and [owner checks](test.md#gpt-oss-batch-owner-checks) before preparing that candidate.
+
+### Tensor-parallel qualification refusal regression
+
+After changing installed generation-mode or qualification handling, run
+`bash provider-swift/Tests/ClusterInstalledSessionChecks/run.sh` before building
+a candidate. It includes actual negative no-cut TP metadata and both installed
+rank checks, without loading weights or using a GPU. See [failed-shape tests](test.md#tensor-parallel-failed-shape-checks).
+
+
+### Building the demand-driven local generation host
+
+The optional `DistributedLocalBatchReplacement` factories live in ProviderCore and return fresh `DistributedInstalledSession` values; they must not start owners themselves. Rebuild both ProviderCore and the CLI wiring when integrating a planner/factory. Default construction supplies no replacement callback. Validate the host's lifecycle tests, then the separate planner/configuration/supervisor adoption path, before treating same-listener automatic mode switching as installed behavior. Keep previous-generation release proof and failed-candidate cleanup as hard barriers before every load.
+
+### Automatic cluster placement checks
+
+The automatic placement and setup transaction fixtures compile their actual
+Swift source closure with `swiftc`; they do not require native model resources
+or an installed provider. Run the [automatic batching CPU checks](test.md)
+before the full provider/helper build. Provider and helper builds must still
+use matching sources when verifying persisted lane activation on hardware.
+
+### Native batch quote helper matching
+
+Build the provider and placement helper from the same batch-quote sources.
+The helper obtains the native allocator's scalar upper bound without allocating
+model state or running a stream. Pure metadata checks inject an explicit bound
+and keep MLX/device execution absent. MiMo page/history helpers and the native
+owner must be integrated together; a zero or omitted page/workspace quote
+cannot enable automatic widening. See [native quote checks](test.md#native-family-batch-quote-checks).
+
+### Gemma request and paged restore checks
+
+Rebuild `darkbloom-cluster-pair-check` after changing
+`libs/darkbloom-cluster-worker/Sources/DarkbloomClusterPrompt/PromptTokenizer.swift`
+before generating qualification requests. The
+[Gemma prompt and prefix checks](test.md#gemma-paged-prefix-and-prompt-checks)
+require the current control binary and source-matched native metallib. Keep
+previous generated requests and their numerical evidence unchanged.
+
+### MiMo paged mode dependency closure
+
+Build the cluster runtime, worker and qualification tools against the same
+SDK that supplies paged target rollback, phase restore and explicit trained-head
+storage. Rebuild both MLXLLM and MLXVLM consumers after changing the assistant
+initializer; a cached object compiled against the former initializer is not a
+valid dependency. Run the [paged-mode checks](test.md#mimo-paged-speculative-and-phase-checks)
+before installing a source-matched candidate. No capability or reference record
+is generated by compilation alone.
+
+The metadata-only placement check compiles `QwenVisionResidentBudget` alongside
+the registered Qwen closure. This helper has no MLX dependency and performs no
+tensor loading. Run `libs/darkbloom-cluster/Tests/PlacementChecks/run.sh` to verify
+this source closure; native/media module and hardware checks remain separate.
+
+The Qwen native media source closure needs the matching SDK `Qwen3VLMediaProcessor`,
+`Qwen35VisionTower` and explicit-position Qwen language seams plus the
+`ClusterQwenMedia` protocol carrier. Build these together with Runtime and Worker;
+a worker gate without its protocol dependency does not compile. Preserve the
+regular-file source manifest when preparing isolated validation mirrors.
+
+Qwen27 TP batching needs the matching `MLXLLM` task-local row policy and projection
+protocol, media `MLXVLM` seams, Protocol/Placement, Runtime and Worker modules.
+Build that closure together; a worker lane setting alone does not install a
+native batch owner. The standalone tiny probe also needs the source-matched
+`mlx.metallib` and `pagedattention.metal` beside its binary. Preserve exact source
+and resource hashes for both machines; see the [TP batch checks](test.md#qwen27-tensor-parallel-native-batch-checks).
+
+The automatic Qwen27 TP-width change builds the Placement and Runtime targets
+and the actual ProviderCore source closure. The installed-session contract
+checks use a real sanitized child process without native weights or network;
+see [the focused tests](test.md#automatic-qwen27-tp-width-checks).
+
+Qwen27 TP batch prefix capture/restore changes the Runtime target only; it
+reuses the pinned SDK owned-state APIs. Rebuild the worker and planner together
+because the same complete LOAD budget prices the additional snapshot banks.
+See [warm-prefix validation](test.md#qwen27-tp-warm-prefix-checks).

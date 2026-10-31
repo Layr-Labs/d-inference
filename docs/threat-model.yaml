@@ -584,6 +584,8 @@ trust_boundaries:
       to verify the DER ECDSA signature over SHA-256(canonical_json_bytes). Three checks
       are mandatory and will fail the attestation: SecureEnclave not available, SIP
       disabled, SecureBoot disabled. ARV and RDMA are parsed and logged but not enforced.
+      RDMA over Thunderbolt is an administrator's switch (System Settings, Privacy &
+      Security on macOS 27 or later; `rdma_ctl enable` in macOS Recovery on macOS 26).
       The blob timestamp must be within ±2 minutes of coordinator time
       (RegistrationAttestationMaxAge, CheckTimestamp()) or the provider is marked
       untrusted; providers re-sign the blob on every reconnect.

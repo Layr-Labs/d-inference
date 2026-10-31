@@ -76,6 +76,17 @@ have a startup environment different from the current shell. Set an explicit
 Use [runtime cache observations](../reference/ssd-kv-cache.md#verification) to
 check caching activity. A valid disk does not imply every model supports caching.
 
+On a Mac that is part of a [two-Mac cluster](two-mac-cluster.md), status also
+prints one line for the pair's prompt-cache tier. It uses the same daily
+allowance and cache volume settings with a folder of its own, and its records
+are encrypted with AES-GCM under a key derived (HKDF-SHA256, its own label)
+from the same Secure Enclave-rooted key the single-Mac tier uses, so no new
+keychain item or permission is involved. The key reaches the rank processes
+on an input pipe, never in their environment or arguments. Records are scoped
+to the model, plan, rank and Mac, so another model, plan, rank or Mac cannot
+load them. A development build without the keychain entitlement uses an
+owner-only key file instead.
+
 ## Troubleshooting
 
 | Result | Action |

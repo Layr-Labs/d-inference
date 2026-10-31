@@ -57,14 +57,11 @@ enum PagedKernelPreflight {
         childTimeout: TimeInterval = defaultChildTimeout,
         childRunner: ChildRunner? = nil
     ) throws {
-        let shapes = PagedAttentionKernel.smokeShapes(layerKinds: layerKinds)
-        let packed =
-            try precision.configuration.map {
-                try PagedQuantizedKernelSmoke.smokeShapes(
-                    layerKinds: layerKinds, quantization: $0,
-                    nativeLayerIndices: nativeLayerIndices)
-            } ?? []
-        let request = Request(nativeShapes: shapes, packedShapes: packed, precision: precision)
+        let plan = try PagedKernelSmokePlan(
+            layerKinds: layerKinds, quantization: precision.configuration,
+            nativeLayerIndices: nativeLayerIndices)
+        let request = Request(
+            nativeShapes: plan.nativeShapes, packedShapes: plan.packedShapes, precision: precision)
         if let childRunner {
             try childRunner(request)
         } else if // Resolve bin/ (or operator-added) symlinks before deriving the
@@ -81,12 +78,8 @@ enum PagedKernelPreflight {
 
         // The child makes fatal compiler/driver failures catchable. Repeat
         // in the parent to populate its process-local MLXFast kernel cache,
-        // before publishing the serving pool. The bounded probe exercises
-        // selected geometry/dtype variants rather than private request data.
-        try PagedAttentionKernel.runtimeSmoke(shapes: shapes)
-        if let quantization = precision.configuration {
-            try PagedQuantizedKernelSmoke.runtimeSmoke(shapes: packed, quantization: quantization)
-        }
+        // before publishing the serving pool.
+        try plan.runInProcess()
     }
 
     private static func runChild(

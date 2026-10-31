@@ -1,0 +1,5 @@
+### Cluster model provisioning without manual downloads
+
+- `darkbloom cluster` needs no `--model-dir`: the cluster keeps its models in a store beside the product's model cache, and models single-Mac Darkbloom installed are cloned in (APFS clones, the catalog's exact manifest bytes).
+- A model one Mac lacks is copied over the Thunderbolt cable on the pairing-keyed link control channel (encrypted records, 4 MiB chunks acknowledged after the receiver wrote and hashed them, resumable). The receiving Mac accepts only a manifest whose digest this build's qualification records pin, refuses hard links, unexpected files, an occupied destination and too little free disk, writes uncached, and has its own worker check the staged files before an exclusive rename into place.
+- A catalog model neither Mac has is downloaded once on the leader (the product downloader, written and verified uncached through the new opt-in `ModelDownloader.uncachedWrites`), then copied. A copy predicted under 30 s at the rate measured on these Macs starts by itself (`n` within 3 s stops it).

@@ -219,6 +219,7 @@ private actor SuperOwnedImageEvents {
     var completions: [Int] = []
     func record(_ event: GenerationEvent) -> Bool {
         switch event {
+        case .logprobs: break
         case .chunk: chunks += 1; return chunks == 1
         case .info(_, let count, _, _): completions.append(count)
         case .error(let message): errors.append(message)

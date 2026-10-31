@@ -15,71 +15,60 @@ import IOKit.pwr_mgt
 /// No root privileges required.
 public final class NetworkPowerAssertion {
     private let reason: String
+    private var networkAssertionID: UInt32 = 0
+    private var backgroundAssertionID: UInt32 = 0
+    private let createAssertion: (String, String) -> UInt32?
+    private let destroyAssertion: (UInt32) -> Void
 
-    #if canImport(IOKit)
-    private var networkAssertionID: IOPMAssertionID = 0
-    private var backgroundAssertionID: IOPMAssertionID = 0
-    #endif
+    public convenience init(reason: String = "Darkbloom provider: keep network alive for MDM/APN") {
+        self.init(reason: reason, createAssertion: Self.createSystemAssertion,
+                  destroyAssertion: Self.destroySystemAssertion)
+    }
 
-    private var active = false
-
-    public init(reason: String = "Darkbloom provider: keep network alive for MDM/APN") {
+    init(reason: String, createAssertion: @escaping (String, String) -> UInt32?,
+         destroyAssertion: @escaping (UInt32) -> Void) {
         self.reason = reason
+        self.createAssertion = createAssertion
+        self.destroyAssertion = destroyAssertion
     }
 
-    deinit {
-        release()
-    }
+    deinit { release() }
 
-    /// Acquire both network and background task assertions.
-    /// Safe to call multiple times — only the first call creates assertions.
+    /// Repeated calls keep successful assertions and retry only failed ones.
     public func acquire() {
-        guard !active else { return }
-        active = true
-
-        #if canImport(IOKit)
-        // NetworkClientActive: keeps TCP connections alive during sleep,
-        // which is critical for APN (courier.push.apple.com:5223).
-        var netID = IOPMAssertionID(0)
-        let netResult = IOPMAssertionCreateWithName(
-            "NetworkClientActive" as CFString,
-            IOPMAssertionLevel(kIOPMAssertionLevelOn),
-            reason as CFString,
-            &netID
-        )
-        if netResult == kIOReturnSuccess {
-            networkAssertionID = netID
+        if networkAssertionID == 0 {
+            networkAssertionID = createAssertion("NetworkClientActive", reason) ?? 0
         }
-
-        // BackgroundTask: tells macOS this process has background work,
-        // enabling Power Nap wake cycles that process push notifications.
-        var bgID = IOPMAssertionID(0)
-        let bgResult = IOPMAssertionCreateWithName(
-            "BackgroundTask" as CFString,
-            IOPMAssertionLevel(kIOPMAssertionLevelOn),
-            reason as CFString,
-            &bgID
-        )
-        if bgResult == kIOReturnSuccess {
-            backgroundAssertionID = bgID
+        if backgroundAssertionID == 0 {
+            backgroundAssertionID = createAssertion("BackgroundTask", reason) ?? 0
         }
-        #endif
     }
 
-    /// Release both assertions.
     public func release() {
-        guard active else { return }
-        active = false
-
-        #if canImport(IOKit)
         if networkAssertionID != 0 {
-            IOPMAssertionRelease(networkAssertionID)
+            destroyAssertion(networkAssertionID)
             networkAssertionID = 0
         }
         if backgroundAssertionID != 0 {
-            IOPMAssertionRelease(backgroundAssertionID)
+            destroyAssertion(backgroundAssertionID)
             backgroundAssertionID = 0
         }
+    }
+
+    private static func createSystemAssertion(type: String, reason: String) -> UInt32? {
+        #if canImport(IOKit)
+        var id = IOPMAssertionID(0)
+        let result = IOPMAssertionCreateWithName(type as CFString,
+            IOPMAssertionLevel(kIOPMAssertionLevelOn), reason as CFString, &id)
+        return result == kIOReturnSuccess ? id : nil
+        #else
+        return nil
+        #endif
+    }
+
+    private static func destroySystemAssertion(_ id: UInt32) {
+        #if canImport(IOKit)
+        IOPMAssertionRelease(id)
         #endif
     }
 }

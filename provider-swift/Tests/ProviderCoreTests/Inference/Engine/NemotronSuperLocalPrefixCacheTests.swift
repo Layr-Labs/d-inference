@@ -13,6 +13,7 @@ private actor SuperPrefixRun {
     var errors: [String] = []
     func record(_ event: GenerationEvent) {
         switch event {
+        case .logprobs: break
         case .chunk(let chunk): text += chunk
         case .info: break
         case .error(let message): errors.append(message)

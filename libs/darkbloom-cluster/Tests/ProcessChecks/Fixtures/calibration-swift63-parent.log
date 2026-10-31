@@ -1,0 +1,68 @@
+◇ Test run started.
+↳ Testing Library Version: 2084
+↳ Target Platform: arm64e-apple-macos14.0
+◇ Suite ClusterCalibrationProcessTests started.
+◇ Test reportBeforeExitIsNotSuccessAndCredentialPrecedesRenewals() started.
+✔ Test reportBeforeExitIsNotSuccessAndCredentialPrecedesRenewals() passed after 0.174 seconds.
+◇ Test promptAndDecodeFrontierIsBoundedByContextNotOutputLimit(frontier:) started.
+◇ Test case passing 1 argument frontier → 16 to promptAndDecodeFrontierIsBoundedByContextNotOutputLimit(frontier:) started.
+◇ Test case passing 1 argument frontier → 17 to promptAndDecodeFrontierIsBoundedByContextNotOutputLimit(frontier:) started.
+◇ Test case passing 1 argument frontier → 31 to promptAndDecodeFrontierIsBoundedByContextNotOutputLimit(frontier:) started.
+✔ Test promptAndDecodeFrontierIsBoundedByContextNotOutputLimit(frontier:) with 3 test cases passed after 0.091 seconds.
+◇ Test malformedOrOutOfContextFrontierCannotComplete(change:) started.
+◇ Test case passing 1 argument change → "context" to malformedOrOutOfContextFrontierCannotComplete(change:) started.
+◇ Test case passing 1 argument change → "above-context" to malformedOrOutOfContextFrontierCannotComplete(change:) started.
+◇ Test case passing 1 argument change → "negative" to malformedOrOutOfContextFrontierCannotComplete(change:) started.
+◇ Test case passing 1 argument change → "boolean" to malformedOrOutOfContextFrontierCannotComplete(change:) started.
+◇ Test case passing 1 argument change → "fractional" to malformedOrOutOfContextFrontierCannotComplete(change:) started.
+◇ Test case passing 1 argument change → "string" to malformedOrOutOfContextFrontierCannotComplete(change:) started.
+◇ Test case passing 1 argument change → "null" to malformedOrOutOfContextFrontierCannotComplete(change:) started.
+◇ Test case passing 1 argument change → "overflow" to malformedOrOutOfContextFrontierCannotComplete(change:) started.
+✔ Test malformedOrOutOfContextFrontierCannotComplete(change:) with 8 test cases passed after 0.242 seconds.
+◇ Test frontierSeventeenIsProvisionalUntilActualExitWithinSelectedProfile() started.
+✔ Test frontierSeventeenIsProvisionalUntilActualExitWithinSelectedProfile() passed after 0.040 seconds.
+◇ Test outOfProfileFrontierIsRefusedDespiteContextHeadroom(frontier:) started.
+◇ Test case passing 1 argument frontier → 18 to outOfProfileFrontierIsRefusedDespiteContextHeadroom(frontier:) started.
+◇ Test case passing 1 argument frontier → 31 to outOfProfileFrontierIsRefusedDespiteContextHeadroom(frontier:) started.
+✔ Test outOfProfileFrontierIsRefusedDespiteContextHeadroom(frontier:) with 2 test cases passed after 0.060 seconds.
+◇ Test normalizedConfigurationDiffersFromRawFileIdentity() started.
+✔ Test normalizedConfigurationDiffersFromRawFileIdentity() passed after 0.042 seconds.
+◇ Test rawConfigurationDigestCannotSubstituteForNormalizedDigest() started.
+✔ Test rawConfigurationDigestCannotSubstituteForNormalizedDigest() passed after 0.032 seconds.
+◇ Test malformedExpectedNormalizedDigestRefusedBeforeLaunch() started.
+✔ Test malformedExpectedNormalizedDigestRefusedBeforeLaunch() passed after 0.008 seconds.
+◇ Test eofFromLiveChildIsNotExitProof() started.
+✔ Test eofFromLiveChildIsNotExitProof() passed after 0.140 seconds.
+◇ Test cooperativeCancelClosesInputAndCannotReturnSuccess() started.
+✔ Test cooperativeCancelClosesInputAndCannotReturnSuccess() passed after 0.033 seconds.
+◇ Test fixedDeadlineWinsOverRenewalsAndSignalsRequireActualExit() started.
+✔ Test fixedDeadlineWinsOverRenewalsAndSignalsRequireActualExit() passed after 1.601 seconds.
+◇ Test invalidOrBlockedPipesRetireBoundedly(mode:) started.
+◇ Test case passing 1 argument mode → "multiple" to invalidOrBlockedPipesRetireBoundedly(mode:) started.
+◇ Test case passing 1 argument mode → "oversize" to invalidOrBlockedPipesRetireBoundedly(mode:) started.
+◇ Test case passing 1 argument mode → "stderr-flood" to invalidOrBlockedPipesRetireBoundedly(mode:) started.
+◇ Test case passing 1 argument mode → "no-report" to invalidOrBlockedPipesRetireBoundedly(mode:) started.
+◇ Test case passing 1 argument mode → "nonzero" to invalidOrBlockedPipesRetireBoundedly(mode:) started.
+◇ Test case passing 1 argument mode → "blocked-input" to invalidOrBlockedPipesRetireBoundedly(mode:) started.
+✔ Test invalidOrBlockedPipesRetireBoundedly(mode:) with 6 test cases passed after 3.234 seconds.
+◇ Test reportBindingAndSafetyFlagsRefused(change:) started.
+◇ Test case passing 1 argument change → "authorization" to reportBindingAndSafetyFlagsRefused(change:) started.
+◇ Test case passing 1 argument change → "environment" to reportBindingAndSafetyFlagsRefused(change:) started.
+◇ Test case passing 1 argument change → "configuration" to reportBindingAndSafetyFlagsRefused(change:) started.
+◇ Test case passing 1 argument change → "rank" to reportBindingAndSafetyFlagsRefused(change:) started.
+◇ Test case passing 1 argument change → "qualified" to reportBindingAndSafetyFlagsRefused(change:) started.
+◇ Test case passing 1 argument change → "exit" to reportBindingAndSafetyFlagsRefused(change:) started.
+◇ Test case passing 1 argument change → "unknown" to reportBindingAndSafetyFlagsRefused(change:) started.
+✔ Test reportBindingAndSafetyFlagsRefused(change:) with 7 test cases passed after 0.212 seconds.
+◇ Test launchFailureIsNotObservedChildExit() started.
+✔ Test launchFailureIsNotObservedChildExit() passed after 0.004 seconds.
+◇ Test bootstrapUsesConcreteChildAndRefusesCrossedBinding() started.
+✔ Test bootstrapUsesConcreteChildAndRefusesCrossedBinding() passed after 0.031 seconds.
+◇ Test refusedBootstrapReplyCancelsChildAndJoinsActualExit() started.
+✔ Test refusedBootstrapReplyCancelsChildAndJoinsActualExit() passed after 0.031 seconds.
+◇ Test bootstrapOwnerSurvivesCallerDropUntilActualExit() started.
+✔ Test bootstrapOwnerSurvivesCallerDropUntilActualExit() passed after 0.050 seconds.
+◇ Test cancellingCompletedBootstrapStillCancelsLiveExperiment() started.
+✔ Test cancellingCompletedBootstrapStillCancelsLiveExperiment() passed after 0.039 seconds.
+✔ Suite ClusterCalibrationProcessTests passed after 6.070 seconds.
+✔ Test run with 18 tests in 1 suite passed after 6.070 seconds.

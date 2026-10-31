@@ -1,0 +1,4 @@
+### Cluster served speeds count only for the build that served them
+
+- A two-Mac pair's planner and request router now use a served request's speed only for the worker build that served it. Each speed record in `~/.darkbloom/cluster/served-speed.json` names every rank's worker build; records from another build, including every record written before this release, give no speed and age out of the file, so a new build plans from the share probes and link measurements until it has served. Speeds served by older, slower builds no longer hold a tensor-parallel split where the current build's own probes balance it. The plan is still made for the prompt and answer lengths the pair's clients send.
+- The plan says how many records it left out (`N record(s) from other worker builds ignored`). `darkbloom-cluster-plan plan --served` and `route --served` use records only for the build named with `--served-build SHA256`.

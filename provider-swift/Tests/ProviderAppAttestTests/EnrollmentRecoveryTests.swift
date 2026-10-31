@@ -40,6 +40,15 @@ private final class FailOnceBudgetStorage: ShadowKeyStorage, @unchecked Sendable
     func save(_ record: ShadowKeyRecord, scope: String) { backing.save(record, scope: scope) }
 }
 
+/// Records each retry backoff the client asks for and returns at once, so the
+/// production schedule is asserted without waiting for it.
+private final class RecordedRetrySleeps: @unchecked Sendable {
+    private let lock = NSLock()
+    private var values: [Double] = []
+    func sleep(_ seconds: Double) { lock.lock(); defer { lock.unlock() }; values.append(seconds) }
+    var requested: [Double] { lock.lock(); defer { lock.unlock() }; return values }
+}
+
 private actor EnrollmentService: AppAttestService {
     var generationFailure: ShadowFailure?
     var nativeGenerationFailure: AppleAppAttestFailure?
@@ -314,10 +323,13 @@ final class EnrollmentRecoveryTests: XCTestCase {
         let storage = EnrollmentStorage(); let service = EnrollmentService()
         await service.failNextAssertionsUnavailable(1)
         storage.save(ShadowKeyRecord(keyID: oldKey, attested: true, createdAt: Date(timeIntervalSinceNow: -7200)), scope: scope)
-        let client = AppAttestShadowClient(scope: "test", service: service, storage: storage)
+        let sleeps = RecordedRetrySleeps()
+        let client = AppAttestShadowClient(scope: "test", service: service, storage: storage,
+                                           retrySleep: { sleeps.sleep($0) })
         _ = await client.respond(to: request("prepare"), publicKey: endpoint)
         let reply = await client.respond(to: request("assert", key: oldKey), publicKey: endpoint, status: status)
         XCTAssertEqual(reply.result, "ok")
+        XCTAssertEqual(sleeps.requested, [2], "one retry after the production two-second backoff")
         let calls = await service.assertions()
         XCTAssertEqual(calls.count, 2)
         XCTAssertTrue(calls.allSatisfy { $0.0 == oldKey && $0.1 == calls[0].1 })
@@ -357,10 +369,13 @@ final class EnrollmentRecoveryTests: XCTestCase {
         let storage = EnrollmentStorage(); let service = EnrollmentService()
         await service.failNatively(AppleAppAttestFailure(NSError(domain: DCErrorDomain, code: DCError.Code.serverUnavailable.rawValue)))
         storage.save(ShadowKeyRecord(keyID: oldKey, attested: false, createdAt: Date(timeIntervalSinceNow: -7200)), scope: scope)
-        let client = AppAttestShadowClient(scope: "test", service: service, storage: storage)
+        let sleeps = RecordedRetrySleeps()
+        let client = AppAttestShadowClient(scope: "test", service: service, storage: storage,
+                                           retrySleep: { sleeps.sleep($0) })
         _ = await client.respond(to: request("prepare"), publicKey: endpoint)
         let failed = await client.respond(to: request("attest", key: oldKey), publicKey: endpoint, status: status)
         XCTAssertEqual(failed.result, "apple_unavailable")
+        XCTAssertEqual(sleeps.requested, [2, 8], "the production backoff between the three calls")
         XCTAssertEqual(failed.appleError?.domain, "devicecheck")
         XCTAssertEqual(failed.appleError?.code, DCError.Code.serverUnavailable.rawValue)
         XCTAssertEqual(storage.load(scope: scope)?.keyID, oldKey)
@@ -373,10 +388,13 @@ final class EnrollmentRecoveryTests: XCTestCase {
     func testUnavailableEnrollmentKeepsOriginalHashAcrossRestart() async {
         let storage = EnrollmentStorage(); let service = EnrollmentService(enrollmentFailure: .appleUnavailable)
         storage.save(ShadowKeyRecord(keyID: oldKey, attested: false, createdAt: Date(timeIntervalSinceNow: -7200)), scope: scope)
-        let first = AppAttestShadowClient(scope: "test", service: service, storage: storage)
+        let sleeps = RecordedRetrySleeps()
+        let first = AppAttestShadowClient(scope: "test", service: service, storage: storage,
+                                          retrySleep: { sleeps.sleep($0) })
         _ = await first.respond(to: request("prepare"), publicKey: endpoint)
         let unavailable = await first.respond(to: request("attest", key: oldKey), publicKey: endpoint, status: status)
         XCTAssertEqual(unavailable.result, "apple_unavailable")
+        XCTAssertEqual(sleeps.requested, [2, 8], "the production backoff between the three calls")
         await service.allowEnrollment()
         let restarted = AppAttestShadowClient(scope: "test", service: service, storage: storage)
         let newEndpoint = Data(repeating: 8, count: 32).base64EncodedString()

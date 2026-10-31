@@ -44,6 +44,54 @@ public enum LocalEndpoint {
         return token
     }
 
+    // MARK: - The cluster's local API key
+
+    /// The key `darkbloom cluster local` serves with, one for the pair: the Mac where requests enter follows the
+    /// plan and can change between starts, and each Mac's own `local_token` then gave clients another key each time.
+    /// The control leader sends it to the member with each start (inside the keyed link control session).
+    static func clusterTokenPath() -> URL { directory().appendingPathComponent("cluster_local_token") }
+
+    public static func loadOrCreateClusterToken() throws -> String {
+        if let content = try? String(contentsOf: clusterTokenPath(), encoding: .utf8) {
+            let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
+            if isToken(trimmed) { return trimmed }
+        }
+        let token = generateToken()
+        try writeFile(token, to: clusterTokenPath())
+        return token
+    }
+
+    /// The key of the server listening on `port` on this Mac: its discovery file's when that names the port (a
+    /// cluster serving locally only uses the pair's key, others this Mac's own), else the pair's, else this Mac's own.
+    public static func token(forPort port: Int) -> String? {
+        if let info = readLiveInfo(), Int(info.port) == port, !info.apiKey.isEmpty { return info.apiKey }
+        return existingClusterToken() ?? readToken()
+    }
+
+    /// The pair's key when this Mac has one; nil otherwise (nothing is created).
+    public static func existingClusterToken() -> String? {
+        guard let content = try? String(contentsOf: clusterTokenPath(), encoding: .utf8) else { return nil }
+        let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
+        return isToken(trimmed) ? trimmed : nil
+    }
+
+    /// Keeps the key the control leader sent; false (nothing written) for anything that is not a key.
+    @discardableResult
+    public static func saveClusterToken(_ token: String) -> Bool {
+        guard isToken(token) else { return false }
+        if (try? String(contentsOf: clusterTokenPath(), encoding: .utf8))?.trimmingCharacters(in: .whitespacesAndNewlines) == token { return true }
+        return (try? writeFile(token, to: clusterTokenPath())) != nil
+    }
+
+    /// `dk-local-` and 43 base64url characters (32 random bytes), as `generateToken` makes it.
+    public static func isToken(_ value: String) -> Bool {
+        guard value.hasPrefix(tokenPrefix) else { return false }
+        let body = value.dropFirst(tokenPrefix.count)
+        return body.count == 43 && body.unicodeScalars.allSatisfy {
+            CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_").contains($0)
+        }
+    }
+
     static func readToken() -> String? {
         guard let content = try? String(contentsOf: tokenPath(), encoding: .utf8) else { return nil }
         let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -136,6 +184,12 @@ public enum LocalEndpoint {
     /// is intentionally retained so the same token survives restarts.
     public static func removeInfo() {
         try? FileManager.default.removeItem(at: infoPath())
+    }
+
+    /// The same, only when the discovery file is `pid`'s (a cluster service's relay never removes a server's file).
+    public static func removeInfo(ifPID pid: Int32) {
+        guard readInfo()?.pid == pid else { return }
+        removeInfo()
     }
 
     // MARK: - Shared file writer (atomic, 0600)

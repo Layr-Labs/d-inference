@@ -982,7 +982,10 @@ adapter is dropped from the advertised set at scan time and never loads
 Slot construction carries the engine's immutable admission watermark into the
 bridge so future load and reserve-raise checks can preserve a serviceable total
 grant. These [workspace-aware floors](hardware-support.md#kv-slot-grants) do not
-lower the activation reserve or replace actual per-request byte admission.
+lower the activation reserve or replace actual per-request byte admission. Every
+re-slice, including regrowth, funds those floors first when the proportional
+split alone would leave a slot below one, so a load is refused only when the
+floors together exceed the fleet KV budget.
 
 ### GLM5Next implementation boundary
 

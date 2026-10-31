@@ -955,7 +955,7 @@ computes no facts for it ([model approvals](#model-approvals)).
 | `models[].capability_sha256` | SHA-256 of the exact output of `darkbloom-cluster-worker --describe-runtime` |
 | `models[].profile_sha256` | the capability's `profileFingerprint` |
 | `models[].resource_policy_sha256` | `DistributedInstalledNativeStart.resourcePolicySHA256` of the capability, the value a native start carries |
-| `models[].pair_serving_grant` | `null`, or exactly `evidence_sha256` and `mode_families` (1 to 4 of `hand_off`, `pipeline`, `pipeline_speculative`, `tensor_parallel`, in byte order). A model the build's public declaration (`ClusterPublicModels`) names by runtime model, catalog ID and artifact: its declared families, with the evidence document's SHA-256. Any other model: the families the build's bundled records grant its artifact (`ClusterPairServingGrants.grant`), with the SHA-256 of those records as canonical JSON Lines (`ClusterPairServingGrant.evidenceSHA256`: each record's `encodedLine` in bundle order, joined by `\n`, no trailing newline); `null` when they grant none |
+| `models[].pair_serving_grant` | `null`, or exactly `evidence_sha256` and `mode_families` (1 to 4 of `hand_off`, `pipeline`, `pipeline_speculative`, `tensor_parallel`, in byte order). A model the build's public declaration (`ClusterPublicModels`) names by runtime model, catalog ID and artifact: its declared families, with the evidence document's SHA-256. Any other model: the families the build's bundled records grant its artifact (`ClusterPairServingGrants.grant`), with the SHA-256 of the records that grant is computed from (the artifact's passing records, without a pass that a divergence of the same shape contradicts) as canonical JSON Lines (`ClusterPairServingGrant.evidenceSHA256`: each record's `encodedLine` in bundle order, joined by `\n`, no trailing newline); `null` when they grant none |
 | `models[].parity_qualifications` | `[]` unless the model is declared; then one object per declared mode family (in byte order: `pipeline`, then `tensor_parallel`) and schedule (ascending), with the fields below. At most 8 |
 | `…schedule` | `1` or `2`: the derived approval it qualifies |
 | `…numerics_classes` | each rank's `ClusterMemberDeviceProfile.numericsClass` of the evidence placement with this block's `metallib_sha256`, for example `g17d-nax1-mlx-98bab9d7-macos27.0` (Apple M5 Ultra, NAX on, macOS 27.0); two, the members of a derived approval |
@@ -971,7 +971,23 @@ The public declaration names GLM-5.3-Flash (`registered_glm53_flash`,
 `EigenLabs/Qwen3.8-27B-4bit-mtp`), each in `pipeline` and `tensor_parallel` on
 schedules 1 and 2, on the owner's decisions of 2026-10-31
 ([evidence](../reports/2026-10-31-public-cluster-models.md)). Every other
-model's clusters serve their owner only. The setup's public-traffic line says a
+model's clusters serve their owner only.
+
+The declared placement names the evidence; it does not limit public traffic. A
+coordinator applies a promotable parity qualification to its approval's whole
+mode family: a session whose placement no record matches exactly takes the
+family's promotable records, merged under the request envelope they all allow,
+on any numerics classes, cuts and shares, unless a diverged record of the same
+numerics-class combination withholds it
+([`parityQualification`](https://github.com/Layr-Labs/darkbloom-platform/blob/df61dd6f93714b4458d0eef3125c377087c08b52/coordinator/registry/cluster_parity_qualification.go)).
+Under a derived approval, public traffic for GLM-5.3-Flash and Qwen3.8-27B is
+therefore admitted in pipeline and tensor parallel on any Apple silicon pair,
+within the envelope. No pipeline of either model ran on two Apple M5 Ultras,
+and GLM-5.3-Flash has no tensor-parallel cross-cable record: both rest on the
+owner's decision of 2026-10-31 and the DevNet serving results. GLM-5.3-Flash's
+runtime serves only the serial prefill schedule (`supportedPrefillSchedules`
+of its registered specification), so its schedule 2 approval, grant and
+qualifications are inert. The setup's public-traffic line says a
 declared model is qualified for public traffic in its declared families, with
 or without a bundled record of them (`ClusterPairServingGrants.publicTrafficLine`).
 Every model the records or the declaration qualify needs its grant: without one

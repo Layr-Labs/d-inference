@@ -297,7 +297,8 @@ jobs:
       RELEASE_BUILD_RUN_ATTEMPT: ${{ needs.resolve-env.outputs.build_run_attempt }}
       # 'true' only when this run registers a release and the environment's
       # repository variable (DEV_, STAGING_ or PROD_CLUSTER_RUNTIME_ENABLED) is
-      # exactly 'true'. Then the payload carries cluster_runtime and a failure
+      # set to 'true' (== compares case-insensitively, so 'True' counts too).
+      # Then the payload carries cluster_runtime and a failure
       # to compute it fails the release before registration; otherwise the
       # payload is unchanged and a failure only warns.
       CLUSTER_RUNTIME_SEND: >-

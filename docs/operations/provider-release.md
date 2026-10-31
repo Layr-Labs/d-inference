@@ -604,8 +604,10 @@ and `changelog`. It also contains `cluster_runtime` only when that environment's
 ([cluster runtime facts](#cluster-runtime-facts)). The URL is the configured CDN followed by
 `releases/v<VERSION>/artifacts/<BUNDLE_SHA256>/darkbloom-bundle-macos-arm64.tar.gz`.
 Use the retained payload, never hand-reconstruct hashes. The
-[pinned release-handler contract](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/api/releases/release_handlers.go)
-documents artifact validation; it predates automatic identity registration.
+[release handler, pinned at the platform `dev` merge that accepts `cluster_runtime`](https://github.com/Layr-Labs/darkbloom-platform/blob/df61dd6f93714b4458d0eef3125c377087c08b52/coordinator/api/releases/release_handlers.go)
+validates the artifact, records the build identity and reads the block strictly
+(`registry.ParseReleaseClusterRuntime`); a coordinator without that change
+refuses the field (`DisallowUnknownFields`).
 
 The updated platform verifies the staged archive and records complete native
 identity in its durable `AppAttestBuildQualification` registry before publication
@@ -655,9 +657,12 @@ and the parity qualifications (public traffic) of the models the build declares
 public (`ClusterPublicModels`: GLM-5.3-Flash and Qwen3.8-27B in pipeline and
 tensor parallel, the owner's decisions of 2026-10-31,
 [evidence](../reports/2026-10-31-public-cluster-models.md)). No operator posts
-approvals, grants or public qualifications per build. The block format and its
-rules are in the
-[configuration reference](../reference/configuration.md#cluster-runtime-facts).
+approvals, grants or public qualifications per build. A coordinator applies the
+qualifications to each declared family on any Apple silicon pair: the declared
+placement names the evidence, not a limit, and GLM-5.3-Flash's schedule 2
+entries are inert because its runtime serves only the serial schedule
+([details](../reference/configuration.md#cluster-runtime-facts)). The block
+format and its rules are in the same reference.
 
 Every lane (dev branch, staging, prod) runs the step
 `Compute cluster runtime facts from the final signed app` of job
@@ -696,9 +701,9 @@ Every lane (dev branch, staging, prod) runs the step
    and schedule; a tensor-parallel envelope admits the media its catalog entry
    lists, a pipeline's text only. A declared pipeline whose `config.json` has
    no layer count is left out and named on standard error, in the job log. The
-   step fails when such a model has no candidate the worker describes as it,
-   when no model is left, or when an ID a coordinator would derive exceeds 128
-   bytes.
+   step fails when a catalog model ID of a listed artifact has no candidate the
+   worker describes as the listed model, when no model is left, or when an ID a
+   coordinator would derive exceeds 128 bytes.
 
 The steps `Show the cluster runtime facts` and `Retain the cluster runtime facts`
 then write the block (or the failure) to the job summary and upload
@@ -707,7 +712,8 @@ and whether or not the block is sent.
 
 Whether the payload carries the block is decided by one repository variable per
 environment. The job reads it as `CLUSTER_RUNTIME_SEND`, which is `true` only
-when the run registers a release and the variable is exactly `true`:
+when the run registers a release and the variable is set to `true` (GitHub
+compares the strings case-insensitively, so `True` counts too):
 
 | Variable | Lane | Unset or not `true` | `true` |
 |---|---|---|---|
@@ -721,23 +727,56 @@ staging publishes. `validate` (in `prepare`, `stage` and `publish`) accepts a va
 environment and refuses an invalid one, and one whose derived IDs
 (`release/<version>/<model>/s<1|2>`, `<approval ID>/grant` for a model with a
 grant, and `<approval ID>/q<n>` for each parity qualification) exceed 128
-bytes. `prepare` also refuses a block file that
-is not canonical, and registration sends the block in that canonical form (a
-body without the block is sent exactly as before).
+bytes. It also refuses a payload whose registration body (the bytes
+`POST /v1/releases` sends, block included) exceeds the coordinator's 64 KiB
+limit (`MaxReleaseRegisterBodyBytes`), so an oversized body stops before
+staging. `prepare` also refuses a block file that is not canonical, and
+registration sends the block in that canonical form (a body without the block
+is sent exactly as before).
+
+With the variable set to `true`, a failure of the facts step stops the release
+before `prepare`, so nothing is staged or registered. Fix the cause (for
+example a catalog or CDN outage) and re-run the failed job, or first set the
+variable to anything but `true` to release without the block; for a tag, sign
+again with
+[Resume Signing From A Retained Unsigned Build](#resume-signing-from-a-retained-unsigned-build).
 
 Turn a variable on only after the coordinator of that environment accepts the
 block (`EIGENINFERENCE_CLUSTER_PAIR_APPROVALS_FROM_RELEASES`, darkbloom-platform);
 a coordinator that does not accept it yet must never receive it. Public cluster
 routing also needs `EIGENINFERENCE_CLUSTER_PUBLIC_ROUTING=true` on that
-coordinator. Rollout order:
+coordinator.
+
+Before a release with the block registers, make sure the coordinator's catalog
+has room. It holds at most 64 approvals (the operator's per-build and per-model
+approvals included), 64 pair-serving grants and 256 parity qualifications. A
+release adds 2 approvals per model of its block (and up to 2 grants and 8
+qualifications per model). Releases are taken newest first, each whole: a
+release that would pass a bound is left out, so older releases' entries drop
+first, and the operator's entries are never displaced
+([`NativeRuntimeCatalogWithReleases`](https://github.com/Layr-Labs/darkbloom-platform/blob/df61dd6f93714b4458d0eef3125c377087c08b52/coordinator/registry/cluster_release_approvals.go)).
+When the catalog is short, prune the hand-posted per-build approvals of retired
+builds. After the first registration, check the coordinator log: the warning
+`release cluster approvals omitted` names a release left out and why, and
+`cluster pair catalog replaced` reports `approvals` and `omitted_releases`;
+`GET /v1/cluster/approvals` lists the derived `release/<version>/<model>/s<1|2>`
+approvals. On DevNet on 2026-10-31 the coordinator served 26 approvals (25
+per-model and 1 per-build) and the catalog listed 4 models, so each dev-branch
+release adds 8 approvals: the 4 newest releases fit (58 of 64) and a fifth is
+left out. Check the production catalog the same way before
+`PROD_CLUSTER_RUNTIME_ENABLED` is set.
+
+Rollout order:
 
 1. The platform change merges to the platform's `dev`, and DevNet deploys it.
-2. This change merges to `dev`. A person sets `DEV_CLUSTER_RUNTIME_ENABLED=true`.
-3. The next dev-branch release registers with the block, and a pair registers
-   by itself after it updates.
+2. A person makes room in DevNet's catalog, if needed, and sets
+   `DEV_CLUSTER_RUNTIME_ENABLED=true`.
+3. This change merges to `dev`. The next dev-branch release registers with the
+   block; check the coordinator log for an omitted release. A pair registers by
+   itself after it updates.
 4. Both repositories go `dev` to `master`. The production coordinator deploys
-   with its switch on, a person sets `PROD_CLUSTER_RUNTIME_ENABLED=true`, and the
-   release tag follows.
+   with its switch on, a person checks its catalog's room and sets
+   `PROD_CLUSTER_RUNTIME_ENABLED=true`, and the release tag follows.
 
 To compute the facts of an installed or downloaded app by hand, give the models
 explicitly. Run that app's own CLI, so the public declaration and the records

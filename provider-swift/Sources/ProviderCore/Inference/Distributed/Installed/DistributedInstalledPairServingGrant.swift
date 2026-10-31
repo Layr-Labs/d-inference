@@ -183,7 +183,8 @@ public struct ClusterPairServingGrant: Sendable, Equatable {
     /// served, on any chips, until a check of the family passes.
     public let withheldFamilies: [ClusterPairServingModeFamily: String]
     /// The records the grant rests on, in the order they were given (the
-    /// bundle's): the passing records of its granted families.
+    /// bundle's): the passing records it is computed from, without a pass
+    /// that a divergence of the same shape contradicts.
     public let records: [ClusterPairQualificationRecord]
 
     public init(runtimeModelID: String, qualifications: [ClusterPairServingQualification], evidence: String,

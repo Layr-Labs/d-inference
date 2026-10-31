@@ -559,6 +559,10 @@ struct ClusterRuntimeApprovalFactsTests {
         #expect(try grant(model, [pipeline, diverged]) == nil)
         #expect(try grant(model, [pipeline, diverged, tensor])
                 == .init(evidenceSHA256: Self.sha256(Data(tensorLine.utf8)), modeFamilies: ["tensor_parallel"]))
+        // A family still granted by another pass leaves the contradicted pass out of its evidence.
+        let otherCut = try #require(qwen.first { $0.mode == .pipeline && $0.cuts != pipeline.cuts })
+        #expect(try grant(model, [pipeline, otherCut, diverged])
+                == .init(evidenceSHA256: Self.sha256(Data(try otherCut.encodedLine().utf8)), modeFamilies: ["pipeline"]))
         // By default the build's own bundled records: the grant a member of this build reports.
         let bundled = try #require(ClusterRuntimeApprovalFacts.compute(installation: f.installation, models: [.init(directory: model)]).models.first)
         let own = try ClusterRuntimeApprovalFacts.PairServingGrant(ClusterPairServingGrants.grant(runtimeModelID: "registered_qwen35_9b",

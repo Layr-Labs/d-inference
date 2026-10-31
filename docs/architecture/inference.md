@@ -5252,15 +5252,25 @@ types them ([fields](../reference/configuration.md#cluster-runtime-facts),
    grant a member of the same build reports for the described artifact
    (`ClusterPairServingGrants.grant`, records of that artifact only), with the
    SHA-256 of the records it rests on (`ClusterPairServingGrant.evidenceSHA256`).
+   A grant also bounds the sessions formed for the owner: a coordinator forms
+   none under an approval in a mode family that its grants do not name
+   ([`pairServingGrant`](https://github.com/Layr-Labs/darkbloom-platform/blob/df61dd6f93714b4458d0eef3125c377087c08b52/coordinator/registry/cluster_pair_serving_grant.go)).
+   Each undeclared model's records grant covers the modes its runtime serves
+   today; a mode added to an undeclared model later forms coordinator sessions
+   only once a record of that mode is bundled.
 5. The parity qualifications come from the declaration only: one per declared
    family and schedule. Each rank's numerics class is the one a member of that
    build registers for the evidence placement
    (`ClusterMemberDeviceProfile.numericsClass`, the block's Metal library); a
    pipeline is cut at half the model's layers (`ClusterPublicModels.placement`);
    the request envelope admits media only where the placement serves it
-   (`ClusterModelFeaturePolicy.mediaContract`). This build places Qwen3.8-27B
-   in tensor parallel only (`ClusterModelFeaturePolicy.admissibleModes`), so
-   its declared pipeline takes effect with a build that places it as one. The
+   (`ClusterModelFeaturePolicy.mediaContract`). A coordinator applies them to
+   the whole declared family, on any Apple silicon pair: the placement names
+   the evidence, not a limit
+   ([fields](../reference/configuration.md#cluster-runtime-facts)). This build
+   places Qwen3.8-27B in tensor parallel only
+   (`ClusterModelFeaturePolicy.admissibleModes`), so its declared pipeline
+   takes effect with a build that places it as one. The
    release lane runs the released build's own CLI, so the declaration and the
    records are that build's.
 

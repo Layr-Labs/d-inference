@@ -201,9 +201,9 @@ dependency pins and build recipe. `DARKBLOOM_RELEASE_ENVIRONMENT` also separates
 dev and prod products. A source commit identifies an immutable generation;
 compatible restore prefixes never cross these boundaries. The Metal cache
 includes nested MLX source, compiler binary SHA and CMake recipe identity.
-The optimized cache also holds the native cluster worker build
-(`libs/darkbloom-cluster-worker/.build-native-worker`), so unchanged MLX and
-cluster objects are not compiled again. Its Metal library is deleted on
+The optimized cache also holds the scratch directory of the native cluster
+worker build (`libs/darkbloom-cluster-worker/build-native-worker.sh`), so
+unchanged MLX and cluster objects are not compiled again. Its Metal library is deleted on
 restore, and the worker's JACCL and macOS 26.2 checks run on every build.
 
 The cache's `snapshot-mtimes` and `restore-mtimes` commands restore timestamps

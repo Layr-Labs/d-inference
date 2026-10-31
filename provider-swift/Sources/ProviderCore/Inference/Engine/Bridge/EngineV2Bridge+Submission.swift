@@ -60,6 +60,7 @@ extension EngineV2Bridge {
         hybridPrefixIdentity: CBv2HybridPrefixIdentity? = nil,
         mediaKind: EngineV2MediaKind? = nil,
         tokenConstraint: (any CBv2TokenConstraint)? = nil,
+        stopStringScope: CBv2StopStringScope? = nil,
         donationDemand: SSDCheckpointDonationDemand? = nil,
         promptWork: PromptWork? = nil,
         measurementPurpose: EngineMeasurementPurpose = .serving
@@ -79,6 +80,7 @@ extension EngineV2Bridge {
                 hybridPrefixIdentity: hybridPrefixIdentity,
                 mediaKind: mediaKind,
                 tokenConstraint: tokenConstraint,
+                stopStringScope: stopStringScope,
                 donationDemand: donationDemand,
                 firstContentDeadline: nil, promptWork: promptWork,
                 measurementPurpose: measurementPurpose)
@@ -131,6 +133,9 @@ extension EngineV2Bridge {
         hybridPrefixIdentity: CBv2HybridPrefixIdentity? = nil,
         mediaKind: EngineV2MediaKind? = nil,
         tokenConstraint: (any CBv2TokenConstraint)? = nil,
+        /// Where this request's stop strings apply (`ReasoningStopScope`); nil
+        /// keeps the model's scope (`ModelEOSPolicy.stopStringScope`).
+        stopStringScope: CBv2StopStringScope? = nil,
         /// Coordinator repeat-demand hint for the complete-checkpoint write
         /// gate; nil keeps the legacy write-every-checkpoint behaviour.
         donationDemand: SSDCheckpointDonationDemand? = nil,
@@ -317,7 +322,11 @@ extension EngineV2Bridge {
             // engine which fork boundary is worth staging.
             prefixCheckpointTargetTokens: donationDemand?.repeatedPrefixTokens,
             defaultMaxTokensContextLimit: defaultMaxTokensContextLimit,
-            stopStringScope: stopStringScope
+            // The native block engine's decoder matches stops over the whole
+            // output, so its requests carry no scope and the reported stop
+            // agrees with the one that matched.
+            stopStringScope: ownedEngine is CBv2NativeBlockEngine
+                ? nil : stopStringScope ?? self.stopStringScope
         )
         cbv2Request.mimoClusterImages = mimoClusterImages
         cbv2Request.clusterStillImages = clusterStillImages
@@ -1061,6 +1070,7 @@ extension EngineV2Bridge {
             id: id, events: events, continuation: continuation,
             holdsSharedReservation: sharedKVReserved,
             stopSequences: cbv2Request.stopStrings,
+            stopStringScope: cbv2Request.stopStringScope,
             usageSignal: usageSignal,
             prefixCacheReceiptID: prefixCacheReceiptID,
             readyReceiptRegistered: readyReceiptRegistered,

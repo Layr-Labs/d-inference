@@ -47,6 +47,28 @@ struct NativeBlockRetirementBridgeTests {
             return .committed(tokens: [64 + index], stopToken: nil, finishReason: index == 2 ? .length : nil)
         }
     }
+    /// Commits one block of output, then stops at the token limit.
+    private final class TextSession: CBv2NativeBlockSession {
+        let tokens: [Int]
+        let cancellation: CBv2NativeBlockCancellation
+        var index = 0, generatedTokenCount = 0
+        var retainedBytes: Int { 64 }
+        var activeTokenCount: Int { 1 + generatedTokenCount }
+        init(tokens: [Int], cancellation: CBv2NativeBlockCancellation) {
+            self.tokens = tokens; self.cancellation = cancellation
+        }
+        func cancel() {}
+        func advanceNative() throws -> CBv2NativeBlockStep {
+            defer { index += 1 }
+            if index == 0 { return .prefill(computedTokens: 1, complete: true) }
+            if cancellation.isCancelled { throw CancellationError() }
+            if index == 1 {
+                generatedTokenCount = tokens.count
+                return .committed(tokens: tokens, stopToken: nil, finishReason: nil)
+            }
+            return .committed(tokens: [], stopToken: nil, finishReason: .length)
+        }
+    }
     private struct Result: Sendable { var text = "", error = ""; var cause: InferenceTerminalCause?; var completion = 0 }
     private func collect(_ stream: AsyncStream<GenerationEvent>) async -> Result {
         var result = Result()
@@ -65,6 +87,33 @@ struct NativeBlockRetirementBridgeTests {
         let until = ContinuousClock.now.advanced(by: .seconds(3))
         while !(await predicate()), ContinuousClock.now < until { try await Task.sleep(for: .milliseconds(2)) }
         try #require(await predicate())
+    }
+
+    /// The native block decoder matches stops over the whole output, so a
+    /// request's reasoning scope is not sent there and the reported stop is
+    /// the one that matched.
+    @Test func nativeBlockRequestsCarryNoStopScope() async throws {
+        let tokenizer = Tokens()
+        let output = Array("<|channel>thought\nIt is A.<channel|>Yes!".utf8).map(Int.init)
+        let engine = try CBv2NativeBlockEngine(tokenizer: tokenizer, kvBytesCapacity: 300,
+            shutdownGraceSeconds: 0, loopConfig: .init(stepTimeout: 60, watchdogInterval: 0.01),
+            reservationForRequest: { _ in 100 }, makeSession: { _, cancellation in
+                TextSession(tokens: output, cancellation: cancellation)
+            })
+        let budget = GlobalKVCacheBudget(capFraction: 1, activationReserveBytes: 0) {
+            .init(total: 8 << 30, active: 0, cache: 0, systemAvailable: 1_000)
+        }
+        let bridge = EngineV2Bridge(engine: engine, modelId: "native-fixture", tokenizer: TokenizerHandle(tokenizer),
+            eosTokenIds: [], defaultMaxTokens: 64, kvBytesPerToken: 1, kvBudget: budget)
+        let request = ChatCompletionRequest(model: "native-fixture", messages: [], temperature: 1, max_tokens: 64,
+            stop: .multiple([".", "!"]))
+        let signal = EngineV2RequestUsageSignal()
+        let result = await collect(await bridge.submitTokenized(promptTokens: [1], request: request,
+            requestId: "scoped", cacheEnabled: false, usageSignal: signal,
+            stopStringScope: ReasoningStopScope.scope(reasoningParser: .gemma4, reasoningPrefix: nil)))
+        #expect(result.text == "<|channel>thought\nIt is A" && result.error.isEmpty)
+        #expect(signal.matchedStopSequence == ".")
+        await bridge.shutdown()
     }
 
     @Test func watchdogReturnsTypedErrorWithoutRefundingBlockedNativeMemory() async throws {

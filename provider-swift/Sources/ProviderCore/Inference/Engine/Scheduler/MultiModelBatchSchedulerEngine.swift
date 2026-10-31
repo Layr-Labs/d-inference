@@ -786,6 +786,17 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     // failures) stay correct as written.
                     await mediaGate.release(requestId: mediaReqId)
                     try checkFirstContentDeadline()
+                    // Initialize the think parser from the rendered media
+                    // prompt: reasoning for an open block, content for a
+                    // pre-closed block (thinking-disabled media). The stop
+                    // scope starts in the same state.
+                    let reasoningPrefix = ReasoningPromptProbe.streamingPrefix(
+                        reasoningParser: visionRequest.reasoningParser,
+                        stream: visionRequest.stream,
+                        promptTokens: visionPrepared.promptTokens,
+                        modelType: modelType,
+                        decodeTail: { tokenizer.inner.decode(tokenIds: $0, skipSpecialTokens: false) }
+                    ) ?? contentSeed(parser: visionRequest.reasoningParser, stream: visionRequest.stream)
                     // Qualified native media shares text's request-owned
                     // parser. Other VLMs retain their legacy media behavior.
                     let upstream = try await bridge.submitTokenized(
@@ -807,6 +818,9 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                         multimodal: visionPrepared.multimodalInput(),
                         hybridPrefixIdentity: mediaPrefixIdentity,
                         mediaKind: visionPrepared.mediaKind,
+                        stopStringScope: ReasoningStopScope.scope(
+                            reasoningParser: visionRequest.reasoningParser,
+                            reasoningPrefix: reasoningPrefix),
                         donationDemand: donationDemand,
                         firstContentDeadline: firstContentDeadline,
                         profile: profile,
@@ -822,18 +836,6 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                         await bridge.cancel(requestId: visionRequestId)
                         throw error
                     }
-                    // Initialize the think parser from the rendered media
-                    // prompt: reasoning for an open block, content for a
-                    // pre-closed block (thinking-disabled media).
-                    try checkFirstContentDeadline()
-                    let reasoningPrefix = ReasoningPromptProbe.streamingPrefix(
-                        reasoningParser: visionRequest.reasoningParser,
-                        stream: visionRequest.stream,
-                        promptTokens: visionPrepared.promptTokens,
-                        modelType: modelType,
-                        decodeTail: { tokenizer.inner.decode(tokenIds: $0, skipSpecialTokens: false) }
-                    ) ?? contentSeed(parser: visionRequest.reasoningParser, stream: visionRequest.stream)
-                    try checkFirstContentDeadline()
                     return try await makeDeadlineCheckedEventStream(
                         upstream: upstream,
                         cancelUpstream: { await bridge.cancel(requestId: visionRequestId) },
@@ -1038,6 +1040,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     cacheEnabled: cacheEnabled,
                     usageSignal: requestUsage,
                     tokenConstraint: tokenConstraint,
+                    stopStringScope: ReasoningStopScope.scope(
+                        reasoningParser: request.reasoningParser, reasoningPrefix: reasoningPrefix),
                     donationDemand: donationDemand,
                     firstContentDeadline: firstContentDeadline,
                     profile: profile,
@@ -1419,7 +1423,9 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             request:Self.translate(openAIRequest:request,defaultMaxTokens:maximumOutput,
                 logitBias:engineV2Sampling?.logitBias,seed:engineV2Sampling?.seed),
             requestId:id,cacheScope:cacheScope,cacheEnabled:false,usageSignal:requestUsage,
-            multimodal:native.request.multimodal,firstContentDeadline:firstContentDeadline,profile:profile,
+            multimodal:native.request.multimodal,
+            stopStringScope:ReasoningStopScope.scope(reasoningParser:request.reasoningParser,reasoningPrefix:nil),
+            firstContentDeadline:firstContentDeadline,profile:profile,
             measurementPurpose:measurementPurpose)
         // Install the ONE existing router/forwarder before any post-submit
         // cancellation veto. Its protected mode drains actual terminal/error.

@@ -372,7 +372,8 @@ extension StandaloneServer {
         let targets = EngineV2KVSizing.resliceGrants(existing: existing.map(\.slot),
             newcomer: .init(modelId: modelID, fp16KVBytesPerToken: sizing.fp16KVBytesPerToken,
                 maxContextLength: sizing.maxContextLength),
-            fleetKVBudgetBytes: fleetKVBudgetBytes(extraWeightBytes: sizing.weightsBytes))
+            fleetKVBudgetBytes: fleetKVBudgetBytes(extraWeightBytes: sizing.weightsBytes),
+            minimumGrantBytes: Self.minimumGrantBytes(existing))
         guard Self.resliceKeepsSlotsServiceable(targets, existing: existing) else {
             EngineV2Factory.emitRefusalTelemetry(modelId: modelID, reason: .resliceFloor,
                 error: nil, emitTelemetry: v2TestHooks?.emitTelemetry)

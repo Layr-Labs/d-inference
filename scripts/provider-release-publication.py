@@ -23,6 +23,168 @@ class ReadinessPending(RuntimeError):
     pass
 
 
+# The cluster runtime facts (darkbloom_cluster_runtime_v2) of the final signed
+# app, written by its own `cluster runtime-facts` (ClusterRuntimeApprovalFacts).
+# Any environment's payload may carry the block; the release lane adds it only
+# when that environment's *_CLUSTER_RUNTIME_ENABLED variable is 'true'. This
+# only checks the block; it computes no digest.
+CLUSTER_RUNTIME_SCHEMA = 'darkbloom_cluster_runtime_v2'
+CLUSTER_RUNTIME_DIGESTS = ('native_runtime_sha256', 'metallib_sha256', 'resource_library_sha256',
+                           'placement_policy_sha256')
+CLUSTER_RUNTIME_MODEL_DIGESTS = ('artifact_sha256', 'capability_sha256', 'profile_sha256', 'resource_policy_sha256')
+CLUSTER_MODE_FAMILIES = ('hand_off', 'pipeline', 'pipeline_speculative', 'tensor_parallel')
+# ClusterGenerationMode: tensor parallel has no layer cut, every other mode one
+# per member boundary (layerCutCount).
+CLUSTER_GENERATION_MODES = ('pipeline_v1', 'pipeline_compact_decode_v1', 'phase_split_v1', 'phase_split_mtp_v1',
+                            'tensor_parallel_v1', 'pipeline_prefill_tensor_decode_v1', 'pipeline_mtp_v1')
+CLUSTER_RUNTIME_MAXIMUM_MODELS = 64
+CLUSTER_RUNTIME_MAXIMUM_BYTES = 64 * 1024
+# A derived approval admits two members, so a qualification names two numerics classes.
+CLUSTER_DERIVED_MEMBERS = 2
+# Four mode families times two schedules.
+CLUSTER_MAXIMUM_QUALIFICATIONS = 8
+CLUSTER_QUALIFICATION_FIELDS = {'schedule', 'numerics_classes', 'cuts', 'mode', 'tensor_parallel_shares', 'promotable',
+                                'diverged', 'evidence_sha256', 'qualified_at', 'request_envelope'}
+CLUSTER_ENVELOPE_FIELDS = {'sampling', 'tools', 'vision', 'video', 'max_prompt_tokens', 'max_output_tokens'}
+CLUSTER_MAXIMUM_TOKENS = 1 << 20
+# The instants a coordinator accepts: seconds, an optional fraction, then Z or an offset.
+CLUSTER_INSTANT = re.compile(r'[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]{1,9})?(Z|[+-][0-9]{2}:[0-9]{2})')
+# A coordinator derives approvals `release/<version>/<model>/s<1|2>`, for a
+# model with a grant each approval's `<approval ID>/grant`, and for each parity
+# qualification `<its schedule's approval ID>/q<n>`, and refuses at registration
+# a block with any derived ID over this bound.
+CLUSTER_DERIVED_ID_MAXIMUM_BYTES = 128
+# The coordinator reads a release registration (POST /v1/releases) under this
+# limit (MaxReleaseRegisterBodyBytes, applied as http.MaxBytesReader applies
+# it); a larger body would be refused only at publish, after staging.
+COORDINATOR_REGISTRATION_MAXIMUM_BYTES = 64 * 1024
+
+
+def is_digest(value):
+    return isinstance(value, str) and re.fullmatch('[0-9a-f]{64}', value) is not None and value != '0' * 64
+
+
+def is_integer(value, low, high):
+    return type(value) is int and low <= value <= high
+
+
+def check_pair_serving_grant(grant):
+    """A model's pair_serving_grant: null, or exactly its evidence digest and 1 to 4 known families in byte order."""
+    if grant is None:
+        return
+    if not isinstance(grant, dict) or set(grant) != {'evidence_sha256', 'mode_families'}:
+        raise ValueError('Invalid cluster_runtime: a pair_serving_grant is not null or exactly '
+                         'evidence_sha256 and mode_families')
+    families = grant['mode_families']
+    if not isinstance(families, list) or not families \
+            or any(not isinstance(family, str) or family not in CLUSTER_MODE_FAMILIES for family in families) \
+            or any(first >= second for first, second in zip(families, families[1:])):
+        raise ValueError('Invalid cluster_runtime: mode_families must list 1 to 4 known mode families, '
+                         'sorted by byte and unique')
+
+
+def check_parity_qualifications(qualifications):
+    """A model's parity qualifications, as a coordinator validates them for its derived approvals."""
+    if not isinstance(qualifications, list) or len(qualifications) > CLUSTER_MAXIMUM_QUALIFICATIONS:
+        raise ValueError(f'Invalid cluster_runtime: parity_qualifications must be a list of at most '
+                         f'{CLUSTER_MAXIMUM_QUALIFICATIONS}')
+    placements = []
+    for q in qualifications:
+        if not isinstance(q, dict) or set(q) != CLUSTER_QUALIFICATION_FIELDS:
+            raise ValueError('Invalid cluster_runtime: unknown or missing parity qualification fields')
+        envelope, classes, cuts = q['request_envelope'], q['numerics_classes'], q['cuts']
+        if not is_integer(q['schedule'], 1, 2) or q['mode'] not in CLUSTER_GENERATION_MODES \
+                or q['tensor_parallel_shares'] is not None \
+                or not isinstance(classes, list) or len(classes) != CLUSTER_DERIVED_MEMBERS \
+                or not all(isinstance(c, str) and re.fullmatch(r'[\x21-\x7e]{1,64}', c) for c in classes) \
+                or not isinstance(cuts, list) or not all(is_integer(cut, 1, 1 << 31) for cut in cuts) \
+                or len(cuts) != (0 if q['mode'] == 'tensor_parallel_v1' else len(classes) - 1) \
+                or any(first >= second for first, second in zip(cuts, cuts[1:])) \
+                or type(q['promotable']) is not bool or type(q['diverged']) is not bool \
+                or (q['promotable'] and q['diverged']) \
+                or not isinstance(q['qualified_at'], str) or not CLUSTER_INSTANT.fullmatch(q['qualified_at']):
+            raise ValueError('Invalid cluster_runtime: a parity qualification names another schedule, mode, shares, '
+                             'member count, cuts, flags or instant than a derived approval admits')
+        if not isinstance(envelope, dict) or set(envelope) != CLUSTER_ENVELOPE_FIELDS \
+                or not all(type(envelope[key]) is bool for key in ('sampling', 'tools', 'vision', 'video')) \
+                or not is_integer(envelope['max_prompt_tokens'], 1, CLUSTER_MAXIMUM_TOKENS) \
+                or not is_integer(envelope['max_output_tokens'], 1, CLUSTER_MAXIMUM_TOKENS) \
+                or (envelope['video'] and not envelope['vision']):
+            raise ValueError(f'Invalid cluster_runtime: a request_envelope needs its six fields, 1 to '
+                             f'{CLUSTER_MAXIMUM_TOKENS} tokens and vision for video')
+        placement = (q['schedule'], q['mode'], tuple(classes), tuple(cuts))
+        if placement in placements:
+            raise ValueError('Invalid cluster_runtime: two parity qualifications of a model describe one placement')
+        placements.append(placement)
+
+
+def check_cluster_runtime(block):
+    if not isinstance(block, dict) or set(block) != {'schema', 'models', *CLUSTER_RUNTIME_DIGESTS} \
+            or block['schema'] != CLUSTER_RUNTIME_SCHEMA:
+        raise ValueError('Invalid cluster_runtime: unknown or missing fields or another schema')
+    models = block['models']
+    if not isinstance(models, list) or not 1 <= len(models) <= CLUSTER_RUNTIME_MAXIMUM_MODELS:
+        raise ValueError(f'Invalid cluster_runtime: 1 to {CLUSTER_RUNTIME_MAXIMUM_MODELS} models are required')
+    digests, names = [block[key] for key in CLUSTER_RUNTIME_DIGESTS], []
+    for model in models:
+        if not isinstance(model, dict) \
+                or set(model) != {'model', 'pair_serving_grant', 'parity_qualifications', *CLUSTER_RUNTIME_MODEL_DIGESTS}:
+            raise ValueError('Invalid cluster_runtime: unknown or missing model fields')
+        if not isinstance(model['model'], str) or re.fullmatch(r'[\x20-\x7e]{1,128}', model['model']) is None:
+            raise ValueError('Invalid cluster_runtime: a model ID is not 1 to 128 printable ASCII bytes')
+        names.append(model['model'].encode())
+        digests += [model[key] for key in CLUSTER_RUNTIME_MODEL_DIGESTS]
+        check_pair_serving_grant(model['pair_serving_grant'])
+        if model['pair_serving_grant'] is not None:
+            digests.append(model['pair_serving_grant']['evidence_sha256'])
+        check_parity_qualifications(model['parity_qualifications'])
+        digests += [q['evidence_sha256'] for q in model['parity_qualifications']]
+    if not all(is_digest(value) for value in digests):
+        raise ValueError('Invalid cluster_runtime: a digest is not 64 lowercase hex characters or is zero')
+    if any(first >= second for first, second in zip(names, names[1:])):
+        raise ValueError('Invalid cluster_runtime: models must be sorted by model ID and unique')
+
+
+def derived_ids(model, version):
+    """The IDs a coordinator derives for a model of the block: its approvals, their grants, then one per qualification."""
+    approval = f"release/{version}/{model['model']}/s"
+    ids = [approval + '1', approval + '2']
+    if model['pair_serving_grant'] is not None:
+        ids += [approval + '1/grant', approval + '2/grant']
+    counts = {}
+    for q in model['parity_qualifications']:
+        counts[q['schedule']] = counts.get(q['schedule'], 0) + 1
+        ids.append(f"{approval}{q['schedule']}/q{counts[q['schedule']]}")
+    return ids
+
+
+def check_cluster_derived_ids(block, version):
+    """Every ID a coordinator derives from the block fits its bound."""
+    if any(len(identifier.encode()) > CLUSTER_DERIVED_ID_MAXIMUM_BYTES
+           for model in block['models'] for identifier in derived_ids(model, version)):
+        raise ValueError(f'Invalid cluster_runtime: a derived cluster approval, grant or parity qualification ID exceeds '
+                         f'{CLUSTER_DERIVED_ID_MAXIMUM_BYTES} bytes')
+
+
+def load_cluster_runtime(path):
+    data = Path(path).read_bytes()
+    if len(data) > CLUSTER_RUNTIME_MAXIMUM_BYTES:
+        raise ValueError('Invalid cluster_runtime: the block exceeds its bound')
+
+    def unique(pairs):
+        if len({key for key, _ in pairs}) != len(pairs):
+            raise ValueError('Invalid cluster_runtime: a field is repeated')
+        return dict(pairs)
+    try:
+        block = json.loads(data, object_pairs_hook=unique)
+    except json.JSONDecodeError as error:
+        raise ValueError('Invalid cluster_runtime: not JSON') from error
+    check_cluster_runtime(block)
+    if data != json.dumps(block, sort_keys=True, separators=(',', ':')).encode():
+        raise ValueError('Invalid cluster_runtime: not canonical (keys sorted by byte, no whitespace, no trailing newline)')
+    return block
+
+
 def object_key(payload):
     return f"releases/v{payload['version']}/artifacts/{payload['bundle_hash']}/{BUNDLE}"
 
@@ -50,6 +212,20 @@ def validate(payload, env):
             raise ValueError(f'Invalid signed digest: {key}')
     if payload['url'] != env['R2_PUBLIC_URL'].rstrip('/') + '/' + object_key(payload):
         raise ValueError('Publication origin or immutable object path changed')
+    if 'cluster_runtime' in payload:
+        check_cluster_runtime(payload['cluster_runtime'])
+        check_cluster_derived_ids(payload['cluster_runtime'], payload['version'])
+    size = len(registration_body(payload))
+    if size > COORDINATOR_REGISTRATION_MAXIMUM_BYTES:
+        raise ValueError(f'The release registration body is {size} bytes, over the coordinator\'s limit of '
+                         f'{COORDINATOR_REGISTRATION_MAXIMUM_BYTES} bytes (POST /v1/releases); shorten the release '
+                         f'notes or the cluster_runtime block')
+
+
+def registration_body(payload):
+    """The bytes the registration sends: a cluster_runtime block goes in its canonical form (no whitespace; its keys
+    keep the canonical file's byte order). Without one the body is unchanged."""
+    return (json.dumps(payload, separators=(',', ':')) if 'cluster_runtime' in payload else json.dumps(payload)).encode()
 
 
 def release_changelog(env):
@@ -68,7 +244,9 @@ def release_changelog(env):
     return f"Release v{env['VERSION']}"
 
 
-def prepare(root, bundle, env):
+def prepare(root, bundle, env, cluster_runtime=None):
+    # Read before anything is written: a refused block leaves no publication folder.
+    block = None if cluster_runtime is None else load_cluster_runtime(cluster_runtime)
     root.mkdir(parents=True, exist_ok=False)
     payload = {
         'version': env['VERSION'], 'platform': 'macos-arm64', 'backend': 'mlx-swift',
@@ -80,6 +258,8 @@ def prepare(root, bundle, env):
         'changelog': release_changelog(env),
     }
     payload['url'] = env['R2_PUBLIC_URL'].rstrip('/') + '/' + object_key(payload)
+    if block is not None:
+        payload['cluster_runtime'] = block
     validate(payload, env)
     if sha256(bundle) != payload['bundle_hash']:
         raise ValueError('Signed bundle changed after final verification')
@@ -125,7 +305,7 @@ def coordinator(env, path, payload=None):
     data = None
     if payload is not None:
         headers.update({'Content-Type': 'application/json', 'Authorization': 'Bearer ' + env['RELEASE_KEY']})
-        data = json.dumps(payload).encode()
+        data = registration_body(payload)
     request = urllib.request.Request(env['COORDINATOR_URL'].rstrip('/') + path, data=data, headers=headers)
     try:
         with urllib.request.build_opener(NoRedirect()).open(request, timeout=150) as response:
@@ -213,14 +393,18 @@ def main():
     parser.add_argument('--artifact-id')
     parser.add_argument('--artifact-digest')
     parser.add_argument('--run-id')
+    parser.add_argument('--cluster-runtime', type=Path,
+                        help='prepare: the cluster runtime facts of the final signed app, sent as cluster_runtime')
     args = parser.parse_args()
+    if args.cluster_runtime is not None and args.operation != 'prepare':
+        parser.error('--cluster-runtime is a prepare option')
     if args.operation == 'download':
         download(os.environ['GITHUB_REPOSITORY'], args.artifact_id, args.artifact_digest,
                  args.run_id, args.directory)
     elif args.operation == 'prepare':
         if args.bundle is None:
             parser.error('prepare requires --bundle')
-        prepare(args.directory, args.bundle, os.environ)
+        prepare(args.directory, args.bundle, os.environ, args.cluster_runtime)
     else:
         globals()[args.operation](args.directory, os.environ)
 

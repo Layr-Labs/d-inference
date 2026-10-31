@@ -182,15 +182,27 @@ public struct ClusterPairServingGrant: Sendable, Equatable {
     /// The families with a diverged record and no passing one, and why: never
     /// served, on any chips, until a check of the family passes.
     public let withheldFamilies: [ClusterPairServingModeFamily: String]
+    /// The records the grant rests on, in the order they were given (the
+    /// bundle's): the passing records it is computed from, without a pass
+    /// that a divergence of the same shape contradicts.
+    public let records: [ClusterPairQualificationRecord]
 
     public init(runtimeModelID: String, qualifications: [ClusterPairServingQualification], evidence: String,
-                withheldFamilies: [ClusterPairServingModeFamily: String] = [:]) {
+                withheldFamilies: [ClusterPairServingModeFamily: String] = [:], records: [ClusterPairQualificationRecord] = []) {
         self.runtimeModelID = runtimeModelID; self.qualifications = qualifications; self.evidence = evidence
-        self.withheldFamilies = withheldFamilies
+        self.withheldFamilies = withheldFamilies; self.records = records
     }
 
     /// The mode families a pair may serve this model in, in order.
     public var families: [ClusterPairServingModeFamily] { Set(qualifications.map(\.family)).sorted() }
+
+    /// SHA-256 of `records` as canonical JSON Lines: each record's
+    /// `encodedLine` (sorted keys, no whitespace), joined by "\n", with no
+    /// trailing newline. A release's cluster runtime facts name it as the
+    /// grant's `evidence_sha256`.
+    public func evidenceSHA256() throws -> String {
+        ClusterConfigurationCodec.sha256(Data(try records.map { try $0.encodedLine() }.joined(separator: "\n").utf8))
+    }
 
     /// The chip classes the grant's passing checks ran on, in any role: what
     /// the evidence says in words. Not a list of allowed chips: any detected
@@ -460,7 +472,8 @@ public struct ClusterPairServingDecisions: Sendable, Equatable {
                 $0.0.mode!.servingFamily
             }.mapValues { Self.withholding($0) }
             granted.append(ClusterPairServingGrant(runtimeModelID: model, qualifications: runs,
-                evidence: Self.evidence(records: evidence.count, placements: runs), withheldFamilies: closed))
+                evidence: Self.evidence(records: evidence.count, placements: runs), withheldFamilies: closed,
+                records: evidence.map(\.0)))
         }
         self.granted = granted
         // A model is withheld as a whole only when no family of it is granted.
@@ -631,23 +644,33 @@ public enum ClusterPairServingGrants {
     /// The owner's own serving of a model (owner, 2026-10-14 08:45): refused
     /// only when no cluster stage adapter runs it; memory is the planner's and
     /// each Mac's load gate's. Records add the public grant, if any, and the
-    /// shapes the planner steers away from.
+    /// shapes the planner steers away from; `publicModels` the families the
+    /// owner declared public.
     public static func ownerServing(runtimeModelID: String, publicModelID: String, artifactSHA256: String? = nil,
-                                    decisions: ClusterPairServingDecisions = decisions) throws -> ClusterPairOwnerServing {
+                                    decisions: ClusterPairServingDecisions = decisions,
+                                    publicModels: [ClusterPublicModel] = ClusterPublicModels.declared) throws -> ClusterPairOwnerServing {
         try requireStageAdapter(runtimeModelID: runtimeModelID, publicModelID: publicModelID)
         return .init(runtimeModelID: runtimeModelID,
             publicGrant: try? grant(runtimeModelID: runtimeModelID, publicModelID: publicModelID, artifactSHA256: artifactSHA256,
                                     decisions: decisions),
-            records: records(runtimeModelID: runtimeModelID, artifactSHA256: artifactSHA256, decisions: decisions))
+            records: records(runtimeModelID: runtimeModelID, artifactSHA256: artifactSHA256, decisions: decisions),
+            declaredFamilies: ClusterPublicModels.families(runtimeModelID: runtimeModelID, artifactSHA256: artifactSHA256,
+                                                           in: publicModels))
     }
 
     /// The one line a plan or the onboarding shows about public traffic for a
-    /// model served in `mode`.
+    /// model served in `mode`: qualified in the families its records grant or
+    /// the owner declared public (`ClusterPublicModels`), unless the placement
+    /// decodes with Qwen's speculative assistant (`tensorAssistant`), which no
+    /// qualification covers.
     public static func publicTrafficLine(runtimeModelID: String, artifactSHA256: String? = nil, mode: ClusterGenerationMode?,
-                                         decisions: ClusterPairServingDecisions = decisions) -> String {
+                                         tensorAssistant: Bool = false, decisions: ClusterPairServingDecisions = decisions,
+                                         publicModels: [ClusterPublicModel] = ClusterPublicModels.declared) -> String {
         let grant = try? grant(runtimeModelID: runtimeModelID, publicModelID: runtimeModelID, artifactSHA256: artifactSHA256,
                                decisions: decisions)
-        return ClusterPairOwnerServing.publicTrafficLine(grant: grant, mode: mode)
+        return ClusterPairOwnerServing.publicTrafficLine(grant: grant, declared: ClusterPublicModels.families(
+            runtimeModelID: runtimeModelID, artifactSHA256: artifactSHA256, in: publicModels), mode: mode,
+            tensorAssistant: tensorAssistant)
     }
 
     /// One rank of a placement, checked on the Mac that runs it with that
@@ -762,6 +785,11 @@ public enum ClusterPairServingGrants {
 public struct ClusterPairOwnerServing: Sendable, Equatable {
     /// The one line shown for a model or placement with no public grant.
     public static let notYetQualified = "not yet qualified for public traffic"
+    /// The one line shown for a placement of a qualified model and mode that decodes with Qwen's speculative
+    /// assistant: the assistant serves local clusters only, so the setup is never offered to the coordinator
+    /// (`ClusterConfiguration.tensorAssistantServesLocally`).
+    public static let tensorAssistantNotOffered = "not offered for public traffic: it decodes with Qwen's speculative "
+        + "assistant, which serves local clusters only (with [backend] mtp_mode \"auto\", a cluster served through Darkbloom is planned without it)"
 
     public let runtimeModelID: String
     /// The records' public grant; nil when no passing record of the installed
@@ -769,18 +797,32 @@ public struct ClusterPairOwnerServing: Sendable, Equatable {
     public let publicGrant: ClusterPairServingGrant?
     /// Every check on record, for the shapes they steer away from.
     public let records: ClusterPairQualificationRecords
+    /// The families the owner declared public for the installed artifact
+    /// (`ClusterPublicModels`), with or without a record of them.
+    public let declaredFamilies: [ClusterPairServingModeFamily]
+
+    init(runtimeModelID: String, publicGrant: ClusterPairServingGrant?, records: ClusterPairQualificationRecords,
+         declaredFamilies: [ClusterPairServingModeFamily] = []) {
+        self.runtimeModelID = runtimeModelID; self.publicGrant = publicGrant; self.records = records
+        self.declaredFamilies = declaredFamilies
+    }
 
     /// The model's public status in one line, whatever the mode.
-    public var publicTrafficLine: String { Self.publicTrafficLine(grant: publicGrant, mode: nil) }
+    public var publicTrafficLine: String { Self.publicTrafficLine(grant: publicGrant, declared: declaredFamilies, mode: nil) }
 
     /// The public status of serving it in `mode`, in one line.
-    public func publicTrafficLine(mode: ClusterGenerationMode?) -> String { Self.publicTrafficLine(grant: publicGrant, mode: mode) }
+    public func publicTrafficLine(mode: ClusterGenerationMode?) -> String {
+        Self.publicTrafficLine(grant: publicGrant, declared: declaredFamilies, mode: mode)
+    }
 
-    static func publicTrafficLine(grant: ClusterPairServingGrant?, mode: ClusterGenerationMode?) -> String {
-        guard let grant, !grant.families.isEmpty, mode.map({ grant.families.contains($0.servingFamily) }) ?? true else {
+    static func publicTrafficLine(grant: ClusterPairServingGrant?, declared: [ClusterPairServingModeFamily],
+                                  mode: ClusterGenerationMode?, tensorAssistant: Bool = false) -> String {
+        let families = Set((grant?.families ?? []) + declared).sorted()
+        guard !families.isEmpty, mode.map({ families.contains($0.servingFamily) }) ?? true else {
             return notYetQualified
         }
-        let families = (mode.map { [$0.servingFamily] } ?? grant.families).map(\.description).joined(separator: " and ")
-        return "qualified for public traffic in \(families) mode (the coordinator's parity qualification decides each placement)"
+        guard !tensorAssistant else { return tensorAssistantNotOffered }
+        let named = (mode.map { [$0.servingFamily] } ?? families).map(\.description).joined(separator: " and ")
+        return "qualified for public traffic in \(named) mode (the coordinator's parity qualification decides each placement)"
     }
 }

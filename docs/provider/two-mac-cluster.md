@@ -1,6 +1,6 @@
 # Two Macs as one provider (guided setup)
 
-> Last updated: 2026-10-30
+> Last updated: 2026-10-31
 
 Two Apple Silicon Macs joined by one Thunderbolt 5 cable serve a model together:
 each Mac holds part of its layers, and the pair serves as one provider. Setting
@@ -73,6 +73,35 @@ update, speeds an earlier build served no longer steer the plan (`darkbloom
 cluster plan` says how many records it left out). A request that answers fewer
 than 64 tokens (the setup's test answer, a quick "Say hi") is not counted as a
 speed and does not shape the plan.
+
+Qwen3.8 27B in tensor parallel can also decode with the speculative assistant
+its artifact ships, but only on a cluster that serves locally only. The
+assistant is not qualified for public traffic, and a setup registered with the
+coordinator never carries it. So, with the default `[backend] mtp_mode` of
+`auto`:
+
+| You run | Qwen3.8 27B decodes | One request on two M5 Ultras (2026-10-31) | The coordinator |
+|---|---|---|---|
+| `darkbloom cluster` | without the assistant | about 40 tokens/s | the pair registers when the coordinator serves a matching approval |
+| [`darkbloom cluster local`](#serving-locally-only) | with the assistant | about 93 tokens/s | never contacted |
+
+With `mtp_mode = "on"`, `darkbloom cluster` keeps the assistant too. That pair
+is then not offered to the coordinator: its plan says "not offered for public
+traffic", and it serves on the leader's local API. A serving cluster switched
+with `l` or `p` keeps the setup it has; press `m` to plan the model again for
+the new way of serving. Public speculative decoding for Qwen pairs needs
+qualification evidence of its own, which no record holds yet. Rules:
+[Qwen27 TP assistant policy](../reference/configuration.md#qwen27-tp-assistant-policy).
+
+A JSON `response_format` request that a single Mac would answer under a grammar
+(no tools or `tool_choice`, no media, a schema the grammar covers) is refused on
+a Qwen pair before any output: a pair's ranks cannot apply the grammar
+(`constrained_decoding_unsupported`, HTTP 400). The coordinator moves a public
+request refused this way to a single Mac, which constrains it
+(darkbloom-platform `fix/coord-pair-refusal-failover`); a request to the owner's
+local cluster API gets the refusal. Other JSON requests are served with the
+format instruction only, as on one Mac
+([constrained Qwen JSON answers](../architecture/inference.md#constrained-qwen-json-answers)).
 
 | # | Where | What you do | What it asks |
 |---|---|---|---|
@@ -150,10 +179,16 @@ The pair also serves on the leader's local API, both Macs without the
 approval, when the coordinator gives no answer for the absence grace (10
 minutes, the same grace as in [if a Mac goes away](#if-a-mac-goes-away)), when
 it no longer lists the approval, or when the coordinator-paired parts end three
-times in a row right after starting. When the coordinator lists a matching
-approval again, the pair registers again (after repeated failures, only with a
-later approval). Both Macs carry the same approval, or neither does: the leader
-compares the two at every check.
+times in a row right after starting. An end the coordinator decides is not
+counted: one because it could not be reached, or because it did not accept the
+part's registration in time, as during a coordinator deploy. This complements
+the coordinator's side: a coordinator that ends each pair session before its
+shutdown closes the members' connections gives a deploy cleaner ends, and this
+rule still covers a coordinator without that change, a coordinator crash and a
+slow registration. When the coordinator lists a matching approval again, the
+pair registers again (after repeated failures, with the same approval an hour
+later, or at once with a later one). Both Macs carry the same approval, or
+neither does: the leader compares the two at every check.
 
 What `darkbloom cluster` status says in each mode:
 
@@ -162,7 +197,7 @@ What `darkbloom cluster` status says in each mode:
 | Registered | `Registered with the coordinator as a cluster member: approval <id>, until <date>.` |
 | Coordinator gave no answer for the grace | The API line, then `The coordinator has not answered for 10 minutes: the pair serves on the leader's local API until it answers again, then it is offered again with approval <id>.` |
 | Approval no longer listed | The API line, then `The coordinator no longer lists cluster approval <id>: the pair serves on the leader's local API until it lists a matching one again.` |
-| Parts kept ending | The API line, then `The coordinator-paired parts ended 3 times in a row right after starting with cluster approval <id>: the pair serves on the leader's local API until the coordinator lists a later one.` |
+| Parts kept ending | The API line, then `The coordinator-paired parts ended 3 times in a row right after starting with cluster approval <id>: the pair serves on the leader's local API for 60 minutes, then it is offered again with it, or sooner with a later one the coordinator lists.` |
 | Approval ended | The API line, then one line that says the cluster approval `<id>` expired and the pair serves on the leader's local API |
 | No approval (production, staging, no matching entry) | The API line, then (only after a refusal) `Not offered for pairing: <reason>.` |
 
@@ -190,7 +225,9 @@ to keep waiting (it leads) and the other says so and joins it.
 choice, planner, copies, speculative decoding, caches, failover and stop as
 `darkbloom cluster`, but no Mac of the cluster contacts a coordinator. Nothing
 registers, sends heartbeats, takes public traffic or bills, and serving needs
-no network beyond the cable.
+no network beyond the cable. It is also where Qwen3.8 27B in tensor parallel
+decodes with its speculative assistant under the default `mtp_mode`
+([above](#the-steps-once)).
 
 1. On the leader, run:
 
@@ -482,12 +519,37 @@ a restart, and writes why to `~/.darkbloom/cluster-setup/service.log`.
 
 After a restart or power cut a Mac serves again once it is logged in. With
 automatic login on (System Settings → Users & Groups; needs FileVault off) that
-happens by itself; `darkbloom cluster` says which applies to each Mac. After a
-Darkbloom update, the cluster sets itself up again by itself ("Updating the
-cluster setup after a Darkbloom update."). The leader checks for an update
-every minute; while a Mac serves, those checks and any plan made then use the
-speed it measured while idle and never run a GPU benchmark beside the model
-([device profile](../architecture/inference.md#automatic-local-cluster-batching)).
+happens by itself; `darkbloom cluster` says which applies to each Mac.
+
+## Updating Darkbloom on the pair
+
+The Macs of a pair do not update by themselves. The cluster service runs with
+automatic updates off, its parts run no updater, and the single-Mac provider,
+whose updater keeps one Mac current, does not run beside the cluster.
+Automatic updates for a pair are a follow-up. Until then, update by hand:
+
+1. On each Mac, run:
+
+   ```bash
+   darkbloom update
+   ```
+
+   It installs the release. Its last line, "Restart the provider for the new
+   version to take effect.", does not apply here: no single-Mac provider runs on
+   a pair Mac.
+2. Wait. The leader compares each Mac's installed cluster worker with the saved
+   setup every minute while the cluster serves. When one changed, it stops both
+   parts, plans the same model again and serves it from the new release
+   ("Updating the cluster setup after a Darkbloom update."). Its log,
+   `~/.darkbloom/cluster-setup/service.log`, says
+   `Darkbloom changed on the other Mac: setting the cluster up again for <model>`
+   (or this Mac, or both Macs). An update of the second Mac sets it up once more.
+   While a Mac serves, these checks and any plan made then use the speed it
+   measured while idle and never run a GPU benchmark beside the model
+   ([device profile](../architecture/inference.md#automatic-local-cluster-batching)).
+3. Log out and back in on each Mac, or restart it. The cluster service itself
+   keeps running the release it started with until it starts again, as it does
+   at login.
 
 ## When something is in the way
 
@@ -548,6 +610,8 @@ and they must match.
 
 ## Not yet in this build
 
+- A pair does not update itself: run `darkbloom update` on both Macs
+  ([updating Darkbloom on the pair](#updating-darkbloom-on-the-pair)).
 - The login agent and macOS's one Local Network approval need the signed
   Darkbloom.app ([always on](cluster-always-on.md)).
 - A setup with unequal tensor-parallel shares cannot register with the

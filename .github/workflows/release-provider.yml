@@ -63,6 +63,13 @@ name: Provider Release Lane (reusable)
 # release-swift.yml runs the staging lane only when the STAGING_ENABLED
 # repository variable is 'true'. Apple signing secrets are shared (same cert for
 # all envs).
+#
+# Repository variables DEV_CLUSTER_RUNTIME_ENABLED, STAGING_CLUSTER_RUNTIME_ENABLED
+# and PROD_CLUSTER_RUNTIME_ENABLED: 'true' sends the final signed app's cluster
+# runtime facts (cluster_runtime) with that environment's release registration
+# (job build-and-release, CLUSTER_RUNTIME_SEND). Every lane computes, shows and
+# retains them either way. Set one only after that environment's coordinator
+# accepts the block (docs/operations/provider-release.md).
 
 on:
   workflow_call:
@@ -288,6 +295,17 @@ jobs:
       RELEASE_UNSIGNED_ARTIFACT_DIGEST: ${{ needs.resolve-env.outputs.unsigned_artifact_digest }}
       RELEASE_BUILD_RUN_ID: ${{ needs.resolve-env.outputs.build_run_id }}
       RELEASE_BUILD_RUN_ATTEMPT: ${{ needs.resolve-env.outputs.build_run_attempt }}
+      # 'true' only when this run registers a release and the environment's
+      # repository variable (DEV_, STAGING_ or PROD_CLUSTER_RUNTIME_ENABLED) is
+      # set to 'true' (== compares case-insensitively, so 'True' counts too).
+      # Then the payload carries cluster_runtime and a failure
+      # to compute it fails the release before registration; otherwise the
+      # payload is unchanged and a failure only warns.
+      CLUSTER_RUNTIME_SEND: >-
+        ${{ needs.resolve-env.outputs.publish == 'true' &&
+            ((needs.resolve-env.outputs.environment == 'dev' && vars.DEV_CLUSTER_RUNTIME_ENABLED == 'true') ||
+             (needs.resolve-env.outputs.environment == 'staging' && vars.STAGING_CLUSTER_RUNTIME_ENABLED == 'true') ||
+             (needs.resolve-env.outputs.environment == 'prod' && vars.PROD_CLUSTER_RUNTIME_ENABLED == 'true')) }}
 
     steps:
       - name: Resolve release metadata URLs
@@ -920,6 +938,89 @@ jobs:
           echo "Bundle hash:   $BUNDLE_HASH"
           echo "Metallib hash: $METALLIB_HASH"
 
+      # Every lane: the cluster runtime facts (cluster_runtime) from which a
+      # coordinator derives this build's cluster approvals, their pair-serving
+      # grants and the parity qualifications of the models it declares public
+      # (ClusterPublicModels), computed by the final signed app's own CLI and
+      # worker after every signing, notarization and final-bytes check above.
+      # The payload carries them only when CLUSTER_RUNTIME_SEND is 'true';
+      # otherwise a failure here only warns (continue-on-error) and the release
+      # continues exactly as before. No secret is in this step: it reads no secrets.*,
+      # removes the two secret-derived values the job's GITHUB_ENV holds and
+      # the signing keychain (and proves the identity is gone) before any
+      # release code runs, and runs the app's CLI with an empty environment.
+      - name: Compute cluster runtime facts from the final signed app
+        id: cluster_runtime
+        continue-on-error: ${{ env.CLUSTER_RUNTIME_SEND != 'true' }}
+        timeout-minutes: 20
+        run: |
+          set -euo pipefail
+          unset r2_public_url coordinator_url
+          # The signing keychain must be gone, and no keychain may still list
+          # the signing identity, before any release code runs.
+          security delete-keychain "$KEYCHAIN_PATH"
+          test ! -e "$KEYCHAIN_PATH"
+          test -n "$DEVELOPER_ID"
+          IDENTITIES=$(security find-identity -p codesigning)
+          if grep -F -q -- "$DEVELOPER_ID" <<< "$IDENTITIES"; then
+            echo "::error::The signing identity is still readable after the signing keychain was deleted"
+            exit 1
+          fi
+          test "$(shasum -a 256 /tmp/darkbloom-bundle-macos-arm64.tar.gz | cut -d' ' -f1)" = "$BUNDLE_HASH"
+          FACTS_ROOT="$RUNNER_TEMP/cluster-runtime"
+          rm -rf "$FACTS_ROOT"
+          mkdir -p "$FACTS_ROOT/app"
+          /usr/bin/tar -xzf /tmp/darkbloom-bundle-macos-arm64.tar.gz -C "$FACTS_ROOT/app"
+          scripts/provider-cluster-runtime-facts.sh "$FACTS_ROOT/app/$APP_NAME" "$CLI_NAME" "$ENV_PREFIX" "$FACTS_ROOT/facts"
+          if [ "$CLUSTER_RUNTIME_SEND" = true ]; then
+            echo "CLUSTER_RUNTIME_FILE=$FACTS_ROOT/facts/cluster-runtime.json" >> "$GITHUB_ENV"
+          fi
+
+      - name: Show the cluster runtime facts
+        if: ${{ !cancelled() && (steps.cluster_runtime.outcome == 'success' || steps.cluster_runtime.outcome == 'failure') }}
+        continue-on-error: true
+        env:
+          FACTS_OUTCOME: ${{ steps.cluster_runtime.outcome }}
+        run: |
+          set -euo pipefail
+          FACTS="$RUNNER_TEMP/cluster-runtime/facts"
+          VARIABLE="$(echo "$ENV_PREFIX" | tr '[:lower:]' '[:upper:]')_CLUSTER_RUNTIME_ENABLED"
+          if [ "$CLUSTER_RUNTIME_SEND" = true ]; then
+            SENT="$VARIABLE is true: the release registers with these facts (cluster_runtime) or not at all."
+            FAILED="::error::The cluster runtime facts could not be computed; with $VARIABLE true the release stops before registration."
+          else
+            SENT="Not sent: $VARIABLE is not true, or this run registers no release; the payload is unchanged."
+            FAILED="::warning::The cluster runtime facts could not be computed; the release continues without them, as before."
+          fi
+          {
+            echo "### Cluster runtime facts ($ENV_PREFIX)"
+            echo "$SENT"
+            if [ "$FACTS_OUTCOME" = success ]; then
+              cat "$FACTS/skipped.md"
+              echo '```json'
+              python3 -m json.tool --sort-keys "$FACTS/cluster-runtime.json"
+              echo '```'
+            else
+              echo "Failed: see the log of the step 'Compute cluster runtime facts from the final signed app'."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$FACTS_OUTCOME" != success ]; then
+            echo "$FAILED"
+          fi
+
+      - name: Retain the cluster runtime facts
+        if: ${{ !cancelled() && (steps.cluster_runtime.outcome == 'success' || steps.cluster_runtime.outcome == 'failure') }}
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: cluster-runtime-${{ needs.resolve-env.outputs.environment }}-${{ needs.resolve-env.outputs.source_sha }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/cluster-runtime/facts/cluster-runtime.json
+            ${{ runner.temp }}/cluster-runtime/facts/release-models.json
+            ${{ runner.temp }}/cluster-runtime/facts/skipped.md
+          if-no-files-found: warn
+          retention-days: 30
+
       - name: Record signed validation identity
         id: validation_identity
         if: needs.resolve-env.outputs.publish == 'false'
@@ -974,8 +1075,17 @@ jobs:
           COORDINATOR_URL: ${{ env.coordinator_url }}
         run: |
           set -euo pipefail
-          python3 scripts/provider-release-publication.py prepare \
-            --directory "$RUNNER_TEMP/provider-publication" --bundle /tmp/darkbloom-bundle-macos-arm64.tar.gz
+          if [ "$CLUSTER_RUNTIME_SEND" = true ]; then
+            # The environment's variable is 'true': the facts step succeeded
+            # (it fails the job otherwise) and its block goes with the payload.
+            test -s "${CLUSTER_RUNTIME_FILE:-}"
+            python3 scripts/provider-release-publication.py prepare \
+              --directory "$RUNNER_TEMP/provider-publication" --bundle /tmp/darkbloom-bundle-macos-arm64.tar.gz \
+              --cluster-runtime "$CLUSTER_RUNTIME_FILE"
+          else
+            python3 scripts/provider-release-publication.py prepare \
+              --directory "$RUNNER_TEMP/provider-publication" --bundle /tmp/darkbloom-bundle-macos-arm64.tar.gz
+          fi
           # dev and staging names carry the environment, so two lanes in one
           # GitHub run never collide; prod keeps the unqualified
           # name the resume path (provider_release_resume) reconstructs and the

@@ -1,0 +1,5 @@
+### A coordinator deploy no longer takes a cluster pair off public traffic
+
+- A pair registered with the coordinator serves on the leader's local API instead when its coordinator-paired parts end three times in a row right after starting. A part that ended because the coordinator did not accept its registration within the 10-second window counted too, although the coordinator decided that end: it happens during a coordinator deploy, right after a restart, or while the coordinator is slow. Such an end no longer counts. Ends with a local cause, such as a changed input or a crash, still count.
+- This complements a coordinator that ends each pair session before it shuts down, which makes a deploy's ends cleaner: the provider rule still covers coordinators without that change, coordinator crashes and slow registrations.
+- A pair set aside this way is offered to the coordinator again with the same approval an hour later, or at once with a later approval. Before, only a later approval, the approval's end or a Darkbloom update brought it back, so it could serve only the leader's local API for the rest of the release.

@@ -1257,9 +1257,11 @@ import Foundation
         require("a hand-off record qualifies the hand-off family for public traffic, and the owner is served in every mode",
             publicFamilies(handoffModel) == [.handOff] && allows([m3Ultra, m5Ultra], handoffModel, cuts: [8], .phaseSplitMTP)
                 && allows([m3Ultra, m5Ultra], handoffModel, cuts: [8], .pipeline) && allows([m3Ultra, m5Ultra], handoffModel, cuts: [8], .pipelineCompactDecode))
-        require("public traffic for a family no record passed is not yet qualified",
-            ClusterPairServingGrants.publicTrafficLine(runtimeModelID: handoffModel, mode: .pipeline, decisions: decisions) == ClusterPairOwnerServing.notYetQualified
-                && ClusterPairServingGrants.publicTrafficLine(runtimeModelID: handoffModel, mode: .phaseSplit, decisions: decisions).hasPrefix("qualified for public traffic"))
+        require("public traffic for a family no record passed is not yet qualified (records only, no public declaration)",
+            ClusterPairServingGrants.publicTrafficLine(runtimeModelID: handoffModel, mode: .pipeline, decisions: decisions, publicModels: [])
+                == ClusterPairOwnerServing.notYetQualified
+                && ClusterPairServingGrants.publicTrafficLine(runtimeModelID: handoffModel, mode: .phaseSplit, decisions: decisions, publicModels: [])
+                    .hasPrefix("qualified for public traffic"))
         require("a placement checked without its mode is refused", reason([m3Ultra, m5Ultra], handoffModel, cuts: [8], nil).contains("without its generation mode"))
         let handoff = try? ClusterPairServingGrants.grant(runtimeModelID: handoffModel, publicModelID: "p", decisions: decisions)
         require("a grant lists its families and no chip", handoff?.families == [.handOff] && handoff?.qualifiedChipClasses == [m3Ultra!, m5Ultra!]

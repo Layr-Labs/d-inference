@@ -246,15 +246,21 @@ extension ProviderLoop {
     ) async -> Bool {
         let survivors = await existingSlotGrants(excludingModelId: "", excludingModelIDs: excludingModelIDs)
         guard !survivors.isEmpty else { return true }
+        let minimumGrants = Self.minimumGrantBytes(survivors)
         let targets = EngineV2KVSizing.resliceGrants(
             existing: survivors.map(\.slot),
             newcomer: nil,
             fleetKVBudgetBytes: fleetKVBudgetBytes(
                 extraWeightBytes: 0, activationReserveBytes: reserveBytes,
-                excludingModelIDs: excludingModelIDs))
-        return EngineV2KVSizing.resliceMeetsServiceabilityFloor(
-            targets, minimumGrantBytes: Dictionary(uniqueKeysWithValues:
-                survivors.map { ($0.slot.modelId, $0.minimumGrantBytes) }))
+                excludingModelIDs: excludingModelIDs),
+            minimumGrantBytes: minimumGrants)
+        return EngineV2KVSizing.resliceMeetsServiceabilityFloor(targets, minimumGrantBytes: minimumGrants)
+    }
+
+    /// Every slot's serviceability floor by model, for `resliceGrants` and
+    /// `resliceMeetsServiceabilityFloor`.
+    private static func minimumGrantBytes(_ slots: [ExistingSlotGrant]) -> [String: Int] {
+        Dictionary(uniqueKeysWithValues: slots.map { ($0.slot.modelId, $0.minimumGrantBytes) })
     }
 
     /// Existing v2 slots eligible for re-slicing: live (not mid-unload)
@@ -414,13 +420,13 @@ extension ProviderLoop {
             modelId: modelId,
             fp16KVBytesPerToken: sizing.fp16KVBytesPerToken,
             maxContextLength: sizing.maxContextLength)
+        let minimumGrants = Self.minimumGrantBytes(existing)
         var fleetBudget = fleetKVBudgetBytes(extraWeightBytes: sizing.weightsBytes)
         var targets = EngineV2KVSizing.resliceGrants(
             existing: existing.map(\.slot),
             newcomer: newcomer,
-            fleetKVBudgetBytes: fleetBudget)
-        let minimumGrants = Dictionary(uniqueKeysWithValues:
-            existing.map { ($0.slot.modelId, $0.minimumGrantBytes) })
+            fleetKVBudgetBytes: fleetBudget,
+            minimumGrantBytes: minimumGrants)
 
         // Serviceability floor (fail loud): a slice that would leave ANY
         // slot below the minimum serveable grant is refused outright —
@@ -445,7 +451,8 @@ extension ProviderLoop {
             targets = EngineV2KVSizing.resliceGrants(
                 existing: existing.map(\.slot),
                 newcomer: newcomer,
-                fleetKVBudgetBytes: fleetBudget)
+                fleetKVBudgetBytes: fleetBudget,
+                minimumGrantBytes: minimumGrants)
         }
         guard EngineV2KVSizing.resliceMeetsServiceabilityFloor(
             targets, minimumGrantBytes: minimumGrants)
@@ -544,14 +551,15 @@ extension ProviderLoop {
         modelId: String, weightBytes: Int, fp16KVBytesPerToken: Int, maxContextLength: Int
     ) async throws -> NewcomerReslice {
         let existing = await existingSlotGrants(excludingModelId: modelId)
+        let minimumGrants = Self.minimumGrantBytes(existing)
         let fleetBudget = fleetKVBudgetBytes(extraWeightBytes: weightBytes)
         let targets = EngineV2KVSizing.resliceGrants(
             existing: existing.map(\.slot),
             newcomer: .init(modelId: modelId, fp16KVBytesPerToken: fp16KVBytesPerToken,
                             maxContextLength: maxContextLength),
-            fleetKVBudgetBytes: fleetBudget)
-        guard EngineV2KVSizing.resliceMeetsServiceabilityFloor(targets, minimumGrantBytes:
-            Dictionary(uniqueKeysWithValues: existing.map { ($0.slot.modelId, $0.minimumGrantBytes) }))
+            fleetKVBudgetBytes: fleetBudget,
+            minimumGrantBytes: minimumGrants)
+        guard EngineV2KVSizing.resliceMeetsServiceabilityFloor(targets, minimumGrantBytes: minimumGrants)
         else {
             EngineV2Factory.emitRefusalTelemetry(modelId: modelId, reason: .resliceFloor, error: nil,
                 emitTelemetry: engineV2SlotHooks?.emitTelemetry)
@@ -646,7 +654,9 @@ extension ProviderLoop {
     /// Regrow body — caller holds the re-slice gate. Shrink targets, if
     /// the budget somehow contracted, are applied first so the Σ ≤ budget
     /// invariant holds throughout. Used directly by `ensureModelLoaded`'s
-    /// post-bridge-guard failure path, which already holds the gate.
+    /// post-bridge-guard failure path, which already holds the gate. The
+    /// floors keep a slot a load funded to its floor from being shrunk
+    /// back below it.
     internal func resliceGrowSurvivorsLocked() async {
         guard nativeMiMoAllowsReclamation() else { return }
         let survivors = await existingSlotGrants(excludingModelId: "")
@@ -656,7 +666,8 @@ extension ProviderLoop {
         let targets = EngineV2KVSizing.resliceGrants(
             existing: survivors.map(\.slot),
             newcomer: nil,
-            fleetKVBudgetBytes: fleetBudget)
+            fleetKVBudgetBytes: fleetBudget,
+            minimumGrantBytes: Self.minimumGrantBytes(survivors))
         for entry in survivors {
             if let target = targets[entry.slot.modelId], target < entry.previousGrant {
                 await entry.bridge.updateKVBytesCapacity(target)

@@ -64,6 +64,7 @@ jobs:
           python3 scripts/test-prepare-metal-toolchain.py
           python3 scripts/test-provider-release-pipeline.py
           python3 scripts/test-provider-release-publication.py
+          python3 scripts/test-provider-cluster-runtime-models.py
           python3 scripts/test-release-dev-branch.py
           python3 scripts/test-provider-release-artifact.py
           python3 scripts/test-provider-signing-validation.py

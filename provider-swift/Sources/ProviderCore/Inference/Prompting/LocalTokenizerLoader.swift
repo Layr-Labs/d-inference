@@ -5,8 +5,8 @@
 /// macro expands to, but done by hand because we load tokenizers from a
 /// local on-disk cache rather than the Hugging Face Hub. Keeping the
 /// bridge in pure Swift lets us avoid pulling in MLXHuggingFace
-/// (and its BoringSSL/NIO/Jinja transitive closure) just for the
-/// `from(modelFolder:)` entrypoint we already have.
+/// (and its BoringSSL/NIO/Jinja transitive closure) just for the steps of
+/// `AutoTokenizer.from(modelFolder:)`, which `load(from:)` runs itself.
 ///
 /// Used by ProviderLoop and the engine/model factories.
 
@@ -32,18 +32,19 @@ public struct LocalTokenizerLoader: TokenizerLoader, Sendable {
             upstream = try PreTrainedTokenizer(
                 tokenizerConfig: .init(inputs.configurationDictionary()),
                 tokenizerData: .init(inputs.dataDictionary()))
-        } else if PromptTokenCachePolicy.isEnabled(environment: environment) {
-            // The steps of `AutoTokenizer.from(modelFolder:)`, keeping the
-            // configurations for the prompt token cache.
+        } else {
+            // The steps of `AutoTokenizer.from(modelFolder:)`, with decode cleanup
+            // resolved and the configurations kept for the prompt token cache.
             let hub = LanguageModelConfigurationFromHub(modelFolder: directory)
-            guard let tokenizerConfig = try await hub.tokenizerConfig else {
+            guard let published = try await hub.tokenizerConfig else {
                 throw Tokenizers.TokenizerError.missingConfig
             }
+            let tokenizerConfig = Self.resolvingDecodeCleanup(published)
             let tokenizerData = try await hub.tokenizerData
             upstream = try PreTrainedTokenizer(tokenizerConfig: tokenizerConfig, tokenizerData: tokenizerData)
-            configurations = .init(tokenizerConfig: tokenizerConfig, tokenizerData: tokenizerData)
-        } else {
-            upstream = try await AutoTokenizer.from(modelFolder: directory)
+            if PromptTokenCachePolicy.isEnabled(environment: environment) {
+                configurations = .init(tokenizerConfig: tokenizerConfig, tokenizerData: tokenizerData)
+            }
         }
         let modelType = ModelScanner.parseConfigJSON(
             at: directory.appendingPathComponent("config.json")).modelType
@@ -57,6 +58,18 @@ public struct LocalTokenizerLoader: TokenizerLoader, Sendable {
         return LocalTokenizerBridge(
             upstream, chatTemplate: chatTemplate, modelType: modelType,
             promptCacheConfigurations: configurations, environment: environment)
+    }
+
+    /// swift-transformers reads an absent `clean_up_tokenization_spaces` as true; Python
+    /// Transformers reads it as false. Cleanup rewrites decoded text: `git add .` comes back
+    /// as `git add.`, and a streamed `'start'` as `''start'`. Gemma 4's published config omits
+    /// the key. This resolves it in memory, so the verified files stay as they are; cleanup
+    /// runs only on decode, so input IDs do not change. An explicit Boolean is kept.
+    private static func resolvingDecodeCleanup(_ config: Config) -> Config {
+        let key: BinaryDistinctString = "clean_up_tokenization_spaces"
+        guard var fields = config.dictionary(), fields[key]?.boolean() == nil else { return config }
+        fields[key] = Config(false)
+        return Config(fields)
     }
 }
 

@@ -993,9 +993,15 @@ are not successful physical runs.
 
 ## SDK 27 Release Qualification
 
-The release `qualify-sdk` job uses SDK 27 / Swift 6.4 and runs independently of
-optimized compilation. Signing requires both successes. GPU suites retain serial
-execution and exclusive-process isolation. A cache hit never skips a test.
+Release SDK qualification uses SDK 27 / Swift 6.4 and runs independently of
+optimized compilation. The `qualify-sdk-shard` jobs run the provider suite in
+five shards on separate Macs, with the shard plan of CI
+(`scripts/provider-test-shards.py`). Shard 2 also runs Prompt Parity, and the
+last shard runs the isolated processes and the audio gate. The `qualify-sdk`
+job runs after every shard passes. It audits the executed counts of each shard
+against the full suite list. Signing requires `qualify-sdk` and optimized
+compilation. GPU suites retain serial execution and exclusive-process isolation.
+A cache hit never skips a test.
 
 `Qwen4StandaloneAdmissionTests` uses scripted memory through the real standalone
 server to cover low-headroom refusal before loading, pending-load cleanup and

@@ -61,6 +61,7 @@ import Darwin
             ("saved setup, trust and candidate", savedSetup),
             ("serving scope kept in the setup record", servingScopeInTheRecord),
             ("the cable moved to another port: listeners follow it", cableMovesToAnotherPort),
+            ("the Macs paired again: listeners follow the pairing", listenersFollowThePairing),
             ("the owner a setup names is the file, not the PATH link", ownerIsTheFileNotThePathLink),
             ("what each Mac holds", holdings),
             ("link fix results and the guided setup's reading", linkFixResults),

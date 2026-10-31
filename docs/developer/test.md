@@ -2462,6 +2462,27 @@ The planned-stop lifecycle suite also pauses the actual service immediately befo
 
 Planned-stop lifecycle checks exercise the actual peerLeaseState projection, accepted ClusterControlNode follower lease, ClusterControlIntent recording and follower part selection while the real owned child is retained after TERM, while start is paused, and after retirement. A held outbound lease custody flag must block final peer stop after local child exit. Optional-record compatibility and an already-idle peer are checked separately. No physical peer transport or installed native shutdown is claimed by these CPU cases.
 
+### Cluster service listeners after pairing again
+
+`ClusterServicePairingChangeTests` runs the actual service's two listeners on
+loopback ports of their own (`ClusterService.Listening`), keyed from real pairing
+ceremonies stored in a private home. After the same two Macs pair again, the
+earlier listeners refuse the new pairing (`handshakeRejected`) until the next
+check starts them again; then the new pairing is answered and the earlier one
+refused. A removed pairing stops both listeners, an unchanged or unreadable
+pairing store keeps the same ones, and the control node of this Mac's earlier key
+is dropped. The other Mac dials without the per-user request lock, which a
+cluster service running on the same Mac shares; no production port or
+Thunderbolt interface is used. `ClusterConsoleChecks` (`listenersFollowThePairing`)
+checks the same refusal and restart on real ceremonies and listeners without the
+service, and that a re-read pairing store gives the same identity, a new
+ceremony another one and an unsafe store a read failure rather than no pairing.
+
+Focused check: `swift test --filter ClusterServicePairingChangeTests` from
+`provider-swift`. Sources:
+`provider-swift/Tests/ProviderCoreTests/Inference/Distributed/ClusterServicePairingChangeTests.swift`
+and `provider-swift/Tests/ClusterConsoleChecks/ConsolePairingChangeChecks.swift`.
+
 ### Qwen27 capacity consistency checks
 
 Every Qwen TP row serves through these request-owned lanes. `QwenTensorParallelBatchSessionTests`

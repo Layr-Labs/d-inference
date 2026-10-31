@@ -3538,6 +3538,41 @@ part the same key with a different file (`ClusterServiceAgent.partHealthPath`,
 service's heartbeat and still waits for its registration as a supervised member.
 An empty or absent key is passed on unchanged.
 
+## Cluster service listeners follow the cable and the pairing
+
+Each Mac's cluster service answers the other Mac on two listeners: the setup
+exchange's (`ClusterSetupLinkExchange.port`) and the control lease's
+(`ClusterSetupLinkExchange.controlPort`). A listener binds the cable's port and
+address as they are when it starts, and is keyed with the pairing that holds
+then (`ClusterSetupLinkExchange.Responder.pairing`). It refuses every handshake
+the other Mac keys with a later pairing (`handshakeRejected` there), so a
+listener left on an earlier pairing refuses every lease and setup request.
+
+At most once per `ClusterService.listenerCheckSeconds`
+(`static let listenerCheckSeconds: Double = 5`) seconds for each listener,
+`ClusterService.listenerChange` compares the listener with what holds now:
+
+- a cable on another port or address restarts it there;
+- another pairing restarts it with that pairing. `ClusterSetupLinkExchange.Pairing.Identity`
+  compares both pins, the cluster label, the link epoch and the edge, never the
+  edge secret; every ceremony derives a new link epoch, so pairing the same two
+  Macs again is another pairing;
+- no pairing at all stops it;
+- a pairing store that cannot be read changes nothing, as an unreadable setup
+  record leaves a running part alone.
+
+Each restart or stop of the exchange's listener names its reason in the service
+log; the control lease's listener restarts and stops without a line. The
+control node of an earlier pairing is dropped once the pairing names another
+local or peer member (`ClusterService.ensureControl`).
+
+Sources: `provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/ClusterService.swift`
+(`ClusterService.listenerChange`, `ensureResponder`),
+`provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/ClusterServiceControl.swift`
+(`ensureControlResponder`, `ensureControl`) and
+`provider-swift/Sources/ProviderCore/Inference/Distributed/Console/ClusterSetupLinkExchange.swift`
+(`ClusterSetupLinkExchange.Responder`).
+
 ## GLM tool-stream completion
 
 GLM tool output uses the SDK GLM parser to validate the complete tool suffix at

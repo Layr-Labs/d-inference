@@ -188,6 +188,47 @@ struct ProviderModelSwitchTests {
         #expect(changed.recomputed)
     }
 
+    /// A committed switch saves `enabled_models` and applies it, so the daemon
+    /// reports the filter its running selection now applies for `status` to
+    /// compare with the saved file; a refused commit restores none.
+    @Test(arguments: [true, false])
+    func theDaemonStateReportsTheFilterACommittedSwitchApplied(accepted: Bool) async throws {
+        let mock = MockCoordinator(acknowledgeModelReplacements: accepted)
+        let url = try await mock.start()
+        defer { Task { await mock.shutdown() } }
+        let (loop, root) = try await switchLoop(url: url.mockProviderWebSocketURL())
+        defer { try? FileManager.default.removeItem(at: root) }
+        await loop.useSwitchSnapshot(try switchSnapshot(in: root))
+        let (client, reader) = await connectSwitchLoop(loop, url: url.mockProviderWebSocketURL())
+        defer { reader.cancel(); Task { await client.shutdown() } }
+        let identity = try #require(ProcessIdentity.current())
+        let switching = Task { await loop.switchModels(request: .init(target: identity,
+            models: ["new-model"], timeoutSeconds: 0)) }
+        defer { switching.cancel() }
+        if !accepted {
+            let validated = try #require(try await mock.waitForSnapshot { $0.modelsReplacements.count == 1 })
+            let validation = try #require(validated.modelsReplacements.first)
+            try await mock.pushModelsReplaceAck(.init(requestId: validation.requestId,
+                drainRequestId: validation.drainRequestId, validateOnly: true, accepted: true))
+            let committed = try #require(try await mock.waitForSnapshot { $0.modelsReplacements.count == 2 })
+            let commit = try #require(committed.modelsReplacements.last)
+            try await mock.pushModelsReplaceAck(.init(requestId: commit.requestId,
+                drainRequestId: commit.drainRequestId, accepted: false, error: "invalid_models"))
+            let rolledBack = try #require(try await mock.waitForSnapshot { $0.modelsReplacements.count == 3 })
+            let rollback = try #require(rolledBack.modelsReplacements.last)
+            try await mock.pushModelsReplaceAck(.init(requestId: rollback.requestId,
+                drainRequestId: rollback.drainRequestId, accepted: true))
+        }
+        #expect(await switching.value.outcome == (accepted ? .switched : .failed))
+        await loop.writeDaemonState()
+        let state = try #require(try JSONSerialization.jsonObject(
+            with: Data(contentsOf: root.appendingPathComponent("state.json"))) as? [String: Any])
+        #expect(state["enabled_models_at_start"] as? [String] == ["old-model"])
+        #expect(state["enabled_models_at_last_switch"] as? [String] == (accepted ? ["new-model"] : nil))
+        #expect(try ConfigManager.load(from: root.appendingPathComponent("provider.toml")).backend.enabledModels
+            == [accepted ? "new-model" : "old-model"])
+    }
+
     @Test func explicitSelectionDiscardsPendingWeightRevision() async throws {
         let mock = MockCoordinator()
         let url = try await mock.start()

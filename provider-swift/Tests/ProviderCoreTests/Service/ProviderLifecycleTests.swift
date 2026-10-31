@@ -217,6 +217,30 @@ struct ProviderLifecycleTests {
         #expect(await !loop.appAttestStallRestartOwnsDrain)
     }
 
+    /// A slot whose native retirement is unproven stays resident and
+    /// unloading for the rest of the process (`GLM5NextRetirement`); nothing
+    /// resumes a wait for it. Shutdown must still finish: process exit
+    /// releases that memory.
+    @Test(.timeLimit(.minutes(1)))
+    func shutdownDoesNotWaitForeverForAnUnloadThatNeverFinishes() async throws {
+        let sandbox = try ModelLoadingSandbox()
+        defer { sandbox.remove() }
+        let loop = try await ModelLoadingFixtures.makeLoop(sandbox: sandbox,
+            models: [ModelLoadingFixtures.model("retained-glm")])
+        await loop.modelLoadingInstallSlot("retained-glm", bridge: makeInertStubBridge(modelId: "retained-glm").bridge)
+        await loop.modelLoadingMarkUnloading("retained-glm")
+        let finished = OneShotBoolContinuation()
+        let shutdown = Task { _ = await loop.shutdownBeforeRegistration(); finished.resume(returning: true) }
+        let timer = Task {
+            try? await Task.sleep(for: .seconds(40))
+            finished.resume(returning: false)
+        }
+        let completed = await withCheckedContinuation { finished.install($0) }
+        timer.cancel()
+        #expect(completed, "shutdown is still waiting for the retained slot")
+        if completed { _ = await shutdown.value }
+    }
+
     @Test func abandonedAppAttestStallRestartReopensServingAndDefersTheNextDrain() async throws {
         let (loop, root) = try await lifecycleLoop()
         defer { try? FileManager.default.removeItem(at: root) }

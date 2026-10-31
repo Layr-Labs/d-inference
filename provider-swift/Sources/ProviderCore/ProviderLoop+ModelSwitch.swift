@@ -140,6 +140,7 @@ extension ProviderLoop {
     internal var modelSwitchMutationsSettled: Bool {
         autopilotCommand == nil && !isLoadingAny && modelsLoading.isEmpty && modelsUnloading.isEmpty && !isReslicing
             && pendingAdvertise.isEmpty && retiringModels.isEmpty && preloadTasks.isEmpty
+            && selectedModelRecovery.attempt == nil
             && startupPreloadTask == nil && modelAdvertisementsInFlight == 0
             && mtpUpgradeTransitions.isEmpty && mtpStagingBytes == 0
     }

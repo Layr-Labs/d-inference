@@ -1207,6 +1207,9 @@ process draining with automatic restart disabled. Repeat `stop` or `restart`
 with a new deadline, or explicitly pass `--force`. Interrupting the CLI does not
 cancel accepted inference or reopen admission. A running provider without the
 drain control protocol requires an upgrade or an explicit forced interruption.
+After the drain, shutdown waits up to 15 seconds for each model's unload; a
+model whose native retirement never finishes is left to process exit
+(`ProviderLoop.unloadAllModelsForShutdown`).
 
 Code: `provider-swift/Sources/darkbloom/ServiceDrain.swift` (`DrainOptions`,
 `ServiceDrain.prepare`) and `provider-swift/Sources/darkbloom/StopCommand.swift`
@@ -1284,11 +1287,22 @@ Output includes:
   `cumulativeDelta`)
   (`provider-swift/Sources/darkbloom/StatusCommand+ServedRequests.swift`).
 - `Enabled model filter` is the saved config; a running daemon applies a
-  changed `enabled_models` only at its next start. `Serving outside the enabled
-  model filter` names each warm or advertised model the filter omits and why it
-  serves: an Autopilot operation's adoption, the running daemon's selection, or
-  the live Autopilot lease. `Autopilot placements` lists adoptions and placement
-  holds with each hold's UTC expiry and time left. `Not evictable for a load
+  changed `enabled_models` only at its next start. `Configuration change needs
+  a restart to apply: enabled_models adds …; removes …` appears when the saved
+  filter differs from the one the running selection applies: the filter the
+  daemon started with, or the one the last committed `switch` saved and applied
+  (`enabled_models_at_start`, `enabled_models_at_last_switch` in the daemon
+  state). `Serving
+  outside the enabled model filter` names each warm or advertised model the
+  filter omits and why it serves: an Autopilot operation's adoption, the
+  running daemon's selection, or the live Autopilot lease. `Autopilot
+  placements` lists adoptions and placement holds with each hold's UTC expiry
+  and time left. `Retrying <model> when memory frees; next check in …
+  (waiting …)` names each selected model the daemon keeps trying to load: one
+  the startup preload left cold for memory or a slot, or one an Autopilot
+  operation unloaded to load another model
+  ([selected-model recovery](../architecture/hardware-support.md#load-gate-modelloadadmission)),
+  followed by `Last check:` and what kept it out. `Not evictable for a load
   now` lists the resident models no load can evict at the snapshot, with the
   same reasons a refusal gives (`provider-swift/Sources/darkbloom/StatusCommand+Residency.swift`).
 - `Traffic:` whether the coordinator can route work to this connection, judged

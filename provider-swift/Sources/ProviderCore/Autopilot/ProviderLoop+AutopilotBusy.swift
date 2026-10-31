@@ -19,7 +19,7 @@ extension ProviderLoop {
         case .revisionActivation: return modelRevisionActivationID != nil
         case .revisionUpdate: return !revisionUpdatesInProgress.isEmpty
         case .startupPreload: return startupPreloadTask != nil
-        case .preload: return !preloadTasks.isEmpty
+        case .preload: return !preloadTasks.isEmpty || selectedModelRecovery.attempt != nil
         case .engineRecovery: return !engineV2RecoveryInProgress.isEmpty
         case .mtpUpgrade: return !mtpUpgradeTransitions.isEmpty
         case .mtpStaging: return mtpStagingReservations.hasRetainedTargets

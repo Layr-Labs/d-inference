@@ -562,6 +562,7 @@ extension ProviderLoop {
         // gate when the timeout passed).
         var preloads = Array(preloadTasks.values)
         if let autopilotTask { preloads.append(autopilotTask) }
+        if let recovery = selectedModelRecovery.attempt?.task { preloads.append(recovery) }
         if let startupTask = startupPreloadTask {
             preloads.append(startupTask)
         }
@@ -587,15 +588,7 @@ extension ProviderLoop {
             // faulted native engine is not an empty successful shutdown.
             throw InferenceError.modelLoadFailed("Native MiMo slot shutdown remains pending or requires process restart")
         }
-        while !modelSlots.isEmpty {
-            if let unloading = modelsUnloading.first {
-                await waitForModelUnload(unloading)
-                continue
-            }
-            for modelId in Array(modelSlots.keys) {
-                await unloadModel(modelId)
-            }
-        }
+        await unloadAllModelsForShutdown()
         powerAssertion.releaseAll()
     }
 

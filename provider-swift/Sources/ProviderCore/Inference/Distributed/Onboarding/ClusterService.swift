@@ -104,6 +104,8 @@ public final class ClusterService: @unchecked Sendable {
     private var updateInFlight = false
     private var nextUpdateCheck = Date.distantPast
     private var updatingLine: String?
+    /// Said once while the Macs run different builds after an update.
+    private var updateWaitLine: String?
     // The cluster approval is asked for once per run of this service on the control leader, and again every minute
     // while the pair is offered or serves locally with its approval set aside (`checkApproval`).
     private var approvalChecked = false
@@ -938,6 +940,7 @@ public final class ClusterService: @unchecked Sendable {
             value.localOnly = record?.leadership.map { $0.scope.isLocalOnly }
             value.memberQuickEnds = memberQuickEnds
             value.approvalID = configuration?.nativeMember?.clusterApproval?.id ?? ""
+            value.pairUpdate = ClusterPairUpdate.readProgress(from: ClusterServiceAgent.updateProgressPath(serviceDirectory: store.paths.directory))
             return value
         }
     }
@@ -968,12 +971,22 @@ public final class ClusterService: @unchecked Sendable {
             if case .reached = context.reachPeer(), let facts = context.peerFacts { current[facts.memberID] = facts.runtimeBinarySHA256 }
             let changed = ClusterOnboardingUpdate.changed(pinned: pinned, current: current)
             guard !changed.isEmpty else { return }
+            let macs = changed.count == 1 && changed[0] == local.id ? "this Mac" : changed.count == 1 ? "the other Mac" : "both Macs"
+            // The two Macs restart into an update seconds apart, or one was updated alone: plan once both run one build.
+            guard ClusterOnboardingUpdate.oneBuild(pinned: pinned, current: current) else {
+                let line = "Darkbloom changed on \(macs): waiting until both Macs answer with the same build to set the cluster up again for \(model)"
+                if self.lock.withLock({ self.updateWaitLine != line }) {
+                    self.lock.withLock { self.updateWaitLine = line }
+                    say(line)
+                }
+                return
+            }
+            self.lock.withLock { self.updateWaitLine = nil }
             guard let held = ClusterControlCommandLock.acquire(seconds: 5) else { return }
             defer { held.release() }
             self.lock.withLock { self.updatingLine = ClusterOnboardingUpdate.statusLine }
             self.publish()
-            say("Darkbloom changed on \(changed.count == 1 && changed[0] == local.id ? "this Mac" : changed.count == 1 ? "the other Mac" : "both Macs"): "
-                + "setting the cluster up again for \(model)")
+            say("Darkbloom changed on \(macs): setting the cluster up again for \(model)")
             func failed(_ lines: [String]) {
                 say("could not set the cluster up again after the update: " + lines.joined(separator: " "))
                 self.lock.withLock { self.nextUpdateCheck = Date().addingTimeInterval(ClusterOnboardingUpdate.retryAfterFailureSeconds) }

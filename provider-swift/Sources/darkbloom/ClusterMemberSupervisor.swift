@@ -14,11 +14,31 @@ import ProviderCore
 ///    budget and backoff (`ClusterMemberRestartBudget`), and parks when the
 ///    budget is spent instead of looping against JACCL and Metal memory;
 /// 4. at the cluster's update slot drains its member, installs a release and
-///    starts again from the new binary (`ClusterMemberUpdateSlot`).
+///    starts again from the new binary (`ClusterMemberUpdateSlot`). Around the
+///    cluster service (`pairUpdate`), the pair's coordinated update runs while
+///    the service serves (`ClusterPairUpdateCycle`), and a release it installed
+///    is promoted or rolled back by its service's health (`ClusterCandidateRecovery`).
 ///
 /// It sends SIGKILL only as the guard's last resort for a member that
 /// ignored a SIGTERM for the whole grace; an operator stop always waits.
 final class ClusterMemberSupervisor: @unchecked Sendable {
+    /// The cluster service route's coordinated update and candidate recovery.
+    struct PairUpdate: Sendable {
+        /// The pairing's cluster ID, the same on both Macs: it fixes the update slot. Read at each slot.
+        var clusterID: @Sendable () -> String?
+        /// One coordinated update cycle (`ClusterPairUpdateCycle.run`) for `request` (a `darkbloom update`), logging
+        /// with `log`; `restart` stops the service so the supervisor starts again from the installed binary.
+        var run: @Sendable (_ request: String?, _ log: @escaping @Sendable (String) -> Void,
+                            _ restart: @escaping @Sendable (String) async throws -> Void) async -> AutoUpdateController.Outcome
+        /// Where `darkbloom update` asks for a restart into the release it installed (`ClusterPairUpdate.Request`).
+        var requestPath: URL
+        /// Where this Mac's progress is written; idle (or disabled) outside a cycle.
+        var progressPath: URL
+        var recovery: ClusterCandidateRecovery?
+        /// Whether the service's published status says this Mac's part serves again (logged once after an update).
+        var partServes: @Sendable () -> Bool = { false }
+    }
+
     struct Configuration {
         var executable: String
         var childArguments: [String]
@@ -40,6 +60,12 @@ final class ClusterMemberSupervisor: @unchecked Sendable {
         var restartHint: String = "`darkbloom restart` (or `darkbloom stop` then start)"
         /// How often a running member is checked for its end and its next probe.
         var childPollSeconds: Double = 0.5
+        /// The cluster service route's coordinated update; nil on the member route, which uses the slot above.
+        var pairUpdate: PairUpdate? = nil
+        /// Replaces this process with the installed binary (`execv`); a test observes the call instead.
+        var reexec: (@Sendable ([String]) -> Void)? = nil
+        /// The orphan sweep before every run signals this user's orphaned cluster processes; a test never does.
+        var sweepsOrphans = true
     }
 
     private let configuration: Configuration
@@ -48,6 +74,15 @@ final class ClusterMemberSupervisor: @unchecked Sendable {
     private var child: Process?
     private var state: ClusterMemberSupervisorState
     private var budget: ClusterMemberRestartBudget
+    // The coordinated update of the cluster service route: the next slot (main loop only), whether a cycle runs and
+    // the version it asked to restart into (under `lock`, set from the cycle's task).
+    private var pairSlot: Double?
+    private var pairCycle: Task<Void, Never>?
+    private var pairCycleRunning = false
+    private var requestedRestart: String?
+    // The candidate this run's service is (main loop only), until it is promoted.
+    private var candidate: String?
+    private var updatedServiceServes = false
 
     init(configuration: Configuration) {
         self.configuration = configuration
@@ -96,6 +131,13 @@ final class ClusterMemberSupervisor: @unchecked Sendable {
         var updateSlot = configuration.setup.map {
             ClusterMemberUpdateSlot.nextSlot(after: Date().timeIntervalSince1970, clusterID: $0.clusterID)
         }
+        if let pair = configuration.pairUpdate {
+            // A cycle of an earlier supervisor run is over: the other Mac must not wait for it.
+            ClusterPairUpdate.writeProgress(restingProgress(now: Date().timeIntervalSince1970), to: pair.progressPath)
+            log(configuration.autoUpdate
+                ? "cluster update: automatic updates on; both Macs check at the pair's update slot every \(Int(ClusterMemberUpdateSlot.periodSeconds / 60)) min"
+                : "cluster update: automatic updates are off (auto_update, DARKBLOOM_NO_UPDATE_CHECK); `darkbloom update` still updates the pair")
+        }
         while !isStopping {
             guard await waitForLink() else { break }
             // Before every run (the first and each restart): nothing of the
@@ -115,6 +157,11 @@ final class ClusterMemberSupervisor: @unchecked Sendable {
             case .updateDrainedWithoutInstall:
                 continue
             case .ended(let end, let runSeconds, let detail):
+                if recordCandidateEnd(detail: detail) {
+                    reexecAfterUpdate()
+                    log("re-exec after the rollback failed; starting the member from this binary")
+                    continue
+                }
                 let decision = budget.record(end, runSeconds: runSeconds)
                 state.budget = budget
                 switch decision {
@@ -147,6 +194,7 @@ final class ClusterMemberSupervisor: @unchecked Sendable {
     /// sweeps again at its start. Waits for a leftover's contract (bounded),
     /// so a member recycled a moment ago is given its own exit first.
     private func sweepOrphansBeforeRun() async {
+        guard configuration.sweepsOrphans else { return }
         let outcome = await Task.detached(priority: .utility) { () -> String? in
             do { return ClusterOrphanSweep.summary(try ClusterOrphanSweep.reap(waitForContract: true)) }
             catch { return "orphan sweep skipped: \(error)" }
@@ -211,6 +259,7 @@ final class ClusterMemberSupervisor: @unchecked Sendable {
         process.standardInput = FileHandle.nullDevice
         try? FileManager.default.removeItem(at: configuration.healthPath)
         let started = Date().timeIntervalSince1970
+        noteCandidateLaunch(now: started)
         do {
             try lock.withLock {
                 guard !stopRequested else { throw CancellationError() }
@@ -234,6 +283,7 @@ final class ClusterMemberSupervisor: @unchecked Sendable {
         var drainedForUpdate: UpdateIntent?
         var nextProbe = started + configuration.guardLimits.intervalSeconds
         var lastHealthPhase: ClusterMemberHealth.Phase?
+        var restarting = false
         while process.isRunning {
             // A plain sleep: during an operator stop the member may take long
             // to drain, and an interruptible sleep would spin.
@@ -241,7 +291,11 @@ final class ClusterMemberSupervisor: @unchecked Sendable {
             let now = Date().timeIntervalSince1970
             guard process.isRunning, now >= nextProbe else { continue }
             nextProbe = now + configuration.guardLimits.intervalSeconds
-            if isStopping || recycleReason != nil || drainedForUpdate != nil { continue }
+            if !restarting, let version = lock.withLock({ requestedRestart }) {
+                restarting = true
+                update(phase: .updating, detail: "restarting into v\(version)")
+            }
+            if isStopping || recycleReason != nil || drainedForUpdate != nil || restarting { continue }
             let health = ClusterSupervisionFiles.read(ClusterMemberHealth.self, from: configuration.healthPath)
             if let phase = health.flatMap({ $0.pid == pid ? $0.phase : nil }), phase != lastHealthPhase {
                 log("member pid \(pid) is \(phase.rawValue)" + (health?.warmup.map { "; warmup \($0)" } ?? ""))
@@ -276,6 +330,10 @@ final class ClusterMemberSupervisor: @unchecked Sendable {
                     }
                 }
             }
+            if recycleReason == nil, let pair = configuration.pairUpdate {
+                observeCandidate(pair, health: health, pid: pid, started: started, now: now)
+                startPairCycleIfDue(pair, pid: pid, now: now)
+            }
         }
         // The loop above already saw the member end (`isRunning` is false, so its status is final). No blocking
         // `waitUntilExit()` here: it parks this thread in its own run loop until a termination message arrives, and
@@ -285,6 +343,14 @@ final class ClusterMemberSupervisor: @unchecked Sendable {
         let ended = Date().timeIntervalSince1970
         let signal: Int32? = process.terminationReason == .uncaughtSignal ? process.terminationStatus : nil
         let exitCode: Int32? = process.terminationReason == .exit ? process.terminationStatus : nil
+        await endPairCycle()
+        if let version = lock.withLock({ () -> String? in defer { requestedRestart = nil }; return requestedRestart }), !isStopping {
+            state.lastRun = .init(pid: pid, startedAt: started, endedAt: ended, exitCode: exitCode, signal: signal,
+                                  end: "stopped to restart into v\(version)")
+            state.current = nil
+            candidate = nil
+            return .updateInstalled
+        }
         if let intent = drainedForUpdate, !isStopping {
             state.lastRun = .init(pid: pid, startedAt: started, endedAt: ended, exitCode: exitCode, signal: signal,
                                   end: "drained for update")
@@ -368,14 +434,139 @@ final class ClusterMemberSupervisor: @unchecked Sendable {
     }
 
     private func reexecAfterUpdate() {
-        update(phase: .updating, detail: "starting the updated binary")
+        update(phase: .updating, detail: "starting the installed binary")
         let arguments = configuration.reexecArguments
         guard let program = arguments.first else { return }
-        log("re-executing \(program) after the coordinated update")
+        log("re-executing \(program) to start the installed release")
+        if let reexec = configuration.reexec { return reexec(arguments) }
         var cArguments = arguments.map { strdup($0) }
         cArguments.append(nil)
         execv(program, &cArguments)
         for pointer in cArguments { free(pointer) }
+    }
+
+    // MARK: - The cluster service's coordinated update
+
+    /// At the pair's update slot (with automatic updates on), or for a `darkbloom update` request, one cycle runs
+    /// beside the service it supervises, which keeps serving until the cycle asks for the restart.
+    private func startPairCycleIfDue(_ pair: PairUpdate, pid: Int32, now: Double) {
+        guard !lock.withLock({ pairCycleRunning }) else { return }
+        if pairSlot == nil, let clusterID = pair.clusterID() {
+            pairSlot = ClusterMemberUpdateSlot.nextSlot(after: now, clusterID: clusterID)
+        }
+        let request = ClusterPairUpdate.takeRequest(from: pair.requestPath, now: now)
+        let slotDue = pairSlot.map { now >= $0 } ?? false
+        if let request {
+            log("cluster update: `darkbloom update` asked for a restart into the installed release together with the other Mac (\(request.id.prefix(8)))")
+        } else if !configuration.autoUpdate {
+            return restAsDisabled(pair, now: now)
+        } else if !slotDue {
+            return
+        }
+        // A cycle at or after the slot is that slot's.
+        if slotDue { pairSlot = pair.clusterID().map { ClusterMemberUpdateSlot.nextSlot(after: now, clusterID: $0) } }
+        lock.withLock { pairCycleRunning = true }
+        let log: @Sendable (String) -> Void = { [weak self] in self?.log($0) }
+        let restart: @Sendable (String) async throws -> Void = { [weak self] version in
+            try self?.restartForUpdate(into: version, pid: pid)
+        }
+        pairCycle = Task.detached { [weak self] in
+            _ = await pair.run(request?.id, log, restart)
+            guard let self else { return }
+            self.lock.withLock { self.pairCycleRunning = false }
+        }
+    }
+
+    /// This Mac outside a cycle: idle, or disabled while its automatic updates are off.
+    private func restingProgress(now: Double) -> ClusterPairUpdateProgress {
+        .init(phase: configuration.autoUpdate ? .idle : .disabled, running: ProviderCore.version, writtenAt: now)
+    }
+
+    /// With automatic updates off, the end of a cycle `darkbloom update` asked for stays the other Mac's (and the
+    /// command's) answer for a minute; then this Mac says `disabled` again, or the other Mac's every slot would download
+    /// the release and wait for this one.
+    private func restAsDisabled(_ pair: PairUpdate, now: Double) {
+        let last = ClusterPairUpdate.readProgress(from: pair.progressPath)
+        guard last?.phase != .disabled, now - (last?.writtenAt ?? 0) > ClusterPairUpdate.progressStaleSeconds else { return }
+        ClusterPairUpdate.writeProgress(restingProgress(now: now), to: pair.progressPath)
+    }
+
+    /// The cycle's restart, once both Macs drained and the release is installed: the service stops (its drained part
+    /// with it) and the supervisor starts again from the installed binary.
+    private func restartForUpdate(into version: String, pid: Int32) throws {
+        let running: Process? = lock.withLock {
+            guard !stopRequested, let current = child, current.processIdentifier == pid, current.isRunning else { return nil }
+            requestedRestart = version
+            return current
+        }
+        guard running != nil else { throw CancellationError() }
+        log("cluster update: v\(version) installed; stopping the cluster service (pid \(pid), SIGTERM) to start again from it")
+        kill(pid, SIGTERM)
+    }
+
+    /// The run ended: a cycle still running belonged to the service that ended. Its cancellation undoes the part's
+    /// drain and keeps nothing staged.
+    private func endPairCycle() async {
+        guard let cycle = pairCycle else { return }
+        cycle.cancel()
+        await cycle.value
+        pairCycle = nil
+    }
+
+    /// Before each start of the service: a release installed and not yet promoted is a candidate (`ClusterCandidateRecovery`).
+    private func noteCandidateLaunch(now: Double) {
+        candidate = nil
+        guard let recovery = configuration.pairUpdate?.recovery,
+              case .candidate(let version, let failed) = recovery.noteLaunch(now: now) else { return }
+        candidate = version
+        updatedServiceServes = false
+        log("cluster update: starting the cluster service on candidate v\(version)"
+            + (failed > 0 ? " (\(failed) failed start\(failed == 1 ? "" : "s") so far)" : "")
+            + "; it is promoted once its service stays healthy, rolled back after \(UpdateRecoveryState.rollbackThreshold) failed starts")
+    }
+
+    /// The candidate's health is the service's own heartbeat: from this run's process, with the candidate version,
+    /// fresh. It promotes the candidate once continuous for the stabilization window, as the watchdog's daemon-state
+    /// heartbeat does for a single Mac.
+    private func observeCandidate(_ pair: PairUpdate, health: ClusterMemberHealth?, pid: Int32, started: Double, now: Double) {
+        guard let version = candidate, let recovery = pair.recovery else { return }
+        if !updatedServiceServes, pair.partServes() {
+            updatedServiceServes = true
+            log("cluster update: this Mac's part serves again on v\(version)")
+        }
+        let healthy = health.map { $0.pid == pid && $0.version == version && now - $0.writtenAt <= Self.candidateHeartbeatSeconds } ?? false
+        switch recovery.observe(healthy: healthy, processStartedAt: started, now: now) {
+        case .promoted(let promoted):
+            candidate = nil
+            log("cluster update: v\(promoted) promoted: its cluster service stayed healthy through the stabilization window")
+        case .noCandidate:
+            candidate = nil
+        case .stabilizing:
+            break
+        }
+    }
+
+    /// A service heartbeat (every 2 s) older than this does not count toward promotion.
+    static let candidateHeartbeatSeconds: Double = 30
+
+    /// A candidate's service that ended without being asked to is a failed start; returns whether the third restored
+    /// the verified predecessor, which the supervisor then starts again from.
+    private func recordCandidateEnd(detail: String) -> Bool {
+        guard candidate != nil, let recovery = configuration.pairUpdate?.recovery else { return false }
+        candidate = nil
+        switch recovery.recordFailedStart(now: Date().timeIntervalSince1970) {
+        case .counted(let version, let failures):
+            log("cluster update: v\(version) failed start \(failures)/\(UpdateRecoveryState.rollbackThreshold) (\(detail))")
+            return false
+        case .rolledBack(let from, let to):
+            log("cluster update: v\(from) failed \(UpdateRecoveryState.rollbackThreshold) starts; restored v\(to) and quarantined v\(from)")
+            return true
+        case .rollbackRefused(let version, let reason):
+            log("cluster update: rolling v\(version) back was refused (\(reason)); the installed release is kept and tried again later")
+            return false
+        case .notCandidate:
+            return false
+        }
     }
 
     // MARK: - Helpers

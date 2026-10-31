@@ -97,16 +97,21 @@ public struct ClusterSetupRecord: Codable, Sendable, Equatable {
     public var approvalSetAside: ApprovalSetAside? = nil
 
     /// The cluster approval both Macs saved their setups without, and why (`ClusterApprovalCheck`): the leader checks
-    /// the coordinator every minute while it is set, and does not take an approval its parts kept failing with again.
+    /// the coordinator every minute while it is set, and does not take an approval its parts kept failing with again
+    /// for `ClusterApprovalFallback.failingSeconds`.
     public struct ApprovalSetAside: Codable, Sendable, Equatable {
         public var approval: ClusterRuntimeApproval
         public var reason: ClusterApprovalFallback
         /// The setup's worker digest (`capability.runtimeBinarySHA256`) when the approval was set aside: an approval
         /// its parts kept failing with is not taken again by the same build, but a model approval, which names no
-        /// build, is taken again after an update. Nil in a record from an older build: its `id` alone is not taken.
+        /// build, is taken again after an update. Nil in a record from an older build, which names no `setAt` either.
         public var runtimeBinarySHA256: String?
-        public init(approval: ClusterRuntimeApproval, reason: ClusterApprovalFallback, runtimeBinarySHA256: String? = nil) {
-            self.approval = approval; self.reason = reason; self.runtimeBinarySHA256 = runtimeBinarySHA256
+        /// When the approval was set aside (wall-clock seconds since 1970): one its parts kept failing with is taken
+        /// again `ClusterApprovalFallback.failingSeconds` later. Nil in a record from an older build, which is past it.
+        public var setAt: Double?
+        public init(approval: ClusterRuntimeApproval, reason: ClusterApprovalFallback, runtimeBinarySHA256: String? = nil,
+                    setAt: Double? = nil) {
+            self.approval = approval; self.reason = reason; self.runtimeBinarySHA256 = runtimeBinarySHA256; self.setAt = setAt
         }
     }
 

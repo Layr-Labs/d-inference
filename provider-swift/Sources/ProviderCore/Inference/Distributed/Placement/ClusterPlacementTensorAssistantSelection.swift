@@ -37,6 +37,16 @@ enum ClusterPlacementTensorAssistantSelection {
     /// stays bound by one weight pass.
     static let automaticDepth = 3
 
+    /// The `backend.mtp_mode` discovery runs under for a plan whose setup serves through the coordinator
+    /// (`coordinator`) or on a local cluster. The assistant's speculative decoding has no parity qualification, so a
+    /// setup saved for coordinator pairing carries none (`ClusterConfiguration.tensorAssistantServesLocally`): under
+    /// `auto` such a plan quotes the ordinary target only. `on` is the operator's explicit choice and is kept; the
+    /// plan then says it is not offered for public traffic, and the leader refuses the coordinator's approval before
+    /// any part stops.
+    static func discoveryMode(_ configured: MTPMode, coordinator: Bool) -> MTPMode {
+        coordinator && configured == .auto ? .off : configured
+    }
+
     static func automaticCandidate(mode: MTPMode, runtimeModelID: String,
                                    modelDirectory: URL, publicModelID: String,
                                    artifactSHA256: String, manifestSHA256: String,

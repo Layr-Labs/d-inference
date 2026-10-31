@@ -568,6 +568,9 @@ rate and a fixed per-request workspace, such as `nvidia-nemotron-3.5-lightning`
 with its embedded assistant, falls below its floor beside high-rate models even
 when every floor fits (`EngineV2KVSizing.resliceGrants`,
 `ProviderLoop.resliceAndBuildEngineV2Bundle`, `ProviderLoop.resliceGrowSurvivorsLocked`).
+A newcomer's own floor is checked only when its engine is assembled, so such a
+model loaded last can still receive less than its floor and fail with
+`no_kv_headroom` (`EngineV2Bridge.requireServiceableOrdinaryGrant`).
 
 A private hybrid-cache carve is added once to the engine floor. The bridge
 retains the total requested grant for exact rollback instead of feeding an

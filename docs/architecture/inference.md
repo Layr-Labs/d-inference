@@ -984,8 +984,9 @@ bridge so future load and reserve-raise checks can preserve a serviceable total
 grant. These [workspace-aware floors](hardware-support.md#kv-slot-grants) do not
 lower the activation reserve or replace actual per-request byte admission. Every
 re-slice, including regrowth, funds those floors first when the proportional
-split alone would leave a slot below one, so a load is refused only when the
-floors together exceed the fleet KV budget.
+split alone would leave a slot below one, so the re-slice refuses a load only
+when the floors together exceed the fleet KV budget. A newcomer counts only the
+base floor until its engine is assembled.
 
 ### GLM5Next implementation boundary
 

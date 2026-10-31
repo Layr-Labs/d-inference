@@ -217,4 +217,40 @@ struct EngineV2ResliceFloorWiringTests {
         await newcomerBridge.shutdown()
         for resident in residents.values { await resident.shutdown() }
     }
+
+    @Test("StandaloneServer regrow and the reserve check keep a starved slot at its floor")
+    func standaloneRegrowAndReserveKeepFloors() async throws {
+        let newcomer = ResliceFloorScenario.gemmaQAT
+        let server = StandaloneServer(models: [])
+        await server.setV2TestHooksForTesting(.init(physicalMemoryBytes: Self.physical,
+            makeEngine: { _, grant in InertStubEngine(kvBytesCapacity: grant) }))
+        let residents = try await installResidents(physicalBytes: Self.physical) { model, bridge in
+            await server.installSlotForTesting(modelId: model.id, bridge: bridge,
+                container: makeFloorContainer(), tokenizer: TokenizerHandle(StubBridgeTokenizer()),
+                sizing: model.sizing, modelType: model.modelType)
+        }
+        let newcomerBridge = EngineV2Bridge(engine: InertStubEngine(kvBytesCapacity: 4 << 30),
+            modelId: newcomer.id, tokenizer: TokenizerHandle(StubBridgeTokenizer()), eosTokenIds: [])
+        await server.installSlotForTesting(modelId: newcomer.id, bridge: newcomerBridge,
+            container: makeFloorContainer(), tokenizer: TokenizerHandle(StubBridgeTokenizer()),
+            sizing: newcomer.sizing, modelType: newcomer.modelType)
+        // The server's own budget: its proportional share alone starves Lightning.
+        let budget = await server.fleetKVBudgetBytes(extraWeightBytes: 0)
+        let all = try ResliceFloorScenario.residents() + [newcomer]
+        let lightning = try #require(all.first { $0.id == ResliceFloorScenario.lightningID })
+        let proportional = EngineV2KVSizing.resliceGrants(existing: all.map(\.resliceSlot), newcomer: nil,
+            fleetKVBudgetBytes: budget)
+        #expect(try #require(proportional[lightning.id]) < lightning.minimumGrantBytes)
+
+        #expect(await server.reserveKeepsSurvivorsServiceable(
+            reserveBytes: await server.resolvedActivationReserveBytes))
+        await server.resliceGrowSurvivors()
+
+        await expectResidentsServiceable(residents)
+        var total = UInt64(await newcomerBridge.engineKVBytesCapacity())
+        for resident in residents.values { total += UInt64(await resident.engineKVBytesCapacity()) }
+        #expect(total <= budget)
+        await newcomerBridge.shutdown()
+        for resident in residents.values { await resident.shutdown() }
+    }
 }

@@ -64,6 +64,13 @@ public struct CapturedMessages: Sendable {
     public var enrollmentAuthorizations: [String] = []
     /// The query of each `GET /v1/cluster/approvals`, in arrival order.
     public var clusterApprovalQueries: [String] = []
+    /// The body and `Authorization` header of each `POST /v1/cluster/owner-approvals`, in arrival order.
+    public var clusterApprovalPosts: [Data] = []
+    public var clusterApprovalAuthorizations: [String] = []
+    /// The `Authorization` header of each `GET /v1/cluster/owner-approvals`, in arrival order.
+    public var ownerApprovalAuthorizations: [String] = []
+    /// The id of each `DELETE /v1/cluster/owner-approvals/{id}`, in arrival order.
+    public var ownerApprovalDeletes: [String] = []
 
     public init() {}
 }
@@ -195,6 +202,12 @@ public final class MockCoordinator: @unchecked Sendable {
     private var acknowledgedReadiness = Set<String>()
     /// `GET /v1/cluster/approvals`: the status and exact body bytes answered; nil answers 404 (pair control off).
     private var clusterApprovals: (status: Int, body: Data, location: String?)?
+    /// `POST /v1/cluster/owner-approvals` and `GET /v1/cluster/owner-approvals`: the same; nil answers 404 (owner
+    /// approvals off).
+    private var clusterApprovalRequests: (status: Int, body: Data, location: String?)?
+    private var ownerApprovals: (status: Int, body: Data, location: String?)?
+    /// `DELETE /v1/cluster/owner-approvals/{id}`: the status answered.
+    private var ownerApprovalDeleteStatus = 204
     private var activeOutbound: WebSocketOutboundWriter?
     private var bound: BoundServer?
 
@@ -256,6 +269,43 @@ public final class MockCoordinator: @unchecked Sendable {
     /// `location` adds a `Location` header (a redirect the provider must not follow).
     public func setClusterApprovals(status: Int = 200, body: Data?, location: String? = nil) {
         lock.withLock { clusterApprovals = body.map { (status, $0, location) } }
+    }
+
+    /// What `POST /v1/cluster/owner-approvals` answers from now on; nil answers 404, as a coordinator without owner
+    /// approvals does. `location` adds a `Location` header (a redirect the provider must not follow).
+    public func setClusterApprovalRequests(status: Int = 201, body: Data?, location: String? = nil) {
+        lock.withLock { clusterApprovalRequests = body.map { (status, $0, location) } }
+    }
+
+    /// What `GET /v1/cluster/owner-approvals` answers from now on; nil answers 404.
+    public func setOwnerApprovals(status: Int = 200, body: Data?, location: String? = nil) {
+        lock.withLock { ownerApprovals = body.map { (status, $0, location) } }
+    }
+
+    /// What `DELETE /v1/cluster/owner-approvals/{id}` answers from now on (204 by default).
+    public func setOwnerApprovalDeleteStatus(_ status: Int) {
+        lock.withLock { ownerApprovalDeleteStatus = status }
+    }
+
+    /// The coordinator's strict reading of a `POST /v1/cluster/owner-approvals` body: exactly `provider_version`,
+    /// `model`, `artifact_sha256` (64 lowercase hex) and `schedule` (1 or 2), each once; anything else is its 400.
+    static func isOwnerApprovalRequest(_ body: Data) -> Bool {
+        guard let fields = try? JSONSerialization.jsonObject(with: body) as? [String: Any],
+              Set(fields.keys) == ["provider_version", "model", "artifact_sha256", "schedule"],
+              let version = fields["provider_version"] as? String, !version.isEmpty,
+              let model = fields["model"] as? String, !model.isEmpty,
+              let artifact = fields["artifact_sha256"] as? String, artifact.count == 64,
+              artifact.allSatisfy({ "0123456789abcdef".contains($0) }),
+              let schedule = fields["schedule"] as? Int, [1, 2].contains(schedule) else { return false }
+        return true
+    }
+
+    /// The answer set for a cluster approval route: its status, exact body bytes and `Location`; nil is a 404.
+    private static func answer(_ answer: (status: Int, body: Data, location: String?)?) -> Response {
+        guard let answer else { return makeJSONResponse(body: ["error": "not found"], status: .notFound) }
+        var headers: HTTPFields = [.contentType: "application/json"]
+        if let location = answer.location { headers[.location] = location }
+        return Response(status: .init(code: answer.status), headers: headers, body: .init(byteBuffer: ByteBuffer(bytes: answer.body)))
     }
 
     /// Return a snapshot of all messages captured so far. Each call clones the
@@ -556,11 +606,45 @@ public final class MockCoordinator: @unchecked Sendable {
                 self.captured.clusterApprovalQueries.append(query)
                 return self.clusterApprovals
             }
-            guard let answer else { return MockCoordinator.makeJSONResponse(body: ["error": "not found"], status: .notFound) }
-            var headers: HTTPFields = [.contentType: "application/json"]
-            if let location = answer.location { headers[.location] = location }
-            return Response(status: .init(code: answer.status), headers: headers,
-                body: .init(byteBuffer: ByteBuffer(bytes: answer.body)))
+            return MockCoordinator.answer(answer)
+        }
+
+        // ----- HTTP: /v1/cluster/owner-approvals -----
+        router.post("/v1/cluster/owner-approvals") { [weak self] request, _ -> Response in
+            guard let self else {
+                return MockCoordinator.makeJSONResponse(body: ["error": "mock dead"], status: .internalServerError)
+            }
+            let body = Data(try await request.body.collect(upTo: 64 * 1024).readableBytesView)
+            let answer = self.lock.withLock { () -> (status: Int, body: Data, location: String?)? in
+                self.captured.clusterApprovalPosts.append(body)
+                self.captured.clusterApprovalAuthorizations.append(request.headers[.authorization] ?? "")
+                return self.clusterApprovalRequests
+            }
+            guard answer == nil || MockCoordinator.isOwnerApprovalRequest(body) else {
+                return MockCoordinator.makeJSONResponse(body: ["error": "invalid request"], status: .badRequest)
+            }
+            return MockCoordinator.answer(answer)
+        }
+        router.delete("/v1/cluster/owner-approvals/**") { [weak self] request, _ -> Response in
+            guard let self else {
+                return MockCoordinator.makeJSONResponse(body: ["error": "mock dead"], status: .internalServerError)
+            }
+            let prefix = "/v1/cluster/owner-approvals/"
+            let path = request.uri.path.removingPercentEncoding ?? request.uri.path
+            let status = self.lock.withLock { () -> Int in
+                self.captured.ownerApprovalDeletes.append(String(path.dropFirst(prefix.count)))
+                return self.ownerApprovalDeleteStatus
+            }
+            return Response(status: .init(code: status))
+        }
+        router.get("/v1/cluster/owner-approvals") { [weak self] request, _ -> Response in
+            guard let self else {
+                return MockCoordinator.makeJSONResponse(body: ["error": "mock dead"], status: .internalServerError)
+            }
+            return MockCoordinator.answer(self.lock.withLock { () -> (status: Int, body: Data, location: String?)? in
+                self.captured.ownerApprovalAuthorizations.append(request.headers[.authorization] ?? "")
+                return self.ownerApprovals
+            })
         }
 
         // ----- HTTP: /v1/releases/latest -----

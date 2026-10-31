@@ -111,8 +111,9 @@ start fails and says why. To serve without any coordinator, use
 
 ## Registered with the coordinator as a cluster member (DevNet)
 
-When the coordinator's operator approval file holds a cluster approval for this
-pair's model (DevNet only), the pair registers with the coordinator by itself.
+On DevNet the guided setup asks the coordinator for a cluster approval for
+this pair's model, and the pair registers with the coordinator by itself. An
+approval the coordinator's operator added for the model is taken the same way.
 Nothing is typed and no file is copied. Production and staging serve no
 approvals, and the pair serves as described above. The pair
 serves its owner's own requests, and public requests too once the coordinator's
@@ -121,8 +122,14 @@ split ([serving a pair](../reference/cluster-control-protocol.md#serving-a-pair)
 A tensor-parallel pair registers like a pipeline one; its plan names no cut.
 
 1. Run `darkbloom cluster` and choose a model, as in [the steps](#the-steps-once).
-   After the Test stage passes, the leader reads the approvals the coordinator
-   serves (`GET /v1/cluster/approvals`) and takes the one whose model and
+   After the Test stage passes, the leader asks the coordinator to register a
+   model approval for this pair (`POST /v1/cluster/owner-approvals`, with the
+   account's credential; only DevNet takes it, and any other answer is one
+   line that changes nothing). The cluster service asks the same way later
+   while the pair holds no approval, for example after an update, and renews
+   the approval a week before it ends. Then it reads the approvals the coordinator
+   serves (`GET /v1/cluster/approvals`, and the account's own approvals from
+   `GET /v1/cluster/owner-approvals`) and takes the one whose model and
    prefill schedule match this pair's setup. A build-pinned approval must also
    match the installed app's digests. A model approval names no build and must
    match only the model's artifact, so it stays valid after an update

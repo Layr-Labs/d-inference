@@ -225,9 +225,14 @@ and `libs/darkbloom-cluster/Sources/DarkbloomClusterPlacement/ClusterPlacementBa
 `ClusterOnboardingDriver` presents connection, pairing, model choice, startup
 and a test response as five stages. Completion requires the test response to
 succeed; a failed response retains the saved setup for a later retry. After
-the test response succeeds, the control leader registers the pair with the
-coordinator when the coordinator serves a cluster approval for this pair
-(`ClusterOnboardingDriver.register`, control operation `register`). Both parts
+the test response succeeds, the control leader first asks the coordinator to
+register a model approval for this pair (`ClusterApprovalRequest`,
+`POST /v1/cluster/owner-approvals`; only DevNet takes it, and every other
+answer is one line that stops nothing). It then registers the pair with the
+coordinator when the coordinator serves a cluster approval for this pair,
+in its public list or in the account's own approvals
+(`ClusterApprovalFetch.fetchOwned`; `ClusterOnboardingDriver.register`,
+control operation `register`). Both parts
 then run as coordinator-paired members
 (`ClusterService.Settings.memberArguments`), which have no local API, and the
 ready screen shows the registered line (`ClusterOnboardingReady.offered`,

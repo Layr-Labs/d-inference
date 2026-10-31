@@ -6,6 +6,10 @@ import Foundation
 /// beaten with the new version, continuously, for the stabilization window; the third start that ends before that
 /// restores the verified predecessor and quarantines the release (`UpdateRecoveryState.rollbackThreshold`).
 /// Every transition holds the cross-process update lease, as the watchdog's do.
+///
+/// The supervisor restarts into a release by replacing itself (`execv`), so a release whose binary cannot start
+/// at all would leave no supervisor to count its failed starts. The start check (`startCheckFailure`) runs that
+/// binary first; one that fails it is rolled back at once (`recordFailedStartCheck`) and never restarted into.
 public struct ClusterCandidateRecovery: Sendable {
     public enum Launch: Equatable, Sendable {
         case notCandidate
@@ -40,11 +44,7 @@ public struct ClusterCandidateRecovery: Sendable {
     /// restart prepared, or a new one after a failed start), so an end before promotion is counted exactly once.
     public func noteLaunch(now: Double) -> Launch {
         transition(operation: "cluster-candidate-launch") { state in
-            guard let candidate = state.candidate else { return Launch.notCandidate }
-            if candidate.pendingAttemptID == nil {
-                if candidate.launchIntent == nil { _ = state.prepareLaunchIntent(now: now, baseline: nil) }
-                _ = state.markLaunchIssued(now: now)
-            }
+            Self.issueLaunch(&state, now: now)
             guard let current = state.candidate, current.pendingAttemptID != nil else { return Launch.notCandidate }
             return Launch.candidate(version: current.release.version, failedStarts: current.failureCount)
         } ?? .notCandidate
@@ -72,16 +72,79 @@ public struct ClusterCandidateRecovery: Sendable {
             try session.writeState(state)
             let version = candidate.release.version
             guard failures >= UpdateRecoveryState.rollbackThreshold else { return .counted(version: version, failures: failures) }
-            do {
-                let restored = try session.rollback(now: now, reason: "automatic rollback after \(failures) failed starts of the cluster service")
-                return .rolledBack(from: version, to: restored)
-            } catch {
-                state.deferRetryAfterRollbackFailure(now: now, reason: "\(error)")
-                try? session.writeState(state)
-                return .rollbackRefused(version: version, reason: "\(error)")
-            }
+            return rollBack(session, state: state, version: version,
+                            reason: "automatic rollback after \(failures) failed starts of the cluster service", now: now)
         } catch {
             return .notCandidate
+        }
+    }
+
+    /// How long the binary the supervisor restarts into may take to answer its start check.
+    public static let startCheckTimeoutSeconds: Double = 30
+
+    /// Before the supervisor replaces itself with the installed binary at `executable`, that binary runs once as the
+    /// supervisor's child with `--version`: it is loaded as the restart would load it (the dynamic loader and the
+    /// frameworks it links, its code signature, the argument parser) while the supervisor, which alone can still roll
+    /// the release back, keeps running. It passes when it exits 0 within `timeout` and prints exactly `version`.
+    /// Returns why it did not; nil when it passed.
+    public static func startCheckFailure(executable: String, version: String,
+                                         timeout: Double = startCheckTimeoutSeconds) -> String? {
+        let output: Data
+        do {
+            output = try BoundedProcess.runCapturingStandardOutput(URL(fileURLWithPath: executable),
+                                                                   arguments: ["--version"], timeout: timeout)
+        } catch BoundedProcess.Failure.exited(let status, _) {
+            return "`--version` exited \(status)"
+        } catch BoundedProcess.Failure.signalled(let signal) {
+            return "`--version` ended on signal \(signal)"
+        } catch BoundedProcess.Failure.timedOut, BoundedProcess.Failure.wouldNotTerminate {
+            return "`--version` did not finish within \(Int(timeout)) s"
+        } catch {
+            return "it could not be run: \(error.localizedDescription)"
+        }
+        let reported = String(decoding: output, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard reported != version else { return nil }
+        // Only a version is repeated: whatever else a wrong binary prints stays out of the log.
+        return SemanticVersion(reported) == nil ? "it printed no version" : "it reports v\(reported)"
+    }
+
+    /// Before the supervisor restarts into candidate `version`, its binary failed the start check (`reason`). After
+    /// that restart no supervisor would be left to count its failed starts, so this one is conclusive: it counts as a
+    /// failed start, and the verified predecessor is restored and the release quarantined at once.
+    public func recordFailedStartCheck(version: String, reason: String, now: Double) -> Failure {
+        guard let session = try? updater.beginUpdateSession(operation: "cluster-candidate-start-check", timeout: 1) else { return .notCandidate }
+        defer { session.release() }
+        do {
+            try session.recover(now: now)
+            var state = try session.readState()
+            guard state.candidate?.release.version == version else { return .notCandidate }
+            Self.issueLaunch(&state, now: now)
+            state.recordPendingAttemptFailure(now: now)
+            try session.writeState(state)
+            return rollBack(session, state: state, version: version,
+                            reason: "automatic rollback: v\(version) failed its start check before the restart (\(reason))", now: now)
+        } catch {
+            return .notCandidate
+        }
+    }
+
+    /// A pending candidate's launch attempt: the one the restart prepared, or a new one after a failed start.
+    private static func issueLaunch(_ state: inout UpdateRecoveryState, now: Double) {
+        guard let candidate = state.candidate, candidate.pendingAttemptID == nil else { return }
+        if candidate.launchIntent == nil { _ = state.prepareLaunchIntent(now: now, baseline: nil) }
+        _ = state.markLaunchIssued(now: now)
+    }
+
+    /// Restores the verified predecessor of candidate `version`; a refused rollback keeps it and backs its retry off.
+    private func rollBack(_ session: SelfUpdater.UpdateSession, state: UpdateRecoveryState, version: String,
+                          reason: String, now: Double) -> Failure {
+        do {
+            return .rolledBack(from: version, to: try session.rollback(now: now, reason: reason))
+        } catch {
+            var state = state
+            state.deferRetryAfterRollbackFailure(now: now, reason: "\(error)")
+            try? session.writeState(state)
+            return .rollbackRefused(version: version, reason: "\(error)")
         }
     }
 

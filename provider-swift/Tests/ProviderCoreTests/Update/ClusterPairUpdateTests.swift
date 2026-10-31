@@ -379,4 +379,55 @@ struct ClusterPairUpdateTests {
         #expect(version == "2.0.0", "the next slot does not install the failed release again")
         #expect(failing.recordFailedStart(now: 400) == .notCandidate, "an ordinary end after the rollback counts nothing")
     }
+
+    /// Before the supervisor restarts into an installed binary, it runs it once with `--version`: the check passes only
+    /// on exit 0 within the bound with exactly the expected version, and repeats nothing but a version from its output.
+    @Test func startCheckPassesOnlyABinaryThatReportsItsVersionInTime() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("start-check-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        func check(_ body: String) throws -> String? {
+            let binary = directory.appendingPathComponent(UUID().uuidString)
+            try Data("#!/bin/sh\n\(body)\n".utf8).write(to: binary)
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: binary.path)
+            return ClusterCandidateRecovery.startCheckFailure(executable: binary.path, version: "2.0.0", timeout: 1)
+        }
+        #expect(try check(#"[ "$1" = --version ] && echo 2.0.0"#) == nil)
+        #expect(try check("exit 1") == "`--version` exited 1")
+        #expect(try check("kill -KILL $$") == "`--version` ended on signal 9")
+        #expect(try check("exec sleep 30") == "`--version` did not finish within 1 s")
+        #expect(try check("echo 1.9.9") == "it reports v1.9.9")
+        #expect(try check("echo 'token=not-a-version'") == "it printed no version", "nothing else the binary prints is repeated")
+        let missing = directory.appendingPathComponent("missing").path
+        #expect(ClusterCandidateRecovery.startCheckFailure(executable: missing, version: "2.0.0", timeout: 1)?
+            .hasPrefix("it could not be run") == true)
+    }
+
+    /// A candidate whose binary failed its start check before the restart: after that restart no supervisor would count
+    /// its failed starts, so the predecessor is restored and the release quarantined at once. Only the pending release
+    /// is, and only under the update lease.
+    @Test func candidateThatFailsItsStartCheckIsRolledBackAtOnce() async throws {
+        let mac = try await PairMac.make(part: false)
+        defer { Task { await mac.cleanUp() } }
+        let updater = mac.fixture.updater(baseURL: mac.baseURL)
+        guard case .updated = await updater.update() else { Issue.record("install failed"); return }
+        try updater.prepareCandidateLaunch(operation: "cluster-restart", baseline: nil)
+        let recovery = ClusterCandidateRecovery(updater: updater)
+        #expect(recovery.recordFailedStartCheck(version: "1.9.9", reason: "it reports v1.9.9", now: 200) == .notCandidate,
+                "not the pending release")
+        let held = try updater.beginUpdateSession(operation: "pair-cycle")
+        #expect(recovery.recordFailedStartCheck(version: "2.0.0", reason: "`--version` exited 1", now: 201) == .notCandidate,
+                "another update holds the lease")
+        held.release()
+        #expect(try mac.fixture.liveBinaryContents() == "2.0.0-darkbloom")
+        #expect(recovery.recordFailedStartCheck(version: "2.0.0", reason: "`--version` exited 1", now: 202)
+                == .rolledBack(from: "2.0.0", to: "1.0.0"))
+        #expect(try mac.fixture.liveBinaryContents() == "1.0.0-darkbloom")
+        let state = try UpdateRecoveryStore(installRoot: mac.fixture.installRoot, verifyCodeSignatures: false).loadState()
+        #expect(state.candidate == nil && state.current?.version == "1.0.0")
+        #expect(state.quarantine?.version == "2.0.0" && state.quarantine?.failureCount == 1, "one failed start")
+        #expect(state.quarantine?.reason.contains("failed its start check before the restart (`--version` exited 1)") == true)
+        guard case .quarantined(let version, _) = await updater.checkForUpdate() else { Issue.record("not quarantined"); return }
+        #expect(version == "2.0.0", "the next slot does not install it again")
+    }
 }

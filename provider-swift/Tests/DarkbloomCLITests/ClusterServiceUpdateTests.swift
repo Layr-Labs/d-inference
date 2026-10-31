@@ -7,8 +7,8 @@ import Testing
 
 /// The cluster service supervisor's update (`darkbloom cluster`): its wiring to the single-Mac gate, the pair's update
 /// slot and `darkbloom update`'s request, around a real supervisor with a shell standing in for the cluster service
-/// (no model, network, launchd or re-exec: the re-exec is observed). The cycle itself is covered with real installs in
-/// `ClusterPairUpdateTests`.
+/// (no model, network, launchd or re-exec: the re-exec is observed). The start check before a restart runs the
+/// temporary install's `darkbloom`, a script. The cycle itself is covered with real installs in `ClusterPairUpdateTests`.
 @Suite("Cluster service update", .serialized)
 struct ClusterServiceUpdateTests {
     private final class Recorder: @unchecked Sendable {
@@ -48,7 +48,11 @@ struct ClusterServiceUpdateTests {
         return "slot-check-none"
     }
 
-    private func configuration(directory: URL, script: String, autoUpdate: Bool, clusterID: String,
+    /// `service` stands in for the cluster service (a shell running `script` unless a test install's binary serves);
+    /// `installed` is the binary the supervisor restarts into, start-checked within `startCheckSeconds`.
+    private func configuration(directory: URL, script: String = "", service: String = "/bin/sh",
+                               installed: String = "/installed/darkbloom", startCheckSeconds: Double = 5,
+                               autoUpdate: Bool, clusterID: String,
                                recovery: ClusterCandidateRecovery? = nil, reexecs: Recorder,
                                run: @escaping @Sendable (String?, @escaping @Sendable (String) -> Void,
                                                          @escaping @Sendable (String) async throws -> Void) async -> AutoUpdateController.Outcome)
@@ -57,18 +61,19 @@ struct ClusterServiceUpdateTests {
         limits.intervalSeconds = 0.2
         limits.startGraceSeconds = 600
         limits.downSeconds = 600
-        return .init(executable: "/bin/sh", childArguments: ["-c", script], environment: ["PATH": "/usr/bin:/bin"],
+        return .init(executable: service, childArguments: ["-c", script], environment: ["PATH": "/usr/bin:/bin"],
             statePath: ClusterServiceAgent.supervisorStatePath(serviceDirectory: directory),
             healthPath: ClusterServiceAgent.healthPath(serviceDirectory: directory),
             setup: nil, coordinatorURL: "http://127.0.0.1:9", autoUpdate: autoUpdate,
             budgetLimits: .init(maxQuickFailures: 5, quickFailureWindowSeconds: 30, initialBackoffSeconds: 1, maxBackoffSeconds: 1),
-            guardLimits: limits, recycleGraceSeconds: 5, reexecArguments: ["/installed/darkbloom", "cluster", "service", "--supervise"],
+            guardLimits: limits, recycleGraceSeconds: 5, reexecArguments: [installed, "cluster", "service", "--supervise"],
             logName: "cluster service supervisor", childPollSeconds: 0.05,
             pairUpdate: .init(clusterID: { clusterID }, run: run,
                 requestPath: ClusterServiceAgent.updateRequestPath(serviceDirectory: directory),
                 progressPath: ClusterServiceAgent.updateProgressPath(serviceDirectory: directory),
                 recovery: recovery),
-            reexec: { reexecs.add($0.joined(separator: " ")) }, sweepsOrphans: false)
+            reexec: { reexecs.add($0.joined(separator: " ")) }, startCheckTimeoutSeconds: startCheckSeconds,
+            sweepsOrphans: false)
     }
 
     // MARK: - Wiring
@@ -210,7 +215,8 @@ struct ClusterServiceUpdateTests {
     // MARK: - Candidate promotion and rollback
 
     /// The release a cycle installed is a candidate: three starts of its service that end on their own restore the
-    /// verified predecessor, quarantine the release and start again from the restored binary.
+    /// verified predecessor, quarantine the release and start again from the restored binary, once it passes its
+    /// start check.
     @Test func failingCandidateIsRolledBackAndTheSupervisorRestartsFromThePredecessor() async throws {
         let install = try CandidateInstall()
         defer { install.cleanUp() }
@@ -218,14 +224,117 @@ struct ClusterServiceUpdateTests {
         defer { try? FileManager.default.removeItem(at: directory) }
         let reexecs = Recorder()
         let supervisor = ClusterMemberSupervisor(configuration: configuration(directory: directory, script: "exit 1",
-            autoUpdate: false, clusterID: "pair-far-from-its-slot", recovery: ClusterCandidateRecovery(updater: install.updater),
-            reexecs: reexecs) { _, _, _ in .upToDate })
+            installed: install.binary, autoUpdate: false, clusterID: "pair-far-from-its-slot",
+            recovery: ClusterCandidateRecovery(updater: install.updater), reexecs: reexecs) { _, _, _ in .upToDate })
         let run = Task { await supervisor.run() }
         #expect(await waitUntil(seconds: 20) { !reexecs.all.isEmpty }, "three failed starts roll the candidate back")
-        #expect(try install.liveBinary() == "1.0.0-darkbloom")
+        #expect(reexecs.all == ["\(install.binary) cluster service --supervise"])
+        #expect(try install.liveRelease() == "1.0.0")
         let recovery = try UpdateRecoveryStore(installRoot: install.installRoot, verifyCodeSignatures: false).loadState()
         #expect(recovery.quarantine?.version == "2.0.0" && recovery.candidate == nil)
         #expect((state(directory)?.runs ?? 0) >= 3, "rolled back at the third failed start")
+        supervisor.requestStop()
+        #expect(await run.value == 0)
+    }
+
+    /// The predecessor a rollback restored is start-checked too: one that cannot start is not restarted into, and the
+    /// supervisor starts the cluster service again itself.
+    @Test func restoredPredecessorThatCannotStartIsNotRestartedInto() async throws {
+        let install = try CandidateInstall(predecessor: .exitsNonZero)
+        defer { install.cleanUp() }
+        let directory = try temporaryDirectory("cluster-update-rollback-check")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let reexecs = Recorder()
+        let supervisor = ClusterMemberSupervisor(configuration: configuration(directory: directory, script: "exit 1",
+            installed: install.binary, autoUpdate: false, clusterID: "pair-far-from-its-slot",
+            recovery: ClusterCandidateRecovery(updater: install.updater), reexecs: reexecs) { _, _, _ in .upToDate })
+        let run = Task { await supervisor.run() }
+        let store = UpdateRecoveryStore(installRoot: install.installRoot, verifyCodeSignatures: false)
+        #expect(await waitUntil(seconds: 20) { (try? store.loadState())?.quarantine?.version == "2.0.0" },
+                "three failed starts roll the candidate back")
+        #expect(await waitUntil(seconds: 10) { (state(directory)?.runs ?? 0) >= 4 }, "the service starts again under this supervisor")
+        #expect(reexecs.all.isEmpty, "a restored binary that cannot start is not restarted into")
+        #expect(try install.liveRelease() == "1.0.0")
+        supervisor.requestStop()
+        #expect(await run.value == 0)
+    }
+
+    // MARK: - The start check before a restart
+
+    /// The pair's cycle as the supervisor sees it: 2.0.0 is installed and its launch prepared, the progress says the
+    /// service restarts, and the cycle asks for the restart.
+    private func cycleInstalling(_ install: CandidateInstall, directory: URL)
+        -> @Sendable (String?, @escaping @Sendable (String) -> Void, @escaping @Sendable (String) async throws -> Void) async
+        -> AutoUpdateController.Outcome {
+        { request, _, restart in
+            do { try install.install() } catch { return .commitFailed("\(error)") }
+            ClusterPairUpdate.writeProgress(.init(phase: .restarting, target: "2.0.0", running: "1.0.0", cycleStartedAt: 1,
+                request: request, writtenAt: Date().timeIntervalSince1970), to: ClusterServiceAgent.updateProgressPath(serviceDirectory: directory))
+            try? await restart("2.0.0")
+            return .restarted(from: "1.0.0", to: "2.0.0", drained: true)
+        }
+    }
+
+    /// A supervisor whose cluster service is the test install's `darkbloom`, and the `darkbloom update` request that
+    /// runs the cycle installing 2.0.0 at once.
+    private func superviseUpdate(_ install: CandidateInstall, directory: URL, reexecs: Recorder)
+        async -> (ClusterMemberSupervisor, Task<Int32, Never>) {
+        let supervisor = ClusterMemberSupervisor(configuration: configuration(directory: directory, service: install.binary,
+            installed: install.binary, startCheckSeconds: 1, autoUpdate: false, clusterID: "pair-far-from-its-slot",
+            recovery: ClusterCandidateRecovery(updater: install.updater), reexecs: reexecs,
+            run: cycleInstalling(install, directory: directory)))
+        let run = Task { await supervisor.run() }
+        #expect(await waitUntil(seconds: 5) { state(directory)?.phase == .running })
+        #expect(ClusterPairUpdate.writeRequest(.init(createdAt: Date().timeIntervalSince1970),
+                                               to: ClusterServiceAgent.updateRequestPath(serviceDirectory: directory)))
+        return (supervisor, run)
+    }
+
+    /// Before the supervisor restarts into the release its cycle installed, the release's `darkbloom` runs once with
+    /// `--version`. One that exits non-zero, outlasts the bound or reports another version is never restarted into:
+    /// the supervisor stays, restores the predecessor and quarantines the release at once, and starts the cluster
+    /// service again from the restored binary.
+    @Test(arguments: [StartAnswer.exitsNonZero, .hangs, .reportsAnotherVersion])
+    func releaseThatCannotStartIsRolledBackInsteadOfRestartedInto(_ answer: StartAnswer) async throws {
+        let install = try CandidateInstall(candidate: answer, installed: false)
+        defer { install.cleanUp() }
+        let directory = try temporaryDirectory("cluster-update-start-check")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let reexecs = Recorder()
+        let (supervisor, run) = await superviseUpdate(install, directory: directory, reexecs: reexecs)
+        let store = UpdateRecoveryStore(installRoot: install.installRoot, verifyCodeSignatures: false)
+        #expect(await waitUntil(seconds: 20) { (try? store.loadState())?.quarantine?.version == "2.0.0" },
+                "rolled back at its first failed start check")
+        #expect(await waitUntil(seconds: 10) {
+            guard let current = state(directory)?.current, state(directory)?.runs == 2 else { return false }
+            let health = ClusterSupervisionFiles.read(ClusterMemberHealth.self, from: ClusterServiceAgent.healthPath(serviceDirectory: directory))
+            return health?.pid == current.pid && health?.version == "1.0.0"
+        }, "this supervisor runs the cluster service again, from the restored binary")
+        #expect(reexecs.all.isEmpty, "never restarted into a release that cannot start")
+        #expect(try install.liveRelease() == "1.0.0")
+        let recovery = try store.loadState()
+        #expect(recovery.candidate == nil && recovery.current?.version == "1.0.0")
+        #expect(recovery.quarantine?.failureCount == 1 && recovery.quarantine?.reason.contains("start check") == true)
+        #expect(ClusterPairUpdate.readProgress(from: ClusterServiceAgent.updateProgressPath(serviceDirectory: directory))?.phase == .disabled,
+                "the cycle is over: this Mac rests on its release")
+        supervisor.requestStop()
+        #expect(await run.value == 0)
+    }
+
+    /// A release whose `darkbloom` starts and reports its version is restarted into as before, and stays the candidate.
+    @Test func releaseThatStartsIsRestartedInto() async throws {
+        let install = try CandidateInstall(installed: false)
+        defer { install.cleanUp() }
+        let directory = try temporaryDirectory("cluster-update-start-check-passes")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let reexecs = Recorder()
+        let (supervisor, run) = await superviseUpdate(install, directory: directory, reexecs: reexecs)
+        #expect(await waitUntil(seconds: 20) { !reexecs.all.isEmpty }, "restarted into the release")
+        #expect(reexecs.all == ["\(install.binary) cluster service --supervise"])
+        #expect(state(directory)?.lastRun?.end == "stopped to restart into v2.0.0")
+        #expect(try install.liveRelease() == "2.0.0")
+        let recovery = try UpdateRecoveryStore(installRoot: install.installRoot, verifyCodeSignatures: false).loadState()
+        #expect(recovery.candidate?.release.version == "2.0.0" && recovery.quarantine == nil)
         supervisor.requestStop()
         #expect(await run.value == 0)
     }
@@ -248,23 +357,42 @@ struct ClusterServiceUpdateTests {
         }, "promoted after the window")
         let recovery = try UpdateRecoveryStore(installRoot: install.installRoot, verifyCodeSignatures: false).loadState()
         #expect(recovery.candidate == nil && recovery.quarantine == nil)
-        #expect(try install.liveBinary() == "2.0.0-darkbloom" && reexecs.all.isEmpty)
+        #expect(try install.liveRelease() == "2.0.0" && reexecs.all.isEmpty)
         supervisor.requestStop()
         #expect(await run.value == 0)
     }
 }
 
+/// How a test release's `darkbloom --version` answers.
+enum StartAnswer: String, Sendable {
+    case reportsItsVersion, exitsNonZero, hangs, reportsAnotherVersion
+
+    func command(version: String) -> String {
+        switch self {
+        case .reportsItsVersion: return "echo \(version)"
+        case .exitsNonZero: return "exit 1"
+        case .hangs: return "exec sleep 30"
+        case .reportsAnotherVersion: return "echo 1.9.9"
+        }
+    }
+}
+
 /// A temporary install with release 2.0.0 installed over 1.0.0 and not yet promoted (no network, unsigned fixtures).
+/// Each release's `darkbloom` is a script: `--version` answers as the test says, and otherwise it beats as that
+/// release's cluster service would.
 private struct CandidateInstall {
     let root: URL
     let installRoot: URL
     let updater: SelfUpdater
+    private let tarball: URL
+    private let release: ReleaseInfo
 
-    init() throws {
+    /// `installed`: 2.0.0 is installed already; otherwise `install()` installs it, as the test's cycle does.
+    init(predecessor: StartAnswer = .reportsItsVersion, candidate: StartAnswer = .reportsItsVersion, installed: Bool = true) throws {
         let fm = FileManager.default
         root = fm.temporaryDirectory.appendingPathComponent("cluster-candidate-\(UUID().uuidString)", isDirectory: true)
         installRoot = root.appendingPathComponent("install", isDirectory: true)
-        try Self.writeApp(version: "1.0.0", root: installRoot)
+        try Self.writeApp(version: "1.0.0", answer: predecessor, root: installRoot)
         let bin = installRoot.appendingPathComponent("bin")
         try fm.createDirectory(at: bin, withIntermediateDirectories: true)
         for name in ["darkbloom", "darkbloom-enclave", "mlx.metallib"] {
@@ -272,13 +400,13 @@ private struct CandidateInstall {
                                       withDestinationPath: "../Darkbloom.app/Contents/MacOS/\(name)")
         }
         let source = root.appendingPathComponent("release", isDirectory: true)
-        try Self.writeApp(version: "2.0.0", root: source)
+        try Self.writeApp(version: "2.0.0", answer: candidate, root: source)
         let flat = source.appendingPathComponent("bin", isDirectory: true)
         try fm.createDirectory(at: flat, withIntermediateDirectories: true)
         for name in ["darkbloom", "darkbloom-enclave", "mlx.metallib"] {
             try fm.copyItem(at: source.appendingPathComponent("Darkbloom.app/Contents/MacOS/\(name)"), to: flat.appendingPathComponent(name))
         }
-        let tarball = root.appendingPathComponent("release.tar.gz")
+        tarball = root.appendingPathComponent("release.tar.gz")
         let tar = Process()
         tar.executableURL = URL(fileURLWithPath: "/usr/bin/tar")
         tar.arguments = ["czf", tarball.path, "-C", source.path, "."]
@@ -287,24 +415,48 @@ private struct CandidateInstall {
         let digest = SHA256.hash(data: try Data(contentsOf: tarball)).map { String(format: "%02x", $0) }.joined()
         updater = SelfUpdater(coordinatorBaseURL: "http://127.0.0.1:9", installRoot: installRoot, verifyCodeSignatures: false,
                               currentVersion: "1.0.0")
-        let release = ReleaseInfo(version: "2.0.0", platform: "macos-arm64", url: "file:///unused", bundleHash: digest)
+        release = ReleaseInfo(version: "2.0.0", platform: "macos-arm64", url: "file:///unused", bundleHash: digest)
+        if installed { try commit() }
+    }
+
+    /// The installed `darkbloom`, which the supervisor restarts into.
+    var binary: String { installRoot.appendingPathComponent("Darkbloom.app/Contents/MacOS/darkbloom").path }
+
+    /// Installs 2.0.0 and prepares its launch, as the pair's cycle does before it asks for the restart.
+    func install() throws {
+        try commit()
+        try updater.prepareCandidateLaunch(operation: "test-cluster-restart", baseline: nil)
+    }
+
+    /// The release whose `darkbloom` is installed.
+    func liveRelease() throws -> String? {
+        try String(contentsOfFile: binary, encoding: .utf8).split(separator: "\n")
+            .first { $0.hasPrefix("# release ") }.map { String($0.dropFirst("# release ".count)) }
+    }
+
+    func cleanUp() { try? FileManager.default.removeItem(at: root) }
+
+    private func commit() throws {
         guard case .success = updater.installBundleForTesting(from: tarball, release: release, installDir: installRoot) else {
             throw CocoaError(.fileWriteUnknown)
         }
     }
 
-    func liveBinary() throws -> String {
-        try String(contentsOf: installRoot.appendingPathComponent("Darkbloom.app/Contents/MacOS/darkbloom"), encoding: .utf8)
-    }
-
-    func cleanUp() { try? FileManager.default.removeItem(at: root) }
-
-    private static func writeApp(version: String, root: URL) throws {
+    private static func writeApp(version: String, answer: StartAnswer, root: URL) throws {
         let contents = root.appendingPathComponent("Darkbloom.app/Contents")
         let macOS = contents.appendingPathComponent("MacOS")
         try FileManager.default.createDirectory(at: macOS, withIntermediateDirectories: true)
         try Data("<plist/>".utf8).write(to: contents.appendingPathComponent("Info.plist"))
-        try Data("\(version)-darkbloom".utf8).write(to: macOS.appendingPathComponent("darkbloom"))
+        let darkbloom = macOS.appendingPathComponent("darkbloom")
+        try Data("""
+            #!/bin/sh
+            # release \(version)
+            if [ "$1" = --version ]; then \(answer.command(version: version)); exit; fi
+            while :; do printf '{"pid":%d,"version":"\(version)","phase":"serving","writtenAt":%s}' $$ "$(date +%s)" \
+            > "$DARKBLOOM_CLUSTER_MEMBER_HEALTH_FILE"; sleep 0.2; done
+
+            """.utf8).write(to: darkbloom)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: darkbloom.path)
         try Data("\(version)-enclave".utf8).write(to: macOS.appendingPathComponent("darkbloom-enclave"))
         try Data("\(version)-metallib".utf8).write(to: macOS.appendingPathComponent("mlx.metallib"))
     }

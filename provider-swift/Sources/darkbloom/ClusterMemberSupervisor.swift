@@ -17,7 +17,8 @@ import ProviderCore
 ///    starts again from the new binary (`ClusterMemberUpdateSlot`). Around the
 ///    cluster service (`pairUpdate`), the pair's coordinated update runs while
 ///    the service serves (`ClusterPairUpdateCycle`), and a release it installed
-///    is promoted or rolled back by its service's health (`ClusterCandidateRecovery`).
+///    is promoted or rolled back by its service's health (`ClusterCandidateRecovery`),
+///    or rolled back at once when its binary fails the start check before the restart.
 ///
 /// It sends SIGKILL only as the guard's last resort for a member that
 /// ignored a SIGTERM for the whole grace; an operator stop always waits.
@@ -64,6 +65,8 @@ final class ClusterMemberSupervisor: @unchecked Sendable {
         var pairUpdate: PairUpdate? = nil
         /// Replaces this process with the installed binary (`execv`); a test observes the call instead.
         var reexec: (@Sendable ([String]) -> Void)? = nil
+        /// How long that binary may take to pass its start check first (`ClusterCandidateRecovery.startCheckFailure`).
+        var startCheckTimeoutSeconds = ClusterCandidateRecovery.startCheckTimeoutSeconds
         /// The orphan sweep before every run signals this user's orphaned cluster processes; a test never does.
         var sweepsOrphans = true
     }
@@ -149,7 +152,11 @@ final class ClusterMemberSupervisor: @unchecked Sendable {
             switch outcome {
             case .stopped:
                 break
-            case .updateInstalled:
+            case .updateInstalled(let version):
+                if let version, let failure = await startCheckFailure(version) {
+                    stayAfterFailedStartCheck(of: version, failure: failure)
+                    continue
+                }
                 reexecAfterUpdate()
                 // execv returned: the new binary could not be started; keep the old one running.
                 log("re-exec after the update failed; starting the member from this binary")
@@ -157,7 +164,12 @@ final class ClusterMemberSupervisor: @unchecked Sendable {
             case .updateDrainedWithoutInstall:
                 continue
             case .ended(let end, let runSeconds, let detail):
-                if recordCandidateEnd(detail: detail) {
+                if let restored = recordCandidateEnd(detail: detail) {
+                    if let failure = await startCheckFailure(restored) {
+                        log("cluster update: the restored v\(restored) failed its start check (\(failure)), so the supervisor "
+                            + "does not restart into it; starting the cluster service again from this supervisor")
+                        continue
+                    }
                     reexecAfterUpdate()
                     log("re-exec after the rollback failed; starting the member from this binary")
                     continue
@@ -245,7 +257,9 @@ final class ClusterMemberSupervisor: @unchecked Sendable {
     private enum RunOutcome {
         case stopped
         case ended(ClusterMemberRunEnd, runSeconds: Double, detail: String)
-        case updateInstalled
+        /// A release is installed: the supervisor restarts into it. `version`: the release the pair's cycle installed,
+        /// which passes the start check first; nil on the member route, whose job the watchdog recovers.
+        case updateInstalled(version: String?)
         case updateDrainedWithoutInstall
     }
 
@@ -349,13 +363,13 @@ final class ClusterMemberSupervisor: @unchecked Sendable {
                                   end: "stopped to restart into v\(version)")
             state.current = nil
             candidate = nil
-            return .updateInstalled
+            return .updateInstalled(version: version)
         }
         if let intent = drainedForUpdate, !isStopping {
             state.lastRun = .init(pid: pid, startedAt: started, endedAt: ended, exitCode: exitCode, signal: signal,
                                   end: "drained for update")
             state.current = nil
-            return await applyUpdate(intent) ? .updateInstalled : .updateDrainedWithoutInstall
+            return await applyUpdate(intent) ? .updateInstalled(version: nil) : .updateDrainedWithoutInstall
         }
         let end = ClusterMemberRunEnd.classify(stopRequested: isStopping, exitCode: exitCode, signal: signal)
         let detail: String
@@ -549,24 +563,54 @@ final class ClusterMemberSupervisor: @unchecked Sendable {
     /// A service heartbeat (every 2 s) older than this does not count toward promotion.
     static let candidateHeartbeatSeconds: Double = 30
 
-    /// A candidate's service that ended without being asked to is a failed start; returns whether the third restored
-    /// the verified predecessor, which the supervisor then starts again from.
-    private func recordCandidateEnd(detail: String) -> Bool {
-        guard candidate != nil, let recovery = configuration.pairUpdate?.recovery else { return false }
+    /// A candidate's service that ended without being asked to is a failed start; returns the verified predecessor the
+    /// third restored, which the supervisor then starts again from.
+    private func recordCandidateEnd(detail: String) -> String? {
+        guard candidate != nil, let recovery = configuration.pairUpdate?.recovery else { return nil }
         candidate = nil
         switch recovery.recordFailedStart(now: Date().timeIntervalSince1970) {
         case .counted(let version, let failures):
             log("cluster update: v\(version) failed start \(failures)/\(UpdateRecoveryState.rollbackThreshold) (\(detail))")
-            return false
+            return nil
         case .rolledBack(let from, let to):
             log("cluster update: v\(from) failed \(UpdateRecoveryState.rollbackThreshold) starts; restored v\(to) and quarantined v\(from)")
-            return true
+            return to
         case .rollbackRefused(let version, let reason):
             log("cluster update: rolling v\(version) back was refused (\(reason)); the installed release is kept and tried again later")
-            return false
+            return nil
         case .notCandidate:
-            return false
+            return nil
         }
+    }
+
+    /// Before this process replaces itself (`execv`) with the installed `version`, on the route that rolls releases
+    /// back (`PairUpdate.recovery`), that binary runs once as its child (`ClusterCandidateRecovery.startCheckFailure`).
+    /// Nil when it passed, or when there is no check to run.
+    private func startCheckFailure(_ version: String) async -> String? {
+        guard configuration.pairUpdate?.recovery != nil, let program = configuration.reexecArguments.first else { return nil }
+        let timeout = configuration.startCheckTimeoutSeconds
+        return await Task.detached {
+            ClusterCandidateRecovery.startCheckFailure(executable: program, version: version, timeout: timeout)
+        }.value
+    }
+
+    /// A release that failed its start check would fail every start, and after an `execv` no supervisor would be left
+    /// to count them: this supervisor stays, restores the verified predecessor and quarantines the release at once,
+    /// then starts the cluster service again from what is installed. The cycle that asked for the restart is over.
+    private func stayAfterFailedStartCheck(of version: String, failure: String) {
+        guard let pair = configuration.pairUpdate, let recovery = pair.recovery else { return }
+        let now = Date().timeIntervalSince1970
+        let outcome: String
+        switch recovery.recordFailedStartCheck(version: version, reason: failure, now: now) {
+        case .rolledBack(_, let restored):
+            outcome = "restored v\(restored) and quarantined v\(version)"
+        case .rollbackRefused(_, let reason):
+            outcome = "rolling it back was refused (\(reason)); the installed release is kept"
+        case .counted, .notCandidate:
+            outcome = "it was not rolled back (another update holds the lease, or it is no longer the pending release)"
+        }
+        log("cluster update: v\(version) failed its start check (\(failure)), so the supervisor does not restart into it; \(outcome)")
+        ClusterPairUpdate.writeProgress(restingProgress(now: now), to: pair.progressPath)
     }
 
     // MARK: - Helpers

@@ -554,8 +554,11 @@ at the next slot. A release that one Mac cannot download or verify is installed
 on neither Mac; both try again at the next slot. Until a new
 release's cluster service has stayed healthy for 10 minutes, three of its starts
 that end by themselves bring back the previous release and quarantine the new
-one, as the watchdog does for a single Mac. How the cluster service does this is
-in [the pair's coordinated update](cluster-always-on.md#the-pairs-coordinated-update).
+one, as the watchdog does for a single Mac. A Mac never restarts into a new
+release that does not start at all (it checks before the restart): it brings
+back the previous release at once and quarantines the new one. How the cluster
+service does this is in
+[the pair's coordinated update](cluster-always-on.md#the-pairs-coordinated-update).
 
 To update at once, run on each Mac:
 

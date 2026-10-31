@@ -1,5 +1,0 @@
-### Concurrent tensor-parallel requests share each draft step's weight reads
-
-- On a two-Mac tensor-parallel pair, speculative drafts now use the same batch-invariant kernel as decoding. When several requests draft in the same round, every draft step after the first runs all of them through one assistant pass, and every head call serves all of them, so each weight is read once per step for the whole batch instead of once per request. With eight concurrent Qwen3.8 27B requests, a round's draft work on one Mac fell from about 38 to 24 ms.
-- A request proposes the same tokens alone and in a batch of any size, and every request still produces exactly the tokens the model produces without speculation. Proposals can differ from the previous kernels at near-ties, so the share of accepted proposals can shift slightly; the output never does.
-- Both Macs must use the same draft kernel or the pair refuses to load. `DARKBLOOM_QWEN_TP_MTP_EXACT_DRAFTS=0` (diagnostic only, never forwarded to an installed rank) keeps the previous kernels. Single-Mac speculative decoding is unchanged.

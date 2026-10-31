@@ -182,15 +182,26 @@ public struct ClusterPairServingGrant: Sendable, Equatable {
     /// The families with a diverged record and no passing one, and why: never
     /// served, on any chips, until a check of the family passes.
     public let withheldFamilies: [ClusterPairServingModeFamily: String]
+    /// The records the grant rests on, in the order they were given (the
+    /// bundle's): the passing records of its granted families.
+    public let records: [ClusterPairQualificationRecord]
 
     public init(runtimeModelID: String, qualifications: [ClusterPairServingQualification], evidence: String,
-                withheldFamilies: [ClusterPairServingModeFamily: String] = [:]) {
+                withheldFamilies: [ClusterPairServingModeFamily: String] = [:], records: [ClusterPairQualificationRecord] = []) {
         self.runtimeModelID = runtimeModelID; self.qualifications = qualifications; self.evidence = evidence
-        self.withheldFamilies = withheldFamilies
+        self.withheldFamilies = withheldFamilies; self.records = records
     }
 
     /// The mode families a pair may serve this model in, in order.
     public var families: [ClusterPairServingModeFamily] { Set(qualifications.map(\.family)).sorted() }
+
+    /// SHA-256 of `records` as canonical JSON Lines: each record's
+    /// `encodedLine` (sorted keys, no whitespace), joined by "\n", with no
+    /// trailing newline. A release's cluster runtime facts name it as the
+    /// grant's `evidence_sha256`.
+    public func evidenceSHA256() throws -> String {
+        ClusterConfigurationCodec.sha256(Data(try records.map { try $0.encodedLine() }.joined(separator: "\n").utf8))
+    }
 
     /// The chip classes the grant's passing checks ran on, in any role: what
     /// the evidence says in words. Not a list of allowed chips: any detected
@@ -460,7 +471,8 @@ public struct ClusterPairServingDecisions: Sendable, Equatable {
                 $0.0.mode!.servingFamily
             }.mapValues { Self.withholding($0) }
             granted.append(ClusterPairServingGrant(runtimeModelID: model, qualifications: runs,
-                evidence: Self.evidence(records: evidence.count, placements: runs), withheldFamilies: closed))
+                evidence: Self.evidence(records: evidence.count, placements: runs), withheldFamilies: closed,
+                records: evidence.map(\.0)))
         }
         self.granted = granted
         // A model is withheld as a whole only when no family of it is granted.

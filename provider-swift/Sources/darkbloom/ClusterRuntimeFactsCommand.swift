@@ -5,9 +5,11 @@ import ProviderCore
 extension Cluster {
     /// The cluster runtime facts of an app bundle (`ClusterRuntimeApprovalFacts`),
     /// printed in their canonical form: the digests a cluster approval of that
-    /// build pins and the parity qualifications of the models this build
-    /// declares public (`ClusterPublicModels`). The release lane runs the final
-    /// signed app's own CLI, so the declaration is that build's. It reads
+    /// build pins, each model's pair-serving grant, and the parity
+    /// qualifications of the models this build declares public
+    /// (`ClusterPublicModels`). A declared family left without a qualification
+    /// is named on standard error. The release lane runs the final signed app's
+    /// own CLI, so the declaration and the records are that build's. It reads
     /// metadata only: no model weights, no GPU, no configuration, no network
     /// and no secret.
     struct RuntimeFacts: ParsableCommand {
@@ -51,6 +53,7 @@ extension Cluster {
                 // coordinator derives for this build's version must fit.
                 let bytes = try facts.canonicalBytes()
                 _ = try ClusterRuntimeApprovalFacts(canonical: bytes)
+                Self.note(facts)
                 FileHandle.standardOutput.write(bytes)
                 return
             }
@@ -60,7 +63,12 @@ extension Cluster {
             guard named == expected, given.count == facts.models.count else {
                 throw ValidationError("The manifests name \(named.sorted().joined(separator: ", ")), not \(given.map { $0.model }.joined(separator: ", "))")
             }
+            Self.note(facts)
             FileHandle.standardOutput.write(try facts.canonicalBytes())
+        }
+
+        static func note(_ facts: ClusterRuntimeApprovalFacts) {
+            for line in facts.unqualifiedDeclaredFamilies() { FileHandle.standardError.write(Data("note: \(line)\n".utf8)) }
         }
     }
 }

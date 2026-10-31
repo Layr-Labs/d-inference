@@ -5,7 +5,8 @@ import DarkbloomClusterProtocol
 /// release's own CLI and worker from its final signed app: the models this
 /// build qualifies on a cluster, described from the metadata of the target
 /// environment's catalog (`scripts/provider-cluster-runtime-facts.sh`), with
-/// the parity qualifications of the models this build declares public.
+/// each model's pair-serving grant and the parity qualifications of the models
+/// this build declares public.
 extension ClusterRuntimeApprovalFacts {
     /// A model a release describes: a registered model with a cluster stage
     /// adapter and a passing pair qualification record on this artifact.
@@ -47,7 +48,8 @@ extension ClusterRuntimeApprovalFacts {
     /// model is left.
     public static func release(installation: Installation, candidates: [ModelFiles],
                                models: [ReleaseModel] = ClusterRuntimeApprovalFacts.releaseModels,
-                               publicModels: [ClusterPublicModel] = ClusterPublicModels.declared) throws -> Self {
+                               publicModels: [ClusterPublicModel] = ClusterPublicModels.declared,
+                               decisions: ClusterPairServingDecisions = ClusterPairServingGrants.decisions) throws -> Self {
         let installed = try HashedInstallation(installation)
         let parsed = try candidates.map { ($0, try catalogArtifact($0)) }
         var entries: [Model] = [], failures: [String] = []
@@ -59,7 +61,7 @@ extension ClusterRuntimeApprovalFacts {
                 var refusals: [String] = [], chosen: Model?
                 for (files, artifact) in ofArtifact where artifact.modelID == catalogID {
                     do {
-                        let described = try installed.describe(files, publicModels: publicModels)
+                        let described = try installed.describe(files, publicModels: publicModels, decisions: decisions)
                         if described.runtimeModelID == listed.runtimeModelID { chosen = described.entry; break }
                         refusals.append("\(files.manifest.path) is \(described.runtimeModelID)")
                     } catch {

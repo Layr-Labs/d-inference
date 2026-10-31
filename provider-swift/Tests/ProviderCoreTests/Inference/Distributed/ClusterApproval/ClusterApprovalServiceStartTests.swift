@@ -8,8 +8,11 @@ import Testing
 @Suite("Cluster approval at a service start", .serialized)
 struct ClusterApprovalServiceStartTests {
     /// The leader's setup saved with an approval ending `endsIn` seconds from now (in the past: ended): a cluster
-    /// approval as the guided setup saves it, or (`handSaved`) a pair approval an operator saved by hand.
-    private func setUp(endsIn: Double, handSaved: Bool = false) throws -> (ClusterApprovalMacs, ClusterService, URL) {
+    /// approval as the guided setup saves it, or (`handSaved`) a pair approval an operator saved by hand. `supervised`:
+    /// the service runs under its supervisor (its heartbeat file named in its environment) or not; nil: this process's
+    /// environment as it is.
+    private func setUp(endsIn: Double, handSaved: Bool = false,
+                       supervised: Bool? = nil) throws -> (ClusterApprovalMacs, ClusterService, URL) {
         let macs = try ClusterApprovalMacs(coordinatorURL: "ws://127.0.0.1:9/ws/provider")
         let leader = macs.leader, saved = try macs.saved(leader), facts = try macs.facts()
         let current = try ClusterApprovalAttachment.attachment(for: macs.approval(), saved: saved, paths: leader.paths,
@@ -42,12 +45,20 @@ struct ClusterApprovalServiceStartTests {
         try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: helper.path)
         let parts = leader.home.appendingPathComponent("parts", isDirectory: true)
         try FileManager.default.createDirectory(at: parts, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+        let environment = supervised.map { underSupervisor -> [String: String] in
+            let key = ClusterSupervisionFiles.healthPathEnvironmentKey
+            var environment = ProcessInfo.processInfo.environment
+            environment[key] = underSupervisor
+                ? ClusterServiceAgent.healthPath(serviceDirectory: ClusterSetupPaths(paths: leader.paths).directory).path : nil
+            return environment
+        }
         let wizard = ClusterSetupOperations.LiveSettings(providerConfiguration: leader.provider, darkbloomExecutable: helper,
             sessionArguments: [], pair: nil, dryRun: true, version: "fixture")
         let service = ClusterService(settings: .init(wizard: wizard,
             leaderArguments: ["--service-part-fixture", parts.path, "leader"], followerArguments: [],
             soloArguments: ["--service-part-fixture", parts.path, "replacement"],
-            memberArguments: ["--service-part-fixture", parts.path, "member"]), paths: leader.paths, recoveryGraceSeconds: 0.2)
+            memberArguments: ["--service-part-fixture", parts.path, "member"]), paths: leader.paths, recoveryGraceSeconds: 0.2,
+            environment: environment)
         var leadership = ClusterOnboardingLeadership(role: "leader", leaderPin: leader.pin, peerPin: macs.follower.pin,
             peerName: "fixture peer", since: "fixture")
         leadership.serving = true; leadership.modelName = ClusterApprovalMacs.model
@@ -100,6 +111,41 @@ struct ClusterApprovalServiceStartTests {
         #expect(reached, "the member part did not start: \(lines)")
         #expect(!started(parts, "leader"))
         #expect(try macs.bytes(macs.leader) == before, "a current approval was rewritten")
+    }
+
+    /// A supervised service beats into the file its supervisor names, and so does a coordinator-paired part (with its
+    /// own pid) when it inherits that name. The supervisor's liveness guard reads another pid's beat as no beat, so on
+    /// DevNet it restarted a healthy registered service every 15 minutes or so (the pair dropped each time). The part
+    /// beats into a file of its own, and still runs as a supervised member (the key stays set).
+    @Test func aSupervisedServicesMemberPartNeverBeatsIntoTheServicesHeartbeat() throws {
+        let (_, service, parts) = try setUp(endsIn: 14 * 86_400, supervised: true)
+        let (reached, lines) = run(service, parts: parts) { started(parts, "member") }
+        #expect(reached, "the member part did not start: \(lines)")
+        let directory = service.store.paths.directory
+        #expect(heartbeatFiles(parts, "member") == [ClusterServiceAgent.partHealthPath(serviceDirectory: directory).path],
+                "the part must beat into its own file, never \(ClusterServiceAgent.healthPath(serviceDirectory: directory).path)")
+    }
+
+    @Test func anUnsupervisedServicesMemberPartIsToldOfNoHeartbeatFile() throws {
+        let (_, service, parts) = try setUp(endsIn: 14 * 86_400, supervised: false)
+        let (reached, lines) = run(service, parts: parts) { started(parts, "member") }
+        #expect(reached, "the member part did not start: \(lines)")
+        #expect(heartbeatFiles(parts, "member").isEmpty)
+    }
+
+    /// An empty name is no supervisor to the service and to its part alike: it stays empty, never a part's file.
+    @Test func anEmptyHeartbeatNameIsPassedOnEmpty() {
+        let key = ClusterSupervisionFiles.healthPathEnvironmentKey
+        let environment = ClusterService.partEnvironment([key: "", "HOME": "/fixture"],
+                                                         serviceDirectory: URL(fileURLWithPath: "/fixture/.darkbloom/cluster-setup"))
+        #expect(environment == [key: "", "HOME": "/fixture"])
+    }
+
+    /// The heartbeat files the parts of `role` were told of (the fixture records its environment's).
+    private func heartbeatFiles(_ parts: URL, _ role: String) -> [String] {
+        ((try? FileManager.default.contentsOfDirectory(atPath: parts.path)) ?? [])
+            .filter { $0.hasPrefix(role + "-") && $0.hasSuffix(".health") }
+            .compactMap { try? String(contentsOf: parts.appendingPathComponent($0), encoding: .utf8) }
     }
 
     @Test func aHandSavedPairApprovalThatEndedStaysSavedAndIsNeverOffered() throws {

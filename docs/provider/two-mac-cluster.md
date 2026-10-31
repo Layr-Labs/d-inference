@@ -169,10 +169,16 @@ The pair also serves on the leader's local API, both Macs without the
 approval, when the coordinator gives no answer for the absence grace (10
 minutes, the same grace as in [if a Mac goes away](#if-a-mac-goes-away)), when
 it no longer lists the approval, or when the coordinator-paired parts end three
-times in a row right after starting. When the coordinator lists a matching
-approval again, the pair registers again (after repeated failures, only with a
-later approval). Both Macs carry the same approval, or neither does: the leader
-compares the two at every check.
+times in a row right after starting. An end the coordinator decides is not
+counted: one because it could not be reached, or because it did not accept the
+part's registration in time, as during a coordinator deploy. This complements
+the coordinator's side: a coordinator that ends each pair session before its
+shutdown closes the members' connections gives a deploy cleaner ends, and this
+rule still covers a coordinator without that change, a coordinator crash and a
+slow registration. When the coordinator lists a matching approval again, the
+pair registers again (after repeated failures, with the same approval an hour
+later, or at once with a later one). Both Macs carry the same approval, or
+neither does: the leader compares the two at every check.
 
 What `darkbloom cluster` status says in each mode:
 
@@ -181,7 +187,7 @@ What `darkbloom cluster` status says in each mode:
 | Registered | `Registered with the coordinator as a cluster member: approval <id>, until <date>.` |
 | Coordinator gave no answer for the grace | The API line, then `The coordinator has not answered for 10 minutes: the pair serves on the leader's local API until it answers again, then it is offered again with approval <id>.` |
 | Approval no longer listed | The API line, then `The coordinator no longer lists cluster approval <id>: the pair serves on the leader's local API until it lists a matching one again.` |
-| Parts kept ending | The API line, then `The coordinator-paired parts ended 3 times in a row right after starting with cluster approval <id>: the pair serves on the leader's local API until the coordinator lists a later one.` |
+| Parts kept ending | The API line, then `The coordinator-paired parts ended 3 times in a row right after starting with cluster approval <id>: the pair serves on the leader's local API for 60 minutes, then it is offered again with it, or sooner with a later one the coordinator lists.` |
 | Approval ended | The API line, then one line that says the cluster approval `<id>` expired and the pair serves on the leader's local API |
 | No approval (production, staging, no matching entry) | The API line, then (only after a refusal) `Not offered for pairing: <reason>.` |
 

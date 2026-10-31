@@ -63,6 +63,8 @@ on:
       - 'scripts/provider_release_github.py'
       - 'scripts/provider_release_identity.py'
       - 'scripts/provider-signing-validation.py'
+      - 'scripts/provider-cluster-runtime-models.py'
+      - 'scripts/provider-cluster-runtime-facts.sh'
       - 'scripts/build-cluster-helpers.sh'
       - 'scripts/sign-cluster-helpers.sh'
       - 'scripts/stage-swiftpm-resource-bundles.sh'

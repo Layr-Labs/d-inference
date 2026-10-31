@@ -305,6 +305,179 @@ class PublicationTests(PublicationFixture):
         self.assertEqual(PUB.release_changelog(dict(env, GITHUB_REF_TYPE='branch')), 'Release v0.9.8')
 
 
+def cluster_runtime_block():
+    def model(name, seed, grant=None):
+        return {'model': name, 'artifact_sha256': seed * 64, 'capability_sha256': 'c' * 64,
+                'pair_serving_grant': grant, 'profile_sha256': 'd' * 64, 'resource_policy_sha256': 'e' * 64}
+    grant = {'evidence_sha256': 'f' * 64, 'mode_families': ['pipeline', 'tensor_parallel']}
+    return {'schema': 'darkbloom_cluster_runtime_v2', 'native_runtime_sha256': '1' * 64,
+            'metallib_sha256': '2' * 64, 'resource_library_sha256': '3' * 64,
+            'placement_policy_sha256': '4' * 64,
+            'models': [model('EigenLabs/Qwen3.8-27B-4bit-mtp', '5', grant), model('Qwen3.5-9B', '6'),
+                       model('glm-5.3-flash', '7', dict(grant, mode_families=['pipeline']))]}
+
+
+class ClusterRuntimeTests(PublicationFixture):
+    # The payloads of PublicationFixture (prod) and of its dev twin, byte for
+    # byte as the release lane wrote them before cluster_runtime existed: a
+    # release without the block is unchanged in every environment.
+    PROD_PAYLOAD_SHA256 = 'f864c569d555a574a8499160cb2a815d5d54ce2ac73294e690e16a44cf999758'
+    DEV_PAYLOAD_SHA256 = 'f8d464b44d74957419bb800386735647891775bb1cfc5bc70db794033bd07e50'
+
+    def dev_env(self):
+        return dict(self.env, ENV_PREFIX='dev', VERSION='0.9.8-dev.branch.7')
+
+    def write_block(self, block, name='cluster-runtime.json'):
+        path = self.base / name
+        path.write_text(block if isinstance(block, str) else json.dumps(block, sort_keys=True, separators=(',', ':')))
+        return path
+
+    def test_payload_bytes_are_unchanged_without_the_block(self):
+        self.assertNotIn('cluster_runtime', self.payload)
+        self.assertEqual(PUB.sha256(self.root / 'release-payload.json'), self.PROD_PAYLOAD_SHA256)
+        root = self.base / 'dev'
+        payload = PUB.prepare(root, self.root / PUB.BUNDLE, self.dev_env())
+        self.assertNotIn('cluster_runtime', payload)
+        self.assertEqual(PUB.sha256(root / 'release-payload.json'), self.DEV_PAYLOAD_SHA256)
+
+    def test_every_environment_carries_a_valid_block_through_stage(self):
+        # Staging is refused before and after this block ("Unknown publication environment").
+        for env in (self.dev_env(), dict(self.env, VERSION='0.9.9')):
+            with self.subTest(environment=env['ENV_PREFIX']):
+                block, root = cluster_runtime_block(), self.base / env['ENV_PREFIX']
+                payload = PUB.prepare(root, self.root / PUB.BUNDLE, env, self.write_block(block))
+                self.assertEqual(payload['cluster_runtime'], block)
+                self.assertEqual(list(payload)[-1], 'cluster_runtime')
+                written = json.loads((root / 'release-payload.json').read_text())
+                self.assertEqual(written['cluster_runtime'], block)
+                # Every other field is the payload without the block.
+                without = PUB.prepare(self.base / (env['ENV_PREFIX'] + '-without'), self.root / PUB.BUNDLE, env)
+                self.assertEqual({key: value for key, value in written.items() if key != 'cluster_runtime'}, without)
+                env.update(RELEASE_PAYLOAD_SHA256=PUB.sha256(root / 'release-payload.json'),
+                           RELEASE_PROVENANCE_SHA256=PUB.sha256(root / 'release-provenance.json'))
+                with patch.object(PUB, 'upload') as upload:
+                    PUB.stage(root, env)
+                upload.assert_called_once()
+        with self.assertRaisesRegex(ValueError, 'Unknown publication environment'):
+            PUB.prepare(self.base / 'staging', self.root / PUB.BUNDLE, dict(self.env, ENV_PREFIX='staging'),
+                        self.write_block(cluster_runtime_block()))
+
+    def test_registration_sends_the_block(self):
+        root = self.base / 'dev'
+        payload = PUB.prepare(root, self.root / PUB.BUNDLE, self.dev_env(), self.write_block(cluster_runtime_block()))
+        with patch.object(PUB.urllib.request, 'build_opener') as opener:
+            opener.return_value.open.return_value.__enter__.return_value.read.return_value = b'{}'
+            PUB.coordinator(self.dev_env(), '/v1/releases', payload)
+            sent = json.loads(opener.return_value.open.call_args.args[0].data)
+        self.assertEqual(sent['cluster_runtime'], cluster_runtime_block())
+
+    def test_malformed_block_is_refused(self):
+        def edited(change):
+            block = cluster_runtime_block()
+            change(block)
+            return block
+        many = [dict(cluster_runtime_block()['models'][1], model=f'model-{index:02d}') for index in range(65)]
+        rows = {
+            'unknown field': edited(lambda b: b.update(extra='x')),
+            'missing field': edited(lambda b: b.pop('metallib_sha256')),
+            'schema v1': edited(lambda b: b.update(schema='darkbloom_cluster_runtime_v1')),
+            'unknown model field': edited(lambda b: b['models'][0].update(extra='x')),
+            'missing model field': edited(lambda b: b['models'][0].pop('profile_sha256')),
+            'absent grant, not null': edited(lambda b: b['models'][1].pop('pair_serving_grant')),
+            'grant a string': edited(lambda b: b['models'][1].update(pair_serving_grant='pipeline')),
+            'grant false': edited(lambda b: b['models'][1].update(pair_serving_grant=False)),
+            'unknown grant field': edited(lambda b: b['models'][0]['pair_serving_grant'].update(extra='x')),
+            'missing grant field': edited(lambda b: b['models'][0]['pair_serving_grant'].pop('evidence_sha256')),
+            'no mode family': edited(lambda b: b['models'][0]['pair_serving_grant'].update(mode_families=[])),
+            'unknown mode family': edited(lambda b: b['models'][0]['pair_serving_grant'].update(mode_families=['pipeline_mtp'])),
+            'mode families unsorted': edited(lambda b: b['models'][0]['pair_serving_grant'].update(
+                mode_families=['tensor_parallel', 'pipeline'])),
+            'mode family repeated': edited(lambda b: b['models'][0]['pair_serving_grant'].update(
+                mode_families=['pipeline', 'pipeline'])),
+            'mode families not a list': edited(lambda b: b['models'][0]['pair_serving_grant'].update(mode_families='pipeline')),
+            'mode family not a string': edited(lambda b: b['models'][0]['pair_serving_grant'].update(mode_families=[1])),
+            'zero evidence': edited(lambda b: b['models'][0]['pair_serving_grant'].update(evidence_sha256='0' * 64)),
+            'uppercase evidence': edited(lambda b: b['models'][0]['pair_serving_grant'].update(evidence_sha256='F' * 64)),
+            'uppercase digest': edited(lambda b: b.update(native_runtime_sha256='A' * 64)),
+            'short digest': edited(lambda b: b['models'][1].update(capability_sha256='c' * 63)),
+            'zero digest': edited(lambda b: b['models'][1].update(resource_policy_sha256='0' * 64)),
+            'digest not a string': edited(lambda b: b.update(placement_policy_sha256=1)),
+            'no models': edited(lambda b: b.update(models=[])),
+            'models not a list': edited(lambda b: b.update(models={})),
+            'model not an object': edited(lambda b: b['models'].append('glm')),
+            'too many models': edited(lambda b: b.update(models=many)),
+            'unsorted models': edited(lambda b: b['models'].reverse()),
+            'repeated model': edited(lambda b: b['models'].append(dict(b['models'][-1]))),
+            'empty model ID': edited(lambda b: b['models'][0].update(model='')),
+            'long model ID': edited(lambda b: b['models'][0].update(model='A' * 129)),
+            'non-ASCII model ID': edited(lambda b: b['models'][0].update(model='Qwené')),
+            'control byte in model ID': edited(lambda b: b['models'][0].update(model='A\n')),
+            'model ID not a string': edited(lambda b: b['models'][0].update(model=7)),
+            'block not an object': [],
+        }
+        for label, block in rows.items():
+            with self.subTest(row=label):
+                for env in (self.dev_env(), self.env):
+                    with self.assertRaisesRegex(ValueError, 'Invalid cluster_runtime'):
+                        PUB.prepare(self.base / (label + env['ENV_PREFIX']), self.root / PUB.BUNDLE, env,
+                                    self.write_block(block))
+                    self.assertFalse((self.base / (label + env['ENV_PREFIX'])).exists())
+                with self.assertRaisesRegex(ValueError, 'Invalid cluster_runtime'):
+                    PUB.check_cluster_runtime(block)
+                with self.assertRaisesRegex(ValueError, 'Invalid cluster_runtime'):
+                    PUB.validate(dict(self.payload, cluster_runtime=block), self.env)
+        text = json.dumps(cluster_runtime_block())
+        for label, data in {'repeated field': text[:-1] + ', "schema": "darkbloom_cluster_runtime_v2"}',
+                            'repeated grant field': text.replace('"evidence_sha256"', '"mode_families": [], "evidence_sha256"', 1),
+                            'over its bound': text + ' ' * (64 * 1024), 'not JSON': text[:-1]}.items():
+            with self.subTest(row=label), self.assertRaisesRegex(ValueError, 'Invalid cluster_runtime'):
+                PUB.prepare(self.base / label, self.root / PUB.BUNDLE, self.dev_env(), self.write_block(data))
+
+    def test_a_block_whose_derived_ids_exceed_128_bytes_is_refused_before_staging(self):
+        # release/<version>/<model>/s2 with version 0.9.8-dev.branch.7: 30 bytes plus the model ID,
+        # and 6 more for the /grant of a model with a pair-serving grant.
+        env = self.dev_env()
+        self.assertEqual(len(f"release/{env['VERSION']}/{'m' * 98}/s2".encode()), 128)
+        template = cluster_runtime_block()['models']
+        for label, base, fits in (('without a grant', template[1], 98), ('with a grant', template[0], 92)):
+            with self.subTest(row=label):
+                block, over = cluster_runtime_block(), cluster_runtime_block()
+                block['models'] = [dict(base, model='m' * fits)]
+                over['models'] = [dict(base, model='m' * (fits + 1))]
+                payload = PUB.prepare(self.base / ('fits ' + label), self.root / PUB.BUNDLE, env,
+                                      self.write_block(block, 'fits.json'))
+                self.assertEqual(payload['cluster_runtime'], block)
+                with self.assertRaisesRegex(ValueError, 'derived cluster approval or grant ID exceeds 128 bytes'), \
+                        patch.object(PUB, 'upload') as upload:
+                    PUB.prepare(self.base / ('over ' + label), self.root / PUB.BUNDLE, env, self.write_block(over, 'over.json'))
+                upload.assert_not_called()
+                self.assertFalse((self.base / ('over ' + label) / 'release-payload.json').exists())
+                with self.assertRaisesRegex(ValueError, 'derived cluster approval or grant ID exceeds 128 bytes'):
+                    PUB.validate(dict(payload, cluster_runtime=over), env)
+
+    def test_boundary_values_are_accepted(self):
+        block = cluster_runtime_block()
+        block['models'] = [dict(block['models'][1], model=f'm{index:02d}') for index in range(64)]
+        PUB.check_cluster_runtime(block)
+        version = '0.9.8-dev.branch.7'
+        PUB.validate(dict(self.payload, version=version, require_app_attest_qualification=False,
+                          url='https://releases.example/' + PUB.object_key(dict(self.payload, version=version)),
+                          cluster_runtime=block), self.dev_env())
+        block['models'] = [dict(block['models'][0], model=' ' + '~' * 127)]
+        PUB.check_cluster_runtime(block)
+        block['models'][0]['pair_serving_grant'] = {
+            'evidence_sha256': 'f' * 64, 'mode_families': ['hand_off', 'pipeline', 'pipeline_speculative', 'tensor_parallel']}
+        PUB.check_cluster_runtime(block)
+
+    def test_only_prepare_takes_the_block(self):
+        for operation in ('stage', 'publish', 'download'):
+            with self.subTest(operation=operation), \
+                    patch('sys.argv', ['publication', operation, '--directory', str(self.root),
+                                                   '--cluster-runtime', str(self.write_block(cluster_runtime_block()))]), \
+                    patch('sys.stderr'), self.assertRaises(SystemExit):
+                PUB.main()
+
+
 class GitHubPublicationTests(PublicationFixture):
     def fake_github(self, release=None, fail_at=None, content=None):
         self.release = release

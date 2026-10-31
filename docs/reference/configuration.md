@@ -920,37 +920,52 @@ pair.
 
 ### Cluster runtime facts
 
-The cluster runtime facts are the digests of one installed app's cluster
-helpers and, for each model, of the capability its own worker describes. The
-coordinator operator copies them into a cluster approval in the operator
-approval file. After the Test stage, the guided setup reads the approvals the
-coordinator serves (`GET /v1/cluster/approvals`) and takes the one whose
-digests equal this Mac's facts
+The cluster runtime facts are the digests of one app's cluster helpers and, for
+each model, of the capability its own worker describes, with the pair-serving
+grant that build's qualification records give the model. A signed release
+registers them as `cluster_runtime` in its `POST /v1/releases` payload when its
+environment's variable is on
+([release lane](../operations/provider-release.md#cluster-runtime-facts)), and a
+coordinator that accepts the block derives that build's cluster approvals and
+grants from it. An operator may still copy them into a cluster approval in the
+operator approval file. After the Test stage, the guided setup reads the
+approvals the coordinator serves (`GET /v1/cluster/approvals`) and takes the one
+whose digests equal this Mac's facts
 ([coordinator-paired member](#coordinator-paired-member)), and each member
 checks it against its own installed files with the same computation. One type computes every value:
 `provider-swift/Sources/ProviderCore/Config/ClusterRuntimeApprovalFacts.swift`
 (`ClusterRuntimeApprovalFacts`). The hidden command
 `darkbloom cluster runtime-facts --app <app> --model <id>=<folder>` prints them
-in their canonical form. No value is typed by hand. Only a build-pinned entry
-needs these facts. A model approval names no runtime digest, and the provider
-computes no facts for it ([model approvals](#model-approvals)).
+in their canonical form; run the app's own CLI, so the grants are that build's.
+No value is typed by hand. Only a build-pinned entry needs these facts. A model
+approval names no runtime digest, and the provider computes no facts for it
+([model approvals](#model-approvals)).
 
 | Field | Value |
 |---|---|
-| `schema` | `darkbloom_cluster_runtime_v1` |
+| `schema` | `darkbloom_cluster_runtime_v2` |
 | `native_runtime_sha256` | SHA-256 of the signed `Contents/Helpers/darkbloom-cluster-worker` |
 | `metallib_sha256` | SHA-256 of `Contents/Helpers/mlx.metallib` |
 | `resource_library_sha256` | SHA-256 of `Contents/Helpers/pagedattention.metal` |
 | `placement_policy_sha256` | SHA-256 of the signed `Contents/Helpers/darkbloom-cluster-plan` |
-| `models` | 1 to 32 entries, sorted by `model` in byte order, unique |
+| `models` | 1 to 64 entries, sorted by `model` in byte order, unique |
 | `models[].model` | the catalog model ID the manifest names (`model_id`); 1 to 128 printable ASCII bytes |
 | `models[].artifact_sha256` | the capability's `artifactSHA256`, the catalog aggregate |
 | `models[].capability_sha256` | SHA-256 of the exact output of `darkbloom-cluster-worker --describe-runtime` |
 | `models[].profile_sha256` | the capability's `profileFingerprint` |
 | `models[].resource_policy_sha256` | `DistributedInstalledNativeStart.resourcePolicySHA256` of the capability, the value a native start carries |
+| `models[].pair_serving_grant` | `null` when this build's records grant the model's artifact nothing; else exactly `evidence_sha256` and `mode_families` below. It is the public grant a member of this build reports for that artifact (`ClusterPairServingGrants.grant`) |
+| `models[].pair_serving_grant.mode_families` | 1 to 4 of `hand_off`, `pipeline`, `pipeline_speculative`, `tensor_parallel`, sorted by byte, unique: the families of the grant's passing records |
+| `models[].pair_serving_grant.evidence_sha256` | SHA-256 of the records the grant rests on (the passing records of its granted families, in bundle order), each as its canonical line (`ClusterPairQualificationRecord.encodedLine`), joined by `\n`, no trailing newline (`ClusterPairServingGrant.evidenceSHA256`). The bundled lines are already canonical, so the digest can be recomputed from the bundle |
 
 Every digest is 64 lowercase hex and nonzero. The canonical form is JSON with
-sorted keys and no whitespace. Why each digest is the one a member compares:
+keys sorted by byte, no whitespace and no trailing newline; `null` is written,
+never omitted. The strict decoder (`init(canonical:releaseVersion:)`) refuses an
+unknown, missing or repeated field, another schema (v1 included) and a model whose
+derived IDs for the release version exceed 128 bytes: `release/<version>/<model>/s2`,
+and that ID followed by `/grant` for a model with a grant.
+`scripts/provider-release-publication.py` applies the same rules to the block
+but computes no digest. Why each digest is the one a member compares:
 [cluster runtime facts of an installed app](../architecture/inference.md#cluster-runtime-facts-of-an-installed-app).
 
 ### Sharded placement and the hand-off opt-in
@@ -1012,12 +1027,13 @@ with an optional `nativeMember` object and runs `darkbloom start
 selector matches the two registrations itself (see
 [pair formation](cluster-control-protocol.md#pair-formation)).
 
-**Automatic (guided setup).** The coordinator operator adds a cluster approval
-by hand to the operator approval file
+**Automatic (guided setup).** The coordinator derives build-pinned cluster
+approvals from a signed release that carries `cluster_runtime`
+([cluster runtime facts](#cluster-runtime-facts)), or the coordinator operator
+adds a cluster approval by hand to the operator approval file
 ([`EIGENINFERENCE_CLUSTER_PAIR_CATALOG`](#experimental-cluster-pairs)). A
 build-pinned entry has the digests that `darkbloom cluster runtime-facts --app
-<app> --model <id>=<config>,<manifest>` prints
-([cluster runtime facts](#cluster-runtime-facts)). A model approval has no
+<app> --model <id>=<config>,<manifest>` prints. A model approval has no
 runtime digests ([model approvals](#model-approvals)).
 The coordinator serves the loaded entries. After the Test stage of
 `darkbloom cluster` passes, the control leader takes the entry for this pair and

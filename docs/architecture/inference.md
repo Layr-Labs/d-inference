@@ -5218,10 +5218,12 @@ New saves and installed startup enforce the same mode rule. Old pipeline records
 ## Cluster runtime facts of an installed app
 
 A coordinator-formed cluster session is admitted when its committed native start
-matches the approval each member installed. The guided setup registers the
-digests of such an approval from the installed app and the chosen model, so
-that no person types them
-([fields](../reference/configuration.md#cluster-runtime-facts)).
+matches the approval each member installed. A signed release computes the
+digests of such approvals from its own final app and registers them
+(`cluster_runtime`), and the guided setup matches a served approval against the
+installed app and the chosen model with the same computation, so that no person
+types them ([fields](../reference/configuration.md#cluster-runtime-facts),
+[release lane](../operations/provider-release.md#cluster-runtime-facts)).
 
 1. The file digests (worker, metallib, paged-attention source, placement tool)
    come from `DistributedInstalledFiles.digest`. `DistributedInstalledFiles.verify`,
@@ -5236,13 +5238,21 @@ that no person types them
    `resourcePolicySHA256`. A coordinator-formed start carries the approval's
    value, which the member and its owner compare with the installed approval
    (`NativePairMemberPolicy.require`).
+4. The pair-serving grant is the public grant a member of the same build reports
+   for the described artifact (`ClusterPairServingGrants.grant`, records of that
+   artifact only), with the SHA-256 of the records it rests on
+   (`ClusterPairServingGrant.evidenceSHA256`). A release's facts therefore name
+   the grants of the build being released: the release lane runs that build's
+   own CLI.
 
 A model approval needs none of these facts: the member takes the same values
 from its own saved setup and files
 ([model approvals](../reference/configuration.md#model-approvals)).
 
 Code map: `provider-swift/Sources/ProviderCore/Config/ClusterRuntimeApprovalFacts.swift`
-(`ClusterRuntimeApprovalFacts`),
+(`ClusterRuntimeApprovalFacts`), `ClusterRuntimeApprovalFacts+Release.swift` (the release's model list and
+candidate choice),
+`provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledPairServingGrant.swift`,
 `provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledFiles.swift`,
 `provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledNativeStart.swift`.
 

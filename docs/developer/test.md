@@ -1286,6 +1286,7 @@ make changelog-check
 python3 scripts/test-provider-release-resolution.py
 python3 scripts/test-provider-release-resume.py
 python3 scripts/test-provider-release-publication.py
+python3 scripts/test-provider-cluster-runtime-models.py
 python3 scripts/test-release-dev-branch.py
 python3 scripts/test-provider-release-pipeline.py
 python3 scripts/test-provider-release-artifact.py
@@ -1321,7 +1322,18 @@ prove Apple runtime behavior.
 with verbatim annotations, including multiline opening paragraphs, extra blank
 lines, CRLFs and synthetic SSH/PGP signature armor. It checks exact retained note
 text and payload/provenance digest guards without invoking signing or live
-publication.
+publication. Its cluster runtime rows pin the prod and dev payload bytes without
+`cluster_runtime` to their digests from before the block existed, carry a valid
+block through `stage` in dev and prod, refuse each malformed block (grants
+included) and a block whose derived approval or grant IDs exceed 128 bytes, and
+check that registration sends the block.
+`scripts/test-provider-cluster-runtime-models.py` runs the release's
+model-metadata fetch against a local HTTP registry: the environment's catalog and
+CDN, candidate selection, the manifest and `config.json` checks, a listed model the
+catalog lacks (left out and named), retries and refusals. It reads no weights
+and uses no network. `scripts/provider-cluster-runtime-facts.sh` has no
+fake-driven test; the release lane runs it on every final signed app and shows
+its result in the job summary.
 
 `scripts/test-provider-release-pipeline.py` and
 `scripts/test-provider-release-resolution.py` pin the routing of
@@ -1334,7 +1346,10 @@ from master and a master push routed to dev. A push to `dev` resolves to
 refused. `scripts/test-provider-release-resume.py` pins the source gate: a dev
 push needs environment `dev` and a verified commit on `dev` ancestry, and the
 tag, master push and dispatch rows keep the master checks. The pipeline test
-pins the final-app check against the self-updater's designated requirement.
+pins the final-app check against the self-updater's designated requirement, and
+the cluster runtime facts step: after the final hashes, no secret, the keychain
+removed first, its failure fatal only when `CLUSTER_RUNTIME_SEND` is true, and
+`prepare` byte for byte today's command when it is not.
 
 `scripts/test-darkbloom-route.py` runs the actual
 [CI runner routing](build.md#ci-runner-routing) shell step against a loopback

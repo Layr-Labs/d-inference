@@ -13,6 +13,15 @@ CALLER = (ROOT / '.github/workflows/release-swift.yml').read_text()
 RELEASE = (ROOT / '.github/workflows/release-provider.yml').read_text()
 WARM = (ROOT / '.github/workflows/provider-release-cache.yml').read_text()
 ACTION = (ROOT / '.github/actions/provider-release-build/action.yml').read_text()
+FACTS_SCRIPT = (ROOT / 'scripts/provider-cluster-runtime-facts.sh').read_text()
+FACTS_STEP = '- name: Compute cluster runtime facts from the final signed app\n'
+SHOW_STEP = '- name: Show the cluster runtime facts\n'
+RETAIN_STEP = '- name: Retain the cluster runtime facts\n'
+
+
+def step(content, name):
+    """The body of the step that starts with `name`, up to the next step."""
+    return content.split(name, 1)[1].split('\n      - name:', 1)[0].split('\n      # ', 1)[0]
 
 
 def caller_lanes():
@@ -197,7 +206,13 @@ class ReleasePipelineTests(unittest.TestCase):
         self.assertIn('needs: [resolve-env, build-provider, qualify-sdk]', content)
         self.assertNotRegex(content, r'(?m)^    environment:')
         self.assertNotRegex(content, r'(?m)^    if:.*always')
-        self.assertNotIn('continue-on-error:', RELEASE)
+        # Every release step is required. The only exceptions are the cluster
+        # runtime facts steps: their failure fails the job only when the
+        # payload carries the block (CLUSTER_RUNTIME_SEND).
+        self.assertEqual(RELEASE.count('continue-on-error:'), 3)
+        self.assertIn("continue-on-error: ${{ env.CLUSTER_RUNTIME_SEND != 'true' }}\n", step(content, FACTS_STEP))
+        for name in (SHOW_STEP, RETAIN_STEP):
+            self.assertIn('continue-on-error: true\n', step(content, name))
         self.assertNotIn('continue-on-error:', ACTION)
         self.assertIn('needs: [resolve-env, build-and-release]', job(RELEASE, 'validate-older-macos'))
 
@@ -442,6 +457,114 @@ class ReleasePipelineTests(unittest.TestCase):
         self.assertIn("provider-sdk-test-diagnostics${{ inputs.environment != '' && format('-{0}', inputs.environment) || '' }}-", ACTION)
         self.assertNotIn('provider-sdk-test-diagnostics--', ACTION)
         self.assertNotRegex(WARM, r'(?m)^\s+environment:')
+
+    def test_cluster_runtime_facts_come_from_the_final_signed_app_without_secrets(self):
+        sign = job(RELEASE, 'build-and-release')
+        facts = step(sign, FACTS_STEP)
+        # Every lane and every run: no condition of its own.
+        self.assertNotIn('\n        if:', facts)
+        # After signing, notarization, the final tar and its hashes; before the
+        # payload is prepared and the keychain is cleaned up.
+        self.assertLess(sign.index('xcrun notarytool submit'), sign.index(FACTS_STEP))
+        self.assertLess(sign.index('echo "BUNDLE_HASH=$BUNDLE_HASH"'), sign.index(FACTS_STEP))
+        for later in ('- name: Record signed validation identity', '- name: Prepare exact signed release identity',
+                      '- name: Cleanup keychain'):
+            self.assertLess(sign.index(FACTS_STEP), sign.index(later))
+        # No secret: none referenced, the two secret-derived GITHUB_ENV values
+        # and the signing keychain removed before release code runs, which then
+        # runs with an empty environment.
+        self.assertNotIn('secrets.', facts)
+        self.assertNotIn('\n        env:', facts)
+        first_run = facts.index('scripts/provider-cluster-runtime-facts.sh "$FACTS_ROOT/app/$APP_NAME" "$CLI_NAME" '
+                                '"$ENV_PREFIX" "$FACTS_ROOT/facts"')
+        for removal in ('unset r2_public_url coordinator_url', 'security delete-keychain "$KEYCHAIN_PATH"\n',
+                        'test ! -e "$KEYCHAIN_PATH"', 'IDENTITIES=$(security find-identity -p codesigning)',
+                        'if grep -F -q -- "$DEVELOPER_ID" <<< "$IDENTITIES"; then'):
+            self.assertLess(facts.index(removal), first_run)
+        # A keychain that cannot be deleted, or an identity still listed, fails the step.
+        self.assertNotIn('|| true', facts)
+        self.assertNotIn('2>/dev/null', facts)
+        # Every identity, not only valid ones: a revoked or expired key left behind is found too.
+        self.assertNotIn('find-identity -v', facts)
+        self.assertLess(facts.index('security delete-keychain'), facts.index('IDENTITIES='))
+        # The final archived bytes, extracted afresh after their hash is checked.
+        self.assertLess(facts.index('= "$BUNDLE_HASH"'), facts.index('tar -xzf /tmp/darkbloom-bundle-macos-arm64.tar.gz'))
+        self.assertLess(facts.index('tar -xzf /tmp/darkbloom-bundle-macos-arm64.tar.gz'), first_run)
+        # A hang ends the step; with the block unsent its failure only warns.
+        self.assertIn('timeout-minutes: 20\n', facts)
+        # The shared script: the app's own CLI only ever runs with an empty
+        # environment, and the metadata comes from the release's environment.
+        self.assertTrue(FACTS_SCRIPT.startswith('#!/usr/bin/env bash\n') and 'set -euo pipefail\n' in FACTS_SCRIPT)
+        self.assertEqual(FACTS_SCRIPT.count('/Contents/MacOS/'), 1)
+        self.assertIn('  env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin HOME="$root/home" DARKBLOOM_NO_UPDATE_CHECK=1 \\\n'
+                      '    "$app/Contents/MacOS/$cli" cluster runtime-facts "$@"\n', FACTS_SCRIPT)
+        fetch = 'python3 "$scripts/provider-cluster-runtime-models.py" --environment "$environment"'
+        self.assertLess(FACTS_SCRIPT.index('runtime_facts --list-release-models'), FACTS_SCRIPT.index(fetch))
+        self.assertLess(FACTS_SCRIPT.index(fetch),
+                        FACTS_SCRIPT.index('runtime_facts --app "$app" --release-candidates "$root/candidates"'))
+        # Any failure fails the script: no swallowed status, no required list.
+        for soft in ('|| status', '|| true', '--require-model', '2>'):
+            self.assertNotIn(soft, FACTS_SCRIPT)
+
+    def test_cluster_runtime_is_sent_only_when_the_environment_variable_is_true(self):
+        sign = job(RELEASE, 'build-and-release')
+        switch = sign.split('      CLUSTER_RUNTIME_SEND: >-\n', 1)[1].split('\n\n', 1)[0]
+        self.assertEqual(' '.join(switch.split()),
+                         "${{ needs.resolve-env.outputs.publish == 'true' && "
+                         "((needs.resolve-env.outputs.environment == 'dev' && vars.DEV_CLUSTER_RUNTIME_ENABLED == 'true') || "
+                         "(needs.resolve-env.outputs.environment == 'staging' && vars.STAGING_CLUSTER_RUNTIME_ENABLED == 'true') || "
+                         "(needs.resolve-env.outputs.environment == 'prod' && vars.PROD_CLUSTER_RUNTIME_ENABLED == 'true')) }}")
+        for variable in ('DEV', 'STAGING', 'PROD'):
+            self.assertEqual(RELEASE.count(f'vars.{variable}_CLUSTER_RUNTIME_ENABLED'), 1)
+        self.assertEqual(RELEASE.count('CLUSTER_RUNTIME_SEND: >-'), 1)
+        # The facts step names the file for prepare only when the block is sent.
+        self.assertEqual(RELEASE.count('CLUSTER_RUNTIME_FILE='), 1)
+        self.assertIn('          if [ "$CLUSTER_RUNTIME_SEND" = true ]; then\n'
+                      '            echo "CLUSTER_RUNTIME_FILE=$FACTS_ROOT/facts/cluster-runtime.json" >> "$GITHUB_ENV"\n'
+                      '          fi\n', step(sign, FACTS_STEP))
+        # Prepare: with the switch off, today's command byte for byte; with it
+        # on, the facts are required and passed.
+        prepare = step(sign, '- name: Prepare exact signed release identity\n')
+        today = ('python3 scripts/provider-release-publication.py prepare \\\n'
+                 '              --directory "$RUNNER_TEMP/provider-publication" --bundle /tmp/darkbloom-bundle-macos-arm64.tar.gz\n')
+        on, off = prepare.split('          if [ "$CLUSTER_RUNTIME_SEND" = true ]; then\n', 1)[1].split('          else\n', 1)
+        off = off.split('          fi\n', 1)[0]
+        self.assertEqual(off, '            ' + today)
+        self.assertIn('test -s "${CLUSTER_RUNTIME_FILE:-}"\n', on)
+        self.assertLess(on.index('test -s'), on.index('prepare'))
+        self.assertIn('--cluster-runtime "$CLUSTER_RUNTIME_FILE"\n', on)
+        self.assertEqual(RELEASE.count('--cluster-runtime'), 1)
+
+    def test_cluster_runtime_facts_are_always_shown_and_retained(self):
+        sign = job(RELEASE, 'build-and-release')
+        for name in (SHOW_STEP, RETAIN_STEP):
+            with self.subTest(step=name):
+                content = step(sign, name)
+                # They also run when the facts step failed, and never fail the job.
+                self.assertIn("if: ${{ !cancelled() && (steps.cluster_runtime.outcome == 'success' || "
+                              "steps.cluster_runtime.outcome == 'failure') }}\n", content)
+                self.assertNotIn('secrets.', content)
+                self.assertLess(sign.index(FACTS_STEP), sign.index(name))
+                self.assertLess(sign.index(name), sign.index('- name: Prepare exact signed release identity'))
+        self.assertIn('        id: cluster_runtime\n', step(sign, FACTS_STEP))
+        show = step(sign, SHOW_STEP)
+        self.assertIn('>> "$GITHUB_STEP_SUMMARY"', show)
+        self.assertIn('python3 -m json.tool --sort-keys "$FACTS/cluster-runtime.json"', show)
+        self.assertIn('cat "$FACTS/skipped.md"', show)
+        retain = step(sign, RETAIN_STEP)
+        self.assertIn('uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a', retain)
+        # Lanes of one run never collide.
+        self.assertIn('name: cluster-runtime-${{ needs.resolve-env.outputs.environment }}-'
+                      '${{ needs.resolve-env.outputs.source_sha }}-${{ github.run_attempt }}\n', retain)
+        self.assertIn('${{ runner.temp }}/cluster-runtime/facts/cluster-runtime.json\n', retain)
+        self.assertIn('if-no-files-found: warn\n', retain)
+
+    def test_the_cluster_runtime_scripts_start_the_release_lanes(self):
+        # The facts script runs the fetch script; a change to either starts
+        # both push lanes, like every other script a release runs.
+        for caller in (CALLER, (ROOT / '.github/workflows/release-dev-branch.yml').read_text()):
+            for script in ('scripts/provider-cluster-runtime-models.py', 'scripts/provider-cluster-runtime-facts.sh'):
+                self.assertIn(f"      - '{script}'\n", caller)
 
 
 if __name__ == '__main__':

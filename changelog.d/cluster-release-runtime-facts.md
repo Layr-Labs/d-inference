@@ -1,0 +1,5 @@
+### Releases carry their cluster runtime facts
+
+- Every release lane (dev branch, staging, prod) now computes the cluster runtime facts of its final signed app with that app's own CLI and worker: the digests of the cluster worker, placement tool, Metal library and paged-attention source, and for each model the build qualifies on a cluster and the environment's catalog has, the digests of its capability and the pair-serving grant the build's qualification records give it. The job summary and a run artifact show them in every release.
+- The release registration carries them as `cluster_runtime` only when that environment's repository variable (`DEV_CLUSTER_RUNTIME_ENABLED`, `STAGING_CLUSTER_RUNTIME_ENABLED`, `PROD_CLUSTER_RUNTIME_ENABLED`) is `true`; a coordinator that accepts the block then approves the build's two-Mac clusters automatically. Unset, the registration is unchanged and a failure to compute the facts only warns.
+- `darkbloom cluster runtime-facts` (hidden) prints schema `darkbloom_cluster_runtime_v2`: the same digests as before plus each model's `pair_serving_grant`.

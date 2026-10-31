@@ -129,7 +129,7 @@ class CacheIdentityTests(unittest.TestCase):
 
     def test_lanes_and_release_are_isolated_but_metallib_is_shared(self):
         outputs = [self.keys(lane) for lane in cache.LANE_PURPOSES]
-        self.assertEqual(len({output["swift-prefix"] for output in outputs}), 3)
+        self.assertEqual(len({output["swift-prefix"] for output in outputs}), len(cache.LANE_PURPOSES))
         self.assertEqual(len({output["metallib-key"] for output in outputs}), 1)
         for lane in ("release", "qualification"):
             release = identity.keys(self.root, lane, self.metadata)
@@ -439,7 +439,7 @@ class ToolchainSelectionTests(unittest.TestCase):
                 with patch.object(identity, "toolchain_metadata", return_value={"swift": {}}):
                     with patch.object(identity, target, side_effect=ValueError("probe failed")):
                         with self.assertRaisesRegex(ValueError, "probe failed"):
-                            cache.toolchain_metadata("parity")
+                            cache.toolchain_metadata("sdk")
                 self.assertEqual(dict(os.environ), {"PROVIDER_SWIFT": ""})
 
 
@@ -459,7 +459,7 @@ class CommandLineTests(unittest.TestCase):
     def test_probe_errors_have_no_partial_output(self):
         stdout, stderr = io.StringIO(), io.StringIO()
         with patch.object(cache, "keys", side_effect=KeyError("PROVIDER_SWIFT")):
-            with patch.object(cache.sys, "argv", [str(SCRIPT), "keys", "--lane", "parity"]):
+            with patch.object(cache.sys, "argv", [str(SCRIPT), "keys", "--lane", "sdk"]):
                 with redirect_stdout(stdout), redirect_stderr(stderr):
                     self.assertEqual(cache.main(), 1)
         self.assertEqual(stdout.getvalue(), "")

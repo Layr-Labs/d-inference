@@ -9,43 +9,36 @@ import IOKit.pwr_mgt
 final class InferencePowerAssertion {
     private let reason: String
     private var retainCount = 0
+    private var assertionID: UInt32 = 0
+    private let createAssertion: (String) -> UInt32?
+    private let destroyAssertion: (UInt32) -> Void
 
-    #if canImport(IOKit)
-    private var assertionID: IOPMAssertionID = 0
-    #endif
-
-    init(reason: String) {
+    init(reason: String, createAssertion: ((String) -> UInt32?)? = nil,
+         destroyAssertion: ((UInt32) -> Void)? = nil) {
         self.reason = reason
+        self.createAssertion = createAssertion ?? Self.createSystemAssertion
+        self.destroyAssertion = destroyAssertion ?? Self.destroySystemAssertion
     }
 
-    deinit {
-        releaseSystemAssertion()
-    }
+    deinit { releaseSystemAssertion() }
 
     func acquire() {
         retainCount += 1
-        guard retainCount == 1 else { return }
+        _ = ensureAcquired()
+    }
 
-        #if canImport(IOKit)
-        var id = IOPMAssertionID(0)
-        let result = IOPMAssertionCreateWithName(
-            kIOPMAssertionTypeNoIdleSleep as CFString,
-            IOPMAssertionLevel(kIOPMAssertionLevelOn),
-            reason as CFString,
-            &id
-        )
-        if result == kIOReturnSuccess {
-            assertionID = id
-        }
-        #endif
+    /// Retry a failed system acquisition without retaining another owner.
+    @discardableResult
+    func ensureAcquired() -> Bool {
+        guard retainCount > 0 else { return false }
+        if assertionID == 0 { assertionID = createAssertion(reason) ?? 0 }
+        return assertionID != 0
     }
 
     func release() {
         guard retainCount > 0 else { return }
         retainCount -= 1
-        if retainCount == 0 {
-            releaseSystemAssertion()
-        }
+        if retainCount == 0 { releaseSystemAssertion() }
     }
 
     func releaseAll() {
@@ -54,10 +47,25 @@ final class InferencePowerAssertion {
     }
 
     private func releaseSystemAssertion() {
-        #if canImport(IOKit)
         guard assertionID != 0 else { return }
-        IOPMAssertionRelease(assertionID)
+        destroyAssertion(assertionID)
         assertionID = 0
+    }
+
+    private static func createSystemAssertion(reason: String) -> UInt32? {
+        #if canImport(IOKit)
+        var id = IOPMAssertionID(0)
+        let result = IOPMAssertionCreateWithName(kIOPMAssertionTypeNoIdleSleep as CFString,
+            IOPMAssertionLevel(kIOPMAssertionLevelOn), reason as CFString, &id)
+        return result == kIOReturnSuccess ? id : nil
+        #else
+        return nil
+        #endif
+    }
+
+    private static func destroySystemAssertion(_ id: UInt32) {
+        #if canImport(IOKit)
+        IOPMAssertionRelease(id)
         #endif
     }
 }

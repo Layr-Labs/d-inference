@@ -104,6 +104,9 @@ extension ProviderLoop {
     func nativeMiMoConsumerLease(
         modelID: String, entry: MultiModelBatchSchedulerEngine.ModelRegistryEntry
     ) throws -> NativeLocalConsumerLease? {
+        // A cluster pair slot's owners hold the model out of process; no
+        // native lease exists here whatever the family.
+        if modelSlots[modelID]?.modelContainer.clusterPair != nil { return nil }
         let load = modelSlots[modelID].flatMap { Self.nativeMiMoLoad(in: $0.modelContainer) }
         guard let load else {
             if entry.modelType == "mimo_v2" { throw MiMoV26ServingLoadError.nativeOwnerMismatch }

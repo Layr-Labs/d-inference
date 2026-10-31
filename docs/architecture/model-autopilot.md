@@ -34,6 +34,13 @@ Cancellation, disconnect and shutdown must preserve native retirement and
 restore ordinary serving eligibility only through the existing lifecycle.
 Files already on disk are not evidence that a model can load safely.
 
+A control-only cluster member never participates, whatever consent its saved
+configuration records: `autopilotConsented` is false in that role, so it
+advertises no participation and downloads nothing on the operator's behalf
+(`autopilotDownloadsEnabled`), and `consumeClusterMemberEvent` drops a control
+lease or command that arrives anyway. The coordinator does not send one either;
+that guard is in `Layr-Labs/darkbloom-platform`.
+
 ## The Autopilot model set
 
 With saved consent, every Autopilot gate uses one set, reported as

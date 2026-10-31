@@ -160,6 +160,31 @@ struct ConfigValidationTests {
         }
     }
 
+    @Test("a new Mac with no config file reads the build's defaults where a caller asks for them")
+    func missingFileDefaultsOnlyWhereAsked() throws {
+        // `darkbloom cluster` lists Darkbloom's catalog before its first setup
+        // writes provider.toml; on a new Mac that file does not exist yet.
+        let missing = FileManager.default.temporaryDirectory
+            .appendingPathComponent("config-validation-missing-\(UUID().uuidString).toml")
+        let config = try ConfigManager.loadOrDefaults(from: missing)
+        #expect(config.coordinator.url == BuildEnvironment.current.coordinatorWebSocketURL)
+        #expect(config.cluster == nil)
+
+        // A file that exists still loads, and one that cannot decode still fails loudly.
+        let present = try writeTempConfig("""
+            [coordinator]
+            url = "ws://127.0.0.1:9/ws/provider"
+            """)
+        defer { try? FileManager.default.removeItem(at: present) }
+        #expect(try ConfigManager.loadOrDefaults(from: present).coordinator.url == "ws://127.0.0.1:9/ws/provider")
+        let malformed = try writeTempConfig("""
+            [gemma_optimizations]
+            weighted_r1 = 0
+            """)
+        defer { try? FileManager.default.removeItem(at: malformed) }
+        #expect(throws: ConfigError.self) { _ = try ConfigManager.loadOrDefaults(from: malformed) }
+    }
+
     @Test("the lenient test-facing parse keeps its historical contract")
     func lenientParseStillDefaultsOnMalformed() {
         let config = ConfigManager.parse("""

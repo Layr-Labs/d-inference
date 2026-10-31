@@ -1,0 +1,177 @@
+import Foundation
+import DarkbloomClusterProcess
+import DarkbloomClusterProtocol
+import DarkbloomClusterSecurity
+import ProviderCoreFoundation
+
+/// Validates this Mac's installed setup without retaining a device lease. The
+/// future native owner must acquire its own canonical lease before it starts.
+/// An empty journal alone is insufficient: startup briefly takes the exact
+/// existing exclusive gate, so live solo/native ownership and sticky journals
+/// refuse member startup. No recovery or journal clearing occurs here.
+public struct ClusterMemberPreparation: Sendable {
+    public let model: ModelInfo
+    let validation: DistributedInstalledValidation
+
+    /// `localChipClass` is this Mac's own class
+    /// (`ClusterChipClass.local()`): the rank this Mac runs must not be a
+    /// rank-shape that diverged on that class, and the model must have a
+    /// cluster stage adapter (owner, 2026-10-14 08:45). The single-Mac
+    /// requirements of the model are not applied to a member: see
+    /// DistributedServingEligibility. This is decided from the verified
+    /// metadata, before the model's weights are read: a start that policy
+    /// refuses costs no pass over tens of gigabytes.
+    public static func prepare(reference: ClusterConfigurationReference,
+                               localChipClass: ClusterChipClass?) throws -> Self {
+        let paths = try ClusterUserPaths()
+        let gate = try ClusterDeviceExclusion(directoryURL: paths.deviceDirectory)
+        return try withExtendedLifetime(gate) {
+            let validation = try DistributedInstalledValidation.validate(reference: reference,
+                paths: paths, deadline: DispatchTime.now().uptimeNanoseconds + 15_000_000_000)
+            try ClusterMiMoPrivateImagePolicy.requireCoordinatorEligible(validation.plan.capability)
+            try validation.plan.requireLocalRankGranted(chipClass: localChipClass)
+            let installed = validation.model
+            guard var model = ModelScanner.parseModelInfo(snapshotDir: installed.directory,
+                    modelName: installed.publicModelID) else {
+                throw ClusterMemberControlError.incompatibleConfiguration
+            }
+            // Same on-demand integrity hasher as ordinary registration. This is
+            // the ONE selected cluster model, not a discovery-wide payload scan.
+            // WeightHasher is synchronous and has no cancellation/deadline API.
+            // This full read is outside the metadata probe's 15-second budget;
+            // the CLI owns/awaits it before any native owner or ACK timer starts.
+            guard let hash = WeightHasher.computeHash(snapshotDir: installed.directory,
+                    modelID: installed.publicModelID), hash == validation.manifest.aggregateSHA256 else {
+                throw ClusterConfigurationError.invalid("Cluster member model integrity differs from the pinned product manifest")
+            }
+            model.weightHash = hash
+            model = registeredModel(model, capability: validation.plan.capability,
+                                    mode: validation.plan.configuration.selectedGenerationMode)
+            try validation.requireUnchanged()
+            return Self(model: model, validation: validation)
+        }
+    }
+
+    /// What a member registers for its pair's model: the artifact's scan, with image and video input only where
+    /// the placed mode's ranks serve them (`ClusterModelFeaturePolicy.mediaContract`). The scan reads the model's
+    /// configuration, which declares vision whatever the placement; the coordinator routes media by
+    /// `ModelInfo.isVision`, so a pair that cannot serve media (any pipeline, GLM-5.3-Flash included) is never
+    /// sent any.
+    static func registeredModel(_ scanned: ModelInfo, capability: ClusterRuntimeCapability,
+                                mode: ClusterGenerationMode) -> ModelInfo {
+        guard ClusterModelFeaturePolicy.mediaContract(capability: capability, mode: mode) == nil else { return scanned }
+        var model = scanned
+        model.isVision = nil
+        model.nativeMediaTools = nil
+        return model
+    }
+
+    /// A pair slot is published only while its readiness serves what its member registered: a registration that
+    /// claims image and video input needs both ranks' media contract (`DistributedResidentReadiness.media`).
+    static func requireRegisteredMedia(_ registered: ModelInfo?, ready: DistributedResidentReadiness) throws {
+        guard registered?.isVision != true || ready.media != nil else {
+            throw DistributedEngineError.invalidConfiguration(
+                "The pair registered image and video input, but its ranks serve no media contract")
+        }
+    }
+
+    public func requireUnchanged() throws { try validation.requireUnchanged() }
+
+    /// DEBUG builds only: a harness that shuttles the members' public roster
+    /// values by hand (`darkbloom cluster member-identity`) may skip the
+    /// pairing check with `DARKBLOOM_DEBUG_ROSTER_UNPAIRED=1`. A release build
+    /// always requires the pairing.
+    static var rosterWithoutPairingAllowed: Bool {
+        #if DEBUG
+        return ProcessInfo.processInfo.environment["DARKBLOOM_DEBUG_ROSTER_UNPAIRED"] == "1"
+        #else
+        return false
+        #endif
+    }
+
+    /// Nil unless the saved setup carries a pair approval. Built only from
+    /// this Mac's verified installation: the approval must be unexpired and
+    /// cover this chip, and the owner, native executable, metallib and
+    /// resource library must hash to their pins, so a member never registers
+    /// a policy it did not install. The loop installs the result with its own
+    /// signer before connecting; nothing is granted here.
+    ///
+    /// A setup saved with a cluster approval (`darkbloom_cluster_native_member_v2`)
+    /// registers the roster registration instead: `device` gives this Mac's
+    /// device profile v2 for the approval's metallib, and the plan is derived from the setup's selected
+    /// partition and rank order, so both members register the same plan.
+    /// Under a model approval, which pins no build, the metallib digest is the
+    /// one this Mac takes of its installed metallib here (with its resource
+    /// library's, which the start checks again), and the plan carries this
+    /// setup's own runtime block (`DistributedInstalledNativeStart.runtimeBlock`).
+    public func nativeMemberInstallation(chip: String,
+                                         device: ((_ metallibSHA256: String) throws -> ClusterRegisteredDeviceProfile)? = nil) throws -> NativePairMemberInstallation? {
+        let plan = validation.plan
+        guard let attachment = plan.configuration.nativeMember else { return nil }
+        try requireUnchanged()
+        let policy = try NativePairMemberPolicy(attachment.policyBytes)
+        guard Date().timeIntervalSince1970 * 1_000_000_000 < Double(policy.notAfter) else {
+            throw ClusterConfigurationError.invalid("Saved pair approval has expired")
+        }
+        // The metallib digest the device profile names: the approval's, or under a model approval, which pins no
+        // files, the digest this Mac takes of its own metallib here, once, with its resource library's.
+        let installedDigests: (metallib: String, resourceLibrary: String)?
+        let metallibSHA256: String
+        if let pinned = policy.runtime {
+            installedDigests = nil
+            metallibSHA256 = NativePairMemberPolicy.hex(pinned.metallib)
+        } else {
+            let deadline = DispatchTime.now().uptimeNanoseconds + 15_000_000_000
+            func digest(_ path: String) throws -> String {
+                try DistributedInstalledFiles.digest(URL(fileURLWithPath: path), maximumBytes: 256 * 1024 * 1024,
+                    deadline: deadline).sha256
+            }
+            let own = (metallib: try digest(attachment.metallibPath), resourceLibrary: try digest(attachment.resourceLibraryPath))
+            installedDigests = own
+            metallibSHA256 = own.metallib
+        }
+        var roster: NativePairMemberRoster?
+        if attachment.isRoster, let saved = attachment.roster, let pins = attachment.memberPins {
+            guard let device else { throw ClusterConfigurationError.invalid("A roster registration needs this Mac's device profile") }
+            let configuration = plan.configuration
+            // The roster's other members must be the keys this Mac pinned in the
+            // pairing ceremony (S17): a setup file alone never adds trust.
+            if !Self.rosterWithoutPairingAllowed {
+                guard pins.indices.contains(configuration.localRank) else {
+                    throw ClusterConfigurationError.invalid("The saved roster pins do not name this Mac's rank")
+                }
+                do {
+                    try ClusterPairingRosterCheck.verify(roster: saved, localPin: pins[configuration.localRank], store: .default())
+                } catch {
+                    throw ClusterConfigurationError.invalid("The saved roster is not backed by this Mac's pairing: \(error)")
+                }
+            }
+            do {
+                roster = try NativePairMemberRoster(clusterID: configuration.clusterID, rank: configuration.localRank,
+                    roster: saved, rankPins: pins, policyBytes: policy.bytes, model: policy.model,
+                    artifactSHA256: plan.identity(epoch: UUID()).artifactSHA256, planSHA256: plan.partition.planSHA256,
+                    cut: plan.partition.stages[0].sourceLayerEnd, mode: configuration.selectedGenerationMode,
+                    tensorShares: configuration.tensorShares,
+                    deviceProfile: try device(metallibSHA256), edges: attachment.edges ?? [],
+                    runtime: installedDigests == nil ? nil : DistributedInstalledNativeStart.runtimeBlock(plan: plan))
+            } catch {
+                throw ClusterConfigurationError.invalid("The saved roster registration is not valid for this Mac: \(error)")
+            }
+        }
+        guard let installation = try? NativePairMemberInstallation(expectedCoordinatorPolicy: policy.bytes,
+                rank: plan.configuration.localRank, clusterID: plan.configuration.clusterID,
+                identity: plan.identity(epoch: UUID()), profile: plan.capability.profile,
+                installedOwner: URL(fileURLWithPath: plan.localPeer.ownerExecutable), ownerSHA256: attachment.ownerSHA256,
+                nativeExecutable: URL(fileURLWithPath: plan.localPeer.workerExecutable),
+                metallib: URL(fileURLWithPath: attachment.metallibPath),
+                resourceLibrary: URL(fileURLWithPath: attachment.resourceLibraryPath), chip: chip,
+                meshOverLink: plan.configuration.linkControl != nil, roster: roster, batchLanes: plan.batchLanes(),
+                installedDigests: installedDigests) else {
+            throw ClusterConfigurationError.invalid(roster == nil
+                ? "Saved pair approval does not cover this Mac's chip, artifact or native build"
+                : "Saved cluster approval does not cover this Mac's numerics class, usable memory, artifact or native build")
+        }
+        _ = try installation.verifyInstalledFiles(deadline: DispatchTime.now().uptimeNanoseconds + 15_000_000_000)
+        return installation
+    }
+}

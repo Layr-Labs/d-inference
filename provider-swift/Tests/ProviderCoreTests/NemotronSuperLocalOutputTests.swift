@@ -26,6 +26,8 @@ final class NemotronSuperLocalOutputTests: XCTestCase {
         encoder.outputFormatting = [.sortedKeys]
         return try events.map { event in
             switch event {
+            case .logprobs(let entries):
+                return "L:" + String(decoding: try encoder.encode(entries), as: UTF8.self)
             case .parsed(let parsed):
                 return [parsed.reasoningContent.map { "R:" + $0 }, parsed.content.isEmpty ? nil : "C:" + parsed.content]
                     .compactMap { $0 }.joined(separator: "|")
@@ -34,12 +36,15 @@ final class NemotronSuperLocalOutputTests: XCTestCase {
                 return "F:" + call.function.name
                     + String(decoding: try encoder.encode(call.function.arguments), as: UTF8.self)
             case .info: return "I"
-            case .logprobs: return "L"
             case .toolCallDelta:
                 XCTFail("the Super output holds calls until validation; it never streams fragments")
                 return "D"
             }
         }
+    }
+
+    func testTracePreservesMetadataAsAnOrderedDistinctEvent() throws {
+        XCTAssertEqual(try trace([.logprobs([]), .content("visible")]), ["L:[]", "T:visible"])
     }
 
     private func stream(_ output: inout NemotronSuperLocalOutput, _ chunks: [String]) throws -> [String] {

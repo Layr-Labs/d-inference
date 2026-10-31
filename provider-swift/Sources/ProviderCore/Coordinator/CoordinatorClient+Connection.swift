@@ -21,14 +21,20 @@ extension CoordinatorClient {
             do {
                 try await connectAndRun(session)
                 logger.info(.coordinatorConnectionClosed)
+                // A clean close ends a final attempt too; it reconnects at once.
+                memberFinalAttemptUntil = nil
+                if memberRoleFailure { break }
                 policy.reset()
                 continue
             } catch {
-                if shutdownRequested { break }
+                if shutdownRequested || memberRoleFailure { break }
 
-                eventContinuation?.yield(.disconnected)
+                // Placed before the event: a waiting member reads the
+                // attempt's outcome when it sees the disconnect.
                 let end = session.end()
-                let delay = TimeInterval.random(in: policy.nextDelayRange(after: end))
+                let delay = nextMemberAwareReconnectDelay(
+                    backoff: TimeInterval.random(in: policy.nextDelayRange(after: end)))
+                eventContinuation?.yield(.disconnected)
                 let reachable = reachability.isReachable
                 let closeCode = end.closeCode.map { "\($0)" } ?? "none"
                 logger.warning(.coordinatorConnectionFailed)
@@ -62,7 +68,12 @@ extension CoordinatorClient {
         // WebSocket server-response validation fail.
         let scheme = url.scheme?.lowercased()
         let useTLS = (scheme == "wss" || scheme == "https")
-        let params = useTLS ? NWParameters.tls : NWParameters.tcp
+        // A debug build may pin a local test coordinator's certificate
+        // (`CoordinatorDebugCertificatePin`); release builds always use the
+        // system's trust evaluation.
+        let params = useTLS
+            ? (CoordinatorDebugCertificatePin.tlsOptions().map { NWParameters(tls: $0) } ?? NWParameters.tls)
+            : NWParameters.tcp
 
         // Disable Nagle's algorithm (TCP_NODELAY). Without this, the kernel
         // batches small WebSocket frames (~200 bytes each) and delays sending
@@ -110,8 +121,13 @@ extension CoordinatorClient {
         // Mid-session connection drops are published here by the persistent state
         // handler and rethrown by a task-group child to drive the reconnect loop.
         let (failureStream, failureCont) = AsyncStream<Error>.makeStream()
+        var memberTimeout: Task<Void, Never>?
         defer {
+            memberTimeout?.cancel()
             failureCont.finish()
+            // Before the reconnect loop announces the end: a waiting member
+            // past its deadline must not wait on a connection that is gone.
+            self.noteMemberAttemptEnded()
             // Tear down this connection on every exit (error OR clean reconnect),
             // so a stale NWConnection (and its internal retry) never lingers.
             // Nil the stored reference so sendOnCurrentConnection fast-returns
@@ -124,6 +140,11 @@ extension CoordinatorClient {
             // quote snapshot is dropped with it so quotes never answer from a
             // session the new coordinator connection has not seen.
             self.sessionRegistered = false
+            // One negotiation per connection: a late prior acknowledgment must
+            // never open the next connection's member wait.
+            self.memberNegotiation = nil
+            // No grant or key is retained across a connection boundary.
+            self.detachNativePairMember()
             self.failDrainBarriers()
             self.failModelReplacements()
             self.state.resetCapacitySession()
@@ -142,25 +163,47 @@ extension CoordinatorClient {
         // installed inside the `.ready` callback (serial on connectionQueue) so
         // no post-ready state change slips through the gap between resuming
         // and installing it.
-        try await CoordinatorConnectionHandshake.start(
-            connection, on: connectionQueue, timeout: config.handshakeTimeout
-        ) {
-            connection.stateUpdateHandler = { laterState in
-                if let error = CoordinatorError(terminalState: laterState) {
-                    failureCont.yield(error)
+        noteMemberAttemptStarted()
+        do {
+            try await CoordinatorConnectionHandshake.start(
+                connection, on: connectionQueue, timeout: config.handshakeTimeout
+            ) {
+                connection.stateUpdateHandler = { laterState in
+                    if let error = CoordinatorError(terminalState: laterState) {
+                        failureCont.yield(error)
+                    }
                 }
             }
+        } catch {
+            // Not reached at all: a waiting member says so instead of
+            // reporting a role refusal (F11).
+            noteMemberAttemptUnreachable(error)
+            throw error
         }
 
         logger.info(.coordinatorTransportReady)
 
+        // A member registration carries this connection's fresh negotiation
+        // nonce; the coordinator's acceptance must echo it within the
+        // negotiation window (ten seconds in production).
+        memberNegotiation = config.executionRole == .clusterMember
+            ? .init(window: config.memberNegotiationWindow) : nil
+        memberOrdinaryAnswer = false
+        noteMemberTransportReady(memberNegotiation)
+        if let negotiation = memberNegotiation {
+            memberTimeout = Task { [weak self] in
+                do { try await ContinuousClock().sleep(until: negotiation.deadline) } catch { return }
+                guard !Task.isCancelled else { return }
+                await self?.expireMemberNegotiation(nonce: negotiation.nonce)
+            }
+        }
         try await sendRegistration(connection: connection)
         logger.info(.coordinatorRegistrationSent)
         // Fresh capacity-seq session for this connection (routing v2): seq
         // restarts at 1 on the first heartbeat and out-of-band event
         // heartbeats are permitted from here on.
         state.resetCapacitySession()
-        sessionRegistered = true
+        sessionRegistered = config.executionRole == .solo
         // The reconnect policy measures how long the session stays open from here.
         session.markOpened()
 
@@ -185,7 +228,9 @@ extension CoordinatorClient {
             chunkWriter.write(frames)
         }
 
-        eventContinuation?.yield(.connected)
+        // A member connection is announced only by its nonce-bound acceptance
+        // (CoordinatorClient+Inbound), never by the registration send.
+        if config.executionRole == .solo { eventContinuation?.yield(.connected) }
 
         try await sessionLoop(
             connection: connection,

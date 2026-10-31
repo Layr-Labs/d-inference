@@ -3,12 +3,13 @@ import MLX
 import MLXLMCommon
 
 extension EngineV2Factory {
-    /// The caller has already admitted this slot's unified-memory grant. A
-    /// segmented pool starts empty and follows that grant; it has no second
-    /// physical-RAM fraction, eager-pool budget, or model-demand ceiling.
-    /// Native construction validates dtype, owner/borrower geometry, window
-    /// rings, per-segment Metal buffer limits and kernel addressability. Native
-    /// Admission reserves complete process C before subsequent page allocation.
+    /// The caller has already admitted this slot's unified-memory grant. The
+    /// pool is the shared serving pool (`PagedKVBackend.segmented`: the same
+    /// segment size, commitment and validation the cluster's stage hosts use)
+    /// plus free-segment retention, which `segmented` does not take. It starts
+    /// empty and follows that grant; it has no second physical-RAM fraction,
+    /// eager-pool budget, or model-demand ceiling. Native Admission reserves
+    /// complete process C before subsequent page allocation.
     static func makeSegmentedPagedBackend(
         admittedGrantBytes: Int,
         layerKinds: [CBv2LayerKind],
@@ -32,7 +33,7 @@ extension EngineV2Factory {
                     schedulerConfig.soloPrefillStripeTokens ?? 0),
                 nominalMaxSequenceLength: max(1, maxContextLength ?? 8192),
                 maxBufferLength: maxBufferLength,
-                segmentSizeBytes: 64 << 20,
+                segmentSizeBytes: PagedKVBackend.servingSegmentBytes,
                 layerDTypes: layerDTypes,
                 quantization: quantization,
                 nativeLayerIndices: nativeLayerIndices,

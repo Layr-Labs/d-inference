@@ -1,0 +1,3 @@
+### GLM images and video on a tensor-parallel pair
+
+- A GLM-5.3-Flash pair serving in tensor parallel accepts image and video input as the single-Mac product does: the leader runs the product's media decode, processor and prompt expansion, rank 0 reproduces the same patches (checked by digest) off its executor and runs the vision tower when the request opens, and both ranks prefill the same spliced embeddings. Batch lanes carry media requests too, with the same arithmetic as a request served alone. Media requests decode with MTP rounds like text (the NextN history is primed with the media features) and without prefix reuse. Rank 0 now loads the vision tower (1.13 GB) with the tensor-parallel shard.

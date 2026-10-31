@@ -199,6 +199,12 @@ extension ProviderLoop {
         modelId: String, allowEviction: Bool = true, revisionUpdate: Bool = false,
         revisionDirectory: URL? = nil, autopilotCommandId: String? = nil
     ) async throws {
+        if isClusterMember {
+            // A member loads nothing: only its live pair slot is resident, and
+            // anything else keeps the member guard's own refusal.
+            guard clusterPairSlotServes(modelId) else { throw ClusterMemberControlError.incompatibleConfiguration }
+            return
+        }
         try GLM5NextLoadFaultState.requireHealthy(modelType: advertisedModels[modelId]?.modelType)
         try requireNativeMiMoProcessWorkAllowed()
         try refuseClosingNativeMiMoOwner(modelId)

@@ -1,6 +1,6 @@
 # Release A Provider Version
 
-> Last updated: 2026-10-28
+> Last updated: 2026-10-30
 
 Build, sign, notarize and publish an explicitly authorized provider artifact.
 The pipeline registers its exact official identity through the external platform
@@ -27,70 +27,45 @@ runs the resolve, build, qualification, signing, R2 staging and publication
 chain for one environment. To find the newest dev release, read
 `https://api.dev.darkbloom.dev/v1/releases/latest`.
 
-`ProviderCore.version` is prepared as `0.10.4`, a patch release over `v0.10.3`.
-A Qwen 3.5, 3.6 or 3.8 request with a JSON `response_format` and no thinking
-control answers without thinking, and on `qwen3_5` and `qwen3_5_moe` text
-requests without tools the answer is grammar-constrained. Qwen3.5-9B,
-Qwen3.5-35B-A3B, Qwen3.6-35B-A3B and MiMo-V2.6-Flash advertise forced
-`tool_choice`. A request that restored a Qwen native recurrent complete
-checkpoint writes its later checkpoints as deltas. A signed local add-on such
-as the Darkbloom Sandbox can hold the provider, which stays connected, leaves
-routing and unloads its models.
-`darkbloom status` and `darkbloom doctor` say why a connected provider gets no
-coordinator work, the provider re-registers a connection the coordinator leaves
-unauthorized, and a stalled coordinator reconnect fails after 30 seconds and
-retries. `darkbloom stop` finishes without a coordinator session,
-`darkbloom status` says what its served counts cover, and `darkbloom switch`
-scans the configured model cache. The MLX pins are unchanged from 0.10.3. The
-entry also records desktop app, CI, landing and documentation changes that build
-no provider artifact. See the [`v0.10.4` changelog entry](../../CHANGELOG.md)
-for the full scope.
+`ProviderCore.version` is prepared as `0.10.5`, a patch release over `v0.10.4`.
+`darkbloom sandbox` sets up, checks, pauses, resumes and removes the Darkbloom
+Sandbox add-on from the provider CLI. GPT-OSS client stop sequences match only
+the Harmony final message, which ends its reasoning-only empty answers, and Qwen
+3.5 and 3.6 no longer loop to `max_tokens` when sampling is omitted. A dense Qwen
+follow-up restores its checkpoint from just below the previous prompt end. SSD
+checkpoint restores, eviction, maintenance, reads and donations are faster,
+expired checkpoints no longer count as corrupt and cache sweeps no longer stall
+lookups. The provider reconnects faster after a long session or a 1012 close,
+keeps prompt-cache hits across batch promotion, drops response chunks processed
+while disconnected and keeps a model download's completion. The MLX pins move to
+their forks' `main`. See the [`v0.10.5` changelog entry](../../CHANGELOG.md) for the full
+scope.
 
-Before tagging `v0.10.4`:
+Before tagging `v0.10.5`:
 
-- Confirm that the tagged commit still pins `libs/mlx-swift` to `4926d3d9` and
-  `libs/mlx` and the nested `mlx` to `31f550af`, the heads of the mlx-swift and
-  mlx branches `hotfix/0.10.2-jit-nax-dsplit`, and `libs/mlx-swift-lm` to
-  `aee6ebb6`, the head of SDK `main`. Neither fork's `main` contains its pinned
-  commit, so keep both hotfix branches.
-- With those pins the tag build's `metallib_hash` should equal v0.10.3's
-  `6ccc62966bb452b767fbd7261175b06c7653259a25f657524f1c1ef71f556d45`. The
-  `bin/mlx.metallib` in the `v0.10.2` bundle, built before 0.10.3's MLX fix
-  (C++ only), has the same hash. A different hash needs an explanation, such as
-  a changed Metal toolchain.
+- Confirm that the tagged commit pins `libs/mlx` and the nested `mlx` to
+  `72dffa2d`, `libs/mlx-swift` to `c633d221` and `libs/mlx-swift-lm` to
+  `2beb401f`, all on their forks' `main`. The 0.10.2 hotfix branches are no
+  longer pinned; the NAX head-dim split fix they carried (`mlx` `31f550af`) is
+  in `72dffa2d`'s `jit_kernels.cpp`.
+- The tag build's `metallib_hash` differs from v0.10.4's
+  `6ccc62966bb452b767fbd7261175b06c7653259a25f657524f1c1ef71f556d45`: twelve
+  Metal backend files change between the `mlx` pins, including
+  `kernels/fence.metal`. Record the new hash. Complete SSD checkpoints that 0.10.4
+  wrote are not restored by 0.10.5, because their namespace binds the binary and
+  loaded-metallib hashes.
 
 Roll out in this order; each step is a separate approval:
 
-1. Shortly before the tag, deploy a `darkbloom-platform` coordinator that
-   includes [darkbloom-platform#516](https://github.com/Layr-Labs/darkbloom-platform/pull/516),
-   [#491](https://github.com/Layr-Labs/darkbloom-platform/pull/491) and
-   [#541](https://github.com/Layr-Labs/darkbloom-platform/pull/541). #516's
-   prompt sidecar plans a Qwen JSON `response_format` without thinking, as
-   0.10.4 renders it. While a provider and the coordinator disagree, that
-   provider's Qwen JSON requests without a thinking control fail their cache
-   receipts with `prompt_anchor_mismatch`, and each failure quarantines its
-   cache affinity for the whole model for up to 10 minutes; serving is
-   unaffected. #491 repeats a refusal every 5 seconds while App Attest serving
-   is on, and #541 tells a legacy Mac when its first passing challenge
-   authorizes it; 0.10.4's `Traffic:` line and re-registration act only on
-   that current evidence.
-2. Tag `v0.10.4` ([step 4](#4-tag-and-push-production-source)).
-3. The platform snapshots its provider contracts from the tagged commit
+1. Tag `v0.10.5` ([step 4](#4-tag-and-push-production-source)). No coordinator
+   deployment is needed first, and no provider-version floor applies.
+2. The platform snapshots its provider contracts from the tagged commit
    (`python3 scripts/provider-contracts.py snapshot <tag commit>`), sets
-   `LatestProviderVersion` to `0.10.4` in the coordinator's
-   [`server.go`](https://github.com/Layr-Labs/darkbloom-platform/blob/5ba280d89aa5e9bd4fbf05e0dfa848059cd3b585/coordinator/api/server.go)
-   in the same change and adds the revision row to its
-   [provider-contract reference](https://github.com/Layr-Labs/darkbloom-platform/blob/5ba280d89aa5e9bd4fbf05e0dfa848059cd3b585/docs/reference/provider-contracts.md).
-   Of the snapshotted inputs, only `contracts/provider/ProviderCore.swift`
-   should change: the prompt vectors are unchanged since `a8556957`, the
-   revision the platform already pins. `LatestProviderVersion` is a fallback
-   and does not gate publication.
-
-No provider-version floor is needed. Coordinators send forced `tool_choice` only
-to providers that advertise it, and only 0.10.4 providers advertise it for those
-four models. The add-on hold's coordinator side,
-[darkbloom-platform#514](https://github.com/Layr-Labs/darkbloom-platform/pull/514),
-is already in production.
+   `LatestProviderVersion` to `0.10.5` in the coordinator's `server.go` in the
+   same change and adds the revision row to its provider-contract reference. Of
+   the 34 snapshotted inputs, pinned at v0.10.4's `8effff7f`, only
+   `contracts/provider/ProviderCore.swift` should change. `LatestProviderVersion`
+   is a fallback and does not gate publication.
 
 0.10.2's remaining enablement steps do not wait for this tag and still apply;
 each is a separate approval:
@@ -107,27 +82,21 @@ Catalog changes, allowlist changes and model registration are separate
 approvals. This preparation does not tag, register, upload, deploy or enable
 anything.
 
-Platform evidence, inspected on 2026-10-27 (recheck before tagging):
+Platform evidence, inspected on 2026-10-30 (recheck before tagging):
 
 | Claim | Source |
 |---|---|
-| Production runs platform `master` `2acffb5c`, which includes darkbloom-platform#514 and #464's `0.10.2` logprobs floors but not #516, #491 or #541 | `/health` `build_commit`; [`modelarch/logprobs.go` at `2acffb5c`](https://github.com/Layr-Labs/darkbloom-platform/blob/2acffb5c301547b085b846adbc2a3fed95fafb2c/coordinator/internal/modelarch/logprobs.go) (`LogprobsMinimumProviderVersion`); #514 merged as `6259c9dc`, #516 as `5a779a11`, #491 as `809d2366` and #541 as `6beb8514` |
-| #516 plans a Qwen JSON `response_format` without thinking | [`normalize.rs` at `5a779a11`](https://github.com/Layr-Labs/darkbloom-platform/blob/5a779a113b3874bf06f597f6c4107a4d08103a6f/coordinator/promptsidecar/src/normalize.rs) (`template_additional_context`) and [`response_format.rs`](https://github.com/Layr-Labs/darkbloom-platform/blob/5a779a113b3874bf06f597f6c4107a4d08103a6f/coordinator/promptsidecar/src/response_format.rs) (`requires_json_output`) |
-| A `prompt_anchor_mismatch` quarantines the provider's cache capability for that model: 60 s, doubling on repeats up to 10 min | [`registry/cache_quarantine.go` at `2acffb5c`](https://github.com/Layr-Labs/darkbloom-platform/blob/2acffb5c301547b085b846adbc2a3fed95fafb2c/coordinator/registry/cache_quarantine.go) (`CacheQuarantineCommit.Apply`) and [`cachetracker/proofs.go`](https://github.com/Layr-Labs/darkbloom-platform/blob/2acffb5c301547b085b846adbc2a3fed95fafb2c/coordinator/internal/registry/cachetracker/proofs.go) (`ProofFenceBase`, `ProofFenceMax`) |
-| #491 repeats an unauthorized connection's `trust_status` every 5 s while App Attest serving is on; #541 sends one when a verdict changes its `authorization.path` | [`serving_diagnostic.go` at `6beb8514`](https://github.com/Layr-Labs/darkbloom-platform/blob/6beb851488e08b3fc950b46f5002a502c4fcc9d4/coordinator/appattest/service/serving_diagnostic.go) (`startUnauthorizedStatusRefresh`) and [`trust/status.go`](https://github.com/Layr-Labs/darkbloom-platform/blob/6beb851488e08b3fc950b46f5002a502c4fcc9d4/coordinator/api/provider/trust/status.go) (`notifyServingAuthorizationChange`) |
-| The provider-contract snapshot pins d-inference `a8556957`, and its 34 inputs equal those of this preparation except `ProviderCore.swift` | [`contracts/provider/manifest.json` at `5ba280d8`](https://github.com/Layr-Labs/darkbloom-platform/blob/5ba280d89aa5e9bd4fbf05e0dfa848059cd3b585/contracts/provider/manifest.json) (`source_revision`) |
-| Forced tool choice goes only to advertising providers | [`registry/tool_constraints.go` at `2acffb5c`](https://github.com/Layr-Labs/darkbloom-platform/blob/2acffb5c301547b085b846adbc2a3fed95fafb2c/coordinator/registry/tool_constraints.go) (`providerSupportsToolConstraintLocked`) |
-| A model without an allowlisted tuple gets no cache routing | [`cache-routing-rollout.md` at `9d44e01e`](https://github.com/Layr-Labs/darkbloom-platform/blob/9d44e01eb0d4f6052f2be471b8107b94754c5c3e/docs/operations/cache-routing-rollout.md) ("Add GLM-5.3-Flash", "Add Nemotron 3.5 Super") |
+| The provider-contract snapshot pins d-inference `8effff7f` (v0.10.4), and its 34 inputs equal this preparation's except `ProviderCore.swift` | [`contracts/provider/manifest.json` at `cb31f6b4`](https://github.com/Layr-Labs/darkbloom-platform/blob/cb31f6b44af25500eab72fa0adb01eb6c69864d6/contracts/provider/manifest.json) (`source_revision`) |
 | `LatestProviderVersion` must equal the snapshotted `ProviderCore.version` | [`provider_version_sync_test.go` at `5ba280d8`](https://github.com/Layr-Labs/darkbloom-platform/blob/5ba280d89aa5e9bd4fbf05e0dfa848059cd3b585/coordinator/tests/api/provider_version_sync_test.go) (`TestLatestProviderVersionMatchesProviderCore`) |
 
-`v0.10.3` was [published on 2026-10-26](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.3)
+`v0.10.4` was [published on 2026-10-28](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.4)
+from `8effff7f7067fec70b2e3b58de0a4ba47ea3986c`, `v0.10.3` was
+[published on 2026-10-26](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.3)
 from `3ddd11ce8d7204cc5aadefd2050376c583da4ff8`, `v0.10.2` was
 [published on 2026-10-26](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.2)
 from `f9d1af3d0d3e1838974a5cfdff0a08142977b45e`, `v0.10.1` was
 [published on 2026-10-24](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.1)
-from `9034a5a0f3526dec83ab6384e5264db595cb7549`, and `v0.10.0` was
-[published on 2026-10-23](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.0)
-from `1ef9c89f465ba1299b4938c2b0359e9ae33ed454`. Publication does not establish
+from `9034a5a0f3526dec83ab6384e5264db595cb7549`. Publication does not establish
 that every optional feature or environment has been activated.
 
 ## Prerequisites
@@ -177,6 +146,15 @@ documents the release key/CDN contract; a missing CDN configuration returns
 `503 not_configured`. Pinned platform references below preserve historical
 contracts and are not evidence that a live deployment implements the latest
 automatic-registration semantics.
+
+## Archive Extraction Permissions
+
+Installer and self-update archive extraction use a child-local `umask 022` so
+ordinary release modes, including the fan helper's required `0755`, survive a
+provider started with `umask 077`. The caller's private-state mask is unchanged.
+Hash, signature, runtime-capability and atomic replacement checks still run;
+extraction does not enable tar's full-permissions or unsafe-path options.
+Coordinate the platform-served installer snapshot separately before publication.
 
 ## Steps
 
@@ -229,6 +207,11 @@ runners with no signing/publication secrets. PR caches remain PR-scoped and do
 not seed `master`. Only pull-request runs can use Darkbloom Sandboxes, under
 [CI runner routing](../developer/build.md#ci-runner-routing); `master` and
 dispatched runs always use these Blacksmith runners.
+
+The qualification lane prepares the bounded MiMo HTTP image fixtures before
+the full provider suite, including on cache hits. Keep that preparation as a
+separate step so its environment reaches the tests. See the
+[fixture recipe](../developer/test.md#mimo-regression-fixtures) for local runs.
 
 Inspect each **SDK 27 build cache** summary and actual restore key. Compatible
 prefix hits are useful even when the exact-hit output is false. Compiler, SDK,
@@ -635,6 +618,29 @@ After commit, the platform refreshes binary/runtime policy and release caches.
 Active releases retain their hashes during adoption; deactivation removes them
 from the catalog. See the [runtime manifest](../architecture/security/attestation.md#runtime-manifest).
 
+### Cluster Helpers
+
+The release ships the two-Mac cluster's helpers inside the app:
+`Darkbloom.app/Contents/Helpers/darkbloom-cluster-worker` (the rank a cluster
+member launches) and `darkbloom-cluster-plan` (the placement tool), with the
+`mlx.metallib` and `pagedattention.metal` they load beside themselves. On the
+release lane `.github/actions/provider-release-build/action.yml` builds them
+with `scripts/build-cluster-helpers.sh` against the same source-matched Metal
+library as the provider and checks the copy is byte-identical;
+`scripts/provider-signing-validation.py stage --cluster-helpers` copies them
+into the unsigned app and refuses an artifact without them. Signing runs
+`scripts/sign-cluster-helpers.sh` before the app itself is signed: Developer ID,
+hardened runtime, timestamp, their own identifiers and the network-only
+entitlements of `provider-swift/entitlements-cluster-worker.plist`. After
+notarization, `provider-signing-validation.py cluster-helpers --app` and
+`sign-cluster-helpers.sh --verify` check the final archived bytes. The app's
+`Info.plist` carries `NSLocalNetworkUsageDescription`, so macOS asks for Local
+Network once for the signed identity and keeps the approval across updates and
+reboots ([always on](../provider/cluster-always-on.md)). The
+environment-free signing workflow builds, stages, signs and verifies the helpers
+the same way. An owner signing a local build runs the same script with the
+Developer ID identity, then signs and notarizes the app as the workflow does.
+
 ## Recovery
 
 ### Resume Signing From A Retained Unsigned Build
@@ -755,3 +761,10 @@ API remains a compatibility/recovery tool, not a normal release step.
 - [Pinned platform deployment reference](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/operations/coordinator-deploy.md)
 - [Pinned release-policy reference](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/operations/release-policy-rollout.md)
 - [Pinned release API reference](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/reference/api-contracts.md)
+
+The cluster service LaunchAgent must include `AssociatedBundleIdentifiers`
+for the installed app. Verify the normal `darkbloom cluster` flow after both
+setup terminals exit, including leases and an outbound follower connection on
+each Mac. A foreground CLI check does not qualify background Local Network
+access. Keep the signing identity consistent across builds and retain final
+post-signing executable hashes.

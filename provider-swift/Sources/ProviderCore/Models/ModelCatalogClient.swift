@@ -107,7 +107,7 @@ public struct ModelCatalogClient: Sendable {
         return decoder
     }()
 
-    private static func escapeModelIDForPath(_ modelID: String) -> String? {
+    static func escapeModelIDForPath(_ modelID: String) -> String? {
         var allowed = CharacterSet.urlPathAllowed
         allowed.remove(charactersIn: "/")
         return modelID.addingPercentEncoding(withAllowedCharacters: allowed)

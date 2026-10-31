@@ -29,16 +29,27 @@ public struct ProviderUsageRecord: Codable, Sendable, Equatable {
 
 /// A bounded, owner-only journal shared by the provider and desktop reader.
 /// Atomic replacement keeps readers from observing half of a terminal record.
+///
+/// Served requests are coalesced: each replacement rewrites the whole journal
+/// (up to 4096 records, about 1 MB), so persisting once per request turned
+/// high-rate serving into tens of GB of SSD writes per day. `enqueue` saves at
+/// most once per `flushInterval`, bounding writes independently of request rate.
+/// The desktop reader already reports records not yet on disk as pending.
 public final class ProviderUsageHistory: @unchecked Sendable {
     public static var defaultURL: URL {
         FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".darkbloom/usage-history.json")
     }
+    public static let defaultFlushInterval: TimeInterval = 60
+    private static let capacity = 4096
     private let queue = DispatchQueue(label: "dev.darkbloom.usage-history")
     private let lock = NSLock()
     private let url: URL
+    private let flushInterval: TimeInterval
     private var records: [ProviderUsageRecord]
-    public init(url: URL = defaultURL) {
-        self.url = url; records = Self.read(url: url)
+    private var hasUnsavedRecords = false
+    private var flushScheduled = false
+    public init(url: URL = defaultURL, flushInterval: TimeInterval = defaultFlushInterval) {
+        self.url = url; self.flushInterval = flushInterval; records = Self.read(url: url)
     }
     public static func read(url: URL = defaultURL) -> [ProviderUsageRecord] {
         guard let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
@@ -47,17 +58,47 @@ public final class ProviderUsageHistory: @unchecked Sendable {
               let data = try? Data(contentsOf: url), data.count <= 4_000_000 else { return [] }
         return (try? JSONDecoder().decode([ProviderUsageRecord].self, from: data)) ?? []
     }
-    /// Terminal responses never wait on journal disk I/O.
+    /// Terminal responses never wait on journal disk I/O; the record is saved
+    /// with any others that complete within the same flush interval.
     public func enqueue(_ record: ProviderUsageRecord) {
         queue.async { [self] in
-            do { try self.record(record) }
-            catch { ProviderLogger(subsystem: "dev.darkbloom.provider", category: "usage").warning("Local usage history could not be saved") }
+            lock.lock(); defer { lock.unlock() }
+            guard insertLocked(record), !flushScheduled else { return }
+            flushScheduled = true
+            queue.asyncAfter(deadline: .now() + flushInterval) { [self] in
+                lock.lock(); defer { lock.unlock() }
+                flushScheduled = false
+                saveLockedLoggingFailure()
+            }
         }
     }
+    /// Saves every record enqueued before this call. Shutdown calls this so a clean exit loses none.
+    public func flush() {
+        queue.sync { [self] in
+            lock.lock(); defer { lock.unlock() }
+            saveLockedLoggingFailure()
+        }
+    }
+    /// Records and saves immediately. A failed save keeps the record for the next flush.
     @discardableResult public func record(_ record: ProviderUsageRecord) throws -> Bool {
         lock.lock(); defer { lock.unlock() }
+        guard insertLocked(record) else { return false }
+        try saveLocked()
+        return true
+    }
+    private func insertLocked(_ record: ProviderUsageRecord) -> Bool {
         guard !records.contains(where: { $0.id == record.id && $0.sessionStartedAt == record.sessionStartedAt }) else { return false }
-        let next = Array((records + [record]).suffix(4096))
+        records.append(record)
+        if records.count > Self.capacity { records.removeFirst(records.count - Self.capacity) }
+        hasUnsavedRecords = true
+        return true
+    }
+    private func saveLockedLoggingFailure() {
+        do { try saveLocked() }
+        catch { ProviderLogger(subsystem: "dev.darkbloom.provider", category: "usage").warning("Local usage history could not be saved") }
+    }
+    private func saveLocked() throws {
+        guard hasUnsavedRecords else { return }
         let fm = FileManager.default
         let directory = url.deletingLastPathComponent()
         try fm.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
@@ -69,9 +110,8 @@ public final class ProviderUsageHistory: @unchecked Sendable {
         guard fd >= 0 else { throw CocoaError(.fileWriteNoPermission) }
         let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
         defer { try? fm.removeItem(at: temporary) }
-        try handle.write(contentsOf: JSONEncoder().encode(next)); try handle.synchronize(); try handle.close()
+        try handle.write(contentsOf: JSONEncoder().encode(records)); try handle.synchronize(); try handle.close()
         guard rename(temporary.path, url.path) == 0 else { throw CocoaError(.fileWriteUnknown) }
-        records = next
-        return true
+        hasUnsavedRecords = false
     }
 }

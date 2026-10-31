@@ -340,6 +340,7 @@ extension ProviderLoop {
     private func restartAfterAutoUpdate(_ restart: @Sendable () throws -> Void) throws {
         try Task.checkCancellation()
         guard ownsUpdateDrain, appAttestWorkerStopReason == .update else { throw CancellationError() }
+        usageHistory.flush()
         try restart()
     }
 

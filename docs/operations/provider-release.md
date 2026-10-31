@@ -696,18 +696,19 @@ Every lane (dev branch, staging, prod) runs the step
 6. The final CLI computes the facts:
    `<cli> cluster runtime-facts --app <app> --release-candidates <folder>`. The
    app's own worker describes each candidate (`--describe-runtime`); every
-   catalog model ID of a listed artifact gets one entry, with its pair-serving
-   grant. A declared model gets one parity qualification per declared family
-   and schedule; a tensor-parallel envelope admits the media its catalog entry
-   lists, a pipeline's text only. A declared pipeline whose `config.json` has
-   no layer count is left out and named on standard error, in the job log. One
-   artifact can be two registered models that only the manifest tells apart
-   (production lists `gemma-4-26b` and `gemma-4-26b-8bit` for one artifact): a
-   catalog model ID whose candidates the worker describes only as another
-   registered model is that model's, so it is left out and named on standard
-   error too. The step fails when the worker describes no candidate of a
-   catalog model ID of a listed artifact at all, when no model is left, or when
-   an ID a coordinator would derive exceeds 128 bytes.
+   catalog model ID of a listed artifact that it describes as the listed model
+   gets one entry, with its pair-serving grant. A declared model gets one
+   parity qualification per declared family and schedule; a tensor-parallel
+   envelope admits the media its catalog entry lists, a pipeline's text only. A
+   declared pipeline whose `config.json` has no layer count is left out and
+   named on standard error, in the job log. One artifact can be two registered
+   models that only the manifest tells apart (production lists `gemma-4-26b`
+   and `gemma-4-26b-8bit` for one artifact): a catalog model ID whose
+   candidates the worker describes only as another registered model is that
+   model's, so it is left out and named on standard error too. The step fails
+   when the worker describes no candidate of a catalog model ID of a listed
+   artifact at all, when no model is left, or when an ID a coordinator would
+   derive exceeds 128 bytes.
 
 The steps `Show the cluster runtime facts` and `Retain the cluster runtime facts`
 then write the block (or the failure) to the job summary and upload

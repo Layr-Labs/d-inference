@@ -711,8 +711,12 @@ struct ClusterRuntimeApprovalFactsTests {
         #expect(refused.contains("Qwen3.5-9B (registered_qwen35_9b, \(Self.qwenArtifact))") && refused.contains("refused/manifest.json"))
 
         _ = try f.model("accepted", parent: candidates)
+        // Described only as another registered model: left out, so no model is left, and the refusal names it.
         let another = ClusterRuntimeApprovalFacts.ReleaseModel(runtimeModelID: "registered_other", artifactSHA256: Self.qwenArtifact)
-        #expect(message([another]).contains("is registered_qwen35_9b"))
+        let leftOut = message([another])
+        #expect(leftOut.hasPrefix("No candidate folder holds a model this build qualifies on a cluster; left out, the catalog model ID "
+            + "of another registered model: Qwen3.5-9B (registered_other, \(Self.qwenArtifact)): "))
+        #expect(leftOut.contains("is registered_qwen35_9b"))
         let absent = ClusterRuntimeApprovalFacts.ReleaseModel(runtimeModelID: "registered_glm53_flash",
                                                               artifactSHA256: ClusterGLMImageCandidate.artifactSHA256)
         #expect(message([absent]).contains("No candidate folder holds a model this build qualifies on a cluster"))

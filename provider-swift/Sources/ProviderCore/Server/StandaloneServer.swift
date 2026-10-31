@@ -1040,7 +1040,8 @@ public actor StandaloneServer {
             existing: survivors.map(\.slot),
             newcomer: nil,
             fleetKVBudgetBytes: fleetKVBudgetBytes(
-                extraWeightBytes: 0, activationReserveBytes: reserveBytes))
+                extraWeightBytes: 0, activationReserveBytes: reserveBytes),
+            minimumGrantBytes: Self.minimumGrantBytes(survivors))
         return Self.resliceKeepsSlotsServiceable(targets, existing: survivors)
     }
 
@@ -1071,8 +1072,13 @@ public actor StandaloneServer {
         _ targets: [String: Int], existing: [ExistingSlotGrant]
     ) -> Bool {
         EngineV2KVSizing.resliceMeetsServiceabilityFloor(
-            targets, minimumGrantBytes: Dictionary(uniqueKeysWithValues:
-                existing.map { ($0.slot.modelId, $0.minimumGrantBytes) }))
+            targets, minimumGrantBytes: minimumGrantBytes(existing))
+    }
+
+    /// Every slot's serviceability floor by model, for `resliceGrants` and
+    /// `resliceKeepsSlotsServiceable`.
+    nonisolated static func minimumGrantBytes(_ existing: [ExistingSlotGrant]) -> [String: Int] {
+        Dictionary(uniqueKeysWithValues: existing.map { ($0.slot.modelId, $0.minimumGrantBytes) })
     }
 
     private struct SlotBuild {
@@ -1201,11 +1207,13 @@ public actor StandaloneServer {
             modelId: modelId,
             fp16KVBytesPerToken: sizing.fp16KVBytesPerToken,
             maxContextLength: sizing.maxContextLength)
+        let minimumGrants = Self.minimumGrantBytes(existing)
         var fleetBudget = fleetKVBudgetBytes(extraWeightBytes: sizing.weightsBytes)
         var targets = EngineV2KVSizing.resliceGrants(
             existing: existing.map(\.slot),
             newcomer: newcomer,
-            fleetKVBudgetBytes: fleetBudget)
+            fleetKVBudgetBytes: fleetBudget,
+            minimumGrantBytes: minimumGrants)
 
         // Serviceability floor (fail loud): refuse a load that would leave
         // any slot below the minimum serveable live-KV grant.
@@ -1225,7 +1233,8 @@ public actor StandaloneServer {
             targets = EngineV2KVSizing.resliceGrants(
                 existing: existing.map(\.slot),
                 newcomer: newcomer,
-                fleetKVBudgetBytes: fleetBudget)
+                fleetKVBudgetBytes: fleetBudget,
+                minimumGrantBytes: minimumGrants)
         }
         guard Self.resliceKeepsSlotsServiceable(targets, existing: existing)
         else {
@@ -1369,7 +1378,8 @@ public actor StandaloneServer {
 
     /// Grow the surviving slots back to their re-sliced shares after an
     /// eviction (a lone survivor gets the FULL fleet budget back). Called
-    /// from the eviction path, i.e. inside `isLoadingAny`.
+    /// from the eviction path, i.e. inside `isLoadingAny`. The floors keep
+    /// a slot a load funded to its floor from being shrunk back below it.
     func resliceGrowSurvivors() async {
         guard nativeMiMoReclaimAllowed else { return }
         let survivors = await existingSlotGrants(excludingModelId: "")
@@ -1379,7 +1389,8 @@ public actor StandaloneServer {
         let targets = EngineV2KVSizing.resliceGrants(
             existing: survivors.map(\.slot),
             newcomer: nil,
-            fleetKVBudgetBytes: fleetBudget)
+            fleetKVBudgetBytes: fleetBudget,
+            minimumGrantBytes: Self.minimumGrantBytes(survivors))
         for entry in survivors {
             guard nativeMiMoReclaimAllowed else { return }
             if let target = targets[entry.slot.modelId], target < entry.previousGrant {

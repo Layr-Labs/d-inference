@@ -1,6 +1,6 @@
 # Hardware support and the provider memory model
 
-> Last updated: 2026-10-26
+> Last updated: 2026-10-31
 
 What hardware the provider runs on and how it decides, in bytes, whether a
 model may load and how much KV cache each resident model may use. Read this to
@@ -556,6 +556,19 @@ Unknown or saturated policy evidence and a fixed pool that cannot meet the floor
 fail closed. `resliceMeetsServiceabilityFloor` rejects the unattainable `Int.max`
 sentinel rather than accepting it as a usable grant.
 
+Every re-slice passes those floors to `resliceGrants`; a newcomer, whose engine
+does not exist yet, has only the base `minimumServiceableGrantBytes`. When the
+proportional split already gives each slot at least its floor, that split is the
+result. Otherwise, if the floors sum to no more than the budget, each slot
+receives its floor plus its weighted share of the rest; if they do not, the
+proportional split stands and `resliceMeetsServiceabilityFloor` refuses the load
+or reserve raise. Regrowth after an unload or rollback uses the same floors, so
+it never shrinks a slot below its floor. Without this, a slot with a small KV
+rate and a fixed per-request workspace, such as `nvidia-nemotron-3.5-lightning`
+with its embedded assistant, falls below its floor beside high-rate models even
+when every floor fits (`EngineV2KVSizing.resliceGrants`,
+`ProviderLoop.resliceAndBuildEngineV2Bundle`, `ProviderLoop.resliceGrowSurvivorsLocked`).
+
 A private hybrid-cache carve is added once to the engine floor. The bridge
 retains the total requested grant for exact rollback instead of feeding an
 already-carved engine grant back through the carve. Physically retained cache
@@ -831,8 +844,10 @@ grant or reported capacity field changes, so
    replaces the first term with its own claim's ledger room, which keeps no
    load reserve — `ProviderLoop.evictUntilNemotronSuperFits`,
    `nemotronSuperLoadIsCertainToFail`.
-6. Load-time re-slicing refuses a newcomer if any resulting engine share falls
-   below `minimumServiceableGrantBytes`; shrink preserves existing ownership —
+6. Load-time re-slicing refuses a newcomer only when the slots'
+   `minimumServiceableGrantBytes` floors sum to more than the fleet KV budget;
+   otherwise every engine share is at least its floor. Shrink preserves existing
+   ownership — `EngineV2KVSizing.resliceGrants`,
    `EngineV2KVSizing.resliceMeetsServiceabilityFloor`, `AdmissionV2.updateBytesCapacity`.
 7. `freeForLoadGb` applies no multiplicative discount; the only padding is the
    scanner's `memoryOverheadFactor` on weights — `ModelLoadAdmission.swift`,
@@ -846,6 +861,7 @@ grant or reported capacity field changes, so
 | Start refused: Metal unavailable | `GPUEnforcement.requireMetal()` threw | `GPUEnforcement.swift` |
 | Load refused: "… need N GB to serve — unloaded" | Post-load `hasServeableKVHeadroom` false (live KV headroom below `minimumLoadKVBytes`) | `ProviderLoop+ModelLoading.swift`, `KVHeadroomProbe.swift` |
 | Load refused with `no_kv_headroom` | Slot KV sizing overflowed or no serviceable grant during construction | `EngineV2Config.swift` (`EngineV2RefusalReason.noKVHeadroom`), `EngineV2SlotFactory.swift` |
+| Load refused: "loading '…' would leave a model without its fixed request workspace, admission watermark and 1.0 GB minimum KV allowance (fleet KV budget … B across … slots) — refused" | The slots' `minimumServiceableGrantBytes` floors sum to more than the fleet KV budget | `ProviderLoop+EngineV2.swift` (`resliceAndBuildEngineV2Bundle`), `EngineV2Reslice.swift` (`resliceGrants`) |
 | Catalog says the tier fits, provider refuses | Static cap arithmetic passes but `freeForLoadGb` (real free minus `loadReserveBytes` and in-flight reservations) is below `requiredToLoadGb` | `ModelLoadAdmission.swift`, `ProviderLoop+ModelLoading.swift` |
 | Nemotron Super refused: "Insufficient memory (… GB of LOAD room, need … GB) …" | The claim's ledger room cannot hold its narrowest configuration, even after evicting every idle model | `provider-swift/Sources/ProviderCore/NemotronSuper/ProviderLoop+NemotronSuperAdmission.swift` |
 | New request cannot fit | Its complete request promise exceeds the slot grant, or live ownership/OS pressure leaves no process headroom | `AdmissionV2.swift`, `ProcessMemoryLedger.swift` |

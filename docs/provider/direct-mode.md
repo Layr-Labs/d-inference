@@ -1,6 +1,6 @@
 # Direct mode: a local OpenAI-compatible endpoint
 
-> Last updated: 2026-10-26
+> Last updated: 2026-10-31
 
 Run the provider's inference engine as an OpenAI-compatible HTTP server on your
 own Mac, either standalone (`darkbloom start --local`, no coordinator, no
@@ -53,7 +53,10 @@ See [inference and logprob admission](../architecture/inference.md).
    when `[backend] startup_preload` is enabled (the default). When a load is
    short of headroom the server first releases retained paged KV segments and
    drops the MLX buffer cache once, then evicts the least recently used idle
-   slot (`StandaloneServer.ensureMemoryHeadroomForLoad`). The explicit
+   slot (`StandaloneServer.ensureMemoryHeadroomForLoad`). Resident models share
+   the KV budget as [KV slot grants](../architecture/hardware-support.md#kv-slot-grants)
+   describes; a load that would leave any model below its minimum grant fails
+   with HTTP 503 (`StandaloneServer.resliceKeepsSlotsServiceable`). The explicit
    `preload_models` list takes precedence; slot and memory limits can skip a
    model, which still loads on request. A local GLM qualification load reads its
    weights for its own per-file SHA-256 verification and the tensor reads only;

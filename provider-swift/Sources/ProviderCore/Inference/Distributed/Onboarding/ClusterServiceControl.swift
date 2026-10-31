@@ -106,16 +106,17 @@ extension ClusterService {
     // MARK: - The control listener
 
     func ensureControlResponder(say: @escaping @Sendable (String) -> Void) {
-        // The lease listener follows the cable to another port too (`cableMove`), or leases never reach this Mac there.
-        if cableMove(of: lock.withLock({ controlResponder }), checked: \.controlCableCheck) != nil {
+        // The lease listener follows the cable to another port and the pairing to a new one too (`listenerChange`), or
+        // leases never reach this Mac; the exchange's listener says so.
+        if listenerChange(of: lock.withLock({ controlResponder }), checked: \.controlCheck) != nil {
             lock.withLock { controlResponder }?.stop()
             lock.withLock { controlResponder = nil }
         }
         guard lock.withLock({ controlResponder == nil }), let pairing = try? ClusterSetupLinkExchange.pairing(store: pairingStore),
-              let selection = try? context.linkSelection() else { return }
+              let selection = try? listenerSelection() else { return }
         do {
             let created = try ClusterSetupLinkExchange.Responder(pairing: pairing, selection: selection,
-                port: ClusterSetupLinkExchange.controlPort, epochLabel: ClusterSetupLinkExchange.controlLabel,
+                port: listening.controlPort, policy: listening.policy, epochLabel: ClusterSetupLinkExchange.controlLabel,
                 answer: { throw ClusterSetupFailure("the control listener reports nothing") },
                 receive: { _ in throw ClusterSetupFailure("the control listener takes no setup") },
                 command: { [weak self] data in
@@ -172,8 +173,13 @@ extension ClusterService {
     // MARK: - Each tick
 
     func ensureControl(pairing: ClusterSetupLinkExchange.Pairing) {
-        // A node of an earlier pairing (this Mac was re-paired with another Mac while the service ran) is dropped.
-        lock.withLock { if let node = control, !node.claim.members.contains(pairing.peerMemberID) { control = nil } }
+        // A node of an earlier pairing (this Mac was re-paired with another Mac, or under a new key of its own, while the
+        // service ran) is dropped.
+        lock.withLock {
+            if let node = control, node.localID != pairing.localMemberID || !node.claim.members.contains(pairing.peerMemberID) {
+                control = nil
+            }
+        }
         guard lock.withLock({ control == nil }), let record = try? store.readRecord(), let leadership = record.leadership,
               leadership.peerPin == pairing.peerPin else { return }
         let local = localControlMember(pairing: pairing, record: record)

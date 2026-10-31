@@ -109,6 +109,20 @@ public enum ClusterSetupLinkExchange {
         }
         public var localMemberID: String { ClusterSetupMemberFacts.memberID(pin: localPin) }
         public var peerMemberID: String { ClusterSetupMemberFacts.memberID(pin: peerPin) }
+
+        /// What tells this pairing from another, from its public values only. Every ceremony derives a new link epoch
+        /// from its transcript, as it derives a new edge secret, so pairing the same two Macs again changes it too.
+        public struct Identity: Sendable, Equatable {
+            public let localPin: String
+            public let peerPin: String
+            public let clusterID: String
+            public let linkEpoch: String
+            public let edgeID: String
+        }
+
+        public var identity: Identity {
+            Identity(localPin: localPin, peerPin: peerPin, clusterID: clusterID, linkEpoch: linkEpoch, edgeID: edgeID)
+        }
     }
 
     /// Nil when this Mac never paired over the link. With several pairings, the newest.
@@ -153,6 +167,9 @@ public enum ClusterSetupLinkExchange {
         private let edgeID: UUID
         /// The cable port and address it listens on (it never follows the cable to another port by itself).
         public let selection: ClusterLinkInterfaceSelection
+        /// The pairing whose key it answers with. It never follows a later pairing by itself: the other Mac's every
+        /// connection keyed with that one is refused (`handshakeRejected` there).
+        public let pairing: Pairing.Identity
 
         public init(pairing: Pairing, selection: ClusterLinkInterfaceSelection,
                     port: UInt16 = ClusterSetupLinkExchange.port, policy: ClusterLinkInterfacePolicy = .thunderboltOnly,
@@ -164,6 +181,7 @@ public enum ClusterSetupLinkExchange {
             let edge = try ClusterSetupLinkExchange.edge(pairing, peerAddress: nil, label: epochLabel)
             edgeID = edge.edgeID
             self.selection = selection
+            self.pairing = pairing.identity
             let work = DispatchQueue(label: "darkbloom.cluster-setup.exchange")
             listener = try ClusterLinkControlListener(configuration: .init(interface: selection.interface,
                 localAddress: selection.local.address, port: port, policy: policy, edges: [edge])) { event, peer in

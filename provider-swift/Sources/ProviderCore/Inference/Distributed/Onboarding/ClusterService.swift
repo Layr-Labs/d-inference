@@ -96,7 +96,7 @@ public final class ClusterService: @unchecked Sendable {
     /// The part whose end (or failed start) set `nextStart`: its restart backoff does not hold back another part.
     private var endedKey: String?
     private var backoff: Double = 3
-    private var responder: ClusterSetupLinkExchange.Responder?
+    var responder: ClusterSetupLinkExchange.Responder?
     var stopping = false
     private var syncing = false
     private var nextSync = Date.distantPast
@@ -141,9 +141,10 @@ public final class ClusterService: @unchecked Sendable {
     /// Seconds before the next ask: 10 while the other Mac answers, longer (to 120) while it does not, so the link's
     /// one-at-a-time request lock is not held for the other commands.
     private var relayAskInterval: Double = 10
-    /// When each listener last looked for the cable on another port (`cableMove`).
-    private var responderCableCheck = Date.distantPast
-    var controlCableCheck = Date.distantPast
+    /// When each listener last checked its cable port and its pairing (`listenerChange`).
+    var responderCheck = Date.distantPast
+    var controlCheck = Date.distantPast
+    let listening: Listening
     var leaseInFlight = false
     var nextLease: Double = 0
     var lastModeLine: String?
@@ -160,17 +161,18 @@ public final class ClusterService: @unchecked Sendable {
         try self.init(settings: settings, paths: ClusterUserPaths())
     }
 
-    /// Internal composition of the service's existing stores. Public callers keep
-    /// the canonical user namespace, the normal recovery deadline and the one-second supervision interval.
+    /// Internal composition of the service's existing stores. Public callers keep the canonical user namespace,
+    /// the normal recovery deadline, the one-second supervision interval and the cable's listeners.
     init(settings: Settings, paths: ClusterUserPaths, recoveryGraceSeconds: Double = 300,
          supervisionIntervalSeconds: Double = 1, beforePartStart: (@Sendable () -> Void)? = nil,
-         environment: [String: String]? = nil) {
+         environment: [String: String]? = nil, listening: Listening = .init()) {
         precondition(recoveryGraceSeconds.isFinite && recoveryGraceSeconds >= 0)
         precondition(supervisionIntervalSeconds.isFinite && supervisionIntervalSeconds > 0)
         self.recoveryGraceSeconds = recoveryGraceSeconds
         self.supervisionIntervalSeconds = supervisionIntervalSeconds
         self.beforePartStart = beforePartStart
         self.environment = environment
+        self.listening = listening
         pairingStore = .default(home: paths.homeDirectory)
         var wizard = settings.wizard
         wizard.derivedPlacement = true
@@ -332,37 +334,75 @@ public final class ClusterService: @unchecked Sendable {
         }
     }
 
-    /// How often a listener looks for the cable on another port: a cable moved to another Thunderbolt port (or a port
-    /// whose address changed) leaves the listener on the old one, where the other Mac never reaches it.
-    static let cableCheckSeconds: Double = 5
+    /// Where this service's two listeners answer: the cable's interface, on the exchange's and the control lease's own
+    /// ports. The checks put them on loopback, on ports of their own.
+    struct Listening: Sendable {
+        var exchangePort = ClusterSetupLinkExchange.port
+        var controlPort = ClusterSetupLinkExchange.controlPort
+        var policy = ClusterLinkInterfacePolicy.thunderboltOnly
+        /// Nil: the cable's interface on this Mac, read at each use (`LiveContext.linkSelection`).
+        var selection: ClusterLinkInterfaceSelection?
+    }
 
-    /// The cable's port now when it is not the one `listener` was started on (checked at most every
-    /// `cableCheckSeconds` per listener, `checked`); nil when it has not moved, or there is no listener or cable.
-    func cableMove(of listener: ClusterSetupLinkExchange.Responder?,
-                   checked: ReferenceWritableKeyPath<ClusterService, Date>) -> ClusterLinkInterfaceSelection? {
-        guard let bound = listener?.selection else { return nil }
+    func listenerSelection() throws -> ClusterLinkInterfaceSelection {
+        try listening.selection ?? context.linkSelection()
+    }
+
+    /// How often a listener checks that it still reaches the paired Mac: a cable moved to another Thunderbolt port (or a
+    /// port whose address changed) leaves it on the old one, where the other Mac never reaches it, and a pairing made
+    /// since it started leaves it keyed with the old one, so it refuses the other Mac's every connection (2026-10-31).
+    static let listenerCheckSeconds: Double = 5
+
+    /// What leaves a running listener unable to answer the paired Mac.
+    enum ListenerChange {
+        /// The cable is on another port, or its port has another address, now.
+        case cableMoved(ClusterLinkInterfaceSelection)
+        /// The pairing this Mac uses now is another one (`darkbloom cluster` or `darkbloom cluster pair` paired it
+        /// again).
+        case pairingChanged(ClusterSetupLinkExchange.Pairing.Identity)
+        /// This Mac holds no pairing now.
+        case unpaired
+    }
+
+    /// What changed since `listener` started (checked at most every `listenerCheckSeconds` per listener, `checked`); nil
+    /// when nothing did, or there is no listener. A cable or pairing store that cannot be read now changes nothing.
+    func listenerChange(of listener: ClusterSetupLinkExchange.Responder?,
+                        checked: ReferenceWritableKeyPath<ClusterService, Date>) -> ListenerChange? {
+        guard let listener else { return nil }
         let due = lock.withLock { () -> Bool in
-            guard Date().timeIntervalSince(self[keyPath: checked]) >= Self.cableCheckSeconds else { return false }
+            guard Date().timeIntervalSince(self[keyPath: checked]) >= Self.listenerCheckSeconds else { return false }
             self[keyPath: checked] = Date()
             return true
         }
-        guard due, let current = try? context.linkSelection(),
-              ClusterSetupLinkExchange.cableMoved(bound: bound, current: current) else { return nil }
-        return current
+        guard due else { return nil }
+        if let current = try? listenerSelection(), ClusterSetupLinkExchange.cableMoved(bound: listener.selection, current: current) {
+            return .cableMoved(current)
+        }
+        let pairing: ClusterSetupLinkExchange.Pairing?
+        do { pairing = try ClusterSetupLinkExchange.pairing(store: pairingStore) } catch { return nil }
+        guard let identity = pairing?.identity else { return .unpaired }
+        return identity == listener.pairing ? nil : .pairingChanged(identity)
     }
 
-    private func ensureResponder(say: @escaping @Sendable (String) -> Void) {
-        if let moved = cableMove(of: lock.withLock({ responder }), checked: \.responderCableCheck) {
+    func ensureResponder(say: @escaping @Sendable (String) -> Void) {
+        if let change = listenerChange(of: lock.withLock({ responder }), checked: \.responderCheck) {
             lock.withLock { responder }?.stop()
             lock.withLock { responder = nil }
-            say("the cable is on \(moved.interface) now: answering the paired Mac there")
-            // A port that was never set up has no fixed address: the other Mac cannot find this one there.
-            if let port = OnboardingLive.unsetCablePort(ClusterLinkReadinessProbe.inspectLocalLink()) {
-                say("\(port) is not set up for the cluster: run `darkbloom cluster` on this Mac and press f (macOS asks for your password once)")
+            switch change {
+            case .cableMoved(let moved):
+                say("the cable is on \(moved.interface) now: answering the paired Mac there")
+                // A port that was never set up has no fixed address: the other Mac cannot find this one there.
+                if let port = OnboardingLive.unsetCablePort(ClusterLinkReadinessProbe.inspectLocalLink()) {
+                    say("\(port) is not set up for the cluster: run `darkbloom cluster` on this Mac and press f (macOS asks for your password once)")
+                }
+            case .pairingChanged(let current):
+                say("this Mac's pairing changed (\(current.clusterID)): answering the paired Mac with the new one")
+            case .unpaired:
+                say("this Mac is no longer paired: it stopped answering over the cable")
             }
         }
         guard lock.withLock({ responder == nil }), let pairing = try? ClusterSetupLinkExchange.pairing(store: pairingStore),
-              let selection = try? context.linkSelection() else { return }
+              let selection = try? listenerSelection() else { return }
         let context = self.context, store = self.store
         // A model the leader copies here over the cable lands in this Mac's model store, verified file by file.
         let provisioner = ClusterModelProvisionResponder(store: {
@@ -376,7 +416,8 @@ public final class ClusterService: @unchecked Sendable {
             return ClusterModelWorkerCheck(executable: URL(fileURLWithPath: local.workerExecutable), runtimeBinarySHA256: local.runtimeBinarySHA256)
         }, say: say)
         do {
-            let created = try ClusterSetupLinkExchange.Responder(pairing: pairing, selection: selection, answer: {
+            let created = try ClusterSetupLinkExchange.Responder(pairing: pairing, selection: selection,
+                port: listening.exchangePort, policy: listening.policy, answer: {
                 ClusterSetupLinkAnswer(report: context.report(input: context.pairInput(), saved: context.savedConfiguration(),
                     inbox: ClusterSetupLocalReader.inbox(store)), facts: try context.localFacts(pairing: pairing, selection: selection))
             }, receive: { [weak self] data in

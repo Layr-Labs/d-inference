@@ -37,18 +37,19 @@ coordinator. Every release lane computes the build's
 darkbloom-platform#643 derives the build's cluster approvals, pair-serving
 grants and public qualifications. A registered pair's cluster service is no
 longer restarted by its own part's heartbeats (#1690), pair members register the
-models their pair-serving grant admits (#1686), Qwen3.8-27B in tensor parallel
-decodes about 6% faster on two M5 Ultra (#1680) and model downloads show one
-progress line (#1683). Single-Mac serving needs no coordinator change and no
-provider-version floor. See the [`v0.10.6` changelog entry](../../CHANGELOG.md)
-for the full scope.
+models their pair-serving grant admits (#1686), a single Qwen3.8-27B request in
+tensor parallel decodes about 6% faster on two M5 Ultra (#1680) and model
+downloads show one progress line (#1683). Single-Mac serving needs no
+coordinator change and no provider-version floor, though three answers to
+coordinator requests and the local API change. See the
+[`v0.10.6` changelog entry](../../CHANGELOG.md) for the full scope.
 
 Before tagging `v0.10.6`:
 
 - Confirm that the tagged commit pins `libs/mlx` and the nested `mlx` to
   `72dffa2d` and `libs/mlx-swift` to `c633d221`, as v0.10.5 did, and
   `libs/mlx-swift-lm` to `7933a0fa`, its fork's `main`. Only the SDK pin moves
-  (from `2beb401f`, through #1680): SDK #373 changes
+  (from `2beb401f`, through #1680 and #1684): SDK #373 changes
   `AffineQuantizedVectors.swift` alone.
 - The tag build's `metallib_hash` should equal v0.10.5's
   `98bab9d77dc5078ad8dd8f1fd17e8f3581415193506e4791a3c4f1ebaab614be`: the MLX
@@ -62,44 +63,87 @@ Before tagging `v0.10.6`:
   the cluster runtime facts. The dev-branch lane runs the same reusable
   workflow; its run
   [41167361754](https://github.com/Layr-Labs/d-inference/actions/runs/41167361754)
-  passed both and registered its block on DevNet.
-- Before step 2 below, check that the production catalog lists `glm-5.3-flash`
+  passed both, and DevNet's coordinator accepted its block. That proves neither
+  the derived approvals nor pairing; step 2 below does.
+- Before step 3 below, check that the production catalog lists `glm-5.3-flash`
   and `EigenLabs/Qwen3.8-27B-4bit-mtp`, because the facts step leaves out a
-  model the environment's catalog lacks, and that the coordinator's catalog has
-  room for the release's approvals ([cluster runtime facts](#cluster-runtime-facts)).
+  model the environment's catalog lacks. Check that the coordinator's catalog
+  has room within its bounds of 64 approvals, 64 pair-serving grants and 256
+  parity qualifications, which newer releases fill first, each release whole:
+  0.10.6 adds at most 24 approvals and 24 grants (`s1` and `s2` for each of at
+  most 12 models) and 8 parity qualifications (4 each for GLM-5.3-Flash and
+  Qwen3.8-27B). See [cluster runtime facts](#cluster-runtime-facts).
+- `changelog.d/` must hold only its `README.md` at the tagged commit, and the
+  tagged commit may differ from this preparation's merge commit on `dev` only
+  by `master`'s `prod` default. On the `master` checkout you tag:
+
+  ```bash
+  make changelog-check   # must print: changelog: 0 valid fragment(s)
+  git diff --stat <this preparation's merge commit on dev> HEAD
+  # must list only provider-swift/Package.swift and
+  # provider-swift/Tests/ProviderCoreTests/Config/BuildEnvironmentTests.swift
+  ```
+
+  Anything else reached the tag without an entry in this release's changelog.
 
 Roll out in this order; each step is a separate approval:
 
 1. Platform first: deploy to production a `darkbloom-platform` coordinator with
    [darkbloom-platform#643](https://github.com/Layr-Labs/darkbloom-platform/pull/643)
-   and its switches on: `EIGENINFERENCE_CLUSTER_PAIRS=true` (pair control with
-   the operator's approval table),
-   `EIGENINFERENCE_CLUSTER_PAIR_APPROVALS_FROM_RELEASES=true` (approvals derived
-   from releases) and `EIGENINFERENCE_CLUSTER_PUBLIC_ROUTING=true` (public
-   traffic for qualified clusters), with migration 58 applied (the
-   `releases.cluster_runtime` column). #643 is merged into the platform's `dev`;
-   its migration reaches `master` with the platform's next `dev` to `master`
-   merge or with its twin,
-   [darkbloom-platform#644](https://github.com/Layr-Labs/darkbloom-platform/pull/644).
-2. A person checks that coordinator's catalog room and sets the repository
-   variable `PROD_CLUSTER_RUNTIME_ENABLED=true`. Never before step 1 is done: a
-   coordinator without #643 refuses a registration that carries
-   `cluster_runtime`, and the release then fails after signing. Set it before
-   the tag: a release registered without the block never gains one, because a
-   re-registration must repeat the stored block.
-3. Promote the d-inference `dev` branch to `master` with a merge commit, never
-   a squash, as [#1688](https://github.com/Layr-Labs/d-inference/pull/1688)
-   did. The `master` ruleset allows only squash merges, so an admin allows merge
-   commits for that one merge and restores the ruleset at once. The merge keeps
-   `master`'s `prod` default for plain builds (`e9babca4`). Let SDK 27 release
-   preparation pass on `master`. This step does not depend on steps 1 and 2 and
-   may come first.
-4. Tag `v0.10.6` on that merge commit
+   and any follow-up fix that the DevNet proof in step 2 needs. A fix for the
+   split edge and Conductor deployment, where DevNet derived no approvals, is in
+   progress. #643's code reaches the platform's `master` only with its `dev` to
+   `master` merge; its twin,
+   [darkbloom-platform#644](https://github.com/Layr-Labs/darkbloom-platform/pull/644),
+   carries only migration 58 (the `releases.cluster_runtime` column), which no
+   code on `master` reads. Apply migration 58 and set:
+   - `EIGENINFERENCE_CLUSTER_PAIRS=true` (pair control with the operator's
+     approval table);
+   - `EIGENINFERENCE_CLUSTER_PAIR_APPROVALS_FROM_RELEASES=true` (approvals
+     derived from releases);
+   - `EIGENINFERENCE_CLUSTER_PUBLIC_ROUTING=true` (public traffic for qualified
+     clusters);
+   - `EIGENINFERENCE_CLUSTER_PAIR_TRUSTED_TLS_PROXIES` to the address of the
+     TLS-terminating proxy as the coordinator sees it (DevNet lists
+     `127.0.0.1`). In the split deployment the Conductor reads it, and the
+     address is the proxy's as the Provider Edge sees it. The production
+     coordinator listens on plain HTTP behind Caddy, so without this setting no
+     member connection attaches to pair control;
+   - App Attest serving for every account:
+     `EIGENINFERENCE_APP_ATTEST_SERVING=true`,
+     `EIGENINFERENCE_APP_ATTEST_ENVIRONMENT=production` and
+     `EIGENINFERENCE_APP_ATTEST_ROLLOUT_PERCENT=100`. A member holds either the
+     legacy MDM path or an App Attest serving authorization, so a member on
+     macOS 27 without MDM pairs only through App Attest.
+2. DevNet proof. After this preparation merges into `dev`, its dev-branch
+   release `0.10.6-dev.branch.<N>` registers with the block on DevNet, whose
+   coordinator runs the same platform fixes as step 1. DevNet's
+   `GET /v1/cluster/approvals` must list the derived
+   `release/0.10.6-dev.branch.<N>/<model>/s1` and `/s2` approvals, and a real
+   DevNet pair must form a session under one of them. Record the run and the
+   session.
+3. Confirm from production's `/health` `build_commit` that it runs the platform
+   revision that passed step 2; #643 alone is not enough. Check the catalog as
+   above, then set the repository variable `PROD_CLUSTER_RUNTIME_ENABLED=true`.
+   Never before steps 1 and 2: a coordinator without #643 refuses a
+   registration that carries `cluster_runtime`, and the release then fails
+   after signing. Set it before the tag: a release registered without the block
+   never gains one, because a re-registration must repeat the stored block.
+4. Promote `dev` to `master` from a snapshot branch cut at this preparation's
+   merge commit on `dev`, as #1688 cut `release/dev-to-master-2026-10-31`, so
+   later `dev` changes wait for the next release. Merge the snapshot into
+   `master` with a merge commit, never a squash. The `master` ruleset allows
+   only squash merges, so an admin allows merge commits for that one merge and
+   restores the ruleset at once ([the `dev` branch](../developer/build.md#the-dev-branch)).
+   `master` keeps its `prod` default for plain builds (`e9babca4`), so the
+   snapshot needs no commit of its own. Let SDK 27 release preparation pass on
+   `master`. This step does not depend on steps 1 to 3 and may come first.
+5. Tag `v0.10.6` on that merge commit once the checks above pass
    ([step 4](#4-tag-and-push-production-source)). After registration, check the
    coordinator log for `release cluster approvals omitted` and
    `GET /v1/cluster/approvals` for the derived `release/0.10.6/<model>/s<1|2>`
    approvals.
-5. The platform snapshots its provider contracts from the tagged commit
+6. The platform snapshots its provider contracts from the tagged commit
    (`python3 scripts/provider-contracts.py snapshot <tag commit>`), sets
    `LatestProviderVersion` to `0.10.6` in the coordinator's `server.go` in the
    same change and adds the revision row to its provider-contract reference. Of
@@ -107,7 +151,7 @@ Roll out in this order; each step is a separate approval:
    changes from v0.10.5. `LatestProviderVersion` is a fallback and does not gate
    publication.
 
-Without steps 1 and 2 the tag still publishes with an unchanged registration,
+Without steps 1 to 3 the tag still publishes with an unchanged registration,
 but 0.10.6 then derives no cluster approvals, and a production pair without an
 operator's approval serves only on its leading Mac's local API.
 
@@ -123,8 +167,9 @@ each is a separate approval:
    tuple to the allowlist and list `logprobs` in Super's catalog row.
 
 Catalog changes, allowlist changes and model registration are separate
-approvals. This preparation does not tag, register, upload, deploy or enable
-anything.
+approvals. This preparation tags, deploys and enables nothing; merging it into
+`dev` starts only the DevNet release of the
+[dev-branch lane](#dev-branch-lane-dev-only).
 
 Platform evidence, inspected on 2026-10-31 (recheck before tagging):
 
@@ -132,13 +177,16 @@ Platform evidence, inspected on 2026-10-31 (recheck before tagging):
 |---|---|
 | Platform `master` (`2847f27d`) pins the provider contracts at d-inference `8effff7f` (v0.10.4) and keeps `LatestProviderVersion` at `0.10.4`; darkbloom-platform#639 (open) pins v0.10.5's `d3bbcd06`. The 34 inputs equal this preparation's except `ProviderCore.swift` | [`contracts/provider/manifest.json` at `2847f27d`](https://github.com/Layr-Labs/darkbloom-platform/blob/2847f27dda8e4caf9e2441d554067f42a88c9e1f/contracts/provider/manifest.json) and [at #639's `422ca1d4`](https://github.com/Layr-Labs/darkbloom-platform/blob/422ca1d428849c775daa950691a185154f117c18/contracts/provider/manifest.json) (`source_revision`) |
 | `LatestProviderVersion` must equal the snapshotted `ProviderCore.version` | [`provider_version_sync_test.go` at `5ba280d8`](https://github.com/Layr-Labs/darkbloom-platform/blob/5ba280d89aa5e9bd4fbf05e0dfa848059cd3b585/coordinator/tests/api/provider_version_sync_test.go) (`TestLatestProviderVersionMatchesProviderCore`) |
-| #643 is merged into platform `dev` (`df61dd6f`), not `master`. Only `EIGENINFERENCE_CLUSTER_PAIR_APPROVALS_FROM_RELEASES=true` derives entries from releases, and public routing needs an approval source | [`cluster_pair_config.go` at `df61dd6f`](https://github.com/Layr-Labs/darkbloom-platform/blob/df61dd6f93714b4458d0eef3125c377087c08b52/coordinator/api/cluster_pair_config.go) (`ClusterPairConfig`) |
+| #643 is merged into platform `dev` (`df61dd6f`), not `master`; #644 (open) carries only its migration to `master`. Only `EIGENINFERENCE_CLUSTER_PAIR_APPROVALS_FROM_RELEASES=true` derives entries from releases, and public routing needs an approval source | [`cluster_pair_config.go` at `df61dd6f`](https://github.com/Layr-Labs/darkbloom-platform/blob/df61dd6f93714b4458d0eef3125c377087c08b52/coordinator/api/cluster_pair_config.go) (`ClusterPairConfig`) |
 | Migration 58 adds `releases.cluster_runtime`, and a re-registration must repeat the stored block (409 `cluster_runtime_conflict`) | [`00058_release_cluster_runtime.sql` at `df61dd6f`](https://github.com/Layr-Labs/darkbloom-platform/blob/df61dd6f93714b4458d0eef3125c377087c08b52/coordinator/store/postgres/schema/migrations/00058_release_cluster_runtime.sql); [`releases.go` at `df61dd6f`](https://github.com/Layr-Labs/darkbloom-platform/blob/df61dd6f93714b4458d0eef3125c377087c08b52/coordinator/store/postgres/releases.go) (`SetRelease`) |
 | A coordinator without #643 refuses a registration body that carries `cluster_runtime` | [`release_handlers.go` at `2847f27d`](https://github.com/Layr-Labs/darkbloom-platform/blob/2847f27dda8e4caf9e2441d554067f42a88c9e1f/coordinator/api/releases/release_handlers.go) (`DisallowUnknownFields`) |
-| Of the platform's deploy configuration, only DevNet's overlay sets the three switches | [`env-overrides` (DevNet) at `df61dd6f`](https://github.com/Layr-Labs/darkbloom-platform/blob/df61dd6f93714b4458d0eef3125c377087c08b52/deploy/gcp/dev/env-overrides) |
+| Of the platform's deploy configuration, only DevNet's overlay sets the three switches, and it also sets `EIGENINFERENCE_CLUSTER_PAIR_TRUSTED_TLS_PROXIES=127.0.0.1` | [`env-overrides` (DevNet) at `df61dd6f`](https://github.com/Layr-Labs/darkbloom-platform/blob/df61dd6f93714b4458d0eef3125c377087c08b52/deploy/gcp/dev/env-overrides) |
+| A member connection attaches to pair control only after its own TLS handshake or through a listed TLS proxy. The production coordinator listens on plain HTTP behind Caddy, and in the split deployment only the trusted-proxy path attaches a member | [`configuration.md` at `df61dd6f`](https://github.com/Layr-Labs/darkbloom-platform/blob/df61dd6f93714b4458d0eef3125c377087c08b52/docs/reference/configuration.md) ("Trusted TLS proxy trade-off") |
+| A pair member holds the legacy MDM path or an App Attest serving authorization; App Attest serving reads `EIGENINFERENCE_APP_ATTEST_SERVING`, `EIGENINFERENCE_APP_ATTEST_ENVIRONMENT` and `EIGENINFERENCE_APP_ATTEST_ROLLOUT_PERCENT` | [`cluster-control-protocol.md` at `df61dd6f`](https://github.com/Layr-Labs/darkbloom-platform/blob/df61dd6f93714b4458d0eef3125c377087c08b52/docs/reference/cluster-control-protocol.md) ("Member trust"); [`config.go` at `2847f27d`](https://github.com/Layr-Labs/darkbloom-platform/blob/2847f27dda8e4caf9e2441d554067f42a88c9e1f/coordinator/appattest/service/config.go) (`ConfigFromEnvironment`) |
+| DevNet runs `df61dd6f` and accepted the block of `0.10.5-dev.branch.18` (registered 04:33Z), yet its `GET /v1/cluster/approvals` listed only 26 operator approvals, with no `release/` entry, at 04:44Z, 04:57Z, 05:04Z and 05:09Z | DevNet `/health` and `/v1/cluster/approvals`; run [41167361754](https://github.com/Layr-Labs/d-inference/actions/runs/41167361754) (`CLUSTER_RUNTIME_SEND: true`) |
 
-The production coordinator was not inspected for this preparation. Before step
-2, confirm from its `/health` `build_commit` that it runs #643.
+The production coordinator was not inspected for this preparation; step 3
+checks its `/health`.
 
 `v0.10.5` was [published on 2026-10-30](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.5)
 from `d3bbcd064ea290fbeb500e5c51c7870e3695741c`, `v0.10.4` was
@@ -796,7 +844,8 @@ Turn a variable on only after the coordinator of that environment accepts the
 block (`EIGENINFERENCE_CLUSTER_PAIR_APPROVALS_FROM_RELEASES`, darkbloom-platform);
 a coordinator that does not accept it yet must never receive it. Public cluster
 routing also needs `EIGENINFERENCE_CLUSTER_PUBLIC_ROUTING=true` on that
-coordinator.
+coordinator, and a coordinator behind a TLS-terminating proxy attaches members
+only through `EIGENINFERENCE_CLUSTER_PAIR_TRUSTED_TLS_PROXIES`.
 
 Before a release with the block registers, make sure the coordinator's catalog
 has room. It holds at most 64 approvals (the operator's per-build and per-model
@@ -826,8 +875,11 @@ Rollout order:
    block; check the coordinator log for an omitted release. A pair registers by
    itself after it updates.
 4. Both repositories go `dev` to `master`. The production coordinator deploys
-   with its switch on, a person checks its catalog's room and sets
-   `PROD_CLUSTER_RUNTIME_ENABLED=true`, and the release tag follows.
+   with its settings on, and the release's dev build shows derived approvals
+   and a pair session on DevNet. A person then checks the production catalog's
+   room and sets `PROD_CLUSTER_RUNTIME_ENABLED=true`, and the release tag
+   follows. The rollout of the version being prepared, at the top of this page,
+   lists each step.
 
 To compute the facts of an installed or downloaded app by hand, give the models
 explicitly. Run that app's own CLI, so the public declaration and the records

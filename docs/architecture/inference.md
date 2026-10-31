@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-10-30
+> Last updated: 2026-10-31
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -1590,7 +1590,9 @@ The SSD stage runs before `engine.submit`, off the engine queue, while the
 engine may be evaluating another request's prefill chunk under MLX-Swift's
 process-wide `evalLock`. A provider-staged complete-checkpoint import therefore
 creates its destinations already available from host bytes and never evaluates
-or fences them, so staging does not wait for that chunk
+or fences them, so staging does not wait for that chunk; its CPU decode tests each
+restored row once for values the native dtype cannot hold, and a refused row never
+reaches a destination
 ([destination contract](../reference/ssd-kv-cache.md#complete-checkpoint-payload),
 `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/CompleteCheckpointTransfer.swift`
 (`CBv2CompleteCheckpointImport`)).

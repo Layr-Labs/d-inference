@@ -108,9 +108,10 @@ public final class ClusterService: @unchecked Sendable {
     private var approvalInFlight = false
     private var nextApprovalCheck = Date.distantPast
     private var approvalWatch = ClusterApprovalCheck.Watch()
-    // The coordinator refused the owner approval request (`ClusterApprovalRequest.Outcome.retries`), or this Mac could
-    // not send it: asked again only at the next run of this service or after an update.
-    private var ownerRequestSettled = false
+    // The owner approval need (`ClusterApprovalRequest.need`) the coordinator answered in this run of the service, or
+    // this Mac could not send (`ClusterApprovalRequest.Outcome.retries`): not asked again until the need changes (a
+    // renewal), the next run of this service or an update.
+    private var ownerRequestSettled: ClusterApprovalRequest.Need?
     // This Mac's coordinator-paired parts that ended in a row right after starting (`ClusterApprovalCheck.memberQuickEnds`),
     // and whether the running part is one.
     private var memberQuickEnds = 0
@@ -1010,7 +1011,7 @@ public final class ClusterService: @unchecked Sendable {
             // The re-adopted setups carry no cluster approval: the next check finds the same model approval again, or the
             // build-pinned entry of the updated app.
             self.lock.withLock {
-                self.approvalChecked = false; self.nextApprovalCheck = .distantPast; self.ownerRequestSettled = false
+                self.approvalChecked = false; self.nextApprovalCheck = .distantPast; self.ownerRequestSettled = nil
             }
         }
     }
@@ -1018,7 +1019,7 @@ public final class ClusterService: @unchecked Sendable {
     /// On the control leader: asks the coordinator for its cluster approvals once per run of this service, and every
     /// `ClusterOnboardingUpdate.checkEverySeconds` while the pair is registered or serves locally with its approval set
     /// aside (`ClusterApprovalCheck.asks`), or while the setup needs an owner approval (`ClusterApprovalRequest.need`:
-    /// none held, or an owner approval near its end) that the coordinator has not refused in this run. Such a check
+    /// none held, or an owner approval near its end) that the coordinator has not answered in this run. Such a check
     /// first asks the coordinator to register (or renew) it, says the outcome in one line, and then reads the list. Only when a setup must change (`ClusterApprovalCheck.step`: an approval to
     /// save, or one to serve without because the coordinator gave no answer for the grace, no longer lists it, or the
     /// parts keep failing with it) it stops both parts, changes both Macs' setups and serves again. A coordinator that
@@ -1037,6 +1038,8 @@ public final class ClusterService: @unchecked Sendable {
             guard let self else { return }
             defer { self.lock.withLock { self.approvalInFlight = false } }
             let first = self.lock.withLock { !self.approvalChecked }
+            // Read once, so the decision taken again under the command lock asks as the first one did.
+            let settled = self.lock.withLock { self.ownerRequestSettled }
             func checked() {
                 self.lock.withLock {
                     self.approvalChecked = true
@@ -1053,7 +1056,7 @@ public final class ClusterService: @unchecked Sendable {
                 /// The saved setup's worker digest, recorded with an approval set aside.
                 let worker: String
             }
-            func decide(_ answer: (ClusterConfigurationStore.Saved) -> ClusterApprovalFetch.Outcome?) -> Decided? {
+            func decide(_ answer: (ClusterConfigurationStore.Saved, ClusterApprovalRequest.Need) -> ClusterApprovalFetch.Outcome?) -> Decided? {
                 let record = try? self.store.readRecord()
                 let scope = record?.leadership?.scope ?? .publicServing
                 var setAside = record?.approvalSetAside
@@ -1067,13 +1070,13 @@ public final class ClusterService: @unchecked Sendable {
                 let peer = try? JSONDecoder().decode(ClusterServiceStatus.self, from: live.command(.init(op: .status), seconds: 10))
                 let peerApprovalID = ClusterApprovalCheck.peerApprovalID(peer)
                 let macsDiffer = ClusterApprovalCheck.macsDiffer(saved, peerApprovalID: peerApprovalID)
-                let wantsOwner = !scope.isLocalOnly && !self.lock.withLock({ self.ownerRequestSettled })
-                    && ClusterApprovalRequest.need(saved, now: now) != .nothing
-                let asks = wantsOwner || ClusterApprovalCheck.asks(first: first, serving: record?.leadership?.serving == true,
+                let need: ClusterApprovalRequest.Need = scope.isLocalOnly ? .nothing : ClusterApprovalRequest.need(saved, now: now)
+                let ownerNeed: ClusterApprovalRequest.Need = need == settled ? .nothing : need
+                let asks = ownerNeed != .nothing || ClusterApprovalCheck.asks(first: first, serving: record?.leadership?.serving == true,
                     scope: scope, offered: offered, setAside: setAside != nil, macsDiffer: macsDiffer)
                 guard asks || macsDiffer else { return nil }
                 // A local-only cluster settles a difference between the Macs without asking the coordinator.
-                guard let fetched = asks ? answer(saved) : .unavailable("not asked") else { return nil }
+                guard let fetched = asks ? answer(saved, ownerNeed) : .unavailable("not asked") else { return nil }
                 if let ended = setAside, !ClusterApprovalLifetime.current(ended.approval, now: now) {
                     try? self.store.updateRecord { $0.approvalSetAside = nil }
                     setAside = nil
@@ -1087,14 +1090,14 @@ public final class ClusterService: @unchecked Sendable {
                                worker: saved.capability.runtimeBinarySHA256)
             }
             var fetched: ClusterApprovalFetch.Outcome?
-            func answer(_ saved: ClusterConfigurationStore.Saved) -> ClusterApprovalFetch.Outcome? {
+            func answer(_ saved: ClusterConfigurationStore.Saved, _ ownerNeed: ClusterApprovalRequest.Need) -> ClusterApprovalFetch.Outcome? {
                 if fetched == nil {
                     // The owner approval request (DevNet) comes first, so the list read next holds what it registered.
-                    if !self.lock.withLock({ self.ownerRequestSettled }),
+                    if ownerNeed != .nothing,
                        let asked = ClusterApprovalRequest.ensureBlocking(saved, providerConfiguration: configuration,
                                                                          now: Date().timeIntervalSince1970) {
                         say(asked.line)
-                        if !asked.retries { self.lock.withLock { self.ownerRequestSettled = true } }
+                        if !asked.retries { self.lock.withLock { self.ownerRequestSettled = ownerNeed } }
                     }
                     fetched = ClusterApprovalFetch.fetchBlocking(providerConfiguration: configuration) ?? .unavailable("no coordinator is configured")
                 }

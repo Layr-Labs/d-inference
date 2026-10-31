@@ -93,6 +93,8 @@ struct ClusterApprovalRequestTests {
                                                           now: Date().timeIntervalSince1970, token: "account-token")
         #expect(outcome == .registered(Self.ownID))
         #expect(outcome?.line == "Cluster approval request: the coordinator holds approval \(Self.ownID) for this pair.")
+        // An answer settles the need: the service does not ask for it again in this run.
+        #expect(outcome?.retries == false)
         let sent = mock.snapshot()
         #expect(sent.clusterApprovalAuthorizations == ["Bearer account-token"])
         #expect(sent.clusterApprovalPosts.map { String(decoding: $0, as: UTF8.self) } == [#"{"provider_version":"0.10.5-dev.branch.42","model":"fixture/qwen","artifact_sha256":""#

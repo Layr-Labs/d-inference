@@ -47,13 +47,15 @@ enum ClusterApprovalRequest {
             return ClusterOnboardingReady.approvalRequestNotice + ": " + text + "."
         }
 
-        /// Whether the cluster service asks again at its next check: after a success (the next check still finds no
-        /// approval only when saving it failed) and after a failure that may pass (no answer, a server error). An
-        /// answer that refuses, or a Mac that cannot send, waits for the next service run or update.
+        /// Whether the cluster service asks again for the same need at its next check: only after a failure that may
+        /// pass (no answer, a server error). Any answer settles that need for this run of the service: a registered
+        /// approval is read and saved by the same check (asking again would answer the same approval, and a save
+        /// refused once would be stopped for and refused again every minute), and a refusal, or a Mac that cannot
+        /// send, waits for the next service run or update. A later need (a renewal) is asked when it comes.
         var retries: Bool {
             switch self {
-            case .registered, .failed: return true
-            case .notTaken, .refused, .notSent: return false
+            case .failed: return true
+            case .registered, .notTaken, .refused, .notSent: return false
             }
         }
     }

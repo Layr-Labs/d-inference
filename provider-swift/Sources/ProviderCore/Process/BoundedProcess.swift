@@ -124,7 +124,7 @@ public enum BoundedProcess {
         } else {
             process.standardError = FileHandle.nullDevice
         }
-        // Drain to EOF before anyone reads the tail. `waitUntilExit()` says
+        // Drain to EOF before anyone reads the tail. A reported exit says
         // the CHILD is gone, not that the readability handler has consumed
         // the pipe -- a child that writes a short diagnostic and exits fast
         // can be reaped before its bytes are delivered, and then the tail
@@ -136,20 +136,19 @@ public enum BoundedProcess {
             stderrPipe?.fileHandleForReading.readabilityHandler = nil
             try? stderrPipe?.fileHandleForReading.close()
         }
-        try process.run()
+        let childExit = ProcessExitObserver()
+        try childExit.run(process)
 
-        guard waitForExit(process, timeout: timeout) else {
+        guard waitForExit(process, reportedBy: childExit, timeout: timeout) else {
             process.terminate()
-            if !waitForExit(process, timeout: 2) {
+            if !waitForExit(process, reportedBy: childExit, timeout: 2) {
                 forceKill(process)
-                guard waitForExit(process, timeout: 2) else {
+                guard waitForExit(process, reportedBy: childExit, timeout: 2) else {
                     throw Failure.wouldNotTerminate
                 }
             }
-            process.waitUntilExit()
             throw Failure.timedOut(seconds: timeout)
         }
-        process.waitUntilExit()
 
         guard requireSuccessfulExit else { return }
         guard process.terminationReason == .exit else {
@@ -162,17 +161,16 @@ public enum BoundedProcess {
         }
     }
 
+    /// Waits up to `timeout` seconds for the exit report; true means the child
+    /// has exited. A child that is reaped as the deadline passes counts as
+    /// exited even if its report is still in flight, so a signal is only ever
+    /// sent to a process that is running.
     private static func waitForExit(
         _ process: Process,
+        reportedBy childExit: ProcessExitObserver,
         timeout: TimeInterval
     ) -> Bool {
-        let deadline = ProcessInfo.processInfo.systemUptime + max(0, timeout)
-        while process.isRunning,
-              ProcessInfo.processInfo.systemUptime < deadline
-        {
-            Thread.sleep(forTimeInterval: 0.05)
-        }
-        return !process.isRunning
+        childExit.wait(timeout: timeout) || !process.isRunning
     }
 
     private static func forceKill(_ process: Process) {

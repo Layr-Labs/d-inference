@@ -104,6 +104,14 @@ public struct ClusterConfiguration: Codable, Sendable, Equatable {
     /// run different Darkbloom builds); the onboarding says it in plain words (`ClusterSetupPlanning.differentBuilds`).
     static let peerBuildDiffers = "Peer native build differs from the capability"
 
+    /// The refusal of a tensor assistant beside `nativeMember`. Its speculative decoding has no parity qualification,
+    /// so it serves local clusters only; the guided setup plans a cluster served through Darkbloom without it under
+    /// `auto` (`ClusterPlacementTensorAssistantSelection.discoveryMode`). The leader's check of a coordinator's
+    /// approval runs this rule before any part stops (`ClusterApprovalAttachment.attachment`). Short enough to reach
+    /// the leader whole through the other Mac's refusal (`ClusterSetupFailure` keeps 240 characters).
+    static let tensorAssistantServesLocally = "Qwen's speculative assistant serves local clusters only (not qualified for "
+        + "public traffic); with mtp_mode \"auto\", press m in `darkbloom cluster` to plan without it"
+
     func validate(capability: ClusterRuntimeCapability, rawCapabilitySHA256: String) throws {
         func require(_ value: Bool, _ message: String) throws {
             guard value else { throw ClusterConfigurationError.invalid(message) }
@@ -161,8 +169,9 @@ public struct ClusterConfiguration: Codable, Sendable, Equatable {
             try require(ClusterQwenTensorAssistantPolicy.runtimeModelIDs.contains(capability.runtimeModelID)
                 && capability.adapterID == ClusterRuntimeAdapter.qwen35Dense.rawValue
                 && selectedGenerationMode == .tensorParallel && selectedPrefillSchedule == .serial
-                && !capability.hasPrivateImages && nativeMember == nil,
-                "A tensor assistant requires Qwen TP on a row with an inline head, serial prefill and a local cluster setup")
+                && !capability.hasPrivateImages,
+                "A tensor assistant requires Qwen TP on a row with an inline head and serial prefill")
+            try require(nativeMember == nil, Self.tensorAssistantServesLocally)
         }
         try require(ClusterConfigurationSyntax.ipv4(coordinator.address) && (1...65535).contains(coordinator.port), "Invalid JACCL coordinator address")
         if let linkControl {

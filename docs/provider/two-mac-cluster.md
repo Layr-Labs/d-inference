@@ -1,6 +1,6 @@
 # Two Macs as one provider (guided setup)
 
-> Last updated: 2026-10-30
+> Last updated: 2026-10-31
 
 Two Apple Silicon Macs joined by one Thunderbolt 5 cable serve a model together:
 each Mac holds part of its layers, and the pair serves as one provider. Setting
@@ -73,6 +73,25 @@ update, speeds an earlier build served no longer steer the plan (`darkbloom
 cluster plan` says how many records it left out). A request that answers fewer
 than 64 tokens (the setup's test answer, a quick "Say hi") is not counted as a
 speed and does not shape the plan.
+
+Qwen3.8 27B in tensor parallel can also decode with the speculative assistant
+its artifact ships, but only on a cluster that serves locally only. The
+assistant is not qualified for public traffic, and a setup registered with the
+coordinator never carries it. So, with the default `[backend] mtp_mode` of
+`auto`:
+
+| You run | Qwen3.8 27B decodes | One request on two M5 Ultras (2026-10-31) | The coordinator |
+|---|---|---|---|
+| `darkbloom cluster` | without the assistant | about 40 tokens/s | the pair registers when the coordinator serves a matching approval |
+| [`darkbloom cluster local`](#serving-locally-only) | with the assistant | about 93 tokens/s | never contacted |
+
+With `mtp_mode = "on"`, `darkbloom cluster` keeps the assistant too. That pair
+is then not offered to the coordinator: its plan says "not offered for public
+traffic", and it serves on the leader's local API. A serving cluster switched
+with `l` or `p` keeps the setup it has; press `m` to plan the model again for
+the new way of serving. Public speculative decoding for Qwen pairs needs
+qualification evidence of its own, which no record holds yet. Rules:
+[Qwen27 TP assistant policy](../reference/configuration.md#qwen27-tp-assistant-policy).
 
 | # | Where | What you do | What it asks |
 |---|---|---|---|
@@ -190,7 +209,9 @@ to keep waiting (it leads) and the other says so and joins it.
 choice, planner, copies, speculative decoding, caches, failover and stop as
 `darkbloom cluster`, but no Mac of the cluster contacts a coordinator. Nothing
 registers, sends heartbeats, takes public traffic or bills, and serving needs
-no network beyond the cable.
+no network beyond the cable. It is also where Qwen3.8 27B in tensor parallel
+decodes with its speculative assistant under the default `mtp_mode`
+([above](#the-steps-once)).
 
 1. On the leader, run:
 

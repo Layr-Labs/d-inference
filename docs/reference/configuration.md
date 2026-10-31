@@ -938,7 +938,13 @@ type computes every value:
 (`ClusterRuntimeApprovalFacts`). The hidden command
 `darkbloom cluster runtime-facts --app <app> --model <id>=<folder>` prints them
 in their canonical form; run the app's own CLI, so the declaration and the
-records are that build's. No value is typed by hand. Only a build-pinned entry
+records are that build's. With `--release-candidates <folder>` (the release
+lane) it describes every model the build lists from its environment's catalog
+metadata (`ClusterRuntimeApprovalFacts.release`). One artifact can be two
+registered models that only the manifest tells apart (production lists
+`gemma-4-26b` and `gemma-4-26b-8bit` for one artifact): a catalog model ID
+whose candidates the worker describes only as another registered model is that
+model's, so it is left out and named on standard error. No value is typed by hand. Only a build-pinned entry
 needs these facts. A model approval names no runtime digest, and the provider
 computes no facts for it ([model approvals](#model-approvals)).
 

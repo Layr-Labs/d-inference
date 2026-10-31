@@ -12,6 +12,8 @@ import DarkbloomClusterRuntime
 @Suite("Cluster runtime approval facts")
 struct ClusterRuntimeApprovalFactsTests {
     static let qwenArtifact = "127de76b4ef82b7aaa0acaac0ee31c784cff066eda64291f521f051469b7c24b"
+    /// One Gemma 4 26B artifact: `gemma-4-26b` and `gemma-4-26b-8bit` name it.
+    static let gemmaArtifact = "a4722b6020adb1894c700b45ddcd58bc0e0f033abe7139f86cbbbfe60cba4eb6"
     /// The release version the decoder rows name (`init(canonical:releaseVersion:)`).
     static let releaseVersion = "1.2.3"
 
@@ -642,6 +644,55 @@ struct ClusterRuntimeApprovalFactsTests {
         // A candidate of an artifact the build does not list is never described.
         #expect(try f.calls().count == 2)
         #expect(try !f.calls().contains { $0.contains("2-unlisted") })
+    }
+
+    /// Production's catalog lists one artifact under two catalog IDs that the build registers as two
+    /// runtime models (`gemma-4-26b` and `gemma-4-26b-8bit`, one configuration), and only the 8-bit one
+    /// is a listed model. The ID the worker describes as the other model is that model's, not a failure.
+    @Test func releaseLeavesOutACatalogIDTheWorkerDescribesAsAnotherRegisteredModel() throws {
+        let f = try Fixture()
+        let candidates = try Self.gemmaCandidates(f)
+        let facts = try ClusterRuntimeApprovalFacts.release(installation: f.installation,
+            candidates: try ClusterRuntimeApprovalFacts.candidates(in: candidates), models: [Self.gemma8Bit])
+        #expect(facts.models.map(\.model) == ["gemma-4-26b-8bit"])
+        #expect(facts.models.allSatisfy { $0.artifactSHA256 == Self.gemmaArtifact })
+        #expect(try f.calls().count == 2)
+    }
+
+    @Test func releaseNamesTheCatalogIDOfAnotherRegisteredModelItLeavesOut() throws {
+        let f = try Fixture()
+        let candidates = try Self.gemmaCandidates(f)
+        var notes: [String] = []
+        _ = try ClusterRuntimeApprovalFacts.release(installation: f.installation,
+            candidates: try ClusterRuntimeApprovalFacts.candidates(in: candidates), models: [Self.gemma8Bit], note: { notes.append($0) })
+        #expect(notes.count == 1)
+        #expect(notes.first?.hasPrefix("left out, the catalog model ID of another registered model: gemma-4-26b (registered_gemma4_26b_8bit, \(Self.gemmaArtifact)): ") == true)
+        #expect(notes.first?.contains("0-gemma/manifest.json is registered_gemma4_26b") == true)
+        // Listed alone, the other model keeps its own ID and leaves out the 8-bit one.
+        let other = ClusterRuntimeApprovalFacts.ReleaseModel(runtimeModelID: "registered_gemma4_26b", artifactSHA256: Self.gemmaArtifact)
+        notes = []
+        let facts = try ClusterRuntimeApprovalFacts.release(installation: f.installation,
+            candidates: try ClusterRuntimeApprovalFacts.candidates(in: candidates), models: [other], note: { notes.append($0) })
+        #expect(facts.models.map(\.model) == ["gemma-4-26b"])
+        #expect(notes.count == 1 && notes.first?.contains("gemma-4-26b-8bit (registered_gemma4_26b, ") == true)
+    }
+
+    static let gemma8Bit = ClusterRuntimeApprovalFacts.ReleaseModel(runtimeModelID: "registered_gemma4_26b_8bit",
+                                                                    artifactSHA256: gemmaArtifact)
+
+    /// Two candidates of the one Gemma 4 26B artifact, as production's catalog lists it: `gemma-4-26b`
+    /// (registered_gemma4_26b) and `gemma-4-26b-8bit` (registered_gemma4_26b_8bit), one configuration.
+    private static func gemmaCandidates(_ f: Fixture) throws -> URL {
+        let candidates = f.root.appendingPathComponent("candidates", isDirectory: true)
+        _ = try f.model("0-gemma", parent: candidates, fixture: "registered-gemma4-26b")
+        let eightBitManifest = try Data(contentsOf: Fixture.metadataFixtures
+            .appendingPathComponent("registered-gemma4-26b-8bit.manifest.json"))
+        let eightBit = try f.model("1-gemma-8bit", parent: candidates, fixture: "registered-gemma4-26b", manifest: eightBitManifest)
+        try ClusterRuntimeCapabilityCodec.encode(ClusterResidentModelCatalog.describe(
+            configuration: Data(contentsOf: eightBit.appendingPathComponent("config.json")),
+            manifest: eightBitManifest, runtimeBinarySHA256: f.workerSHA256))
+            .write(to: eightBit.appendingPathComponent("capability.out"))
+        return candidates
     }
 
     @Test func releaseNamesEveryCatalogModelItCannotDescribeAndRefusesAnEmptyResult() throws {

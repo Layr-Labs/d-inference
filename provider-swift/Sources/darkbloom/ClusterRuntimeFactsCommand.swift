@@ -48,7 +48,8 @@ extension Cluster {
             let installation = ClusterRuntimeApprovalFacts.Installation(app: URL(fileURLWithPath: app, isDirectory: true))
             if let releaseCandidates {
                 let facts = try ClusterRuntimeApprovalFacts.release(installation: installation,
-                    candidates: try ClusterRuntimeApprovalFacts.candidates(in: URL(fileURLWithPath: releaseCandidates, isDirectory: true)))
+                    candidates: try ClusterRuntimeApprovalFacts.candidates(in: URL(fileURLWithPath: releaseCandidates, isDirectory: true)),
+                    note: { FileHandle.standardError.write(Data("note: \($0)\n".utf8)) })
                 // The release registers these bytes: they must read back under the strict decoder, and every ID a
                 // coordinator derives for this build's version must fit.
                 let bytes = try facts.canonicalBytes()

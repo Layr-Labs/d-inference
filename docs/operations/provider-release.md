@@ -56,15 +56,13 @@ Before tagging `v0.10.6`:
   core is unchanged, and the dev-branch release of this preparation's base,
   `0.10.5-dev.branch.18` from `a0413a8a`, registered that hash on DevNet. A
   different hash needs an explanation, such as a changed Metal toolchain.
-  Complete SSD checkpoints stay per build, because their namespace binds the
-  binary hash: 0.10.6 does not restore those 0.10.5 wrote.
 - The tag is the first production run of the release steps that came with the
   cluster: the build and signing of the [cluster helpers](#cluster-helpers) and
   the cluster runtime facts. The dev-branch lane runs the same reusable
   workflow; its run
   [41167361754](https://github.com/Layr-Labs/d-inference/actions/runs/41167361754)
   passed both, and DevNet's coordinator accepted its block. That proves neither
-  the derived approvals nor pairing; step 2 below does.
+  the derived approvals nor pairing; step 1 below does.
 - Before step 3 below, check that the production catalog lists `glm-5.3-flash`
   and `EigenLabs/Qwen3.8-27B-4bit-mtp`, because the facts step leaves out a
   model the environment's catalog lacks. Check that the coordinator's catalog
@@ -88,9 +86,16 @@ Before tagging `v0.10.6`:
 
 Roll out in this order; each step is a separate approval:
 
-1. Platform first: deploy to production a `darkbloom-platform` coordinator with
+1. DevNet proof. After this preparation merges into `dev`, its dev-branch
+   release `0.10.6-dev.branch.<N>` registers with the block on DevNet, whose
+   coordinator runs the platform revision that step 2 deploys to production.
+   DevNet's `GET /v1/cluster/approvals` must list the derived
+   `release/0.10.6-dev.branch.<N>/<model>/s1` and `/s2` approvals, and a real
+   DevNet pair must form a session under one of them. Record the run and the
+   session.
+2. Production platform: deploy a `darkbloom-platform` coordinator with
    [darkbloom-platform#643](https://github.com/Layr-Labs/darkbloom-platform/pull/643)
-   and any follow-up fix that the DevNet proof in step 2 needs. A fix for the
+   and any follow-up fix that the DevNet proof in step 1 needs. A fix for the
    split edge and Conductor deployment, where DevNet derived no approvals, is in
    progress. #643's code reaches the platform's `master` only with its `dev` to
    `master` merge; its twin,
@@ -115,15 +120,8 @@ Roll out in this order; each step is a separate approval:
      `EIGENINFERENCE_APP_ATTEST_ROLLOUT_PERCENT=100`. A member holds either the
      legacy MDM path or an App Attest serving authorization, so a member on
      macOS 27 without MDM pairs only through App Attest.
-2. DevNet proof. After this preparation merges into `dev`, its dev-branch
-   release `0.10.6-dev.branch.<N>` registers with the block on DevNet, whose
-   coordinator runs the same platform fixes as step 1. DevNet's
-   `GET /v1/cluster/approvals` must list the derived
-   `release/0.10.6-dev.branch.<N>/<model>/s1` and `/s2` approvals, and a real
-   DevNet pair must form a session under one of them. Record the run and the
-   session.
 3. Confirm from production's `/health` `build_commit` that it runs the platform
-   revision that passed step 2; #643 alone is not enough. Check the catalog as
+   revision that passed step 1; #643 alone is not enough. Check the catalog as
    above, then set the repository variable `PROD_CLUSTER_RUNTIME_ENABLED=true`.
    Never before steps 1 and 2: a coordinator without #643 refuses a
    registration that carries `cluster_runtime`, and the release then fails
@@ -606,7 +604,7 @@ requirement of `scripts/install.sh` and the self-updater's
 | Item | Dev-branch lane |
 |---|---|
 | Version | `X.Y.Z-dev.branch.<run>`, stamped by `scripts/resolve-provider-release.sh` and accepted by `scripts/check-release-version.sh` |
-| Source gate | Job `resolve-env` runs master's copy of `scripts/provider-release-resume.py verify-source`. The gate must accept a `refs/heads/dev` push for environment `dev`; until master carries that change, the lane fails at the gate. |
+| Source gate | Job `resolve-env` runs master's copy of `scripts/provider-release-resume.py verify-source`, which accepts a `refs/heads/dev` push for environment `dev` only. |
 | Signing and notarization secrets | `APPLE_CERTIFICATE_P12`, `APPLE_CERTIFICATE_PASSWORD`, `PROVISIONING_PROFILE_BASE64`, `APPLE_ID`, `APPLE_APP_PASSWORD`, read only in job `build-and-release` |
 | Publication secrets | `DEV_R2_*`, `DEV_COORDINATOR_URL`, `DEV_RELEASE_KEY` |
 | GitHub environment | None. All of these are repository secrets. |
@@ -623,11 +621,11 @@ re-run failed jobs only after the signing job passed, and push a new commit to
 rebuild. The `release-dev-branch` group does not cancel a running run, but a
 newer dev push cancels a run that is still pending in the group.
 
-Review is not enforced on `dev` today. Its rules are required signatures and the
-"Darkbloom PR access control" ruleset, which lets only the accounts on that
-ruleset's bypass list create or update a ref. Because a dev push gets the
-Developer ID signature, `dev` needs a pull_request rule before the lane runs. A
-repository administrator adds that rule.
+Because a dev push gets the Developer ID signature, pull requests into `dev`
+need one approving review and land as merge commits (ruleset "Dev pull
+requests"). `dev` also requires signed commits, and the "Darkbloom PR access
+control" ruleset lets only the accounts on its bypass list create or update a
+ref.
 
 The dev coordinator can still hold `X.Y.Z-dev.<run>` releases from the master
 dev lane; `0.10.4-dev.224` is the latest dev release on 2026-10-28.
@@ -841,8 +839,9 @@ again with
 [Resume Signing From A Retained Unsigned Build](#resume-signing-from-a-retained-unsigned-build).
 
 Turn a variable on only after the coordinator of that environment accepts the
-block (`EIGENINFERENCE_CLUSTER_PAIR_APPROVALS_FROM_RELEASES`, darkbloom-platform);
-a coordinator that does not accept it yet must never receive it. Public cluster
+block (darkbloom-platform#643); a coordinator that does not accept it yet must
+never receive it. It derives approvals from the block only with
+`EIGENINFERENCE_CLUSTER_PAIR_APPROVALS_FROM_RELEASES=true`. Public cluster
 routing also needs `EIGENINFERENCE_CLUSTER_PUBLIC_ROUTING=true` on that
 coordinator, and a coordinator behind a TLS-terminating proxy attaches members
 only through `EIGENINFERENCE_CLUSTER_PAIR_TRUSTED_TLS_PROXIES`.
@@ -878,8 +877,7 @@ Rollout order:
    with its settings on, and the release's dev build shows derived approvals
    and a pair session on DevNet. A person then checks the production catalog's
    room and sets `PROD_CLUSTER_RUNTIME_ENABLED=true`, and the release tag
-   follows. The rollout of the version being prepared, at the top of this page,
-   lists each step.
+   follows.
 
 To compute the facts of an installed or downloaded app by hand, give the models
 explicitly. Run that app's own CLI, so the public declaration and the records

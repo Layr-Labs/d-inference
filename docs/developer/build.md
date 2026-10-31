@@ -1,6 +1,6 @@
 # Build The Provider And Landing
 
-> Last updated: 2026-10-29
+> Last updated: 2026-10-31
 
 Build the provider, its source-matched native resources, and the independent
 landing site from this repository. Backend, sidecar, console and admin builds
@@ -177,23 +177,30 @@ importing its certificate. See [release qualification](test.md#sdk-27-release-qu
 
 ## The `dev` branch
 
-The `dev` branch is master plus one commit. On it, a plain `swift build` is a
-DevNet build: `DARKBLOOM_RELEASE_ENVIRONMENT` defaults to `dev`, so the
-provider talks to `https://api.dev.darkbloom.dev` and nothing else. On master
-the default is `prod`. Set `DARKBLOOM_RELEASE_ENVIRONMENT=prod` to build a
-production binary from the `dev` branch.
+On the `dev` branch a plain `swift build` is a DevNet build:
+`DARKBLOOM_RELEASE_ENVIRONMENT` defaults to `dev`, so the provider talks to
+`https://api.dev.darkbloom.dev` and nothing else. On master the default is
+`prod`. Set `DARKBLOOM_RELEASE_ENVIRONMENT=prod` to build a production binary
+from the `dev` branch.
 
 Use the `dev` branch to run a provider from source against the DevNet
-coordinator. Published dev providers do not come from this branch: a master
-push that changes the provider publishes one through `release-swift.yml`
+coordinator. A push to `dev` that changes the provider publishes the DevNet
+release through `.github/workflows/release-dev-branch.yml`
 (see `docs/operations/provider-release.md`).
 
 Rules for the branch:
 
-- Merge master into `dev` to update it. Never merge `dev` into master.
-- Never tag a commit on `dev`. Tags publish production.
-- Code changes go to master through a pull request, then reach `dev` by
-  merging master. Only the default-environment commit lives on `dev` alone.
+- Changes reach `dev` through pull requests into `dev`, which land as merge
+  commits, and through merges of master into `dev`.
+- `dev` reaches master only when a release promotes it, as
+  [#1688](https://github.com/Layr-Labs/d-inference/pull/1688) did. A snapshot
+  branch cut from `dev` merges into master with a merge commit, never a squash
+  or a rebase. The master ruleset allows only squash merges, so an admin allows
+  merge commits for that one merge and restores the ruleset at once.
+- Master keeps one commit of its own, `e9babca4`, which sets plain builds back
+  to `prod`. A merge of master into `dev` reverts that commit on its sync
+  branch, so `dev` keeps its DevNet default.
+- Never tag a commit on `dev`. Tags publish production, from master.
 
 `scripts/provider-release-cache.py` separates optimized and qualification Swift
 caches by compiler/SDK, architecture, absolute checkout/toolchain paths,

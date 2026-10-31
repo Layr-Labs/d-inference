@@ -648,9 +648,15 @@ Developer ID identity, then signs and notarizes the app as the workflow does.
 
 Each signed release can carry the cluster runtime facts of its final app as
 `cluster_runtime` in its `POST /v1/releases` payload. A coordinator that
-accepts the block derives that build's cluster approvals and pair-serving
-grants from it, so no operator posts approvals per build. The block format and
-its rules are in the
+accepts the block derives that build's cluster approvals from it, and the
+parity qualifications (public traffic) of the models the build declares public
+(`ClusterPublicModels`: GLM-5.3-Flash and Qwen3.8-27B in tensor parallel, the
+owner's decision of 2026-10-31,
+[evidence](../reports/2026-10-31-public-cluster-models.md)), so no operator
+posts approvals or public qualifications per build. No pair-serving grant is
+derived: a coordinator grant restricts its approval to the families it names,
+and GLM-5.3-Flash's bundled records hold only a pipeline run. The block format
+and its rules are in the
 [configuration reference](../reference/configuration.md#cluster-runtime-facts).
 
 Every lane (dev branch, staging, prod) runs the step
@@ -666,8 +672,8 @@ Every lane (dev branch, staging, prod) runs the step
    `$DEVELOPER_ID`.
 3. It checks the archive against `BUNDLE_HASH` and extracts it into a new
    folder. Steps 4 to 6 are `scripts/provider-cluster-runtime-facts.sh`; the
-   app's own CLI runs with an empty environment (`env -i`), so each model's
-   grant comes from the qualification records of the build being released.
+   app's own CLI runs with an empty environment (`env -i`), so the public
+   declaration is that of the build being released.
 4. The final CLI prints the build's model list:
    `<cli> cluster runtime-facts --list-release-models`. It holds every model
    with a cluster stage adapter and a passing pair qualification record in the
@@ -676,15 +682,19 @@ Every lane (dev branch, staging, prod) runs the step
    public catalog and model CDN of the lane's environment, the ones its app
    reads (`provider-swift/identity/provider-identity.json`). For each listed
    artifact it fetches the `manifest.json` encodings the provider reads (CDN,
-   then coordinator) and `config.json` from the CDN, never weights. A listed
-   model that catalog does not have is left out and named in the job summary.
-   Any other fetch or integrity failure fails the step.
+   then coordinator) and `config.json` from the CDN, never weights, and saves
+   the catalog entry's `id` and `input_modalities` beside them
+   (`catalog.json`). A listed model that catalog does not have is left out and
+   named in the job summary. Any other fetch or integrity failure fails the
+   step.
 6. The final CLI computes the facts:
    `<cli> cluster runtime-facts --app <app> --release-candidates <folder>`. The
    app's own worker describes each candidate (`--describe-runtime`); every
-   catalog model ID of a listed artifact gets one entry. The step fails when such
-   a model has no candidate the worker describes as it, when no model is left,
-   or when an ID a coordinator would derive exceeds 128 bytes.
+   catalog model ID of a listed artifact gets one entry. A declared model gets
+   one parity qualification per declared family and schedule, its request
+   envelope admitting the media its catalog entry lists. The step fails when
+   such a model has no candidate the worker describes as it, when no model is
+   left, or when an ID a coordinator would derive exceeds 128 bytes.
 
 The steps `Show the cluster runtime facts` and `Retain the cluster runtime facts`
 then write the block (or the failure) to the job summary and upload
@@ -705,14 +715,16 @@ Staging publication is refused today ("Unknown publication environment": no
 staging coordinator yet), so `STAGING_CLUSTER_RUNTIME_ENABLED` takes effect once
 staging publishes. `validate` (in `prepare`, `stage` and `publish`) accepts a valid block in any
 environment and refuses an invalid one, and one whose derived IDs
-(`release/<version>/<model>/s<1|2>`, and that ID followed by `/grant` for a
-model with a grant) exceed 128 bytes. `prepare` also refuses a block file that
+(`release/<version>/<model>/s<1|2>`, and `<approval ID>/q<n>` for each parity
+qualification) exceed 128 bytes. `prepare` also refuses a block file that
 is not canonical, and registration sends the block in that canonical form (a
 body without the block is sent exactly as before).
 
 Turn a variable on only after the coordinator of that environment accepts the
 block (`EIGENINFERENCE_CLUSTER_PAIR_APPROVALS_FROM_RELEASES`, darkbloom-platform);
-a coordinator that does not accept it yet must never receive it. Rollout order:
+a coordinator that does not accept it yet must never receive it. Public cluster
+routing also needs `EIGENINFERENCE_CLUSTER_PUBLIC_ROUTING=true` on that
+coordinator. Rollout order:
 
 1. The platform change merges to the platform's `dev`, and DevNet deploys it.
 2. This change merges to `dev`. A person sets `DEV_CLUSTER_RUNTIME_ENABLED=true`.
@@ -723,7 +735,9 @@ a coordinator that does not accept it yet must never receive it. Rollout order:
    release tag follows.
 
 To compute the facts of an installed or downloaded app by hand, give the models
-explicitly. Run that app's own CLI, so the grants are that build's:
+explicitly. Run that app's own CLI, so the public declaration is that build's.
+A model given by hand has no catalog entry, so a declared model's request
+envelope then admits text only:
 
 ```bash
 "/Applications/Darkbloom.app/Contents/MacOS/darkbloom" cluster runtime-facts \

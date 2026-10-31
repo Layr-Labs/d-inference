@@ -5238,12 +5238,16 @@ types them ([fields](../reference/configuration.md#cluster-runtime-facts),
    `resourcePolicySHA256`. A coordinator-formed start carries the approval's
    value, which the member and its owner compare with the installed approval
    (`NativePairMemberPolicy.require`).
-4. The pair-serving grant is the public grant a member of the same build reports
-   for the described artifact (`ClusterPairServingGrants.grant`, records of that
-   artifact only), with the SHA-256 of the records it rests on
-   (`ClusterPairServingGrant.evidenceSHA256`). A release's facts therefore name
-   the grants of the build being released: the release lane runs that build's
-   own CLI.
+4. The parity qualifications come from the build's checked-in public
+   declaration (`ClusterPublicModels`: the owner's decision, with its evidence
+   document's SHA-256), not from the bundled qualification records, for a
+   described model whose runtime model, catalog ID and artifact it names. Each
+   rank's numerics class is the one a member of that build registers for the
+   evidence placement (`ClusterMemberDeviceProfile.numericsClass`, the block's
+   Metal library). The release lane runs the released build's own CLI, so the
+   declaration is that build's. No pair-serving grant is derived from the
+   records: a coordinator grant restricts its approval to the families it
+   names.
 
 A model approval needs none of these facts: the member takes the same values
 from its own saved setup and files
@@ -5252,7 +5256,7 @@ from its own saved setup and files
 Code map: `provider-swift/Sources/ProviderCore/Config/ClusterRuntimeApprovalFacts.swift`
 (`ClusterRuntimeApprovalFacts`), `ClusterRuntimeApprovalFacts+Release.swift` (the release's model list and
 candidate choice),
-`provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledPairServingGrant.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/ClusterPublicModels.swift`,
 `provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledFiles.swift`,
 `provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledNativeStart.swift`.
 

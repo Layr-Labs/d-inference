@@ -75,13 +75,15 @@ class FetchTests(unittest.TestCase):
     def catalog(self, *entries):
         self.route('/dev/v1/models/catalog', json.dumps({'models': list(entries)}).encode())
 
-    def entry(self, model_id, prefix, aggregate=ARTIFACT, cdn=None, coordinator=None, config=CONFIG):
+    def entry(self, model_id, prefix, aggregate=ARTIFACT, cdn=None, coordinator=None, config=CONFIG,
+              modalities=('text', 'image')):
         """A catalog entry with its CDN manifest, coordinator manifest and config.json."""
         self.route(f'/cdn/{prefix}/manifest.json', cdn if cdn is not None else manifest(model_id, aggregate))
         self.route('/dev/v1/models/catalog/manifest/' + MODELS.model_id_path(model_id),
                    coordinator if coordinator is not None else manifest(model_id, aggregate, created='other'))
         self.route(f'/cdn/{prefix}/config.json', config)
-        return {'id': model_id, 'r2_prefix': prefix, 'aggregate_sha256': aggregate}
+        return {'id': model_id, 'r2_prefix': prefix, 'aggregate_sha256': aggregate, 'input_modalities': list(modalities),
+                'display_name': 'not copied'}
 
     def fetch(self, listed=None):
         return MODELS.candidates(self.listed if listed is None else listed, self.coordinator, self.cdn)
@@ -92,10 +94,14 @@ class FetchTests(unittest.TestCase):
         self.catalog(qwen, twin, self.entry('other', 'v2/other/r1', aggregate=OTHER))
         found, skipped, failures = self.fetch()
         self.assertEqual((skipped, failures), ([], []))
-        self.assertEqual([(json.loads(m)['model_id'], json.loads(m)['created_at']) for m, _ in found[ARTIFACT]],
+        self.assertEqual([(json.loads(m)['model_id'], json.loads(m)['created_at']) for m, _, _ in found[ARTIFACT]],
                          [('Qwen3.5-9B', '2026-09-03T00:00:00Z'), ('Qwen3.5-9B', 'other'),
                           ('Qwen3.5-9B-copy', '2026-09-03T00:00:00Z'), ('Qwen3.5-9B-copy', 'other')])
-        self.assertTrue(all(config == CONFIG for _, config in found[ARTIFACT]))
+        self.assertTrue(all(config == CONFIG for _, config, _ in found[ARTIFACT]))
+        # Each candidate carries its own entry's ID and input modalities, canonical, and nothing else of the entry.
+        self.assertEqual([entry for _, _, entry in found[ARTIFACT]],
+                         [b'{"id":"Qwen3.5-9B","input_modalities":["text","image"]}'] * 2
+                         + [b'{"id":"Qwen3.5-9B-copy","input_modalities":["text","image"]}'] * 2)
         self.assertFalse(any('/v2/other/' in path for path, _ in Registry.hits))
         self.assertTrue(all(agent == MODELS.USER_AGENT for _, agent in Registry.hits))
         # config.json is fetched once per entry, never a weight file.
@@ -106,7 +112,7 @@ class FetchTests(unittest.TestCase):
         same = manifest('Qwen3.5-9B')
         self.catalog(self.entry('Qwen3.5-9B', 'v2/q/r1', coordinator=same))
         found, skipped, failures = self.fetch()
-        self.assertEqual((failures, skipped, [m for m, _ in found[ARTIFACT]]), ([], [], [same]))
+        self.assertEqual((failures, skipped, [m for m, _, _ in found[ARTIFACT]]), ([], [], [same]))
 
     def test_a_listed_artifact_the_catalog_lacks_is_left_out_and_named(self):
         glm = {'runtime_model_id': 'registered_glm53_flash', 'artifact_sha256': OTHER}
@@ -117,6 +123,33 @@ class FetchTests(unittest.TestCase):
         self.assertNotIn(OTHER, found)
         # Nothing of the absent model is asked for.
         self.assertFalse(any('no-prefix' in path for path, _ in Registry.hits))
+
+    def test_the_entrys_input_modalities_go_with_its_candidates(self):
+        for label, modalities, expected in (('image and video', ['text', 'image', 'video'], ['text', 'image', 'video']),
+                                            ('text only', ['text'], ['text']), ('none listed', None, [])):
+            with self.subTest(row=label):
+                Registry.routes = {}
+                entry = self.entry('glm-5.3-flash', 'v2/glm/r1')
+                if modalities is None:
+                    entry.pop('input_modalities')
+                else:
+                    entry['input_modalities'] = modalities
+                self.catalog(entry)
+                found, _, failures = self.fetch()
+                self.assertEqual(failures, [])
+                self.assertTrue(all(json.loads(item) == {'id': 'glm-5.3-flash', 'input_modalities': expected}
+                                    for _, _, item in found[ARTIFACT]))
+        for label, modalities in (('not a list', 'text'), ('not strings', [1]), ('empty name', ['']),
+                                  ('a space', ['text image']), ('too many', ['m%d' % index for index in range(17)])):
+            with self.subTest(row=label):
+                Registry.routes = {}
+                entry = self.entry('glm-5.3-flash', 'v2/glm/r1')
+                entry['input_modalities'] = modalities
+                self.catalog(entry)
+                found, _, failures = self.fetch()
+                self.assertEqual(found[ARTIFACT], [])
+                self.assertEqual(len(failures), 1)
+                self.assertIn('input_modalities', failures[0])
 
     def test_model_ids_and_prefixes_are_escaped_as_the_provider_escapes_them(self):
         self.assertEqual(MODELS.model_id_path('EigenLabs/Qwen3.8 27B'), 'EigenLabs%2FQwen3.8%2027B')
@@ -236,8 +269,10 @@ class FetchTests(unittest.TestCase):
         registry.assert_called_once_with('dev')
         self.assertEqual(sorted(p.name for p in output.iterdir()), ['000', '001'])
         for folder in output.iterdir():
+            self.assertEqual(sorted(path.name for path in folder.iterdir()), ['catalog.json', 'config.json', 'manifest.json'])
             self.assertEqual((folder / 'config.json').read_bytes(), CONFIG)
             self.assertEqual(json.loads((folder / 'manifest.json').read_bytes())['aggregate_sha256'], ARTIFACT)
+            self.assertEqual((folder / 'catalog.json').read_bytes(), b'{"id":"Qwen3.5-9B","input_modalities":["text","image"]}')
         line = f'- Not in the dev catalog, left out: registered_glm53_flash (artifact {OTHER})\n'
         self.assertEqual(skipped.read_text(), line)
         self.assertIn(line.strip(), ''.join(call.args[0] for call in stdout.write.call_args_list))

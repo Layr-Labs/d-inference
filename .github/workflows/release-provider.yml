@@ -938,8 +938,9 @@ jobs:
           echo "Metallib hash: $METALLIB_HASH"
 
       # Every lane: the cluster runtime facts (cluster_runtime) from which a
-      # coordinator derives this build's cluster approvals and pair-serving
-      # grants, computed by the final signed app's own CLI and worker after
+      # coordinator derives this build's cluster approvals and the parity
+      # qualifications of the models it declares public (ClusterPublicModels),
+      # computed by the final signed app's own CLI and worker after
       # every signing, notarization and final-bytes check above. The payload
       # carries them only when CLUSTER_RUNTIME_SEND is 'true'; otherwise a
       # failure here only warns (continue-on-error) and the release continues

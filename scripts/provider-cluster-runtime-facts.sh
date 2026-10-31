@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
 # The cluster runtime facts (cluster_runtime) of an app bundle for one
 # environment, computed by the app's own CLI and cluster worker
-# (ClusterRuntimeApprovalFacts), so each model's pair-serving grant comes from
-# that build's own qualification records.
+# (ClusterRuntimeApprovalFacts), so the parity qualifications of the models it
+# declares public are that build's (ClusterPublicModels).
 #
 # Usage: provider-cluster-runtime-facts.sh APP CLI_NAME ENVIRONMENT FOLDER
 #
-# The app lists the models it qualifies on a cluster; their manifest and
-# config.json (never weights) come from ENVIRONMENT's public catalog and model
-# CDN (provider-cluster-runtime-models.py), which leaves out a listed model
-# that catalog does not have and names it in FOLDER/skipped.md; the app's worker
-# describes each one. FOLDER must not exist; the facts are
+# The app lists the models it qualifies on a cluster; their manifest,
+# config.json (never weights) and catalog entry (its input modalities) come from
+# ENVIRONMENT's public catalog and model CDN (provider-cluster-runtime-models.py),
+# which leaves out a listed model that catalog does not have and names it in
+# FOLDER/skipped.md; the app's worker describes each one. FOLDER must not exist; the facts are
 # FOLDER/cluster-runtime.json. The app's CLI runs with an empty environment.
 set -euo pipefail
 

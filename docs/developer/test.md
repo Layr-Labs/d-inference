@@ -1324,13 +1324,16 @@ lines, CRLFs and synthetic SSH/PGP signature armor. It checks exact retained not
 text and payload/provenance digest guards without invoking signing or live
 publication. Its cluster runtime rows pin the prod and dev payload bytes without
 `cluster_runtime` to their digests from before the block existed, carry a valid
-block through `stage` in dev and prod, refuse each malformed block (grants
-included) and a block whose derived approval or grant IDs exceed 128 bytes, and
-check that registration sends the block.
+block through `stage` in dev and prod, refuse each malformed block (parity
+qualifications included) and a block whose derived approval or parity
+qualification IDs exceed 128 bytes, accept the GLM-5.3-Flash block pinned from
+the 0.10.5-dev.branch.16 app, and check that registration sends the block in its
+canonical form.
 `scripts/test-provider-cluster-runtime-models.py` runs the release's
 model-metadata fetch against a local HTTP registry: the environment's catalog and
-CDN, candidate selection, the manifest and `config.json` checks, a listed model the
-catalog lacks (left out and named), retries and refusals. It reads no weights
+CDN, candidate selection, the manifest and `config.json` checks, each candidate's
+catalog entry (`id`, `input_modalities`), a listed model the catalog lacks (left out
+and named), retries and refusals. It reads no weights
 and uses no network. `scripts/provider-cluster-runtime-facts.sh` has no
 fake-driven test; the release lane runs it on every final signed app and shows
 its result in the job summary.

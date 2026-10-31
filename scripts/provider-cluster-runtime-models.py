@@ -13,8 +13,10 @@ them (ClusterModelProvisioningStore.catalogAnswer:
 `<coordinator>/v1/models/catalog/manifest/<model ID>`), each with the entry's
 config.json from the CDN. A manifest is kept when it names the entry and the
 listed aggregate and lists config.json; config.json is kept when its size and
-SHA-256 are the manifest's. Each kept manifest is one candidate folder; the
-build's own worker chooses among them. Weights are never read.
+SHA-256 are the manifest's. Each kept manifest is one candidate folder, with the
+entry's `id` and `input_modalities` (catalog.json: the media a declared public
+model's request envelope admits); the build's own worker chooses among them.
+Weights are never read.
 
 A listed artifact the catalog does not have is left out and named (standard
 output and `--skipped`). Every other failure (an unreadable catalog, an entry
@@ -42,6 +44,8 @@ ATTEMPTS = 3
 # The CDN refuses Python's default agent.
 USER_AGENT = 'darkbloom-release-cluster-runtime/1'
 DIGEST = re.compile(r'[0-9a-f]{64}')
+MODALITY = re.compile(r'[\x21-\x7e]{1,32}')
+MAXIMUM_MODALITIES = 16
 
 
 class FetchError(RuntimeError):
@@ -118,8 +122,17 @@ def configuration_entry(data, entry, artifact):
     return files[0]
 
 
+def catalog_entry(entry):
+    """catalog.json of a candidate: the entry's ID and input modalities (none listed: text only)."""
+    modalities = entry.get('input_modalities', [])
+    if not isinstance(modalities, list) or len(modalities) > MAXIMUM_MODALITIES \
+            or not all(isinstance(item, str) and MODALITY.fullmatch(item) for item in modalities):
+        raise ValueError('input_modalities is not a list of modality names')
+    return json.dumps({'id': entry['id'], 'input_modalities': modalities}, sort_keys=True, separators=(',', ':')).encode()
+
+
 def candidates(listed, coordinator, cdn, fetch=get):
-    """({artifact: [(manifest bytes, config bytes)]}, listed models the catalog lacks, failures)."""
+    """({artifact: [(manifest, config, catalog.json bytes)]}, listed models the catalog lacks, failures)."""
     entries = catalog(coordinator, fetch)
     found, skipped, failures = {}, [], []
     for model in listed:
@@ -132,12 +145,17 @@ def candidates(listed, coordinator, cdn, fetch=get):
         for entry in matching:
             base = cdn + '/' + r2_path(entry['r2_prefix'])
             configuration, entry_kept = None, 0
+            try:
+                entry_file = catalog_entry(entry)
+            except ValueError as error:
+                failures.append(f"{entry['id']} ({model['runtime_model_id']}, {artifact}): catalog entry: {error}")
+                continue
             for url in (base + '/manifest.json',
                         coordinator + '/v1/models/catalog/manifest/' + model_id_path(entry['id'])):
                 try:
                     data = fetch(url, MAXIMUM_MANIFEST_BYTES)
                     item = configuration_entry(data, entry, artifact)
-                    if any(data == manifest for manifest, _ in kept):
+                    if any(data == manifest for manifest, _, _ in kept):
                         entry_kept += 1
                         continue
                     if configuration is None:
@@ -145,7 +163,7 @@ def candidates(listed, coordinator, cdn, fetch=get):
                     if len(configuration) != item['size_bytes'] \
                             or hashlib.sha256(configuration).hexdigest() != item['sha256']:
                         raise ValueError("config.json differs from the manifest's size or SHA-256")
-                    kept.append((data, configuration))
+                    kept.append((data, configuration, entry_file))
                     entry_kept += 1
                 except (FetchError, ValueError) as error:
                     notes.append(f'{url}: {error}')
@@ -159,11 +177,12 @@ def write(found, output):
     output.mkdir(parents=True, exist_ok=False)
     index = 0
     for artifact in sorted(found):
-        for manifest, configuration in found[artifact]:
+        for manifest, configuration, entry in found[artifact]:
             folder = output / f'{index:03d}'
             folder.mkdir()
             (folder / 'manifest.json').write_bytes(manifest)
             (folder / 'config.json').write_bytes(configuration)
+            (folder / 'catalog.json').write_bytes(entry)
             index += 1
 
 

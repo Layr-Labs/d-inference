@@ -540,6 +540,67 @@ class ClusterRuntimeTests(PublicationFixture):
             for suffix in ('s1', 's2', 's1/grant', 's2/grant', 's1/q1', 's2/q1', 's1/q2', 's2/q2')])
         self.assertEqual(PUB.derived_ids(template[2], 'V'), ['release/V/glm-5.3-flash/s1', 'release/V/glm-5.3-flash/s2'])
 
+    def test_a_registration_body_over_the_coordinators_limit_is_refused_before_staging(self):
+        # The coordinator reads POST /v1/releases under 64 KiB, the block's own bound: a block within its bound can
+        # still take the body over the limit. Grow a valid block by whole qualifications, then lengthen numerics
+        # classes byte by byte to a body of exactly the limit, and one byte over it.
+        env, limit = self.dev_env(), PUB.COORDINATOR_REGISTRATION_MAXIMUM_BYTES
+        self.assertEqual(limit, 65536)
+        sized = PUB.prepare(self.base / 'sized', self.root / PUB.BUNDLE, env)
+        template = cluster_runtime_block()['models'][0]
+
+        def block(models):
+            return dict(cluster_runtime_block(), models=models)
+
+        def body(models):
+            return PUB.registration_body(dict(sized, cluster_runtime=block(models)))
+
+        def grown(models):
+            count = len(models[-1]['parity_qualifications']) if models else 8
+            index = len(models) - (count < 8)
+            return models[:index] + [dict(template, model=f'm{index:02d}', parity_qualifications=[
+                dict(qualification(1 + n % 2), numerics_classes=[f'c{n}'] * 2) for n in range(count % 8 + 1)])]
+
+        def padded(models, extra):
+            out = []
+            for model in models:
+                qualifications = []
+                for q in model['parity_qualifications']:
+                    classes = []
+                    for name in q['numerics_classes']:
+                        add = min(extra, 64 - len(name))
+                        classes.append(name + 'x' * add)
+                        extra -= add
+                    qualifications.append(dict(q, numerics_classes=classes))
+                out.append(dict(model, parity_qualifications=qualifications))
+            self.assertEqual(extra, 0)
+            return out
+        models = grown([])
+        while len(body(grown(models))) <= limit:
+            models = grown(models)
+        gap = limit - len(body(models))
+        exact, over = padded(models, gap), padded(models, gap + 1)
+        self.assertEqual((len(body(exact)), len(body(over))), (limit, limit + 1))
+        self.assertLess(len(json.dumps(block(over), sort_keys=True, separators=(',', ':'))), PUB.CLUSTER_RUNTIME_MAXIMUM_BYTES)
+
+        payload = PUB.prepare(self.base / 'exact', self.root / PUB.BUNDLE, env, self.write_block(block(exact), 'exact.json'))
+        self.assertEqual(len(PUB.registration_body(payload)), limit)
+        refused = f"registration body is {limit + 1} bytes, over the coordinator's limit of {limit} bytes"
+        with self.assertRaisesRegex(ValueError, refused), patch.object(PUB, 'upload') as upload:
+            PUB.prepare(self.base / 'over', self.root / PUB.BUNDLE, env, self.write_block(block(over), 'over.json'))
+        upload.assert_not_called()
+        self.assertFalse((self.base / 'over' / 'release-payload.json').exists())
+        with self.assertRaisesRegex(ValueError, refused):
+            PUB.validate(dict(payload, cluster_runtime=block(over)), env)
+        # The same limit without a block: release notes the coordinator would refuse.
+        with self.assertRaisesRegex(ValueError, "over the coordinator's limit"):
+            PUB.validate(dict(self.payload, changelog='x' * limit), self.env)
+        # Registration sends exactly the bytes that were sized.
+        with patch.object(PUB.urllib.request, 'build_opener') as opener:
+            opener.return_value.open.return_value.__enter__.return_value.read.return_value = b'{}'
+            PUB.coordinator(dict(env, RELEASE_KEY='k'), '/v1/releases', payload)
+        self.assertEqual(opener.return_value.open.call_args.args[0].data, PUB.registration_body(payload))
+
     def test_the_glm_block_of_the_branch17_app_is_accepted(self):
         # The block the release lane computed for GLM-5.3-Flash with the 0.10.5-dev.branch.17 app (pinned by the
         # Swift suite): canonical and valid, with the declared grant and, per schedule, the pipeline's qualification

@@ -54,6 +54,10 @@ CLUSTER_INSTANT = re.compile(r'[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9
 # qualification `<its schedule's approval ID>/q<n>`, and refuses at registration
 # a block with any derived ID over this bound.
 CLUSTER_DERIVED_ID_MAXIMUM_BYTES = 128
+# The coordinator reads a release registration (POST /v1/releases) under this
+# limit (MaxReleaseRegisterBodyBytes, applied as http.MaxBytesReader applies
+# it); a larger body would be refused only at publish, after staging.
+COORDINATOR_REGISTRATION_MAXIMUM_BYTES = 64 * 1024
 
 
 def is_digest(value):
@@ -211,6 +215,17 @@ def validate(payload, env):
     if 'cluster_runtime' in payload:
         check_cluster_runtime(payload['cluster_runtime'])
         check_cluster_derived_ids(payload['cluster_runtime'], payload['version'])
+    size = len(registration_body(payload))
+    if size > COORDINATOR_REGISTRATION_MAXIMUM_BYTES:
+        raise ValueError(f'The release registration body is {size} bytes, over the coordinator\'s limit of '
+                         f'{COORDINATOR_REGISTRATION_MAXIMUM_BYTES} bytes (POST /v1/releases); shorten the release '
+                         f'notes or the cluster_runtime block')
+
+
+def registration_body(payload):
+    """The bytes the registration sends: a cluster_runtime block goes in its canonical form (no whitespace; its keys
+    keep the canonical file's byte order). Without one the body is unchanged."""
+    return (json.dumps(payload, separators=(',', ':')) if 'cluster_runtime' in payload else json.dumps(payload)).encode()
 
 
 def release_changelog(env):
@@ -290,11 +305,7 @@ def coordinator(env, path, payload=None):
     data = None
     if payload is not None:
         headers.update({'Content-Type': 'application/json', 'Authorization': 'Bearer ' + env['RELEASE_KEY']})
-        # A cluster_runtime block goes in its canonical form (no whitespace;
-        # its keys keep the canonical file's byte order). Without one the
-        # body is unchanged.
-        data = (json.dumps(payload, separators=(',', ':')) if 'cluster_runtime' in payload
-                else json.dumps(payload)).encode()
+        data = registration_body(payload)
     request = urllib.request.Request(env['COORDINATOR_URL'].rstrip('/') + path, data=data, headers=headers)
     try:
         with urllib.request.build_opener(NoRedirect()).open(request, timeout=150) as response:

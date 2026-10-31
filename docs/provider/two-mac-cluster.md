@@ -138,15 +138,23 @@ clusters. A coordinator that refuses this pair is not treated this way; the
 start fails and says why. To serve without any coordinator, use
 [`darkbloom cluster local`](#serving-locally-only).
 
-## Registered with the coordinator as a cluster member (DevNet)
+## Registered with the coordinator as a cluster member
 
-When the coordinator's operator approval file holds a cluster approval for this
-pair's model (DevNet only), the pair registers with the coordinator by itself.
-Nothing is typed and no file is copied. Production and staging serve no
-approvals, and the pair serves as described above. The pair
-serves its owner's own requests, and public requests too once the coordinator's
-operator has turned public cluster routing on and qualified the pair's model and
-split ([serving a pair](../reference/cluster-control-protocol.md#serving-a-pair)).
+When the coordinator serves a cluster approval for this pair's model, the pair
+registers with the coordinator by itself. Nothing is typed and no file is
+copied. DevNet's coordinator serves the approvals its operator posts.
+Production's derives them from each release's
+[cluster runtime facts](../operations/provider-release.md#cluster-runtime-facts),
+from 0.10.6 on, once it runs darkbloom-platform#643 with
+`EIGENINFERENCE_CLUSTER_PAIR_APPROVALS_FROM_RELEASES=true`; such an approval
+names one release's build, so a pair registers with it only on that release.
+Before that deploy production serves no approvals (`GET /v1/cluster/approvals`
+answers 404), staging serves none, and the pair serves as described above. The
+pair serves its owner's own requests, and public requests too once the
+coordinator has public cluster routing on and a parity qualification for the
+pair's model and split; a release's cluster runtime facts carry them for
+GLM-5.3-Flash and Qwen3.8-27B
+([serving a pair](../reference/cluster-control-protocol.md#serving-a-pair)).
 A tensor-parallel pair registers like a pipeline one; its plan names no cut.
 
 1. Run `darkbloom cluster` and choose a model, as in [the steps](#the-steps-once).
@@ -167,7 +175,9 @@ A tensor-parallel pair registers like a pipeline one; its plan names no cut.
    There is no local API in this mode. `darkbloom cluster` status shows the
    same line.
 
-An approval ends at its `not_after`, which the operator sets. The
+An approval ends at its `not_after`, which the operator sets; one derived from
+a release ends 90 days after that release registered
+([`releaseApprovalExpiry`](https://github.com/Layr-Labs/darkbloom-platform/blob/df61dd6f93714b4458d0eef3125c377087c08b52/coordinator/registry/cluster_release_approvals.go)). The
 leader asks again at each start of its cluster service, after each Darkbloom
 update and every minute while the pair is registered, and takes a later
 matching approval when the saved one ends within a day. A Mac whose approval
@@ -199,7 +209,7 @@ What `darkbloom cluster` status says in each mode:
 | Approval no longer listed | The API line, then `The coordinator no longer lists cluster approval <id>: the pair serves on the leader's local API until it lists a matching one again.` |
 | Parts kept ending | The API line, then `The coordinator-paired parts ended 3 times in a row right after starting with cluster approval <id>: the pair serves on the leader's local API for 60 minutes, then it is offered again with it, or sooner with a later one the coordinator lists.` |
 | Approval ended | The API line, then one line that says the cluster approval `<id>` expired and the pair serves on the leader's local API |
-| No approval (production, staging, no matching entry) | The API line, then (only after a refusal) `Not offered for pairing: <reason>.` |
+| No approval (staging, production before its coordinator derives approvals from releases, no matching entry) | The API line, then (only after a refusal) `Not offered for pairing: <reason>.` |
 
 Approval sources, checks and saved fields:
 [coordinator-paired member](../reference/configuration.md#coordinator-paired-member).

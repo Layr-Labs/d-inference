@@ -188,7 +188,7 @@ jobs:
     env:
       VERSION: ${{ needs.resolve-env.outputs.version }}
       # Package.swift compiles ProviderCore with this environment's defaults.
-      # qualify-sdk sets prod: tests must see production defaults on every
+      # qualify-sdk-shard sets prod: tests must see production defaults on every
       # branch (on dev, an unset value compiles the dev identity).
       DARKBLOOM_RELEASE_ENVIRONMENT: ${{ needs.resolve-env.outputs.environment }}
     steps:
@@ -240,14 +240,26 @@ jobs:
           if-no-files-found: error
           retention-days: 3
 
-  qualify-sdk:
-    name: Qualify provider with SDK 27
+  # SDK 27 qualification runs the provider suite in shards on separate Macs,
+  # with the shard plan ci.yml uses (scripts/provider-test-shards.py): each
+  # shard builds the tests and runs its suites serially; shard 1 also runs the
+  # MLX-free targets in one parallel process, shard 2 Prompt Parity, and the
+  # last shard every unassigned suite, the isolated processes and the audio
+  # gate. Job qualify-sdk is the one qualification result that signing and
+  # recovery (scripts/provider_release_resume/identity.py) read.
+  qualify-sdk-shard:
+    name: Qualify provider with SDK 27 (shard ${{ matrix.shard }})
     needs: resolve-env
     if: needs.resolve-env.outputs.resume != 'true'
     runs-on: blacksmith-12vcpu-macos-27
     timeout-minutes: 60
     permissions:
       contents: read
+    strategy:
+      # Every shard finishes and keeps its diagnostics when another one fails.
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5]
     env:
       # The test suite pins production names and defaults. Package.swift
       # defaults to dev on the dev branch, so name prod here, as ci.yml does.
@@ -265,6 +277,42 @@ jobs:
         with:
           lane: qualification
           environment: ${{ needs.resolve-env.outputs.environment }}
+          shard: ${{ matrix.shard }}/${{ strategy.job-total }}
+
+  qualify-sdk:
+    name: Qualify provider with SDK 27
+    # Runs only when every shard passed; skipped on resume, like the shards.
+    needs: [resolve-env, qualify-sdk-shard]
+    if: needs.resolve-env.outputs.resume != 'true'
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ needs.resolve-env.outputs.workflow_sha }}
+          persist-credentials: false
+      - name: Download the shard counts
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          pattern: provider-sdk-qualification-${{ needs.resolve-env.outputs.environment }}-${{ github.sha }}-shard-*
+          path: ${{ runner.temp }}/provider-sdk-shards
+      - name: Check that the shards executed the full SDK 27 suite
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          lists=("$RUNNER_TEMP"/provider-sdk-shards/*/provider-tests.txt)
+          if [ "${#lists[@]}" -eq 0 ]; then
+            echo "::error::No shard suite list in $RUNNER_TEMP/provider-sdk-shards"
+            exit 1
+          fi
+          # Every shard built the same suite from the same source. Compare the
+          # test identifiers (lines without spaces) in sorted order.
+          for list in "${lists[@]}"; do
+            diff <(grep -v '[[:space:]]' "${lists[0]}" | sort -u) <(grep -v '[[:space:]]' "$list" | sort -u)
+          done
+          python3 scripts/provider-test-shards.py audit "${lists[0]}" "$RUNNER_TEMP/provider-sdk-shards"
 
   build-and-release:
     name: Sign, notarize and retain exact artifact

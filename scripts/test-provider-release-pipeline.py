@@ -164,7 +164,7 @@ class ReleasePipelineTests(unittest.TestCase):
 
     def test_release_lane_stamps_only_a_resolved_dev_version_after_clean_source_check(self):
         self.assertIn('version: ${{ needs.resolve-env.outputs.version }}', job(RELEASE, 'build-provider'))
-        self.assertNotIn('version:', job(RELEASE, 'qualify-sdk').split('lane: qualification', 1)[1])
+        self.assertNotIn('version:', job(RELEASE, 'qualify-sdk-shard').split('lane: qualification', 1)[1])
         stamp = ACTION.split('- name: Stamp dev release version\n', 1)[1].split('\n    - name:', 1)[0]
         self.assertLess(ACTION.index('- name: Verify checked-out source'), ACTION.index('- name: Stamp dev release version'))
         self.assertLess(ACTION.index('- name: Stamp dev release version'), ACTION.index('- name: Build optimized provider products'))
@@ -174,7 +174,7 @@ class ReleasePipelineTests(unittest.TestCase):
         self.assertNotIn('version:', WARM.split('uses: ./.github/actions/provider-release-build', 1)[1].split('\n      - ', 1)[0])
 
     def test_parallel_lanes_use_sdk27_without_signing_secrets(self):
-        for name, lane in [('build-provider', 'release'), ('qualify-sdk', 'qualification')]:
+        for name, lane in [('build-provider', 'release'), ('qualify-sdk-shard', 'qualification')]:
             content = job(RELEASE, name)
             self.assertRegex(content, r'(?m)^    needs: resolve-env$')
             self.assertIn('runs-on: blacksmith-12vcpu-macos-27', content)
@@ -186,7 +186,7 @@ class ReleasePipelineTests(unittest.TestCase):
     def test_only_the_release_lane_compiles_the_release_environment(self):
         selector = 'DARKBLOOM_RELEASE_ENVIRONMENT: ${{ needs.resolve-env.outputs.environment }}'
         self.assertIn(selector, job(RELEASE, 'build-provider'))
-        qualify = job(RELEASE, 'qualify-sdk')
+        qualify = job(RELEASE, 'qualify-sdk-shard')
         self.assertNotIn(selector, qualify)
         self.assertEqual(re.findall(r'DARKBLOOM_RELEASE_ENVIRONMENT: (\S+)', qualify), ['prod'])
         # Named once, in the job-level env: (no step or shell override).
@@ -262,7 +262,7 @@ class ReleasePipelineTests(unittest.TestCase):
         self.assertLess(resolver.index('ref: ${{ steps.trust.outputs.source_sha }}'),
                         resolver.index('./scripts/resolve-provider-release.sh'))
         self.assertIn('workflow_sha: ${{ steps.trust.outputs.source_sha }}', resolver)
-        for name in ['build-provider', 'qualify-sdk', 'build-and-release',
+        for name in ['build-provider', 'qualify-sdk-shard', 'qualify-sdk', 'build-and-release',
                      'stage-release', 'publish-release', 'validate-older-macos']:
             content = job(RELEASE, name)
             self.assertIn('ref: ${{ needs.resolve-env.outputs.workflow_sha }}', content)
@@ -390,6 +390,9 @@ class ReleasePipelineTests(unittest.TestCase):
         self.assertIn("run-nested-suite.sh testNativeAudioRelease --no-parallel", gate)
         self.assertNotIn("cache-hit", gate)
         self.assertNotIn("continue-on-error:", gate)
+        # Exactly one job runs it: the last shard, or an unsharded qualification.
+        for content in (fixture, gate):
+            self.assertIn("steps.lane.outputs.last == 'true'", content)
 
     def test_image_http_fixtures_reach_the_full_sdk_test_process(self):
         marker = '- name: Prepare MiMo image HTTP fixtures\n'
@@ -450,13 +453,87 @@ class ReleasePipelineTests(unittest.TestCase):
         self.assertIn('PUBLICATION_NAME="provider-publication-${ENV_PREFIX}-${RELEASE_SOURCE_SHA}-${GITHUB_RUN_ATTEMPT}"', sign)
         # Both SDK lanes pass the environment so retained diagnostics never clash.
         self.assertIn('environment: ${{ needs.resolve-env.outputs.environment }}', job(RELEASE, 'build-provider'))
-        self.assertIn('environment: ${{ needs.resolve-env.outputs.environment }}', job(RELEASE, 'qualify-sdk'))
+        self.assertIn('environment: ${{ needs.resolve-env.outputs.environment }}', job(RELEASE, 'qualify-sdk-shard'))
         # Release lanes add an -<environment>- infix; a caller passing no
         # environment (the warm lane) keeps the historical name with no empty
         # double dash.
         self.assertIn("provider-sdk-test-diagnostics${{ inputs.environment != '' && format('-{0}', inputs.environment) || '' }}-", ACTION)
         self.assertNotIn('provider-sdk-test-diagnostics--', ACTION)
         self.assertNotRegex(WARM, r'(?m)^\s+environment:')
+
+    def test_qualification_shards_run_the_ci_plan_and_one_audited_job_gates_signing(self):
+        shards = job(RELEASE, 'qualify-sdk-shard')
+        self.assertIn('    name: Qualify provider with SDK 27 (shard ${{ matrix.shard }})\n', shards)
+        self.assertIn("    if: needs.resolve-env.outputs.resume != 'true'\n", shards)
+        self.assertIn('      fail-fast: false\n', shards)
+        self.assertIn('        shard: [1, 2, 3, 4, 5]\n', shards)
+        self.assertIn('          shard: ${{ matrix.shard }}/${{ strategy.job-total }}\n', shards)
+        # One job carries the qualification result that signing needs and that
+        # recovery binds by name; a shard's name never matches it.
+        identity = (ROOT / 'scripts/provider_release_resume/identity.py').read_text()
+        self.assertIn('QUALIFY_JOB = "Qualify provider with SDK 27"', identity)
+        gate = job(RELEASE, 'qualify-sdk')
+        self.assertIn('    name: Qualify provider with SDK 27\n', gate)
+        self.assertFalse(shards.split('    name: ', 1)[1].split('\n', 1)[0].endswith('Qualify provider with SDK 27'))
+        self.assertRegex(gate, r'(?m)^    needs: \[resolve-env, qualify-sdk-shard\]$')
+        # The implicit success() condition: a failed or skipped shard skips the gate.
+        self.assertIn("    if: needs.resolve-env.outputs.resume != 'true'\n", gate)
+        self.assertNotRegex(gate, r'(?m)^    if:.*(always|cancelled|failure)')
+        self.assertNotIn('secrets.', gate)
+        self.assertIn('contents: read', gate)
+        self.assertNotIn('continue-on-error', gate)
+        # The gate audits what every shard executed against the full suite list.
+        self.assertIn('pattern: provider-sdk-qualification-${{ needs.resolve-env.outputs.environment }}-'
+                      '${{ github.sha }}-shard-*\n', gate)
+        self.assertIn('python3 scripts/provider-test-shards.py audit "${lists[0]}" "$RUNNER_TEMP/provider-sdk-shards"', gate)
+        self.assertLess(gate.index('diff <('), gate.index('provider-test-shards.py audit'))
+        # Each shard uploads its counts and suite list under that pattern.
+        # No attempt in the name: a rerun of failed shards overwrites only theirs.
+        retain = ACTION.split('- name: Retain shard counts for the audit\n', 1)[1].split('\n    - name:', 1)[0]
+        self.assertIn("name: provider-sdk-qualification${{ inputs.environment != '' && format('-{0}', inputs.environment) || '' }}"
+                      "-${{ github.sha }}-shard-${{ steps.lane.outputs.index }}\n", retain)
+        self.assertIn('overwrite: true\n', retain)
+        listing = ACTION.split('- name: List the provider suite for the shard audit\n', 1)[1].split('\n    - name:', 1)[0]
+        self.assertIn('swift test list --skip-build > "$RUNNER_TEMP/provider-sdk-shard/provider-tests.txt"', listing)
+        test = ACTION.split('- name: Test provider with release SDK\n', 1)[1].split('\n    - name:', 1)[0]
+        self.assertIn('export PROVIDER_TEST_SHARD="$QUALIFICATION_SHARD"', test)
+        self.assertIn('export PROVIDER_TEST_REPORT_DIR="$RUNNER_TEMP/provider-sdk-shard"', test)
+        # Prompt Parity runs once, against the test build, and reports both suites.
+        build = ACTION.index('- name: Build SDK test products and stage Metal library\n')
+        for name, script, suite in (('Verify public prompt golden vectors', 'verify-prompt-parity.sh',
+                                     'ProductionPromptParityTests'),
+                                    ('Verify pinned Nemotron prompts', 'verify-nemotron-prompt-parity.sh',
+                                     'NemotronTemplateParityLiveTests')):
+            with self.subTest(step=name):
+                self.assertLess(build, ACTION.index('- name: ' + name + '\n'))
+                parity = ACTION.split('- name: ' + name + '\n', 1)[1].split('\n    - name:', 1)[0]
+                self.assertIn("if: inputs.lane == 'qualification' && steps.lane.outputs.parity == 'true'", parity)
+                self.assertIn('./scripts/' + script, parity)
+                self.assertIn('provider-test-shards.py counts parity ' + suite, parity)
+        self.assertIn("PROMPT_PARITY_SKIP_BUILD: '1'", ACTION)
+        # A shard applies to qualification only; the release lane builds whole.
+        lane = ACTION.split('- name: Validate lane\n', 1)[1].split('\n    - name:', 1)[0]
+        self.assertIn('if [ "$LANE" != qualification ]', lane)
+        self.assertIn('^([1-9][0-9]*)/([1-9][0-9]*)$', lane)
+        self.assertNotIn('shard:', job(RELEASE, 'build-provider'))
+        self.assertNotIn('shard:', WARM)
+
+    def test_cluster_helper_objects_share_the_release_swift_cache(self):
+        # The native worker build reuses objects like the provider build; the
+        # Metal library is never taken from a cache, and the helper checks
+        # always run.
+        worker = 'libs/darkbloom-cluster-worker/.build-native-worker'
+        for name in ('Restore SDK-specific Swift build cache', 'Save SDK-specific Swift build cache'):
+            cache = ACTION.split('- name: ' + name + '\n', 1)[1].split('\n    - name:', 1)[0]
+            self.assertIn('          ' + worker + '\n', cache)
+        restore = ACTION.split('- name: Restore unchanged source timestamps\n', 1)[1].split('\n    - name:', 1)[0]
+        self.assertIn('libs/mlx-swift-lm/.build ' + worker + '; do', restore)
+        self.assertIn('-name mlx.metallib -delete', restore)
+        helpers = ACTION.split('- name: Build cluster helpers (worker and placement tool)\n', 1)[1].split('\n    - name:', 1)[0]
+        self.assertNotIn('cache-hit', helpers)
+        identity = (ROOT / 'scripts/provider_release_cache/identity.py').read_text()
+        for recipe in ('"scripts/build-cluster-helpers.sh"', '"libs/darkbloom-cluster-worker/build-native-worker.sh"'):
+            self.assertIn(recipe, identity)
 
     def test_cluster_runtime_facts_come_from_the_final_signed_app_without_secrets(self):
         sign = job(RELEASE, 'build-and-release')

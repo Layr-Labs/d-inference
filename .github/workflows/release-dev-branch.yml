@@ -81,6 +81,8 @@ on:
       - 'scripts/fetch-metallib.sh'
       - 'scripts/test-qwen4-packaged-resources.py'
       - 'scripts/verify-prompt-parity.sh'
+      - 'scripts/verify-nemotron-prompt-parity.sh'
+      - 'scripts/provider-test-shards.py'
       - 'scripts/prepare-mimo-*-fixtures.py'
       - 'scripts/run-provider-tests.sh'
       - 'scripts/run-nested-suite.sh'

@@ -397,7 +397,7 @@ The optimized job sets `DARKBLOOM_RELEASE_ENVIRONMENT`. For `dev`,
 `DARKBLOOM_ENV_DEV`; defaults are `wss://api.dev.darkbloom.dev/ws/provider` and
 `https://models.darkbloom.ai`
 (`provider-swift/Sources/ProviderBuildEnvironment/BuildEnvironment.swift`).
-`qualify-sdk` sets `DARKBLOOM_RELEASE_ENVIRONMENT: prod`, so its tests see
+`qualify-sdk-shard` sets `DARKBLOOM_RELEASE_ENVIRONMENT: prod`, so its tests see
 production defaults on every branch: on `dev`, an unset value compiles the dev
 identity (`provider-swift/Package.swift`). Config, CLI flags and
 `DARKBLOOM_R2_CDN_URL` still override defaults. Dev/prod products have different
@@ -662,9 +662,11 @@ fresh install takes the latest.
 
 After `build-provider` and `qualify-sdk` succeed, `build-and-release` consumes
 the source-bound unsigned artifact on `blacksmith-12vcpu-macos-27`. It does not
-wait for an environment approval. Release SDK selection is SDK 27.0 / Apple
-Swift 6.4, with `SDKROOT` covering compilation and linking; the final recorded
-SDK must match. The checksum-pinned GitHub CLI is installed by
+wait for an environment approval. `qualify-sdk` passes only when all five
+`qualify-sdk-shard` jobs pass and together executed the full provider suite.
+Release SDK selection is SDK 27.0 / Apple Swift 6.4, with `SDKROOT` covering
+compilation and linking; the final recorded SDK must match. The
+checksum-pinned GitHub CLI is installed by
 `scripts/install-macos-github-cli.sh` before downloads. Missing `gh` in an old
 run is a tooling failure, not a model or notarization failure.
 

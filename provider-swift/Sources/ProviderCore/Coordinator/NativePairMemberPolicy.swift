@@ -6,16 +6,49 @@ struct NativePairMemberPolicy: Sendable {
     let bytes: Data
     let model: String
     let generation: UInt64
-    /// Plan (a pair approval's fixed plan, or a cluster approval's placement
-    /// policy), artifact, native runtime, metallib, resource library,
-    /// capability, resource policy and profile.
-    let hashes: [Data]
+    /// The model's artifact digest, which every approval names.
+    let artifact: Data
+    /// A pair approval's fixed plan, or a build-pinned cluster approval's
+    /// placement policy (no member check reads it); nil for a model approval.
+    let pinnedPlan: Data?
+    /// The runtime a pair or build-pinned cluster approval pins; nil for a
+    /// model approval, whose members take it from their own saved setups.
+    let runtime: Runtime?
+    /// The runtime digests a member starts with and hashes its files against.
+    struct Runtime: Sendable, Equatable {
+        let nativeRuntime, metallib, resourceLibrary, capability, resourcePolicy, profile: Data
+
+        /// From a plan's runtime block (the member's own setup) and the
+        /// digests the member took of its installed metallib and resource
+        /// library; nil when a value is not 64 lowercase hex characters.
+        init?(_ block: ClusterPlan.Runtime, metallibSHA256: String, resourceLibrarySHA256: String) {
+            let values = [block.nativeRuntimeSHA256, metallibSHA256, resourceLibrarySHA256, block.capabilitySHA256,
+                          block.resourcePolicySHA256, block.profileSHA256].compactMap(NativePairMemberPolicy.digest(hex:))
+            guard values.count == 6 else { return nil }
+            self.init(values)
+        }
+
+        /// The six digests in canonical order (worker, metallib, resource library, capability, resource policy, profile).
+        init(_ values: [Data]) {
+            nativeRuntime = values[0]; metallib = values[1]; resourceLibrary = values[2]
+            capability = values[3]; resourcePolicy = values[4]; profile = values[5]
+        }
+
+        /// The four digests a start carries, as a plan's runtime block names them.
+        var block: ClusterPlan.Runtime {
+            .init(nativeRuntimeSHA256: NativePairMemberPolicy.hex(nativeRuntime),
+                  capabilitySHA256: NativePairMemberPolicy.hex(capability),
+                  resourcePolicySHA256: NativePairMemberPolicy.hex(resourcePolicy),
+                  profileSHA256: NativePairMemberPolicy.hex(profile))
+        }
+    }
     let schedule: UInt8
     let maximumFrame, maximumPlaintext: UInt32
     let maximumRecords, maximumCumulative, notAfter: UInt64
     /// A pair approval's qualified chips; empty for a cluster approval.
     let chips: [String]
-    /// A cluster approval's terms (`darkbloom/coordinator-cluster-runtime-approval/v1`);
+    /// A cluster approval's terms (`darkbloom/coordinator-cluster-runtime-approval/v1`,
+    /// or a model approval's `darkbloom/coordinator-cluster-model-approval/v1`);
     /// nil for a pair approval.
     let cluster: Cluster?
     struct Cluster: Sendable, Equatable {
@@ -34,14 +67,23 @@ struct NativePairMemberPolicy: Sendable {
     }
     static let pairDomain = Data("darkbloom/coordinator-native-runtime-approval/v1\0".utf8)
     static let clusterDomain = Data("darkbloom/coordinator-cluster-runtime-approval/v1\0".utf8)
+    /// A cluster approval that pins no build (contract M2): the cluster layout
+    /// without the placement digest and the six runtime digests.
+    static let modelDomain = Data("darkbloom/coordinator-cluster-model-approval/v1\0".utf8)
     init(_ bytes: Data) throws {
         guard bytes.count <= 8192 else { throw NativePairMemberError.binding }
         var r = Reader(bytes)
-        let isCluster = bytes.starts(with: Self.clusterDomain)
-        try r.literal(isCluster ? Self.clusterDomain : Self.pairDomain)
+        let isModel = bytes.starts(with: Self.modelDomain)
+        let isCluster = isModel || bytes.starts(with: Self.clusterDomain)
+        try r.literal(isModel ? Self.modelDomain : isCluster ? Self.clusterDomain : Self.pairDomain)
         _ = try r.string(maximum: 128) // Policy ID is included in the exact digest.
         model = try r.string(maximum: 512); generation = try r.integer(UInt64.self)
-        hashes = try (0..<8).map { _ in try r.read(32) }
+        let hashes = try (0..<(isModel ? 1 : 8)).map { _ in try r.read(32) }
+        if isModel {
+            artifact = hashes[0]; pinnedPlan = nil; runtime = nil
+        } else {
+            pinnedPlan = hashes[0]; artifact = hashes[1]; runtime = Runtime(Array(hashes[2...]))
+        }
         try r.literal(Data([1, 1])); schedule = try r.integer(UInt8.self)
         maximumFrame = try r.integer(UInt32.self); maximumPlaintext = try r.integer(UInt32.self)
         maximumRecords = try r.integer(UInt64.self); maximumCumulative = try r.integer(UInt64.self)
@@ -98,6 +140,15 @@ struct NativePairMemberPolicy: Sendable {
             guard n > 0, Int(n) <= maximum, let s = String(data: try read(Int(n)), encoding: .utf8) else { throw NativePairMemberError.binding }
             return s
         }
+    }
+
+    static func hex(_ bytes: Data) -> String { bytes.map { String(format: "%02x", $0) }.joined() }
+
+    /// The 32 bytes of a digest given as 64 lowercase hex characters; nil for anything else.
+    static func digest(hex text: String) -> Data? {
+        guard ClusterConfigurationSyntax.hash(text) else { return nil }
+        let digits = Array(text.utf8).map { $0 < 58 ? $0 - 48 : $0 - 87 }
+        return Data(stride(from: 0, to: 64, by: 2).map { digits[$0] << 4 | digits[$0 + 1] })
     }
 }
 

@@ -21,21 +21,23 @@ public enum DistributedInstalledOwner {
 
     /// The owner's own admission of a start the coordinator committed to this
     /// member: its own rank, and every digest, limit and generation of the
-    /// approval this Mac installed (the same check the member's session made
-    /// before it prepared). The epoch and the owner, lease and launch
+    /// approval this Mac installed, or under a model approval this Mac's own
+    /// setup's runtime (the same check the member's session made before it
+    /// prepared). The epoch and the owner, lease and launch
     /// identifiers are the coordinator's.
     static func memberAuthorizer(plan: DistributedInstalledPlan, attachment: ClusterNativeMemberAttachment)
         throws -> @Sendable (ClusterNativeAuthorizationStart) throws -> Void {
         let policy = try NativePairMemberPolicy(attachment.policyBytes), rank = plan.configuration.localRank
         // A cluster approval fixes no plan: the start must name the one this
-        // Mac's setup derives (and its member registered).
-        let digits = Array(plan.partition.planSHA256.utf8).map { $0 < 58 ? $0 - 48 : $0 - 87 }
-        let derived = Data(stride(from: 0, to: 64, by: 2).map { digits[$0] << 4 | digits[$0 + 1] })
+        // Mac's setup derives (and its member registered). A model approval
+        // fixes no runtime: the start must name this Mac's setup's own.
+        let derived = NativePairMemberPolicy.digest(hex: plan.partition.planSHA256) ?? Data()
+        let runtime = DistributedInstalledNativeStart.runtimeBlock(plan: plan)
         return { start in
             guard start.rank == rank else {
                 throw ClusterConfigurationError.invalid("The committed native start names another rank")
             }
-            do { try policy.require(start, plan: policy.cluster == nil ? nil : derived) }
+            do { try policy.require(start, plan: policy.cluster == nil ? nil : derived, runtime: runtime) }
             catch { throw ClusterConfigurationError.invalid("The committed native start differs from this Mac's installed approval") }
         }
     }

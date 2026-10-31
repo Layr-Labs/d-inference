@@ -45,7 +45,7 @@ struct ClusterRuntimeApprovalFactsTests {
         let fields = ["darkbloom/installed-resource-policy/v1", capability.arithmeticPolicyID,
                       capability.arithmeticPolicySHA256, capability.stateSemantics, capability.schedulingPolicy]
         #expect(entry.resourcePolicySHA256 == ClusterConfigurationCodec.sha256(Data(fields.joined(separator: "\u{1F}").utf8)))
-        #expect(entry.resourcePolicySHA256 == NativePairMemberInstallation.hex(DistributedInstalledNativeStart.resourcePolicySHA256(capability)))
+        #expect(entry.resourcePolicySHA256 == NativePairMemberPolicy.hex(DistributedInstalledNativeStart.resourcePolicySHA256(capability)))
 
         // The worker ran its metadata command with the hash just computed.
         let configuration = try f.real(model.appendingPathComponent("config.json"))

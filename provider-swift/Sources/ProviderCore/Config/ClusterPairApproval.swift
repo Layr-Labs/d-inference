@@ -52,7 +52,7 @@ public struct ClusterPairApproval: Codable, Sendable, Equatable {
         guard let expiry = Self.unixNanoseconds(rfc3339: notAfter) else {
             throw ClusterConfigurationError.invalid("Pair approval not_after must be an RFC 3339 instant")
         }
-        var bytes = Data("darkbloom/coordinator-native-runtime-approval/v1\0".utf8)
+        var bytes = NativePairMemberPolicy.pairDomain
         func integer<T: FixedWidthInteger>(_ value: T) {
             withUnsafeBytes(of: value.bigEndian) { bytes.append(contentsOf: $0) }
         }
@@ -60,11 +60,10 @@ public struct ClusterPairApproval: Codable, Sendable, Equatable {
         text(id); text(model); integer(generation)
         for digest in [planSHA256, artifactSHA256, nativeRuntimeSHA256, metallibSHA256,
                        resourceLibrarySHA256, capabilitySHA256, resourcePolicySHA256, profileSHA256] {
-            guard ClusterConfigurationSyntax.hash(digest) else {
+            guard let value = NativePairMemberPolicy.digest(hex: digest) else {
                 throw ClusterConfigurationError.invalid("Pair approval digests must be 64 lowercase hex characters")
             }
-            let digits = Array(digest.utf8).map { $0 < 58 ? $0 - 48 : $0 - 87 }
-            for index in stride(from: 0, to: 64, by: 2) { bytes.append(digits[index] << 4 | digits[index + 1]) }
+            bytes.append(value)
         }
         bytes.append(contentsOf: [1, 1, schedule])
         integer(maximumTransportFrame); integer(maximumPlaintext)

@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-10-29
+> Last updated: 2026-10-30
 
 Provider CLI and native-runtime environment variables, compiled defaults and reading symbols. Secrets are named, never valued. Unless specified otherwise, values are read at process start.
 
@@ -931,7 +931,9 @@ checks it against its own installed files with the same computation. One type co
 `provider-swift/Sources/ProviderCore/Config/ClusterRuntimeApprovalFacts.swift`
 (`ClusterRuntimeApprovalFacts`). The hidden command
 `darkbloom cluster runtime-facts --app <app> --model <id>=<folder>` prints them
-in their canonical form. No value is typed by hand.
+in their canonical form. No value is typed by hand. Only a build-pinned entry
+needs these facts. A model approval names no runtime digest, and the provider
+computes no facts for it ([model approvals](#model-approvals)).
 
 | Field | Value |
 |---|---|
@@ -1012,9 +1014,11 @@ selector matches the two registrations itself (see
 
 **Automatic (guided setup).** The coordinator operator adds a cluster approval
 by hand to the operator approval file
-([`EIGENINFERENCE_CLUSTER_PAIR_CATALOG`](#experimental-cluster-pairs)), with the
-digests that `darkbloom cluster runtime-facts --app <app> --model
-<id>=<config>,<manifest>` prints ([cluster runtime facts](#cluster-runtime-facts)).
+([`EIGENINFERENCE_CLUSTER_PAIR_CATALOG`](#experimental-cluster-pairs)). A
+build-pinned entry has the digests that `darkbloom cluster runtime-facts --app
+<app> --model <id>=<config>,<manifest>` prints
+([cluster runtime facts](#cluster-runtime-facts)). A model approval has no
+runtime digests ([model approvals](#model-approvals)).
 The coordinator serves the loaded entries. After the Test stage of
 `darkbloom cluster` passes, the control leader takes the entry for this pair and
 saves it on both Macs. The cluster service then runs each Mac's part as
@@ -1026,13 +1030,13 @@ pair's placement; [serving a pair](cluster-control-protocol.md#serving-a-pair)).
 
 | Step | Rule | Source |
 |---|---|---|
-| Fetch | `GET <coordinator>/v1/cluster/approvals`, no query, no credential; HTTPS only (plain HTTP only to this Mac's loopback); no redirect; at most `maximumBytes = 512 * 1024` bytes and `maximumApprovals = 128` entries; `timeoutSeconds = 10`. The body is `darkbloom_cluster_catalog_v2` with `cluster_approvals`; one unknown, missing or malformed field refuses the whole answer. 404 (pair control off: production, staging) and every failure mean no approval. A read error after an HTTP answer is an answer that cannot be used, not "no answer" | `provider-swift/Sources/ProviderCore/Inference/Distributed/Membership/ClusterApproval/ClusterApprovalFetch.swift` (`ClusterApprovalFetch`) |
-| Match | The entry whose `model` is the setup's `publicModelID`, whose `schedule` is its prefill schedule (`1` serial, `2` one-chunk lookahead), that is still current, and whose eight digests all equal this Mac's own cluster runtime facts (computed from the helpers beside the setup's worker and the setup's model folder); latest `not_after` first. An entry for another build or another copy of the model does not match | `provider-swift/Sources/ProviderCore/Inference/Distributed/Membership/ClusterApproval/ClusterApprovalLifetime.swift` (`select`) |
-| Check | On each Mac, against its own files: every digest (`ClusterApprovalAttachment.mismatches`); the member's own start refusals (`requireLocalRankGranted`); the roster of this Mac's pairing (S17); `validate` below | `provider-swift/Sources/ProviderCore/Inference/Distributed/Membership/ClusterApproval/ClusterApprovalAttachment.swift` (`attachment`) |
+| Fetch | `GET <coordinator>/v1/cluster/approvals`, no query, no credential; HTTPS only (plain HTTP only to this Mac's loopback); no redirect; at most `maximumBytes = 512 * 1024` bytes and `maximumApprovals = 128` entries; `timeoutSeconds = 10`. The body is `darkbloom_cluster_catalog_v2` with `cluster_approvals`. Each entry has the fields of one of the two shapes (build-pinned or model approval); one list can hold both. One unknown, missing or malformed field refuses the whole answer. 404 (pair control off: production, staging) and every failure mean no approval. A read error after an HTTP answer is an answer that cannot be used, not "no answer" | `provider-swift/Sources/ProviderCore/Inference/Distributed/Membership/ClusterApproval/ClusterApprovalFetch.swift` (`ClusterApprovalFetch`) |
+| Match | The entry whose `model` is the setup's `publicModelID`, whose `schedule` is its prefill schedule (`1` serial, `2` one-chunk lookahead), and that is still current. A model approval matches when its `artifact_sha256` is the saved setup's `capability.artifactSHA256`; no runtime facts are computed for it. A build-pinned entry matches when its eight digests all equal this Mac's own cluster runtime facts (computed at most once per check from the helpers beside the setup's worker and the setup's model folder). Latest `not_after` first, across both shapes. An entry for another build or another copy of the model does not match | `provider-swift/Sources/ProviderCore/Inference/Distributed/Membership/ClusterApproval/ClusterApprovalLifetime.swift` (`select`) |
+| Check | On each Mac, against its own files: every digest of a build-pinned entry (`ClusterApprovalAttachment.mismatches`), or the artifact of a model approval (refusal: "the approval's artifact_sha256 differs from this Mac's setup"); the member's own start refusals (`requireLocalRankGranted`); the roster of this Mac's pairing (S17); `validate` below | `provider-swift/Sources/ProviderCore/Inference/Distributed/Membership/ClusterApproval/ClusterApprovalAttachment.swift` (`attachment`) |
 | Save | Both parts stop. The leader checks the entry, sends it to the other Mac over the cable (service command `approval`), and saves it only after the other Mac checked and saved it. A refusal on either Mac saves it on neither. Both parts then start as cluster members | `provider-swift/Sources/ProviderCore/Inference/Distributed/Membership/ClusterApproval/ClusterApprovalSync.swift` (`run`, `receive`) |
-| When | After the guided setup's Test stage passed (control operation `register`, run by the control leader: `OnboardingLive.localRegister`), once at each start of the control leader's cluster service and after an update re-adopted the setups, and every minute while a serving pair is offered or has its approval kept aside (`ClusterService.checkApproval`). A local-only cluster never asks (`ClusterApprovalSync.asks`) | as named |
-| Lifetime | A saved approval with more than `renewWithinSeconds = 86_400` left is kept. Within that day a later matching entry replaces it. An ended one is removed: each Mac saves its setup without it before its part starts, and its part then serves on the leader's local API (`ClusterService.supervise`) | `ClusterApprovalLifetime.decide` |
-| Serve locally | Both Macs save their setups without the approval, the other Mac first, and the pair serves on the leader's local API, when: no request gets an HTTP answer for the absence grace (`ClusterService.soloGraceSeconds`: 600 s; `DARKBLOOM_DEBUG_CLUSTER_SOLO_GRACE_SECONDS` in a development build); the coordinator answers (a 404, or a list) without the saved approval and serves no other matching entry; or either Mac's coordinator-paired parts ended `ClusterControlSoloAdmission.maximumQuickEnds = 3` times in a row right after starting (each Mac's status, `memberQuickEnds`; an end because the coordinator was out of reach is not counted). When either Mac cannot save, both keep the approval and the next check tries again. The leader keeps the approval and the reason in its setup record (`approvalSetAside`). When an answer lists a matching entry, the pair is registered again through the Save step; after repeated failures, only a later entry | `ClusterApprovalCheck.step`, `ClusterApprovalSync.serveLocally`; `ClusterService.checkApproval` |
+| When | After the guided setup's Test stage passed (control operation `register`, run by the control leader: `OnboardingLive.localRegister`), once at each start of the control leader's cluster service and after an update re-adopted the setups (the re-adopted setups find the same model approval again, because it names no build), and every minute while a serving pair is offered or has its approval kept aside (`ClusterService.checkApproval`). A local-only cluster never asks (`ClusterApprovalSync.asks`) | as named |
+| Lifetime | A saved approval with more than `renewWithinSeconds = 86_400` left is kept. Within that day a later matching entry replaces it. An entry that the operator replaced under the same `id` (other bytes, for example a new `not_after`) is no longer the saved approval: a matching entry replaces it, else it is withdrawn (Serve locally). An ended one is removed: each Mac saves its setup without it before its part starts, and its part then serves on the leader's local API (`ClusterService.supervise`) | `ClusterApprovalLifetime.decide` |
+| Serve locally | Both Macs save their setups without the approval, the other Mac first, and the pair serves on the leader's local API, when: no request gets an HTTP answer for the absence grace (`ClusterService.soloGraceSeconds`: 600 s; `DARKBLOOM_DEBUG_CLUSTER_SOLO_GRACE_SECONDS` in a development build); the coordinator answers (a 404, or a list) without the saved approval as saved and serves no other matching entry; or either Mac's coordinator-paired parts ended `ClusterControlSoloAdmission.maximumQuickEnds = 3` times in a row right after starting (each Mac's status, `memberQuickEnds`; an end because the coordinator was out of reach is not counted). When either Mac cannot save, both keep the approval and the next check tries again. The leader keeps the approval, the reason and the setup's worker digest in its setup record (`approvalSetAside`, `runtimeBinarySHA256`). When an answer lists a matching entry, the pair is registered again through the Save step; after repeated failures, only a later entry, or the same entry after an update installs another worker (a record without the worker digest keeps the same entry aside on every build) | `ClusterApprovalCheck.step`, `ClusterApprovalSync.serveLocally`; `ClusterService.checkApproval` |
 | Both or neither | A send whose reply is lost may come after the other Mac saved: the leader gives it its setup back. Each Mac's status names its saved cluster approval (`approvalID`, `""` for none; a build without the field is unknown and never compared). On every check the leader compares it with its own; while they differ, it gives the other Mac its approval (while offered) or none, and saves its own setup without an approval it does not offer; when the other Mac refuses its approval, it saves its own setup without it too | `ClusterApprovalCheck.peerApprovalID`, `macsDiffer`, `ClusterApprovalSync.converge` |
 | Changing | The leader decides under the command lock, from the setup, record and the other Mac's status as they are then. A save is first checked against the leader's own files, so no part stops for an approval it refuses. A busy command lock waits for the next check, a minute later | `ClusterService.checkApproval`, `ClusterApprovalSync.apply` |
 
@@ -1067,8 +1071,8 @@ coordinator operator keeps:
 The automatic path saves `schema` `darkbloom_cluster_native_member_v2` (the
 roster registration) instead: `ownerSHA256`, `metallibPath` and
 `resourceLibraryPath` as above (the setup worker's `mlx.metallib` and
-`pagedattention.metal`), `clusterApproval` (one `cluster_approvals` entry,
-field for field), `roster` (the roster both Macs countersigned when they
+`pagedattention.metal`), `clusterApproval` (one `cluster_approvals` entry of
+either shape, field for field), `roster` (the roster both Macs countersigned when they
 paired), `memberPins` (the members' pins in rank order) and `edges` (the link
 the serving leader last measured, as `rdma`; omitted when none was measured).
 
@@ -1077,7 +1081,9 @@ loaded (`provider-swift/Sources/ProviderCore/Config/ClusterNativeMemberAttachmen
 `validate`): the approval's `model`, `plan_sha256`, `artifact_sha256`,
 `native_runtime_sha256`, `capability_sha256`, `profile_sha256` and `schedule`
 must equal the saved setup's own model, selected Plan, capability pins and
-prefill schedule (`1` serial, `2` one-chunk lookahead). The member derives the
+prefill schedule (`1` serial, `2` one-chunk lookahead). A cluster approval
+names no plan; a model approval names no runtime, so only its `model`,
+`artifact_sha256` and `schedule` are compared. The member derives the
 canonical policy bytes from the entry exactly as the coordinator does
 (`provider-swift/Sources/ProviderCore/Config/ClusterPairApproval.swift`,
 `canonicalPolicy`, mirroring `darkbloom-platform:coordinator/registry/native_pair_approval.go`,
@@ -1089,7 +1095,8 @@ then `Z` or `±HH:MM`); any other spelling is refused when the setup is saved.
 At start (`provider-swift/Sources/ProviderCore/Inference/Distributed/Membership/ClusterMemberPreparation.swift`,
 `nativeMemberInstallation`) the approval must be unexpired and list this Mac's
 chip, and the owner, native executable, metallib and resource library must
-hash to their pins; otherwise the command stops before registering. A member
+hash to their pins; otherwise the command stops before registering. Under a
+model approval the pins are this Mac's own (below). A member
 whose setup has no `nativeMember` registers no membership and is never paired.
 
 A setup with `nativeMember` cannot run `darkbloom start --local --distributed`
@@ -1102,6 +1109,22 @@ serves the pair's committed starts: the leader hosts the link listener and the
 pair's slot, the follower dials it. A member without `linkControl` declines the
 coordinator's preparation; see [provider member
 control](cluster-control-protocol.md#provider-member-control).
+
+### Model approvals
+
+A model approval is a `cluster_approvals` entry that names no build. A new
+build of the provider needs no new entry: after an update, the re-adopted
+setups find the same entry at the next check. The coordinator accepts one only
+in its development deployment (DevNet); see the coordinator's documentation in
+`Layr-Labs/darkbloom-platform`. Build-pinned entries keep every rule above.
+
+| Item | Rule | Source |
+|---|---|---|
+| Shape | Exactly 14 fields: `id`, `model`, `generation`, `artifact_sha256`, `schedule`, `maximum_transport_frame`, `maximum_plaintext`, `maximum_records`, `maximum_cumulative_plaintext`, `allowed_numerics_classes`, `minimum_members`, `maximum_members`, `minimum_member_usable_bytes`, `not_after`. The build-pinned shape adds `placement_policy_sha256`, `native_runtime_sha256`, `metallib_sha256`, `resource_library_sha256`, `capability_sha256`, `resource_policy_sha256` and `profile_sha256`. An entry with some but not all of these seven, or with a null one, is refused | `provider-swift/Sources/ProviderCore/Config/ClusterRuntimeApproval.swift` (`ClusterRuntimeApproval`, `isEntry`, `init(from:)`) |
+| Canonical bytes | Domain `darkbloom/coordinator-cluster-model-approval/v1` and a zero byte, then the cluster approval's layout without the placement digest and the six runtime digests: `id`, `model`, `generation`, `artifact_sha256`, bytes `1, 1, schedule`, frame, plaintext, records, cumulative, `not_after` (nanoseconds), member bounds, usable bytes, grant lease terms, numerics classes. Their SHA-256 is the `policy_sha256` the member registers. Two golden vectors are pinned in `ClusterModelApprovalTests` and in the coordinator's tests | `ClusterRuntimeApproval.canonicalPolicy`; `provider-swift/Sources/ProviderCore/Coordinator/NativePairMemberPolicy.swift` (`modelDomain`) |
+| Plan runtime block | The member's plan for a model approval carries `runtime`: `native_runtime_sha256` (the saved setup's `capability.runtimeBinarySHA256`), `capability_sha256` (the setup's `capabilitySHA256`), `resource_policy_sha256` (`DistributedInstalledNativeStart.resourcePolicySHA256` of the capability) and `profile_sha256` (`capability.profileFingerprint`). A plan for a build-pinned entry has none. The block is part of the plan, so both members must register the same one | `DistributedInstalledNativeStart.runtimeBlock`; `provider-swift/Sources/ProviderCore/Protocol/ClusterRosterRegistration.swift` (`ClusterPlan.runtime`) |
+| Metallib and resource library | Hashed once when the member builds its registration. The metallib digest also gives the device profile's numerics class. A model approval that lists numerics classes is in effect pinned to one metallib, because each class contains the first 8 hex characters of the metallib digest (`ClusterMemberDeviceProfile.numericsClass`); an empty list admits any class | `ClusterMemberPreparation.nativeMemberInstallation` |
+| Start | The start's worker, capability, resource-policy and profile digests must equal the member's own block; the artifact, schedule and limits must equal the entry's. At prepare, the worker hashes to the setup's pin and the metallib and resource library to the digests taken at registration. The owner admits the start against the same block from its own setup | `NativePairMemberPolicy.require`, `NativePairMemberInstallation` (`requireStart`, `verifyInstalledFiles`), `DistributedInstalledOwner.memberAuthorizer` |
 
 ### Guided link setup
 

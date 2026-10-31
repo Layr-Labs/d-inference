@@ -121,9 +121,11 @@ enum ClusterApprovalCheck {
         watch.unreachableSince = nil
         guard answered else { return .keep }
         // Not offered now: the first matching entry, or one listed again for a pair that serves locally. An approval its
-        // parts kept failing with is not taken again.
+        // parts kept failing with is not taken again by the same build (by any build for a record without one).
         var answer = fetched
-        if let setAside, setAside.reason == .failing, case .approvals(let approvals) = fetched {
+        if let setAside, setAside.reason == .failing,
+           setAside.runtimeBinarySHA256.map({ $0 == saved.capability.runtimeBinarySHA256 }) ?? true,
+           case .approvals(let approvals) = fetched {
             answer = .approvals(approvals.filter { $0.id != setAside.approval.id })
         }
         if case .save(let approval) = ClusterApprovalSync.decision(saved: saved, fetched: answer, now: now, facts: facts) {

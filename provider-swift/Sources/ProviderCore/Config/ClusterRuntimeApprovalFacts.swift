@@ -128,7 +128,7 @@ public struct ClusterRuntimeApprovalFacts: Equatable, Sendable {
         }
         return Model(model: artifact.modelID, artifactSHA256: capability.artifactSHA256,
             capabilitySHA256: ClusterConfigurationCodec.sha256(bytes), profileSHA256: capability.profileFingerprint,
-            resourcePolicySHA256: NativePairMemberInstallation.hex(DistributedInstalledNativeStart.resourcePolicySHA256(capability)))
+            resourcePolicySHA256: NativePairMemberPolicy.hex(DistributedInstalledNativeStart.resourcePolicySHA256(capability)))
     }
 
     // MARK: - Canonical form

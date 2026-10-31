@@ -29,6 +29,16 @@ enum DistributedInstalledNativeStart {
             capability.arithmeticPolicySHA256, capability.stateSemantics, capability.schedulingPolicy])
     }
 
+    /// The runtime block a member registers in its plan for a model
+    /// approval (contract M3) and requires of a start under it: its saved
+    /// setup's worker pin, capability, resource policy and profile. These are
+    /// the values a build-pinned approval for the same build names.
+    static func runtimeBlock(plan: DistributedInstalledPlan) -> ClusterPlan.Runtime {
+        .init(nativeRuntimeSHA256: plan.capability.runtimeBinarySHA256, capabilitySHA256: plan.configuration.capabilitySHA256,
+              resourcePolicySHA256: NativePairMemberPolicy.hex(resourcePolicySHA256(plan.capability)),
+              profileSHA256: plan.capability.profileFingerprint)
+    }
+
     static func common(plan: DistributedInstalledPlan, epoch: UUID) throws -> ClusterNativeAuthorizationCommon {
         let configuration = plan.configuration, capability = plan.capability
         func bytes(_ hex: String) throws -> Data {

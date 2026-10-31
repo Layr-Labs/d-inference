@@ -2,10 +2,10 @@ import Foundation
 
 /// The cluster approvals the provider's coordinator serves (`GET /v1/cluster/approvals`): every unexpired entry of
 /// the coordinator operator's approval file, public build facts, so the request carries no credential. The answer
-/// approves nothing by itself: the leader takes only an entry whose digests are this Mac's own cluster runtime facts,
-/// and each Mac checks it against its own installed files before it saves it (`ClusterApprovalAttachment`). A
-/// coordinator without pair control answers 404, and every failure means "no approval": nothing here can stop a Mac
-/// from serving.
+/// approves nothing by itself: the leader takes only an entry whose digests are this Mac's own cluster runtime facts
+/// (or a model approval for its saved setup's model, schedule and artifact), and each Mac checks it against its own
+/// installed files before it saves it (`ClusterApprovalAttachment`). A coordinator without pair control answers 404,
+/// and every failure means "no approval": nothing here can stop a Mac from serving.
 public enum ClusterApprovalFetch {
     public static let path = "/v1/cluster/approvals"
     public static let schemaName = "darkbloom_cluster_catalog_v2"
@@ -85,13 +85,14 @@ public enum ClusterApprovalFetch {
     }
 
     /// `{"schema":"darkbloom_cluster_catalog_v2","cluster_approvals":[…]}`, read as strictly as a saved setup reads
-    /// one entry: exact field names, nothing unknown or missing, and every entry must encode to coordinator policy
-    /// bytes (`ClusterRuntimeApproval.canonicalPolicy`). One bad entry refuses the whole answer.
+    /// one entry: the exact field names of one of the two shapes (build-pinned or a model approval, in any mix),
+    /// nothing unknown or missing, and every entry must encode to coordinator policy bytes
+    /// (`ClusterRuntimeApproval.canonicalPolicy`). One bad entry refuses the whole answer.
     static func decode(_ data: Data) throws -> [ClusterRuntimeApproval] {
         guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               Set(object.keys) == ["schema", "cluster_approvals"], object["schema"] as? String == schemaName,
               let entries = object["cluster_approvals"] as? [[String: Any]], entries.count <= maximumApprovals,
-              entries.allSatisfy({ Set($0.keys) == ClusterRuntimeApproval.fields }) else {
+              entries.allSatisfy({ ClusterRuntimeApproval.isEntry($0.keys) }) else {
             throw ClusterConfigurationError.invalid("The cluster approvals answer is not a \(schemaName) list")
         }
         struct List: Decodable { let clusterApprovals: [ClusterRuntimeApproval]

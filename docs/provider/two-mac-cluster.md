@@ -1,6 +1,6 @@
 # Two Macs as one provider (guided setup)
 
-> Last updated: 2026-10-29
+> Last updated: 2026-10-30
 
 Two Apple Silicon Macs joined by one Thunderbolt 5 cable serve a model together:
 each Mac holds part of its layers, and the pair serves as one provider. Setting
@@ -112,9 +112,9 @@ start fails and says why. To serve without any coordinator, use
 ## Registered with the coordinator as a cluster member (DevNet)
 
 When the coordinator's operator approval file holds a cluster approval for this
-pair's installed app and model (DevNet only), the pair registers with the
-coordinator by itself. Nothing is typed and no file is copied. Production and
-staging serve no approvals, and the pair serves as described above. The pair
+pair's model (DevNet only), the pair registers with the coordinator by itself.
+Nothing is typed and no file is copied. Production and staging serve no
+approvals, and the pair serves as described above. The pair
 serves its owner's own requests, and public requests too once the coordinator's
 operator has turned public cluster routing on and qualified the pair's model and
 split ([serving a pair](../reference/cluster-control-protocol.md#serving-a-pair)).
@@ -122,8 +122,11 @@ A tensor-parallel pair registers like a pipeline one; its plan names no cut.
 
 1. Run `darkbloom cluster` and choose a model, as in [the steps](#the-steps-once).
    After the Test stage passes, the leader reads the approvals the coordinator
-   serves (`GET /v1/cluster/approvals`) and takes the one whose model, prefill
-   schedule and eight digests match this pair's installed app and model. Each
+   serves (`GET /v1/cluster/approvals`) and takes the one whose model and
+   prefill schedule match this pair's setup. A build-pinned approval must also
+   match the installed app's digests. A model approval names no build and must
+   match only the model's artifact, so it stays valid after an update
+   ([model approvals](../reference/configuration.md#model-approvals)). Each
    Mac checks it against its own files, and both Macs save it, or neither
    does. Both Macs then start their parts again as cluster members.
 2. Read the ready screen. Instead of the API line it says:
@@ -135,7 +138,7 @@ A tensor-parallel pair registers like a pipeline one; its plan names no cut.
    There is no local API in this mode. `darkbloom cluster` status shows the
    same line.
 
-An approval ends at its `not_after` (14 days after the operator added it). The
+An approval ends at its `not_after`, which the operator sets. The
 leader asks again at each start of its cluster service, after each Darkbloom
 update and every minute while the pair is registered, and takes a later
 matching approval when the saved one ends within a day. A Mac whose approval

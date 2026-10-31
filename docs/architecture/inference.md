@@ -2887,7 +2887,13 @@ a share of every layer, and one fewer than the members otherwise, as the
 coordinator requires. A setup with unequal tensor-parallel shares is refused at
 registration, because the provider does not encode the plan's
 `tensor_parallel_shares` yet: a plan without them is an equal split to the
-coordinator. For a cluster that serves through Darkbloom, the onboarding's start
+coordinator. Under a model approval, which names no build, the plan also carries
+the member's own runtime block (`ClusterPlan.runtime`: worker, capability,
+resource policy and profile from its saved setup,
+`DistributedInstalledNativeStart.runtimeBlock`), so both members must run the
+same runtime to register the same plan; the start must carry that block
+([model approvals](../reference/configuration.md#model-approvals)). For a
+cluster that serves through Darkbloom, the onboarding's start
 line says it serves its owner's requests, and public requests where Darkbloom
 has qualified the model and split
 (`provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/ClusterOnboardingFlow.swift`);
@@ -5230,6 +5236,10 @@ that no person types them
    `resourcePolicySHA256`. A coordinator-formed start carries the approval's
    value, which the member and its owner compare with the installed approval
    (`NativePairMemberPolicy.require`).
+
+A model approval needs none of these facts: the member takes the same values
+from its own saved setup and files
+([model approvals](../reference/configuration.md#model-approvals)).
 
 Code map: `provider-swift/Sources/ProviderCore/Config/ClusterRuntimeApprovalFacts.swift`
 (`ClusterRuntimeApprovalFacts`),

@@ -1,6 +1,6 @@
 # Test Provider And Native Contracts
 
-> Last updated: 2026-10-29
+> Last updated: 2026-10-31
 
 Run isolated Swift, native-resource, public-fixture and landing tests here.
 Backend integration and cross-implementation qualification are platform-owned.
@@ -1324,11 +1324,11 @@ lines, CRLFs and synthetic SSH/PGP signature armor. It checks exact retained not
 text and payload/provenance digest guards without invoking signing or live
 publication. Its cluster runtime rows pin the prod and dev payload bytes without
 `cluster_runtime` to their digests from before the block existed, carry a valid
-block through `stage` in dev and prod, refuse each malformed block (parity
-qualifications included) and a block whose derived approval or parity
-qualification IDs exceed 128 bytes, accept the GLM-5.3-Flash block pinned from
-the 0.10.5-dev.branch.16 app, and check that registration sends the block in its
-canonical form.
+block through `stage` in dev and prod, refuse each malformed block (grants and
+parity qualifications included) and a block whose derived approval, grant or
+parity qualification IDs exceed 128 bytes, accept the GLM-5.3-Flash block pinned
+from the 0.10.5-dev.branch.17 app, and check that registration sends the block
+in its canonical form.
 `scripts/test-provider-cluster-runtime-models.py` runs the release's
 model-metadata fetch against a local HTTP registry: the environment's catalog and
 CDN, candidate selection, the manifest and `config.json` checks, each candidate's

@@ -938,13 +938,13 @@ jobs:
           echo "Metallib hash: $METALLIB_HASH"
 
       # Every lane: the cluster runtime facts (cluster_runtime) from which a
-      # coordinator derives this build's cluster approvals and the parity
-      # qualifications of the models it declares public (ClusterPublicModels),
-      # computed by the final signed app's own CLI and worker after
-      # every signing, notarization and final-bytes check above. The payload
-      # carries them only when CLUSTER_RUNTIME_SEND is 'true'; otherwise a
-      # failure here only warns (continue-on-error) and the release continues
-      # exactly as before. No secret is in this step: it reads no secrets.*,
+      # coordinator derives this build's cluster approvals, their pair-serving
+      # grants and the parity qualifications of the models it declares public
+      # (ClusterPublicModels), computed by the final signed app's own CLI and
+      # worker after every signing, notarization and final-bytes check above.
+      # The payload carries them only when CLUSTER_RUNTIME_SEND is 'true';
+      # otherwise a failure here only warns (continue-on-error) and the release
+      # continues exactly as before. No secret is in this step: it reads no secrets.*,
       # removes the two secret-derived values the job's GITHUB_ENV holds and
       # the signing keychain (and proves the identity is gone) before any
       # release code runs, and runs the app's CLI with an empty environment.

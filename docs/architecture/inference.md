@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-10-30
+> Last updated: 2026-10-31
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -5238,16 +5238,31 @@ types them ([fields](../reference/configuration.md#cluster-runtime-facts),
    `resourcePolicySHA256`. A coordinator-formed start carries the approval's
    value, which the member and its owner compare with the installed approval
    (`NativePairMemberPolicy.require`).
-4. The parity qualifications come from the build's checked-in public
-   declaration (`ClusterPublicModels`: the owner's decision, with its evidence
-   document's SHA-256), not from the bundled qualification records, for a
-   described model whose runtime model, catalog ID and artifact it names. Each
-   rank's numerics class is the one a member of that build registers for the
-   evidence placement (`ClusterMemberDeviceProfile.numericsClass`, the block's
-   Metal library). The release lane runs the released build's own CLI, so the
-   declaration is that build's. No pair-serving grant is derived from the
-   records: a coordinator grant restricts its approval to the families it
-   names.
+4. Every model carries a pair-serving grant when the build qualifies it. A
+   pair member reports only hardware capabilities
+   (`DistributedServingEligibility.memberCapabilities`: `apple_m5` on an M5,
+   never `mlx_nax` or `glm5_next_v1`), and a coordinator holds each member of a
+   pair without a grant to the model's single-Mac requirements
+   ([`providerMeetsServingRequirementsLocked`](https://github.com/Layr-Labs/darkbloom-platform/blob/2847f27dda8e4caf9e2441d554067f42a88c9e1f/coordinator/registry/cluster_pair_serving_grant.go)),
+   so no pair of GLM-5.3-Flash or Qwen3.8-27B forms without one. For a
+   described model whose runtime model, catalog ID and artifact the build's
+   checked-in public declaration names (`ClusterPublicModels`: the owner's
+   decisions, with its evidence document's SHA-256), the grant names the
+   declared families with that digest. Any other model's grant is the public
+   grant a member of the same build reports for the described artifact
+   (`ClusterPairServingGrants.grant`, records of that artifact only), with the
+   SHA-256 of the records it rests on (`ClusterPairServingGrant.evidenceSHA256`).
+5. The parity qualifications come from the declaration only: one per declared
+   family and schedule. Each rank's numerics class is the one a member of that
+   build registers for the evidence placement
+   (`ClusterMemberDeviceProfile.numericsClass`, the block's Metal library); a
+   pipeline is cut at half the model's layers (`ClusterPublicModels.placement`);
+   the request envelope admits media only where the placement serves it
+   (`ClusterModelFeaturePolicy.mediaContract`). This build places Qwen3.8-27B
+   in tensor parallel only (`ClusterModelFeaturePolicy.admissibleModes`), so
+   its declared pipeline takes effect with a build that places it as one. The
+   release lane runs the released build's own CLI, so the declaration and the
+   records are that build's.
 
 A model approval needs none of these facts: the member takes the same values
 from its own saved setup and files
@@ -5257,6 +5272,7 @@ Code map: `provider-swift/Sources/ProviderCore/Config/ClusterRuntimeApprovalFact
 (`ClusterRuntimeApprovalFacts`), `ClusterRuntimeApprovalFacts+Release.swift` (the release's model list and
 candidate choice),
 `provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/ClusterPublicModels.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledPairServingGrant.swift`,
 `provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledFiles.swift`,
 `provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledNativeStart.swift`.
 

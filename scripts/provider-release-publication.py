@@ -32,6 +32,7 @@ CLUSTER_RUNTIME_SCHEMA = 'darkbloom_cluster_runtime_v2'
 CLUSTER_RUNTIME_DIGESTS = ('native_runtime_sha256', 'metallib_sha256', 'resource_library_sha256',
                            'placement_policy_sha256')
 CLUSTER_RUNTIME_MODEL_DIGESTS = ('artifact_sha256', 'capability_sha256', 'profile_sha256', 'resource_policy_sha256')
+CLUSTER_MODE_FAMILIES = ('hand_off', 'pipeline', 'pipeline_speculative', 'tensor_parallel')
 # ClusterGenerationMode: tensor parallel has no layer cut, every other mode one
 # per member boundary (layerCutCount).
 CLUSTER_GENERATION_MODES = ('pipeline_v1', 'pipeline_compact_decode_v1', 'phase_split_v1', 'phase_split_mtp_v1',
@@ -48,9 +49,10 @@ CLUSTER_ENVELOPE_FIELDS = {'sampling', 'tools', 'vision', 'video', 'max_prompt_t
 CLUSTER_MAXIMUM_TOKENS = 1 << 20
 # The instants a coordinator accepts: seconds, an optional fraction, then Z or an offset.
 CLUSTER_INSTANT = re.compile(r'[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]{1,9})?(Z|[+-][0-9]{2}:[0-9]{2})')
-# A coordinator derives approvals `release/<version>/<model>/s<1|2>` and, for
-# each parity qualification, `<its schedule's approval ID>/q<n>`, and refuses at
-# registration a block with any derived ID over this bound.
+# A coordinator derives approvals `release/<version>/<model>/s<1|2>`, for a
+# model with a grant each approval's `<approval ID>/grant`, and for each parity
+# qualification `<its schedule's approval ID>/q<n>`, and refuses at registration
+# a block with any derived ID over this bound.
 CLUSTER_DERIVED_ID_MAXIMUM_BYTES = 128
 
 
@@ -60,6 +62,21 @@ def is_digest(value):
 
 def is_integer(value, low, high):
     return type(value) is int and low <= value <= high
+
+
+def check_pair_serving_grant(grant):
+    """A model's pair_serving_grant: null, or exactly its evidence digest and 1 to 4 known families in byte order."""
+    if grant is None:
+        return
+    if not isinstance(grant, dict) or set(grant) != {'evidence_sha256', 'mode_families'}:
+        raise ValueError('Invalid cluster_runtime: a pair_serving_grant is not null or exactly '
+                         'evidence_sha256 and mode_families')
+    families = grant['mode_families']
+    if not isinstance(families, list) or not families \
+            or any(not isinstance(family, str) or family not in CLUSTER_MODE_FAMILIES for family in families) \
+            or any(first >= second for first, second in zip(families, families[1:])):
+        raise ValueError('Invalid cluster_runtime: mode_families must list 1 to 4 known mode families, '
+                         'sorted by byte and unique')
 
 
 def check_parity_qualifications(qualifications):
@@ -106,12 +123,16 @@ def check_cluster_runtime(block):
         raise ValueError(f'Invalid cluster_runtime: 1 to {CLUSTER_RUNTIME_MAXIMUM_MODELS} models are required')
     digests, names = [block[key] for key in CLUSTER_RUNTIME_DIGESTS], []
     for model in models:
-        if not isinstance(model, dict) or set(model) != {'model', 'parity_qualifications', *CLUSTER_RUNTIME_MODEL_DIGESTS}:
+        if not isinstance(model, dict) \
+                or set(model) != {'model', 'pair_serving_grant', 'parity_qualifications', *CLUSTER_RUNTIME_MODEL_DIGESTS}:
             raise ValueError('Invalid cluster_runtime: unknown or missing model fields')
         if not isinstance(model['model'], str) or re.fullmatch(r'[\x20-\x7e]{1,128}', model['model']) is None:
             raise ValueError('Invalid cluster_runtime: a model ID is not 1 to 128 printable ASCII bytes')
         names.append(model['model'].encode())
         digests += [model[key] for key in CLUSTER_RUNTIME_MODEL_DIGESTS]
+        check_pair_serving_grant(model['pair_serving_grant'])
+        if model['pair_serving_grant'] is not None:
+            digests.append(model['pair_serving_grant']['evidence_sha256'])
         check_parity_qualifications(model['parity_qualifications'])
         digests += [q['evidence_sha256'] for q in model['parity_qualifications']]
     if not all(is_digest(value) for value in digests):
@@ -121,9 +142,12 @@ def check_cluster_runtime(block):
 
 
 def derived_ids(model, version):
-    """The IDs a coordinator derives for a model of the block: its approvals, then one per qualification."""
+    """The IDs a coordinator derives for a model of the block: its approvals, their grants, then one per qualification."""
     approval = f"release/{version}/{model['model']}/s"
-    counts, ids = {}, [approval + '1', approval + '2']
+    ids = [approval + '1', approval + '2']
+    if model['pair_serving_grant'] is not None:
+        ids += [approval + '1/grant', approval + '2/grant']
+    counts = {}
     for q in model['parity_qualifications']:
         counts[q['schedule']] = counts.get(q['schedule'], 0) + 1
         ids.append(f"{approval}{q['schedule']}/q{counts[q['schedule']]}")
@@ -134,7 +158,7 @@ def check_cluster_derived_ids(block, version):
     """Every ID a coordinator derives from the block fits its bound."""
     if any(len(identifier.encode()) > CLUSTER_DERIVED_ID_MAXIMUM_BYTES
            for model in block['models'] for identifier in derived_ids(model, version)):
-        raise ValueError(f'Invalid cluster_runtime: a derived cluster approval or parity qualification ID exceeds '
+        raise ValueError(f'Invalid cluster_runtime: a derived cluster approval, grant or parity qualification ID exceeds '
                          f'{CLUSTER_DERIVED_ID_MAXIMUM_BYTES} bytes')
 
 

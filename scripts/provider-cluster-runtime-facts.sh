@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # The cluster runtime facts (cluster_runtime) of an app bundle for one
 # environment, computed by the app's own CLI and cluster worker
-# (ClusterRuntimeApprovalFacts), so the parity qualifications of the models it
-# declares public are that build's (ClusterPublicModels).
+# (ClusterRuntimeApprovalFacts), so each model's pair-serving grant and the
+# parity qualifications of the models it declares public are that build's
+# (its qualification records and ClusterPublicModels).
 #
 # Usage: provider-cluster-runtime-facts.sh APP CLI_NAME ENVIRONMENT FOLDER
 #

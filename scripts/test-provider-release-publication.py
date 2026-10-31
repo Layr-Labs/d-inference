@@ -306,26 +306,33 @@ class PublicationTests(PublicationFixture):
 
 
 GLM_BLOCK = (Path(__file__).resolve().parent.parent
-             / 'provider-swift/Tests/ProviderCoreTests/Fixtures/ClusterRuntime/glm-5.3-flash-dev-branch16.json')
+             / 'provider-swift/Tests/ProviderCoreTests/Fixtures/ClusterRuntime/glm-5.3-flash-dev-branch17.json')
+ALL_FAMILIES = ['hand_off', 'pipeline', 'pipeline_speculative', 'tensor_parallel']
 
 
-def qualification(schedule):
-    return {'schedule': schedule, 'numerics_classes': ['g17d-nax1-mlx-22222222-macos27.0'] * 2, 'cuts': [],
-            'mode': 'tensor_parallel_v1', 'tensor_parallel_shares': None, 'promotable': True, 'diverged': False,
+def qualification(schedule, mode='tensor_parallel_v1', cuts=(), media=True):
+    return {'schedule': schedule, 'numerics_classes': ['g17d-nax1-mlx-22222222-macos27.0'] * 2, 'cuts': list(cuts),
+            'mode': mode, 'tensor_parallel_shares': None, 'promotable': True, 'diverged': False,
             'evidence_sha256': 'f' * 64, 'qualified_at': '2026-10-31T00:00:00Z',
-            'request_envelope': {'sampling': True, 'tools': True, 'vision': True, 'video': True,
+            'request_envelope': {'sampling': True, 'tools': True, 'vision': media, 'video': media,
                                  'max_prompt_tokens': 1048576, 'max_output_tokens': 1048576}}
 
 
 def cluster_runtime_block():
-    def model(name, seed, qualifications=()):
-        return {'model': name, 'artifact_sha256': seed * 64, 'capability_sha256': 'c' * 64,
+    """The 27B declared (a grant of its two families; the pipeline's qualifications, text only, then tensor
+    parallel's), the 9B with a grant from records only, GLM with neither."""
+    def model(name, seed, grant=None, qualifications=()):
+        return {'model': name, 'artifact_sha256': seed * 64, 'capability_sha256': 'c' * 64, 'pair_serving_grant': grant,
                 'parity_qualifications': list(qualifications), 'profile_sha256': 'd' * 64, 'resource_policy_sha256': 'e' * 64}
+    declared = [qualification(1, 'pipeline_v1', [32], media=False), qualification(2, 'pipeline_v1', [32], media=False),
+                qualification(1), qualification(2)]
     return {'schema': 'darkbloom_cluster_runtime_v2', 'native_runtime_sha256': '1' * 64,
             'metallib_sha256': '2' * 64, 'resource_library_sha256': '3' * 64,
             'placement_policy_sha256': '4' * 64,
-            'models': [model('EigenLabs/Qwen3.8-27B-4bit-mtp', '5', [qualification(1), qualification(2)]),
-                       model('Qwen3.5-9B', '6'), model('glm-5.3-flash', '7', [qualification(1), qualification(2)])]}
+            'models': [model('EigenLabs/Qwen3.8-27B-4bit-mtp', '5',
+                             {'evidence_sha256': 'f' * 64, 'mode_families': ['pipeline', 'tensor_parallel']}, declared),
+                       model('Qwen3.5-9B', '6', {'evidence_sha256': 'a' * 64, 'mode_families': list(ALL_FAMILIES)}),
+                       model('glm-5.3-flash', '7')]}
 
 
 class ClusterRuntimeTests(PublicationFixture):
@@ -411,14 +418,31 @@ class ClusterRuntimeTests(PublicationFixture):
 
         def edited_envelope(change):
             return edited_q(lambda q: change(q['request_envelope']))
+
+        def edited_grant(change):
+            return edited(lambda b: change(b['models'][0]['pair_serving_grant']))
         rows = {
             'unknown field': edited(lambda b: b.update(extra='x')),
             'missing field': edited(lambda b: b.pop('metallib_sha256')),
             'schema v1': edited(lambda b: b.update(schema='darkbloom_cluster_runtime_v1')),
             'unknown model field': edited(lambda b: b['models'][0].update(extra='x')),
             'missing model field': edited(lambda b: b['models'][0].pop('profile_sha256')),
+            'no pair_serving_grant': edited(lambda b: b['models'][2].pop('pair_serving_grant')),
+            'grant a string': edited(lambda b: b['models'][2].update(pair_serving_grant='pipeline')),
+            'grant a list': edited(lambda b: b['models'][2].update(pair_serving_grant=['pipeline'])),
+            'grant empty': edited(lambda b: b['models'][2].update(pair_serving_grant={})),
+            'unknown grant field': edited_grant(lambda g: g.update(granted_at='2026-10-31T00:00:00Z')),
+            'missing grant field': edited_grant(lambda g: g.pop('mode_families')),
+            'families not a list': edited_grant(lambda g: g.update(mode_families='pipeline')),
+            'no mode family': edited_grant(lambda g: g.update(mode_families=[])),
+            'unknown mode family': edited_grant(lambda g: g.update(mode_families=['pipeline_mtp'])),
+            'mode families unsorted': edited_grant(lambda g: g.update(mode_families=['tensor_parallel', 'pipeline'])),
+            'mode family repeated': edited_grant(lambda g: g.update(mode_families=['pipeline', 'pipeline'])),
+            'family not a string': edited_grant(lambda g: g.update(mode_families=[1])),
+            'zero grant evidence': edited_grant(lambda g: g.update(evidence_sha256='0' * 64)),
+            'uppercase grant evidence': edited_grant(lambda g: g.update(evidence_sha256='F' * 64)),
+            'grant evidence not a string': edited_grant(lambda g: g.update(evidence_sha256=7)),
             'no parity_qualifications': edited(lambda b: b['models'][1].pop('parity_qualifications')),
-            'a pair_serving_grant': edited(lambda b: b['models'][1].update(pair_serving_grant=None)),
             'qualifications null': edited(lambda b: b['models'][1].update(parity_qualifications=None)),
             'qualification a string': edited(lambda b: b['models'][1].update(parity_qualifications=['tensor_parallel'])),
             'nine qualifications': edited(lambda b: b['models'][1].update(parity_qualifications=[
@@ -435,8 +459,8 @@ class ClusterRuntimeTests(PublicationFixture):
             'three numerics classes': edited_q(lambda q: q.update(numerics_classes=['a', 'b', 'c'])),
             'empty numerics class': edited_q(lambda q: q.update(numerics_classes=['', 'b'])),
             'numerics class not a string': edited_q(lambda q: q.update(numerics_classes=[1, 2])),
-            'tensor parallel with a cut': edited_q(lambda q: q.update(cuts=[8])),
-            'pipeline without a cut': edited_q(lambda q: q.update(mode='pipeline_v1')),
+            'tensor parallel with a cut': edited_q(lambda q: q.update(mode='tensor_parallel_v1', cuts=[8])),
+            'pipeline without a cut': edited_q(lambda q: q.update(mode='pipeline_v1', cuts=[])),
             'zero cut': edited_q(lambda q: q.update(mode='pipeline_v1', cuts=[0])),
             'cut not an integer': edited_q(lambda q: q.update(mode='pipeline_v1', cuts=[8.0])),
             'promotable a number': edited_q(lambda q: q.update(promotable=1)),
@@ -446,7 +470,7 @@ class ClusterRuntimeTests(PublicationFixture):
             'not an instant': edited_q(lambda q: q.update(qualified_at='2026-10-31')),
             'unknown envelope field': edited_envelope(lambda e: e.update(logprobs=True)),
             'missing envelope field': edited_envelope(lambda e: e.pop('video')),
-            'video without vision': edited_envelope(lambda e: e.update(vision=False)),
+            'video without vision': edited_envelope(lambda e: e.update(vision=False, video=True)),
             'no prompt tokens': edited_envelope(lambda e: e.update(max_prompt_tokens=0)),
             'too many output tokens': edited_envelope(lambda e: e.update(max_output_tokens=1048577)),
             'sampling a number': edited_envelope(lambda e: e.update(sampling=1)),
@@ -481,18 +505,21 @@ class ClusterRuntimeTests(PublicationFixture):
                     PUB.validate(dict(self.payload, cluster_runtime=block), self.env)
         text = json.dumps(cluster_runtime_block())
         for label, data in {'repeated field': text[:-1] + ', "schema": "darkbloom_cluster_runtime_v2"}',
+                            'repeated grant field': text.replace('"evidence_sha256"', '"mode_families": [], "evidence_sha256"', 1),
                             'repeated qualification field': text.replace('"cuts"', '"schedule": 1, "cuts"', 1),
                             'over its bound': text + ' ' * (64 * 1024), 'not JSON': text[:-1]}.items():
             with self.subTest(row=label), self.assertRaisesRegex(ValueError, 'Invalid cluster_runtime'):
                 PUB.prepare(self.base / label, self.root / PUB.BUNDLE, self.dev_env(), self.write_block(data))
 
     def test_a_block_whose_derived_ids_exceed_128_bytes_is_refused_before_staging(self):
-        # release/<version>/<model>/s2 with version 0.9.8-dev.branch.7: 30 bytes plus the model ID,
-        # and 3 more for the /q1 of a model's parity qualification.
+        # release/<version>/<model>/s2 with version 0.9.8-dev.branch.7: 30 bytes plus the model ID; a grant's ID
+        # adds 6 more (/grant), a parity qualification's 3 (/q1, /q2).
         env = self.dev_env()
         self.assertEqual(len(f"release/{env['VERSION']}/{'m' * 98}/s2".encode()), 128)
         template = cluster_runtime_block()['models']
-        for label, base, fits in (('without qualifications', template[1], 98), ('with qualifications', template[0], 95)):
+        refused = 'derived cluster approval, grant or parity qualification ID exceeds 128 bytes'
+        for label, base, fits in (('neither', template[2], 98), ('qualifications', dict(template[0], pair_serving_grant=None), 95),
+                                  ('a grant', template[1], 92), ('a grant and qualifications', template[0], 92)):
             with self.subTest(row=label):
                 block, over = cluster_runtime_block(), cluster_runtime_block()
                 block['models'] = [dict(base, model='m' * fits)]
@@ -500,34 +527,38 @@ class ClusterRuntimeTests(PublicationFixture):
                 payload = PUB.prepare(self.base / ('fits ' + label), self.root / PUB.BUNDLE, env,
                                       self.write_block(block, 'fits.json'))
                 self.assertEqual(payload['cluster_runtime'], block)
-                with self.assertRaisesRegex(ValueError, 'derived cluster approval or parity qualification ID exceeds 128 bytes'), \
-                        patch.object(PUB, 'upload') as upload:
+                with self.assertRaisesRegex(ValueError, refused), patch.object(PUB, 'upload') as upload:
                     PUB.prepare(self.base / ('over ' + label), self.root / PUB.BUNDLE, env, self.write_block(over, 'over.json'))
                 upload.assert_not_called()
                 self.assertFalse((self.base / ('over ' + label) / 'release-payload.json').exists())
-                with self.assertRaisesRegex(ValueError, 'derived cluster approval or parity qualification ID exceeds 128 bytes'):
+                with self.assertRaisesRegex(ValueError, refused):
                     PUB.validate(dict(payload, cluster_runtime=over), env)
-        # n counts each schedule's qualifications from 1, in block order.
-        model = dict(template[0], parity_qualifications=[qualification(1), dict(qualification(1), cuts=[8], mode='pipeline_v1'),
-                                                         qualification(2)])
-        self.assertEqual(PUB.derived_ids(model, 'V'), [
-            'release/V/EigenLabs/Qwen3.8-27B-4bit-mtp/s1', 'release/V/EigenLabs/Qwen3.8-27B-4bit-mtp/s2',
-            'release/V/EigenLabs/Qwen3.8-27B-4bit-mtp/s1/q1', 'release/V/EigenLabs/Qwen3.8-27B-4bit-mtp/s1/q2',
-            'release/V/EigenLabs/Qwen3.8-27B-4bit-mtp/s2/q1'])
+        # One grant per approval; n counts each schedule's qualifications from 1 in block order: q1 the pipeline,
+        # q2 tensor parallel.
+        self.assertEqual(PUB.derived_ids(template[0], 'V'), [
+            'release/V/EigenLabs/Qwen3.8-27B-4bit-mtp/' + suffix
+            for suffix in ('s1', 's2', 's1/grant', 's2/grant', 's1/q1', 's2/q1', 's1/q2', 's2/q2')])
+        self.assertEqual(PUB.derived_ids(template[2], 'V'), ['release/V/glm-5.3-flash/s1', 'release/V/glm-5.3-flash/s2'])
 
-    def test_the_glm_block_of_the_branch16_app_is_accepted(self):
-        # The block the release lane computed for GLM-5.3-Flash with the 0.10.5-dev.branch.16 app (pinned by the
-        # Swift suite): canonical, valid, with one tensor-parallel qualification per schedule.
+    def test_the_glm_block_of_the_branch17_app_is_accepted(self):
+        # The block the release lane computed for GLM-5.3-Flash with the 0.10.5-dev.branch.17 app (pinned by the
+        # Swift suite): canonical and valid, with the declared grant and, per schedule, the pipeline's qualification
+        # (cut at 45 / 2, text only) and tensor parallel's (images and video, as DevNet's catalog lists them).
         block = PUB.load_cluster_runtime(GLM_BLOCK)
-        PUB.check_cluster_derived_ids(block, '0.10.5-dev.branch.17')
+        PUB.check_cluster_derived_ids(block, '0.10.5-dev.branch.18')
         [glm] = block['models']
         self.assertEqual(glm['model'], 'glm-5.3-flash')
-        self.assertEqual([q['schedule'] for q in glm['parity_qualifications']], [1, 2])
-        for q in glm['parity_qualifications']:
+        self.assertEqual(glm['pair_serving_grant']['mode_families'], ['pipeline', 'tensor_parallel'])
+        qualifications = glm['parity_qualifications']
+        self.assertEqual([(q['schedule'], q['mode'], q['cuts']) for q in qualifications],
+                         [(1, 'pipeline_v1', [22]), (2, 'pipeline_v1', [22]), (1, 'tensor_parallel_v1', []),
+                          (2, 'tensor_parallel_v1', [])])
+        for q in qualifications:
             self.assertEqual(q['numerics_classes'], ['g17d-nax1-mlx-98bab9d7-macos27.0'] * 2)
-            self.assertEqual((q['mode'], q['cuts'], q['tensor_parallel_shares'], q['promotable'], q['diverged']),
-                             ('tensor_parallel_v1', [], None, True, False))
-            self.assertTrue(q['request_envelope']['vision'] and q['request_envelope']['video'])
+            self.assertEqual((q['tensor_parallel_shares'], q['promotable'], q['diverged']), (None, True, False))
+            self.assertEqual(q['evidence_sha256'], glm['pair_serving_grant']['evidence_sha256'])
+            media = q['mode'] == 'tensor_parallel_v1'
+            self.assertEqual((q['request_envelope']['vision'], q['request_envelope']['video']), (media, media))
 
     def test_boundary_values_are_accepted(self):
         block = cluster_runtime_block()
@@ -538,6 +569,11 @@ class ClusterRuntimeTests(PublicationFixture):
                           url='https://releases.example/' + PUB.object_key(dict(self.payload, version=version)),
                           cluster_runtime=block), self.dev_env())
         block['models'] = [dict(block['models'][0], model=' ' + '~' * 127)]
+        PUB.check_cluster_runtime(block)
+        # A grant of every family; none.
+        block['models'][0]['pair_serving_grant'] = {'evidence_sha256': 'f' * 64, 'mode_families': list(ALL_FAMILIES)}
+        PUB.check_cluster_runtime(block)
+        block['models'][0]['pair_serving_grant'] = None
         PUB.check_cluster_runtime(block)
         # Eight qualifications; a pipeline cut; a measurement kept for the record; a fraction and an offset;
         # the smallest envelope.

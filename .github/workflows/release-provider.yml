@@ -296,7 +296,7 @@ jobs:
       - name: Download the shard counts
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
-          pattern: provider-sdk-qualification-${{ needs.resolve-env.outputs.environment }}-${{ github.sha }}-${{ github.run_attempt }}-shard-*
+          pattern: provider-sdk-qualification-${{ needs.resolve-env.outputs.environment }}-${{ github.sha }}-shard-*
           path: ${{ runner.temp }}/provider-sdk-shards
       - name: Check that the shards executed the full SDK 27 suite
         run: |

@@ -292,15 +292,19 @@ runs:
       run: |
         set -euo pipefail
         swift test list --skip-build > "$RUNNER_TEMP/provider-sdk-shard/provider-tests.txt"
+    # One name per shard and run, without the attempt: after "Re-run failed
+    # jobs" the audit finds the rerun shard's counts beside the counts of the
+    # shards that passed before, and a full rerun replaces them.
     - name: Retain shard counts for the audit
       if: inputs.lane == 'qualification' && inputs.shard != ''
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
-        name: provider-sdk-qualification${{ inputs.environment != '' && format('-{0}', inputs.environment) || '' }}-${{ github.sha }}-${{ github.run_attempt }}-shard-${{ steps.lane.outputs.index }}
+        name: provider-sdk-qualification${{ inputs.environment != '' && format('-{0}', inputs.environment) || '' }}-${{ github.sha }}-shard-${{ steps.lane.outputs.index }}
         path: |
           ${{ runner.temp }}/provider-sdk-shard/*.json
           ${{ runner.temp }}/provider-sdk-shard/provider-tests.txt
         if-no-files-found: error
+        overwrite: true
         retention-days: 14
     - name: Resolve provider product and packaged names
       if: inputs.lane == 'release'

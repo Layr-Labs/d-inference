@@ -484,12 +484,15 @@ class ReleasePipelineTests(unittest.TestCase):
         self.assertNotIn('continue-on-error', gate)
         # The gate audits what every shard executed against the full suite list.
         self.assertIn('pattern: provider-sdk-qualification-${{ needs.resolve-env.outputs.environment }}-'
-                      '${{ github.sha }}-${{ github.run_attempt }}-shard-*\n', gate)
+                      '${{ github.sha }}-shard-*\n', gate)
         self.assertIn('python3 scripts/provider-test-shards.py audit "${lists[0]}" "$RUNNER_TEMP/provider-sdk-shards"', gate)
         self.assertLess(gate.index('diff <('), gate.index('provider-test-shards.py audit'))
         # Each shard uploads its counts and suite list under that pattern.
+        # No attempt in the name: a rerun of failed shards overwrites only theirs.
+        retain = ACTION.split('- name: Retain shard counts for the audit\n', 1)[1].split('\n    - name:', 1)[0]
         self.assertIn("name: provider-sdk-qualification${{ inputs.environment != '' && format('-{0}', inputs.environment) || '' }}"
-                      "-${{ github.sha }}-${{ github.run_attempt }}-shard-${{ steps.lane.outputs.index }}\n", ACTION)
+                      "-${{ github.sha }}-shard-${{ steps.lane.outputs.index }}\n", retain)
+        self.assertIn('overwrite: true\n', retain)
         listing = ACTION.split('- name: List the provider suite for the shard audit\n', 1)[1].split('\n    - name:', 1)[0]
         self.assertIn('swift test list --skip-build > "$RUNNER_TEMP/provider-sdk-shard/provider-tests.txt"', listing)
         test = ACTION.split('- name: Test provider with release SDK\n', 1)[1].split('\n    - name:', 1)[0]

@@ -62,7 +62,7 @@ Before tagging `v0.10.6`:
   workflow; its run
   [41167361754](https://github.com/Layr-Labs/d-inference/actions/runs/41167361754)
   passed both, and DevNet's coordinator accepted its block. That proves neither
-  the derived approvals nor pairing; step 1 below does.
+  the derived approvals nor pairing; step 5 below checks both in production.
 - Before step 3 below, check that the production catalog lists `glm-5.3-flash`
   and `EigenLabs/Qwen3.8-27B-4bit-mtp`, because the facts step leaves out a
   model the environment's catalog lacks. Check that the coordinator's catalog
@@ -86,18 +86,14 @@ Before tagging `v0.10.6`:
 
 Roll out in this order; each step is a separate approval:
 
-1. DevNet proof. After this preparation merges into `dev`, its dev-branch
-   release `0.10.6-dev.branch.<N>` registers with the block on DevNet, whose
-   coordinator runs the platform revision that step 2 deploys to production.
-   DevNet's `GET /v1/cluster/approvals` must list the derived
-   `release/0.10.6-dev.branch.<N>/<model>/s1` and `/s2` approvals, and a real
-   DevNet pair must form a session under one of them. Record the run and the
-   session.
+1. No DevNet proof: this release goes to production without one
+   (mainnet-direct). DevNet's coordinator accepted the block of
+   `0.10.5-dev.branch.18` but derived no approvals, so production is the first
+   coordinator to derive them, and step 5 checks them.
 2. Production platform: deploy a `darkbloom-platform` coordinator with
    [darkbloom-platform#643](https://github.com/Layr-Labs/darkbloom-platform/pull/643)
-   and any follow-up fix that the DevNet proof in step 1 needs. A fix for the
-   split edge and Conductor deployment, where DevNet derived no approvals, is in
-   progress. #643's code reaches the platform's `master` only with its `dev` to
+   and its follow-up fix for the split edge and Conductor deployment, where
+   DevNet derived no approvals with #643 alone. #643's code reaches the platform's `master` only with its `dev` to
    `master` merge; its twin,
    [darkbloom-platform#644](https://github.com/Layr-Labs/darkbloom-platform/pull/644),
    carries only migration 58 (the `releases.cluster_runtime` column), which no
@@ -121,9 +117,9 @@ Roll out in this order; each step is a separate approval:
      legacy MDM path or an App Attest serving authorization, so a member on
      macOS 27 without MDM pairs only through App Attest.
 3. Confirm from production's `/health` `build_commit` that it runs the platform
-   revision that passed step 1; #643 alone is not enough. Check the catalog as
+   revision of step 2; #643 alone is not enough. Check the catalog as
    above, then set the repository variable `PROD_CLUSTER_RUNTIME_ENABLED=true`.
-   Never before steps 1 and 2: a coordinator without #643 refuses a
+   Never before step 2: a coordinator without #643 refuses a
    registration that carries `cluster_runtime`, and the release then fails
    after signing. Set it before the tag: a release registered without the block
    never gains one, because a re-registration must repeat the stored block.
@@ -140,7 +136,8 @@ Roll out in this order; each step is a separate approval:
    ([step 4](#4-tag-and-push-production-source)). After registration, check the
    coordinator log for `release cluster approvals omitted` and
    `GET /v1/cluster/approvals` for the derived `release/0.10.6/<model>/s<1|2>`
-   approvals.
+   approvals. Then a production pair, the owner's two Macs with App Attest,
+   must form a session under one of them. Record the run and the session.
 6. The platform snapshots its provider contracts from the tagged commit
    (`python3 scripts/provider-contracts.py snapshot <tag commit>`), sets
    `LatestProviderVersion` to `0.10.6` in the coordinator's `server.go` in the

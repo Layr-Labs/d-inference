@@ -97,6 +97,7 @@ struct EngineV2CoResidencyLiveTests {
         var error: String?
         for await event in stream {
             switch event {
+            case .logprobs: break
             case .chunk(let chunk): text += chunk
             case .info(_, let completionTokens, _, _): completion = completionTokens
             case .error(let message): error = message

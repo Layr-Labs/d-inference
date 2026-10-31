@@ -8,6 +8,11 @@ enum ProviderModelContainer: Sendable {
     case autoregressive(ModelContainer)
     case nativeMiMo(ModelContainer, MiMoV26ServingLoad)
     case diffusion(DiffusionGemmaContainer)
+    /// A model held by a cluster pair's two owner processes, never by this
+    /// process: no container, weights or Metal state exist here. The handle
+    /// is the slot's identity and carries the tokenizer and sizing the pair
+    /// was published with (see `ProviderLoop+ClusterPairSlot`).
+    case clusterPair(ClusterPairSlotHandle)
     /// The managed Super owner; it holds no `ModelContainer` and is never
     /// rebuilt from one (`ProviderLoop+NemotronSuper`).
     case nemotronSuper(NemotronSuperSlotOwner)
@@ -15,8 +20,11 @@ enum ProviderModelContainer: Sendable {
     var autoregressive: ModelContainer? {
         switch self {
         case .autoregressive(let value), .nativeMiMo(let value, _): value
-        case .diffusion, .nemotronSuper: nil
+        case .diffusion, .clusterPair, .nemotronSuper: nil
         }
+    }
+    var clusterPair: ClusterPairSlotHandle? {
+        if case .clusterPair(let value) = self { value } else { nil }
     }
     var nemotronSuper: NemotronSuperSlotOwner? {
         if case .nemotronSuper(let owner) = self { owner } else { nil }
@@ -29,6 +37,7 @@ enum ProviderModelContainer: Sendable {
         case .autoregressive(let value): ObjectIdentifier(value)
         case .nativeMiMo(let value, _): ObjectIdentifier(value)
         case .diffusion(let value): ObjectIdentifier(value)
+        case .clusterPair(let value): ObjectIdentifier(value)
         case .nemotronSuper(let owner): ObjectIdentifier(owner)
         }
     }
@@ -37,13 +46,14 @@ enum ProviderModelContainer: Sendable {
         switch self {
         case .autoregressive(let value):
             return await value.perform { context in
-                TokenizerHandle(context.tokenizer, toolConstraintContractVerified:
-                    Gemma4ToolConstraintContract.isVerified(modelType: modelType, modelDirectory: directory))
+                TokenizerHandle.serving(context.tokenizer, modelType: modelType, modelDirectory: directory)
             }
         case .diffusion(let value):
             return await value.perform { TokenizerHandle($0.tokenizer) }
         case .nativeMiMo(let value, _):
             return await value.perform { TokenizerHandle($0.tokenizer) }
+        case .clusterPair(let value):
+            return value.tokenizer
         case .nemotronSuper(let owner):
             return owner.tokenizer
         }
@@ -83,6 +93,8 @@ enum ProviderModelContainer: Sendable {
                     fp16KVBytesPerToken: rate, maxContextLength: config.maxPositionEmbeddings,
                     defaultMaxTokens: context.generationConfiguration.maxNewTokens)
             }
+        case .clusterPair(let value):
+            return value.sizing
         }
     }
 

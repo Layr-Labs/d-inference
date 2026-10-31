@@ -123,6 +123,7 @@ enum GPTOSSMixedPrefixCohort {
         var completionTokens: Int?
         for await event in pending.stream {
             switch event {
+            case .logprobs: break
             case .chunk(let chunk):
                 if first == nil && !chunk.isEmpty { first = .now }
                 text += chunk

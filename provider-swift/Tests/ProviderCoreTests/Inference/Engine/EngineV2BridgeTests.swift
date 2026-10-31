@@ -190,12 +190,14 @@ private final class TelemetrySink: @unchecked Sendable {
 /// dependent so it is recorded separately, not part of the fixture.
 private enum RecordedEvent: Equatable, CustomStringConvertible {
     case chunk(String)
+    case logprobs([SSETokenLogprob])
     case info(prompt: Int, completion: Int)
     case error(String)
     case terminal(cause: InferenceTerminalCause, prompt: Int, completion: Int)
 
     var description: String {
         switch self {
+        case .logprobs(let entries): return "logprobs(count: \(entries.count))"
         case .chunk(let s): return "chunk(\(s))"
         case .info(let p, let c): return "info(\(p),\(c))"
         case .error(let m): return "error(\(m))"
@@ -212,6 +214,7 @@ private func record(
     var tps: [Double] = []
     for await event in stream {
         switch event {
+        case .logprobs(let entries): events.append(.logprobs(entries))
         case .chunk(let text):
             events.append(.chunk(text))
         case .info(let prompt, let completion, let tokensPerSecond, _):
@@ -1098,13 +1101,13 @@ struct EngineV2EventFramingTests {
     }
 }
 
-// MARK: - Logprobs passthrough (delta logprobs → per-request channel)
+// MARK: - Logprobs passthrough (ordered delta metadata)
 
 @Suite("EngineV2 logprobs passthrough")
 struct EngineV2LogprobsPassthroughTests {
 
-    @Test("delta logprobs publish to the channel in OpenAI entry shape, in order")
-    func logprobsFlowToChannel() async {
+    @Test("delta metadata precedes exactly its text event in OpenAI entry shape")
+    func logprobsFlowInEventOrder() async {
         let engine = ScriptedCBv2Engine(script: .stream([
             .delta(
                 text: "He", tokens: [10],
@@ -1120,21 +1123,22 @@ struct EngineV2LogprobsPassthroughTests {
             .finished(reason: .stop, usage: CBv2Usage(promptTokens: 5, completionTokens: 2)),
         ]))
         let bridge = makeBridge(engine: engine)
-        let channel = EngineV2LogprobsChannel()
         let (events, _) = await record(await bridge.submit(
             request: makeRequest(logprobs: true, topLogprobs: 2),
-            requestId: "req-lp",
-            logprobsChannel: channel
+            requestId: "req-lp"
         ))
-        // The GenerationEvent stream is untouched — logprobs ride out-of-band.
-        #expect(events == [
-            .chunk("He"), .chunk("llo"), .info(prompt: 5, completion: 2),
-        ])
+        #expect(events.count == 5)
+        guard case .logprobs(let first) = events[0], case .logprobs(let second) = events[2] else {
+            Issue.record("expected event-bound metadata before each chunk")
+            return
+        }
+        #expect(events[1] == .chunk("He") && events[3] == .chunk("llo"))
+        #expect(events[4] == .info(prompt: 5, completion: 2))
         // Sampling translation asked the engine to capture logprobs.
         #expect(engine.submitted[0].sampling.topLogprobs == 2)
         // Entries arrive converted (StubTokenizer decodes id → "t<id>"),
         // in emission order, with alternatives preserved.
-        let entries = channel.drain()
+        let entries = first + second
         #expect(entries.count == 2)
         #expect(entries[0].token == "t10")
         #expect(entries[0].logprob == -0.1)
@@ -1143,11 +1147,27 @@ struct EngineV2LogprobsPassthroughTests {
         #expect(entries[0].topLogprobs[1].token == "t12")
         #expect(entries[1].token == "t11")
         #expect(entries[1].topLogprobs.isEmpty)
-        // drain() empties the channel.
-        #expect(channel.drain().isEmpty)
     }
 
-    @Test("nil/empty delta logprobs leave the channel empty")
+    @Test("pair warmup counts content chunks, never metadata-only output")
+    func pairWarmupIgnoresMetadataOnlyEvents() async {
+        for text in ["", "visible"] {
+            let engine = ScriptedCBv2Engine(script: .stream([
+                .delta(text: text, tokens: [10],
+                       logprobs: [CBv2TokenLogprob(token: 10, logprob: -0.5)])
+                // No terminal: the actual bridge publishes its teardown error.
+            ]))
+            let bridge = makeBridge(engine: engine)
+            let result = await ProviderLoop.runClusterPairWarmup(
+                bridge: bridge, modelID: "gemma-4-27b-it", timeoutSeconds: 2)
+            #expect(!result.succeeded)
+            #expect(result.tokens == (text.isEmpty ? 0 : 1))
+            #expect(result.detail == "request stream closed by engine teardown")
+            await bridge.shutdown()
+        }
+    }
+
+    @Test("nil/empty delta logprobs produce no metadata events")
     func noLogprobsNoEntries() async {
         let engine = ScriptedCBv2Engine(script: .stream([
             .delta(text: "x", tokens: [10], logprobs: nil),
@@ -1155,15 +1175,12 @@ struct EngineV2LogprobsPassthroughTests {
             .finished(reason: .stop, usage: CBv2Usage(promptTokens: 5, completionTokens: 2)),
         ]))
         let bridge = makeBridge(engine: engine)
-        let channel = EngineV2LogprobsChannel()
-        _ = await record(await bridge.submit(
-            request: makeRequest(), requestId: "req-nolp", logprobsChannel: channel
-        ))
-        #expect(channel.drain().isEmpty)
+        let (events, _) = await record(await bridge.submit(request: makeRequest(), requestId: "req-nolp"))
+        #expect(events == [.chunk("x"), .chunk("y"), .info(prompt: 5, completion: 2)])
     }
 
-    @Test("no channel wired → logprob-bearing deltas stream normally (dropped)")
-    func logprobsWithoutChannelAreDropped() async {
+    @Test("captured metadata needs no separately wired side channel")
+    func logprobsNeedNoSideChannel() async {
         let engine = ScriptedCBv2Engine(script: .stream([
             .delta(
                 text: "x", tokens: [10],
@@ -1172,7 +1189,10 @@ struct EngineV2LogprobsPassthroughTests {
         ]))
         let bridge = makeBridge(engine: engine)
         let (events, _) = await record(await bridge.submit(request: makeRequest()))
-        #expect(events == [.chunk("x"), .info(prompt: 5, completion: 1)])
+        #expect(events.count == 3)
+        guard case .logprobs(let entries) = events.first else { Issue.record("missing metadata"); return }
+        #expect(entries.map(\.token) == ["t10"])
+        #expect(events[1] == .chunk("x") && events[2] == .info(prompt: 5, completion: 1))
     }
 }
 
@@ -2956,42 +2976,9 @@ struct EngineV2SeededSamplingTests {
     }
 }
 
-// MARK: - Logprobs channel cap (fix #8)
-
-@Suite("EngineV2 logprobs channel bounding")
-struct EngineV2LogprobsChannelCapTests {
-
-    private func entry(_ token: String) -> SSETokenLogprob {
-        SSETokenLogprob(token: token, logprob: -0.1, bytes: nil, topLogprobs: [])
-    }
-
-    @Test("undrained channel is capped at maxEntries with drop-oldest")
-    func channelCapsWithDropOldest() {
-        let channel = EngineV2LogprobsChannel()
-        let cap = EngineV2LogprobsChannel.maxEntries
-        // Append cap + 10 entries, tagged by index, without ever draining.
-        for i in 0..<(cap + 10) {
-            channel.append([entry("t\(i)")])
-        }
-        let drained = channel.drain()
-        // Buffer never exceeds the cap; the 10 OLDEST were dropped.
-        #expect(drained.count == cap)
-        #expect(channel.droppedCount == 10)
-        // The freshest entries are retained (drop-oldest): first kept is t10,
-        // last is t<cap+9>.
-        #expect(drained.first?.token == "t10")
-        #expect(drained.last?.token == "t\(cap + 9)")
-    }
-
-    @Test("under the cap nothing is dropped; drain empties the buffer")
-    func channelUnderCapNoDrops() {
-        let channel = EngineV2LogprobsChannel()
-        for i in 0..<100 { channel.append([entry("t\(i)")]) }
-        #expect(channel.droppedCount == 0)
-        #expect(channel.drain().count == 100)
-        #expect(channel.drain().isEmpty)
-    }
-}
+// Bounded metadata holdback lives in MLXLMServer's canonical encoder
+// (EventBoundLogprobsTests). The relay channel cap that the GLM and Nemotron
+// paths still use is covered by EngineV2LogprobsChannelCapTests.
 
 // MARK: - Paged KV backend: capacity mapping, heartbeat bind, shared-gate skip
 

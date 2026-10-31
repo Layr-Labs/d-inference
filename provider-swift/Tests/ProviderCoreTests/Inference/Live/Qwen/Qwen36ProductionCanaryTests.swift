@@ -373,6 +373,7 @@ private enum Qwen36ProductionCanary {
         var result = Qwen36ProductionCanaryServerResult()
         for try await event in stream {
             switch event {
+            case .logprobs: break
             case .content(let text):
                 if result.firstContentLatency == nil, !text.isEmpty {
                     result.firstContentLatency = startedAt.duration(to: .now)
@@ -391,8 +392,6 @@ private enum Qwen36ProductionCanary {
                 if let call = delta.completed { result.toolCalls.append(call) }
             case .info(let info):
                 result.info = info
-            case .logprobs:
-                break
             }
         }
         return result
@@ -747,6 +746,7 @@ private struct Qwen36ProductionCanaryFixture: @unchecked Sendable {
         var result = Qwen36ProductionCanaryCancellationResult()
         for await event in stream {
             switch event {
+            case .logprobs: break
             case .chunk:
                 if !result.sawDelta {
                     result.sawDelta = true

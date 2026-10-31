@@ -493,8 +493,7 @@ struct GLM5NextOpenRouterCapabilityTests {
         body.removeValue(forKey: "response_format")
         // The coordinator handler threads the sealed body's logprobs request
         // this way (`ProviderLoop+InferenceHandler`).
-        let served = try await serve(body, output: ["Sunny."], logprobs: EngineV2LogprobsPlumbing(
-            topLogprobs: 2, channel: EngineV2LogprobsChannel()))
+        let served = try await serve(body, output: ["Sunny."], logprobs: EngineV2LogprobsPlumbing(topLogprobs: 2))
         #expect(served.nativeRefusals == [nil])
         let refusal = try #require(served.nonCapturingNativeRefusals.first ?? nil)
         #expect(refusal.hasPrefix(EngineV2Translation.unsupportedOutputControlPrefix))

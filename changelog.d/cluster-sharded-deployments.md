@@ -1,0 +1,6 @@
+### Cluster pairs serve sharded deployments by default
+
+- The planner chooses tensor parallel or a pipeline for the Macs it detects; phase split, phase split with MTP, the pipeline-prefill/tensor-decode hybrid and the per-request "alone" route are kept but off by default, reachable only behind `DARKBLOOM_CLUSTER_HANDOFF_MODES=1`, and a setup saved with one of them is refused at start without it. The onboarding's deployment line names the sharded mode.
+- Qwen models with an MTP head and MiMo V2.6 Flash can decode as speculative rounds across the pipeline (`pipeline_mtp_v1`): the last Mac holds the head and a copy of the token embedding, drafts, and both Macs verify the drafts in one window. The planner credits the rounds only from what the same placement served with and without them, and a pair serves them only where its own qualification records pass.
+- MiMo V2.6 Flash keeps prompt prefixes on both Macs, in memory and in the encrypted SSD tier, restored on both or neither.
+- The pair's SSD prompt-cache tier carries its daily write cap across restarts, keeps other plans' records within one byte budget instead of wiping them, stores speculative history once per record, reads records page-aligned without a copy, and hashes model files in parallel.

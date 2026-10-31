@@ -302,6 +302,7 @@ actor SuperImageHTTPRelay {
     func accept(_ event: GenerationEvent) {
         guard failure == nil else { return }
         switch event {
+        case .logprobs: break
         case .chunk(let text):
             guard terminal == nil else {
                 failure = MultiModelBatchSchedulerEngineError.generationFailed("invalid native terminal order")

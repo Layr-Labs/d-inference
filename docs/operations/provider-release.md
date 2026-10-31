@@ -147,6 +147,15 @@ documents the release key/CDN contract; a missing CDN configuration returns
 contracts and are not evidence that a live deployment implements the latest
 automatic-registration semantics.
 
+## Archive Extraction Permissions
+
+Installer and self-update archive extraction use a child-local `umask 022` so
+ordinary release modes, including the fan helper's required `0755`, survive a
+provider started with `umask 077`. The caller's private-state mask is unchanged.
+Hash, signature, runtime-capability and atomic replacement checks still run;
+extraction does not enable tar's full-permissions or unsafe-path options.
+Coordinate the platform-served installer snapshot separately before publication.
+
 ## Steps
 
 ### 1. Check Source And Artifact Version
@@ -198,6 +207,11 @@ runners with no signing/publication secrets. PR caches remain PR-scoped and do
 not seed `master`. Only pull-request runs can use Darkbloom Sandboxes, under
 [CI runner routing](../developer/build.md#ci-runner-routing); `master` and
 dispatched runs always use these Blacksmith runners.
+
+The qualification lane prepares the bounded MiMo HTTP image fixtures before
+the full provider suite, including on cache hits. Keep that preparation as a
+separate step so its environment reaches the tests. See the
+[fixture recipe](../developer/test.md#mimo-regression-fixtures) for local runs.
 
 Inspect each **SDK 27 build cache** summary and actual restore key. Compatible
 prefix hits are useful even when the exact-hit output is false. Compiler, SDK,
@@ -604,6 +618,29 @@ After commit, the platform refreshes binary/runtime policy and release caches.
 Active releases retain their hashes during adoption; deactivation removes them
 from the catalog. See the [runtime manifest](../architecture/security/attestation.md#runtime-manifest).
 
+### Cluster Helpers
+
+The release ships the two-Mac cluster's helpers inside the app:
+`Darkbloom.app/Contents/Helpers/darkbloom-cluster-worker` (the rank a cluster
+member launches) and `darkbloom-cluster-plan` (the placement tool), with the
+`mlx.metallib` and `pagedattention.metal` they load beside themselves. On the
+release lane `.github/actions/provider-release-build/action.yml` builds them
+with `scripts/build-cluster-helpers.sh` against the same source-matched Metal
+library as the provider and checks the copy is byte-identical;
+`scripts/provider-signing-validation.py stage --cluster-helpers` copies them
+into the unsigned app and refuses an artifact without them. Signing runs
+`scripts/sign-cluster-helpers.sh` before the app itself is signed: Developer ID,
+hardened runtime, timestamp, their own identifiers and the network-only
+entitlements of `provider-swift/entitlements-cluster-worker.plist`. After
+notarization, `provider-signing-validation.py cluster-helpers --app` and
+`sign-cluster-helpers.sh --verify` check the final archived bytes. The app's
+`Info.plist` carries `NSLocalNetworkUsageDescription`, so macOS asks for Local
+Network once for the signed identity and keeps the approval across updates and
+reboots ([always on](../provider/cluster-always-on.md)). The
+environment-free signing workflow builds, stages, signs and verifies the helpers
+the same way. An owner signing a local build runs the same script with the
+Developer ID identity, then signs and notarizes the app as the workflow does.
+
 ## Recovery
 
 ### Resume Signing From A Retained Unsigned Build
@@ -724,3 +761,10 @@ API remains a compatibility/recovery tool, not a normal release step.
 - [Pinned platform deployment reference](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/operations/coordinator-deploy.md)
 - [Pinned release-policy reference](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/operations/release-policy-rollout.md)
 - [Pinned release API reference](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/reference/api-contracts.md)
+
+The cluster service LaunchAgent must include `AssociatedBundleIdentifiers`
+for the installed app. Verify the normal `darkbloom cluster` flow after both
+setup terminals exit, including leases and an outbound follower connection on
+each Mac. A foreground CLI check does not qualify background Local Network
+access. Keep the signing identity consistent across builds and retain final
+post-signing executable hashes.

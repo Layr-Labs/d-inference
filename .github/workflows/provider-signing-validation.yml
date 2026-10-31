@@ -94,9 +94,12 @@ jobs:
           bin_dir=$(swift build --build-system native --sdk "$sdk" -c release --scratch-path "$RUNNER_TEMP/provider-build" --show-bin-path)
           cd "$GITHUB_WORKSPACE"
           METALLIB_CACHE_DIR="$RUNNER_TEMP/metallib-cache" candidate/scripts/fetch-metallib.sh "$RUNNER_TEMP/metallib"
+          DARKBLOOM_CLUSTER_WORKER_BUILD_JOBS="$(sysctl -n hw.logicalcpu)" \
+            candidate/scripts/build-cluster-helpers.sh "$RUNNER_TEMP/metallib/mlx.metallib" "$RUNNER_TEMP/cluster-helpers"
           python3 tooling/scripts/provider-signing-validation.py stage \
             --source "$GITHUB_WORKSPACE/candidate" --bin "$bin_dir" \
             --metallib "$RUNNER_TEMP/metallib/mlx.metallib" \
+            --cluster-helpers "$RUNNER_TEMP/cluster-helpers" \
             --output "$RUNNER_TEMP/unsigned-stage" --version "$EXPECTED_VERSION"
           tar czf "$RUNNER_TEMP/unsigned-validation.tar.gz" -C "$RUNNER_TEMP/unsigned-stage" .
       - name: Retain unsigned input for the separate signing job
@@ -186,6 +189,8 @@ jobs:
             "$app/Contents/Helpers/darkbloom-fan-helper"
           codesign --force --options runtime --timestamp --keychain "$keychain" \
             --sign "$DEVELOPER_ID" "$app/Contents/MacOS/mlx.metallib"
+          bash tooling/scripts/sign-cluster-helpers.sh "$app" "$keychain" "$DEVELOPER_ID" "$APPLE_TEAM_ID" \
+            tooling/provider-swift/entitlements-cluster-worker.plist
           codesign --force --options runtime --timestamp --keychain "$keychain" \
             --entitlements tooling/provider-swift/entitlements-enclave.plist \
             --sign "$DEVELOPER_ID" "$app/Contents/MacOS/$ENCLAVE_NAME"
@@ -218,6 +223,8 @@ jobs:
           xcrun stapler validate "$app"
           spctl --assess --type execute --verbose=4 "$app"
           codesign --verify --deep --strict --verbose=2 "$app"
+          python3 tooling/scripts/provider-signing-validation.py cluster-helpers --app "$app"
+          bash tooling/scripts/sign-cluster-helpers.sh --verify "$app" "$APPLE_TEAM_ID"
           python3 tooling/scripts/provider-signing-validation.py receipt \
             --output "$RUNNER_TEMP/signing-stage" --notary "$RUNNER_TEMP/notary-result.json"
           tar czf "$RUNNER_TEMP/signed-validation.tar.gz" -C "$RUNNER_TEMP/signing-stage" .

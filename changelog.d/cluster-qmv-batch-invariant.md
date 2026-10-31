@@ -1,0 +1,3 @@
+### A request's tokens do not depend on what it is batched with on the new MLX core
+
+- Cluster workers, the single-Mac reference and the tensor-parallel check now set `MLX_QMV_BATCH_INVARIANT=1` before MLX starts, unless their launcher set it. The cluster's MLX core then keeps quantized products of a few rows (speculative verify windows, rows of several requests in one launch) on its per-vector kernels, as before it took MLX main's new kernels for 6 to 16 NVFP4 rows and 8 or more affine rows, whose results change with the row count. A request served beside others keeps the bytes it gets alone. Each process logs `darkbloom-qmv-batch-invariant-v1` with the value and who set it. Single-Mac serving is unchanged.

@@ -90,6 +90,7 @@ struct GemmaQATCheckpointRestartLiveTests {
         var failure: String?
         for await event in stream {
             switch event {
+            case .logprobs: break
             case .chunk(let chunk):
                 if !chunk.isEmpty && firstContentMillis == nil {
                     firstContentMillis = Double(DispatchTime.now().uptimeNanoseconds - started) / 1_000_000

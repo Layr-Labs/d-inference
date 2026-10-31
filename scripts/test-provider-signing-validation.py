@@ -26,6 +26,37 @@ PROD, DEV, STAGING = "0.9.20", "0.9.20" + MARKERS["dev"] + "3", "0.9.20" + MARKE
 PROD_NAMES, DEV_NAMES, STAGING_NAMES = (release_identity.identity(v) for v in (PROD, DEV, STAGING))
 
 
+MACHO_ARM64 = bytes.fromhex("cffaedfe0c000001") + b"\0" * 24
+
+
+def write_app_with_cluster_helpers(app, omit=None, metallib=b"metal kernels", paged=b"paged source"):
+    """A synthetic app with the cluster helpers the release must ship."""
+    contents = app / "Contents"
+    (contents / "MacOS").mkdir(parents=True, exist_ok=True)
+    (contents / "Helpers").mkdir(parents=True, exist_ok=True)
+    (contents / "Resources/mlx-swift-lm_MLXLMCommon.bundle").mkdir(parents=True, exist_ok=True)
+    (contents / "MacOS/mlx.metallib").write_bytes(b"metal kernels")
+    (contents / "Resources/mlx-swift-lm_MLXLMCommon.bundle/pagedattention.metal").write_bytes(b"paged source")
+    files = {"darkbloom-cluster-worker": MACHO_ARM64, "darkbloom-cluster-plan": MACHO_ARM64,
+             "mlx.metallib": metallib, "pagedattention.metal": paged}
+    for name, data in files.items():
+        if name == omit:
+            continue
+        path = contents / "Helpers" / name
+        path.write_bytes(data)
+        path.chmod(0o755 if name.startswith("darkbloom-") else 0o644)
+
+
+def cluster_helper_source(root):
+    """The directory scripts/build-cluster-helpers.sh leaves: both helpers with their Metal library and paged source."""
+    source = root / "cluster-helpers"
+    source.mkdir(parents=True, exist_ok=True)
+    for name, data in {"darkbloom-cluster-worker": MACHO_ARM64, "darkbloom-cluster-plan": MACHO_ARM64,
+                       "mlx.metallib": b"metallib", "pagedattention.metal": b"paged source"}.items():
+        (source / name).write_bytes(data)
+    return source
+
+
 class SigningValidationTests(unittest.TestCase):
     def test_workflow_has_no_environment_or_publication_route(self):
         workflow = (ROOT / ".github/workflows/provider-signing-validation.yml").read_text()
@@ -53,13 +84,14 @@ class SigningValidationTests(unittest.TestCase):
         (source / "validation-inputs").mkdir(parents=True)
         app_contents = source / app / "Contents"
         app_contents.mkdir(parents=True)
+        write_app_with_cluster_helpers(source / app)
         info = {"CFBundleIdentifier": VALIDATION.APP_ID, "CFBundleVersion": version,
                 "CFBundleShortVersionString": version, "CFBundleExecutable": executable,
                 "CFBundleName": name}
         info.update(info_updates or {})
         with (app_contents / "Info.plist").open("wb") as output:
             plistlib.dump(info, output)
-        for name in ["entitlements.plist", "entitlements-enclave.plist"]:
+        for name in VALIDATION.SIGNING_ENTITLEMENTS:
             shutil.copy2(ROOT / "provider-swift" / name, source / "validation-inputs" / name)
         (source / "fixture.txt").write_text("synthetic unsigned archive fixture")
         manifest = {"source_sha": "test-source", "version": version, "files": VALIDATION.inventory(source)}
@@ -85,6 +117,98 @@ class SigningValidationTests(unittest.TestCase):
                 else:
                     with self.assertRaises(ValueError):
                         VALIDATION.unpack(arguments)
+
+    def test_cluster_helpers_are_required_where_the_installed_provider_looks(self):
+        names = list(VALIDATION.CLUSTER_HELPER_EXECUTABLES + VALIDATION.CLUSTER_HELPER_RESOURCES)
+        self.assertEqual(names, ["darkbloom-cluster-worker", "darkbloom-cluster-plan", "mlx.metallib", "pagedattention.metal"])
+        for omit in [None] + names:
+            with self.subTest(omit=omit), tempfile.TemporaryDirectory() as temporary:
+                app = Path(temporary) / "Darkbloom.app"
+                write_app_with_cluster_helpers(app, omit=omit)
+                if omit is None:
+                    VALIDATION.check_cluster_helpers(app)
+                else:
+                    with self.assertRaisesRegex(ValueError, "Contents/Helpers/" + omit + " is missing"):
+                        VALIDATION.check_cluster_helpers(app)
+
+    def test_cluster_helpers_must_match_the_apps_metal_library_and_paged_source(self):
+        for scenario in ["metallib", "paged", "not-macho", "not-executable", "symlink"]:
+            with self.subTest(scenario=scenario), tempfile.TemporaryDirectory() as temporary:
+                app = Path(temporary) / "Darkbloom.app"
+                write_app_with_cluster_helpers(app, metallib=b"other kernels" if scenario == "metallib" else b"metal kernels",
+                                               paged=b"other source" if scenario == "paged" else b"paged source")
+                worker = app / "Contents/Helpers/darkbloom-cluster-worker"
+                if scenario == "not-macho":
+                    worker.write_bytes(b"#!/bin/sh\n")
+                if scenario == "not-executable":
+                    worker.chmod(0o644)
+                if scenario == "symlink":
+                    worker.unlink()
+                    worker.symlink_to(Path(temporary) / "elsewhere")
+                with self.assertRaises(ValueError):
+                    VALIDATION.check_cluster_helpers(app)
+
+    def test_unpack_refuses_an_artifact_without_cluster_helpers(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            archive_root = root / "build"
+            archive_root.mkdir()
+            original = write_app_with_cluster_helpers
+
+            def without_worker(app, **_):
+                original(app, omit="darkbloom-cluster-worker")
+            with mock.patch(__name__ + ".write_app_with_cluster_helpers", without_worker):
+                archive = self.make_archive(archive_root)
+            with self.assertRaisesRegex(ValueError, "darkbloom-cluster-worker is missing"):
+                VALIDATION.unpack(argparse.Namespace(archive=archive, output=root / "output",
+                    source_sha="test-source", version="test-version"))
+
+    def test_stage_copies_built_helpers_and_refuses_an_incomplete_build(self):
+        for omit in [None, "darkbloom-cluster-plan", "pagedattention.metal"]:
+            with self.subTest(omit=omit), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                built = root / "cluster-helpers"
+                built.mkdir()
+                for name, data in {"darkbloom-cluster-worker": MACHO_ARM64, "darkbloom-cluster-plan": MACHO_ARM64,
+                                   "mlx.metallib": b"metal kernels", "pagedattention.metal": b"paged source"}.items():
+                    if name != omit:
+                        (built / name).write_bytes(data)
+                helpers = root / "Darkbloom.app/Contents/Helpers"
+                helpers.mkdir(parents=True)
+                if omit is None:
+                    VALIDATION.stage_cluster_helpers(built, helpers)
+                    self.assertEqual((helpers / "darkbloom-cluster-worker").stat().st_mode & 0o777, 0o755)
+                    self.assertEqual((helpers / "mlx.metallib").read_bytes(), b"metal kernels")
+                else:
+                    with self.assertRaisesRegex(ValueError, "missing from the build: " + omit):
+                        VALIDATION.stage_cluster_helpers(built, helpers)
+        with self.assertRaisesRegex(ValueError, "build-cluster-helpers.sh"):
+            VALIDATION.stage_cluster_helpers(None, Path("/nonexistent"))
+
+    def test_release_workflows_build_ship_and_sign_the_cluster_helpers(self):
+        # The release body lives in the reusable workflow release-swift.yml calls per environment.
+        release = (ROOT / ".github/workflows/release-provider.yml").read_text()
+        validation = (ROOT / ".github/workflows/provider-signing-validation.yml").read_text()
+        action = (ROOT / ".github/actions/provider-release-build/action.yml").read_text()
+        self.assertIn("scripts/build-cluster-helpers.sh", action)
+        self.assertIn("cluster-helpers-dir", action)
+        self.assertIn("--cluster-helpers", release)
+        self.assertIn("build-cluster-helpers.sh", validation)
+        self.assertIn("--cluster-helpers", validation)
+        for workflow in [release, validation]:
+            self.assertIn("sign-cluster-helpers.sh", workflow)
+            self.assertIn("provider-signing-validation.py cluster-helpers", workflow)
+        # Never optional again: no silent skip when the artifact lacks them.
+        self.assertNotIn('[ -f "$APP/Contents/Helpers/$helper" ] || continue', release)
+        self.assertNotIn("mlx-cluster-worker.metallib", release)
+        # Every workflow that stages an unsigned app hands it the cluster helpers (stage requires them).
+        for path in sorted((ROOT / ".github/workflows").glob("*.yml")):
+            text = path.read_text()
+            for call in text.split("provider-signing-validation.py stage")[1:]:
+                self.assertIn("--cluster-helpers", call.split("--version", 1)[0], path.name)
+        signer = (ROOT / "scripts/sign-cluster-helpers.sh").read_text()
+        self.assertIn('--identifier "io.darkbloom.$name"', signer)
+        self.assertIn("entitlements", signer)
 
     def test_unpack_refuses_path_escape_and_links(self):
         for name, member_type in [("../escape", tarfile.REGTYPE), ("link", tarfile.SYMTYPE), ("hardlink", tarfile.LNKTYPE)]:
@@ -141,10 +265,13 @@ class SigningValidationTests(unittest.TestCase):
                 for product in [*PRODUCTS.values(), "darkbloom-fan-helper"]:
                     (products / product).write_text(product)
                 (root / "mlx.metallib").write_text("metallib")
+                # Resource staging is not run here, so the paged-source match is the cluster tests' to check.
                 with mock.patch.object(VALIDATION.subprocess, "run"), \
-                        mock.patch.object(VALIDATION.subprocess, "check_output", return_value=""):
+                        mock.patch.object(VALIDATION.subprocess, "check_output", return_value=""), \
+                        mock.patch.object(VALIDATION, "check_cluster_helpers"):
                     VALIDATION.stage(argparse.Namespace(source=ROOT, bin=products,
-                        metallib=root / "mlx.metallib", output=root / "stage", version=version))
+                        metallib=root / "mlx.metallib", output=root / "stage", version=version,
+                        cluster_helpers=cluster_helper_source(root)))
                 app = root / "stage" / names["appBundleName"] / "Contents"
                 self.assertEqual({path.name: path.read_text() for path in (app / "MacOS").iterdir()}, {
                     names["cliName"]: PRODUCTS["cli"], names["enclaveName"]: PRODUCTS["enclave"],
@@ -169,14 +296,15 @@ class SigningValidationTests(unittest.TestCase):
                 {"source_sha": "s", "version": DEV, "submodules": []}))
             notary = root / "notary.json"
             notary.write_text(json.dumps({"status": "Accepted", "id": "n"}))
-            VALIDATION.receipt(argparse.Namespace(output=root, notary=notary))
+            with mock.patch.object(VALIDATION, "check_cluster_helpers"):
+                VALIDATION.receipt(argparse.Namespace(output=root, notary=notary))
             self.assertEqual({path.name: path.read_text() for path in (root / "bin").iterdir()}, {
                 PRODUCTS["cli"]: DEV_NAMES["cliName"], PRODUCTS["enclave"]: DEV_NAMES["enclaveName"],
                 "mlx.metallib": "mlx.metallib"})
 
     def candidate(self, root, document=None):
         """A source checkout; without a document it predates the identity file."""
-        for name in ["entitlements.plist", "entitlements-enclave.plist"]:
+        for name in VALIDATION.SIGNING_ENTITLEMENTS:
             (root / "provider-swift").mkdir(parents=True, exist_ok=True)
             shutil.copy2(ROOT / "provider-swift" / name, root / "provider-swift" / name)
         if document is not None:
@@ -221,9 +349,11 @@ class SigningValidationTests(unittest.TestCase):
                 (products / product).write_text(product)
             (root / "mlx.metallib").write_text("metallib")
             with mock.patch.object(VALIDATION.subprocess, "run"), \
-                    mock.patch.object(VALIDATION.subprocess, "check_output", return_value=""):
+                    mock.patch.object(VALIDATION.subprocess, "check_output", return_value=""), \
+                    mock.patch.object(VALIDATION, "check_cluster_helpers"):
                 VALIDATION.stage(argparse.Namespace(source=source, bin=products,
-                    metallib=root / "mlx.metallib", output=root / "stage", version=DEV))
+                    metallib=root / "mlx.metallib", output=root / "stage", version=DEV,
+                    cluster_helpers=cluster_helper_source(root)))
             manifest = json.loads((root / "stage/unsigned-files.json").read_text())
             self.assertEqual(manifest["packaging"]["appBundleName"], "Candidate.app")
             self.assertEqual(manifest["packaging"]["products"], PRODUCTS)

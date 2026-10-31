@@ -85,10 +85,10 @@ Before tagging `v0.10.6`:
 
 Roll out in this order; each step is a separate approval:
 
-1. No DevNet proof: this release goes to production without one
-   (mainnet-direct). DevNet's coordinator accepted the block of
-   `0.10.5-dev.branch.18` but derived no approvals, so production is the first
-   coordinator to derive them, and step 5 checks them.
+1. No DevNet proof: this release goes to production without one. DevNet's
+   coordinator accepted the block of `0.10.5-dev.branch.18` but derived no
+   approvals, so production is the first coordinator to derive them, and step 5
+   checks them.
 2. Production platform: deploy a `darkbloom-platform` coordinator with
    [darkbloom-platform#643](https://github.com/Layr-Labs/darkbloom-platform/pull/643).
    #643's code reaches the platform's `master` only with its `dev` to `master`
@@ -176,7 +176,7 @@ Platform evidence, inspected on 2026-10-31 (recheck before tagging):
 | #643 is merged into platform `dev` (`df61dd6f`), not `master`; #644 (open) carries only its migration to `master`. Only `EIGENINFERENCE_CLUSTER_PAIR_APPROVALS_FROM_RELEASES=true` derives entries from releases, and public routing needs an approval source | [`cluster_pair_config.go` at `df61dd6f`](https://github.com/Layr-Labs/darkbloom-platform/blob/df61dd6f93714b4458d0eef3125c377087c08b52/coordinator/api/cluster_pair_config.go) (`ClusterPairConfig`) |
 | Migration 58 adds `releases.cluster_runtime`, and a re-registration must repeat the stored block (409 `cluster_runtime_conflict`) | [`00058_release_cluster_runtime.sql` at `df61dd6f`](https://github.com/Layr-Labs/darkbloom-platform/blob/df61dd6f93714b4458d0eef3125c377087c08b52/coordinator/store/postgres/schema/migrations/00058_release_cluster_runtime.sql); [`releases.go` at `df61dd6f`](https://github.com/Layr-Labs/darkbloom-platform/blob/df61dd6f93714b4458d0eef3125c377087c08b52/coordinator/store/postgres/releases.go) (`SetRelease`) |
 | A coordinator without #643 refuses a registration body that carries `cluster_runtime` | [`release_handlers.go` at `2847f27d`](https://github.com/Layr-Labs/darkbloom-platform/blob/2847f27dda8e4caf9e2441d554067f42a88c9e1f/coordinator/api/releases/release_handlers.go) (`DisallowUnknownFields`) |
-| Of the platform's deploy configuration, only DevNet's overlay sets the three switches, and it also sets `EIGENINFERENCE_CLUSTER_PAIR_TRUSTED_TLS_PROXIES=127.0.0.1` | [`env-overrides` (DevNet) at `df61dd6f`](https://github.com/Layr-Labs/darkbloom-platform/blob/df61dd6f93714b4458d0eef3125c377087c08b52/deploy/gcp/dev/env-overrides) |
+| Of the platform's deploy configuration, only DevNet's overlay sets `EIGENINFERENCE_CLUSTER_PAIRS`, `EIGENINFERENCE_CLUSTER_PAIR_APPROVALS_FROM_RELEASES` and `EIGENINFERENCE_CLUSTER_PUBLIC_ROUTING`, and it also sets `EIGENINFERENCE_CLUSTER_PAIR_TRUSTED_TLS_PROXIES=127.0.0.1` | [`env-overrides` (DevNet) at `df61dd6f`](https://github.com/Layr-Labs/darkbloom-platform/blob/df61dd6f93714b4458d0eef3125c377087c08b52/deploy/gcp/dev/env-overrides) |
 | A member connection attaches to pair control only after its own TLS handshake or through a listed TLS proxy. The production coordinator listens on plain HTTP behind Caddy, and in the split deployment only the trusted-proxy path attaches a member | [`configuration.md` at `df61dd6f`](https://github.com/Layr-Labs/darkbloom-platform/blob/df61dd6f93714b4458d0eef3125c377087c08b52/docs/reference/configuration.md) ("Trusted TLS proxy trade-off") |
 | A pair member holds the legacy MDM path or an App Attest serving authorization; App Attest serving reads `EIGENINFERENCE_APP_ATTEST_SERVING`, `EIGENINFERENCE_APP_ATTEST_ENVIRONMENT` and `EIGENINFERENCE_APP_ATTEST_ROLLOUT_PERCENT` | [`cluster-control-protocol.md` at `df61dd6f`](https://github.com/Layr-Labs/darkbloom-platform/blob/df61dd6f93714b4458d0eef3125c377087c08b52/docs/reference/cluster-control-protocol.md) ("Member trust"); [`config.go` at `2847f27d`](https://github.com/Layr-Labs/darkbloom-platform/blob/2847f27dda8e4caf9e2441d554067f42a88c9e1f/coordinator/appattest/service/config.go) (`ConfigFromEnvironment`) |
 | DevNet runs `df61dd6f` and accepted the block of `0.10.5-dev.branch.18` (registered 04:33Z), yet its `GET /v1/cluster/approvals` listed only 26 operator approvals, with no `release/` entry, at 04:44Z, 04:57Z, 05:04Z and 05:09Z | DevNet `/health` and `/v1/cluster/approvals`; run [41167361754](https://github.com/Layr-Labs/d-inference/actions/runs/41167361754) (`CLUSTER_RUNTIME_SEND: true`) |

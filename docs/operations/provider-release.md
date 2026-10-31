@@ -123,12 +123,13 @@ Roll out in this order; each step is a separate approval:
    the tag: a release registered without the block never gains one, because a
    re-registration must repeat the stored block (409
    `cluster_runtime_conflict`).
-4. Merge into `master`, in this order, each squash-merged after its approval:
-   the two-Mac clustering pull request (#1690 and #1692 from `dev`, with
-   `master` merged in so plain builds keep `master`'s `prod` default), the
-   release facts fix (a catalog model ID that the worker describes as another
-   registered model is left out), then this preparation. After each squash,
-   restack the pull requests left with `scripts/restack-after-squash.py`
+4. Merge into `master`, each squash-merged after its approval: first the
+   two-Mac clustering pull request, then this preparation. The clustering pull
+   request carries #1690 and #1692 from `dev`, with `master` merged in so plain
+   builds keep `master`'s `prod` default, and the fixes found while preparing
+   this release, such as the release facts fix (a catalog model ID that the
+   worker describes as another registered model is left out). After its squash,
+   restack this preparation with `scripts/restack-after-squash.py`
    ([pull-request stacks](../developer/pull-requests.md)). Let SDK 27 release
    preparation pass on `master`. This step does not depend on steps 1 to 3 and
    may come first.

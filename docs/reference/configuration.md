@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-10-30
+> Last updated: 2026-10-31
 
 Provider CLI and native-runtime environment variables, compiled defaults and reading symbols. Secrets are named, never valued. Unless specified otherwise, values are read at process start.
 
@@ -920,37 +920,92 @@ pair.
 
 ### Cluster runtime facts
 
-The cluster runtime facts are the digests of one installed app's cluster
-helpers and, for each model, of the capability its own worker describes. The
-coordinator operator copies them into a cluster approval in the operator
-approval file. After the Test stage, the guided setup reads the approvals the
-coordinator serves (`GET /v1/cluster/approvals`) and takes the one whose
-digests equal this Mac's facts
-([coordinator-paired member](#coordinator-paired-member)), and each member
-checks it against its own installed files with the same computation. One type computes every value:
+The cluster runtime facts are the digests of one app's cluster helpers and, for
+each model, of the capability its own worker describes, with each model's
+pair-serving grant and the parity qualifications of the models that build
+declares public. A signed release registers them as `cluster_runtime` in its
+`POST /v1/releases` payload when its environment's variable is on
+([release lane](../operations/provider-release.md#cluster-runtime-facts)), and a
+coordinator that accepts the block derives that build's cluster approvals, their
+pair-serving grants and their parity qualifications from it. An operator may
+still copy the digests into a cluster approval in the operator approval file.
+After the Test stage, the guided setup reads the approvals the coordinator
+serves (`GET /v1/cluster/approvals`) and takes the one whose digests equal this
+Mac's facts ([coordinator-paired member](#coordinator-paired-member)), and each
+member checks it against its own installed files with the same computation. One
+type computes every value:
 `provider-swift/Sources/ProviderCore/Config/ClusterRuntimeApprovalFacts.swift`
 (`ClusterRuntimeApprovalFacts`). The hidden command
 `darkbloom cluster runtime-facts --app <app> --model <id>=<folder>` prints them
-in their canonical form. No value is typed by hand. Only a build-pinned entry
+in their canonical form; run the app's own CLI, so the declaration and the
+records are that build's. No value is typed by hand. Only a build-pinned entry
 needs these facts. A model approval names no runtime digest, and the provider
 computes no facts for it ([model approvals](#model-approvals)).
 
 | Field | Value |
 |---|---|
-| `schema` | `darkbloom_cluster_runtime_v1` |
+| `schema` | `darkbloom_cluster_runtime_v2` |
 | `native_runtime_sha256` | SHA-256 of the signed `Contents/Helpers/darkbloom-cluster-worker` |
 | `metallib_sha256` | SHA-256 of `Contents/Helpers/mlx.metallib` |
 | `resource_library_sha256` | SHA-256 of `Contents/Helpers/pagedattention.metal` |
 | `placement_policy_sha256` | SHA-256 of the signed `Contents/Helpers/darkbloom-cluster-plan` |
-| `models` | 1 to 32 entries, sorted by `model` in byte order, unique |
+| `models` | 1 to 64 entries, sorted by `model` in byte order, unique |
 | `models[].model` | the catalog model ID the manifest names (`model_id`); 1 to 128 printable ASCII bytes |
 | `models[].artifact_sha256` | the capability's `artifactSHA256`, the catalog aggregate |
 | `models[].capability_sha256` | SHA-256 of the exact output of `darkbloom-cluster-worker --describe-runtime` |
 | `models[].profile_sha256` | the capability's `profileFingerprint` |
 | `models[].resource_policy_sha256` | `DistributedInstalledNativeStart.resourcePolicySHA256` of the capability, the value a native start carries |
+| `models[].pair_serving_grant` | `null`, or exactly `evidence_sha256` and `mode_families` (1 to 4 of `hand_off`, `pipeline`, `pipeline_speculative`, `tensor_parallel`, in byte order). A model the build's public declaration (`ClusterPublicModels`) names by runtime model, catalog ID and artifact: its declared families, with the evidence document's SHA-256. Any other model: the families the build's bundled records grant its artifact (`ClusterPairServingGrants.grant`), with the SHA-256 of the records that grant is computed from (the artifact's passing records, without a pass that a divergence of the same shape contradicts) as canonical JSON Lines (`ClusterPairServingGrant.evidenceSHA256`: each record's `encodedLine` in bundle order, joined by `\n`, no trailing newline); `null` when they grant none |
+| `models[].parity_qualifications` | `[]` unless the model is declared; then one object per declared mode family (in byte order: `pipeline`, then `tensor_parallel`) and schedule (ascending), with the fields below. At most 8 |
+| `…schedule` | `1` or `2`: the derived approval it qualifies |
+| `…numerics_classes` | each rank's `ClusterMemberDeviceProfile.numericsClass` of the evidence placement with this block's `metallib_sha256`, for example `g17d-nax1-mlx-98bab9d7-macos27.0` (Apple M5 Ultra, NAX on, macOS 27.0); two, the members of a derived approval |
+| `…mode`, `…cuts` | `pipeline`: `pipeline_v1` cut at `[num_hidden_layers / 2]` (integer division) of the model's `config.json`, read at the top level or else in `text_config` (`[22]` for GLM-5.3-Flash, `[32]` for Qwen3.8-27B); without a layer count the pipeline's qualifications are left out and the command names the family on standard error. `tensor_parallel`: `tensor_parallel_v1`, `[]` (`ClusterPublicModels.placement`) |
+| `…tensor_parallel_shares` | `null`: equal shares |
+| `…promotable`, `…diverged` | `true`, `false` |
+| `…evidence_sha256` | SHA-256 of the evidence document, [`docs/reports/2026-10-31-public-cluster-models.md`](../reports/2026-10-31-public-cluster-models.md) |
+| `…qualified_at` | `2026-10-31T00:00:00Z` |
+| `…request_envelope` | `sampling` and `tools` `true`; `max_prompt_tokens` and `max_output_tokens` 1,048,576 (the coordinator's maximum: only the model's own limits apply); where the placement serves media (`ClusterModelFeaturePolicy.mediaContract`: both declared models in tensor parallel; a pipeline is text only), `vision` when the model's catalog entry in the release's environment lists `image` in `input_modalities`, `video` when it also lists `video` (`ClusterPublicModels.requestEnvelope`). A model given by hand has no catalog entry, so its envelope admits text only |
+
+The public declaration names GLM-5.3-Flash (`registered_glm53_flash`,
+`glm-5.3-flash`) and Qwen3.8-27B (`registered_qwen38_27b`,
+`EigenLabs/Qwen3.8-27B-4bit-mtp`), each in `pipeline` and `tensor_parallel` on
+schedules 1 and 2, on the owner's decisions of 2026-10-31
+([evidence](../reports/2026-10-31-public-cluster-models.md)). Every other
+model's clusters serve their owner only.
+
+The declared placement names the evidence; it does not limit public traffic. A
+coordinator applies a promotable parity qualification to its approval's whole
+mode family: a session whose placement no record matches exactly takes the
+family's promotable records, merged under the request envelope they all allow,
+on any numerics classes, cuts and shares, unless a diverged record of the same
+numerics-class combination withholds it
+([`parityQualification`](https://github.com/Layr-Labs/darkbloom-platform/blob/df61dd6f93714b4458d0eef3125c377087c08b52/coordinator/registry/cluster_parity_qualification.go)).
+Under a derived approval, public traffic for GLM-5.3-Flash and Qwen3.8-27B is
+therefore admitted in pipeline and tensor parallel on any Apple silicon pair,
+within the envelope. No pipeline of either model ran on two Apple M5 Ultras,
+and GLM-5.3-Flash has no tensor-parallel cross-cable record: both rest on the
+owner's decision of 2026-10-31 and the DevNet serving results. GLM-5.3-Flash's
+runtime serves only the serial prefill schedule (`supportedPrefillSchedules`
+of its registered specification), so its schedule 2 approval, grant and
+qualifications are inert. The setup's public-traffic line says a
+declared model is qualified for public traffic in its declared families, with
+or without a bundled record of them (`ClusterPairServingGrants.publicTrafficLine`).
+Every model the records or the declaration qualify needs its grant: without one
+a coordinator holds each member of a pair to the model's single-Mac
+requirements ([why](../architecture/inference.md#cluster-runtime-facts-of-an-installed-app)).
 
 Every digest is 64 lowercase hex and nonzero. The canonical form is JSON with
-sorted keys and no whitespace. Why each digest is the one a member compares:
+keys sorted by byte, no whitespace and no trailing newline; `null` is written,
+never omitted. The strict decoder (`init(canonical:releaseVersion:)`) refuses an
+unknown, missing or repeated field, another schema (v1 included) and a model whose
+derived IDs for the release version exceed 128 bytes: `release/<version>/<model>/s<1|2>`,
+for a model with a grant `<approval ID>/grant`, and for each parity
+qualification `<its schedule's approval ID>/q<n>`, n counting that schedule's
+qualifications from 1 in block order (a declared model's `q1` is its pipeline,
+`q2` tensor parallel). `scripts/provider-release-publication.py` applies the
+same rules to the block, requires its canonical bytes and sends it in that form
+within the registration body, but computes no digest. Why each digest is the
+one a member compares:
 [cluster runtime facts of an installed app](../architecture/inference.md#cluster-runtime-facts-of-an-installed-app).
 
 ### Sharded placement and the hand-off opt-in
@@ -1012,12 +1067,13 @@ with an optional `nativeMember` object and runs `darkbloom start
 selector matches the two registrations itself (see
 [pair formation](cluster-control-protocol.md#pair-formation)).
 
-**Automatic (guided setup).** The coordinator operator adds a cluster approval
-by hand to the operator approval file
+**Automatic (guided setup).** The coordinator derives build-pinned cluster
+approvals from a signed release that carries `cluster_runtime`
+([cluster runtime facts](#cluster-runtime-facts)), or the coordinator operator
+adds a cluster approval by hand to the operator approval file
 ([`EIGENINFERENCE_CLUSTER_PAIR_CATALOG`](#experimental-cluster-pairs)). A
 build-pinned entry has the digests that `darkbloom cluster runtime-facts --app
-<app> --model <id>=<config>,<manifest>` prints
-([cluster runtime facts](#cluster-runtime-facts)). A model approval has no
+<app> --model <id>=<config>,<manifest>` prints. A model approval has no
 runtime digests ([model approvals](#model-approvals)).
 The coordinator serves the loaded entries. After the Test stage of
 `darkbloom cluster` passes, the control leader takes the entry for this pair and

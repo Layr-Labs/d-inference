@@ -192,11 +192,11 @@ Rules for the branch:
 
 - Changes reach `dev` through pull requests into `dev`, which land as merge
   commits, and through merges of master into `dev`.
-- `dev` reaches master only when a release promotes it, as
-  [#1688](https://github.com/Layr-Labs/d-inference/pull/1688) did. A snapshot
-  branch cut from `dev` merges into master with a merge commit, never a squash
-  or a rebase. The master ruleset allows only squash merges, so an admin allows
-  merge commits for that one merge and restores the ruleset at once.
+- `dev`'s changes reach master through pull requests into master.
+  [#1688](https://github.com/Layr-Labs/d-inference/pull/1688) merged a snapshot
+  branch of `dev` with a merge commit, for which an admin briefly allowed merge
+  commits on the squash-only master ruleset; 0.10.6's cluster changes reached
+  master as a squash-merged pull request of `dev` with master merged in.
 - Master keeps one commit of its own, `e9babca4`, which sets plain builds back
   to `prod`. A merge of master into `dev` reverts that commit on its sync
   branch, so `dev` keeps its DevNet default.

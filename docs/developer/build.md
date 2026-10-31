@@ -1,6 +1,6 @@
 # Build The Provider And Landing
 
-> Last updated: 2026-10-29
+> Last updated: 2026-10-31
 
 Build the provider, its source-matched native resources, and the independent
 landing site from this repository. Backend, sidecar, console and admin builds
@@ -225,12 +225,14 @@ see [resource and release tooling checks](test.md#focused-tooling-checks).
 `.github/workflows/darkbloom-route.yml` chooses where read-only CI jobs run: a
 Darkbloom Sandbox when its plane grants one, otherwise the job's Blacksmith
 fallback. It runs on GitHub-hosted `ubuntu-24.04` with no token permissions or
-checkout. Each routed job runs on `fromJSON(needs.route.outputs.routes)['<lane>']`.
+checkout. Each routed job runs on `fromJSON(needs.route.outputs.routes)['<lane>']`,
+where the lane is the job's name; each provider shard reads its own lane,
+`format('test-provider-{0}', matrix.shard)`.
 
 | Workflow | Routed jobs | Fallback |
 |---|---|---|
 | `ci.yml` | `release-integrity`, `docs` | `blacksmith-4vcpu-ubuntu-2404` |
-| `ci.yml` | `test-provider` (one per shard), `test-provider-summary`, `test-provider-sdk`, `test-cluster-checks` | `blacksmith-12vcpu-macos-27` |
+| `ci.yml` | `test-provider` (lanes `test-provider-1` to `test-provider-5`, one per shard), `test-provider-summary`, `test-provider-sdk`, `test-cluster-checks` | `blacksmith-12vcpu-macos-27` |
 | `docs-impact.yml` | `commit-signatures`, `docs-impact` | `blacksmith-4vcpu-ubuntu-2404` |
 | `landing.yml`, `desktop.yml`, `nightly-linear-package.yml` | `check`, `frontend`, `test` | `blacksmith-4vcpu-ubuntu-2404` |
 | `provider-release-cache.yml` | `warm`, pull requests only | `blacksmith-12vcpu-macos-27` |
@@ -243,6 +245,10 @@ fallback and the plane is not contacted. When it is on, the route job sends one
 most once after a transient failure. It uses a grant only when the grant
 repeats the exact Darkbloom labels for the job's profile. Errors, timeouts and
 malformed replies keep the fallback; the plane never fails the route job.
+Every job of a lane shares one `runs-on` value, so the plane grants a lane
+whole, for its requested job count, or not at all. Each provider shard is
+therefore a lane of its own and runs on a Darkbloom Mac whenever one is free,
+independently of the other shards.
 Release, signing, publication, model registration, review automation,
 `cache-swift` and `master` or dispatched cache warming keep literal Blacksmith
 labels. The component classifier and the `Provider Tests` gate run on

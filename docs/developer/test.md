@@ -1,6 +1,6 @@
 # Test Provider And Native Contracts
 
-> Last updated: 2026-10-29
+> Last updated: 2026-10-31
 
 Run isolated Swift, native-resource, public-fixture and landing tests here.
 Backend integration and cross-implementation qualification are platform-owned.
@@ -96,7 +96,9 @@ selector. Use `scripts/run-nested-suite.sh` for documented nested Swift Testing
 cases and `scripts/run-exclusive-native-gpu-test.sh` for exclusive native work.
 
 CI runs the provider suite in five shards (`Provider Unit Tests (shard K)`), one
-Mac each. `PROVIDER_TEST_SHARD=K/N` selects a shard in `scripts/run-provider-tests.sh`,
+Mac each, each routed through its own lane `test-provider-K`
+([CI runner routing](build.md#ci-runner-routing)).
+`PROVIDER_TEST_SHARD=K/N` selects a shard in `scripts/run-provider-tests.sh`,
 and `scripts/provider-test-shards.py` chooses its suites:
 
 | Class | Process | Suites |
@@ -1341,9 +1343,10 @@ pins the final-app check against the self-updater's designated requirement.
 HTTPS plane with a throwaway certificate; the host needs Bash, Python, jq, curl
 and openssl. It covers the default-off switch, fork pull requests, exact label
 grants, HTTP errors, the single retry, timeouts, untrusted or plain-HTTP planes
-and hostile reply text. It also pins each routed job's fallback, timeout and
-read-only permissions, and keeps release workflows on literal Blacksmith
-runners. No check contacts the real plane.
+and hostile reply text. It also pins each routed job's lanes (one per provider
+shard, matching the job's matrix), fallback, timeout and read-only permissions,
+and keeps release workflows on literal Blacksmith runners. No check contacts the
+real plane.
 
 Docs-impact tests retain provider, protocol, privacy, native capacity, cache,
 release/model publication and fixture mappings. Historical links need exact

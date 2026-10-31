@@ -41,14 +41,14 @@ extension ClusterRuntimeApprovalFacts {
     /// installed the artifact under any of them), the first candidate the
     /// worker describes as that model. One artifact can be two registered
     /// models, told apart by the manifest (`gemma-4-26b` and `gemma-4-26b-8bit`):
-    /// a catalog model ID the worker describes only as another model is that
-    /// model's, so it is left out and named through `note`. Candidates of an
-    /// artifact not in `models` are never described, and a listed model with
-    /// no candidate is left out: the environment's catalog does not have it,
-    /// and the fetch step names it. Each candidate's catalog entry gives a
-    /// declared model's request envelope its media. Fails naming every catalog
-    /// model ID of which the worker describes no candidate at all, and when no
-    /// model is left.
+    /// a catalog model ID whose candidates the worker describes only as another
+    /// registered model is that model's, so it is left out and named through
+    /// `note`. Candidates of an artifact not in `models` are never described,
+    /// and a listed model with no candidate is left out: the environment's
+    /// catalog does not have it, and the fetch step names it. Each candidate's
+    /// catalog entry gives a declared model's request envelope its media. Fails
+    /// naming every catalog model ID of which the worker describes no candidate
+    /// at all, and when no model is left (naming what was left out).
     public static func release(installation: Installation, candidates: [ModelFiles],
                                models: [ReleaseModel] = ClusterRuntimeApprovalFacts.releaseModels,
                                publicModels: [ClusterPublicModel] = ClusterPublicModels.declared,
@@ -56,7 +56,7 @@ extension ClusterRuntimeApprovalFacts {
                                note: (String) -> Void = { _ in }) throws -> Self {
         let installed = try HashedInstallation(installation)
         let parsed = try candidates.map { ($0, try catalogArtifact($0)) }
-        var entries: [Model] = [], failures: [String] = [], othersCatalogIDs: [String] = []
+        var entries: [Model] = [], failures: [String] = [], leftOut: [String] = []
         for listed in models {
             let ofArtifact = parsed.filter { $0.1.aggregateSHA256 == listed.artifactSHA256 }
             var catalogIDs: [String] = []
@@ -75,14 +75,13 @@ extension ClusterRuntimeApprovalFacts {
                 }
                 let reasons = "\(catalogID) (\(listed.runtimeModelID), \(listed.artifactSHA256)): " + refusals.joined(separator: "; ")
                 if let chosen { entries.append(chosen) }
-                else if describedAsAnother { othersCatalogIDs.append(reasons) }
+                else if describedAsAnother { leftOut.append("left out, the catalog model ID of another registered model: " + reasons) }
                 else { failures.append(reasons) }
             }
         }
         guard failures.isEmpty else {
             throw ClusterConfigurationError.invalid("Qualified cluster models the release cannot describe: " + failures.joined(separator: " | "))
         }
-        let leftOut = othersCatalogIDs.map { "left out, the catalog model ID of another registered model: \($0)" }
         guard !entries.isEmpty else {
             throw ClusterConfigurationError.invalid("No candidate folder holds a model this build qualifies on a cluster"
                 + leftOut.map { "; \($0)" }.joined())

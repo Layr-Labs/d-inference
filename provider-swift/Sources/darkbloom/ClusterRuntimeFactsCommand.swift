@@ -7,11 +7,12 @@ extension Cluster {
     /// printed in their canonical form: the digests a cluster approval of that
     /// build pins, each model's pair-serving grant, and the parity
     /// qualifications of the models this build declares public
-    /// (`ClusterPublicModels`). A declared family left without a qualification
-    /// is named on standard error. The release lane runs the final signed app's
-    /// own CLI, so the declaration and the records are that build's. It reads
-    /// metadata only: no model weights, no GPU, no configuration, no network
-    /// and no secret.
+    /// (`ClusterPublicModels`). What it leaves out is named on standard error: a
+    /// declared family without a qualification and, with release candidates,
+    /// another registered model's catalog ID. The release lane runs the final
+    /// signed app's own CLI, so the declaration and the records are that
+    /// build's. It reads metadata only: no model weights, no GPU, no
+    /// configuration, no network and no secret.
     struct RuntimeFacts: ParsableCommand {
         static let configuration = CommandConfiguration(commandName: "runtime-facts",
             abstract: "Print the cluster runtime facts of an app bundle's cluster helpers and models.", shouldDisplay: false)
@@ -49,7 +50,7 @@ extension Cluster {
             if let releaseCandidates {
                 let facts = try ClusterRuntimeApprovalFacts.release(installation: installation,
                     candidates: try ClusterRuntimeApprovalFacts.candidates(in: URL(fileURLWithPath: releaseCandidates, isDirectory: true)),
-                    note: { FileHandle.standardError.write(Data("note: \($0)\n".utf8)) })
+                    note: Self.note)
                 // The release registers these bytes: they must read back under the strict decoder, and every ID a
                 // coordinator derives for this build's version must fit.
                 let bytes = try facts.canonicalBytes()
@@ -69,7 +70,9 @@ extension Cluster {
         }
 
         static func note(_ facts: ClusterRuntimeApprovalFacts) {
-            for line in facts.unqualifiedDeclaredFamilies() { FileHandle.standardError.write(Data("note: \(line)\n".utf8)) }
+            for line in facts.unqualifiedDeclaredFamilies() { note(line) }
         }
+
+        static func note(_ line: String) { FileHandle.standardError.write(Data("note: \(line)\n".utf8)) }
     }
 }

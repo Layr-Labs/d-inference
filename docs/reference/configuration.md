@@ -944,9 +944,10 @@ metadata (`ClusterRuntimeApprovalFacts.release`). One artifact can be two
 registered models that only the manifest tells apart (production lists
 `gemma-4-26b` and `gemma-4-26b-8bit` for one artifact): a catalog model ID
 whose candidates the worker describes only as another registered model is that
-model's, so it is left out and named on standard error. No value is typed by hand. Only a build-pinned entry
-needs these facts. A model approval names no runtime digest, and the provider
-computes no facts for it ([model approvals](#model-approvals)).
+model's, so it is left out and named on standard error. No value is typed by
+hand. Only a build-pinned entry needs these facts. A model approval names no
+runtime digest, and the provider computes no facts for it
+([model approvals](#model-approvals)).
 
 | Field | Value |
 |---|---|

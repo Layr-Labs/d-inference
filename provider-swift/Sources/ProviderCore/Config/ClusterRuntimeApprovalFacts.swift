@@ -4,17 +4,17 @@ import DarkbloomClusterProtocol
 
 /// The cluster runtime facts of one app (`darkbloom_cluster_runtime_v2`): the
 /// digests of the cluster helpers it ships and, for each model, the digests of
-/// the capability its own worker describes and the pair-serving grant this
-/// build's qualification records give the model. A signed release registers
-/// them as `cluster_runtime` (the release lane computes them from its final
-/// signed app, `release`); a coordinator derives that build's cluster approvals
-/// and pair-serving grants from them. The guided setup takes the served
-/// approval whose digests equal this Mac's facts (`ClusterApprovalLifetime.select`),
-/// and each member checks it against its own installed files with the same
-/// computation. Every digest is computed by the code the member's checks use
-/// (`DistributedInstalledFiles.digest`, the worker's `--describe-runtime`,
-/// `DistributedInstalledNativeStart.resourcePolicySHA256`). The facts approve
-/// nothing by themselves.
+/// the capability its own worker describes and the parity qualifications of a
+/// model the owner declared public (`ClusterPublicModels`). A signed release
+/// registers them as `cluster_runtime` (the release lane computes them from its
+/// final signed app, `release`); a coordinator derives that build's cluster
+/// approvals and their parity qualifications from them. The guided setup takes
+/// the served approval whose digests equal this Mac's facts
+/// (`ClusterApprovalLifetime.select`), and each member checks it against its
+/// own installed files with the same computation. Every digest is computed by
+/// the code the member's checks use (`DistributedInstalledFiles.digest`, the
+/// worker's `--describe-runtime`, `DistributedInstalledNativeStart.resourcePolicySHA256`).
+/// The facts approve nothing by themselves.
 public struct ClusterRuntimeApprovalFacts: Equatable, Sendable {
     public static let schema = "darkbloom_cluster_runtime_v2"
     public static let maximumModels = 64
@@ -22,11 +22,13 @@ public struct ClusterRuntimeApprovalFacts: Equatable, Sendable {
     /// The canonical form is far smaller; anything larger is refused unread.
     public static let maximumEncodedBytes = 64 * 1024
     /// The longest ID a coordinator derives from the facts of a release and
-    /// registers: `release/<version>/<model>/s<1|2>` for each approval, and
-    /// that ID followed by `/grant` for the grant of a granted model.
+    /// registers (`derivedIDs`).
     public static let maximumDerivedIDBytes = 128
+    /// The members a derived approval admits, so the ranks of a qualification.
+    static let derivedApprovalMembers = 2
 
-    /// One model: what a member's saved setup pins for it, and its grant.
+    /// One model: what a member's saved setup pins for it, and its public
+    /// qualifications.
     public struct Model: Codable, Equatable, Sendable {
         /// The catalog model ID the installed manifest names (`model_id`).
         public let model: String
@@ -38,16 +40,15 @@ public struct ClusterRuntimeApprovalFacts: Equatable, Sendable {
         public let profileSHA256: String
         /// `DistributedInstalledNativeStart.resourcePolicySHA256` of the capability.
         public let resourcePolicySHA256: String
-        /// The grant this build's qualification records give the model's
-        /// artifact (`ClusterPairServingGrants.grant`); nil, written as `null`,
-        /// when they grant it nothing.
-        public let pairServingGrant: PairServingGrant?
+        /// One per declared family and schedule of a declared model
+        /// (`parityQualifications`); empty for every other model.
+        public let parityQualifications: [ParityQualification]
 
         public init(model: String, artifactSHA256: String, capabilitySHA256: String,
-                    profileSHA256: String, resourcePolicySHA256: String, pairServingGrant: PairServingGrant? = nil) {
+                    profileSHA256: String, resourcePolicySHA256: String, parityQualifications: [ParityQualification] = []) {
             self.model = model; self.artifactSHA256 = artifactSHA256; self.capabilitySHA256 = capabilitySHA256
             self.profileSHA256 = profileSHA256; self.resourcePolicySHA256 = resourcePolicySHA256
-            self.pairServingGrant = pairServingGrant
+            self.parityQualifications = parityQualifications
         }
 
         enum CodingKeys: String, CodingKey, CaseIterable {
@@ -56,46 +57,75 @@ public struct ClusterRuntimeApprovalFacts: Equatable, Sendable {
             case capabilitySHA256 = "capability_sha256"
             case profileSHA256 = "profile_sha256"
             case resourcePolicySHA256 = "resource_policy_sha256"
-            case pairServingGrant = "pair_serving_grant"
+            case parityQualifications = "parity_qualifications"
         }
         static let fields = Set(CodingKeys.allCases.map(\.rawValue))
-
-        /// Every member is written: a model without a grant has `"pair_serving_grant":null`.
-        public func encode(to encoder: Encoder) throws {
-            var container = encoder.container(keyedBy: CodingKeys.self)
-            try container.encode(model, forKey: .model)
-            try container.encode(artifactSHA256, forKey: .artifactSHA256)
-            try container.encode(capabilitySHA256, forKey: .capabilitySHA256)
-            try container.encode(profileSHA256, forKey: .profileSHA256)
-            try container.encode(resourcePolicySHA256, forKey: .resourcePolicySHA256)
-            if let pairServingGrant { try container.encode(pairServingGrant, forKey: .pairServingGrant) }
-            else { try container.encodeNil(forKey: .pairServingGrant) }
-        }
     }
 
-    /// A model's pair-serving grant as a release names it: the mode families
-    /// the grant's passing records ran, in byte order, and the SHA-256 of those
-    /// records (`ClusterPairServingGrant.evidenceSHA256`).
-    public struct PairServingGrant: Codable, Equatable, Sendable {
+    /// The statement that one placement of a declared model serves public
+    /// traffic (contract D): a coordinator makes it the parity qualification
+    /// of the model's derived approval of `schedule`. Its equal shares are
+    /// written as `"tensor_parallel_shares":null`.
+    public struct ParityQualification: Codable, Equatable, Sendable {
+        public let schedule: UInt8
+        /// Each rank's numerics class, in rank order.
+        public let numericsClasses: [String]
+        public let cuts: [Int]
+        public let mode: ClusterGenerationMode
+        public let promotable: Bool
+        public let diverged: Bool
         public let evidenceSHA256: String
-        /// `ClusterPairServingModeFamily` raw values, sorted by byte, unique.
-        public let modeFamilies: [String]
+        public let qualifiedAt: String
+        public let requestEnvelope: ClusterRequestEnvelope
 
-        public init(evidenceSHA256: String, modeFamilies: [String]) {
-            self.evidenceSHA256 = evidenceSHA256; self.modeFamilies = modeFamilies
-        }
-
-        /// The grant `grant` gives: its families and the digest of its records.
-        public init(_ grant: ClusterPairServingGrant) throws {
-            self.init(evidenceSHA256: try grant.evidenceSHA256(),
-                      modeFamilies: grant.families.map(\.rawValue).sorted { $0.utf8.lexicographicallyPrecedes($1.utf8) })
+        public init(schedule: UInt8, numericsClasses: [String], cuts: [Int], mode: ClusterGenerationMode, promotable: Bool,
+                    diverged: Bool, evidenceSHA256: String, qualifiedAt: String, requestEnvelope: ClusterRequestEnvelope) {
+            self.schedule = schedule; self.numericsClasses = numericsClasses; self.cuts = cuts; self.mode = mode
+            self.promotable = promotable; self.diverged = diverged; self.evidenceSHA256 = evidenceSHA256
+            self.qualifiedAt = qualifiedAt; self.requestEnvelope = requestEnvelope
         }
 
         enum CodingKeys: String, CodingKey, CaseIterable {
+            case schedule, cuts, mode, promotable, diverged
+            case numericsClasses = "numerics_classes"
+            case tensorParallelShares = "tensor_parallel_shares"
             case evidenceSHA256 = "evidence_sha256"
-            case modeFamilies = "mode_families"
+            case qualifiedAt = "qualified_at"
+            case requestEnvelope = "request_envelope"
         }
         static let fields = Set(CodingKeys.allCases.map(\.rawValue))
+
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            // Equal shares only: anything but null is refused.
+            guard try container.decodeNil(forKey: .tensorParallelShares) else {
+                throw DecodingError.dataCorruptedError(forKey: .tensorParallelShares, in: container,
+                                                       debugDescription: "tensor_parallel_shares must be null (equal shares)")
+            }
+            self.init(schedule: try container.decode(UInt8.self, forKey: .schedule),
+                      numericsClasses: try container.decode([String].self, forKey: .numericsClasses),
+                      cuts: try container.decode([Int].self, forKey: .cuts),
+                      mode: try container.decode(ClusterGenerationMode.self, forKey: .mode),
+                      promotable: try container.decode(Bool.self, forKey: .promotable),
+                      diverged: try container.decode(Bool.self, forKey: .diverged),
+                      evidenceSHA256: try container.decode(String.self, forKey: .evidenceSHA256),
+                      qualifiedAt: try container.decode(String.self, forKey: .qualifiedAt),
+                      requestEnvelope: try container.decode(ClusterRequestEnvelope.self, forKey: .requestEnvelope))
+        }
+
+        public func encode(to encoder: Encoder) throws {
+            var container = encoder.container(keyedBy: CodingKeys.self)
+            try container.encode(schedule, forKey: .schedule)
+            try container.encode(numericsClasses, forKey: .numericsClasses)
+            try container.encode(cuts, forKey: .cuts)
+            try container.encode(mode, forKey: .mode)
+            try container.encodeNil(forKey: .tensorParallelShares)
+            try container.encode(promotable, forKey: .promotable)
+            try container.encode(diverged, forKey: .diverged)
+            try container.encode(evidenceSHA256, forKey: .evidenceSHA256)
+            try container.encode(qualifiedAt, forKey: .qualifiedAt)
+            try container.encode(requestEnvelope, forKey: .requestEnvelope)
+        }
     }
 
     /// SHA-256 of the signed `Contents/Helpers/darkbloom-cluster-worker`.
@@ -146,8 +176,15 @@ public struct ClusterRuntimeApprovalFacts: Equatable, Sendable {
     public struct ModelFiles: Equatable, Sendable {
         public let configuration: URL
         public let manifest: URL
+        /// The model's catalog entry as the release lane fetched it
+        /// (`catalog.json`: its `id` and `input_modalities`). Nil for a model
+        /// given by hand or installed, whose declared request envelope then
+        /// admits text only.
+        public let catalog: URL?
 
-        public init(configuration: URL, manifest: URL) { self.configuration = configuration; self.manifest = manifest }
+        public init(configuration: URL, manifest: URL, catalog: URL? = nil) {
+            self.configuration = configuration; self.manifest = manifest; self.catalog = catalog
+        }
 
         /// `config.json` and `manifest.json` of a model folder.
         public init(directory: URL) {
@@ -162,23 +199,23 @@ public struct ClusterRuntimeApprovalFacts: Equatable, Sendable {
         let runtimeModelID: String
     }
 
-    /// The facts of `installation` for exactly `models`. Each model's grant
-    /// comes from `decisions` (this build's bundled records by default).
+    /// The facts of `installation` for exactly `models`, with the parity
+    /// qualifications `publicModels` declare (this build's declaration by default).
     public static func compute(installation: Installation, models: [ModelFiles],
-                               decisions: ClusterPairServingDecisions = ClusterPairServingGrants.decisions) throws -> Self {
+                               publicModels: [ClusterPublicModel] = ClusterPublicModels.declared) throws -> Self {
         let installed = try HashedInstallation(installation)
-        return try installed.facts(models.map { try installed.describe($0, decisions: decisions).entry })
+        return try installed.facts(models.map { try installed.describe($0, publicModels: publicModels).entry })
     }
 
-    /// One model's entry, described by `worker` pinned to `workerSHA256`, with
-    /// the grant `decisions` give the described runtime model and artifact.
-    static func describe(_ files: ModelFiles, worker: URL, workerSHA256: String, deadline: UInt64,
-                         decisions: ClusterPairServingDecisions) throws -> Described {
+    /// One model's entry, described by `worker` pinned to `workerSHA256`.
+    static func describe(_ files: ModelFiles, worker: URL, workerSHA256: String, metallibSHA256: String, deadline: UInt64,
+                         publicModels: [ClusterPublicModel]) throws -> Described {
         let configuration = try canonical(files.configuration), manifest = try canonical(files.manifest)
         let artifact = try catalogArtifact(ModelFiles(configuration: configuration, manifest: manifest))
         guard modelIDIsValid(artifact.modelID) else {
             throw ClusterConfigurationError.invalid("The manifest's model ID is not 1 to \(maximumModelBytes) printable ASCII bytes")
         }
+        let inputModalities = try files.catalog.map { try catalogInputModalities($0, model: artifact.modelID) } ?? []
         let bytes = try DistributedCapabilityProbe.run(executable: try canonical(worker), arguments: ["--describe-runtime",
             "--config", configuration.path, "--manifest", manifest.path, "--expected-executable-sha256", workerSHA256],
             deadline: deadline)
@@ -187,13 +224,43 @@ public struct ClusterRuntimeApprovalFacts: Equatable, Sendable {
               !capability.hasPrivateImages else {
             throw ClusterConfigurationError.invalid("The worker described another build, artifact or profile than \(manifest.path) names")
         }
-        // The public grant a member of this build reports for the installed artifact (`ClusterPairOwnerServing.publicGrant`).
-        let grant = try? ClusterPairServingGrants.grant(runtimeModelID: capability.runtimeModelID, publicModelID: artifact.modelID,
-                                                        artifactSHA256: capability.artifactSHA256, decisions: decisions)
         return Described(entry: Model(model: artifact.modelID, artifactSHA256: capability.artifactSHA256,
             capabilitySHA256: ClusterConfigurationCodec.sha256(bytes), profileSHA256: capability.profileFingerprint,
             resourcePolicySHA256: NativePairMemberPolicy.hex(DistributedInstalledNativeStart.resourcePolicySHA256(capability)),
-            pairServingGrant: try grant.map(PairServingGrant.init)), runtimeModelID: capability.runtimeModelID)
+            parityQualifications: parityQualifications(model: artifact.modelID, runtimeModelID: capability.runtimeModelID,
+                artifactSHA256: capability.artifactSHA256, metallibSHA256: metallibSHA256, inputModalities: inputModalities,
+                publicModels: publicModels)),
+            runtimeModelID: capability.runtimeModelID)
+    }
+
+    /// The parity qualifications of a described model: when `publicModels`
+    /// declare its runtime model, catalog model and artifact, one per declared
+    /// family (byte order) and schedule, each placement's ranks in this build's
+    /// numerics class; none otherwise.
+    static func parityQualifications(model: String, runtimeModelID: String, artifactSHA256: String, metallibSHA256: String,
+                                     inputModalities: [String], publicModels: [ClusterPublicModel]) -> [ParityQualification] {
+        guard let declared = publicModels.first(where: {
+            $0.runtimeModelID == runtimeModelID && $0.catalogModelID == model && $0.artifactSHA256 == artifactSHA256
+        }) else { return [] }
+        let envelope = ClusterPublicModels.requestEnvelope(inputModalities: inputModalities)
+        return declared.placements.sorted { $0.family.rawValue.utf8.lexicographicallyPrecedes($1.family.rawValue.utf8) }
+            .flatMap { placement in
+                declared.schedules.sorted().map { schedule in
+                    ParityQualification(schedule: schedule, numericsClasses: numericsClasses(placement, metallibSHA256: metallibSHA256),
+                        cuts: placement.cuts, mode: placement.mode, promotable: true, diverged: false,
+                        evidenceSHA256: ClusterPublicModels.evidenceSHA256, qualifiedAt: ClusterPublicModels.qualifiedAt,
+                        requestEnvelope: envelope)
+                }
+            }
+    }
+
+    /// Each rank's numerics class of `placement` on a build whose Metal
+    /// library is `metallibSHA256`: what its members register
+    /// (`ClusterMemberDeviceProfile.numericsClass`).
+    static func numericsClasses(_ placement: ClusterPublicModel.Placement, metallibSHA256: String) -> [String] {
+        let os = OperatingSystemVersion(majorVersion: placement.macOSMajor, minorVersion: placement.macOSMinor, patchVersion: 0)
+        return Array(repeating: ClusterMemberDeviceProfile.numericsClass(architecture: placement.gpuArchitecture,
+            metallibSHA256: metallibSHA256, os: os), count: placement.ranks)
     }
 
     // MARK: - Canonical form
@@ -231,13 +298,21 @@ public struct ClusterRuntimeApprovalFacts: Equatable, Sendable {
     /// outside the rules or a model whose derived IDs for `releaseVersion`
     /// exceed `maximumDerivedIDBytes` is refused.
     public init(canonical data: Data, releaseVersion: String = ProviderCore.version) throws {
+        func object(_ value: Any?, fields: Set<String>) -> [String: Any]? {
+            (value as? [String: Any]).flatMap { Set($0.keys) == fields ? $0 : nil }
+        }
         guard data.count <= Self.maximumEncodedBytes,
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              Set(object.keys) == Document.fields, object["schema"] as? String == Self.schema,
-              let entries = object["models"] as? [[String: Any]],
+              let top = object(try? JSONSerialization.jsonObject(with: data), fields: Document.fields),
+              top["schema"] as? String == Self.schema,
+              let entries = top["models"] as? [Any],
               entries.allSatisfy({ entry in
-                  Set(entry.keys) == Model.fields && (entry["pair_serving_grant"] is NSNull
-                      || (entry["pair_serving_grant"] as? [String: Any]).map { Set($0.keys) == PairServingGrant.fields } == true)
+                  guard let model = object(entry, fields: Model.fields),
+                        let qualifications = model["parity_qualifications"] as? [Any] else { return false }
+                  return qualifications.allSatisfy { value in
+                      guard let qualification = object(value, fields: ParityQualification.fields) else { return false }
+                      return qualification["tensor_parallel_shares"] is NSNull
+                          && object(qualification["request_envelope"], fields: ClusterRequestEnvelope.fields) != nil
+                  }
               }) else {
             throw ClusterConfigurationError.invalid("Cluster runtime facts have unknown or missing fields or another schema")
         }
@@ -250,24 +325,32 @@ public struct ClusterRuntimeApprovalFacts: Equatable, Sendable {
         try self.init(nativeRuntimeSHA256: document.nativeRuntimeSHA256, metallibSHA256: document.metallibSHA256,
                       resourceLibrarySHA256: document.resourceLibrarySHA256,
                       placementPolicySHA256: document.placementPolicySHA256, models: document.models)
-        guard models.allSatisfy({ Self.longestDerivedID($0, releaseVersion: releaseVersion).utf8.count <= Self.maximumDerivedIDBytes }) else {
+        guard models.allSatisfy({ Self.derivedIDs($0, releaseVersion: releaseVersion)
+            .allSatisfy { $0.utf8.count <= Self.maximumDerivedIDBytes } }) else {
             throw ClusterConfigurationError.invalid("An ID a coordinator derives from these facts exceeds \(Self.maximumDerivedIDBytes) bytes")
         }
     }
 
-    /// The longest ID a coordinator derives for `model` from the facts of
-    /// release `releaseVersion`: its schedule 2 approval, or that approval's grant.
-    static func longestDerivedID(_ model: Model, releaseVersion: String) -> String {
-        "release/\(releaseVersion)/\(model.model)/s2" + (model.pairServingGrant == nil ? "" : "/grant")
+    /// The IDs a coordinator derives for `model` from the facts of release
+    /// `releaseVersion`: its approvals `release/<version>/<model>/s<1|2>` and,
+    /// for each parity qualification, `<its schedule's approval>/q<n>`, n
+    /// counting that schedule's qualifications from 1 in block order.
+    static func derivedIDs(_ model: Model, releaseVersion: String) -> [String] {
+        func approval(_ schedule: UInt8) -> String { "release/\(releaseVersion)/\(model.model)/s\(schedule)" }
+        var counts: [UInt8: Int] = [:]
+        return [approval(1), approval(2)] + model.parityQualifications.map { qualification in
+            counts[qualification.schedule, default: 0] += 1
+            return approval(qualification.schedule) + "/q\(counts[qualification.schedule]!)"
+        }
     }
 
     /// Every digest 64 lowercase hex and nonzero; 1 to 64 models with valid,
-    /// strictly ascending (byte order, so unique) model IDs; each grant with 1
-    /// to 4 known mode families in byte order.
+    /// strictly ascending (byte order, so unique) model IDs; every parity
+    /// qualification as a coordinator validates one.
     func validate() throws {
         let digests = [nativeRuntimeSHA256, metallibSHA256, resourceLibrarySHA256, placementPolicySHA256]
             + models.flatMap { [$0.artifactSHA256, $0.capabilitySHA256, $0.profileSHA256, $0.resourcePolicySHA256] }
-            + models.compactMap(\.pairServingGrant?.evidenceSHA256)
+            + models.flatMap { $0.parityQualifications.map(\.evidenceSHA256) }
         guard digests.allSatisfy({ ClusterConfigurationSyntax.hash($0) && $0 != String(repeating: "0", count: 64) }) else {
             throw ClusterConfigurationError.invalid("Cluster runtime facts digests must be 64 lowercase hex characters, not zero")
         }
@@ -277,12 +360,40 @@ public struct ClusterRuntimeApprovalFacts: Equatable, Sendable {
         guard zip(models, models.dropFirst()).allSatisfy({ Self.inByteOrder($0, $1) }) else {
             throw ClusterConfigurationError.invalid("Cluster runtime facts models must be sorted by model ID and unique")
         }
-        let known = Set(ClusterPairServingModeFamily.allCases.map(\.rawValue))
-        guard models.compactMap(\.pairServingGrant).allSatisfy({ grant in
-            !grant.modeFamilies.isEmpty && grant.modeFamilies.allSatisfy(known.contains)
-                && zip(grant.modeFamilies, grant.modeFamilies.dropFirst()).allSatisfy { $0.utf8.lexicographicallyPrecedes($1.utf8) }
-        }) else {
-            throw ClusterConfigurationError.invalid("A pair-serving grant names 1 to \(known.count) known mode families, sorted by byte and unique")
+        for model in models {
+            try Self.validate(model.parityQualifications, of: model.model)
+        }
+    }
+
+    /// A model's parity qualifications as a coordinator validates them for its
+    /// derived approvals (two members each): schedule 1 or 2, one numerics
+    /// class per member, the cuts the mode has, never diverged and promotable,
+    /// an RFC 3339 `qualified_at`, an envelope of 1 to `ClusterPublicModels.maximumTokens`
+    /// tokens with video only with vision, and no placement twice.
+    static func validate(_ qualifications: [ParityQualification], of model: String) throws {
+        let refuse = { (rule: String) in ClusterConfigurationError.invalid("A parity qualification of \(model) \(rule)") }
+        guard qualifications.count <= 2 * ClusterPairServingModeFamily.allCases.count else { throw refuse("is one too many") }
+        for (index, q) in qualifications.enumerated() {
+            guard [1, 2].contains(q.schedule) else { throw refuse("names schedule \(q.schedule), not 1 or 2") }
+            guard q.numericsClasses.count == derivedApprovalMembers, q.numericsClasses.allSatisfy({
+                (1...64).contains($0.utf8.count) && $0.utf8.allSatisfy { (0x21...0x7E).contains($0) }
+            }) else { throw refuse("needs one numerics class of 1 to 64 printable ASCII bytes per member") }
+            guard q.cuts.count == q.mode.layerCutCount(ranks: q.numericsClasses.count), q.cuts.allSatisfy({ $0 > 0 }),
+                  zip(q.cuts, q.cuts.dropFirst()).allSatisfy({ $0 < $1 }) else {
+                throw refuse("needs the cuts its mode has, positive and ascending")
+            }
+            guard !(q.diverged && q.promotable) else { throw refuse("is diverged and promotable") }
+            guard ClusterPairApproval.unixNanoseconds(rfc3339: q.qualifiedAt) != nil else {
+                throw refuse("has a qualified_at that is not an RFC 3339 instant")
+            }
+            let envelope = q.requestEnvelope, bounds = 1...ClusterPublicModels.maximumTokens
+            guard bounds.contains(envelope.maxPromptTokens), bounds.contains(envelope.maxOutputTokens),
+                  !envelope.video || envelope.vision else {
+                throw refuse("needs token bounds of 1 to \(ClusterPublicModels.maximumTokens) and vision for video")
+            }
+            guard !qualifications[..<index].contains(where: {
+                $0.schedule == q.schedule && $0.mode == q.mode && $0.numericsClasses == q.numericsClasses && $0.cuts == q.cuts
+            }) else { throw refuse("repeats a placement") }
         }
     }
 
@@ -304,6 +415,24 @@ public struct ClusterRuntimeApprovalFacts: Equatable, Sendable {
     }
 
     // MARK: - Helpers
+
+    /// The `input_modalities` of the catalog entry fetched with a model
+    /// (`{"id":…,"input_modalities":[…]}`, the entry of `model`).
+    static func catalogInputModalities(_ url: URL, model: String) throws -> [String] {
+        let refused = ClusterConfigurationError.invalid("The catalog entry \(url.path) is not the entry of \(model) with its input modalities")
+        let data: Data
+        do {
+            let handle = try FileHandle(forReadingFrom: try canonical(url))
+            defer { try? handle.close() }
+            data = try handle.read(upToCount: 4097) ?? Data()
+        } catch { throw refused }
+        guard data.count <= 4096, let entry = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              Set(entry.keys) == ["id", "input_modalities"], entry["id"] as? String == model,
+              let modalities = entry["input_modalities"] as? [String], modalities.count <= 16,
+              modalities.allSatisfy({ (1...32).contains($0.utf8.count) && $0.utf8.allSatisfy { (0x21...0x7E).contains($0) } })
+        else { throw refused }
+        return modalities
+    }
 
     /// True when an object in `data` (already parsed as JSON) names one key
     /// twice. Keys compare after unescaping, as a JSON reader sees them.
@@ -354,9 +483,9 @@ public struct ClusterRuntimeApprovalFacts: Equatable, Sendable {
             resourceLibrarySHA256 = digests[2]; placementPolicySHA256 = digests[3]
         }
 
-        func describe(_ files: ModelFiles, decisions: ClusterPairServingDecisions) throws -> Described {
+        func describe(_ files: ModelFiles, publicModels: [ClusterPublicModel]) throws -> Described {
             try ClusterRuntimeApprovalFacts.describe(files, worker: worker, workerSHA256: nativeRuntimeSHA256,
-                                                     deadline: ClusterRuntimeApprovalFacts.deadline(seconds: 30), decisions: decisions)
+                metallibSHA256: metallibSHA256, deadline: ClusterRuntimeApprovalFacts.deadline(seconds: 30), publicModels: publicModels)
         }
 
         /// The facts of this installation for `models`, in byte order.

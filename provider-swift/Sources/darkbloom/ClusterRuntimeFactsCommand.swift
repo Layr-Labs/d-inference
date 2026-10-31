@@ -5,10 +5,11 @@ import ProviderCore
 extension Cluster {
     /// The cluster runtime facts of an app bundle (`ClusterRuntimeApprovalFacts`),
     /// printed in their canonical form: the digests a cluster approval of that
-    /// build pins and each model's pair-serving grant from this build's own
-    /// qualification records. The release lane runs the final signed app's own
-    /// CLI, so the grants are that build's. It reads metadata only: no model
-    /// weights, no GPU, no configuration, no network and no secret.
+    /// build pins and the parity qualifications of the models this build
+    /// declares public (`ClusterPublicModels`). The release lane runs the final
+    /// signed app's own CLI, so the declaration is that build's. It reads
+    /// metadata only: no model weights, no GPU, no configuration, no network
+    /// and no secret.
     struct RuntimeFacts: ParsableCommand {
         static let configuration = CommandConfiguration(commandName: "runtime-facts",
             abstract: "Print the cluster runtime facts of an app bundle's cluster helpers and models.", shouldDisplay: false)

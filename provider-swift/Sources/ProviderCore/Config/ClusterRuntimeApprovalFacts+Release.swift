@@ -4,7 +4,8 @@ import DarkbloomClusterProtocol
 /// The facts a signed release registers (`cluster_runtime`), computed by the
 /// release's own CLI and worker from its final signed app: the models this
 /// build qualifies on a cluster, described from the metadata of the target
-/// environment's catalog (`scripts/provider-cluster-runtime-facts.sh`).
+/// environment's catalog (`scripts/provider-cluster-runtime-facts.sh`), with
+/// the parity qualifications of the models this build declares public.
 extension ClusterRuntimeApprovalFacts {
     /// A model a release describes: a registered model with a cluster stage
     /// adapter and a passing pair qualification record on this artifact.
@@ -40,12 +41,13 @@ extension ClusterRuntimeApprovalFacts {
     /// worker describes as that model. Candidates of an artifact not in
     /// `models` are never described, and a listed model with no candidate is
     /// left out: the environment's catalog does not have it, and the fetch
-    /// step names it. Fails naming every catalog model ID that has no
-    /// candidate the worker describes as the listed model, and when no model is
-    /// left.
+    /// step names it. Each candidate's catalog entry gives a declared model's
+    /// request envelope its media. Fails naming every catalog model ID that has
+    /// no candidate the worker describes as the listed model, and when no
+    /// model is left.
     public static func release(installation: Installation, candidates: [ModelFiles],
                                models: [ReleaseModel] = ClusterRuntimeApprovalFacts.releaseModels,
-                               decisions: ClusterPairServingDecisions = ClusterPairServingGrants.decisions) throws -> Self {
+                               publicModels: [ClusterPublicModel] = ClusterPublicModels.declared) throws -> Self {
         let installed = try HashedInstallation(installation)
         let parsed = try candidates.map { ($0, try catalogArtifact($0)) }
         var entries: [Model] = [], failures: [String] = []
@@ -57,7 +59,7 @@ extension ClusterRuntimeApprovalFacts {
                 var refusals: [String] = [], chosen: Model?
                 for (files, artifact) in ofArtifact where artifact.modelID == catalogID {
                     do {
-                        let described = try installed.describe(files, decisions: decisions)
+                        let described = try installed.describe(files, publicModels: publicModels)
                         if described.runtimeModelID == listed.runtimeModelID { chosen = described.entry; break }
                         refusals.append("\(files.manifest.path) is \(described.runtimeModelID)")
                     } catch {
@@ -78,13 +80,17 @@ extension ClusterRuntimeApprovalFacts {
     }
 
     /// The candidate folders of a release: every subfolder of `directory`, in
-    /// name order, each with its `config.json` and `manifest.json`.
+    /// name order, each with its `config.json`, `manifest.json` and the
+    /// catalog entry it came from (`catalog.json`).
     public static func candidates(in directory: URL) throws -> [ModelFiles] {
         let names: [String]
         do { names = try FileManager.default.contentsOfDirectory(atPath: directory.path) }
         catch { throw ClusterConfigurationError.invalid("Cannot list the candidate folder \(directory.path)") }
         return names.filter { !$0.hasPrefix(".") }.sorted().map {
-            ModelFiles(directory: directory.appendingPathComponent($0, isDirectory: true))
+            let folder = directory.appendingPathComponent($0, isDirectory: true)
+            return ModelFiles(configuration: folder.appendingPathComponent("config.json"),
+                              manifest: folder.appendingPathComponent("manifest.json"),
+                              catalog: folder.appendingPathComponent("catalog.json"))
         }
     }
 }

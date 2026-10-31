@@ -65,16 +65,52 @@ import DarkbloomClusterProcess
             == "not yet qualified for public traffic")
     }
 
+    /// A model the owner declared public (`ClusterPublicModels`) is qualified for public traffic in its declared family, with
+    /// or without a record of it: GLM-5.3-Flash has only a pipeline record and Qwen3.8-27B none here, yet both say
+    /// tensor parallel. Only the declared family and artifact: another mode family, another artifact or an undeclared
+    /// model is not.
+    @Test func aDeclaredModelIsQualifiedInItsDeclaredFamilyWithoutARecordOfIt() throws {
+        let glm = "registered_glm53_flash", q27 = "registered_qwen38_27b"
+        let pipelineOnly = ClusterPairServingDecisions(records: [record(glm, ["Apple M3 Ultra", "Apple M5 Max"], cuts: [39])])
+        let none = ClusterPairServingDecisions(records: [])
+        let tensor = "qualified for public traffic in tensor parallel mode (the coordinator's parity qualification decides each placement)"
+        for (model, decisions) in [(glm, pipelineOnly), (q27, none)] {
+            #expect(ClusterPairServingGrants.publicTrafficLine(runtimeModelID: model, mode: .tensorParallel, decisions: decisions) == tensor)
+            let declared = ClusterPublicModels.declared.first { $0.runtimeModelID == model }!
+            #expect(ClusterPairServingGrants.publicTrafficLine(runtimeModelID: model, artifactSHA256: declared.artifactSHA256,
+                                                               mode: .tensorParallel, decisions: decisions) == tensor)
+            // Another artifact of the model is not what was declared.
+            #expect(ClusterPairServingGrants.publicTrafficLine(runtimeModelID: model, artifactSHA256: String(repeating: "e", count: 64),
+                                                               mode: .tensorParallel, decisions: decisions) == ClusterPairOwnerServing.notYetQualified)
+            // Without the declaration, the records alone decide.
+            #expect(ClusterPairServingGrants.publicTrafficLine(runtimeModelID: model, mode: .tensorParallel, decisions: decisions,
+                                                               publicModels: []) == ClusterPairOwnerServing.notYetQualified)
+            let owner = try ClusterPairServingGrants.ownerServing(runtimeModelID: model, publicModelID: "p", decisions: decisions)
+            #expect(owner.declaredFamilies == [.tensorParallel])
+            #expect(owner.publicTrafficLine(mode: .tensorParallel) == tensor)
+        }
+        // A mode family no record passed and no declaration names stays unqualified; the record's family stays qualified.
+        #expect(ClusterPairServingGrants.publicTrafficLine(runtimeModelID: q27, mode: .pipeline, decisions: none) == ClusterPairOwnerServing.notYetQualified)
+        #expect(ClusterPairServingGrants.publicTrafficLine(runtimeModelID: glm, mode: .pipeline, decisions: pipelineOnly)
+            .hasPrefix("qualified for public traffic in pipeline mode"))
+        let glmOwner = try ClusterPairServingGrants.ownerServing(runtimeModelID: glm, publicModelID: "p", decisions: pipelineOnly)
+        #expect(glmOwner.publicTrafficLine.hasPrefix("qualified for public traffic in pipeline and tensor parallel mode"))
+        // An undeclared model is unchanged.
+        #expect(ClusterPairServingGrants.publicTrafficLine(runtimeModelID: "registered_qwen35_9b", mode: .tensorParallel, decisions: none)
+            == ClusterPairOwnerServing.notYetQualified)
+    }
+
     /// With a passing pipeline record the pipeline family is qualified for public traffic, tensor parallel is not; both
-    /// are served for the owner.
+    /// are served for the owner. (Records only: no model is declared public here.)
     @Test func publicTrafficFollowsThePassingRecordsOnly() throws {
         let decisions = ClusterPairServingDecisions(records: [record("registered_qwen38_27b", ["Apple M3 Ultra", "Apple M5 Ultra"], cuts: [8])])
-        let owner = try ClusterPairServingGrants.ownerServing(runtimeModelID: "registered_qwen38_27b", publicModelID: "p", decisions: decisions)
+        let owner = try ClusterPairServingGrants.ownerServing(runtimeModelID: "registered_qwen38_27b", publicModelID: "p", decisions: decisions,
+                                                              publicModels: [])
         #expect(owner.publicGrant?.families == [.pipeline])
-        #expect(ClusterPairServingGrants.publicTrafficLine(runtimeModelID: "registered_qwen38_27b", mode: .pipeline, decisions: decisions)
-            .hasPrefix("qualified for public traffic"))
-        #expect(ClusterPairServingGrants.publicTrafficLine(runtimeModelID: "registered_qwen38_27b", mode: .tensorParallel, decisions: decisions)
-            == "not yet qualified for public traffic")
+        #expect(ClusterPairServingGrants.publicTrafficLine(runtimeModelID: "registered_qwen38_27b", mode: .pipeline, decisions: decisions,
+                                                           publicModels: []).hasPrefix("qualified for public traffic"))
+        #expect(ClusterPairServingGrants.publicTrafficLine(runtimeModelID: "registered_qwen38_27b", mode: .tensorParallel, decisions: decisions,
+                                                           publicModels: []) == "not yet qualified for public traffic")
         #expect(ownerServes([m4max, m4max], "registered_qwen38_27b", cuts: [], mode: .tensorParallel, decisions))
         #expect(ownerServes([m4max, cls("Apple M5 Pro")], "registered_qwen38_27b", cuts: [40], decisions))
     }

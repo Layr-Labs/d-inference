@@ -116,12 +116,18 @@ Roll out in this order; each step is a separate approval:
    legacy MDM path or an App Attest serving authorization, so a member on
    macOS 27 without MDM pairs only through App Attest.
 3. Confirm from production's `/health` `build_commit` that it runs the platform
-   revision of step 2. Check the catalog as above, then set the repository
-   variable `PROD_CLUSTER_RUNTIME_ENABLED=true`. Never before step 2: a
-   coordinator without #643 refuses a registration that carries
-   `cluster_runtime`, and the release then fails after signing. Set it before
-   the tag: a release registered without the block never gains one, because a
-   re-registration must repeat the stored block (409
+   revision of step 2. Check the catalog as above, and re-run the release's
+   facts step read-only against it:
+   `scripts/provider-cluster-runtime-facts.sh <app> darkbloom prod <new folder>`,
+   with an unsigned app staged from this preparation's source the way the build
+   job stages it (`scripts/provider-signing-validation.py stage`). It reads the
+   catalog and the CDN, sends nothing, and must exit 0: a catalog row that the
+   worker cannot describe stops the release after signing once the variable is
+   set. Then set the repository variable `PROD_CLUSTER_RUNTIME_ENABLED=true`.
+   Never before step 2: a coordinator without #643 refuses a registration that
+   carries `cluster_runtime`, and the release then fails after signing. Set it
+   before the tag: a release registered without the block never gains one,
+   because a re-registration must repeat the stored block (409
    `cluster_runtime_conflict`).
 4. Merge into `master`, each squash-merged after its approval: first the
    two-Mac clustering pull request, then this preparation. The clustering pull

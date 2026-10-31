@@ -29,6 +29,8 @@ jobs:
   # Chooses a Darkbloom Sandbox or the Blacksmith fallback for each read-only
   # job below. It follows the classifier so only jobs that will run are
   # requested, and still routes the unconditional jobs if the classifier fails.
+  # A lane is granted whole or falls back whole, so each provider shard has a
+  # lane of its own and gets a free Mac even when there is not one per shard.
   route:
     needs: changes
     if: ${{ !cancelled() }}
@@ -38,7 +40,11 @@ jobs:
       lanes: |
         release-integrity linux_arm64 blacksmith-4vcpu-ubuntu-2404
         docs linux_arm64 blacksmith-4vcpu-ubuntu-2404
-        test-provider macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.changes.outputs.provider == 'true' && 5 || 0 }}
+        test-provider-1 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.changes.outputs.provider == 'true' && 1 || 0 }}
+        test-provider-2 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.changes.outputs.provider == 'true' && 1 || 0 }}
+        test-provider-3 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.changes.outputs.provider == 'true' && 1 || 0 }}
+        test-provider-4 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.changes.outputs.provider == 'true' && 1 || 0 }}
+        test-provider-5 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.changes.outputs.provider == 'true' && 1 || 0 }}
         test-provider-summary macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.changes.outputs.provider == 'true' && 1 || 0 }}
         test-provider-sdk macos_arm64 blacksmith-12vcpu-macos-27 ${{ (github.event_name == 'push' || needs.changes.outputs.sdk == 'true') && 1 || 0 }}
         test-cluster-checks macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.changes.outputs.provider == 'true' && 1 || 0 }}
@@ -123,7 +129,8 @@ jobs:
 
   test-provider:
     # The provider suite runs in shards on separate Macs
-    # (scripts/provider-test-shards.py). Each shard runs its suites serially in
+    # (scripts/provider-test-shards.py), each routed through its own
+    # test-provider-K lane above. Each shard runs its suites serially in
     # one process. Shard 1 also runs the MLX-free test targets in one parallel
     # process; shard 2 also runs Prompt Parity. The last shard runs every suite
     # that no other shard selects, the isolated processes and the native gates
@@ -132,7 +139,7 @@ jobs:
     name: Provider Unit Tests (shard ${{ matrix.shard }})
     needs: [changes, route]
     if: ${{ needs.changes.outputs.provider == 'true' }}
-    runs-on: ${{ fromJSON(needs.route.outputs.routes)['test-provider'] }}
+    runs-on: ${{ fromJSON(needs.route.outputs.routes)[format('test-provider-{0}', matrix.shard)] }}
     timeout-minutes: 60
     strategy:
       # A failed shard does not cancel the other shards.

@@ -1109,30 +1109,36 @@ final class OnboardingLive: @unchecked Sendable {
         return .success(lines + result.lines)
     }
 
-    /// After the Test stage passed: registers the pair with the coordinator as a cluster member when the coordinator
-    /// serves a cluster approval whose digests are this Mac's own facts (`ClusterApprovalSync`), on the control leader.
+    /// After the Test stage passed: asks the coordinator to register the pair's model approval, then registers the
+    /// pair with the coordinator as a cluster member when the coordinator serves a cluster approval for this pair
+    /// (`ClusterApprovalSync`), on the control leader.
     func register() -> Result<[String], ClusterOnboardingFailure> {
         routed(.init(op: .register), seconds: 900, acting: true, local: { localRegister() }) { $0.lines }
     }
 
-    /// The leader's half of `register`. A local-only cluster never asks; a coordinator that serves no matching entry
-    /// (404, none listed, any failure) changes nothing and stops nothing. Otherwise both parts stop (each save needs
-    /// its device journal empty), each Mac checks the entry against its own files and saves it, the other Mac first,
-    /// and both parts start again as cluster members.
+    /// The leader's half of `register`. A local-only cluster never asks. First the leader asks its coordinator to
+    /// register the pair's model approval (`ClusterApprovalRequest`; one line, whatever the answer, and it stops
+    /// nothing), unless the setup carries a pair approval saved by hand. Then a coordinator that serves no matching
+    /// entry (404, none listed, any failure) changes nothing and stops nothing. Otherwise both parts stop (each save
+    /// needs its device journal empty), each Mac checks the entry against its own files and saves it, the other Mac
+    /// first, and both parts start again as cluster members.
     func localRegister() -> Result<[String], ClusterOnboardingFailure> {
         guard leadership?.scope.isLocalOnly != true else { return .success([]) }
         let providerConfiguration = settings.service.wizard.providerConfiguration
-        guard let saved = try? ClusterApprovalAttachment.savedSetup(paths: context.paths, providerConfiguration: providerConfiguration),
-              let fetched = ClusterApprovalFetch.fetchBlocking(providerConfiguration: providerConfiguration),
+        guard let saved = try? ClusterApprovalAttachment.savedSetup(paths: context.paths, providerConfiguration: providerConfiguration)
+        else { return .success([]) }
+        let asked: [String] = saved.configuration.nativeMember?.approval != nil ? [] : [ClusterApprovalRequest.requestBlocking(
+            for: saved.configuration, providerConfiguration: providerConfiguration).line]
+        guard let fetched = ClusterApprovalFetch.fetchBlocking(providerConfiguration: providerConfiguration),
               case .save(let approval) = ClusterApprovalSync.decision(saved: saved, fetched: fetched, now: Date().timeIntervalSince1970,
                                                                          facts: ClusterApprovalAttachment.installedFacts) else {
-            return .success([])
+            return .success(asked)
         }
-        if case .failure(let failure) = localStop() { return .failure(failure) }
+        if case .failure(let failure) = localStop() { return .failure(.init(asked + failure.lines)) }
         guard drained(seconds: 300) else {
             // The services start the parts again by themselves, with the setups as they were.
             try? store.updateRecord { $0.leadership?.serving = true }
-            return .failure(.init("A part did not stop within 5 minutes, so the cluster was not registered with the coordinator."))
+            return .failure(.init(asked + ["A part did not stop within 5 minutes, so the cluster was not registered with the coordinator."]))
         }
         let result = ClusterApprovalSync.run(fetched: .approvals([approval]), paths: context.paths,
             providerConfiguration: providerConfiguration, pairingStore: .default(home: context.paths.homeDirectory),
@@ -1140,8 +1146,9 @@ final class OnboardingLive: @unchecked Sendable {
             _ = try command(request, seconds: 180)
         }
         if let note = result.note { try? store.updateRecord { $0.approvalNote = note } }
-        if case .failure(let failure) = localServe() { return .failure(.init((result.line.map { [$0 + "."] } ?? []) + failure.lines)) }
-        return .success(result.line.map { [$0 + "."] } ?? [])
+        let said = asked + (result.line.map { [$0 + "."] } ?? [])
+        if case .failure(let failure) = localServe() { return .failure(.init(said + failure.lines)) }
+        return .success(said)
     }
 
     /// After `localStop`: waits until both Macs say nothing is left running (at most

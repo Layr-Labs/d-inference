@@ -1,0 +1,3 @@
+### The guided cluster setup asks the DevNet coordinator for its own approval
+
+After the Test stage passes, `darkbloom cluster` asks the coordinator to register a model approval for the pair (model, prefill schedule and the installed app's version, with the account's credential), then reads and saves the approvals as before. On DevNet no operator adds an approval row for a new pair. Production and staging do not take the request: the setup says so on one line ("Cluster approval request: …"), and the pair serves as before. A failed request never stops serving, and running the setup again is safe.

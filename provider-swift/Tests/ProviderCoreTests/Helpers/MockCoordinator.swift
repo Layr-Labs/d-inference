@@ -64,6 +64,9 @@ public struct CapturedMessages: Sendable {
     public var enrollmentAuthorizations: [String] = []
     /// The query of each `GET /v1/cluster/approvals`, in arrival order.
     public var clusterApprovalQueries: [String] = []
+    /// The body and `Authorization` header of each `POST /v1/cluster/approvals`, in arrival order.
+    public var clusterApprovalPosts: [Data] = []
+    public var clusterApprovalAuthorizations: [String] = []
 
     public init() {}
 }
@@ -195,6 +198,8 @@ public final class MockCoordinator: @unchecked Sendable {
     private var acknowledgedReadiness = Set<String>()
     /// `GET /v1/cluster/approvals`: the status and exact body bytes answered; nil answers 404 (pair control off).
     private var clusterApprovals: (status: Int, body: Data, location: String?)?
+    /// `POST /v1/cluster/approvals`: the same; nil answers 404 (owner approvals off).
+    private var clusterApprovalRequests: (status: Int, body: Data, location: String?)?
     private var activeOutbound: WebSocketOutboundWriter?
     private var bound: BoundServer?
 
@@ -256,6 +261,12 @@ public final class MockCoordinator: @unchecked Sendable {
     /// `location` adds a `Location` header (a redirect the provider must not follow).
     public func setClusterApprovals(status: Int = 200, body: Data?, location: String? = nil) {
         lock.withLock { clusterApprovals = body.map { (status, $0, location) } }
+    }
+
+    /// What `POST /v1/cluster/approvals` answers from now on; nil answers 404, as a coordinator without owner
+    /// approvals does. `location` adds a `Location` header (a redirect the provider must not follow).
+    public func setClusterApprovalRequests(status: Int = 201, body: Data?, location: String? = nil) {
+        lock.withLock { clusterApprovalRequests = body.map { (status, $0, location) } }
     }
 
     /// Return a snapshot of all messages captured so far. Each call clones the
@@ -555,6 +566,23 @@ public final class MockCoordinator: @unchecked Sendable {
             let answer = self.lock.withLock { () -> (status: Int, body: Data, location: String?)? in
                 self.captured.clusterApprovalQueries.append(query)
                 return self.clusterApprovals
+            }
+            guard let answer else { return MockCoordinator.makeJSONResponse(body: ["error": "not found"], status: .notFound) }
+            var headers: HTTPFields = [.contentType: "application/json"]
+            if let location = answer.location { headers[.location] = location }
+            return Response(status: .init(code: answer.status), headers: headers,
+                body: .init(byteBuffer: ByteBuffer(bytes: answer.body)))
+        }
+
+        router.post("/v1/cluster/approvals") { [weak self] request, _ -> Response in
+            guard let self else {
+                return MockCoordinator.makeJSONResponse(body: ["error": "mock dead"], status: .internalServerError)
+            }
+            let body = try await request.body.collect(upTo: 64 * 1024)
+            let answer = self.lock.withLock { () -> (status: Int, body: Data, location: String?)? in
+                self.captured.clusterApprovalPosts.append(Data(body.readableBytesView))
+                self.captured.clusterApprovalAuthorizations.append(request.headers[.authorization] ?? "")
+                return self.clusterApprovalRequests
             }
             guard let answer else { return MockCoordinator.makeJSONResponse(body: ["error": "not found"], status: .notFound) }
             var headers: HTTPFields = [.contentType: "application/json"]

@@ -28,6 +28,7 @@ import Darwin
         pairingStateMachine()
         leaderFromScratch()
         leaderWaitsForThePartsAfterTheRegistration()
+        leaderSaysTheApprovalRequestAndWaitsForNothingElse()
         forcedModeNoticeOnTheSetupScreen()
         memberFromScratch()
         bothWaitingAtOnce()
@@ -662,6 +663,10 @@ import Darwin
              "Starting both Macs' parts again…"),
             ("registered", .success([ClusterOnboardingReady.registeredNotice + ": approval devnet/0.10.4-dev.1/Qwen3.5-9B/s1, until 2026-11-12T00:00:00Z."]),
              "Starting both Macs' parts again as cluster members…"),
+            ("asked, then registered", .success([
+                ClusterOnboardingReady.approvalRequestNotice + ": the coordinator holds approval owner/a/Qwen3.5-9B/s1/0123456789ab for this pair.",
+                ClusterOnboardingReady.registeredNotice + ": approval owner/a/Qwen3.5-9B/s1/0123456789ab, until 2026-11-12T00:00:00Z."]),
+             "Starting both Macs' parts again as cluster members…"),
         ]
         for (label, result, restart) in cases {
             let recorder = Recorder()
@@ -680,6 +685,27 @@ import Darwin
             let done = text.range(of: "Done.")?.lowerBound, restarted = text.range(of: restart)?.lowerBound
             expect(done != nil && restarted != nil && restarted! < done!, "\(label): Done comes after the parts serve again")
         }
+    }
+
+    /// After the Test stage: the approval request's line is said, and when the coordinator then serves no approval
+    /// (the request was not taken, failed, or its row does not match) nothing stopped, so the setup ends at once.
+    static func leaderSaysTheApprovalRequestAndWaitsForNothingElse() {
+        let line = ClusterOnboardingReady.approvalRequestNotice + ": not taken by this coordinator (HTTP 404)."
+        let recorder = Recorder()
+        let run = TerminalRun(operations(recorder, pairEvents: [.searching, .waitingAsLeader, .connected,
+            .code("123456", peer: ["Apple M3 Ultra, 256 GB"]), .peerDecided(true)],
+            pairResult: .paired(role: .leader, peerName: "Apple M3 Ultra, 256 GB"), registerResult: .success([line])))
+        expect(run.waitFor("Does the other Mac show 123 456? Press y if it does, n if it does not."), "request only: the code question")
+        run.type("y")
+        expect(run.waitFor("Choose a model [1-2, enter = 1]: "), "request only: the model choice")
+        run.type("\r")
+        _ = run.finish()
+        let text = run.text
+        expect(text.contains("  " + line), "request only: the request line: \(text)")
+        expect(!text.contains("Starting both Macs' parts again"), "request only: no restart line")
+        expect(recorder.all.last == "register", "request only: nothing is awaited after the request: \(recorder.all)")
+        let said = text.range(of: line)?.lowerBound, done = text.range(of: "Done.")?.lowerBound
+        expect(said != nil && done != nil && said! < done!, "request only: Done comes after the request line")
     }
 
     /// DEVELOPER ONLY (`DARKBLOOM_CLUSTER_FORCE_MODE` in a debug build): a forced mode is said loudly, in one line, on

@@ -190,11 +190,20 @@ export interface RequestHistory {
   since?: number;
   records: RequestRecord[];
 }
+export interface ChipModelEarning {
+  // The reported chip name, e.g. "Apple M3 Ultra"; matches Machine.chip.
+  chip: string;
+  machines: number;
+  median_micro_usd_per_machine_day: string;
+  mean_micro_usd_per_machine_day: string;
+}
 export interface NetworkData {
   model_earnings?: {
     window: '7d';
     as_of: string;
-    models: { id: string; earnings_micro_usd: string }[];
+    models: { id: string; earnings_micro_usd: string; by_chip?: ChipModelEarning[] }[];
+    // Present when any model carries by_chip: what one machine of a chip earned per day.
+    by_chip_window?: '24h';
   } | null;
   total_tokens?: string;
   total_requests?: string;

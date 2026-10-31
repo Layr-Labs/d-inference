@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-10-30
+> Last updated: 2026-10-31
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -1594,6 +1594,14 @@ or fences them, so staging does not wait for that chunk
 ([destination contract](../reference/ssd-kv-cache.md#complete-checkpoint-payload),
 `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/CompleteCheckpointTransfer.swift`
 (`CBv2CompleteCheckpointImport`)).
+
+A donor's stream retires only after its complete checkpoint is published
+(`EngineLoopV2.finishAfterCompletePrefixPublication`), so export time is added
+to the donating response's end. At a quantized checkpoint precision, export
+encodes each older attention row on the CPU with one prepared row encoder per
+segment read, which writes the scalar codec's exact bytes
+([conversion](../reference/ssd-kv-cache.md#complete-checkpoint-payload),
+`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/NativeQuantizedCheckpointTensorSource.swift`).
 
 Segmented paged admission no longer waits for queued GPU work. A released row's
 free 64 MiB segments are parked per pool, up to `min(2 GiB, slot grant / 8)`,

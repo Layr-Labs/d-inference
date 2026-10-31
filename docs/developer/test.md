@@ -1081,6 +1081,12 @@ frame (member nonce, epoch, generation, renewal payloads and a refused payload).
 check the provider against them; the platform's own tests must agree. Refresh them only together with the
 coordinator change, after review.
 
+`owner_cluster_approval_vector.json` in the same folder is byte for byte the vector of the same name in the
+platform repository's coordinator API tests: the `POST /v1/cluster/owner-approvals` body
+the provider sends, the coordinator's 201 answer and the approval's canonical policy bytes.
+`ClusterApprovalRequestTests` checks that the provider sends exactly that body and verifies the answer's
+`policy_sha256`. Replace it only with the platform's file.
+
 The `cluster-member-fixture-child` executable target (`provider-swift/Tests/ClusterMemberFixtureChild/`)
 is a CPU-only stand-in for an installed owner and its native child, run by the
 native-pair member control tests over the real owner pipe and key prelude. It is

@@ -1,0 +1,9 @@
+{
+  "method": "POST",
+  "path": "/v1/cluster/owner-approvals",
+  "authorization": "Bearer <provider token of account-one>",
+  "request": "{\"provider_version\":\"0.10.5-dev.branch.16\",\"model\":\"glm-5.3-flash\",\"artifact_sha256\":\"3aae613ff188bb0f72e880774a84e4d8e9943ab20c929d8a302af9c57b97d5ac\",\"schedule\":1}",
+  "status": 201,
+  "response": "{\"approval\":{\"id\":\"owner/account-one/glm-5.3-flash/s1/0123456789ab\",\"model\":\"glm-5.3-flash\",\"generation\":1,\"artifact_sha256\":\"3aae613ff188bb0f72e880774a84e4d8e9943ab20c929d8a302af9c57b97d5ac\",\"schedule\":1,\"maximum_transport_frame\":1048616,\"maximum_plaintext\":1048576,\"maximum_records\":1048576,\"maximum_cumulative_plaintext\":4294967296,\"allowed_numerics_classes\":[],\"minimum_members\":2,\"maximum_members\":2,\"minimum_member_usable_bytes\":1,\"not_after\":\"2027-01-29T00:00:00Z\"},\"policy_sha256\":\"1683c2acd7e89589957a99707e85801a903e328b566cdc1e8185761599d0b148\"}\n",
+  "canonical_hex": "6461726b626c6f6f6d2f636f6f7264696e61746f722d636c75737465722d6d6f64656c2d617070726f76616c2f7631000000002f6f776e65722f6163636f756e742d6f6e652f676c6d2d352e332d666c6173682f73312f3031323334353637383961620000000d676c6d2d352e332d666c61736800000000000000013aae613ff188bb0f72e880774a84e4d8e9943ab20c929d8a302af9c57b97d5ac01010100100028001000000000000000100000000000010000000018ff1465004100000202000000000000000100000009502f90000000001bf08eb00000000014f46b040000000000"
+}

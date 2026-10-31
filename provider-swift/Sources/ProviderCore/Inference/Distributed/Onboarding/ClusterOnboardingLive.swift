@@ -1117,8 +1117,8 @@ final class OnboardingLive: @unchecked Sendable {
     }
 
     /// The leader's half of `register`. A local-only cluster never asks. First the leader asks its coordinator to
-    /// register the pair's model approval (`ClusterApprovalRequest`; one line, whatever the answer, and it stops
-    /// nothing), unless the setup carries a pair approval saved by hand. Then a coordinator that serves no matching
+    /// register the pair's model approval when the setup holds none, or to renew an owner approval near its end
+    /// (`ClusterApprovalRequest.ensure`; one line, whatever the answer, and it stops nothing). Then a coordinator that serves no matching
     /// entry (404, none listed, any failure) changes nothing and stops nothing. Otherwise both parts stop (each save
     /// needs its device journal empty), each Mac checks the entry against its own files and saves it, the other Mac
     /// first, and both parts start again as cluster members.
@@ -1127,8 +1127,8 @@ final class OnboardingLive: @unchecked Sendable {
         let providerConfiguration = settings.service.wizard.providerConfiguration
         guard let saved = try? ClusterApprovalAttachment.savedSetup(paths: context.paths, providerConfiguration: providerConfiguration)
         else { return .success([]) }
-        let asked: [String] = saved.configuration.nativeMember?.approval != nil ? [] : [ClusterApprovalRequest.requestBlocking(
-            for: saved.configuration, providerConfiguration: providerConfiguration).line]
+        let asked = ClusterApprovalRequest.ensureBlocking(saved, providerConfiguration: providerConfiguration,
+                                                          now: Date().timeIntervalSince1970).map { [$0.line] } ?? []
         guard let fetched = ClusterApprovalFetch.fetchBlocking(providerConfiguration: providerConfiguration),
               case .save(let approval) = ClusterApprovalSync.decision(saved: saved, fetched: fetched, now: Date().timeIntervalSince1970,
                                                                          facts: ClusterApprovalAttachment.installedFacts) else {

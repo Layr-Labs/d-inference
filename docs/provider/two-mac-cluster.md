@@ -123,10 +123,13 @@ A tensor-parallel pair registers like a pipeline one; its plan names no cut.
 
 1. Run `darkbloom cluster` and choose a model, as in [the steps](#the-steps-once).
    After the Test stage passes, the leader asks the coordinator to register a
-   model approval for this pair (`POST /v1/cluster/approvals`, with the
+   model approval for this pair (`POST /v1/cluster/owner-approvals`, with the
    account's credential; only DevNet takes it, and any other answer is one
-   line that changes nothing). Then it reads the approvals the coordinator
-   serves (`GET /v1/cluster/approvals`) and takes the one whose model and
+   line that changes nothing). The cluster service asks the same way later
+   while the pair holds no approval, for example after an update, and renews
+   the approval a week before it ends. Then it reads the approvals the coordinator
+   serves (`GET /v1/cluster/approvals`, and the account's own approvals from
+   `GET /v1/cluster/owner-approvals`) and takes the one whose model and
    prefill schedule match this pair's setup. A build-pinned approval must also
    match the installed app's digests. A model approval names no build and must
    match only the model's artifact, so it stays valid after an update

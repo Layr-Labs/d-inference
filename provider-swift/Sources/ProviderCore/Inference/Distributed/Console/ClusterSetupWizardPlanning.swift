@@ -180,7 +180,8 @@ enum ClusterSetupPlanning {
                 var plan = summary(decided.result, chosen: chosen, lines: decided.lines, localMemberID: localMemberID,
                     profiles: [localMemberID: localProfile, peerID: peerProfile])
                 plan.publicTraffic = ClusterPairServingGrants.publicTrafficLine(runtimeModelID: capability.record.runtimeModelID,
-                    artifactSHA256: capability.record.artifactSHA256, mode: chosen.mode)
+                    artifactSHA256: capability.record.artifactSHA256, mode: chosen.mode,
+                    tensorAssistant: assistantQuote?.assistant != nil && chosen.mode == .tensorParallel)
                 return .init(option: .init(model: reading.model, onOtherMac: onOther, blocker: nil, plan: plan), setup: decided.setup,
                     capability: (capability.data, capability.sha256))
             } catch is ClusterPairServingRefusal {

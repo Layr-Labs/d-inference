@@ -3525,6 +3525,15 @@ the system assertion wrappers in `provider-swift/Sources/ProviderCore/System/`.
 See [cluster member operation](../provider/cluster-always-on.md) for the limits
 on explicit sleep and laptop lid closure.
 
+Under its supervisor, the cluster service writes its heartbeat to the file that
+`DARKBLOOM_CLUSTER_MEMBER_HEALTH_FILE` names (`ClusterServiceAgent.healthPath`,
+`service-health.json`), and the supervisor's liveness guard accepts only a beat
+with the service's own PID. `ClusterService.partEnvironment` gives this Mac's
+part the same key with a different file (`ClusterServiceAgent.partHealthPath`,
+`part-health.json`), so a coordinator-paired part never writes over the
+service's heartbeat and still waits for its registration as a supervised member.
+An empty or absent key is passed on unchanged.
+
 ## GLM tool-stream completion
 
 GLM tool output uses the SDK GLM parser to validate the complete tool suffix at

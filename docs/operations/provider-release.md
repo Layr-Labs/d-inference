@@ -27,45 +27,89 @@ runs the resolve, build, qualification, signing, R2 staging and publication
 chain for one environment. To find the newest dev release, read
 `https://api.dev.darkbloom.dev/v1/releases/latest`.
 
-`ProviderCore.version` is prepared as `0.10.5`, a patch release over `v0.10.4`.
-`darkbloom sandbox` sets up, checks, pauses, resumes and removes the Darkbloom
-Sandbox add-on from the provider CLI. GPT-OSS client stop sequences match only
-the Harmony final message, which ends its reasoning-only empty answers, and Qwen
-3.5 and 3.6 no longer loop to `max_tokens` when sampling is omitted. A dense Qwen
-follow-up restores its checkpoint from just below the previous prompt end. SSD
-checkpoint restores, eviction, maintenance, reads and donations are faster,
-expired checkpoints no longer count as corrupt and cache sweeps no longer stall
-lookups. The provider reconnects faster after a long session or a 1012 close,
-keeps prompt-cache hits across batch promotion, drops response chunks processed
-while disconnected and keeps a model download's completion. The MLX pins move to
-their forks' `main`. See the [`v0.10.5` changelog entry](../../CHANGELOG.md) for the full
-scope.
+`ProviderCore.version` is prepared as `0.10.6`, a patch release over `v0.10.5`
+and the first production release with two-Mac clusters. `darkbloom cluster`
+sets up two Macs joined by one Thunderbolt 5 cable (macOS 26.2 or later, RDMA
+over Thunderbolt) to serve one model together, GLM-5.3-Flash and Qwen3.8-27B in
+tensor parallel, and `darkbloom cluster local` serves a pair without a
+coordinator. Every release lane computes the build's
+[cluster runtime facts](#cluster-runtime-facts), from which a coordinator with
+darkbloom-platform#643 derives the build's cluster approvals, pair-serving
+grants and public qualifications. A registered pair's cluster service is no
+longer restarted by its own part's heartbeats (#1690), pair members register the
+models their pair-serving grant admits (#1686), Qwen3.8-27B in tensor parallel
+decodes about 6% faster on two M5 Ultra (#1680) and model downloads show one
+progress line (#1683). Single-Mac serving needs no coordinator change and no
+provider-version floor. See the [`v0.10.6` changelog entry](../../CHANGELOG.md)
+for the full scope.
 
-Before tagging `v0.10.5`:
+Before tagging `v0.10.6`:
 
 - Confirm that the tagged commit pins `libs/mlx` and the nested `mlx` to
-  `72dffa2d`, `libs/mlx-swift` to `c633d221` and `libs/mlx-swift-lm` to
-  `2beb401f`, all on their forks' `main`. The 0.10.2 hotfix branches are no
-  longer pinned; the NAX head-dim split fix they carried (`mlx` `31f550af`) is
-  in `72dffa2d`'s `jit_kernels.cpp`.
-- The tag build's `metallib_hash` differs from v0.10.4's
-  `6ccc62966bb452b767fbd7261175b06c7653259a25f657524f1c1ef71f556d45`: twelve
-  Metal backend files change between the `mlx` pins, including
-  `kernels/fence.metal`. Record the new hash. Complete SSD checkpoints that 0.10.4
-  wrote are not restored by 0.10.5, because their namespace binds the binary and
-  loaded-metallib hashes.
+  `72dffa2d` and `libs/mlx-swift` to `c633d221`, as v0.10.5 did, and
+  `libs/mlx-swift-lm` to `7933a0fa`, its fork's `main`. Only the SDK pin moves
+  (from `2beb401f`, through #1680): SDK #373 changes
+  `AffineQuantizedVectors.swift` alone.
+- The tag build's `metallib_hash` should equal v0.10.5's
+  `98bab9d77dc5078ad8dd8f1fd17e8f3581415193506e4791a3c4f1ebaab614be`: the MLX
+  core is unchanged, and the dev-branch release of this preparation's base,
+  `0.10.5-dev.branch.18` from `a0413a8a`, registered that hash on DevNet. A
+  different hash needs an explanation, such as a changed Metal toolchain.
+  Complete SSD checkpoints stay per build, because their namespace binds the
+  binary hash: 0.10.6 does not restore those 0.10.5 wrote.
+- The tag is the first production run of the release steps that came with the
+  cluster: the build and signing of the [cluster helpers](#cluster-helpers) and
+  the cluster runtime facts. The dev-branch lane runs the same reusable
+  workflow; its run
+  [41167361754](https://github.com/Layr-Labs/d-inference/actions/runs/41167361754)
+  passed both and registered its block on DevNet.
+- Before step 2 below, check that the production catalog lists `glm-5.3-flash`
+  and `EigenLabs/Qwen3.8-27B-4bit-mtp`, because the facts step leaves out a
+  model the environment's catalog lacks, and that the coordinator's catalog has
+  room for the release's approvals ([cluster runtime facts](#cluster-runtime-facts)).
 
 Roll out in this order; each step is a separate approval:
 
-1. Tag `v0.10.5` ([step 4](#4-tag-and-push-production-source)). No coordinator
-   deployment is needed first, and no provider-version floor applies.
-2. The platform snapshots its provider contracts from the tagged commit
+1. Platform first: deploy to production a `darkbloom-platform` coordinator with
+   [darkbloom-platform#643](https://github.com/Layr-Labs/darkbloom-platform/pull/643)
+   and its switches on: `EIGENINFERENCE_CLUSTER_PAIRS=true` (pair control with
+   the operator's approval table),
+   `EIGENINFERENCE_CLUSTER_PAIR_APPROVALS_FROM_RELEASES=true` (approvals derived
+   from releases) and `EIGENINFERENCE_CLUSTER_PUBLIC_ROUTING=true` (public
+   traffic for qualified clusters), with migration 58 applied (the
+   `releases.cluster_runtime` column). #643 is merged into the platform's `dev`;
+   its migration reaches `master` with the platform's next `dev` to `master`
+   merge or with its twin,
+   [darkbloom-platform#644](https://github.com/Layr-Labs/darkbloom-platform/pull/644).
+2. A person checks that coordinator's catalog room and sets the repository
+   variable `PROD_CLUSTER_RUNTIME_ENABLED=true`. Never before step 1 is done: a
+   coordinator without #643 refuses a registration that carries
+   `cluster_runtime`, and the release then fails after signing. Set it before
+   the tag: a release registered without the block never gains one, because a
+   re-registration must repeat the stored block.
+3. Promote the d-inference `dev` branch to `master` with a merge commit, never
+   a squash, as [#1688](https://github.com/Layr-Labs/d-inference/pull/1688)
+   did. The `master` ruleset allows only squash merges, so an admin allows merge
+   commits for that one merge and restores the ruleset at once. The merge keeps
+   `master`'s `prod` default for plain builds (`e9babca4`). Let SDK 27 release
+   preparation pass on `master`. This step does not depend on steps 1 and 2 and
+   may come first.
+4. Tag `v0.10.6` on that merge commit
+   ([step 4](#4-tag-and-push-production-source)). After registration, check the
+   coordinator log for `release cluster approvals omitted` and
+   `GET /v1/cluster/approvals` for the derived `release/0.10.6/<model>/s<1|2>`
+   approvals.
+5. The platform snapshots its provider contracts from the tagged commit
    (`python3 scripts/provider-contracts.py snapshot <tag commit>`), sets
-   `LatestProviderVersion` to `0.10.5` in the coordinator's `server.go` in the
+   `LatestProviderVersion` to `0.10.6` in the coordinator's `server.go` in the
    same change and adds the revision row to its provider-contract reference. Of
-   the 34 snapshotted inputs, pinned at v0.10.4's `8effff7f`, only
-   `contracts/provider/ProviderCore.swift` should change. `LatestProviderVersion`
-   is a fallback and does not gate publication.
+   the 34 snapshotted inputs, only `contracts/provider/ProviderCore.swift`
+   changes from v0.10.5. `LatestProviderVersion` is a fallback and does not gate
+   publication.
+
+Without steps 1 and 2 the tag still publishes with an unchanged registration,
+but 0.10.6 then derives no cluster approvals, and a production pair without an
+operator's approval serves only on its leading Mac's local API.
 
 0.10.2's remaining enablement steps do not wait for this tag and still apply;
 each is a separate approval:
@@ -82,21 +126,28 @@ Catalog changes, allowlist changes and model registration are separate
 approvals. This preparation does not tag, register, upload, deploy or enable
 anything.
 
-Platform evidence, inspected on 2026-10-30 (recheck before tagging):
+Platform evidence, inspected on 2026-10-31 (recheck before tagging):
 
 | Claim | Source |
 |---|---|
-| The provider-contract snapshot pins d-inference `8effff7f` (v0.10.4), and its 34 inputs equal this preparation's except `ProviderCore.swift` | [`contracts/provider/manifest.json` at `cb31f6b4`](https://github.com/Layr-Labs/darkbloom-platform/blob/cb31f6b44af25500eab72fa0adb01eb6c69864d6/contracts/provider/manifest.json) (`source_revision`) |
+| Platform `master` (`2847f27d`) pins the provider contracts at d-inference `8effff7f` (v0.10.4) and keeps `LatestProviderVersion` at `0.10.4`; darkbloom-platform#639 (open) pins v0.10.5's `d3bbcd06`. The 34 inputs equal this preparation's except `ProviderCore.swift` | [`contracts/provider/manifest.json` at `2847f27d`](https://github.com/Layr-Labs/darkbloom-platform/blob/2847f27dda8e4caf9e2441d554067f42a88c9e1f/contracts/provider/manifest.json) and [at #639's `422ca1d4`](https://github.com/Layr-Labs/darkbloom-platform/blob/422ca1d428849c775daa950691a185154f117c18/contracts/provider/manifest.json) (`source_revision`) |
 | `LatestProviderVersion` must equal the snapshotted `ProviderCore.version` | [`provider_version_sync_test.go` at `5ba280d8`](https://github.com/Layr-Labs/darkbloom-platform/blob/5ba280d89aa5e9bd4fbf05e0dfa848059cd3b585/coordinator/tests/api/provider_version_sync_test.go) (`TestLatestProviderVersionMatchesProviderCore`) |
+| #643 is merged into platform `dev` (`df61dd6f`), not `master`. Only `EIGENINFERENCE_CLUSTER_PAIR_APPROVALS_FROM_RELEASES=true` derives entries from releases, and public routing needs an approval source | [`cluster_pair_config.go` at `df61dd6f`](https://github.com/Layr-Labs/darkbloom-platform/blob/df61dd6f93714b4458d0eef3125c377087c08b52/coordinator/api/cluster_pair_config.go) (`ClusterPairConfig`) |
+| Migration 58 adds `releases.cluster_runtime`, and a re-registration must repeat the stored block (409 `cluster_runtime_conflict`) | [`00058_release_cluster_runtime.sql` at `df61dd6f`](https://github.com/Layr-Labs/darkbloom-platform/blob/df61dd6f93714b4458d0eef3125c377087c08b52/coordinator/store/postgres/schema/migrations/00058_release_cluster_runtime.sql); [`releases.go` at `df61dd6f`](https://github.com/Layr-Labs/darkbloom-platform/blob/df61dd6f93714b4458d0eef3125c377087c08b52/coordinator/store/postgres/releases.go) (`SetRelease`) |
+| A coordinator without #643 refuses a registration body that carries `cluster_runtime` | [`release_handlers.go` at `2847f27d`](https://github.com/Layr-Labs/darkbloom-platform/blob/2847f27dda8e4caf9e2441d554067f42a88c9e1f/coordinator/api/releases/release_handlers.go) (`DisallowUnknownFields`) |
+| Of the platform's deploy configuration, only DevNet's overlay sets the three switches | [`env-overrides` (DevNet) at `df61dd6f`](https://github.com/Layr-Labs/darkbloom-platform/blob/df61dd6f93714b4458d0eef3125c377087c08b52/deploy/gcp/dev/env-overrides) |
 
-`v0.10.4` was [published on 2026-10-28](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.4)
+The production coordinator was not inspected for this preparation. Before step
+2, confirm from its `/health` `build_commit` that it runs #643.
+
+`v0.10.5` was [published on 2026-10-30](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.5)
+from `d3bbcd064ea290fbeb500e5c51c7870e3695741c`, `v0.10.4` was
+[published on 2026-10-28](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.4)
 from `8effff7f7067fec70b2e3b58de0a4ba47ea3986c`, `v0.10.3` was
 [published on 2026-10-26](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.3)
 from `3ddd11ce8d7204cc5aadefd2050376c583da4ff8`, `v0.10.2` was
 [published on 2026-10-26](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.2)
-from `f9d1af3d0d3e1838974a5cfdff0a08142977b45e`, `v0.10.1` was
-[published on 2026-10-24](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.1)
-from `9034a5a0f3526dec83ab6384e5264db595cb7549`. Publication does not establish
+from `f9d1af3d0d3e1838974a5cfdff0a08142977b45e`. Publication does not establish
 that every optional feature or environment has been activated.
 
 ## Prerequisites

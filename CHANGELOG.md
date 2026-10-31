@@ -8,9 +8,22 @@ or console deployment, feature activation, model promotion or hardware
 qualification. Sections marked historical retain the original candidate's
 qualification, opt-in and deployment limits rather than claiming activation.
 
-## v0.10.5 — candidate (unpublished)
+## v0.10.6 — candidate (unpublished)
 
-Prepared on 2026-10-30; tagging and publication are separate steps.
+Prepared on 2026-10-31; tagging and publication are separate steps.
+
+### Upgrade and rollout notes
+
+- This is the first production release with two-Mac clusters (#1628 with #1407, #1426 and #1577, and the cluster PRs merged after it): run `darkbloom cluster` on each of two Apple silicon Macs joined by one Thunderbolt 5 cable, pick a model, and the pair serves it together. Both Macs need macOS 26.2 or later, RDMA over Thunderbolt turned on by an administrator (System Settings on macOS 27, `rdma_ctl enable` in Recovery on macOS 26) and the same Darkbloom release. The planner chooses tensor parallel or a pipeline; GLM-5.3-Flash and Qwen3.8-27B can serve in tensor parallel, with images and video. `darkbloom cluster local` serves a pair without any coordinator. A Mac that never runs `darkbloom cluster` keeps serving alone.
+- Releases carry their cluster runtime facts (#1692): every release lane computes them from the final signed app and shows them in its job summary, and the registration carries them as `cluster_runtime` only while that environment's repository variable is `true`. A coordinator with darkbloom-platform#643 and `EIGENINFERENCE_CLUSTER_PAIR_APPROVALS_FROM_RELEASES=true` derives from them the build's cluster approvals, their pair-serving grants and the public qualifications of GLM-5.3-Flash and Qwen3.8-27B in pipeline and tensor parallel; every other model's clusters serve their owner only. This is off in production until the production coordinator runs #643 with its switches on (`EIGENINFERENCE_CLUSTER_PAIRS`, `EIGENINFERENCE_CLUSTER_PAIR_APPROVALS_FROM_RELEASES`, `EIGENINFERENCE_CLUSTER_PUBLIC_ROUTING`) and migration 58 applied, and `PROD_CLUSTER_RUNTIME_ENABLED=true` is then set. Never set the variable before that coordinator accepts the block: a coordinator without #643 refuses the registration, and the release fails after signing. Set it before the tag: a release registered without the block can never gain one. A pair without a cluster approval serves only on its leading Mac's local API, with the `darkbloom start --local` key.
+- Single-Mac serving needs no coordinator change and no provider-version floor. After the tag the platform snapshots its provider contracts from the tagged commit and sets `LatestProviderVersion` to `0.10.6`; of the 34 snapshotted inputs only `ProviderCore.swift` changes since v0.10.5.
+- Recent cluster fixes: a registered pair's cluster service is no longer restarted many times a day by its own part's heartbeats (#1690); pair members register GLM-5.3-Flash and Qwen3.8-27B under their pair-serving grant instead of ending a second after they start (#1686); Qwen3.8-27B in tensor parallel decodes about 6% faster on two M5 Ultra with an M5 Ultra verify-window layout (#1680). On every Mac, `darkbloom models download` and the `darkbloom start` picker show one progress line (#1683); without a terminal they print a plain line at most every 30 seconds, and `darkbloom models download` ends with `Cached at <path>` instead of `Done. Cached at <path>`.
+- MLX pins: `libs/mlx` and the nested `mlx` (`72dffa2d`) and `libs/mlx-swift` (`c633d221`) are unchanged from v0.10.5. `libs/mlx-swift-lm` moves from `2beb401f` to `7933a0fa`, its fork's `main` (#1680): SDK #373 adds an M5 Ultra layout table to `AffineQuantizedVectors`, which only the cluster's Qwen tensor-parallel exact projections use, and a layout never changes a result. The MLX core is unchanged, so the tag build's `metallib_hash` should equal v0.10.5's `98bab9d7…614be`, which the dev-branch build of this preparation's base (`a0413a8a`) also registered on DevNet. Cluster entries below that describe MLX work (steel tiles, `MLX_QMV_BATCH_INVARIANT`, fast-fence ordering) describe code that v0.10.5's pins already contain.
+- The 101 entries below are the pending fragments rendered verbatim, in filename order. Most were written on the cluster branch, and some record steps that later entries supersede (for example, "Fixed" predates GLM-5.3-Flash tensor parallel). The single-Mac halves of "The local Responses API continues a conversation from `previous_response_id`" and "Preserve truncated reasoning in collected responses" repeat changes v0.10.0 published. #1666 (approval check follow-ups) and #1674 (CI shards) have no entry.
+
+## v0.10.5
+
+Published 2026-10-30 ([release](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.5)).
 
 ### Upgrade and rollout notes
 

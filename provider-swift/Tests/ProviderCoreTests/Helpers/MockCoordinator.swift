@@ -300,6 +300,7 @@ public final class MockCoordinator: @unchecked Sendable {
         return true
     }
 
+    /// The answer set for a cluster approval route: its status, exact body bytes and `Location`; nil is a 404.
     private static func answer(_ answer: (status: Int, body: Data, location: String?)?) -> Response {
         guard let answer else { return makeJSONResponse(body: ["error": "not found"], status: .notFound) }
         var headers: HTTPFields = [.contentType: "application/json"]
@@ -605,11 +606,7 @@ public final class MockCoordinator: @unchecked Sendable {
                 self.captured.clusterApprovalQueries.append(query)
                 return self.clusterApprovals
             }
-            guard let answer else { return MockCoordinator.makeJSONResponse(body: ["error": "not found"], status: .notFound) }
-            var headers: HTTPFields = [.contentType: "application/json"]
-            if let location = answer.location { headers[.location] = location }
-            return Response(status: .init(code: answer.status), headers: headers,
-                body: .init(byteBuffer: ByteBuffer(bytes: answer.body)))
+            return MockCoordinator.answer(answer)
         }
 
         // ----- HTTP: /v1/cluster/owner-approvals -----

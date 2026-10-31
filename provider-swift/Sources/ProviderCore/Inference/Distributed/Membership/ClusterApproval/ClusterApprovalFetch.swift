@@ -68,37 +68,68 @@ public enum ClusterApprovalFetch {
         guard let url = url(coordinatorURL: coordinatorURL, path: path) else {
             return .unavailable("the coordinator URL is not HTTPS")
         }
+        switch await send(url, token: token, reads: { $0 == 200 }) {
+        case .unreachable(let reason): return .unreachable(reason)
+        case .unusable(let reason): return .unavailable(reason)
+        case .answered(let status, _) where notOffered.contains(status): return .notOffered
+        case .answered(let status, .none): return .unavailable("HTTP \(status)")
+        case .answered(_, .some(let body)):
+            do { return .approvals(try decode(body)) } catch let error as ClusterConfigurationError {
+                return .unavailable("\(error)")
+            } catch {
+                return .unavailable(error.localizedDescription)
+            }
+        }
+    }
+
+    /// The coordinator's answer to one request (`send`).
+    enum Answer {
+        /// Its HTTP status, and its body when the caller reads that status.
+        case answered(status: Int, body: Data?)
+        /// An answer that cannot be used: not this URL's, over `maximumBytes`, or unreadable. The reason.
+        case unusable(String)
+        /// No HTTP answer at all (no route, refused, timed out): the reason.
+        case unreachable(String)
+    }
+
+    /// One request to the coordinator under the rules every cluster approval exchange keeps: an ephemeral session with
+    /// no cache, cookie or credential store, no redirect followed (a credential never leaves for another URL),
+    /// `timeoutSeconds`, and at most `maximumBytes` of a body read, only for a status `reads` takes.
+    static func send(_ url: URL, method: String = "GET", token: String?, body: Data? = nil,
+                     reads: (Int) -> Bool) async -> Answer {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.timeoutIntervalForRequest = timeoutSeconds; configuration.timeoutIntervalForResource = timeoutSeconds
         configuration.urlCache = nil; configuration.httpCookieStorage = nil; configuration.urlCredentialStorage = nil
         let session = URLSession(configuration: configuration, delegate: ClusterNoRedirect(), delegateQueue: nil)
         defer { session.invalidateAndCancel() }
         var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalAndRemoteCacheData, timeoutInterval: timeoutSeconds)
+        request.httpMethod = method
+        if let body {
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.httpBody = body
+        }
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         if let token { request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
         do {
             let (stream, response) = try await session.bytes(for: request)
-            guard let http = response as? HTTPURLResponse, http.url == url else { return .unavailable("no HTTP answer") }
-            if notOffered.contains(http.statusCode) { return .notOffered }
-            guard http.statusCode == 200 else { return .unavailable("HTTP \(http.statusCode)") }
-            guard response.expectedContentLength <= Int64(maximumBytes) else { return .unavailable("the answer exceeds its bound") }
+            guard let http = response as? HTTPURLResponse, http.url == url else { return .unusable("no HTTP answer") }
+            guard reads(http.statusCode) else { return .answered(status: http.statusCode, body: nil) }
+            guard response.expectedContentLength <= Int64(maximumBytes) else { return .unusable("the answer exceeds its bound") }
             // An answer came: a failure from here on is an unusable answer, never "unreachable".
             var bytes = Data()
             do {
                 for try await byte in stream {
-                    guard bytes.count < maximumBytes else { return .unavailable("the answer exceeds its bound") }
+                    guard bytes.count < maximumBytes else { return .unusable("the answer exceeds its bound") }
                     bytes.append(byte)
                 }
             } catch {
-                return .unavailable("the answer could not be read: \(error.localizedDescription)")
+                return .unusable("the answer could not be read: \(error.localizedDescription)")
             }
-            return .approvals(try decode(bytes))
-        } catch let error as ClusterConfigurationError {
-            return .unavailable("\(error)")
+            return .answered(status: http.statusCode, body: bytes)
         } catch let error as URLError {
             return .unreachable(error.localizedDescription)
         } catch {
-            return .unavailable(error.localizedDescription)
+            return .unusable(error.localizedDescription)
         }
     }
 

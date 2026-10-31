@@ -14,7 +14,6 @@ import DarkbloomClusterProtocol
 /// none stops a Mac from serving.
 enum ClusterApprovalRequest {
     static let path = ClusterApprovalFetch.ownerPath
-    static let timeoutSeconds: Double = 10
     /// An owner approval this close to its `not_after` is renewed.
     static let renewWithinSeconds: Double = 7 * 86_400
     /// How the coordinator names an approval its owner registered: `owner/<account>/<model>/s<schedule>/<nonce>`.
@@ -101,36 +100,19 @@ enum ClusterApprovalRequest {
         return version
     }
 
-    /// One exchange with the coordinator: the status and body of its answer, or the outcome that ends the request.
-    /// The URL rules are the fetch's (HTTPS, or this Mac's loopback), so the credential never leaves the Mac in plain
-    /// text, and no redirect is followed with it.
+    /// One exchange with the coordinator under the fetch's rules (`ClusterApprovalFetch.send`: HTTPS or this Mac's
+    /// loopback, no redirect, so the credential never leaves the Mac in plain text or for another URL): the status and,
+    /// for a 200 or 201, the body; or the outcome that ends the request first.
     private static func exchange(coordinatorURL: String, path: String, method: String, token: String?,
                                  body: Data?) async -> Result<(status: Int, data: Data), Stop> {
         guard let url = ClusterApprovalFetch.url(coordinatorURL: coordinatorURL, path: path) else {
             return .failure(.init(.notSent("the coordinator URL is not HTTPS")))
         }
         guard let token, !token.isEmpty else { return .failure(.init(.notSent("this Mac is not linked to an account"))) }
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.timeoutIntervalForRequest = timeoutSeconds; configuration.timeoutIntervalForResource = timeoutSeconds
-        configuration.urlCache = nil; configuration.httpCookieStorage = nil; configuration.urlCredentialStorage = nil
-        let session = URLSession(configuration: configuration, delegate: ClusterNoRedirect(), delegateQueue: nil)
-        defer { session.invalidateAndCancel() }
-        var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalAndRemoteCacheData, timeoutInterval: timeoutSeconds)
-        request.httpMethod = method
-        if let body {
-            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            request.httpBody = body
-        }
-        request.setValue("application/json", forHTTPHeaderField: "Accept")
-        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        do {
-            let (data, response) = try await session.data(for: request)
-            guard let http = response as? HTTPURLResponse, http.url == url else { return .failure(.init(.failed("no HTTP answer"))) }
-            return .success((status: http.statusCode, data: data))
-        } catch let error as URLError {
-            return .failure(.init(.failed("no answer: \(error.localizedDescription)")))
-        } catch {
-            return .failure(.init(.failed(error.localizedDescription)))
+        switch await ClusterApprovalFetch.send(url, method: method, token: token, body: body, reads: { $0 == 200 || $0 == 201 }) {
+        case .answered(let status, let data): return .success((status: status, data: data ?? Data()))
+        case .unusable(let reason): return .failure(.init(.failed(reason)))
+        case .unreachable(let reason): return .failure(.init(.failed("no answer: " + reason)))
         }
     }
 

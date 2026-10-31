@@ -3,12 +3,22 @@ import Testing
 @testable import ProviderCore
 
 /// Pauses a real sweep at the existing active-store mutation barrier, without
-/// adding a production hook or requiring a large/slow filesystem fixture.
-private final class PausedMaintenanceStore: SSDEvictableStore, @unchecked Sendable {
+/// adding a production hook or requiring a large/slow filesystem fixture, and
+/// takes a heartbeat snapshot there. The paused sweep holds
+/// `SSDDiskBudget.shared`'s lock, which parallel suites take on cooperative-pool
+/// threads, so the snapshot runs on its own thread and the pause is bounded:
+/// nothing that ends it needs a pool thread.
+private final class SnapshotDuringSweepStore: SSDEvictableStore, @unchecked Sendable {
     let evictionRoot: URL
-    let entered = DispatchSemaphore(value: 0)
-    let release = DispatchSemaphore(value: 0)
-    init(root: URL) { evictionRoot = root }
+    private let maintainer: SSDWholeRootMaintainer
+    private let lock = NSLock()
+    private var pauses = 0
+    private var snapshotWasAvailable = false
+    private var snapshot: SSDWholeRootMaintainer.Stats?
+    init(root: URL, maintainer: SSDWholeRootMaintainer) {
+        evictionRoot = root
+        self.maintainer = maintainer
+    }
     var ownsEvictionRoot: Bool { true }
     var diskBytesOnDisk: Int { 0 }
     func oldestEntryAccess() -> Int64? { nil }
@@ -24,10 +34,26 @@ private final class PausedMaintenanceStore: SSDEvictableStore, @unchecked Sendab
         return removed
     }
     func performExternalDestructiveChange(_ body: () -> Void) -> Bool {
-        entered.signal()
-        release.wait()
+        let returned = DispatchSemaphore(value: 0)
+        // Its own thread, not a GCD worker: while the pool is full of threads
+        // blocked on the budget lock, GCD did not start default-QoS work for 5 s.
+        Thread { [self] in
+            let stats = maintainer.statsSnapshot()
+            lock.withLock { snapshot = stats }
+            returned.signal()
+        }.start()
+        // A snapshot that waits for the sweep fails the test here instead of
+        // holding the shared budget lock until the run's watchdog.
+        let available = returned.wait(timeout: .now() + 5) == .success
+        lock.withLock {
+            pauses += 1
+            snapshotWasAvailable = available
+        }
         body()
         return true
+    }
+    var observed: (pauses: Int, snapshotWasAvailable: Bool, snapshot: SSDWholeRootMaintainer.Stats?) {
+        lock.withLock { (pauses, snapshotWasAvailable, snapshot) }
     }
 }
 
@@ -41,41 +67,20 @@ struct SSDWholeRootTelemetryConcurrencyTests {
         #expect(try await fixture.donate(donor) == [256])
         await donor.closeAndWait()
 
-        let paused = PausedMaintenanceStore(root: fixture.modelRoot)
-        SSDDiskBudget.shared.register(paused)
-        defer { paused.release.signal(); SSDDiskBudget.shared.deregister(paused) }
         let maintainer = SSDWholeRootMaintainer()
-        let sweep = Task.detached {
+        let paused = SnapshotDuringSweepStore(root: fixture.modelRoot, maintainer: maintainer)
+        SSDDiskBudget.shared.register(paused)
+        defer { SSDDiskBudget.shared.deregister(paused) }
+        let swept = try await onGCD {
             maintainer.maintain(root: fixture.root, ttlSeconds: 1,
                 nowSeconds: Int64(Date().timeIntervalSince1970) + 7200,
                 budgetBytes: Int.max)
         }
-        // Poll rather than blocking a cooperative executor thread.
-        func signalled(_ semaphore: DispatchSemaphore) -> Bool {
-            semaphore.wait(timeout: .now()) == .success
-        }
-        func waitForSignal(_ semaphore: DispatchSemaphore) async -> Bool {
-            let deadline = ContinuousClock.now.advanced(by: .seconds(5))
-            while ContinuousClock.now < deadline {
-                if signalled(semaphore) { return true }
-                try? await Task.sleep(for: .milliseconds(1))
-            }
-            return false
-        }
-        let sweepPaused = await waitForSignal(paused.entered)
-        #expect(sweepPaused)
-        let snapshotFinished = DispatchSemaphore(value: 0)
-        let snapshot = Task.detached {
-            let result = maintainer.statsSnapshot()
-            snapshotFinished.signal()
-            return result
-        }
-        let snapshotWasAvailable = await waitForSignal(snapshotFinished)
-        #expect(snapshotWasAvailable, "capacity heartbeat must not wait for the sweep")
-        paused.release.signal()
-        #expect(await sweep.value.ttlExpired == 1)
-        let duringSweep = await snapshot.value
-        if snapshotWasAvailable { #expect(duringSweep.ttlExpired == 0) }
+        #expect(swept.ttlExpired == 1)
+        let observed = paused.observed
+        try #require(observed.pauses == 1)
+        #expect(observed.snapshotWasAvailable, "capacity heartbeat must not wait for the sweep")
+        if observed.snapshotWasAvailable { #expect(observed.snapshot?.ttlExpired == 0) }
         #expect(maintainer.statsSnapshot().ttlExpired == 1)
     }
 }

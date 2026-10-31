@@ -2328,6 +2328,7 @@ automatic updates with `darkbloom autoupdate disable`.
 | State-file stale threshold | `isStale(maxAge: 90)` s; `doctor` calls the daemon wedged after `max(8 × refresh period, 90)` s | `provider-swift/Sources/ProviderCore/Service/DaemonStateFile.swift`; `provider-swift/Sources/darkbloom/Diagnostics/KVBackendPosture.swift` (`wedgedAfterSeconds`) |
 | Idle unload | `idle_timeout_mins` ([`provider.toml` table](#providertoml-keys-read-by-the-cli)); polled every 60 s; unloads the model, the daemon keeps running | `provider-swift/Sources/ProviderCore/ProviderLoop+IdleTimeout.swift` |
 | Watchdog check interval | `checkIntervalSeconds = 60` | `provider-swift/Sources/ProviderCore/Service/WatchdogAgent.swift` |
+| Watchdog crash restart | next check after the outage is seen (1–2 min); `defaultGraceSeconds = 300` when the restart would continue a crash-loop chain (`WatchdogPolicy.graceSeconds`) | `provider-swift/Sources/ProviderCore/Service/WatchdogDecision.swift` |
 | Crash-loop guard trip | `crashLoopTripThreshold = 3` restarts | `provider-swift/Sources/ProviderCore/Service/WatchdogDecision.swift` |
 | Auto-update first check / interval / drain | `300` s / `1800` s / `120` s | `provider-swift/Sources/ProviderCore/ProviderLoop+AutoUpdate.swift` (`autoUpdateInitialDelay`, `autoUpdateInterval`, `updateDrainTimeout`) |
 | Update quarantine | `rollbackThreshold = 3`; `defaultStabilizationSeconds = 600` | `provider-swift/Sources/ProviderCore/Update/UpdateRecoveryState.swift` |

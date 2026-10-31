@@ -73,6 +73,24 @@ struct WatchdogDecisionTests {
     func defaultGraceIsFiveMinutes() {
         #expect(WatchdogPolicy.defaultGraceSeconds == 300)
     }
+
+    @Test("an exited provider restarts on the next tick; a stale live or crash-loop-shaped one waits the grace")
+    func graceFollowsCrashLoopShape() {
+        let bound = WatchdogPolicy.crashLoopUptimeBoundSeconds
+        for isolated in [WatchdogState(), WatchdogState(lastRestartAt: now - bound - 1)] {
+            #expect(WatchdogPolicy.graceSeconds(current: isolated, effectiveDownSince: now, processRunning: false) == 0)
+            #expect(WatchdogPolicy.graceSeconds(current: isolated, effectiveDownSince: now, processRunning: true) == grace)
+        }
+        let looping = WatchdogState(lastRestartAt: now - 60, consecutiveCrashLoopRestarts: 1)
+        #expect(WatchdogPolicy.graceSeconds(current: looping, effectiveDownSince: now, processRunning: false) == grace)
+        // The outage is first armed (`startGrace`), so zero grace still waits one tick.
+        #expect(WatchdogPolicy.decide(
+            autoRestartEnabled: true, providerLoaded: true, providerRunning: false,
+            downSince: nil, now: now, graceSeconds: 0) == .startGrace)
+        #expect(WatchdogPolicy.decide(
+            autoRestartEnabled: true, providerLoaded: true, providerRunning: false,
+            downSince: now - 60, now: now, graceSeconds: 0) == .restart)
+    }
 }
 
 /// The reboot guard: a downSince armed in a previous uptime must not survive to

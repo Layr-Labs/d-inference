@@ -65,13 +65,16 @@ struct Watchdog: AsyncParsableCommand {
         // Ignore a downSince left over from a previous boot (fresh window per outage).
         let bootTime = now - ProcessInfo.processInfo.systemUptime
         let downSince = WatchdogPolicy.effectiveDownSince(state.downSince, bootTime: bootTime)
+        let graceSeconds = WatchdogPolicy.graceSeconds(
+            current: state, effectiveDownSince: downSince, processRunning: liveness.running)
 
         let decision = WatchdogPolicy.decide(
             autoRestartEnabled: settings.autoRestart,
             providerLoaded: liveness.loaded,
             providerRunning: providerActive,
             downSince: downSince,
-            now: now
+            now: now,
+            graceSeconds: graceSeconds
         )
         let updater = SelfUpdater(
             coordinatorBaseURL: settings.coordinatorURL,
@@ -117,7 +120,7 @@ struct Watchdog: AsyncParsableCommand {
             candidateStartupTimeoutSeconds: settings.candidateStartupTimeoutSeconds
         )
 
-        let grace = Int(WatchdogPolicy.defaultGraceSeconds)
+        let grace = Int(graceSeconds)
         var persistenceDecision = decision
         // Counter value the final state write persists for `.restart`; nil
         // keeps the current one. Only an ISSUED restart advances the chain —
@@ -171,7 +174,7 @@ struct Watchdog: AsyncParsableCommand {
                 now: now
             )
         case .startGrace:
-            Self.log("provider appears down — will restart in \(grace)s if it stays down")
+            Self.log("provider appears down — will restart in \(max(grace, WatchdogAgent.checkIntervalSeconds))s if it stays down")
         case .waiting(let remaining):
             Self.log("provider still down — restart in ~\(Int(remaining))s")
         case .healthy:

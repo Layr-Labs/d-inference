@@ -1,6 +1,6 @@
 # Keep a cluster member always on
 
-> Last updated: 2026-10-20
+> Last updated: 2026-10-31
 
 `darkbloom cluster` on each Mac does all of this. Nothing below is needed: it
 explains what the onboarding sets up and how to check it.
@@ -27,10 +27,18 @@ the cluster comes back by itself, with no command run on either Mac (see
 [After a restart or a power cut](#after-a-restart-or-a-power-cut)).
 
 - launchd runs `darkbloom cluster service --supervise`: the same supervisor as
-  below, around `darkbloom cluster service`. A service that ends is restarted
-  after 15 s, doubling to 300 s; three runs in a row each shorter than 120 s
-  park it (nothing runs) until `darkbloom cluster` is run again, which
-  restarts it and resets the budget.
+  below, around `darkbloom cluster service`, without its update slot. A service
+  that ends is restarted after 15 s, doubling to 300 s; three runs in a row each
+  shorter than 120 s park it (nothing runs) until `darkbloom cluster` is run
+  again, which restarts it and resets the budget.
+- Nothing updates Darkbloom on these Macs: the supervisor runs with automatic
+  updates off (`provider-swift/Sources/darkbloom/ClusterServiceCommand.swift`,
+  `runSupervisor`), this Mac's part runs no updater
+  (`provider-swift/Sources/ProviderCore/ProviderLoop+Serve.swift`, which starts
+  `startAutoUpdateMonitor` only for a single-Mac provider), and the single-Mac
+  provider does not run beside the cluster. Run `darkbloom update` on both Macs
+  ([updating Darkbloom on the pair](two-mac-cluster.md#updating-darkbloom-on-the-pair));
+  automatic updates for a pair are a follow-up.
 - `RunAtLoad`, and `KeepAlive` only after an unsuccessful exit (throttled to
   the budget's first backoff): launchd brings back a supervisor that crashed,
   never one that was stopped.
@@ -246,7 +254,7 @@ it. It documents the developer route that runs `darkbloom start
 | The leader's pair engine stays wedged (its own watchdog's verdict) for 180 s | Same recycle |
 | An active request made no progress at all for `clamp(120, 120 + prompt tokens / 1000, 900)` s (when the member reports one) | Same recycle |
 | A pair forms | The leader runs one greedy 8-token warmup request before the pair accepts work; if it fails or takes over 300 s the pair is retired and formed again (`DARKBLOOM_CLUSTER_WARMUP=0` turns this off) |
-| Cluster update slot (every 30 min, at an offset fixed by the cluster ID, the same on both Macs) | If a release is available: drains the member, installs, restarts from the new binary; both Macs do this together |
+| Cluster update slot (every 30 min, at an offset fixed by the cluster ID, the same on both Macs), on this route only, with `auto_update` on (the default) | If a release is available: drains the member, installs, restarts from the new binary; both Macs do this together. The cluster service of `darkbloom cluster` has no update slot ([updating Darkbloom on the pair](two-mac-cluster.md#updating-darkbloom-on-the-pair)) |
 | `darkbloom stop` | Drains, stops the member and keeps it stopped across reboots |
 | Before every run, and at the member's own start and end | Orphan sweep: a worker or owner whose parent is gone is given its own contract to end, then SIGTERM, SIGKILL only after the kill margin; a stranded device journal is cleared once nothing it names runs; bootstrap directories whose socket no process holds any more are removed (read from the descriptor tables; nothing connects). One log line when it found something (`darkbloom cluster reap --json` runs the same sweep by hand) |
 

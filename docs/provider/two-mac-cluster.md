@@ -509,12 +509,37 @@ a restart, and writes why to `~/.darkbloom/cluster-setup/service.log`.
 
 After a restart or power cut a Mac serves again once it is logged in. With
 automatic login on (System Settings → Users & Groups; needs FileVault off) that
-happens by itself; `darkbloom cluster` says which applies to each Mac. After a
-Darkbloom update, the cluster sets itself up again by itself ("Updating the
-cluster setup after a Darkbloom update."). The leader checks for an update
-every minute; while a Mac serves, those checks and any plan made then use the
-speed it measured while idle and never run a GPU benchmark beside the model
-([device profile](../architecture/inference.md#automatic-local-cluster-batching)).
+happens by itself; `darkbloom cluster` says which applies to each Mac.
+
+## Updating Darkbloom on the pair
+
+The Macs of a pair do not update by themselves. The cluster service runs with
+automatic updates off, its parts run no updater, and the single-Mac provider,
+whose updater keeps one Mac current, does not run beside the cluster.
+Automatic updates for a pair are a follow-up. Until then, update by hand:
+
+1. On each Mac, run:
+
+   ```bash
+   darkbloom update
+   ```
+
+   It installs the release. Its last line, "Restart the provider for the new
+   version to take effect.", does not apply here: no single-Mac provider runs on
+   a pair Mac.
+2. Wait. The leader compares each Mac's installed cluster worker with the saved
+   setup every minute while the cluster serves. When one changed, it stops both
+   parts, plans the same model again and serves it from the new release
+   ("Updating the cluster setup after a Darkbloom update."). Its log,
+   `~/.darkbloom/cluster-setup/service.log`, says
+   `Darkbloom changed on the other Mac: setting the cluster up again for <model>`
+   (or this Mac, or both Macs). An update of the second Mac sets it up once more.
+   While a Mac serves, these checks and any plan made then use the speed it
+   measured while idle and never run a GPU benchmark beside the model
+   ([device profile](../architecture/inference.md#automatic-local-cluster-batching)).
+3. Log out and back in on each Mac, or restart it. The cluster service itself
+   keeps running the release it started with until it starts again, as it does
+   at login.
 
 ## When something is in the way
 
@@ -575,6 +600,8 @@ and they must match.
 
 ## Not yet in this build
 
+- A pair does not update itself: run `darkbloom update` on both Macs
+  ([updating Darkbloom on the pair](#updating-darkbloom-on-the-pair)).
 - The login agent and macOS's one Local Network approval need the signed
   Darkbloom.app ([always on](cluster-always-on.md)).
 - A setup with unequal tensor-parallel shares cannot register with the

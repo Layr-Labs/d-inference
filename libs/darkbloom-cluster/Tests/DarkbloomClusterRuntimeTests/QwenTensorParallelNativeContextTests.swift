@@ -94,6 +94,21 @@ struct QwenTensorParallelNativeContextTests {
         }
     }
 
+    /// A prompt past the memory plan's within its context: its own prefix
+    /// capture lifts its lane above LOAD's, so it is not within the memory
+    /// plan, and the gate charges it at its own prompt as it does a longer context.
+    @Test(arguments: [1, 8], [nil, 3] as [Int?])
+    func aPromptPastTheMemoryPlansIsChargedAtItsOwn(lanes: Int, depth: Int?) throws {
+        let load = try Self.loaded(lanes: lanes, depth: depth)
+        let memory = try Self.input().0.profile
+        let within = QwenTensorParallelRequestCharge.withinMemoryPlan
+        #expect(within(65_536, 32_768, memory) && within(513, 512, memory))
+        #expect(!within(65_537, 32_768, memory) && !within(64_000, 32_769, memory))
+        let value = try load.charge.charge(maximumTokens: 64_000, promptTokens: 60_000, chunkSize: 512)
+        #expect(value.laneBytes > load.laneBytes, "lanes=\(lanes) depth=\(String(describing: depth))")
+        #expect(!within(64_000, 60_000, memory))
+    }
+
     /// Past the memory plan a request is charged at its own context: its lane
     /// grows by its KV pages (this rank's heads, BF16, both K and V of every
     /// attention layer) and the shared workspaces grow from LOAD's.

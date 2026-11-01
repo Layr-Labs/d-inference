@@ -64,6 +64,14 @@ struct QwenTensorParallelRequestCharge {
         return .init(laneBytes: lane, sharedBytes: max(loadSharedBytes, shared))
     }
 
+    /// Whether a request lies within the memory plan LOAD quoted every lane
+    /// at, whose per-lane quote its lane must then fit: its context and its
+    /// prompt, since its prefix capture grows with its prompt. Any other
+    /// request is charged at its own context and prompt alone.
+    static func withinMemoryPlan(maximumTokens: Int, promptTokens: Int, memory: QwenLayerStageGenerationProfile) -> Bool {
+        maximumTokens <= memory.maximumContextTokens && promptTokens <= memory.maximumPromptTokens
+    }
+
     /// The longest request of `contextTokens` within `profile`: its longest
     /// prompt that leaves an output token, in the profile's chunks.
     func charge(contextTokens: Int, profile: QwenLayerStageGenerationProfile) throws -> Charge {

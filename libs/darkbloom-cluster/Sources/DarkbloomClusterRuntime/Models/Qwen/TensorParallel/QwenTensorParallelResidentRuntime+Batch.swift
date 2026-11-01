@@ -50,7 +50,8 @@ extension QwenTensorParallelResidentRuntime {
             let laneBytes = charge.laneBytes
             // Within the memory plan, a lane fits the quote LOAD admitted it under.
             let loadLaneBytes = batchMTPBudget?.perLaneStateBytes ?? batchBudget.perLaneStateBytes
-            guard request.maximumTokens > admission.memoryProfile.maximumContextTokens || laneBytes <= loadLaneBytes else {
+            guard !QwenTensorParallelRequestCharge.withinMemoryPlan(maximumTokens: request.maximumTokens,
+                    promptTokens: request.promptCount, memory: admission.memoryProfile) || laneBytes <= loadLaneBytes else {
                 throw ProbeError("Tensor-parallel lane state exceeds its LOAD budget")
             }
             let mediaBudget: QwenMediaBudget?
@@ -132,7 +133,9 @@ extension QwenTensorParallelResidentRuntime {
     /// twice in the allocator ceiling. Host media keeps its separate full bound.
     /// The shared workspaces are held once, at the longest context any held
     /// (or entering) request has: LOAD's within the memory plan. The plain
-    /// lanes' kept prefix entries are in no charge, so they are not credited.
+    /// lanes' kept prefix entries are in no charge, so they are not credited;
+    /// nor are the retired captures the SSD writer may still hold while it
+    /// writes (at most its queue's byte bound; a refusal drains it first).
     private func requireBatchMemory(extraState: Int = 0, extraShared: Int = 0, extraNative: Int = 0, extraHost: Int = 0,
                                     entering: Bool = false) throws {
         guard batchBudget != nil else { throw ProbeError("Qwen TP batch LOAD quote is missing") }
@@ -142,7 +145,9 @@ extension QwenTensorParallelResidentRuntime {
         let native = try sum([shared, requestCharge.collectiveScratchBytes,
             sum(held.map(\.laneStateBytes)), sum(held.map { $0.media?.budget.nativeBytes ?? 0 }), extraState, extraNative])
         let host = try sum([sum(held.map { $0.media?.budget.hostBytes ?? 0 }), extraHost])
-        let kept = batchPrefix?.bytesInUse ?? 0
+        // A zero-second drain only asks whether the writer is idle.
+        let writing = prefixDisk.map { !$0.tier.drain(timeoutSeconds: 0) } ?? false
+        let kept = try sum([batchPrefix?.bytesInUse ?? 0, writing ? prefixDisk?.tier.configuration.maximumQueuedBytes ?? 0 : 0])
         let remaining = try QwenResidentRequestAllowance.continuingRequirement(reservedBytes: native,
             additionalBytes: 0, grownBytes: max(0, Memory.activeMemory - batchAllocationBaseline - kept))
         try QwenResidentResourceEnvironment.requirePower()

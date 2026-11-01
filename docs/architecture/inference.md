@@ -3792,13 +3792,20 @@ SiLU) and its q/k normalization, the attention output gate, the SwiGLU product,
 and a single vector's gate, up and SwiGLU in one launch (a window keeps the two
 projections: the fused kernel measured slower there). That one-launch SwiGLU
 (`AffineQuantizedVectors.projectSwiGLU`) computes its sigmoid as MLX's
-`Sigmoid` does, with `metal::precise::exp`: with Metal's default fast `exp` it
-rounded the bf16 gate -6.84375 to another SwiGLU value, so a registered 27B
-row's one-row step left the bits of its cohort and window steps. A test
-compares it with the two projections and the compiled SwiGLU at every normal
-bf16 and f16 gate value. The convolution step's SiLU (`GatedDeltaConvolution`)
-still uses the default `exp`, so it can round differently from the unfused
-SiLU (`Qwen35DecodeFusionParityTests` finds f16 and f32 differences); every
+`Sigmoid` does, with `metal::precise::exp`; Metal's default fast `exp` rounds
+the bf16 gate -6.84375 to another SwiGLU value. Only a tensor-parallel batch
+session's one-row decode step takes that kernel (it needs
+`Qwen35BatchDecodeScope.exactVectors`; single-Mac serving and
+`darkbloom-cluster-tp-check run` never do), so with the fast `exp` a registered
+27B row alone left the bits of its cohort and window steps. Tensor-parallel
+serving output recorded with an earlier build differs only where such a step
+met that gate, and is regenerated once.
+`AffineQuantizedVectorsTests.swigluEqualsTheCompiledSwiGLUAtEveryGateValue`
+compares the kernel with the two projections and the compiled SwiGLU at every
+normal bf16 and f16 gate value. The convolution step's SiLU
+(`GatedDeltaConvolution`) still uses the default `exp`, so it can round
+differently from the unfused SiLU that prompt chunks of more than eight tokens
+take (`Qwen35DecodeFusionParityTests` finds f16 and f32 differences); every
 decode row count and window of up to eight columns takes that kernel, so rows
 still agree. A residual stream
 narrower than its norms (the Prism/Bonsai packs: FP16 packed embedding rows

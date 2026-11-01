@@ -241,21 +241,24 @@ struct AffineQuantizedVectorsTests {
 
     /// The fused SwiGLU's sigmoid is MLX's (`metal::precise::exp`): at every normal gate value
     /// and zero, one a row (a one-hot input reads each row's bias), it gives the bits of the
-    /// two projections and the multi-row path's compiled SwiGLU. The registered 27B's gate
-    /// inputs reach |33|; a fast `exp` rounded `exp(6.84375)` = 938.00005 to another bf16.
+    /// two projections and the multi-row path's compiled SwiGLU. Each gate value is paired with
+    /// an up of 1 (its `g * sigmoid(g)`, which every up then multiplies) and the 27B's ups beside
+    /// -6.84375. A fast `exp` rounded `exp(6.84375)` = 938.00005 to another bf16.
     @Test(.enabled(if: Self.gpu), arguments: [DType.bfloat16, .float16])
     func swigluEqualsTheCompiledSwiGLUAtEveryGateValue(dtype: DType) throws {
         try Device.withDefaultDevice(.gpu) {
             let exponent: UInt16 = dtype == .bfloat16 ? 0x7F80 : 0x7C00
             // Normal values and +0 (a product's -0 sums to +0).
-            let codes = (0...UInt16.max).filter { code in
+            let values = (0...UInt16.max).filter { code in
                 let field = code & exponent
                 return field != exponent && (field != 0 || code == 0)
             }
+            // Up 1, then the ups the 27B's gate had beside -6.84375 (layers 50, 61, 62).
+            let upValues: [Float] = [1, -3.1875, 0.1640625, -2.046875]
+            let codes = Array(repeating: values, count: upValues.count).flatMap { $0 }
             let rows = codes.count
             let gates = MLXArray(codes).view(dtype: dtype)
-            // Up values the 27B's gate had beside -6.84375 (layers 50, 61, 62).
-            let ups = MLXArray((0..<rows).map { [Float(1), -3.1875, 0.1640625, -2.046875][$0 % 4] }).asType(dtype)
+            let ups = MLXArray(upValues.flatMap { Array(repeating: $0, count: values.count) }).asType(dtype)
             func linear(_ biases: MLXArray) -> QuantizedLinear {
                 let made = QuantizedLinear(weight: MLXArray.zeros([rows, 8], dtype: .uint32), bias: nil,
                     scales: MLXArray.ones([rows, 1], dtype: dtype), biases: biases.reshaped([rows, 1]),
@@ -282,7 +285,7 @@ struct AffineQuantizedVectorsTests {
                 let shown = differing.sorted().prefix(8).map { code in
                     dtype == .bfloat16 ? Float(bitPattern: UInt32(code) << 16) : Float(Float16(bitPattern: code))
                 }
-                #expect(differing.isEmpty, "\(dtype) M=\(vectors): \(differing.count) of \(rows) gate values differ, e.g. \(shown)")
+                #expect(differing.isEmpty, "\(dtype) M=\(vectors): \(differing.count) of \(values.count) gate values differ, e.g. \(shown)")
             }
         }
     }

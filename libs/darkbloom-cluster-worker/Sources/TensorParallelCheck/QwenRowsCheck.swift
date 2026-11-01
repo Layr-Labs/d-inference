@@ -3,7 +3,8 @@ import Foundation
 import MLX
 
 // Qwen3.8-27B rows at the registered per-rank widths on two ranks of one Mac
-// (`QwenTensorParallelRowsCheck`): random weights, never a model pass.
+// (`QwenTensorParallelRowsCheck`): random weights or a registered checkpoint's
+// files read directly, never a model pass.
 //   darkbloom-cluster-tp-check qwen-rows synthesize --output /DIR [--layers 4]
 //   MLX_RANK=0|1 MLX_HOSTFILE=hosts.json darkbloom-cluster-tp-check qwen-rows run --model-dir /DIR \
 //       --report FILE [--backend ring|socket] [--reduction native|sealed-bench]
@@ -37,7 +38,10 @@ enum QwenRowsCheck {
             return
         }
         guard let directory = options["model-dir"], let reportPath = options["report"] else {
-            throw Failure("run needs --model-dir and --report")
+            throw Failure("\(command) needs --model-dir and --report")
+        }
+        guard let target = Int(options["target"] ?? "7"), let other = Int(options["other"] ?? "6") else {
+            throw Failure("--target and --other take row numbers")
         }
         guard let backend = QwenTensorParallelGroup.Backend(rawValue: options["backend"] ?? "ring"), backend != .jaccl else {
             throw Failure("qwen-rows runs on the loopback ring or socket only")
@@ -47,8 +51,10 @@ enum QwenRowsCheck {
         let url = URL(fileURLWithPath: directory)
         let configuration = try Data(contentsOf: url.appendingPathComponent("config.json"))
         let group = try QwenTensorParallelGroup(backend: backend)
-        guard try group.digestsEqual(fnv(sha256Hex(configuration) + "|" + reduction)) else {
-            throw Failure("the ranks disagree on the checkpoint or the reduction")
+        // Ranks running other commands or rows would pair different collectives.
+        let work = command == "layers" ? "layers \(target) \(other)" : command
+        guard try group.digestsEqual(fnv(sha256Hex(configuration) + "|" + reduction + "|" + work)) else {
+            throw Failure("the ranks disagree on the checkpoint, the reduction or the command")
         }
         if reduction == "sealed-bench" {
             let codec = try QwenTensorParallelSealCodec.bench(group: group,
@@ -62,7 +68,7 @@ enum QwenRowsCheck {
                 let model = try QwenTensorParallelModel.load(modelDirectory: url, role: .shard(rank: group.rank, size: 2),
                     reduction: group)
                 return try QwenTensorParallelRowsCheck.firstDifferingLayers(model: model, configuration: configuration,
-                    target: Int(options["target"] ?? "7") ?? 7, other: Int(options["other"] ?? "6") ?? 6)
+                    target: target, other: other)
             }
             try lines.joined(separator: "\n").write(toFile: reportPath, atomically: true, encoding: .utf8)
             lines.forEach { note($0) }

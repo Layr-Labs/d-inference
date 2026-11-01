@@ -9,9 +9,9 @@ import MLXLMCommon
 /// context lengths that join and leave (PB), while an assistant observes the
 /// cohort, and at every position of a four-column verify window alone or in
 /// a cohort (W). Both ranks run `run` in lock step (their reductions pair
-/// them); each compares only its own digests. Random weights only (affine
-/// 4-bit, group 64, BF16 scales, biases and norms, as the registered
-/// artifact is quantized), never a model pass: the test suite runs it in one
+/// them); each compares only its own digests. Random weights with the
+/// registered artifact's statistics (`tensors`), or a registered checkpoint's
+/// files through the tool, never a model pass: the test suite runs it in one
 /// process, `darkbloom-cluster-tp-check qwen-rows` over the loopback ring.
 public enum QwenTensorParallelRowsCheck {
     public struct Report: Codable, Sendable {
@@ -285,6 +285,9 @@ public enum QwenTensorParallelRowsCheck {
     /// ranks call it in lock step; each reports its own rows.
     public static func firstDifferingLayers(model: QwenTensorParallelModel, configuration: Data, target: Int = 7,
                                             other: Int = 6, steps: Int = 3) throws -> [String] {
+        guard let targetLength = lengths[target], let otherLength = lengths[other], target != other, steps > 0 else {
+            throw ProbeError("Qwen TP rows check: layers needs two different rows of 0 to 7")
+        }
         final class Outputs: @unchecked Sendable { var layers: [MLXArray] = [] }
         func observed(_ rows: Rows, members: [Int], position: Int) throws -> [(layers: [MLXArray], logits: MLXArray)] {
             try (0..<steps).map { step in
@@ -303,14 +306,18 @@ public enum QwenTensorParallelRowsCheck {
             }
         }
         let alone = try Rows(model, configuration: configuration, lanes: 1)
-        try alone.open(target, length: lengths[target]!)
+        try alone.open(target, length: targetLength)
         let solo = try observed(alone, members: [target], position: 0)
         try alone.retireAll()
         let pair = try Rows(model, configuration: configuration, lanes: 2)
-        try pair.open(other, length: lengths[other]!)
-        try pair.open(target, length: lengths[target]!)
+        try pair.open(other, length: otherLength)
+        try pair.open(target, length: targetLength)
         let beside = try observed(pair, members: [other, target], position: 1)
         try pair.retireAll()
+        // After both ranks' last collective: an observer that never ran would report every layer equal.
+        guard zip(solo, beside).allSatisfy({ !$0.0.layers.isEmpty && $0.0.layers.count == $0.1.layers.count }) else {
+            throw ProbeError("Qwen TP rows check: the layer observer saw no layers, or other counts beside a row")
+        }
         return zip(solo, beside).enumerated().map { step, compared in
             let logits = Rows.digest(compared.0.logits) == Rows.digest(compared.1.logits) ? "equal" : "differ"
             guard let layer = compared.0.layers.indices.first(where: {

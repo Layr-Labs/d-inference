@@ -4180,6 +4180,20 @@ rank stores padding: 84,013,770,176 B of text weights per rank. A layer issues
 two collectives of one 16,384 B row per token, and a decode step 97. MTP stays
 off.
 
+The routed experts' partial is not the Qwen and Gemma one, which sums every
+selected expert's FP32 row across ranks (`TensorParallelSwitchLinear`). A
+MiMo rank keeps the stock half bank, so decode stays on the MXFP4 expert
+kernel (`MiMoV26DecodeExperts` takes only a plain `QuantizedSwitchLinear`),
+and one FP32 row crosses per token instead of eight: 16,384 B instead of
+131,072 B per routed layer at the registered width. The cost is one more
+rounding. Each expert's down projection over this rank's channels is rounded
+to BF16 before the FP32 combine, where one Mac rounds each expert's whole
+projection once. That is the rounding class of the `o_proj` partial, so
+comparisons against one Mac read `tokensEqualLogitsDiffer` or
+`divergedAtNearTie`. Per-expert FP32 rows would remove only this rounding:
+the `o_proj` partial keeps its own, so ranks would still not be bit-exact
+with one Mac, and routes could still flip.
+
 `MiMoV26TensorShard` derives each rank's configuration (half the heads of both
 layer kinds and both channel widths, no MTP heads or towers) and cuts stored
 tensors, including the 3-D expert banks, by slice or by byte runs.

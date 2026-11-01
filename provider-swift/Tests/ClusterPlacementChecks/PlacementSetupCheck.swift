@@ -812,6 +812,55 @@ import Foundation
         require("owner pilot: the same model on 2x M4 Max 128 GB is planned", fits.result.chosen != nil && fits.setup != nil)
     }
 
+    /// MiMo V2.6's plan, on its golden layout (read from the real headers, with the family's tensor-parallel facts
+    /// and `fastest_v1`) and the mode list its row now advertises: the guided step's "Tensor parallel or pipeline"
+    /// lines say the model runs tensor parallel only where predicted faster, and that only tensor parallel keeps
+    /// committed-token logprobs; a capability without tensor parallel prints neither.
+    static func mimoFastestPlanLines(description base: [String: Any]) throws {
+        let golden = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent(
+            "../../../libs/darkbloom-cluster/Tests/PlacementChecks/Golden/layouts/mimo-v2.6-flash-mopd-2026-09-28-r1.json")
+        var object = try JSONSerialization.jsonObject(with: Data(contentsOf: golden)) as? [String: Any] ?? [:]
+        object["generationModes"] = [ClusterGenerationMode.pipeline, .pipelineCompactDecode, .phaseSplit, .tensorParallel].map(\.rawValue)
+        let layout = try ClusterModelLayout.decode(JSONSerialization.data(withJSONObject: object))
+        func capability(_ modes: [ClusterGenerationMode]) throws -> (ClusterRuntimeCapability, ClusterPairDescription) {
+            let cuts = layout.admittedCuts, layers = layout.layerCount
+            let value = try ClusterRuntimeCapability(runtimeBinarySHA256: hash("a"), adapterID: "mimo-v26-layer-stage", adapterVersion: 1,
+                runtimeModelID: layout.runtimeModelID, artifactSHA256: layout.artifactSHA256,
+                configurationSHA256: layout.configurationSHA256, manifestSHA256: hash("d"),
+                profile: .init(id: "registered_mimo_v26_flash_mopd_greedy_generation_v1", vocabularySize: 152_576,
+                    maximumPromptTokens: layout.maximumPromptTokens, maximumOutputTokens: layout.maximumOutputTokens,
+                    maximumChunkTokens: layout.maximumChunkTokens, maximumContextTokens: layout.maximumContextTokens),
+                profileFingerprint: hash("e"), partitions: cuts.map { cut in
+                    .init(planSHA256: String(repeating: "7", count: 62) + String(format: "%02d", cut), stages: [
+                        .init(rank: 0, sourceLayerStart: 0, sourceLayerEnd: cut, stagePlanSHA256: String(repeating: "1", count: 62) + String(format: "%02d", cut),
+                              constructionConfigurationSHA256: hash("2")),
+                        .init(rank: 1, sourceLayerStart: cut, sourceLayerEnd: layers, stagePlanSHA256: String(repeating: "3", count: 62) + String(format: "%02d", cut),
+                              constructionConfigurationSHA256: hash("4"))]) },
+                arithmeticPolicyID: "mimo_v26_text_ordinary_cache_bf16_defaults_v1", arithmeticPolicySHA256: hash("5"),
+                supportedPrefillSchedules: [.serial, .oneChunkLookahead], supportedGenerationModes: modes)
+            var description = base
+            description["capabilitySHA256"] = ClusterConfigurationCodec.sha256(try ClusterRuntimeCapabilityCodec.encode(value))
+            description["publicModelID"] = "fixture/mimo"
+            return (value, try ClusterPairDescription.decode(JSONSerialization.data(withJSONObject: description)))
+        }
+        let local = try device("mac-one", physicalGiB: 128, freeGiB: 116, prefill: 400, decode: 40).profile
+        let peer = try device("mac-two", physicalGiB: 128, freeGiB: 116, prefill: 400, decode: 40).profile
+        let fastestLine = "  This model runs tensor parallel only where it is predicted faster than a pipeline; until a load "
+            + "measures the link, tensor parallel is priced on a slow assumed link."
+        let logprobLine = "  Committed-token logprobs are captured in tensor parallel only; a pipeline pair refuses requests for them."
+        let (both, bothDescription) = try capability([.pipeline, .pipelineCompactDecode, .phaseSplit, .tensorParallel])
+        let planned = try ClusterPlacementFlow.decide(description: bothDescription, capability: both, localMemberID: "mac-one",
+            localProfile: local, peerProfile: peer, layout: layout)
+        require("MiMo plan lines: the model runs tensor parallel only where predicted faster, and keeps logprobs only there",
+            layout.tensorParallel?.family.choosesFastest == true && planned.lines.contains("Tensor parallel or pipeline")
+                && planned.lines.contains(fastestLine) && planned.lines.contains(logprobLine))
+        let (pipelineOnly, pipelineDescription) = try capability([.pipeline, .pipelineCompactDecode, .phaseSplit])
+        let piped = try ClusterPlacementFlow.decide(description: pipelineDescription, capability: pipelineOnly, localMemberID: "mac-one",
+            localProfile: local, peerProfile: peer, layout: layout)
+        require("MiMo plan lines: a capability without tensor parallel prints neither line",
+            !piped.lines.contains(fastestLine) && !piped.lines.contains(logprobLine))
+    }
+
     static func main() throws {
         if CommandLine.arguments.count > 1, CommandLine.arguments[1] == "flow" {
             do { try flow(Array(CommandLine.arguments.dropFirst(2))) } catch {
@@ -929,6 +978,7 @@ import Foundation
             capabilityHash: capabilityHash, slowTwo: slowTwo)
         try qualifiedShapes(description: descriptionObject, slowTwo: slowTwo)
         try ownerPilot(description: descriptionObject)
+        try mimoFastestPlanLines(description: descriptionObject)
         try benchCap(layout: layout, description: description, capability: capability, slowTwo: slowTwo)
         try forcedMode(layout: layout, description: description, capability: capability, slowTwo: slowTwo)
         try requestMix(layout: layout, description: description, capability: capability, slowTwo: slowTwo)

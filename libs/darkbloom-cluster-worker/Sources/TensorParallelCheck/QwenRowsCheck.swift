@@ -9,10 +9,12 @@ import MLX
 //       --report FILE [--backend ring|socket] [--reduction native|sealed-bench]
 // Each rank compares its own digests (a row alone, in cohorts, across KV
 // segments, observed, in verify windows) and both agree on the verdict.
+// `layers` (same options, [--target 7 --other 6]) reports the first decoder
+// layer where a row's step beside another leaves its solo bits.
 enum QwenRowsCheck {
     static func run(_ arguments: [String]) throws {
-        guard let command = arguments.first, ["synthesize", "run"].contains(command) else {
-            throw Failure("usage: darkbloom-cluster-tp-check qwen-rows synthesize|run ...")
+        guard let command = arguments.first, ["synthesize", "run", "layers"].contains(command) else {
+            throw Failure("usage: darkbloom-cluster-tp-check qwen-rows synthesize|run|layers ...")
         }
         var options: [String: String] = [:]
         var index = 1
@@ -54,6 +56,17 @@ enum QwenRowsCheck {
             group.sealed = codec
         }
         note("rank \(group.rank) of \(group.size) over \(backend.rawValue), \(reduction) sums")
+        if command == "layers" {
+            let lines = try Device.withDefaultDevice(.gpu) { () throws -> [String] in
+                let model = try QwenTensorParallelModel.load(modelDirectory: url, role: .shard(rank: group.rank, size: 2),
+                    reduction: group)
+                return try QwenTensorParallelRowsCheck.firstDifferingLayers(model: model, configuration: configuration,
+                    target: Int(options["target"] ?? "7") ?? 7, other: Int(options["other"] ?? "6") ?? 6)
+            }
+            try lines.joined(separator: "\n").write(toFile: reportPath, atomically: true, encoding: .utf8)
+            lines.forEach { note($0) }
+            return
+        }
         let report = try Device.withDefaultDevice(.gpu) { () throws -> QwenTensorParallelRowsCheck.Report in
             let model = try QwenTensorParallelModel.load(modelDirectory: url, role: .shard(rank: group.rank, size: 2),
                 reduction: group)

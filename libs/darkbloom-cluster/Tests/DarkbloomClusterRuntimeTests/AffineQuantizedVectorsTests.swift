@@ -1,6 +1,6 @@
 import Foundation
 import MLX
-import MLXLLM
+@testable import MLXLLM
 import MLXLMCommon
 import MLXNN
 import Testing
@@ -237,6 +237,54 @@ struct AffineQuantizedVectorsTests {
                 }
             }
         } }
+    }
+
+    /// The fused SwiGLU's sigmoid is MLX's (`metal::precise::exp`): at every normal gate value
+    /// and zero, one a row (a one-hot input reads each row's bias), it gives the bits of the
+    /// two projections and the multi-row path's compiled SwiGLU. The registered 27B's gate
+    /// inputs reach |33|; a fast `exp` rounded `exp(6.84375)` = 938.00005 to another bf16.
+    @Test(.enabled(if: Self.gpu), arguments: [DType.bfloat16, .float16])
+    func swigluEqualsTheCompiledSwiGLUAtEveryGateValue(dtype: DType) throws {
+        try Device.withDefaultDevice(.gpu) {
+            let exponent: UInt16 = dtype == .bfloat16 ? 0x7F80 : 0x7C00
+            // Normal values and +0 (a product's -0 sums to +0).
+            let codes = (0...UInt16.max).filter { code in
+                let field = code & exponent
+                return field != exponent && (field != 0 || code == 0)
+            }
+            let rows = codes.count
+            let gates = MLXArray(codes).view(dtype: dtype)
+            // Up values the 27B's gate had beside -6.84375 (layers 50, 61, 62).
+            let ups = MLXArray((0..<rows).map { [Float(1), -3.1875, 0.1640625, -2.046875][$0 % 4] }).asType(dtype)
+            func linear(_ biases: MLXArray) -> QuantizedLinear {
+                let made = QuantizedLinear(weight: MLXArray.zeros([rows, 8], dtype: .uint32), bias: nil,
+                    scales: MLXArray.ones([rows, 1], dtype: dtype), biases: biases.reshaped([rows, 1]),
+                    groupSize: 64, bits: 4, mode: .affine)
+                eval(made.weight, made.scales, made.biases!)
+                return made
+            }
+            let gate = linear(gates), up = linear(ups)
+            let oneHot = (MLXArray(Array(Int32(0) ..< 64)) .== Int32(0)).asType(dtype).reshaped([1, 64])
+            let g = try #require(AffineQuantizedVectors.project(oneHot, gate))
+            let u = try #require(AffineQuantizedVectors.project(oneHot, up))
+            let expected = Qwen35DecodeFusions.siluMultiply(g, u)
+            let eager = silu(g) * u
+            eval(g, u, expected, eager)
+            #expect(Self.bytes(g) == Self.bytes(gates) && Self.bytes(u) == Self.bytes(ups), "the one-hot products are inexact")
+            #expect(Self.bytes(eager) == Self.bytes(expected), "\(dtype) compiled and eager SwiGLU differ")
+            let reference = expected.view(dtype: .uint16).asArray(UInt16.self)
+            for vectors in [1, 4] {
+                let x = tiled(oneHot, repetitions: [vectors, 1])
+                let fused = try #require(AffineQuantizedVectors.projectSwiGLU(x, gate: gate, up: up))
+                eval(fused)
+                let got = fused.view(dtype: .uint16).asArray(UInt16.self)
+                let differing = Set((0..<(vectors * rows)).filter { got[$0] != reference[$0 % rows] }.map { codes[$0 % rows] })
+                let shown = differing.sorted().prefix(8).map { code in
+                    dtype == .bfloat16 ? Float(bitPattern: UInt32(code) << 16) : Float(Float16(bitPattern: code))
+                }
+                #expect(differing.isEmpty, "\(dtype) M=\(vectors): \(differing.count) of \(rows) gate values differ, e.g. \(shown)")
+            }
+        }
     }
 
     /// Throughput against MLX's own calls (qmv at one vector, qmv_wide below the vector limit,

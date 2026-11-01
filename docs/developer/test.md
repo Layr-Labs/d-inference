@@ -1249,7 +1249,8 @@ neither real-weight numerics, a pair qualification nor speed.
    - refusals of unknown, misaligned and vision tensors;
    - shard parameters against independent slices;
    - two in-process ranks against the split-sum oracle, bit for bit;
-   - the packed feed-forward collective against separate collectives;
+   - the packed feed-forward collective against separate collectives, also
+     under the registered prompt policy and the scoped batch decode;
    - the vocabulary-split head against the whole head.
 
 2. Build `darkbloom-cluster-tp-check` and put a source-matched `mlx.metallib`

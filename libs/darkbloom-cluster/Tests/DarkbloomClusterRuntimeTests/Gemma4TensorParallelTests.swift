@@ -369,6 +369,64 @@ struct Gemma4TensorParallelTests {
         #expect(separate.payloads.count == forwards * 3 * layers + 4)
     }
 
+    /// Under the registered prompt policy (singleton tokens) and the scoped
+    /// batch decode (singleton rows), each rank packs every slice's expert
+    /// partials and the dense partial into ONE collective, and its expert
+    /// output and dense sum equal the split-sum oracle's slice-by-slice
+    /// forward bit for bit.
+    @Test(arguments: ["prompt", "batch"]) func scopedSlicesPackIntoOneCollective(scope: String) throws {
+        let directory = try Self.synthetic(bits: 4)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let rows = scope == "prompt" ? 1 : 3, tokens = scope == "prompt" ? 6 : 1
+        let shape = [rows, tokens, 256]
+        let expected: (experts: [UInt16], dense: [UInt16], indices: MLXArray, weights: MLXArray) = try Device.withDefaultDevice(.cpu) {
+            let oracle = try Gemma4TensorParallelModel.load(modelDirectory: directory, role: .splitSum, reduction: nil)
+            let layer = oracle.textModel.model.layers[0]
+            let x = withRandomState(MLXRandom.RandomState(seed: 31)) { MLXRandom.normal(shape).asType(.bfloat16) }
+            let (indices, weights) = layer.router!(x)
+            let (experts, dense) = Self.scoped(scope, rows: rows, tokens: tokens) {
+                (layer.experts!(x, topKIndices: indices, topKWeights: weights, isExpertPrefill: true), layer.mlp(x))
+            }
+            eval(experts, dense, indices, weights)
+            return (experts.asType(.float32).asArray(Float.self).map { UInt16($0.bitPattern >> 16) },
+                    dense.asType(.float32).asArray(Float.self).map { UInt16($0.bitPattern >> 16) }, indices, weights)
+        }
+        let pair = Pair()
+        let models = Box(try (0 ..< 2).map { rank in
+            try Device.withDefaultDevice(.cpu) {
+                try Gemma4TensorParallelModel.load(modelDirectory: directory, role: .shard(rank: rank),
+                                                   reduction: pair.reduction(rank: rank))
+            }
+        })
+        let inputs = Box((expected.indices, expected.weights))
+        let results = try Pair.run(device: .cpu) { rank -> ([UInt16], [UInt16]) in
+            let layer = models.value[rank].textModel.model.layers[0]
+            let x = withRandomState(MLXRandom.RandomState(seed: 31)) { MLXRandom.normal(shape).asType(.bfloat16) }
+            let (experts, dense) = Self.scoped(scope, rows: rows, tokens: tokens) {
+                layer.experts!.tensorParallelCall(x, topKIndices: inputs.value.0, topKWeights: inputs.value.1,
+                    isExpertPrefill: true, carrying: layer.mlp.tensorParallelPartial(x))
+            }
+            let rounded = dense.asType(.bfloat16)
+            eval(experts, rounded)
+            return (experts.asType(.float32).asArray(Float.self).map { UInt16($0.bitPattern >> 16) },
+                    rounded.asType(.float32).asArray(Float.self).map { UInt16($0.bitPattern >> 16) })
+        }
+        for (rank, result) in results.enumerated() {
+            #expect(result.0 == expected.experts, "rank \(rank): \(scope) expert output differs from the oracle")
+            #expect(result.1 == expected.dense, "rank \(rank): \(scope) dense sum differs from the oracle")
+        }
+        // One collective: every slice's top-4 expert rows, then the dense rows.
+        #expect(pair.payloads == [[rows * tokens * 4 + rows * tokens, 256]])
+    }
+
+    /// `body` under the registered prompt policy or the scoped batch decode.
+    private static func scoped<T>(_ scope: String, rows: Int, tokens: Int, _ body: () throws -> T) rethrows -> T {
+        let frame = MLXArray.zeros([rows, tokens], dtype: .int32)
+        return scope == "prompt"
+            ? try Gemma4PrefillProjectionScope.withPrefillFrame(tokens: frame, enabled: true, body)
+            : try Gemma4BatchDecodeScope.withDecodeFrame(tokens: frame, enabled: true, body)
+    }
+
     /// Each oracle projection against the whole projection it replaces, on
     /// random inputs: the split sums change only rounding.
     @Test(arguments: [DType.float32, .bfloat16]) func splitSumProjectionsEqualWholeProjections(dtype: DType) throws {

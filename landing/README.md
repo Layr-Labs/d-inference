@@ -57,6 +57,23 @@ Use a budget-capped coordinator key for the public demo. The chat route's
 in-memory rate limiter is per instance; distributed enforcement belongs in
 the deployment's shared limiter or edge controls.
 
+## Media and scroll work
+
+Films and stills live in `public/media/` and are revisioned by file name
+(`hero-film-r7-…`). `/media/*` is served with `Cache-Control: public,
+max-age=86400, stale-while-revalidate=604800`, so a changed asset needs a new
+name to reach returning visitors. Screens up to 800 px wide get
+`hero-film-r7-mobile.mp4` and larger ones `hero-film-r7-1080.mp4`, with
+`hero-film-r7-poster.jpg` as the poster; Low Power Mode on iOS refuses autoplay
+and stays on the poster. The hero film pauses once it has landed in the map, and
+the closing laptop loop plays only while it is on screen.
+
+The map choreography in `HomeExperience.tsx` writes each custom property on the
+element that reads it, because a value on `.network-sticky` would inherit into
+and restyle every map tile on every scroll frame. The tile outline
+(`--grid-line`) and the dive fade (`--tile-exit`) move in small steps, so the map
+repaints a few dozen times across the zoom, not every frame.
+
 ## Public discovery and representations
 
 The public entry points are `/llms.txt`, `/auth.md`, `/openapi.json`,

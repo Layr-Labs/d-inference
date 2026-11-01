@@ -846,11 +846,11 @@ struct EngineV2MatchedStopSequenceTests {
 
     @Test("a scoped report names the stop that matched, not one that only starts there")
     func scopedReportNamesTheMatchingCandidate() {
-        let inside = ReasoningStopScope.scope(reasoningParser: .qwen3, reasoningPrefix: "<think>")
+        let inside = ReasoningStopScope.scope(reasoningParser: .qwen3, reasoningPrefix: "<think>", parsesToolCalls: true)
         #expect(EngineV2Bridge.matchedStopSequence(
             candidates: ["\n", "\nUser:"], generatedText: "r</think>\n\nUser: hi", scope: inside
         ) == "\nUser:", "a bare newline before the answer does not stop it")
-        let outside = ReasoningStopScope.scope(reasoningParser: .qwen3, reasoningPrefix: nil)
+        let outside = ReasoningStopScope.scope(reasoningParser: .qwen3, reasoningPrefix: nil, parsesToolCalls: true)
         #expect(EngineV2Bridge.matchedStopSequence(
             candidates: ["A<th", "A"], generatedText: "xA<think>r</think>", scope: outside
         ) == "A", "a stop never matches into a span")
@@ -867,7 +867,7 @@ struct EngineV2MatchedStopSequenceTests {
             .finished(reason: .stop, usage: CBv2Usage(promptTokens: 5, completionTokens: 4)),
         ]))
         let bridge = makeBridge(engine: engine, tokenizer: tokenizer)
-        let scope = ReasoningStopScope.scope(reasoningParser: .gemma4, reasoningPrefix: nil)
+        let scope = ReasoningStopScope.scope(reasoningParser: .gemma4, reasoningPrefix: nil, parsesToolCalls: true)
         let signal = EngineV2RequestUsageSignal()
         _ = await record(await bridge.submitTokenized(
             promptTokens: [1, 2, 3],
@@ -882,7 +882,7 @@ struct EngineV2MatchedStopSequenceTests {
     @Test("a request's scope replaces the model's, which applies otherwise")
     func modelScopeIsTheDefault() async {
         let harmony = ModelEOSPolicy.stopStringScope(modelId: "gpt-oss-20b")
-        let think = ReasoningStopScope.scope(reasoningParser: .qwen3, reasoningPrefix: "<think>")
+        let think = ReasoningStopScope.scope(reasoningParser: .qwen3, reasoningPrefix: "<think>", parsesToolCalls: true)
         for (modelScope, requestScope, expected) in [
             (harmony, nil, harmony), (nil, nil, nil), (harmony, think, think),
         ] {

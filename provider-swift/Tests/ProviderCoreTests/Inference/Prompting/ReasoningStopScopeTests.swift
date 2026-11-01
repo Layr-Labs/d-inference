@@ -19,13 +19,13 @@ struct ReasoningStopScopeTests {
     func thinkParsers() {
         for parser in [ReasoningParserFormat.qwen3, .deepseekR1] {
             #expect(
-                ReasoningStopScope.scope(reasoningParser: parser, reasoningPrefix: "<think>")
+                ReasoningStopScope.scope(reasoningParser: parser, reasoningPrefix: "<think>", parsesToolCalls: true)
                     == CBv2StopStringScope(
                         excluding: [ReasoningStopScope.think, ReasoningStopScope.thinkToolCall],
                         startingInside: true))
             for prefix in ["<think></think>", nil] {
                 #expect(
-                    ReasoningStopScope.scope(reasoningParser: parser, reasoningPrefix: prefix)
+                    ReasoningStopScope.scope(reasoningParser: parser, reasoningPrefix: prefix, parsesToolCalls: true)
                         == CBv2StopStringScope(
                             excluding: [ReasoningStopScope.think, ReasoningStopScope.thinkToolCall]))
             }
@@ -35,17 +35,47 @@ struct ReasoningStopScopeTests {
     @Test("Gemma 4 excludes its thought channel and tool calls")
     func gemma() {
         #expect(
-            ReasoningStopScope.scope(reasoningParser: .gemma4, reasoningPrefix: nil)
+            ReasoningStopScope.scope(reasoningParser: .gemma4, reasoningPrefix: nil, parsesToolCalls: true)
                 == CBv2StopStringScope(excluding: [
                     .init(opener: "<|channel>", closers: ["<channel|>"]),
                     .init(opener: "<|tool_call>", closers: ["<tool_call|>"]),
                 ]))
     }
 
+    @Test("without declared tools a literal tool tag in an answer is text, so stops still apply")
+    func toolTagsWithoutTools() {
+        let qwen = ReasoningStopScope.scope(reasoningParser: .qwen3, reasoningPrefix: nil, parsesToolCalls: false)
+        #expect(qwen == CBv2StopStringScope(excluding: [ReasoningStopScope.think]))
+        #expect(
+            run("Use the <tool_call> tag. Close it. Done.", stops: ["."], scope: qwen)
+                == "Use the <tool_call> tag")
+        let gemma = ReasoningStopScope.scope(reasoningParser: .gemma4, reasoningPrefix: nil, parsesToolCalls: false)
+        #expect(gemma == CBv2StopStringScope(excluding: [ReasoningStopScope.gemmaThought]))
+        #expect(
+            run("Use the <|tool_call> tag. Close it. Done.", stops: ["."], scope: gemma)
+                == "Use the <|tool_call> tag")
+        // Reasoning still never matches, with or without tools.
+        #expect(
+            run("<think>One. Two.</think>Three. Four.", stops: ["."], scope: qwen)
+                == "<think>One. Two.</think>Three")
+    }
+
+    @Test("with declared tools a stop never cuts a tool frame")
+    func toolTagsWithTools() {
+        let qwen = ReasoningStopScope.scope(reasoningParser: .qwen3, reasoningPrefix: nil, parsesToolCalls: true)
+        #expect(
+            run("<tool_call>{\"a\": \"b.c\"}</tool_call>Done. More.", stops: ["."], scope: qwen)
+                == "<tool_call>{\"a\": \"b.c\"}</tool_call>Done")
+    }
+
     @Test("Harmony keeps the model's scope; no parser keeps whole-output matching")
     func otherParsers() {
         for parser in [ReasoningParserFormat.harmony, ReasoningParserFormat.none, nil] {
-            #expect(ReasoningStopScope.scope(reasoningParser: parser, reasoningPrefix: "<think>") == nil)
+            for parsesToolCalls in [true, false] {
+                #expect(
+                    ReasoningStopScope.scope(
+                        reasoningParser: parser, reasoningPrefix: "<think>", parsesToolCalls: parsesToolCalls) == nil)
+            }
         }
     }
 
@@ -55,7 +85,7 @@ struct ReasoningStopScopeTests {
         let output =
             "Capital of Australia. Canberra.\n\nKeep it short.\n</think>\n\n"
             + "The capital of Australia is Canberra.\n\nIt is in the ACT."
-        let scope = ReasoningStopScope.scope(reasoningParser: .qwen3, reasoningPrefix: "<think>")
+        let scope = ReasoningStopScope.scope(reasoningParser: .qwen3, reasoningPrefix: "<think>", parsesToolCalls: true)
         #expect(run(output, stops: ["."], scope: nil) == "Capital of Australia")
         #expect(
             run(output, stops: ["."], scope: scope)
@@ -72,7 +102,7 @@ struct ReasoningStopScopeTests {
         let output =
             "<|channel>thought\nCapital of Australia. Canberra.\n\nKeep it short.<channel|>"
             + "The capital of Australia is Canberra.\n\nIt is in the ACT."
-        let scope = ReasoningStopScope.scope(reasoningParser: .gemma4, reasoningPrefix: nil)
+        let scope = ReasoningStopScope.scope(reasoningParser: .gemma4, reasoningPrefix: nil, parsesToolCalls: true)
         #expect(run(output, stops: ["."], scope: nil) == "<|channel>thought\nCapital of Australia")
         #expect(
             run(output, stops: ["\n\n"], scope: scope)

@@ -4,7 +4,9 @@
 // against all generated text, a stop the model happened to write while it
 // reasoned ended the request before any answer: finish_reason "stop",
 // reasoning only, empty content. Each scope mirrors the request's reasoning
-// parser, so text it returns as reasoning, and tool-call frames, never match.
+// parser, so text it returns as reasoning never matches. Tool-call frames don't
+// either when the request parses tool calls; without declared tools a literal
+// tool tag in an answer is text the client receives, so stops still apply.
 
 import Foundation
 import MLXLMCommon
@@ -22,16 +24,18 @@ enum ReasoningStopScope {
     /// `ReasoningPromptProbe` state: an open think block means output starts
     /// inside reasoning. nil keeps the model's scope (GPT-OSS's Harmony final
     /// channel) or, without a reasoning parser, whole-output matching.
+    /// `parsesToolCalls` is whether the request has a tool stream handler.
     static func scope(
-        reasoningParser: ReasoningParserFormat?, reasoningPrefix: String?
+        reasoningParser: ReasoningParserFormat?, reasoningPrefix: String?, parsesToolCalls: Bool
     ) -> CBv2StopStringScope? {
         switch reasoningParser {
         case .qwen3?, .deepseekR1?:
             return CBv2StopStringScope(
-                excluding: [think, thinkToolCall],
+                excluding: parsesToolCalls ? [think, thinkToolCall] : [think],
                 startingInside: reasoningPrefix == ReasoningPromptProbe.thinkOpen)
         case .gemma4?:
-            return CBv2StopStringScope(excluding: [gemmaThought, gemmaToolCall])
+            return CBv2StopStringScope(
+                excluding: parsesToolCalls ? [gemmaThought, gemmaToolCall] : [gemmaThought])
         default:
             return nil
         }

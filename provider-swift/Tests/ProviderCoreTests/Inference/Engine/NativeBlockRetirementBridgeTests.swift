@@ -110,7 +110,7 @@ struct NativeBlockRetirementBridgeTests {
         let signal = EngineV2RequestUsageSignal()
         let result = await collect(await bridge.submitTokenized(promptTokens: [1], request: request,
             requestId: "scoped", cacheEnabled: false, usageSignal: signal,
-            stopStringScope: ReasoningStopScope.scope(reasoningParser: .gemma4, reasoningPrefix: nil)))
+            stopStringScope: ReasoningStopScope.scope(reasoningParser: .gemma4, reasoningPrefix: nil, parsesToolCalls: true)))
         #expect(result.text == "<|channel>thought\nIt is A" && result.error.isEmpty)
         #expect(signal.matchedStopSequence == ".")
         await bridge.shutdown()

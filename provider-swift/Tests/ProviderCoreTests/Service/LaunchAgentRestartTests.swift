@@ -333,6 +333,31 @@ struct LaunchAgentEnvironmentTests {
         #expect(GatedDeltaPrefill.Mode(environmentValue: rollback[key]) == .stock)
     }
 
+    @Test func forwardsDeltaCheckpointRollbackToProviderJob() {
+        // Delta complete checkpoints are on by default. launchd does not
+        // inherit the shell, so the provider job writes complete files only if
+        // its plist carries the rollback; the watchdog never writes the cache.
+        let key = SSDPrefixCachePolicy.incrementalCheckpointsFlag
+        #expect(LaunchAgent.inferencePassthroughEnvKeys.contains(key))
+        #expect(!WatchdogAgent.passthroughEnvKeys.contains(key))
+        for value: String? in [nil, "", "0", " OFF ", "false", "no", "1", "typo"] {
+            var foreground = ["UNRELATED_SECRET": "excluded"]
+            foreground[key] = value
+            let plist = LaunchAgent.makeServicePlist(
+                label: LaunchAgent.label, programArguments: ["/test/darkbloom", "start", "--foreground"],
+                logPath: "/test/provider.log", environment: foreground)
+            let launchd = plist["EnvironmentVariables"] as? [String: String] ?? [:]
+            #expect(launchd["UNRELATED_SECRET"] == nil)
+            #expect(SSDPrefixCachePolicy.incrementalCheckpoints(environment: launchd)
+                == SSDPrefixCachePolicy.incrementalCheckpoints(environment: foreground))
+        }
+        let rollback = LaunchAgent.passthroughEnvironment(from: [key: "0"])
+        #expect(rollback == [key: "0"])
+        #expect(!SSDPrefixCachePolicy.incrementalCheckpoints(environment: rollback))
+        #expect(SSDPrefixCachePolicy.incrementalCheckpoints(
+            environment: LaunchAgent.passthroughEnvironment(from: [:])))
+    }
+
     @Test func preservesMalformedNonEmptyControlsForRuntimeSecureDefault() {
         let out = LaunchAgent.passthroughEnvironment(from: [
             EngineV2Factory.maxPartialPrefillsKey: "not-an-integer",

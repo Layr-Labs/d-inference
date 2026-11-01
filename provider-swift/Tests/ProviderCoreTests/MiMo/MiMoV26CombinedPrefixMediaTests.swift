@@ -118,6 +118,7 @@ final class MiMoV26CombinedPrefixMediaTests: XCTestCase {
             let reservations = await value.budget.reservationIDsForTesting()
             XCTAssertFalse(reservations.contains(id), "same engine Admission must not also acquire bridge R")
             switch event {
+            case .logprobs: break
             case .chunk(let part): output += part
             case .info: terminals += 1
             case .error(let message): XCTFail(message)

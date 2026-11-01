@@ -25,6 +25,13 @@ public struct LifecycleMailbox: Sendable {
     public func writeSwitchStatus(_ status: ProviderModelSwitchStatus) throws { try write(status, suffix: "switch-status") }
     public func readSwitchStatus() -> ProviderModelSwitchStatus? { read(ProviderModelSwitchStatus.self, suffix: "switch-status") }
 
+    public func writeAddonRequest(_ request: AddonHoldControlRequest) throws { try write(request, suffix: "addon-request") }
+    public func writeAddonStatus(_ status: AddonHoldControlStatus) throws { try write(status, suffix: "addon-status") }
+    public func readAddonStatus() -> AddonHoldControlStatus? { read(AddonHoldControlStatus.self, suffix: "addon-status") }
+    public func claimAddonRequest() -> AddonHoldControlRequest? {
+        claim(AddonHoldControlRequest.self, suffix: "addon-request", claimPrefix: "addon-claim", afterClaim: {})
+    }
+
     /// Rename is the acceptance boundary. Each loop/monitor can consume a
     /// publication once, and cleanup can never unlink a newer publication.
     public func claimSwitchRequest() -> ProviderModelSwitchRequest? {
@@ -32,14 +39,19 @@ public struct LifecycleMailbox: Sendable {
     }
 
     internal func claimSwitchRequest(afterClaim: () -> Void) -> ProviderModelSwitchRequest? {
+        claim(ProviderModelSwitchRequest.self, suffix: "switch-request", claimPrefix: "switch-claim", afterClaim: afterClaim)
+    }
+
+    private func claim<T: Decodable>(_ type: T.Type, suffix: String, claimPrefix: String,
+                                     afterClaim: () -> Void) -> T? {
         var info = stat()
         guard lstat(directory.path, &info) == 0, info.st_uid == getuid(),
               info.st_mode & S_IFMT == S_IFDIR, info.st_mode & 0o077 == 0 else { return nil }
-        let claimed = path("switch-claim-\(UUID().uuidString)")
-        guard rename(path("switch-request").path, claimed.path) == 0 else { return nil }
+        let claimed = path("\(claimPrefix)-\(UUID().uuidString)")
+        guard rename(path(suffix).path, claimed.path) == 0 else { return nil }
         defer { try? FileManager.default.removeItem(at: claimed) }
         afterClaim()
-        return read(ProviderModelSwitchRequest.self, at: claimed)
+        return read(type, at: claimed)
     }
 
     private func write<T: Encodable>(_ value: T, suffix: String) throws {
@@ -63,8 +75,10 @@ public struct LifecycleMailbox: Sendable {
         read(type, at: path(suffix))
     }
 
+    /// Never blocks: a FIFO at the path is opened without waiting for a
+    /// writer, then refused with every other non-regular file.
     private func read<T: Decodable>(_ type: T.Type, at path: URL) -> T? {
-        let fd = open(path.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+        let fd = open(path.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
         guard fd >= 0 else { return nil }
         let file = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
         defer { try? file.close() }

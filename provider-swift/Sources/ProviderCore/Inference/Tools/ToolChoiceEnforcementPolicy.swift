@@ -88,9 +88,23 @@ enum ToolChoiceEnforcementPolicy {
             GLM5NextCoordinatorServing.isManagedModelID(model.id) {
             return true
         }
+        if let admittedType = structuredForcedToolModelTypes[model.id] {
+            return model.modelType == admittedType
+        }
         return ModelRuntimeRequirements.qwen38ConcreteModelIDs.contains(model.id)
             && Qwen35TemplateFix.applies(to: context)
     }
+
+    /// Exact catalog builds whose required/named calls are prompt-forced,
+    /// withheld and schema-validated, each bound to the `model_type` whose
+    /// parser that path accepts. A renamed or retyped artifact stays
+    /// unadvertised, so the coordinator never routes it a forced request.
+    static let structuredForcedToolModelTypes: [String: String] = [
+        "Qwen3.5-9B": "qwen3_5",
+        "qwen3.5-35b-a3b": "qwen3_5_moe",
+        "qwen3.6-35b-a3b-vl-mtp-mxfp8": "qwen3_5_moe",
+        "mimo-v2.6-flash-mopd": "mimo_v2",
+    ]
 
     /// Explicit family admission is supplied by each model onboarding change.
     /// Shared tool-frame validation alone must not advertise a new model.

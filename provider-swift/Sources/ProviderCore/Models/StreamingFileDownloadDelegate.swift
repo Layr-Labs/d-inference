@@ -47,6 +47,9 @@ final class StreamingFileDownloadDelegate: NSObject, URLSessionDataDelegate, @un
     private let label: String
     private let maximumTotalBytes: Int64?
     private let onChunk: (@Sendable (Int64) -> Void)?
+    /// Writes with the file cache off (F_NOCACHE), so a download does not take memory a model load needs; off by
+    /// default (single-Mac downloads keep their behaviour), on for `darkbloom cluster`'s provisioning.
+    private let uncached: Bool
     private let fm = FileManager.default
 
     // Mutated only from the URLSession delegate queue (callbacks are serialized).
@@ -56,22 +59,25 @@ final class StreamingFileDownloadDelegate: NSObject, URLSessionDataDelegate, @un
     private var decided: Outcome?
     private var setupError: Error?
 
-    // The continuation may be resumed from any delegate callback; guard it.
+    // Cancellation can complete a suspended URLSession task before attach runs.
+    // Keep the first terminal result so either callback order resumes the waiter.
     private let lock = NSLock()
     private var continuation: CheckedContinuation<Outcome, Error>?
-    private var resumed = false
+    private var result: Result<Outcome, Error>?
 
     init(
         partial: URL,
         existingBytes: Int64,
         label: String,
         maximumTotalBytes: Int64? = nil,
+        uncached: Bool = false,
         onChunk: (@Sendable (Int64) -> Void)?
     ) {
         self.partial = partial
         self.existingBytes = existingBytes
         self.label = label
         self.maximumTotalBytes = maximumTotalBytes
+        self.uncached = uncached
         self.onChunk = onChunk
         super.init()
     }
@@ -79,21 +85,23 @@ final class StreamingFileDownloadDelegate: NSObject, URLSessionDataDelegate, @un
     /// Attach the awaiting continuation. Call exactly once, immediately before
     /// `task.resume()`.
     func attach(_ continuation: CheckedContinuation<Outcome, Error>) {
-        lock.lock()
-        self.continuation = continuation
-        lock.unlock()
+        let completed: Result<Outcome, Error>? = lock.withLock {
+            if let result { return result }
+            self.continuation = continuation
+            return nil
+        }
+        if let completed { continuation.resume(with: completed) }
     }
 
     private func finish(_ result: Result<Outcome, Error>) {
-        lock.lock()
-        guard !resumed, let cont = continuation else { lock.unlock(); return }
-        resumed = true
-        continuation = nil
-        lock.unlock()
-        switch result {
-        case .success(let outcome): cont.resume(returning: outcome)
-        case .failure(let error): cont.resume(throwing: error)
+        let cont: CheckedContinuation<Outcome, Error>? = lock.withLock {
+            guard self.result == nil else { return nil }
+            self.result = result
+            let cont = continuation
+            continuation = nil
+            return cont
         }
+        cont?.resume(with: result)
     }
 
     // MARK: URLSessionDataDelegate
@@ -190,6 +198,7 @@ final class StreamingFileDownloadDelegate: NSObject, URLSessionDataDelegate, @un
                 fm.createFile(atPath: partial.path, contents: nil)
             }
             let handle = try FileHandle(forWritingTo: partial)
+            if uncached { _ = fcntl(handle.fileDescriptor, F_NOCACHE, 1) }
             if append {
                 try handle.seekToEnd()
             } else {

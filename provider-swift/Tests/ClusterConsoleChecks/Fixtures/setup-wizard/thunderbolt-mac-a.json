@@ -1,0 +1,70 @@
+{
+ "SPThunderboltDataType": [
+  {
+   "_items": [
+    {
+     "_name": "MacBook Pro",
+     "device_name_key": "Mac17,7"
+    }
+   ],
+   "_name": "thunderboltusb4_bus_5",
+   "device_name_key": "Mac Studio",
+   "receptacle_1_tag": {
+    "current_speed_key": "80 Gb/s",
+    "receptacle_id_key": "6",
+    "receptacle_status_key": "receptacle_connected"
+   }
+  },
+  {
+   "_name": "thunderboltusb4_bus_4",
+   "device_name_key": "Mac Studio",
+   "receptacle_1_tag": {
+    "current_speed_key": "Up to 120 Gb/s",
+    "receptacle_id_key": "5",
+    "receptacle_status_key": "receptacle_no_devices_connected"
+   }
+  },
+  {
+   "_name": "thunderboltusb4_bus_3",
+   "device_name_key": "Mac Studio",
+   "receptacle_1_tag": {
+    "current_speed_key": "Up to 120 Gb/s",
+    "receptacle_id_key": "4",
+    "receptacle_status_key": "receptacle_no_devices_connected"
+   }
+  },
+  {
+   "_items": [
+    {
+     "_name": "Mac mini",
+     "device_name_key": "Mac16,10"
+    }
+   ],
+   "_name": "thunderboltusb4_bus_2",
+   "device_name_key": "Mac Studio",
+   "receptacle_1_tag": {
+    "current_speed_key": "40 Gb/s",
+    "receptacle_id_key": "3",
+    "receptacle_status_key": "receptacle_connected"
+   }
+  },
+  {
+   "_name": "thunderboltusb4_bus_1",
+   "device_name_key": "Mac Studio",
+   "receptacle_1_tag": {
+    "current_speed_key": "Up to 120 Gb/s",
+    "receptacle_id_key": "2",
+    "receptacle_status_key": "receptacle_no_devices_connected"
+   }
+  },
+  {
+   "_name": "thunderboltusb4_bus_0",
+   "device_name_key": "Mac Studio",
+   "receptacle_1_tag": {
+    "current_speed_key": "Up to 120 Gb/s",
+    "receptacle_id_key": "1",
+    "receptacle_status_key": "receptacle_no_devices_connected"
+   }
+  }
+ ]
+}

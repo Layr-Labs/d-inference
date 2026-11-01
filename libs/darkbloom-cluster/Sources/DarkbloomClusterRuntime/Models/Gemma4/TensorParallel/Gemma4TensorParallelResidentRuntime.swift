@@ -29,7 +29,12 @@ import MLXLMCommon
 /// request's from the vocabulary-split top-k gather, a sampled one's from the
 /// product's sampler on rank 0.
 ///
-/// Not yet: prompt prefixes, speculative decoding and media.
+/// Prompt prefixes are kept as the Gemma pipeline keeps them, resident and on
+/// the owner's encrypted SSD tier, each rank its own heads; a request
+/// restores the deepest boundary both ranks hold after a sealed vote and
+/// confirmation, or neither does (`Gemma4TensorParallelPrefix`).
+///
+/// Not yet: speculative decoding and media.
 public final class Gemma4TensorParallelResidentRuntime {
     static let planName = Gemma4TensorParallelPlan.name
     /// Bytes the worker keeps for MLX's freed-buffer cache once ready under
@@ -66,10 +71,14 @@ public final class Gemma4TensorParallelResidentRuntime {
     var failedLaneDriver: QwenTensorParallelBatchDriver<Gemma4TensorParallelBatchExecutor<Gemma4TensorParallelLaneReservation>>?
     /// Raw-token logprobs are published for every request that asks for them.
     public var capturesLogprobs: Bool { true }
+    /// This rank's prompt prefixes, in memory and on its SSD tier.
+    let prefix: Gemma4TensorParallelPrefix
 
     struct Reserved {
         let request: QwenLayerStageGenerationRequest
         let deadline: UInt64
+        /// What this request's prefix capture may hold (0: none).
+        var prefixCaptureLimit = 0
     }
 
     // MARK: - Load
@@ -80,15 +89,24 @@ public final class Gemma4TensorParallelResidentRuntime {
         (try? Gemma4RegisteredSpecification.registered(runtimeModelID: runtimeModelID)) != nil
     }
 
+    /// `prefixSSDKey`: the 32-byte key of this rank's prompt-prefix SSD tier,
+    /// as the owner sent it on the worker's input; nil keeps the tier off.
     public static func load(_ configuration: QwenResidentLoadConfiguration,
                             qualification: QwenResidentQualificationSwitches = .refused,
-                            dataPlane credential: ClusterDataPlaneCredential) throws -> Gemma4TensorParallelResidentRuntime {
+                            dataPlane credential: ClusterDataPlaneCredential,
+                            prefixSSDKey: Data? = nil) throws -> Gemma4TensorParallelResidentRuntime {
         let environment = ProcessInfo.processInfo.environment
         try qualification.admit(environment: environment)
         let kvQuantization = try PagedKVQuantizationSelection.clusterLive(environment)
         try kvQuantization.requireNative("Gemma tensor parallel, whose paged KV stays native until it is qualified")
         let kv = try ClusterStageKVBackendKind.fromEnvironment(environment)
         let lanes = try QwenBatchSettings.fromEnvironment(environment).lanes
+        // Prompt prefixes, unless the diagnosis switch turns them off on this
+        // rank (`DARKBLOOM_CLUSTER_PREFIX_CACHE=off`): bound into the agreement,
+        // so both ranks keep them or neither does. Gemma records stay native.
+        let prefixCache = QwenStagePrefixCache.fromEnvironment(environment)
+        let keepsPrefixes = Gemma4ResidentAdapterDefinition.tensorParallelKeepsPromptPrefixes && prefixCache.enabled
+        let prefixRecords = try QwenStagePrefixDiskEncoding.fromEnvironment(environment, family: .native)
         let directory = configuration.modelDirectory
         let any = try LayerStageResidentFamily.admission(configuration: configuration,
             configBytes: BoundedProbeInput.data(directory.appendingPathComponent("config.json"), maximumBytes: 1_048_576),
@@ -115,9 +133,8 @@ public final class Gemma4TensorParallelResidentRuntime {
             try admission.jaccl.requireUnchanged(environment: ProcessInfo.processInfo.environment, read: read)
             try admission.jaccl.requireInitialized(rank: collective.rank, worldSize: collective.size,
                 transport: collective.transport)
-            // What the capability declares (`Gemma4ResidentAdapterDefinition.servingFeatures`).
             let terms = Gemma4TensorParallelLoadAgreement(lanes: lanes, kv: kv, kvQuantization: kvQuantization,
-                prefixCache: Gemma4ResidentAdapterDefinition.tensorParallelKeepsPromptPrefixes)
+                prefixCache: keepsPrefixes)
             let loadAgreement = try terms.fingerprint(admission: try admission.loadAgreementFingerprint())
             try ClusterDataPlaneAgreement.establish(collective: collective, credential: credential,
                 loadAgreement: loadAgreement, tamper: nil, tensorParallelSeal: true, check: { try control.check() })
@@ -133,6 +150,7 @@ public final class Gemma4TensorParallelResidentRuntime {
             let profile = admission.profile
             var probe: ClusterWorkerLinkProbe?
             var receipt: Gemma4TensorParallelShardReceipt?
+            var prefixCharges = (capture: 0, room: 0)
             let capacity = try MLX.withError { nativeError -> Int in
                 func checked() throws { try nativeError.check(); try control.check(); try nativeError.check() }
                 try configuration.allocatorPolicy.configure(setCacheLimit: { Memory.cacheLimit = $0 }, check: checked)
@@ -145,9 +163,11 @@ public final class Gemma4TensorParallelResidentRuntime {
                     hiddenSize: profile.hiddenSize, chunkTokens: profile.maximumChunkTokens, check: checked)
                 probe = measured
                 log(QwenTensorParallelLinkProbe.line(measured, rank: collective.rank))
-                // The load gate admits the shard with the profile's longest request and the rank's own
-                // reserve (activation floor, freed-buffer cache, sealed frames) beside it: the planner's quote.
-                let budget = try requestBudget(contextTokens: profile.maximumContextTokens, admission: admission)
+                // The load gate admits the shard with the profile's longest request (its prompt-prefix
+                // capture included) and the rank's own reserve (activation floor, freed-buffer cache,
+                // sealed frames) beside it: the planner's quote.
+                let budget = try requestBudget(contextTokens: profile.maximumContextTokens, admission: admission,
+                    keepsPrefixes: keepsPrefixes)
                 let request = budget.requestBytes
                 let value = try autoreleasepool {
                     try Gemma4TensorParallelVerifiedLoad.load(admission, rank: collective.rank, reduction: reduction,
@@ -179,6 +199,15 @@ public final class Gemma4TensorParallelResidentRuntime {
                     Memory.cacheLimit = bufferCacheBytes
                     try checked()
                 }
+                // The prefix memory tier, charged nowhere: the pipeline's budget,
+                // half the admissible room measured beside the longest request
+                // and this rank's reserve (at most `maximumBudgetBytes`).
+                if keepsPrefixes {
+                    let room = try ClusterStagePrefixBudget.roomBytes(chargeBytes: try QwenLongPrefillCheckedBytes.sum([
+                        budget.requestBytes, budget.rankBytes]))
+                    prefixCache.setBudget(QwenStagePrefixCache.budget(roomBytes: room))
+                    prefixCharges = (budget.prefixCaptureBytes, room)
+                }
                 log("darkbloom-tensor-parallel-load-v1 rank=\(collective.rank) plan=\(planName) shares=1-1"
                     + " shard_bytes=\(value.receipt.shardBytes) source_bytes=\(value.receipt.sourceBytes)"
                     + " tensors=\(value.receipt.sourceTensors) load_ns=\(value.receipt.loadNanoseconds) sealed=1"
@@ -186,20 +215,37 @@ public final class Gemma4TensorParallelResidentRuntime {
                     + " kv_heads=\(value.model.plan.kvHeadsPerRank.map(String.init).joined(separator: "-"))")
                 return request
             }
-            guard let model = loadedModel, let host = loadedHost, receipt != nil else {
+            guard let model = loadedModel, let host = loadedHost, let receipt else {
                 throw ProbeError("Gemma tensor-parallel load returned no shard")
             }
             // This rank's own share, timed alone before its ready record.
             let shareProbe = try Gemma4TensorParallelShareProbe.measure(model: model, reduction: reduction, profile: profile,
                 deadline: control.deadline, admit: { tokens, chunk in
                     try QwenTensorParallelShareProbe.memoryAdmits(bytes: requestChargeBytes(contextTokens: tokens,
-                        admission: admission, chunkTokens: chunk))
+                        admission: admission, chunkTokens: chunk, keepsPrefixes: false))
                 }, check: { try control.check() })
             if let shareProbe { log(QwenTensorParallelShareProbe.line(shareProbe, rank: collective.rank)) }
             try control.loaded()
+            // The prefix cache's SSD tier, when the owner configured one: this
+            // rank's records of this artifact, plan and both builds, which a
+            // restarted pair finds again. Opening it sweeps the directories of
+            // other plans under the root that hold no live record.
+            let identity = admission.configuration.identity
+            let diskPlanScope = Gemma4TensorParallelPrefix.planScope(admission: admission,
+                aggregateSHA256: receipt.verifiedAggregateSHA256, storageCommitmentSHA256: receipt.storageCommitmentSHA256)
+            if keepsPrefixes {
+                prefixCache.disk = QwenStagePrefixDiskTier.open(configuration: .fromEnvironment(environment, key: prefixSSDKey),
+                    planScope: diskPlanScope, rank: collective.rank, encoding: prefixRecords,
+                    stagingEpoch: identity.membershipEpoch.uuidString.lowercased())
+            }
+            log("darkbloom-prefix-v1 rank=\(collective.rank) family=gemma4 mode=tensor_parallel enabled=\(keepsPrefixes)"
+                + " budget_bytes=\(keepsPrefixes ? prefixCache.budgetBytes : 0) capture_charge=\(prefixCharges.capture)"
+                + " room_bytes=\(prefixCharges.room) ssd=\(prefixCache.disk != nil)")
+            let prefix = Gemma4TensorParallelPrefix(cache: keepsPrefixes ? prefixCache : QwenStagePrefixCache(enabled: false),
+                load: loadAgreement, diskPlanScope: diskPlanScope)
             return Gemma4TensorParallelResidentRuntime(admission: admission, control: control, collective: collective,
                 group: group, codec: codec, model: model, host: host, loadAgreement: loadAgreement, capacity: capacity,
-                linkProbe: probe, shareProbe: shareProbe, lanes: lanes)
+                linkProbe: probe, shareProbe: shareProbe, lanes: lanes, prefix: prefix)
         } catch {
             let primary = error
             control.fail(); loadedHost = nil; loadedModel = nil
@@ -216,28 +262,44 @@ public final class Gemma4TensorParallelResidentRuntime {
     }
 
     /// This rank's reserve for requests of `contextTokens` (`Gemma4TensorParallelRequestBudget`)
-    /// at the allocator's own bound.
-    static func requestBudget(contextTokens: Int, admission: Gemma4ResidentAdmission,
-                              chunkTokens: Int? = nil) throws -> Gemma4TensorParallelRequestBudget {
+    /// at the allocator's own bound; `keepsPrefixes` charges the prompt-prefix
+    /// capture of a prompt of `promptTokens` (the profile's longest by default).
+    static func requestBudget(contextTokens: Int, admission: Gemma4ResidentAdmission, chunkTokens: Int? = nil,
+                              promptTokens: Int? = nil, keepsPrefixes: Bool = true) throws -> Gemma4TensorParallelRequestBudget {
         try Gemma4TensorParallelRequestBudget.derive(contextTokens: contextTokens,
             chunkTokens: chunkTokens ?? admission.profile.maximumChunkTokens,
+            promptTokens: promptTokens ?? admission.profile.maximumPromptTokens, keepsPrefixes: keepsPrefixes,
             allocationBound: QwenResidentResourceEnvironment.allocationBound)
     }
 
     /// What one request of `contextTokens` reserves on a rank: its own KV
     /// heads, its own query heads' prompt transient, the chunk's FP32
-    /// partials and the vocabulary rows (`Gemma4TensorParallelRequestBudget.requestBytes`).
+    /// partials, the vocabulary rows and its prefix capture at its deepest
+    /// boundary (`Gemma4TensorParallelRequestBudget.requestBytes`).
     static func requestChargeBytes(contextTokens: Int, admission: Gemma4ResidentAdmission,
-                                   chunkTokens: Int? = nil) throws -> Int {
-        try requestBudget(contextTokens: contextTokens, admission: admission, chunkTokens: chunkTokens).requestBytes
+                                   chunkTokens: Int? = nil, keepsPrefixes: Bool = true) throws -> Int {
+        try requestBudget(contextTokens: contextTokens, admission: admission, chunkTokens: chunkTokens,
+            keepsPrefixes: keepsPrefixes).requestBytes
     }
 
     /// What the live gate asks for beside every held request: the rank's
     /// activation floor, freed-buffer cache and sealed frames.
     var rankReserveBytes: Int {
-        get throws {
-            try Self.requestBudget(contextTokens: admission.profile.maximumContextTokens, admission: admission).rankBytes
-        }
+        get throws { try Self.requestBudget(contextTokens: admission.profile.maximumContextTokens, admission: admission).rankBytes }
+    }
+
+    /// A request's charge on this rank, at its own context with its own
+    /// prompt's prefix capture (none when its cache is off: it neither
+    /// restores nor captures), what that capture may hold
+    /// (`Gemma4TensorParallelPrefix.captureLimit`, at least the charged part)
+    /// and the part beyond the charge: kept entries give way before the live
+    /// gate refuses that part, and a capture the gate still refuses is cut to
+    /// its charged part.
+    func prefixCharge(_ request: QwenLayerStageGenerationRequest) throws -> (charge: Int, captureLimit: Int, beyond: Int) {
+        let budget = try Self.requestBudget(contextTokens: request.maximumTokens, admission: admission,
+            chunkTokens: request.chunkSize, promptTokens: request.promptCount, keepsPrefixes: prefix.scopes(request) != nil)
+        let limit = prefix.captureLimit(request, chargedBytes: budget.prefixCaptureBytes)
+        return (budget.requestBytes, limit, max(0, limit - budget.prefixCaptureBytes))
     }
 
     /// The host memory gate's decision for `bytes` more, as the resident families take it.
@@ -255,10 +317,10 @@ public final class Gemma4TensorParallelResidentRuntime {
     private init(admission: Gemma4ResidentAdmission, control: QwenResidentControl, collective: Collective,
                  group: QwenTensorParallelGroup, codec: QwenTensorParallelSealCodec, model: Gemma4TensorParallelModel,
                  host: CBv2StageKVHost, loadAgreement: String, capacity: Int, linkProbe: ClusterWorkerLinkProbe?,
-                 shareProbe: ClusterWorkerShareProbe?, lanes: Int) {
+                 shareProbe: ClusterWorkerShareProbe?, lanes: Int, prefix: Gemma4TensorParallelPrefix) {
         self.admission = admission; self.control = control; self.collective = collective; self.group = group
         self.codec = codec; self.model = model; self.host = host; self.loadAgreement = loadAgreement
-        self.linkProbe = linkProbe; self.shareProbe = shareProbe; self.lanes = lanes
+        self.linkProbe = linkProbe; self.shareProbe = shareProbe; self.lanes = lanes; self.prefix = prefix
         baseReady = .init(identity: admission.configuration.identity, rank: collective.rank,
             profile: admission.wireProfile, executionPlanSHA256: admission.plan.fingerprint,
             requestCapacityBytes: capacity, dataPlane: collective.workerDataPlane, linkProbe: linkProbe,
@@ -296,8 +358,8 @@ public final class Gemma4TensorParallelResidentRuntime {
         }
         let request = try admission.request(value, id: requestID, now: now)
         // Charged at its own context: the live gate alone decides whether it fits.
-        let charge = try Self.requestChargeBytes(contextTokens: request.maximumTokens, admission: admission,
-            chunkTokens: request.chunkSize)
+        let priced = try prefixCharge(request)
+        let charge = priced.charge
         try control.check(); try control.reserve(requestID)
         return try control.reserving(requestID, rank: collective.rank, deadline: value.deadlineUptimeNanoseconds) {
             guard model != nil, host != nil else { throw ProbeError("Resident model already released") }
@@ -305,11 +367,31 @@ public final class Gemma4TensorParallelResidentRuntime {
                 throw ProbeError("Gemma tensor-parallel reservation exceeds its owner or readiness capacity")
             }
             ClusterIdleMemory.releaseFreedBuffers()
-            try Self.requireLiveMemory(bytes: try QwenLongPrefillCheckedBytes.sum([charge, rankReserveBytes]))
+            let captureLimit = try admitCapture(priced, held: [charge, rankReserveBytes])
             try control.check(deadline: value.deadlineUptimeNanoseconds)
-            reservation = .init(request: request, deadline: value.deadlineUptimeNanoseconds)
+            reservation = .init(request: request, deadline: value.deadlineUptimeNanoseconds, prefixCaptureLimit: captureLimit)
             return charge
         }
+    }
+
+    /// The live gate for a request priced as `prefixCharge` beside `held`
+    /// bytes: kept prefix entries give way first; a capture beyond its
+    /// charged part that still does not fit is cut to that part. Returns the
+    /// capture limit admitted.
+    func admitCapture(_ priced: (charge: Int, captureLimit: Int, beyond: Int), held: [Int]) throws -> Int {
+        let base = try QwenLongPrefillCheckedBytes.sum(held)
+        if priced.beyond > 0 {
+            do {
+                try prefix.cache.yieldingMemory {
+                    try Self.requireLiveMemory(bytes: try QwenLongPrefillCheckedBytes.sum([base, priced.beyond]))
+                }
+                return priced.captureLimit
+            } catch {
+                log("darkbloom-prefix-v1 rank=\(collective.rank) family=gemma4 capture-cut bytes=\(priced.beyond): \(error)")
+            }
+        }
+        try prefix.cache.yieldingMemory { try Self.requireLiveMemory(bytes: base) }
+        return priced.captureLimit - priced.beyond
     }
 
     public func releaseReservation(requestID: UUID) throws {
@@ -347,11 +429,32 @@ public final class Gemma4TensorParallelResidentRuntime {
             reservation = nil
             return value
         } catch {
+            // The peer may hold something else now.
+            prefix.cache.sweep()
             control.fail(); throw error
         }
     }
 
     public func cancel(requestID: UUID) { control.cancel(requestID) }
+
+    /// Gives back what this idle rank holds beyond its weights
+    /// (`ClusterIdleMemory`): MLX's freed-buffer cache, and the prompt-prefix
+    /// entries too while the host is `underPressure` (the vote then restores
+    /// nothing until both ranks hold a boundary again). Nothing while a
+    /// request or any batch lane is reserved, started or running.
+    public func releaseIdleMemory(underPressure: Bool) throws -> Int {
+        guard operation.try() else { throw ProbeError("Resident native operation is already active") }
+        defer { operation.unlock() }
+        guard control.available, reservation == nil, laneBook.isEmpty, model != nil else { return 0 }
+        let held = prefix.cache.bytesInUse, entries = prefix.cache.count
+        if underPressure { prefix.cache.sweep() }
+        let released = ClusterIdleMemory.releaseFreedBuffers()
+        if underPressure, entries > 0 {
+            log("darkbloom-idle-release-v1 rank=\(collective.rank) family=gemma4 prefix_entries_dropped=\(entries)"
+                + " prefix_bytes_dropped=\(held) freed_buffer_bytes=\(released)")
+        }
+        return released
+    }
 
     public func shutdown() throws {
         guard operation.try() else { throw ProbeError("Cannot release a running native request") }
@@ -364,6 +467,10 @@ public final class Gemma4TensorParallelResidentRuntime {
                     Stream.gpu.synchronize(); Stream.cpu.synchronize(); try error.check()
                     try failedLaneDriver?.retireAll()
                     guard host?.isDrained ?? true else { throw ProbeError("Gemma tensor-parallel request state remains owned") }
+                    // Records already queued for the SSD are finished first
+                    // (bounded): they are what a restarted pair restores.
+                    prefix.disk?.close()
+                    prefix.cache.sweep()
                     reservation = nil; laneBook.clear(); failedLaneDriver = nil; host = nil
                     weak var released: Gemma4TensorParallelModel?
                     released = model; model = nil
@@ -387,19 +494,33 @@ public final class Gemma4TensorParallelResidentRuntime {
         guard try group.digestsEqual(QwenTensorParallelResidentRuntime.digest64(request.fingerprint + "|" + loadAgreement)) else {
             throw ProbeError("Gemma tensor-parallel ranks were given different requests")
         }
-        let session = try Gemma4TensorParallelPagedSession(model: model, host: host,
-            promptCount: request.promptTokenIDs.count, outputCount: request.outputCount)
+        // Prompt prefix: the deepest boundary both ranks hold, voted and confirmed (or none).
+        let session = try MLX.withError { error -> Gemma4TensorParallelPagedSession in
+            let value = try prefix.open(request, model: model, host: host, group: group,
+                captureLimit: reserved.prefixCaptureLimit, stop: { [control] in
+                    (try? control.check(deadline: reserved.deadline)) == nil
+                })
+            try error.check()
+            return value
+        }
         do {
             // A step checks native errors only: a cancel or deadline must not
             // end one rank between two collectives (its peer would wait in the
             // next one), so it rides in the next step's flags (`localStop`).
-            let completion = try MLX.withError { error in
+            var completion = try MLX.withError { error in
                 try serve(request, session: session, deadline: reserved.deadline, channel: channel,
                     checked: { try error.check() })
             }
             try session.retire()
+            // Both ranks ended after the same step and agreed how: the prompt's
+            // capture becomes reusable now, in memory and behind serving on SSD.
+            if let capture = session.prefixCapture, let scopes = prefix.scopes(request) {
+                completion.storedPromptFrontiers = prefix.store(capture, request: request, scopes: scopes, rank: collective.rank)
+            }
+            completion.reusedPromptTokens = session.reusedPrefixTokens
             return completion
         } catch {
+            session.prefixCapture?.withdraw()
             try? session.retire(failed: true)
             throw error
         }
@@ -414,12 +535,17 @@ public final class Gemma4TensorParallelResidentRuntime {
         let choice = Gemma4TensorParallelChoice(selection: session.model.selection, sampler: request.sampler, rank: rank)
         var lastCheck: UInt64 = 0
         let loop = Gemma4TensorParallelRequestLoop(session: session, request: request, choice: choice,
-            exchange: { [group] in try group.exchangeIntegers($0) }, localStop: { [control] in
+            exchange: { [group] in try group.exchangeIntegers($0) }, localStop: { [control, prefix] in
                 if (try? control.check(deadline: deadline)) == nil { return true }
                 let now = DispatchTime.now().uptimeNanoseconds
                 if now - lastCheck >= 250_000_000 {
                     lastCheck = now
-                    if (try? Self.requireLiveMemory(bytes: 0)) == nil { return true }
+                    // Kept prefixes give way first, then the request's own capture.
+                    if (try? prefix.cache.yieldingMemory({ try Self.requireLiveMemory(bytes: 0) })) == nil {
+                        guard let capture = session.prefixCapture, !capture.withdrawn else { return true }
+                        capture.withdraw(); Memory.clearCache()
+                        return (try? Self.requireLiveMemory(bytes: 0)) == nil
+                    }
                 }
                 return false
             })
@@ -433,7 +559,7 @@ public final class Gemma4TensorParallelResidentRuntime {
             + " prompt=\(prompt.count) output=\(tokens.count) finish=\(finish.rawValue) sampled=\(choice.gathersRow ? 1 : 0)"
             + " logprobs=\(request.sampler?.wire.capturedLogprobs ?? 0) frames=\(codec.sealedFrames)"
             + " key_generation=\(codec.keyGeneration) kv_tokens=\(session.state.reservedTokens)"
-            + " kv_refused=\(ended.pagesRefused ? 1 : 0)")
+            + " kv_refused=\(ended.pagesRefused ? 1 : 0) reused=\(session.reusedPrefixTokens)")
         return QwenResidentGenerationCompletion(requestID: request.requestID, finishReason: finish,
             selectedTokenIDs: tokens, completedFrames: tokens.count, committedTokens: prompt.count + tokens.count,
             tokenChainSHA256: sha256(try canonicalJSONData(tokens.map { String($0) })), bothRequestStatesRetired: true)

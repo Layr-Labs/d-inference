@@ -520,7 +520,10 @@ memory holds its share.
 Both Macs keep the prompt prefixes of every model family, in memory and in the
 encrypted SSD tier: a repeated long prompt starts with its prefix restored, and
 after both Macs restart the SSD tier gives it back. Gemma 4 keeps each
-sliding-window layer's window at every kept frontier; GLM-5.3-Flash in pipeline
+sliding-window layer's window at every kept frontier, in pipeline and in tensor
+parallel, where each Mac keeps its own half of every layer's heads and a prefix
+is restored only when both Macs hold it, with exactly the tokens of a request
+that prefilled the whole prompt; GLM-5.3-Flash in pipeline
 keeps its attention history once per prompt and its linear-attention state per
 frontier. GLM-5.3-Flash in tensor parallel keeps one boundary per prompt, the
 last whole 4,096-token chunk before its final token: each Mac writes its own

@@ -16,8 +16,10 @@ struct Gemma4TensorParallelLoadAgreement: Equatable {
     var lanes = 1
     var kv = ClusterStageKVBackendKind.paged
     var kvQuantization = PagedKVQuantizationSelection.native
-    /// Prompt prefixes are not kept yet: both ranks say so.
-    var prefixCache = false
+    /// Prompt prefixes kept, resident and on the SSD tier (`Gemma4TensorParallelPrefix`):
+    /// this build's `tensorParallelKeepsPromptPrefixes`, unless the diagnosis switch
+    /// turns them off on a rank, which its peer then refuses.
+    var prefixCache = Gemma4ResidentAdapterDefinition.tensorParallelKeepsPromptPrefixes
 
     /// The mode's terms (FP32 partials, rounded once after the sum; the
     /// sealed all-sum) and the plan's: where each layer's two sums are taken

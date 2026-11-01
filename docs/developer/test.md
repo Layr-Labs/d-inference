@@ -1271,6 +1271,27 @@ neither real-weight numerics, a pair qualification nor speed.
      kept, until each rank's share probe lets it be chosen; the forced mode
      places it; and each rank is charged its own heads.
 
+   `swift test --package-path libs/darkbloom-cluster --filter Gemma4TensorParallelPrefixTests`
+   (GPU, as above) covers the prompt-prefix tiers on two in-process ranks:
+
+   - a repeated prompt, and a longer one sharing it, restores the deepest
+     boundary both ranks hold and equals the cold request bit for bit;
+   - the restored rows, windows and position offsets equal the cold request's
+     at the boundary and after the next chunk;
+   - a boundary only one rank holds, or one rank cannot restore, another chunk
+     grid and a request whose cache is off all prefill from zero on both ranks;
+   - the request loop (greedy and sampled) and batch lanes through the driver
+     continue a restored prefix with the cold tokens;
+   - the memory tier's budget and eviction, and a capture within its limit;
+   - a request's own capture charged in its budget and the LOAD quote, no
+     charge for the memory tier, whose budget stays within the measured room;
+     with no tier budget a request still captures within its charge and a
+     repeat restores from the SSD tier;
+   - the SSD tier: records restore bit for bit after both tiers reopen,
+     encrypted and owner-only; stale, corrupted and other-key records are
+     refused on both ranks; no directory or key is no tier, and the daily write
+     cap, the free-space floor and the bounded close hold.
+
    `libs/darkbloom-cluster/Tests/PlacementChecks/run.sh` also runs
    `GemmaTensorParallelChecks.swift` (model-free). It builds the QAT 4-bit
    layout from the retained real headers and the 8-bit layouts from their
@@ -1280,8 +1301,9 @@ neither real-weight numerics, a pair qualification nor speed.
    must be quoted. Under the provider's tensor-parallel-first policy it checks the
    fastest-plan rule on constructed pairs: 2x M5 Ultra 256 GB keeps the pipeline on
    default link costs. Where tensor parallel is predicted faster on the device
-   index alone (2x M4 Pro 24 or 32 GB, and 2x M5 Ultra for a 128 + 128 request on
-   the measured 29 us link), the pipeline is kept with the verdict
+   index alone (2x M4 Pro 24 or 32 GB, each rank quoted with its request's
+   prompt-prefix capture, and 2x M5 Ultra for a 128 + 128 request on the
+   measured 29 us link), the pipeline is kept with the verdict
    `predictedFasterOnPriorOnly`, its plan line and model-list note. Share probes
    of the model on both Macs (through `ClusterShareProbeHistory`) and requests
    served in tensor parallel (through `ClusterServedCalibration`) then decide
@@ -1319,9 +1341,13 @@ neither real-weight numerics, a pair qualification nor speed.
    entry, and each step's choice in its own evaluation. The paged path also
    runs `gemma lanes`: three requests served together through the batch
    driver, in one process and over the ring, each of which must take its solo
-   tokens.
+   tokens. And it runs `gemma run --prefix repeat` in `simulated` and on both
+   `tp` ranks: the request served twice through each rank's prompt-prefix tier,
+   the repeat restoring the deepest boundary both ranks hold.
 
 3. Verify. Each `tp` rank must equal `simulated` bit for bit (exit status 0).
+   Each repeated-prefix run must have restored a prefix and equal its cold run
+   bit for bit, and each `tp` rank's repeat must equal `simulated`'s.
    The script also prints QualificationComparator's verdict for each rank
    against `full`.
 

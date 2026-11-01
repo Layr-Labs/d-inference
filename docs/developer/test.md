@@ -2196,9 +2196,11 @@ lane steps then run twice: once under the guard and once under
 every logits row and every cache or page array must be byte-equal. The tests
 cover a tiny BF16 model and one quantized like the registered row (MXFP4
 experts, affine 8-bit projections, key width 192, value width 128), each on
-ordinary caches and on request-owned pages. Build and stage the runtime tests
-as described for the cluster runtime tests above, then, with the same build
-flags:
+ordinary caches and on request-owned pages. The quantized model's guard scales
+MLX's size bound to its small expert banks (`bankGuard`), so each expert launch
+commits a buffer, as each registered bank does. Build and stage the runtime
+tests as described for the cluster runtime tests above, then, with the same
+build flags:
 
 ```bash
 swift test --package-path libs/darkbloom-cluster -c release --skip-build --no-parallel \

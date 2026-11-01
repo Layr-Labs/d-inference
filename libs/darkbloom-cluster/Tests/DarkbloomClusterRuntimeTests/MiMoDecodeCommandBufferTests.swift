@@ -16,8 +16,8 @@ import Testing
 // ordinary caches and on request-owned pages (one request, and two decoded as
 // lanes). A tiny bfloat16 model, and one shaped and quantized like the
 // registered row (MXFP4 experts, affine 8-bit projections, key width 192 and
-// value width 128), whose expert banks also pass MLX's per-buffer size bound.
-// No artifact, collective or network.
+// value width 128), whose guard commits at every expert launch as the
+// registered row's does (`bankGuard`). No artifact, collective or network.
 
 @Suite("MiMo decode command buffers change no byte (random stages)", .serialized)
 struct MiMoDecodeCommandBufferTests {
@@ -25,6 +25,10 @@ struct MiMoDecodeCommandBufferTests {
     /// The rank's own limits as a worker starts it (`ClusterWorkerEnvironmentGuards`):
     /// 16 operations, MLX's per-chip size bound.
     static let rankGuard = GPU.CommandBufferLimits(operations: 16, megabytes: 0)
+    /// The guard scaled to the quantized model's banks. MLX's size bound counts
+    /// Mi elements of distinct inputs, so at 1 each 2 Mi-element bank commits a
+    /// buffer, as each registered 256 Mi-element bank does at MLX's own 40-50.
+    static let bankGuard = GPU.CommandBufferLimits(operations: 16, megabytes: 1)
 
     /// Hidden 1,024, 16 experts of width 1,024 (8 a token), key width 192 and
     /// value width 128 on four layers (full, sliding, sliding, full).
@@ -192,7 +196,7 @@ struct MiMoDecodeCommandBufferTests {
     func registeredShapeStagesDecodeTheSameBytes(paged: Bool) throws {
         let stages = try Self.randomStages(Self.kernelShapeConfiguration, cut: 2, quantized: true)
         let prompt = [5, 1017, 3, 2044, 96, 8, 3021, 60, 2, 33, 4071]
-        let guarded = try Self.trace(stages, paged: paged, prompt: prompt, decode: Self.rankGuard)
+        let guarded = try Self.trace(stages, paged: paged, prompt: prompt, decode: Self.bankGuard)
         let decoded = try Self.trace(stages, paged: paged, prompt: prompt, decode: MiMoLayerStageSession.decodeCommandBuffers)
         Self.requireSameBytes(guarded, decoded, "registered shape \(paged ? "pages" : "caches")")
     }
@@ -208,7 +212,7 @@ struct MiMoDecodeCommandBufferTests {
                                   from: try P.whole(data, dtype: .bfloat16), dtype: .bfloat16)
         }
         let prompts = [[5, 17, 3, 44, 96, 8, 21, 60, 2, 33, 71], [9, 4, 81, 2, 15, 66, 30]]
-        let guarded = try Self.laneTrace(stages, prompts: prompts, decode: Self.rankGuard)
+        let guarded = try Self.laneTrace(stages, prompts: prompts, decode: registeredShape ? Self.bankGuard : Self.rankGuard)
         let decoded = try Self.laneTrace(stages, prompts: prompts, decode: MiMoLayerStageSession.decodeCommandBuffers)
         Self.requireSameBytes(guarded, decoded, "lanes \(registeredShape ? "registered shape" : "tiny")")
     }

@@ -58,13 +58,14 @@ Pipeline decode steps of the Qwen catalog, Nemotron, Gemma 4 and GPT-OSS
 encode under decode command buffers that can keep a whole stage step's
 temporaries alive at once, so each request charge prices every attending
 layer's decode rows together (one a layer, or a verify window's `depth + 1`;
-every layer on a phase split's decoding rank), and never less than one prompt
-frame's attention transient (`QwenResidentPrefillTransient`,
-`Gemma4PrefillTransient`, `GPTOSSRequestStateBudget`). The LOAD quotes and
-activation floors are unchanged; only requests whose prompt frames are shorter
-than their decode rows are charged more. GLM's request charge is already its
-profile's whole envelope. The fused vector-attention partials are not priced
-separately; see
+every layer on a phase split's decoding rank, none on its other rank), and
+never less than one prompt frame's attention transient
+(`QwenResidentPrefillTransient`, `Gemma4PrefillTransient`,
+`GPTOSSRequestStateBudget`). The LOAD quotes and activation floors are
+unchanged; only requests whose prompt frames are shorter than their decode rows
+are charged more. GLM's request charge is already its
+profile's whole envelope. Attention-kernel partials beyond the priced rows are
+not charged separately; see
 [pipeline decode command buffers](inference.md#pipeline-decode-command-buffers).
 
 Optional Qwen plain-pipeline batch cancellation retains a lane's memory charge

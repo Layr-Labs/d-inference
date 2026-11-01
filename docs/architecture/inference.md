@@ -4095,7 +4095,7 @@ prompt frame's:
 
 | Family | Charge | Decode rows priced together |
 |---|---|---|
-| Qwen catalog, Nemotron | `QwenResidentPrefillTransient.bytes` (`decodeRows`), from `QwenResidentRequestAllowance.derive` | One a layer, or the verify window's `depth + 1` (`LayerStageDecodeShape`), on the rank's stage; on every layer on a phase split's decoding rank |
+| Qwen catalog, Nemotron | `QwenResidentPrefillTransient.bytes` (`decodeRows`), from `QwenResidentRequestAllowance.derive` | One a layer, or the verify window's `depth + 1` (`LayerStageDecodeShape`), on the rank's stage; on every layer on a phase split's decoding rank; none on its other rank, which hands its prompt state over |
 | Gemma 4 | `Gemma4PrefillTransient.bytes` (`decodeRows`, `decodeLayers`) | One on each layer of the stage, sliding layers over their window |
 | GPT-OSS | `GPTOSSRequestStateBudget` workspace | One a full-attention layer |
 | GLM | Unchanged: every request is charged the profile's whole envelope at its largest chunk (`GLM5NextResidentResourceEnvelope.budget`) | None added |
@@ -4103,17 +4103,27 @@ prompt frame's:
 The LOAD quotes are unchanged: they are computed at the largest prompt chunk,
 512 rows, and a decode step prices at most 80 rows (5 on each of 16 attending
 layers; one on each of Gemma's 30). Only requests whose prompt frames are
-shorter than their decode rows are charged more. The rows are priced as float32
-score rows over the whole context, which the unfused attention path builds.
-Decode rows and verify windows of up to 32 query rows per KV head take MLX's
-fused vector attention instead, whose float32 partials on Max and Ultra GPUs
-at 1,024 keys or more (`sdpa_vector_2pass` in
-`libs/mlx-swift/Source/Cmlx/mlx/mlx/backend/metal/scaled_dot_product_attention.cpp`)
-can exceed a score row and are not priced separately. GLM's graph workspace is
+shorter than their decode rows are charged more, and only on a rank that
+decodes. The rows are priced as float32 score rows over the whole context.
+The Qwen, Nemotron and Gemma 4 stages keep their keys and values in the paged
+stage KV (`CBv2StageKVHost`). There, decode steps, lane steps and verify
+windows (one decode row a window column, `CBv2OwnedRequestState.buildingWindow`)
+attend through the paged decode kernel (`PagedAttentionKernel.decode` in
+`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedAttentionKernel.swift`).
+Its float32 partials take `heads × ceil(keys / 256) × (head width + 2) × 4`
+bytes a row: about one score row at head width 256, two on Gemma's full layers
+(width 512) and half on Nemotron's (width 128, whose charge prices only the
+output). GPT-OSS attends through MLX's attention, whose vector kernel on Max
+and Ultra GPUs at 1,024 keys or more keeps float32 partials that exceed a score
+row by at most about 4 MiB a layer (`sdpa_vector_2pass` in
+`libs/mlx-swift/Source/Cmlx/mlx/mlx/backend/metal/scaled_dot_product_attention.cpp`).
+The excess over the priced rows is not charged; [INFERENCE] it is at most tens
+of MiB a request, times the lanes. GLM's graph workspace is
 authenticated evidence (`GLM5NextRequestStateBudget.WorkspaceEvidence`); a
-decode step on all of a stage's layers holds fewer rows than one 512-row frame
-on one layer, but the evidence does not say how it was measured. The decode
-speed effect and peak memory on registered models are not measured yet.
+decode step on all of a stage's layers holds fewer rows than the envelope's
+prompt frame on one layer, but the evidence does not say how it was measured.
+The decode speed effect and peak memory on registered models are not measured
+yet.
 
 ## GLM cluster prefill bounds
 

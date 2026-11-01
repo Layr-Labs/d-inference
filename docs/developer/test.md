@@ -1868,7 +1868,10 @@ swift test --package-path libs/darkbloom-cluster -c release --skip-build --no-pa
 ```
 
 The admission suites check each family's decode-row charge. These are synthetic
-GPU checks: not registered weights, pair runs, speed or peak memory. See
+GPU checks: not registered weights, pair runs, speed or peak memory. Served
+Qwen, Nemotron and Gemma 4 stages all attend through the paged stage KV, but
+only the Qwen cases use it here; the Nemotron and Gemma 4 cases keep
+request-owned KV. See
 [pipeline decode command buffers](../architecture/inference.md#pipeline-decode-command-buffers).
 
 ## Qwen batch projection arithmetic

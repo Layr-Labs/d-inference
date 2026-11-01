@@ -193,6 +193,12 @@ extension ProviderLoop {
                 modelDirectory: specification.modelDirectory, pairTelemetry: specification.pairTelemetry)
         } catch { throw ClusterPairSlotError.ownerUnavailable }
         guard let bridge = entry.engineV2Bridge else { throw ClusterPairSlotError.ownerUnavailable }
+        // The pair's MTP posture (heartbeats, `darkbloom status`): ranks whose readiness names the resident assistant
+        // they loaded (`ClusterQwenTensorAssistantReady`) decode with it; any other pair keeps the disabled posture.
+        if ready.tensorAssistant != nil {
+            await bridge.configureMTPStatus(.init(configured: true, active: true, reason: nil, source: nil, revision: nil,
+                                                  artifactBytes: 0, assistantBytes: 0))
+        }
         let profile = specification.profile
         let sizing = SlotSizingSnapshot(weightsBytes: specification.artifactBytes, fp16KVBytesPerToken: 0,
             maxContextLength: profile.maxContextTokens,

@@ -560,9 +560,9 @@ final class LiveContext: @unchecked Sendable {
         let mtpMode: MTPMode
         do { mtpMode = try ConfigManager.loadOrDefaults(from: settings.providerConfiguration).backend.mtpMode }
         catch { return .failed("The provider configuration could not be read: \(clean(ClusterConsoleText.bounded(error)))") }
-        // A setup that serves through the coordinator carries no speculative assistant: under `auto` its plan quotes
-        // the ordinary target only.
-        let discovery = ClusterPlacementTensorAssistantSelection.discoveryMode(mtpMode, coordinator: coordinator)
+        // A setup that serves through the coordinator carries only the speculative assistant this build declares
+        // public for the artifact: under `auto` its plan quotes that one, or the ordinary target only
+        // (`ClusterPlacementTensorAssistantSelection.discoveryMode`).
         let readings = models.filter {
             settings.privateGLMImageQualification ? ClusterGLMOnboardingSelection.accepts($0)
                 : ClusterMiMoOnboardingSelection.accepts($0, qualifying: settings.privateMiMoImageQualification)
@@ -615,14 +615,14 @@ final class LiveContext: @unchecked Sendable {
                     } else {
                         let discovered = try ClusterPlacementTensorAssistantSelection.readAutomatic(tool: tool,
                             modelDirectory: directory, publicModelID: model.modelID, capability: admitted,
-                            mode: discovery, chunkTokens: chunk, deadline: deadline())
+                            mode: mtpMode, chunkTokens: chunk, deadline: deadline(), coordinator: coordinator)
                         assistantQuote = discovered.map { .success($0) }
                         // Capacity changes keep the shares, so the first widening's complete
                         // quote steers the initial split; without it the choice is speed-only.
                         if discovered != nil {
                             discoveredWidening = try? ClusterPlacementTensorAssistantSelection.readAutomatic(tool: tool,
                                 modelDirectory: directory, publicModelID: model.modelID, capability: admitted,
-                                mode: discovery, chunkTokens: chunk, deadline: deadline(), lanes: 2)
+                                mode: mtpMode, chunkTokens: chunk, deadline: deadline(), lanes: 2, coordinator: coordinator)
                         }
                         // Only a discovered assistant may give way to the ordinary target (`assistantOrTarget`).
                         if discovered?.assistant != nil {

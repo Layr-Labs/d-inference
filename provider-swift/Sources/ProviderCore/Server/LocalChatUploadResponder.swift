@@ -4,6 +4,7 @@
 // router fixes BasicRequestContext's 2 MiB limit, so these routes collect and
 // decode here, then use the same MLXOpenAIService and response framing.
 
+import NIOCore
 import Foundation
 import Hummingbird
 import MLXLMServer
@@ -26,6 +27,7 @@ where Inner.Context == BasicRequestContext {
     public let inner: Inner
     let serviceForTemplateControls: @Sendable (ChatTemplateControls) -> MLXOpenAIService
     let maxUploadBytes: Int
+    let distributedResponses: (any DistributedHTTPResponseProviding)?
     /// The reasoning parser a request that names none is served with, by its model's type (see
     /// `makeLocalInferenceApplication`); nil: the request's own. Without it the local API returned Gemma's thought
     /// channel and GPT-OSS's Harmony markers in `content`, on a single Mac and on a cluster alike.
@@ -36,22 +38,35 @@ where Inner.Context == BasicRequestContext {
     /// entries on the channel this responder passes and splices.
     let serviceForRawChat: (@Sendable (Data, OpenAIChatCompletionRequest, EngineV2LogprobsChannel?)
         -> MLXOpenAIService?)?
+    /// A request-owned service for OpenAI `logprobs`/`top_logprobs`, read from
+    /// the raw body as the coordinator path reads them. The selected engine
+    /// still decides whether capture is supported; nil disables this plumbing.
+    let serviceForLogprobs: (@Sendable (ChatTemplateControls, EngineV2LogprobsPlumbing) -> MLXOpenAIService)?
+    /// Counts model tokens in returned reasoning for
+    /// `usage.completion_tokens_details.reasoning_tokens`; nil reports none.
+    let reasoningTokenCounter: (@Sendable (String) async -> (@Sendable (String) -> Int)?)?
 
     init(
         inner: Inner,
         service: MLXOpenAIService,
         maxUploadBytes: Int = localInferenceMaxUploadBytes,
         serviceForTemplateControls: (@Sendable (ChatTemplateControls) -> MLXOpenAIService)? = nil,
+        distributedResponses: (any DistributedHTTPResponseProviding)? = nil,
         reasoningParserFor: (@Sendable (String) async -> ReasoningParserFormat?)? = nil,
         responseConversations: LocalResponseConversationStore = LocalResponseConversationStore(),
+        serviceForLogprobs: (@Sendable (ChatTemplateControls, EngineV2LogprobsPlumbing) -> MLXOpenAIService)? = nil,
+        reasoningTokenCounter: (@Sendable (String) async -> (@Sendable (String) -> Int)?)? = nil,
         serviceForRawChat: (@Sendable (Data, OpenAIChatCompletionRequest, EngineV2LogprobsChannel?)
             -> MLXOpenAIService?)? = nil
     ) {
+        self.serviceForLogprobs = serviceForLogprobs
+        self.reasoningTokenCounter = reasoningTokenCounter
         self.reasoningParserFor = reasoningParserFor
         self.responseConversations = responseConversations
         self.inner = inner
         self.serviceForTemplateControls = serviceForTemplateControls ?? { _ in service }
         self.maxUploadBytes = maxUploadBytes
+        self.distributedResponses = distributedResponses
         self.serviceForRawChat = serviceForRawChat
     }
 
@@ -162,7 +177,15 @@ where Inner.Context == BasicRequestContext {
         var item: LocalChatRequest
         switch decodeBody(LocalChatRequest.self, from: buffer) {
         case .success(let decoded): item = decoded
-        case .failure(let badRequest): return badRequest
+        case .failure(let badRequest):
+            // Both local APIs normalize what the coordinator path normalizes (a
+            // scalar `stop`, the `developer` role, content-less messages,
+            // hosted tools) and retries, as `ProviderLoop.decodeOpenAIRequest`
+            // does; the original error stands when that cannot help.
+            guard let repaired = try? InboundChatNormalization.normalize(Data(buffer: buffer)),
+                  case .success(let decoded) = decodeBody(LocalChatRequest.self, from: ByteBuffer(data: repaired))
+            else { return badRequest }
+            item = decoded
         }
         // Optional unpublished-owner hook is reached only after outer auth,
         // body-limit collection and ordinary request decoding. Exact raw bytes
@@ -170,29 +193,121 @@ where Inner.Context == BasicRequestContext {
         // Its owner splits its own reasoning channel and refuses a request
         // parser, so the inferred parser applies only to the generic service
         // (the coordinator path likewise sets none for a Super owner).
-        // Only a raw-body owner returns logprobs; the generic service ignores them.
+        // A raw-body owner returns logprobs on its own channel, spliced here;
+        // any other request that asks for them gets the request-owned
+        // plumbing (`serviceForLogprobs`), whose entries the service encodes
+        // in stream order. The generic service ignores them.
         let requestService: MLXOpenAIService
         let logprobs: EngineV2LogprobsChannel?
         let raw = Data(buffer: buffer), channel = EngineV2LogprobsChannel()
         if let rawService = serviceForRawChat?(raw, item.request, channel) {
             requestService = rawService
             logprobs = ProviderLoop.extractLogprobsSpec(from: raw) != nil ? channel : nil
+        } else if let serviceForLogprobs, let spec = ProviderLoop.extractLogprobsSpec(from: raw) {
+            await resolveReasoningParser(&item)
+            let plumbing = EngineV2LogprobsPlumbing(topLogprobs: spec.topLogprobs)
+            requestService = serviceForLogprobs(item.templateControls, plumbing)
+            logprobs = nil
         } else {
             await resolveReasoningParser(&item)
             requestService = serviceForTemplateControls(item.templateControls)
             logprobs = nil
         }
+        let countTokens = await reasoningTokenCounter?(item.request.model)
         // Same service entry points as the upstream handler; pre-stream
         // throws (unknown model, admission refusal) travel to
         // `CORSResponder`'s status mapping unchanged.
         if item.request.stream == true {
+            if let distributedResponses {
+                let response = try distributedResponses.begin()
+                do {
+                    guard let channel = LocalHTTPConnectionScope.current else {
+                        throw MultiModelBatchSchedulerEngineError.requestRejected("Missing local connection observation")
+                    }
+                    // A full close is definitive. Input half-close alone is
+                    // allowed; the serialized SSE writer probes for write loss.
+                    channel.closeFuture.whenComplete { [weak response] _ in
+                        guard let response else { return }
+                        // Delivery is impossible after a full close. This ends
+                        // only the HTTP hold; engine/lease retirement stays held.
+                        response.disconnect(); response.finish()
+                    }
+                    if !channel.isActive { response.disconnect(); response.finish(); throw CancellationError() }
+                    let frames = try await DistributedHTTPResponseScope.$current.withValue(response) {
+                        try await requestService.streamChatCompletionFrames(
+                            request: item.request, frameGenerationErrors: true)
+                    }
+                    return DistributedHTTPEventStream.response(
+                        Self.decorating(frames, countTokens: countTokens), control: response)
+                } catch {
+                    response.disconnect(); response.finish(); throw error
+                }
+            }
             let frames = try await requestService.streamChatCompletionFrames(
                 request: item.request, frameGenerationErrors: true)
-            return Self.sseResponse(logprobs.map { Self.splicingLogprobs(frames, from: $0) } ?? frames)
+            // A raw-body owner's entries are spliced as the coordinator relay
+            // splices them; every other response takes the usage decoration,
+            // as the collected path below does.
+            if let logprobs { return Self.sseResponse(Self.splicingLogprobs(frames, from: logprobs)) }
+            return Self.sseResponse(Self.decorating(frames, countTokens: countTokens))
         }
-        let response = try await requestService.createChatCompletion(request: item.request)
-        guard let logprobs else { return try Self.jsonResponse(response) }
-        return try Self.jsonResponse(response, logprobs: logprobs.drain())
+        let completion = try await requestService.createChatCompletion(request: item.request)
+        if let logprobs { return try Self.jsonResponse(completion, logprobs: logprobs.drain()) }
+        if countTokens != nil {
+            return try Self.jsonResponse(completion, countTokens: countTokens)
+        }
+        return try Self.jsonResponse(completion)
+    }
+
+    /// Usage decoration preserves the canonical service's event-bound logprobs.
+    static func decorating(_ frames: AsyncThrowingStream<String, Error>,
+                           countTokens: (@Sendable (String) -> Int)?) -> AsyncThrowingStream<String, Error> {
+        guard countTokens != nil else { return frames }
+        return AsyncThrowingStream { continuation in
+            let task = Task {
+                var reasoning = ""
+                do {
+                    for try await frame in frames {
+                        var frame = frame
+                        if let countTokens, let parsed = ProviderLoop.parseStreamChunk(frame) {
+                            reasoning += parsed.reasoningDelta ?? ""
+                            if let usage = parsed.usage, !reasoning.isEmpty {
+                                frame = ProviderLoop.injectReasoningTokens(into: frame,
+                                    reasoningTokens: min(countTokens(reasoning), max(0, usage.completionTokens)))
+                            }
+                        }
+                        continuation.yield(frame)
+                    }
+                    continuation.finish()
+                } catch { continuation.finish(throwing: error) }
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
+    /// A collected completion with every token's logprobs on its choice and
+    /// its reasoning tokens in the usage.
+    static func jsonResponse(_ completion: OpenAIChatCompletionResponse,
+                             countTokens: (@Sendable (String) -> Int)?) throws -> Response {
+        guard let bytes = try decoratedJSON(completion, countTokens: countTokens) else {
+            return try jsonResponse(completion)
+        }
+        return Response(status: .ok, headers: [.contentType: "application/json"],
+                        body: .init(byteBuffer: ByteBuffer(bytes: bytes)))
+    }
+
+    static func decoratedJSON(_ completion: OpenAIChatCompletionResponse,
+                              countTokens: (@Sendable (String) -> Int)?) throws -> Data? {
+        let data = try JSONEncoder.openAIServer.encode(completion)
+        guard var object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let choices = object["choices"] as? [[String: Any]], !choices.isEmpty else { return nil }
+        if let countTokens, let reasoning = completion.choices.first?.message.reasoningContent, !reasoning.isEmpty,
+           var usage = object["usage"] as? [String: Any] {
+            usage["completion_tokens_details"] = ["reasoning_tokens":
+                min(countTokens(reasoning), max(0, completion.usage.completionTokens))]
+            object["usage"] = usage
+        }
+        return try JSONSerialization.data(withJSONObject: object, options: [.withoutEscapingSlashes])
     }
 
     /// A raw-body owner's frames with its logprob entries spliced into the

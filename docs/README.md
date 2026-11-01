@@ -17,6 +17,7 @@ belong to
 - [Attestation](provider/attestation.md) and [troubleshooting](provider/troubleshooting.md)
 - [Local direct mode](provider/direct-mode.md) and [network self-route](provider/self-route.md)
 - [Fan control](provider/fan-control.md) and [beta features](provider/beta-features.md)
+- [Always-on cluster members](provider/cluster-always-on.md): link wait, restart budget, coordinated update, permissions asked once
 - [Host Darkbloom Sandbox CI jobs](provider/sandboxes.md) beside inference
 - [Desktop app development](developer/desktop-app.md): build and validate the Electron frontend and its Swift CLI/backend interface
 

@@ -35,6 +35,8 @@ public struct CapturedMessages: Sendable {
     public var appAttestShadow: [AppAttestShadowPayload] = []
     public var appAttestResume: [AppAttestResumeResponse] = []
     public var registers: [ProviderMessage.Register] = []
+    /// The exact bytes of each `register` frame, in arrival order.
+    public var registerFrames: [Data] = []
     public var heartbeats: [ProviderMessage.Heartbeat] = []
     public var attestationResponses: [ProviderMessage.AttestationResponse] = []
     public var codeAttestationResponses: [ProviderMessage.CodeAttestationResponse] = []
@@ -53,11 +55,15 @@ public struct CapturedMessages: Sendable {
     public var prefixCacheLookupsV2: [ProviderMessage.PrefixCacheLookupV2] = []
     public var prefixCacheReadyV2: [ProviderMessage.PrefixCacheReadyV2] = []
     public var capacityQuotes: [ProviderMessage.CapacityQuote] = []
+    /// Native-pair member control frames, captured verbatim (never answered).
+    public var nativePairs: [NativePairMessage] = []
     /// Raw bodies POSTed to the retired `/v1/telemetry/events` route. The
     /// provider never sends telemetry; this only catches a regression.
     public var telemetryPosts: [Data] = []
     public var enrollmentPosts: [Data] = []
     public var enrollmentAuthorizations: [String] = []
+    /// The query of each `GET /v1/cluster/approvals`, in arrival order.
+    public var clusterApprovalQueries: [String] = []
 
     public init() {}
 }
@@ -187,6 +193,8 @@ public final class MockCoordinator: @unchecked Sendable {
     private let lock = NSLock()
     private var captured = CapturedMessages()
     private var acknowledgedReadiness = Set<String>()
+    /// `GET /v1/cluster/approvals`: the status and exact body bytes answered; nil answers 404 (pair control off).
+    private var clusterApprovals: (status: Int, body: Data, location: String?)?
     private var activeOutbound: WebSocketOutboundWriter?
     private var bound: BoundServer?
 
@@ -244,6 +252,12 @@ public final class MockCoordinator: @unchecked Sendable {
     /// stream only finishes when `shutdown()` is called.
     public var events: AsyncStream<MockEvent> { eventStream }
 
+    /// What `GET /v1/cluster/approvals` answers from now on; nil answers 404, as a coordinator without pairing does.
+    /// `location` adds a `Location` header (a redirect the provider must not follow).
+    public func setClusterApprovals(status: Int = 200, body: Data?, location: String? = nil) {
+        lock.withLock { clusterApprovals = body.map { (status, $0, location) } }
+    }
+
     /// Return a snapshot of all messages captured so far. Each call clones the
     /// underlying state, so the returned value is safe to inspect without
     /// holding any locks.
@@ -253,8 +267,10 @@ public final class MockCoordinator: @unchecked Sendable {
 
     /// Bring the server up on a system-assigned port and return the bound
     /// base URL. The WebSocket route is at `${baseURL}/ws/provider` (with
-    /// `ws://` scheme); HTTP routes use the returned URL directly.
-    public func start() async throws -> URL {
+    /// `ws://` scheme); HTTP routes use the returned URL directly. `port`
+    /// brings it up on a port a client is already retrying (a coordinator
+    /// that comes back).
+    public func start(port: Int = 0) async throws -> URL {
         // Hummingbird logs at .error during graceful shutdown ("Already
         // closed", child-channel cancellation) which pollutes the test
         // output without indicating a real problem. Crank the level so the
@@ -274,13 +290,13 @@ public final class MockCoordinator: @unchecked Sendable {
         // actual port via onServerRunning. Funneled through a one-shot
         // continuation so start() can resolve only once the listening socket
         // is up.
-        let portBox = PortBox()
+        let portBox = OneShotPortBox()
 
         let app = Application(
             router: router,
             server: .http1WebSocketUpgrade(webSocketRouter: router),
             configuration: .init(
-                address: .hostname("127.0.0.1", port: 0),
+                address: .hostname("127.0.0.1", port: port),
                 serverName: "MockCoordinator"
             ),
             onServerRunning: { @Sendable channel in
@@ -441,6 +457,22 @@ public final class MockCoordinator: @unchecked Sendable {
         try await sendCoordinatorMessage(msg)
     }
 
+    /// Echo a member acceptance exactly as the coordinator sends it; the
+    /// client's negotiation refuses any nonce that is not its own.
+    public func pushClusterMemberAcceptance(nonce: String, providerID: String = "mock-provider") async throws {
+        try await sendCoordinatorMessage(.clusterMemberAccepted(ClusterMemberAccepted(
+            executionRole: .clusterMember, memberRegistrationNonce: nonce, providerID: providerID)))
+    }
+
+    /// Push a native-pair coordinator frame as raw text (bypasses the
+    /// CoordinatorMessage codec exactly like the real wire).
+    public func pushNativePair(_ message: NativePairMessage) async throws {
+        let outbound: WebSocketOutboundWriter? = lock.withLock { activeOutbound }
+        guard let outbound else { throw MockCoordinatorError.noActiveWebSocket }
+        let bytes = try JSONEncoder().encode(message)
+        try await outbound.write(.text(String(decoding: bytes, as: UTF8.self)))
+    }
+
     /// Force-close the active provider WebSocket so the provider's reconnect
     /// loop kicks in. The close frame carries `closeCode` and `reason`, so a
     /// test can inject the close that the edge sends on a Conductor change (1012).
@@ -512,6 +544,23 @@ public final class MockCoordinator: @unchecked Sendable {
                 )
             }
             return MockCoordinator.makeJSONResponse(body: ["models": self.catalog])
+        }
+
+        // ----- HTTP: /v1/cluster/approvals -----
+        router.get("/v1/cluster/approvals") { [weak self] request, _ -> Response in
+            guard let self else {
+                return MockCoordinator.makeJSONResponse(body: ["error": "mock dead"], status: .internalServerError)
+            }
+            let query = request.uri.query ?? ""
+            let answer = self.lock.withLock { () -> (status: Int, body: Data, location: String?)? in
+                self.captured.clusterApprovalQueries.append(query)
+                return self.clusterApprovals
+            }
+            guard let answer else { return MockCoordinator.makeJSONResponse(body: ["error": "not found"], status: .notFound) }
+            var headers: HTTPFields = [.contentType: "application/json"]
+            if let location = answer.location { headers[.location] = location }
+            return Response(status: .init(code: answer.status), headers: headers,
+                body: .init(byteBuffer: ByteBuffer(bytes: answer.body)))
         }
 
         // ----- HTTP: /v1/releases/latest -----
@@ -654,6 +703,12 @@ public final class MockCoordinator: @unchecked Sendable {
 
     private func handleProviderMessage(_ text: String) {
         guard let data = text.data(using: .utf8) else { return }
+        // Native-pair member frames are captured raw alongside ordinary
+        // provider messages; the mock never signs or answers them.
+        if let native = try? NativePairMessage.decodePublicFrame(data) {
+            lock.withLock { captured.nativePairs.append(native) }
+            return
+        }
         guard let parsed = try? ProviderProtocolCodec.decodeProviderMessage(from: data) else {
             return
         }
@@ -663,7 +718,9 @@ public final class MockCoordinator: @unchecked Sendable {
             case .drainBarrier(let id): captured.drainBarriers.append(id)
             case .appAttestShadow(let p): captured.appAttestShadow.append(p)
             case .appAttestResume(let p): captured.appAttestResume.append(p)
-            case .register(let r):           captured.registers.append(r)
+            case .register(let r):
+                captured.registers.append(r)
+                captured.registerFrames.append(data)
             case .heartbeat(let h):          captured.heartbeats.append(h)
             case .attestationResponse(let a): captured.attestationResponses.append(a)
             case .codeAttestationResponse(let c): captured.codeAttestationResponses.append(c)
@@ -762,42 +819,6 @@ public enum MockCoordinatorError: Error, CustomStringConvertible, Sendable {
         case .noActiveWebSocket:          "No active provider WebSocket on the mock"
         case .invalidProviderPublicKey:   "Provider public key was not a 32-byte X25519 key"
         }
-    }
-}
-
-// MARK: - One-shot port box
-
-/// One-shot async box for the bound port. `complete(_:)` is fired from
-/// Hummingbird's `onServerRunning` callback; `value` is awaited from
-/// `start()`.
-private final class PortBox: @unchecked Sendable {
-    private let lock = NSLock()
-    private var port: Int?
-    private var continuation: CheckedContinuation<Int, Never>?
-
-    var value: Int {
-        get async {
-            await withCheckedContinuation { (cont: CheckedContinuation<Int, Never>) in
-                lock.withLock {
-                    if let p = port {
-                        cont.resume(returning: p)
-                    } else {
-                        continuation = cont
-                    }
-                }
-            }
-        }
-    }
-
-    func complete(_ port: Int) {
-        let cont: CheckedContinuation<Int, Never>? = lock.withLock {
-            if self.port != nil { return nil }
-            self.port = port
-            let cont = continuation
-            continuation = nil
-            return cont
-        }
-        cont?.resume(returning: port)
     }
 }
 

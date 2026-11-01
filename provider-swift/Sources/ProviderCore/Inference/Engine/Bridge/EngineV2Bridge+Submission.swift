@@ -1,3 +1,4 @@
+import DarkbloomClusterProtocol
 // Tokenization, cache staging, and engine submission.
 
 import Foundation
@@ -12,7 +13,7 @@ extension EngineV2Bridge {
     public func submit(
         request: ChatCompletionRequest,
         requestId: String? = nil,
-        logprobsChannel: EngineV2LogprobsChannel? = nil
+        cacheEnabled: Bool = true
     ) async -> AsyncStream<GenerationEvent> {
         let messages: [[String: any Sendable]] = request.messages.map { msg in
             [
@@ -35,7 +36,7 @@ extension EngineV2Bridge {
         }
         return await submitTokenized(
             promptTokens: promptTokens, request: request, requestId: requestId,
-            cacheScope: "", logprobsChannel: logprobsChannel
+            cacheScope: "", cacheEnabled: cacheEnabled
         )
     }
 
@@ -43,7 +44,7 @@ extension EngineV2Bridge {
     /// using the same sampling, stop, and token-limit translation as submit.
     /// Remote cacheScope values come from authenticated coordinator metadata;
     /// local callers remain unscoped and cacheEnabled=false forces cold serving.
-    /// usageSignal and logprobsChannel carry per-request output metadata.
+    /// usageSignal carries per-request usage metadata; logprobs travel in stream order.
     /// Multimodal embeddings must already be evaluated; mediaKind is telemetry.
     public func submitTokenized(
         promptTokens: [Int],
@@ -51,9 +52,10 @@ extension EngineV2Bridge {
         requestId: String? = nil,
         cacheScope: String = "",
         cacheEnabled: Bool = true,
-        logprobsChannel: EngineV2LogprobsChannel? = nil,
         usageSignal: EngineV2RequestUsageSignal? = nil,
         multimodal: CBv2MultimodalInput? = nil,
+        mimoClusterImages: Data? = nil,
+        clusterStillImages: Data? = nil,
         positionState: CBv2PositionState? = nil,
         hybridPrefixIdentity: CBv2HybridPrefixIdentity? = nil,
         mediaKind: EngineV2MediaKind? = nil,
@@ -69,9 +71,10 @@ extension EngineV2Bridge {
                 requestId: requestId,
                 cacheScope: cacheScope,
                 cacheEnabled: cacheEnabled,
-                logprobsChannel: logprobsChannel,
                 usageSignal: usageSignal,
                 multimodal: multimodal,
+                mimoClusterImages: mimoClusterImages,
+                clusterStillImages: clusterStillImages,
                 positionState: positionState,
                 hybridPrefixIdentity: hybridPrefixIdentity,
                 mediaKind: mediaKind,
@@ -117,9 +120,13 @@ extension EngineV2Bridge {
         requestId: String? = nil,
         cacheScope: String = "",
         cacheEnabled: Bool = true,
-        logprobsChannel: EngineV2LogprobsChannel? = nil,
         usageSignal: EngineV2RequestUsageSignal? = nil,
         multimodal: CBv2MultimodalInput? = nil,
+        mimoClusterImages: Data? = nil,
+        clusterStillImages: Data? = nil,
+        clusterGLMMedia: Data? = nil,
+        clusterQwenMedia: Data? = nil,
+        qwenMediaLifetime: DistributedQwenMediaLifetime? = nil,
         positionState: CBv2PositionState? = nil,
         hybridPrefixIdentity: CBv2HybridPrefixIdentity? = nil,
         mediaKind: EngineV2MediaKind? = nil,
@@ -132,14 +139,72 @@ extension EngineV2Bridge {
         serviceReservationID: String? = nil,
         serviceReservation: ServiceReservationLifetime? = nil,
         promptWork: PromptWork? = nil,
+        distributedDeadlineContext: DistributedRequestDeadlineContext? = nil,
+        distributedRequestOrigin: ContinuousClock.Instant? = nil,
         measurementPurpose: EngineMeasurementPurpose = .serving
     ) async throws -> AsyncStream<GenerationEvent> {
+        if let clusterStillImages {
+            guard mimoClusterImages == nil, multimodal == nil,
+                  let binding = try clusterGLMImageIngress() else { throw DistributedEngineError.refused(.mediaUnsupported) }
+            let media = try ClusterStillImages.decodeBounded(clusterStillImages), c = binding.ingress.configuration
+            guard media.configurationSHA256 == binding.ingress.configurationSHA256 else {
+                throw DistributedEngineError.refused(.mediaUnsupported)
+            }
+            try media.validate(prompt: promptTokens, imageToken: c.imageTokenId,
+                startToken: c.imageStartTokenId, endToken: c.imageEndTokenId, videoToken: c.videoTokenId)
+        }
+        if let clusterGLMMedia {
+            // The tensor-parallel pair's media: only on a bridge bound to it,
+            // never beside another media form, every span bound to the prompt.
+            guard mimoClusterImages == nil, clusterStillImages == nil, multimodal == nil,
+                  let ingress = clusterGLMMediaIngress else { throw DistributedEngineError.refused(.mediaUnsupported) }
+            let media = try ClusterGLMMedia.decodeBounded(clusterGLMMedia), c = ingress.configuration
+            guard media.configurationSHA256 == ingress.configurationSHA256 else {
+                throw DistributedEngineError.refused(.mediaUnsupported)
+            }
+            try media.validate(prompt: promptTokens, imageToken: c.imageTokenId,
+                startToken: c.imageStartTokenId, endToken: c.imageEndTokenId, videoToken: c.videoTokenId)
+        }
+        if let clusterQwenMedia {
+            guard mimoClusterImages == nil, clusterStillImages == nil, clusterGLMMedia == nil,
+                multimodal == nil, positionState == nil, tokenConstraint == nil,
+                qwenMediaLifetime != nil, let ingress = clusterQwenMediaIngress else {
+                throw DistributedEngineError.refused(.mediaUnsupported)
+            }
+            let media = try ClusterQwenMedia.decodeBounded(clusterQwenMedia), c = ingress.configuration
+            guard media.artifactSHA256 == ingress.artifactSHA256,
+                media.configurationSHA256 == ingress.configurationSHA256,
+                media.processorSHA256 == ingress.processorSHA256, media.carriesEncodedBytes else {
+                throw DistributedEngineError.refused(.mediaUnsupported)
+            }
+            try media.validate(prompt: promptTokens, imageToken: c.imageTokenIndex,
+                videoToken: c.videoTokenIndex, startToken: c.visionStartTokenId,
+                endToken: c.visionEndTokenId, maximumPromptTokens: ingress.maximumPromptTokens)
+        } else if qwenMediaLifetime != nil { throw DistributedEngineError.refused(.mediaUnsupported) }
+        let imageBoundCacheScope: String
+        if let mimoClusterImages {
+            let media = try ClusterMiMoImages.decodeBounded(mimoClusterImages)
+            try media.validate(prompt:promptTokens)
+            imageBoundCacheScope = cacheScope.isEmpty ? "" : cacheScope + "|mimo=" + media.fingerprint
+        } else { imageBoundCacheScope = cacheScope }
+        // Never manufacture an authenticated scope from an image digest.
+        let imageCacheEnabled = cacheEnabled && clusterStillImages == nil && clusterGLMMedia == nil && clusterQwenMedia == nil
+            && (mimoClusterImages == nil || !cacheScope.isEmpty)
+        // This is our frame-receipt clock when available, never an upstream wall
+        // timestamp. Local engines are unaffected by the distributed-only context.
+        let httpResponse = DistributedHTTPResponseScope.current
+        let distributedOrigin = DistributedRequestOrigin.earliest(
+            handler: distributedRequestOrigin, profile: profile?.continuousAnchor,
+            now: ContinuousClock.now)
         // Validate the caller-supplied id before it becomes a dictionary key /
         // cancel-correlation handle: a nil / empty / over-long / non-printable
         // id is replaced with a fresh generated one (it could never correlate
         // a cancel reliably anyway, and an unbounded/control-char key is a
         // hardening risk). See `normalizedRequestId`.
         let id = Self.normalizedRequestId(requestId)
+        let qwenMediaKey = try qwenMediaLifetime.map {
+            try $0.submissionKey(requestID: id, matching: clusterQwenMedia!)
+        }
         let (stream, continuation) = AsyncStream<GenerationEvent>.makeStream()
         guard canSubmitWithNativeOwner() else {
             usageSignal?.finalizeLookup(failure: .policy, fallbackTier: prefixCacheFallbackTier)
@@ -201,6 +266,10 @@ extension EngineV2Bridge {
                 releaseServiceAllowance(requestID: id)
             }
         }
+        if let lifetime = qwenMediaLifetime, let key = qwenMediaKey {
+            try lifetime.requireNativeRetirement(key)
+            qwenMediaHostResources[id] = (lifetime, key)
+        }
         pendingSubmissionIDs.insert(id)
         if let profile { pendingProfiles[id] = profile }
         // Profiler: this prompt is "queued for prefill" for exactly the span
@@ -239,18 +308,24 @@ extension EngineV2Bridge {
             request: request,
             defaultMaxTokens: defaultMaxTokens,
             stopTokenIds: stopTokenIds,
-            cacheScope: cacheScope,
-            cacheEnabled: cacheEnabled,
+            cacheScope: imageBoundCacheScope,
+            cacheEnabled: imageCacheEnabled,
             multimodal: multimodal,
             tokenConstraint: tokenConstraint,
             samplingDefaults: samplingDefaults,
             // The same coordinator hint that gates the write also tells the
             // engine which fork boundary is worth staging.
             prefixCheckpointTargetTokens: donationDemand?.repeatedPrefixTokens,
+            defaultMaxTokensContextLimit: defaultMaxTokensContextLimit,
             stopStringScope: stopStringScope
         )
+        cbv2Request.mimoClusterImages = mimoClusterImages
+        cbv2Request.clusterStillImages = clusterStillImages
+        cbv2Request.clusterGLMMedia = clusterGLMMedia
+        cbv2Request.clusterQwenMedia = clusterQwenMedia
         cbv2Request.positionState = positionState ?? multimodal?.positionState
         cbv2Request.hybridPrefixIdentity = hybridPrefixIdentity
+        if let minP = request.min_p { cbv2Request.sampling.minP = minP }
         let checkpointScope = cbv2Request.checkpointCacheSalt ?? ""
         try await checkFirstContentDeadline(
             firstContentDeadline,
@@ -318,7 +393,7 @@ extension EngineV2Bridge {
             throw MultiModelBatchSchedulerEngineError.generationFailed("Native block engine configuration is invalid")
         }
         let residentPrefixCandidate: CBv2ResidentPrefixCandidate? =
-            cacheEnabled && multimodal == nil
+            imageCacheEnabled && multimodal == nil
             ? ownedEngine?.residentPrefixCandidate(for: cbv2Request) : nil
         if residentPrefixCandidate != nil {
             usageSignal?.recordResidentPrefixCandidate()
@@ -335,7 +410,7 @@ extension EngineV2Bridge {
             && multimodal != nil && hybridPrefixIdentity != nil
             && cbv2Request.positionState == nil && ssdHybridCheckpointStore != nil
         let mediaHybridCacheEligible = qwen4MediaCacheEligible || nativeMediaCacheEligible
-        if cacheEnabled, (multimodal == nil || mediaHybridCacheEligible),
+        if imageCacheEnabled, (multimodal == nil || mediaHybridCacheEligible),
             ssdPrefixCache != nil || ssdHybridCheckpointStore != nil || residentPrefixCacheEvidence != nil
         {
             let receiptID = mintPrefixCacheReceiptID()
@@ -361,7 +436,7 @@ extension EngineV2Bridge {
                 store.registerDonationDemand(donationDemand, requestID: receiptID)
             }
             if multimodal == nil, let evidence = residentPrefixCacheEvidence, let usageSignal,
-                let proof = evidence.promptProof(tokens: promptTokens, scope: cacheScope)
+                let proof = evidence.promptProof(tokens: promptTokens, scope: imageBoundCacheScope)
             {
                 usageSignal.recordResidentPrompt(proof)
                 evidence.register(receiptID: receiptID, signal: usageSignal)
@@ -388,7 +463,7 @@ extension EngineV2Bridge {
         var ssdStaged = false
         var ssdReuseAttempted = false
         cbv2Request.prefixCacheReceiptID = prefixCacheReceiptID
-        if !cacheEnabled {
+        if !imageCacheEnabled {
             usageSignal?.recordCacheDisabled(tier: prefixCacheFallbackTier)
         } else if multimodal != nil, !mediaHybridCacheEligible {
             usageSignal?.finalizeLookup(
@@ -428,14 +503,14 @@ extension EngineV2Bridge {
         } else if let ssd = ssdPrefixCache, let prefixCacheReceiptID,
             residentPrefixCandidate == nil
                 || ssd.estimatedPrefillTokensSaved(
-                    promptTokens: promptTokens, cacheScope: cacheScope)
+                    promptTokens: promptTokens, cacheScope: imageBoundCacheScope)
                     > (residentPrefixCandidate?.prefillTokensSaved ?? 0)
         {
             let stageStart = SuspendingClock.now
             let stageResult = await ssd.stage(
                 requestID: prefixCacheReceiptID,
                 promptTokens: promptTokens,
-                cacheScope: cacheScope)
+                cacheScope: imageBoundCacheScope)
             profile?.markDuration(.ssdStage, start: stageStart)
             ssdStaged = stageResult.staged
             ssdReuseAttempted = stageResult.staged
@@ -705,15 +780,39 @@ extension EngineV2Bridge {
                 ? deadlineProjectionBypassReason(
                     deadline: firstContentDeadline, isMultimodal: multimodal != nil)
                 : nil)
+        let distributed = engine as? DistributedCBv2Engine
+        let originContext = distributed?.deadlineContext(receivedAt: distributedOrigin,
+                                                         firstTokenDeadline: firstContentDeadline?.instant)
         do {
+            let selectedContext = try originContext.map { original in
+                let bounded = distributedDeadlineContext.map { original.restricted(to: $0) } ?? original
+                return try distributedFirstTokenBudgetPolicy.map { policy in
+                    try policy.restricting(bounded, receivedAt: distributedOrigin,
+                                           inputTokenCount: promptTokens.count)
+                } ?? bounded
+            }
+            if let distributed, let selectedContext, let httpResponse {
+                // Actual token count and trusted origin have selected this
+                // absolute deadline. Bind before reserve/start; no fresh budget.
+                try httpResponse.bind(deadline: selectedContext.firstTokenDeadline) { [weak distributed] in
+                    // Never block a writer/timer on a synchronous engine queue.
+                    distributed?.queue.async { [weak distributed] in distributed?.cancel(cbv2Id) }
+                }
+            }
             if let admission = deadlineAdmission {
                 // The engine's serialized closure compares projection against
                 // this same absolute deadline. A second task-group race would
                 // cancel after commit and hide the generation-bound retirement
                 // handle needed to transfer resource ownership safely.
-                let result = try await engine.submit(
-                    engineRequest,
-                    firstTokenDeadline: admission)
+                let result: CBv2FirstTokenDeadlineResult
+                if let distributed, let selectedContext {
+                    result = try await distributed.submit(engineRequest, firstTokenDeadline: admission,
+                                                          deadlineContext: selectedContext)
+                } else {
+                    result = try await engine.submit(
+                        engineRequest,
+                        firstTokenDeadline: admission)
+                }
                 switch result {
                 case .admitted(let stream, let projectedWork, let admittedAt, let retirement):
                     prefillEvidenceRecovery.admit(id)
@@ -827,6 +926,17 @@ extension EngineV2Bridge {
                     let submitted = try autoregressive.submitWithRetirement(engineRequest)
                     events = submitted.events
                     nativeRetirement = submitted.retirement
+                } else if let distributed, let selectedContext {
+                    // Without a projected admission the engine still enforces
+                    // the origin-anchored deadlines selected above. A bare
+                    // submit would start a fresh budget with no first-token limit.
+                    if clusterQwenMedia != nil {
+                        let submitted = try distributed.submitWithRetirement(engineRequest, deadlineContext: selectedContext)
+                        events = submitted.events
+                        nativeRetirement = submitted.retirement
+                    } else {
+                        events = try distributed.submit(engineRequest, deadlineContext: selectedContext)
+                    }
                 } else {
                     events = try engine.submit(engineRequest)
                 }
@@ -862,6 +972,7 @@ extension EngineV2Bridge {
                     }
                 }
             }
+            httpResponse?.applyPendingCancellation()
         } catch let cancellation as CBv2FirstTokenAdmissionCancellation {
             prefillEvidenceRecovery.admit(id)
             // This exception proves acceptance but carries no projected work.
@@ -901,13 +1012,27 @@ extension EngineV2Bridge {
                     usageSignal: usageSignal,
                     failure: Self.prefixCacheFailureClass(for: error))
             }
+            // A distributed first-token budget spent before admission is the
+            // same pre-content refusal as an unreachable coordinator deadline.
+            if error as? DistributedRequestDeadlineError == .firstTokenExpired {
+                throw PreContentDeadlineFailure.deadlineUnreachable
+            }
             if let failure = error as? PreContentDeadlineFailure { throw failure }
             if error is CancellationError { throw CancellationError() }
+            // A refused distributed admission has no native terminal for the
+            // HTTP writer to report. Throw the mapped error before response
+            // headers instead of returning a stream that can only abort.
+            let distributedProfile = (ownedEngine as? DistributedCBv2Engine)?.profile
+            if distributed != nil, httpResponse != nil, !retirementTransfer.isClaimed {
+                throw MultiModelBatchSchedulerEngineError.fromSchedulerMessage(
+                    EngineV2Translation.admissionErrorMessage(for: error, distributedProfile: distributedProfile))
+            }
             // Admission failure. The message keeps the canonical
             // `token_budget_exhausted:` prefix contract so
             // `fromSchedulerMessage` classifies it as a retryable capacity
             // error (429/503) exactly as the legacy engine's rejections.
-            continuation.yield(.error(EngineV2Translation.admissionErrorMessage(for: error)))
+            continuation.yield(.error(EngineV2Translation.admissionErrorMessage(
+                for: error, distributedProfile: distributedProfile)))
             continuation.finish()
             return stream
         }
@@ -936,12 +1061,12 @@ extension EngineV2Bridge {
             id: id, events: events, continuation: continuation,
             holdsSharedReservation: sharedKVReserved,
             stopSequences: cbv2Request.stopStrings,
-            logprobsChannel: logprobsChannel,
             usageSignal: usageSignal,
             prefixCacheReceiptID: prefixCacheReceiptID,
             readyReceiptRegistered: readyReceiptRegistered,
             profile: profile,
-            nativeRetirement: nativeRetirement
+            nativeRetirement: nativeRetirement,
+            httpResponse: distributed == nil ? nil : httpResponse
         )
 
         let bridge = self

@@ -59,7 +59,7 @@ struct NemotronSuperPrefixCacheEvidenceTests {
         func record(_ event: GenerationEvent) {
             switch event {
             case .chunk(let chunk): text += chunk
-            case .info: break
+            case .logprobs, .info: break
             case .error(let message): errors.append(message)
             case .terminal(_, let message, _, _): errors.append(message)
             }

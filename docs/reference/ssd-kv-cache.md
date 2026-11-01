@@ -561,3 +561,99 @@ observations remain available through these surfaces.
 - [`../architecture/security/encryption.md`](../architecture/security/encryption.md) — key hierarchy
 - [`../design/ssd-kv-cache.md`](../design/ssd-kv-cache.md), [`../design/ssd-kv-cache-v1-design.md`](../design/ssd-kv-cache-v1-design.md) — superseded design records
 - Tests: `provider-swift/Tests/ProviderCoreTests/KVCacheSSD/SSDPrefixCacheTests.swift`
+
+## Cluster cache ownership (experimental, staging)
+
+`ClusterCacheIdentity` and `ClusterCacheWriterLease`
+(`provider-swift/Sources/ProviderCore/KVCacheSSD/ClusterCacheOwnership.swift`,
+mirrored on the coordinator side in `Layr-Labs/darkbloom-platform`) are the
+ownership contracts clustering adds on top of the epoch seam, without
+changing it: a cluster cache namespace is scoped to the authorization
+boundary plus the exact model aggregate, prompt contract, build,
+layout/shard placement, activation precision and cache epoch (fuzzy or
+absent fields cannot construct an identity — safe miss by construction),
+and writes are fenced to one authoritative owner per namespace and physical
+root (canonical root keys, exact-owner admission, strict supersession, no
+reconnect regain). No call site consumes them yet and there is no
+cross-host raw-KV reuse contract; the epoch store, durable-budget
+accounting and publication behavior are unchanged.
+
+## Cluster prompt-prefix records
+
+The two-Mac cluster's ranks keep their prompt prefixes in their own encrypted
+records under `<cache base>/darkbloom/cluster-prefix-v1`, separate from the
+`kv3/` tier above and its DBK3 format
+(`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Prefix/QwenStagePrefixDiskTier.swift`,
+`QwenStagePrefixDiskRecord.swift` beside it). Attention rows are stored at the
+pair's checkpoint precision, `balanced` by default; the mechanism, eligibility
+per family and bindings are in the
+[cluster record encoding](../architecture/inference.md#cluster-ssd-prefix-record-encoding).
+
+| Item | Value | Code |
+|---|---|---|
+| Path | `<root>/v1-<24 hex of the plan scope digest>/rank<r>/<32 hex keyed tag>.dbpx`; an encoding that encodes anything adds `\|records=<selection>:<profile identity>:<family>` to the plan scope, so its records live in their own directory | `QwenStagePrefixDiskTier.planDirectoryName`, `QwenStagePrefixDiskEncoding.planScopeSuffix` |
+| File | Magic `DBPXSSD1`, the record's data key sealed with the owner-derived key, the JSON header sealed with the data key, then every unit sealed under a nonce made of its index | `QwenStagePrefixDiskIO` |
+| Attention units | Rows `[k * blockTokens, ...)` of every head of one entry; a frontier `f` on the block grid reads only its own units | `QwenStagePrefixDiskHeader.Attention` |
+| Encoded entry | Header `nativeFrom` = committed tokens less the profile's `recentTokenCount` (128): per head, rows below it encoded (`encodedRowBytes`: codes, FP32 scales, FP32 offsets), the rest native; absent means every row native | `QwenStagePrefixDiskEncodedRows` |
+| Record encoding | Header `encoding` (`quantization`, `identity`, `family`), absent for native records; must equal the tier's, and every entry's `nativeFrom` must be what that encoding writes, or the record is refused and deleted | `QwenStagePrefixDiskRestoreWork`, `QwenStagePrefixDiskTier` (`loadIndex`) |
+| Always native | Recurrent and convolution state, speculative (MTP) history (a NextN history a record keeps as an attention entry included), GLM index keys and pool gates | `QwenStagePrefixDiskFamily`, `QwenStagePrefixDiskEncoding.nativeLayers` |
+| Restore | Decoded into page-aligned native buffers the arrays own: `[1, heads, frontier, width]` of the captured dtype, as a native record restores; older rows approximate | `QwenStagePrefixDiskRestoreWork.place` |
+| Restored rows written again | An encoded row whose native bytes equal the decode of the same row in the record holding the prompt's deepest kept prefix on this rank is stored as that record's bytes, not encoded again (the codec is not idempotent on its own output); that record is pinned until the new one is written, and if it cannot be read the new record is dropped (`reason=verbatim_source_unreadable`). The `persist` line logs `verbatim_rows` | `QwenStagePrefixDiskVerbatimSource`, `QwenStagePrefixDiskTier.persist` |
+| Switch | `DARKBLOOM_CLUSTER_PREFIX_SSD_QUANTIZATION` on the rank, from the owner ([configuration](configuration.md#cluster-ssd-prefix-record-precision)) | `QwenStagePrefixDiskEncoding.fromEnvironment` |
+
+## GLM cluster image exclusion
+
+| Input | SSD prefix behavior | Enforcement |
+|---|---|---|
+| Bounded GLM cluster still image | No restore or capture; cold prompt on both ranks | `agreeGLM5NextStagePrefixPlan` in `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/GLM5Next/Prefix/GLM5NextStagePrefix.swift` |
+
+See [image prefix isolation](../architecture/prefix-cache.md#glm-cluster-image-prefix-isolation).
+
+## Cluster prefix tenant partitions
+
+Each pair rank's SSD records carry the request's partition in their sealed
+record scope; directories, file names (keyed tags of the record key) and the
+record format are unchanged.
+
+| Request (`ClusterWorkerReservation.prefixCache`) | SSD record behavior | Enforcement |
+|---|---|---|
+| None (cache on, no salt) | The plan's earlier scope; read and written as before | `ClusterWorkerPrefixCache.scope` in `libs/darkbloom-cluster/Sources/DarkbloomClusterProtocol/ClusterWorkerPrefixCache.swift` |
+| `tenant` | Scope carries `\|tenant=` and the salt's SHA-256 digest; offered, restored and written only for that tenant | the same helper, through `qwenStagePrefixScope`, `QwenTensorParallelResidentRuntime.batchPrefixScope` and `GLM5NextTensorParallelResidentRuntime.prefixDiskScope` |
+| `disabled` | Nothing offered, restored or written | the same helper (no scope) |
+
+See [cluster prefix tenant partitions](../architecture/prefix-cache.md#cluster-prefix-tenant-partitions).
+
+## Cluster resident sliding restore
+
+| Operation | SSD effect | Implementation |
+|---|---|---|
+| Bounded chronological restoration of a cluster sliding prefix | None; resident request rows only, no DBK3 format or persistent identity change | `CBv2PagedPrefixRestore.write` in `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/State/CBv2PagedPrefixRestore.swift` |
+
+See [cluster sliding prefix adoption](../architecture/prefix-cache.md#cluster-sliding-prefix-adoption).
+
+## Nemotron prefix frontier compatibility
+
+Registered Nemotron SSD prefix reuse accepts only original global prefill
+chunk boundaries. The `nemotron-prefix-chunk-grid-v1` numerical receipt changes
+its cache scope, so records created under the former final-token split are not
+offered in that scope. Authentication, rank ownership, storage limits, restore
+confirmation and retirement remain unchanged. See the
+[chunk-grid reuse policy](../architecture/prefix-cache.md#nemotron-chunk-grid-reuse).
+
+## Gemma prefix frontier compatibility
+
+Gemma 4's `gemma4-original-chunk-grid-v1` numerical receipt separates the
+registered rows' new existing-chunk prefix scope from prior final-token-split
+records. Resident and SSD hits obey identical frontier filtering and bilateral
+restore confirmation. See [Gemma reuse](../architecture/prefix-cache.md#gemma-chunk-grid-reuse).
+
+MiMo cluster independent page histories are not eligible for the contiguous
+trained-head COMPLETE checkpoint codec. Plain, compact, MTP and phase page
+paths disable cluster prefix reuse; the standalone contiguous row above keeps
+its existing contract. See [the cluster boundary](../architecture/prefix-cache.md#mimo-cluster-paged-mode-boundary)
+and `MiMoV26MTPHistoryStorage` in
+`libs/mlx-swift-lm/Libraries/MLXLLM/Models/MiMo/MiMoV26MTP.swift`.
+
+The Qwen27 TP batch prefix cache is resident memory only. It does not read,
+write or reinterpret an encrypted SSD checkpoint. Its keys, bounded storage
+and bilateral lifetime are described in the [prefix architecture](../architecture/prefix-cache.md#cluster-sliding-prefix-adoption).

@@ -359,7 +359,7 @@ struct FlintResponseFormatOutputTests {
                 case .content(let text): outcome.content += text
                 case .toolCall: outcome.calls += 1
                 case .toolCallDelta(let delta): if delta.completed != nil { outcome.calls += 1 }
-                case .info, .logprobs: break
+                case .logprobs, .info: break
                 }
             }
         } catch { outcome.error = error }

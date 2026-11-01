@@ -5,6 +5,8 @@ on:
     outputs:
       provider:
         value: ${{ jobs.changes.outputs.provider }}
+      sdk:
+        value: ${{ jobs.changes.outputs.sdk }}
 
 permissions:
   contents: read
@@ -17,10 +19,14 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       provider: ${{ steps.paths.outputs.provider }}
+      sdk: ${{ steps.paths.outputs.sdk }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           fetch-depth: 0
+          # The classifier diffs trees and walks commits; it reads no file
+          # contents outside the checkout, so a blobless clone is enough.
+          filter: blob:none
           persist-credentials: false
       - name: Classify complete base-to-head Git diff
         id: paths

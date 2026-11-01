@@ -2,7 +2,7 @@ name: Provider CI Build
 description: Build full debug test products with lane-specific caches and source-matched Metal
 inputs:
   lane:
-    description: provider, sdk, or parity; each owns independent build outputs
+    description: provider or sdk; each owns independent build outputs
     required: true
 runs:
   using: composite
@@ -13,7 +13,7 @@ runs:
         LANE: ${{ inputs.lane }}
       run: |
         case "$LANE" in
-          provider|sdk|parity) ;;
+          provider|sdk) ;;
           *) echo "Unknown provider CI lane: $LANE" >&2; exit 2 ;;
         esac
     - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -54,22 +54,15 @@ runs:
             -path "$root/*-apple-macosx/*/*.bundle" -prune -exec rm -rf {} +
         done
     - name: Build all provider test products
-      if: inputs.lane != 'sdk'
+      if: inputs.lane == 'provider'
       id: provider-build
       shell: bash
       working-directory: provider-swift
-      env:
-        LANE: ${{ inputs.lane }}
-      # The provider lane instruments Swift code for the coverage report at the
-      # end of its job. Both builds use the same flags, so neither rebuilds the
-      # other. The parity lane has no coverage report and builds as before.
+      # Instrumented for the coverage report. Both builds use the same flags,
+      # so neither rebuilds the other.
       run: |
-        coverage=()
-        if [ "$LANE" = provider ]; then
-          coverage=(--enable-code-coverage)
-        fi
-        swift build --build-tests ${coverage[@]+"${coverage[@]}"}
-        swift build --product darkbloom-fan-helper ${coverage[@]+"${coverage[@]}"}
+        swift build --build-tests --enable-code-coverage
+        swift build --product darkbloom-fan-helper --enable-code-coverage
     - name: Build all SDK test products against local MLX
       if: inputs.lane == 'sdk'
       id: sdk-build

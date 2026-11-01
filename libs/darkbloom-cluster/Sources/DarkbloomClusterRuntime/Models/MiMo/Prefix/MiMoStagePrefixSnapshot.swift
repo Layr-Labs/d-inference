@@ -106,12 +106,16 @@ enum MiMoStagePrefixSnapshot {
                       pair.conv.dim(0) == 1, pair.ssm.dim(0) == 1, pair.conv.dim(1) == pair.ssm.dim(1) else {
                     throw ProbeError("MiMo prefix restore lacks sliding-window layer \(layer)")
                 }
-                let meta = cache.metaState
-                guard meta.count == 5 else { throw ProbeError("MiMo prefix restore found an unknown ring") }
+                // The fresh ring's own values, with the offset and write
+                // position the original ring had after its frame: the tail in
+                // temporal order, not wrapped (a ring wrapped back to the end
+                // of its buffer continues the same).
+                guard let metadata = MiMoSlidingRing.metadata(window: window, offset: frontier, index: kept,
+                                                              wrapped: false) else {
+                    throw ProbeError("MiMo prefix restore found an unknown ring")
+                }
                 cache.state = [owned(pair.conv), owned(pair.ssm)]
-                // keep, window, step as the fresh ring has them; offset and the
-                // write position as the original ring had them after its frame.
-                cache.metaState = [meta[0], meta[1], meta[2], String(frontier), String(kept)]
+                cache.metaState = metadata
                 slidingLayers.insert(layer)
             }
             guard cache.offset == frontier else { throw ProbeError("MiMo prefix restore left a layer at another frontier") }
@@ -147,8 +151,8 @@ enum MiMoStagePrefixSnapshot {
 
     static func kind(_ cache: KVCache) throws -> Kind {
         if let ring = cache as? RotatingKVCache {
-            guard let window = ring.maxSize, window > 0, ring.metaState.count == 5, ring.metaState[0] == "0" else {
-                throw ProbeError("MiMo prefix needs a sliding ring with no kept prefix")
+            guard let window = ring.maxSize, window > 0, MiMoSlidingRing.isModelRing(ring) else {
+                throw ProbeError("MiMo prefix needs the model's sliding ring: no kept prefix or rewind reserve")
             }
             return .sliding(window: window)
         }

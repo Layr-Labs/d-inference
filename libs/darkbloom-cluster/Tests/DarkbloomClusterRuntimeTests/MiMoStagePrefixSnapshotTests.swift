@@ -189,6 +189,19 @@ struct MiMoStagePrefixSnapshotTests {
         #expect(captures.allSatisfy { $0.skipped == [21] && $0.states().isEmpty && !$0.keepsPrompt })
     }
 
+    // The pinned SDK writes a ring's metadata as seven values (keep, window,
+    // step, offset, write index, capacity origin, wrapped); a rewind reserve
+    // adds an eighth. Only the ring the model builds is a sliding layer.
+    @Test func onlyTheModelsOwnRingIsASlidingLayer() throws {
+        let window = Equivalence.window
+        #expect(try MiMoStagePrefixSnapshot.kind(RotatingKVCache(maxSize: window)) == .sliding(window: window))
+        #expect(try MiMoStagePrefixSnapshot.kind(KVCacheSimple()) == .full)
+        for foreign in [RotatingKVCache(maxSize: window, keep: 1), RotatingKVCache(maxSize: window, step: 4),
+                        RotatingKVCache(maxSize: window, rewindCapacity: 2)] {
+            #expect(throws: (any Error).self) { try MiMoStagePrefixSnapshot.kind(foreign) }
+        }
+    }
+
     @Test func aRestoreRefusesAStateThatIsNotThisStagesOwn() throws {
         let (plan, models) = try Self.stages(cut: 2)
         let captures = [ClusterStagePrefixCapture.mimo(frontiers: [8, 16, 22]), ClusterStagePrefixCapture.mimo(frontiers: [8, 16, 22])]

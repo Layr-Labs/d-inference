@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-10-31
+> Last updated: 2026-11-01
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -4774,6 +4774,26 @@ Code: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/MiMo/Reside
 `libs/mlx-swift-lm/Libraries/MLXLLM/Models/MiMo/MiMoV26IndependentHistory.swift`
 and `MiMoV26IndependentHistoryCache.swift`. See
 [MiMo independent-history checks](../developer/test.md#mimo-independent-history-batch-checks).
+
+### MiMo contiguous ring metadata
+
+Image candidates, cluster prompt-prefix snapshots and contiguous phase
+hand-offs keep MiMo's ordinary caches: `KVCacheSimple` for full attention and
+`RotatingKVCache(maxSize: window)` for each sliding window. The pinned SDK
+writes a ring's `metaState` as seven values: keep, window, step, offset, write
+index, capacity origin and wrapped flag. A rewind reserve adds an eighth.
+
+| Path | What it writes or accepts |
+|---|---|
+| Model ring check (`MiMoSlidingRing.isModelRing`) | Only the model's own ring: every value except offset, write index and wrapped flag equals a fresh ring's |
+| Prefix capture and restore (`MiMoStagePrefixSnapshot`) | Restores a tail at the frontier's offset and write index, not wrapped |
+| Phase split (`MiMoPhaseSplitState`) | Replays the frame grid for the write index and wrapped flag; exports or adopts a ring only when its whole metadata matches |
+| Page histories (`MiMoPhaseSplitState.pagedMetadata`) | Keep their own five values |
+
+A kept prefix, another step or origin, a rewind reserve or another layout is
+refused. Code: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/MiMo/Generation/MiMoSlidingRing.swift`,
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/MiMo/Generation/MiMoPhaseSplit.swift`
+and `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/MiMo/Prefix/MiMoStagePrefixSnapshot.swift`.
 
 ### Gemma paged prefix restoration
 

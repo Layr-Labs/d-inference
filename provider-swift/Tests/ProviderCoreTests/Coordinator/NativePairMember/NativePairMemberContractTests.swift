@@ -24,7 +24,8 @@ struct MemberContractFixture {
     let expiresUnix: Int64
 
     init(lifetimeSeconds: Int64 = 12, preparationSeconds: Int64 = 5,
-         schedule: ClusterNativePrefillSchedule = .oneChunkLookahead) throws {
+         schedule: ClusterNativePrefillSchedule = .oneChunkLookahead,
+         model: String = "fixture-model", chip: String = "Apple M4") throws {
         let now = Int64(Date().timeIntervalSince1970 * 1_000_000_000)
         prepareUnix = now + preparationSeconds * 1_000_000_000
         expiresUnix = now + lifetimeSeconds * 1_000_000_000
@@ -39,10 +40,10 @@ struct MemberContractFixture {
             for shift in stride(from: T.bitWidth - 8, through: 0, by: -8) { p.append(UInt8(truncatingIfNeeded: value >> shift)) }
         }
         func string(_ text: String) { let bytes = Data(text.utf8); integer(UInt32(bytes.count)); p.append(bytes) }
-        string("explicit-cpu-contract-only"); string("fixture-model"); integer(UInt64(11))
+        string("explicit-cpu-contract-only"); string(model); integer(UInt64(11))
         hashes.forEach { p.append($0) }; p.append(contentsOf: [1, 1, schedule.rawValue])
         integer(UInt32(4136)); integer(UInt32(4096)); integer(UInt64(64)); integer(UInt64(262144))
-        integer(UInt64(now + 3_600_000_000_000)); integer(UInt32(1)); string("Apple M4")
+        integer(UInt64(now + 3_600_000_000_000)); integer(UInt32(1)); string(chip)
         policy = p
         let common = try ClusterNativeAuthorizationCommon(epoch: UUID(), membershipGeneration: 7, nativePolicyGeneration: 11,
             membershipTranscriptSHA256: memberDigest("fixture-membership"),
@@ -64,7 +65,7 @@ struct MemberContractFixture {
             try memberDigest("contract-resource").write(to: resource, options: .withoutOverwriting)
             let gate = directory.appendingPathComponent(".darkbloom/cluster-device")
             try FileManager.default.createDirectory(at: gate, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-            let identity = ClusterWorkerIdentity(membershipEpoch: common.epoch, modelID: "fixture-model",
+            let identity = ClusterWorkerIdentity(membershipEpoch: common.epoch, modelID: model,
                 artifactSHA256: memberHex(hashes[1]), configurationSHA256: memberHex(memberDigest("fixture-config")),
                 peers: (0..<2).map { ClusterWorkerPeer(id: "peer-\($0)", buildSHA256: memberHex(hashes[2])) })
             let profile = ClusterWorkerProfile(id: "fixture-profile", vocabularySize: 1000,
@@ -72,7 +73,7 @@ struct MemberContractFixture {
             installed.append(try NativePairMemberInstallation(expectedCoordinatorPolicy: p, rank: rank,
                 clusterID: "native-member-contract", identity: identity, profile: profile,
                 installedOwner: owner, ownerSHA256: memberHex(native), nativeExecutable: owner,
-                metallib: metallib, resourceLibrary: resource, chip: "Apple M4", leaseDirectory: gate))
+                metallib: metallib, resourceLibrary: resource, chip: chip, leaseDirectory: gate))
         }
         installations = installed
     }

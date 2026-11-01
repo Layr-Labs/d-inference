@@ -80,11 +80,22 @@ public struct ProviderLoopConfig: Sendable {
         self.pairServingGrantedModelIDs = pairServingGrantedModelIDs
     }
 
-    /// Whether this configuration admits a model: by the single-Mac
-    /// requirements, or, for a cluster member only, by the pair-serving grant
-    /// its rank passed for that model.
+    /// Whether this configuration admits a model (`ProviderExecutionRole.admitsModel`).
     func admitsModel(_ modelID: String) -> Bool {
-        (executionRole == .clusterMember && pairServingGrantedModelIDs.contains(modelID))
+        executionRole.admitsModel(modelID, pairServingGrantedModelIDs: pairServingGrantedModelIDs,
+            runtimeCapabilities: runtimeCapabilities)
+    }
+}
+
+extension ProviderExecutionRole {
+    /// Whether a provider in this role admits a model: by the single-Mac
+    /// requirements, or, for a cluster member only, by the pair-serving grant
+    /// its rank passed for that model. A member's capabilities are
+    /// hardware-only (`DistributedServingEligibility.memberCapabilities`), so
+    /// its grant, not the single-Mac requirements, admits its pair model.
+    func admitsModel(_ modelID: String, pairServingGrantedModelIDs: Set<String>,
+                     runtimeCapabilities: Set<ProviderRuntimeCapability>) -> Bool {
+        (self == .clusterMember && pairServingGrantedModelIDs.contains(modelID))
             || ModelRuntimeRequirements.isEligible(modelID: modelID, available: runtimeCapabilities)
     }
 }

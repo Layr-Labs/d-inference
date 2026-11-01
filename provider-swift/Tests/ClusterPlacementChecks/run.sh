@@ -38,6 +38,7 @@ xcrun swiftc -j 4 "${task_flags[@]}" -D DARKBLOOM_CLUSTER_FIXTURE_ARTIFACTS -par
   "$task_provider/Sources/ProviderCore/Config/ClusterRuntimeApproval.swift" "$task_provider/Sources/ProviderCore/Protocol/ClusterRosterRegistration.swift" \
   "$task_provider/Tests/ClusterInstalledSessionChecks/AttestationSignerStandIn.swift" \
   "$task_provider/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledPairServingGrant.swift" \
+  "$task_provider/Sources/ProviderCore/Inference/Distributed/Installed/ClusterPublicModels.swift" \
   "$task_provider/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledPairQualificationRecords.swift" \
   "$task_provider/Sources/ProviderCore/Inference/Distributed/Placement/ClusterPlacementSetup.swift" \
   "$task_provider/Sources/ProviderCore/Inference/Distributed/Placement/ClusterPlacementFlow.swift" \

@@ -1,6 +1,6 @@
 # Release A Provider Version
 
-> Last updated: 2026-10-28
+> Last updated: 2026-10-31
 
 Build, sign, notarize and publish an explicitly authorized provider artifact.
 The pipeline registers its exact official identity through the external platform
@@ -27,70 +27,45 @@ runs the resolve, build, qualification, signing, R2 staging and publication
 chain for one environment. To find the newest dev release, read
 `https://api.dev.darkbloom.dev/v1/releases/latest`.
 
-`ProviderCore.version` is prepared as `0.10.4`, a patch release over `v0.10.3`.
-A Qwen 3.5, 3.6 or 3.8 request with a JSON `response_format` and no thinking
-control answers without thinking, and on `qwen3_5` and `qwen3_5_moe` text
-requests without tools the answer is grammar-constrained. Qwen3.5-9B,
-Qwen3.5-35B-A3B, Qwen3.6-35B-A3B and MiMo-V2.6-Flash advertise forced
-`tool_choice`. A request that restored a Qwen native recurrent complete
-checkpoint writes its later checkpoints as deltas. A signed local add-on such
-as the Darkbloom Sandbox can hold the provider, which stays connected, leaves
-routing and unloads its models.
-`darkbloom status` and `darkbloom doctor` say why a connected provider gets no
-coordinator work, the provider re-registers a connection the coordinator leaves
-unauthorized, and a stalled coordinator reconnect fails after 30 seconds and
-retries. `darkbloom stop` finishes without a coordinator session,
-`darkbloom status` says what its served counts cover, and `darkbloom switch`
-scans the configured model cache. The MLX pins are unchanged from 0.10.3. The
-entry also records desktop app, CI, landing and documentation changes that build
-no provider artifact. See the [`v0.10.4` changelog entry](../../CHANGELOG.md)
-for the full scope.
+`ProviderCore.version` is prepared as `0.10.5`, a patch release over `v0.10.4`.
+`darkbloom sandbox` sets up, checks, pauses, resumes and removes the Darkbloom
+Sandbox add-on from the provider CLI. GPT-OSS client stop sequences match only
+the Harmony final message, which ends its reasoning-only empty answers, and Qwen
+3.5 and 3.6 no longer loop to `max_tokens` when sampling is omitted. A dense Qwen
+follow-up restores its checkpoint from just below the previous prompt end. SSD
+checkpoint restores, eviction, maintenance, reads and donations are faster,
+expired checkpoints no longer count as corrupt and cache sweeps no longer stall
+lookups. The provider reconnects faster after a long session or a 1012 close,
+keeps prompt-cache hits across batch promotion, drops response chunks processed
+while disconnected and keeps a model download's completion. The MLX pins move to
+their forks' `main`. See the [`v0.10.5` changelog entry](../../CHANGELOG.md) for the full
+scope.
 
-Before tagging `v0.10.4`:
+Before tagging `v0.10.5`:
 
-- Confirm that the tagged commit still pins `libs/mlx-swift` to `4926d3d9` and
-  `libs/mlx` and the nested `mlx` to `31f550af`, the heads of the mlx-swift and
-  mlx branches `hotfix/0.10.2-jit-nax-dsplit`, and `libs/mlx-swift-lm` to
-  `aee6ebb6`, the head of SDK `main`. Neither fork's `main` contains its pinned
-  commit, so keep both hotfix branches.
-- With those pins the tag build's `metallib_hash` should equal v0.10.3's
-  `6ccc62966bb452b767fbd7261175b06c7653259a25f657524f1c1ef71f556d45`. The
-  `bin/mlx.metallib` in the `v0.10.2` bundle, built before 0.10.3's MLX fix
-  (C++ only), has the same hash. A different hash needs an explanation, such as
-  a changed Metal toolchain.
+- Confirm that the tagged commit pins `libs/mlx` and the nested `mlx` to
+  `72dffa2d`, `libs/mlx-swift` to `c633d221` and `libs/mlx-swift-lm` to
+  `2beb401f`, all on their forks' `main`. The 0.10.2 hotfix branches are no
+  longer pinned; the NAX head-dim split fix they carried (`mlx` `31f550af`) is
+  in `72dffa2d`'s `jit_kernels.cpp`.
+- The tag build's `metallib_hash` differs from v0.10.4's
+  `6ccc62966bb452b767fbd7261175b06c7653259a25f657524f1c1ef71f556d45`: twelve
+  Metal backend files change between the `mlx` pins, including
+  `kernels/fence.metal`. Record the new hash. Complete SSD checkpoints that 0.10.4
+  wrote are not restored by 0.10.5, because their namespace binds the binary and
+  loaded-metallib hashes.
 
 Roll out in this order; each step is a separate approval:
 
-1. Shortly before the tag, deploy a `darkbloom-platform` coordinator that
-   includes [darkbloom-platform#516](https://github.com/Layr-Labs/darkbloom-platform/pull/516),
-   [#491](https://github.com/Layr-Labs/darkbloom-platform/pull/491) and
-   [#541](https://github.com/Layr-Labs/darkbloom-platform/pull/541). #516's
-   prompt sidecar plans a Qwen JSON `response_format` without thinking, as
-   0.10.4 renders it. While a provider and the coordinator disagree, that
-   provider's Qwen JSON requests without a thinking control fail their cache
-   receipts with `prompt_anchor_mismatch`, and each failure quarantines its
-   cache affinity for the whole model for up to 10 minutes; serving is
-   unaffected. #491 repeats a refusal every 5 seconds while App Attest serving
-   is on, and #541 tells a legacy Mac when its first passing challenge
-   authorizes it; 0.10.4's `Traffic:` line and re-registration act only on
-   that current evidence.
-2. Tag `v0.10.4` ([step 4](#4-tag-and-push-production-source)).
-3. The platform snapshots its provider contracts from the tagged commit
+1. Tag `v0.10.5` ([step 4](#4-tag-and-push-production-source)). No coordinator
+   deployment is needed first, and no provider-version floor applies.
+2. The platform snapshots its provider contracts from the tagged commit
    (`python3 scripts/provider-contracts.py snapshot <tag commit>`), sets
-   `LatestProviderVersion` to `0.10.4` in the coordinator's
-   [`server.go`](https://github.com/Layr-Labs/darkbloom-platform/blob/5ba280d89aa5e9bd4fbf05e0dfa848059cd3b585/coordinator/api/server.go)
-   in the same change and adds the revision row to its
-   [provider-contract reference](https://github.com/Layr-Labs/darkbloom-platform/blob/5ba280d89aa5e9bd4fbf05e0dfa848059cd3b585/docs/reference/provider-contracts.md).
-   Of the snapshotted inputs, only `contracts/provider/ProviderCore.swift`
-   should change: the prompt vectors are unchanged since `a8556957`, the
-   revision the platform already pins. `LatestProviderVersion` is a fallback
-   and does not gate publication.
-
-No provider-version floor is needed. Coordinators send forced `tool_choice` only
-to providers that advertise it, and only 0.10.4 providers advertise it for those
-four models. The add-on hold's coordinator side,
-[darkbloom-platform#514](https://github.com/Layr-Labs/darkbloom-platform/pull/514),
-is already in production.
+   `LatestProviderVersion` to `0.10.5` in the coordinator's `server.go` in the
+   same change and adds the revision row to its provider-contract reference. Of
+   the 34 snapshotted inputs, pinned at v0.10.4's `8effff7f`, only
+   `contracts/provider/ProviderCore.swift` should change. `LatestProviderVersion`
+   is a fallback and does not gate publication.
 
 0.10.2's remaining enablement steps do not wait for this tag and still apply;
 each is a separate approval:
@@ -107,27 +82,21 @@ Catalog changes, allowlist changes and model registration are separate
 approvals. This preparation does not tag, register, upload, deploy or enable
 anything.
 
-Platform evidence, inspected on 2026-10-27 (recheck before tagging):
+Platform evidence, inspected on 2026-10-30 (recheck before tagging):
 
 | Claim | Source |
 |---|---|
-| Production runs platform `master` `2acffb5c`, which includes darkbloom-platform#514 and #464's `0.10.2` logprobs floors but not #516, #491 or #541 | `/health` `build_commit`; [`modelarch/logprobs.go` at `2acffb5c`](https://github.com/Layr-Labs/darkbloom-platform/blob/2acffb5c301547b085b846adbc2a3fed95fafb2c/coordinator/internal/modelarch/logprobs.go) (`LogprobsMinimumProviderVersion`); #514 merged as `6259c9dc`, #516 as `5a779a11`, #491 as `809d2366` and #541 as `6beb8514` |
-| #516 plans a Qwen JSON `response_format` without thinking | [`normalize.rs` at `5a779a11`](https://github.com/Layr-Labs/darkbloom-platform/blob/5a779a113b3874bf06f597f6c4107a4d08103a6f/coordinator/promptsidecar/src/normalize.rs) (`template_additional_context`) and [`response_format.rs`](https://github.com/Layr-Labs/darkbloom-platform/blob/5a779a113b3874bf06f597f6c4107a4d08103a6f/coordinator/promptsidecar/src/response_format.rs) (`requires_json_output`) |
-| A `prompt_anchor_mismatch` quarantines the provider's cache capability for that model: 60 s, doubling on repeats up to 10 min | [`registry/cache_quarantine.go` at `2acffb5c`](https://github.com/Layr-Labs/darkbloom-platform/blob/2acffb5c301547b085b846adbc2a3fed95fafb2c/coordinator/registry/cache_quarantine.go) (`CacheQuarantineCommit.Apply`) and [`cachetracker/proofs.go`](https://github.com/Layr-Labs/darkbloom-platform/blob/2acffb5c301547b085b846adbc2a3fed95fafb2c/coordinator/internal/registry/cachetracker/proofs.go) (`ProofFenceBase`, `ProofFenceMax`) |
-| #491 repeats an unauthorized connection's `trust_status` every 5 s while App Attest serving is on; #541 sends one when a verdict changes its `authorization.path` | [`serving_diagnostic.go` at `6beb8514`](https://github.com/Layr-Labs/darkbloom-platform/blob/6beb851488e08b3fc950b46f5002a502c4fcc9d4/coordinator/appattest/service/serving_diagnostic.go) (`startUnauthorizedStatusRefresh`) and [`trust/status.go`](https://github.com/Layr-Labs/darkbloom-platform/blob/6beb851488e08b3fc950b46f5002a502c4fcc9d4/coordinator/api/provider/trust/status.go) (`notifyServingAuthorizationChange`) |
-| The provider-contract snapshot pins d-inference `a8556957`, and its 34 inputs equal those of this preparation except `ProviderCore.swift` | [`contracts/provider/manifest.json` at `5ba280d8`](https://github.com/Layr-Labs/darkbloom-platform/blob/5ba280d89aa5e9bd4fbf05e0dfa848059cd3b585/contracts/provider/manifest.json) (`source_revision`) |
-| Forced tool choice goes only to advertising providers | [`registry/tool_constraints.go` at `2acffb5c`](https://github.com/Layr-Labs/darkbloom-platform/blob/2acffb5c301547b085b846adbc2a3fed95fafb2c/coordinator/registry/tool_constraints.go) (`providerSupportsToolConstraintLocked`) |
-| A model without an allowlisted tuple gets no cache routing | [`cache-routing-rollout.md` at `9d44e01e`](https://github.com/Layr-Labs/darkbloom-platform/blob/9d44e01eb0d4f6052f2be471b8107b94754c5c3e/docs/operations/cache-routing-rollout.md) ("Add GLM-5.3-Flash", "Add Nemotron 3.5 Super") |
+| The provider-contract snapshot pins d-inference `8effff7f` (v0.10.4), and its 34 inputs equal this preparation's except `ProviderCore.swift` | [`contracts/provider/manifest.json` at `cb31f6b4`](https://github.com/Layr-Labs/darkbloom-platform/blob/cb31f6b44af25500eab72fa0adb01eb6c69864d6/contracts/provider/manifest.json) (`source_revision`) |
 | `LatestProviderVersion` must equal the snapshotted `ProviderCore.version` | [`provider_version_sync_test.go` at `5ba280d8`](https://github.com/Layr-Labs/darkbloom-platform/blob/5ba280d89aa5e9bd4fbf05e0dfa848059cd3b585/coordinator/tests/api/provider_version_sync_test.go) (`TestLatestProviderVersionMatchesProviderCore`) |
 
-`v0.10.3` was [published on 2026-10-26](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.3)
+`v0.10.4` was [published on 2026-10-28](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.4)
+from `8effff7f7067fec70b2e3b58de0a4ba47ea3986c`, `v0.10.3` was
+[published on 2026-10-26](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.3)
 from `3ddd11ce8d7204cc5aadefd2050376c583da4ff8`, `v0.10.2` was
 [published on 2026-10-26](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.2)
 from `f9d1af3d0d3e1838974a5cfdff0a08142977b45e`, `v0.10.1` was
 [published on 2026-10-24](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.1)
-from `9034a5a0f3526dec83ab6384e5264db595cb7549`, and `v0.10.0` was
-[published on 2026-10-23](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.0)
-from `1ef9c89f465ba1299b4938c2b0359e9ae33ed454`. Publication does not establish
+from `9034a5a0f3526dec83ab6384e5264db595cb7549`. Publication does not establish
 that every optional feature or environment has been activated.
 
 ## Prerequisites
@@ -327,7 +296,7 @@ The optimized job sets `DARKBLOOM_RELEASE_ENVIRONMENT`. For `dev`,
 `DARKBLOOM_ENV_DEV`; defaults are `wss://api.dev.darkbloom.dev/ws/provider` and
 `https://models.darkbloom.ai`
 (`provider-swift/Sources/ProviderBuildEnvironment/BuildEnvironment.swift`).
-`qualify-sdk` sets `DARKBLOOM_RELEASE_ENVIRONMENT: prod`, so its tests see
+`qualify-sdk-shard` sets `DARKBLOOM_RELEASE_ENVIRONMENT: prod`, so its tests see
 production defaults on every branch: on `dev`, an unset value compiles the dev
 identity (`provider-swift/Package.swift`). Config, CLI flags and
 `DARKBLOOM_R2_CDN_URL` still override defaults. Dev/prod products have different
@@ -592,9 +561,11 @@ fresh install takes the latest.
 
 After `build-provider` and `qualify-sdk` succeed, `build-and-release` consumes
 the source-bound unsigned artifact on `blacksmith-12vcpu-macos-27`. It does not
-wait for an environment approval. Release SDK selection is SDK 27.0 / Apple
-Swift 6.4, with `SDKROOT` covering compilation and linking; the final recorded
-SDK must match. The checksum-pinned GitHub CLI is installed by
+wait for an environment approval. `qualify-sdk` passes only when all five
+`qualify-sdk-shard` jobs pass and together executed the full provider suite.
+Release SDK selection is SDK 27.0 / Apple Swift 6.4, with `SDKROOT` covering
+compilation and linking; the final recorded SDK must match. The
+checksum-pinned GitHub CLI is installed by
 `scripts/install-macos-github-cli.sh` before downloads. Missing `gh` in an old
 run is a tooling failure, not a model or notarization failure.
 
@@ -605,8 +576,9 @@ run is a tooling failure, not a model or notarization failure.
 | 3 | Sign the canonical app with hardened runtime and preserve SwiftPM resources |
 | 4 | Copy `darkbloom`, `darkbloom-enclave` and `mlx.metallib` into regular files under `bin/`; these verification copies support current and older updaters, not flat installation |
 | 5 | Notarize, staple, rebuild/extract the final archive, run packaged smoke and compute final binary/archive/metallib and full CodeDirectory SHA-256 hashes |
-| 6 | Run `scripts/provider-release-publication.py prepare` to retain exact registration payload, original annotated-tag notes without the signature suffix, and source/run provenance |
-| 7 | Retain `provider-publication-<SOURCE_SHA>-<SIGNING_ATTEMPT>` for 30 days; always remove the signing keychain |
+| 6 | Compute the [cluster runtime facts](#cluster-runtime-facts) from the final archive, show them in the job summary and retain them as a run artifact |
+| 7 | Run `scripts/provider-release-publication.py prepare` to retain exact registration payload, original annotated-tag notes without the signature suffix, and source/run provenance |
+| 8 | Retain `provider-publication-<SOURCE_SHA>-<SIGNING_ATTEMPT>` for 30 days; always remove the signing keychain |
 
 All hashes describe final signed bytes. `scripts/install.sh` and self-update
 verify the `bin/` files before installing the app; the external artifact verifier
@@ -629,11 +601,15 @@ staging and performs these operations in order:
 The payload contains `version`, `platform=macos-arm64`, `backend=mlx-swift`,
 `binary_hash`, `bundle_hash`, `metallib_hash`, `code_directory_hash`,
 `source_commit`, `ci_run_id`, `require_app_attest_qualification=true`, `url`
-and `changelog`. The URL is the configured CDN followed by
+and `changelog`. It also contains `cluster_runtime` only when that environment's
+`*_CLUSTER_RUNTIME_ENABLED` variable is `true`
+([cluster runtime facts](#cluster-runtime-facts)). The URL is the configured CDN followed by
 `releases/v<VERSION>/artifacts/<BUNDLE_SHA256>/darkbloom-bundle-macos-arm64.tar.gz`.
 Use the retained payload, never hand-reconstruct hashes. The
-[pinned release-handler contract](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/api/releases/release_handlers.go)
-documents artifact validation; it predates automatic identity registration.
+[release handler, pinned at the platform `dev` merge that accepts `cluster_runtime`](https://github.com/Layr-Labs/darkbloom-platform/blob/df61dd6f93714b4458d0eef3125c377087c08b52/coordinator/api/releases/release_handlers.go)
+validates the artifact, records the build identity and reads the block strictly
+(`registry.ParseReleaseClusterRuntime`); a coordinator without that change
+refuses the field (`DisallowUnknownFields`).
 
 The updated platform verifies the staged archive and records complete native
 identity in its durable `AppAttestBuildQualification` registry before publication
@@ -671,6 +647,148 @@ reboots ([always on](../provider/cluster-always-on.md)). The
 environment-free signing workflow builds, stages, signs and verifies the helpers
 the same way. An owner signing a local build runs the same script with the
 Developer ID identity, then signs and notarizes the app as the workflow does.
+
+### Cluster Runtime Facts
+
+Each signed release can carry the cluster runtime facts of its final app as
+`cluster_runtime` in its `POST /v1/releases` payload. A coordinator that
+accepts the block derives from it that build's cluster approvals, their
+pair-serving grants (without one no pair of GLM-5.3-Flash or Qwen3.8-27B forms:
+[why](../architecture/inference.md#cluster-runtime-facts-of-an-installed-app)),
+and the parity qualifications (public traffic) of the models the build declares
+public (`ClusterPublicModels`: GLM-5.3-Flash and Qwen3.8-27B in pipeline and
+tensor parallel, the owner's decisions of 2026-10-31,
+[evidence](../reports/2026-10-31-public-cluster-models.md)). No operator posts
+approvals, grants or public qualifications per build. A coordinator applies the
+qualifications to each declared family on any Apple silicon pair: the declared
+placement names the evidence, not a limit, and GLM-5.3-Flash's schedule 2
+entries are inert because its runtime serves only the serial schedule
+([details](../reference/configuration.md#cluster-runtime-facts)). The block
+format and its rules are in the same reference.
+
+Every lane (dev branch, staging, prod) runs the step
+`Compute cluster runtime facts from the final signed app` of job
+`build-and-release`:
+
+1. It runs after notarization, stapling and the final-archive checks, and before
+   `prepare`.
+2. It reads no secret. It removes the two secret-derived values in the job's
+   `GITHUB_ENV` (`r2_public_url`, `coordinator_url`) and deletes the signing
+   keychain before any release code runs. The step fails unless the keychain
+   file is gone and `security find-identity -p codesigning` no longer lists
+   `$DEVELOPER_ID`.
+3. It checks the archive against `BUNDLE_HASH` and extracts it into a new
+   folder. Steps 4 to 6 are `scripts/provider-cluster-runtime-facts.sh`; the
+   app's own CLI runs with an empty environment (`env -i`), so the public
+   declaration and the qualification records are those of the build being
+   released.
+4. The final CLI prints the build's model list:
+   `<cli> cluster runtime-facts --list-release-models`. It holds every model
+   with a cluster stage adapter and a passing pair qualification record in the
+   build (`ClusterRuntimeApprovalFacts.releaseModels`).
+5. `scripts/provider-cluster-runtime-models.py --environment <env>` reads the
+   public catalog and model CDN of the lane's environment, the ones its app
+   reads (`provider-swift/identity/provider-identity.json`). For each listed
+   artifact it fetches the `manifest.json` encodings the provider reads (CDN,
+   then coordinator) and `config.json` from the CDN, never weights, and saves
+   the catalog entry's `id` and `input_modalities` beside them
+   (`catalog.json`). A listed model that catalog does not have is left out and
+   named in the job summary. Any other fetch or integrity failure fails the
+   step.
+6. The final CLI computes the facts:
+   `<cli> cluster runtime-facts --app <app> --release-candidates <folder>`. The
+   app's own worker describes each candidate (`--describe-runtime`); every
+   catalog model ID of a listed artifact gets one entry, with its pair-serving
+   grant. A declared model gets one parity qualification per declared family
+   and schedule; a tensor-parallel envelope admits the media its catalog entry
+   lists, a pipeline's text only. A declared pipeline whose `config.json` has
+   no layer count is left out and named on standard error, in the job log. The
+   step fails when a catalog model ID of a listed artifact has no candidate the
+   worker describes as the listed model, when no model is left, or when an ID a
+   coordinator would derive exceeds 128 bytes.
+
+The steps `Show the cluster runtime facts` and `Retain the cluster runtime facts`
+then write the block (or the failure) to the job summary and upload
+`cluster-runtime-<environment>-<SOURCE_SHA>-<ATTEMPT>` (30 days), in every lane
+and whether or not the block is sent.
+
+Whether the payload carries the block is decided by one repository variable per
+environment. The job reads it as `CLUSTER_RUNTIME_SEND`, which is `true` only
+when the run registers a release and the variable is set to `true` (GitHub
+compares the strings case-insensitively, so `True` counts too):
+
+| Variable | Lane | Unset or not `true` | `true` |
+|---|---|---|---|
+| `DEV_CLUSTER_RUNTIME_ENABLED` | dev branch (`release-dev-branch.yml`) | The payload is byte for byte the same as without this feature; a failure of the facts step only warns (`continue-on-error`) and the release continues | `prepare --cluster-runtime <file>` adds the block; a failure of the facts step fails the release before staging and registration |
+| `STAGING_CLUSTER_RUNTIME_ENABLED` | staging (`release-swift.yml`, master push) | as above | as above |
+| `PROD_CLUSTER_RUNTIME_ENABLED` | prod (`release-swift.yml`, tag) | as above | as above |
+
+Staging publication is refused today ("Unknown publication environment": no
+staging coordinator yet), so `STAGING_CLUSTER_RUNTIME_ENABLED` takes effect once
+staging publishes. `validate` (in `prepare`, `stage` and `publish`) accepts a valid block in any
+environment and refuses an invalid one, and one whose derived IDs
+(`release/<version>/<model>/s<1|2>`, `<approval ID>/grant` for a model with a
+grant, and `<approval ID>/q<n>` for each parity qualification) exceed 128
+bytes. It also refuses a payload whose registration body (the bytes
+`POST /v1/releases` sends, block included) exceeds the coordinator's 64 KiB
+limit (`MaxReleaseRegisterBodyBytes`), so an oversized body stops before
+staging. `prepare` also refuses a block file that is not canonical, and
+registration sends the block in that canonical form (a body without the block
+is sent exactly as before).
+
+With the variable set to `true`, a failure of the facts step stops the release
+before `prepare`, so nothing is staged or registered. Fix the cause (for
+example a catalog or CDN outage) and re-run the failed job, or first set the
+variable to anything but `true` to release without the block; for a tag, sign
+again with
+[Resume Signing From A Retained Unsigned Build](#resume-signing-from-a-retained-unsigned-build).
+
+Turn a variable on only after the coordinator of that environment accepts the
+block (`EIGENINFERENCE_CLUSTER_PAIR_APPROVALS_FROM_RELEASES`, darkbloom-platform);
+a coordinator that does not accept it yet must never receive it. Public cluster
+routing also needs `EIGENINFERENCE_CLUSTER_PUBLIC_ROUTING=true` on that
+coordinator.
+
+Before a release with the block registers, make sure the coordinator's catalog
+has room. It holds at most 64 approvals (the operator's per-build and per-model
+approvals included), 64 pair-serving grants and 256 parity qualifications. A
+release adds 2 approvals per model of its block (and up to 2 grants and 8
+qualifications per model). Releases are taken newest first, each whole: a
+release that would pass a bound is left out, so older releases' entries drop
+first, and the operator's entries are never displaced
+([`NativeRuntimeCatalogWithReleases`](https://github.com/Layr-Labs/darkbloom-platform/blob/df61dd6f93714b4458d0eef3125c377087c08b52/coordinator/registry/cluster_release_approvals.go)).
+When the catalog is short, prune the hand-posted per-build approvals of retired
+builds. After the first registration, check the coordinator log: the warning
+`release cluster approvals omitted` names a release left out and why, and
+`cluster pair catalog replaced` reports `approvals` and `omitted_releases`;
+`GET /v1/cluster/approvals` lists the derived `release/<version>/<model>/s<1|2>`
+approvals. On DevNet on 2026-10-31 the coordinator served 26 approvals (25
+per-model and 1 per-build) and the catalog listed 4 models, so each dev-branch
+release adds 8 approvals: the 4 newest releases fit (58 of 64) and a fifth is
+left out. Check the production catalog the same way before
+`PROD_CLUSTER_RUNTIME_ENABLED` is set.
+
+Rollout order:
+
+1. The platform change merges to the platform's `dev`, and DevNet deploys it.
+2. A person makes room in DevNet's catalog, if needed, and sets
+   `DEV_CLUSTER_RUNTIME_ENABLED=true`.
+3. This change merges to `dev`. The next dev-branch release registers with the
+   block; check the coordinator log for an omitted release. A pair registers by
+   itself after it updates.
+4. Both repositories go `dev` to `master`. The production coordinator deploys
+   with its switch on, a person checks its catalog's room and sets
+   `PROD_CLUSTER_RUNTIME_ENABLED=true`, and the release tag follows.
+
+To compute the facts of an installed or downloaded app by hand, give the models
+explicitly. Run that app's own CLI, so the public declaration and the records
+are that build's. A model given by hand has no catalog entry, so a declared
+model's request envelope then admits text only:
+
+```bash
+"/Applications/Darkbloom.app/Contents/MacOS/darkbloom" cluster runtime-facts \
+  --app /Applications/Darkbloom.app --model Qwen3.5-9B=/path/to/Qwen3.5-9B-folder
+```
 
 ## Recovery
 

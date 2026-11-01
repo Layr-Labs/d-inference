@@ -82,7 +82,7 @@ final class NativePairMemberSession: @unchecked Sendable {
         let (policy, start) = try NativePairMemberPolicy.preparation(Data(base64Encoded: message.payload)!)
         try installation.requireStart(start)
         guard policy.bytes == installation.policy.bytes, start.rank == installation.rank,
-              NativePairMemberInstallation.hex(Self.uuidBytes(start.common.epoch)) == message.epoch,
+              NativePairMemberPolicy.hex(Self.uuidBytes(start.common.epoch)) == message.epoch,
               start.common.membershipGeneration == message.generation,
               let prepare = message.prepareBeforeUnixNano, let expires = message.expiresAtUnixNano,
               wallUnixNanoseconds > 0, prepare > wallUnixNanoseconds, expires > prepare, UInt64(expires) < policy.notAfter else { throw NativePairMemberError.binding }

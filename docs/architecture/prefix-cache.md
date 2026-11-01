@@ -1,6 +1,6 @@
 # KV cache layouts and prefix caching
 
-> Last updated: 2026-10-26
+> Last updated: 2026-10-28
 
 How the provider lays out a request's KV cache, how it decides whether a
 previously computed prefix can be reused, and where reusable state lives:
@@ -529,6 +529,26 @@ validates the durable record without rotating it.
 See [routing evidence lifecycle](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/architecture/cache-aware-routing.md) and
 [eviction rules](../reference/ssd-kv-cache.md#size-and-eviction-rules).
 
+Both active SSD stores use `SSDOwnedEntryRetirement.evictOldest` to try one
+linear `SSDBlockIndex.oldest` probe before copying the index. If that file is
+busy or cannot be unlinked, one `SSDBlockIndex.oldestFirstSnapshot` bounds the
+remaining attempts. It yields the probe's order (last hit, then
+lexicographic tag) from a binary heap: O(n) to copy and build, then O(log n)
+per candidate tried, so the pass orders only as many entries as it walks. The
+snapshot includes recency and membership changes during the first attempt;
+later changes cannot extend or reorder the pass. The first tag is excluded,
+even if it was touched or replaced. Stable inputs keep the same LRU order;
+concurrent schedules can select different victims from a snapshot taken
+before the first attempt. File leases, epoch validation and the store's
+removal lock still govern retirement; external loss returns control to the
+disk budget after reconciliation so it can recheck usage before deleting
+another file. A closed store refuses every removal and is never reopened, so
+eviction makes no attempt in a store that is closed when the pass starts and
+ends the pass at the first attempt that frees nothing after the store closes.
+Other refusals (an unsafe root, a lost or unreadable epoch record) can clear,
+so the pass continues past them. Source:
+`provider-swift/Sources/ProviderCore/KVCacheSSD/SSDOwnedEntryRetirement.swift`.
+
 A natural `stop`/`length` donor exports its actual complete prompt checkpoints,
 one per file. A remote donor writes them only on evidence of demand: the
 coordinator's `cache_repeated_prefix_tokens` at or above the effective-token
@@ -667,6 +687,27 @@ live in `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/Dem
 `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineLoopV2.swift`
 (`executeMixed`). Existing checkpoint count/byte and storage floors remain.
 
+A dense Qwen donor's deepest boundary is otherwise the last full solo stripe
+end, up to 4,095 tokens below the prompt end. The next turn of a growing
+conversation re-prefills that gap. The engine with its paged complete store
+therefore also sets
+`CBv2SchedulerConfig.demandedLatestCheckpointMinimumTokens` to the store floor
+(`EngineV2Factory.demandedLatestCheckpointMinimumTokens`). A request the store
+would write then ends one range at the deepest aligned boundary at least
+`demandedLatestPromptEndMarginTokens = 64` tokens below its prompt end. The
+margin keeps the boundary inside the prefix the next turn shares even after
+the template re-renders the generation prompt. The cut is made only when it
+saves at least the floor over the start of the range it shortens. Beside
+decoding requests (512-token chunks) no cut qualifies at the default floor, so
+the ordinary geometry stays. The short-prompt fork target, the retained
+first/target/latest roles and fleet-novel refusal are unchanged; the cut
+boundary becomes the rolling latest. Dense Qwen restores token-exactly under
+any partition, as the parity rule above records. The partition is
+`demandedLatestCheckpointRange` in
+`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/DemandedShortCheckpointRange.swift`;
+scheduling and the first-token projection share it through
+`demandedCheckpointRange`.
+
 GLM-5.3-Flash captures its KDA state under the same range-end rule, but it has
 no solo stripe and its prefill chunk shares one 2,048-token step budget with
 the decode rows of other requests (`EngineV2Factory.glm5NextMaximumStepTokens`).
@@ -799,6 +840,15 @@ reads each candidate's size and recency under one lock, so request lookup visits
 only its prefix candidates and does not scan unrelated cached entries. A probe
 does not extend TTL; authenticated use still controls recency updates and
 validates replacements or evictions (`SSDHybridCheckpointStore+Read.swift`).
+Restores of one checkpoint share its per-file lease and read it in parallel;
+its writer and duplicate validation take the lease exclusively, in arrival
+order, and maintenance takes it only when no request holds or awaits it. A
+reader rewrites the file's mtime or removes a corrupt file only while it holds
+the file alone
+([same-file coordination](../reference/ssd-kv-cache.md#complete-checkpoint-payload)),
+so that mtime can trail the last hit. Whole-root TTL expiry therefore checks a
+loaded store's in-memory last hit before deleting its file and records a newer
+hit as the mtime (`SSDOwnedEntryRetirement.swift`).
 Before file I/O, the provider reserves bounded host read scratch. A shared
 native process owner prices destinations, zero-fill scratch, metadata and full
 request promises through Admission; it does not duplicate the provider's host

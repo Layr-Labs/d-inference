@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-10-30
+> Last updated: 2026-10-31
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -1659,6 +1659,7 @@ elapsed nanoseconds. Numerics only — never tokens, text or hashes
 | `maxWaiting` | 64 (`CBv2SchedulerConfig` init default) | `CBv2Contracts.swift`, `CBv2SchedulerConfig` |
 | `soloPrefillStripeTokens` | 4096 for dense Qwen3.5/3.8 (`Qwen35Model`, not `Qwen35MoEModel`); 2048 (`defaultSoloPrefillStripeTokens`) for families on the 512-token chunk; none for Gemma 4, because a stripe arms only above the plain chunk; `DARKBLOOM_CBV2_SOLO_PREFILL_STRIPE` | `EngineV2Factory+Configuration.swift` (`soloPrefillStripeTokens`) |
 | `bidirectionalMediaPrefillChunkCeiling` | 512 whenever the plain chunk is wider, otherwise unset | `EngineV2Factory+Configuration.swift` (`prefillGeometry`); `CBv2Contracts.swift` (`plainPrefillChunkSize`) |
+| `demandedLatestCheckpointMinimumTokens` | The paged complete store's effective-token floor for dense Qwen3.5/3.8 (`Qwen35Model`, not `Qwen35MoEModel`), otherwise unset: a range ends just below the prompt end when that saves at least the floor ([end-of-prompt boundary](prefix-cache.md#streamed-complete-checkpoints)) | `EngineV2Factory+DemandedCheckpoint.swift` (`demandedLatestCheckpointMinimumTokens`) |
 | `maxConcurrentPartialPrefills` | 1; `DARKBLOOM_CBV2_MAX_PARTIAL_PREFILLS` | `EngineV2Factory+Configuration.swift`, `maxPartialPrefillsKey` |
 | Prompt-chunk attention | 128-query blocks (`DARKBLOOM_CBV2_ATTN_QUERY_BLOCK`; paged blocks other than Qwen4 QSA build an absolute mask), bounding the composed score tensor. A full-attention chunk with no window, softcap, vision span or bidirectional mask, whose head_dim MLX fuses (64/72/80/96/128; 256 on NAX from 1024 queries in bf16/fp16), is one `.causal` call on either KV backend (live packed paged KV keeps its own path); `DARKBLOOM_TTFT_FUSED_CAUSAL_PREFILL=0` restores blocks | `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/AttentionV1.swift` (`usesFusedCausalPrefill`), `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedLayerCache.swift` (`prefillAttend`) |
 | `enablePrefixCache` | true when the slot has an effective SSD cache, enabled paged resident cache, or recurrent checkpoint-bank configuration, or complete SSD checkpoint store; engine capability gates still apply | `EngineV2Factory+Production.swift` (`assembleProductionBuild`), `EngineV2.swift` |
@@ -2118,7 +2119,7 @@ disabled for this hybrid model.
 | `logit_bias` | `logitBias` — string keys parsed to non-negative `Int`; invalid keys dropped and counted | `[:]` |
 | `logprobs` + `top_logprobs` | `topLogprobs = logprobs ? min(20, max(1, top_logprobs ?? 0)) : 0` | `0` |
 | `max_tokens` | `maxTokens = max_tokens ?? 4096` | 4096 |
-| `stop` | `stopStrings`, matched on held-back detokenised text (`EngineV2Bridge+StopSequence.swift`) | `[]` |
+| `stop` | `stopStrings`, matched on held-back detokenised text (`StopHoldback`). GPT-OSS sets `stopStringScope` to the Harmony `final` message (`ModelEOSPolicy.stopStringScope`), so analysis and tool-call frames never match; the reported sequence replays the same scope (`EngineV2Bridge+StopSequence.swift`) | `[]` |
 | `min_p` | `minP`, forwarded by `EngineV2Bridge.submitTokenized` after translation | `0` |
 | `priority` | **Ignored**: always `0` | — |
 | `n`, `best_of` | **Not represented**: one alternative | — |
@@ -2886,7 +2887,13 @@ a share of every layer, and one fewer than the members otherwise, as the
 coordinator requires. A setup with unequal tensor-parallel shares is refused at
 registration, because the provider does not encode the plan's
 `tensor_parallel_shares` yet: a plan without them is an equal split to the
-coordinator. For a cluster that serves through Darkbloom, the onboarding's start
+coordinator. Under a model approval, which names no build, the plan also carries
+the member's own runtime block (`ClusterPlan.runtime`: worker, capability,
+resource policy and profile from its saved setup,
+`DistributedInstalledNativeStart.runtimeBlock`), so both members must run the
+same runtime to register the same plan; the start must carry that block
+([model approvals](../reference/configuration.md#model-approvals)). For a
+cluster that serves through Darkbloom, the onboarding's start
 line says it serves its owner's requests, and public requests where Darkbloom
 has qualified the model and split
 (`provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/ClusterOnboardingFlow.swift`);
@@ -2945,9 +2952,24 @@ shows the adopted plan as one deployment line (`ClusterOnboardingDeployment`:
 the plan's mode in words, each Mac's layers or tensor-parallel share), lists
 the choices that fit in free memory first and measures the fit again before
 the start, and never offers a model whose pair-serving grant refuses the pair.
+A copy or download of the chosen model shows its progress on the console's
+live line (`ClusterOnboardingDriver.move`, `ClusterOnboardingProgress.live`),
+laid out by `TransferProgressLine` through `ClusterTransferReports`; a
+transcript without a live line keeps only the reports
+`TransferProgressLine.takeLogLine` marks and the lines for the record.
 After a Darkbloom update changes a Mac's worker digest, the control leader's
 cluster service re-plans and re-adopts the same model by itself
-(`ClusterService.checkForUpdate`, `ClusterOnboardingUpdate`). The stage memory
+(`ClusterService.checkForUpdate`, `ClusterOnboardingUpdate`). A model change of
+a serving cluster (`m`, or `darkbloom cluster local <model>`) plans the same way:
+its list was priced while the running parts held their memory, where tensor
+parallel may not fit now, so once both parts stopped and both Macs gave the
+memory back (`OnboardingLive.awaitReleased`) it plans again and adopts the
+chosen model's new plan, found by its id (`OnboardingLive.localAdopt`,
+`ClusterOnboardingUpdate.servableIndex`). When planning again fails, the listed
+plan stands (it was priced with less memory than the Macs then have); a model
+the new plan does not offer is not started, and the screen says why. The
+automatic re-plan after repeated memory refusals at load adopts through the
+same path (`ClusterService.noteMemoryRefusal`). The stage memory
 gate's two fixed margins (the admissible floor, 6 GiB, and the loading
 headroom, 4 GiB, measured on 256 GiB Macs) apply on Macs with 96 GiB or more;
 below that they are the same share of the observed Mac's memory, never under
@@ -3503,6 +3525,15 @@ the system assertion wrappers in `provider-swift/Sources/ProviderCore/System/`.
 See [cluster member operation](../provider/cluster-always-on.md) for the limits
 on explicit sleep and laptop lid closure.
 
+Under its supervisor, the cluster service writes its heartbeat to the file that
+`DARKBLOOM_CLUSTER_MEMBER_HEALTH_FILE` names (`ClusterServiceAgent.healthPath`,
+`service-health.json`), and the supervisor's liveness guard accepts only a beat
+with the service's own PID. `ClusterService.partEnvironment` gives this Mac's
+part the same key with a different file (`ClusterServiceAgent.partHealthPath`,
+`part-health.json`), so a coordinator-paired part never writes over the
+service's heartbeat and still waits for its registration as a supervised member.
+An empty or absent key is passed on unchanged.
+
 ## GLM tool-stream completion
 
 GLM tool output uses the SDK GLM parser to validate the complete tool suffix at
@@ -3738,10 +3769,17 @@ multiply-add per weight and vector) and the words a lane takes per step (capped
 to the weight's quantization group). The M3 Ultra (family 15) and the M5 Max
 (17) take the dequantized weights at one word per lane, with layouts `a:4:4:1`
 for one vector, `a:2:4:4` for two to four and `a:2:4:5` for five, and tiles of
-four (`a:2:4:4`) past five. The kernel also serves whole-cohort tiles (one tile
+four (`a:2:4:4`) past five. The M5 Ultra (`applegpu_g17d`, family 17) has its
+own table in `architectureLayouts`, read before the family's: rows in registers
+for two to five vectors (`b:2:2:4`, `b:2:2:5`) and family 17's for the rest.
+On two M5 Ultra 256 GB serving the 27B pair the table cut the one-request round
+from 35.3 ms (family 17's layout, same build) to 33.2 ms. Against the
+`0.10.4-dev.branch.9` release (34.5 ms) it raised decode from 75.8 to 80.5 tok/s
+at 256 tokens (62.7 to 66.8 at 1,024), with identical outputs.
+The kernel also serves whole-cohort tiles (one tile
 of eight, `b:4:4:8`, or tiles of sixteen, `b:2:4:16`, reading the weights once
 for up to 32 vectors; a tile that runs past the call's end skips its missing
-vectors), but no family selects them: on two M5 Ultra 256 GB serving the 27B
+vectors), but no table selects them: on two M5 Ultra 256 GB serving the 27B
 pair they lowered the four-request aggregate by 19 % (73.1 against 90.1 tok/s,
 identical outputs). Other families take the scaled inputs and the generic
 layouts. A layout (rows per SIMD group, SIMD groups, vectors per weight read,
@@ -5202,10 +5240,12 @@ New saves and installed startup enforce the same mode rule. Old pipeline records
 ## Cluster runtime facts of an installed app
 
 A coordinator-formed cluster session is admitted when its committed native start
-matches the approval each member installed. The guided setup registers the
-digests of such an approval from the installed app and the chosen model, so
-that no person types them
-([fields](../reference/configuration.md#cluster-runtime-facts)).
+matches the approval each member installed. A signed release computes the
+digests of such approvals from its own final app and registers them
+(`cluster_runtime`), and the guided setup matches a served approval against the
+installed app and the chosen model with the same computation, so that no person
+types them ([fields](../reference/configuration.md#cluster-runtime-facts),
+[release lane](../operations/provider-release.md#cluster-runtime-facts)).
 
 1. The file digests (worker, metallib, paged-attention source, placement tool)
    come from `DistributedInstalledFiles.digest`. `DistributedInstalledFiles.verify`,
@@ -5220,9 +5260,51 @@ that no person types them
    `resourcePolicySHA256`. A coordinator-formed start carries the approval's
    value, which the member and its owner compare with the installed approval
    (`NativePairMemberPolicy.require`).
+4. Every model carries a pair-serving grant when the build qualifies it. A
+   pair member reports only hardware capabilities
+   (`DistributedServingEligibility.memberCapabilities`: `apple_m5` on an M5,
+   never `mlx_nax` or `glm5_next_v1`), and a coordinator holds each member of a
+   pair without a grant to the model's single-Mac requirements
+   ([`providerMeetsServingRequirementsLocked`](https://github.com/Layr-Labs/darkbloom-platform/blob/2847f27dda8e4caf9e2441d554067f42a88c9e1f/coordinator/registry/cluster_pair_serving_grant.go)),
+   so no pair of GLM-5.3-Flash or Qwen3.8-27B forms without one. For a
+   described model whose runtime model, catalog ID and artifact the build's
+   checked-in public declaration names (`ClusterPublicModels`: the owner's
+   decisions, with its evidence document's SHA-256), the grant names the
+   declared families with that digest. Any other model's grant is the public
+   grant a member of the same build reports for the described artifact
+   (`ClusterPairServingGrants.grant`, records of that artifact only), with the
+   SHA-256 of the records it rests on (`ClusterPairServingGrant.evidenceSHA256`).
+   A grant also bounds the sessions formed for the owner: a coordinator forms
+   none under an approval in a mode family that its grants do not name
+   ([`pairServingGrant`](https://github.com/Layr-Labs/darkbloom-platform/blob/df61dd6f93714b4458d0eef3125c377087c08b52/coordinator/registry/cluster_pair_serving_grant.go)).
+   Each undeclared model's records grant covers the modes its runtime serves
+   today; a mode added to an undeclared model later forms coordinator sessions
+   only once a record of that mode is bundled.
+5. The parity qualifications come from the declaration only: one per declared
+   family and schedule. Each rank's numerics class is the one a member of that
+   build registers for the evidence placement
+   (`ClusterMemberDeviceProfile.numericsClass`, the block's Metal library); a
+   pipeline is cut at half the model's layers (`ClusterPublicModels.placement`);
+   the request envelope admits media only where the placement serves it
+   (`ClusterModelFeaturePolicy.mediaContract`). A coordinator applies them to
+   the whole declared family, on any Apple silicon pair: the placement names
+   the evidence, not a limit
+   ([fields](../reference/configuration.md#cluster-runtime-facts)). This build
+   places Qwen3.8-27B in tensor parallel only
+   (`ClusterModelFeaturePolicy.admissibleModes`), so its declared pipeline
+   takes effect with a build that places it as one. The
+   release lane runs the released build's own CLI, so the declaration and the
+   records are that build's.
+
+A model approval needs none of these facts: the member takes the same values
+from its own saved setup and files
+([model approvals](../reference/configuration.md#model-approvals)).
 
 Code map: `provider-swift/Sources/ProviderCore/Config/ClusterRuntimeApprovalFacts.swift`
-(`ClusterRuntimeApprovalFacts`),
+(`ClusterRuntimeApprovalFacts`), `ClusterRuntimeApprovalFacts+Release.swift` (the release's model list and
+candidate choice),
+`provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/ClusterPublicModels.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledPairServingGrant.swift`,
 `provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledFiles.swift`,
 `provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledNativeStart.swift`.
 

@@ -481,7 +481,6 @@ enum SSDBlockStore {
         guard count > 0 else { return Data() }
         try beforeRead?(count)
         var out = Data()
-        out.reserveCapacity(count)
         while out.count < count {
             try beforeRead?(0)
             let chunk: Data?
@@ -493,6 +492,12 @@ enum SSDBlockStore {
             guard let chunk, !chunk.isEmpty else {
                 throw SSDBlockStoreError.truncated(
                     "\(what): expected \(count) bytes, got \(out.count) before EOF")
+            }
+            if out.isEmpty {
+                // A regular file usually returns the whole span in one read: return
+                // that buffer uncopied. Callers index the result from zero.
+                if chunk.count == count, chunk.startIndex == 0 { return chunk }
+                out.reserveCapacity(count)
             }
             out.append(chunk)
         }

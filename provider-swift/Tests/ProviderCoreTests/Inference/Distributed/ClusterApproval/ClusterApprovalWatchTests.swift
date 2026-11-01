@@ -172,6 +172,34 @@ struct ClusterApprovalWatchTests {
         #expect(ClusterApprovalCheck.memberQuickEnds(after: 2, ranSeconds: 31, lastError: unreachable) == 0)
     }
 
+    /// A model approval names no build and keeps its `id` across updates: its parts failing on one build set it aside
+    /// for that build only, so the build an update installs takes it again. A record from an older build, which names
+    /// no build, keeps it aside by its `id`.
+    @Test func aModelApprovalSetAsideAsFailingIsTakenAgainByTheNextBuild() throws {
+        let macs = try ClusterApprovalMacs(coordinatorURL: "ws://127.0.0.1:9/ws/provider")
+        let model = macs.modelApproval(), facts = try macs.facts(), watch = Watched()
+        #expect(macs.sync(.approvals([model]), leaderFacts: facts, followerFacts: facts).changed)
+        let limit = ClusterControlSoloAdmission.maximumQuickEnds
+        #expect(try step(macs, .approvals([model]), quickEnds: limit, watch, clock: 0) == .serveLocally(model, .failing))
+        #expect(serveLocally(macs, model, facts: facts, reason: .failing).changed)
+        let failing = ClusterSetupRecord.ApprovalSetAside(approval: model, reason: .failing,
+            runtimeBinarySHA256: try macs.saved(macs.leader).capability.runtimeBinarySHA256)
+        // The build its parts kept failing on does not take it again.
+        #expect(try step(macs, .approvals([model]), setAside: failing, watch, clock: 0) == .keep)
+        // A record saved by an older build reads without the field.
+        var object = try #require(try JSONSerialization.jsonObject(with: JSONEncoder().encode(failing)) as? [String: Any])
+        let removed = object.removeValue(forKey: "runtimeBinarySHA256") as? String
+        #expect(removed == failing.runtimeBinarySHA256)
+        let older = try JSONDecoder().decode(ClusterSetupRecord.ApprovalSetAside.self,
+                                             from: JSONSerialization.data(withJSONObject: object))
+        #expect(older == ClusterSetupRecord.ApprovalSetAside(approval: model, reason: .failing))
+
+        // An update re-adopts both setups for a new worker: the new build takes the same model approval again.
+        try macs.readopt(runtime: ClusterApprovalMacs.hash("9"))
+        #expect(try step(macs, .approvals([model]), setAside: failing, watch, clock: 0) == .save(model))
+        #expect(try step(macs, .approvals([model]), setAside: older, watch, clock: 0) == .keep)
+    }
+
     @Test func aClusterThatServesLocallyOnlyNeverAsksTheCoordinatorAndChangesNothing() throws {
         let local = ClusterServingScope.localOnly(bind: "127.0.0.1")
         for first in [true, false] {

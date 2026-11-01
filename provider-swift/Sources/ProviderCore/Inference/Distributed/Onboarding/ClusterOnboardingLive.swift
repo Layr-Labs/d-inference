@@ -867,7 +867,7 @@ final class OnboardingLive: @unchecked Sendable {
             .sorted { ($0.totalSizeBytes ?? 0) < ($1.totalSizeBytes ?? 0) }.prefix(32).map { $0 }
     }
 
-    func provision(_ index: Int, download: Bool, _ progress: @escaping @Sendable (String) -> Void) -> Result<[String], ClusterOnboardingFailure> {
+    func provision(_ index: Int, download: Bool, _ progress: @escaping @Sendable (ClusterOnboardingProgress) -> Void) -> Result<[String], ClusterOnboardingFailure> {
         var index = index
         // A list made on the control leader (this Mac forwarded `planModels`) holds no choices here. Getting the files
         // onto both Macs needs no leadership: this Mac plans the same models itself and fetches the one the list showed
@@ -910,10 +910,10 @@ final class OnboardingLive: @unchecked Sendable {
             guard let pairing = try ClusterSetupLinkExchange.pairing() else { throw ClusterSetupFailure("This Mac is not paired.") }
             let selection = try context.linkSelection()
             let name = there
-            let started = Date()
+            let reports = ClusterTransferReports(label: "Copying \(artifact.modelID) to \(thereShort)", send: progress)
             let outcome = try ClusterSetupLinkExchange.copyModel(pairing: pairing, selection: selection, peerAddress: nil, artifact: artifact,
                 source: store.appendingPathComponent(folder), folder: folder) { sent, total in
-                    progress(Self.copyLine(model: artifact.modelID, to: name, sent: sent, total: total, seconds: Date().timeIntervalSince(started)))
+                    reports.report(done: sent, total: total)
                 }
             if outcome.alreadyThere {
                 lines.append("\(Self.sentence(name)) has it already (same catalog digest).")
@@ -932,17 +932,9 @@ final class OnboardingLive: @unchecked Sendable {
         }
     }
 
-    /// "Copying Qwen3.5-9B to the other Mac (Apple M5 Ultra, 256 GB) over the Thunderbolt cable: 3.1 of 6.1 GB, 2.40 GB/s,
-    /// about 1 s left".
-    static func copyLine(model: String, to peer: String, sent: Int64, total: Int64, seconds: Double) -> String {
-        let rate = seconds > 0 ? Double(sent) / seconds : 0
-        let left = rate > 0 && total > sent ? ", " + ClusterModelProvisioning.duration(Double(total - sent) / rate) + " left" : ""
-        return "Copying \(model) to \(peer) over the Thunderbolt cable: \(String(format: "%.1f", Double(sent) / 1e9)) of \(ClusterModelProvisioning.gigabytes(total)), \(String(format: "%.2f", rate / 1e9)) GB/s\(left)"
-    }
-
     /// The other Mac sends a model only it has: asked over the link, it copies it into this Mac's store (this Mac's
     /// cluster service verifies every file); this Mac follows the staged bytes for the progress.
-    func receiveFromPeer(_ model: ClusterSetupLocalModel, store: URL, progress: @escaping @Sendable (String) -> Void) throws -> String {
+    func receiveFromPeer(_ model: ClusterSetupLocalModel, store: URL, progress: @escaping @Sendable (ClusterOnboardingProgress) -> Void) throws -> String {
         // The other Mac answers once this Mac's service took (or refused) the copy, so a refusal shows at once.
         _ = try command(.init(op: .sendModel, model: model.folder, text: model.artifactSHA256), seconds: 30)
         let sender = there
@@ -950,7 +942,8 @@ final class OnboardingLive: @unchecked Sendable {
         var lastBytes: Int64 = -1, lastChange = Date()
         let deadline = started.addingTimeInterval(120 + Double(model.totalBytes) / 50e6)
         let staging = store.appendingPathComponent(".darkbloom-incoming-" + String(model.artifactSHA256.prefix(32)))
-        var lastLine = Date.distantPast
+        var lastCheck = Date.distantPast
+        let reports = ClusterTransferReports(label: "Receiving \(model.modelID) from \(thereShort)", send: progress)
         while Date() < deadline {
             if let data = ClusterModelStore.readSmall(store.appendingPathComponent(model.folder).appendingPathComponent("manifest.json")),
                let artifact = try? ClusterCatalogArtifact.parse(manifest: data),
@@ -959,19 +952,15 @@ final class OnboardingLive: @unchecked Sendable {
                 let seconds = Date().timeIntervalSince(started)
                 return "\(Self.sentence(sender)) copied \(ClusterModelProvisioning.gigabytes(model.totalBytes)) of \(model.modelID) to \(hereShort) over the Thunderbolt cable in \(String(format: "%.1f", seconds)) s; every file matched the catalog manifest's SHA-256."
             }
-            if Date().timeIntervalSince(lastLine) >= 1 {
-                lastLine = Date()
+            if Date().timeIntervalSince(lastCheck) >= 1 {
+                lastCheck = Date()
                 let bytes = Self.stagedBytes(staging)
                 if bytes != lastBytes { lastBytes = bytes; lastChange = Date() }
                 // Nothing new staged for 90 s: the other Mac stopped sending (its `darkbloom cluster` service says why).
                 if Date().timeIntervalSince(lastChange) > 90 {
                     throw ClusterSetupFailure("\(Self.sentence(sender)) stopped sending \(model.modelID) (nothing arrived for 90 s); run `darkbloom cluster` here again (the copy resumes)")
                 }
-                let seconds = Date().timeIntervalSince(started), rate = seconds > 0 ? Double(bytes) / seconds : 0
-                let left = rate > 0 && model.totalBytes > bytes ? ", " + ClusterModelProvisioning.duration(Double(model.totalBytes - bytes) / rate) + " left" : ""
-                if bytes > 0 {
-                    progress("Receiving \(model.modelID) from \(sender) over the Thunderbolt cable: \(String(format: "%.1f", Double(bytes) / 1e9)) of \(ClusterModelProvisioning.gigabytes(model.totalBytes)), \(String(format: "%.2f", rate / 1e9)) GB/s\(left)")
-                }
+                if bytes > 0 { reports.report(done: bytes, total: model.totalBytes) }
             }
             usleep(250_000)
         }
@@ -990,7 +979,7 @@ final class OnboardingLive: @unchecked Sendable {
 
     /// Downloads a catalog model exactly as single-Mac Darkbloom does (verified manifest, resumable, into the
     /// product's model store), then clones it into the cluster's store. Returns its folder there.
-    func downloadOnThisMac(_ model: CatalogModel, store: URL, progress: @escaping @Sendable (String) -> Void) throws -> String {
+    func downloadOnThisMac(_ model: CatalogModel, store: URL, progress: @escaping @Sendable (ClusterOnboardingProgress) -> Void) throws -> String {
         var capabilities = (try? HardwareDetector.detect()).map { ProviderRuntimeCapabilityDetector.detectPrepared(hardware: $0, boundMetallibHash: nil) } ?? []
         // The catalog's runtime requirements are single-Mac serving's (Qwen 3.8 27B needs an M5's neural accelerators
         // when one Mac serves it alone). A model this build's cluster runtime serves (its records pin the digest) is
@@ -1005,20 +994,16 @@ final class OnboardingLive: @unchecked Sendable {
         // Written and verified uncached, like the copy over the cable: a download does not take memory from a model load.
         downloader.uncachedWrites = true
         let started = Date()
-        let lastLine = ClusterOnboardingMailbox<Date>()
+        let reports = ClusterTransferReports(label: "Downloading \(model.id)", send: progress)
         let verifying = ClusterOnboardingMailbox<Bool>()
         downloader.byteProgress = { done, total in
-            let now = Date()
-            if done >= total {
-                // Every byte is here; the downloader checks each file and the aggregate digest before it publishes.
-                if verifying.take().isEmpty { progress("Downloaded \(ClusterModelProvisioning.gigabytes(total)); checking every file against the catalog manifest…") }
-                verifying.post(true)
-                return
+            guard done >= total else { reports.report(done: done, total: total); return }
+            // Every byte is here; the downloader checks each file and the aggregate digest before it publishes.
+            if verifying.take().isEmpty {
+                let checking = "Downloaded \(ClusterModelProvisioning.gigabytes(total)); checking every file against the catalog manifest"
+                progress(.live({ _ in checking }, logged: true))
             }
-            if let last = lastLine.take().last, now.timeIntervalSince(last) < 1 { lastLine.post(last); return }
-            lastLine.post(now)
-            let rate = Double(done) / max(now.timeIntervalSince(started), 0.001)
-            progress("Downloading \(model.id) from Darkbloom's catalog: \(ClusterModelProvisioning.gigabytes(done)) of \(ClusterModelProvisioning.gigabytes(total)), \(String(format: "%.0f", rate / 1e6)) MB/s")
+            verifying.post(true)
         }
         let failure = ClusterOnboardingMailbox<String>()
         let done = DispatchSemaphore(value: 0)
@@ -1042,14 +1027,16 @@ final class OnboardingLive: @unchecked Sendable {
         guard case .complete(let folder) = ClusterModelStore.holding(store: store, artifact: installed.artifact) else {
             throw ClusterSetupFailure("\(model.id) could not be placed in the cluster's model store")
         }
-        progress("Downloaded \(ClusterModelProvisioning.gigabytes(installed.artifact.totalBytes)) in \(String(format: "%.1f", Date().timeIntervalSince(started))) s; every file matched the catalog manifest.")
+        progress(.line("Downloaded \(ClusterModelProvisioning.gigabytes(installed.artifact.totalBytes)) in \(String(format: "%.1f", Date().timeIntervalSince(started))) s; every file matched the catalog manifest."))
         return folder
     }
 
     func adopt(_ index: Int) -> Result<[String], ClusterOnboardingFailure> {
         // The choice travels with its model's id: a leader that restarted since it made the list plans again and finds it.
         let model = lock.withLock { listedChoices.indices.contains(index) ? (listedChoices[index].modelID ?? listedChoices[index].title) : nil }
-        return routed(.init(op: .adopt, index: index, model: model), seconds: 240, acting: true, local: { localAdopt(index) }) { $0.lines }
+        // The leader may stop both parts (up to 5 minutes to drain), wait for their memory (`releaseWaitSeconds`), plan
+        // again and retry the device lease: the reply can take that long.
+        return routed(.init(op: .adopt, index: index, model: model), seconds: 600, acting: true, local: { localAdopt(index) }) { $0.lines }
     }
 
     /// `model`: the id of the model the list showed at `index` (a choice forwarded from another Mac). When this Mac's
@@ -1064,7 +1051,7 @@ final class OnboardingLive: @unchecked Sendable {
             }
             index = found
         }
-        guard let peer = lock.withLock({ peerReport }), let choice = lock.withLock({ choices.indices.contains(index) ? choices[index] : nil }) else {
+        guard var peer = lock.withLock({ peerReport }), var choice = lock.withLock({ choices.indices.contains(index) ? choices[index] : nil }) else {
             return .failure(.init("The list of models is out of date; run `darkbloom cluster` again to choose."))
         }
         var lines = [String]()
@@ -1075,6 +1062,33 @@ final class OnboardingLive: @unchecked Sendable {
             lines.append("Stopped both Macs' parts to change the model (each released its memory first).")
             guard drained(seconds: 300) else {
                 return .failure(.init(lines + ["A part did not stop within 5 minutes, so the setup was not changed; run `darkbloom cluster` again."]))
+            }
+            // The list was planned while the parts held their memory, where a tensor-parallel split may not fit "now"
+            // and a pipeline is listed in its place (2026-10-29: GLM-5.3-Flash came back as a pipeline at half the
+            // speed, serving the pipeline's context instead of its native one). Plan again once that memory is back,
+            // as the re-plan after an update does, and adopt the model's new plan. When planning fails, the listed
+            // plan stands (a failed plan replaces neither `choices` nor the decisions `context.adopt` reads): it was
+            // priced with less memory than there is now.
+            awaitReleased()
+            if case .success(let replanned) = localPlanModels() {
+                // `localPlanModels` set `choices` in the order of the list it returned. Both are read under one lock,
+                // and the entry must still name the chosen model: a plan forwarded from the other Mac may replace
+                // `choices` meanwhile.
+                let picked = lock.withLock { () -> (index: Int, again: ChoiceKey)? in
+                    guard let found = ClusterOnboardingUpdate.servableIndex(of: choice.title, folder: choice.folder, in: replanned,
+                                                                            folders: choices.map { $0.folder }),
+                          choices.indices.contains(found), choices[found].title == choice.title else { return nil }
+                    return (found, choices[found])
+                }
+                guard let picked else {
+                    let reason = replanned.first { ($0.modelID ?? $0.title) == choice.title }?.blocker ?? "not found"
+                    return .failure(.init(lines + ["\(choice.title) is not offered on these Macs now (\(reason)); run `darkbloom cluster` again to choose."]))
+                }
+                if picked.again.key != choice.key, let line = replanned[picked.index].lines.first {
+                    lines.append("Planned again with both Macs' memory given back: \(line).")
+                }
+                choice = picked.again
+                peer = lock.withLock { peerReport } ?? peer
             }
         }
         let macs = (here: hereShort, there: thereShort)
@@ -1128,6 +1142,16 @@ final class OnboardingLive: @unchecked Sendable {
         if let note = result.note { try? store.updateRecord { $0.approvalNote = note } }
         if case .failure(let failure) = localServe() { return .failure(.init((result.line.map { [$0 + "."] } ?? []) + failure.lines)) }
         return .success(result.line.map { [$0 + "."] } ?? [])
+    }
+
+    /// After `localStop`: waits until both Macs say nothing is left running (at most
+    /// `ClusterOnboardingUpdate.releaseWaitSeconds`), so the plan made next prices the memory the new parts will have,
+    /// not what the stopped ones held.
+    func awaitReleased() {
+        let releasedBy = Date().addingTimeInterval(ClusterOnboardingUpdate.releaseWaitSeconds)
+        while Date() < releasedBy, case .success(let lines) = localVerifyTeardown(), !ClusterOnboardingUpdate.released(lines) {
+            Thread.sleep(forTimeInterval: 2)
+        }
     }
 
     /// Both Macs' parts ended (this Mac's service publishes its own; the other Mac's is asked over the link).

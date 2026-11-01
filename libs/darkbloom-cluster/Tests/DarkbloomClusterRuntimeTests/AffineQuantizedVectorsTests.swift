@@ -36,7 +36,7 @@ struct AffineQuantizedVectorsTests {
     }
 
     @Test func layoutsAreValidForEveryVectorCountAndFamily() {
-        for architecture in ["applegpu_g15d", "applegpu_g17s", "applegpu_g16s", ""] {
+        for architecture in ["applegpu_g15d", "applegpu_g17s", "applegpu_g17d", "applegpu_g16s", ""] {
             for vectors in 1...64 {
                 let layout = AffineQuantizedVectors.layout(vectors: vectors, inputs: 5120, outputs: 6144, bits: 4,
                     architecture: architecture)
@@ -45,15 +45,22 @@ struct AffineQuantizedVectorsTests {
                     && layout.schedule != .sharedInputs, "\(architecture) M=\(vectors) \(layout)")
             }
         }
-        // The measured families read the weights once for a whole cohort's vectors (up to sixteen a
-        // tile past five), instead of once per four.
-        for architecture in ["applegpu_g15d", "applegpu_g17s"] {
+        // Past five vectors the measured tables keep tiles of four: whole-cohort tiles measured slower on a pair.
+        for architecture in ["applegpu_g15d", "applegpu_g17s", "applegpu_g17d"] {
             for vectors in 6...48 {
                 let layout = AffineQuantizedVectors.layout(vectors: vectors, inputs: 5120, outputs: 6144, bits: 4,
                     architecture: architecture)
-                #expect(layout.vectorsPerTile >= min(vectors, 8), "\(architecture) M=\(vectors) \(layout)")
+                #expect(layout.vectorsPerTile == 4, "\(architecture) M=\(vectors) \(layout)")
             }
         }
+        // Two M5 Ultra measured rows in registers fastest for a verify window's four and five vectors; the M5 Max
+        // keeps its family's table.
+        func window(_ architecture: String, _ vectors: Int) -> String {
+            AffineQuantizedVectors.layout(vectors: vectors, inputs: 5120, outputs: 6144, bits: 4,
+                architecture: architecture).description
+        }
+        #expect(window("applegpu_g17d", 4) == "br2s2v4" && window("applegpu_g17d", 5) == "br2s2v5")
+        #expect(window("applegpu_g17s", 4) == "ar2s4v4" && window("applegpu_g15d", 4) == "ar2s4v4")
         #expect(AffineQuantizedVectors.parseLayout("b:2:4:32") != nil && AffineQuantizedVectors.parseLayout("b:2:4:33") == nil)
         #expect(AffineQuantizedVectors.family("applegpu_g15d") == 15)
         #expect(AffineQuantizedVectors.family("applegpu_g17s") == 17)

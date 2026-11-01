@@ -13,7 +13,7 @@ extension ModelDownloader {
     /// `downloadFile` helper (Range requests, Content-Range validation, retries).
     ///
     /// `onChunk(bytesOnDisk)` reports cumulative bytes-on-disk for this file as
-    /// it streams, so the foreground path can render a live per-shard bar; the
+    /// it streams, so the foreground path can show live progress; the
     /// background prefetch passes nil and accounts progress per whole file.
     internal func downloadManifestFileWithResume(
         _ job: (file: ManifestFile, destination: URL, url: String),

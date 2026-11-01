@@ -49,8 +49,10 @@ struct ClusterPairApprovalTests {
             notAfter: "2027-01-02T03:04:05Z", schedule: 2, generation: 3))
         let policy = try NativePairMemberPolicy(approval.canonicalPolicy())
         #expect(policy.model == "fixture/pair-model" && policy.generation == 3 && policy.schedule == 2)
-        #expect(policy.hashes.map(memberHex) == ["plan", "artifact", "native", "metallib", "resources",
-            "capability", "resource-policy", "profile"].map(Self.digest))
+        let runtime = try #require(policy.runtime)
+        #expect([try #require(policy.pinnedPlan), policy.artifact, runtime.nativeRuntime, runtime.metallib,
+            runtime.resourceLibrary, runtime.capability, runtime.resourcePolicy, runtime.profile].map(memberHex)
+            == ["plan", "artifact", "native", "metallib", "resources", "capability", "resource-policy", "profile"].map(Self.digest))
         #expect(policy.maximumFrame == 131_112 && policy.maximumPlaintext == 131_072)
         #expect(policy.maximumRecords == 1024 && policy.maximumCumulative == 16_777_216)
         #expect(policy.chips == ["Apple M4 Max", "Apple M4 Pro"])

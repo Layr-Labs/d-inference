@@ -8,9 +8,172 @@ or console deployment, feature activation, model promotion or hardware
 qualification. Sections marked historical retain the original candidate's
 qualification, opt-in and deployment limits rather than claiming activation.
 
-## v0.10.4 — candidate (unpublished)
+## v0.10.5 — candidate (unpublished)
 
-Prepared on 2026-10-27; tagging and publication are separate steps.
+Prepared on 2026-10-30; tagging and publication are separate steps.
+
+### Upgrade and rollout notes
+
+- The MLX pins move to their forks' `main`: `libs/mlx` and the nested `mlx` from `31f550af` to `72dffa2d`, `libs/mlx-swift` from `4926d3d9` to `c633d221`, and `libs/mlx-swift-lm` from `aee6ebb6` to `2beb401f` (#1645; #1643 needs the same pin). SDK #369 lets a stop string end only the answer and SDK #368 ends a demanded checkpoint range just below the prompt end. Twelve Metal backend files change, including `kernels/fence.metal`, so the tag build's `metallib_hash` differs from v0.10.4's. Complete SSD checkpoints are stored per provider build, because their namespace binds the binary and loaded-metallib hashes: an upgraded provider writes new complete checkpoints instead of restoring 0.10.4's, and a rollback does the same. The NAX head-dim split attention JIT fix that v0.10.3 and v0.10.4 shipped from the `hotfix/0.10.2-jit-nax-dsplit` branches (`mlx` `31f550af`) is in the new `mlx` pin's `jit_kernels.cpp`. All three pins are on their forks' `main`, so no hotfix branch needs keeping.
+- No coordinator change is needed before the tag, and no provider-version floor. After the tag, the platform snapshots its provider contracts from the tagged commit and sets `LatestProviderVersion` to `0.10.5`; of the 34 snapshotted inputs, pinned at v0.10.4's `8effff7f`, only `ProviderCore.swift` changes.
+- `darkbloom sandbox` drives the Darkbloom Sandbox add-on that `https://api-sandbox.darkbloom.dev/install.sh` installs (add-on 1.1.0 when this was prepared): it runs that installer with `--json-progress` and reads the add-on's `status --json` (`schema` 1). A Mac without the add-on gets only the new subcommand.
+- The CI (#1637 and the dev-branch lane) and release qualification (#1659) entries change no provider artifact; the test-only changes #1644, #1653 and #1676 have no entry.
+
+### Darkbloom Sandbox from the provider CLI
+
+- `darkbloom sandbox setup` checks whether this Mac can host Darkbloom Sandbox CI jobs (chip, macOS, cores, memory, disk, network, power and sleep) and how many Linux and macOS jobs it can run at a time, explains that inference pauses while a job runs and that each job pays its price minus a 10% fee into your Darkbloom balance, and asks before installing anything. It then downloads the add-on's installer over HTTPS and shows its stages, including the browser approval link and code. Running it again reports the state, continues an unfinished setup, repairs the add-on or applies new slot counts.
+- `darkbloom sandbox status` (with `--json`), `pause`, `resume`, `logs` and `uninstall` drive the installed add-on. `darkbloom status` adds a `Sandboxes:` line while the add-on is installed and waits at most 2 seconds for it.
+- Older installers and add-ons keep working: setup runs an installer without progress events with its own output, and `darkbloom sandbox status` shows an older add-on's own status.
+
+### Dev-branch provider lane builds on a dev push
+
+- `.github/workflows/release-dev-branch.yml` now starts on a push to the `dev` branch, with the same `paths:` list as the master push of `release-swift.yml`. Dev builds dev, and master builds master; no workflow dispatches a build of another branch.
+- The lane is a caller of the reusable `release-provider.yml` with `environment: dev` and `secrets: inherit`. A dev-branch build is built, signed with the Developer ID, notarized and stapled like a master build, so the installer and the provider self-updater accept it. The version stays `X.Y.Z-dev.branch.<run>`. The ad-hoc build and signing path of the lane is removed.
+- The lane has no `workflow_dispatch` and no `ref` input. Its job checks `refs/heads/dev`. It runs only after master's release source gate accepts a `dev` push for environment `dev`.
+
+### GPT-OSS stop sequences apply to the answer only
+
+- A client `stop` sequence on GPT-OSS models such as `gpt-oss-20b` now
+  matches only the Harmony `final` message, the text returned as `content`.
+  It used to match the private analysis too, so a sequence that appeared
+  while the model reasoned (for example `"\n\n"` or `"."`) ended the request
+  before any answer: `finish_reason` `stop`, reasoning only, empty content.
+  Tool-call arguments are never cut either. Other models keep whole-output
+  matching.
+
+### Master release lane publishes no dev release
+
+- A push to `master` no longer publishes a dev release to DevNet. `.github/workflows/release-swift.yml` routes a master push to the `staging` lane only, which still runs only when the `STAGING_ENABLED` repository variable is `true`. A `vX.Y.Z` tag still publishes production.
+- The `release-swift.yml` dispatch has no `dev` environment choice. `validation_only=true` runs the `dev` lane as a signed validation build that is never published, in place of the chosen environment.
+- `scripts/resolve-provider-release.sh` refuses a dev publication from `master` and a master push routed to dev. DevNet gets its provider releases from the d-inference `dev` branch through `.github/workflows/release-dev-branch.yml`.
+- The source gate on `master` (`verify_workflow_source`) admits a push to `dev` for the `dev` environment only, and only for a GitHub-verified commit on `dev` ancestry. The resolver stamps that build `X.Y.Z-dev.branch.N`. A dev push routed to staging or prod and a push from any other branch are refused. The tag and master checks are unchanged.
+- `build-and-release` checks the final archived app against the self-updater's designated requirement (Apple anchor, `io.darkbloom.provider`, team `SLDQ2GJ6TL`) before upload.
+
+### Model download cancellation
+
+- Fix a hang when a model download is cancelled before its completion waiter is attached. Keep the cancellation result until the waiter can receive it, preserving partial files for a later resume.
+
+### Faster model weight verification
+
+- Weight hashes read each file on a separate thread one 4 MiB chunk ahead of
+  SHA-256, so the uncached reads added for Nemotron Super no longer leave the
+  hash waiting on the disk. Every full hash gets faster: startup registration,
+  download and prefetch verification, and the fresh hashes before and after
+  each load of a model with SSD prefix caching. On an M3 Ultra a full hash of
+  `EigenLabs/Qwen3.8-27B-4bit-mtp` takes 2.9 s instead of 4.7 s, with the same
+  digest. Weights still bypass the file cache, and the digests are unchanged.
+
+### Prompt-token cache batch hits
+
+- Preserve all prompt-token cache hits present at the start of a request's batch lookup, avoiding unnecessary re-tokenization when promoting an earlier hit rotates the cache generations.
+
+### Drop disconnected response chunks before reconnect
+
+- Drop response frames processed by the chunk queue while no connection is
+  bound, so their deferred flush cannot deliver them to a replacement session.
+
+### Faster coordinator reconnect
+
+- A coordinator session that stayed open for 60 seconds or more resets the reconnect backoff. When such a session drops, the provider connects again after the shortest wait (0.5 to 1 second), not after a wait of up to 30 seconds that earlier drops grew.
+- When the coordinator side closes the socket with WebSocket code 1012 (service restart), the provider connects again after a random wait of 0 to 1 second. This close does not grow the backoff.
+- Other close codes, closes without a code and failed attempts keep the exponential backoff. Registration, attestation and the cancellation of the old connection's requests do not change.
+
+### Release qualification uses production defaults on every branch
+
+The SDK 27 qualification job of the provider release names `DARKBLOOM_RELEASE_ENVIRONMENT: prod`, so its tests see production defaults on the `dev` branch too. The first signed dev build (run 40783649415) failed there because the tests compiled the dev identity.
+
+### Dense Qwen conversations restore almost all of the previous turn
+
+- A dense Qwen 3.5/3.8 request served alone prefills in 4,096-token stripes,
+  so its deepest SSD checkpoint was the last full stripe end, up to 4,095
+  tokens before the prompt end. The next turn of the conversation
+  re-prefilled that gap. Such a request now also ends a prefill range just
+  below its prompt end (at least 64 tokens before it, on the 256-token grid)
+  when that saves at least 1,024 tokens, and the next turn restores from
+  there. In a six-turn conversation from 30K to 55K tokens on Qwen3.5-9B (M3
+  Ultra), the summed time to first token of the five follow-up turns fell
+  from 57.4 s to 47.9 s, with identical outputs. Busy providers, which
+  prefill in 512-token chunks beside decoding requests, and the short-prompt
+  fork checkpoint are unchanged.
+
+### Qwen 3.5/3.6 stop looping to max_tokens
+
+- Requests that omit sampling fields now use the model cards' thinking-mode values (temperature 1.0, top_p 0.95, top_k 20, presence_penalty 1.5) on the catalog Qwen3.5-9B, Qwen3.5-35B-A3B and Qwen3.6-35B-A3B builds instead of greedy decoding. On 20 prompts, runaway repetition fell from 7 to 0 (9B), 8 to 0 (3.5 35B) and 3 to 0 (3.6 35B). Explicit request values still win.
+
+### Concurrent SSD restores of one checkpoint
+
+- Requests that restore the same complete checkpoint from SSD now read the file together instead of one at a time. In a CPU-only probe with a 1 GiB checkpoint already in the page cache, the last of eight concurrent restores finished after 0.70–0.78 s instead of 2.70–2.84 s; a single restore is unchanged at 0.35 s.
+- A restore rewrites the checkpoint file's modification time only while no other request holds the file, and at most once per `ttlSeconds / 30` (one minute at the default TTL). Requests that restored a checkpoint and then donate the same boundary keep their authenticated receipts instead of re-reading the whole file, which three of four did in a burst of four.
+- Writers, duplicate validation and maintenance still hold the file alone, and a queued writer goes before readers that arrive after it. When every restore of a checkpoint overlaps another, as with repeated simultaneous bursts, none refreshes its modification time. Whole-root TTL maintenance therefore checks the loaded cache's own record of the last restore before deleting a file: one restored within the TTL stays, and that restore becomes its modification time. A provider restart in the minute before the next maintenance pass can still drop such a file, and whole-root disk-budget eviction still orders files by modification time.
+
+### Select SSD eviction victims without sorting the whole index first
+
+- Attention-block and complete-checkpoint caches retire the least recently used
+  file found by one linear index scan. Only when that file is busy or cannot be
+  deleted do they copy the index into a snapshot that yields newer candidates
+  oldest-first on demand, instead of sorting every entry up front. For an index
+  that does not change during eviction, victims are chosen in the same order as
+  before. The pass past busy or undeletable files stays bounded, and
+  external-removal reconciliation still returns control to the disk budget
+  before another file is removed.
+- A store that is closed, or that closes during an eviction pass, ends the
+  pass instead of refusing every remaining candidate in turn. It frees
+  nothing either way, and other stores are still evicted.
+
+### Attention-block SSD donations write about five times faster
+
+- GPT-OSS and Gemma write one SSD cache file per 256-token block, and each
+  block's daily write-budget charge rewrote the shared ledger with a full
+  flush. A donation of several blocks now reserves their summed size in one
+  charge before its first write. Measured with 64-block donations on an M3
+  Ultra (debug build), a donation took 73-78 ms instead of 412-445 ms with 1
+  MiB blocks, and 114-118 ms instead of 502-518 ms with 4 MiB blocks.
+  Another model's writes are also refused far less often while a donation is
+  in flight: when two models donated 64 blocks each at the same moment, 10%
+  of the blocks were refused instead of 49%. Charges still precede writes
+  and are never refunded, and near the daily cap the leading blocks that fit
+  are still written.
+
+### Faster SSD cache maintenance after each checkpoint write
+
+- After every checkpoint or attention-block write, cache maintenance walks the
+  whole SSD cache root to enforce its TTL and disk budget. It used to open and
+  parse the header of every cache file on each pass. It now remembers each
+  readable header until the file changes, so a pass parses only new, changed
+  or unreadable headers. With 5,000 cache files a pass falls from 1.84 s to
+  0.16 s (debug build, M3 Ultra). TTL, budget and ownership decisions are
+  unchanged.
+
+### SSD cache reads skip a copy of each encrypted chunk
+
+- Reading an SSD cache file keeps each encrypted chunk in the buffer it was
+  read into instead of copying it into a second one, when one read returns the
+  whole chunk, as it usually does from a local file. Reading and decrypting a
+  512 MiB file of 4 MiB chunks from a warm page cache took a median 136 ms
+  instead of 146 ms on an M3 Ultra (debug build), and a chunk occupies one
+  buffer instead of two while it is read.
+
+### Cache hits no longer wait for a whole SSD cache sweep
+
+- A TTL or disk-budget sweep removed its whole batch of cache files while
+  holding the locks that a cache-hit lookup on the engine's submit thread
+  and a donor's index publication also take. Sweeping 2,000 files in a debug
+  build on an M3 Ultra held them for about a second. A sweep now removes 16
+  files per hold and rechecks ownership each time, so those waits stayed at
+  30 ms or less in the same measurement (28.4 ms at worst), while the sweep
+  itself took up to 12% longer in the background.
+
+### Expired checkpoints no longer count as corrupt after a restart
+
+- When a provider restarted more than 30 minutes after its last cache use,
+  the complete-checkpoint store removed each expired file through the
+  corrupt-file path, so every one was reported in `corrupt_drops_total`.
+  Expired files are still removed at startup, but they are no longer counted
+  as corrupt, so that counter now reports only files that failed validation.
+
+## v0.10.4
+
+Published 2026-10-28 ([release](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.4)).
 
 ### Upgrade and rollout notes
 

@@ -1,3 +1,0 @@
-### Release qualification uses production defaults on every branch
-
-The SDK 27 qualification job of the provider release names `DARKBLOOM_RELEASE_ENVIRONMENT: prod`, so its tests see production defaults on the `dev` branch too. The first signed dev build (run 40783649415) failed there because the tests compiled the dev identity.

@@ -256,6 +256,35 @@ public struct ClusterPlan: Codable, Sendable, Equatable {
     /// The planner's speed estimate for one request alone on the cluster;
     /// omitted when it has none. Also part of the placement.
     public let prediction: Prediction?
+    /// The runtime every member of a plan for a model approval runs, from
+    /// each member's own saved setup; omitted in a plan for a build-pinned
+    /// approval, which pins the runtime itself. Part of the plan: every member
+    /// registers the same block, so all members agree on the runtime.
+    public let runtime: Runtime?
+
+    /// A plan's runtime block (`runtime`, contract M3): the four runtime digests a
+    /// session's start carries, each 64 lowercase hex characters, not zero.
+    public struct Runtime: Codable, Sendable, Equatable {
+        public let nativeRuntimeSHA256: String
+        public let capabilitySHA256: String
+        public let resourcePolicySHA256: String
+        public let profileSHA256: String
+        enum CodingKeys: String, CodingKey {
+            case nativeRuntimeSHA256 = "native_runtime_sha256"
+            case capabilitySHA256 = "capability_sha256"
+            case resourcePolicySHA256 = "resource_policy_sha256"
+            case profileSHA256 = "profile_sha256"
+        }
+        public init(nativeRuntimeSHA256: String, capabilitySHA256: String, resourcePolicySHA256: String, profileSHA256: String) {
+            self.nativeRuntimeSHA256 = nativeRuntimeSHA256; self.capabilitySHA256 = capabilitySHA256
+            self.resourcePolicySHA256 = resourcePolicySHA256; self.profileSHA256 = profileSHA256
+        }
+        func validate() throws {
+            let zero = String(repeating: "0", count: 64)
+            guard [nativeRuntimeSHA256, capabilitySHA256, resourcePolicySHA256, profileSHA256]
+                    .allSatisfy({ ClusterConfigurationSyntax.hash($0) && $0 != zero }) else { throw ClusterRosterError.invalidPlan }
+        }
+    }
 
     /// `protocol.ClusterPlanPrediction`.
     public struct Prediction: Codable, Sendable, Equatable {
@@ -296,13 +325,13 @@ public struct ClusterPlan: Codable, Sendable, Equatable {
         case policySHA256 = "policy_sha256"
         case model
         case planSHA256 = "plan_sha256"
-        case members, cuts, mode, prediction
+        case members, cuts, mode, prediction, runtime
     }
 
     public init(policySHA256: String, model: String, planSHA256: String, members: [String], cuts: [UInt32],
-                mode: String? = nil, prediction: Prediction? = nil) {
+                mode: String? = nil, prediction: Prediction? = nil, runtime: Runtime? = nil) {
         self.policySHA256 = policySHA256; self.model = model; self.planSHA256 = planSHA256
-        self.members = members; self.cuts = cuts; self.mode = mode; self.prediction = prediction
+        self.members = members; self.cuts = cuts; self.mode = mode; self.prediction = prediction; self.runtime = runtime
     }
 
     /// The plan's generation mode, the pipeline when omitted.
@@ -312,7 +341,7 @@ public struct ClusterPlan: Codable, Sendable, Equatable {
     public func samePlacement(as other: ClusterPlan) -> Bool {
         policySHA256 == other.policySHA256 && model == other.model && planSHA256 == other.planSHA256
             && members == other.members && cuts == other.cuts && effectiveMode == other.effectiveMode
-            && prediction == other.prediction
+            && prediction == other.prediction && runtime == other.runtime
     }
 
     func validate(roster: ClusterRoster) throws {
@@ -326,6 +355,7 @@ public struct ClusterPlan: Codable, Sendable, Equatable {
             throw ClusterRosterError.invalidPlan
         }
         try prediction?.validate()
+        try runtime?.validate()
     }
 }
 

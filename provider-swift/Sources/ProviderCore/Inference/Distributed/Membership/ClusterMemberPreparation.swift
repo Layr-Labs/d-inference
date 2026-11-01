@@ -100,6 +100,10 @@ public struct ClusterMemberPreparation: Sendable {
     /// registers the roster registration instead: `device` gives this Mac's
     /// device profile v2 for the approval's metallib, and the plan is derived from the setup's selected
     /// partition and rank order, so both members register the same plan.
+    /// Under a model approval, which pins no build, the metallib digest is the
+    /// one this Mac takes of its installed metallib here (with its resource
+    /// library's, which the start checks again), and the plan carries this
+    /// setup's own runtime block (`DistributedInstalledNativeStart.runtimeBlock`).
     public func nativeMemberInstallation(chip: String,
                                          device: ((_ metallibSHA256: String) throws -> ClusterRegisteredDeviceProfile)? = nil) throws -> NativePairMemberInstallation? {
         let plan = validation.plan
@@ -108,6 +112,23 @@ public struct ClusterMemberPreparation: Sendable {
         let policy = try NativePairMemberPolicy(attachment.policyBytes)
         guard Date().timeIntervalSince1970 * 1_000_000_000 < Double(policy.notAfter) else {
             throw ClusterConfigurationError.invalid("Saved pair approval has expired")
+        }
+        // The metallib digest the device profile names: the approval's, or under a model approval, which pins no
+        // files, the digest this Mac takes of its own metallib here, once, with its resource library's.
+        let installedDigests: (metallib: String, resourceLibrary: String)?
+        let metallibSHA256: String
+        if let pinned = policy.runtime {
+            installedDigests = nil
+            metallibSHA256 = NativePairMemberPolicy.hex(pinned.metallib)
+        } else {
+            let deadline = DispatchTime.now().uptimeNanoseconds + 15_000_000_000
+            func digest(_ path: String) throws -> String {
+                try DistributedInstalledFiles.digest(URL(fileURLWithPath: path), maximumBytes: 256 * 1024 * 1024,
+                    deadline: deadline).sha256
+            }
+            let own = (metallib: try digest(attachment.metallibPath), resourceLibrary: try digest(attachment.resourceLibraryPath))
+            installedDigests = own
+            metallibSHA256 = own.metallib
         }
         var roster: NativePairMemberRoster?
         if attachment.isRoster, let saved = attachment.roster, let pins = attachment.memberPins {
@@ -131,7 +152,8 @@ public struct ClusterMemberPreparation: Sendable {
                     artifactSHA256: plan.identity(epoch: UUID()).artifactSHA256, planSHA256: plan.partition.planSHA256,
                     cut: plan.partition.stages[0].sourceLayerEnd, mode: configuration.selectedGenerationMode,
                     tensorShares: configuration.tensorShares,
-                    deviceProfile: try device(NativePairMemberInstallation.hex(policy.hashes[3])), edges: attachment.edges ?? [])
+                    deviceProfile: try device(metallibSHA256), edges: attachment.edges ?? [],
+                    runtime: installedDigests == nil ? nil : DistributedInstalledNativeStart.runtimeBlock(plan: plan))
             } catch {
                 throw ClusterConfigurationError.invalid("The saved roster registration is not valid for this Mac: \(error)")
             }
@@ -143,7 +165,8 @@ public struct ClusterMemberPreparation: Sendable {
                 nativeExecutable: URL(fileURLWithPath: plan.localPeer.workerExecutable),
                 metallib: URL(fileURLWithPath: attachment.metallibPath),
                 resourceLibrary: URL(fileURLWithPath: attachment.resourceLibraryPath), chip: chip,
-                meshOverLink: plan.configuration.linkControl != nil, roster: roster, batchLanes: plan.batchLanes()) else {
+                meshOverLink: plan.configuration.linkControl != nil, roster: roster, batchLanes: plan.batchLanes(),
+                installedDigests: installedDigests) else {
             throw ClusterConfigurationError.invalid(roster == nil
                 ? "Saved pair approval does not cover this Mac's chip, artifact or native build"
                 : "Saved cluster approval does not cover this Mac's numerics class, usable memory, artifact or native build")

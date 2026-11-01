@@ -101,7 +101,13 @@ public struct ClusterSetupRecord: Codable, Sendable, Equatable {
     public struct ApprovalSetAside: Codable, Sendable, Equatable {
         public var approval: ClusterRuntimeApproval
         public var reason: ClusterApprovalFallback
-        public init(approval: ClusterRuntimeApproval, reason: ClusterApprovalFallback) { self.approval = approval; self.reason = reason }
+        /// The setup's worker digest (`capability.runtimeBinarySHA256`) when the approval was set aside: an approval
+        /// its parts kept failing with is not taken again by the same build, but a model approval, which names no
+        /// build, is taken again after an update. Nil in a record from an older build: its `id` alone is not taken.
+        public var runtimeBinarySHA256: String?
+        public init(approval: ClusterRuntimeApproval, reason: ClusterApprovalFallback, runtimeBinarySHA256: String? = nil) {
+            self.approval = approval; self.reason = reason; self.runtimeBinarySHA256 = runtimeBinarySHA256
+        }
     }
 
     public init(pair: Pair? = nil) { self.pair = pair }

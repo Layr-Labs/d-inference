@@ -77,6 +77,8 @@ public final class ClusterService: @unchecked Sendable {
     /// The supervision loop's period: one supervise/publish cycle per interval.
     private let supervisionIntervalSeconds: Double
     private let beforePartStart: (@Sendable () -> Void)?
+    /// The environment this Mac's parts start from (`partEnvironment`); nil: this process's own at each start.
+    private let environment: [String: String]?
     /// Main supervision thread only; a pending stop cannot be acknowledged by
     /// a cycle that read the preceding serving intent.
     private var supervisedStopDrainID: UUID?
@@ -161,12 +163,14 @@ public final class ClusterService: @unchecked Sendable {
     /// Internal composition of the service's existing stores. Public callers keep
     /// the canonical user namespace, the normal recovery deadline and the one-second supervision interval.
     init(settings: Settings, paths: ClusterUserPaths, recoveryGraceSeconds: Double = 300,
-         supervisionIntervalSeconds: Double = 1, beforePartStart: (@Sendable () -> Void)? = nil) {
+         supervisionIntervalSeconds: Double = 1, beforePartStart: (@Sendable () -> Void)? = nil,
+         environment: [String: String]? = nil) {
         precondition(recoveryGraceSeconds.isFinite && recoveryGraceSeconds >= 0)
         precondition(supervisionIntervalSeconds.isFinite && supervisionIntervalSeconds > 0)
         self.recoveryGraceSeconds = recoveryGraceSeconds
         self.supervisionIntervalSeconds = supervisionIntervalSeconds
         self.beforePartStart = beforePartStart
+        self.environment = environment
         pairingStore = .default(home: paths.homeDirectory)
         var wizard = settings.wizard
         wizard.derivedPlacement = true
@@ -450,15 +454,18 @@ public final class ClusterService: @unchecked Sendable {
             case .success(let value): choices = value
             case .failure(let failure): return failed(failure.lines)
             }
-            guard let index = choices.firstIndex(where: { ($0.modelID ?? $0.title) == model && $0.blocker == nil && $0.provision == nil }) else {
+            guard let index = ClusterOnboardingUpdate.servableIndex(of: model, in: choices) else {
                 return failed(["\(model) does not fit these Macs' memory now: \(choices.first { ($0.modelID ?? $0.title) == model }?.blocker ?? "not offered")"])
             }
             if case .failure(let failure) = live.localAdopt(index) { return failed(failure.lines) }
             if case .failure(let failure) = live.localServe() { return failed(failure.lines) }
             let after = try? self.context.savedConfiguration().reference.get()?.sha256
             self.lock.withLock { self.sameSplitReplans = before == after ? self.sameSplitReplans + 1 : 0 }
+            // `localAdopt` stops the serving parts and plans once more when their memory is back, so the split adopted
+            // need not be `choices[index]` (planned while they ran): it is said from the setup the start recorded.
+            let deployment = (try? self.store.readRecord())?.leadership?.deployment
             say(before == after ? "planned \(model) again: the same split is still the one that fits; trying it again"
-                                : "planned \(model) again on the memory now: \(choices[index].lines.first ?? "a new split") is starting on both Macs")
+                                : "planned \(model) again on the memory now: a new split is starting on both Macs" + (deployment.map { " (\($0))" } ?? ""))
         }
     }
 
@@ -978,11 +985,7 @@ public final class ClusterService: @unchecked Sendable {
             // pair does not fit "now" and a pipeline is chosen in its place. A failure from here on keeps the
             // serving intent, so the next check tries again.
             if case .failure(let failure) = live.localStop() { return failed(failure.lines) }
-            let releasedBy = Date().addingTimeInterval(ClusterOnboardingUpdate.releaseWaitSeconds)
-            while Date() < releasedBy, case .success(let lines) = live.localVerifyTeardown(),
-                  !ClusterOnboardingUpdate.released(lines) {
-                Thread.sleep(forTimeInterval: 2)
-            }
+            live.awaitReleased()
             func failedStopped(_ lines: [String]) {
                 try? self.store.updateRecord { $0.leadership?.serving = true }
                 failed(lines)
@@ -997,7 +1000,7 @@ public final class ClusterService: @unchecked Sendable {
             case .failure(let failure): return failedStopped(failure.lines)
             }
             // `model` is the model's id (the record keeps ids; the screens show catalog names).
-            guard let index = choices.firstIndex(where: { ($0.modelID ?? $0.title) == model && $0.blocker == nil && $0.provision == nil }) else {
+            guard let index = ClusterOnboardingUpdate.servableIndex(of: model, in: choices) else {
                 return failedStopped(["\(model) is not offered on these Macs with this release: \(choices.first { ($0.modelID ?? $0.title) == model }?.blocker ?? "not found")"])
             }
             if case .failure(let failure) = live.localAdopt(index) { return failedStopped(failure.lines) }
@@ -1005,7 +1008,8 @@ public final class ClusterService: @unchecked Sendable {
             // The plan's own line and its reason for the mode (tensor parallel or a pipeline), so the log says why.
             say("set the cluster up again after the update: \(model) is starting on both Macs ("
                 + choices[index].lines.joined(separator: " ") + ")")
-            // The re-adopted setups carry no cluster approval: the next check looks for the entry of the updated app.
+            // The re-adopted setups carry no cluster approval: the next check finds the same model approval again, or the
+            // build-pinned entry of the updated app.
             self.lock.withLock { self.approvalChecked = false; self.nextApprovalCheck = .distantPast }
         }
     }
@@ -1043,6 +1047,8 @@ public final class ClusterService: @unchecked Sendable {
                 let step: ClusterApprovalCheck.Step
                 let watch: ClusterApprovalCheck.Watch
                 let serving: Bool
+                /// The saved setup's worker digest, recorded with an approval set aside.
+                let worker: String
             }
             func decide(_ answer: () -> ClusterApprovalFetch.Outcome?) -> Decided? {
                 let record = try? self.store.readRecord()
@@ -1072,7 +1078,8 @@ public final class ClusterService: @unchecked Sendable {
                 let step = ClusterApprovalCheck.step(saved: saved, fetched: fetched, setAside: setAside, scope: scope,
                     memberQuickEnds: quickEnds, peerApprovalID: peerApprovalID, watch: &watch, clock: ClusterService.monotonicSeconds(),
                     grace: ClusterService.soloGraceSeconds, now: now)
-                return Decided(step: step, watch: watch, serving: record?.leadership?.serving == true)
+                return Decided(step: step, watch: watch, serving: record?.leadership?.serving == true,
+                               worker: saved.capability.runtimeBinarySHA256)
             }
             var fetched: ClusterApprovalFetch.Outcome?
             func answer() -> ClusterApprovalFetch.Outcome? {
@@ -1122,7 +1129,7 @@ public final class ClusterService: @unchecked Sendable {
                 if let note = result.note { stored.approvalNote = note }
                 // The approval set aside is kept while the pair serves locally and dropped once one is saved again.
                 if case .serveLocally(let approval, let reason) = step, result.changed {
-                    stored.approvalSetAside = .init(approval: approval, reason: reason)
+                    stored.approvalSetAside = .init(approval: approval, reason: reason, runtimeBinarySHA256: decided.worker)
                 }
                 if case .save = step, result.changed { stored.approvalSetAside = nil }
             }
@@ -1416,6 +1423,8 @@ public final class ClusterService: @unchecked Sendable {
         let process = Process()
         process.executableURL = settings.wizard.darkbloomExecutable
         process.arguments = arguments
+        process.environment = Self.partEnvironment(environment ?? ProcessInfo.processInfo.environment,
+                                                   serviceDirectory: store.paths.directory)
         process.standardInput = FileHandle.nullDevice
         let log = serviceFiles.rankLog
         if !FileManager.default.fileExists(atPath: log.path) { FileManager.default.createFile(atPath: log.path, contents: nil, attributes: [.posixPermissions: 0o600]) }
@@ -1434,6 +1443,22 @@ public final class ClusterService: @unchecked Sendable {
             if !memberRoute { memberQuickEnds = 0 }
         }
         say("started \(what) (pid \(process.processIdentifier))")
+    }
+
+    /// The environment of this Mac's part: this service's own, except the heartbeat file. Under its supervisor the
+    /// service beats into the file `ClusterSupervisionFiles.healthPathEnvironmentKey` names, and a coordinator-paired
+    /// part (`start --cluster-member`) beats into the file the same key names, with its own pid. Inherited as is, the
+    /// part overwrote the service's heartbeat, and the supervisor's liveness guard reads a beat of another pid as no
+    /// beat: whenever the part's beats landed last at the guard's probes for its down budget, the guard restarted a
+    /// healthy service and the pair dropped. The part beats into a file of its own instead; it keeps the key, so it
+    /// still waits for its registration as a supervised member does.
+    static func partEnvironment(_ environment: [String: String], serviceDirectory: URL) -> [String: String] {
+        var environment = environment
+        let key = ClusterSupervisionFiles.healthPathEnvironmentKey
+        if let path = environment[key], !path.isEmpty {
+            environment[key] = ClusterServiceAgent.partHealthPath(serviceDirectory: serviceDirectory).path
+        }
+        return environment
     }
 
     /// Saves this Mac's setup without its cluster approval (it ended, or the cluster serves locally only). A save

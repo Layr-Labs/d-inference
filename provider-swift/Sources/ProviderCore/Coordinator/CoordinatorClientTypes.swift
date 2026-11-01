@@ -184,6 +184,10 @@ public struct CoordinatorClientConfig: Sendable {
     /// The saved cluster claim a member registers. Read only in member mode;
     /// nil registers none, which the coordinator accepts but never pairs.
     public let clusterMembership: ClusterMembership?
+    /// Cluster member only: the models whose pair-serving grant this Mac's
+    /// rank has passed (`ProviderLoopConfig.pairServingGrantedModelIDs`).
+    /// Ignored in every other role.
+    public let pairServingGrantedModelIDs: Set<String>
     /// Deadline for one connection to reach `.ready`
     /// (`CoordinatorConnectionHandshake`).
     public let handshakeTimeout: TimeInterval
@@ -212,6 +216,7 @@ public struct CoordinatorClientConfig: Sendable {
         autopilotInventory: [ModelInfo] = [],
         executionRole: ProviderExecutionRole = .solo,
         clusterMembership: ClusterMembership? = nil,
+        pairServingGrantedModelIDs: Set<String> = [],
         handshakeTimeout: TimeInterval? = nil,
         memberNegotiationWindow: Duration? = nil
     ) {
@@ -235,6 +240,7 @@ public struct CoordinatorClientConfig: Sendable {
         self.idleUnloadMins = idleUnloadMins
         self.executionRole = executionRole
         self.clusterMembership = clusterMembership
+        self.pairServingGrantedModelIDs = pairServingGrantedModelIDs
         self.handshakeTimeout = handshakeTimeout ?? CoordinatorConnectionHandshake.defaultTimeout
         self.memberNegotiationWindow = memberNegotiationWindow ?? ClusterMemberNegotiation.window
     }
@@ -391,5 +397,14 @@ public enum CoordinatorError: Error, CustomStringConvertible {
         case .suspensionDetected: return "Process suspension detected (timer gap); forcing reconnect"
         case .handshakeTimeout(let seconds): return "WebSocket handshake did not complete in \(Int(seconds))s"
         }
+    }
+}
+
+extension CoordinatorClientConfig {
+    /// Whether a registration carries a model: the same rule as
+    /// `ProviderLoopConfig.admitsModel` (`ProviderExecutionRole.admitsModel`).
+    func admitsModel(_ modelID: String) -> Bool {
+        executionRole.admitsModel(modelID, pairServingGrantedModelIDs: pairServingGrantedModelIDs,
+            runtimeCapabilities: runtimeCapabilities)
     }
 }

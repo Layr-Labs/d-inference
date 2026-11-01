@@ -39,7 +39,7 @@ extension DistributedCBv2Engine {
         let (stream, continuation) = AsyncStream<CBv2Event>.makeStream()
         let state = DistributedRequestState(
             request: request, lease: lease, continuation: continuation,
-            detokenizer: detokenizers.makeDetokenizer(stopStrings: request.stopStrings),
+            detokenizer: detokenizers.makeDetokenizer(stopStrings: request.stopStrings, scope: request.stopStringScope),
             absoluteDeadline: deadlineContext.generationDeadline, firstTokenDeadline: deadline,
             admissionStartedAt: admissionStartedAt, reservedAt: clock.now())
         actives[state.generation] = state

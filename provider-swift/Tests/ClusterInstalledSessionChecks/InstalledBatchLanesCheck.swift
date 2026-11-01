@@ -312,10 +312,11 @@ extension InstalledSessionCheck {
         }
         // MiMo uses the same real owner launcher and per-request memory
         // gates as Qwen; only explicit plain-pipeline widths are added here.
-        for mode in [ClusterGenerationMode.pipeline, .pipelineMTP, .pipelineCompactDecode, .phaseSplit, .phaseSplitMTP] {
+        // Its tensor-parallel owner serves one request at a time: no width reaches its ranks.
+        for mode in [ClusterGenerationMode.pipeline, .pipelineMTP, .pipelineCompactDecode, .phaseSplit, .phaseSplitMTP, .tensorParallel] {
             let mimo = try InstalledFixture.make(root: f.root.appendingPathComponent("lane-mimo-" + mode.rawValue),
                 probe: f.probe, owner: probe, worker: f.worker, generationMode: mode.rawValue,
-                advertisedModes: ClusterGenerationMode.allCases.filter { [.pipeline, .pipelineMTP, .pipelineCompactDecode, .phaseSplit, .phaseSplitMTP].contains($0) },
+                advertisedModes: ClusterGenerationMode.allCases.filter { [.pipeline, .pipelineMTP, .pipelineCompactDecode, .phaseSplit, .phaseSplitMTP, .tensorParallel].contains($0) },
                 registered: ("registered_mimo_v26_flash_mopd", "registered_mimo_v26_flash_mopd_greedy_generation_v1", "fixture/mimo"),
                 adapter: .mimoV26LayerStage)
             let prepared = try mimo.prepare(), plan = prepared.plan
@@ -330,11 +331,19 @@ extension InstalledSessionCheck {
                         "MiMo provider/owner/native lane widths disagree")
                     try require(plan.lanesRetireAlone(child) == (lanes > 1), "MiMo cancellation width differs")
                 } else {
-                    try require(plan.batchLanes(caller) == nil && child == fixed && native[key] == nil,
-                        "MiMo speculative/compact/phase mode gained lanes")
+                    try require(plan.batchLanes(caller) == nil && child == fixed && native[key] == nil
+                        && !plan.lanesRetireAlone(caller), "MiMo speculative/compact/phase/tensor-parallel mode gained lanes")
                 }
             }
             if mode == .pipeline { try malformedOverrideKeepsOneLane(plan, matrix: prepared.matrixURL) }
+            // Committed-token logprobs in tensor parallel only; the product's arithmetic defaults reach a TP rank.
+            try require(try DistributedResidentExecutionProfile(capability: plan.capability, generationMode: mode,
+                requestTimeout: .seconds(10)).supportsLogprobs == (mode == .tensorParallel), "MiMo logprob capture does not follow tensor parallel")
+            if mode == .tensorParallel {
+                let native = plan.nativeEnvironment(matrix: prepared.matrixURL, ownerEnvironment: [:])
+                try require(native["MLX_ENABLE_TF32"] == "1" && !native.keys.contains { $0.hasPrefix("DARKBLOOM_MIMO_") },
+                    "MiMo tensor parallel left the product's arithmetic defaults")
+            }
         }
         try require(DistributedInstalledPlan.defaultBatchLanes(adapter: .glm5NextLayerStage, mode: .tensorParallel,
             hasPrivateImages: false) == 8, "GLM tensor-parallel default changed")

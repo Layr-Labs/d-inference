@@ -1,0 +1,1046 @@
+import Cmlx
+import DarkbloomClusterProtocol
+import Foundation
+import MLX
+import MLXLLM
+
+/// Tensor-parallel measurement of the registered GLM model, one code path for
+/// three modes so their times compare directly:
+/// - `full`: the unsharded text model on one Mac (the reference);
+/// - `shard`: one rank's half of every layer with no peer (each sum is the
+///   local partial), which times the compute TP2 leaves each Mac;
+/// - `tp`: one rank of a two-rank run over JACCL (`JACCL_RANK`,
+///   `JACCL_IBV_DEVICES`, `JACCL_COORDINATOR`), summing each layer's attention
+///   and feed-forward partials with the native all-sum.
+/// The verified artifact loader reads every payload; standing residency is
+/// applied as the product applies it. Greedy, no prefix cache, no sealing
+/// unless asked: a measurement and correctness tool, never a serving path.
+/// With `mtpDepth` > 0 it loads the NextN layer whole and decodes as the
+/// product's greedy requests do (`GLM5NextTensorParallelSpeculation`).
+public enum GLM5NextTensorParallelBench {
+    public enum Mode: String, Sendable { case full, shard, tp }
+
+    public struct Options: Sendable {
+        public var modelDirectory: URL
+        public var mode: Mode
+        public var shardRank: Int
+        public var promptTokenIDs: [Int]
+        public var chunkSize: Int
+        public var outputCount: Int
+        public var repeats: Int
+        /// Partials summed in float32 (one rounding, as the TP terms fix) or as stored.
+        public var float32Partials: Bool
+        /// Build each decode step from the previous step's still-lazy token and
+        /// submit it before reading that token, so graph construction overlaps the GPU.
+        public var pipelinedDecode = false
+        /// Print one decode step's primitives by name (no peer only).
+        public var census = false
+        /// Seal every floating all-sum (AES-GCM, as the product's terms do) with
+        /// bench keys from an ephemeral exchange: the sealed path's cost, never a trust.
+        public var sealed = false
+        /// MLX freed-buffer cache while measuring (nil: MLX's default).
+        public var cacheLimitBytes: Int?
+        /// `GLM5NextTextStage.tensorParallelMicroBatches`.
+        public var microBatches = 1
+        /// NextN proposals per greedy round (0: one token per step). Loads the
+        /// NextN layer whole; decode is then unpipelined, one round per read.
+        public var mtpDepth = 0
+        /// Diagnostics of speculative decode's arithmetic (`mtpDepth` > 0).
+        public enum MTPCheck: String, Sendable {
+            /// Product behavior.
+            case none
+            /// Every round keeps only the target's first token: one-token
+            /// greedy decode computed in `[1, mtpDepth + 1]` windows, each
+            /// rejecting all proposals (the rollback path every round).
+            case keepFirst = "keep-first"
+            /// One-token windows (no proposal verified): must equal plain
+            /// greedy decode bit for bit.
+            case oneToken = "one-token"
+        }
+        public var mtpCheck = MTPCheck.none
+        /// How each MTP round submits GPU work while it is still being built
+        /// (`GLM5NextTensorParallelSpeculation.EarlySubmission`): `none`,
+        /// `proposals` (the runtime's) or `layers`.
+        public var mtpEarly = "proposals"
+        /// Greedy rounds between two ranks read out half the vocabulary each
+        /// (`GLM5NextTensorParallelSpeculation.splitsVocabulary`, the runtime's).
+        public var mtpVocabularySplit = true
+        /// Lanes' NextN heads in one launch per step
+        /// (`GLM5NextTensorParallelSpeculation.batchesProposalHeads`, the runtime's).
+        public var mtpBatchHeads = true
+        /// The runtime's decode policy (`GLM5NextTensorParallelDecodePolicy`):
+        /// `fixed` or `load` (one proposal a round from `mtpLoadLanes` lanes),
+        /// and `widthInvariant` (no window of one row; implied by `load`).
+        public var mtpDepthPolicy = "fixed"
+        public var mtpLoadLanes = 3
+        public var widthInvariant = false
+        /// Diagnostic, one request: `random` verifies 1 to `mtpDepth`
+        /// proposals a round, a pseudo-random sequence by round (the same on
+        /// every rank), within the output limit; `fixed` the policy's depth.
+        public var mtpDepthSchedule = "fixed"
+        /// How the prompt is prefilled.
+        public enum PrefillSchedule: String, Sendable {
+            /// Chunks of `chunkSize`, each as `microBatches` micro-batches.
+            case chunked
+            /// The product's chunks (`GLM5NextTensorParallelPrefillPlan`, with
+            /// the runtime's chunk and bulk sizes and `microBatches`), each
+            /// run alone, keeping a prompt prefix at the product's boundary.
+            case product
+            /// The same chunks, run together up to `mergedTokens` a graph,
+            /// as the runtime does: the same tokens and bits as `product`.
+            case merged
+        }
+        public var prefillSchedule = PrefillSchedule.chunked
+        /// `merged`: tokens per graph (the runtime's `mergedPrefillTokens` by default).
+        public var mergedTokens = GLM5NextTensorParallelResidentRuntime.mergedPrefillTokens
+        /// `product` and `merged`: keep the product's prompt prefix (copied
+        /// into a prefix cache, as the runtime stores it).
+        public var keepsPrefix = true
+        /// `product` and `merged`: prefixes on the bulk grid and the rest as
+        /// one chunk (`GLM5NextTensorParallelResidentRuntime.prefixOnBulkGrid`).
+        public var prefixOnBulkGrid = GLM5NextTensorParallelResidentRuntime.prefixOnBulkGrid
+        /// Diagnostic (`divergenceProbe`): the prompt's first `divergenceTokens`
+        /// tokens prefilled as the product's two micro-batches and as
+        /// micro-batches of at most `divergenceMicroBatchTokens` rows, every
+        /// layer compared bit for bit; the bench then stops (no runs).
+        public var divergenceTokens: Int?
+        public var divergenceMicroBatchTokens = 8192
+        /// The probe's chunk starts at each of these offsets in turn, after the
+        /// prompt's first tokens prefilled the product's way.
+        public var divergenceStarts = [0]
+        /// A re-cut prefill (`microBatchTokens`, `prefixOnBulkGrid`) and the
+        /// divergence probe's other cut keep the product's DSA selections
+        /// (`GLM5NextTensorParallelPrefillPlan.make(pinsSelections:)`); off,
+        /// each micro-batch selects among its own call's candidates.
+        public var pinsSelections = true
+        /// Prefill frames' command-buffer operation limit (this thread's MLX
+        /// override, `GLM5NextTensorParallelPrefillPlan.commandBuffers`); nil:
+        /// the process's own (`MLX_MAX_OPS_PER_BUFFER`, else MLX's per-chip).
+        public var prefillOperationsPerBuffer: Int?
+        /// `tp` only: each DSA layer's prefill selection shared between the
+        /// ranks by rows (`GLM5NextTensorParallelResidentRuntime.prefillSelectionSplit`).
+        public var selectionSplit = GLM5NextTensorParallelResidentRuntime.prefillSelectionSplit
+        /// Only micro-batches whose history holds this many keys share
+        /// (`GLM5NextTensorParallelResidentRuntime.prefillSelectionSplitMinimumHistory`).
+        public var selectionSplitMinimumHistory = GLM5NextTensorParallelResidentRuntime.prefillSelectionSplitMinimumHistory
+        /// Re-cut segments only where their micro-batches' sums stay hidden
+        /// (`GLM5NextTensorParallelPrefillPlan.hidingSums`); off, every re-cut.
+        public var hidesSums = true
+        /// `product` and `merged`: chunks whose micro-batches all have at
+        /// least `GLM5NextTensorParallelPrefillPlan.rowCountInvariantRows`
+        /// rows run as micro-batches of at most this many rows instead (nil:
+        /// the product's). Must give the same bits as `product`; compare with
+        /// `perplexity` to show it on the model.
+        public var microBatchTokens = GLM5NextTensorParallelResidentRuntime.prefillMicroBatchTokens
+        /// `tp` only: residual streams divided by rows between the ranks in
+        /// prefill micro-batches (`GLM5NextTextStage.installTensorParallelSequenceParallel`,
+        /// sealed reduce-scatter and all-gather with `sealed`). Must give the
+        /// same bits as without.
+        public var sequenceParallel = GLM5NextTensorParallelResidentRuntime.prefillSequenceParallel
+        /// After the run, the prompt's perplexity and every position's
+        /// greedy next token from the prefill's hidden rows (the head at each
+        /// row, in pieces), outside the timed prefill: the reordering gate
+        /// (perplexity and top-1 agreement between two runs).
+        public var perplexity = false
+        /// With `mtpDepth` > 0: this many requests decode together. Lane i's
+        /// prompt is the prompt rotated by `i * 977` tokens (its own context and
+        /// routing), prefilled alone in `chunkSize` chunks; then every lane's
+        /// window is verified per round in ONE forward
+        /// (`GLM5NextTensorParallelSpeculation.rounds`, `lanesBatched`) or one
+        /// lane after another (`round`, the time-sliced lanes), until each
+        /// lane has `outputCount` tokens.
+        public var lanes = 1
+        public var lanesBatched = true
+        /// Lanes mode: afterwards every lane's prompt is decoded again alone
+        /// (one lane, the policy's depth for one lane) and its tokens compared
+        /// with the lane's: what the product's c1 = cN gate checks.
+        public var lanesCheckSolo = false
+        /// Batched rounds also evaluate the NextN proposals before the forward
+        /// is built, to time them alone (serializes what otherwise overlaps).
+        public var lanesSplitEval = false
+        /// DSA and NextN histories in a page pool, as the product's runtime
+        /// (`GLM5NextTensorParallelPagedKV.swift`); false keeps them contiguous.
+        public var pagedKV = true
+        public init(modelDirectory: URL, mode: Mode, shardRank: Int = 0, promptTokenIDs: [Int],
+                    chunkSize: Int = 2048, outputCount: Int = 64, repeats: Int = 2, float32Partials: Bool = true) {
+            self.modelDirectory = modelDirectory; self.mode = mode; self.shardRank = shardRank
+            self.promptTokenIDs = promptTokenIDs; self.chunkSize = chunkSize; self.outputCount = outputCount
+            self.repeats = repeats; self.float32Partials = float32Partials
+        }
+    }
+
+    public struct Run: Codable, Sendable {
+        public var prefillSeconds: Double
+        public var prefillTokensPerSecond: Double
+        public var decodeTokensPerSecond: Double
+        public var stepP50Milliseconds: Double
+        public var stepP90Milliseconds: Double
+        public var tokenIDs: [Int]
+        /// The first steps' five largest logits (token, value), for comparing modes.
+        public var topLogits: [[[Double]]]
+        /// Speculative decode: verification rounds, and proposals made and
+        /// accepted. Nil without `mtpDepth`.
+        public var mtpRounds: Int?
+        public var mtpProposedTokens: Int?
+        public var mtpAcceptedTokens: Int?
+        /// Median host milliseconds per round: building its graph, encoding
+        /// it, then waiting for the GPU (`GLM5NextTensorParallelSpeculation.phases`).
+        public var mtpBuildP50Milliseconds: Double?
+        public var mtpEncodeP50Milliseconds: Double?
+        public var mtpWaitP50Milliseconds: Double?
+        /// The prefill's graphs (tokens each), and MLX's peak active bytes
+        /// during the prefill less the bytes active before it.
+        public var prefillGraphs: [Int]?
+        public var prefillPeakTransientBytes: Int?
+        /// `perplexity`: mean negative log-likelihood of prompt tokens 1 ... n-1
+        /// and its exponent, and the greedy next token at every prompt position.
+        public var promptNLL: Double?
+        public var promptPerplexity: Double?
+        public var promptGreedyTokenIDs: [Int]?
+        /// Lanes mode: lanes, every lane's tokens per second together, per
+        /// round median wall milliseconds, and (batched) the median host
+        /// milliseconds of `rounds`' phases.
+        public var lanes: Int? = nil
+        public var laneTokenIDs: [[Int]]? = nil
+        public var lanesRoundP50Milliseconds: Double? = nil
+        public var lanesPhasesP50Milliseconds: [String: Double]? = nil
+        /// `lanesCheckSolo`: per lane, the first output index where its tokens
+        /// differ from its prompt decoded alone (nil: equal).
+        public var lanesFirstDifferenceFromSolo: [Int?]? = nil
+        /// Rounds by the proposals they verified (index = window).
+        public var mtpRoundsByWindow: [Int]? = nil
+    }
+
+    public struct Report: Codable, Sendable {
+        public var mode: String
+        public var rank: Int
+        public var size: Int
+        public var promptTokens: Int
+        public var chunkSize: Int
+        public var outputCount: Int
+        public var loadSeconds: Double
+        public var loadedActiveBytes: Int
+        public var wiredLimitBytes: Int
+        public var floatingReductions: Int
+        public var runs: [Run]
+        public var repeatsIdentical: Bool
+        public var mtpDepth: Int?
+        public var mtpCheck: String?
+        public var prefillSchedule: String?
+    }
+
+    private static func earlySubmission(_ options: Options) throws -> GLM5NextTensorParallelSpeculation.EarlySubmission {
+        guard let mode = GLM5NextTensorParallelSpeculation.EarlySubmission(rawValue: options.mtpEarly) else {
+            throw ProbeError("GLM bench MTP early submission must be none, proposals or layers")
+        }
+        return mode
+    }
+
+    /// The options' decode policy, as the runtime's environment would set it.
+    static func decodePolicy(_ options: Options) throws -> GLM5NextTensorParallelDecodePolicy {
+        guard ["fixed", "random"].contains(options.mtpDepthSchedule) else {
+            throw ProbeError("GLM bench MTP depth schedule must be fixed or random")
+        }
+        typealias Switches = ClusterGLMTensorParallel
+        return try GLM5NextTensorParallelDecodePolicy(environment: [Switches.depthPolicySwitch: options.mtpDepthPolicy,
+            Switches.loadLanesSwitch: String(options.mtpLoadLanes),
+            Switches.widthInvariantSwitch: options.widthInvariant ? "1" : "0"])
+    }
+
+    /// `mtpDepthSchedule == "random"`: round `round`'s depth, 1 through
+    /// `maximum`, from a fixed pseudo-random sequence (the same on every rank).
+    static func scheduledDepth(round: Int, maximum: Int) -> Int {
+        var state = UInt64(truncatingIfNeeded: round) &* 0x9E37_79B9_7F4A_7C15 &+ 0x2545_F491_4F6C_DD1D
+        state ^= state >> 29; state = state &* 0xBF58_476D_1CE4_E5B9; state ^= state >> 32
+        return 1 + Int(state % UInt64(max(1, maximum)))
+    }
+
+    public static func run(_ options: Options, log: (String) -> Void) throws -> Report {
+        GLM5NextTensorParallelPrefillPlan.commandBuffers = options.prefillOperationsPerBuffer.map {
+            GPU.CommandBufferLimits(operations: $0, megabytes: 1 << 20)
+        } ?? GLM5NextTensorParallelResidentRuntime.prefillCommandBuffers
+        let spec = try GLM5NextRegisteredSpecification.specification(runtimeModelID: GLM5NextRegisteredModel.glm53Flash.rawValue)
+        let directory = options.modelDirectory
+        let config = try BoundedProbeInput.data(directory.appendingPathComponent("config.json"),
+            maximumBytes: GLM5NextRegisteredSpecification.maximumConfigurationBytes)
+        let manifest = try BoundedProbeInput.data(directory.appendingPathComponent("manifest.json"),
+            maximumBytes: GLM5NextRegisteredSpecification.maximumManifestBytes)
+        let descriptor = try spec.descriptor(configuration: config, manifest: manifest,
+            cut: spec.supportedCuts.first ?? 1)
+        var group: QwenTensorParallelGroup?
+        var shard: GLM5NextTensorShard?
+        switch options.mode {
+        case .full: break
+        case .shard: shard = try GLM5NextTensorShard(rank: options.shardRank, size: 2)
+        case .tp:
+            let value = try QwenTensorParallelGroup(backend: .jaccl)
+            if options.sealed {
+                let codec = try QwenTensorParallelSealCodec.bench(group: value, scope: Data("glm-tp-bench".utf8))
+                // Test only: DARKBLOOM_TP_SEALED_TAMPER_AT=N makes this rank corrupt its Nth sealed frame
+                // (the peer must refuse it and both ranks must end the run).
+                codec.tamperAtCounter = ProcessInfo.processInfo.environment["DARKBLOOM_TP_SEALED_TAMPER_AT"].flatMap { UInt64($0) }
+                try codec.install(); value.sealed = codec
+            }
+            group = value
+            shard = try GLM5NextTensorShard(rank: value.rank, size: value.size)
+            log("tp rank=\(value.rank) size=\(value.size)")
+        }
+        let started = DispatchTime.now().uptimeNanoseconds
+        let environment = ProcessInfo.processInfo.environment
+        let path = try GLM5NextTensorParallelLoadPath.resolved(environment)
+        let roots = GLM5NextArtifactLoadRoots()
+        let loader = try GLM5NextArtifactLoader(directory: directory, expectedIdentity: descriptor.artifactIdentity,
+            storage: descriptor.storage, constructionRoots: roots, executionPolicy: descriptor.executionPolicy,
+            verification: path.verification)
+        let text = loader.configuration.textConfig
+        let plan = try GLM5NextTextStagePlan(configuration: text, layers: 0 ..< text.hiddenLayers, shard: shard)
+        if path != .perTensor {
+            try loader.prepare(plan: plan, includeMTP: options.mtpDepth > 0, keepFileCache: path == .prepared)
+        }
+        log("verified artifact in \(seconds(since: started)) s (load path \(path.rawValue))")
+        let stage = try loader.loadTextStage(plan: plan)
+        stage.tensorParallelMicroBatches = options.microBatches
+        stage.freeze()
+        if options.pagedKV {
+            stage.dsaPagePool = try stage.makeDSAPagePool(
+                pageSize: GLM5NextTensorParallelResidentRuntime.dsaPageTokens)
+        }
+        let mtp = options.mtpDepth > 0 ? try loader.loadMTP(stage: stage) : nil
+        mtp?.freeze()
+        try MLX.withError { error in
+            try roots.evaluate(stage.parameters().flattened().map(\.1) + (mtp?.parameters().flattened().map(\.1) ?? []))
+            Stream.gpu.synchronize(); try error.check()
+        }
+        roots.releaseAfterConfirmedFence()
+        for line in GLM5NextTensorParallelLoadDigest.lines([stage] + (mtp.map { [$0] } ?? []),
+                rank: shard?.rank ?? 0, path: path, environment: environment) {
+            log(line)
+        }
+        if let group {
+            let float32 = options.float32Partials
+            try stage.installTensorParallelReduction { partial in
+                float32 ? group.allSum(partial.asType(.float32)).asType(partial.dtype) : group.allSum(partial)
+            }
+        } else if shard != nil {
+            // Shard-local: a sum with no peer is the rank's own partial.
+            try stage.installTensorParallelReduction { $0 }
+        }
+        if options.sequenceParallel {
+            guard let group else { throw ProbeError("GLM bench sequence parallel needs a peer (--mode tp)") }
+            try stage.installTensorParallelSequenceParallel(share: group.rank, shares: group.size,
+                reduceScatter: { group.reduceScatter($0) }, allGather: { group.allGather($0) })
+        }
+        if options.selectionSplit {
+            guard let group else { throw ProbeError("GLM bench selection split needs a peer (--mode tp)") }
+            try stage.installTensorParallelSelectionSplit(share: group.rank, shares: group.size,
+                minimumHistory: options.selectionSplitMinimumHistory, exchange: { group.allSum($0) })
+        }
+        Memory.clearCache()
+        if let limit = options.cacheLimitBytes { Memory.cacheLimit = limit }
+        let loaded = Memory.activeMemory
+        let residency = try ClusterStageResidency(bytes: loaded + (24 << 30))
+        let loadSeconds = seconds(since: started)
+        log("loaded mode=\(options.mode.rawValue) active=\(loaded) wired=\(residency.receipt.appliedBytes) in \(loadSeconds) s"
+            + " paged_kv=\(stage.dsaPagePool?.pageSize ?? 0)")
+        if options.census, group == nil {
+            let counts = try decodeCensus(stage: stage, prompt: Array(options.promptTokenIDs.prefix(64)))
+            log("census: \(counts.values.reduce(0, +)) primitives in one decode step; top: "
+                + counts.sorted { $0.value > $1.value }.prefix(16).map { "\($0.key)=\($0.value)" }.joined(separator: " "))
+        }
+        if let group {
+            // Both ranks start each measurement together.
+            _ = try group.exchangeIntegers([1])
+        }
+        var runs: [Run] = []
+        let policy = try decodePolicy(options)
+        if let tokens = options.divergenceTokens {
+            for start in options.divergenceStarts {
+                try divergenceProbe(stage: stage, prompt: options.promptTokenIDs, start: start,
+                    count: tokens, microBatchTokens: options.divergenceMicroBatchTokens,
+                    microBatches: options.microBatches, pinsSelections: options.pinsSelections, log: log)
+            }
+        }
+        for repeatIndex in 0 ..< (options.divergenceTokens == nil ? max(1, options.repeats) : 0) {
+            if let group { _ = try group.exchangeIntegers([Int32(repeatIndex)]) }
+            runs.append(try generate(stage: stage, mtp: mtp, group: group, options: options))
+            let r = runs.last!
+            log(String(format: "run %d prefill %.1f tok/s (%.2f s) decode %.2f tok/s p50 %.2f ms p90 %.2f ms first tokens %@",
+                repeatIndex, r.prefillTokensPerSecond, r.prefillSeconds, r.decodeTokensPerSecond,
+                r.stepP50Milliseconds, r.stepP90Milliseconds, r.tokenIDs.prefix(8).map(String.init).joined(separator: ","))
+                + (r.mtpRounds.map { rounds in
+                    String(format: " mtp rounds %d accepted %d/%d (%.2f tokens per round) build/encode/wait p50 %.2f/%.2f/%.2f ms",
+                        rounds, r.mtpAcceptedTokens ?? 0, r.mtpProposedTokens ?? 0,
+                        Double(r.tokenIDs.count - 1) / Double(max(1, rounds)), r.mtpBuildP50Milliseconds ?? 0,
+                        r.mtpEncodeP50Milliseconds ?? 0, r.mtpWaitP50Milliseconds ?? 0)
+                } ?? "")
+                + (r.prefillGraphs.map { graphs in
+                    String(format: " prefill graphs %@ peak transient %.0f MiB",
+                        graphs.map(String.init).joined(separator: ","), Double(r.prefillPeakTransientBytes ?? 0) / 1048576)
+                } ?? "")
+                + (r.promptPerplexity.map { String(format: " prompt ppl %.6f nll %.8f", $0, r.promptNLL ?? 0) } ?? "")
+                + (r.lanes.map { lanes in
+                    String(format: " lanes %d %@ aggregate %.2f tok/s round p50 %.2f ms", lanes,
+                        options.lanesBatched ? "batched" : "time-sliced", r.decodeTokensPerSecond,
+                        r.lanesRoundP50Milliseconds ?? 0)
+                        + (r.lanesPhasesP50Milliseconds.map { phases in
+                            " phases p50 ms " + ["proposals", "proposal_wait", "forward", "agreement", "encode", "wait", "total"]
+                                .map { String(format: "%@=%.2f", $0, phases[$0] ?? 0) }.joined(separator: " ")
+                        } ?? "")
+                } ?? "")
+                + (r.mtpRoundsByWindow.map { counts in
+                    " policy \(options.mtpDepthPolicy) load-lanes \(options.mtpLoadLanes) padded "
+                        + (policy.widthInvariant ? "yes" : "no")
+                        + " schedule \(options.mtpDepthSchedule) rounds by window "
+                        + counts.map(String.init).joined(separator: "/")
+                } ?? "")
+                + (r.lanesFirstDifferenceFromSolo.map { firsts in
+                    firsts.allSatisfy { $0 == nil } ? " lanes EQUAL solo"
+                        : " lanes DIFFER from solo at " + firsts.map { $0.map(String.init) ?? "-" }.joined(separator: ",")
+                } ?? ""))
+        }
+        try residency.end()
+        return Report(mode: options.mode.rawValue, rank: group?.rank ?? options.shardRank, size: group?.size ?? 1,
+            promptTokens: options.promptTokenIDs.count, chunkSize: options.chunkSize, outputCount: options.outputCount,
+            loadSeconds: loadSeconds, loadedActiveBytes: loaded, wiredLimitBytes: residency.receipt.appliedBytes,
+            floatingReductions: group?.floatingReductions ?? 0, runs: runs,
+            repeatsIdentical: Set(runs.map(\.tokenIDs)).count == 1, mtpDepth: mtp == nil ? nil : options.mtpDepth,
+            mtpCheck: mtp == nil ? nil : options.mtpCheck.rawValue, prefillSchedule: options.prefillSchedule.rawValue)
+    }
+
+    private static func generate(stage: GLM5NextTextStage, mtp: GLM5NextMTP?, group: QwenTensorParallelGroup?,
+                                 options: Options) throws -> Run {
+        if options.lanes > 1, let mtp { return try generateLanes(stage: stage, mtp: mtp, group: group, options: options) }
+        let prompt = options.promptTokenIDs, chunk = max(1, options.chunkSize)
+        // As the runtime: the request's pages are reserved before it runs.
+        let pages = try stage.dsaPagePool.map { pool in
+            GLM5NextPageReservation(pool: pool, account: try pool.reserve(pages:
+                GLM5NextTensorParallelResidentRuntime.historyPages(pool: pool, configuration: stage.plan.configuration,
+                    contextTokens: prompt.count + options.outputCount + options.mtpDepth + 1,
+                    speculative: mtp != nil)))
+        }
+        let cache = stage.newCache(account: pages?.account)
+        // Each rank proposes and verifies itself; with a peer, every round's
+        // tokens are summed and compared as the product does (unsealed unless
+        // `sealed`).
+        let policy = try decodePolicy(options)
+        stage.widthInvariantWindows = policy.widthInvariant
+        let speculation = try mtp.map { head in
+            let value = try GLM5NextTensorParallelSpeculation(mtp: head, depth: options.mtpDepth,
+                rank: group?.rank ?? 0, ranks: group == nil ? 1 : 2, primeRows: min(chunk, 2048),
+                pagePool: pages?.pool, pageAccount: pages?.account,
+                agree: { value in group.map { $0.allSum(value) } ?? value })
+            value.acceptsProposals = options.mtpCheck != .keepFirst
+            value.earlySubmission = try earlySubmission(options)
+            value.splitsVocabulary = options.mtpVocabularySplit
+            value.batchesProposalHeads = options.mtpBatchHeads
+            // `one-token` compares one-row windows with plain steps: never padded.
+            value.padsSingleRowWindows = policy.widthInvariant && options.mtpCheck != .oneToken
+            value.recordsPhases = true
+            return value
+        }
+        var windows: [Int] = []
+        var logits: MLXArray?, lastHidden: MLXArray?
+        var graphs: [Int] = []
+        var rows: [(start: Int, hidden: MLXArray)] = []
+        Memory.peakMemory = 0
+        let activeBefore = Memory.activeMemory
+        let prefillStart = DispatchTime.now().uptimeNanoseconds
+        if options.prefillSchedule == .chunked {
+            var offset = 0
+            while offset < prompt.count {
+                let end = min(prompt.count, offset + chunk)
+                let last = end == prompt.count
+                let tokens = MLXArray(prompt[offset ..< end].map(Int32.init), [1, end - offset])
+                let candidate = try stage.prepareForward(tokens: tokens, cache: cache, readout: last ? .lastToken : .none)
+                if let speculation {
+                    switch candidate.output {
+                    case .final(let output): try speculation.primePrompt(prompt, from: offset, to: end, hidden: output.hidden)
+                    case .hidden(let hidden): try speculation.primePrompt(prompt, from: offset, to: end, hidden: hidden)
+                    case .streams: throw ProbeError("GLM bench prefill produced no hidden rows")
+                    }
+                }
+                try candidate.commit { roots in eval(roots + (try speculation?.evaluationTargets() ?? [])) }
+                switch candidate.output {
+                case .final(let output):
+                    if options.perplexity { rows.append((offset, output.hidden)) }
+                    if last { logits = output.logits[0..., -1, 0...]; lastHidden = output.hidden[0..., (-1)..., 0...] }
+                case .hidden(let hidden): if options.perplexity { rows.append((offset, hidden)) }
+                case .streams: break
+                }
+                graphs.append(end - offset)
+                offset = end
+            }
+        } else {
+            // The runtime's schedule and prefix store, from an empty cache.
+            let runtime = GLM5NextTensorParallelResidentRuntime.self
+            let chunkTokens = max(chunk, (runtime.prefillChunkTokens / chunk) * chunk)
+            let grid = options.prefixOnBulkGrid
+                ? max(chunkTokens, (runtime.bulkPrefillChunkTokens / chunkTokens) * chunkTokens) : chunkTokens
+            let plan = GLM5NextTensorParallelPrefillPlan.make(promptCount: prompt.count, start: 0,
+                chunkTokens: chunkTokens,
+                keepAt: options.keepsPrefix ? ((prompt.count - 1) / grid) * grid : 0,
+                bulkTokens: runtime.bulkPrefillChunkTokens, microBatches: max(1, options.microBatches),
+                mergedTokens: options.prefillSchedule == .merged ? options.mergedTokens : 0,
+                microBatchTokens: options.microBatchTokens, coalescing: options.prefillSchedule == .merged,
+                tailTokens: options.prefixOnBulkGrid ? runtime.bulkPrefillChunkTokens : nil,
+                selectionKeepAt: options.keepsPrefix ? ((prompt.count - 1) / chunkTokens) * chunkTokens : 0,
+                pinsSelections: options.pinsSelections, hidesSums: options.hidesSums)
+            let prefix = GLM5NextTensorParallelPrefixCache(budgetBytes: 8 << 30)
+            let result = try plan.run(stage: stage, cache: cache, prompt: prompt, speculation: speculation,
+                observe: options.perplexity ? { rows.append(($0, $1)) } : nil) { end, kept, history in
+                prefix.store(scope: "glm-tp-bench", prompt: prompt, length: end, cache: kept, mtp: history)
+            }
+            logits = result.logits; lastHidden = result.lastHidden
+            graphs = plan.chunks.map(\.tokens)
+        }
+        let peakTransient = max(0, Memory.peakMemory - activeBefore)
+        guard var row = logits else { throw ProbeError("GLM bench prefill produced no logits") }
+        var top: [[[Double]]] = []
+        func record(_ row: MLXArray) {
+            guard top.count < 4 else { return }
+            let values = row.asType(.float32).reshaped(-1).asArray(Float.self)
+            let best = values.indices.sorted { values[$0] > values[$1] }.prefix(5)
+            top.append(best.map { [Double($0), Double(values[$0])] })
+        }
+        record(row)
+        var token = argMax(row.asType(.float32), axis: -1).item(Int32.self)
+        let prefillSeconds = seconds(since: prefillStart)
+        var tokens = [Int(token)]
+        var steps: [Double] = []
+        let decodeStart = DispatchTime.now().uptimeNanoseconds
+        if let speculation, let lastHidden {
+            // One round per host read: up to depth + 1 tokens each.
+            try speculation.begin(carry: Int(token), lastHidden: lastHidden)
+            while tokens.count < options.outputCount {
+                let roundStart = DispatchTime.now().uptimeNanoseconds
+                let maximum = options.mtpDepthSchedule == "random"
+                    ? scheduledDepth(round: windows.count, maximum: speculation.depth) : speculation.depth
+                let window = options.mtpCheck == .oneToken
+                    ? 0 : policy.window(maximum: maximum, lanes: 1, outputLeft: options.outputCount - tokens.count)
+                let round = try speculation.round(stage: stage, cache: cache, last: tokens[tokens.count - 1],
+                    window: window, stop: 0)
+                tokens += round.tokens
+                windows.append(window)
+                steps.append(seconds(since: roundStart))
+            }
+        } else if options.pipelinedDecode {
+            // The token stays an MLXArray: step k+1 is built and submitted before
+            // step k's token is read on the host.
+            var lazyToken = MLXArray([token], [1, 1])
+            var previous = DispatchTime.now().uptimeNanoseconds
+            var pending: MLXArray?
+            // GLM53_TP_VOCAB_PARALLEL=1: each rank projects half the vocabulary
+            // (`lastTokenVocabularyPart`) and one small sum agrees on the greedy
+            // token: the same argmax (ties keep the lower index, rank 0's half).
+            let vocabulary = group.flatMap { group in
+                ProcessInfo.processInfo.environment["GLM53_TP_VOCAB_PARALLEL"] == "1" ? group : nil
+            }
+            let readout: GLM5NextTextStageReadout = vocabulary.map {
+                .lastTokenVocabularyPart(part: $0.rank, parts: 2)
+            } ?? .lastToken
+            for _ in 1 ..< max(1, options.outputCount) {
+                let candidate = try stage.prepareForward(tokens: lazyToken, cache: cache, readout: readout)
+                try candidate.commit { roots in asyncEval(roots) }
+                guard case .final(let output) = candidate.output else { throw ProbeError("GLM bench decode produced no logits") }
+                let next: MLXArray
+                if let group = vocabulary {
+                    let row = output.logits[0..., -1, 0...].asType(.float32)
+                    let local = argMax(row, axis: -1).reshaped(1)
+                    let mine = concatenated([
+                        takeAlong(row, local.reshaped(1, 1), axis: -1).reshaped(1),
+                        local.asType(.float32) + Float(group.rank * row.dim(-1)),
+                    ])
+                    let zero = MLXArray.zeros([2], dtype: .float32)
+                    let pair = group.allSum(concatenated(group.rank == 0 ? [mine, zero] : [zero, mine]))
+                    next = MLX.where(pair[2] .> pair[0], pair[3], pair[1]).asType(.int32).reshaped(1, 1)
+                } else {
+                    next = argMax(output.logits[0..., -1, 0...].asType(.float32), axis: -1).asType(.int32).reshaped(1, 1)
+                }
+                asyncEval(next)
+                if let pending {
+                    tokens.append(Int(pending.item(Int32.self)))
+                    let now = DispatchTime.now().uptimeNanoseconds
+                    steps.append(Double(now - previous) / 1e9); previous = now
+                }
+                pending = next; lazyToken = next
+            }
+            if let pending {
+                tokens.append(Int(pending.item(Int32.self)))
+                let now = DispatchTime.now().uptimeNanoseconds
+                steps.append(Double(now - previous) / 1e9)
+            }
+        } else {
+        for _ in 1 ..< max(1, options.outputCount) {
+            let stepStart = DispatchTime.now().uptimeNanoseconds
+            let candidate = try stage.prepareForward(tokens: MLXArray([token], [1, 1]), cache: cache, readout: .lastToken)
+            try candidate.commit { roots in eval(roots) }
+            guard case .final(let output) = candidate.output else { throw ProbeError("GLM bench decode produced no logits") }
+            row = output.logits[0..., -1, 0...]
+            record(row)
+            token = argMax(row.asType(.float32), axis: -1).item(Int32.self)
+            tokens.append(Int(token))
+            steps.append(seconds(since: stepStart))
+        }
+        }
+        let decodeSeconds = seconds(since: decodeStart)
+        let scored = options.perplexity ? try score(stage: stage, prompt: prompt, rows: rows) : nil
+        let sorted = steps.sorted()
+        func percentile(_ p: Double) -> Double { sorted.isEmpty ? 0 : sorted[min(sorted.count - 1, Int(Double(sorted.count) * p))] * 1000 }
+        // Decoded tokens after the prefill's (one per step; one or more per speculative round).
+        let decoded = tokens.count - 1
+        var run = Run(prefillSeconds: prefillSeconds,
+            prefillTokensPerSecond: Double(prompt.count) / prefillSeconds,
+            decodeTokensPerSecond: steps.isEmpty ? 0 : Double(decoded) / decodeSeconds,
+            stepP50Milliseconds: percentile(0.5), stepP90Milliseconds: percentile(0.9), tokenIDs: tokens,
+            topLogits: top, mtpRounds: speculation?.rounds, mtpProposedTokens: speculation?.proposedTokens,
+            mtpAcceptedTokens: speculation?.acceptedTokens,
+            mtpBuildP50Milliseconds: speculation.map { median($0.phases.map(\.build)) },
+            mtpEncodeP50Milliseconds: speculation.map { median($0.phases.map(\.encode)) },
+            mtpWaitP50Milliseconds: speculation.map { median($0.phases.map(\.wait)) },
+            prefillGraphs: graphs, prefillPeakTransientBytes: peakTransient, promptNLL: scored?.nll,
+            promptPerplexity: scored.map { exp($0.nll) }, promptGreedyTokenIDs: scored?.greedy)
+        if speculation != nil { run.mtpRoundsByWindow = roundsByWindow(windows, depth: options.mtpDepth) }
+        return run
+    }
+
+    /// Rounds counted by the proposals they verified (index = window).
+    static func roundsByWindow(_ windows: [Int], depth: Int) -> [Int] {
+        (0...max(0, depth)).map { window in windows.filter { $0 == window }.count }
+    }
+
+    /// `Options.lanes`: several requests' greedy MTP decode, batched or time-sliced.
+    private static func generateLanes(stage: GLM5NextTextStage, mtp: GLM5NextMTP, group: QwenTensorParallelGroup?,
+                                      options: Options) throws -> Run {
+        typealias Speculation = GLM5NextTensorParallelSpeculation
+        let chunk = max(1, options.chunkSize)
+        struct Lane {
+            let cache: GLM5NextTextStageCache
+            /// As the runtime's lanes: each lane's pages reserved before it runs.
+            let pages: GLM5NextPageReservation?
+            let speculation: Speculation
+            var tokens: [Int]
+        }
+        let policy = try decodePolicy(options)
+        stage.widthInvariantWindows = policy.widthInvariant
+        let prefillStart = DispatchTime.now().uptimeNanoseconds
+        /// Lane `index`'s request, prefilled alone: its prompt is the prompt rotated by `index * 977`.
+        func lane(_ index: Int) throws -> Lane {
+            let base = options.promptTokenIDs
+            let shift = (index * 977) % max(1, base.count)
+            let prompt = Array(base[shift...] + base[..<shift])
+            let pages = try stage.dsaPagePool.map { pool in
+                GLM5NextPageReservation(pool: pool, account: try pool.reserve(pages:
+                    GLM5NextTensorParallelResidentRuntime.historyPages(pool: pool,
+                        configuration: stage.plan.configuration,
+                        contextTokens: prompt.count + options.outputCount + options.mtpDepth + 1, speculative: true)))
+            }
+            let cache = stage.newCache(account: pages?.account)
+            let speculation = try Speculation(mtp: mtp, depth: options.mtpDepth, rank: group?.rank ?? 0,
+                ranks: group == nil ? 1 : 2, primeRows: min(chunk, 2048),
+                pagePool: pages?.pool, pageAccount: pages?.account,
+                agree: { value in group.map { $0.allSum(value) } ?? value })
+            speculation.earlySubmission = try earlySubmission(options)
+            speculation.splitsVocabulary = options.mtpVocabularySplit
+            speculation.batchesProposalHeads = options.mtpBatchHeads
+            speculation.padsSingleRowWindows = policy.widthInvariant
+            var offset = 0
+            var last: (logits: MLXArray, hidden: MLXArray)?
+            while offset < prompt.count {
+                let end = min(prompt.count, offset + chunk)
+                let tokens = MLXArray(prompt[offset ..< end].map(Int32.init), [1, end - offset])
+                let candidate = try stage.prepareForward(tokens: tokens, cache: cache,
+                    readout: end == prompt.count ? .lastToken : .none)
+                switch candidate.output {
+                case .final(let output):
+                    try speculation.primePrompt(prompt, from: offset, to: end, hidden: output.hidden)
+                    last = (output.logits[0..., -1, 0...], output.hidden[0..., (-1)..., 0...])
+                case .hidden(let hidden): try speculation.primePrompt(prompt, from: offset, to: end, hidden: hidden)
+                case .streams: throw ProbeError("GLM bench prefill produced no hidden rows")
+                }
+                try candidate.commit { roots in eval(roots + (try speculation.evaluationTargets())) }
+                offset = end
+            }
+            guard let last else { throw ProbeError("GLM bench prefill produced no logits") }
+            let first = Int(argMax(last.logits.asType(.float32), axis: -1).item(Int32.self))
+            try speculation.begin(carry: first, lastHidden: last.hidden)
+            return .init(cache: cache, pages: pages, speculation: speculation, tokens: [first])
+        }
+        var lanes = try (0 ..< options.lanes).map { try lane($0) }
+        let prefillSeconds = seconds(since: prefillStart)
+        var steps: [Double] = []
+        var phases: [Speculation.RoundsTiming] = []
+        var verified: [Int] = []
+        let decodeStart = DispatchTime.now().uptimeNanoseconds
+        // Decode encodes under the runtime's command-buffer limits, as the lanes do.
+        try GPU.withCommandBufferLimits(GLM5NextTensorParallelResidentRuntime.decodeCommandBuffers) {
+        while true {
+            let active = lanes.indices.filter { lanes[$0].tokens.count < options.outputCount }
+            if active.isEmpty { break }
+            let roundStart = DispatchTime.now().uptimeNanoseconds
+            // The runtime's window rule: the policy's depth for this many decoding lanes.
+            let windows = active.map {
+                policy.window(maximum: options.mtpDepth, lanes: active.count,
+                    outputLeft: options.outputCount - lanes[$0].tokens.count)
+            }
+            verified += windows
+            if options.lanesBatched {
+                let rounds = try Speculation.rounds(stage: stage, lanes: zip(active, windows).map { index, window in
+                    .init(speculation: lanes[index].speculation, cache: lanes[index].cache,
+                        last: lanes[index].tokens[lanes[index].tokens.count - 1], window: window, stop: 0)
+                }, evaluatesProposals: options.lanesSplitEval, timing: { phases.append($0) })
+                for (index, round) in zip(active, rounds) { lanes[index].tokens += round.tokens }
+            } else {
+                for (index, window) in zip(active, windows) {
+                    let round = try lanes[index].speculation.round(stage: stage, cache: lanes[index].cache,
+                        last: lanes[index].tokens[lanes[index].tokens.count - 1], window: window, stop: 0)
+                    lanes[index].tokens += round.tokens
+                }
+            }
+            steps.append(seconds(since: roundStart))
+        }
+        }
+        let decodeSeconds = seconds(since: decodeStart)
+        let decoded = lanes.reduce(0) { $0 + $1.tokens.count - 1 }
+        let sorted = steps.sorted()
+        func percentile(_ p: Double) -> Double { sorted.isEmpty ? 0 : sorted[min(sorted.count - 1, Int(Double(sorted.count) * p))] * 1000 }
+        func p50(_ values: [Double]) -> Double { median(values) * 1000 }
+        let phaseMedians: [String: Double]? = phases.isEmpty ? nil : [
+            "proposals": p50(phases.map(\.proposals)), "proposal_wait": p50(phases.map(\.proposalWait)),
+            "forward": p50(phases.map(\.forward)), "agreement": p50(phases.map(\.agreement)),
+            "encode": p50(phases.map(\.encode)), "wait": p50(phases.map(\.wait)), "total": p50(phases.map(\.total)),
+        ]
+        let promptCount = options.promptTokenIDs.count * options.lanes
+        var run = Run(prefillSeconds: prefillSeconds, prefillTokensPerSecond: Double(promptCount) / prefillSeconds,
+            decodeTokensPerSecond: Double(decoded) / decodeSeconds, stepP50Milliseconds: percentile(0.5),
+            stepP90Milliseconds: percentile(0.9), tokenIDs: lanes[0].tokens, topLogits: [],
+            mtpRounds: lanes.reduce(0) { $0 + $1.speculation.rounds },
+            mtpProposedTokens: lanes.reduce(0) { $0 + $1.speculation.proposedTokens },
+            mtpAcceptedTokens: lanes.reduce(0) { $0 + $1.speculation.acceptedTokens },
+            prefillGraphs: nil, prefillPeakTransientBytes: nil, promptNLL: nil, promptPerplexity: nil,
+            promptGreedyTokenIDs: nil, lanes: options.lanes, laneTokenIDs: lanes.map(\.tokens),
+            lanesRoundP50Milliseconds: percentile(0.5), lanesPhasesP50Milliseconds: phaseMedians,
+            mtpRoundsByWindow: roundsByWindow(verified, depth: options.mtpDepth))
+        if options.lanesCheckSolo {
+            // Each lane's request again, alone: its own rounds (`round`) at the
+            // policy's window for one decoding lane, as the runtime serves it at c1.
+            let tokens = lanes.map(\.tokens)
+            lanes.removeAll()
+            run.lanesFirstDifferenceFromSolo = try GPU.withCommandBufferLimits(
+                GLM5NextTensorParallelResidentRuntime.decodeCommandBuffers) {
+                try tokens.indices.map { index -> Int? in
+                    var alone = try lane(index)
+                    while alone.tokens.count < options.outputCount {
+                        let round = try alone.speculation.round(stage: stage, cache: alone.cache,
+                            last: alone.tokens[alone.tokens.count - 1],
+                            window: policy.window(maximum: options.mtpDepth, lanes: 1,
+                                outputLeft: options.outputCount - alone.tokens.count), stop: 0)
+                        alone.tokens += round.tokens
+                    }
+                    return zip(alone.tokens, tokens[index]).enumerated().first { $1.0 != $1.1 }?.offset
+                        ?? (alone.tokens.count == tokens[index].count ? nil : min(alone.tokens.count, tokens[index].count))
+                }
+            }
+        }
+        return run
+    }
+
+    /// Mean negative log-likelihood of prompt tokens 1 ... n-1 from the
+    /// prefill's hidden rows (FP32 log-softmax of the head's logits), and the
+    /// greedy next token at every prompt position.
+    static func score(stage: GLM5NextTextStage, prompt: [Int], rows: [(start: Int, hidden: MLXArray)])
+        throws -> (nll: Double, greedy: [Int]) {
+        guard let head = stage.head else { throw ProbeError("GLM bench perplexity needs the head") }
+        var total = 0.0, count = 0, greedy: [Int] = []
+        for (start, hidden) in rows.sorted(by: { $0.start < $1.start }) {
+            guard start == greedy.count else { throw ProbeError("GLM bench perplexity rows are not contiguous") }
+            var first = 0
+            while first < hidden.dim(1) {
+                let end = min(hidden.dim(1), first + 1024)
+                let logits = head(hidden[0..., first ..< end, 0...]).asType(.float32)
+                let targets = (start + first ..< start + end).map { Int32($0 + 1 < prompt.count ? prompt[$0 + 1] : 0) }
+                let picked = takeAlong(logits, MLXArray(targets, [1, end - first, 1]), axis: -1).squeezed(axis: -1)
+                let nll = logSumExp(logits, axis: -1) - picked
+                let best = argMax(logits, axis: -1)
+                eval(nll, best)
+                let values = nll.asArray(Float.self)
+                for (index, position) in (start + first ..< start + end).enumerated() where position + 1 < prompt.count {
+                    total += Double(values[index]); count += 1
+                }
+                greedy += best.asArray(Int32.self).map(Int.init)
+                first = end
+            }
+        }
+        guard greedy.count == prompt.count, count > 0 else { throw ProbeError("GLM bench perplexity covered no prompt") }
+        return (total / Double(count), greedy)
+    }
+
+    /// One decode step's graph (logits and cache updates) by primitive name.
+    static func decodeCensus(stage: GLM5NextTextStage, prompt: [Int]) throws -> [String: Int] {
+        let pages = try stage.dsaPagePool.map { pool in
+            GLM5NextPageReservation(pool: pool, account: try pool.reserve(pages:
+                GLM5NextTensorParallelResidentRuntime.historyPages(pool: pool, configuration: stage.plan.configuration,
+                    contextTokens: prompt.count + 1, speculative: false)))
+        }
+        let cache = stage.newCache(account: pages?.account)
+        let warm = try stage.prepareForward(tokens: MLXArray(prompt.map(Int32.init), [1, prompt.count]), cache: cache,
+            readout: .lastToken)
+        try warm.commit { roots in eval(roots) }
+        let candidate = try stage.prepareForward(tokens: MLXArray([Int32(1)], [1, 1]), cache: cache, readout: .lastToken)
+        guard case .final(let output) = candidate.output else { throw ProbeError("census: no logits") }
+        guard let file = tmpfile() else { throw ProbeError("census: no temporary file") }
+        defer { fclose(file) }
+        let namer = mlx_node_namer_new()
+        defer { mlx_node_namer_free(namer) }
+        let outputs = mlx_vector_array_new()
+        defer { mlx_vector_array_free(outputs) }
+        mlx_vector_array_append_value(outputs, output.logits.ctx)
+        for state in cache.layers.flatMap({ $0.innerState() }) { mlx_vector_array_append_value(outputs, state.ctx) }
+        guard mlx_print_graph(file, namer, outputs) == 0 else { throw ProbeError("census: graph printout failed") }
+        fflush(file); rewind(file)
+        var counts: [String: Int] = [:]
+        var line: UnsafeMutablePointer<CChar>?
+        var capacity = 0
+        defer { free(line) }
+        while getline(&line, &capacity, file) > 0, let line {
+            let text = String(cString: line)
+            guard let name = text.split(separator: " ", maxSplits: 1).first, !name.isEmpty, text.contains(" -> ") else { continue }
+            counts[String(name), default: 0] += 1
+        }
+        candidate.discard()
+        return counts
+    }
+
+    /// Milliseconds at the median of `values` seconds (0 when empty).
+    private static func median(_ values: [Double]) -> Double {
+        values.isEmpty ? 0 : values.sorted()[values.count / 2] * 1000
+    }
+
+    private static func seconds(since start: UInt64) -> Double {
+        Double(DispatchTime.now().uptimeNanoseconds - start) / 1e9
+    }
+}
+
+extension GLM5NextTensorParallelBench {
+    /// Raw cross-rank sum cost on this pair: each shape summed `count` times,
+    /// evaluated one at a time (as a decode step meets them) and as one graph.
+    public static func allSumProbe(shapes: [[Int]], count: Int, log: (String) -> Void) throws {
+        let group = try QwenTensorParallelGroup(backend: .jaccl)
+        func pass(dtype: DType, sealed: Bool) throws {
+            for shape in shapes {
+                let value = MLXArray.ones(shape, dtype: dtype) * Float(group.rank + 1)
+                eval(value)
+                _ = try group.exchangeIntegers([1])
+                var start = DispatchTime.now().uptimeNanoseconds
+                for _ in 0 ..< count { eval(group.allSum(value)) }
+                let one = Double(DispatchTime.now().uptimeNanoseconds - start) / 1e6 / Double(count)
+                _ = try group.exchangeIntegers([2])
+                start = DispatchTime.now().uptimeNanoseconds
+                var chained = value
+                for _ in 0 ..< count { chained = group.allSum(chained) * 0.5 }
+                eval(chained)
+                let graph = Double(DispatchTime.now().uptimeNanoseconds - start) / 1e6 / Double(count)
+                // (1 + 2) / 2 from the first sum on: any other value is a stale or torn read.
+                let error = abs(chained.asType(.float32) - 1.5).max().item(Float.self)
+                let bytes = shape.reduce(dtype == .float32 ? 4 : 2, *)
+                log(String(format: "allsum sealed=%d dtype=%@ shape=%@ bytes=%d eval_each=%.3f ms graph=%.3f ms (%.2f GB/s) max_error=%g",
+                    sealed ? 1 : 0, "\(dtype)", shape.map(String.init).joined(separator: "x"), bytes, one, graph,
+                    Double(bytes) / (graph / 1000) / 1e9, error))
+            }
+        }
+        try pass(dtype: .bfloat16, sealed: false)
+        try pass(dtype: .float32, sealed: false)
+        let codec = try QwenTensorParallelSealCodec.bench(group: group, scope: Data("glm-tp-bench".utf8))
+        try codec.install(); group.sealed = codec
+        try pass(dtype: .float32, sealed: true)
+        try pass(dtype: .bfloat16, sealed: true)
+    }
+}
+
+extension GLM5NextTensorParallelBench {
+    /// The sealed reduce-scatter and all-gather against the sealed all-sum on
+    /// this pair of ranks, bit for bit, on the CPU: the scatter is this rank's
+    /// rows of the sum, the gather the rank-ordered rows (equal to a sum of
+    /// frames padded with -0). `ring` (two processes on one Mac, `MLX_RANK`,
+    /// `MLX_HOSTFILE`) runs the gathered frames; `jaccl` the streamed exchange.
+    /// Throws on the first difference.
+    ///
+    /// Tamper check (`DARKBLOOM_TP_SEALED_TAMPER_AT=N`, as tp-check's sealed
+    /// runs): the rank flips one byte of its sealed frame at counter N, and
+    /// the peer must refuse it (the codec then stays refused). Each round
+    /// runs, per shape, an all-sum, a reduce-scatter, a padded all-sum and an
+    /// all-gather: counters `20 r + 4 s + 0...3`, so N = 1 / 3 hit the first
+    /// reduce-scatter / all-gather and, with `DARKBLOOM_TP_SEALED_CHECK_ROUNDS=11`,
+    /// N = 201 / 203 hit round 10's.
+    public static func sealedCollectivesCheck(backend: QwenTensorParallelGroup.Backend, log: (String) -> Void) throws {
+        let group = try QwenTensorParallelGroup(backend: backend)
+        let codec = try QwenTensorParallelSealCodec.bench(group: group, scope: Data("glm-tp-sealed-collectives".utf8))
+        let environment = ProcessInfo.processInfo.environment
+        codec.tamperAtCounter = environment["DARKBLOOM_TP_SEALED_TAMPER_AT"].flatMap { UInt64($0) }
+        let rounds = max(1, environment["DARKBLOOM_TP_SEALED_CHECK_ROUNDS"].flatMap { Int($0) } ?? 1)
+        try codec.install(); group.sealed = codec
+        func bits(_ a: MLXArray) -> Data { a.asData(access: .copy).data }
+        let shapes: [(Int, Int, DType)] = [(2, 8, .float32), (4096, 4096, .bfloat16), (1000, 16, .float32),
+                                           (8192, 4096, .bfloat16), (6, 3, .float16)]
+        try Device.withDefaultDevice(.cpu) {
+            for (rows, width, dtype) in (0 ..< rounds).flatMap({ _ in shapes }) {
+                // Each rank its own partial, with a few signed zeros.
+                var partial = MLXRandom.normal([1, rows, width], key: MLXRandom.key(UInt64(11 + group.rank)))
+                partial = MLX.where(abs(partial) .< 0.01, MLXArray(Float(-0.0)), partial).asType(dtype)
+                let half = rows / 2
+                let own = partial[0..., (group.rank * half) ..< ((group.rank + 1) * half)]
+                let padding = MLX.full(own.shape, values: MLXArray(Float(-0.0)).asType(dtype))
+                // One evaluation each, in this order, so the sealed counters
+                // are 4 s + 0 (all-sum), 1 (reduce-scatter), 2 (padded all-sum),
+                // 3 (all-gather): one evaluation of all four ran them in MLX's
+                // graph order instead (1 and 3 were the all-sums).
+                let sum = group.allSum(partial)
+                eval(sum)
+                let scattered = group.reduceScatter(partial)
+                eval(scattered)
+                let padded = group.allSum(concatenated(group.rank == 0 ? [own, padding] : [padding, own], axis: 1))
+                eval(padded)
+                let gathered = group.allGather(own)
+                eval(gathered)
+                let expected = sum[0..., (group.rank * half) ..< ((group.rank + 1) * half)]
+                let scatterOK = scattered.shape == expected.shape && bits(scattered) == bits(expected)
+                let gatherOK = gathered.shape == [1, rows, width] && bits(gathered) == bits(padded)
+                log("sealed-collectives rank=\(group.rank) shape=1x\(rows)x\(width) \(dtype) reduce_scatter=\(scatterOK ? "bitwise" : "DIFFERS") all_gather=\(gatherOK ? "bitwise" : "DIFFERS")")
+                guard scatterOK, gatherOK else { throw ProbeError("sealed reduce-scatter or all-gather differs") }
+            }
+        }
+    }
+
+    /// Where two cuts of one chunk into micro-batches first compute different
+    /// bits: `prompt[start ..< start + count]` (one chunk; with `start` > 0,
+    /// after the prompt's first `start` tokens prefilled the product's way,
+    /// chunk by chunk, into a cache both cuts then copy) as the product's
+    /// micro-batches and as micro-batches of at most `microBatchTokens` rows,
+    /// built layer by layer (`GLM5NextTextStage.beginForward`, one-layer
+    /// slices). After every layer each cut's boundary (the pending mHC expand:
+    /// the FFN output, the residual streams after the attention, post, comb;
+    /// rows concatenated in order) and the layer's cache state are compared
+    /// bit for bit. At the first differing layer every earlier layer is
+    /// identical, so its inputs are: `residual` differs means the attention
+    /// sublayer (with its sum), `output` alone the feed-forward one. Every
+    /// line is logged; both ranks run the same collectives. After the last
+    /// layer both cuts read out (stream mean, final norm, head) and their
+    /// hidden rows and last-row logits are compared too. With
+    /// `pinsSelections` the other cut keeps the product cut's DSA selections
+    /// (`GLM5NextPrefillSegment.selectionRows`).
+    static func divergenceProbe(stage: GLM5NextTextStage, prompt: [Int], start: Int = 0, count: Int,
+                                microBatchTokens: Int, microBatches: Int, pinsSelections: Bool = false,
+                                log: (String) -> Void) throws {
+        guard start >= 0, count > 0, start + count <= prompt.count else {
+            throw ProbeError("GLM divergence probe: tokens \(start) ..< \(start + count) are outside the prompt")
+        }
+        let product = GLM5NextPrefillSegment.chunk(tokens: count, microBatches: max(1, microBatches)).microBatchRows
+        let parts = max(1, (count + microBatchTokens - 1) / microBatchTokens)
+        let other = (0 ..< parts).map { (($0 + 1) * count / parts) - ($0 * count / parts) }
+        let tokens = MLXArray(prompt[start ..< start + count].map(Int32.init), [1, count])
+        let c = stage.plan.configuration
+        // One account for the prefix and both cuts' appends (the copies share the prefix's pages).
+        let pages = try stage.dsaPagePool.map { pool in
+            GLM5NextPageReservation(pool: pool, account: try pool.reserve(pages:
+                GLM5NextTensorParallelResidentRuntime.historyPages(pool: pool, configuration: c,
+                    contextTokens: start + 2 * count + 1, speculative: false)))
+        }
+        let prefix = stage.newCache(account: pages?.account)
+        if start > 0 {
+            // The product's chunks, each alone (no merging, no prefix kept).
+            let runtime = GLM5NextTensorParallelResidentRuntime.self
+            let plan = GLM5NextTensorParallelPrefillPlan.make(promptCount: start, start: 0,
+                chunkTokens: runtime.prefillChunkTokens, keepAt: 0, bulkTokens: runtime.bulkPrefillChunkTokens,
+                microBatches: max(1, microBatches), mergedTokens: 0)
+            _ = try plan.run(stage: stage, cache: prefix, prompt: Array(prompt[0 ..< start]), speculation: nil,
+                keep: { _, _, _ in })
+            log("divergence prefix tokens=\(start) chunks=\(plan.chunks.map { String($0.tokens) }.joined(separator: ","))")
+        }
+        let cacheA = prefix.copy(), cacheB = prefix.copy()
+        let a = try stage.beginForward(tokens: tokens, cache: cacheA, segments: [.init(microBatchRows: product)],
+            readout: .lastToken)
+        let b = try stage.beginForward(tokens: tokens, cache: cacheB,
+            segments: [.init(microBatchRows: other, selectionRows: pinsSelections ? product : nil)], readout: .lastToken)
+        log("divergence start=\(start) tokens=\(count) cut_a=\(product.map(String.init).joined(separator: "+"))"
+            + " cut_b=\(other.map(String.init).joined(separator: "+")) pinned=\(pinsSelections ? 1 : 0) layers=\(stage.layers.count)")
+        /// Rows (axis 1) whose bits differ, the first of them, and the largest absolute difference.
+        func difference(_ x: MLXArray, _ y: MLXArray) -> String {
+            guard x.shape == y.shape, x.dtype == y.dtype else { return "shape \(x.shape) vs \(y.shape)" }
+            let raw: DType = x.dtype.size == 2 ? .uint16 : (x.dtype.size == 4 ? .uint32 : .uint8)
+            let unequal = x.view(dtype: raw) .!= y.view(dtype: raw)
+            guard x.ndim >= 2 else { return unequal.any().item(Bool.self) ? "differs" : "=" }
+            let rows = unequal.any(axes: Array(0 ..< x.ndim).filter { $0 != 1 }).asArray(Bool.self)
+            let differing = rows.indices.filter { rows[$0] }
+            guard let first = differing.first else { return "=" }
+            let delta = abs(x.asType(.float32) - y.asType(.float32)).max().item(Float.self)
+            return "rows=\(differing.count)/\(rows.count) first=\(first) max_abs=\(delta)"
+        }
+        let names = ["output", "residual", "post", "comb"]
+        var first: Int?
+        for layer in 0 ..< stage.layers.count {
+            try a.advance(layers: 1); try b.advance(layers: 1)
+            try MLX.withError { error in
+                eval(a.frontier + b.frontier)
+                try error.check()
+            }
+            let (x, y) = (a.boundaryArrays, b.boundaryArrays)
+            var fields: [String] = []
+            var same = true
+            for index in 0 ..< min(x.first?.count ?? 0, y.first?.count ?? 0) {
+                let left = concatenated(x.map { $0[index] }, axis: 1), right = concatenated(y.map { $0[index] }, axis: 1)
+                let result = difference(left, right)
+                if result != "=" { same = false }
+                fields.append("\(index < names.count && x[0].count == 4 ? names[index] : "streams\(index)")=\(result)")
+            }
+            let (stateA, stateB) = (a.workingState(layer: layer), b.workingState(layer: layer))
+            try MLX.withError { error in
+                eval(stateA + stateB)
+                try error.check()
+            }
+            let states = zip(stateA, stateB).map { difference($0, $1) }
+            if states.contains(where: { $0 != "=" }) { same = false }
+            let kind = c.layerTypes[stage.plan.layers.lowerBound + layer] == .linearAttention ? "kda" : "dsa"
+            log("divergence layer=\(layer) attention=\(kind) \(fields.joined(separator: " ")) state=[\(states.joined(separator: ","))]")
+            if !same, first == nil { first = layer }
+        }
+        let (ca, cb) = (try a.finish(), try b.finish())
+        guard case .final(let oa) = ca.output, case .final(let ob) = cb.output else {
+            throw ProbeError("GLM divergence probe: a cut read out no logits")
+        }
+        try MLX.withError { error in
+            eval(ca.segmentHidden + cb.segmentHidden + [oa.logits, ob.logits])
+            try error.check()
+        }
+        let hidden = difference(concatenated(ca.segmentHidden, axis: 1), concatenated(cb.segmentHidden, axis: 1))
+        let logits = difference(oa.logits, ob.logits)
+        log("divergence readout hidden=\(hidden) last_logits=\(logits)")
+        if first == nil, hidden != "=" || logits != "=" { first = stage.layers.count }
+        log("divergence first_layer=\(first.map { $0 == stage.layers.count ? "readout" : String($0) } ?? "none")")
+    }
+
+    /// Local cost of the sealed reduction's crypto alone (no link): one rank's
+    /// seal of a partial and the other's open of it, with paired test keys.
+    public static func sealProbe(bytes sizes: [Int], repeats: Int, log: (String) -> Void) {
+        let (zero, one) = QwenTensorParallelSealCodec.pair(scope: Data("glm-tp-seal-probe".utf8))
+        var next: UInt64 = 0
+        for bytes in sizes {
+            let plain = UnsafeMutableRawPointer.allocate(byteCount: bytes, alignment: 64)
+            let opened = UnsafeMutableRawPointer.allocate(byteCount: bytes, alignment: 64)
+            let frame = UnsafeMutableRawPointer.allocate(byteCount: bytes + QwenTensorParallelSealCodec.frameOverhead, alignment: 64)
+            defer { plain.deallocate(); opened.deallocate(); frame.deallocate() }
+            memset(plain, 0x5A, bytes)
+            var sealNs: UInt64 = 0, openNs: UInt64 = 0
+            for _ in 0 ..< repeats {
+                let counter = next; next += 1
+                var t = DispatchTime.now().uptimeNanoseconds
+                guard zero.seal(plain, bytes, frame, counter) == 0 else { log("seal refused"); return }
+                sealNs += DispatchTime.now().uptimeNanoseconds - t
+                t = DispatchTime.now().uptimeNanoseconds
+                guard one.open(frame, bytes, opened, counter, 0) == 0 else { log("open refused"); return }
+                openNs += DispatchTime.now().uptimeNanoseconds - t
+            }
+            let seal = Double(sealNs) / 1e6 / Double(repeats), open = Double(openNs) / 1e6 / Double(repeats)
+            log(String(format: "seal-probe bytes=%d seal=%.3f ms (%.2f GB/s) open=%.3f ms (%.2f GB/s)",
+                bytes, seal, Double(bytes) / seal / 1e6, open, Double(bytes) / open / 1e6))
+        }
+    }
+}

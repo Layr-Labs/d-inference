@@ -12,7 +12,7 @@ import Testing
         ProcessInfo.processInfo.environment["DARKBLOOM_TEST_GLM5_MANAGED_SYNTHETIC"] == "1"
 
     /// One request's text, generated-token count and bridge errors, and the
-    /// entries its relay channel received when it asked for logprobs.
+    /// entries the bridge yielded when it asked for logprobs.
     struct Served: Sendable {
         var text = ""
         var generated = 0
@@ -20,24 +20,23 @@ import Testing
         var entries: [SSETokenLogprob] = []
     }
 
-    /// One request through the bridge relay path; a `logprobs` request gets
-    /// a relay channel.
+    /// One request through the bridge, which yields each delta's entries in
+    /// stream order before its text.
     static func serve(bridge: EngineV2Bridge, request: ChatCompletionRequest, requestID: String,
                       prompt: [Int] = [3, 3]) async throws -> Served {
-        let channel = request.logprobs == true ? EngineV2LogprobsChannel() : nil
         let stream = try await bridge.submitTokenized(
             promptTokens: prompt, request: request, requestId: requestID, cacheEnabled: false,
-            logprobsChannel: channel, firstContentDeadline: nil)
+            firstContentDeadline: nil)
         var served = Served()
         for await event in stream {
             switch event {
             case .chunk(let text): served.text += text
+            case .logprobs(let entries): served.entries += entries
             case .info(_, let count, _, _): served.generated = count
             case .error(let reason): served.errors.append(reason)
             default: break
             }
         }
-        served.entries = channel?.drain() ?? []
         return served
     }
 

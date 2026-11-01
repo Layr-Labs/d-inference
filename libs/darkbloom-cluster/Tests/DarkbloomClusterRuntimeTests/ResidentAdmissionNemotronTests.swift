@@ -246,6 +246,8 @@ struct ResidentAdmissionNemotronTests {
             // 32 query heads of width 128 take MLX's fused kernel: a row prices its float32 output.
             #expect(try transient(1) == 32 * own * 128 * 4)
             #expect(try transient(1, .init(wholeModel: true)) == 32 * blocks * 128 * 4)
+            // A phase split's producer rank decodes nothing: its prompt frame alone.
+            #expect(try transient(1, .init(rows: 0)) == (own > 0 ? 32 * 128 * 4 : 0))
             #expect(try transient(512) == (try transient(512, .init(wholeModel: true))))
         }
     }

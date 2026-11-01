@@ -60,6 +60,8 @@ extension LayerStageResidentAdmission {
 /// temporaries of every layer it runs can be alive at once: `rows` a layer (1,
 /// or a verify window's `depth + 1`), over the rank's own stage or, on the
 /// decoding rank of a phase split, which runs both stages, over every layer.
+/// The other rank of a phase split hands its prompt state over and decodes
+/// nothing: 0 rows.
 struct LayerStageDecodeShape: Equatable {
     var rows = 1
     var wholeModel = false
@@ -71,8 +73,8 @@ struct LayerStageDecodeShape: Equatable {
     }
 
     init(mode: QwenResidentGenerationMode, rank: Int, speculativeTerms: QwenMTPTerms?) {
-        self.init(rows: mode.usesSpeculativeHead ? (speculativeTerms?.depth ?? 0) + 1 : 1,
-                  wholeModel: mode.isPhaseSplit && rank == 1)
+        let rows = mode.usesSpeculativeHead ? (speculativeTerms?.depth ?? 0) + 1 : 1
+        self.init(rows: mode.isPhaseSplit && rank == 0 ? 0 : rows, wholeModel: mode.isPhaseSplit && rank == 1)
     }
 
     /// The stages of `plan` whose layers one decode forward on `rank` runs.

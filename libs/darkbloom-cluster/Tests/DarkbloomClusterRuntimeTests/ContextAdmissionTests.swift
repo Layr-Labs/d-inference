@@ -100,7 +100,9 @@ struct ContextAdmissionTests {
         #expect(LayerStageDecodeShape(mode: .pipelineCompactDecode, rank: 0, speculativeTerms: nil) == .plain)
         #expect(LayerStageDecodeShape(mode: .pipelineMTP, rank: 0, speculativeTerms: terms)
             == .init(rows: terms.depth + 1))
-        #expect(LayerStageDecodeShape(mode: .phaseSplit, rank: 0, speculativeTerms: nil) == .plain)
+        // A phase split's producer rank hands its prompt state over and runs no decode forward.
+        #expect(LayerStageDecodeShape(mode: .phaseSplit, rank: 0, speculativeTerms: nil) == .init(rows: 0))
+        #expect(LayerStageDecodeShape(mode: .phaseSplitMTP, rank: 0, speculativeTerms: terms) == .init(rows: 0))
         #expect(LayerStageDecodeShape(mode: .phaseSplit, rank: 1, speculativeTerms: nil) == .init(wholeModel: true))
         #expect(LayerStageDecodeShape(mode: .phaseSplitMTP, rank: 1, speculativeTerms: terms)
             == .init(rows: terms.depth + 1, wholeModel: true))

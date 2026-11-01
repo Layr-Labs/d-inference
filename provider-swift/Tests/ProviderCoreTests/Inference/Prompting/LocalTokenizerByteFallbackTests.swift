@@ -96,6 +96,22 @@ struct LocalTokenizerByteFallbackTests {
         }
     }
 
+    @Test("a reply of byte tokens alone keeps all of them")
+    func allByteReply() async throws {
+        let directory = try tokenizerDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let tokenizer = try await LocalTokenizerLoader().load(from: directory)
+        // Longer than any bound a walk might take, and a control character written as a byte.
+        let text = String(repeating: "갂🗜丌", count: 100) + "\r"
+        let tokens = try text.unicodeScalars.flatMap { scalar in
+            try String(scalar).utf8.map { byte in
+                try #require(tokenizer.convertTokenToId(String(format: "<0x%02X>", byte)))
+            }
+        }
+        #expect(tokenizer.decode(tokenIds: tokens, skipSpecialTokens: false) == text)
+        #expect(streamed(tokens, tokenizer) == text)
+    }
+
     @Test("a segment restart does not land inside a run")
     func restartInsideARun() async throws {
         let directory = try tokenizerDirectory()
@@ -144,8 +160,11 @@ struct LocalTokenizerByteFallbackTests {
         // Only some byte tokens exist, so the others convert to the unknown ID.
         let directory = try tokenizerDirectory(byteTokens: 0xF0...0xFF)
         defer { try? FileManager.default.removeItem(at: directory) }
-        let tokenizer = try await LocalTokenizerLoader().load(from: directory)
-        let unknown = try #require(tokenizer.convertTokenToId("<unk>"))
-        #expect(tokenizer.decode(tokenIds: try ids("a", tokenizer) + [unknown], skipSpecialTokens: false) == "a<unk>")
+        // The probe reads whichever byte token a dictionary lists first, so load it more than once.
+        for _ in 0..<40 {
+            let tokenizer = try await LocalTokenizerLoader().load(from: directory)
+            let unknown = try #require(tokenizer.convertTokenToId("<unk>"))
+            #expect(tokenizer.decode(tokenIds: try ids("a", tokenizer) + [unknown], skipSpecialTokens: false) == "a<unk>")
+        }
     }
 }

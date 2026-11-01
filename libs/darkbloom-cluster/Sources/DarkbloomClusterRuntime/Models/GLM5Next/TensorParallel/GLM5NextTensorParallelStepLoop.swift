@@ -10,7 +10,8 @@ import DarkbloomClusterProtocol
 /// and a flag on either rank ends both after that step. A rank that stopped
 /// after a step was built (rank 0 reads the owner's answer late) commits
 /// nothing more, but still ends at a stop token its peer commits, as MTP
-/// rounds do; both then reconcile to rank 0's count and finish
+/// rounds do, so both leave after the same step; the end-of-request
+/// agreement then settles each rank's count and finish
 /// (`QwenTensorParallelStopRule.reconcile`). The runtime supplies the steps
 /// and its request's state, so two ranks can run it without a model.
 struct GLM5NextTensorParallelStepLoop<Selection> {

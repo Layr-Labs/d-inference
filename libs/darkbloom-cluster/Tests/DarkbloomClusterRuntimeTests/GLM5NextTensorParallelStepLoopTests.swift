@@ -5,10 +5,11 @@ import Testing
 
 /// GLM tensor parallel's one-token steps (`GLM5NextTensorParallelStepLoop`)
 /// on two ranks without a model: each step's agreement crosses an in-process
-/// all-sum (`FakeLink`), rank 0 reads the owner's answers late as the runtime
-/// does, and both ranks then cross the end-of-request agreement and reconcile
-/// (`QwenTensorParallelStopRule.reconcile`). Every case must end both ranks
-/// after the same step, through the same collectives.
+/// all-sum (`FakeLink`) when the loop reads or evaluates it, as it does every
+/// step it builds, in order; rank 0 reads the owner's answers late as the
+/// runtime does, and both ranks then cross the end-of-request agreement and
+/// reconcile (`QwenTensorParallelStopRule.reconcile`). Every case must end
+/// both ranks after the same step, through the same collectives.
 @Suite("GLM tensor-parallel one-token steps")
 struct GLM5NextTensorParallelStepLoopTests {
     static let stopToken = 2
@@ -61,7 +62,7 @@ struct GLM5NextTensorParallelStepLoopTests {
                 readAnswer: {
                     guard self.unanswered else { return }
                     self.unanswered = false
-                    if !self.wanted(self.tokens.count - 1), self.stopKeep == 0 {
+                    if !self.wanted(self.published.count - 1), self.stopKeep == 0 {
                         self.clientStopped = true; self.stopKeep = Float(self.tokens.count)
                     }
                 },
@@ -81,7 +82,7 @@ struct GLM5NextTensorParallelStepLoopTests {
             var finish = try loop.run(first: Step(index: 0, stop: 0)) ?? .length
             if unanswered {
                 unanswered = false
-                if !wanted(tokens.count - 1), finish == .clientStop { clientStopped = true }
+                if !wanted(published.count - 1), finish == .clientStop { clientStopped = true }
             }
             if clientStopped || (stopKeep > 0 && stopKeep < QwenTensorParallelStopRule.lengthStopBase) { finish = .clientStop }
             let local: QwenTensorParallelStopRule.Finish = finish == .eos ? .eos : finish == .length ? .length : .clientStop
@@ -126,17 +127,18 @@ struct GLM5NextTensorParallelStepLoopTests {
         #expect(stopped.kinds.last == "end")
     }
 
-    /// The owner stops at the token just before a stop token. Rank 0 reads
-    /// that answer only after the next step ran, so no step both ranks build
-    /// carries its flag: rank 1 commits the stop token and ends, and rank 0
-    /// must end there too instead of building a step alone (on the pair, a
-    /// collective its peer never joins). Both then keep the tokens up to the
-    /// owner's stop, as a client stop.
-    @Test(arguments: [false, true])
-    func anOwnersStopJustBeforeAStopTokenEndsBothRanksThere(sampled: Bool) throws {
-        let race = try Self.pair(.init(sampled: sampled, ownerStopsAt: 3))
-        for ended in race.ended { #expect(ended.tokens == Array(Self.script.prefix(4)) && ended.finish == .clientStop) }
-        #expect(race.ended[0].published == Array(Self.script.prefix(4)))
+    /// The owner stops one token before a stop token, or two on greedy steps
+    /// (built one ahead). Rank 0 reads that answer only after the next step
+    /// was built, so its flag rides a step rank 1 never reads: rank 1 commits
+    /// the stop token and ends, and rank 0 must end there too instead of
+    /// building a step alone (on the pair, a collective its peer never
+    /// joins). Both then keep the tokens up to the owner's stop, as a client stop.
+    @Test(arguments: zip([false, false, true], [3, 2, 3]))
+    func anOwnersStopJustBeforeAStopTokenEndsBothRanksThere(sampled: Bool, ownerStopsAt: Int) throws {
+        let race = try Self.pair(.init(sampled: sampled, ownerStopsAt: ownerStopsAt))
+        let kept = Array(Self.script.prefix(ownerStopsAt + 1))
+        for ended in race.ended { #expect(ended.tokens == kept && ended.finish == .clientStop) }
+        #expect(race.ended[0].published == kept)
         #expect(race.kinds.last == "end")
     }
 
@@ -147,8 +149,12 @@ struct GLM5NextTensorParallelStepLoopTests {
     func aRanksOwnStopJustBeforeAStopTokenEndsBothRanksThere(stopping: Int) throws {
         let race = try Self.pair(.init(localStopAfter: [stopping: 4]))
         #expect(race.kinds.last == "end")
-        // The stopping rank keeps what it held; its peer ends at the stop token.
+        // The stopping rank keeps what it held. Rank 1 adopts rank 0's count
+        // and finish unless it stopped on its own; rank 0 keeps its own.
         #expect(race.ended[stopping].tokens == Array(Self.script.prefix(4)) && race.ended[stopping].finish == .clientStop)
-        #expect(race.ended[1 - stopping].tokens.count >= 4)
+        let peer = race.ended[1 - stopping]
+        #expect(peer.tokens == Array(Self.script.prefix(stopping == 0 ? 4 : 5)))
+        #expect(peer.finish == (stopping == 0 ? .clientStop : .eos))
+        #expect(race.ended[0].published == race.ended[0].tokens)
     }
 }

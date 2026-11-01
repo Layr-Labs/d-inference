@@ -152,7 +152,7 @@ enum MiMoStagePrefixSnapshot {
     static func kind(_ cache: KVCache) throws -> Kind {
         if let ring = cache as? RotatingKVCache {
             guard let window = ring.maxSize, window > 0, MiMoSlidingRing.isModelRing(ring) else {
-                throw ProbeError("MiMo prefix needs the model's sliding ring: no kept prefix or rewind reserve")
+                throw ProbeError("MiMo prefix needs the sliding ring the model builds")
             }
             return .sliding(window: window)
         }

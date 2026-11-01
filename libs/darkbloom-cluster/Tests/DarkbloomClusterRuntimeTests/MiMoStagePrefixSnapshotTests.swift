@@ -196,10 +196,30 @@ struct MiMoStagePrefixSnapshotTests {
         let window = Equivalence.window
         #expect(try MiMoStagePrefixSnapshot.kind(RotatingKVCache(maxSize: window)) == .sliding(window: window))
         #expect(try MiMoStagePrefixSnapshot.kind(KVCacheSimple()) == .full)
+        let requested = RotatingKVCache(maxSize: window)
+        var fields = requested.metaState
+        fields[5] = "requested"
+        requested.metaState = fields
         for foreign in [RotatingKVCache(maxSize: window, keep: 1), RotatingKVCache(maxSize: window, step: 4),
-                        RotatingKVCache(maxSize: window, rewindCapacity: 2)] {
+                        RotatingKVCache(maxSize: window, rewindCapacity: 2), requested] {
             #expect(throws: (any Error).self) { try MiMoStagePrefixSnapshot.kind(foreign) }
         }
+    }
+
+    // A frontier shorter than the window keeps a tail that does not fill the
+    // ring. Restored unwrapped at that tail's end, the ring grows on as the
+    // original did; at a full ring, wrapped or not continue the same.
+    @Test func aFrontierShorterThanTheWindowRestoresBitForBit() throws {
+        let (plan, models) = try Self.stages(cut: 2)
+        let prompt = Array(Self.prompt.prefix(3))
+        let captures = [ClusterStagePrefixCapture.mimo(frontiers: [2]), ClusterStagePrefixCapture.mimo(frontiers: [2])]
+        let cold = try Self.run(models, plan: plan, caches: models.map { $0.newCache() }, prompt: prompt, start: 0,
+                                captures: captures)
+        let states = try captures.map { try #require($0.states().first) }
+        #expect(states.allSatisfy { $0.committedTokens == 2 && $0.recurrent.values.allSatisfy { $0.conv.dim(2) == 2 } })
+        let rows = try Self.run(models, plan: plan, caches: try Self.restored(models, plan: plan, states: states),
+                                prompt: prompt, start: 2)
+        #expect(Self.bits(rows) == Self.bits(cold))
     }
 
     @Test func aRestoreRefusesAStateThatIsNotThisStagesOwn() throws {

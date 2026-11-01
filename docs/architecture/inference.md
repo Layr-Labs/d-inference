@@ -4777,23 +4777,29 @@ and `MiMoV26IndependentHistoryCache.swift`. See
 
 ### MiMo contiguous ring metadata
 
-Image candidates, cluster prompt-prefix snapshots and contiguous phase
-hand-offs keep MiMo's ordinary caches: `KVCacheSimple` for full attention and
-`RotatingKVCache(maxSize: window)` for each sliding window. The pinned SDK
-writes a ring's `metaState` as seven values: keep, window, step, offset, write
-index, capacity origin and wrapped flag. A rewind reserve adds an eighth.
+Only image-candidate loads keep MiMo's ordinary caches: `KVCacheSimple` for
+full attention and `RotatingKVCache(maxSize: window)` for each sliding window.
+The four text modes use pages with cluster prefix reuse off
+([independent histories](#mimo-plain-pipeline-independent-histories)), so only
+image candidates take cluster prompt-prefix snapshots. `MiMoPhaseSplitState`
+also handles ordinary caches, but no load reaches that branch: image candidates
+refuse phase split (`MiMoResidentRuntime.load`). The pinned SDK writes a ring's
+`metaState` as seven values: keep, window, step, offset, write index, capacity
+origin and wrapped flag. A rewind reserve adds an eighth.
 
 | Path | What it writes or accepts |
 |---|---|
 | Model ring check (`MiMoSlidingRing.isModelRing`) | Only the model's own ring: every value except offset, write index and wrapped flag equals a fresh ring's |
 | Prefix capture and restore (`MiMoStagePrefixSnapshot`) | Restores a tail at the frontier's offset and write index, not wrapped |
 | Phase split (`MiMoPhaseSplitState`) | Replays the frame grid for the write index and wrapped flag; exports or adopts a ring only when its whole metadata matches |
+| Verify-window rollback (`MiMoWindowRollback`) | Cuts a multi-token window's rows and rewrites only offset and write index; that window left the wrapped flag false |
 | Page histories (`MiMoPhaseSplitState.pagedMetadata`) | Keep their own five values |
 
-A kept prefix, another step or origin, a rewind reserve or another layout is
-refused. Code: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/MiMo/Generation/MiMoSlidingRing.swift`,
-`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/MiMo/Generation/MiMoPhaseSplit.swift`
-and `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/MiMo/Prefix/MiMoStagePrefixSnapshot.swift`.
+The snapshot and the phase split refuse a kept prefix, another step or origin,
+a rewind reserve or another layout. Code: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/MiMo/Generation/MiMoSlidingRing.swift`,
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/MiMo/Generation/MiMoPhaseSplit.swift`,
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/MiMo/Prefix/MiMoStagePrefixSnapshot.swift`
+and `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/MiMo/MTP/MiMoWindowRollback.swift`.
 
 ### Gemma paged prefix restoration
 

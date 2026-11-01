@@ -38,8 +38,10 @@
 # the one-token path (tokens, rows, caches: lossless greedy), with the heads'
 # own proposals (random, so mostly rejected), with proposals scripted from the
 # one-token tokens (forced acceptance: every draft kept) and with every fifth
-# scripted proposal moved off (accepts, rejects and rollback); and each tp
-# rank bitwise equal to `simulated` for the heads, the script and a sampled run.
+# scripted proposal moved off (accepts, rejects and rollback); sampled rounds
+# (temperature 0.8: the heads, and the misses scripted from the sampled
+# one-token run) bitwise equal to the sampled one-token path; and each tp rank
+# bitwise equal to `simulated` for the heads, the misses and a sampled run.
 set -euo pipefail
 tp_check="$1"
 scratch="$2"
@@ -273,11 +275,20 @@ mtp_matrix() {
       done
     done
   done
-  # Sampled rounds (the product's keyed target sample per column over the gathered rows): tp == simulated.
+  # Sampled rounds (the product's keyed target sample per column over the gathered rows): every round run
+  # equals the sampled one-token path bit for bit, and tp == simulated.
   dir="$scratch/kernel-mtp"
-  nice -n 19 "$tp_check" mimo run --mode simulated --path paged --model-dir "$dir" --request "$dir/request.json" \
-    --report "$dir/sampled-heads-simulated.json" --temperature 0.8 --sample-seed 11 --mtp-depth 2 \
-    >"$dir/sampled-heads-simulated.log" 2>&1
+  sampled() { local tag="$1"; shift
+    nice -n 19 "$tp_check" mimo run --mode simulated --path paged --model-dir "$dir" --request "$dir/request.json" \
+      --report "$dir/sampled-$tag-simulated.json" --temperature 0.8 --sample-seed 11 "$@" \
+      >"$dir/sampled-$tag-simulated.log" 2>&1; }
+  sampled plain
+  sampled heads --mtp-depth 2
+  sampled misses --mtp-depth 3 --mtp-script "$dir/sampled-plain-simulated.json" --mtp-misses 5
+  for tag in heads misses; do
+    same_bits "$dir/sampled-plain-simulated.json" "$dir/sampled-$tag-simulated.json" \
+      "mtp kernel/request sampled $tag ($(grep -o 'speculative rounds.*' "$dir/sampled-$tag-simulated.log" || echo 'no rounds')) == one-token path"
+  done
   tp_pair "$dir" request sampled-heads-tp-ring ring "" --path paged --temperature 0.8 --sample-seed 11 --mtp-depth 2
   for rank in 0 1; do
     same_bits "$dir/sampled-heads-simulated.json" "$dir/sampled-heads-tp-ring-rank$rank.json" \

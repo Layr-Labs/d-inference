@@ -258,13 +258,12 @@ final class MiMoTensorParallelDrafter {
     /// After both ranks kept `tokens` of a window `[last] + drafts` whose
     /// post-final-norm rows are `hidden`.
     func finalize(drafts: [Int], tokens: [Int], acceptedDrafts: Int, hidden: MLXArray) throws {
-        guard !released, !tokens.isEmpty, hidden.dim(1) >= tokens.count else {
+        guard !released, !drafts.isEmpty, !tokens.isEmpty, hidden.dim(1) >= tokens.count else {
             throw ProbeError("MiMo tensor-parallel drafter finalized rows the window did not keep")
         }
         statistics.record(drafts: drafts.count, acceptedDrafts: acceptedDrafts, emitted: tokens.count)
         guard case .heads(let head) = speculation.proposer, let state else { return }
         let carryHidden = hidden[0..., (tokens.count - 1) ..< tokens.count, 0...]
-        guard !drafts.isEmpty else { carry = nil; return }
         let draftArray = MLXArray(drafts.map(Int32.init)).reshaped([1, drafts.count])
         head.assistant.finalizeRound(requestState: state, confirmedInputTokens: 1 + acceptedDrafts,
             committedDraftTokens: draftArray[0..., 0 ..< acceptedDrafts],
@@ -274,6 +273,14 @@ final class MiMoTensorParallelDrafter {
             try error.check()
         }
         carry = (tokens[tokens.count - 1], carryHidden)
+    }
+
+    /// After a plain step: the heads draft no more for this request, as the
+    /// pipeline's decoder (they would need the history the step skipped).
+    func plainStep() throws {
+        guard !released else { throw ProbeError("MiMo tensor-parallel drafter stepped past its request") }
+        statistics.record(drafts: 0, acceptedDrafts: 0, emitted: 1)
+        carry = nil
     }
 
     func release() {

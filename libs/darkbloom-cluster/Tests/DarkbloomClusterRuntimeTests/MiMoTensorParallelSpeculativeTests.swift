@@ -91,7 +91,8 @@ struct MiMoTensorParallelSpeculativeTests {
     }
 
     /// `script`: proposals scripted from these tokens (all kept); nil: the trained heads.
-    private static func run(_ models: Box<[MiMoTensorParallelModel]>, script: [Int]? = nil,
+    /// `rounds` false: the one-token path.
+    private static func run(_ models: Box<[MiMoTensorParallelModel]>, script: [Int]? = nil, rounds: Bool = true,
                             rule: MiMoTensorParallelSelectionRule = .greedy, stops: Set<Int> = [],
                             answer: @escaping @Sendable (Int, Int) -> Bool = { _, _ in true },
                             stopAfter: @escaping @Sendable (Int, Int) -> Bool = { _, _ in false }) throws -> [Ran] {
@@ -99,7 +100,7 @@ struct MiMoTensorParallelSpeculativeTests {
             let model = models.value[rank]
             let proposer: MiMoTensorParallelProposer = try script.map { .scripted(script: $0, missEvery: 0) }
                 ?? .heads(try #require(model.draftHead))
-            let speculation = try MiMoTensorParallelSpeculation(depth: 2, proposer: proposer)
+            let speculation = rounds ? try MiMoTensorParallelSpeculation(depth: 2, proposer: proposer) : nil
             var published: [(ordinal: Int, token: Int, logprobs: ClusterWorkerTokenLogprobs?)] = []
             var checks = 0
             let outcome = try MiMoTensorParallelDecoding(model: model).run(
@@ -154,13 +155,17 @@ struct MiMoTensorParallelSpeculativeTests {
         let local = try Self.run(models, script: script, stopAfter: { rank, checks in rank == 1 && checks == 3 })
         for ran in local { #expect(ran.outcome.tokens == Array(tokens.prefix(7)) && ran.outcome.finish == .clientStop) }
         #expect(local[1].outcome.stoppedHere && !local[0].outcome.stoppedHere)
-        // Greedy logprobs for every kept column, the token first, the same tokens.
+        // Greedy logprobs for every kept column, the token first, the same tokens, and exactly the
+        // logprobs the one-token path publishes.
         let logprobs = try Self.run(models, script: script, rule: .greedyLogprobs(top: 3))
         #expect(logprobs[0].outcome.tokens == tokens && logprobs[0].published.count == tokens.count)
         for entry in logprobs[0].published {
             let value = try #require(entry.logprobs)
             #expect(value.top.count == 3 && value.top[0].tokenID == entry.token && value.logprob == value.top[0].logprob)
         }
+        let stepped = try Self.run(models, rounds: false, rule: .greedyLogprobs(top: 3))
+        #expect(stepped[0].outcome.statistics == nil && stepped[0].published.map(\.token) == tokens)
+        #expect(logprobs[0].published.map(\.logprobs) == stepped[0].published.map(\.logprobs))
         // The trained (random) heads, with the same stop token: both end there.
         let heads = try Self.run(models, stops: [tokens[inside]])
         for ran in heads { #expect(ran.outcome.tokens == Array(tokens.prefix(inside + 1)) && ran.outcome.finish == .eos) }

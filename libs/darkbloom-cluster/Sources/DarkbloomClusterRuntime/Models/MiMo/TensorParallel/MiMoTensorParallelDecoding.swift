@@ -174,13 +174,7 @@ struct MiMoTensorParallelDecoding {
             let position = caches[0].offset
             let choice = try select(logits, request: request, stop: stopKeep, position: position)
             routes?.flush()
-            if let slot = choice.stop {
-                // A rank asked both to stop: both keep the tokens it named.
-                let stop = QwenTensorParallelStopRule.stop(slot: slot)
-                outcome.tokens = Array(outcome.tokens.prefix(stop.keep))
-                outcome.finish = stop.finish
-                break
-            }
+            if let slot = choice.stop { endAtStop(slot, &outcome); break }
             if index == 0 { outcome.firstTokenSeconds = MiMoTensorParallelModel.now() - started }
             try observe?(choice.step(index))
             request.sampler?.commit(choice.token)
@@ -209,13 +203,26 @@ struct MiMoTensorParallelDecoding {
         return outcome
     }
 
-    /// The prompt in chunks; the last position's logits `[1, V or V/2]`, not evaluated.
-    func prefill(_ prompt: [Int], chunk: Int, caches: [MiMoV26IndependentHistoryCache]) throws -> MLXArray {
+    /// A rank asked both to stop: both keep the tokens it named.
+    func endAtStop(_ slot: Float, _ outcome: inout Outcome) {
+        let stop = QwenTensorParallelStopRule.stop(slot: slot)
+        outcome.tokens = Array(outcome.tokens.prefix(stop.keep))
+        outcome.finish = stop.finish
+    }
+
+    /// The prompt in chunks, each chunk's post-final-norm rows handed to the
+    /// drafter when rounds follow; the last position's logits `[1, V or V/2]`, not evaluated.
+    func prefill(_ prompt: [Int], chunk: Int, caches: [MiMoV26IndependentHistoryCache],
+                 drafter: MiMoTensorParallelDrafter? = nil) throws -> MLXArray {
         var offset = 0
         while true {
             let end = min(prompt.count, offset + chunk)
-            let logits = try forward(Array(prompt[offset ..< end]), caches: caches)
-            if end == prompt.count { return logits }
+            let tokens = Array(prompt[offset ..< end])
+            let output = try model.model.forwardIndependentHistory(
+                inputIDs: MLXArray(tokens.map(Int32.init)).reshaped(1, tokens.count), caches: caches,
+                logitsStart: tokens.count - 1)
+            try drafter?.observePrompt(tokens: tokens, hidden: output.normalizedHiddenStates)
+            if end == prompt.count { return output.logits[0..., -1, 0...] }
             try MLX.withError { error in
                 eval(caches.flatMap { $0.innerState() } + (routes?.pending ?? []))
                 try error.check()

@@ -119,6 +119,7 @@ final class QwenTensorParallelNativeBatchExecutor<Reservation: QwenTensorParalle
         self.prefixDisk = prefixDisk; self.prefixDiskScope = prefixDiskScope
         self.allocationBound = allocationBound; self.prefixObserved = prefixObserved
         self.group = group; self.prepare = prepare; self.completedDecode = completedDecode; self.completedPrefill = completedPrefill; self.releaseResources = releaseResources
+        QwenTensorParallelBatchSession.logCensusOnce(rank: rank, model: model)
     }
 
     func exchange(_ words: [Float], check: () throws -> Void) throws -> [Float] {

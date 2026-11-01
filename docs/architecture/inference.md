@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-10-31
+> Last updated: 2026-11-01
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -5101,8 +5101,37 @@ the 27B, whose features keep it in tensor parallel, and an assistant quote bind 
 placement to tensor parallel as before. Synthetic CPU and both-chip native
 fixtures are not full-artifact, RDMA, tower, throughput or endpoint evidence.
 
+Each rank logs its decode routes once per loaded model when its native
+executor starts (`qwen-tp-decode-census-v1`,
+`QwenTensorParallelBatchSession.censusLine`): every projection's route (the
+batch-invariant kernel `aqv`, a row-parallel FP32 partial on it `partial`, or
+MLX's own kernels with the reason, `mlx-...`) and each projection shape's
+layout per vector count (plain rows of one to eight and their four-column
+windows), the residual-norm form, the paged attention geometry and partition
+size, the selection, and any arithmetic switch the launcher set. A registered
+27B rank reports `mlx=0`. Only host values are read; nothing is evaluated.
+
+`QwenTensorParallelRowsCheck` checks the row contract at the registered 27B
+per-rank widths with random weights (affine 4-bit, group 64, BF16 scales,
+biases and norms; three Gated DeltaNet layers and one attention layer; the
+whole 248,320-row vocabulary): a row's logits and history equal its run alone,
+on a one- or an eight-lane host, beside rows of 100 to 4,600 tokens that join
+and leave, across two KV segments, while an assistant observes the cohort, and
+at every position of a four-column verify window alone and in a cohort. Both
+ranks run it in one process (`QwenTensorParallelRealGeometryRowsTests`,
+`QWEN_TP_REAL_GEOMETRY_GPU=1`) or as two processes over the loopback ring
+(`darkbloom-cluster-tp-check qwen-rows`, native or sealed sums, with the
+worker's arithmetic environment); on an M5 Ultra every comparison is bitwise
+equal. It covers neither the registered weights nor JACCL's streamed sealed
+sums, the driver under live traffic or the HTTP stream; `qwen-rows run` also
+loads a registered checkpoint directory on a Mac with the memory for it.
+
 Sources: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/TensorParallel/QwenTensorParallelBatchSession.swift`
-(`QwenTensorParallelBatchSession`),
+(`QwenTensorParallelBatchSession`, `censusLine`),
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/TensorParallel/QwenTensorParallelRowsCheck.swift`
+(`QwenTensorParallelRowsCheck`),
+`libs/darkbloom-cluster-worker/Sources/TensorParallelCheck/QwenRowsCheck.swift`
+(`QwenRowsCheck`),
 `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/TensorParallel/QwenTensorParallelBatchDriver.swift`
 (`serve`, `makePlan`, `join`, `leave`),
 `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Batch/QwenBatchDecodeCoalescing.swift`

@@ -115,7 +115,9 @@ public final class Gemma4TensorParallelResidentRuntime {
             try admission.jaccl.requireUnchanged(environment: ProcessInfo.processInfo.environment, read: read)
             try admission.jaccl.requireInitialized(rank: collective.rank, worldSize: collective.size,
                 transport: collective.transport)
-            let terms = Gemma4TensorParallelLoadAgreement(lanes: lanes, kv: kv, kvQuantization: kvQuantization, prefixCache: false)
+            // What the capability declares (`Gemma4ResidentAdapterDefinition.servingFeatures`).
+            let terms = Gemma4TensorParallelLoadAgreement(lanes: lanes, kv: kv, kvQuantization: kvQuantization,
+                prefixCache: Gemma4ResidentAdapterDefinition.tensorParallelKeepsPromptPrefixes)
             let loadAgreement = try terms.fingerprint(admission: try admission.loadAgreementFingerprint())
             try ClusterDataPlaneAgreement.establish(collective: collective, credential: credential,
                 loadAgreement: loadAgreement, tamper: nil, tensorParallelSeal: true, check: { try control.check() })

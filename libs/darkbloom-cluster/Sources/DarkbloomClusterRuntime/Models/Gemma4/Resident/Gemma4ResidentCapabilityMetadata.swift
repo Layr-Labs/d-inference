@@ -41,6 +41,7 @@ public enum Gemma4ResidentCapabilityMetadata {
             arithmeticPolicyID: Gemma4ArithmeticEnvironment.contract,
             arithmeticPolicySHA256: sha256(try canonicalJSONData(arithmetic)),
             supportedPrefillSchedules: Gemma4ResidentAdapterDefinition.supportedPrefillSchedules,
-            supportedGenerationModes: Gemma4ResidentAdapterDefinition.supportedGenerationModes)
+            supportedGenerationModes: Gemma4ResidentAdapterDefinition.supportedGenerationModes,
+            modeFeatures: Gemma4ResidentAdapterDefinition.servingFeatures)
     }
 }

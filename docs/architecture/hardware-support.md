@@ -1170,6 +1170,19 @@ headroom. That fits a 128 GB Mac. A reservation asks the live gate for its own r
 per-rank charges. Nothing here is measured on a pair; see
 [inference](inference.md#mimo-tensor-parallel-placement).
 
+A rank launched with speculative rounds (`--mtp-depth`) adds, in its own gates
+only (the planner's quote does not count them yet):
+
+| Charge | Held | Bytes |
+|---|---|---|
+| The three trained heads, whole on every rank (BF16) | per rank | 1,975,640,448 |
+| The drafter's state: the product's bounded declaration at a 512-token chunk and depth 2 (`MiMoV26MTPAssistant.boundedRequestAllocation`) | per request | 438,426,984 |
+| The window's extra rows at depth 2: each sliding ring once more per extra row, one page per layer, the window's rows twice (`MiMoTensorParallelRequestBudget.speculativeWindowBytes`) | per request | 36,347,904 |
+
+With them a rank still fits a 128 GB Mac: 107,281,620,648 bytes (99.9 GiB) with
+the loading headroom, against a 115.2 GiB ceiling. See
+[speculative rounds](inference.md#mimo-tensor-parallel-speculative-rounds).
+
 ### Additional TP resident allocations
 
 TP layouts may carry allocator-bounded resident allocations outside their text

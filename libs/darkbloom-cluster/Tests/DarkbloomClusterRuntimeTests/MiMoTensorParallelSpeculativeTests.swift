@@ -166,6 +166,36 @@ struct MiMoTensorParallelSpeculativeTests {
         for ran in heads { #expect(ran.outcome.tokens == Array(tokens.prefix(inside + 1)) && ran.outcome.finish == .eos) }
     }
 
+    /// A rank's speculative charge at the registered geometry (exact bounds): the drafter's
+    /// bounded state is the product's own declaration (chunk 512, depth 2), and a window adds
+    /// each sliding ring once more per extra row, one page per layer and its rows twice. The
+    /// load agreement grows only when rounds are on.
+    @Test func speculativeChargeAndAgreementAtTheRegisteredGeometry() throws {
+        let data = try MiMoTensorParallelTests.fixture("configuration")
+        let plan = try MiMoTensorParallelPlan(configuration: data)
+        let exact: (Int) throws -> Int = { $0 }
+        let window = try MiMoTensorParallelRequestBudget.speculativeWindowBytes(plan: plan, slidingWindow: 128, depth: 2,
+                                                                                allocationBound: exact)
+        #expect(window == 39 * 128 * 2560 * 2 + 39 * 64 * 2560 + 9 * 64 * 1280 + 3 * 152_576 * 4 * 2)
+        #expect(window == 36_347_904)
+        #expect(throws: (any Error).self) {
+            try MiMoTensorParallelRequestBudget.speculativeWindowBytes(plan: plan, slidingWindow: 128, depth: 4,
+                                                                       allocationBound: exact)
+        }
+        let configuration = try JSONDecoder().decode(MiMoV26Configuration.self, from: data)
+        let spec = try #require(MiMoV26MTPAssistant.boundedRequestAllocation(configuration: configuration,
+            limits: .init(maximumPrefillTokens: 512, maximumDraftTokens: 2)))
+        let drafter = (spec.resident + spec.working).reduce(spec.hostBytes) { $0 + $1.logicalBytes * $1.allocationCount }
+        #expect(drafter == 438_426_984)
+        typealias Runtime = MiMoTensorParallelResidentRuntime
+        let plain = Runtime.loadAgreementFields(plan: plan, chunkTokens: 512)
+        #expect(Runtime.loadAgreementFields(plan: plan, chunkTokens: 512, speculative: nil) == plain)
+        let two = Runtime.loadAgreementFields(plan: plan, chunkTokens: 512, speculative: try MiMoMTPTerms(depth: 2))
+        let three = Runtime.loadAgreementFields(plan: plan, chunkTokens: 512, speculative: try MiMoMTPTerms(depth: 3))
+        #expect(Array(two.prefix(plain.count)) == plain && two.count > plain.count && two != three)
+        #expect(two.contains("depth=2") && two.contains("windows=row-exact-one-token-bits"))
+    }
+
     /// Exactly tied maxima in a window's columns: inside one rank's half the
     /// lower ID wins, across halves rank 0's (the lower IDs); a column's
     /// logprobs lead with its agreed maximum even when a tied token leads the

@@ -4262,10 +4262,10 @@ held back until it keeps them."). On equal idle Macs in the placement checks'
 device model, with MiMo's rounds credited and the heads priced, that is 106 GB
 for 128 + 128 and 118 GB for a fresh pair's 32,768 + 32,768; from 104 GB
 (where tensor parallel first fits) every other size replaces the speculative
-pipeline, and no size fits tensor parallel alone (2026-11-01 scan,
-`mainnet/overnight/mimo-tp-speculative-v2.md`) [INFERENCE: the device model,
-not real Macs]. The tensor-parallel-first families (Qwen, GLM) declare no
-features and are not gated. Applied to them, the rule would leave GLM unchanged (its tensor parallel
+pipeline, and no size fits tensor parallel alone (a planner scan on 2026-11-01,
+the measured 29 µs link) [INFERENCE: the checks' device model, not measured
+Macs]. The tensor-parallel-first families (Qwen, GLM) declare no features and
+are not gated. Applied to them, the rule would leave GLM unchanged (its tensor parallel
 keeps prompt-prefix and SSD reuse and adds rounds, eight lanes, images, video
 and logprobs) but would move Qwen3.5 9B from tensor parallel to its
 speculative pipeline, which its records credit 1.74x: Qwen tensor parallel

@@ -132,7 +132,7 @@ extension ProviderLoop {
     /// could keep reservations non-empty and hold `run()` open for the full
     /// shutdown drain timeout, then have its models unloaded mid-stream.
     internal func throwIfRefusingNewLocalWork(modelId: String? = nil) throws {
-        if let modelId, !autopilotAllowsModel(modelId) {
+        if let modelId, !autopilotServesModel(modelId) {
             throw MultiModelBatchSchedulerEngineError.requestRejected("model_not_selected")
         }
         if autopilotCommand != nil {
@@ -190,7 +190,8 @@ extension ProviderLoop {
         profile requestProfile: RequestProfileBuilder? = nil,
         serviceReservationID: String? = nil,
         promptWork: PromptWork? = nil,
-        send: SendHandle
+        send: SendHandle,
+        workFIFOGate: WorkFIFOGate? = nil
     ) async {
         let serviceReservation = ServiceReservationLifetime(id: serviceReservationID) { id in
             send.send(.serviceReservationReleased(serviceReservationID: id))
@@ -233,14 +234,17 @@ extension ProviderLoop {
         }
         let lookupReceiptFinalizer = PrefixCacheLookupReceiptFinalizer(
             callback: receiptCallbacks.lookup)
-        func rejectInvalidRequest() {
+        // Each refusal before the inference task logs its fixed reason publicly,
+        // so `darkbloom logs` accounts for it; the frame carries no reason.
+        func reject(_ failure: InferenceFailure, refusal: InferenceRefusalReason) {
+            InferenceFailureLogger(logger: logger).record(requestId: requestId, failure: failure, refusal: refusal)
             lookupReceiptFinalizer.sendTerminal(
-                .inferenceError(
-                    requestId: requestId,
-                    failure: InferenceFailure(code: .invalidRequest, statusCode: 400),
-                    profile: profile),
+                .inferenceError(requestId: requestId, failure: failure, profile: profile),
                 fallbackFailure: .policy,
                 send: send)
+        }
+        func rejectInvalidRequest(_ refusal: InferenceRefusalReason) {
+            reject(InferenceFailure(code: .invalidRequest, statusCode: 400), refusal: refusal)
         }
         var receiptTransferredToTask = false
         defer {
@@ -250,6 +254,17 @@ extension ProviderLoop {
                 lookupReceiptFinalizer.finalize(failure: .policy)
                 inflightProfiles.removeValue(forKey: requestId)
             }
+        }
+
+        // A member answers only through its published pair slot (S09). The
+        // slot can retire after the dispatcher let this request through, so
+        // the refusal runs after the reservation and receipt owners exist:
+        // the defer above releases the reservation and settles the receipt.
+        if isClusterMember && clusterPairSlot == nil {
+            lookupReceiptFinalizer.sendTerminal(
+                Self.clusterMemberInferenceRefusal(requestId),
+                fallbackFailure: .capacity, send: send)
+            return
         }
 
         if rejectIfFirstContentDeadlineExpired(
@@ -290,8 +305,7 @@ extension ProviderLoop {
         // `senderPublicKey` are already base64-decoded by CoordinatorClient,
         // so we hand the raw bytes straight to NodeKeyPair.decrypt.
         guard let senderKey = senderPublicKey, senderKey.count == 32 else {
-            logger.error("[\(requestId)] missing or malformed sender public key")
-            rejectInvalidRequest()
+            rejectInvalidRequest(.missingSenderKey)
             return
         }
 
@@ -302,8 +316,7 @@ extension ProviderLoop {
                 ciphertext: ciphertext
             )
         } catch {
-            logger.error("[\(requestId)] request decryption failed")
-            rejectInvalidRequest()
+            rejectInvalidRequest(.undecryptableRequest)
             return
         }
         profile.mark(.decrypted)
@@ -320,9 +333,7 @@ extension ProviderLoop {
         if toolSchemaMetadataProtocol != ToolSchemaNormalization.metadataProtocolVersion,
             ToolSchemaNormalization.containsReservedMetadata(in: decryptedData)
         {
-            logger.warning(
-                "[\(requestId)] rejecting unauthenticated internal tool-schema metadata")
-            rejectInvalidRequest()
+            rejectInvalidRequest(.reservedToolSchemaMetadata)
             return
         }
 
@@ -342,23 +353,44 @@ extension ProviderLoop {
         // tools, content-less messages, the `developer` role) before
         // retrying — surfacing the real decoder error on failure rather
         // than a masked one (#252). See ProviderLoop+InboundDecode.swift.
-        let chatRequest: OpenAIChatCompletionRequest
+        // `decodeInboundChatRequest` runs that decode and also reads the
+        // body extensions below, in the same parse when the tool and
+        // function-call repairs leave the body unchanged.
+        let inbound: InboundChatRequest
         do {
-            chatRequest = try Self.decodeOpenAIRequest(decryptedData)
+            inbound = try Self.decodeInboundChatRequest(decryptedData)
         } catch {
-            // Privacy: the provider logger renders the whole message `.public`, and
-            // reports collect this subsystem — so never interpolate the raw decode
+            // Privacy: reports collect this subsystem, so never log the raw decode
             // error, which on a malformed body can carry a fragment of the (now
-            // decrypted) request, i.e. user prompt content. Log only the error TYPE.
-            // The requester-facing string below is likewise kept generic: it transits
+            // decrypted) request, i.e. user prompt content. Log only its fixed
+            // reason. The requester-facing frame is likewise generic: it transits
             // the coordinator in plaintext and is logged server-side, so interpolating
             // the raw error could resurface a prompt fragment in coordinator logs
             // (defense-in-depth for the "coordinator never sees plaintext" invariant).
-            logger.error("[\(requestId)] failed to parse chat request")
-            rejectInvalidRequest()
+            rejectInvalidRequest(InferenceRefusalReason(chatDecodeFailure: error))
             return
         }
+        let chatRequest = inbound.request
         profile.mark(.parsed)
+
+        // A member serves only its pair's model, and only while that slot is
+        // live. Refuse anything else here, before any local admission sample.
+        if isClusterMember && !clusterPairSlotServes(chatRequest.model) {
+            lookupReceiptFinalizer.sendTerminal(
+                .inferenceError(requestId: requestId,
+                    failure: InferenceFailure(code: .modelUnavailable, statusCode: 503), profile: profile),
+                fallbackFailure: .capacity, send: send)
+            return
+        }
+
+        // A content part type no engine serves is refused before acceptance,
+        // as the shared request preparation refuses it on the local API
+        // (`OpenAIRequestValidationError.unsupportedContentPart`), on one Mac
+        // and on a pair alike: never answered from the text that is left.
+        if chatRequest.unsupportedContentPartType != nil {
+            rejectInvalidRequest(.invalidMessages)
+            return
+        }
 
         // Reject unknown/non-native audio before acceptance or cold loading.
         // Only provider-owned architecture metadata selects MiMo dispatch;
@@ -368,13 +400,7 @@ extension ProviderLoop {
             try MediaIngest.rejectUnsupportedAudio(chatRequest,
                 modelType: localModelTypeForAudioAdmission(chatRequest.model))
         } catch {
-            lookupReceiptFinalizer.sendTerminal(
-                .inferenceError(
-                    requestId: requestId,
-                    failure: Self.sanitizedInferenceFailure(from: error, phase: .request),
-                    profile: profile),
-                fallbackFailure: .policy,
-                send: send)
+            reject(Self.sanitizedInferenceFailure(from: error, phase: .request), refusal: .unsupportedAudio)
             return
         }
 
@@ -390,7 +416,7 @@ extension ProviderLoop {
         // Recover the one out-of-band template-control value once from the
         // authenticated plaintext body. The same value is used by text,
         // vision, and both prompt-token recount paths.
-        let templateControls = Self.extractChatTemplateControls(from: decryptedData).resolvingPromptDate()
+        let templateControls = inbound.extensions.templateControls.resolvingPromptDate()
         // Cache identity is coordinator-authored and authenticated outside the
         // sealed OpenAI body. Never trust caller-controlled prompt_cache_key/user
         // for remote cache partitioning. Legacy coordinators omit the outer
@@ -399,10 +425,10 @@ extension ProviderLoop {
         // OpenAI `logprobs` / `top_logprobs` (also absent from the upstream
         // request shape). Non-nil only when the request asked for logprobs;
         // honored by the EngineV2 path (see EngineV2Logprobs.swift).
-        let logprobsSpec = Self.extractLogprobsSpec(from: decryptedData)
+        let logprobsSpec = inbound.extensions.logprobsSpec
         // OpenAI `logit_bias` / `seed` (also absent from the upstream request
         // shape). Overlaid onto the EngineV2 translation.
-        let samplingOverrides = Self.extractSamplingOverrides(from: decryptedData)
+        let samplingOverrides = inbound.extensions.samplingOverrides
 
         if rejectIfFirstContentDeadlineExpired(
             firstContentDeadline,
@@ -424,11 +450,10 @@ extension ProviderLoop {
         let modelId = chatRequest.model
         // This metadata is provider-authored, never a caller model_type/name
         // heuristic. Revalidate against the actual acquired slot below.
-        do {
-            try ProviderPromptContractPipeline.validateNativeControls(templateControls,
-                modelType: modelSlots[modelId]?.modelType ?? advertisedModels[modelId]?.modelType)
-        } catch {
-            rejectInvalidRequest() // Never publish raw decrypted validation details.
+        if let refusal = ProviderPromptContractPipeline.nativeControlsRefusal(templateControls,
+            modelType: modelSlots[modelId]?.modelType ?? advertisedModels[modelId]?.modelType)
+        {
+            rejectInvalidRequest(refusal) // Never publish raw decrypted validation details.
             return
         }
         if rejectIfDrainingForMTP(modelId: modelId, requestId: requestId, send: send,
@@ -437,7 +462,15 @@ extension ProviderLoop {
         // load step: a cold sample includes model-load latency and must never
         // calibrate warm quotes.
         let modelWasResidentAtDispatch = modelSlots[modelId] != nil
-        let fastAdmissionRejected = await fastAdmissionReject(modelId: modelId)
+        // A cold model is sized only after released loads of other models
+        // have taken their capacity, and a rejection while a released load of
+        // the same model runs is checked again after it
+        // (`ProviderLoop+WorkFIFO.swift`).
+        if !modelWasResidentAtDispatch { await awaitReleasedLoads(otherThan: modelId) }
+        var fastAdmissionRejected = await fastAdmissionReject(modelId: modelId)
+        if fastAdmissionRejected, await awaitReleasedLoads(of: modelId) {
+            fastAdmissionRejected = await fastAdmissionReject(modelId: modelId)
+        }
         profile.mark(.admission)
         if rejectIfFirstContentDeadlineExpired(
             firstContentDeadline,
@@ -497,7 +530,7 @@ extension ProviderLoop {
         // Authoritative autopilot check after all admission suspensions and
         // before request ownership is registered. Managed network work may use
         // warm models only; owner-local work retains its own load path.
-        if !autopilotAllowsModel(modelId) || autopilotCommand != nil || (autopilotManagesResidency && modelSlots[modelId] == nil) {
+        if !autopilotServesModel(modelId) || autopilotCommand != nil || (autopilotManagesResidency && modelSlots[modelId] == nil) {
             lookupReceiptFinalizer.sendTerminal(
                 .inferenceError(requestId: requestId,
                     failure: InferenceFailure(code: .capacity, statusCode: 503), profile: profile),
@@ -546,6 +579,11 @@ extension ProviderLoop {
             f.set(.loadCold, !loadWasWarm)
             f.set(.loadParked, loadParked)
         }
+        // Accepted and registered: later events need not queue behind a cold
+        // load or another load's wait. Native MiMo keeps serial admission.
+        if !loadWasWarm, advertisedModels[modelId]?.modelType != "mimo_v2" {
+            releaseWorkFIFO(workFIFOGate, requestId: requestId, modelId: modelId)
+        }
         do {
             try await ensureModelLoaded(modelId: modelId)
         } catch {
@@ -556,6 +594,7 @@ extension ProviderLoop {
             profile.mark(.loadWaitEnd)
             await finishAcceptedRequestWithoutTask(requestId: requestId)
             logger.error("[\(requestId)] model load failed")
+            GLM5NextWiredLimitNotice.report(error, modelID: modelId)
             let failure = CapacityRejectionEnrichment.enrich(
                 Self.loadInferenceFailure(for: error),
                 modelId: modelId,
@@ -631,11 +670,9 @@ extension ProviderLoop {
         // <think> tokens for a Gemma build. The slot carries the type captured at
         // load, so it is correct for startup, prefetched, AND dropped-resident.
         let modelType = slot.modelType
-        do {
-            try ProviderPromptContractPipeline.validateNativeControls(templateControls, modelType: modelType)
-        } catch {
+        if let refusal = ProviderPromptContractPipeline.nativeControlsRefusal(templateControls, modelType: modelType) {
             await finishAcceptedRequestWithoutTask(requestId: requestId)
-            rejectInvalidRequest()
+            rejectInvalidRequest(refusal)
             return
         }
         let slotContainer = slot.container
@@ -664,12 +701,20 @@ extension ProviderLoop {
                 terminal: callbacks.terminal)
         }
         let slotVisionGate = slot.visionGate(kvBudget: kvBudget)
-        // Logprobs passthrough: a per-request channel the bridge pump fills
-        // with OpenAI-shaped entries and the frames loop below drains into
-        // content-bearing SSE chunks. nil (request didn't ask) ⇒ frames
-        // pass through untouched.
+        // The managed Super owner renders, parses and validates through its
+        // pinned prompt contract and output parsers, never the generic engine.
+        let superOwner = slot.modelContainer.nemotronSuper
+        // Logprobs relay: a model whose entries also ride the reasoning frames
+        // that carry their tokens (GLM5-Next, Nemotron Super) gets a per-request
+        // channel the frames loop below splices; the scheduler (or the Super
+        // owner) appends to it before the text each entry precedes. Every other
+        // model's entries travel in stream order and the SDK's encoder attaches
+        // them to content chunks. Withheld reasoning never reaches either: the
+        // scheduler drops its entries (`WithheldReasoningLogprobsFilter`).
+        let logprobsCoverReasoning = Self.logprobsCoverReasoning(
+            modelType: modelType, nemotronSuper: superOwner != nil)
         let logprobsChannel: EngineV2LogprobsChannel? =
-            logprobsSpec != nil ? EngineV2LogprobsChannel() : nil
+            logprobsSpec != nil && logprobsCoverReasoning ? EngineV2LogprobsChannel() : nil
 
         if await rejectAcceptedRequestIfFirstContentDeadlineExpired(
             firstContentDeadline,
@@ -847,7 +892,21 @@ extension ProviderLoop {
             // already resolved. This keeps the engine constructor's
             // "model not loaded" path unreachable on this code path while
             // still going through the upstream library for SSE encoding.
-            let providerEngine = MultiModelBatchSchedulerEngine(
+            let providerEngine: any MLXServerEngine
+            if let superOwner {
+                // Text prefix reuse is partitioned by the authenticated scope
+                // and off without one. Its outcome reaches this request's
+                // signal, hence its receipts and cache usage, and the repeat
+                // hint gates a durable checkpoint write, as on the generic
+                // engine. Schema metadata passed the protocol check above, so
+                // it is trusted as on the generic engine. Logprobs leave on
+                // the same channel the frames loop splices.
+                providerEngine = superOwner.chatEngine(body: decryptedData,
+                    hasMedia: MediaIngest.hasMedia(chatRequest), cacheScope: remoteCache.scope,
+                    trustsSchemaMetadata: true, logprobs: logprobsChannel, usageSignal: v2UsageSignal,
+                    donationDemand: remoteCache.donationDemand)
+            } else {
+                providerEngine = MultiModelBatchSchedulerEngine(
                 registryProvider: { @Sendable in
                     [chatRequest.model: .init(
                         tokenizer: tokenizer, modelType: modelType,
@@ -863,9 +922,8 @@ extension ProviderLoop {
                 cacheScope: cacheScope,
                 cacheEnabled: remoteCache.cacheEnabled,
                 donationDemand: remoteCache.donationDemand,
-                engineV2Logprobs: logprobsChannel.map {
-                    EngineV2LogprobsPlumbing(
-                        topLogprobs: logprobsSpec?.topLogprobs, channel: $0)
+                engineV2Logprobs: logprobsSpec.map {
+                    EngineV2LogprobsPlumbing(topLogprobs: $0.topLogprobs, relay: logprobsChannel)
                 },
                 engineV2Sampling: samplingOverrides,
                 engineV2Usage: v2UsageSignal,
@@ -879,6 +937,7 @@ extension ProviderLoop {
                 },
                 promptWork: promptWork
             )
+            }
 
             // Force-stream so we get SSE frames even if the original request
             // had `stream: false`. The coordinator always uses streaming
@@ -905,8 +964,17 @@ extension ProviderLoop {
             // reasoning tokens (Harmony channels, Gemma4 channels,
             // Qwen3/DeepSeek <think> tags) are parsed into
             // reasoning_content rather than leaking as raw content.
-            if streamingRequest.reasoningParser == nil {
+            // Super's owner already splits its reference reasoning channel.
+            if streamingRequest.reasoningParser == nil, superOwner == nil {
                 streamingRequest.reasoningParser = Self.inferReasoningParser(for: modelType)
+            }
+            let floorRequest = streamingRequest
+            let promptFloor: @Sendable () -> Int = {
+                if let superOwner {
+                    return superOwner.promptTokenCount(body: decryptedData, trustsSchemaMetadata: true)
+                }
+                return Self.promptTokenFloor(request: floorRequest, tokenizer: tokenizer,
+                                             modelType: modelType, templateControls: templateControls)
             }
 
             let service = MLXOpenAIService(engine: providerEngine)
@@ -974,7 +1042,9 @@ extension ProviderLoop {
                     errorReason: reason)
                 InferenceFailureLogger(logger: log).record(
                     requestId: requestId,
-                    failure: failure)
+                    failure: failure,
+                    refusal: Self.promptRefusal(failure, error))
+                GLM5NextWiredLimitNotice.report(error, modelID: modelId)
                 // Classify HERE, where the real `Error` (and its rich
                 // `String(describing:)` text) is in scope. For a Harmony
                 // TemplateException `error.localizedDescription` collapses to the
@@ -1035,6 +1105,11 @@ extension ProviderLoop {
             if rejectExpiredDeadline() { return }
 
             var fullResponseText = ""
+            // Visible output only (content, reasoning, tool names and argument
+            // text): the cancelled-stream billing floor. Streamed calls add one
+            // hash marker per fragment to `fullResponseText`, which would
+            // otherwise inflate that floor.
+            var deliveredText = ""
             var promptTokens = 0
             var completionTokens = 0
             // Profiler frame counters (locals; written to the profile once at
@@ -1061,24 +1136,28 @@ extension ProviderLoop {
             // upstream's usage block only carries the total completion count.
             var reasoningText = ""
             var reasoningTokens = 0
+            // Reasoning the request asked not to receive is never framed, but
+            // it is still generated: count it with the visible reasoning.
+            func generatedReasoningText() -> String {
+                reasoningText + v2UsageSignal.withheldReasoning
+            }
 
             // A cancelled request that already streamed output settles through
             // the completion path below with real usage, not a bare 499 ($0).
             var cancelledMidStream = false
-            // Logprobs entries drained from the v2 bridge but not yet
-            // attached to a frame. Entries attach to the NEXT content-
-            // bearing chunk (role preambles / reasoning-only deltas /
-            // usage chunks are skipped); consumers accumulate
-            // `logprobs.content` across chunks, so chunk-boundary
+            // Relay entries drained from the channel but not yet attached to
+            // a frame. Entries attach to the NEXT content-bearing chunk (role
+            // preambles / usage chunks are skipped), or reasoning chunk, the
+            // channel exists only where `logprobsCoverReasoning`; consumers
+            // accumulate `logprobs.content` across chunks, so chunk-boundary
             // alignment is not load-bearing — order and exactly-once are.
             //
-            // BOUNDED (round-3 PR#499 P2): a long reasoning-only/tool-only
-            // prefix (GPT-OSS) drains the capped channel here every frame
-            // without ever clearing, so this buffer is re-capped after each
-            // drain with the SAME drop-oldest policy as the channel
-            // (`EngineV2LogprobsChannel.capPending`); the freshest window —
-            // the entries nearest the content that eventually renders — is
-            // kept and the dropped count is logged (never token text).
+            // BOUNDED (round-3 PR#499 P2): a long tool-only prefix drains the
+            // capped channel here every frame without ever clearing, so this
+            // buffer is re-capped after each drain with the SAME drop-oldest
+            // policy as the channel (`EngineV2LogprobsChannel.capPending`); the
+            // freshest window — the entries nearest the text that eventually
+            // renders — is kept and the dropped count is logged (never token text).
             var pendingLogprobs: [SSETokenLogprob] = []
             var pendingLogprobsDropped = 0
             do {
@@ -1086,8 +1165,12 @@ extension ProviderLoop {
                     // The iterator suspension is the final pre-content await.
                     // Role/usage boilerplate is not content, so keep enforcing
                     // the same absolute deadline until a real content,
-                    // reasoning, or tool delta has been observed.
-                    if contentFrameCount == 0, rejectExpiredDeadline() {
+                    // reasoning, or tool delta has been observed. Withheld
+                    // reasoning or answer text is generated output too, though
+                    // not framed (yet).
+                    if contentFrameCount == 0, v2UsageSignal.firstWithheldOutputAt == nil,
+                        rejectExpiredDeadline()
+                    {
                         return
                     }
                     if token.isCancelled {
@@ -1117,11 +1200,14 @@ extension ProviderLoop {
                     //   real assistant output on `delta.tool_calls`; a
                     //   hash that ignored them would commit to (near-)
                     //   empty bytes instead of the actual output.
+                    // - Reasoning withheld at the request's direction is never
+                    //   framed, so the hash commits to exactly what is emitted.
                     var frameToEmit = frame
                     if let parsed = Self.parseStreamChunk(frame) {
                         var frameHadContent = false
                         if let content = parsed.contentDelta {
                             fullResponseText += content
+                            deliveredText += content
                             // Count only NON-empty content toward the billing
                             // floor: parseStreamChunk returns a non-nil but empty
                             // contentDelta for SSE frames carrying "content":""
@@ -1133,18 +1219,27 @@ extension ProviderLoop {
                         }
                         if let reasoning = parsed.reasoningDelta, !reasoning.isEmpty {
                             fullResponseText += reasoning
+                            deliveredText += reasoning
                             frameHadContent = true
                             reasoningText += reasoning
                         }
                         if let toolCalls = parsed.toolCallsDelta, !toolCalls.isEmpty {
                             fullResponseText += Self.encodeToolCallsForHash(toolCalls)
+                            for call in toolCalls {
+                                deliveredText += (call.function?.name ?? "") + (call.function?.arguments ?? "")
+                            }
+                            // A streamed call's first fragment is content: the
+                            // pre-content deadline no longer applies once a
+                            // call is visible, so it is never discarded late.
                             frameHadContent = true
                         }
                         if frameHadContent {
                             // First content frame (both counters flip here,
                             // so one check suffices).
                             if contentFrameCount == 0 {
-                                let elapsed = ContinuousClock.Instant.now - dispatchReceivedAt
+                                // Withheld output was the first generated output.
+                                let firstOutputAt = v2UsageSignal.firstWithheldOutputAt ?? .now
+                                let elapsed = firstOutputAt - dispatchReceivedAt
                                 firstContentElapsedMs =
                                     Double(elapsed.components.seconds) * 1000.0
                                     + Double(elapsed.components.attoseconds) / 1e15
@@ -1167,14 +1262,15 @@ extension ProviderLoop {
                             // (OpenAI shape). The coordinator forwards this
                             // chunk verbatim, so no coordinator change is
                             // needed for the streaming path.
-                            if !reasoningText.isEmpty {
+                            let generatedReasoning = generatedReasoningText()
+                            if !generatedReasoning.isEmpty {
                                 // Re-tokenizing detokenized text isn't a perfect
                                 // identity (whitespace/special-token merges), so
                                 // clamp to the engine's completion count — a
                                 // reasoning subset can never exceed the total.
                                 reasoningTokens = min(
                                     tokenizer.inner.encode(
-                                        text: reasoningText, addSpecialTokens: false
+                                        text: generatedReasoning, addSpecialTokens: false
                                     ).count,
                                     max(0, completionTokens)
                                 )
@@ -1199,15 +1295,15 @@ extension ProviderLoop {
                             }
                         }
                     }
-                    // Logprobs passthrough (v2 only): splice pending entries
-                    // into this frame if it carries content; otherwise keep
-                    // them pending. Runs AFTER the hash/usage bookkeeping
-                    // above, which reads the original `frame` — logprobs
-                    // never alter `delta.content`, so the response hash and
-                    // billing extraction are unaffected.
+                    // Logprobs relay: splice pending entries into this frame if
+                    // it carries content or reasoning; otherwise keep them
+                    // pending. Runs AFTER the hash/usage bookkeeping above,
+                    // which reads the original `frame` — logprobs never alter
+                    // `delta.content`, so the response hash and billing
+                    // extraction are unaffected.
                     if let logprobsChannel {
                         pendingLogprobs += logprobsChannel.drain()
-                        // Re-cap after every drain: without a content-bearing
+                        // Re-cap after every drain: without a text-bearing
                         // frame this buffer would grow unbounded past the
                         // channel's own cap (see the declaration comment).
                         let dropped = EngineV2LogprobsChannel.capPending(&pendingLogprobs)
@@ -1216,14 +1312,15 @@ extension ProviderLoop {
                                 log.warning(
                                     "[\(requestId)] pending logprobs hit the "
                                     + "\(EngineV2LogprobsChannel.maxEntries)-entry cap before a "
-                                    + "content-bearing frame; dropping oldest entries (count only)"
+                                    + "text-bearing frame; dropping oldest entries (count only)"
                                 )
                             }
                             pendingLogprobsDropped += dropped
                         }
                         if !pendingLogprobs.isEmpty,
                             let injected = Self.injectLogprobs(
-                                into: frameToEmit, entries: pendingLogprobs)
+                                into: frameToEmit, entries: pendingLogprobs,
+                                includingReasoning: logprobsCoverReasoning)
                         {
                             frameToEmit = injected
                             pendingLogprobs = []
@@ -1246,7 +1343,9 @@ extension ProviderLoop {
                         phase: .generation)
                     InferenceFailureLogger(logger: log).record(
                         requestId: requestId,
-                        failure: failure)
+                        failure: failure,
+                        refusal: Self.promptRefusal(failure, error))
+                    GLM5NextWiredLimitNotice.report(error, modelID: modelId)
                     if Self.hasVisibleStreamOutput(
                         contentFrameCount: contentFrameCount,
                         fullResponseText: fullResponseText
@@ -1287,12 +1386,13 @@ extension ProviderLoop {
             }
 
             if cancelledMidStream {
-                if reasoningTokens == 0 && !reasoningText.isEmpty {
+                let generatedReasoning = generatedReasoningText()
+                if reasoningTokens == 0 && !generatedReasoning.isEmpty {
                     let completionFloor = completionTokens > 0 ? completionTokens : contentFrameCount
                     if completionFloor > 0 {
                         reasoningTokens = min(
                             tokenizer.inner.encode(
-                                text: reasoningText, addSpecialTokens: false
+                                text: generatedReasoning, addSpecialTokens: false
                             ).count,
                             completionFloor
                         )
@@ -1305,19 +1405,14 @@ extension ProviderLoop {
                     reasoningTokens: reasoningTokens,
                     contentFrameCount: contentFrameCount,
                     deliveredCompletionTokenFloor: tokenizer.inner.encode(
-                        text: fullResponseText, addSpecialTokens: false
+                        text: deliveredText, addSpecialTokens: false
                     ).count,
                     hasVisibleOutput: Self.hasVisibleStreamOutput(
                         contentFrameCount: contentFrameCount,
                         fullResponseText: fullResponseText
                     )
                 )
-                let terminal = partialUsage.cancelledTerminal(promptTokenFloor: Self.promptTokenFloor(
-                    request: streamingRequest,
-                    tokenizer: tokenizer,
-                    modelType: modelType,
-                    templateControls: templateControls
-                ))
+                let terminal = partialUsage.cancelledTerminal(promptTokenFloor: promptFloor())
                 guard case .complete(let settledUsage) = terminal else {
                     // Cancelled with nothing delivered: 499 so the coordinator refunds.
                     providerStats.incrementCancellationsBeforeOutput()
@@ -1356,9 +1451,13 @@ extension ProviderLoop {
 
                 // Partial billing stays tied to delivered output. Cache usage
                 // needs the native terminal that proves adoption; cancellation
-                // can end this frame loop before the bridge records it.
-                await slotEngineV2.settleCancelledStream(
-                    profile: profile, usageSignal: v2UsageSignal)
+                // can end this frame loop before the bridge records it. Super's
+                // stream termination cancels and joins its native request; its
+                // cache usage counts only if that terminal was already recorded.
+                if superOwner == nil {
+                    await slotEngineV2.settleCancelledStream(
+                        profile: profile, usageSignal: v2UsageSignal)
+                }
             }
 
             // No usage chunk on a clean finish means an upstream regression.
@@ -1376,12 +1475,7 @@ extension ProviderLoop {
                     )
                 }
                 if promptTokens == 0 {
-                    promptTokens = Self.promptTokenFloor(
-                        request: streamingRequest,
-                        tokenizer: tokenizer,
-                        modelType: modelType,
-                        templateControls: templateControls
-                    )
+                    promptTokens = promptFloor()
                     if promptTokens > 0 {
                         log.warning(
                             "[\(requestId)] usage chunk missing/zero prompt tokens"
@@ -1391,10 +1485,11 @@ extension ProviderLoop {
                     }
                 }
                 // Re-tokenize reasoning here too when the usage frame is missing.
-                if reasoningTokens == 0 && !reasoningText.isEmpty && completionTokens > 0 {
+                let generatedReasoning = generatedReasoningText()
+                if reasoningTokens == 0 && !generatedReasoning.isEmpty && completionTokens > 0 {
                     reasoningTokens = min(
                         tokenizer.inner.encode(
-                            text: reasoningText, addSpecialTokens: false
+                            text: generatedReasoning, addSpecialTokens: false
                         ).count,
                         completionTokens
                     )
@@ -1422,6 +1517,7 @@ extension ProviderLoop {
             // Update stats
             providerStats.incrementRequestsServed()
             providerStats.addTokensGenerated(UInt64(max(completionTokens, 0)))
+            providerStats.addPromptTokensProcessed(UInt64(max(promptTokens, 0)))
 
             // Commit the TTFT sample (routing v2): completed real requests
             // only — a cancelled stream's first-token timing is still real,
@@ -1459,6 +1555,14 @@ extension ProviderLoop {
                 prefillTokensSaved: cacheResult.map { UInt64(max(0, $0.prefillTokensSaved)) },
                 cacheStageMs: cacheResult?.stageMs
             )
+            let localCachedTokens = min(usageInfo.promptTokens, usageInfo.cachedTokens ?? UInt64(max(0, v2UsageSignal.prefixCacheHitTokens ?? 0)))
+            providerStats.addCachedInputTokens(localCachedTokens)
+            providerStats.addReasoningTokens(min(usageInfo.reasoningTokens, usageInfo.completionTokens))
+            await me.recordLocalUsage(ProviderUsageRecord(
+                id: requestId, sessionStartedAt: me.startedAtEpoch, model: modelId,
+                inputTokens: usageInfo.promptTokens, outputTokens: usageInfo.completionTokens,
+                cachedInputTokens: localCachedTokens, reasoningTokens: usageInfo.reasoningTokens,
+                exact: !usageRecovered))
             finalizeProfile(framesEmitted, bytesEmitted, usageRecovered, seSignDuration)
             lookupReceiptFinalizer.sendTerminal(
                 .inferenceComplete(

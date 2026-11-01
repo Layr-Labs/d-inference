@@ -432,7 +432,7 @@ public enum BackendParityHarness {
             throw MTPBenchmarkError.mtpRequestedButInactive(
                 "target model \(serving.typeName) is not Gemma4MTPTarget")
         }
-        let assistant = try await Gemma4AssistantDraftModel.load(from: assistantDirectory)
+        let assistant = try await MLXLLM.Gemma4AssistantDraftModel.load(from: assistantDirectory)
         return DrafterBox(
             drafter: try Gemma4CBv2MTPDrafter(drafter: assistant, target: target))
     }

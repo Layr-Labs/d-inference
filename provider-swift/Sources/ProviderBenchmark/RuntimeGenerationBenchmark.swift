@@ -57,39 +57,20 @@ public enum RuntimeGenerationBenchmark {
             ["auto", "paged", "contiguous"].contains(backend),
             assistantDirectory == nil || mtpEnabled
         else { throw Failure.invalidArguments }
-        let modelType = try ModelBenchmark.decodedModelType(
-            from: Data(contentsOf: modelDirectory.appendingPathComponent("config.json")))
-        guard modelType != "mimo_v2" else { throw Failure.unsupportedMiMo }
-        _ = try GPUEnforcement.requireMetal()
-        MLXMemoryGuard.configureOnce()
-        guard let verified = WeightHasher.computeHash(snapshotDir: modelDirectory, modelID: modelID)
-        else { throw Failure.modelHashMismatch }
-        let loaded = try await EngineV2Factory.loadBenchmarkContainer(
-            modelID: modelID, directory: modelDirectory)
-        let container = loaded.container
+        let target = try await loadVerifiedTarget(modelID: modelID, modelDirectory: modelDirectory)
+        let container = target.container
+        let verified = target.weightHash
         do {
-            guard
-                WeightHasher.computeHash(snapshotDir: modelDirectory, modelID: modelID) == verified
-            else { throw Failure.modelHashMismatch }
-            let tokenizer = await container.perform { TokenizerHandle($0.tokenizer) }
-            let body = try JSONSerialization.data(
-                withJSONObject: [
-                    "model": modelID, "messages": [["role": "user", "content": prompt]],
-                    "temperature": 0, "seed": 1, "max_tokens": maxTokens,
-                ] as [String: Any])
-            let prepared = try EngineV2Factory.benchmarkPrompt(
-                body: body, tokenizer: tokenizer.inner, modelType: modelType, defaultDate: date)
-            var environment = ProcessInfo.processInfo.environment
-            environment["DARKBLOOM_PREFIX_CACHE"] = "0"
-            environment["DARKBLOOM_PREFIX_CACHE_MEMORY"] = "0"
+            let prepared = try preparedPrompt(
+                prompt, modelID: modelID, maxTokens: maxTokens, target: target, date: date)
             let session = try await EngineV2Factory.makeBenchmarkSession(
-                modelId: modelID, modelDirectory: modelDirectory, isVLM: loaded.isVLM,
-                container: container, tokenizer: tokenizer, verifiedWeightHash: verified,
+                modelId: modelID, modelDirectory: modelDirectory, isVLM: target.isVLM,
+                container: container, tokenizer: target.tokenizer, verifiedWeightHash: verified,
                 kvBytesCapacity: 1 << 30, maxConcurrentRequests: 1, mtpEnabled: mtpEnabled,
                 assistantDirectory: assistantDirectory,
                 useProductionKVGrant: true, kvBackendConfig: backend,
                 checkpointQuantizationConfig: checkpointQuantizationConfig, requirePersistentKey: false,
-                environment: environment)
+                environment: prefixCacheDisabledEnvironment())
             do {
                 let stopTokens = await session.stopTokenIDs()
                 let preRequestActive = Memory.activeMemory
@@ -137,9 +118,7 @@ public enum RuntimeGenerationBenchmark {
                 let report = Report(
                     modelID: modelID, verifiedModelAggregateSHA256: verified,
                     runtimeIdentity: EngineV2Factory.benchmarkRuntimeIdentity(),
-                    promptSHA256: SHA256.hash(data: Data(prompt.utf8)).map {
-                        String(format: "%02x", $0)
-                    }.joined(),
+                    promptSHA256: sha256Hex(Data(prompt.utf8)),
                     promptTokens: prepared.tokens, renderDate: prepared.renderDate,
                     resolvedBackend: session.backend,
                     kvQuantization: session.kvQuantization.rawValue,
@@ -175,5 +154,69 @@ public enum RuntimeGenerationBenchmark {
             await EngineV2Factory.releaseBenchmarkContainer(container)
             throw error
         }
+    }
+}
+
+/// Target loading and prompt preparation shared by the runtime benchmarks.
+extension RuntimeGenerationBenchmark {
+    struct VerifiedTarget {
+        let modelType: String?
+        /// Equal before and after the container load.
+        let weightHash: String
+        let container: ModelContainer
+        let isVLM: Bool
+        let tokenizer: TokenizerHandle
+    }
+
+    /// `makeBenchmarkSession` requires fresh equal hashes around the load.
+    /// On a mismatch the container is released here; otherwise the caller
+    /// releases it after its sessions shut down.
+    static func loadVerifiedTarget(modelID: String, modelDirectory: URL) async throws
+        -> VerifiedTarget
+    {
+        let modelType = try ModelBenchmark.decodedModelType(
+            from: Data(contentsOf: modelDirectory.appendingPathComponent("config.json")))
+        guard modelType != "mimo_v2" else { throw Failure.unsupportedMiMo }
+        _ = try GPUEnforcement.requireMetal()
+        MLXMemoryGuard.configureOnce()
+        guard let verified = WeightHasher.computeHash(snapshotDir: modelDirectory, modelID: modelID)
+        else { throw Failure.modelHashMismatch }
+        let loaded = try await EngineV2Factory.loadBenchmarkContainer(
+            modelID: modelID, directory: modelDirectory)
+        guard WeightHasher.computeHash(snapshotDir: modelDirectory, modelID: modelID) == verified
+        else {
+            await EngineV2Factory.releaseBenchmarkContainer(loaded.container)
+            throw Failure.modelHashMismatch
+        }
+        let tokenizer = await loaded.container.perform { TokenizerHandle($0.tokenizer) }
+        return VerifiedTarget(
+            modelType: modelType, weightHash: verified, container: loaded.container,
+            isVLM: loaded.isVLM, tokenizer: tokenizer)
+    }
+
+    /// One greedy, seeded user turn through the production prompt pipeline.
+    static func preparedPrompt(
+        _ content: String, modelID: String, maxTokens: Int, target: VerifiedTarget,
+        date: PromptRenderDate
+    ) throws -> EngineV2Factory.BenchmarkPrompt {
+        let body = try JSONSerialization.data(
+            withJSONObject: [
+                "model": modelID, "messages": [["role": "user", "content": content]],
+                "temperature": 0, "seed": 1, "max_tokens": maxTokens,
+            ] as [String: Any])
+        return try EngineV2Factory.benchmarkPrompt(
+            body: body, tokenizer: target.tokenizer.inner, modelType: target.modelType,
+            defaultDate: date)
+    }
+
+    static func prefixCacheDisabledEnvironment() -> [String: String] {
+        var environment = ProcessInfo.processInfo.environment
+        environment["DARKBLOOM_PREFIX_CACHE"] = "0"
+        environment["DARKBLOOM_PREFIX_CACHE_MEMORY"] = "0"
+        return environment
+    }
+
+    static func sha256Hex(_ data: Data) -> String {
+        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
 }

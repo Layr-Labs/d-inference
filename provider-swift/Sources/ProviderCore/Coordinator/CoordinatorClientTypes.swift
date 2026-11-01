@@ -178,6 +178,22 @@ public struct CoordinatorClientConfig: Sendable {
     /// `[backend] idle_timeout_mins` — 0 keeps models resident, N unloads
     /// after N idle minutes. nil omits the field (test/legacy clients).
     public let idleUnloadMins: UInt64?
+    /// Restrictive registration role. Default solo; the control-only cluster
+    /// member role requires the caller to also drive the member control owner.
+    public let executionRole: ProviderExecutionRole
+    /// The saved cluster claim a member registers. Read only in member mode;
+    /// nil registers none, which the coordinator accepts but never pairs.
+    public let clusterMembership: ClusterMembership?
+    /// Cluster member only: the models whose pair-serving grant this Mac's
+    /// rank has passed (`ProviderLoopConfig.pairServingGrantedModelIDs`).
+    /// Ignored in every other role.
+    public let pairServingGrantedModelIDs: Set<String>
+    /// Deadline for one connection to reach `.ready`
+    /// (`CoordinatorConnectionHandshake`).
+    public let handshakeTimeout: TimeInterval
+    /// How long one member connection's acceptance may take after its
+    /// registration (`ClusterMemberNegotiation.window` unless set).
+    public let memberNegotiationWindow: Duration
 
     public init(
         url: String,
@@ -197,7 +213,12 @@ public struct CoordinatorClientConfig: Sendable {
         apnsDeviceToken: String? = nil,
         apnsEnvironment: String? = nil,
         idleUnloadMins: UInt64? = nil,
-        autopilotInventory: [ModelInfo] = []
+        autopilotInventory: [ModelInfo] = [],
+        executionRole: ProviderExecutionRole = .solo,
+        clusterMembership: ClusterMembership? = nil,
+        pairServingGrantedModelIDs: Set<String> = [],
+        handshakeTimeout: TimeInterval? = nil,
+        memberNegotiationWindow: Duration? = nil
     ) {
         self.url = url
         self.hardware = hardware
@@ -217,6 +238,11 @@ public struct CoordinatorClientConfig: Sendable {
         self.apnsDeviceToken = apnsDeviceToken
         self.apnsEnvironment = apnsEnvironment
         self.idleUnloadMins = idleUnloadMins
+        self.executionRole = executionRole
+        self.clusterMembership = clusterMembership
+        self.pairServingGrantedModelIDs = pairServingGrantedModelIDs
+        self.handshakeTimeout = handshakeTimeout ?? CoordinatorConnectionHandshake.defaultTimeout
+        self.memberNegotiationWindow = memberNegotiationWindow ?? ClusterMemberNegotiation.window
     }
 }
 
@@ -360,6 +386,7 @@ public enum CoordinatorError: Error, CustomStringConvertible {
     case pongTimeout
     case connectionClosed(Error)
     case suspensionDetected
+    case handshakeTimeout(seconds: TimeInterval)
 
     public var description: String {
         switch self {
@@ -368,6 +395,16 @@ public enum CoordinatorError: Error, CustomStringConvertible {
         case .pongTimeout: return "WebSocket pong timeout (no response in 30s)"
         case .connectionClosed(let err): return "WebSocket connection closed: \(err.localizedDescription)"
         case .suspensionDetected: return "Process suspension detected (timer gap); forcing reconnect"
+        case .handshakeTimeout(let seconds): return "WebSocket handshake did not complete in \(Int(seconds))s"
         }
+    }
+}
+
+extension CoordinatorClientConfig {
+    /// Whether a registration carries a model: the same rule as
+    /// `ProviderLoopConfig.admitsModel` (`ProviderExecutionRole.admitsModel`).
+    func admitsModel(_ modelID: String) -> Bool {
+        executionRole.admitsModel(modelID, pairServingGrantedModelIDs: pairServingGrantedModelIDs,
+            runtimeCapabilities: runtimeCapabilities)
     }
 }

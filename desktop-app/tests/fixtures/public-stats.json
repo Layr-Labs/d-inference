@@ -1,0 +1,325 @@
+{
+  "active_providers": 1137,
+  "last_24h_requests": 4990989,
+  "last_24h_total_tokens": 14592165861,
+  "location_privacy_min_providers": 2,
+  "provider_regions": [
+    {
+      "key": "us|ca",
+      "scope": "region",
+      "region": "California",
+      "region_code": "CA",
+      "country": "United States",
+      "country_code": "US",
+      "latitude": 36.29321315789474,
+      "longitude": -120.49726666666663,
+      "providers": 114,
+      "hardware_attested": 95,
+      "verification_counts": {
+        "connections": 114,
+        "authorized": 108,
+        "app_attest": 79,
+        "legacy": 93,
+        "overlap": 64
+      },
+      "gpu_cores": 4481,
+      "memory_gb": 13776
+    },
+    {
+      "key": "jp|13",
+      "scope": "region",
+      "region": "Tokyo",
+      "region_code": "13",
+      "country": "Japan",
+      "country_code": "JP",
+      "latitude": 35.681052173913045,
+      "longitude": 139.7014523913044,
+      "providers": 46,
+      "hardware_attested": 36,
+      "verification_counts": {
+        "connections": 46,
+        "authorized": 40,
+        "app_attest": 30,
+        "legacy": 35,
+        "overlap": 25
+      },
+      "gpu_cores": 1578,
+      "memory_gb": 4576
+    },
+    {
+      "key": "jp|23",
+      "scope": "region",
+      "region": "Aichi",
+      "region_code": "23",
+      "country": "Japan",
+      "country_code": "JP",
+      "latitude": 35.10209999999999,
+      "longitude": 136.94190000000003,
+      "providers": 4,
+      "hardware_attested": 1,
+      "verification_counts": {
+        "connections": 4,
+        "authorized": 3,
+        "app_attest": 3,
+        "legacy": 1,
+        "overlap": 1
+      },
+      "gpu_cores": 160,
+      "memory_gb": 320
+    },
+    {
+      "key": "jp|14",
+      "scope": "region",
+      "region": "Kanagawa",
+      "region_code": "14",
+      "country": "Japan",
+      "country_code": "JP",
+      "latitude": 35.4338,
+      "longitude": 139.6496,
+      "providers": 2,
+      "hardware_attested": 2,
+      "verification_counts": {
+        "connections": 2,
+        "authorized": 2,
+        "app_attest": 0,
+        "legacy": 2,
+        "overlap": 0
+      },
+      "gpu_cores": 50,
+      "memory_gb": 152
+    },
+    {
+      "key": "jp|25",
+      "scope": "region",
+      "region": "Shiga",
+      "region_code": "25",
+      "country": "Japan",
+      "country_code": "JP",
+      "latitude": 34.9667,
+      "longitude": 136.167,
+      "providers": 1,
+      "hardware_attested": 1,
+      "verification_counts": {
+        "connections": 1,
+        "authorized": 1,
+        "app_attest": 0,
+        "legacy": 1,
+        "overlap": 0
+      },
+      "gpu_cores": 40,
+      "memory_gb": 64
+    },
+    {
+      "key": "jp|12",
+      "scope": "region",
+      "region": "Chiba",
+      "region_code": "12",
+      "country": "Japan",
+      "country_code": "JP",
+      "latitude": 35.7025,
+      "longitude": 139.997,
+      "providers": 1,
+      "hardware_attested": 1,
+      "verification_counts": {
+        "connections": 1,
+        "authorized": 1,
+        "app_attest": 0,
+        "legacy": 1,
+        "overlap": 0
+      },
+      "gpu_cores": 16,
+      "memory_gb": 32
+    },
+    {
+      "key": "jp|11",
+      "scope": "region",
+      "region": "Saitama",
+      "region_code": "11",
+      "country": "Japan",
+      "country_code": "JP",
+      "latitude": 35.7949,
+      "longitude": 139.7334,
+      "providers": 1,
+      "hardware_attested": 1,
+      "verification_counts": {
+        "connections": 1,
+        "authorized": 1,
+        "app_attest": 1,
+        "legacy": 1,
+        "overlap": 1
+      },
+      "gpu_cores": 10,
+      "memory_gb": 24
+    },
+    {
+      "key": "us|ny",
+      "scope": "region",
+      "region": "New York",
+      "region_code": "NY",
+      "country": "United States",
+      "country_code": "US",
+      "latitude": 40.98788529411763,
+      "longitude": -74.10275294117646,
+      "providers": 34,
+      "hardware_attested": 26,
+      "verification_counts": {
+        "connections": 34,
+        "authorized": 27,
+        "app_attest": 16,
+        "legacy": 24,
+        "overlap": 13
+      },
+      "gpu_cores": 1167,
+      "memory_gb": 3120
+    },
+    {
+      "key": "us|nj",
+      "scope": "region",
+      "region": "New Jersey",
+      "region_code": "NJ",
+      "country": "United States",
+      "country_code": "US",
+      "latitude": 40.63220833333333,
+      "longitude": -74.31454999999998,
+      "providers": 12,
+      "hardware_attested": 7,
+      "verification_counts": {
+        "connections": 12,
+        "authorized": 11,
+        "app_attest": 10,
+        "legacy": 7,
+        "overlap": 6
+      },
+      "gpu_cores": 478,
+      "memory_gb": 1636
+    },
+    {
+      "key": "gb|eng",
+      "scope": "region",
+      "region": "England",
+      "region_code": "ENG",
+      "country": "United Kingdom",
+      "country_code": "GB",
+      "latitude": 52.115667567567556,
+      "longitude": -0.498950364864865,
+      "providers": 37,
+      "hardware_attested": 35,
+      "verification_counts": {
+        "connections": 37,
+        "authorized": 36,
+        "app_attest": 23,
+        "legacy": 32,
+        "overlap": 19
+      },
+      "gpu_cores": 1326,
+      "memory_gb": 3268
+    },
+    {
+      "key": "gb|sct",
+      "scope": "region",
+      "region": "Scotland",
+      "region_code": "SCT",
+      "country": "United Kingdom",
+      "country_code": "GB",
+      "latitude": 55.90795,
+      "longitude": -3.71265,
+      "providers": 2,
+      "hardware_attested": 2,
+      "verification_counts": {
+        "connections": 2,
+        "authorized": 2,
+        "app_attest": 0,
+        "legacy": 2,
+        "overlap": 0
+      },
+      "gpu_cores": 79,
+      "memory_gb": 224
+    },
+    {
+      "key": "tw|tpe",
+      "scope": "region",
+      "region": "Taipei City",
+      "region_code": "TPE",
+      "country": "Taiwan",
+      "country_code": "TW",
+      "latitude": 25.05304375,
+      "longitude": 121.53307500000003,
+      "providers": 16,
+      "hardware_attested": 14,
+      "verification_counts": {
+        "connections": 16,
+        "authorized": 14,
+        "app_attest": 7,
+        "legacy": 12,
+        "overlap": 5
+      },
+      "gpu_cores": 468,
+      "memory_gb": 1092
+    },
+    {
+      "key": "tw|nwt",
+      "scope": "region",
+      "region": "New Taipei City",
+      "region_code": "NWT",
+      "country": "Taiwan",
+      "country_code": "TW",
+      "latitude": 25.05333333333333,
+      "longitude": 121.46571111111108,
+      "providers": 9,
+      "hardware_attested": 7,
+      "verification_counts": {
+        "connections": 9,
+        "authorized": 9,
+        "app_attest": 7,
+        "legacy": 7,
+        "overlap": 5
+      },
+      "gpu_cores": 252,
+      "memory_gb": 548
+    },
+    {
+      "key": "us|hi",
+      "scope": "region",
+      "region": "Hawaii",
+      "region_code": "HI",
+      "country": "United States",
+      "country_code": "US",
+      "latitude": 21.295166666666667,
+      "longitude": -157.83053333333334,
+      "providers": 3,
+      "hardware_attested": 2,
+      "verification_counts": {
+        "connections": 3,
+        "authorized": 3,
+        "app_attest": 2,
+        "legacy": 2,
+        "overlap": 1
+      },
+      "gpu_cores": 90,
+      "memory_gb": 228
+    },
+    {
+      "key": "ge",
+      "scope": "region",
+      "country": "Georgia",
+      "country_code": "GE",
+      "latitude": 42,
+      "longitude": 43.4999,
+      "providers": 1,
+      "hardware_attested": 0,
+      "verification_counts": {
+        "connections": 1,
+        "authorized": 0,
+        "app_attest": 0,
+        "legacy": 0,
+        "overlap": 0
+      },
+      "gpu_cores": 60,
+      "memory_gb": 256
+    }
+  ],
+  "snapshot_at": "2026-10-02T23:16:33.765812061Z",
+  "total_requests": 200188251,
+  "total_tokens": 659103744009,
+  "unknown_location_providers": 127
+}

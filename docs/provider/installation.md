@@ -1,6 +1,6 @@
 # Install, update, and uninstall the provider
 
-> Last updated: 2026-10-09
+> Last updated: 2026-10-23
 
 How to put the `darkbloom` CLI on an Apple Silicon Mac with `scripts/install.sh`,
 what the script verifies before it touches an existing install, how the binary
@@ -10,8 +10,8 @@ is updated afterwards, and how to remove everything. For operators; at the end
 ## Prerequisites
 
 - An Apple Silicon Mac. The binary targets macOS 14 (`provider-swift/Package.swift`,
-  `.macOS(.v14)`); the installer checks only `uname` = `Darwin` and `uname -m` =
-  `arm64` and prints the macOS version without gating on it. Sizing (RAM, disk,
+  `.macOS(.v14)`); the installer checks `uname` = `Darwin` and `uname -m` =
+  `arm64`, and refuses a new install below macOS 27 (see step 1/5). Sizing (RAM, disk,
   which models fit) is in [hardware requirements](./hardware-requirements.md).
 - New network providers require macOS 27 or later and current qualified App
   Attest authorization, not just a successful install or OS upgrade. Only the
@@ -56,6 +56,11 @@ The script performs these actions in order (`scripts/install.sh`; failures exit
 2. **Step 1/5 — release metadata.** `GET $COORD_URL/v1/releases/latest`, then
    extracts `url`, `bundle_hash`, `binary_hash`, `metallib_hash`, `version`,
    `backend` with `sed`. Missing `url`, `bundle_hash` or `version` aborts.
+   `require_supported_macos` then stops a **new** install on macOS 26 or earlier
+   with an upgrade prompt (System Settings › General › Software Update) before
+   anything is downloaded. A Mac that already has the CLI or a provider config
+   (a grandfathered provider reinstalling or repairing) continues with a notice to
+   upgrade; an unknown OS version is not guessed.
 3. **Step 2/5 — download and verify.** Creates `~/.darkbloom` and
    `~/.darkbloom/bin`, downloads the tarball to `/tmp/darkbloom-bundle.tar.gz`
    and requires `shasum -a 256` to equal `bundle_hash` (mismatch deletes the
@@ -211,18 +216,57 @@ that exact version is blocked; a newer release installs normally.
 `darkbloom update --override-quarantine` reinstalls it anyway, and
 `darkbloom doctor` reports the quarantine under `up to date`.
 
+If the watchdog exits after starting a candidate but before recording the
+launch receipt, its next health observations reconcile the saved intent with
+launchd's run count or process identity for the same job. For each comparison,
+both saved and current values must be known; either a higher run count or a
+changed process identity proves a launch. A proven launch receives the existing
+startup timeout from reconciliation;
+repeated observations do not extend it. Missing or unchanged evidence preserves
+the intent for a later observation without arming a failed-start timeout. This
+includes a health observation before restart and a previously unreadable process
+identity becoming available without other evidence of a launch. This also covers
+a candidate that remains running without a heartbeat
+(`provider-swift/Sources/ProviderCore/Service/WatchdogRecoveryService.swift`,
+`observeHealthyProvider`).
+
 The unprivileged updater never touches the root fan helper; after an update run
 `sudo darkbloom fan enable` again if you use [fan control](./fan-control.md).
+
+If the provider job disappears between the watchdog's loaded check and kickstart,
+the watchdog leaves it unloaded and reports that no restart occurred. A
+crash-loop backend guard staged for that attempt is rolled back to its previous
+state; an existing guard remains intact
+(`provider-swift/Sources/ProviderCore/Service/LaunchAgent.swift`,
+`kickstartIfLoaded`; `provider-swift/Sources/ProviderCore/Service/WatchdogRecoveryService.swift`,
+`recoverDownProvider`). Use `darkbloom start` to start a stopped provider.
+
+## Two Macs as one provider
+
+Two Macs joined by a Thunderbolt 5 cable are set up once with `darkbloom cluster`
+on each Mac: see [two-mac-cluster.md](./two-mac-cluster.md) (one command on
+each Mac: `darkbloom cluster`; no SSH, no network settings typed).
 
 ## Uninstall
 
 ```bash
 sudo darkbloom fan uninstall    # only if fan control was enabled
+darkbloom cluster link --remove # only if `darkbloom cluster` set up a two-Mac link; asks for approval
 darkbloom stop --uninstall      # stops the daemon, removes both LaunchAgent plists
 darkbloom unenroll              # opens System Settings to remove the MDM profile; offers to delete config + tokens
 rm -rf ~/.darkbloom ~/.config/darkbloom
 sudo rm -f /usr/local/bin/darkbloom
 ```
+
+`darkbloom cluster link --remove` (`provider-swift/Sources/darkbloom/ClusterLinkCommand.swift`)
+restores what `darkbloom cluster` changed for a two-Mac link: it removes the
+network service `Darkbloom Cluster Link (<port>)`, switches the services it
+turned off on that port on again and puts the port back into its bridge, or,
+for a link set up by an earlier version, removes the root launchd job
+`io.darkbloom.cluster-link.<port>` and the address it kept. Run it before
+deleting `~/.darkbloom`, which holds the record of what was changed; without
+the record it still removes Darkbloom's own service or job. It changes nothing
+on a Mac that never ran `darkbloom cluster`.
 
 `darkbloom stop --uninstall` (`provider-swift/Sources/darkbloom/StopCommand.swift`)
 disarms the watchdog first, deletes `~/Library/LaunchAgents/io.darkbloom.watchdog.plist`

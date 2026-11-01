@@ -108,6 +108,29 @@ extension EngineV2Bridge {
         return tps.isFinite && tps > 0 && tps <= 20_000 ? tps : nil
     }
 
+    /// The decode steps behind `engineDecodeRate`, which starts after the
+    /// first-token step: mean token-producing rows, confirmed tokens and
+    /// assigned width per decode step. Without the first-token step's rows
+    /// (`EnginePrefillReceipt.firstTokenStepRows`), rows are averaged over
+    /// that step as well. Native block engines serve one plain row per step.
+    static func engineDecodeShape(usage: CBv2Usage, nativeBlock: Bool,
+        firstTokenStepRows: UInt64? = nil) -> CBv2DecodeRateShape {
+        let timing = usage.timing
+        let decodeSteps = Double(timing.decodeSteps)
+        guard !nativeBlock, decodeSteps > 0 else { return .init(batchRows: 1) }
+        func clamped(_ value: Double) -> Double { value.isFinite ? min(64, max(1, value)) : 1 }
+        let tokensPerStep = clamped(Double(max(0, usage.completionTokens - 1)) / decodeSteps)
+        let decodeRowsSum = firstTokenStepRows.flatMap {
+            $0 <= timing.batchRowsSum ? timing.batchRowsSum - $0 : nil
+        }
+        let batchRows = decodeRowsSum.map { Double($0) / decodeSteps }
+            ?? Double(timing.batchRowsSum) / (decodeSteps + 1)
+        return .init(
+            batchRows: clamped(batchRows),
+            tokensPerStep: tokensPerStep,
+            stepWidth: max(tokensPerStep, clamped(1 + Double(timing.mtpProposed) / decodeSteps)))
+    }
+
     static func engineObservationInstant(
         timing: CBv2RequestTiming, now: ContinuousClock.Instant,
         uptimeNanos: UInt64 = DispatchTime.now().uptimeNanoseconds
@@ -139,7 +162,9 @@ extension EngineV2Bridge {
                 context: state.promptTokens + completion, cache: cached ? "reused" : "cold",
                 overlap: overlap, at: observedAt,
                 postureEpoch: state.prefillReceipt?.deadlineRateEvidence?.currentEpoch(),
-                aggregate: calibration == nil || (calibration?.width == 1 && !overlap.contended)),
+                aggregate: calibration == nil || (calibration?.width == 1 && !overlap.contended),
+                decodeShape: Self.engineDecodeShape(usage: usage, nativeBlock: usesNativeBlockTiming,
+                    firstTokenStepRows: state.prefillReceipt?.firstTokenStepRows)),
                 requestID: id)
         }
         if calibration != nil { performanceUpdates?.notify(); return }

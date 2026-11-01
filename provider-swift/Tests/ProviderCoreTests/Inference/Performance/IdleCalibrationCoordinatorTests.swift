@@ -91,4 +91,26 @@ struct IdleCalibrationCoordinatorTests {
         #expect(successor.hasEntered, "retirement still offers the next resident engine")
         #expect(successorStarted.isSet, "the successor sees the finished session's ownership released")
     }
+
+    @Test("a session records what first cancelled it, and a new session starts clean")
+    func sessionRecordsItsFirstCanceller() async throws {
+        let coordinator = IdleCalibrationCoordinator()
+        let probe: @Sendable () async -> Void = {
+            while !Task.isCancelled { try? await Task.sleep(for: .milliseconds(1)) }
+        }
+        let first = try #require(coordinator.startIfIdle(isIdle: { true }, operation: probe))
+        #expect(coordinator.hasSession && coordinator.cancellationSource == nil)
+        coordinator.cancel()
+        let lease = await coordinator.beginForeground()
+        await first.value
+        #expect(coordinator.cancellationSource == "device work" && !coordinator.hasSession)
+        lease.finish()
+
+        let second = try #require(coordinator.startIfIdle(isIdle: { true }, operation: probe))
+        #expect(coordinator.cancellationSource == nil)
+        let foreground = await coordinator.beginForeground()
+        await second.value
+        #expect(coordinator.cancellationSource == "request")
+        foreground.finish()
+    }
 }

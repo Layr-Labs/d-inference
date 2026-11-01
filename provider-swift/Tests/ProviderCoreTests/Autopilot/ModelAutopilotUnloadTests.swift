@@ -5,7 +5,8 @@ import Testing
 @testable import ProviderCore
 
 private final class AutopilotEmptyModel: Module, LanguageModel {
-    func prepare(_ input: LMInput, cache: [KVCache], windowSize: Int?) throws -> PrepareResult { .tokens(input.text) }
+    func prepare(_ input: LMInput, cache: [KVCache], state: LMOutput.State?, prefill: PrefillParameters) throws
+        -> PrepareResult { .tokens(input.text) }
     func newCache(parameters: GenerateParameters?) -> [KVCache] { [] }
 }
 private struct AutopilotEmptyProcessor: UserInputProcessor {
@@ -58,6 +59,22 @@ private extension ProviderLoop {
     func finishDesiredRetirementWorkForTest(activeKind: String) {
         if activeKind == "network" { requestToModel.removeValue(forKey: "retirement-active-request") }
         else { localReservations.release("local") }
+    }
+}
+/// Runs the watchdog past the operation bound from inside a victim's engine
+/// shutdown, i.e. while the operation awaits its final unload.
+private final class WatchdogDuringUnload: @unchecked Sendable {
+    private let lock = NSLock()
+    private var loop: ProviderLoop?
+    private var didFire = false
+    func arm(_ loop: ProviderLoop) { lock.withLock { self.loop = loop } }
+    var fired: Bool { lock.withLock { didFire } }
+    func fire() async {
+        guard let loop = lock.withLock({ loop }) else { return }
+        let start = ContinuousClock.now
+        await loop.superviseTransitions(now: start)
+        await loop.superviseTransitions(now: start + ModelAutopilotTransition.autopilotOperation.stallBound)
+        lock.withLock { didFire = true }
     }
 }
 private final class AutopilotUnloadRecorder: @unchecked Sendable {
@@ -246,6 +263,34 @@ struct ModelAutopilotUnloadTests {
         #expect(await loop.autopilotPhase == "shadow")
         #expect(await loop.state.refusingNewWork == false)
         #expect(await loop.autopilotLoadedIDs() == ["keep", "local"])
+        await loop.idleMonitorTask?.cancel()
+    }
+
+    /// Unloads never check cancellation, so the victim's slot is gone after the
+    /// watchdog fired; the operation must still fail rather than succeed.
+    @Test func watchdogCancelledFinalUnloadFailsAsTransitionStalled() async throws {
+        let watchdog = WatchdogDuringUnload()
+        let (loop, engines) = try await fixture(oldShutdown: { await watchdog.fire() })
+        watchdog.arm(loop)
+        let recorder = AutopilotUnloadRecorder()
+        await loop.handleModelAutopilot(.init(commandId: "slow-final-unload", unloadModelIds: ["old"],
+            expectedResidentModels: ["old", "keep", "local"],
+            expiresAtMs: Int64(Date().timeIntervalSince1970 * 1_000) + 60_000,
+            sessionId: "session", revision: "test"), send: SendHandle(recorder.send))
+        let task = await loop.autopilotTask
+        await task?.value
+        #expect(watchdog.fired)
+        #expect(recorder.last?.status == .failed)
+        #expect(recorder.last?.error == "transition_stalled")
+        #expect(engines["old"]?.shutdownCalls == 1)
+        #expect(await loop.autopilotLoadedIDs() == ["keep", "local"])
+        #expect(await loop.autopilotCommand == nil)
+        #expect(await loop.autopilotStalledCommandId == nil)
+        #expect(await loop.state.refusingNewWork == false)
+        let snapshot = try #require(await loop.state.modelAutopilot)
+        #expect(snapshot.lastCommandStatus == .failed)
+        #expect(snapshot.transitionStalls?.map(\.transition) == ["autopilot_operation"])
+        #expect(snapshot.adoptedModels == nil && snapshot.heldModels == nil)
         await loop.idleMonitorTask?.cancel()
     }
 

@@ -104,6 +104,14 @@ final class EnginePrefillReceipt: @unchecked Sendable {
         }
     }
 
+    /// Token-producing rows of the step that confirmed the first token. The
+    /// engine publishes prompt completion from that step right after recording
+    /// the row's first step participation, so the snapshot's row sum is that
+    /// step's rows; nil before then or when no rows were reported.
+    var firstTokenStepRows: UInt64? {
+        lock.withLock { sample.map(\.usage.timing.batchRowsSum).flatMap { $0 > 0 ? $0 : nil } }
+    }
+
     var overlap: EngineMeasurementActivity.Overlap {
         var result = activity.snapshot(activityID)
         if isolationGuard?.isValid == false { result.contended = true }
@@ -146,13 +154,16 @@ struct EnginePerformanceMeasurements {
         var value: Double
         var count: Int64 = 1
         var at: ContinuousClock.Instant
-        mutating func observe(_ tps: Double, at now: ContinuousClock.Instant, restart: Bool = false) {
+        mutating func observe(_ tps: Double, at now: ContinuousClock.Instant, restart: Bool,
+            keepsNewest: Bool) {
             // A new observation starts a new estimate after an evidence gap;
             // one slow old sample must not poison the next serving window.
             value = restart || now - at > EnginePerformanceMeasurements.freshness
                 ? tps : 0.3 * tps + 0.7 * value
             count = count == .max ? .max : count + 1
-            at = now
+            // Completed work can arrive out of order. Freshness follows the
+            // newest observation, not the last receipt consumed.
+            at = keepsNewest ? max(at, now) : now
         }
         func wire(now: ContinuousClock.Instant) -> PerformanceRateObservation {
             let seconds = max(0, WedgeMonitor.seconds(now - at))
@@ -170,6 +181,8 @@ struct EnginePerformanceMeasurements {
         let concurrency: Int
     }
     let epoch = UUID().uuidString
+    /// `DeadlineAdmissionFixes`: off restores last-receipt freshness.
+    var keepsNewestObservationTime = DeadlineAdmissionFixes.enabled
     private var rates: [String: Rate] = [:]
     private var qualifiedRates: [String: QualifiedRate] = [:]
     private var buckets: [Key: Rate] = [:]
@@ -181,6 +194,20 @@ struct EnginePerformanceMeasurements {
         guard let rate = rates[name], now >= rate.at, now - rate.at <= maximumAge,
             rate.value.isFinite, rate.value > 0 else { return nil }
         return rate.value
+    }
+
+    /// Whether usable evidence spans an observation made at `at`. Unlike
+    /// `freshRate`, evidence newer than a late observation still covers it,
+    /// so delayed completed work never manufactures an evidence gap.
+    func coversObservation(_ name: String, at: ContinuousClock.Instant,
+        maximumAge: Duration = Self.freshness) -> Bool {
+        guard let rate = rates[name], rate.value.isFinite, rate.value > 0 else { return false }
+        return at - rate.at <= maximumAge
+    }
+
+    /// Age of the newest observation; nil before any.
+    func observationAge(_ name: String, now: ContinuousClock.Instant = .now) -> Duration? {
+        rates[name].map { max(.zero, now - $0.at) }
     }
 
     func rateExpiration(_ name: String, maximumAge: Duration = Self.freshness) -> ContinuousClock.Instant? {
@@ -219,8 +246,9 @@ struct EnginePerformanceMeasurements {
         recordAggregate: Bool = true, restartEstimate: Bool = false
     ) {
         guard tps.isFinite, tps > 0 else { return }
+        let newest = keepsNewestObservationTime
         if recordAggregate {
-            if var rate = rates[name] { rate.observe(tps, at: now, restart: restartEstimate); rates[name] = rate }
+            if var rate = rates[name] { rate.observe(tps, at: now, restart: restartEstimate, keepsNewest: newest); rates[name] = rate }
             else { rates[name] = Rate(value: tps, at: now) }
         }
         if recordAggregate, let deadlinePostureEpoch,
@@ -228,7 +256,7 @@ struct EnginePerformanceMeasurements {
             var rate: Rate
             if let previous = qualifiedRates[name], previous.postureEpoch == deadlinePostureEpoch {
                 rate = previous.rate
-                rate.observe(tps, at: now, restart: restartEstimate)
+                rate.observe(tps, at: now, restart: restartEstimate, keepsNewest: newest)
             } else {
                 rate = Rate(value: tps, at: now)
             }
@@ -243,7 +271,7 @@ struct EnginePerformanceMeasurements {
         let key = Key(phase: phase,
             prompt: Self.bucket(prompt), context: Self.bucket(context), cache: cache,
             contended: overlap.contended, otherModel: overlap.otherModel, concurrency: min(64, max(1, overlap.peakRequests)))
-        if var rate = buckets[key] { rate.observe(tps, at: now, restart: restartEstimate); buckets[key] = rate }
+        if var rate = buckets[key] { rate.observe(tps, at: now, restart: restartEstimate, keepsNewest: newest); buckets[key] = rate }
         else {
             if buckets.count >= Self.maxBuckets,
                 let oldest = buckets.min(by: { $0.value.at < $1.value.at })?.key {

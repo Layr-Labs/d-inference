@@ -199,7 +199,7 @@ func vlmDecodeImageAcceptsBombWithinCap() throws {
     // positive. 2000x2000 = 4 Mpx, decodes to ~16 MB (CI-affordable).
     let uri = PNGBomb.dataURI(width: 2000, height: 2000)
     let image = try MediaIngest.decodeImage(uri, maxImagePixels: 8_000_000)
-    guard case .ciImage(let ci) = image else {
+    guard case .ciImage(let ci) = image.source else {
         Issue.record("expected a decoded .ciImage")
         return
     }

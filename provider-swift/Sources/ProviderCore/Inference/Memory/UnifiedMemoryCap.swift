@@ -144,6 +144,16 @@ public enum UnifiedMemoryCap {
         // convention; the compiled path was removed in v0.8.0 — the
         // current-engine raw figure is 2.63, so 3.5 keeps ~0.9 margin).
         "gpt-oss-20b": 7 * 1024 * 1024 * 1024 / 2,
+        // Nemotron 3.5 Super charges its activations elsewhere: every request
+        // reserves its decode row, recurrent generations and (speculating)
+        // verify window and draft workspace; the owner's prefill lane covers
+        // prompt chunks and each image request's media charge its tower and
+        // projector. The full checkpoint at B=8 (500-token prompts, default
+        // speculation, M3 Ultra) peaked 5.5 GB above the pre-request
+        // resident set with 27.6 GB of request charges held; what no charge
+        // covers is the 0.94 GB the speculating owner (0.23 GB plain) keeps
+        // resident after its requests. 2 GiB = that plus 1.1 GiB slack.
+        "nvidia-nemotron-3.5-super": 2 * 1024 * 1024 * 1024,
         // qwen3.5/3.6 (measured text-decode envelope ~3.3 GiB, floor 4.0
         // candidate) are deliberately ABSENT pending a vision-inclusive
         // measurement: they are vision-capable, and VisionMemoryGate charges

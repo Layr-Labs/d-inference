@@ -33,7 +33,7 @@ struct EngineV2BenchmarkMTPAcceptanceTests {
             """.utf8)
         try targetConfig.write(to: targetDirectory.appendingPathComponent("config.json"))
         let target = Gemma4TextModel(try JSONDecoder().decode(
-            Gemma4TextConfiguration.self, from: targetConfig))
+            MLXLLM.Gemma4TextConfiguration.self, from: targetConfig))
         target.update(parameters: ModuleParameters.unflattened(
             target.parameters().flattened().map { ($0.0, $0.1.asType(.bfloat16)) }))
         eval(target)
@@ -49,8 +49,8 @@ struct EngineV2BenchmarkMTPAcceptanceTests {
             "text_config": assistantText,
         ])
         try assistantConfig.write(to: assistantDirectory.appendingPathComponent("config.json"))
-        let assistant = try Gemma4AssistantDraftModel(config: JSONDecoder().decode(
-            Gemma4AssistantConfiguration.self, from: assistantConfig))
+        let assistant = try MLXLLM.Gemma4AssistantDraftModel(config: JSONDecoder().decode(
+            MLXLLM.Gemma4AssistantConfiguration.self, from: assistantConfig))
         eval(assistant)
         try MLX.save(arrays: Dictionary(uniqueKeysWithValues: assistant.parameters().flattened()),
             metadata: ["format": "mlx"], url: assistantDirectory.appendingPathComponent("model.safetensors"))

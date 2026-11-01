@@ -47,7 +47,7 @@ extension PersistentEnclaveKey {
 
         guard SecKeyIsAlgorithmSupported(publicKey, .encrypt, algorithm) else {
             throw PersistentEnclaveKeyError.signingFailed(
-                status: errSecParam,
+                status: errSecUnimplemented,
                 message: "ECIES encryption not supported on this SE key"
             )
         }
@@ -74,9 +74,12 @@ extension PersistentEnclaveKey {
     public func eciesDecrypt(_ wrapped: Data) throws -> Data {
         let algorithm: SecKeyAlgorithm = .eciesEncryptionStandardX963SHA256AESGCM
 
+        // A key that cannot run the operation says nothing about the
+        // ciphertext: errSecParam is reserved for a ciphertext the key cannot
+        // open (`SecureEnclaveKeyWrappingService.unwrapError`).
         guard SecKeyIsAlgorithmSupported(privateKey, .decrypt, algorithm) else {
             throw PersistentEnclaveKeyError.signingFailed(
-                status: errSecParam,
+                status: errSecUnimplemented,
                 message: "ECIES decryption not supported on this SE key"
             )
         }

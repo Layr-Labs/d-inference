@@ -15,39 +15,65 @@ import ProviderCoreFoundation
 
 /// Template-only controls recovered from the sealed OpenAI body. They remain
 /// out-of-band because the upstream request type does not model the top-level
-/// Qwen3.8 fields. `enableThinking` is already resolved across top-level and
+/// model-specific fields. `enableThinking` is already resolved across top-level and
 /// `chat_template_kwargs`; the typed request's nested `reasoning.enabled`
-/// remains authoritative when the template context is built.
+/// remains authoritative for its supported families. GLM retains its own exact
+/// effort/clear_thinking evidence, and Flint its reasoning-control and
+/// visibility evidence, until actual model metadata selects that path.
 public struct ChatTemplateControls: Sendable, Equatable {
     public let reasoningEffort: String?
     public let enableThinking: Bool?
     public let preserveThinking: Bool?
-    public let promptDate: PromptRenderDate?
+    public let clearThinking: Bool?
+    public private(set) var promptDate: PromptRenderDate?
+    /// A positive OpenRouter `reasoning.max_tokens` budget. The typed request
+    /// drops it, so it is recovered from the raw body: a budget asks for
+    /// reasoning even without an explicit thinking switch.
+    public let reasoningBudgetTokens: Int?
     // Included in synthesized equality: refusal evidence cannot be erased by
     // comparing only the permissively decoded legacy control fields.
     var rawMiMoControls = MiMoV26RawControlEvidence()
+    var rawMiMoTools = MiMoV26ToolEvidence()
+    var rawGLM5Controls = GLM5NextPromptPolicy.RawControls()
+    var rawFlintControls = FlintRequestPolicy.RawControls()
 
     public init(
         reasoningEffort: String? = nil,
         enableThinking: Bool? = nil,
         preserveThinking: Bool? = nil,
-        promptDate: PromptRenderDate? = nil
+        clearThinking: Bool? = nil,
+        promptDate: PromptRenderDate? = nil,
+        reasoningBudgetTokens: Int? = nil
     ) {
         self.reasoningEffort = reasoningEffort
         self.enableThinking = enableThinking
         self.preserveThinking = preserveThinking
+        self.clearThinking = clearThinking
         self.promptDate = promptDate
+        self.reasoningBudgetTokens = reasoningBudgetTokens
     }
 
     func withPromptDate(_ date: PromptRenderDate) -> Self {
-        .init(reasoningEffort: reasoningEffort, enableThinking: enableThinking,
-              preserveThinking: preserveThinking, promptDate: date)
-            .withRawMiMoControls(rawMiMoControls)
+        var copy = self
+        copy.promptDate = date
+        return copy
     }
 
     func withRawMiMoControls(_ evidence: MiMoV26RawControlEvidence) -> Self {
         var copy = self
         copy.rawMiMoControls = evidence
+        return copy
+    }
+
+    func withRawGLM5Controls(_ evidence: GLM5NextPromptPolicy.RawControls) -> Self {
+        var copy = self
+        copy.rawGLM5Controls = evidence
+        return copy
+    }
+
+    func withRawFlintControls(_ evidence: FlintRequestPolicy.RawControls) -> Self {
+        var copy = self
+        copy.rawFlintControls = evidence
         return copy
     }
 
@@ -123,6 +149,18 @@ extension MultiModelBatchSchedulerEngine {
             // Qwen templates default thinking on. Grounded media defaults off
             // only when the caller supplied no thinking control at all.
             context["enable_thinking"] = false
+        } else if request.responseFormat?.requiresJSONOutput == true
+            && Qwen35TemplateFix.applies(to: fixContext)
+            && controls.enableThinking == nil && effort == nil
+            && controls.reasoningBudgetTokens == nil
+        {
+            // A JSON answer follows the reasoning block, and Qwen's default
+            // thinking routinely spends the caller's max_tokens before any
+            // JSON is written. JSON response formats therefore use the
+            // no-thinking prompt unless the caller supplied a thinking
+            // control or a reasoning budget. The coordinator prompt sidecar
+            // mirrors this rule.
+            context["enable_thinking"] = false
         }
         if let preserveThinking = controls.preserveThinking {
             context["preserve_thinking"] = preserveThinking
@@ -143,17 +181,19 @@ extension MultiModelBatchSchedulerEngine {
     /// remains authoritative to preserve that authenticated boundary.
     /// `logprobs`/`topLogprobs` overlay the OpenAI knobs of the same names
     /// onto the internal shape; on the coordinator path they arrive via
-    /// `EngineV2LogprobsPlumbing`.
+    /// `EngineV2LogprobsPlumbing`. `engineStopStrings: false` withholds `stop`
+    /// from the engine's raw-text holdback when a native constraint owns it.
     static func translate(
         openAIRequest request: OpenAIChatCompletionRequest,
         defaultMaxTokens: Int,
         logprobs: Bool? = nil,
         topLogprobs: Int? = nil,
         logitBias: [String: Float]? = nil,
-        seed: UInt64? = nil
+        seed: UInt64? = nil,
+        engineStopStrings: Bool = true
     ) -> ChatCompletionRequest {
         let stop: StopSequences? = {
-            guard let stops = request.stop, !stops.isEmpty else { return nil }
+            guard engineStopStrings, let stops = request.stop, !stops.isEmpty else { return nil }
             return .multiple(stops)
         }()
         return ChatCompletionRequest(
@@ -177,7 +217,8 @@ extension MultiModelBatchSchedulerEngine {
             user: nil,
             logit_bias: logitBias ?? request.logitBias,
             logprobs: logprobs,
-            top_logprobs: topLogprobs
+            top_logprobs: topLogprobs,
+            min_p: request.minP
         )
     }
 }

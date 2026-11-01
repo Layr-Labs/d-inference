@@ -1,6 +1,10 @@
 import Foundation
 
 extension EngineV2Bridge {
+    /// Capacity refusal of a Mac whose serving concurrency is full; thrown
+    /// before any stream exists (503 locally, retriable capacity upstream).
+    static let serviceAllowanceExhausted = "token_budget_exhausted: whole-Mac service allowance exhausted"
+
     func retainDeadlinePostureMonitoring() {
         guard deadlineProfile != nil || nativeTransactionID != nil,
             deadlinePostureMonitoring == nil else { return }
@@ -103,6 +107,9 @@ extension EngineV2Bridge {
     /// Call only at refused pre-submit cleanup or completed engine retirement.
     /// The stream's terminal alone does not prove device resources retired.
     func releaseServiceAllowance(requestID: String) {
+        if let (lifetime, key) = qwenMediaHostResources.removeValue(forKey: requestID) {
+            lifetime.nativeDidRetire(key)
+        }
         prefillEvidenceRecovery.retire(requestID)
         if nativeMediaLearnedRequestIDs.remove(requestID) != nil {
             nextNativeMediaBootstrapAt = nil

@@ -60,10 +60,16 @@ the deployment's shared limiter or edge controls.
 ## Public discovery and representations
 
 The public entry points are `/llms.txt`, `/auth.md`, `/openapi.json`,
-`/sitemap.xml`, `/developers`, `/pricing` and `/contact`. The homepage and
-explanatory pages support explicit Markdown twins (`/index.md`,
-`/developers.md`, `/pricing.md`, `/contact.md`) and `Accept: text/markdown`.
-Normal browser requests retain HTML. Read [API-CONTRACT.md](API-CONTRACT.md)
+`/sitemap.xml`, `/developers.md`, `/pricing` and `/contact.md`. The homepage
+and pricing page support explicit Markdown twins (`/index.md`, `/pricing.md`)
+and `Accept: text/markdown`; normal browser requests retain HTML.
+Developer and contact guidance remain Markdown documents, discoverable through
+`/llms.txt`. `/developers` and `/contact` return Markdown when requested with
+`Accept: text/markdown`, and HTTP 404 for ordinary browser requests. Their HTML
+pages, site navigation links and XML sitemap entries are removed. Human-facing
+API links lead to the official documentation. Direct `.md` URLs remain public
+and readable by any client; format selection is not access control.
+Read [API-CONTRACT.md](API-CONTRACT.md)
 for the exact reviewed operation subset and its platform source revision.
 
 Pricing reads the public coordinator source server-side, labels USD per million

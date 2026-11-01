@@ -1,0 +1,21 @@
+=== 11:34:23 gemma-4-26b-qat-4bit arm A bundle=io.darkbloom.ttftw3.r3.gemma426bqat.off.1792606494 warmup=off cache_dir_before=no
+[alone] waited 31s; other-slots=2 thermal=nominal load=20.75 other-server=no
+[gemma-4-26b-qat-4bit-A] other servers: 0
+[gemma-4-26b-qat-4bit-A] ready after 8.9s
+[gemma-4-26b-qat-4bit-A] hi {"hi_total_ms": 735.6, "hi_first_ms": 26.7}
+[gemma-4-26b-qat-4bit-A] r0 ttft_ms=3190.7 prompt 8045 dec 32.0
+[gemma-4-26b-qat-4bit-A] r1 ttft_ms=973.2 prompt 8031 dec 97.2
+[gemma-4-26b-qat-4bit-A] r2 ttft_ms=1081.6 prompt 8054 dec 80.8
+[A] cache_dir_after= 22M
+=== 11:35:43 gemma-4-26b-qat-4bit arm B bundle=io.darkbloom.ttftw3.r3.gemma426bqat.on.1792606494 warmup=on cache_dir_before=no
+[alone] waited 31s; other-slots=2 thermal=nominal load=32.03 other-server=no
+[gemma-4-26b-qat-4bit-B] other servers: 0
+[gemma-4-26b-qat-4bit-B] ready after 18.0s
+[gemma-4-26b-qat-4bit-B] hi {"hi_total_ms": 434.5, "hi_first_ms": 9.3}
+[gemma-4-26b-qat-4bit-B] r0 ttft_ms=1126.8 prompt 8025 dec 35.9
+[gemma-4-26b-qat-4bit-B] r1 ttft_ms=1191.0 prompt 8006 dec 81.0
+[gemma-4-26b-qat-4bit-B] r2 ttft_ms=1034.4 prompt 7975 dec 85.7
+2026-10-21T11:36:32-0700 info darkbloom.ShapeWarmup: [ProviderCore] Shape warmup gemma-4-26b-qat-4bit: complete 2/2 cells in 5354 ms (attempt 1, probe 2340/69 ms)
+2026-10-21T11:36:37-0700 info darkbloom.ShapeWarmup: [ProviderCore] Shape warmup gemma-4-26b-qat-4bit: skipped (warm shader cache) 0/2 cells in 236 ms (attempt 1, probe 174/58 ms)
+[B] cache_dir_after= 23M
+=== 11:37:10 done

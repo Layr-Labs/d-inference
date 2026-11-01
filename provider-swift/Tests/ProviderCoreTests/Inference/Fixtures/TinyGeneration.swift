@@ -33,6 +33,7 @@ struct TinyGeneration {
             var result = TinyGeneration()
             for await event in stream {
                 switch event {
+                case .logprobs: break
                 case .chunk:
                     break  // The text is not checked: the weights are random.
                 case .info(let prompt, let completion, _, let finish):

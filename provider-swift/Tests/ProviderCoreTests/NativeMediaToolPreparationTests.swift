@@ -72,9 +72,15 @@ struct NativeMediaToolPreparationTests {
         #expect(result["name"] as? String == "viewer")
     }
 
-    @Test func nativeMediaRejectsUnsupportedEffortBeforeDecodingPixels() async throws {
+    /// Qwen3.8-27B media requests run without preserved template fields or a
+    /// native model type, exactly as `EngineV2VisionPrefill` builds them.
+    @Test(arguments: [("DarkBloom/Qwen3.8-Flash-Next-Q4-mtp", true, "qwen4_exp"),
+                      ("EigenLabs/Qwen3.8-27B-4bit-mtp", false, nil)] as [(String, Bool, String?)])
+    func nativeMediaRejectsUnsupportedEffortBeforeDecodingPixels(
+        model: String, preserveTemplateFields: Bool, modelType: String?
+    ) async throws {
         let body = #"""
-        {"model":"DarkBloom/Qwen3.8-Flash-Next-Q4-mtp",
+        {"model":"\#(model)",
          "reasoning":{"enabled":true,"effort":"high"},
          "messages":[{"role":"user","content":[
            {"type":"image_url","image_url":{"url":"data:image/png;base64,AAAA"}},
@@ -84,7 +90,7 @@ struct NativeMediaToolPreparationTests {
             OpenAIChatCompletionRequest.self, from: Data(body.utf8))
         do {
             _ = try await MediaIngest.buildUserInput(
-                from: decoded, preserveTemplateFields: true, modelType: "qwen4_exp")
+                from: decoded, preserveTemplateFields: preserveTemplateFields, modelType: modelType)
             Issue.record("unsupported native effort unexpectedly reached pixel decoding")
         } catch MultiModelBatchSchedulerEngineError.unsupportedReasoningEffort {
             // The invalid image must not be decoded before the control error.

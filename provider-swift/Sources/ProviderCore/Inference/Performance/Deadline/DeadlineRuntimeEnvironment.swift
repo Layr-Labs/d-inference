@@ -13,6 +13,7 @@ enum DeadlineRuntimeEnvironment {
         "DARKBLOOM_NO_UPDATE_CHECK",
         "DARKBLOOM_PID_FILE",
         "DARKBLOOM_STATE_FILE",
+        "DARKBLOOM_VERIFIED_WEIGHTS_FILE",
         "DARKBLOOM_WATCHDOG_STATE",
     ]
 

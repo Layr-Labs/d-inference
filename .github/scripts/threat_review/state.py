@@ -8,6 +8,8 @@ import base64
 import copy
 import json
 import re
+import time
+from random import uniform
 from datetime import datetime, timezone
 from uuid import uuid4
 from .client import APIError, ReviewUnavailable
@@ -17,6 +19,13 @@ MAX_STATE_BYTES = 500_000
 USD = 1_000_000  # integer microdollars, rounded up at reservation boundaries
 CAPS = {"normal": USD, "deep": 3 * USD, "pr_day": 5 * USD,
         "repo_day": 25 * USD, "pilot": 25 * USD, "prs": 10}
+WRITE_ATTEMPTS = 12
+
+
+def conflict_backoff(attempt):
+    # Different PRs share one branch even when they update different files.
+    # Retry only explicit conflicts, never an ambiguous paid request/write.
+    time.sleep(uniform(0.5, min(8.0, 0.5 * 2 ** attempt)))
 
 
 class BudgetStopped(ReviewUnavailable):
@@ -56,7 +65,13 @@ class State:
                 "content": base64.b64encode(raw).decode()}
         if sha:
             body["sha"] = sha
-        return self.github.call(f"/contents/{path}", body, "PUT")
+        try:
+            return self.github.call(f"/contents/{path}", body, "PUT")
+        except APIError as error:
+            kind = "ledger" if path == "ledger.json" else "cache" if path.startswith("cache/") else "report"
+            error.diagnostic = {"code": "STATE_WRITE_FAILED", "service": "github",
+                                "operation": kind, "http_status": error.status}
+            raise
 
     def read_ledger(self):
         ledger, sha = self.read("ledger.json")
@@ -68,7 +83,7 @@ class State:
         return ledger, sha
 
     def mutate(self, update):
-        for _ in range(8):
+        for attempt in range(WRITE_ATTEMPTS):
             ledger, sha = self.read_ledger()
             result = update(ledger)
             try:
@@ -77,7 +92,12 @@ class State:
             except APIError as error:
                 if error.status != 409:
                     raise
-        raise BudgetStopped("Concurrent budget updates did not settle; no paid request allowed")
+                if attempt + 1 < WRITE_ATTEMPTS:
+                    conflict_backoff(attempt)
+        error = BudgetStopped("Concurrent budget updates did not settle; no paid request allowed")
+        error.diagnostic = {"code": "STATE_WRITE_FAILED", "service": "github", "operation": "ledger",
+                            "http_status": 409, "write_attempts": WRITE_ATTEMPTS}
+        raise error
 
     def check_reservation(self, ledger, pr, run, tier, amount, day):
         if ledger["halted"]:
@@ -157,19 +177,36 @@ class State:
         return self.read(f"cache/{fingerprint}.json")[0]
 
     def save_cache(self, fingerprint, value):
-        try:
-            self.write(f"cache/{fingerprint}.json", value)
-        except APIError as error:
-            # Immutable cache: another identical request may have won the race.
-            if error.status not in (409, 422) or self.cached(fingerprint) is None:
-                raise
+        for attempt in range(WRITE_ATTEMPTS):
+            try:
+                self.write(f"cache/{fingerprint}.json", value)
+                return
+            except APIError as error:
+                error.diagnostic.update(write_attempts=attempt + 1, write_limit=WRITE_ATTEMPTS)
+                if error.status not in (409, 422):
+                    raise
+                # Immutable cache: another identical request may have won the
+                # race. A different file's branch update can also cause a 409.
+                if self.cached(fingerprint) is not None:
+                    return
+                if error.status != 409 or attempt + 1 == WRITE_ATTEMPTS:
+                    raise
+                conflict_backoff(attempt)
 
     def checkpoint(self, run, value):
         if not re.fullmatch(r"[0-9]+-[0-9]+", run):
             raise ReviewUnavailable("Invalid run identity")
         path = f"reports/{run}.json"
-        _, sha = self.read(path)
-        result = self.write(path, copy.deepcopy(value), sha)
+        for attempt in range(WRITE_ATTEMPTS):
+            _, sha = self.read(path)
+            try:
+                result = self.write(path, copy.deepcopy(value), sha)
+                break
+            except APIError as error:
+                error.diagnostic.update(write_attempts=attempt + 1, write_limit=WRITE_ATTEMPTS)
+                if error.status != 409 or attempt + 1 == WRITE_ATTEMPTS:
+                    raise
+                conflict_backoff(attempt)
         # Immutable commit URL preserves each checkpoint even after another write.
         repo = self.github.root.replace("https://api.github.com/repos/", "https://github.com/")
         return f"{repo}/blob/{result['commit']['sha']}/{path}"

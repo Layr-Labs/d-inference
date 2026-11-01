@@ -144,6 +144,49 @@ struct SSDSharedProcessCheckpointTests {
         fixture.codec.admission.closeProcessMemoryOwner()
     }
 
+    @Test("Queued writes keep their host reservations, so the host ledger binds before the job bound")
+    func queuedWritesStayInsideHostLedger() async throws {
+        let scratch = UInt64(SSDHybridCheckpointStore.ioScratchBytes)
+        // Room for four writer reservations, fewer than the six-job bound.
+        let budget = GlobalKVCacheBudget(capFraction: 1, activationReserveBytes: 0, memorySnapshot: {
+            .init(total: (2 << 30) + 4 * scratch, active: 0, cache: 0, systemAvailable: .max)
+        })
+        let fixture = try SSDHybridCheckpointTestFixture(sharedPaged: true, budget: budget)
+        defer { fixture.remove() }
+        let outcomes = PrefixCacheDonationTelemetry()
+        let store = try fixture.makeStore(donationRecorder: outcomes)
+        defer { store.close() }
+        let barrier = SSDCheckpointCoordinationTestSupport.Barrier()
+        defer { barrier.release() }
+        store.afterPublishBeforeIndexForTesting = { try? barrier.block() }
+        // Distinct cache scopes give the same boundary distinct checkpoint tags.
+        let first = try fixture.startDonation(store, receipt: 85, scope: "tenant-a")
+        try await SSDCheckpointCoordinationTestSupport.waitUntil { barrier.isEntered }
+        let queued = try ["tenant-b", "tenant-c", "tenant-d"].map {
+            try fixture.startDonation(store, receipt: 85, scope: $0)
+        }
+        try await SSDCheckpointCoordinationTestSupport.waitUntil {
+            store.lock.withLock { store.writing.count == 4 }
+        }
+        #expect(budget.processLedger.snapshot().chargedBytes == 4 * scratch)
+        #expect(try await fixture.startDonation(store, receipt: 85, scope: "tenant-e").value.isEmpty)
+        #expect(store.stats().writeHostCapacityRefusals == 1)
+        #expect(outcomes.snapshot().first { $0.outcome == .hostMemoryUnavailable }?.count == 1)
+        #expect(outcomes.snapshot().first { $0.outcome == .writeQueueFull } == nil)
+        #expect(store.lock.withLock { store.writing.count } == 4)
+        #expect(budget.processLedger.snapshot().chargedBytes == 4 * scratch)
+        barrier.release()
+        #expect(await first.value == [256])
+        for task in queued {
+            #expect(await task.value == [256])
+        }
+        #expect(store.stats().filesWritten == 4)
+        #expect(store.stats().writeHostBytesInUse == 0)
+        await store.closeAndWait()
+        #expect(budget.processLedger.snapshot().chargedBytes == 0)
+        fixture.codec.admission.closeProcessMemoryOwner()
+    }
+
     @Test("Failed native allocation drains both owners and preserves authenticated ciphertext")
     func allocationFailure() async throws {
         let fixture = try SSDHybridCheckpointTestFixture(sharedPaged: true)

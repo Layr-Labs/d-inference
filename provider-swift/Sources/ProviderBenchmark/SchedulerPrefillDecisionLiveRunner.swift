@@ -63,6 +63,23 @@ enum SchedulerPrefillDecisionLiveRunner {
         case failed(String)
     }
 
+    /// The live engine runs the simulated geometry, not the family default:
+    /// a wide-chunk family would otherwise swallow the configured stripe.
+    static func engineEnvironment(
+        _ environment: [String: String],
+        configuration: SchedulerPrefillDecisionReport.Configuration,
+        cap: Int
+    ) -> [String: String] {
+        var configured = environment
+        configured[EngineV2Factory.maxPartialPrefillsKey] = String(cap)
+        configured[EngineV2Factory.prefillChunkKey] = String(configuration.prefillChunkTokens)
+        configured[EngineV2Factory.stepTokenBudgetKey] =
+            String(configuration.maxBatchedTokensPerStep)
+        configured[EngineV2Factory.soloPrefillStripeKey] =
+            String(configuration.soloPrefillStripeTokens)
+        return configured
+    }
+
     static func makeEngine(
         container: ModelContainer,
         modelID: String,
@@ -81,11 +98,8 @@ enum SchedulerPrefillDecisionLiveRunner {
                 residentWeightBytes: UInt64(max(0, weightBytes)),
                 configReserveBytes: 0),
             UInt64(Int.max)))
-        var configuredEnvironment = environment
-        configuredEnvironment[EngineV2Factory.maxPartialPrefillsKey] = String(cap)
-        configuredEnvironment[EngineV2Factory.soloPrefillStripeKey] =
-            String(configuration.soloPrefillStripeTokens)
-        let environment = configuredEnvironment
+        let environment = engineEnvironment(
+            environment, configuration: configuration, cap: cap)
 
         return try await container.perform {
             context -> SchedulerPrefillDecisionEngineParts in

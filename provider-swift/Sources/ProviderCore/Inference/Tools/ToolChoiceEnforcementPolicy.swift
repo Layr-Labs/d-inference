@@ -15,8 +15,6 @@ enum ToolChoiceEnforcementPolicy {
         case structuredPostValidation
     }
 
-    static let qwen38ConstrainedModelID = "EigenLabs/Qwen3.8-27B-4bit"
-
     /// Per-model wire capability, never inferred from a caller's model label.
     /// Other families retain their existing media/grammar behavior until their
     /// complete forced-choice and tool-result-media paths are qualified.
@@ -53,8 +51,11 @@ enum ToolChoiceEnforcementPolicy {
         }
 
         if Gemma4TemplateFix.applies(to: modelContext) { return .gemmaGrammar }
+        // GLM's native engine refuses sampler constraints: its forced calls
+        // are prompt-forced, withheld and validated like Qwen and Nemotron.
         if Qwen35TemplateFix.applies(to: modelContext) || nativeStructuredTarget(modelContext)
-            || modelContext.modelType == "mimo_v2" {
+            || modelContext.modelType == "mimo_v2"
+            || GLM5NextPromptPolicy.applies(modelType: modelContext.modelType) {
             return .structuredPostValidation
         }
         throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
@@ -74,14 +75,42 @@ enum ToolChoiceEnforcementPolicy {
         if nativeStructuredTarget(context) {
             return true
         }
-        return model.id == qwen38ConstrainedModelID
+        // The managed Super owner prompt-forces required/named calls on text
+        // requests and withholds output until the call validates
+        // (`NemotronSuperLocalOutput`); its image requests refuse tools.
+        if NemotronSuperServingPolicy.isServingIdentity(modelID: model.id, modelType: model.modelType) {
+            return true
+        }
+        // GLM-5.3-Flash prompt-forces text calls and withholds them until the
+        // native parser and schema validator accept them; media refuses forced
+        // choice before any media work.
+        if GLM5NextPromptPolicy.applies(modelType: model.modelType),
+            GLM5NextCoordinatorServing.isManagedModelID(model.id) {
+            return true
+        }
+        if let admittedType = structuredForcedToolModelTypes[model.id] {
+            return model.modelType == admittedType
+        }
+        return ModelRuntimeRequirements.qwen38ConcreteModelIDs.contains(model.id)
             && Qwen35TemplateFix.applies(to: context)
     }
+
+    /// Exact catalog builds whose required/named calls are prompt-forced,
+    /// withheld and schema-validated, each bound to the `model_type` whose
+    /// parser that path accepts. A renamed or retyped artifact stays
+    /// unadvertised, so the coordinator never routes it a forced request.
+    static let structuredForcedToolModelTypes: [String: String] = [
+        "Qwen3.5-9B": "qwen3_5",
+        "qwen3.5-35b-a3b": "qwen3_5_moe",
+        "qwen3.6-35b-a3b-vl-mtp-mxfp8": "qwen3_5_moe",
+        "mimo-v2.6-flash-mopd": "mimo_v2",
+    ]
 
     /// Explicit family admission is supplied by each model onboarding change.
     /// Shared tool-frame validation alone must not advertise a new model.
     static func nativeStructuredTarget(_ context: ChatTemplateFixContext) -> Bool {
         let type = context.modelType?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if type == "flint" { return context.modelType == "flint" }
         if type == "qwen4_exp" || type == "qwen4_exp_text" { return true }
         // Native block diffusion retains its trained sampler. Required/named
         // calls use prompt selection plus withheld schema/cardinality validation,
@@ -133,10 +162,24 @@ enum ToolChoiceEnforcementPolicy {
                     "inference-enforced Gemma tool_choice requires the gemma tool parser")
             }
         case .structuredPostValidation:
+            if modelContext?.modelType == "flint" {
+                guard format == .flint else {
+                    throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
+                        "Flint tool_choice requires the native Flint parser")
+                }
+                return
+            }
             if modelContext?.modelType == "mimo_v2" {
                 guard format == .mimoV2 else {
                     throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
                         "native MiMo tool_choice requires the native MiMo parser")
+                }
+                return
+            }
+            if GLM5NextPromptPolicy.applies(modelType: modelContext?.modelType) {
+                guard format == .glm5 else {
+                    throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
+                        "GLM tool_choice requires the native GLM parser")
                 }
                 return
             }
@@ -150,7 +193,7 @@ enum ToolChoiceEnforcementPolicy {
                 return
             }
             let nativeQwen = type == "qwen4_exp" || type == "qwen4_exp_text"
-                || type == "prism_hadamard_qwen35"
+                || type == "prism_hadamard_qwen35" || type?.hasPrefix("qwen3_5") == true
             let framedFormat: ToolCallFormat = nativeQwen ? .qwen35 : .nemotron
             guard format == .xmlFunction || format == framedFormat else {
                 throw MultiModelBatchSchedulerEngineError.invalidToolPayload(

@@ -57,7 +57,7 @@ struct ToolChoicePromptPolicyTests {
     @Test("named choice rejects undeclared functions")
     func namedChoiceRejectsUndeclaredFunction() {
         #expect(throws: MultiModelBatchSchedulerEngineError.invalidToolPayload(
-            "tool_choice names an undeclared function")) {
+            "tool_choice names an undeclared function", refusal: .invalidToolChoice)) {
             try ToolChoicePromptPolicy.prepare(request(choice: .function(name: "missing")))
         }
     }
@@ -71,7 +71,7 @@ struct ToolChoicePromptPolicyTests {
             toolChoice: .mode(.auto))
 
         #expect(throws: MultiModelBatchSchedulerEngineError.invalidToolPayload(
-            "tool function names must match ^[a-zA-Z0-9_-]{1,64}$")) {
+            "tool function names must match ^[a-zA-Z0-9_-]{1,64}$", refusal: .invalidToolDeclaration)) {
             try ToolChoicePromptPolicy.prepare(input)
         }
     }

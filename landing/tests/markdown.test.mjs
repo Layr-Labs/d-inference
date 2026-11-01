@@ -52,7 +52,7 @@ test("agent guidance provides safe consumer auth and provider discovery", async 
   assert.match(llms.headers.get("content-type"), /^text\/plain/);
   const index = await llms.text();
   assert.match(index, /when to use/i);
-  for (const path of ["/auth.md", "/openapi.json", "/developers", "/pricing.md", "/contact"]) {
+  for (const path of ["/auth.md", "/openapi.json", "/developers.md", "/pricing.md", "/contact.md"]) {
     assert.ok(index.includes(path), `discovers ${path}`);
   }
   assert.match(index, /provider.*CLI/i);
@@ -104,7 +104,7 @@ test("homepage advertises verified machine-readable alternatives", async () => {
   }
 });
 
-test("developer and contact Markdown twins retain shared public facts", async () => {
+test("developer and contact documents retain explicit and negotiated Markdown", async () => {
   for (const [path, phrases] of [
     ["/developers", ["consumer API", "provider", "Authorization: Bearer", "darkbloom doctor"]],
     ["/contact", ["legal", "darkbloomnotices@eigenlabs.org", "https://docs.darkbloom.dev/introduction"]],
@@ -114,8 +114,9 @@ test("developer and contact Markdown twins retain shared public facts", async ()
     assert.match(negotiated.headers.get("content-type"), /^text\/markdown/);
     const body = await negotiated.text();
     for (const phrase of phrases) assert.ok(body.includes(phrase), phrase);
-    const explicit = await request(`${path}.md`);
+    const explicit = await request(`${path}.md`, "text/html");
     assert.equal(explicit.status, 200);
+    assert.match(explicit.headers.get("content-type"), /^text\/markdown/);
     assert.equal(await explicit.text(), body);
   }
   const pricing = await request("/pricing.md");
@@ -125,6 +126,34 @@ test("developer and contact Markdown twins retain shared public facts", async ()
   assert.match(body, /USD per million tokens/);
   assert.match(body, /rates are unavailable/);
   assert.match(body, /https:\/\/api.darkbloom.dev\/v1\/pricing/);
+});
+
+test("retired developer and contact HTML pages return 404 for browsers and React navigation", async () => {
+  for (const path of ["/developers", "/contact"]) {
+    for (const headers of [
+      {},
+      { Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8" },
+      { Accept: "text/markdown;q=0, text/html" },
+      { Accept: "text/markdown", RSC: "1" },
+    ]) {
+      const response = await fetch(`${site.origin}${path}`, { headers });
+      assert.equal(response.status, 404, `${path}: ${JSON.stringify(headers)}`);
+      assert.doesNotMatch(response.headers.get("content-type"), /^text\/markdown/);
+    }
+    const head = await fetch(`${site.origin}${path}.md`, { method: "HEAD" });
+    assert.equal(head.status, 200);
+    assert.match(head.headers.get("content-type"), /^text\/markdown/);
+    assert.equal(await head.text(), "");
+  }
+});
+
+test("agent documents discover explicit Markdown URLs instead of retired HTML pages", async () => {
+  for (const path of ["/llms.txt", "/index.md", "/auth.md", "/developers.md", "/contact.md", "/pricing.md"]) {
+    const response = await request(path);
+    assert.equal(response.status, 200, path);
+    const body = await response.text();
+    assert.doesNotMatch(body, /\]\((?:https:\/\/darkbloom\.ai)?\/(?:developers|contact)\)/, path);
+  }
 });
 
 

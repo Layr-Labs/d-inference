@@ -14,8 +14,13 @@ extension ProviderLoop {
     func scheduleLoadedModelCalibration(modelID: String) async {
         guard !Task.isCancelled, !isShuttingDown, !servingDrain.refusing,
             modelsUnloading.isEmpty, let slot = modelSlots[modelID] else { return }
-        await slot.engineV2.startModelCalibrationIfNeeded(onRetired: { [weak self] in
+        let onRetired: @Sendable () async -> Void = { [weak self] in
             await self?.refreshModelCalibration()
-        })
+        }
+        // A slot that never calibrates (reviewed deadline profile) still gets
+        // the excluded shape warmup under the same idle gate.
+        if !(await slot.engineV2.startModelCalibrationIfNeeded(onRetired: onRetired)) {
+            await slot.engineV2.startShapeWarmupIfNeeded(onRetired: onRetired)
+        }
     }
 }

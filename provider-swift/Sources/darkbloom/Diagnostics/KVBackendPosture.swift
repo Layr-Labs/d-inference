@@ -81,6 +81,13 @@ enum KVBackendPosture {
         }
         for slot in slots {
             lines.append("  " + slotLine(slot))
+            if let advice = PrefixCacheDiagnosis.advice(
+                state: slot.prefixCacheState, reason: slot.prefixCacheReason,
+                detail: slot.prefixCacheDetail)
+            {
+                lines.append("    → prefix cache: \(advice.message)")
+                if let fix = advice.fix { lines.append("    → fix: \(fix)") }
+            }
         }
         return lines
     }
@@ -95,6 +102,7 @@ enum KVBackendPosture {
         let precision = precisionPhrase(slot)
         return "\(slot.model): \(backendPhrase(slot)) | \(mtpPhrase(slot))"
             + (precision.isEmpty ? "" : " | \(precision)")
+            + (PrefixCacheDiagnosis.statusPhrase(slot).map { " | \($0)" } ?? "")
     }
 
     static func precisionPhrase(_ slot: DaemonState.SlotPosture) -> String {

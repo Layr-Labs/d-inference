@@ -5,7 +5,8 @@ import Foundation
 
 // Release builds select the default coordinator, model CDN and install
 // identity (BuildEnvironment). The release workflow sets
-// DARKBLOOM_RELEASE_ENVIRONMENT; every other build is prod.
+// DARKBLOOM_RELEASE_ENVIRONMENT. On the dev branch every other build is dev:
+// it talks to the DevNet coordinator. On master it is prod.
 let releaseEnvironment = ProcessInfo.processInfo.environment["DARKBLOOM_RELEASE_ENVIRONMENT"]
     .flatMap { $0.isEmpty ? nil : $0 } ?? "prod"
 precondition(["prod", "dev", "staging"].contains(releaseEnvironment),
@@ -35,7 +36,15 @@ let package = Package(
     ],
     dependencies: [
         .package(path: "../libs/mlx-swift"),
-        .package(path: "../libs/mlx-swift-lm"),
+        // Without the SDK's default `FoundationModelsIntegration` trait. No
+        // provider code uses its Apple FoundationModels adapter, and the trait
+        // would link that adapter, a weak FoundationModels.framework load and
+        // the vendored xgrammar C++ (MLXGuidedGeneration) into the binary.
+        .package(path: "../libs/mlx-swift-lm", traits: []),
+        // Private cluster foundation (slice 1 staging): MLX-free membership
+        // protocol module mirrored by the native-pair public control codec.
+        // Build-graph only; no serving call site consumes it yet.
+        .package(path: "../libs/darkbloom-cluster"),
         .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.4.0"),
         .package(url: "https://github.com/apple/swift-crypto.git", from: "4.0.0"),
         .package(url: "https://github.com/apple/swift-log.git", from: "1.5.0"),
@@ -119,6 +128,22 @@ let package = Package(
         ),
 
         // ----------------------------------------------------------------
+        // DarkbloomHardwareLoad: sudoless whole-machine load sampling for the
+        // desktop control API (per-core CPU, GPU, ANE, memory, best-effort
+        // IOReport SoC counters). MLX-free so its tests build in seconds.
+        // ----------------------------------------------------------------
+        .target(
+            name: "DarkbloomHardwareLoad",
+            path: "Sources/DarkbloomHardwareLoad",
+            linkerSettings: [.linkedFramework("IOKit")]
+        ),
+        .testTarget(
+            name: "DarkbloomHardwareLoadTests",
+            dependencies: ["DarkbloomHardwareLoad"],
+            path: "Tests/DarkbloomHardwareLoadTests"
+        ),
+
+        // ----------------------------------------------------------------
         // ProviderCoreFoundation: Linux-buildable subset containing the
         // model hashing primitives (ModelScanner file discovery,
         // WeightHasher) and the registry manifest types. Has NO Apple-
@@ -156,6 +181,11 @@ let package = Package(
                 "ProviderBuildEnvironment",
                 "ProviderCoreFoundation",
                 "ProviderMetallibControl",
+                .product(name: "DarkbloomClusterProtocol", package: "darkbloom-cluster"),
+                .product(name: "DarkbloomClusterProcess", package: "darkbloom-cluster"),
+                .product(name: "DarkbloomClusterSecurity", package: "darkbloom-cluster"),
+                .product(name: "DarkbloomClusterRemote", package: "darkbloom-cluster"),
+                .product(name: "DarkbloomClusterPlacement", package: "darkbloom-cluster"),
                 .product(name: "MLX", package: "mlx-swift"),
                 .product(name: "MLXNN", package: "mlx-swift"),
                 .product(name: "MLXLLM", package: "mlx-swift-lm"),
@@ -163,6 +193,8 @@ let package = Package(
                 .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
                 .product(name: "MLXLMServer", package: "mlx-swift-lm"),
                 .product(name: "Transformers", package: "swift-transformers"),
+                // Tokenizer configurations for the prompt token cache.
+                .product(name: "Hub", package: "swift-transformers"),
                 .product(name: "Jinja", package: "swift-jinja"),
                 .product(name: "Crypto", package: "swift-crypto"),
                 .product(name: "Sodium", package: "swift-sodium"),
@@ -208,9 +240,12 @@ let package = Package(
                 "DarkbloomFanCore",
                 "DarkbloomFanProtocol",
                 "DarkbloomFanService",
+                "DarkbloomHardwareLoad",
                 "ProviderAppAttest",
                 "ProviderCore",
                 "ProviderBenchmark",
+                .product(name: "Hummingbird", package: "hummingbird"),
+                .product(name: "NIOCore", package: "swift-nio"),
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ],
             path: "Sources/darkbloom"
@@ -278,12 +313,32 @@ let package = Package(
             path: "Tests/GPTOSSOptimizationTests"
         ),
 
+        // Test-only stand-in for an installed owner and its native child, run
+        // by the native-pair member control tests over the real owner pipe and
+        // key prelude. CPU only: no model, mesh or GPU. Not a product, so no
+        // release build ships it.
+        .executableTarget(
+            name: "cluster-member-fixture-child",
+            dependencies: [
+                .product(name: "DarkbloomClusterBootstrap", package: "darkbloom-cluster"),
+                .product(name: "DarkbloomClusterProtocol", package: "darkbloom-cluster"),
+                .product(name: "DarkbloomClusterProcess", package: "darkbloom-cluster"),
+                .product(name: "DarkbloomClusterRemote", package: "darkbloom-cluster"),
+                .product(name: "DarkbloomClusterSecurity", package: "darkbloom-cluster"),
+            ],
+            path: "Tests/ClusterMemberFixtureChild"
+        ),
+
         .testTarget(
             name: "ProviderCoreTests",
             dependencies: [
                 "ProviderAppAttest",
                 "ProviderCore",
                 "ProviderBenchmark",
+                "cluster-member-fixture-child",
+                // Exercise the actual pure capability producer in image-policy tests.
+                // The normal provider target continues to exclude this runtime.
+                .product(name: "DarkbloomClusterRuntime", package: "darkbloom-cluster"),
                 .product(name: "MLXNN", package: "mlx-swift"),
                 .product(name: "HummingbirdTesting", package: "hummingbird"),
                 .product(name: "NIOEmbedded", package: "swift-nio"),
@@ -343,7 +398,10 @@ let package = Package(
         // ----------------------------------------------------------------
         .testTarget(
             name: "DarkbloomCLITests",
-            dependencies: ["darkbloom"],
+            dependencies: [
+                "darkbloom", "DarkbloomHardwareLoad",
+                .product(name: "HummingbirdTesting", package: "hummingbird"),
+            ],
             path: "Tests/DarkbloomCLITests"
         ),
 

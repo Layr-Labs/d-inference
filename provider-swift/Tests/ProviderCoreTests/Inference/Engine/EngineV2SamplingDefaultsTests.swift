@@ -65,6 +65,63 @@ struct EngineV2SamplingDefaultsTests {
         }
     }
 
+    @Test func flintUsesPublishedDefaultsAndHonorsExplicitGreedy() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("flint-sampling-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try Data(#"{"do_sample":true,"temperature":1.0,"top_p":0.95,"top_k":20}"#.utf8)
+            .write(to: directory.appendingPathComponent("generation_config.json"))
+        let defaults = EngineV2SamplingDefaults.resolve(
+            modelId: "RecursiveSI/flint-int4", modelType: "flint", modelDirectory: directory)
+        let omitted = EngineV2Translation.samplingParams(from: try request(bareRequest), defaults: defaults)
+        #expect(omitted.temperature == 1 && omitted.topP == 0.95 && omitted.topK == 20)
+        let explicit = EngineV2Translation.samplingParams(
+            from: try request(#"{"model":"m","messages":[],"temperature":0,"top_k":0}"#), defaults: defaults)
+        #expect(explicit.temperature == 0 && explicit.topK == 0)
+        #expect(!EngineV2SamplingDefaults.honorsArtifactDefaults(modelId: "flint", modelType: "unknown"))
+    }
+
+    /// The catalog Qwen 3.5/3.6 builds have no generation_config.json: omitted
+    /// knobs take the model cards' thinking-mode values, explicit ones win.
+    @Test func qwen35CatalogBuildsUseTheirModelCardDefaults() throws {
+        for (id, type) in EngineV2SamplingDefaults.qwen35CardModelTypes {
+            #expect(EngineV2SamplingDefaults.resolve(modelId: id, modelType: type, modelDirectory: nil)
+                == EngineV2SamplingDefaults.qwen35CardDefaults)
+        }
+        let defaults = EngineV2SamplingDefaults.resolve(
+            modelId: "Qwen3.5-9B", modelType: "qwen3_5", modelDirectory: nil)
+        let omitted = EngineV2Translation.samplingParams(from: try request(bareRequest), defaults: defaults)
+        #expect(omitted.temperature == 1 && omitted.topP == 0.95 && omitted.topK == 20)
+        #expect(omitted.presencePenalty == 1.5 && omitted.repetitionPenalty == 1)
+        let explicit = EngineV2Translation.samplingParams(
+            from: try request(#"{"model":"m","messages":[],"temperature":0,"presence_penalty":0}"#),
+            defaults: defaults)
+        #expect(explicit.temperature == 0 && explicit.presencePenalty == 0)
+        for (id, type) in [("Qwen3.5-9B", "qwen3_5_moe"), ("qwen3.5-35b-a3b", "qwen3_5"), ("mlx-community/Qwen3.5-397B", "qwen3_5")] {
+            #expect(EngineV2SamplingDefaults.resolve(modelId: id, modelType: type, modelDirectory: nil) == .legacy)
+        }
+    }
+
+    /// The exact locally qualified GLM artifact declares temperature 1.0 and
+    /// top_p 0.95 without `do_sample`; other GLM IDs or types stay legacy.
+    @Test func gateAdmitsOnlyTheQualifiedGLMArtifact() throws {
+        let id = GLM5NextLocalQualification.modelID
+        #expect(EngineV2SamplingDefaults.honorsArtifactDefaults(modelId: id, modelType: "glm5_next"))
+        #expect(!EngineV2SamplingDefaults.honorsArtifactDefaults(modelId: id + "-other", modelType: "glm5_next"))
+        #expect(!EngineV2SamplingDefaults.honorsArtifactDefaults(modelId: id, modelType: "glm5_next_text"))
+        #expect(!EngineV2SamplingDefaults.honorsArtifactDefaults(modelId: id, modelType: nil))
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try Data(#"{"eos_token_id":[154820,154827,154829],"pad_token_id":154820,"temperature":1.0,"top_p":0.95}"#.utf8)
+            .write(to: directory.appendingPathComponent("generation_config.json"))
+        let defaults = EngineV2SamplingDefaults.resolve(
+            modelId: id, modelType: "glm5_next", modelDirectory: directory)
+        #expect(defaults.temperature == 1.0 && defaults.topP == 0.95)
+        #expect(defaults.topK == nil && defaults.repetitionPenalty == nil)
+    }
+
     // MARK: parse
 
     @Test func parseReadsTheNemotronArtifactDefaults() {

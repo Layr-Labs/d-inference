@@ -40,8 +40,6 @@ class DocsImpactCheckTests(unittest.TestCase):
             "public fixtures and qualification": "provider-swift/Tests/ProviderCoreTests/Fixtures/Protocol/process_memory_wire.json",
             "build and test tooling": "scripts/docs-impact-rules.json",
             "landing": "landing/package.json",
-            "retained console": "console-ui/package.json",
-            "console protocol fixtures": "coordinator/tests/protocol/testdata/process_memory_wire.json",
             "repository ownership": "AGENTS.md",
         }
         self.assertEqual(set(cases), {rule["name"] for rule in RULES["rules"]})
@@ -73,24 +71,11 @@ class DocsImpactCheckTests(unittest.TestCase):
                          {"provider protocol", "public fixtures and qualification"})
 
     def test_retired_platform_mappings_are_not_local_ownership(self):
-        retained_fixtures = {
-            "coordinator/tests/protocol/testdata/paged_footprint_wire.json",
-            "coordinator/tests/protocol/testdata/process_memory_wire.json",
-        }
         for rule in RULES["rules"]:
             for pattern in rule["source_patterns"]:
-                self.assertFalse(pattern.startswith(("admin-ui/", "e2e/")))
-                if pattern.startswith("coordinator/"):
-                    self.assertIn(pattern, retained_fixtures)
+                self.assertFalse(pattern.startswith(("admin-ui/", "console-ui/", "coordinator/", "e2e/")))
             for document in rule["docs_any_of"]:
                 self.assertTrue((ROOT / document).is_file(), document)
-
-    def test_retained_console_telemetry_keeps_both_documentation_obligations(self):
-        changed = ["console-ui/src/lib/telemetry-types.ts"]
-        self.assertEqual({rule["name"] for rule, _ in checker.violations(RULES, changed)},
-                         {"provider telemetry", "retained console"})
-        self.assertEqual(checker.violations(RULES, changed + [
-            "docs/reference/telemetry-schema.md", "docs/architecture/components/console-ui.md"]), [])
 
     def test_prompt_fixture_provisioner_requires_qualification_documentation(self):
         source = "scripts/prepare-prompt-fixtures.py"

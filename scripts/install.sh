@@ -304,7 +304,9 @@ install_bundle_atomically() {
     local stage="$install_dir/.install-staging-$$-$RANDOM"
     rm -rf "$stage"
     mkdir -p "$stage"
-    if ! tar xzf "$archive" -C "$stage"; then
+    # Restore ordinary release modes without changing private-state creation
+    # elsewhere in the installer or enabling tar's full-permissions mode.
+    if ! (umask 022; /usr/bin/tar xzf "$archive" -C "$stage"); then
         rm -rf "$stage"
         return 1
     fi
@@ -442,6 +444,25 @@ bind_provider_coordinator() {
     echo "  A provider that is already running keeps its old coordinator until $CLI_NAME start."
 }
 
+# New providers need macOS 27 or later. A Mac that already has this provider installed (a
+# grandfathered provider reinstalling or repairing) continues; configure_device_verification
+# explains its upgrade path. An unknown version is not guessed either way.
+require_supported_macos() {
+    local macos_major=${MACOS%%.*}
+    case "$macos_major" in
+        ''|*[!0-9]*) return 0 ;;
+    esac
+    [ "$macos_major" -ge 27 ] && return 0
+    if [ -e "$BIN_DIR/$CLI_NAME" ] || [ -e "$PROVIDER_CONFIG" ]; then
+        echo "  macOS $MACOS: updating an existing $PROVIDER_LABEL install."
+        echo "  Upgrade to macOS 27 or later to keep serving."
+        return 0
+    fi
+    echo "  ✗ $PROVIDER_LABEL needs macOS 27 or later for new providers; this Mac runs macOS $MACOS." >&2
+    echo "    Update macOS in System Settings › General › Software Update, then run this installer again." >&2
+    return 1
+}
+
 # Setup routing is independent of serving authorization. App Attest failures
 # must not silently send a macOS 27+ user into MDM enrollment.
 configure_device_verification() {
@@ -568,6 +589,7 @@ if [ -z "$BUNDLE_URL" ] || [ -z "$BUNDLE_HASH" ] || [ -z "$VERSION" ]; then
 fi
 
 select_provider_identity "$VERSION"
+require_supported_macos || exit 1
 
 echo "  Version: $VERSION"
 echo "  Provider: $PROVIDER_LABEL ($CLI_NAME, installs in $INSTALL_DIR)"

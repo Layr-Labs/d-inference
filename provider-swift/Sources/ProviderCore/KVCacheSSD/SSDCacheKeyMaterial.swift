@@ -8,9 +8,16 @@ struct SSDCacheKeyMaterial {
     let key: SymmetricKey
     let ephemeral: Bool
 
-    enum Failure: Error {
+    enum Failure: Error, CustomStringConvertible {
         case persistentKeyUnavailable(any Error)
         case ephemeralKeyUnavailable
+
+        var description: String {
+            switch self {
+            case .persistentKeyUnavailable(let error): "persistent key unavailable: \(error)"
+            case .ephemeralKeyUnavailable: "ephemeral key unavailable"
+            }
+        }
     }
 
     typealias PersistentLoader = @Sendable (SSDPersistentTestKeyNamespace?) async throws -> SymmetricKey
@@ -25,7 +32,7 @@ struct SSDCacheKeyMaterial {
         let forceEphemeral = SSDPrefixCacheFactory.forceEphemeralKey(environment: environment)
         if !forceEphemeral {
             do {
-                let loadPersistent = persistentLoader ?? loadPersistentKey
+                let loadPersistent = persistentLoader ?? defaultPersistentLoader(environment: environment)
                 let key = try await loadPersistent(persistentTestNamespace)
                 return Self(key: key, ephemeral: false)
             } catch {
@@ -39,6 +46,21 @@ struct SSDCacheKeyMaterial {
             storage: InMemoryWrappedKEKStorage(identifier: "ephemeral-ssd"))
         guard let key = try? await kek.loadOrCreate() else { throw Failure.ephemeralKeyUnavailable }
         return Self(key: key, ephemeral: true)
+    }
+
+    private static func defaultPersistentLoader(environment: [String: String]) -> PersistentLoader {
+        #if DEBUG
+        // Qualification builds without a keychain access group read an
+        // operator-created key file instead. An explicit test namespace keeps
+        // its own isolated enclave hierarchy.
+        if let path = SSDDebugCacheKeyFile.selectedPath(environment: environment) {
+            return { namespace in
+                if let namespace { return try await loadPersistentKey(namespace) }
+                return try SSDDebugCacheKeyFile.load(path: path)
+            }
+        }
+        #endif
+        return loadPersistentKey
     }
 
     private static func loadPersistentKey(_ namespace: SSDPersistentTestKeyNamespace?) async throws -> SymmetricKey {

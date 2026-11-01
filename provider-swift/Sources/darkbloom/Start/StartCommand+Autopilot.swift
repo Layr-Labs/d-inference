@@ -99,14 +99,12 @@ extension Start {
         var verified: [String] = []
         var seen = Set<String>()
         for model in local.sorted(by: { $0.id < $1.id }) {
+            // The same rules decide which cached builds a running provider
+            // adds to the Autopilot set.
             guard seen.insert(model.id).inserted, approved?.contains(model.id) ?? true,
-                  let entry = byID[model.id], entry.active != false,
-                  (entry.minRamGb ?? 0) <= Int(memoryGb),
-                  model.id.utf8.count <= 256, !model.id.isEmpty,
-                  EngineV2SupportedModels.isSupported(model: model),
-                  ModelRuntimeRequirements.isEligible(modelID: model.id,
-                      catalogRequirements: entry.requiredProviderCapabilities, available: runtimeCapabilities),
-                  Self.modelFitsBudget(sizeGb: model.estimatedMemoryGb, memoryGb: memoryGb) else { continue }
+                  let entry = byID[model.id],
+                  AutopilotBuildEligibility.allowsCachedBuild(model, entry: entry, memoryGb: memoryGb,
+                      runtimeCapabilities: runtimeCapabilities) else { continue }
             do {
                 try Task.checkCancellation()
                 verifying(model.id)

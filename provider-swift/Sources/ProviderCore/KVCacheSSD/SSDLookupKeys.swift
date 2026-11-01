@@ -55,6 +55,7 @@ struct SSDLookupKeys: Sendable {
     /// it under K_lookup keeps the binding and publishes 32 pseudorandom
     /// bytes instead of the index.
     static let windowBaseDomainTag = Data("dbkv3-window-base-v1".utf8)
+    static let checkpointParentDomainTag = Data("dbkv3-checkpoint-parent-v1".utf8)
     /// Truncated-tag length used for filenames and the RAM index (128-bit;
     /// the full 256-bit tag rides inside the authenticated file metadata).
     static let truncatedTagLength = 16
@@ -131,5 +132,11 @@ extension SSDLookupKeys {
     /// Hex form written to (and compared against) DBK3 metadata.
     func windowBaseCommitmentHex(windowTag: Data, base: Int) -> String {
         Self.hex(windowBaseCommitment(windowTag: windowTag, base: base))
+    }
+
+    /// Names one exact parent file (its tag and random IV); only K_lookup pairs it.
+    func checkpointParentCommitmentHex(parentTag: Data, parentFileIV: Data) -> String {
+        Self.hex(Data(HMAC<SHA256>.authenticationCode(
+            for: Self.checkpointParentDomainTag + parentTag + parentFileIV, using: key)))
     }
 }

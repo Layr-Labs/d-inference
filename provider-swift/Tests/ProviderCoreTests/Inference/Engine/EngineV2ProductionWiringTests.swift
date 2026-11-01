@@ -293,6 +293,7 @@ private func makeOpenAIRequest(model: String = "gemma-4-26b-qat-4bit") -> OpenAI
 
 /// Collect a server-engine event stream into a comparable shape.
 private enum RecordedServerEvent: Equatable {
+    case logprobs([SSETokenLogprob])
     case content(String)
     case parsed(ParsedReasoning)
     case info(prompt: Int, completion: Int)
@@ -304,6 +305,7 @@ private func recordServerStream(
     var events: [RecordedServerEvent] = []
     for try await event in stream {
         switch event {
+        case .logprobs(let entries): events.append(.logprobs(entries))
         case .content(let text):
             events.append(.content(text))
         case .parsed(let parsed):
@@ -392,6 +394,7 @@ struct EngineV2SlotBuildTests {
                 messages: [ChatMessage(role: "user", content: "hi")]))
         for await event in stream {
             switch event {
+            case .logprobs: break
             case .chunk(let text):
                 #expect(text == "Hello")
                 sawChunk = true
@@ -1542,6 +1545,97 @@ struct EngineV2RequestRoutingTests {
         #expect(engine.submitted.isEmpty)
     }
 
+    @Test("required Qwen tool choice drops framing newlines around validated parallel calls")
+    func requiredQwenToolChoiceDropsFramingWhitespace() async throws {
+        for (model, modelType) in [("qwen35-dense", "qwen3_5"), ("qwen35-moe", "qwen3_5_moe")] {
+            let engine = WiringScriptedEngine(script: .stream([
+                .delta(text: "\n" + Self.qwenWeatherCall("Paris"), tokens: [10], logprobs: nil),
+                .delta(text: "\n", tokens: [11], logprobs: nil),
+                .delta(text: Self.qwenWeatherCall("Rome") + "\n", tokens: [12], logprobs: nil),
+                .finished(reason: .stop, usage: CBv2Usage(promptTokens: 5, completionTokens: 3)),
+            ]))
+            let stream = try await Self.qwenForcedEngine(engine, model: model, modelType: modelType)
+                .streamChatCompletion(request: Self.qwenForcedRequest(model: model))
+            var cities: [MLXLMCommon.JSONValue?] = []
+            var content = ""
+            for try await event in stream {
+                switch event {
+                case .toolCall(let call): cities.append(call.function.arguments["city"])
+                case .content(let text): content += text
+                case .parsed(let parsed): content += parsed.content
+                default: continue
+                }
+            }
+            #expect(cities == [.string("Paris"), .string("Rome")], "\(modelType)")
+            #expect(content.isEmpty, "\(modelType)")
+        }
+    }
+
+    @Test("required Qwen tool choice still refuses prose that follows framing newlines")
+    func requiredQwenToolChoiceRefusesProseAfterWhitespace() async throws {
+        let engine = WiringScriptedEngine(script: .stream([
+            .delta(text: "\n\nSure, checking.\n" + Self.qwenWeatherCall("Paris"), tokens: [10], logprobs: nil),
+            .finished(reason: .stop, usage: CBv2Usage(promptTokens: 5, completionTokens: 1)),
+        ]))
+        var emitted: [MLXServerGenerationEvent] = []
+        do {
+            let stream = try await Self.qwenForcedEngine(engine, model: "qwen35-dense", modelType: "qwen3_5")
+                .streamChatCompletion(request: Self.qwenForcedRequest(model: "qwen35-dense"))
+            for try await event in stream { emitted.append(event) }
+            Issue.record("expected forced tool_choice prose rejection")
+        } catch let error as MultiModelBatchSchedulerEngineError {
+            #expect(error == .toolChoiceViolation(
+                "forced tool_choice produced visible text before a validated call"))
+        }
+        #expect(emitted.isEmpty)
+    }
+
+    @Test("required Qwen tool choice refuses output that is only framing whitespace")
+    func requiredQwenToolChoiceRefusesWhitespaceOnlyOutput() async throws {
+        let engine = WiringScriptedEngine(script: .stream([
+            .delta(text: "\n", tokens: [10], logprobs: nil),
+            .delta(text: " \r", tokens: [11], logprobs: nil),
+            .delta(text: "\n", tokens: [12], logprobs: nil),
+            .finished(reason: .stop, usage: CBv2Usage(promptTokens: 5, completionTokens: 3)),
+        ]))
+        var emitted: [MLXServerGenerationEvent] = []
+        do {
+            let stream = try await Self.qwenForcedEngine(engine, model: "qwen35-moe", modelType: "qwen3_5_moe")
+                .streamChatCompletion(request: Self.qwenForcedRequest(model: "qwen35-moe"))
+            for try await event in stream { emitted.append(event) }
+            Issue.record("expected a missing forced call to fail")
+        } catch let error as MultiModelBatchSchedulerEngineError {
+            #expect(error == .toolChoiceViolation("model did not emit the required tool call"))
+        }
+        #expect(emitted.isEmpty)
+    }
+
+    private static func qwenWeatherCall(_ city: String) -> String {
+        "<tool_call>\n<function=get_weather>\n<parameter=city>\n\(city)\n</parameter>\n</function>\n</tool_call>"
+    }
+
+    private static func qwenForcedEngine(
+        _ engine: WiringScriptedEngine, model: String, modelType: String
+    ) -> MultiModelBatchSchedulerEngine {
+        let bridge = makeBridge(engine: engine, modelId: model)
+        return MultiModelBatchSchedulerEngine(registryProvider: { @Sendable in
+            [model: .init(tokenizer: TokenizerHandle(WiringStubTokenizer()), modelType: modelType,
+                engineV2Bridge: bridge)]
+        })
+    }
+
+    private static func qwenForcedRequest(model: String) -> OpenAIChatCompletionRequest {
+        OpenAIChatCompletionRequest(
+            model: model,
+            messages: [.init(role: .user, content: .text("weather in Paris and Rome"))],
+            tools: [.init(function: .init(name: "get_weather", parameters: .object([
+                "type": .string("object"),
+                "properties": .object(["city": .object(["type": .string("string")])]),
+                "required": .array([.string("city")]),
+            ])))],
+            toolChoice: .mode(.required))
+    }
+
     @Test("auto mode returns malformed tagged output as visible text")
     func autoToolParseFallbackIsVisible() async throws {
         let malformed =
@@ -1733,7 +1827,6 @@ struct EngineV2RequestRoutingTests {
             .finished(reason: .stop, usage: CBv2Usage(promptTokens: 5, completionTokens: 1)),
         ]))
         let bridge = makeBridge(engine: engine)
-        let channel = EngineV2LogprobsChannel()
         let providerEngine = MultiModelBatchSchedulerEngine(
             registryProvider: { @Sendable in
                 [
@@ -1744,10 +1837,10 @@ struct EngineV2RequestRoutingTests {
                 ]
             },
             cacheScope: "tenant-hash",
-            engineV2Logprobs: EngineV2LogprobsPlumbing(topLogprobs: 3, channel: channel)
+            engineV2Logprobs: EngineV2LogprobsPlumbing(topLogprobs: 3)
         )
         let stream = try await providerEngine.streamChatCompletion(request: makeOpenAIRequest())
-        _ = try await recordServerStream(stream)
+        let events = try await recordServerStream(stream)
         #expect(engine.submitted.count == 1)
         // TB-007: the tenant scope rode through as the per-request cache
         // salt (inert — production builds the v2 engine with the prefix
@@ -1755,8 +1848,11 @@ struct EngineV2RequestRoutingTests {
         #expect(engine.submitted[0].cacheSalt == "tenant-hash")
         // The logprobs plumbing flipped the sampling translation on.
         #expect(engine.submitted[0].sampling.topLogprobs == 3)
-        // Entries reached the per-request channel in OpenAI shape.
-        let entries = channel.drain()
+        // Metadata is in the same ordered stream as visible content.
+        let entries = events.flatMap { event -> [SSETokenLogprob] in
+            if case .logprobs(let captured) = event { return captured }
+            return []
+        }
         #expect(entries.count == 1)
         #expect(entries[0].token == "t10")
         #expect(entries[0].logprob == -0.25)

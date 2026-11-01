@@ -112,12 +112,12 @@ extension ProviderLoop {
     @discardableResult
     func resumeAppAttestWorkerAfterUpdate() async -> Bool {
         guard appAttestWorkerStopReason == .update, updatePhase == .idle,
-              !isShuttingDown, !servingDrain.refusing else { return false }
+              !isShuttingDown, !servingDrain.refusingForServiceChange else { return false }
         let generation = appAttestShadowGeneration
         let retired = await appAttestWorkerRetirement?.value ?? true
         guard retired, generation == appAttestShadowGeneration,
               appAttestWorkerStopReason == .update, updatePhase == .idle,
-              !isShuttingDown, !servingDrain.refusing else { return false }
+              !isShuttingDown, !servingDrain.refusingForServiceChange else { return false }
         appAttestWorkerClient = nil
         appAttestWorkerRetirement = nil
         appAttestWorkerStopReason = nil

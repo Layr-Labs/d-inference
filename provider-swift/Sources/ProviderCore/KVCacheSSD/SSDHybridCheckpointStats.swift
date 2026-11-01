@@ -19,6 +19,7 @@ public struct SSDHybridCheckpointStats: Sendable {
     public var donationReadBytes = 0
     public var filesWritten = 0
     public var bytesWritten = 0
+    public var deltaFilesWritten = 0
     public var writesDropped = 0
     public var corruptDropped = 0
     /// Successful removals by the active-store disk-budget enforcer.

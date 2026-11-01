@@ -67,6 +67,7 @@ struct DiffusionGemmaProviderLiveTests {
         var terminalCount = 0
         for await event in stream {
             switch event {
+            case .logprobs: break
             case .chunk(let delta): text += delta
             case .info(let prompt, let generated, let tps, let reason):
                 #expect(prompt == 19 && reason == "stop")

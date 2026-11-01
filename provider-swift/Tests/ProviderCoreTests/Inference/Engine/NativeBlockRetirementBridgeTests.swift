@@ -52,6 +52,7 @@ struct NativeBlockRetirementBridgeTests {
         var result = Result()
         for await event in stream {
             switch event {
+            case .logprobs: break
             case .chunk(let text): result.text += text
             case .info(_, let completion, _, _): result.completion = completion
             case .error(let message): result.error = message

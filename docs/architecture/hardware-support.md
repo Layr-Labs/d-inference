@@ -1124,6 +1124,12 @@ throughput. Keep existing cross-chip failures and require fresh full-artifact
 numerical and timing evidence for both scoped prompt policies. Attention and
 full-model composition retain their independent qualification requirements.
 
+A serial-prefill Gemma 4 pipeline serves four lanes by default
+([Gemma pipeline lanes](inference.md#gemma-pipeline-lanes)). Each lane is
+charged its whole request state on every rank and admitted against live
+memory. The measured activation floor still applies: prompt frames run one at
+a time and decode rows add only M=1 work.
+
 ### Additional TP resident allocations
 
 TP layouts may carry allocator-bounded resident allocations outside their text

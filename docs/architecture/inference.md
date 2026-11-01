@@ -123,7 +123,9 @@ never negative), `rankN_weights_bytes`, `rankN_fit` and `rankN_device`.
 Existing per-request
 admission and LOAD safeguards remain authoritative. GLM, private-image and
 coordinator-installed native-member sessions do not use this
-automatic policy. Explicit diagnostic mode or lane settings retain their choice.
+automatic policy; a serial-prefill Gemma 4 pipeline serves its installed
+default lanes instead ([Gemma pipeline lanes](#gemma-pipeline-lanes)).
+Explicit diagnostic mode or lane settings retain their choice.
 
 Automatic replacement reads the installed plan helper's device profile and the
 current pair's recorded keyed-link costs and served-request history. It uses
@@ -3042,7 +3044,8 @@ step boundaries; a lane without its answer cannot run another forward. The
 leader still exchanges headers and replies when no lane can advance, with
 `role.none` and no model work. This lets the follower admit a joining request
 while the provider's synchronous reservation is holding the queue needed to
-answer an older token. The installed lane default stays one; multi-lane
+answer an older token. The installed lane default stays one (a serial-prefill
+Gemma 4 pipeline serves [four](#gemma-pipeline-lanes)); multi-lane
 sampling, joining and native output equivalence require separate qualification
 (`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Batch/QwenBatchDecisionProgress.swift`,
 `QwenResidentRuntime.leadBatch`).
@@ -3093,7 +3096,8 @@ the worker's pending acknowledgment
 
 Native, installed-owner and qualification gates enable independent retirement
 only for the existing Qwen-family lane adapters in plain pipeline with 2...8
-lanes (installed image candidates are excluded). The default stays one. Other
+lanes (installed image candidates are excluded). The default stays one, except
+for a serial-prefill Gemma 4 pipeline ([Gemma pipeline lanes](#gemma-pipeline-lanes)). Other
 modes retain their existing failure policy, and GLM tensor-parallel retirement
 and its eight-lane default are unchanged. A cancellation racing an already
 finishing lane retains the existing clean-finish linearization: native state
@@ -4497,6 +4501,29 @@ ring/full caches, mixed quantization, differing histories, reordered membership
 and leaving/rejoining rows. Their CPU checks require identical native logits
 and all live KV values. This is not full-artifact GPU, pair or throughput
 qualification; those checks remain required.
+
+### Gemma pipeline lanes
+
+A Gemma 4 pipeline whose saved setup prefills serially serves
+`DistributedInstalledPlan.gemma4PipelineBatchLanes` (4) requests at once,
+coordinator-registered pairs included. Every other pipeline lane adapter keeps
+the default of one (`DistributedInstalledPlan.defaultBatchLanes`). A saved
+width or the owner's `DARKBLOOM_CLUSTER_BATCH_LANES` still overrides the
+default.
+
+| Property | Basis |
+|---|---|
+| A lane costs no request its own tokens | Decode rows keep their one-request arithmetic ([batch decode](#gemma-ordinary-batch-decode-arithmetic)); each prompt frame runs alone on its request's own chunk grid (`QwenBatchSettings`) |
+| Memory | Each lane is charged its whole request state on every rank and admitted against live memory (`QwenResidentRuntime.reserveLane`); a lane the host cannot hold is refused alone, retryably |
+| No load-time allocation | The paged pool reserves pages per request, not per lane (`CBv2StageKVHost`) |
+| Activation floor | Unchanged: one prompt frame runs per step, and decode rows add only M=1 work |
+| Cancellation | A cancelled lane retires alone (`DistributedInstalledPlan.lanesRetireAlone`) |
+| One-chunk lookahead | Lanes prefill serially, so a setup that saved `one_chunk_lookahead_v1` keeps its schedule and one lane, as a planned batch width requires serial prefill (`ClusterConfiguration`) |
+
+Both owners derive the width from the same saved setup and bind it into the
+load agreement (`Gemma4BatchArithmeticAgreement`). The width is not qualified
+on hardware: multi-lane joining, cancellation and output agreement on the
+real pair remain separate checks, as for every pipeline lane adapter.
 
 ### Gemma routed-expert prior
 

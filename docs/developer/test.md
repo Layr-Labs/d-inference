@@ -1874,8 +1874,11 @@ with the fixed owner arguments and checks its exact environment, supported
 lane widths, out-of-range rejection, malformed-override parity even with an
 eight-lane family default, admission/owner/native parity, unsupported
 mode and image gates, and both member ranks. No model, GPU or real service is
-started. The checks preserve the singleton and GLM tensor-parallel defaults;
-actual multi-lane output, encrypted transport and retirement still require
+started. The checks preserve the singleton and GLM tensor-parallel defaults
+and the serial-prefill Gemma 4 pipeline's four default lanes, which reach the
+rank, while a Gemma setup saved with the one-chunk lookahead keeps one lane;
+`DistributedInstalledLanesTests` covers the same rules for every adapter and
+schedule. Actual multi-lane output, encrypted transport and retirement still require
 qualification on both Macs. The same real-child checks pass canonical local
 `MLX_METAL_FAST_SYNCH=0|1` choices through the owner and final native launch,
 reject free-text spellings from forwarding, preserve unrelated native guards,

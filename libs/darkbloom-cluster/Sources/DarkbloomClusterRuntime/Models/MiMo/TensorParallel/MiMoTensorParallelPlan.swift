@@ -242,12 +242,14 @@ public struct MiMoTensorParallelPlan: Sendable, Equatable {
     public var reductionsPerForward: Int { reductionsPerLayer * layerCount }
 
     /// What two ranks must agree on before they serve together: the plan,
-    /// where each sum is taken and what it carries.
+    /// where each sum is taken and what it carries. Each row-parallel product
+    /// takes an exact FP32 widening of its input, so its partial is stored as
+    /// FP32 and rounded only once, after the sum (v2; v1 stored BF16 partials).
     public static let arithmeticAgreementFields = [
         name,
-        "mimo-v26-o-proj-partial-stored-bfloat16-sum-float32-rounded-once-v1",
-        "mimo-v26-dense-down-partial-stored-bfloat16-sum-float32-rounded-once-v1",
-        "mimo-v26-expert-rows-local-float32-combine-sum-float32-rounded-once-v1",
+        "mimo-v26-o-proj-partial-stored-float32-sum-float32-rounded-once-v2",
+        "mimo-v26-dense-down-partial-stored-float32-sum-float32-rounded-once-v2",
+        "mimo-v26-expert-rows-stored-float32-local-float32-combine-sum-float32-rounded-once-v2",
         "mimo-v26-untied-head-vocabulary-halves-v1",
         "mimo-v26-mtp-off-v1",
     ]

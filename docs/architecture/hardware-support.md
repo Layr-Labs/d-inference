@@ -1,6 +1,6 @@
 # Hardware support and the provider memory model
 
-> Last updated: 2026-10-31
+> Last updated: 2026-11-01
 
 What hardware the provider runs on and how it decides, in bytes, whether a
 model may load and how much KV cache each resident model may use. Read this to
@@ -1121,6 +1121,29 @@ Component tests do not qualify a complete model, both rank orders, or prompt
 throughput. Keep existing cross-chip failures and require fresh full-artifact
 numerical and timing evidence for both scoped prompt policies. Attention and
 full-model composition retain their independent qualification requirements.
+
+### Gemma 4 tensor-parallel rank memory
+
+A Gemma 4 tensor-parallel rank is charged its own share, not the whole model
+(`Gemma4TensorParallelRequestBudget`, every array at the allocator's bound):
+
+| Charge | Held | Bytes (QAT 4-bit, 8,320-token request) |
+|---|---|---|
+| Weights: the plan's exact cut, overlap groups and zero rows included | per rank | 8,040,450,108 (8-bit: 14,915,635,260) |
+| Its own KV heads of every layer (4 sliding, 1 full), residual rows | per request | about 364 MB (the whole model's: 719,380,600) |
+| One prompt chunk's attention transient over its 8 query heads | per request | about 145 MB |
+| FP32 partials (attention row, dense row, 8 expert rows and their packed copy) and 3 vocabulary rows | per request | about 113 MB |
+| Activation floor: `UnifiedMemoryCap`'s conservative default, 5.5 GiB, until a pair measures one | per rank | 5,905,580,032 |
+| Freed-buffer cache (half the allocator headroom) | per rank | 1,073,741,824 |
+| Eight sealed frames of the packed collective (512 x 101,376 bytes and the seal) | per rank | about 415 MB |
+
+The layout's `requestAllowance` quotes one request at the profile's longest
+context (65,536 tokens) plus the per-rank charges, and the worker's LOAD gate
+reserves exactly that beside the shard. A reservation or lane asks the live
+gate for every held request, the new one and the per-rank charges. The planner
+still charges at least the pipeline's whole-model `requestChargeEveryRankBytes`.
+Nothing here is measured on a pair; see
+[inference](inference.md#gemma-tensor-parallel-placement).
 
 ### Additional TP resident allocations
 

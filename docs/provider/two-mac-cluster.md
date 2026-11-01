@@ -1,6 +1,6 @@
 # Two Macs as one provider (guided setup)
 
-> Last updated: 2026-10-31
+> Last updated: 2026-11-01
 
 Two Apple Silicon Macs joined by one Thunderbolt 5 cable serve a model together:
 each Mac holds part of its layers, and the pair serves as one provider. Setting
@@ -333,6 +333,22 @@ requests; the plan counts its NextN (MTP) layer on both Macs and its
 speculative decoding ([GLM tensor parallel](../architecture/inference.md#exact-quote-placement)).
 GLM-5.3-Flash has both a pipeline and a tensor-parallel adapter; its private
 image candidate is pipeline-only.
+
+Models that run tensor parallel, and when:
+
+| Model | Tensor parallel chosen | Notes |
+|---|---|---|
+| Qwen3.5 9B, Qwen3.8 27B, Qwen3.5/3.6 35B A3B | wherever it fits | Qwen3.8 27B keeps images, video and logprobs only in tensor parallel |
+| GLM-5.3-Flash | wherever it fits | Eight concurrent requests by default |
+| Gemma 4 26B (QAT 4-bit, 8-bit) | only where the plan predicts it faster than a pipeline | Text only; logprobs in tensor parallel only; one request at a time unless you set `DARKBLOOM_CLUSTER_BATCH_LANES` |
+
+For Gemma 4, two big Macs normally keep the pipeline: before a load has
+measured the link the plan prices tensor parallel on a slow assumed link, and
+on a measured Thunderbolt 5 link it is still predicted slower for most
+requests. Two smaller Macs whose decode is limited by memory bandwidth (for
+example 24 or 32 GB M4 Pro) get tensor parallel for short prompts with longer
+answers. The plan's "Tensor parallel or pipeline" lines say which and why
+([Gemma tensor-parallel placement](../architecture/inference.md#gemma-tensor-parallel-placement)).
 See the [placement planner](../../libs/darkbloom-cluster/Sources/DarkbloomClusterPlacement/ClusterPlacementPlanner.swift)
 and [mode explanation](../../libs/darkbloom-cluster/Sources/DarkbloomClusterPlacement/ClusterRequestMix.swift).
 

@@ -30,4 +30,25 @@ enum ClusterModelFeaturePolicy {
 
     static let explanation = "Qwen3.8 27B retains images, video and committed-token logprobs only in tensor parallel. Pipeline modes are ineligible for this model contract; measured speed estimates are unchanged."
     static let unavailable = "No tensor-parallel placement can preserve those features under the current link, shape and memory checks. No reduced-feature setup was saved."
+
+    /// Whether a pair serving `mode` captures committed-token logprobs, as its
+    /// resident runtime does (`NativeWorkerRuntime.capturesLogprobs`): GLM and
+    /// Gemma 4 tensor parallel, and every Qwen tensor-parallel row's lanes.
+    /// No pipeline mode captures them.
+    static func capturesLogprobs(_ capability: ClusterRuntimeCapability, mode: ClusterGenerationMode) -> Bool {
+        guard mode == .tensorParallel, let adapter = ClusterRuntimeAdapter(rawValue: capability.adapterID) else { return false }
+        return adapter == .glm5NextLayerStage || adapter == .gemma4LayerStage
+            || adapter.servesQwenTensorLanes(runtimeModelID: capability.runtimeModelID)
+    }
+
+    /// What the plan says when its two sharded families keep different
+    /// endpoint features and neither is required (Gemma 4: committed-token
+    /// logprobs in tensor parallel only); nil when they keep the same, or when
+    /// a model contract already rules a family out (`modesReason`).
+    static func modeFeatureNote(_ capability: ClusterRuntimeCapability) -> String? {
+        let modes = admissibleModes(capability)
+        guard modesReason(capability) == nil, modes.contains(.tensorParallel), modes.contains(.pipeline),
+              capturesLogprobs(capability, mode: .tensorParallel) != capturesLogprobs(capability, mode: .pipeline) else { return nil }
+        return "Committed-token logprobs are captured in tensor parallel only; a pipeline pair refuses requests for them."
+    }
 }

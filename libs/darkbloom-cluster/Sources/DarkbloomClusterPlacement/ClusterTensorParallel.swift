@@ -56,12 +56,16 @@ public struct ClusterTensorParallelFamilyPlan: Codable, Equatable, Sendable {
     /// `tensor_parallel_v1` with it on every rank. Nil: one token per step and
     /// no head (omitted then, so a layout of any other family reads as before).
     public let speculativeHead: ClusterTensorParallelSpeculativeHead?
+    /// How the plan is weighed against the pipeline under the provider's
+    /// tensor-parallel-first rule (`ClusterTensorParallelChoice`). Nil keeps
+    /// that rule (omitted then, so a layout of any other family reads as before).
+    public let choice: ClusterTensorParallelChoice?
 
     public init(plan: String, ranks: [Int], reductionsPerLayer: Int, reductionsPerStep: Int,
                 partialBytesPerToken: Int, layerPartialBytesPerToken: Int? = nil, stateDividesByHeads: Bool,
                 shareOptions: [[Int]]? = nil, shareUnits: Int? = nil,
                 requestAllowance: ClusterTensorParallelRequestAllowance? = nil, additionalResidentBytes: Int? = nil,
-                speculativeHead: ClusterTensorParallelSpeculativeHead? = nil) {
+                speculativeHead: ClusterTensorParallelSpeculativeHead? = nil, choice: ClusterTensorParallelChoice? = nil) {
         self.plan = plan; self.ranks = ranks; self.reductionsPerLayer = reductionsPerLayer
         self.reductionsPerStep = reductionsPerStep; self.partialBytesPerToken = partialBytesPerToken
         self.layerPartialBytesPerToken = layerPartialBytesPerToken
@@ -71,7 +75,12 @@ public struct ClusterTensorParallelFamilyPlan: Codable, Equatable, Sendable {
         self.requestAllowance = requestAllowance
         self.additionalResidentBytes = additionalResidentBytes
         self.speculativeHead = speculativeHead
+        self.choice = choice
     }
+
+    /// True when the provider's tensor-parallel-first rule does not apply to
+    /// this plan: it is chosen only where predicted faster.
+    public var choosesFastest: Bool { choice == .fastest }
 
     /// Bytes a selection reduction carries (the head's best value and token
     /// per rank, a few floats), as the prefill prediction has always charged it.

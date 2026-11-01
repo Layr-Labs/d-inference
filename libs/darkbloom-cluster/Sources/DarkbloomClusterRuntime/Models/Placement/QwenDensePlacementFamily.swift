@@ -379,8 +379,19 @@ public enum ClusterPlacementLayouts {
                 configurationSHA256: family.specification.configurationSHA256)
         }
         if Gemma4RegisteredSpecification.isRegistered(configuration: configuration) {
-            let family = try Gemma4PlacementFamily(configuration: configuration, manifest: manifest)
+            var family = try Gemma4PlacementFamily(configuration: configuration, manifest: manifest)
             try family.requireRegisteredInventory(tensors)
+            #if canImport(MLX)
+            let bound: ((Int) throws -> Int)? = allocationBound
+            #else
+            let bound = allocationBound
+            #endif
+            if family.tensorParallel != nil, let bound {
+                // What a rank's LOAD gate reserves beside its shard: one request at the profile's longest context.
+                family.tensorParallelRequestAllowance = try Gemma4TensorParallelRequestBudget.derive(
+                    contextTokens: family.profile.maximumContextTokens, chunkTokens: family.profile.maximumChunkTokens,
+                    allocationBound: bound).allowance
+            }
             return try ClusterModelLayoutBuilder.build(family: family, tensors: tensors,
                 artifactSHA256: family.specification.artifactSHA256,
                 configurationSHA256: family.specification.configurationSHA256)

@@ -14,6 +14,15 @@ struct DistributedInstalledLanesTests {
         #expect(Plan.tensorParallelBatchLanes == 8)
     }
 
+    @Test func gemmaTensorParallelServesExplicitLanesWithSingletonDefault() {
+        #expect(Plan.defaultBatchLanes(adapter: .gemma4LayerStage, mode: .tensorParallel, hasPrivateImages: false) == 1)
+        #expect(Plan.tensorParallelLaneAdapters[.gemma4LayerStage] == Plan.defaultBatchLanes)
+        for lanes in 2...8 {
+            #expect(Plan.lanesRetireAlone(adapter: .gemma4LayerStage, mode: .tensorParallel, hasPrivateImages: false, lanes: lanes))
+        }
+        #expect(!Plan.lanesRetireAlone(adapter: .gemma4LayerStage, mode: .tensorParallel, hasPrivateImages: false, lanes: 1))
+    }
+
     @Test func lightningSupportsExplicitPipelineLanesWithSingletonDefault() {
         #expect(Plan.laneAdapters.contains(.nemotronH))
         #expect(Plan.defaultBatchLanes(adapter: .nemotronH, mode: .pipeline, hasPrivateImages: false) == 1)
@@ -40,7 +49,8 @@ struct DistributedInstalledLanesTests {
         for adapter in Plan.laneAdapters {
             #expect(Plan.defaultBatchLanes(adapter: adapter, mode: .pipeline, hasPrivateImages: false) == Plan.defaultBatchLanes)
             #expect(Plan.defaultBatchLanes(adapter: adapter, mode: .pipeline, hasPrivateImages: true) == nil)
-            #expect(Plan.defaultBatchLanes(adapter: adapter, mode: .tensorParallel, hasPrivateImages: false) == nil)
+            #expect(Plan.defaultBatchLanes(adapter: adapter, mode: .tensorParallel, hasPrivateImages: false)
+                == Plan.tensorParallelLaneAdapters[adapter])
         }
         for mode in ClusterGenerationMode.allCases where mode != .pipeline && mode != .tensorParallel {
             for adapter in ClusterRuntimeAdapter.allCases {

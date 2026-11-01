@@ -9,10 +9,9 @@ enum Gemma4ResidentAdapterDefinition {
     static let supportedPrefillSchedules: [ClusterPrefillSchedule] = [.serial, .oneChunkLookahead]
     /// The pipeline, and tensor parallel (`Gemma4TensorParallelResidentRuntime`).
     /// Handing a sliding layer's window from one rank to the other is not
-    /// built, so the phase split is not advertised. The planner places tensor
-    /// parallel only from a layout's tensor-parallel facts, which this family
-    /// does not give yet (`Gemma4PlacementFamily.tensorParallelPlan` is nil):
-    /// until it does, a Gemma pair is never planned in tensor parallel.
+    /// built, so the phase split is not advertised. The planner chooses tensor
+    /// parallel only where it predicts it faster than the pipeline
+    /// (`Gemma4PlacementFamily.tensorParallelPlan`, `ClusterTensorParallelChoice.fastest`).
     static let supportedGenerationModes: [ClusterGenerationMode] = [.pipeline, .tensorParallel]
 
     static func profileID(_ model: Gemma4RegisteredModel) -> String { model.rawValue + "_greedy_generation_v1" }

@@ -624,11 +624,14 @@ struct Gemma4TensorParallelRuntimeTests {
 
     // MARK: - Modes and planning
 
-    /// Gemma advertises tensor parallel and its worker routes it to this
-    /// runtime, but its layout carries no tensor-parallel facts yet: the
-    /// planner never places it in tensor parallel, not even first-choice or
-    /// with a measured fast link, and forcing it is refused.
-    @Test func gemmaAdvertisesTensorParallelButIsNeverPlannedInIt() throws {
+    /// Gemma advertises tensor parallel, its worker routes it to this runtime,
+    /// and its layout carries the plan's facts with the fastest-plan choice:
+    /// under the provider's tensor-parallel-first policy two big Macs keep the
+    /// pipeline on default link costs, a measured fast link or a pair of small
+    /// Macs takes tensor parallel where it is predicted faster, and the
+    /// developer's forced mode places it. (`PlacementChecks`' Gemma checks
+    /// cover the same rule on more pairs, model-free.)
+    @Test func gemmaIsPlannedInTensorParallelOnlyWherePredictedFaster() throws {
         #expect(Gemma4ResidentAdapterDefinition.supportedGenerationModes == [.pipeline, .tensorParallel])
         let entries = ClusterResidentModelCatalog.all.filter { Gemma4TensorParallelResidentRuntime.serves(runtimeModelID: $0.runtimeModelID) }
         #expect(entries.count == 3 && entries.allSatisfy {
@@ -642,8 +645,6 @@ struct Gemma4TensorParallelRuntimeTests {
         let capability = try Gemma4ResidentCapabilityMetadata.describe(configuration: configuration, manifest: manifest,
             runtimeBinarySHA256: String(repeating: "a", count: 64))
         #expect(capability.supportedGenerationModes == [.pipeline, .tensorParallel])
-        let family = try Gemma4PlacementFamily(configuration: configuration, manifest: manifest)
-        #expect(family.generationModes.contains(.tensorParallel) && family.tensorParallelPlan == nil)
         var tensors: [ClusterPlacementStoredTensor] = []
         for index in 1 ... 3 {
             let header = try #require(try JSONSerialization.jsonObject(with: Data(contentsOf: inputs.appendingPathComponent(
@@ -655,24 +656,44 @@ struct Gemma4TensorParallelRuntimeTests {
                 tensors.append(.init(name: name, byteCount: shape.reduce(size, *), dtype: dtype, shape: shape))
             }
         }
-        let layout = try ClusterModelLayoutBuilder.build(family: family, tensors: tensors,
-            artifactSHA256: family.specification.artifactSHA256, configurationSHA256: sha256(configuration))
-        #expect(layout.generationModes.contains(.tensorParallel) && layout.tensorParallel == nil)
+        // The product's own layout, with the allocator's bound: the rank's native reserve is quoted.
+        let layout = try ClusterPlacementLayouts.layout(configuration: configuration, tensors: tensors, manifest: manifest)
+        let plan = try #require(layout.tensorParallel?.family)
+        #expect(plan.plan == Gemma4TensorParallelPlan.name && plan.choice == .fastest && plan.ranks == [2]
+            && plan.reductionsPerLayer == 2 && plan.reductionsPerStep == 1 && plan.stateDividesByHeads)
+        let reserve = try #require(plan.requestAllowance)
+        #expect(reserve.reservedBytes >= Gemma4TensorParallelRequestBudget.activationFloorBytes)
         let devices = try ["mac-a", "mac-b"].map { try Self.device($0) }
         var first = ClusterPlacementPolicy()
         first.tensorParallelFirst = true; first.tensorParallelAssumesUnmeasuredLink = true
+        first.promptTokens = 128; first.outputTokens = 128
+        // Big Macs, default link costs: the pipeline, whatever the policy.
         for policy in [ClusterPlacementPolicy(), first] {
             let result = try ClusterPlacementPlanner.plan(devices: devices, layout: layout, policy: policy)
-            let chosen: ClusterGenerationMode? = result.chosen?.mode
-            #expect(chosen == .pipeline)
-            let options: [ClusterShardOption] = result.shards?.options ?? []
-            let tensor = options.first { $0.kind == .tensorParallel }
-            #expect(tensor?.verdict == ClusterShardOption.Verdict.adapterHasNoTensorParallel)
+            #expect(result.chosen?.mode == .pipeline)
+            #expect(result.tensorParallel?.verdict != .chosen)
         }
-        var only = ClusterPlacementPolicy(); only.modes = [.tensorParallel]
-        #expect((try? ClusterPlacementPlanner.plan(devices: devices, layout: layout, policy: only))?.chosen == nil)
+        // Measured rates on both Macs (90 tok/s, 7,000 prefill) and their device index (the M5 Ultra's measured
+        // `qmm_h4096_b4_g64_x16_v1`), with a measured 5 us link: tensor parallel.
+        let measured = devices.map { device -> ClusterPlacementDevice in
+            var profile = device.profile
+            profile.speedIndex = .init(chip: profile.chip, osBuild: profile.osBuild, benchmark: "qmm_h4096_b4_g64_x16_v1",
+                prefillIndex: 2_337_768, decodeIndex: 46_409)
+            return .init(label: device.label, profile: profile, speed: .init(source: .measured, absolute: true,
+                rested: .init(prefillTokensPerSecond: 7_000, decodeTokensPerSecond: 90), sustained: nil, explanation: "test input"))
+        }
+        let fast = ClusterLinkCosts(measured: true, perChunkSeconds: 0.0025, perDecodeStepSeconds: [ClusterGenerationMode.pipeline.rawValue: 360e-6],
+            handoffSecondsPerByte: 1 / 2e9, provenance: "test input",
+            reduction: .init(fixedSeconds: 5e-6, secondsPerByte: 1 / 30e9, keyed: true, provenance: "test input"))
+        #expect(try ClusterPlacementPlanner.plan(devices: measured, layout: layout, policy: first, link: fast).chosen?.mode == .tensorParallel)
+        #expect(try ClusterPlacementPlanner.plan(devices: measured, layout: layout, policy: first).chosen?.mode == .pipeline)
         var forced = ClusterPlacementPolicy(); forced.forcedMode = .tensorParallel
-        #expect(throws: (any Error).self) { _ = try ClusterPlacementPlanner.plan(devices: devices, layout: layout, policy: forced) }
+        #expect(try ClusterPlacementPlanner.plan(devices: devices, layout: layout, policy: forced).chosen?.mode == .tensorParallel)
+        // Each rank is charged its own heads: half the whole model's KV, the residual rows and logits whole.
+        let whole = try Gemma4StateBudget.estimate(maximumTokens: 8_320, chunkSize: 512)
+        let own = try Gemma4StateBudget.estimate(maximumTokens: 8_320, chunkSize: 512, ranks: 2)
+        #expect(own.fullKVBytes * 2 == whole.fullKVBytes && own.ringKVBytes * 2 == whole.ringKVBytes
+            && own.boundaryBytes == whole.boundaryBytes && own.logitsBytes == whole.logitsBytes)
     }
 
     /// An idle 256 GB Mac, equal assumed speed: room for every placement.

@@ -1263,7 +1263,20 @@ neither real-weight numerics, a pair qualification nor speed.
      split top-k;
    - the verified load's cut of every text tensor, and its refusals;
    - the load agreement's fields;
-   - a Gemma layout that advertises tensor parallel but is never planned in it.
+   - the product's Gemma layout with its tensor-parallel facts: big Macs keep
+     the pipeline on default link costs, a measured fast link takes tensor
+     parallel, the forced mode places it, and each rank is charged its own heads.
+
+   `libs/darkbloom-cluster/Tests/PlacementChecks/run.sh` also runs
+   `GemmaTensorParallelChecks.swift` (model-free). It builds the QAT 4-bit
+   layout from the retained real headers and the 8-bit layouts from their
+   derived shapes, and requires each to equal its golden layout, tensor-parallel
+   facts included. A rank's share must be the plan's exact cut (8,040,450,108 and
+   14,915,635,260 bytes), and the rank's reserve (`Gemma4TensorParallelRequestBudget`)
+   must be quoted. Under the provider's tensor-parallel-first policy it checks the
+   fastest-plan rule on constructed pairs: 2x M5 Ultra 256 GB keeps the pipeline on
+   default link costs; 2x M4 Pro 24 or 32 GB takes tensor parallel where predicted
+   faster; measured links flip the choice both ways.
 
    The `Gemma4TensorParallelTests` suite covers:
 

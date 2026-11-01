@@ -391,145 +391,35 @@ public final class Gemma4TensorParallelResidentRuntime {
         }
     }
 
-    /// The prompt in chunks of the request's own size, then one decode step a
-    /// token, each step's token and both ranks' stop flags agreed in its own
-    /// evaluation; both ranks submit the same sums in the same order whatever
-    /// either decides, and end after the same step.
+    /// The request through `Gemma4TensorParallelRequestLoop` on this rank:
+    /// the pair's agreed tokens and finish.
     private func decode(_ request: QwenLayerStageGenerationRequest, session: Gemma4TensorParallelPagedSession,
                         deadline: UInt64, channel: ClusterCommittedTokenChannel,
                         checked: () throws -> Void) throws -> QwenResidentGenerationCompletion {
         let rank = collective.rank, prompt = request.promptTokenIDs
-        let sampler = request.sampler
-        let choice = Gemma4TensorParallelChoice(selection: session.model.selection, sampler: sampler, rank: rank)
+        let choice = Gemma4TensorParallelChoice(selection: session.model.selection, sampler: request.sampler, rank: rank)
         var lastCheck: UInt64 = 0
-        func localStop() -> Bool {
-            if (try? control.check(deadline: deadline)) == nil { return true }
-            let now = DispatchTime.now().uptimeNanoseconds
-            if now - lastCheck >= 250_000_000 {
-                lastCheck = now
-                if (try? Self.requireLiveMemory(bytes: 0)) == nil { return true }
-            }
-            return false
-        }
-        var offset = 0
-        var current: (logits: MLXArray, selected: MLXArray)?
-        while offset < prompt.count {
-            let end = min(prompt.count, offset + request.chunkSize)
-            current = try session.prefill(prompt, range: offset..<end, check: checked) { choice.build($0, stop: 0) } ?? current
-            offset = end
-        }
-        guard var step = current else { throw ProbeError("Gemma tensor-parallel prompt produced no logits") }
-        var tokens: [Int] = []
-        var finish: ClusterWorkerFinishReason = .length
-        var clientStopped = false
-        var stopKeep: Float = 0
-        var pagesRefused = false
-        // Rank 0 publishes each token at once and reads the owner's answer
-        // to it after the next step ran. A stop answer is acted on one step
-        // later: the extra step is computed and never published.
-        var unanswered = false
-        func readAnswer() throws {
-            guard unanswered else { return }
-            unanswered = false
-            if try !channel.answer(), stopKeep == 0 { clientStopped = true; stopKeep = Float(tokens.count) }
-        }
-        let logprobCount = sampler?.wire.capturedLogprobs
-        /// Commits one agreed token on this rank (and publishes it on rank 0):
-        /// the request's own end at it (EOS or length), else nil.
-        func commit(_ value: Int, logprobs: ClusterWorkerTokenLogprobs?) throws -> ClusterWorkerFinishReason? {
-            tokens.append(value)
-            if rank == 0 {
-                try channel.publishToken(tokens.count - 1, value, prompt.count + tokens.count - 1, logprobs)
-                unanswered = true
-            }
-            switch QwenTensorParallelStopRule.outcome(isStopToken: request.stopTokenIDs.contains(value),
-                                                      committed: tokens.count, outputCount: request.outputCount, wanted: true) {
-            case .eos: return .eos
-            case .length: return .length
-            case .clientStop, .proceed: return nil
-            }
-        }
-        try GPU.withCommandBufferLimits(Gemma4TensorParallelModel.decodeCommandBuffers) {
-            steps: for index in 0..<request.outputCount {
-                // The answer to the last token arrived while this step ran.
-                if stopKeep == 0 { try readAnswer() }
-                let agreed = try choice.read(step.selected)
-                if let slot = agreed.flags.filter({ $0 > 0 }).min() {
-                    // A rank asked both to stop: both keep the tokens it named
-                    // and end here (at the request's length when its pages could not grow).
-                    let stop = QwenTensorParallelStopRule.stop(slot: slot)
-                    tokens = Array(tokens.prefix(stop.keep))
-                    finish = stop.finish == .length ? .length : .clientStop
-                    break steps
+        let loop = Gemma4TensorParallelRequestLoop(session: session, request: request, choice: choice,
+            exchange: { [group] in try group.exchangeIntegers($0) }, localStop: { [control] in
+                if (try? control.check(deadline: deadline)) == nil { return true }
+                let now = DispatchTime.now().uptimeNanoseconds
+                if now - lastCheck >= 250_000_000 {
+                    lastCheck = now
+                    if (try? Self.requireLiveMemory(bytes: 0)) == nil { return true }
                 }
-                if stopKeep == 0 {
-                    // Logprobs: a greedy step's from the split top-k gather
-                    // (a collective both ranks take), a sampled one's from rank 0's draw.
-                    var logprobs: ClusterWorkerTokenLogprobs?
-                    if let count = logprobCount {
-                        if choice.gathersRow {
-                            if rank == 0 {
-                                guard let drawn = sampler?.takePendingLogprobs() else {
-                                    throw ProbeError("Gemma tensor-parallel token has no logprobs")
-                                }
-                                logprobs = drawn
-                            }
-                        } else {
-                            let gathered = try choice.logprobs(step.logits, token: agreed.token, count: count)
-                            logprobs = rank == 0 ? gathered : nil
-                        }
-                    }
-                    sampler?.commit(agreed.token)
-                    if let end = try commit(agreed.token, logprobs: logprobs) { finish = end; break steps }
-                    if localStop() {
-                        stopKeep = Float(tokens.count)
-                    } else if pagesRefused {
-                        stopKeep = QwenTensorParallelStopRule.lengthStop(keep: tokens.count)
-                    }
-                } else if logprobCount != nil, !choice.gathersRow {
-                    // Both ranks take every step's collectives alike.
-                    _ = try choice.logprobs(step.logits, token: agreed.token, count: logprobCount!)
-                }
-                guard index + 1 < request.outputCount else { break steps }
-                // Pages grow a granule ahead, at least a margin before they are
-                // needed: a growth the pool refuses still leaves this step its
-                // row, and the step carries the length stop (rank-local; the
-                // collectives are the same either way).
-                if !pagesRefused {
-                    pagesRefused = !session.reservePages(writing: 1)
-                    if pagesRefused, stopKeep == 0 { stopKeep = QwenTensorParallelStopRule.lengthStop(keep: tokens.count) }
-                }
-                step = try session.decode(agreed.token, check: checked) { choice.build($0, stop: stopKeep) }
-            }
-        }
-        // The owner answers every published token, the last one too. A stop
-        // answer to a token the request ended at changes nothing.
-        if unanswered {
-            unanswered = false
-            if try !channel.answer(), finish == .clientStop { clientStopped = true }
-        }
-        if clientStopped || (stopKeep > 0 && stopKeep < QwenTensorParallelStopRule.lengthStopBase) { finish = .clientStop }
-        let localFinish: QwenTensorParallelStopRule.Finish = finish == .eos ? .eos : finish == .length ? .length : .clientStop
-        let agreedEnd = try group.exchangeIntegers(rank == 0 ? [Int32(tokens.count), localFinish.code] : [0, 0])
-        guard agreedEnd.count == 2, let rank0Finish = QwenTensorParallelStopRule.Finish(code: agreedEnd[1]) else {
-            throw ProbeError("Gemma tensor-parallel ranks did not agree how the request ended")
-        }
-        let ended = QwenTensorParallelStopRule.reconcile(rank: rank, localFinish: localFinish, localCount: tokens.count,
-            localStopped: stopKeep > 0 && !clientStopped, rank0Finish: rank0Finish, rank0Count: Int(agreedEnd[0]))
-        tokens = Array(tokens.prefix(ended.count))
-        switch ended.finish {
-        case .eos: finish = .eos
-        case .length: finish = .length
-        case .clientStop: finish = .clientStop
-        }
+                return false
+            })
+        let ended = try loop.run(channel: channel, check: checked)
+        let tokens = ended.tokens, finish = ended.finish
         try control.check(deadline: deadline)
-        if finish == .clientStop && !clientStopped && rank == 0 {
+        if finish == .clientStop && !ended.clientStopped && rank == 0 {
             throw ProbeError("The peer rank stopped the Gemma tensor-parallel request")
         }
         log("darkbloom-tensor-parallel-request-v1 rank=\(rank) family=gemma4 request=\(request.requestID.uuidString.lowercased())"
             + " prompt=\(prompt.count) output=\(tokens.count) finish=\(finish.rawValue) sampled=\(choice.gathersRow ? 1 : 0)"
-            + " logprobs=\(logprobCount ?? 0) frames=\(codec.sealedFrames) key_generation=\(codec.keyGeneration)"
-            + " kv_tokens=\(session.state.reservedTokens) kv_refused=\(pagesRefused ? 1 : 0)")
+            + " logprobs=\(request.sampler?.wire.capturedLogprobs ?? 0) frames=\(codec.sealedFrames)"
+            + " key_generation=\(codec.keyGeneration) kv_tokens=\(session.state.reservedTokens)"
+            + " kv_refused=\(ended.pagesRefused ? 1 : 0)")
         return QwenResidentGenerationCompletion(requestID: request.requestID, finishReason: finish,
             selectedTokenIDs: tokens, completedFrames: tokens.count, committedTokens: prompt.count + tokens.count,
             tokenChainSHA256: sha256(try canonicalJSONData(tokens.map { String($0) })), bothRequestStatesRetired: true)

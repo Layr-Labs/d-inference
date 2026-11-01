@@ -1252,7 +1252,10 @@ neither real-weight numerics, a pair qualification nor speed.
      the whole model's tokens and exactly two collectives a layer and one a step;
    - layer submission, which keeps every bit;
    - batch lanes (one joining late): every row equals its request's solo row,
-     bit for bit;
+     bit for bit, and the shared batch driver with the Gemma executor
+     publishes each request's solo tokens;
+   - the request loop on two ranks: a stop token, the owner's stop and one
+     rank's own stop end both ranks after the same step, with logprobs;
    - each step's choice: greedy with both stop flags, sampled from the gathered
      row exactly as the product's sampler draws, and greedy logprobs from the
      split top-k;

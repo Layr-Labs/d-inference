@@ -201,6 +201,173 @@ struct Gemma4TensorParallelRuntimeTests {
         #expect(results[0].lanes == results[1].lanes && results[0].solo.allSatisfy { $0.count == outputs })
     }
 
+    /// The worker's batch host, recording what each rank publishes.
+    private final class LaneHost: QwenBatchServingHost, @unchecked Sendable {
+        var tokens: [UUID: [Int]] = [:], finished: [UUID: ClusterWorkerFinishReason] = [:]
+        func serviceControl() throws {}
+        func publishToken(requestID: UUID, ordinal: Int, tokenID: Int, committedTokens: Int) throws {
+            guard ordinal == tokens[requestID, default: []].count else { throw ProbeError("Lane token out of order") }
+            tokens[requestID, default: []].append(tokenID)
+        }
+        func awaitDecisions(_ requestIDs: [UUID]) throws -> [UUID: Bool] {
+            Dictionary(uniqueKeysWithValues: requestIDs.map { ($0, true) })
+        }
+        func pollDecision(_ requestID: UUID) throws -> Bool? { true }
+        func publishFinished(requestID: UUID, reason: ClusterWorkerFinishReason) throws { finished[requestID] = reason }
+        func publishLeft(requestID: UUID) throws {}
+        func publishPromptCache(requestID: UUID, reusedTokens: Int, storedFrontiers: [Int]) throws {}
+    }
+
+    /// The batch driver (`QwenTensorParallelBatchDriver`) serves three
+    /// requests on both ranks through the Gemma executor: each request's
+    /// published tokens are its solo tokens, every lane finishes at its
+    /// length, and every page goes back.
+    @Test func theBatchDriverServesEachLaneItsSoloTokens() throws {
+        let directory = try Self.synthetic()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let pair = Pair()
+        let models = Box(try (0 ..< 2).map {
+            try Gemma4TensorParallelModel.load(modelDirectory: directory, role: .shard(rank: $0), reduction: pair.reduction(rank: $0))
+        })
+        let prompts = [Self.prompt, (0 ..< 23).map { ($0 * 101 + 7) % 512 }, (0 ..< 57).map { ($0 * 13 + 400) % 512 }]
+        let outputs = [6, 9, 4]
+        let solo = try prompts.indices.map { index in
+            try Pair.run(device: .gpu) { rank in
+                try models.value[rank].generatePaged(prompt: prompts[index], outputCount: outputs[index], chunk: 16).tokenIDs
+            }[0]
+        }
+        let profile = try QwenLayerStageGenerationProfile(identifier: "synthetic-gemma4-tp", vocabularySize: 512,
+            hiddenSize: 256, activationDType: "bfloat16", maximumPromptTokens: 64, maximumChunkTokens: 16,
+            maximumOutputTokens: 32, maximumContextTokens: 128, logitsDType: "float32")
+        let requests = Box(try prompts.indices.map {
+            try QwenLayerStageGenerationRequest(profile: profile, requestID: UUID(), promptTokenIDs: prompts[$0],
+                chunkSize: 16, outputCount: outputs[$0], stopTokenIDs: [])
+        })
+        let served = try Pair.run(device: .gpu) { rank -> (tokens: [UUID: [Int]], finished: [UUID: ClusterWorkerFinishReason], drained: Bool) in
+            let model = models.value[rank]
+            let host = try model.pagedHost(lanes: 3, maximumTokens: 128, chunkTokens: 16)
+            let book = ClusterBatchLaneBook<Gemma4TensorParallelLaneReservation>()
+            for request in requests.value {
+                try book.reserve(request.requestID, .init(request: request, deadline: .max, laneStateBytes: 1), lanes: 3)
+                try book.start(request.requestID)
+            }
+            let executor = try Gemma4TensorParallelBatchExecutor<Gemma4TensorParallelLaneReservation>(model: model,
+                host: host, reduction: model.reduction!, agree: { _, check in try check() })
+            let driver = try QwenTensorParallelBatchDriver(executor: executor, book: book, capacity: 3, vocabulary: 512)
+            let lanes = LaneHost()
+            try MLX.withError { error in try driver.serve(host: lanes, check: { try error.check() }) }
+            return (lanes.tokens, lanes.finished, host.isDrained && book.isEmpty)
+        }
+        for (index, request) in requests.value.enumerated() {
+            #expect(served[0].tokens[request.requestID] == solo[index], "lane \(index) published other tokens than alone")
+            #expect(served.allSatisfy { $0.finished[request.requestID] == .length })
+        }
+        #expect(served[1].tokens.isEmpty && served.allSatisfy(\.drained))
+    }
+
+    // MARK: - The request loop
+
+    private struct LoopCase: Sendable {
+        var stops: Set<Int> = []
+        var sampling: ClusterWorkerSampling?
+        /// Rank 0's owner answers this ordinal with stop.
+        var ownerStopsAt: Int?
+        /// Rank 1 stops on its own after this many committed tokens.
+        var rankOneStopsAfter: Int?
+    }
+
+    private struct LoopResult: Sendable {
+        let tokens: [Int]
+        let finish: ClusterWorkerFinishReason
+        let clientStopped: Bool
+        let published: [Int]
+        let logprobs: [ClusterWorkerTokenLogprobs?]
+    }
+
+    /// Both ranks run the runtime's own request loop on their paged hosts
+    /// (`Gemma4TensorParallelRequestLoop`), each with its own request, as two
+    /// processes would.
+    private static func loop(_ models: Box<[Gemma4TensorParallelModel]>, _ value: LoopCase,
+                             outputs: Int = 8) throws -> [LoopResult] {
+        let reductions = Box(models.value.map { $0.reduction! })
+        return try Pair.run(device: .gpu) { rank in
+            let model = models.value[rank], reduction = reductions.value[rank]
+            let profile = try QwenLayerStageGenerationProfile(identifier: "synthetic-gemma4-tp", vocabularySize: 512,
+                hiddenSize: 256, activationDType: "bfloat16", maximumPromptTokens: 64, maximumChunkTokens: 16,
+                maximumOutputTokens: 32, maximumContextTokens: 128, logitsDType: "float32")
+            let request = try QwenLayerStageGenerationRequest(profile: profile, requestID: UUID(uuidString: "6f0e2a4c-0000-4000-8000-000000000001")!,
+                promptTokenIDs: Self.prompt, chunkSize: 16, outputCount: outputs, stopTokenIDs: value.stops, sampling: value.sampling)
+            let host = try model.pagedHost(lanes: 1, maximumTokens: 128, chunkTokens: 16)
+            let session = try Gemma4TensorParallelPagedSession(model: model, host: host, promptCount: Self.prompt.count,
+                outputCount: outputs)
+            var published: [Int] = [], logprobs: [ClusterWorkerTokenLogprobs?] = [], committed = 0
+            let channel = ClusterCommittedTokenChannel(publishToken: { ordinal, token, _, captured in
+                published.append(token); logprobs.append(captured); committed = ordinal + 1
+            }, answer: { value.ownerStopsAt.map { committed - 1 != $0 } ?? true })
+            var localTokens = 0
+            let outcome = try Gemma4TensorParallelRequestLoop(session: session, request: request,
+                choice: Gemma4TensorParallelChoice(selection: model.selection, sampler: request.sampler, rank: rank),
+                exchange: { values in
+                    let summed = reduction.allSum(MLXArray(values.map(Float.init)))
+                    eval(summed)
+                    return summed.asArray(Float.self).map { Int32($0) }
+                }, localStop: {
+                    localTokens += 1
+                    return rank == 1 && value.rankOneStopsAfter.map { localTokens >= $0 } == true
+                }).run(channel: channel, check: {})
+            try session.retire()
+            return LoopResult(tokens: outcome.tokens, finish: outcome.finish, clientStopped: outcome.clientStopped,
+                published: published, logprobs: logprobs)
+        }
+    }
+
+    /// The request loop on two ranks: plain greedy takes the oracle path's
+    /// tokens; a stop token, the owner's stop and one rank's own stop end both
+    /// ranks with the same tokens after the same step; a greedy request's
+    /// logprobs come from the split top-k, a sampled one's from rank 0's draw.
+    @Test func theRequestLoopEndsBothRanksAfterTheSameStep() throws {
+        let directory = try Self.synthetic()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let pair = Pair()
+        let models = Box(try (0 ..< 2).map {
+            try Gemma4TensorParallelModel.load(modelDirectory: directory, role: .shard(rank: $0), reduction: pair.reduction(rank: $0))
+        })
+        let reference = try Pair.run(device: .gpu) { rank in
+            try models.value[rank].generatePaged(prompt: Self.prompt, outputCount: 8, chunk: 16).tokenIDs
+        }[0]
+        let plain = try Self.loop(models, LoopCase())
+        for result in plain { #expect(result.tokens == reference && result.finish == .length) }
+        #expect(plain[0].published == reference && plain[1].published.isEmpty)
+        // A stop token ends both ranks at its first occurrence.
+        let stopAt = reference.indices.first { $0 >= 1 && !reference[..<$0].contains(reference[$0]) } ?? 0
+        for result in try Self.loop(models, LoopCase(stops: [reference[stopAt]])) {
+            #expect(result.tokens == Array(reference[...stopAt]) && result.finish == .eos)
+        }
+        // The owner stops at ordinal 2: read a step later, both keep three tokens.
+        for result in try Self.loop(models, LoopCase(ownerStopsAt: 2)) {
+            #expect(result.tokens == Array(reference.prefix(3)) && result.finish == .clientStop)
+        }
+        // Rank 1 stops on its own after four tokens: its flag ends both.
+        let alone = try Self.loop(models, LoopCase(rankOneStopsAfter: 4))
+        for result in alone { #expect(result.tokens == Array(reference.prefix(4)) && result.finish == .clientStop) }
+        #expect(!alone[0].clientStopped)
+        // Greedy with logprobs: the same tokens, rank 0 publishes each one's split top-k.
+        func sampling(_ temperature: Float) -> ClusterWorkerSampling {
+            ClusterWorkerSampling(temperature: temperature, topP: 1, topK: 0, minP: 0, repetitionPenalty: 1,
+                repetitionContextSize: 0, frequencyPenalty: 0, presencePenalty: 0, seed: 0x5eed, stream: 0xab,
+                logitBias: [], topLogprobs: 3)
+        }
+        let greedy = try Self.loop(models, LoopCase(sampling: sampling(0)))
+        #expect(greedy.allSatisfy { $0.tokens == reference })
+        #expect(greedy[0].logprobs.count == 8 && zip(greedy[0].logprobs, reference).allSatisfy {
+            $0?.top.count == 3 && $0?.top.first?.tokenID == $1 && $0?.logprob == $0?.top.first?.logprob
+        })
+        // Sampled with logprobs: both ranks take rank 0's draws; rank 0 publishes the draws' logprobs.
+        let sampled = try Self.loop(models, LoopCase(sampling: sampling(1.0)))
+        #expect(sampled[0].tokens == sampled[1].tokens && sampled[0].tokens.count == 8)
+        #expect(sampled[0].published == sampled[0].tokens && sampled[0].logprobs.allSatisfy { $0?.top.count == 3 })
+    }
+
     // MARK: - The step's choice
 
     /// Runs `body` on two rank threads over each rank's half of `logits`.

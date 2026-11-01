@@ -71,18 +71,28 @@ struct MiMoTensorParallelFloat32PartialTests {
         eval(moe)
     }
 
-    /// Contract v2 is in the plan's arithmetic fields and so in the load agreement and the
-    /// plan fingerprint: a rank on v1 (BF16 partials) disagrees and both refuse before loading.
+    /// Contract v2, string for string. The fields are in the load agreement and the plan
+    /// fingerprint, so a rank on v1 (BF16 partials) disagrees and both refuse before loading.
     @Test func theLoadAgreementCarriesContractVersion2() throws {
         let fields = MiMoTensorParallelPlan.arithmeticAgreementFields
-        for part in ["o-proj-partial", "dense-down-partial", "expert-rows"] {
-            #expect(fields.contains { $0.hasPrefix("mimo-v26-\(part)-stored-float32-") && $0.hasSuffix("-rounded-once-v2") }, "\(part)")
-        }
-        #expect(!fields.contains { $0.contains("bfloat16") || $0.hasSuffix("-v1") && $0.contains("partial") })
+        #expect(fields == [
+            "mimo_v26_heads_and_expert_channels_v1",
+            "mimo-v26-o-proj-partial-stored-float32-sum-float32-rounded-once-v2",
+            "mimo-v26-dense-down-partial-stored-float32-sum-float32-rounded-once-v2",
+            "mimo-v26-expert-rows-stored-float32-local-float32-combine-sum-float32-rounded-once-v2",
+            "mimo-v26-untied-head-vocabulary-halves-v1",
+            "mimo-v26-mtp-off-v1",
+        ])
         let plan = try MiMoTensorParallelPlan(configuration: JSONSerialization.data(
             withJSONObject: MiMoTensorParallelModel.syntheticConfiguration(.kernel), options: [.sortedKeys]))
         let agreement = MiMoTensorParallelResidentRuntime.loadAgreementFields(plan: plan, chunkTokens: 16)
         #expect(fields.allSatisfy(agreement.contains) && agreement.contains(plan.fingerprint))
+        let version1 = [
+            "mimo-v26-o-proj-partial-stored-bfloat16-sum-float32-rounded-once-v1",
+            "mimo-v26-dense-down-partial-stored-bfloat16-sum-float32-rounded-once-v1",
+            "mimo-v26-expert-rows-local-float32-combine-sum-float32-rounded-once-v1",
+        ]
+        #expect(!version1.contains(where: agreement.contains))
     }
 
     /// Two ranks' FP32 expert rows sum to the exact full-width row, bit for bit, and the
@@ -151,13 +161,13 @@ struct MiMoTensorParallelFloat32PartialTests {
     @Test func everyRankPartialIsFloat32AndRoundsOnceAfterTheSum() throws {
         let (whole, ranks, directory) = try Self.models()
         defer { try? FileManager.default.removeItem(at: directory) }
-        final class Recorder: @unchecked Sendable { var dtypes: [DType] = [] }
+        final class Recorder: @unchecked Sendable { var summed: [MLXArray] = [] }
         let recorder = Recorder()
         let x = withRandomState(MLXRandom.RandomState(seed: 9)) { MLXRandom.normal([1, 3, Self.hidden]) }.asType(.bfloat16)
         var partials: [MLXArray] = []
         for rank in ranks {
             let context = MiMoV26TensorParallelContext(
-                reduce: { recorder.dtypes.append($0.dtype); return $0 }, vocabularyRows: rank.vocabularyRange)
+                reduce: { recorder.summed.append($0); return $0 }, vocabularyRows: rank.vocabularyRange)
             let dense = rank.model.model.layers[0], moe = rank.model.model.layers[1]
             #expect(dense.mlp is MiMoV26DenseMLP)
             let outputs = [
@@ -173,7 +183,13 @@ struct MiMoTensorParallelFloat32PartialTests {
             #expect((outputs + [attention]).allSatisfy { $0.dtype == .bfloat16 })
             partials.append(try Self.routed(rank).tensorParallelPartial(x))
         }
-        #expect(recorder.dtypes == [DType](repeating: .float32, count: 8))
+        // Per rank: dense, dense row by row, routed, `o_proj`. A BF16 product widened after
+        // the fact (v1's dense and `o_proj` partials) would hold BF16 values only.
+        #expect(recorder.summed.map(\.dtype) == [DType](repeating: .float32, count: 8))
+        for (index, summed) in recorder.summed.enumerated() {
+            let widenedBF16 = summed.asType(.bfloat16).asType(.float32)
+            #expect(any(summed .!= widenedBF16).item(Bool.self), "partial \(index) holds only BF16 values")
+        }
         #expect(partials.allSatisfy { $0.dtype == .float32 })
 
         let wholeMoE = try Self.routed(whole)

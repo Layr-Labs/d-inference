@@ -4274,16 +4274,18 @@ different contracts refuse each other.
 
 FP32 holds every BF16 value exactly, and MLX's FP32 MXFP4 and affine kernels
 accumulate in FP32 as the BF16 ones do. On M5 the NAX path runs FP32 inputs at
-TF32 (`MLX_ENABLE_TF32=1`, which every cluster contract requires). Its 10
+TF32 (`MLX_ENABLE_TF32=1`, which `MiMoArithmeticEnvironment` requires). Its 10
 mantissa bits keep a BF16-sourced activation and an MXFP4 weight exactly, and an
 affine 8-bit weight at least as precisely as the BF16 kernel's BF16 weight tile.
-So no rank rounds more than one Mac: an expert row is rounded once, after the
-sum, where one Mac rounds each expert's whole projection to BF16 before its
-combine. Ranks are still not bit-exact with one Mac, because the halves
-reassociate the FP32 sums and a near tie can flip a route. Comparisons against
-one Mac read `tokensEqualLogitsDiffer` or `divergedAtNearTie`.
-`MiMoTensorParallelFloat32PartialTests` checks on the GPU that two ranks' rows
-add up bit for bit to the exact full-width row that one Mac rounds once.
+So no rank rounds more than one Mac. A rank never rounds its expert rows: their
+combined row is rounded once, after the sum, where one Mac also rounds each
+expert's whole projection to BF16 before its combine. Ranks are still not
+bit-exact with one Mac, because the halves reassociate the FP32 sums and a near
+tie can flip a route. Comparisons against one Mac read `tokensEqualLogitsDiffer`
+or `divergedAtNearTie`. `MiMoTensorParallelFloat32PartialTests` checks on the
+GPU that two ranks' rows add up bit for bit to the exact full-width row that one
+Mac rounds once, and that no `o_proj` or dense partial was rounded to BF16
+before its sum.
 
 `MiMoV26TensorShard` derives each rank's configuration (half the heads of both
 layer kinds and both channel widths, no MTP heads or towers) and cuts stored

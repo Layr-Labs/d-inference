@@ -1342,7 +1342,8 @@ registered artifact for them.
    - FP32 partials (`MiMoTensorParallelFloat32PartialTests`, on the GPU): two
      ranks' expert rows add up bit for bit to the exact full-width row that
      one Mac rounds once, through the decode-expert kernel and MLX's sorted
-     gather, and every partial a rank sums is FP32;
+     gather; every partial a rank sums is FP32, and no `o_proj` or dense
+     partial was rounded to BF16 first; the contract v2 strings are pinned;
    - the vocabulary-split head against the whole head;
    - the resident runtime's verified load: each rank reads exactly its shard's
      bytes, and a tampered or foreign checkpoint is refused;

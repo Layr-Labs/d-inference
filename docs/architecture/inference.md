@@ -4087,12 +4087,15 @@ Code map:
 
 See [focused Gemma 4 tensor-parallel checks](../developer/test.md#focused-gemma-4-tensor-parallel-checks).
 
-## MiMo V2.6 tensor-parallel foundation
+## MiMo V2.6 tensor parallel
 
 MiMo V2.6 Flash (`mimo-v2.6-flash-mopd`) has a two-rank tensor-parallel plan,
-SDK hooks and one-Mac oracles. Nothing serves it yet: the registered row still
-lists only the pipeline modes, and `MiMoPlacementFamily` states no
-tensor-parallel facts.
+SDK hooks, a one-lane resident runtime and one-Mac oracles. The registered row
+lists `tensor_parallel_v1` (text only; the private image candidate stays a
+pipeline candidate), and the worker serves it when a launch asks for it. The
+planner never chooses it yet: `MiMoPlacementFamily` states no tensor-parallel
+facts, so a MiMo layout has no tensor-parallel block, and the planner places
+tensor parallel only from one (placement checks: `MiMoTensorParallelChecks`).
 
 `MiMoTensorParallelPlan` (`mimo_v26_heads_and_expert_channels_v1`, CPU metadata)
 disposes of every name in the registered 1,732-tensor inventory. The 1,103 text
@@ -4118,17 +4121,47 @@ layer kinds and both channel widths, no MTP heads or towers) and cuts stored
 tensors, including the 3-D expert banks, by slice or by byte runs.
 `MiMoV26TextModel.installTensorParallel(reduce:vocabularyRows:)` adds the two
 sums and makes `lm_head` this rank's rows before the weights load. A model
-without it runs the unchanged single-Mac path. The readout check still means the
-whole vocabulary, so the paged, CBv2 and MTP owners refuse a rank. Selection
-reuses the model-neutral vocabulary-split head
-(`Gemma4TensorParallelSelection`): greedy argmax, top-k log probabilities and
-the bit-exact whole-row gather for the product's sampler.
+without it runs the unchanged single-Mac path. The CBv2 and MTP owners still
+require the whole vocabulary's readout and refuse a rank; the independent-history
+pages serve a rank one row at a time. Selection reuses the model-neutral
+vocabulary-split head (`Gemma4TensorParallelSelection`): greedy argmax, top-k log
+probabilities and the bit-exact whole-row gather for the product's sampler.
+
+`MiMoTensorParallelResidentRuntime` is the worker's owner for the mode, with GLM
+tensor parallel's executor contract and one lane:
+
+- Load. The load agreement (the admission's fingerprint, the plan's fingerprint
+  and arithmetic contract, the serving contract, the mode, the link probe and the
+  data plane) is bound into the keyed exchange and compared before any read. The
+  link is measured as the mode uses it (`QwenTensorParallelLinkProbe`). Every
+  artifact file is hashed against the registered manifest, and then only this
+  rank's byte runs are read (`MiMoTensorParallelVerifiedLoad`: the plan disposes
+  of each indexed name; the runs equal the SDK shard's `byteRuns`; any difference
+  refuses). Both ranks compare what they loaded before either is ready.
+- Requests (`MiMoTensorParallelDecoding`). Request-owned 64-token paged
+  histories at the rank's geometry (full layers: 2 KV heads at widths 192/128;
+  sliding layers: window 128 and the rank's 32 sink biases). Decode runs under
+  100-operation command buffers, with sealed sums only. Each step takes one small
+  agreement sum per rank of `[value, token, stop, position]`: the
+  vocabulary-split argmax, or rank 0's draw from the gathered row with the
+  product's sampler. A stop on either rank ends both after the same step, and
+  positions that differ end the request.
+- Logprobs. A greedy row that asks for them takes the split top-k gather; a
+  sampled row publishes the product sampler's own logprobs from the gathered row.
+- Not yet: lanes, prompt-prefix reuse, MTP, 2,048-token prefill frames and
+  micro-batches, building decode steps one ahead.
+- Memory. `MiMoTensorParallelRequestBudget` charges each request
+  conservatively (paged KV at half the KV heads, one chunk's activations, the
+  head's rows); nothing has measured a MiMo tensor-parallel rank.
 
 Oracles run on synthetic checkpoints (`kernel`: hidden 1,024, 16 experts top-8,
 512 expert channels per rank, so every per-rank decode shape takes the
 production MXFP4 expert, router and norm kernels; `tiny`: below those gates).
 `simulated` runs both real shards in one process, and two ranks over the sealed
-loopback ring or socket equal it bit for bit, caches included.
+loopback ring or socket equal it bit for bit, caches included, on the
+foundation's ordinary caches and on the resident runtime's paged path
+(`--path paged`). There each rank reads exactly its shard's bytes, and paged runs
+equal ordinary ones bit for bit.
 
 Code map:
 

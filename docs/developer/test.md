@@ -1278,7 +1278,7 @@ registered artifact for them.
 1. Run the CPU unit tests:
 
    ```bash
-   swift test --package-path libs/darkbloom-cluster --filter MiMoTensorParallelTests
+   swift test --package-path libs/darkbloom-cluster --filter MiMoTensorParallel
    ```
 
    They cover:
@@ -1290,7 +1290,17 @@ registered artifact for them.
    - the shard configuration and per-rank KV geometry;
    - shard cuts and byte runs against independent slices;
    - two in-process ranks against each other and the whole model;
-   - the vocabulary-split head against the whole head.
+   - the vocabulary-split head against the whole head;
+   - the resident runtime's verified load: each rank reads exactly its shard's
+     bytes, and a tampered or foreign checkpoint is refused;
+   - its paged requests: ranks agree bit for bit and equal the ordinary caches,
+     with per-rank paged geometry, the selection rules, logprobs, every stop
+     kind, the request and load agreements, the request budget and the
+     text-only launch.
+
+   The placement checks (`libs/darkbloom-cluster/Tests/PlacementChecks/run.sh`)
+   confirm that the planner never places MiMo in tensor parallel while its
+   placement family states no tensor-parallel facts.
 
 2. Build `darkbloom-cluster-tp-check` and put a source-matched `mlx.metallib`
    beside it ([build](build.md)). Then run the GPU oracles:
@@ -1306,6 +1316,22 @@ registered artifact for them.
    runs `full`, `simulated` and two `tp` ranks over the sealed local ring on
    ports 58223–58224. It then runs the socket backend once, and one sampled
    run: temperature 0.8, drawn by the product's sampler from the gathered row.
+   It runs this matrix twice:
+
+   - `contiguous`: the foundation's path (tensors read whole and cut, ordinary
+     caches);
+   - `paged`: the resident runtime's path (`--path paged`: verified load, paged
+     KV, the per-step agreement sum, 100-op decode buffers). Paged histories
+     are BF16 only, so this matrix skips the FP32 variant.
+
+   The paged matrix also checks that:
+
+   - each rank read only its byte runs;
+   - paged `full` and `simulated` equal contiguous ones bit for bit;
+   - ranks given different agreements refuse;
+   - a checkpoint changed after its manifest is refused.
+
+   `MIMO_ORACLE_PATHS=paged` runs one matrix.
 
 3. Verify. Each `tp` rank must equal `simulated` bit for bit, KV caches
    included, and greedy ranks must agree with `full` under

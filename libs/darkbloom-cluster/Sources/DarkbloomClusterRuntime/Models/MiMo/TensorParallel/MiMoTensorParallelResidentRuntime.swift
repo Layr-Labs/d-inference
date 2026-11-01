@@ -170,9 +170,21 @@ public final class MiMoTensorParallelResidentRuntime {
                 // freed-buffer cache, sealed frames) beside it: the planner's quote. The read's largest slice
                 // (half an expert bank) lives only while loading, inside the reserve no request holds yet.
                 let shardBytes = try Self.shardBytes(plan: plan, descriptors: source.descriptors)
-                // Speculative rounds: the three heads whole on every rank, beside the shard.
-                let headBytes = speculative == nil ? 0 : source.descriptors
-                    .filter { $0.key.hasPrefix(MiMoTensorParallelDraftHead.prefix) }.reduce(0) { $0 + $1.value.byteCount }
+                // Speculative rounds: the three heads whole on every rank, beside the shard. The source's
+                // descriptors hold text tensors only; the heads' inventory is the pipeline's, from the headers.
+                var headDescriptors: [String: TensorDescriptor] = [:]
+                var headInventory: MiMoMTPHeadInventory?
+                if speculative != nil {
+                    let (inventory, indexed) = try MiMoMTPHead.inventory(source: source)
+                    for entry in inventory.head {
+                        guard let descriptor = indexed[entry.name] else {
+                            throw ProbeError("MiMo speculative head descriptor disappeared")
+                        }
+                        headDescriptors[entry.name] = descriptor
+                    }
+                    headInventory = inventory
+                }
+                let headBytes = headDescriptors.values.reduce(0) { $0 + $1.byteCount }
                 try requireLiveMemory(bytes: try QwenLongPrefillCheckedBytes.sum([shardBytes, headBytes,
                                                                                   budget.allowance.reservedBytes]))
                 let value = try autoreleasepool {
@@ -186,7 +198,7 @@ public final class MiMoTensorParallelResidentRuntime {
                 }
                 if let speculative {
                     let head = try autoreleasepool {
-                        try MiMoTensorParallelDraftHead.load(checkpoint: source.checkpoint,
+                        try MiMoTensorParallelDraftHead.load(descriptors: headDescriptors, checkpoint: source.checkpoint,
                             configurationData: admission.configBytes, target: value.model,
                             beforeRead: { _, _ in try checked() }, check: checked)
                     }
@@ -209,7 +221,8 @@ public final class MiMoTensorParallelResidentRuntime {
                 if bufferCacheBytes > 0 { Memory.cacheLimit = bufferCacheBytes; try checked() }
                 let loadedIdentity = sha256(try canonicalJSONData([loadAgreement, value.receipt.verifiedAggregateSHA256,
                     value.receipt.planFingerprint, String(value.receipt.shardBytes), String(value.receipt.textTensors)]
-                    + (draftHead.map { ["draft-heads", String($0.headTensors), String($0.headBytes)] } ?? [])))
+                    + (draftHead.map { ["draft-heads", String($0.headTensors), String($0.headBytes),
+                                        headInventory?.sha256 ?? ""] } ?? [])))
                 _ = try requireQwenLongPrefillReadinessDigest(collective: collective,
                     material: { .residentLoaded(agreementFingerprint: loadedIdentity) },
                     disagreementMessage: "MiMo tensor-parallel peers did not load matching shards",

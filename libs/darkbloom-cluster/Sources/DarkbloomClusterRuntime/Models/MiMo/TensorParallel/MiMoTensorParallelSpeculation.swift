@@ -20,15 +20,23 @@ final class MiMoTensorParallelDraftHead {
     private let shell: MiMoV26TextModel
     private let predictor: MiMoV26MTP
 
-    /// The heads' tensors read whole through a verified checkpoint (every file
-    /// already matched its manifest); `beforeRead` gates each read.
-    static func load(checkpoint: VerifiedCheckpoint, configurationData: Data, target: MiMoTensorParallelModel,
-                     beforeRead: (String, Int) throws -> Void = { _, _ in },
+    /// The heads' indexed tensors of a verified checkpoint, by name; no payload.
+    static func descriptors(checkpoint: VerifiedCheckpoint) throws -> [String: TensorDescriptor] {
+        try tensorDescriptors(checkpoint: checkpoint, scope: .init(acceptsUInt8: true, indexedShardsOnly: true))
+            .filter { $0.key.hasPrefix(prefix) }
+    }
+
+    /// The heads' tensors (`descriptors`, every one under `prefix`) read whole
+    /// through a verified checkpoint (every file already matched its manifest);
+    /// `beforeRead` gates each read.
+    static func load(descriptors: [String: TensorDescriptor], checkpoint: VerifiedCheckpoint, configurationData: Data,
+                     target: MiMoTensorParallelModel, beforeRead: (String, Int) throws -> Void = { _, _ in },
                      check: () throws -> Void = {}) throws -> MiMoTensorParallelDraftHead {
-        let descriptors = try tensorDescriptors(checkpoint: checkpoint,
-            scope: .init(acceptsUInt8: true, indexedShardsOnly: true))
+        guard !descriptors.isEmpty, descriptors.keys.allSatisfy({ $0.hasPrefix(prefix) }) else {
+            throw ProbeError("MiMo speculative heads are not the artifact's next-N tensors")
+        }
         var weights: [String: MLXArray] = [:]
-        for name in descriptors.keys.filter({ $0.hasPrefix(prefix) }).sorted() {
+        for name in descriptors.keys.sorted() {
             let descriptor = descriptors[name]!
             guard descriptor.dtype == .bfloat16 else {
                 throw ProbeError("MiMo speculative head tensor \(name) is not bfloat16")
@@ -53,7 +61,8 @@ final class MiMoTensorParallelDraftHead {
         let configurationData = try Data(contentsOf: modelDirectory.appendingPathComponent("config.json"))
         let checkpoint = try VerifiedCheckpoint(directory: modelDirectory, configurationData: configurationData,
             hashingConcurrency: MiMoRegisteredSpecification.hashingConcurrency)
-        return try load(checkpoint: checkpoint, configurationData: configurationData, target: target)
+        return try load(descriptors: descriptors(checkpoint: checkpoint), checkpoint: checkpoint,
+                        configurationData: configurationData, target: target)
     }
 
     init(configurationData: Data, target: MiMoTensorParallelModel, weights: [String: MLXArray]) throws {

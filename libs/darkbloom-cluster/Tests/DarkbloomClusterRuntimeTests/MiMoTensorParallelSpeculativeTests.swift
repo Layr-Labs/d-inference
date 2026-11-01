@@ -206,6 +206,35 @@ struct MiMoTensorParallelSpeculativeTests {
         }
     }
 
+    /// The runtime charges the heads from the pipeline's head inventory over the artifact's
+    /// headers (`MiMoMTPHeadInventory`: three BF16 heads beside the packed embedding): on a
+    /// synthetic checkpoint it names exactly the tensors a rank loads, and their bytes.
+    @Test func headInventoryNamesExactlyTheLoadedHeads() throws {
+        let (directory, models) = try Self.ranks()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try Device.withDefaultDevice(.cpu) {
+            let configuration = try Data(contentsOf: directory.appendingPathComponent("config.json"))
+            let checkpoint = try VerifiedCheckpoint(directory: directory, configurationData: configuration,
+                                                    hashingConcurrency: 2)
+            let indexed = try tensorDescriptors(checkpoint: checkpoint,
+                                                scope: .init(acceptsUInt8: true, indexedShardsOnly: true))
+            let headers = try indexed.map { name, tensor in
+                MiMoMTPHeadInventory.Entry(name: name, shape: tensor.shape, dtype: try tensor.storedDTypeName,
+                                           byteCount: tensor.byteCount)
+            }
+            let inventory = try MiMoMTPHeadInventory(configuration: configuration, headers: headers)
+            let selected = try MiMoTensorParallelDraftHead.descriptors(checkpoint: checkpoint)
+            #expect(Set(inventory.head.map(\.name)) == Set(selected.keys) && inventory.head.count == 42)
+            let head = try #require(models.value[0].draftHead)
+            #expect(inventory.head.reduce(0) { $0 + $1.byteCount } == head.headBytes && head.headTensors == 42)
+            // A descriptor set that is not the heads' is refused before any read.
+            #expect(throws: (any Error).self) {
+                _ = try MiMoTensorParallelDraftHead.load(descriptors: indexed.filter { !$0.key.hasPrefix("language_model.model.mtp.") },
+                    checkpoint: checkpoint, configurationData: configuration, target: models.value[0])
+            }
+        }
+    }
+
     /// A rank's speculative charge at the registered geometry (exact bounds): the drafter's
     /// bounded state is the product's own declaration (chunk 512, depth 2), and a window adds
     /// each sliding ring once more per extra row, one page per layer and its rows twice. The

@@ -104,7 +104,8 @@ private func checkMiMoRequestAllowance(_ priced: ClusterModelLayout, configurati
 
 /// The fastest-plan rule on constructed pairs, under the provider's own
 /// first-placement policy (`ClusterPlacementFlow.decide`: tensor parallel
-/// first, an unmeasured link assumed).
+/// first, an unmeasured link assumed): against the plain pipeline (1-3), then
+/// as the provider plans MiMo, its speculative pipeline credited by its records (4).
 private func checkMiMoFastestPlan(_ layout: ClusterModelLayout, _ checks: PlacementChecks) throws {
     // Each Mac's whole-model rates and device index (`qmm_h4096_b4_g64_x16_v1`). M5 Ultra 256 GB: MiMo alone on the
     // cluster path, 57 tok/s (MTP off, 2026-10-13); 1,000 prefill tok/s (none is recorded on an M5 Ultra; the plan
@@ -127,7 +128,7 @@ private func checkMiMoFastestPlan(_ layout: ClusterModelLayout, _ checks: Placem
             measuredUTC: "2026-10-31T00:00:00Z")!
     }
     let measuredLink = probe(allSum: 29, large: 3_919), slowLink = probe(allSum: 109, large: 9_000)
-    func first(_ prompt: Int, _ outputs: Int) -> ClusterPlacementPolicy {
+    func first(_ prompt: Int?, _ outputs: Int?) -> ClusterPlacementPolicy {
         var p = ClusterPlacementPolicy(); p.promptTokens = prompt; p.outputTokens = outputs
         p.tensorParallelFirst = true; p.tensorParallelAssumesUnmeasuredLink = true
         return p
@@ -207,6 +208,30 @@ private func checkMiMoFastestPlan(_ layout: ClusterModelLayout, _ checks: Placem
     var forced = ClusterPlacementPolicy(); forced.forcedMode = .tensorParallel
     checks.require("mimo fastest plan: the developer's forced mode still places tensor parallel",
         try plan(ultras, forced, .unmeasured).chosen?.mode == .tensorParallel)
+
+    // 4. As the provider plans MiMo: its shipped records credit the speculative pipeline the decode speed-up they
+    // measured (pipeline_mtp_v1, M5 Ultra + M3 Ultra, 2026-10-14: 59.18 against 43.05 tok/s; the provider's setup
+    // checks pin that `ClusterPlacementFlow.decide` credits it), and a fresh pair plans for the layout's longest
+    // request. Before a load measures the link every pair keeps the speculative pipeline, even for a short request;
+    // on the measured 29 us link both take tensor parallel for that decode-heavy request but not for a long prompt.
+    let recordedRounds = 59.175439562562005 / 43.05376848056872
+    func asProvider(_ prompt: Int? = nil, _ outputs: Int? = nil) -> ClusterPlacementPolicy {
+        var p = first(prompt, outputs); p.recordedPipelineSpeculativeFactor = recordedRounds
+        return p
+    }
+    func speculative(_ r: ClusterPlacementResult) -> Bool {
+        r.chosen?.mode == .pipelineMTP && r.tensorParallel?.verdict == .predictedSlower
+    }
+    for (name, devices) in [("2x M5 Max 128 GB", maxes), ("2x M5 Ultra 256 GB", ultras)] {
+        let fresh = try plan(devices, asProvider(), .unmeasured), short = try plan(devices, asProvider(128, 128), .unmeasured)
+        checks.require("mimo as the provider plans it: \(name) before a load measures the link keeps the speculative pipeline for a fresh pair's \(fresh.promptTokens) + \(fresh.outputTokens) (\(times(fresh))) and for 128 + 128 (\(times(short)))",
+            fresh.promptTokens == 32_768 && fresh.outputTokens == 32_768 && speculative(fresh) && speculative(short))
+        let fast = try plan(devices, asProvider(), measuredLink), long = try plan(devices, asProvider(8_192, 128), measuredLink)
+        checks.require("mimo as the provider plans it: \(name) on the measured 29 us link takes tensor parallel for a fresh pair's request (\(times(fast))) and keeps the speculative pipeline for 8,192 + 128 (\(times(long)))",
+            tensor(fast) && speculative(long))
+        checks.require("mimo as the provider plans it: \(name) on a measured 109 us link keeps the speculative pipeline for a fresh pair's request",
+            speculative(try plan(devices, asProvider(), slowLink)))
+    }
 }
 
 /// The same layout with its plan's choice removed: a family that keeps the tensor-parallel-first rule.

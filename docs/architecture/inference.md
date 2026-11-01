@@ -4352,30 +4352,39 @@ weight bytes per token, 99.1 % of them divided.
 
 MiMo opts into the fastest-plan rule
 ([Gemma tensor-parallel placement](#gemma-tensor-parallel-placement)): 97 sealed
-sums a step cross the link, and on two big Macs the pipeline keeps its
-speculative rounds (`pipeline_mtp_v1`). On the planner's own figures
-(`PlacementChecks`, `MiMoTensorParallelChecks.swift`; constructed Macs: M5 Ultra
-57 tok/s, the M5 Max 128 GB from its stage probes at 40 tok/s):
+sums a step cross the link, and the pipeline it competes with decodes in
+speculative rounds (`pipeline_mtp_v1`), which tensor parallel does not yet. The
+guided step credits those rounds the decode speed-up MiMo's passing
+qualification records measured, 1.37x (59.18 against 43.05 tok/s;
+`ClusterPairServingGrants.recordedPipelineSpeculativeFactor`), and a fresh pair
+plans for the layout's longest request, 32,768 + 32,768 tokens. On the
+planner's own figures (`PlacementChecks`, `MiMoTensorParallelChecks.swift`;
+constructed Macs: M5 Ultra 57 tok/s, the M5 Max 128 GB from its stage probes at
+40 tok/s), the provider plans MiMo as follows:
 
 | Pair | Link | Request | Chosen |
 |---|---|---|---|
-| 2x M5 Max 128 GB (neither holds MiMo alone) | default (unmeasured) | 128 + 128, 1,024 + 1,024 | tensor parallel (3.17 s vs 3.50 s; 25.4 s vs 27.5 s) |
-| 2x M5 Max 128 GB | default | 1,024 + 128 | pipeline (tensor parallel 4.7 % faster, inside the 5 % margin) |
-| 2x M5 Max 128 GB | default | 8,192 + 128 | pipeline (the prompt's FP32 sums) |
-| 2x M5 Max 128 GB | measured 29 us sums | 1,024 + 128 | tensor parallel |
-| 2x M5 Ultra 256 GB | default | 128 + 128 to 8,192 + 128 | pipeline (52.1 vs 57 tok/s on the assumed link) |
-| 2x M5 Ultra 256 GB | measured 29 us / 109 us sums | 1,024 + 128 | tensor parallel (85.7 tok/s) / pipeline |
-| 2x M5 Ultra 256 GB | measured 29 us sums | 8,192 + 128 | pipeline |
+| 2x M5 Max 128 GB (neither holds MiMo alone) or 2x M5 Ultra 256 GB | default (unmeasured) | every request, 128 + 128 and 32,768 + 32,768 included | speculative pipeline (tensor parallel 43.6 against 55.0 tok/s on 2x M5 Max, 52.1 against 78.3 on 2x M5 Ultra) |
+| either pair | measured 29 us sums | decode-heavy, 32,768 + 32,768 included | tensor parallel (32,768 + 32,768: 553 s against 646 s on 2x M5 Max, 405 s against 444 s on 2x M5 Ultra) |
+| either pair | measured 29 us sums | 8,192 + 128 | speculative pipeline (the prompt's FP32 sums) |
+| either pair | measured 109 us sums | 32,768 + 32,768 | speculative pipeline |
 
-On two M5 Ultra the default link prices 97 sums at about 10.3 ms a step, more
-than the weight streaming a half saves. Once a load has measured the pair's
-29 us link, a decode-heavy request is predicted faster in tensor parallel,
-even against the pipeline credited MiMo's recorded 1.37x for speculative
-rounds. That prediction rests on the hardware prior: the M5 Ultra's device
-index puts the whole 17.5 ms step in weights, which is optimistic
-[INFERENCE]; a share probe or served tensor-parallel records correct it. The
-recorded golden layout gains the facts and routed experts beside its recorded
-bytes; its golden plans keep their placements (pipeline, cut 41 and cut 24).
+Against the plain pipeline (a capability without `pipeline_mtp_v1`, or no
+passing record of the rounds), two M5 Max take tensor parallel even on default
+link costs for decode-heavy requests (128 + 128: 3.17 s against 3.50 s) and keep
+the pipeline inside the 5 % margin (1,024 + 128) or for long prompts; two M5
+Ultra keep the pipeline on default link costs, where 97 sums cost about 10.3 ms
+a step, more than the weight streaming a half saves.
+
+Every tensor-parallel prediction here rests on the hardware prior: the M5
+Ultra's device index puts the whole 17.5 ms step in weights, so a rank is
+predicted to save half of it, although it still pays the step's dispatch floor
+[INFERENCE]. MiMo has no share probe, so only served tensor-parallel records
+correct the prior (`ClusterServedCalibration`). The recorded golden layout
+gains the facts and routed experts beside its recorded bytes; its golden plans
+keep their placements (pipeline, cut 41 and cut 24), and their tensor-parallel
+verdict reads `notExecutedByRuntime` because the recorded mode list predates
+`tensor_parallel_v1`.
 
 Code map:
 

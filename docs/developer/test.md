@@ -1354,11 +1354,17 @@ registered artifact for them.
    facts for the image candidate, the same facts in the golden layout, and the
    rank's reserve (`MiMoTensorParallelRequestBudget`) in the quote. Under the
    provider's tensor-parallel-first policy it checks the fastest-plan rule on
-   constructed pairs: 2x M5 Max 128 GB takes tensor parallel where predicted
-   faster and keeps the pipeline inside the margin or for long prompts; 2x M5
-   Ultra 256 GB keeps the pipeline on default link costs; measured links flip
-   the choice both ways, also against a pipeline credited for speculative
-   rounds.
+   constructed pairs against the plain pipeline: 2x M5 Max 128 GB takes tensor
+   parallel where predicted faster and keeps the pipeline inside the margin or
+   for long prompts; 2x M5 Ultra 256 GB keeps the pipeline on default link
+   costs; measured links flip the choice both ways. As the provider plans MiMo
+   (the speculative pipeline credited the 1.37x its records measured, a fresh
+   pair's 32,768 + 32,768 request), both pairs keep the speculative pipeline
+   until a load measures the link, take tensor parallel for that request on the
+   measured 29 us link, and keep the pipeline for 8,192 + 128 or on a 109 us
+   link. `provider-swift/Tests/ClusterPlacementChecks/run.sh` checks that the
+   guided step credits MiMo's rounds from its shipped records and prints the
+   fastest-plan and logprob lines.
 
 2. Build `darkbloom-cluster-tp-check` and put a source-matched `mlx.metallib`
    beside it ([build](build.md)). Then run the GPU oracles:

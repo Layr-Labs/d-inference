@@ -813,14 +813,19 @@ import Foundation
     }
 
     /// MiMo V2.6's plan, on its golden layout (read from the real headers, with the family's tensor-parallel facts
-    /// and `fastest_v1`) and the mode list its row now advertises: the guided step's "Tensor parallel or pipeline"
-    /// lines say the model runs tensor parallel only where predicted faster, and that only tensor parallel keeps
-    /// committed-token logprobs; a capability without tensor parallel prints neither.
+    /// and `fastest_v1`) with the mode list its row now advertises and its MTP head as those headers give it
+    /// (`PipelineSpeculativeChecks`): the guided step's "Tensor parallel or pipeline" lines say the model runs
+    /// tensor parallel only where predicted faster, and that only tensor parallel keeps committed-token logprobs;
+    /// a capability without tensor parallel prints neither. The plan credits MiMo's speculative pipeline the
+    /// speed-up its shipped records measured, the pipeline that tensor parallel must beat.
     static func mimoFastestPlanLines(description base: [String: Any]) throws {
         let golden = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent(
             "../../../libs/darkbloom-cluster/Tests/PlacementChecks/Golden/layouts/mimo-v2.6-flash-mopd-2026-09-28-r1.json")
         var object = try JSONSerialization.jsonObject(with: Data(contentsOf: golden)) as? [String: Any] ?? [:]
-        object["generationModes"] = [ClusterGenerationMode.pipeline, .pipelineCompactDecode, .phaseSplit, .tensorParallel].map(\.rawValue)
+        let rowModes: [ClusterGenerationMode] = [.pipeline, .pipelineCompactDecode, .phaseSplit, .tensorParallel, .pipelineMTP]
+        object["generationModes"] = rowModes.map(\.rawValue)
+        object["speculativeHead"] = ["storedBytes": 1_975_640_448, "loadedBytes": 1_975_640_448, "largestTensorBytes": 134_217_728,
+                                     "tensorCount": 42, "requestWorkBytes": 0]
         let layout = try ClusterModelLayout.decode(JSONSerialization.data(withJSONObject: object))
         func capability(_ modes: [ClusterGenerationMode]) throws -> (ClusterRuntimeCapability, ClusterPairDescription) {
             let cuts = layout.admittedCuts, layers = layout.layerCount
@@ -848,13 +853,19 @@ import Foundation
         let fastestLine = "  This model runs tensor parallel only where it is predicted faster than a pipeline; until a load "
             + "measures the link, tensor parallel is priced on a slow assumed link."
         let logprobLine = "  Committed-token logprobs are captured in tensor parallel only; a pipeline pair refuses requests for them."
-        let (both, bothDescription) = try capability([.pipeline, .pipelineCompactDecode, .phaseSplit, .tensorParallel])
+        let (both, bothDescription) = try capability(rowModes)
         let planned = try ClusterPlacementFlow.decide(description: bothDescription, capability: both, localMemberID: "mac-one",
             localProfile: local, peerProfile: peer, layout: layout)
         require("MiMo plan lines: the model runs tensor parallel only where predicted faster, and keeps logprobs only there",
             layout.tensorParallel?.family.choosesFastest == true && planned.lines.contains("Tensor parallel or pipeline")
                 && planned.lines.contains(fastestLine) && planned.lines.contains(logprobLine))
-        let (pipelineOnly, pipelineDescription) = try capability([.pipeline, .pipelineCompactDecode, .phaseSplit])
+        // pipeline_mtp_v1, M5 Ultra + M3 Ultra, 2026-10-14: 59.18 against 43.05 tok/s (`MiMoTensorParallelChecks` uses it).
+        let rounds = ClusterPairServingGrants.recordedPipelineSpeculativeFactor(runtimeModelID: layout.runtimeModelID,
+            artifactSHA256: layout.artifactSHA256)
+        require("MiMo plan lines: the plan credits MiMo's speculative pipeline the speed-up its shipped records measured",
+            abs((rounds ?? 0) - 59.175439562562005 / 43.05376848056872) < 1e-9
+                && planned.lines.contains { $0.hasPrefix("  Pipeline speculative rounds are credited 1.37x") })
+        let (pipelineOnly, pipelineDescription) = try capability(rowModes.filter { $0 != .tensorParallel })
         let piped = try ClusterPlacementFlow.decide(description: pipelineDescription, capability: pipelineOnly, localMemberID: "mac-one",
             localProfile: local, peerProfile: peer, layout: layout)
         require("MiMo plan lines: a capability without tensor parallel prints neither line",

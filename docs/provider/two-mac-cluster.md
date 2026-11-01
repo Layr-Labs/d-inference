@@ -537,13 +537,15 @@ MiMo V2.6 Flash text can also run tensor parallel: each Mac holds half of every
 layer, about 84 GB of weights and about 98 GiB in all with its reserves
 ([rank memory](../architecture/hardware-support.md#mimo-v26-tensor-parallel-rank-memory)),
 so two 128 GB Macs that cannot hold MiMo alone can serve it. The plan chooses
-tensor parallel only where it predicts it faster than the pipeline:
+tensor parallel only where it predicts it faster than the pipeline with
+speculative decoding, which MiMo's qualification records credit 1.37x:
 
-- Two 128 GB Macs: tensor parallel for short prompts with long answers, the
-  pipeline for long prompts.
-- Two 256 GB Macs: the pipeline until a load has measured the link; after that,
-  tensor parallel for short prompts with long answers on a fast Thunderbolt 5
-  link.
+- Before a load has measured the link, two 128 GB Macs and two 256 GB Macs
+  alike keep the pipeline.
+- After that, on a fast Thunderbolt 5 link, both get tensor parallel unless the
+  prompt is long and the answer short (for example 8,192 + 128 tokens); a new
+  pair plans for the longest prompt and answer, which gets tensor parallel. A
+  slow link keeps the pipeline.
 
 In tensor parallel MiMo returns logprobs, serves one request at a time and
 runs without speculative decoding; the image candidate stays a pipeline. Speed

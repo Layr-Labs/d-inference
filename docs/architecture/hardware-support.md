@@ -1165,8 +1165,8 @@ layout's `requestAllowance`:
 
 The LOAD gate admits the shard with one request at the profile's longest
 context (65,536 tokens) and the per-rank charges, the planner's quote: about
-100.5 GB, plus the 4 GiB loading headroom, about 97.6 GiB per rank. That fits
-a 128 GB Mac. A reservation asks the live gate for its own request and the
+100.5 GB, or about 104.8 GB (97.6 GiB) per rank with the 4 GiB loading
+headroom. That fits a 128 GB Mac. A reservation asks the live gate for its own request and the
 per-rank charges. Nothing here is measured on a pair; see
 [inference](inference.md#mimo-tensor-parallel-placement).
 

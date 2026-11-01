@@ -353,6 +353,7 @@ struct GPTOSSCheckpointRestartLiveTests {
         var finishReason: String?
         for await event in stream {
             switch event {
+            case .logprobs: break
             case .chunk(let chunk):
                 if firstChunk == nil && !chunk.isEmpty { firstChunk = .now }
                 if !chunk.isEmpty { lastChunk = .now }

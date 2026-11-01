@@ -1,4 +1,0 @@
-### Console tooling removed with the console source
-
-- The console source now lives only in darkbloom-platform; #1625 removed this repository's `console-ui/` snapshot. The tooling that still pointed at it is removed too: the `Console UI Lint & Build` CI job and its `console` change lane, the `make ui-install`, `ui-lint`, `ui-test`, `ui-build` and `ui` targets (`make test` and `make build` no longer run them), the console-only `.githooks` pre-commit and pre-push hooks, the `/console-ui` Dependabot entry, and the console tests' copies of `paged_footprint_wire.json` and `process_memory_wire.json` under `coordinator/tests/protocol/testdata/`. Provider tests keep their own copies of those fixtures.
-- The console architecture page and the console section of the configuration reference are removed; console architecture and configuration are documented in darkbloom-platform.

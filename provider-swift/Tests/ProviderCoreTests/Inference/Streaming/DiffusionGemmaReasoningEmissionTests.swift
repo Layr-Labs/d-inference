@@ -99,10 +99,11 @@ struct DiffusionGemmaReasoningEmissionTests {
                         let text = String(buffer: response.body)
                         #expect(native.submissionCount == 1)
                         // Responses objects echo the request's `tools` and `tool_choice`,
-                        // so there the tool name alone is not a leaked call.
+                        // so there the tool name alone is not a leaked call; streamed
+                        // Responses frames are checked without that echo below.
                         #expect(!text.contains("Paris") && !text.contains("<|channel>"))
                         #expect(!text.contains("\"function_call\"") && !text.contains("\"arguments\""))
-                        #expect(responses || !text.contains("get_weather"))
+                        if !responses || !streaming { #expect(!text.contains("get_weather")) }
                         #expect(!text.contains("reasoning_summary_text.delta") && !text.contains("reasoning_content"))
                         if streaming {
                             #expect(response.status == .ok)
@@ -111,6 +112,21 @@ struct DiffusionGemmaReasoningEmissionTests {
                             }.map { try #require(JSONSerialization.jsonObject(with: Data($0.dropFirst(6).utf8)) as? [String: Any]) }
                             let last = try #require(frames.last)
                             if responses {
+                                // Responses echoes request tool configuration. It is not generated output.
+                                for frame in frames {
+                                    var generated = frame
+                                    if var envelope = frame["response"] as? [String: Any] {
+                                        let tools = try #require(envelope.removeValue(forKey: "tools") as? [[String: Any]])
+                                        #expect(tools.count == 1 && tools.first?["name"] as? String == "get_weather")
+                                        let choice = try #require(envelope.removeValue(forKey: "tool_choice") as? [String: Any])
+                                        #expect(choice["type"] as? String == "function" && choice["name"] as? String == "get_weather")
+                                        let output = try #require(envelope["output"] as? [[String: Any]])
+                                        #expect(output.isEmpty && envelope["output_text"] as? String == "")
+                                        generated["response"] = envelope
+                                    }
+                                    let bytes = try JSONSerialization.data(withJSONObject: generated)
+                                    #expect(!String(decoding: bytes, as: UTF8.self).contains("get_weather"))
+                                }
                                 #expect(last["type"] as? String == "response.failed")
                             } else {
                                 #expect(last["error"] is [String: Any])

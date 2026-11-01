@@ -1,0 +1,233 @@
+{
+ "Qwen3.5-9B-2026-09-03-r1": {
+  "cut": 16,
+  "handOffPlanSHA256": "9cb2a6da68dc1cf39f3625e13d078a23d7ccf7d29b1bd26d4fa2c8a019b119b4",
+  "mode": "pipeline_v1",
+  "planSHA256": "ab9f89386761194bac4ad61061eb737d499701736e241486664bd884252aff37",
+  "ranks": [
+   {
+    "device": "mac-a",
+    "endLayer": 16,
+    "firstLayer": 0,
+    "fit": "now"
+   },
+   {
+    "device": "mac-b",
+    "endLayer": 32,
+    "firstLayer": 16,
+    "fit": "now"
+   }
+  ],
+  "runtimeModelID": "registered_qwen35_9b"
+ },
+ "Qwen3.8-27B-4bit-mtp-2026-09-03-r1": {
+  "cut": 32,
+  "handOffPlanSHA256": "a502363ee5115d591d71761768473fd665d0807da00bc7962a78cdbceb2bee54",
+  "mode": "pipeline_v1",
+  "planSHA256": "bee75bf9b4ead011967f1617fe24cdc674341c3728917d46a2be349b1ff0d3c6",
+  "ranks": [
+   {
+    "device": "mac-a",
+    "endLayer": 32,
+    "firstLayer": 0,
+    "fit": "now"
+   },
+   {
+    "device": "mac-b",
+    "endLayer": 64,
+    "firstLayer": 32,
+    "fit": "now"
+   }
+  ],
+  "runtimeModelID": "registered_qwen38_27b"
+ },
+ "gemma-4-26b": {
+  "cut": 15,
+  "handOffPlanSHA256": "d18c86e08d609efff04dba63a250d8a26580ff9bc0fe3854b2399961cc8711a9",
+  "mode": "pipeline_v1",
+  "planSHA256": "4a7acb8341eb99036e819e651b6eb0a91f7d17256192b06c1864c1fdb938eeb4",
+  "ranks": [
+   {
+    "device": "mac-a",
+    "endLayer": 15,
+    "firstLayer": 0,
+    "fit": "now"
+   },
+   {
+    "device": "mac-b",
+    "endLayer": 30,
+    "firstLayer": 15,
+    "fit": "now"
+   }
+  ],
+  "runtimeModelID": "registered_gemma4_26b"
+ },
+ "gemma-4-26b-8bit": {
+  "cut": 15,
+  "handOffPlanSHA256": "4c7e27371b3173548670079e804af65e7229ab812146d9a9d3b5a532ea96d511",
+  "mode": "pipeline_v1",
+  "planSHA256": "8c0e0dc6c7781fe37db90ea37f423fa8b9c370bfea8010a3e2531d00cc41ca8b",
+  "ranks": [
+   {
+    "device": "mac-a",
+    "endLayer": 15,
+    "firstLayer": 0,
+    "fit": "now"
+   },
+   {
+    "device": "mac-b",
+    "endLayer": 30,
+    "firstLayer": 15,
+    "fit": "now"
+   }
+  ],
+  "runtimeModelID": "registered_gemma4_26b_8bit"
+ },
+ "gemma-4-26b-qat-4bit": {
+  "cut": 15,
+  "handOffPlanSHA256": "2b8dc675c45902362c5c01aa93149de0472c2afec72f00232f240278d6ede4df",
+  "mode": "pipeline_v1",
+  "planSHA256": "d6bc775b447fc25abc13db52b72b7d0c17b47a0b87f356f0cd57f86d5aa7e21c",
+  "ranks": [
+   {
+    "device": "mac-a",
+    "endLayer": 15,
+    "firstLayer": 0,
+    "fit": "now"
+   },
+   {
+    "device": "mac-b",
+    "endLayer": 30,
+    "firstLayer": 15,
+    "fit": "now"
+   }
+  ],
+  "runtimeModelID": "registered_gemma4_26b_qat_4bit"
+ },
+ "gpt-oss-20b-2026-05-25-r1": {
+  "cut": 12,
+  "handOffPlanSHA256": "a9d77bc8cbaa30c32a2ff10cf43d2a2254689809c5734662b9c42337d2181393",
+  "mode": "pipeline_v1",
+  "planSHA256": "41fcac53249854edea8f2641f8ce022689a9795717c263015f922c21f4372ce0",
+  "ranks": [
+   {
+    "device": "mac-a",
+    "endLayer": 12,
+    "firstLayer": 0,
+    "fit": "now"
+   },
+   {
+    "device": "mac-b",
+    "endLayer": 24,
+    "firstLayer": 12,
+    "fit": "now"
+   }
+  ],
+  "runtimeModelID": "registered_gpt_oss_20b"
+ },
+ "mimo-v2.6-flash-mopd-2026-09-28-r1": {
+  "cut": 41,
+  "handOffPlanSHA256": "b5ad60578a8438482ea406eac34caf0a4083237335d0a94c6214bfe33d7d0454",
+  "mode": "pipeline_v1",
+  "planSHA256": "b8e47f8ec25b077706df9be8516a679cf4503960491729e6915e47c6b70e3d1a",
+  "ranks": [
+   {
+    "device": "mac-a",
+    "endLayer": 41,
+    "firstLayer": 0,
+    "fit": "now"
+   },
+   {
+    "device": "mac-b",
+    "endLayer": 48,
+    "firstLayer": 41,
+    "fit": "now"
+   }
+  ],
+  "runtimeModelID": "registered_mimo_v26_flash_mopd"
+ },
+ "nvidia-nemotron-3.5-lightning-2026-09-30-r1": {
+  "cut": 27,
+  "handOffPlanSHA256": "2adb43d5fe361398a3350c228e28294b8feaf9875a00ab5f2247e49cbc0ee513",
+  "mode": "pipeline_v1",
+  "planSHA256": "fda4dcaf99e97163c6126750f355757611348fabc5d8704c9ba66c964c21be05",
+  "ranks": [
+   {
+    "device": "mac-a",
+    "endLayer": 27,
+    "firstLayer": 0,
+    "fit": "now"
+   },
+   {
+    "device": "mac-b",
+    "endLayer": 52,
+    "firstLayer": 27,
+    "fit": "now"
+   }
+  ],
+  "runtimeModelID": "registered_nemotron35_lightning"
+ },
+ "qwen3.5-35b-a3b-2026-08-25-r1": {
+  "cut": 20,
+  "handOffPlanSHA256": "5836548672e258d6cf6847797977cac0d76ccd72af7066686075ed5089febcad",
+  "mode": "pipeline_v1",
+  "planSHA256": "040235f97f5e60a3e958ec4ca17cacf5bc6a71caf84de776c28958a1868015d5",
+  "ranks": [
+   {
+    "device": "mac-a",
+    "endLayer": 20,
+    "firstLayer": 0,
+    "fit": "now"
+   },
+   {
+    "device": "mac-b",
+    "endLayer": 40,
+    "firstLayer": 20,
+    "fit": "now"
+   }
+  ],
+  "runtimeModelID": "registered_qwen35_35b_a3b"
+ },
+ "qwen3.6-35b-a3b-vl-mtp-mxfp8-2026-08-11-r1": {
+  "cut": 20,
+  "handOffPlanSHA256": "5174e601a1b10fc3cd72859942a5da866706a2bc0286800493bf9eb3af1542bf",
+  "mode": "pipeline_v1",
+  "planSHA256": "83313dda328b2bb7267fa92f668f61667371e6d0ba3f59b1cec51785b21f198f",
+  "ranks": [
+   {
+    "device": "mac-a",
+    "endLayer": 20,
+    "firstLayer": 0,
+    "fit": "now"
+   },
+   {
+    "device": "mac-b",
+    "endLayer": 40,
+    "firstLayer": 20,
+    "fit": "now"
+   }
+  ],
+  "runtimeModelID": "registered_qwen36_35b_a3b"
+ },
+ "ternary-bonsai-2-27b-2026-09-17-r1": {
+  "cut": 32,
+  "handOffPlanSHA256": "50b3a669ffdd30c0945edb798c7028980fb2d951ede3f403d29037f10898da07",
+  "mode": "pipeline_v1",
+  "planSHA256": "79a6569f90f8442da5b9b584b7722e9724559119a25c1fe33d44392f2a478328",
+  "ranks": [
+   {
+    "device": "mac-a",
+    "endLayer": 32,
+    "firstLayer": 0,
+    "fit": "now"
+   },
+   {
+    "device": "mac-b",
+    "endLayer": 64,
+    "firstLayer": 32,
+    "fit": "now"
+   }
+  ],
+  "runtimeModelID": "registered_ternary_bonsai_2_27b"
+ }
+}

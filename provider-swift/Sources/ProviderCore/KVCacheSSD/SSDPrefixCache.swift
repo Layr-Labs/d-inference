@@ -1078,8 +1078,9 @@ public final class SSDPrefixCache:
         // covers boundaries no earlier donation could; skipping it would leave
         // permanent holes in the window tiling.
         //
-        // Order is load-bearing: `SSDWriteBehind.consume` charges the daily
-        // endurance bucket per entry IN ARRAY ORDER, and one sidecar is an
+        // Order is load-bearing: when the whole donation does not fit,
+        // `SSDWriteBehind.consume` charges the daily endurance bucket per
+        // entry IN ARRAY ORDER, and one sidecar is an
         // order of magnitude larger than a block (52 MB vs 5 MB on gemma-4).
         // Queued first, a sidecar could spend the last of the allowance and
         // starve the very prefix blocks it can only accelerate.
@@ -1768,35 +1769,29 @@ public final class SSDPrefixCache:
 
     /// Unlink the LRU entry (box-wide budget enforcement).
     func evictOldestEntry() -> Int {
-        guard hasSafeRoot else { return 0 }
-        // Bounded by the index snapshot. Invalid/missing entries are dropped
-        // without touching their pathname; a valid-but-undeletable entry is
-        // skipped so a newer victim can still satisfy the box-wide budget.
-        let victims = index.oldestEntries()
-        guard !victims.isEmpty else { return 0 }
-        for victim in victims {
-            let url = SSDBlockStore.fileURL(root: config.root, tag16Hex: SSDLookupKeys.hex(victim.tag16))
-            let retired = retireIndexedEntries([url])
-            if retired.externalChange { return 0 }
-            if retired.indexedBytesFreed > 0 {
-                statsBox.add(evictions: 1)
-                return retired.indexedBytesFreed
+        // A closed cache refuses every removal and is never reopened.
+        guard !isClosed, hasSafeRoot else { return 0 }
+        let freed = SSDOwnedEntryRetirement.evictOldest(index: index, isClosed: { isClosed }) { tag in
+            let url = SSDBlockStore.fileURL(root: config.root, tag16Hex: SSDLookupKeys.hex(tag))
+            return retireIndexedEntries([url])
+        }
+        if freed > 0 { statsBox.add(evictions: 1) }
+        return freed
+    }
+
+    func retireOwnedEntries(_ urls: [URL], unusedSince: Int64? = nil) -> Set<String> {
+        retireIndexedEntries(urls, unusedSince: unusedSince).removed
+    }
+
+    private func retireIndexedEntries(_ urls: [URL], unusedSince: Int64? = nil) -> SSDOwnedEntryRetirement.Result {
+        let result = SSDOwnedEntryRetirement.removeInSlices(urls) { slice in
+            removalLock.withLock {
+                guard hasSafeRoot, ownsEvictionRoot else { return nil }
+                return SSDOwnedEntryRetirement.remove(
+                    urls: slice, root: config.root, index: index, epochStore: config.epochStore,
+                    unusedSince: unusedSince)
             }
         }
-        return 0
-    }
-
-    func retireOwnedEntries(_ urls: [URL]) -> Set<String> {
-        retireIndexedEntries(urls).removed
-    }
-
-    private func retireIndexedEntries(_ urls: [URL]) -> SSDOwnedEntryRetirement.Result {
-        let result: SSDOwnedEntryRetirement.Result? = removalLock.withLock {
-            guard hasSafeRoot, ownsEvictionRoot else { return nil }
-            return SSDOwnedEntryRetirement.remove(
-                urls: urls, root: config.root, index: index, epochStore: config.epochStore)
-        }
-        guard let result else { return .init() }
         if result.externalChange { reconcileExternalRemovals() }
         return result
     }

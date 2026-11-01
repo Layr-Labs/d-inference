@@ -126,6 +126,7 @@ private struct FlintStreamOutcome {
             reasoning += parsed.reasoningContent ?? ""
         case .toolCall(let call): calls.append(call)
         case .toolCallDelta(let delta): if let call = delta.completed { calls.append(call) }
+        case .logprobs: break
         case .info(let info): self.info = info
         }
     }

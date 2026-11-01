@@ -17,7 +17,7 @@ enum MiMoV26ManagedMediaForwarding {
             // upstream bridge owns the terminal, including a sticky native fault.
             for await event in upstream {
                 switch event {
-                case .chunk:
+                case .chunk, .logprobs:
                     if lease.snapshot().phase == .active { continuation.yield(event) }
                 case .info, .error, .terminal:
                     observedTerminal = true

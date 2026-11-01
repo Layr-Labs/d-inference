@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-10-31
+> Last updated: 2026-11-01
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -4475,7 +4475,9 @@ Code: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/GPTOSS/Meta
 one-token requests. Ordinary affine 4/8-bit group-64 projections retain native
 matmul `M=1` through leading weight views; custom and floating modules retain
 their original per-request forward method. The unscaled value RMS reduction
-and each routed expert operation retain singleton request shapes as well.
+retains singleton request shapes. The rows' routed experts share one unsorted
+call that keeps each row's singleton bytes
+([Gemma prompt projection reductions](#gemma-prompt-projection-reductions)).
 The scope owns no cache, changes no shared MLX dispatcher, and is disabled for
 singletons, prefill and speculative rectangles.
 
@@ -4857,17 +4859,30 @@ packed weights; it adds no persistent weight copy. Query/key/value, output,
 shared MLP and router projections use their existing model call sites. Norms,
 the vocabulary head, independent decode lanes and singleton frames retain
 their existing operations.
-The same explicit prompt scope invokes each BF16 token's complete expert block
-with its unchanged selected indices and weights. This preserves singleton
-GeGLU and weighted reduction rather than entering a wide sorted expert graph;
-ordinary SDK prompts and speculative verification keep their existing paths. Custom modules, other dtypes/packing, and ordinary
-SDK callers retain the original forward method.
+The same explicit prompt scope keeps each BF16 token's complete expert block
+at one token: its unchanged selected indices and weights, an M=1 gathered
+product per selected expert, singleton GeGLU and its own top-K weighted
+reduction, rather than a wide sorted expert graph. All tokens of a frame share
+one call (`SwitchGLU.callAndWeightedReduceRows`) that keeps their assignments
+unsorted. MLX selects `gather_qmv` from the bits, dtype and the N and K widths
+alone, and the top-8 reduction's `col_reduce_small` thread layout depends only
+on the hidden width, so each token's bytes equal those of its own one-token
+call. The tokens share one dispatch per operation instead of about six per
+token per layer. Independent decode rows use the same call
+([Gemma ordinary batch decode arithmetic](#gemma-ordinary-batch-decode-arithmetic)).
+Ordinary SDK prompts and speculative verification keep their existing paths.
+Custom modules, other dtypes/packing, and ordinary SDK callers retain the
+original forward method.
 
 The exact Gemma arithmetic receipt binds both prompt projection and expert
 reduction policies before LOAD, separating prior rectangular-projection cache and plan identities. The
 stable family policy identifier and required environment flags remain the same.
+The shared expert dispatch changes no byte, so the receipt and the cache
+identities it separates are unchanged.
 Component byte equality is separate from full-model two-chip numerical
-qualification, and the M=1 prompt graph requires its own throughput measurement.
+qualification. The M=1 prompt graph still needs a pair throughput measurement;
+the synthetic component timings are in
+[Gemma pipeline prompt experts](../reports/2026-11-01-gemma-pipeline-prompt-experts.md).
 The SDK helper is
 `libs/mlx-swift-lm/Libraries/MLXLLM/Models/Gemma4PrefillProjection.swift`;
 stage activation and receipt binding are in

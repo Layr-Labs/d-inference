@@ -1,6 +1,6 @@
 # Test Provider And Native Contracts
 
-> Last updated: 2026-10-31
+> Last updated: 2026-11-01
 
 Run isolated Swift, native-resource, public-fixture and landing tests here.
 Backend integration and cross-implementation qualification are platform-owned.
@@ -2217,13 +2217,20 @@ prompt projections with actual singleton calls at chunk boundaries, checks
 explicit scope restoration and unsupported/custom fallbacks, and verifies the
 unchanged tied head. `Gemma4PrefillExpertTests` executes the actual Gemma decoder, router,
 shared MLP and sparse expert block with the attention output isolated to zero;
-it assembles an independent projection/expert oracle while preserving the
-original rectangular normalization and elementwise operations, and compares
-selected routes across prompt boundaries. A separate expert-only composition
+it assembles an independent projection/expert oracle from one-token expert
+calls while preserving the original rectangular normalization and elementwise
+operations. It requires one unsorted expert call carrying every token's routes
+in order, with the oracle's bytes, at 7 to 512 tokens. A separate expert-only composition
 check compares complete singleton calls with the shared branch isolated to
-zero. Ordinary and verification paths remain covered. These checks do not
+zero, and a decode check requires 2, 3 and 8 independent rows to share one
+unsorted call with each row's one-row bytes. Ordinary and verification paths
+remain covered, and the original rectangular call still sorts. These checks do not
 claim whole-layer singleton equivalence: existing normalization can depend on
-rectangle shape on CPU.
+rectangle shape on CPU. With `GEMMA4_EXPERT_ROWS_GPU=1` the suite also
+compares the shared call with one-row calls on the GPU for 1 to 2,048 rows, at
+a geometry with the production kernel classes; `=production` adds hidden 2,816,
+expert width 704 and 128 experts. Run the GPU case alone, in an exclusive
+hardware window.
 `GemmaPrefillArithmeticTests` in the runtime target verifies that both exact
 policies change the receipt while the family environment and chunk policy
 remain bound. These CPU checks do not establish full-model cross-chip qualification

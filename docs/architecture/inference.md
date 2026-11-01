@@ -5193,8 +5193,10 @@ deepest whole chunk before the final token, a boundary 64 tokens before the
 prompt end for the next turn, and one Mac's 4,096-token stripe boundaries for
 a shared system prompt (`QwenTensorParallelBatchPrefixBudget`, policy
 `qwen-tp-batch-prefix-depth-v2`, which the load agreement binds). A repeated
-33K-token prompt restores 32,768 tokens on both ranks, as one Mac reuses; the
-restored request computes exactly what a cold one computes on the same grid.
+33K-token prompt restores 32,768 tokens on both ranks, as one Mac reuses. A
+request restored from memory or a native SSD record computes exactly what a
+cold one computes on the same grid; the SSD tier's default `balanced` records
+keep their older rows approximate.
 The mechanism, the parity cases and the SSD records are in
 [the Qwen27 TP prefixes](prefix-cache.md#qwen27-tp-prefix-ssd-tier) and the
 section before it; the memory each request and LOAD charge is in

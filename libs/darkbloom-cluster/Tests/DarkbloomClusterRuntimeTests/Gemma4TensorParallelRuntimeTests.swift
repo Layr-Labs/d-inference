@@ -660,8 +660,10 @@ struct Gemma4TensorParallelRuntimeTests {
         }
         let fingerprint = try base.fingerprint(admission: "row")
         #expect(try Gemma4TensorParallelLoadAgreement().fingerprint(admission: "row") == fingerprint)
+        // This build keeps prompt prefixes; a rank whose diagnosis switch turned them off refuses its peer.
+        #expect(base.prefixCache && base.prefixCache == Gemma4ResidentAdapterDefinition.tensorParallelKeepsPromptPrefixes)
         var lanes = base; lanes.lanes = 2
-        var prefix = base; prefix.prefixCache = true
+        var prefix = base; prefix.prefixCache = false
         var packed = base; packed.kvQuantization = .k8v8
         let others = try [lanes, prefix, packed].map { try $0.fingerprint(admission: "row") }
             + [try base.fingerprint(admission: "other row")]

@@ -3,8 +3,9 @@ import Foundation
 import MLX
 
 /// One request on one rank of a Gemma 4 tensor-parallel pair, as the resident
-/// runtime serves it alone: the prompt in chunks of the request's own size,
-/// then one decode step a token. Each step's token and both ranks' stop flags
+/// runtime serves it alone: the prompt in chunks of the request's own size
+/// (from a restored prefix's boundary, when both ranks restored one), then
+/// one decode step a token. Each step's token and both ranks' stop flags
 /// are agreed in the step's own evaluation (`Gemma4TensorParallelChoice`);
 /// both ranks submit the same collectives in the same order whatever either
 /// decides, and end after the same step.
@@ -39,7 +40,8 @@ struct Gemma4TensorParallelRequestLoop {
     func run(channel: ClusterCommittedTokenChannel, check: () throws -> Void) throws -> Outcome {
         let rank = choice.rank, prompt = request.promptTokenIDs
         let sampler = choice.sampler
-        var offset = 0
+        // A restored prefix ends on the chunk grid: the rest runs the chunks a cold request runs there.
+        var offset = session.committedTokens
         var current: (logits: MLXArray, selected: MLXArray)?
         while offset < prompt.count {
             let end = min(prompt.count, offset + request.chunkSize)

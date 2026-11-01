@@ -387,9 +387,12 @@ public enum ClusterPlacementLayouts {
             let bound = allocationBound
             #endif
             if family.tensorParallel != nil, let bound {
-                // What a rank's LOAD gate reserves beside its shard: one request at the profile's longest context.
+                // What a rank's LOAD gate reserves beside its shard: one request at the profile's longest
+                // context, with its prompt-prefix capture and the prefix tier's charged budget.
                 family.tensorParallelRequestAllowance = try Gemma4TensorParallelRequestBudget.derive(
                     contextTokens: family.profile.maximumContextTokens, chunkTokens: family.profile.maximumChunkTokens,
+                    promptTokens: family.profile.maximumPromptTokens,
+                    keepsPrefixes: Gemma4ResidentAdapterDefinition.tensorParallelKeepsPromptPrefixes,
                     allocationBound: bound).allowance
             }
             return try ClusterModelLayoutBuilder.build(family: family, tensors: tensors,

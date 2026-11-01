@@ -73,6 +73,8 @@ run_variant() {
 }
 run_variant kernel "" --variant kernel
 run_variant tiny "" --variant tiny
+# Every token takes all 8 experts: no rounding can flip a route.
+run_variant kernel-all-experts "" --variant kernel --experts 8 --top-k 8
 run_variant kernel-fp32 "MLX_ENABLE_TF32=0" --variant kernel --dtype float32
 # The socket backend once, on the production-kernel shapes.
 tp_pair "$scratch/kernel" request request-tp-socket socket ""

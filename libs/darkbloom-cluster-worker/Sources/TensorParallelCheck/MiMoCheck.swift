@@ -7,7 +7,7 @@ import MLX
 // MiMo V2.6 tensor-parallel oracles (MiMoTensorParallelModel), greedy, MTP off:
 //
 //   darkbloom-cluster-tp-check mimo synthesize --output /NEW/DIR [--variant kernel|tiny] [--seed N]
-//       [--dtype bfloat16|float32]
+//       [--dtype bfloat16|float32] [--experts N --top-k K]
 //       a random MiMo checkpoint (never a model pass), request.json (40-token prompt, longer than the window
 //       and the 16-token chunk) and request-short.json (6 tokens, shorter than both), 64 outputs each
 //   darkbloom-cluster-tp-check mimo run --mode full|simulated|shard|tp --model-dir DIR --request FILE --report FILE
@@ -98,12 +98,15 @@ enum MiMoCheck {
         guard let output = fields["--output"], output.hasPrefix("/"), !FileManager.default.fileExists(atPath: output),
               let variant = MiMoTensorParallelModel.SyntheticVariant(rawValue: fields["--variant"] ?? "kernel"),
               let seed = UInt64(fields["--seed"] ?? "7"),
-              let dtypeName = Optional(fields["--dtype"] ?? "bfloat16"), ["bfloat16", "float32"].contains(dtypeName) else {
-            throw Failure("mimo synthesize needs --output /NEW/DIR [--variant kernel|tiny] [--seed N] [--dtype bfloat16|float32]")
+              let dtypeName = Optional(fields["--dtype"] ?? "bfloat16"), ["bfloat16", "float32"].contains(dtypeName),
+              (fields["--experts"] == nil) == (fields["--top-k"] == nil),
+              fields["--experts"].map({ Int($0) != nil }) ?? true, fields["--top-k"].map({ Int($0) != nil }) ?? true else {
+            throw Failure("mimo synthesize needs --output /NEW/DIR [--variant kernel|tiny] [--seed N] [--dtype bfloat16|float32] [--experts N --top-k K]")
         }
         let directory = URL(fileURLWithPath: output, isDirectory: true)
         try MiMoTensorParallelModel.writeSyntheticCheckpoint(directory: directory, variant: variant, seed: seed,
-            dtype: dtypeName == "float32" ? .float32 : .bfloat16)
+            dtype: dtypeName == "float32" ? .float32 : .bfloat16,
+            experts: fields["--experts"].flatMap { Int($0) }, topK: fields["--top-k"].flatMap { Int($0) })
         let vocabulary = MiMoTensorParallelModel.syntheticConfiguration(variant)["vocab_size"] as! Int
         for (name, count) in [("request.json", 40), ("request-short.json", 6)] {
             let prompt = (0 ..< count).map { ($0 * 37 + 11) % vocabulary }

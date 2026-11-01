@@ -20,8 +20,11 @@ extension MiMoTensorParallelModel {
         case tiny
     }
 
-    /// The variant's whole `config.json` object.
-    public static func syntheticConfiguration(_ variant: SyntheticVariant, dtype: DType = .bfloat16) -> [String: Any] {
+    /// The variant's whole `config.json` object. `experts`/`topK` replace the
+    /// variant's routed bank (with `topK == experts` every token takes every
+    /// expert, so no rounding can change a route).
+    public static func syntheticConfiguration(_ variant: SyntheticVariant, dtype: DType = .bfloat16,
+                                              experts: Int? = nil, topK: Int? = nil) -> [String: Any] {
         let kernel = variant == .kernel
         let layers = kernel ? 6 : 4
         let dtypeName = dtype == .float32 ? "float32" : "bfloat16"
@@ -44,8 +47,8 @@ extension MiMoTensorParallelModel {
             "partial_rotary_factor": 0.334, "attention_value_scale": 0.707, "layernorm_epsilon": 1e-5,
             "attention_projection_layout": "fused_qkv", "moe_router_dtype": dtypeName, "hidden_act": "silu",
             "dtype": dtypeName, "attention_bias": false, "tie_word_embeddings": false, "attention_dropout": 0.0,
-            "scoring_func": "sigmoid", "topk_method": "noaux_tc", "n_routed_experts": kernel ? 16 : 8,
-            "num_experts_per_tok": kernel ? 8 : 2, "n_group": 1, "topk_group": 1, "norm_topk_prob": true,
+            "scoring_func": "sigmoid", "topk_method": "noaux_tc", "n_routed_experts": experts ?? (kernel ? 16 : 8),
+            "num_experts_per_tok": topK ?? (kernel ? 8 : 2), "n_group": 1, "topk_group": 1, "norm_topk_prob": true,
             "num_attention_heads": kernel ? 16 : 4, "num_key_value_heads": 2,
             "head_dim": kernel ? 192 : 48, "v_head_dim": kernel ? 128 : 32, "rope_theta": 10_000_000.0,
             "add_full_attention_sink_bias": false,
@@ -62,12 +65,18 @@ extension MiMoTensorParallelModel {
     /// elsewhere; BF16 router, norms and sinks; FP32 score correction), with
     /// one MTP and one vision tensor that every loader must skip by name.
     public static func writeSyntheticCheckpoint(directory: URL, variant: SyntheticVariant, seed: UInt64 = 7,
-                                                dtype: DType = .bfloat16) throws {
+                                                dtype: DType = .bfloat16, experts: Int? = nil, topK: Int? = nil) throws {
         guard [.bfloat16, .float32].contains(dtype) else {
             throw ProbeError("MiMo synthetic checkpoint: weights are bfloat16 or float32")
         }
+        if experts != nil || topK != nil {
+            guard let experts, let topK, (2 ... 64).contains(experts), (1 ... experts).contains(topK) else {
+                throw ProbeError("MiMo synthetic checkpoint: 2 to 64 experts, top-k at most the experts")
+            }
+        }
         let configurationData = try JSONSerialization.data(
-            withJSONObject: syntheticConfiguration(variant, dtype: dtype), options: [.sortedKeys, .prettyPrinted])
+            withJSONObject: syntheticConfiguration(variant, dtype: dtype, experts: experts, topK: topK),
+            options: [.sortedKeys, .prettyPrinted])
         let plan = try MiMoTensorParallelPlan(configuration: configurationData)
         let configuration = try JSONDecoder().decode(MiMoV26Configuration.self, from: configurationData)
         var arrays = try withRandomState(MLXRandom.RandomState(seed: seed)) { () throws -> [String: MLXArray] in

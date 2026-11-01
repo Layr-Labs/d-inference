@@ -1300,7 +1300,8 @@ registered artifact for them.
      /path/to/darkbloom-cluster-tp-check /new/scratch/dir 58223
    ```
 
-   The script synthesizes the `kernel`, `tiny` and FP32 `kernel` variants. For
+   The script synthesizes four variants: `kernel`, `tiny`, `kernel` with every
+   token taking all 8 experts (no route can flip), and FP32 `kernel`. For
    each, and for a 40-token and a 6-token prompt around the 8-token window, it
    runs `full`, `simulated` and two `tp` ranks over the sealed local ring on
    ports 58223–58224. It then runs the socket backend once, and one sampled

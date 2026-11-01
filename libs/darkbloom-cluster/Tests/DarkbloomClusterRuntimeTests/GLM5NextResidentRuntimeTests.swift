@@ -192,10 +192,18 @@ struct GLM5NextResidentRuntimeTests {
             #expect(quote.peak.hostBytes == rank.hostPeakBytes)
             #expect(quote.peak.reservedBytes == rank.combinedPeakBytes)
             let shortLoad = try envelope(load: rank.combinedPeakBytes - 1, request: rank.request.reservedBytes)
-            #expect(throws: ProbeError.self) {
+            let refusal = #expect(throws: ProbeError.self) {
                 try shortLoad.quote(descriptor: fixture.descriptor, maximumBufferBytes: Int.max,
                     allocationBound: { $0 })
             }
+            // The refusal names the rank, the cut, the memory plan's request, the quote's terms and the capacity.
+            let gib = QwenDenseStageLoadPolicy.gibText
+            let scratch = rank.combinedPeakBytes - rank.load.sourceAllocationBoundBytes - rank.request.reservedBytes
+            #expect(refusal?.description == "GLM rank \(rank.rank) at cut \(fixture.descriptor.cut) needs "
+                + "\(gib(rank.combinedPeakBytes)) to load and serve its 256-token request (weights "
+                + "\(gib(rank.load.sourceAllocationBoundBytes)), load scratch \(gib(scratch)), request "
+                + "\(gib(rank.request.reservedBytes))), more than its load capacity of \(gib(rank.combinedPeakBytes - 1)) "
+                + "(on a serving rank, what its GPU keeps resident)")
             #expect(throws: ProbeError.self) {
                 try envelope(load: rank.combinedPeakBytes, request: rank.request.reservedBytes - 1)
             }

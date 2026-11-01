@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-10-31
+> Last updated: 2026-11-01
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -4058,6 +4058,22 @@ A Qwen tensor-parallel rank waits for each all-sum the same way GLM's does: the 
 The GLM finite-calibration adapter samples each Mac locally and reuses `GLM5NextQualificationPlacement.evaluateLocal`. It supplies serial PP only; TP, lookahead and speculative execution are not part of that calibration seam. The cost layout leaves public admitted cuts empty. Existing keyed measurements feed `ClusterSpeedEstimator`; absent measurements remain priors, and the uniform layer-cost and unmeasured-link assumptions are reported. Predicted fastest is not measured-best pair throughput. Experimental workspace allowances never become measured or calibrated serving evidence.
 
 The installed run command recomputes the decision from both snapshots, binds it to the unchanged local template, and then invokes the existing signed quotation/owner path with the chosen cut. Local and peer quotes must still agree, and current-device/load/reserve/start checks retain authority. Public endpoint activation, automated calibration scheduling and a MiMo adapter for this exact-quote seam are separate integrations.
+
+## GLM pair refusals
+
+A GLM pipeline rank prices its whole stay before it reads a weight: the stage's
+weights at their allocator bounds, what only loading holds (construction
+copies, host read buffers, metadata) and the memory plan's request
+(`GLM5NextResidentResourceEnvelope.quote`). A quote above the rank's load
+capacity, the GPU's recommended working set on a serving rank
+(`GLM5NextServingResources.envelope`), refuses the load. The refusal names the
+rank, the cut, the request's context and each of those terms
+(`GLM5NextResidentResourceEnvelope.capacityRefusal`). The tensor-parallel load
+quotes both pipeline ranks at the installed cut the same way
+(`GLM5NextTensorParallelLoadMetadata`), so it gives the same refusal before its
+own gate. The decision is unchanged; only the sentence carries the numbers.
+[GLM-5.3-Flash pairs on 128 GB Macs](hardware-support.md#glm-53-flash-pairs-on-128-gb-macs)
+has the figures for two M5 Max.
 
 ## GLM cluster prefill bounds
 

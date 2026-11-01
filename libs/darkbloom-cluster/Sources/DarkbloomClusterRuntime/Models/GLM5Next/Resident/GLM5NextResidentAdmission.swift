@@ -274,9 +274,27 @@ public struct GLM5NextResidentResourceEnvelope {
             allocationBound: allocationBound, includeVision: descriptor.includesVision)
         let peak = try GLM5NextResidentPeak(load: load.summary, request: request)
         guard request.reservedBytes <= requestCapacityBytes, peak.reservedBytes <= loadCapacityBytes else {
-            throw ProbeError("GLM quotation exceeds the bound load/request capacities")
+            throw ProbeError(capacityRefusal(cut: descriptor.cut, load: load.summary, request: request, peak: peak))
         }
         return (load, request, peak)
+    }
+
+    /// Which capacity a quote exceeds, with the quote's terms: the stage's
+    /// weights, what only loading holds beside them, and the request the
+    /// memory plan charges. A serving rank's load capacity is what its GPU
+    /// keeps resident (`GLM5NextServingResources.envelope`).
+    func capacityRefusal(cut: Int, load: GLM5NextStageLoadResources.Summary, request: GLM5NextRequestStateBudget,
+                         peak: GLM5NextResidentPeak) -> String {
+        let gib = QwenDenseStageLoadPolicy.gibText
+        let context = "its \(scope.maximumContextTokens)-token request"
+        guard peak.reservedBytes > loadCapacityBytes else {
+            return "GLM rank \(rank) at cut \(cut) quotes \(gib(request.reservedBytes)) for \(context), "
+                + "more than its request capacity of \(gib(requestCapacityBytes))"
+        }
+        let scratch = peak.reservedBytes - load.sourceAllocationBoundBytes - request.reservedBytes
+        return "GLM rank \(rank) at cut \(cut) needs \(gib(peak.reservedBytes)) to load and serve \(context) "
+            + "(weights \(gib(load.sourceAllocationBoundBytes)), load scratch \(gib(scratch)), request \(gib(request.reservedBytes))), "
+            + "more than its load capacity of \(gib(loadCapacityBytes)) (on a serving rank, what its GPU keeps resident)"
     }
 
     func budget(descriptor: GLM5NextResidentDescriptor) throws -> GLM5NextRequestStateBudget {

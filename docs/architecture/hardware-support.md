@@ -1,6 +1,6 @@
 # Hardware support and the provider memory model
 
-> Last updated: 2026-10-31
+> Last updated: 2026-11-01
 
 What hardware the provider runs on and how it decides, in bytes, whether a
 model may load and how much KV cache each resident model may use. Read this to
@@ -312,6 +312,29 @@ The provider neither lowers the cap nor changes admission for this; `doctor`,
 [sysctl values](../provider/hardware-requirements.md) instead
 (`provider-swift/Sources/ProviderCore/Diagnostics/GLM5NextWiredLimit.swift`,
 `GLM5NextWiredLimit`).
+
+#### GLM-5.3-Flash pairs on 128 GB Macs
+
+A pair of 128 GB Macs (two M5 Max) does not hold GLM-5.3-Flash at its memory
+plan's request, 65,536 tokens (`GLM5NextRegisteredSpecification.memoryLimits`):
+
+- **Pipeline:** each rank's LOAD quote must fit its load capacity, the GPU's
+  recommended working set, 107.52 GiB on an M5 Max 128 GB
+  (`GLM5NextServingResources.envelope`, `GLM5NextResidentResourceEnvelope.quote`).
+  At the most balanced cut (24) the ranks quote 111.48 and 110.54 GiB. That is
+  83.49 and 83.04 GiB of weights, 7.15 and 6.24 GiB that only loading holds, and
+  20.83 and 21.25 GiB for the request: its KDA chunk state, the 5.5 GiB
+  activation floor and its DSA histories. Every other cut needs more on one rank.
+- **Tensor parallel:** each rank's load gate asks for about 153 GB beside its
+  headroom, more than the Mac's 128 GiB: its shard (88.7 GB), the NextN layer
+  (4.2 GB), the request charge at 65,536 tokens (56.1 GB) and the freed-buffer
+  cache (`GLM5NextTensorParallelLoadMetadata`).
+
+The context is not what decides. The DSA histories charge 110,628 bytes a
+token on rank 0 at cut 24, so the pipeline would fit only below about 27K
+tokens. These figures are the quotes' own arithmetic on the registered
+artifact's headers, not measured peaks. Each refusal names its rank, cut,
+request and terms ([GLM pair refusals](inference.md#glm-pair-refusals)).
 
 `GLM5NextConstructionOwner` retains actual partial-load roots before evaluation.
 `GLM5NextArtifactLoadRoots` retires individual expert sources only after the

@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-10-31
+> Last updated: 2026-11-01
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -2961,6 +2961,9 @@ live line (`ClusterOnboardingDriver.move`, `ClusterOnboardingProgress.live`),
 laid out by `TransferProgressLine` through `ClusterTransferReports`; a
 transcript without a live line keeps only the reports
 `TransferProgressLine.takeLogLine` marks and the lines for the record.
+Its restart line reads FileVault with `fdesetup isactive`
+(`OnboardingLive.fileVaultOn`): five seconds, then SIGTERM and two more, and no
+answer reads as unknown. The exit comes from `ProcessExitObserver`, which does not run the calling thread's run loop.
 After a Darkbloom update changes a Mac's worker digest, the control leader's
 cluster service re-plans and re-adopts the same model by itself
 (`ClusterService.checkForUpdate`, `ClusterOnboardingUpdate`). A model change of

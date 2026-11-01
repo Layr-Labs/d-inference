@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-10-31
+> Last updated: 2026-11-01
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -783,6 +783,8 @@ grants serving authorization or removes an existing profile.
 | `-l`, `--lines <n>` | `Int` | `50` | Lines to show; only with `--file` |
 
 Without flags: `log stream --predicate 'subsystem == "dev.darkbloom.provider"' --level info`.
+
+Where `logs` and [`report`](#darkbloom-report) wait for a `log` child to finish, they take its exit from `ProcessExitObserver` (its termination handler), which does not run the calling thread's run loop.
 
 | Flag | Description |
 |------|-------------|

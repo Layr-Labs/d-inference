@@ -35,6 +35,9 @@ public struct ClusterShardOption: Codable, Equatable, Sendable {
         case chosen
         /// Predicted slower than the chosen deployment, or fitting less readily.
         case slower
+        /// Predicted faster, but a rank's share step is not measured
+        /// (`ClusterTensorParallelAssessment.Verdict.predictedFasterOnPriorOnly`).
+        case predictedFasterOnPriorOnly
         /// No runtime of this build executes it for this model.
         case notExecutedByRuntime
         /// The model's adapter has no tensor-parallel plan: it gets a pipeline.
@@ -173,6 +176,9 @@ extension ClusterPlacementPlanner {
                 return option(.tensorParallel, .chosen, "predicted faster than every pipeline by at least the margin"
                     + (best.shares != nil ? ", at the shares that balance the two Macs' steps" : ""), best, regime: regime, layerCount: layers)
             }
+            if let assessment, assessment.verdict == .predictedFasterOnPriorOnly {
+                return option(.tensorParallel, .predictedFasterOnPriorOnly, assessment.reason, best, regime: regime, layerCount: layers)
+            }
             return option(.tensorParallel, .slower, versus(best, ranked.first, regime: regime), best, regime: regime, layerCount: layers)
         }
         guard let assessment else {
@@ -182,6 +188,7 @@ extension ClusterPlacementPlanner {
         switch assessment.verdict {
         case .chosen: verdict = .chosen
         case .predictedSlower: verdict = .slower
+        case .predictedFasterOnPriorOnly: verdict = .predictedFasterOnPriorOnly
         case .notExecutedByRuntime: verdict = .notExecutedByRuntime
         case .notQualified: verdict = .failedQualification
         case .doesNotFit: verdict = .doesNotFit

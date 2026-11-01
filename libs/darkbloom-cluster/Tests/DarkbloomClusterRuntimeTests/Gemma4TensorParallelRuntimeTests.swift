@@ -673,8 +673,9 @@ struct Gemma4TensorParallelRuntimeTests {
     /// Gemma advertises tensor parallel, its worker routes it to this runtime,
     /// and its layout carries the plan's facts with the fastest-plan choice:
     /// under the provider's tensor-parallel-first policy two big Macs keep the
-    /// pipeline on default link costs, a measured fast link or a pair of small
-    /// Macs takes tensor parallel where it is predicted faster, and the
+    /// pipeline on default link costs; on a measured fast link tensor parallel
+    /// is predicted faster from the device index alone, so the pipeline is kept
+    /// until a share probe measures each rank, which then takes it; and the
     /// developer's forced mode places it. (`PlacementChecks`' Gemma checks
     /// cover the same rule on more pairs, model-free.)
     @Test func gemmaIsPlannedInTensorParallelOnlyWherePredictedFaster() throws {
@@ -720,7 +721,8 @@ struct Gemma4TensorParallelRuntimeTests {
             #expect(result.tensorParallel?.verdict != .chosen)
         }
         // Measured rates on both Macs (90 tok/s, 7,000 prefill) and their device index (the M5 Ultra's measured
-        // `qmm_h4096_b4_g64_x16_v1`), with a measured 5 us link: tensor parallel.
+        // `qmm_h4096_b4_g64_x16_v1`), with a measured 5 us link: tensor parallel is predicted faster on the index
+        // alone, so the pipeline is kept; with each rank's share probe (8.5 ms a half step), tensor parallel.
         let measured = devices.map { device -> ClusterPlacementDevice in
             var profile = device.profile
             profile.speedIndex = .init(chip: profile.chip, osBuild: profile.osBuild, benchmark: "qmm_h4096_b4_g64_x16_v1",
@@ -731,7 +733,11 @@ struct Gemma4TensorParallelRuntimeTests {
         let fast = ClusterLinkCosts(measured: true, perChunkSeconds: 0.0025, perDecodeStepSeconds: [ClusterGenerationMode.pipeline.rawValue: 360e-6],
             handoffSecondsPerByte: 1 / 2e9, provenance: "test input",
             reduction: .init(fixedSeconds: 5e-6, secondsPerByte: 1 / 30e9, keyed: true, provenance: "test input"))
-        #expect(try ClusterPlacementPlanner.plan(devices: measured, layout: layout, policy: first, link: fast).chosen?.mode == .tensorParallel)
+        let prior = try ClusterPlacementPlanner.plan(devices: measured, layout: layout, policy: first, link: fast)
+        #expect(prior.chosen?.mode == .pipeline && prior.tensorParallel?.verdict == .predictedFasterOnPriorOnly)
+        let probed = measured.map { $0.addingShareRates([$0.label: [ClusterShareRate(sharePerMille: 500, decodeTokensPerSecond: 1 / 0.0085)]]) }
+        let evidenced = try ClusterPlacementPlanner.plan(devices: probed, layout: layout, policy: first, link: fast)
+        #expect(evidenced.chosen?.mode == .tensorParallel && evidenced.tensorParallel?.evidence == .measured)
         #expect(try ClusterPlacementPlanner.plan(devices: measured, layout: layout, policy: first).chosen?.mode == .pipeline)
         var forced = ClusterPlacementPolicy(); forced.forcedMode = .tensorParallel
         #expect(try ClusterPlacementPlanner.plan(devices: devices, layout: layout, policy: forced).chosen?.mode == .tensorParallel)

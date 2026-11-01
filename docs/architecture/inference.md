@@ -5097,8 +5097,11 @@ rows' non-finite logit counts beside their maximum and first global index (a
 sampled cohort counts the gathered rows), and both ranks read them from the
 same evaluation that yields the tokens. A non-finite logit on either rank fails
 both ranks before any token is chosen, a sampler advances or anything is
-published; before, the rank that saw it failed alone and its peer waited in the
-selection sum. The decode step no longer pays a separate finiteness read
+published, so neither rank waits in a collective its peer never enters. The
+load agreement binds this selection sum
+(`qwen-tensor-parallel-selection-nonfinite-in-sum-v1`): a rank whose selection
+sums other words refuses to load beside it rather than meet it in a sum of
+another length. The decode step pays no separate finiteness read
 (`QwenTensorParallelBatchSession.validateLogits` checks shape and dtype), and
 every selected token is unchanged.
 

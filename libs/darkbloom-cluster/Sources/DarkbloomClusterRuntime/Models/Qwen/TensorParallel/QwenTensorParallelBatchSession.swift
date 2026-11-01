@@ -261,12 +261,14 @@ final class QwenTensorParallelBatchSession: QwenTensorParallelMTPTarget {
     static var usesExactVectors: Bool { exactVectorsOverride ?? exactVectors }
 
     /// Bound into the tensor-parallel load agreement: both ranks resolve the
-    /// decode projections alike, or the pair refuses to load (never a mixed
-    /// configuration). Each rank's words per lane is its own arithmetic
-    /// (a rank sums only its own partials) and is not bound.
+    /// decode projections alike and sum the same selection words (each row's
+    /// non-finite counts ride the greedy sum), or the pair refuses to load
+    /// (never a mixed configuration). Each rank's words per lane is its own
+    /// arithmetic (a rank sums only its own partials) and is not bound.
     static var decodeAgreementFields: [String] {
         ["qwen-tensor-parallel-decode-projections-v1", usesExactVectors ? "batch-invariant-affine" : "mlx-kernels",
-         "qwen-tensor-parallel-fenced-sums-v1", sumsAreFencedInputs ? "on" : "off"]
+         "qwen-tensor-parallel-fenced-sums-v1", sumsAreFencedInputs ? "on" : "off",
+         "qwen-tensor-parallel-selection-nonfinite-in-sum-v1"]
     }
 
     /// Whether the residual step's kernel waits for each all-sum itself: MLX

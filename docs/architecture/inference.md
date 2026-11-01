@@ -4362,7 +4362,9 @@ passes no depth in tensor parallel, and the planner credits no speed-up.
   rows, `QwenStageTokenSampler.verifyRound`), the stop slot and the position.
   `MiMoMTPAcceptance.kept` keeps drafts while each equals the target before it,
   then the target, cut at a stop token and the output limit. A request whose
-  sampler does not admit verification decodes one token a step.
+  sampler does not admit verification (`ClusterWorkerSampling.admitsSpeculativeVerification`:
+  history-dependent transforms, or a sampled request that asks for logprobs)
+  decodes one token a step, as in the pipeline's rounds.
 - **Rollback.** Each cache takes a checkpoint before the window (pages are
   immutable arrays). Unless every row is kept, the cache returns to it and
   replays the kept rows' keys and values as one-token appends
@@ -4371,9 +4373,9 @@ passes no depth in tensor parallel, and the planner credits no speed-up.
   tokens. A client stop inside a round stops rank 0's commits and rides the next
   round's agreement; when that round already ends the request, rank 1 adopts rank
   0's count and finish in the end agreement (`QwenTensorParallelStopRule.reconcile`).
-- **Logprobs.** One vocabulary-split top-k gather per kept column, led by the
-  column's agreed maximum; sampled rows publish the product sampler's
-  `takeRoundLogprobs`.
+- **Logprobs.** A greedy request takes one vocabulary-split top-k gather per
+  kept column, led by the column's agreed maximum; a sampled request with
+  logprobs decodes one token a step, so its logprobs are the step path's.
 - **Memory.** The LOAD gate adds the heads' bytes; each reservation and READY's
   capacity add the drafter's bounded request state and the window's extra rows
   (`MiMoTensorParallelResidentRuntime.speculativeRequestBytes`). The activation

@@ -166,6 +166,46 @@ struct MiMoTensorParallelSpeculativeTests {
         for ran in heads { #expect(ran.outcome.tokens == Array(tokens.prefix(inside + 1)) && ran.outcome.finish == .eos) }
     }
 
+    /// Sampled requests follow the product's rule (`admitsSpeculativeVerification`): a stateless
+    /// sampler without logprobs drafts, and both ranks keep the same keyed target samples; a
+    /// sampler with logprobs or with transforms that depend on its history (a logit bias)
+    /// decodes one token a step, exactly as without speculation.
+    @Test func sampledRequestsFollowTheProductsRule() throws {
+        let (directory, models) = try Self.ranks()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        func run(_ wire: ClusterWorkerSampling, speculative: Bool) throws -> [MiMoTensorParallelDecoding.Outcome] {
+            try Pair.run(device: .cpu) { rank in
+                let model = models.value[rank]
+                let sampler = QwenStageTokenSampler(try QwenStageSamplingState(wire, promptTokens: Self.prompt))
+                let speculation = speculative
+                    ? try MiMoTensorParallelSpeculation(depth: 2, proposer: .heads(try #require(model.draftHead))) : nil
+                var published: [ClusterWorkerTokenLogprobs?] = []
+                var outcome = try MiMoTensorParallelDecoding(model: model).run(
+                    .init(prompt: Self.prompt, outputCount: Self.outputs, chunk: 4, stopTokenIDs: [],
+                          rule: .rule(wire), sampler: sampler, speculation: speculation),
+                    publish: { _, _, value in published.append(value); return true })
+                if rank == 0 {
+                    #expect(published.count == outcome.tokens.count)
+                    #expect(published.allSatisfy { wire.topLogprobs == 0 ? $0 == nil : $0?.top.count == wire.topLogprobs })
+                }
+                outcome.caches = []
+                return outcome
+            }
+        }
+        func wire(bias: [ClusterWorkerSampling.LogitBias] = [], top: Int = 0) -> ClusterWorkerSampling {
+            .init(temperature: 0.8, topP: 1, topK: 0, minP: 0, repetitionPenalty: 1, repetitionContextSize: 0,
+                  frequencyPenalty: 0, presencePenalty: 0, seed: 9, stream: 3, logitBias: bias, topLogprobs: top)
+        }
+        let rounds = try run(wire(), speculative: true)
+        #expect(rounds[0].tokens == rounds[1].tokens && rounds[0].tokens.count == Self.outputs)
+        #expect((rounds[0].statistics?.rounds ?? 0) > 0 && rounds[0].statistics == rounds[1].statistics)
+        for stepped in [wire(top: 2), wire(bias: [.init(tokenID: 3, bias: 2)])] {
+            let speculative = try run(stepped, speculative: true), plain = try run(stepped, speculative: false)
+            #expect(speculative[0].statistics == nil && speculative[1].statistics == nil)
+            #expect(speculative[0].tokens == plain[0].tokens && speculative[1].tokens == plain[1].tokens)
+        }
+    }
+
     /// A rank's speculative charge at the registered geometry (exact bounds): the drafter's
     /// bounded state is the product's own declaration (chunk 512, depth 2), and a window adds
     /// each sliding ring once more per extra row, one page per layer and its rows twice. The

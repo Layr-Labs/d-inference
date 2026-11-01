@@ -153,7 +153,9 @@ struct MiMoTensorParallelDecoding {
         guard request.rule != .gatheredRow || request.sampler != nil else {
             throw ProbeError("MiMo tensor parallel generation: a gathered row needs the product's sampler")
         }
-        if let speculation = request.speculation {
+        // A sampler that cannot verify drafts decodes one token a step, as the pipeline's rounds do.
+        if let speculation = request.speculation,
+           request.rule != .gatheredRow || (request.sampler?.admitsSpeculativeVerification ?? false) {
             var result = try runRounds(request, speculation: speculation, localStop: localStop, publish: publish,
                                        observe: observe)
             result.outcome.statistics = result.statistics

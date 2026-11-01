@@ -484,7 +484,7 @@ public final class MiMoTensorParallelResidentRuntime {
             + " family=mimo prompt=\(request.promptCount) output=\(outcome.tokens.count) finish=\(finish.rawValue)"
             + " rule=\(rule.label) frames=\(codec?.sealedFrames ?? 0) key_generation=\(codec?.keyGeneration ?? 0)"
             + " kv_pages=\(outcome.caches.reduce(0) { $0 + $1.pageCount })"
-            + (outcome.statistics.map { " " + $0.diagnosticFields.prefix(6).joined(separator: " ") } ?? "")
+            + (outcome.statistics.map { " " + $0.diagnosticFields.prefix(8).joined(separator: " ") } ?? "")
             + String(format: " first_token_ms=%.1f decode_ms=%.1f", outcome.firstTokenSeconds * 1000, outcome.decodeSeconds * 1000))
         return QwenResidentGenerationCompletion(requestID: request.requestID, finishReason: finish,
             selectedTokenIDs: outcome.tokens, completedFrames: outcome.tokens.count,

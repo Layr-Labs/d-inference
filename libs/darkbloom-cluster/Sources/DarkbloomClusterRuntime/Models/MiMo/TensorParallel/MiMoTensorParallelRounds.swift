@@ -19,7 +19,8 @@ import MLXLMCommon
 /// (`MiMoMTPAcceptance.kept`: drafts while each equals the target before it,
 /// then the target; cut at a stop token and the output limit), roll the rest
 /// of the window back exactly, and commit. A round of no proposal is the
-/// one-token step itself.
+/// one-token step itself; a sampler that cannot verify drafts never gets here
+/// (`run` decodes it one token a step).
 ///
 /// Stops: a round's stop slots are read before either rank commits any of its
 /// tokens. Rank 0 hears the owner's answer to each token at once; a client
@@ -91,10 +92,9 @@ extension MiMoTensorParallelDecoding {
             try drafter.begin(firstToken: first.token)
             if stopKeep == 0, localStop() { stopKeep = Float(outcome.tokens.count); outcome.stoppedHere = true }
         }
-        let verifiable = request.rule != .gatheredRow || (request.sampler?.admitsSpeculativeVerification ?? false)
         while !ended {
             let remaining = request.outputCount - agreed
-            let count = verifiable ? min(drafter.depth, remaining - 1) : 0
+            let count = min(drafter.depth, remaining - 1)
             let drafts = count >= 1 ? try drafter.draft(lastToken: last, nextIndex: agreed, count: count) : []
             if drafts.isEmpty {
                 // A plain step: the one-token path's forward and selection.

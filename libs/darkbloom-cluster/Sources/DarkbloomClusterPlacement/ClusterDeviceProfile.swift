@@ -62,6 +62,12 @@ public struct ClusterDeviceProfile: Codable, Equatable, Sendable {
     /// attention transient exceed it is ranked after every range that fits.
     public var residentCapacityBytes: Int { wiredLimitBytes ?? gpuRecommendedWorkingSetBytes }
 
+    /// What macOS keeps for itself when the GPU's wired-memory limit is raised
+    /// (`iogpu.wired_limit_mb`): the provider's recommendation leaves 16 GiB
+    /// (`GLM5NextWiredLimit`), as a stage's residency does (`ClusterStageResidency`).
+    /// A GPU need above physical memory less this is not met by any setting.
+    public static let gpuLimitReserveBytes = 16 << 30
+
     /// A profile from another Mac is untrusted input: bounded, plain text
     /// labels and counters that cannot contradict each other.
     public func validate() throws {

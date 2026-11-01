@@ -159,6 +159,8 @@ struct GLM5NextPlacementFamily: ClusterPlacementFamily {
     let imageCandidate: Bool
     let allocationExtraBytes: Int
     let transferAndInputAllowanceBytes: Int
+    /// Of those, a chunk's logits: only the last stage holds them.
+    let logitsAllowanceBytes: Int
     let tensorParallelPlan: ClusterTensorParallelFamilyPlan?
 
     static func handles(configuration: Data) -> Bool { GLM5NextRegisteredSpecification.handles(configuration: configuration) }
@@ -190,6 +192,7 @@ struct GLM5NextPlacementFamily: ClusterPlacementFamily {
             })
         transferAndInputAllowanceBytes = try GLM5NextStageLoadResources.sum([
             buffers.boundary, buffers.logits, buffers.wireNative, buffers.input, buffers.tokenHost, buffers.wireHost])
+        logitsAllowanceBytes = buffers.logits
 
         guard self.configuration.hiddenLayers == specification.layers, self.configuration.hcMult == 4,
               self.configuration.layerTypes.count == specification.layers else {
@@ -230,6 +233,23 @@ struct GLM5NextPlacementFamily: ClusterPlacementFamily {
             + GLM5NextArtifactLoader.payloadReadScratchAllowanceBytes + Self.largestExpertBankBytes + allocationExtraBytes
             + transferAndInputAllowanceBytes
             + mediaAllowanceBytes
+    }
+
+    /// A serving pipeline rank reserves no request at LOAD
+    /// (`GLM5NextResidentResourceEnvelope.admitsRequestsOnArrival`): the same
+    /// terms as `allowanceEveryRankBytes`, split as the worker holds them.
+    /// Loading holds the metadata ledgers, the host read buffers and the
+    /// largest expert bank's copy (`GLM5NextStageLoadResources`); every request
+    /// holds the workspace and the transfer buffers, and the last stage's a
+    /// chunk's logits (`GLM5NextRequestStateBudget`), rather than every rank
+    /// being charged rank 1's logits.
+    var requestsOnArrival: ClusterRequestsOnArrival? {
+        .init(loadAllowanceEveryRankBytes: GLM5NextResidentResourceEnvelope.metadataAllowanceBytes + 2 * Self.largestTensorBytes
+                + GLM5NextArtifactLoader.verificationHostBytes + GLM5NextArtifactLoader.payloadReadScratchAllowanceBytes
+                + Self.largestExpertBankBytes + allocationExtraBytes,
+            requestAllowanceEveryRankBytes: GLM5NextServingResources.workspaceNativeBytes + GLM5NextServingResources.workspaceHostBytes
+                + transferAndInputAllowanceBytes - logitsAllowanceBytes + mediaAllowanceBytes,
+            requestAllowanceLastRankBytes: logitsAllowanceBytes)
     }
 
     private var mediaAllowanceBytes: Int {

@@ -13,6 +13,19 @@ enum Gemma4ResidentAdapterDefinition {
     /// parallel only where it predicts it faster than the pipeline
     /// (`Gemma4PlacementFamily.tensorParallelPlan`, `ClusterTensorParallelChoice.fastest`).
     static let supportedGenerationModes: [ClusterGenerationMode] = [.pipeline, .tensorParallel]
+    /// Tensor parallel keeps no prompt prefix yet; its load agreement binds this (`Gemma4TensorParallelResidentRuntime`).
+    static let tensorParallelKeepsPromptPrefixes = false
+    /// What each mode keeps (`ClusterServingFeatures`), as its load runs it: the pipeline's stage owner keeps
+    /// prompt prefixes resident and on the owner's SSD tier (`QwenStagePrefixCache`, native KV); tensor parallel
+    /// keeps none yet (`tensorParallelKeepsPromptPrefixes`) and adds logprobs. Both serve up to
+    /// `QwenBatchWire.maximumLanes` lanes; neither decodes in speculative rounds or takes media.
+    static let servingFeatures: [ClusterGenerationMode: ClusterServingFeatures] = [
+        .pipeline: .init(promptPrefixReuse: true, ssdPrefixTier: true, speculativeRounds: false,
+            maximumLanes: QwenBatchWire.maximumLanes, logprobs: false),
+        .tensorParallel: .init(promptPrefixReuse: tensorParallelKeepsPromptPrefixes,
+            ssdPrefixTier: tensorParallelKeepsPromptPrefixes, speculativeRounds: false,
+            maximumLanes: QwenBatchWire.maximumLanes, logprobs: true),
+    ]
 
     static func profileID(_ model: Gemma4RegisteredModel) -> String { model.rawValue + "_greedy_generation_v1" }
 

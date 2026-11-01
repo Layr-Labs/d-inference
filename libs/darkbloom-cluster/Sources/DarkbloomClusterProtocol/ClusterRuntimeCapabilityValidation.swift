@@ -19,6 +19,11 @@ enum ClusterRuntimeCapabilityValidation {
         try workerRequire(value.supportedGenerationModes.first == .pipeline
             && value.supportedGenerationModes == ClusterGenerationMode.allCases.filter(value.supportedGenerationModes.contains),
             "Missing, duplicate or unordered generation modes")
+        if let features = value.modeFeatures {
+            try workerRequire(Set(features.keys) == Set(value.supportedGenerationModes),
+                "Serving features must name exactly the supported generation modes")
+            for entry in features.values { try entry.validate() }
+        }
         let imageCandidate = adapter == .mimoV26ImageCandidate
         try workerRequire(imageCandidate == (value.media != nil),"Candidate adapter requires its closed media contract")
         if imageCandidate {

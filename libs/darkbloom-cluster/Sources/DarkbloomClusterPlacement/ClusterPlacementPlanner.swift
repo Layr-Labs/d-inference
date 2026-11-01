@@ -117,8 +117,9 @@ public struct ClusterPlacementPolicy: Sendable {
     /// while tensor parallel would not) still goes first. Predictions are still made and reported. False, the
     /// default here: the speed comparison decides (the plan tool without `--tensor-parallel-first`, and the
     /// checks of that comparison). A family whose plan states `ClusterTensorParallelChoice.fastest` is always
-    /// ranked by the comparison (owner policy 2026-11-01); its first placement prices an unmeasured link
-    /// conservatively (`ClusterTensorParallelChoice.assumedReduction`).
+    /// ranked by the comparison (owner policy 2026-11-01) and takes tensor parallel only on every rank's measured
+    /// share step; its first placement prices an unmeasured link conservatively
+    /// (`ClusterTensorParallelChoice.assumedReduction`).
     public var tensorParallelFirst = false
     /// With `tensorParallelFirst`: before a load has measured the link, plan tensor parallel on the keyed
     /// reduction a forced plan assumes (`ClusterForcedMode.assumedReduction`, labelled as assumed), so the first
@@ -129,6 +130,12 @@ public struct ClusterPlacementPolicy: Sendable {
     public var tensorParallelAssumesUnmeasuredLink = false
     /// Why the mode is kept, in plain words: the plan's reason line when the hold decides the choice.
     public var keptModeReason: String?
+    /// Feature parity (owner, 2026-11-01: a mode may be chosen only if it keeps every feature and caching behavior
+    /// of the mode it would replace): why the caller left the tensor-parallel modes out of `modes`, in plain words
+    /// ("tensor parallel would drop prompt-prefix reuse that the pipeline keeps; held back until it keeps them").
+    /// The plan says it (`ClusterTensorParallelAssessment.Verdict.dropsFeatures`). Nil, the default: no mode was
+    /// left out for its features.
+    public var tensorParallelHeldForFeatures: String?
     public init() {}
 }
 
@@ -447,7 +454,9 @@ public enum ClusterPlacementPlanner {
         let byTime = context.ordered(qualified.filter(\.possible), regime: policy.regime)
         let unheld = tensorParallelFirst ? context.tensorParallelFirst(byTime)
             : context.holdingTensorParallelToItsMargin(byTime, regime: policy.regime)
-        let ranked = tensorParallelFirst ? unheld : context.holdingKeptMode(unheld, regime: policy.regime)
+        // A family chosen only where faster takes tensor parallel on measured share steps, never on the prior alone.
+        let evidenced = fastestOnly ? context.holdingTensorParallelWithoutEvidence(unheld, regime: policy.regime) : unheld
+        let ranked = tensorParallelFirst ? unheld : context.holdingKeptMode(evidenced, regime: policy.regime)
         if let forced = policy.forcedMode, ranked.isEmpty {
             throw ClusterPlacementError("Developer setting: \(forced.words) forced, but no \(forced.words) placement of \(layout.runtimeModelID) "
                 + (admitted.contains(where: \.possible)
@@ -503,7 +512,7 @@ public enum ClusterPlacementPlanner {
             candidatesConsidered: admitted.count,
             unqualifiedPossible: policy.admitsShape == nil ? nil
                 : admitted.filter(\.possible).count - qualified.filter(\.possible).count)
-        if let kept = policy.keptMode, ranked.first?.mode == kept, unheld.first?.mode != kept {
+        if let kept = policy.keptMode, ranked.first?.mode == kept, evidenced.first?.mode != kept {
             result.keptModeReason = policy.keptModeReason ?? "kept \(kept.rawValue), the mode this pair keeps"
         }
         // A family the policy left out entirely (every pipeline mode, or tensor parallel) is said with the
@@ -515,8 +524,11 @@ public enum ClusterPlacementPlanner {
             if families.contains(where: { !$0.isEmpty && !$0.contains(where: allowed.contains) }) { result.modesReason = reason }
         }
         if layout.tensorParallel != nil {
+            let heldForEvidence = unheld.first?.mode.usesTensorParallelDecode == true
+                && evidenced.first?.mode.usesTensorParallelDecode == false
             result.tensorParallel = try assessTensorParallel(devices: devices, layout: layout, policy: policy, link: link,
-                prompt: prompt, outputs: outputs, schedules: schedules, ranked: ranked, alone: alone)
+                prompt: prompt, outputs: outputs, schedules: schedules, ranked: ranked, alone: alone,
+                heldForEvidence: heldForEvidence)
         }
         if !policy.handOffModes {
             result.shards = try assessShards(context: context, admitted: admitted, qualified: qualified, ranked: ranked,
@@ -527,11 +539,13 @@ public enum ClusterPlacementPlanner {
 
     /// The tensor-parallel modes evaluated whether or not the runtime lists
     /// them, against what was chosen: the planner's answer to "would tensor
-    /// parallel be faster here, and if so what stops it".
+    /// parallel be faster here, and if so what stops it". `heldForEvidence`:
+    /// the plan put another mode first only because tensor parallel's share
+    /// steps are not all measured (`holdingTensorParallelWithoutEvidence`).
     static func assessTensorParallel(devices: [ClusterPlacementDevice], layout: ClusterModelLayout,
                                      policy: ClusterPlacementPolicy, link: ClusterLinkCosts, prompt: Int, outputs: Int,
                                      schedules: [ClusterPrefillSchedule], ranked: [ClusterPlacementCandidate],
-                                     alone: [ClusterPlacementAlone]) throws -> ClusterTensorParallelAssessment? {
+                                     alone: [ClusterPlacementAlone], heldForEvidence: Bool) throws -> ClusterTensorParallelAssessment? {
         guard let tp = layout.tensorParallel else { return nil }
         let regime = policy.regime
         let steps = tp.reductionsPerStep(layerCount: layout.layerCount)
@@ -560,6 +574,7 @@ public enum ClusterPlacementPlanner {
             (policy.modes?.contains(mode) ?? true) && (policy.forcedMode?.admits(mode) ?? true)
         }
         guard !modes.isEmpty else {
+            if let held = policy.tensorParallelHeldForFeatures { return unavailable(.dropsFeatures, held) }
             let why = implemented.contains(where: { policy.modes?.contains($0) == false }) ? policy.modesReason.map { " (\($0))" } ?? "" : ""
             return unavailable(.notQualified, "the placement policy excludes the model's tensor-parallel modes\(why); using pipeline candidates")
         }
@@ -580,13 +595,20 @@ public enum ClusterPlacementPlanner {
         let best = context.ordered(possible.filter { $0.mode == .tensorParallel }, regime: regime).first
         let hybrid = context.ordered(possible.filter { $0.mode == .pipelinePrefillTensorDecode }, regime: regime).first
         let perStep = tp.family.decodeReductionSeconds(layers: layout.layerCount, head: true, reduction: reduction)
-        func make(_ verdict: ClusterTensorParallelAssessment.Verdict, _ reason: String) -> ClusterTensorParallelAssessment {
-            .init(verdict: verdict, reason: reason, tensorParallel: best, hybrid: hybrid, bestOtherSeconds: bestOther,
-                  bestAloneSeconds: bestAlone, devices: speeds, reductionsPerStep: steps, reductionSecondsPerStep: perStep,
-                  reductionKeyed: reduction.keyed)
+        func make(_ verdict: ClusterTensorParallelAssessment.Verdict, _ reason: String,
+                  restingOn placement: ClusterPlacementCandidate? = nil) -> ClusterTensorParallelAssessment {
+            var value = ClusterTensorParallelAssessment(verdict: verdict, reason: reason, tensorParallel: best, hybrid: hybrid,
+                bestOtherSeconds: bestOther, bestAloneSeconds: bestAlone, devices: speeds, reductionsPerStep: steps,
+                reductionSecondsPerStep: perStep, reductionKeyed: reduction.keyed)
+            if tp.family.choosesFastest, let placement {
+                value.evidence = context.measuredShareSteps(placement, regime: regime) ? .measured : .priorOnly
+            }
+            return value
         }
         if let chosen = ranked.first, chosen.mode.usesTensorParallelDecode {
-            return make(.chosen, "predicted faster than every other mode by at least the margin")
+            let measured = tp.family.choosesFastest && context.measuredShareSteps(chosen, regime: regime)
+            return make(.chosen, "predicted faster than every other mode by at least the margin"
+                + (measured ? ", on every rank's measured share step" : ""), restingOn: chosen)
         }
         guard let fastest = [best, hybrid].compactMap({ $0 }).min(by: {
             $0.prediction(regime).requestSeconds < $1.prediction(regime).requestSeconds }) else {
@@ -602,21 +624,29 @@ public enum ClusterPlacementPlanner {
                 "\($0.device) needs \(ClusterPlacementExplanation.gibText($0.needBytes)) and admits \(ClusterPlacementExplanation.gibText($0.admissibleNowBytes)) now"
             }
             return make(.doesNotFit, String(format: "predicted %.2f s against %.2f s for the chosen placement, but it does not fit as these Macs are now (%@)",
-                time, chosen.prediction(regime).requestSeconds, short.joined(separator: "; ")))
+                time, chosen.prediction(regime).requestSeconds, short.joined(separator: "; ")), restingOn: fastest)
         }
         let unmeasured = speeds.filter { !$0.split.measured && $0.split.fromHardware == nil }.map(\.device)
         let prior = speeds.filter { $0.split.fromHardware == true }.map(\.device)
         let note = (unmeasured.isEmpty ? "" : "; no shard probe on \(unmeasured.joined(separator: ", ")), so its step is assumed not to shrink")
             + (prior.isEmpty ? "" : "; no shard probe on \(prior.joined(separator: ", ")), so its share's step is predicted from its measured device index")
+        if heldForEvidence, let bestOther {
+            return make(.predictedFasterOnPriorOnly, String(format: "predicted %.2f s against %.2f s for the chosen placement, "
+                + "but not on every rank's measured share step", time, bestOther) + note
+                + "; chosen only once a share probe of this model or requests served in tensor parallel measure each rank",
+                restingOn: fastest)
+        }
         if let bestOther, time >= bestOther * (1 - policy.tensorParallelMargin) {
-            return make(.predictedSlower, String(format: "predicted %.2f s against %.2f s for the chosen placement", time, bestOther) + note)
+            return make(.predictedSlower, String(format: "predicted %.2f s against %.2f s for the chosen placement", time, bestOther) + note,
+                restingOn: fastest)
         }
         guard reduction.keyed else {
             return make(.reductionNotMeasured, String(format: "predicted %.2f s, but the reduction was measured as a native all-sum; "
-                + "the product reduces over the keyed data plane, and only that measurement can choose the mode", time) + note)
+                + "the product reduces over the keyed data plane, and only that measurement can choose the mode", time) + note,
+                restingOn: fastest)
         }
         return make(.notQualified, String(format: "predicted %.2f s, but the policy admits no %@ shape on these Macs (a cross-cable check diverged at each)",
-            time, fastest.mode.rawValue) + note)
+            time, fastest.mode.rawValue) + note, restingOn: fastest)
     }
 
     /// One explicit placement, evaluated as the planner evaluates its own
@@ -1005,14 +1035,38 @@ public enum ClusterPlacementPlanner {
         /// right after that candidate.
         func holdingTensorParallelToItsMargin(_ ordered: [ClusterPlacementCandidate],
                                               regime: ClusterPlacementPolicy.Regime) -> [ClusterPlacementCandidate] {
-            func group(_ c: ClusterPlacementCandidate) -> Int { hardwareGroup(c) }
+            holdingTensorParallel(ordered) { candidate, other in
+                candidate.prediction(regime).requestSeconds > other.prediction(regime).requestSeconds * (1 - policy.tensorParallelMargin)
+            }
+        }
+
+        /// `ClusterTensorParallelChoice.fastest`: a tensor-parallel candidate stays ahead of the best candidate of
+        /// another mode in its group only when every rank's share step is measured (`measuredShareSteps`);
+        /// otherwise it goes right after that candidate. One in a better group (only it loads now) stays first.
+        func holdingTensorParallelWithoutEvidence(_ ordered: [ClusterPlacementCandidate],
+                                                  regime: ClusterPlacementPolicy.Regime) -> [ClusterPlacementCandidate] {
+            holdingTensorParallel(ordered) { candidate, _ in !measuredShareSteps(candidate, regime: regime) }
+        }
+
+        /// True when a shard probe measured every rank of `candidate` at a share in this regime
+        /// (`ClusterDecodeSplit.measured`): a share probe of this model, its speed record's shard rates, or the
+        /// shard rates requests served in tensor parallel corrected (`ClusterServedCalibration`).
+        func measuredShareSteps(_ candidate: ClusterPlacementCandidate, regime: ClusterPlacementPolicy.Regime) -> Bool {
+            candidate.ranks.allSatisfy { rank in
+                devices.first { $0.label == rank.device }.map { split($0, regime).measured } ?? false
+            }
+        }
+
+        /// The tensor-parallel candidates ahead of the best candidate of another mode, in its hardware group, that
+        /// `holds` keeps back go right after that candidate; the rest keep their order.
+        private func holdingTensorParallel(_ ordered: [ClusterPlacementCandidate],
+                                           holds: (_ candidate: ClusterPlacementCandidate, _ other: ClusterPlacementCandidate) -> Bool)
+            -> [ClusterPlacementCandidate] {
             guard let otherIndex = ordered.firstIndex(where: { !$0.mode.usesTensorParallelDecode }) else { return ordered }
             let other = ordered[otherIndex]
-            let limit = other.prediction(regime).requestSeconds * (1 - policy.tensorParallelMargin)
             var held: [ClusterPlacementCandidate] = [], kept: [ClusterPlacementCandidate] = []
             for candidate in ordered[..<otherIndex] {
-                if candidate.mode.usesTensorParallelDecode, group(candidate) == group(other),
-                   candidate.prediction(regime).requestSeconds > limit {
+                if candidate.mode.usesTensorParallelDecode, hardwareGroup(candidate) == hardwareGroup(other), holds(candidate, other) {
                     held.append(candidate)
                 } else {
                     kept.append(candidate)

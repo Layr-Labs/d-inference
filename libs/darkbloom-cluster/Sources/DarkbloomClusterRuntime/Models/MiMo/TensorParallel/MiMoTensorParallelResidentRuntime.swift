@@ -38,14 +38,21 @@ import MLXLLM
 /// positions), logprobs from the split top-k gather (greedy rows) or the
 /// product's own gather (sampled rows). No prompt-prefix reuse yet.
 public final class MiMoTensorParallelResidentRuntime {
+    /// What this owner keeps of the model's serving features, as the capability declares it
+    /// (`MiMoResidentCapabilityMetadata.servingFeatures`): one lane and no prompt prefix (both bound below), no
+    /// speculative rounds (no rank holds the trained heads), and committed-token logprobs.
+    static let servingFeatures = ClusterServingFeatures(promptPrefixReuse: false, ssdPrefixTier: false,
+        speculativeRounds: false, maximumLanes: 1, logprobs: true)
+
     /// Everything about serving both ranks must have been told the same,
     /// beside the plan: one lane, paged KV, the chunk grid, the selection
     /// rules and the decode command buffers.
     public static func servingAgreementFields(chunkTokens: Int) -> [String] {
-        ["mimo-v26-tensor-parallel-serving-v1", "lanes=1",
+        ["mimo-v26-tensor-parallel-serving-v1", "lanes=\(servingFeatures.maximumLanes)",
          "kv=paged-\(MiMoTensorParallelRequestBudget.pageTokens)", "chunk=\(chunkTokens)",
          "selection=split-argmax-agreement-gathered-row-rank0-draw-split-topk-logprobs-v1",
-         "decode-buffers=\(MiMoTensorParallelDecoding.decodeCommandBuffers.operations)", "prefix=off"]
+         "decode-buffers=\(MiMoTensorParallelDecoding.decodeCommandBuffers.operations)",
+         servingFeatures.promptPrefixReuse ? "prefix=on" : "prefix=off"]
     }
 
     /// The load agreement's fields after the admission's fingerprint; speculative

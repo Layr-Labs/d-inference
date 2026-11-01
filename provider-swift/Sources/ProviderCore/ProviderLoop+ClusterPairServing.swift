@@ -181,7 +181,8 @@ extension ProviderLoop: NativePairMemberServingHost {
         // The start ends with its session, now: not when the slot's drain or
         // a serve still under way ends, which can outlast the session's own
         // bounded wait (its receipt then lets the coordinator commit the next
-        // start). A serve that lost its start stands down by itself.
+        // start). A serve that lost its start stands down by itself, and the
+        // retirement below closes the slot's admission before it suspends.
         clusterPairServingEndedEpoch = epoch
         endClusterPairServing(epoch)
         // The session sends its release receipt once this returns, so every

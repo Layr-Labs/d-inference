@@ -75,9 +75,9 @@ public final class DistributedCBv2Engine: CBv2Engine, @unchecked Sendable {
     }
 
     /// `onQueue` for a caller that must never wait for the queue: a task's
-    /// cancellation handler, and a stream's termination that cancellation runs.
-    /// Those run holding the task's status lock, which the queue needs to resume
-    /// that task (every `yield` to its stream): waiting here deadlocked both.
+    /// cancellation handler, or a stream's termination that cancellation runs.
+    /// Those hold the task's status lock, which the queue needs to resume that
+    /// task (a `yield` to its stream, its retirement), so waiting can deadlock.
     func onQueueWithoutWaiting(_ body: @escaping @Sendable () -> Void) {
         if DispatchQueue.getSpecific(key: queueKey) != nil { body() } else { queue.async(execute: body) }
     }

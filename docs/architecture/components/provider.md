@@ -1,6 +1,6 @@
 # Provider process
 
-> Last updated: 2026-10-22
+> Last updated: 2026-10-26
 
 The provider is the Apple Silicon Mac that decrypts prompts and runs inference.
 It ships as one Swift package (`provider-swift/`) producing the `darkbloom` CLI,
@@ -37,7 +37,7 @@ lives inside this one hardened process. The authoritative provider version is
 
 | Component | Responsibility | Code |
 |---|---|---|
-| Coordinator client | WebSocket connection, reconnection backoff, protocol codec, registration | `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient.swift`, `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClientCodec.swift` |
+| Coordinator client | WebSocket connection, reconnect policy, protocol codec, registration | `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient.swift`, `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorReconnectPolicy.swift`, `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClientCodec.swift` |
 | `ProviderLoop` (actor) | Event loop: inference requests and cancellations, `load_model` / `prefetch_model` / `desired_models`, heartbeats and capacity, attestation challenges, startup preload, idle timeout, auto-update | `provider-swift/Sources/ProviderCore/ProviderLoop.swift` and its `ProviderLoop+*.swift` extensions |
 | Inference | `MultiModelBatchSchedulerEngine` → one `EngineV2Bridge` per model → CBv2; slot construction, memory model, deadlines, MTP, vision | `provider-swift/Sources/ProviderCore/Inference/` — [`../inference.md`](../inference.md), [`../hardware-support.md`](../hardware-support.md) |
 | KV cache tiers | Encrypted SSD attention snapshots and complete checkpoints (`KVCacheSSD/`); resident paged blocks and recurrent checkpoints require explicit memory opt-in. `KVCache/` retains the legacy cache API and the shared key-wrapping service | `provider-swift/Sources/ProviderCore/KVCacheSSD/`, `provider-swift/Sources/ProviderCore/KVCache/` — [`../prefix-cache.md`](../prefix-cache.md) |
@@ -115,6 +115,32 @@ model-state change or key persistence. It proves custody only; the platform deci
 whether the new connection may serve. Unexpected disconnect still cancels that
 connection's inference requests; this does not resume interrupted completions
 or prove two-minute engine continuity.
+
+When a connection attempt fails or a session ends with an error,
+`CoordinatorClient.runLoop` waits before the next attempt.
+`CoordinatorReconnectPolicy` chooses the range of that wait from how the last
+attempt ended, and `runLoop` draws the wait at random from that range.
+`CoordinatorSessionRecorder` records how long the session stayed open after its
+`register` frame. It also records the code of a close frame from the coordinator
+side. A session that stayed open for `stableSessionDuration` or more resets the
+backoff. A drop after a long session then does not pay the waits that earlier
+drops grew. A close frame with code `1012` (service restart) gives
+`serviceRestartDelayRange`, and the backoff does not grow. Every other end takes
+the next `ExponentialBackoff` range and grows the backoff. The receive callback
+records the close code on the connection queue, because the transport state
+change that follows the frame can end the session first. Network.framework
+reports a code that it does not name, such as `1012`, as `noStatusReceived`;
+the callback then reads the code from the first two bytes of the frame's
+payload (`sentCloseCode`). The
+[close codes](../../reference/protocol-messages.md#close-codes-and-the-reconnect-wait)
+and the [runtime constants](../../provider/cli-reference.md#runtime-constants)
+give the codes and the values. Sources:
+`provider-swift/Sources/ProviderCore/Coordinator/CoordinatorReconnectPolicy.swift`
+(`CoordinatorReconnectPolicy`),
+`provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClientState.swift`
+(`CoordinatorSessionRecorder`) and
+`provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient+Connection.swift`
+(`runLoop`, `receiveLoop`, `sentCloseCode`).
 
 Apple exchanges use `AppAttestShadowReply`, a capability bound to their original
 `NWConnection`, rather than the reconnectable outbound router. Late results are

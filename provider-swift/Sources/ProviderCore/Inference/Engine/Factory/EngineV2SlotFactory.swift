@@ -571,6 +571,7 @@ enum EngineV2SlotFactory {
             tokenizer: tokenizer,
             eosTokenIds: eosTokenIds,
             extraEOSTokens: snapshot.extraEOSTokens,
+            stopStringScope: ModelEOSPolicy.stopStringScope(modelId: modelId, modelType: modelType),
             samplingDefaults: samplingDefaults,
             defaultMaxTokens: sizing.defaultMaxTokens,
             maxConcurrentRequests: effectiveMaxConcurrentRequests,

@@ -30,6 +30,7 @@ struct Darkbloom: AsyncParsableCommand {
             Start.self,
             Switch.self,
             Addon.self,
+            Sandbox.self,
             Stop.self,
             Restart.self,
             Status.self,
@@ -54,6 +55,7 @@ struct Darkbloom: AsyncParsableCommand {
             Fan.self,
             Watchdog.self,
             RuntimeSmoke.self,
+            Cluster.self,
             Desktop.self,
         ]
     )

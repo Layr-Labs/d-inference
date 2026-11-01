@@ -85,6 +85,10 @@ public struct DaemonState: Codable, Sendable, Equatable {
     /// reported and has nothing loaded.
     public var slots: [SlotPosture]?
     public var connectivity: Connectivity?
+    /// The live coordinator connection: whether it is up and since when.
+    /// Lets `status`/`doctor` tell "connected but not authorized" from
+    /// "disconnected". Nil for older daemons.
+    public var coordinatorConnection: CoordinatorConnection?
     /// The daemon's last local App Attest observation (launch session, boot
     /// time, key state, stalled Apple call). Diagnostic only; optional so
     /// older daemons' files keep decoding.
@@ -130,13 +134,19 @@ public struct DaemonState: Codable, Sendable, Equatable {
         public var promptTokensProcessed: UInt64?
         public var cachedInputTokens: UInt64?
         public var reasoningTokens: UInt64?
-        public init(requestsServed: UInt64 = 0, tokensGenerated: UInt64 = 0, usageGaps: UInt64 = 0, promptTokensProcessed: UInt64? = nil, cachedInputTokens: UInt64? = nil, reasoningTokens: UInt64? = nil) {
+        /// Served requests that ended early on a coordinator cancel or a
+        /// dropped connection after output had been delivered; included in
+        /// `requestsServed`, and the coordinator may not pay for them. Nil on
+        /// older runtimes.
+        public var cancellationsPartialComplete: UInt64?
+        public init(requestsServed: UInt64 = 0, tokensGenerated: UInt64 = 0, usageGaps: UInt64 = 0, promptTokensProcessed: UInt64? = nil, cachedInputTokens: UInt64? = nil, reasoningTokens: UInt64? = nil, cancellationsPartialComplete: UInt64? = nil) {
             self.requestsServed = requestsServed
             self.tokensGenerated = tokensGenerated
             self.usageGaps = usageGaps
             self.promptTokensProcessed = promptTokensProcessed
             self.cachedInputTokens = cachedInputTokens
             self.reasoningTokens = reasoningTokens
+            self.cancellationsPartialComplete = cancellationsPartialComplete
         }
     }
 
@@ -318,6 +328,24 @@ public struct DaemonState: Codable, Sendable, Equatable {
         }
     }
 
+    public struct CoordinatorConnection: Codable, Sendable, Equatable {
+        public var connected: Bool
+        /// Epoch seconds when the connection last came up or went down;
+        /// failed reconnect attempts while it is down keep it.
+        public var since: Double
+        /// Registrations this process has completed, including the first.
+        public var connections: Int
+        /// Epoch seconds when the coordinator last sent this connection an
+        /// inference request; nil before the first.
+        public var lastRequestAt: Double?
+        public init(connected: Bool, since: Double, connections: Int, lastRequestAt: Double? = nil) {
+            self.connected = connected
+            self.since = since
+            self.connections = connections
+            self.lastRequestAt = lastRequestAt
+        }
+    }
+
     public init(
         schema: Int = DaemonState.currentSchema,
         pid: Int32,
@@ -347,6 +375,7 @@ public struct DaemonState: Codable, Sendable, Equatable {
         lastModelLoadError: ModelLoadError? = nil,
         slots: [SlotPosture]? = nil,
         connectivity: Connectivity? = nil,
+        coordinatorConnection: CoordinatorConnection? = nil,
         appAttest: AppAttestLocalStatus? = nil,
         autopilot: ModelAutopilotSnapshot? = nil,
         autopilotPhase: String? = nil,
@@ -382,6 +411,7 @@ public struct DaemonState: Codable, Sendable, Equatable {
         self.lastModelLoadError = lastModelLoadError
         self.slots = slots
         self.connectivity = connectivity
+        self.coordinatorConnection = coordinatorConnection
         self.autopilot = autopilot
         self.autopilotPhase = autopilotPhase
         self.autopilotOperation = autopilotOperation

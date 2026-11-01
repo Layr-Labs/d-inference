@@ -19,12 +19,13 @@ directory.
 | File | Owner | Purpose |
 |---|---|---|
 | `addon.sock` | provider, `0600` | `AF_UNIX` stream socket. A stale socket is replaced; a live one is never taken over |
-| `addon-hold.json` | provider, `0600` | Active holds (`schema: 1`, `holds[]` with `hold_id`, `addon`, `vm_bytes`, `state`, `since_ms`, `lease_seconds`, `lease_expires_at_ms`); absent when not held |
+| `addon-hold.json` | provider, `0600` | Active holds (`schema: 1`, `holds[]` with `hold_id`, `addon`, `vm_bytes`, `state`, `since_ms`, `lease_seconds`, `lease_expires_at_ms`); absent when not held. Opened with `O_NONBLOCK` and `O_NOFOLLOW` and read only as an owner-only regular file of at most 64 KiB (`AddonHoldStore.maximumBytes`); anything else, including a FIFO, is ignored as unreadable |
 | `ownership.lock` | add-on | Held exclusively (`flock`) while any lease or VM exists. The provider only probes it with a non-blocking shared lock; a missing file is free and any other probe failure counts as held |
 
-`DARKBLOOM_ADDON_SOCKET` overrides the socket path for tests. The socket's
-directory then holds all three files, matching add-ons, which keep
-`ownership.lock` beside the socket; see [configuration](configuration.md#add-on-hold).
+`DARKBLOOM_ADDON_SOCKET` overrides the socket path for tests; every build
+honors it, but the LaunchAgent does not pass it. The socket's directory then
+holds all three files, matching add-ons, which keep `ownership.lock` beside
+the socket; see [configuration](configuration.md#add-on-hold).
 
 ## Framing
 
@@ -32,8 +33,9 @@ directory then holds all three files, matching add-ons, which keep
 |---|---|
 | Message | One JSON object per line, terminated by `\n` |
 | Size | At most 8 KiB (`maximumMessageBytes = 8 * 1024`) before the newline; a longer line gets one `invalid_request` and the connection closes |
+| Time | A line must finish within 10 s (`requestTimeout = .seconds(10)`) of the server first holding its bytes, however slowly they arrive; otherwise one `invalid_request` and the connection closes |
 | Responses | Exactly one line per request, in order; keys are exactly those listed below |
-| Connections | Several requests per connection; at most 8 connections (`maximumConnections`); closed after 300 s idle (`idleTimeout`) |
+| Connections | Several requests per connection; at most 8 verified connections (`maximumConnections`); closed after 300 s idle (`idleTimeout`). A peer is verified when its connection is accepted, before it takes a slot |
 | Unknown request keys | Ignored |
 
 ## Operations
@@ -64,16 +66,18 @@ Every request carries `"v": 1` and `op`. A `v` other than 1 gets
 
 | `error` | When |
 |---|---|
-| `unauthorized` | Peer failed verification (the connection then closes), or `addon` differs from the verified identifier |
+| `unauthorized` | Peer failed verification when its connection was accepted or at a request (the connection then closes), or `addon` differs from the verified identifier |
 | `unsupported_version` | `v` is a number other than 1 |
-| `invalid_request` | Not a JSON object, missing or wrongly typed field, unknown `op`, lease out of range, oversized line |
+| `invalid_request` | Not a JSON object, missing or wrongly typed field, unknown `op`, lease out of range, oversized line, or a line unfinished after `requestTimeout` |
 | `not_found` | Unknown `hold_id`, or a hold of another add-on |
 | `unavailable` | The provider is stopping, a model switch owns admission, the handler did not answer within 30 s, or the connection limit was reached |
 
 ## Peer verification
 
-Every request is checked, so a peer that executes other code after
-connecting fails (`AddonPeerPolicy.authenticate` in
+A connection is checked when it is accepted, so an unverified peer is answered
+`unauthorized` and closed without taking a slot. Every request is checked
+again, so a peer that executes other code after connecting fails
+(`AddonPeerPolicy.authenticate` in
 `provider-swift/Sources/ProviderCore/Addon/AddonPeerPolicy.swift`):
 
 1. The socket's `LOCAL_PEERTOKEN` audit token must have the provider's
@@ -94,10 +98,12 @@ compile without it.
 
 The provider and add-on run as the same user and can read each other's files;
 the socket and lock coordinate them and are not a boundary against that user.
-See [threat model](../threat-model.yaml) `TB-012`.
+See [local control channels](../architecture/security/local-control.md) and
+[threat model](../threat-model.yaml) `TB-012` and `T-060`.
 
 ## Related
 
 - [Add-on hold](../architecture/addon-hold.md)
+- [Local control channels](../architecture/security/local-control.md)
 - [Protocol busy fields](protocol-messages.md#add-on-hold-busy-fields)
 - [`darkbloom addon`](../provider/cli-reference.md#darkbloom-addon)

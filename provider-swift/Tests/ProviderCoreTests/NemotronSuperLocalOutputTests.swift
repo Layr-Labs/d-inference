@@ -26,6 +26,8 @@ final class NemotronSuperLocalOutputTests: XCTestCase {
         encoder.outputFormatting = [.sortedKeys]
         return try events.map { event in
             switch event {
+            case .logprobs(let entries):
+                return "L:" + String(decoding: try encoder.encode(entries), as: UTF8.self)
             case .parsed(let parsed):
                 return [parsed.reasoningContent.map { "R:" + $0 }, parsed.content.isEmpty ? nil : "C:" + parsed.content]
                     .compactMap { $0 }.joined(separator: "|")
@@ -39,6 +41,10 @@ final class NemotronSuperLocalOutputTests: XCTestCase {
                 return "D"
             }
         }
+    }
+
+    func testTracePreservesMetadataAsAnOrderedDistinctEvent() throws {
+        XCTAssertEqual(try trace([.logprobs([]), .content("visible")]), ["L:[]", "T:visible"])
     }
 
     private func stream(_ output: inout NemotronSuperLocalOutput, _ chunks: [String]) throws -> [String] {

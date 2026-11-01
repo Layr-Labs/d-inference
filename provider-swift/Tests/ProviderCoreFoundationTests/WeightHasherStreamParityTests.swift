@@ -28,6 +28,19 @@ final class WeightHasherStreamParityTests: XCTestCase {
         digest.map { String(format: "%02x", $0) }.joined()
     }
 
+    /// `fill` bytes with each 4 KiB page's offset written at its start. With a
+    /// short repeating pattern every full chunk is identical, so hashing one
+    /// chunk in place of another would not change the digest.
+    private func pageStampedPayload(size: Int, fill: UInt8) -> Data {
+        var data = Data(repeating: fill, count: size)
+        for page in stride(from: 0, to: size, by: 4096) {
+            let stamp = withUnsafeBytes(of: UInt64(page).littleEndian) { Data($0) }
+            let end = min(page + stamp.count, size)
+            data.replaceSubrange(page..<end, with: stamp.prefix(end - page))
+        }
+        return data
+    }
+
     func testEmptyAndStreamingChunkBoundariesMatchIndependentDigest() throws {
         try withDirectory { root in
             for size in [0, 1, 63, 64, 65535, 65536, 65537, 131071, 131072, 1048579] {
@@ -42,9 +55,11 @@ final class WeightHasherStreamParityTests: XCTestCase {
 
     func testUncachedReaderMatchesIndependentDigestAcrossChunkBoundaries() throws {
         try withDirectory { root in
-            let chunk = 1024 * 1024
-            for size in [0, 1, 16383, 16384, chunk - 1, chunk, chunk + 1, 3 * chunk + 4097] {
-                let data = Data((0..<size).map { UInt8(truncatingIfNeeded: $0 &* 13 &+ 5) })
+            // Two chunks fill both overlapped buffers once; three wrap back to the first.
+            let chunk = WeightHasher.uncachedChunkBytes
+            for size in [0, 1, 16383, 16384, chunk - 1, chunk, chunk + 1, 2 * chunk - 1, 2 * chunk,
+                         2 * chunk + 1, 3 * chunk + 4097] {
+                let data = pageStampedPayload(size: size, fill: 0x5d)
                 let file = root.appendingPathComponent("payload")
                 try data.write(to: file)
                 let uncached = try XCTUnwrap(WeightHasher.hashSingleFileUncached(at: file), "size \(size)")
@@ -52,6 +67,28 @@ final class WeightHasherStreamParityTests: XCTestCase {
             }
             XCTAssertNil(WeightHasher.hashSingleFileUncached(at: root))
             XCTAssertNil(WeightHasher.hashSingleFileUncached(at: root.appendingPathComponent("missing")))
+        }
+    }
+
+    func testConcurrentUncachedReadersEachHashTheirOwnFile() throws {
+        try withDirectory { root in
+            let chunk = WeightHasher.uncachedChunkBytes
+            let sizes = [3 * chunk + 1, 2 * chunk, chunk - 7, 5 * chunk + 4097, 1, 0, 4 * chunk, 2 * chunk + 3]
+            var files: [(url: URL, expected: String)] = []
+            for (index, size) in sizes.enumerated() {
+                let data = pageStampedPayload(size: size, fill: UInt8(index))
+                let file = root.appendingPathComponent("payload-\(index)")
+                try data.write(to: file)
+                files.append((file, hex(SHA256.hash(data: data))))
+            }
+            let results = LockedDigests(count: files.count)
+            let urls = files.map(\.url)
+            DispatchQueue.concurrentPerform(iterations: urls.count) { index in
+                results.store(WeightHasher.hashSingleFileUncached(at: urls[index]), at: index)
+            }
+            for (index, file) in files.enumerated() {
+                XCTAssertEqual(results.value(at: index).map(hex), file.expected, "file \(index), \(sizes[index]) bytes")
+            }
         }
     }
 
@@ -110,4 +147,12 @@ final class WeightHasherStreamParityTests: XCTestCase {
             XCTAssertNil(WeightHasher.hashSingleFile(at: file))
         }
     }
+}
+
+private final class LockedDigests: @unchecked Sendable {
+    private let lock = NSLock()
+    private var values: [SHA256Digest?]
+    init(count: Int) { values = Array(repeating: nil, count: count) }
+    func store(_ value: SHA256Digest?, at index: Int) { lock.lock(); defer { lock.unlock() }; values[index] = value }
+    func value(at index: Int) -> SHA256Digest? { lock.lock(); defer { lock.unlock() }; return values[index] }
 }

@@ -10,14 +10,15 @@ import re
 import subprocess
 
 
-COMPONENTS = ("provider", "console")
+COMPONENTS = ("provider", "sdk")
 COMMON = (
     "Makefile", "mise.toml", ".gitmodules", ".github/workflows/component-changes.yml",
     ".github/workflows/darkbloom-route.yml",
     "scripts/ci-component-paths.py", "scripts/test-ci-component-paths.py",
 )
 PROVIDER = (
-    "provider-swift/**", "libs/**", "fixtures/**", ".github/actions/provider-ci-build/**",
+    "provider-swift/**", "libs/**", "fixtures/**",
+    ".github/workflows/ci.yml", ".github/actions/provider-ci-build/**",
     "scripts/provider-ci-cache.py", "scripts/provider_ci_cache/**",
     "scripts/provider-release-cache.py", "scripts/provider_release_cache/**",
     "scripts/provider-release-swift.sh", "scripts/prepare-provider-release-toolchain.sh",
@@ -25,17 +26,28 @@ PROVIDER = (
     "scripts/fetch-metallib.sh", "scripts/stage-test-metallib.sh",
     "scripts/run-provider-tests.sh", "scripts/run-nested-suite.sh",
     "scripts/run-paged-kernel-tests.sh", "scripts/run-provider-test-watchdog.py",
-    "scripts/run-exclusive-native-gpu-test.sh",
+    "scripts/run-exclusive-native-gpu-test.sh", "scripts/provider-test-shards.py",
+    "scripts/provider-test-shard-weights.json",
     "scripts/prepare-mimo-*-fixtures.py", "scripts/verify-*-prompt-parity.sh",
     "scripts/prepare-prompt-fixtures.py", "scripts/test-prepare-prompt-fixtures.py",
     "scripts/verify-prompt-parity.sh", "scripts/test-qwen4-packaged-resources.py",
     "scripts/test-profile-inventory-auth.py", "scripts/test-desktop-api.py", "scripts/install.sh",
     "scripts/test-install-atomic.sh", "scripts/entitlements*.plist",
 )
-CONSOLE = (
-    "console-ui/**", ".githooks/**",
-    "coordinator/tests/protocol/testdata/paged_footprint_wire.json",
-    "coordinator/tests/protocol/testdata/process_memory_wire.json",
+
+
+# Inputs of the Provider SDK Tests lane: the SDK and MLX pins it builds, its
+# build recipe and its runner scripts. Its suites also run in the SDK fork's CI.
+SDK = (
+    "libs/mlx-swift-lm", "libs/mlx-swift-lm/**", "libs/mlx-swift", "libs/mlx-swift/**",
+    ".github/workflows/ci.yml", ".github/actions/provider-ci-build/**",
+    "scripts/provider-ci-cache.py", "scripts/provider_ci_cache/**",
+    "scripts/provider-release-cache.py", "scripts/provider_release_cache/**",
+    "scripts/provider-release-swift.sh", "scripts/prepare-provider-release-toolchain.sh",
+    "scripts/install-release-cmake.sh", "scripts/prepare-metal-toolchain.py",
+    "scripts/fetch-metallib.sh", "scripts/stage-test-metallib.sh",
+    "scripts/run-nested-suite.sh", "scripts/run-paged-kernel-tests.sh",
+    "scripts/run-exclusive-native-gpu-test.sh", "scripts/prepare-mimo-provider-fixtures.py",
 )
 
 
@@ -52,10 +64,8 @@ def classify(paths):
             continue
         if matches(path, COMMON):
             return dict.fromkeys(COMPONENTS, True)
-        ci = path == ".github/workflows/ci.yml"
-        provider = matches(path, PROVIDER)
-        selected["provider"] |= ci or provider
-        selected["console"] |= ci or matches(path, CONSOLE)
+        selected["provider"] |= matches(path, PROVIDER)
+        selected["sdk"] |= matches(path, SDK)
     return selected
 
 

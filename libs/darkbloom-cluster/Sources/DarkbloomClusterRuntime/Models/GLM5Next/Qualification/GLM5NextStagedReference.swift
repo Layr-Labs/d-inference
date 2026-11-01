@@ -72,7 +72,7 @@ public enum GLM5NextStagedReference {
             for rank in 0...1 {
                 let started = DispatchTime.now().uptimeNanoseconds
                 let envelope = try GLM5NextServingResources.envelope(descriptor: descriptor, inventory: inventory,
-                    rank: rank, buildSHA256: build)
+                    rank: rank, buildSHA256: build, admitsRequestsOnArrival: false)
                 let budget = try envelope.budget(descriptor: descriptor)
                 let resident = try GLM5NextResidentStage(directory: modelDirectory,
                     expectedIdentity: descriptor.artifactIdentity, artifactAggregateSHA256: spec.artifactSHA256,

@@ -52,7 +52,8 @@ final class NativeWorkerRuntime: WorkerRuntime, @unchecked Sendable {
                 prefixSSDKey: prefixSSDKey))
         case .mimoV26 where generationMode == .tensorParallel:
             // Every layer on both ranks, half of each split weight, sealed sums; text only. `--mtp-depth`
-            // (1...3, MiMo's own terms) adds speculative rounds on heads replicated whole; none by default.
+            // (1...3, MiMo's own terms) adds speculative rounds on heads replicated whole; the installed owner
+            // passes `ClusterMiMoTensorParallel.speculativeDepth`, and a hand launch without it runs none.
             guard tensorAssistantPolicy == nil, tensorShares == [1, 1], let dataPlane else {
                 throw WorkerFailure.invalid("MiMo tensor parallel runs equal shares over a keyed data plane")
             }

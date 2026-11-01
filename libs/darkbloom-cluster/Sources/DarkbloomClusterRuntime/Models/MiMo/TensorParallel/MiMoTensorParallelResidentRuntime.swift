@@ -12,10 +12,13 @@ import MLXLLM
 /// step together, and sum each layer's attention and feed-forward partials
 /// with the sealed all-sum inside the lazy graph, under the session's keyed
 /// data plane. Text only: the private image candidate stays a pipeline
-/// candidate. With a speculative depth (`--mtp-depth`, off by default) both
-/// ranks also hold the three trained heads whole and decode in rounds
+/// candidate. With a speculative depth (`--mtp-depth`, which the installed
+/// owner passes every MiMo tensor-parallel launch:
+/// `ClusterMiMoTensorParallel.speculativeDepth`) both ranks also hold the three
+/// trained heads whole and decode in rounds
 /// (`MiMoTensorParallelDecoding.runRounds`): row-exact verify windows through
-/// the same sums, so greedy tokens are the one-token path's.
+/// the same sums, so every token is the one-token path's. A hand launch
+/// without the depth decodes one token a step.
 ///
 /// The executor contract of `GLM5NextTensorParallelResidentRuntime`, one
 /// lane: one request at a time, cancel from the control thread, an enclosing
@@ -39,10 +42,12 @@ import MLXLLM
 /// product's own gather (sampled rows). No prompt-prefix reuse yet.
 public final class MiMoTensorParallelResidentRuntime {
     /// What this owner keeps of the model's serving features, as the capability declares it
-    /// (`MiMoResidentCapabilityMetadata.servingFeatures`): one lane and no prompt prefix (both bound below), no
-    /// speculative rounds (no rank holds the trained heads), and committed-token logprobs.
+    /// (`MiMoResidentCapabilityMetadata.servingFeatures`): one lane and no prompt prefix (both bound below),
+    /// speculative rounds on the trained heads (the installed owner launches both ranks with
+    /// `ClusterMiMoTensorParallel.speculativeDepth`, bound by `speculativeAgreementFields`), and committed-token
+    /// logprobs.
     static let servingFeatures = ClusterServingFeatures(promptPrefixReuse: false, ssdPrefixTier: false,
-        speculativeRounds: false, maximumLanes: 1, logprobs: true)
+        speculativeRounds: ClusterMiMoTensorParallel.speculativeDepth > 0, maximumLanes: 1, logprobs: true)
 
     /// Everything about serving both ranks must have been told the same,
     /// beside the plan: one lane, paged KV, the chunk grid, the selection

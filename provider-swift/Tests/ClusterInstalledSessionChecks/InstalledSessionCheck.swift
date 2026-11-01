@@ -364,6 +364,7 @@ final class EndpointBox: @unchecked Sendable {
         try progressGuardIsRequired(fixture,prepared,unguarded:URL(fileURLWithPath:CommandLine.arguments[4]))
         try ordinaryProviderExclusion(fixture)
         try generationModeSelection(fixture,prepared)
+        try mimoTensorParallelRounds(fixture)
         try perModelBudgets(fixture,prepared)
         try longPromptsFitTheInstalledSession(fixture)
         try pairServingGrant(fixture)
@@ -821,6 +822,28 @@ final class EndpointBox: @unchecked Sendable {
         try require(ClusterGenerationSelection.supportedModes(for:other,capability:split.capability).isEmpty,"a record was applied to a worker it does not describe")
         let foreign=try refusal{try ClusterGenerationSelection.requireSupport(for:.pipeline,peers:[other],capability:split.capability)}
         try require(foreign.contains("member peer-9") && foreign.contains("nothing in the saved record"),"foreign worker refusal: \(foreign)")
+    }
+    /// MiMo tensor parallel decodes in speculative rounds by default: where the pinned record declares tensor
+    /// parallel's rounds, both ranks get `--mtp-depth 2` (`ClusterMiMoTensorParallel`) after the mode, and the status
+    /// says the head decodes; a record that declares none launches none.
+    static func mimoTensorParallelRounds(_ f: InstalledFixture) throws {
+        let registered = ClusterRuntimeAdapter.mimoV26LayerStage.registeredProfiles[0]
+        for rounds in [true, false] {
+            let features: [ClusterGenerationMode: ClusterServingFeatures] = [
+                .pipeline: .init(promptPrefixReuse: false, ssdPrefixTier: false, speculativeRounds: false, maximumLanes: 8, logprobs: false),
+                .tensorParallel: .init(promptPrefixReuse: false, ssdPrefixTier: false, speculativeRounds: rounds, maximumLanes: 1, logprobs: true)]
+            let fixture = try InstalledFixture.make(root: f.root.appendingPathComponent("mimo-tensor-parallel-rounds-\(rounds)"),
+                probe: f.probe, owner: f.owner, worker: f.worker, generationMode: ClusterGenerationMode.tensorParallel.rawValue,
+                advertisedModes: [.pipeline, .tensorParallel], registered: (registered.runtimeModelID, registered.profileID, "fixture/mimo"),
+                adapter: .mimoV26LayerStage, modeFeatures: features)
+            let plan = try fixture.prepare().plan
+            let arguments = try DistributedInstalledGenerationSelection.workerArguments(configuration: plan.configuration, capability: plan.capability)
+            let expected = ["--generation-mode", "tensor_parallel_v1"] + (rounds ? ["--mtp-depth", "2"] : [])
+            try require(arguments == expected, "MiMo tensor parallel (rounds declared: \(rounds)) launched \(arguments), not \(expected)")
+            let speculation = DistributedInstalledSpeculation(configuration: plan.configuration, capability: plan.capability)
+            try require(speculation.enabled == rounds && (speculation.offReason == DistributedInstalledSpeculation.enabledReason) == rounds,
+                "MiMo tensor parallel's status (rounds declared: \(rounds)) says \(speculation)")
+        }
     }
     /// Both installed and member serving derive their profile through the same
     /// selected-mode initializer; a pipeline must not inherit GLM TP capture.

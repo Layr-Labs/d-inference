@@ -315,8 +315,7 @@ public enum ClusterPlacementFlow {
             }
         }
         if let parity, forced != nil, let chosen = result.chosen, parity.modes.contains(chosen.mode) {
-            lines += ["Feature parity", "  Developer setting: tensor parallel is placed because it is forced; it drops "
-                + (parity.drops ?? "features this worker build does not declare") + "."]
+            lines += ["Feature parity", "  " + parity.forcedLine]
         }
         if let parityRefusal { lines += ["Feature parity", "  " + parityRefusal] }
         if handOff {

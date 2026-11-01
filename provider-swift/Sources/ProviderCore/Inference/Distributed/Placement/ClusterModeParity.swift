@@ -24,7 +24,7 @@ enum ClusterModeParity {
         let dropped: [String]?
 
         /// "prompt-prefix reuse and the SSD prefix tier that the pipeline keeps"; nil when nothing is declared.
-        var drops: String? {
+        private var drops: String? {
             dropped.map { list($0) + " that "
                 + (replaced.count == 1 ? ClusterModeParity.words(replaced[0]) + " keeps" : "the model's other modes keep") }
         }
@@ -40,6 +40,14 @@ enum ClusterModeParity {
             "Only tensor parallel fits these Macs, and "
                 + (drops.map { "it would drop " + $0 } ?? "this worker build declares no serving features for its modes")
                 + ". No reduced-feature setup was saved."
+        }
+
+        /// Where a developer's forced mode places tensor parallel anyway.
+        var forcedLine: String {
+            "Developer setting: tensor parallel is placed because it is forced; "
+                + (drops.map { "it drops " + $0 }
+                    ?? "this worker build declares no serving features for its modes, so what it drops is not known")
+                + "."
         }
     }
 
@@ -70,9 +78,9 @@ enum ClusterModeParity {
     /// The rule, as a plan of a family it applies to says it.
     static let ruleLine = "A mode is chosen only where it keeps every feature and caching behavior of the mode it would "
         + "replace, as this worker build declares them: prompt-prefix and SSD reuse, speculative rounds, batch lanes, "
-        + "media, penalties and logit bias, and stop handling."
+        + "media, penalties and logit bias, stop handling and logprobs."
     /// The mode a plan would place instead, in words.
-    static func words(_ mode: ClusterGenerationMode) -> String {
+    private static func words(_ mode: ClusterGenerationMode) -> String {
         switch mode {
         case .pipeline: "the pipeline"
         case .pipelineCompactDecode: "the compact-decode pipeline"
@@ -84,7 +92,7 @@ enum ClusterModeParity {
         }
     }
 
-    static func list(_ items: [String]) -> String {
+    private static func list(_ items: [String]) -> String {
         items.count <= 2 ? items.joined(separator: " and ") : items.dropLast().joined(separator: ", ") + " and " + items.last!
     }
 }

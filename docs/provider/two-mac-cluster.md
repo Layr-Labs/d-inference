@@ -346,10 +346,10 @@ Models that run tensor parallel, and when:
 For Gemma 4 and MiMo V2.6 Flash, tensor parallel must first keep every feature
 and caching behavior of the mode it would replace, as the installed cluster
 worker declares them: prompt-prefix and SSD cache reuse, speculative rounds,
-batch lanes, media, penalties and logit bias, and stop handling. What it adds,
-such as logprobs, never counts against it. Today Gemma 4's tensor parallel keeps
-no prompt prefixes and MiMo's has no speculative rounds, so these pairs serve the
-pipeline:
+batch lanes, media, penalties and logit bias, stop handling and logprobs. What it
+adds, such as logprobs where the pipeline has none, never counts against it.
+Today Gemma 4's tensor parallel keeps no prompt prefixes and MiMo's has no
+speculative rounds, so these pairs serve the pipeline:
 
 - The plan's "Tensor parallel or pipeline" line says what tensor parallel would
   drop ("Pipeline: tensor parallel would drop prompt-prefix reuse and the SSD

@@ -1127,6 +1127,13 @@ import Foundation
         require("parity: a fastest-plan family whose record declares no features keeps tensor parallel back and says why",
             blind.result.chosen?.mode == .pipeline && blind.result.tensorParallel?.verdict == .dropsFeatures
                 && blind.lines.contains("  Pipeline: this worker build declares no serving features for its modes, so tensor parallel is held back until it does."))
+        let blindForced = try ClusterPlacementFlow.decide(description: undeclared.description, capability: undeclared.capability,
+            localMemberID: "mac-one", localProfile: ultras.local, peerProfile: ultras.peer, layout: undeclared.layout,
+            measurements: [alone], promptTokens: 128, outputTokens: 128, link: ultras.link,
+            environment: [ClusterForcedModeSetting.environmentName: "tensor_parallel_v1"], benchDebugBuild: true)
+        require("parity: the forced mode places tensor parallel on a record that declares no features, and says nothing shows what it drops",
+            blindForced.result.chosen?.mode == .tensorParallel && blindForced.lines.contains("  Developer setting: tensor parallel is placed "
+                + "because it is forced; this worker build declares no serving features for its modes, so what it drops is not known."))
 
         // Only tensor parallel fits: the layout admits one cut only, 1, whose last rank holds every layer but one, on two
         // equal Macs too small for that rank and large enough for a tensor-parallel half (found by planning each mode alone).

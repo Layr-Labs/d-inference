@@ -1388,8 +1388,9 @@ registered artifact for them.
      and Gemma follows both Macs' share probes;
    - where only tensor parallel fits, the plan refuses and saves no setup; the
      forced mode places it and says what it drops; a record without features
-     holds it back; per-mode features cross the capability codec canonically;
-     a GLM record declaring a gap plans exactly as without it.
+     holds it back, and the forced mode then says what it drops is not known;
+     per-mode features cross the capability codec canonically; a GLM record
+     declaring a gap plans exactly as without it.
 
 2. Build `darkbloom-cluster-tp-check` and put a source-matched `mlx.metallib`
    beside it ([build](build.md)). Then run the GPU oracles:

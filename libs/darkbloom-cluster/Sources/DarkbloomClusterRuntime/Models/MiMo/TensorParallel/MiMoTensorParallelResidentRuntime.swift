@@ -65,10 +65,12 @@ public final class MiMoTensorParallelResidentRuntime {
             + ClusterDataPlaneAgreement.loadAgreementFields + (speculative.map(speculativeAgreementFields) ?? [])
     }
 
-    /// Rounds of `terms.depth` proposals from heads replicated whole, verified in row-exact windows.
+    /// Rounds of `terms.depth` proposals from heads replicated whole, verified in row-exact windows whose
+    /// partials are each row's one-token FP32 partials (contract v2: `o_proj` one FP32 product a row, the dense
+    /// layer row by row, the routed layer's FP32 expert rows combined row by row).
     static func speculativeAgreementFields(_ terms: MiMoMTPTerms) -> [String] {
         ["mimo-v26-tensor-parallel-speculative-v1"] + terms.loadAgreementFields
-            + ["heads=replicated-whole", "draft=split-argmax-sum", "windows=row-exact-one-token-bits"]
+            + ["heads=replicated-whole", "draft=split-argmax-sum", "windows=row-exact-one-token-float32-partials-v2"]
     }
 
     let admission: MiMoResidentAdmission

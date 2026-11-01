@@ -276,7 +276,8 @@ struct MiMoTensorParallelSpeculativeTests {
         let two = Runtime.loadAgreementFields(plan: plan, chunkTokens: 512, speculative: try MiMoMTPTerms(depth: 2))
         let three = Runtime.loadAgreementFields(plan: plan, chunkTokens: 512, speculative: try MiMoMTPTerms(depth: 3))
         #expect(Array(two.prefix(plain.count)) == plain && two.count > plain.count && two != three)
-        #expect(two.contains("depth=2") && two.contains("windows=row-exact-one-token-bits"))
+        #expect(two.contains("depth=2") && two.contains("windows=row-exact-one-token-float32-partials-v2"))
+        #expect(!two.contains("windows=row-exact-one-token-bits"), "the BF16-partial window contract is gone")
     }
 
     /// A window's settle at the registered sliding window (a 128-row ring over two 64-token

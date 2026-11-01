@@ -131,25 +131,29 @@ final class Gemma4TensorParallelBatchExecutor<Reservation: QwenTensorParallelBat
             throw ProbeError("Gemma tensor-parallel selection rows do not match the lanes")
         }
         let choices = lanes.map { Gemma4TensorParallelChoice(selection: selection, sampler: $0.request.sampler, rank: rank) }
-        let tokens: [Int]
-        if choices.contains(where: \.gathersRow) {
-            let rows = selection.gather(logits)
+        // Greedy rows take the split argmax; only sampled rows cross whole.
+        // Both ranks derive the same rows from the agreed requests.
+        let sampled = choices.indices.filter { choices[$0].gathersRow }
+        let greedy = choices.indices.filter { !choices[$0].gathersRow }
+        var tokens = [Int](repeating: 0, count: width)
+        if !greedy.isEmpty {
+            let rows = greedy.count == width ? logits : logits[MLXArray(greedy.map(Int32.init))]
+            let agreed = selection.greedyRows(rows)
+            eval(agreed); try check()
+            for (row, token) in zip(greedy, agreed.asArray(Int32.self)) { tokens[row] = Int(token) }
+        }
+        if !sampled.isEmpty {
+            let rows = selection.gather(sampled.count == width ? logits : logits[MLXArray(sampled.map(Int32.init))])
             eval(rows); try check()
-            var drawn = MLXArray.zeros([width], dtype: .float32)
+            var drawn = MLXArray.zeros([sampled.count], dtype: .float32)
             if rank == 0 {
-                drawn = concatenated(zip(choices, lanes).enumerated().map { index, pair in
-                    let row = rows[index ..< index + 1]
-                    let token = pair.0.gathersRow ? pair.1.request.sampler!.sample(row) : argMax(row, axis: -1)
-                    return token.asType(.float32).reshaped([1])
+                drawn = concatenated(sampled.enumerated().map { index, lane in
+                    lanes[lane].request.sampler!.sample(rows[index ..< index + 1]).asType(.float32).reshaped([1])
                 }, axis: 0)
             }
-            let agreed = selection.exchange(drawn)[0 ..< width]
+            let agreed = selection.exchange(drawn)[0 ..< sampled.count]
             eval(agreed); try check()
-            tokens = agreed.asArray(Float.self).map { Int($0) }
-        } else {
-            let agreed = selection.greedyRows(logits)
-            eval(agreed); try check()
-            tokens = agreed.asArray(Int32.self).map(Int.init)
+            for (row, token) in zip(sampled, agreed.asArray(Float.self)) { tokens[row] = Int(token) }
         }
         guard tokens.count == width, tokens.allSatisfy({ (0 ..< model.plan.vocabularySize).contains($0) }) else {
             throw ProbeError("Gemma tensor-parallel selection produced an invalid token")
@@ -184,6 +188,62 @@ final class Gemma4TensorParallelBatchExecutor<Reservation: QwenTensorParallelBat
         try lane.session.retire(failed: reason == nil)
         lane.pendingLogprobs = nil
     }
+}
+
+extension Gemma4TensorParallelModel {
+    /// Greedy requests served together through the batch driver on this
+    /// shard's own paged host, as a batching rank serves them: each request's
+    /// tokens. Oracles and tools; both ranks call it with the same prompts.
+    public func generateLanes(prompts: [[Int]], outputCount: Int, chunk: Int) throws -> [[Int]] {
+        guard case .shard = role, let reduction, (1 ... 8).contains(prompts.count), outputCount >= 1, chunk >= 1,
+              let longest = prompts.map(\.count).max(), chunk <= longest, prompts.allSatisfy({ !$0.isEmpty }),
+              prompts.joined().allSatisfy({ (0 ..< plan.vocabularySize).contains($0) }) else {
+            throw ProbeError("Gemma tensor-parallel lanes: a shard, 1 to 8 prompts, a chunk within the longest")
+        }
+        let activation = String(describing: activationDType)
+        let profile = try QwenLayerStageGenerationProfile(identifier: "gemma4-tensor-parallel-lanes",
+            vocabularySize: plan.vocabularySize, hiddenSize: plan.hiddenSize, activationDType: activation,
+            maximumPromptTokens: longest, maximumChunkTokens: chunk, maximumOutputTokens: outputCount,
+            maximumContextTokens: longest + outputCount, logitsDType: activation == "float32" ? nil : "float32")
+        // The same request IDs on both ranks: the driver's exchange binds them.
+        let requests = try prompts.enumerated().map { index, prompt in
+            try QwenLayerStageGenerationRequest(profile: profile,
+                requestID: UUID(uuidString: String(format: "00000000-0000-4000-8000-%012d", index))!,
+                promptTokenIDs: prompt, chunkSize: chunk, outputCount: outputCount, stopTokenIDs: [])
+        }
+        let host = try pagedHost(lanes: prompts.count, maximumTokens: longest + outputCount, chunkTokens: chunk)
+        let book = ClusterBatchLaneBook<Gemma4TensorParallelLaneReservation>()
+        for request in requests {
+            try book.reserve(request.requestID, .init(request: request, deadline: .max, laneStateBytes: 1), lanes: prompts.count)
+            try book.start(request.requestID)
+        }
+        let executor = try Gemma4TensorParallelBatchExecutor<Gemma4TensorParallelLaneReservation>(model: self, host: host,
+            reduction: reduction, agree: { _, check in try check() })
+        let driver = try QwenTensorParallelBatchDriver(executor: executor, book: book, capacity: prompts.count,
+            vocabulary: plan.vocabularySize)
+        var tokens: [UUID: [Int]] = [:]
+        try MLX.withError { error in
+            try driver.serve(host: Gemma4TensorParallelOracleLaneHost(),
+                retiredSelection: { id, selected, _ in tokens[id] = selected }, check: { try error.check() })
+        }
+        guard host.isDrained, book.isEmpty, requests.allSatisfy({ tokens[$0.requestID]?.count == outputCount }) else {
+            throw ProbeError("Gemma tensor-parallel lanes did not all finish and return their pages")
+        }
+        return requests.map { tokens[$0.requestID]! }
+    }
+}
+
+/// An owner that wants every token and publishes nowhere (oracles).
+final class Gemma4TensorParallelOracleLaneHost: QwenBatchServingHost {
+    func serviceControl() throws {}
+    func publishToken(requestID: UUID, ordinal: Int, tokenID: Int, committedTokens: Int) throws {}
+    func awaitDecisions(_ requestIDs: [UUID]) throws -> [UUID: Bool] {
+        Dictionary(uniqueKeysWithValues: requestIDs.map { ($0, true) })
+    }
+    func pollDecision(_ requestID: UUID) throws -> Bool? { true }
+    func publishFinished(requestID: UUID, reason: ClusterWorkerFinishReason) throws {}
+    func publishLeft(requestID: UUID) throws {}
+    func publishPromptCache(requestID: UUID, reusedTokens: Int, storedFrontiers: [Int]) throws {}
 }
 
 extension Gemma4TensorParallelResidentRuntime {

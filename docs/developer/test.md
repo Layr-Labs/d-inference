@@ -1291,7 +1291,9 @@ neither real-weight numerics, a pair qualification nor speed.
    ranks over the sealed local ring on ports 58123–58124. With `paged` as the
    fourth argument, every mode but `split-sum` runs the resident runtime's own
    request path: paged KV, the product's CBv2 prompt entry, and each step's
-   choice in its own evaluation.
+   choice in its own evaluation. The paged path also runs `gemma lanes`: three
+   requests served together through the batch driver, in one process and over
+   the ring, each of which must take its solo tokens.
 
 3. Verify. Each `tp` rank must equal `simulated` bit for bit (exit status 0).
    The script also prints QualificationComparator's verdict for each rank

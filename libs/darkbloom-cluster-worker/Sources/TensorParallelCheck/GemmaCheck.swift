@@ -14,6 +14,8 @@ import MLX
 //       [--pack yes|no] [--path legacy|paged] [--deadline-seconds S]
 //   darkbloom-cluster-tp-check gemma compare --reference FILE --candidate FILE [--bitwise yes|no] [--near-tie-ulps U]
 //   darkbloom-cluster-tp-check gemma allsum [--backend ring|socket|jaccl] [--count N]
+//   darkbloom-cluster-tp-check gemma lanes --mode simulated|tp --model-dir DIR --report FILE [--lanes N] [--outputs N]
+//       [--backend ring|socket|jaccl] [--reduction native|sealed-bench] [--deadline-seconds S]
 //
 // `full` is the unsharded model; `simulated` the one-process oracle: both
 // ranks' shards in one process, each on its own thread and stream, every
@@ -36,6 +38,10 @@ import MLX
 // each rank's own heads, the product's CBv2 prompt entry under the registered
 // prompt policy, and each step's token and stop flags agreed in the step's
 // evaluation; `legacy` (the default) keeps the SDK's legacy caches.
+// `lanes` serves N greedy requests of different lengths through the batch
+// driver on each rank's paged host (`Gemma4TensorParallelModel.generateLanes`),
+// after each alone (`generatePaged`): every lane must take its solo tokens,
+// and in `tp` mode both ranks must agree on every token.
 // A report names roles and chips only, never a host, an address or a path.
 enum GemmaCheck {
     struct Report: Codable {
@@ -75,7 +81,7 @@ enum GemmaCheck {
     }
 
     static func run(_ arguments: [String]) throws {
-        guard let command = arguments.first else { throw Failure("gemma: synthesize, run, compare or allsum") }
+        guard let command = arguments.first else { throw Failure("gemma: synthesize, run, compare, allsum or lanes") }
         var fields: [String: String] = [:]
         var index = 1
         while index < arguments.count {
@@ -90,7 +96,8 @@ enum GemmaCheck {
         case "run": try runRank(fields)
         case "compare": try compare(fields)
         case "allsum": try allSum(fields)
-        default: throw Failure("gemma: synthesize, run, compare or allsum")
+        case "lanes": try lanes(fields)
+        default: throw Failure("gemma: synthesize, run, compare, allsum or lanes")
         }
     }
 
@@ -307,6 +314,103 @@ enum GemmaCheck {
                 logicalBytesSHA256: sha256Hex(bytes), values: row)
         }
         return QualificationSubject(label: "\(report.role) on \(report.chip)", identity: decoded, evidence: evidence)
+    }
+
+    struct LanesReport: Codable {
+        var schema = "darkbloom_cluster_tp_check_gemma_lanes_report_v1"
+        var mode: String
+        var rank: Int
+        var backend: String?
+        var reduction: String?
+        var chip: String
+        var modelConfigurationSHA256: String
+        var promptTokens: [Int]
+        var outputCount: Int
+        var soloTokens: [[Int]]
+        var laneTokens: [[Int]]
+        var lanesEqualSolo: Bool
+        var ranksAgree: Bool?
+        var passed: Bool
+    }
+
+    /// Greedy requests together through the batch driver against each alone.
+    private static func lanes(_ fields: [String: String]) throws {
+        guard let mode = fields["--mode"], ["simulated", "tp"].contains(mode), let directory = fields["--model-dir"],
+              let reportPath = fields["--report"], !FileManager.default.fileExists(atPath: reportPath),
+              let count = Int(fields["--lanes"] ?? "3"), (2 ... 8).contains(count),
+              let outputs = Int(fields["--outputs"] ?? "8"), (1 ... 64).contains(outputs),
+              let deadline = Int(fields["--deadline-seconds"] ?? "900"), (30 ... 7200).contains(deadline),
+              ["native", "sealed-bench"].contains(fields["--reduction"] ?? "native") else {
+            throw Failure("gemma lanes needs --mode simulated|tp, --model-dir, a new --report and bounded options")
+        }
+        let sealed = (fields["--reduction"] ?? "native") == "sealed-bench"
+        guard !sealed || mode == "tp" else { throw Failure("--reduction sealed-bench applies to a tp rank only") }
+        try ProcessForcedExit.routeTerminationSignals()
+        ProcessNativeMemoryRelease.installForForcedExit()
+        try ProcessDeadline.arm(uptimeNanoseconds: DispatchTime.now().uptimeNanoseconds + UInt64(deadline) * 1_000_000_000,
+                                status: 124)
+        let modelDirectory = URL(fileURLWithPath: directory)
+        let configurationSHA = sha256Hex(try Data(contentsOf: modelDirectory.appendingPathComponent("config.json")))
+        let chunk = 16
+        @Sendable func prompts(vocabulary: Int) -> [[Int]] {
+            (0 ..< count).map { lane in (0 ..< (24 + 9 * lane)).map { ($0 * (37 + 2 * lane) + 11 + 5 * lane) % vocabulary } }
+        }
+        @Sendable func both(_ model: Gemma4TensorParallelModel) throws -> (solo: [[Int]], lanes: [[Int]]) {
+            let requests = prompts(vocabulary: model.plan.vocabularySize)
+            let solo = try requests.map { try model.generatePaged(prompt: $0, outputCount: outputs, chunk: chunk).tokenIDs }
+            return (solo, try model.generateLanes(prompts: requests, outputCount: outputs, chunk: chunk))
+        }
+        var report: LanesReport
+        if mode == "simulated" {
+            let pair = Gemma4TensorParallelLocalPair()
+            final class Ranks: @unchecked Sendable { let models: [Gemma4TensorParallelModel]; init(_ m: [Gemma4TensorParallelModel]) { models = m } }
+            let ranks = Ranks(try (0 ..< 2).map {
+                try Gemma4TensorParallelModel.load(modelDirectory: modelDirectory, role: .shard(rank: $0), reduction: pair.reduction(rank: $0))
+            })
+            note("both ranks in one process, \(count) lanes")
+            let results = try Gemma4TensorParallelLocalPair.run(device: Device.defaultDevice()) { try both(ranks.models[$0]) }
+            let agree = results[0].solo == results[1].solo && results[0].lanes == results[1].lanes
+            let equal = results.allSatisfy { $0.lanes == $0.solo }
+            report = LanesReport(mode: mode, rank: 0, chip: chipName(), modelConfigurationSHA256: configurationSHA,
+                promptTokens: prompts(vocabulary: ranks.models[0].plan.vocabularySize).map(\.count), outputCount: outputs,
+                soloTokens: results[0].solo, laneTokens: results[0].lanes, lanesEqualSolo: equal, ranksAgree: agree,
+                passed: equal && agree)
+        } else {
+            guard let backend = QwenTensorParallelGroup.Backend(rawValue: fields["--backend"] ?? "ring") else {
+                throw Failure("unknown backend")
+            }
+            let group = try QwenTensorParallelGroup(backend: backend)
+            note("rank \(group.rank) of \(group.size) over \(backend.rawValue)\(backend.correctnessOnly ? " (correctness only, not a pair timing)" : ""), \(count) lanes")
+            guard try group.digestsEqual(fnv("\(configurationSHA)|lanes=\(count)|outputs=\(outputs)|sealed=\(sealed)")) else {
+                throw Failure("the ranks disagree on the workload")
+            }
+            if sealed {
+                var scope = Data("darkbloom-tp-sealed-scope-v1|gemma4-lanes|".utf8)
+                scope.append(Data(configurationSHA.utf8))
+                let codec = try QwenTensorParallelSealCodec.bench(group: group, scope: scope)
+                try codec.install()
+                group.sealed = codec
+            }
+            let model = try Gemma4TensorParallelModel.load(modelDirectory: modelDirectory, role: .shard(rank: group.rank),
+                                                           reduction: group)
+            let result = try both(model)
+            let equal = result.lanes == result.solo
+            let evidence = (result.solo + result.lanes).map { $0.map(String.init).joined(separator: ",") }.joined(separator: ";")
+            let agree = try group.digestsEqual(fnv(evidence))
+            report = LanesReport(mode: mode, rank: group.rank, backend: backend.rawValue, reduction: sealed ? "sealed-bench" : nil,
+                chip: chipName(), modelConfigurationSHA256: configurationSHA,
+                promptTokens: prompts(vocabulary: model.plan.vocabularySize).map(\.count), outputCount: outputs,
+                soloTokens: result.solo, laneTokens: result.lanes, lanesEqualSolo: equal, ranksAgree: agree,
+                passed: try group.agree([equal && agree ? 1 : 0]))
+        }
+        note("lanes equal solo: \(report.lanesEqualSolo); ranks agree: \(report.ranksAgree ?? false)")
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .prettyPrinted]
+        guard FileManager.default.createFile(atPath: reportPath, contents: try encoder.encode(report)) else {
+            throw Failure("could not write the report")
+        }
+        note("report written; passed \(report.passed)")
+        ProcessForcedExit.finish(status: report.passed ? 0 : 2, reason: "tp-check-gemma-lanes-complete")
     }
 
     /// Cross-rank sums at Gemma 4 26B decode and prefill widths (2,816): the

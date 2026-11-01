@@ -13,6 +13,8 @@
 # (both ranks in one process), then two `tp` ranks over the sealed local ring.
 # Required: each tp rank bitwise equal to `simulated`. Reported: the
 # comparator's verdict of each rank against `full`, and `split-sum` against tp.
+# The paged path also serves three requests as batch lanes (`gemma lanes`,
+# simulated and over the ring). Required: every lane takes its solo tokens.
 set -euo pipefail
 tp_check="$1"
 scratch="$2"
@@ -59,6 +61,31 @@ run_variant() {
     "$tp_check" gemma compare --reference "$dir/split-sum.json" --candidate "$dir/tp-rank0.json" --bitwise yes \
       >"$dir/split-sum-vs-tp.txt" 2>&1 || true
     echo "$name ($path): split-sum against tp: $(grep -E '^bitwise' "$dir/split-sum-vs-tp.txt")"
+    return
+  fi
+  # Batch lanes: three requests through the batch driver, each against itself alone.
+  env $environment nice -n 19 "$tp_check" gemma lanes --mode simulated --model-dir "$dir" \
+    --report "$dir/lanes-simulated.json" >"$dir/lanes-simulated.log" 2>&1 || true
+  env $environment MLX_RANK=0 MLX_HOSTFILE="$scratch/hosts.json" nice -n 19 "$tp_check" gemma lanes --mode tp \
+    --backend ring --reduction sealed-bench --model-dir "$dir" --report "$dir/lanes-tp-rank0.json" \
+    --deadline-seconds 300 >"$dir/lanes-tp-rank0.log" 2>&1 &
+  rank0=$!
+  env $environment MLX_RANK=1 MLX_HOSTFILE="$scratch/hosts.json" nice -n 19 "$tp_check" gemma lanes --mode tp \
+    --backend ring --reduction sealed-bench --model-dir "$dir" --report "$dir/lanes-tp-rank1.json" \
+    --deadline-seconds 300 >"$dir/lanes-tp-rank1.log" 2>&1 || true
+  wait "$rank0" || true
+  if /usr/bin/python3 - "$dir" <<'PY'
+import json, sys
+d = sys.argv[1]
+reports = [json.load(open(f"{d}/{name}.json")) for name in ("lanes-simulated", "lanes-tp-rank0", "lanes-tp-rank1")]
+ok = all(r["passed"] and r["lanesEqualSolo"] for r in reports)
+ok = ok and reports[1]["laneTokens"] == reports[0]["laneTokens"] == reports[2]["laneTokens"]
+sys.exit(0 if ok else 1)
+PY
+  then
+    echo "$name ($path): lanes == solo on both tp ranks and simulated, tokens equal"
+  else
+    echo "$name ($path): lanes DIFFER"; failures=$((failures + 1))
   fi
 }
 run_variant w4-routed "" --bits 4

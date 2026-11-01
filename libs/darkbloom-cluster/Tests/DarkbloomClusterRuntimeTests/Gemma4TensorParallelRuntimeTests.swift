@@ -265,6 +265,82 @@ struct Gemma4TensorParallelRuntimeTests {
         #expect(served[1].tokens.isEmpty && served.allSatisfy(\.drained))
     }
 
+    /// Mixed lanes through the batch driver: a greedy lane, a sampled lane
+    /// and a greedy lane asking for logprobs each take the tokens (and
+    /// logprobs) the request loop gives that request alone. Each rank builds
+    /// its own requests, as each process does.
+    @Test func mixedLanesTakeTheirSoloTokensAndLogprobs() throws {
+        let directory = try Self.synthetic()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let pair = Pair()
+        let models = Box(try (0 ..< 2).map {
+            try Gemma4TensorParallelModel.load(modelDirectory: directory, role: .shard(rank: $0), reduction: pair.reduction(rank: $0))
+        })
+        func sampling(_ temperature: Float, logprobs: Int = 0) -> ClusterWorkerSampling {
+            ClusterWorkerSampling(temperature: temperature, topP: 1, topK: 0, minP: 0, repetitionPenalty: 1,
+                repetitionContextSize: 0, frequencyPenalty: 0, presencePenalty: 0, seed: 0x5eed, stream: 0xab,
+                logitBias: [], topLogprobs: logprobs)
+        }
+        let samplings: [ClusterWorkerSampling?] = [nil, sampling(1.0), sampling(0, logprobs: 2)]
+        // Each request alone through the request loop, rank 0's tokens and logprobs.
+        let solo = try samplings.map { value in
+            let result = try Self.loop(models, LoopCase(sampling: value), outputs: 6)
+            return (tokens: result[0].tokens, logprobs: result[0].logprobs)
+        }
+        let profile = try QwenLayerStageGenerationProfile(identifier: "synthetic-gemma4-tp", vocabularySize: 512,
+            hiddenSize: 256, activationDType: "bfloat16", maximumPromptTokens: 64, maximumChunkTokens: 16,
+            maximumOutputTokens: 32, maximumContextTokens: 128, logitsDType: "float32")
+        let ids = (0 ..< 3).map { UUID(uuidString: "6f0e2a4c-0000-4000-8000-00000000001\($0)")! }
+        let served = try Pair.run(device: .gpu) { rank -> (tokens: [UUID: [Int]], logprobs: [UUID: [ClusterWorkerTokenLogprobs?]]) in
+            let model = models.value[rank]
+            let host = try model.pagedHost(lanes: 3, maximumTokens: 128, chunkTokens: 16)
+            let book = ClusterBatchLaneBook<Gemma4TensorParallelLaneReservation>()
+            for (index, value) in samplings.enumerated() {
+                let request = try QwenLayerStageGenerationRequest(profile: profile, requestID: ids[index],
+                    promptTokenIDs: Self.prompt, chunkSize: 16, outputCount: 6, stopTokenIDs: [], sampling: value)
+                try book.reserve(ids[index], .init(request: request, deadline: .max, laneStateBytes: 1), lanes: 3)
+                try book.start(ids[index])
+            }
+            let executor = try Gemma4TensorParallelBatchExecutor<Gemma4TensorParallelLaneReservation>(model: model,
+                host: host, reduction: model.reduction!, agree: { _, check in try check() })
+            let driver = try QwenTensorParallelBatchDriver(executor: executor, book: book, capacity: 3, vocabulary: 512)
+            let lanes = LogprobLaneHost()
+            var tokens: [UUID: [Int]] = [:]
+            try MLX.withError { error in
+                try driver.serve(host: lanes, retiredSelection: { id, selected, _ in tokens[id] = selected },
+                    check: { try error.check() })
+            }
+            return (tokens, lanes.logprobs)
+        }
+        for (index, id) in ids.enumerated() {
+            #expect(served[0].tokens[id] == solo[index].tokens && served[1].tokens[id] == solo[index].tokens,
+                "lane \(index) took other tokens than alone")
+        }
+        #expect(served[0].logprobs[ids[2]] == solo[2].logprobs && solo[2].logprobs.allSatisfy { $0?.top.count == 2 })
+        #expect(served[0].logprobs[ids[1]]?.count == 6 && served[0].logprobs[ids[0]]?.allSatisfy { $0 == nil } == true)
+    }
+
+    /// A batch host that records every published token's logprobs.
+    private final class LogprobLaneHost: QwenBatchServingHost, @unchecked Sendable {
+        var logprobs: [UUID: [ClusterWorkerTokenLogprobs?]] = [:]
+        func serviceControl() throws {}
+        func publishToken(requestID: UUID, ordinal: Int, tokenID: Int, committedTokens: Int) throws {
+            try publishToken(requestID: requestID, ordinal: ordinal, tokenID: tokenID, committedTokens: committedTokens,
+                             logprobs: nil)
+        }
+        func publishToken(requestID: UUID, ordinal: Int, tokenID: Int, committedTokens: Int,
+                          logprobs captured: ClusterWorkerTokenLogprobs?) throws {
+            logprobs[requestID, default: []].append(captured)
+        }
+        func awaitDecisions(_ requestIDs: [UUID]) throws -> [UUID: Bool] {
+            Dictionary(uniqueKeysWithValues: requestIDs.map { ($0, true) })
+        }
+        func pollDecision(_ requestID: UUID) throws -> Bool? { true }
+        func publishFinished(requestID: UUID, reason: ClusterWorkerFinishReason) throws {}
+        func publishLeft(requestID: UUID) throws {}
+        func publishPromptCache(requestID: UUID, reusedTokens: Int, storedFrontiers: [Int]) throws {}
+    }
+
     /// The share probe times one rank's decode step with every sum local, so
     /// one rank runs it alone; it reports an equal share, retires its request
     /// and returns every page. A load deadline too close gives no probe.

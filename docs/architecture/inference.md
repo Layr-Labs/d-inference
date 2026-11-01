@@ -4086,6 +4086,8 @@ Oracles run on synthetic checkpoints with the 26B's structure scaled down:
 
 `tp-check gemma run --path paged` runs `full`, `simulated` and `tp` through the
 resident runtime's own request path instead of the SDK's legacy caches.
+`tp-check gemma lanes` serves several requests together through the batch
+driver and checks each against itself alone.
 
 ### Resident runtime
 

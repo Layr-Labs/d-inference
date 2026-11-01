@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-10-31
+> Last updated: 2026-11-01
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -2891,7 +2891,18 @@ a share of every layer, and one fewer than the members otherwise, as the
 coordinator requires. A setup with unequal tensor-parallel shares is refused at
 registration, because the provider does not encode the plan's
 `tensor_parallel_shares` yet: a plan without them is an equal split to the
-coordinator. Under a model approval, which names no build, the plan also carries
+coordinator. So a cluster served through Darkbloom is planned with equal shares
+only (`ClusterPlacementPolicy.equalTensorShares`, set by
+`ClusterPlacementFlow.decide` for the coordinator scope: the guided setup, its
+forwarded plans and the service's re-plans after an update or a memory
+refusal), and the approval check refuses a cluster approval beside unequal
+shares before any part stops (`ClusterApprovalAttachment.attachment`), on the
+leader and on the other Mac: "Not offered for pairing", with the reason, instead
+of a setup that says it is offered and never registers. Before this, two unequal
+Macs (where the planner gives the faster one the larger share, for example
+Qwen3.8 27B, which pairs only in tensor parallel) saved such a setup, and the
+coordinator never formed or routed the pair. A local cluster keeps the faster
+unequal split. Under a model approval, which names no build, the plan also carries
 the member's own runtime block (`ClusterPlan.runtime`: worker, capability,
 resource policy and profile from its saved setup,
 `DistributedInstalledNativeStart.runtimeBlock`), so both members must run the

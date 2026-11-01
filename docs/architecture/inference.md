@@ -4479,8 +4479,8 @@ Code: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/GPTOSS/Meta
 one-token requests. Ordinary affine 4/8-bit group-64 projections retain native
 matmul `M=1` through leading weight views; custom and floating modules retain
 their original per-request forward method. The unscaled value RMS reduction
-retains singleton request shapes. The rows' routed experts share one unsorted
-call that keeps each row's singleton bytes
+retains singleton request shapes. The rows' routed experts share one call
+that keeps each row's singleton bytes
 ([Gemma prompt projection reductions](#gemma-prompt-projection-reductions)).
 The scope owns no cache, changes no shared MLX dispatcher, and is disabled for
 singletons, prefill and speculative rectangles.
@@ -4903,10 +4903,12 @@ The same explicit prompt scope keeps each BF16 token's complete expert block
 at one token: its unchanged selected indices and weights, an M=1 gathered
 product per selected expert, singleton GeGLU and its own top-K weighted
 reduction, rather than a wide sorted expert graph. All tokens of a frame share
-one call (`SwitchGLU.callAndWeightedReduceRows`) that keeps their assignments
-unsorted. MLX selects `gather_qmv` from the bits, dtype and the N and K widths
-alone, and the top-8 reduction's `col_reduce_small` thread layout depends only
-on the hidden width, so each token's bytes equal those of its own one-token
+one call (`SwitchGLU.callAndWeightedReduceRows`). It groups their assignments
+by expert for weight locality but does not give the gathers the sorted hint, so
+every pair keeps the unsorted M=1 route. MLX selects `gather_qmv` from the
+bits, dtype and the N and K widths alone. The rows return to token order before
+the top-8 reduction, whose `col_reduce_small` thread layout depends only on the
+hidden width. Each token's bytes therefore equal those of its own one-token
 call. The tokens share one dispatch per operation instead of about six per
 token per layer. Independent decode rows use the same call
 ([Gemma ordinary batch decode arithmetic](#gemma-ordinary-batch-decode-arithmetic)).

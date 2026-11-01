@@ -2226,11 +2226,12 @@ unchanged tied head. `Gemma4PrefillExpertTests` executes the actual Gemma decode
 shared MLP and sparse expert block with the attention output isolated to zero;
 it assembles an independent projection/expert oracle from one-token expert
 calls while preserving the original rectangular normalization and elementwise
-operations. It requires one unsorted expert call carrying every token's routes
-in order, with the oracle's bytes, at 7 to 512 tokens. A separate expert-only composition
+operations. It requires one expert call, never hinted as sorted, carrying every
+token's routes (grouped by expert from 64 assignments), with the oracle's
+bytes, at 7 to 512 tokens. A separate expert-only composition
 check compares complete singleton calls with the shared branch isolated to
 zero, and a decode check requires 2, 3 and 8 independent rows to share one
-unsorted call with each row's one-row bytes. Ordinary and verification paths
+call with each row's one-row bytes. Ordinary and verification paths
 remain covered, and the original rectangular call still sorts. These checks do not
 claim whole-layer singleton equivalence: existing normalization can depend on
 rectangle shape on CPU. With `GEMMA4_EXPERT_ROWS_GPU=1` the suite also

@@ -1117,8 +1117,8 @@ Registered Gemma prompt projections use an explicit singleton-token reduction
 policy for supported BF16 affine packing, as described in
 [inference](inference.md#gemma-prompt-projection-reductions). The exact arithmetic
 receipt separates older rectangular-projection results and cache identities.
-The prompt's expert blocks share one unsorted dispatch per operation and keep
-each token's bytes, so the receipt is unchanged.
+The prompt's expert blocks share one dispatch per operation and keep each
+token's bytes, so the receipt is unchanged.
 Component tests do not qualify a complete model, both rank orders, or prompt
 throughput. Keep existing cross-chip failures and require fresh full-artifact
 numerical and timing evidence for both scoped prompt policies. Attention and

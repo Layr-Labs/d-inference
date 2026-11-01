@@ -4,7 +4,7 @@
 
 Dated records and raw native evidence retain their original content, revisions and limitations. A record is not a fresh test result or proof of private platform compatibility.
 
-- [Gemma pipeline prompt experts](2026-11-01-gemma-pipeline-prompt-experts.md) - the registered Gemma stages' prompt expert blocks in one shared unsorted dispatch with the same bytes: CPU and M5 Ultra GPU equality evidence and synthetic one-layer timings; no pair or qualification result.
+- [Gemma pipeline prompt experts](2026-11-01-gemma-pipeline-prompt-experts.md) - the registered Gemma stages' prompt expert blocks in one shared dispatch with the same bytes: CPU and M5 Ultra GPU equality evidence and synthetic one-layer timings; no pair or qualification result.
 - [Public cluster models](2026-10-31-public-cluster-models.md) - the owner's declaration of GLM-5.3-Flash and Qwen3.8-27B for public cluster traffic in pipeline and tensor parallel, the checks it rests on and why releases carry pair-serving grants; the evidence document of `ClusterPublicModels`.
 - [Mixed-step prefill geometry](2026-10-21-mixed-step-prefill-geometry.md) - load, engine, inter-token latency and KV-subtracted activation measurements behind Gemma 4's 2,048 / 4,096 prompt geometry, its media ceiling and the GPT-OSS and dense Qwen opt-in.
 - [GLM-5.3-Flash single-Mac qualification record](2026-10-21-glm53-flash-single-mac-qualification.md)

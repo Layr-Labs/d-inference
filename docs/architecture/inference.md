@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-10-31
+> Last updated: 2026-11-01
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -4431,18 +4431,29 @@ synchronizes before dropping request caches on completion or failure. Copies
 share immutable old pages; a later write replaces the affected page handle.
 Sliding histories release old pages when they repack or enter the fixed ring.
 
+Sliding pages also keep the ring's wrapped flag: a one-token write that rotates
+sets it, and a chunk or trim clears it. Their `metaState` is the seven values the
+pinned SDK writes for `RotatingKVCache(maxSize: window)` in the same state: keep,
+window, step, offset, write index, capacity origin and wrapped flag
+(`GPTOSSSlidingRing`). Restoring accepts only that layout for the cache's window,
+and only with the rows that ring holds: its first `index` rows, or the whole
+window once wrapped. It refuses the five-value legacy layout, a rewind reserve, a
+kept prefix, and any other step, window or capacity origin. GPT-OSS serving never
+reads or restores this metadata.
+
 `GPTOSSRequestStateBudget` keeps the existing full-request admission scope and
 never lowers its previous contiguous allowance. It also charges each page's
 allocator bound separately, the gathered attention view, and partial-page
 copies; sliding repacking includes old and new page versions. Physical
 allocation is demand-grown even though the request is admitted conservatively
 for its whole declared scope. LOAD and live-memory gates remain authoritative.
-CPU parity against the actual SDK caches covers ring/page/chunk boundaries and
-sinks. Real two-Mac numerical acceptance, resource release and performance
+CPU parity against the actual SDK caches covers ring/page/chunk boundaries,
+metadata and sinks. Real two-Mac numerical acceptance, resource release and performance
 remain separate qualification gates.
 
 Code: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/GPTOSS/Generation/GPTOSSPagedKVCache.swift`
-(`GPTOSSPagedKVCache`), `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/GPTOSS/Metadata/GPTOSSPagedKVLayout.swift`,
+(`GPTOSSPagedKVCache`), `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/GPTOSS/Generation/GPTOSSSlidingRing.swift`
+(`GPTOSSSlidingRing`), `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/GPTOSS/Metadata/GPTOSSPagedKVLayout.swift`,
 `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/GPTOSS/Metadata/GPTOSSRequestStateBudget.swift`, and
 `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/GPTOSS/Resident/GPTOSSResidentAdmission.swift` (`loadAgreementFingerprint`).
 See [focused cache checks](../developer/test.md#gpt-oss-cluster-paged-kv-checks).

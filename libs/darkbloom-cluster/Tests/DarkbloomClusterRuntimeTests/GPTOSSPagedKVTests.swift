@@ -129,6 +129,41 @@ struct GPTOSSPagedKVTests {
         }
     }
 
+    @Test func slidingPagesRestoreOnlyTheSDKRingsMetadataForTheirRows() {
+        Device.withDefaultDevice(.cpu) {
+            let ring = RotatingKVCache(maxSize: 128, keep: 0)
+            var checked = 0
+            // Short, chunked past the window, wrapped, wrapped back to its end, chunked again.
+            for (step, count) in ([3, 1, 512] + Array(repeating: 1, count: 128) + [2]).enumerated() {
+                let input = rows(count, start: ring.offset)
+                _ = ring.update(keys: input.0, values: input.1)
+                guard [0, 2, 3, 130, 131].contains(step) else { continue }
+                let metadata = ring.metaState, held = ring.state[0].dim(2)
+                guard let position = GPTOSSSlidingRing.position(of: metadata, window: 128, rows: held) else {
+                    Issue.record("The SDK ring's own metadata \(metadata) was refused"); continue
+                }
+                checked += 1
+                #expect(GPTOSSSlidingRing.metadata(window: 128, at: position) == metadata)
+                #expect(GPTOSSSlidingRing.position(of: metadata, window: 128, rows: held - 1) == nil)
+                #expect(GPTOSSSlidingRing.position(of: metadata, window: 64, rows: held) == nil)
+                func replacing(_ field: Int, _ value: String) -> [String] {
+                    var fields = metadata; fields[field] = value; return fields
+                }
+                // Legacy, rewind reserve, kept prefix, other step, requested origin, non-canonical offset.
+                for refused in [Array(metadata.prefix(5)), metadata + ["2"], replacing(0, "1"), replacing(2, "64"),
+                                replacing(5, "requested"), replacing(3, "+\(position.offset)")] {
+                    #expect(GPTOSSSlidingRing.position(of: refused, window: 128, rows: held) == nil)
+                }
+                // A flipped flag claims other rows, except at a full window's end.
+                if position.index != held || held != 128 {
+                    #expect(GPTOSSSlidingRing.position(of: replacing(6, String(!position.wrapped)),
+                        window: 128, rows: held) == nil)
+                }
+            }
+            #expect(checked == 5)
+        }
+    }
+
     @Test func slidingPagesStayBoundedAndRequestRetirementDropsEveryOwner() {
         Device.withDefaultDevice(.cpu) {
             weak var released: GPTOSSPagedKVCache?

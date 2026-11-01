@@ -13,6 +13,9 @@ enum Gemma4ResidentAdapterDefinition {
     /// parallel only where it predicts it faster than the pipeline
     /// (`Gemma4PlacementFamily.tensorParallelPlan`, `ClusterTensorParallelChoice.fastest`).
     static let supportedGenerationModes: [ClusterGenerationMode] = [.pipeline, .tensorParallel]
+    /// Tensor parallel keeps prompt prefixes as the pipeline does, resident and on the owner's SSD tier
+    /// (`Gemma4TensorParallelPrefix`); its load agreement binds this (`Gemma4TensorParallelLoadAgreement.prefixCache`).
+    static let tensorParallelKeepsPromptPrefixes = true
 
     static func profileID(_ model: Gemma4RegisteredModel) -> String { model.rawValue + "_greedy_generation_v1" }
 

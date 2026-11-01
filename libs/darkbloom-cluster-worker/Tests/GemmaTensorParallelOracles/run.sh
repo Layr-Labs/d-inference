@@ -15,6 +15,9 @@
 # comparator's verdict of each rank against `full`, and `split-sum` against tp.
 # The paged path also serves three requests as batch lanes (`gemma lanes`,
 # simulated and over the ring). Required: every lane takes its solo tokens.
+# And it serves the request twice through each rank's prompt-prefix tier
+# (`--prefix repeat`). Required: the repeat restored a prefix, equals its cold
+# run bit for bit, and each tp rank's repeat equals simulated's bit for bit.
 set -euo pipefail
 tp_check="$1"
 scratch="$2"
@@ -63,6 +66,34 @@ run_variant() {
     echo "$name ($path): split-sum against tp: $(grep -E '^bitwise' "$dir/split-sum-vs-tp.txt")"
     return
   fi
+  # A repeated prompt through each rank's prefix tier: the repeat restores the
+  # deepest boundary both ranks hold and must equal its cold run bit for bit
+  # (in each report), and each tp rank's repeat must equal simulated's.
+  env $environment nice -n 19 "$tp_check" gemma run --mode simulated --path paged --prefix repeat --model-dir "$dir" \
+    --request "$dir/request.json" --report "$dir/prefix-simulated.json" >"$dir/prefix-simulated.log" 2>&1 || true
+  env $environment MLX_RANK=0 MLX_HOSTFILE="$scratch/hosts.json" nice -n 19 "$tp_check" gemma run --mode tp \
+    --path paged --prefix repeat --backend ring --reduction sealed-bench --model-dir "$dir" --request "$dir/request.json" \
+    --report "$dir/prefix-tp-rank0.json" --deadline-seconds 300 >"$dir/prefix-tp-rank0.log" 2>&1 &
+  rank0=$!
+  env $environment MLX_RANK=1 MLX_HOSTFILE="$scratch/hosts.json" nice -n 19 "$tp_check" gemma run --mode tp \
+    --path paged --prefix repeat --backend ring --reduction sealed-bench --model-dir "$dir" --request "$dir/request.json" \
+    --report "$dir/prefix-tp-rank1.json" --deadline-seconds 300 >"$dir/prefix-tp-rank1.log" 2>&1 || true
+  wait "$rank0" || true
+  for rank in 0 1; do
+    if "$tp_check" gemma compare --reference "$dir/prefix-simulated.json" --candidate "$dir/prefix-tp-rank$rank.json" \
+         --bitwise yes >"$dir/prefix-tp-rank$rank-vs-simulated.txt" 2>&1 \
+       && /usr/bin/python3 - "$dir" "$rank" <<'PY'
+import json, sys
+d, rank = sys.argv[1], sys.argv[2]
+reports = [json.load(open(f"{d}/{name}.json")) for name in ("prefix-simulated", f"prefix-tp-rank{rank}")]
+sys.exit(0 if all(r["passed"] and r["restoredEqualsCold"] and r["reusedPromptTokens"] > 0 for r in reports) else 1)
+PY
+    then
+      echo "$name ($path): repeated prefix restored $(/usr/bin/python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["reusedPromptTokens"])' "$dir/prefix-tp-rank$rank.json") tokens; tp rank $rank == simulated and == cold, bitwise"
+    else
+      echo "$name ($path): repeated prefix on tp rank $rank DIFFERS"; failures=$((failures + 1))
+    fi
+  done
   # Batch lanes: three requests through the batch driver, each against itself alone.
   env $environment nice -n 19 "$tp_check" gemma lanes --mode simulated --model-dir "$dir" \
     --report "$dir/lanes-simulated.json" >"$dir/lanes-simulated.log" 2>&1 || true

@@ -4105,8 +4105,10 @@ stops, cancellations and retirements.
   rank's part and materialized at once.
 - Agreement. `Gemma4TensorParallelLoadAgreement` binds the registered row's
   fingerprint, the mode's and the plan's terms, the prompt policy, the
-  selection, the lanes, the KV storage and the prefix-cache switch. A rank
-  started with any other value refuses its peer before reading weights.
+  selection, the lanes, the KV storage and the prefix cache (on in this build,
+  `Gemma4ResidentAdapterDefinition.tensorParallelKeepsPromptPrefixes`; off only
+  by the diagnosis switch `DARKBLOOM_CLUSTER_PREFIX_CACHE=off`). A rank started
+  with any other value refuses its peer before reading weights.
 - Probes. The load measures the link (`QwenTensorParallelLinkProbe`) and this
   rank's own decode step with every sum local
   (`Gemma4TensorParallelShareProbe`). The ready record carries both.
@@ -4140,14 +4142,23 @@ stops, cancellations and retirements.
   that could not grow) ends both after the same step
   (`Gemma4TensorParallelRequestLoop`). A rank that stopped commits nothing
   more, but still ends at a stop token its peer commits.
+- Prompt prefixes. Each rank keeps its own heads' state at a prompt's chunk
+  boundaries as the Gemma pipeline keeps a stage's, in the pipeline's memory
+  tier and the owner's encrypted SSD tier (`Gemma4TensorParallelPrefix`). A
+  request restores the deepest boundary both ranks hold after one sealed vote
+  and one sealed confirmation, or neither restores it, and then runs the rest
+  of the prompt on the same chunk grid: a restore equals the cold prefill bit
+  for bit. Solo requests and lanes alike
+  ([Gemma TP prompt prefixes](prefix-cache.md#gemma-tp-prompt-prefixes)).
 
 Memory is charged per rank (`Gemma4TensorParallelRequestBudget`; see
 [hardware support](hardware-support.md#gemma-4-tensor-parallel-rank-memory)):
-each request its own KV heads, prompt transient, FP32 partials and vocabulary
-rows; each rank once the conservative activation floor, the freed-buffer cache
-and eight sealed frames. A lane is gated with every held lane's charge, the new
-one and the rank's reserve. Prefix caching, speculative decoding, media and a
-measured activation floor are not built yet.
+each request its own KV heads, prompt transient, FP32 partials, vocabulary
+rows and its own prompt's prefix capture; each rank once the conservative
+activation floor, the freed-buffer cache and eight sealed frames. The prefix
+memory tier lives in measured free room and is not charged. A lane is gated
+with every held lane's charge, the new one and the rank's reserve. Speculative
+decoding, media and a measured activation floor are not built yet.
 
 ### Gemma tensor-parallel placement
 

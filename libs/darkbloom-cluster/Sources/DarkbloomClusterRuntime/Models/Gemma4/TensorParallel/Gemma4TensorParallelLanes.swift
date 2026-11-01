@@ -5,23 +5,31 @@ import MLX
 struct Gemma4TensorParallelLaneReservation: QwenTensorParallelBatchReservation {
     let request: QwenLayerStageGenerationRequest
     let deadline: UInt64
-    /// The lane's own charge at its context
-    /// (`Gemma4TensorParallelResidentRuntime.requestChargeBytes`).
+    /// The lane's own charge at its context, with its own prompt's prefix
+    /// capture (`Gemma4TensorParallelResidentRuntime.prefixCharge`).
     let laneStateBytes: Int
+    /// What its prefix capture may hold (0: none).
+    var prefixCaptureLimit = 0
     var joinable: Bool { true }
 }
 
 /// One batch lane: a request's paged session and the frames it has run,
-/// on the request's own chunk grid (the solo path's).
+/// on the request's own chunk grid (the solo path's), from a restored
+/// prefix's boundary when both ranks restored one.
 final class Gemma4TensorParallelLane: QwenTensorParallelBatchLane {
     let session: Gemma4TensorParallelPagedSession
     let request: QwenLayerStageGenerationRequest
     private var schedule: QwenLayerStageGenerationSchedule
     var pendingLogprobs: ClusterWorkerTokenLogprobs?
+    var reusedPrefixTokens: Int { session.reusedPrefixTokens }
+    /// The boundaries its capture kept, once both ranks retired it cleanly.
+    var storedPrefixFrontiers: [Int] = []
 
-    init(session: Gemma4TensorParallelPagedSession, request: QwenLayerStageGenerationRequest) {
-        self.session = session; self.request = request
-        schedule = QwenLayerStageGenerationSchedule(request: request)
+    init(session: Gemma4TensorParallelPagedSession, request: QwenLayerStageGenerationRequest) throws {
+        self.session = session
+        self.request = session.reusedPrefixTokens > 0
+            ? try request.planned(reusedPrefix: session.reusedPrefixTokens, splitFinalToken: false) : request
+        schedule = QwenLayerStageGenerationSchedule(request: self.request)
     }
 
     var nextFrame: QwenLayerStageFrame? {
@@ -70,8 +78,11 @@ final class Gemma4TensorParallelBatchExecutor<Reservation: QwenTensorParallelBat
     /// its history is opened.
     private let agree: (QwenLayerStageGenerationRequest, () throws -> Void) throws -> Void
     private let completedDecode: (Int) -> Void
+    /// This rank's prompt prefixes; nil keeps none (oracles).
+    private let prefix: Gemma4TensorParallelPrefix?
 
     init(model: Gemma4TensorParallelModel, host: CBv2StageKVHost, reduction: any QwenTensorParallelReduction,
+         prefix: Gemma4TensorParallelPrefix? = nil,
          agree: @escaping (QwenLayerStageGenerationRequest, () throws -> Void) throws -> Void,
          completedDecode: @escaping (Int) -> Void = { _ in }) throws {
         guard case .shard(let rank) = model.role, rank == reduction.rank, reduction.size == model.plan.size,
@@ -79,7 +90,7 @@ final class Gemma4TensorParallelBatchExecutor<Reservation: QwenTensorParallelBat
             throw ProbeError("Gemma tensor-parallel batch executor has a mismatched shard or group")
         }
         self.rank = rank; self.model = model; self.host = host; self.reduction = reduction
-        self.agree = agree; self.completedDecode = completedDecode
+        self.prefix = prefix; self.agree = agree; self.completedDecode = completedDecode
     }
 
     func exchange(_ words: [Float], check: () throws -> Void) throws -> [Float] {
@@ -96,12 +107,30 @@ final class Gemma4TensorParallelBatchExecutor<Reservation: QwenTensorParallelBat
     /// An unopened reservation holds no native state.
     func discard(_ reservation: Reservation) throws {}
 
+    /// Both ranks agree on the request, then (with prompt prefixes kept) vote
+    /// its prefix and restore it or neither does (`Gemma4TensorParallelPrefix.open`).
     func open(_ reservation: Reservation, check: () throws -> Void) throws -> Lane {
         let request = reservation.request
         try agree(request, check)
         try check()
-        return Lane(session: try .init(model: model, host: host, promptCount: request.promptCount,
-            outputCount: request.outputCount), request: request)
+        guard let prefix else {
+            return try Lane(session: try .init(model: model, host: host, promptCount: request.promptCount,
+                outputCount: request.outputCount), request: request)
+        }
+        let limit = (reservation as? Gemma4TensorParallelLaneReservation)?.prefixCaptureLimit ?? 0
+        let session = try prefix.open(request, model: model, host: host, group: reduction, captureLimit: limit)
+        do { return try Lane(session: session, request: request) } catch {
+            try? session.retire(failed: true)
+            throw error
+        }
+    }
+
+    /// Both ranks retired the lane: a clean one's capture becomes reusable.
+    func confirmedRetirement(_ lane: Lane, clean: Bool) throws {
+        guard let capture = lane.session.prefixCapture else { return }
+        lane.session.prefixCapture = nil
+        guard clean, let prefix, let scopes = prefix.scopes(lane.request) else { capture.discard(); return }
+        lane.storedPrefixFrontiers = prefix.store(capture, request: lane.request, scopes: scopes, rank: rank)
     }
 
     func prefill(_ lane: Lane, frame: QwenLayerStageFrame, check: () throws -> Void) throws -> Int? {
@@ -270,18 +299,18 @@ extension Gemma4TensorParallelResidentRuntime {
             }
             let request = try admission.request(value, id: requestID, now: DispatchTime.now().uptimeNanoseconds)
             try control.check(deadline: value.deadlineUptimeNanoseconds)
-            let charge = try Self.requestChargeBytes(contextTokens: request.maximumTokens, admission: admission,
-                chunkTokens: request.chunkSize)
+            let priced = try prefixCharge(request)
+            let charge = priced.charge
             guard charge <= value.capacityLimitBytes else {
                 throw ProbeError("Gemma tensor-parallel lane exceeds its owner or readiness capacity")
             }
-            // Every held lane at its whole charge, this one, and the rank's own reserve once.
+            // Every held lane at its whole charge, this one, and the rank's own reserve once
+            // (kept prefixes give way first; a capture beyond its charged part may be cut).
             _ = ClusterIdleMemory.releaseFreedBuffers()
-            try Self.requireLiveMemory(bytes: try QwenLongPrefillCheckedBytes.sum([try laneBook.stateBytes(), charge,
-                rankReserveBytes]))
+            let captureLimit = try admitCapture(priced, held: [try laneBook.stateBytes(), charge, rankReserveBytes])
             try control.check(deadline: value.deadlineUptimeNanoseconds)
             try laneBook.reserve(requestID, .init(request: request, deadline: value.deadlineUptimeNanoseconds,
-                laneStateBytes: charge), lanes: lanes)
+                laneStateBytes: charge, prefixCaptureLimit: captureLimit), lanes: lanes)
             return charge
         }
     }
@@ -300,7 +329,7 @@ extension Gemma4TensorParallelResidentRuntime {
         let records = try QwenBatchRecordBinding(epoch: admission.configuration.identity.membershipEpoch,
             planFingerprint: admission.plan.fingerprint, ordinal: batchOrdinal, lanes: lanes)
         let executor = try Gemma4TensorParallelBatchExecutor<Gemma4TensorParallelLaneReservation>(model: model, host: host,
-            reduction: group, agree: { [self] request, check in try agreeRequest(request, check: check) })
+            reduction: group, prefix: prefix, agree: { [self] request, check in try agreeRequest(request, check: check) })
         let driver = try QwenTensorParallelBatchDriver(executor: executor, book: laneBook, capacity: lanes,
             vocabulary: admission.profile.vocabularySize)
         do {
@@ -312,7 +341,9 @@ extension Gemma4TensorParallelResidentRuntime {
                         try error.check(); try self.control.check()
                         let now = DispatchTime.now().uptimeNanoseconds
                         if lastResourceCheck == 0 || now - lastResourceCheck >= 250_000_000 {
-                            try Self.requireLiveMemory(bytes: 0); lastResourceCheck = now
+                            // Kept prefixes give way before the batch fails for memory.
+                            try prefix.cache.yieldingMemory { try Self.requireLiveMemory(bytes: 0) }
+                            lastResourceCheck = now
                         }
                         try error.check()
                     })
@@ -321,7 +352,9 @@ extension Gemma4TensorParallelResidentRuntime {
             guard host.isDrained else { throw ProbeError("Gemma tensor-parallel batch retained native history") }
             collective.logDataPlaneStatus()
         } catch {
-            // Its native state stays reachable until shutdown's checked drain.
+            // Its native state stays reachable until shutdown's checked drain;
+            // the peer may hold other prefixes now.
+            prefix.cache.sweep()
             failedLaneDriver = driver; control.fail()
             throw error
         }

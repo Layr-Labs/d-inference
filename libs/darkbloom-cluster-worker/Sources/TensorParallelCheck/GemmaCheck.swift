@@ -11,7 +11,7 @@ import MLX
 //       a tiny random Gemma 4 MoE checkpoint with the 26B's structure and request.json (never a model pass)
 //   darkbloom-cluster-tp-check gemma run --mode full|split-sum|simulated|shard|tp --model-dir DIR --request FILE --report FILE
 //       [--record-top K] [--backend ring|socket|jaccl] [--reduction native|sealed-bench] [--shard-rank R]
-//       [--pack yes|no] [--path legacy|paged] [--deadline-seconds S]
+//       [--pack yes|no] [--path legacy|paged] [--prefix none|repeat] [--deadline-seconds S]
 //   darkbloom-cluster-tp-check gemma compare --reference FILE --candidate FILE [--bitwise yes|no] [--near-tie-ulps U]
 //   darkbloom-cluster-tp-check gemma allsum [--backend ring|socket|jaccl] [--count N]
 //   darkbloom-cluster-tp-check gemma lanes --mode simulated|tp --model-dir DIR --report FILE [--lanes N] [--outputs N]
@@ -38,6 +38,12 @@ import MLX
 // each rank's own heads, the product's CBv2 prompt entry under the registered
 // prompt policy, and each step's token and stop flags agreed in the step's
 // evaluation; `legacy` (the default) keeps the SDK's legacy caches.
+// `--prefix repeat` (paged; simulated or tp) serves the request twice through
+// each rank's prompt-prefix memory tier (`generatePagedRepeatingPrefix`):
+// cold, keeping its chunk boundaries, then again restoring the deepest
+// boundary both ranks hold after their sealed vote and confirmation. The
+// report is the repeat's, which must have restored a prefix and equal the
+// cold request bit for bit.
 // `lanes` serves N greedy requests of different lengths through the batch
 // driver on each rank's paged host (`Gemma4TensorParallelModel.generateLanes`),
 // after each alone (`generatePaged`): every lane must take its solo tokens,
@@ -84,6 +90,11 @@ enum GemmaCheck {
         var decodeSeconds: Double
         var ranksAgree: Bool?
         var passed: Bool
+        /// `--prefix repeat`: the prompt tokens the repeat restored, and
+        /// whether it equals the cold request bit for bit.
+        var prefix: String?
+        var reusedPromptTokens: Int?
+        var restoredEqualsCold: Bool?
     }
 
     static func run(_ arguments: [String]) throws {
@@ -135,11 +146,16 @@ enum GemmaCheck {
               let deadline = Int(fields["--deadline-seconds"] ?? "900"), (30 ... 7200).contains(deadline),
               ["native", "sealed-bench"].contains(fields["--reduction"] ?? "native"),
               ["yes", "no"].contains(fields["--pack"] ?? "yes"),
-              ["legacy", "paged"].contains(fields["--path"] ?? "legacy") else {
+              ["legacy", "paged"].contains(fields["--path"] ?? "legacy"),
+              ["none", "repeat"].contains(fields["--prefix"] ?? "none") else {
             throw Failure("gemma run needs --mode full|split-sum|simulated|shard|tp, --model-dir, --request, a new --report and bounded options")
         }
         let paged = (fields["--path"] ?? "legacy") == "paged"
         guard !paged || mode != "split-sum" else { throw Failure("--path paged does not run the split-sum oracle") }
+        let repeatPrefix = fields["--prefix"] == "repeat"
+        guard !repeatPrefix || (paged && ["simulated", "tp"].contains(mode)) else {
+            throw Failure("--prefix repeat runs on the paged path of simulated or tp ranks")
+        }
         let sealed = (fields["--reduction"] ?? "native") == "sealed-bench"
         guard !sealed || mode == "tp" else { throw Failure("--reduction sealed-bench applies to a tp rank only") }
         let pack = (fields["--pack"] ?? "yes") == "yes"
@@ -182,7 +198,7 @@ enum GemmaCheck {
             reduction = g
             note("rank \(g.rank) of \(g.size) over \(backend.rawValue)\(backend.correctnessOnly ? " (correctness only, not a pair timing)" : "")")
             // Everything that changes the collectives is agreed before loading.
-            let workload = "\(configurationSHA)|\(request.promptTokenIDsSHA256)|\(request.outputCount)|\(request.chunkSize)|top=\(recordTop)|pack=\(pack)|sealed=\(sealed)|paged=\(paged)|\(Gemma4TensorParallelPlan.arithmeticAgreementFields.joined(separator: ","))"
+            let workload = "\(configurationSHA)|\(request.promptTokenIDsSHA256)|\(request.outputCount)|\(request.chunkSize)|top=\(recordTop)|pack=\(pack)|sealed=\(sealed)|paged=\(paged)|prefix=\(repeatPrefix)|\(Gemma4TensorParallelPlan.arithmeticAgreementFields.joined(separator: ","))"
             guard try g.digestsEqual(fnv(workload)) else {
                 throw Failure("the ranks disagree on the workload, the model configuration or the arithmetic contract")
             }
@@ -202,7 +218,34 @@ enum GemmaCheck {
         if let group { guard try group.agree([7]) else { throw Failure("load barrier failed") } }
         let generation: Gemma4TensorParallelModel.Generation
         var pairAgrees: Bool?
-        if let pair {
+        var prefixOutcome: (reused: Int, equalsCold: Bool)?
+        func bitsEqual(_ a: Gemma4TensorParallelModel.Generation, _ b: Gemma4TensorParallelModel.Generation) -> Bool {
+            func bits(_ rows: [[Float]]) -> [[UInt32]] { rows.map { $0.map(\.bitPattern) } }
+            return a.tokenIDs == b.tokenIDs && a.topTokenIDs == b.topTokenIDs && bits(a.topLogits) == bits(b.topLogits)
+                && bits(a.topLogprobs) == bits(b.topLogprobs)
+                && a.finalLogits.map { $0.map(\.bitPattern) } == b.finalLogits.map { $0.map(\.bitPattern) }
+        }
+        if repeatPrefix {
+            let prompt = request.promptTokenIDs, count = request.outputCount, chunk = request.chunkSize
+            let runs: [(cold: Gemma4TensorParallelModel.Generation, restored: Gemma4TensorParallelModel.Generation, reused: Int)]
+            if let pair {
+                let ranks = Ranks([model, try Gemma4TensorParallelModel.load(modelDirectory: modelDirectory,
+                    role: .shard(rank: 1), reduction: pair.reduction(rank: 1), packFeedForward: pack)])
+                runs = try Gemma4TensorParallelLocalPair.run(device: Device.defaultDevice()) { rank in
+                    let value = try ranks.models[rank].generatePagedRepeatingPrefix(prompt: prompt, outputCount: count,
+                        chunk: chunk, recordTop: recordTop)
+                    return (value.cold, value.restored, value.reusedPromptTokens)
+                }
+                pairAgrees = bitsEqual(runs[0].restored, runs[1].restored)
+            } else {
+                let value = try model.generatePagedRepeatingPrefix(prompt: prompt, outputCount: count, chunk: chunk,
+                    recordTop: recordTop)
+                runs = [(value.cold, value.restored, value.reusedPromptTokens)]
+            }
+            generation = runs[0].restored
+            prefixOutcome = (runs[0].reused, runs.allSatisfy { $0.reused > 0 && bitsEqual($0.restored, $0.cold) })
+            note("prefix repeat: reused \(runs[0].reused) prompt tokens; restored equals cold bit for bit: \(prefixOutcome!.equalsCold)")
+        } else if let pair {
             let ranks = Ranks([model, try Gemma4TensorParallelModel.load(modelDirectory: modelDirectory,
                 role: .shard(rank: 1), reduction: pair.reduction(rank: 1), packFeedForward: pack)])
             let prompt = request.promptTokenIDs, count = request.outputCount, chunk = request.chunkSize
@@ -238,12 +281,14 @@ enum GemmaCheck {
             topTokenIDs: recordTop > 0 ? generation.topTokenIDs : nil, topLogits: recordTop > 0 ? generation.topLogits : nil,
             topLogprobs: recordTop > 0 ? generation.topLogprobs : nil, finalLogits: generation.finalLogits,
             firstTokenSeconds: generation.firstTokenSeconds, decodeSeconds: generation.decodeSeconds,
-            ranksAgree: pairAgrees, passed: pairAgrees ?? true)
+            ranksAgree: pairAgrees, passed: (pairAgrees ?? true) && (prefixOutcome?.equalsCold ?? true),
+            prefix: repeatPrefix ? "repeat" : nil, reusedPromptTokens: prefixOutcome?.reused,
+            restoredEqualsCold: prefixOutcome?.equalsCold)
         if let group {
             let evidence = report.tokenIDsSHA256 + "|" + sha256Hex(Data((generation.finalLogits ?? []).flatMap {
                 withUnsafeBytes(of: $0.bitPattern.littleEndian) { Array($0) } }))
             report.ranksAgree = try group.digestsEqual(fnv(evidence))
-            report.passed = try group.agree([report.ranksAgree == true ? 1 : 0])
+            report.passed = try group.agree([report.ranksAgree == true && report.restoredEqualsCold != false ? 1 : 0])
         }
         note("tokens \(String(report.tokenIDsSHA256.prefix(16))): \(generation.tokenIDs.prefix(12).map(String.init).joined(separator: " "))…"
             + (report.ranksAgree.map { " ranks agree: \($0)" } ?? ""))

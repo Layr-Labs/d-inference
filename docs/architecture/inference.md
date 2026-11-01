@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-10-30
+> Last updated: 2026-10-31
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -982,7 +982,11 @@ adapter is dropped from the advertised set at scan time and never loads
 Slot construction carries the engine's immutable admission watermark into the
 bridge so future load and reserve-raise checks can preserve a serviceable total
 grant. These [workspace-aware floors](hardware-support.md#kv-slot-grants) do not
-lower the activation reserve or replace actual per-request byte admission.
+lower the activation reserve or replace actual per-request byte admission. Every
+re-slice, including regrowth, funds those floors first when the proportional
+split alone would leave a slot below one, so the re-slice refuses a load only
+when the floors together exceed the fleet KV budget. A newcomer counts only the
+base floor until its engine is assembled.
 
 ### GLM5Next implementation boundary
 
@@ -3525,6 +3529,15 @@ the system assertion wrappers in `provider-swift/Sources/ProviderCore/System/`.
 See [cluster member operation](../provider/cluster-always-on.md) for the limits
 on explicit sleep and laptop lid closure.
 
+Under its supervisor, the cluster service writes its heartbeat to the file that
+`DARKBLOOM_CLUSTER_MEMBER_HEALTH_FILE` names (`ClusterServiceAgent.healthPath`,
+`service-health.json`), and the supervisor's liveness guard accepts only a beat
+with the service's own PID. `ClusterService.partEnvironment` gives this Mac's
+part the same key with a different file (`ClusterServiceAgent.partHealthPath`,
+`part-health.json`), so a coordinator-paired part never writes over the
+service's heartbeat and still waits for its registration as a supervised member.
+An empty or absent key is passed on unchanged.
+
 ## GLM tool-stream completion
 
 GLM tool output uses the SDK GLM parser to validate the complete tool suffix at
@@ -5218,10 +5231,12 @@ New saves and installed startup enforce the same mode rule. Old pipeline records
 ## Cluster runtime facts of an installed app
 
 A coordinator-formed cluster session is admitted when its committed native start
-matches the approval each member installed. The guided setup registers the
-digests of such an approval from the installed app and the chosen model, so
-that no person types them
-([fields](../reference/configuration.md#cluster-runtime-facts)).
+matches the approval each member installed. A signed release computes the
+digests of such approvals from its own final app and registers them
+(`cluster_runtime`), and the guided setup matches a served approval against the
+installed app and the chosen model with the same computation, so that no person
+types them ([fields](../reference/configuration.md#cluster-runtime-facts),
+[release lane](../operations/provider-release.md#cluster-runtime-facts)).
 
 1. The file digests (worker, metallib, paged-attention source, placement tool)
    come from `DistributedInstalledFiles.digest`. `DistributedInstalledFiles.verify`,
@@ -5236,13 +5251,51 @@ that no person types them
    `resourcePolicySHA256`. A coordinator-formed start carries the approval's
    value, which the member and its owner compare with the installed approval
    (`NativePairMemberPolicy.require`).
+4. Every model carries a pair-serving grant when the build qualifies it. A
+   pair member reports only hardware capabilities
+   (`DistributedServingEligibility.memberCapabilities`: `apple_m5` on an M5,
+   never `mlx_nax` or `glm5_next_v1`), and a coordinator holds each member of a
+   pair without a grant to the model's single-Mac requirements
+   ([`providerMeetsServingRequirementsLocked`](https://github.com/Layr-Labs/darkbloom-platform/blob/2847f27dda8e4caf9e2441d554067f42a88c9e1f/coordinator/registry/cluster_pair_serving_grant.go)),
+   so no pair of GLM-5.3-Flash or Qwen3.8-27B forms without one. For a
+   described model whose runtime model, catalog ID and artifact the build's
+   checked-in public declaration names (`ClusterPublicModels`: the owner's
+   decisions, with its evidence document's SHA-256), the grant names the
+   declared families with that digest. Any other model's grant is the public
+   grant a member of the same build reports for the described artifact
+   (`ClusterPairServingGrants.grant`, records of that artifact only), with the
+   SHA-256 of the records it rests on (`ClusterPairServingGrant.evidenceSHA256`).
+   A grant also bounds the sessions formed for the owner: a coordinator forms
+   none under an approval in a mode family that its grants do not name
+   ([`pairServingGrant`](https://github.com/Layr-Labs/darkbloom-platform/blob/df61dd6f93714b4458d0eef3125c377087c08b52/coordinator/registry/cluster_pair_serving_grant.go)).
+   Each undeclared model's records grant covers the modes its runtime serves
+   today; a mode added to an undeclared model later forms coordinator sessions
+   only once a record of that mode is bundled.
+5. The parity qualifications come from the declaration only: one per declared
+   family and schedule. Each rank's numerics class is the one a member of that
+   build registers for the evidence placement
+   (`ClusterMemberDeviceProfile.numericsClass`, the block's Metal library); a
+   pipeline is cut at half the model's layers (`ClusterPublicModels.placement`);
+   the request envelope admits media only where the placement serves it
+   (`ClusterModelFeaturePolicy.mediaContract`). A coordinator applies them to
+   the whole declared family, on any Apple silicon pair: the placement names
+   the evidence, not a limit
+   ([fields](../reference/configuration.md#cluster-runtime-facts)). This build
+   places Qwen3.8-27B in tensor parallel only
+   (`ClusterModelFeaturePolicy.admissibleModes`), so its declared pipeline
+   takes effect with a build that places it as one. The
+   release lane runs the released build's own CLI, so the declaration and the
+   records are that build's.
 
 A model approval needs none of these facts: the member takes the same values
 from its own saved setup and files
 ([model approvals](../reference/configuration.md#model-approvals)).
 
 Code map: `provider-swift/Sources/ProviderCore/Config/ClusterRuntimeApprovalFacts.swift`
-(`ClusterRuntimeApprovalFacts`),
+(`ClusterRuntimeApprovalFacts`), `ClusterRuntimeApprovalFacts+Release.swift` (the release's model list and
+candidate choice),
+`provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/ClusterPublicModels.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledPairServingGrant.swift`,
 `provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledFiles.swift`,
 `provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledNativeStart.swift`.
 
@@ -5318,7 +5371,9 @@ does not establish an installed distributed-model pass.
 
 The Qwen3.5 9B's artifact ships the same dense one-layer inline head, so its tensor owner runs the same resident assistant (`QwenTensorParallelMTPPolicy.models`, `ClusterQwenTensorAssistantPolicy.runtimeModelIDs`): `QwenTensorParallelMTPInventory.Head` derives every expected head tensor from the row's configuration and `QwenTensorParallelMTPBudget` prices the row's own widths (the 27B's inventory fingerprint and quotes are unchanged). The 9B's READY carries the assistant without the 27B's media contract. The routed-expert rows' heads are expert layers this assistant does not load; those rows serve their request-owned lanes without speculation, and planning never asks them for an assistant.
 
-For the exact registered Qwen3.8 27B artifact, normal cluster planning discovers the embedded assistant from the catalog manifest, capability identity and bounded inline header inspection. With `backend.mtp_mode` set to `auto` or `on`, `ClusterPlacementTensorAssistantSelection.readAutomatic` asks the native metadata helper for a complete depth-two cohort quote. The returned inventory fingerprint becomes the saved bilateral policy; the provider does not infer it from a model name. Explicit `off`, the existing MTP kill switch, or an absent head retains the completely quoted ordinary TP owner. A malformed declared assistant refuses planning. This policy does not create a hand-off or phase-split deployment.
+For the exact registered Qwen3.8 27B artifact, normal cluster planning discovers the embedded assistant from the catalog manifest, capability identity and bounded inline header inspection. With `backend.mtp_mode` set to `auto` or `on`, `ClusterPlacementTensorAssistantSelection.readAutomatic` asks the native metadata helper for a complete depth-three cohort quote. The returned inventory fingerprint becomes the saved bilateral policy; the provider does not infer it from a model name. Explicit `off`, the existing MTP kill switch, or an absent head retains the completely quoted ordinary TP owner. A malformed declared assistant refuses planning. This policy does not create a hand-off or phase-split deployment.
+
+The assistant serves local clusters only. Its verify windows are a computation that no parity qualification covers: the coordinator qualifies `tensor_parallel_v1` placements by classes, cuts and mode, a pair's registration carries no speculation field, and the bundled tensor-parallel records of the 27B predate the assistant. A setup saved for coordinator pairing therefore carries none (`ClusterConfiguration.validate`). The guided setup plans a cluster served through Darkbloom under `auto` as under `off` (`ClusterPlacementTensorAssistantSelection.discoveryMode`, from the serving scope in `OnboardingLive.localPlanModels`). Explicit `on` is kept; the plan's public-traffic line then says the pair is not offered, and the leader refuses the coordinator's approval before any part stops (`ClusterApprovalAttachment.attachment` runs the setup's full validation). Public speculative decoding needs qualification evidence of the assisted placement.
 
 The assistant stays resident across admitted widths. Each request owns its history, assistant pages, target frontier and bounded accepted-token queue. Each row's round starts with its own B=1 assistant step over its own history (the step that also feeds its trusted history); the round's later steps run every row of a cohort through one assistant forward (`Qwen35InlineMTPAssistant.draftHiddens`, see [Batch-invariant tensor-parallel decode projections](#batch-invariant-tensor-parallel-decode-projections)). In a cohort, one head call per draft step chooses every row's proposal (`QwenTensorParallelMTPDecoder.stepBatch`; the SDK's `Qwen35InlineMTPAssistant.draftHidden`, `draftHiddens` and `recordDraft`): the rows' hidden states go through the vocabulary-sharded head together, and the cohort's draft step is one evaluation holding two collectives (rank zero's hidden rows, then the score exchange) in the same order on both ranks, instead of one evaluation and two collectives per row. Each row's choice equals its own call's: both collectives are element-wise, the head shard computes every row with the batch-invariant kernel (`QwenTensorParallelMTPProjection.exactRows`; with exact drafts off, each row as its own single-vector MLX product, `rowsAlone`, because one plain multi-row call would let MLX pick `qmv_wide` on Apple GPU family 15 and later and change rows), and the first maximum is taken per row. `QwenTensorParallelMTPHeadRowsTests` checks the head rows byte for byte for two to eight rows, and `QwenTensorParallelBatchMTPTransitionTests.batchedCohortDraftsMatchRowByRowDraftsWithOneHeadCallPerStep` checks tokens, MTP statistics and native state against row-by-row drafting (collective reductions per run: 577 to 401 at two rows, 1,633 to 401 at eight). A one-row round runs the same per-step functions with one row, so a request proposes the same tokens alone and in a cohort. Both ranks read every proposal from the same exchanged (maximum, index) pairs, so no proposal broadcast is needed. Eligible requests then share one captured target rectangle: `QwenTensorParallelMTPDecoder.stepBatch` verifies their seed and proposals, settles every row to its independently accepted prefix, and confirms the entire ordered cohort before publishing any result. Accepted suffixes consume the existing per-token credits without another native step. Request RNG and stopping remain independent.
 

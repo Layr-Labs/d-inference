@@ -3,9 +3,10 @@ import MLX
 
 /// Choices from a tied head whose vocabulary rows are split across ranks.
 /// Each rank holds its rows' FP32 (softcapped) logits `[1, V/2]`; one small
-/// collective per choice makes the same choice on every rank, and no rank
-/// holds the whole row. Without a reduction the rows are the whole
-/// vocabulary and the same functions are the plain choices of a whole model.
+/// collective per choice makes the same choice on every rank without
+/// gathering the whole row (only `gather` does, for the product's sampler).
+/// Without a reduction the rows are the whole vocabulary and the same
+/// functions are the plain choices of a whole model.
 public struct Gemma4TensorParallelSelection {
     public let vocabularyRange: Range<Int>
     public let vocabularySize: Int
@@ -64,20 +65,6 @@ public struct Gemma4TensorParallelSelection {
         guard let reduction else { return mine }
         let empty = MLXArray.full([mine.dim(0)], values: MLXArray(Float(-0.0)))
         return reduction.allSum(concatenated((0 ..< reduction.size).map { $0 == reduction.rank ? mine : empty }, axis: 0))
-    }
-
-    /// Sampling with keyed noise (Gumbel-max): exactly the token
-    /// `argMax(MLXRandom.gumbel([1, V], key: key) + whole * (1 / temperature))`
-    /// of the whole row. Every rank generates the whole vocabulary's noise
-    /// from the shared `key`, adds its rows' part, and the argmax collective
-    /// of `greedy` chooses. An `[1]` int32 token, not evaluated. The pinned
-    /// MLX samples a single row by its inverse CDF instead
-    /// (`categorical_inverse_cdf`), so token-for-token parity with the
-    /// product's sampler takes the whole row (`gather`) and that sampler.
-    public func sample(_ logits: MLXArray, temperature: Float, key: MLXArray) -> MLXArray {
-        let scaled = logits.asType(.float32) * (1 / temperature)
-        let noise = MLXRandom.gumbel([1, vocabularySize], key: key)[0..., vocabularyRange]
-        return argmaxAcrossRanks(noise + scaled, carrying: nil).token
     }
 
     /// One choice's candidates: the top `count` tokens of the whole row with

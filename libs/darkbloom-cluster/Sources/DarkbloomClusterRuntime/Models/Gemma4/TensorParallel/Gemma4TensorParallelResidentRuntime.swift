@@ -372,7 +372,7 @@ public final class Gemma4TensorParallelResidentRuntime {
     private func generate(_ reserved: Reserved, channel: ClusterCommittedTokenChannel) throws
         -> QwenResidentGenerationCompletion {
         guard let model, let host else { throw ProbeError("Resident model already released") }
-        let request = reserved.request, rank = collective.rank
+        let request = reserved.request
         guard try group.digestsEqual(QwenTensorParallelResidentRuntime.digest64(request.fingerprint + "|" + loadAgreement)) else {
             throw ProbeError("Gemma tensor-parallel ranks were given different requests")
         }
@@ -383,7 +383,7 @@ public final class Gemma4TensorParallelResidentRuntime {
             // end one rank between two collectives (its peer would wait in the
             // next one), so it rides in the next step's flags (`localStop`).
             let completion = try MLX.withError { error in
-                try decode(request, session: session, deadline: reserved.deadline, channel: channel,
+                try serve(request, session: session, deadline: reserved.deadline, channel: channel,
                     checked: { try error.check() })
             }
             try session.retire()
@@ -394,11 +394,11 @@ public final class Gemma4TensorParallelResidentRuntime {
         }
     }
 
-    /// The request through `Gemma4TensorParallelRequestLoop` on this rank:
-    /// the pair's agreed tokens and finish.
-    private func decode(_ request: QwenLayerStageGenerationRequest, session: Gemma4TensorParallelPagedSession,
-                        deadline: UInt64, channel: ClusterCommittedTokenChannel,
-                        checked: () throws -> Void) throws -> QwenResidentGenerationCompletion {
+    /// The request's prompt and decode through `Gemma4TensorParallelRequestLoop`
+    /// on this rank: the pair's agreed tokens and finish.
+    private func serve(_ request: QwenLayerStageGenerationRequest, session: Gemma4TensorParallelPagedSession,
+                       deadline: UInt64, channel: ClusterCommittedTokenChannel,
+                       checked: () throws -> Void) throws -> QwenResidentGenerationCompletion {
         let rank = collective.rank, prompt = request.promptTokenIDs
         let choice = Gemma4TensorParallelChoice(selection: session.model.selection, sampler: request.sampler, rank: rank)
         var lastCheck: UInt64 = 0

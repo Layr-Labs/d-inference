@@ -44,6 +44,12 @@ import MLX
 // and in `tp` mode both ranks must agree on every token.
 // A report names roles and chips only, never a host, an address or a path.
 enum GemmaCheck {
+    /// Both ranks' models, handed to the two rank threads of a simulated pair.
+    private final class Ranks: @unchecked Sendable {
+        let models: [Gemma4TensorParallelModel]
+        init(_ models: [Gemma4TensorParallelModel]) { self.models = models }
+    }
+
     struct Report: Codable {
         var schema = "darkbloom_cluster_tp_check_gemma_report_v1"
         var mode: String
@@ -197,7 +203,6 @@ enum GemmaCheck {
         let generation: Gemma4TensorParallelModel.Generation
         var pairAgrees: Bool?
         if let pair {
-            final class Ranks: @unchecked Sendable { let models: [Gemma4TensorParallelModel]; init(_ m: [Gemma4TensorParallelModel]) { models = m } }
             let ranks = Ranks([model, try Gemma4TensorParallelModel.load(modelDirectory: modelDirectory,
                 role: .shard(rank: 1), reduction: pair.reduction(rank: 1), packFeedForward: pack)])
             let prompt = request.promptTokenIDs, count = request.outputCount, chunk = request.chunkSize
@@ -363,7 +368,6 @@ enum GemmaCheck {
         var report: LanesReport
         if mode == "simulated" {
             let pair = Gemma4TensorParallelLocalPair()
-            final class Ranks: @unchecked Sendable { let models: [Gemma4TensorParallelModel]; init(_ m: [Gemma4TensorParallelModel]) { models = m } }
             let ranks = Ranks(try (0 ..< 2).map {
                 try Gemma4TensorParallelModel.load(modelDirectory: modelDirectory, role: .shard(rank: $0), reduction: pair.reduction(rank: $0))
             })

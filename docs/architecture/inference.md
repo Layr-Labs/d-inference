@@ -4071,7 +4071,6 @@ vocabulary-split head. A model without it runs the unchanged single-Mac path.
 `Gemma4TensorParallelSelection` chooses across ranks:
 
 - greedy: a two-value argmax collective;
-- keyed sampling: the whole row's Gumbel-max token under a shared key, through the same collective;
 - top-k logits and log probabilities: one gather of each rank's top-k and log-sum-exp;
 - the whole row: `-0` padding, every bit kept, so the product's sampler draws the single-Mac token on every rank.
 

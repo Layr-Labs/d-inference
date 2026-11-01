@@ -261,12 +261,14 @@ final class QwenTensorParallelBatchSession: QwenTensorParallelMTPTarget {
     static var usesExactVectors: Bool { exactVectorsOverride ?? exactVectors }
 
     /// Bound into the tensor-parallel load agreement: both ranks resolve the
-    /// decode projections alike, or the pair refuses to load (never a mixed
-    /// configuration). Each rank's words per lane is its own arithmetic
-    /// (a rank sums only its own partials) and is not bound.
+    /// decode projections alike and sum the same selection words (each row's
+    /// non-finite counts ride the greedy sum), or the pair refuses to load
+    /// (never a mixed configuration). Each rank's words per lane is its own
+    /// arithmetic (a rank sums only its own partials) and is not bound.
     static var decodeAgreementFields: [String] {
         ["qwen-tensor-parallel-decode-projections-v1", usesExactVectors ? "batch-invariant-affine" : "mlx-kernels",
-         "qwen-tensor-parallel-fenced-sums-v1", sumsAreFencedInputs ? "on" : "off"]
+         "qwen-tensor-parallel-fenced-sums-v1", sumsAreFencedInputs ? "on" : "off",
+         "qwen-tensor-parallel-selection-nonfinite-in-sum-v1"]
     }
 
     /// Whether the residual step's kernel waits for each all-sum itself: MLX
@@ -297,12 +299,15 @@ final class QwenTensorParallelBatchSession: QwenTensorParallelMTPTarget {
     static let censusCounts = [1, 2, 3, 4, 5, 6, 7, 8, 12, 16, 20, 24, 28, 32]
 
     /// The decode route of every projection of a loaded shard
-    /// (`qwen-tp-decode-census-v1`), so a pair's log shows what each row count
-    /// runs: the batch-invariant kernel (`aqv`), a row-parallel FP32 partial on
-    /// it (`partial`), or MLX's own kernels and why (`mlx-...`), with each
-    /// shape's layout per vector count (layouts never change a result), and
-    /// the attention, residual-norm and selection routes. Host only: no
-    /// array is evaluated.
+    /// (`darkbloom-qwen-tp-decode-census-v1`), so a pair's log shows what each
+    /// row count runs: the batch-invariant kernel (`aqv`), a row-parallel FP32
+    /// partial on it (`partial`), or MLX's own kernels and why (`mlx-...`),
+    /// with each shape's layout per vector count (layouts never change a
+    /// result), and the attention, residual-norm and selection routes. Host
+    /// only: no array is evaluated. Layouts are per checkpoint projection:
+    /// the SDK multiplies a Gated DeltaNet layer's four input projections as
+    /// one call of their summed rows, and fuses gate, up and SwiGLU at
+    /// `swiglu_fused_vectors` only while its decode fusions are on.
     static func censusLine(rank: Int, model: QwenTensorParallelModel) -> String {
         var routes: [String: Int] = [:], layouts: [String: String] = [:], tally: [String: Int] = [:]
         for (path, module) in model.model.leafModules().flattened() {
@@ -355,7 +360,7 @@ final class QwenTensorParallelBatchSession: QwenTensorParallelMTPTarget {
                         "DARKBLOOM_RESIDUAL_RMS_NORM", "DARKBLOOM_CBV2_PAGED_PTOK_TARGET", "DARKBLOOM_TTFT_GDN_BLOCKED"]
             .compactMap { key in environment[key].map { "\(key)=\($0)" } }
         let hidden = model.plan.hiddenSize
-        return "qwen-tp-decode-census-v1 rank=\(rank) exact_vectors=\(usesExactVectors ? "on" : "off")"
+        return "darkbloom-qwen-tp-decode-census-v1 rank=\(rank) exact_vectors=\(usesExactVectors ? "on" : "off")"
             + " aqv=\(tally["aqv", default: 0]) partial=\(tally["partial", default: 0]) mlx=\(tally["mlx", default: 0])"
             + " routes=" + routes.sorted { $0.key < $1.key }.map { "\($0.key)*\($0.value)" }.joined(separator: ",")
             + " layouts=" + layouts.sorted { $0.key < $1.key }.map { "\($0.key):\($0.value)" }.joined(separator: ",")

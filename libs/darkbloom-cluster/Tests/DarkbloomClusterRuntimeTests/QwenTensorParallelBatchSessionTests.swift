@@ -464,7 +464,13 @@ struct QwenTensorParallelBatchSessionTests {
         try verifySelectionBoundary(nonfinite: true, upperRankOnly: true)
     }
 
-    private func verifySelectionBoundary(nonfinite: Bool, upperRankOnly: Bool = false) throws {
+    /// The same for a sampled row with logprobs: both ranks gather the row
+    /// and refuse it before rank 0 samples or captures a logprob.
+    @Test func nativeNonfiniteSampledRowsOnOneRankFailBothRanks() throws {
+        try verifySelectionBoundary(nonfinite: true, upperRankOnly: true, sampled: true)
+    }
+
+    private func verifySelectionBoundary(nonfinite: Bool, upperRankOnly: Bool = false, sampled: Bool = false) throws {
         try Device.withDefaultDevice(device) {
             let fixture = QwenTensorParallelFixtures.checkpoint(hidden: 256, layers: 4, heads: 4, kvHeads: 2, vocabulary: 256)
             var root = try JSONSerialization.jsonObject(with: fixture.configuration) as! [String: Any]
@@ -505,8 +511,12 @@ struct QwenTensorParallelBatchSessionTests {
             }
             defer { for owner in owners { for lane in owner.nativeLanes { try? lane.session.retire() } } }
             for row in 0..<(nonfinite ? 1 : 8) {
+                let sampling: ClusterWorkerSampling? = sampled ? .init(temperature: 0.7, topP: 0.9, topK: 32, minP: 0.01,
+                    repetitionPenalty: 1.1, repetitionContextSize: 12, frequencyPenalty: 0.15, presencePenalty: 0.2,
+                    seed: UInt64(77 + row), stream: UInt64(5 * row + 1), logitBias: [.init(tokenID: row + 3, bias: 0.5)],
+                    topLogprobs: 5) : nil
                 let request = try QwenLayerStageGenerationRequest(profile: profile, requestID: UUID(),
-                    promptTokenIDs: [1, 2, row + 3], chunkSize: 5, outputCount: 12, stopTokenIDs: [])
+                    promptTokenIDs: [1, 2, row + 3], chunkSize: 5, outputCount: 12, stopTokenIDs: [], sampling: sampling)
                 for owner in owners { owner.nativeLanes.append(try owner.executor!.open(.init(request: request), check: {})) }
                 let body: (Owned) throws -> Void = { owner in
                     let lane = owner.nativeLanes[row]
@@ -514,7 +524,11 @@ struct QwenTensorParallelBatchSessionTests {
                 }
                 if nonfinite {
                     #expect(throws: ProbeError.self) { try parallel(owners, body: body) }
-                    #expect(owners.allSatisfy { $0.failure != nil && $0.selected.isEmpty })
+                    // Both ranks refuse the row in selection itself: the greedy sum's counts, or the gathered rows.
+                    let refusal = sampled ? "Qwen TP gathered sampling rows are invalid"
+                        : "Qwen TP selection rows have a non-finite logit"
+                    #expect(owners.allSatisfy { ($0.failure as? ProbeError)?.description == refusal && $0.selected.isEmpty })
+                    #expect(try owners[0].executor!.takeLogprobs(owners[0].nativeLanes[row]) == nil)
                 } else {
                     try parallel(owners, body: body)
                 }

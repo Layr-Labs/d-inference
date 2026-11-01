@@ -1276,7 +1276,9 @@ neither real-weight numerics, a pair qualification nor speed.
    must be quoted. Under the provider's tensor-parallel-first policy it checks the
    fastest-plan rule on constructed pairs: 2x M5 Ultra 256 GB keeps the pipeline on
    default link costs; 2x M4 Pro 24 or 32 GB takes tensor parallel where predicted
-   faster; measured links flip the choice both ways.
+   faster; measured links flip the choice both ways. It also pins the device-index
+   prior's choice for 2x M5 Ultra on the measured link: tensor parallel for a
+   128 + 128 request.
 
    The `Gemma4TensorParallelTests` suite covers:
 

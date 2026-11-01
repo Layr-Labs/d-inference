@@ -4196,10 +4196,19 @@ sums cross the link: about 0.67-0.93x one M5 Ultra's decode, unmeasured
 |---|---|---|---|
 | 2x M5 Ultra 256 GB | default (unmeasured) | 8,192 + 128, 1,024 + 128, 128 + 128 | pipeline |
 | 2x M5 Ultra 256 GB | measured 29 us sums | 1,024 + 128 | pipeline |
+| 2x M5 Ultra 256 GB | measured 29 us sums, no share probe | 128 + 128 | tensor parallel (device-index prior) |
 | 2x M5 Ultra 256 GB | measured 5 us sums | 1,024 + 128 | tensor parallel |
 | 2x M4 Pro 24 or 32 GB | default | 128 + 128 | tensor parallel |
 | 2x M4 Pro 24 or 32 GB | default | 8,192 + 128 | pipeline |
 | 2x M4 Pro 32 GB | measured 29 us / 109 us sums | 1,024 + 128 | tensor parallel / pipeline |
+
+Before a share probe, the comparison takes a Mac's weight time from its device
+index (`ClusterHardwarePrior.weightSeconds`): about 5.5 ms of an M5 Ultra's
+11.1 ms QAT 4-bit step, of which a rank halves 96%. The plan behind the rule
+infers 1.4-2.0 ms [INFERENCE], so the prior favours tensor parallel on big
+Macs: on the pair's measured link it predicts a 128 + 128 request about 5%
+faster than the pipeline. A tensor-parallel load's share probe
+(`Gemma4TensorParallelShareProbe`) replaces the prior in later plans.
 
 A family opts in by passing `choice: .fastest` where it builds its
 `ClusterTensorParallelFamilyPlan`; its layouts then encode `"choice":"fastest_v1"`

@@ -29,7 +29,15 @@ final class ClusterApprovalMacs: @unchecked Sendable {
     static let model = "fixture/qwen"
     static let chip = ClusterChipClass(chipName: "Apple M3 Ultra")
 
+    /// What both Macs' setups place: the Qwen3.5 9B pipeline, or Qwen3.8 27B in tensor parallel as the guided setup
+    /// saves it, with or without the model's embedded speculative assistant (`ClusterConfiguration.tensorAssistant`).
+    enum Shape {
+        case pipeline
+        case qwen27TensorParallel(assistant: ClusterQwenTensorAssistantPolicy?)
+    }
+
     let root: URL
+    let shape: Shape
     /// The setups' capability: the installed build's (`readopt` saves the setups of a new build).
     private(set) var capability: ClusterRuntimeCapability
     private(set) var capabilitySHA256: String
@@ -39,10 +47,11 @@ final class ClusterApprovalMacs: @unchecked Sendable {
     var follower: Mac { macs[1] }
 
     /// `coordinatorURL`: the coordinator both provider configurations name.
-    init(coordinatorURL: String) throws {
+    init(coordinatorURL: String, shape: Shape = .pipeline) throws {
         let base = try NativePairMemberFixture.privateRoot()
         root = base
-        let installed = try Self.capability(runtime: Self.hash("a"))
+        self.shape = shape
+        let installed = try Self.capability(runtime: Self.hash("a"), shape: shape)
         capability = installed
         capabilitySHA256 = ClusterConfigurationCodec.sha256(try ClusterRuntimeCapabilityCodec.encode(installed))
 
@@ -91,22 +100,35 @@ final class ClusterApprovalMacs: @unchecked Sendable {
     }
 
     /// The capability the worker of the build whose worker digest is `runtime` describes for the fixture model.
-    static func capability(runtime: String) throws -> ClusterRuntimeCapability {
+    static func capability(runtime: String, shape: Shape = .pipeline) throws -> ClusterRuntimeCapability {
         let h = Self.hash
-        let profile = ClusterWorkerProfile(id: "registered_qwen35_9b_greedy_generation_v1", vocabularySize: 248320,
-            maximumPromptTokens: 8192, maximumOutputTokens: 128, maximumChunkTokens: 512, maximumContextTokens: 8320)
-        return try ClusterRuntimeCapability(runtimeBinarySHA256: runtime, adapterID: "qwen35-dense-layer-stage", adapterVersion: 1,
-            runtimeModelID: "registered_qwen35_9b", artifactSHA256: h("b"), configurationSHA256: h("c"), manifestSHA256: h("d"),
-            profile: profile, profileFingerprint: h("e"), partitions: [.init(planSHA256: h("f"), stages: [
-                .init(rank: 0, sourceLayerStart: 0, sourceLayerEnd: 16, stagePlanSHA256: h("1"), constructionConfigurationSHA256: h("2")),
-                .init(rank: 1, sourceLayerStart: 16, sourceLayerEnd: 32, stagePlanSHA256: h("3"), constructionConfigurationSHA256: h("4"))])],
-            arithmeticPolicyID: "qwen_cbv2_query128_bf16_tf32_default_v1", arithmeticPolicySHA256: h("5"))
+        switch shape {
+        case .pipeline:
+            let profile = ClusterWorkerProfile(id: "registered_qwen35_9b_greedy_generation_v1", vocabularySize: 248320,
+                maximumPromptTokens: 8192, maximumOutputTokens: 128, maximumChunkTokens: 512, maximumContextTokens: 8320)
+            return try ClusterRuntimeCapability(runtimeBinarySHA256: runtime, adapterID: "qwen35-dense-layer-stage", adapterVersion: 1,
+                runtimeModelID: "registered_qwen35_9b", artifactSHA256: h("b"), configurationSHA256: h("c"), manifestSHA256: h("d"),
+                profile: profile, profileFingerprint: h("e"), partitions: [.init(planSHA256: h("f"), stages: [
+                    .init(rank: 0, sourceLayerStart: 0, sourceLayerEnd: 16, stagePlanSHA256: h("1"), constructionConfigurationSHA256: h("2")),
+                    .init(rank: 1, sourceLayerStart: 16, sourceLayerEnd: 32, stagePlanSHA256: h("3"), constructionConfigurationSHA256: h("4"))])],
+                arithmeticPolicyID: "qwen_cbv2_query128_bf16_tf32_default_v1", arithmeticPolicySHA256: h("5"))
+        case .qwen27TensorParallel:
+            let profile = ClusterWorkerProfile(id: "registered_qwen38_27b_greedy_generation_v1", vocabularySize: 248320,
+                maximumPromptTokens: 32768, maximumOutputTokens: 32768, maximumChunkTokens: 512, maximumContextTokens: 65536)
+            return try ClusterRuntimeCapability(runtimeBinarySHA256: runtime, adapterID: "qwen35-dense-layer-stage", adapterVersion: 1,
+                runtimeModelID: ClusterQwenTensorAssistantPolicy.runtimeModelID, artifactSHA256: h("b"), configurationSHA256: h("c"),
+                manifestSHA256: h("d"), profile: profile, profileFingerprint: h("e"), partitions: [.init(planSHA256: h("f"), stages: [
+                    .init(rank: 0, sourceLayerStart: 0, sourceLayerEnd: 32, stagePlanSHA256: h("1"), constructionConfigurationSHA256: h("2")),
+                    .init(rank: 1, sourceLayerStart: 32, sourceLayerEnd: 64, stagePlanSHA256: h("3"), constructionConfigurationSHA256: h("4"))])],
+                arithmeticPolicyID: "qwen_cbv2_query128_bf16_tf32_default_v1", arithmeticPolicySHA256: h("5"),
+                supportedGenerationModes: [.pipeline, .tensorParallel])
+        }
     }
 
     /// What an update does to both Macs' setups (`ClusterService`, "set the cluster up again after the update"): the
     /// same model and placement re-adopted for the new build's worker `runtime`, with no cluster approval.
     func readopt(runtime: String) throws {
-        capability = try Self.capability(runtime: runtime)
+        capability = try Self.capability(runtime: runtime, shape: shape)
         capabilitySHA256 = ClusterConfigurationCodec.sha256(try ClusterRuntimeCapabilityCodec.encode(capability))
         try saveSetups()
     }
@@ -122,7 +144,7 @@ final class ClusterApprovalMacs: @unchecked Sendable {
                  "ownerExecutable": other.owner.path, "workerExecutable": other.worker.path, "modelDirectory": other.model.path,
                  "runtimeBinarySHA256": capability.runtimeBinarySHA256, "jacclDevice": "rdma_en7"]
             }
-            let configuration: [String: Any] = ["schema": ClusterConfiguration.schemaName, "clusterID": record.clusterID,
+            var configuration: [String: Any] = ["schema": ClusterConfiguration.schemaName, "clusterID": record.clusterID,
                 "memberID": mac.memberID, "role": mac.rank == 0 ? "leader" : "follower", "publicModelID": Self.model,
                 "capabilitySHA256": capabilitySHA256, "selectedPlanSHA256": h("f"), "prefillSchedule": "serial_v1",
                 "chunkTokens": 16, "requestTimeoutSeconds": 300, "peers": macs.map(peer),
@@ -130,6 +152,10 @@ final class ClusterApprovalMacs: @unchecked Sendable {
                 "linkControl": ["schema": ClusterLinkControlAttachment.schemaName, "port": 47999,
                                 "linkEpoch": record.link.linkEpoch, "edgeID": record.link.edgeID, "secretFile": secret.path],
                 "tokenizerFiles": [["path": "tokenizer.json", "sha256": h("6"), "purpose": "tokenizer"]]]
+            if case .qwen27TensorParallel(let assistant) = shape {
+                configuration["generationMode"] = ClusterGenerationMode.tensorParallel.rawValue
+                if let assistant { configuration["tensorAssistant"] = assistant.object }
+            }
             let input = mac.scratch.appendingPathComponent("setup.json"), capabilityInput = mac.scratch.appendingPathComponent("capability.json")
             try JSONSerialization.data(withJSONObject: configuration, options: [.sortedKeys]).write(to: input)
             try capabilityData.write(to: capabilityInput)

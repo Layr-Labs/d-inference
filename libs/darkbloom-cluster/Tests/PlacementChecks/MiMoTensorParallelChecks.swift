@@ -25,7 +25,97 @@ func checkMiMoTensorParallel(golden: URL, _ checks: PlacementChecks) throws {
     let priced = try ClusterPlacementLayouts.layout(configuration: configuration, tensors: tensors,
         tensorParallelAllocationBound: { $0 + 16_384 })
     try checkMiMoRequestAllowance(priced, configuration: configuration, checks)
-    try checkMiMoFastestPlan(priced, checks)
+    let rounds = try mimoWithRounds(priced, configuration: configuration, allocationBound: { $0 + 16_384 })
+    try checkMiMoRounds(priced, rounds: rounds, checks)
+    try checkMiMoFastestPlan(rounds, checks)
+}
+
+/// One request's speculative charge at the registered geometry, at exact sizes: the drafter's bounded state at
+/// depth 2 and 512-token chunks (438,426,984 bytes) and the window's rows (36,347,904), both pinned by
+/// `MiMoTensorParallelSpeculativeTests`. The product prices it at the allocator's bound, a few pages more
+/// (`placementQuotesWhatTheLoadGateChargesWithRounds`); its drafter half needs the SDK these checks do not compile.
+private let mimoSpeculativeRequestBytes = 438_426_984 + 36_347_904
+
+/// The layout as the product prices it (`MiMoTensorParallelResidentRuntime.placementRounds`): MiMo tensor
+/// parallel decodes in speculative rounds by default (`ClusterMiMoTensorParallel`), so its plan holds the three
+/// heads whole on every rank and its reserve carries each request's speculative charge, with no speed-up credited.
+private func mimoWithRounds(_ layout: ClusterModelLayout, configuration: Data,
+                            allocationBound: @escaping (Int) throws -> Int) throws -> ClusterModelLayout {
+    guard let tp = layout.tensorParallel else { throw ProbeError("the MiMo layout carries no tensor-parallel plan") }
+    let budget = try MiMoTensorParallelRequestBudget.derive(plan: MiMoTensorParallelPlan(configuration: configuration),
+        slidingWindow: 128, contextTokens: 65_536, chunkTokens: 512, allocationBound: allocationBound)
+    let f = tp.family
+    let family = ClusterTensorParallelFamilyPlan(plan: f.plan, ranks: f.ranks, reductionsPerLayer: f.reductionsPerLayer,
+        reductionsPerStep: f.reductionsPerStep, partialBytesPerToken: f.partialBytesPerToken,
+        layerPartialBytesPerToken: f.layerPartialBytesPerToken, stateDividesByHeads: f.stateDividesByHeads,
+        shareOptions: f.shareOptions, shareUnits: f.shareUnits,
+        requestAllowance: try budget.allowance(speculativeRequestBytes: mimoSpeculativeRequestBytes, allocationBound: allocationBound),
+        additionalResidentBytes: f.additionalResidentBytes,
+        speculativeHead: .init(depth: ClusterMiMoTensorParallel.speculativeDepth, requestBytes: mimoSpeculativeRequestBytes,
+                               decodeSpeedup: 1),
+        choice: f.choice)
+    return try layout.with(tensorParallel: .init(family: family, terms: tp.terms, layerDividedBytes: tp.layerDividedBytes,
+        layerReplicatedBytes: tp.layerReplicatedBytes, ingressDividedBytes: tp.ingressDividedBytes,
+        ingressReplicatedBytes: tp.ingressReplicatedBytes, egressDividedBytes: tp.egressDividedBytes,
+        egressReplicatedBytes: tp.egressReplicatedBytes))
+}
+
+/// Rounds in the quote (2026-11-01, on by default): every rank holds the three heads whole beside its share, in
+/// whole pages, and each request's speculative charge beside its reserve, so the plan admits only pairs the rank's
+/// LOAD gate (shard + heads + reserve + charge, then the loading headroom) admits. Decode is credited nothing until
+/// records measure the rounds. Two 128 GB M5 Max, which cannot hold MiMo alone, still fit now.
+private func checkMiMoRounds(_ priced: ClusterModelLayout, rounds: ClusterModelLayout, _ checks: PlacementChecks) throws {
+    guard let head = rounds.speculativeHead, let plan = rounds.tensorParallel?.family.speculativeHead,
+          let allowance = rounds.tensorParallel?.family.requestAllowance,
+          let plain = priced.tensorParallel?.family.requestAllowance else {
+        checks.require("mimo rounds: the layout carries the three heads and the plan prices them", false)
+        return
+    }
+    checks.require("mimo rounds: the heads are the artifact's three next-N layers (42 tensors, 1,975,640,448 bytes), in no range; depth 2, no speed-up credited",
+        head.tensorCount == 42 && head.storedBytes == 1_975_640_448 && head.loadedBytes == 1_975_640_448
+            && plan.depth == 2 && plan.decodeSpeedup == 1 && plan.requestBytes == mimoSpeculativeRequestBytes)
+    checks.require("mimo rounds: the quoted reserve carries each request's speculative charge beside the plain reserve (+\(mimoSpeculativeRequestBytes) bytes), its collectives unchanged",
+        allowance.reservedBytes == plain.reservedBytes + mimoSpeculativeRequestBytes
+            && allowance.collectiveScratchBytes == plain.collectiveScratchBytes
+            && allowance.maximumContextTokens == 65_536 && allowance.maximumChunkTokens == 512)
+    func mac(_ label: String, _ gib: Double) throws -> ClusterPlacementDevice {
+        .init(label: label, profile: try SyntheticMac.idle(gib).profile(chip: "Apple M5 Max"), speed: measured(prefill: 400, decode: 40))
+    }
+    let maxes = try [mac("a", 128), mac("b", 128)]
+    // The pair's own probe (two M5 Ultra, keyed JACCL, 2026-10-31): sealed all-sum 29 us at 16 KB, 3,919 us at 32 MiB.
+    let link = ClusterLinkCosts(probe: ClusterWorkerLinkProbe(transport: "jaccl", keyed: true, pointToPointSmallBytes: 64,
+        pointToPointSmallMicroseconds: 180, pointToPointLargeBytes: 4 << 20, pointToPointLargeMicroseconds: 2_502,
+        allSumSmallBytes: 16_384, allSumSmallMicroseconds: 29, allSumLargeBytes: 32 << 20, allSumLargeMicroseconds: 3_919),
+        measuredUTC: "2026-10-31T00:00:00Z")!
+    func tensor(_ layout: ClusterModelLayout, _ devices: [ClusterPlacementDevice]) throws -> ClusterPlacementCandidate {
+        try ClusterPlacementPlanner.evaluate(devices: devices, cuts: [], mode: .tensorParallel, prefillSchedule: .serial,
+            layout: layout, policy: ClusterPlacementPolicy(), link: link)
+    }
+    let before = try tensor(priced, maxes), after = try tensor(rounds, maxes)
+    let pages = head.loadedBytes + head.tensorCount * SyntheticMac.page
+    checks.require("mimo rounds: each rank holds the heads whole beside its share, each tensor in whole pages (+\(pages) bytes)",
+        before.ranks.count == 2 && zip(before.ranks, after.ranks).allSatisfy { $1.weightsBytes == $0.weightsBytes + pages })
+    checks.require("mimo rounds: each rank's request need carries the speculative charge",
+        zip(before.ranks, after.ranks).allSatisfy { $1.requestNeedBytes == $0.requestNeedBytes + mimoSpeculativeRequestBytes })
+    checks.require("mimo rounds: so each rank needs both more before it loads",
+        zip(before.ranks, after.ranks).allSatisfy { $1.needBytes == $0.needBytes + pages + mimoSpeculativeRequestBytes })
+    // The rank's LOAD gate with rounds: its exact shard, the heads, the reserve with the charge, then the headroom.
+    let loadGate = 84_013_770_176 + 1_975_640_448 + allowance.reservedBytes + maxes[0].profile.memory.loadingHeadroomBytes
+    checks.require("mimo rounds: the plan's need is the rank's LOAD gate (\(loadGate) bytes on a 128 GB Mac) plus its tensors' page padding",
+        after.ranks.allSatisfy { $0.needBytes == loadGate + ($0.weightsBytes - 84_013_770_176 - 1_975_640_448) })
+    checks.require("mimo rounds: decode and the first token are predicted as before (no credit for unmeasured rounds)",
+        after.rested.decodeTokensPerSecond == before.rested.decodeTokensPerSecond
+            && after.rested.firstTokenSeconds == before.rested.firstTokenSeconds)
+    checks.require(String(format: "mimo rounds: two 128 GB M5 Max still fit now with the heads (each rank needs %.1f GiB of 128)",
+            Double(after.ranks[0].needBytes) / Double(gib)),
+        after.ranks.allSatisfy { $0.fit == .now })
+    checks.require("mimo rounds: a pipeline holds no tensor-parallel heads and keeps its prediction",
+        try ClusterPlacementPlanner.evaluate(devices: maxes, cuts: [41], mode: .pipeline, prefillSchedule: .serial, layout: rounds,
+            policy: ClusterPlacementPolicy(), link: link) == ClusterPlacementPlanner.evaluate(devices: maxes, cuts: [41],
+                mode: .pipeline, prefillSchedule: .serial, layout: priced, policy: ClusterPlacementPolicy(), link: link))
+    checks.require("mimo rounds: the layout's description says the rounds and their charge",
+        ClusterPlacementExplanation.layout(rounds).contains { $0.contains("speculative rounds of up to 2 proposals") }
+            && !ClusterPlacementExplanation.layout(priced).contains { $0.contains("speculative rounds of up to") })
 }
 
 /// What one rank holds of a layout's tensor-parallel facts: every part's

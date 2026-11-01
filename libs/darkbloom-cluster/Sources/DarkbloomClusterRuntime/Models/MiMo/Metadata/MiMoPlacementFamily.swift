@@ -26,6 +26,13 @@ struct MiMoPlacementFamily: ClusterPlacementFamily {
     /// (`MiMoTensorParallelRequestBudget`), set where the allocator's bound is
     /// known (`ClusterPlacementLayouts.layout`); nil in metadata-only layouts.
     var tensorParallelRequestAllowance: ClusterTensorParallelRequestAllowance?
+    /// The speculative rounds every tensor-parallel rank decodes in
+    /// (`ClusterMiMoTensorParallel`): the three heads whole beside its share
+    /// (the layout's `speculativeHead`) and each request's drafter state and
+    /// window rows, which the allowance above then carries too, as the rank's
+    /// LOAD gate charges them. Set with the allowance where the SDK's drafter
+    /// declaration is compiled; nil in metadata-only layouts.
+    var tensorParallelSpeculativeHead: ClusterTensorParallelSpeculativeHead?
 
     static func handles(configuration: Data) -> Bool {
         (try? MiMoRegisteredSpecification.specification(configuration: configuration)) != nil
@@ -156,14 +163,17 @@ struct MiMoPlacementFamily: ClusterPlacementFamily {
     /// selection. Each rank keeps its own KV heads. Equal shares with no
     /// padding: every cut lands on whole heads, quantization groups and packed
     /// words. Chosen only where predicted faster than the pipeline
-    /// (`ClusterTensorParallelChoice.fastest`): 97 sums a step cross the link,
-    /// and the pipeline keeps its speculative rounds (`docs/architecture/inference.md`).
+    /// (`ClusterTensorParallelChoice.fastest`): 97 sums a step cross the link.
+    /// Both modes decode in speculative rounds; the rounds of tensor parallel
+    /// are priced in memory (`tensorParallelSpeculativeHead`) and credited no
+    /// speed-up until records measure one (`docs/architecture/inference.md`).
     var tensorParallelPlan: ClusterTensorParallelFamilyPlan? {
         tensorParallel.map { plan in
             ClusterTensorParallelFamilyPlan(plan: MiMoTensorParallelPlan.name, ranks: [plan.size],
                 reductionsPerLayer: plan.reductionsPerLayer, reductionsPerStep: plan.reductionsPerStep,
                 partialBytesPerToken: plan.partialBytesPerToken, stateDividesByHeads: true,
-                requestAllowance: tensorParallelRequestAllowance, choice: .fastest)
+                requestAllowance: tensorParallelRequestAllowance, speculativeHead: tensorParallelSpeculativeHead,
+                choice: .fastest)
         }
     }
 

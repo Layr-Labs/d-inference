@@ -318,13 +318,35 @@ public final class MiMoTensorParallelResidentRuntime {
     /// product's declaration at the allocator's bound) and the window's extra
     /// rows (`MiMoTensorParallelRequestBudget.speculativeWindowBytes`).
     static func speculativeRequestBytes(configuration: MiMoV26Configuration, terms: MiMoMTPTerms,
-                                        plan: MiMoTensorParallelPlan, slidingWindow: Int, chunkTokens: Int) throws -> Int {
-        let bound = QwenResidentResourceEnvironment.allocationBound
-        return try QwenLongPrefillCheckedBytes.sum([
+                                        plan: MiMoTensorParallelPlan, slidingWindow: Int, chunkTokens: Int,
+                                        bound: (Int) throws -> Int = QwenResidentResourceEnvironment.allocationBound)
+        throws -> Int {
+        try QwenLongPrefillCheckedBytes.sum([
             MiMoTensorParallelDraftHead.requestBytes(configuration: configuration, chunkSize: chunkTokens,
                                                     depth: terms.depth, bound: bound),
             MiMoTensorParallelRequestBudget.speculativeWindowBytes(plan: plan, slidingWindow: slidingWindow,
                 depth: terms.depth, allocationBound: bound)])
+    }
+
+    /// The rounds as the planner prices a rank (`ClusterTensorParallelSpeculativeHead`), from the configuration
+    /// alone: the installed depth (`ClusterMiMoTensorParallel.speculativeDepth`), each request's speculative charge
+    /// at the profile's chunk (what the LOAD gate adds beside `budget`, so the quoted allowance carries it too), and
+    /// a decode speed-up of 1. No record has measured MiMo tensor parallel's rounds against its one-token steps, so
+    /// the plan credits none: served records correct the shard rates instead (`ClusterServedCalibration`), and the
+    /// evidence rule decides. Nil when the installed depth is 0.
+    static func placementRounds(configuration data: Data, plan: MiMoTensorParallelPlan, chunkTokens: Int,
+                                budget: MiMoTensorParallelRequestBudget, allocationBound: (Int) throws -> Int) throws
+        -> (head: ClusterTensorParallelSpeculativeHead, allowance: ClusterTensorParallelRequestAllowance)? {
+        let depth = ClusterMiMoTensorParallel.speculativeDepth
+        guard depth > 0 else { return nil }
+        let configuration = try JSONDecoder().decode(MiMoV26Configuration.self, from: data)
+        guard let window = configuration.slidingAttention.slidingWindow else {
+            throw ProbeError("MiMo tensor parallel needs the sliding layers' window")
+        }
+        let bytes = try speculativeRequestBytes(configuration: configuration, terms: MiMoMTPTerms(depth: depth), plan: plan,
+            slidingWindow: window, chunkTokens: chunkTokens, bound: allocationBound)
+        return (.init(depth: depth, requestBytes: bytes, decodeSpeedup: 1),
+                try budget.allowance(speculativeRequestBytes: bytes, allocationBound: allocationBound))
     }
 
     /// The host memory gate's decision for `bytes` more, as the resident families take it.

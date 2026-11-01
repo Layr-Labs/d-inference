@@ -56,6 +56,19 @@ struct MiMoTensorParallelRequestBudget: Equatable, Sendable {
     /// What a rank holds once beside every request it serves.
     var rankBytes: Int { Self.activationFloorBytes + Self.freedBufferCacheBytes + allowance.collectiveScratchBytes }
 
+    /// The reserve of a rank that decodes in speculative rounds: `speculativeRequestBytes` (the drafter's state
+    /// and the window's rows) beside the request, as its LOAD gate and every reservation add them.
+    func allowance(speculativeRequestBytes: Int,
+                   allocationBound: (Int) throws -> Int) throws -> ClusterTensorParallelRequestAllowance {
+        guard speculativeRequestBytes >= 0 else { throw ProbeError("MiMo speculative request bytes are negative") }
+        return try ClusterTensorParallelRequestAllowance(maximumContextTokens: allowance.maximumContextTokens,
+            maximumChunkTokens: allowance.maximumChunkTokens,
+            requestBytesExcludingCollectives: QwenLongPrefillCheckedBytes.sum([allowance.requestBytesExcludingCollectives,
+                                                                               speculativeRequestBytes]),
+            maximumCollectivePayloadBytes: allowance.maximumCollectivePayloadBytes,
+            maximumCollectiveFrameBytes: allowance.maximumCollectiveFrameBytes, allocationBound: allocationBound)
+    }
+
     static func derive(plan: MiMoTensorParallelPlan, slidingWindow: Int, contextTokens: Int, chunkTokens: Int,
                        allocationBound: (Int) throws -> Int) throws -> Self {
         let sum = QwenLongPrefillCheckedBytes.sum, product = QwenLongPrefillCheckedBytes.product

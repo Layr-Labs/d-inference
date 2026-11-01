@@ -22,9 +22,10 @@ extension QwenResidentLoadedStage: LayerStageResidentStage {
     }
 
     func requestAllowance(plan: QwenLayerStagePlan, rank: Int, maximumTokens: Int, chunkSize: Int,
+                          decode: LayerStageDecodeShape,
                           bound: (Int) throws -> Int) throws -> QwenResidentRequestAllowance {
         try QwenResidentRequestAllowance.derive(profile: profile, plan: plan, rank: rank,
-            maximumTokens: maximumTokens, chunkSize: chunkSize, bound: bound)
+            maximumTokens: maximumTokens, chunkSize: chunkSize, decode: decode, bound: bound)
     }
 
     func diagnosticResources(plan: QwenLayerStagePlan, request: QwenLayerStageGenerationRequest, rank: Int,

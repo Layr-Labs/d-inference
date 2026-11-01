@@ -1,6 +1,6 @@
 # Hardware support and the provider memory model
 
-> Last updated: 2026-10-31
+> Last updated: 2026-11-01
 
 What hardware the provider runs on and how it decides, in bytes, whether a
 model may load and how much KV cache each resident model may use. Read this to
@@ -53,6 +53,19 @@ not waive LOAD or live-memory checks. See
 [GPT-OSS cluster paged KV](inference.md#gpt-oss-cluster-paged-kv) and
 `GPTOSSRequestStateBudget.estimate` in
 `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/GPTOSS/Metadata/GPTOSSRequestStateBudget.swift`.
+
+Pipeline decode steps of the Qwen catalog, Nemotron, Gemma 4 and GPT-OSS
+encode under decode command buffers that can keep a whole stage step's
+temporaries alive at once, so each request charge prices every attending
+layer's decode rows together (one a layer, or a verify window's `depth + 1`;
+every layer on a phase split's decoding rank), and never less than one prompt
+frame's attention transient (`QwenResidentPrefillTransient`,
+`Gemma4PrefillTransient`, `GPTOSSRequestStateBudget`). The LOAD quotes and
+activation floors are unchanged; only requests whose prompt frames are shorter
+than their decode rows are charged more. GLM's request charge is already its
+profile's whole envelope. The fused vector-attention partials are not priced
+separately; see
+[pipeline decode command buffers](inference.md#pipeline-decode-command-buffers).
 
 Optional Qwen plain-pipeline batch cancellation retains a lane's memory charge
 until all its active and tentatively restored native sessions close. It then

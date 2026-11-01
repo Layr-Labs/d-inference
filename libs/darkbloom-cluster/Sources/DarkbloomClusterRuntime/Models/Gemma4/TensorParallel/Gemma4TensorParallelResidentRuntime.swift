@@ -150,7 +150,7 @@ public final class Gemma4TensorParallelResidentRuntime {
             let profile = admission.profile
             var probe: ClusterWorkerLinkProbe?
             var receipt: Gemma4TensorParallelShardReceipt?
-            var prefixCharges = (resident: 0, capture: 0, room: 0)
+            var prefixCharges = (capture: 0, room: 0)
             let capacity = try MLX.withError { nativeError -> Int in
                 func checked() throws { try nativeError.check(); try control.check(); try nativeError.check() }
                 try configuration.allocatorPolicy.configure(setCacheLimit: { Memory.cacheLimit = $0 }, check: checked)
@@ -163,9 +163,9 @@ public final class Gemma4TensorParallelResidentRuntime {
                     hiddenSize: profile.hiddenSize, chunkTokens: profile.maximumChunkTokens, check: checked)
                 probe = measured
                 log(QwenTensorParallelLinkProbe.line(measured, rank: collective.rank))
-                // The load gate admits the shard with the profile's longest request and the rank's own
-                // reserve (activation floor, freed-buffer cache, sealed frames, the prefix tier's
-                // charged budget) beside it: the planner's quote.
+                // The load gate admits the shard with the profile's longest request (its prompt-prefix
+                // capture included) and the rank's own reserve (activation floor, freed-buffer cache,
+                // sealed frames) beside it: the planner's quote.
                 let budget = try requestBudget(contextTokens: profile.maximumContextTokens, admission: admission,
                     keepsPrefixes: keepsPrefixes)
                 let request = budget.requestBytes
@@ -199,15 +199,14 @@ public final class Gemma4TensorParallelResidentRuntime {
                     Memory.cacheLimit = bufferCacheBytes
                     try checked()
                 }
-                // The prefix memory tier: its charged budget at least, else the
-                // pipeline's (half the admissible room beside the longest
-                // request and this rank's reserve, at most `maximumBudgetBytes`),
-                // whose entries beyond the charged part give way first.
+                // The prefix memory tier, charged nowhere: the pipeline's budget,
+                // half the admissible room measured beside the longest request
+                // and this rank's reserve (at most `maximumBudgetBytes`).
                 if keepsPrefixes {
                     let room = try ClusterStagePrefixBudget.roomBytes(chargeBytes: try QwenLongPrefillCheckedBytes.sum([
                         budget.requestBytes, budget.rankBytes]))
-                    prefixCache.setBudget(max(budget.prefixResidentBytes, QwenStagePrefixCache.budget(roomBytes: room)))
-                    prefixCharges = (budget.prefixResidentBytes, budget.prefixCaptureBytes, room)
+                    prefixCache.setBudget(QwenStagePrefixCache.budget(roomBytes: room))
+                    prefixCharges = (budget.prefixCaptureBytes, room)
                 }
                 log("darkbloom-tensor-parallel-load-v1 rank=\(collective.rank) plan=\(planName) shares=1-1"
                     + " shard_bytes=\(value.receipt.shardBytes) source_bytes=\(value.receipt.sourceBytes)"
@@ -240,8 +239,8 @@ public final class Gemma4TensorParallelResidentRuntime {
                     stagingEpoch: identity.membershipEpoch.uuidString.lowercased())
             }
             log("darkbloom-prefix-v1 rank=\(collective.rank) family=gemma4 mode=tensor_parallel enabled=\(keepsPrefixes)"
-                + " budget_bytes=\(keepsPrefixes ? prefixCache.budgetBytes : 0) charged_bytes=\(prefixCharges.resident)"
-                + " capture_charge=\(prefixCharges.capture) room_bytes=\(prefixCharges.room) ssd=\(prefixCache.disk != nil)")
+                + " budget_bytes=\(keepsPrefixes ? prefixCache.budgetBytes : 0) capture_charge=\(prefixCharges.capture)"
+                + " room_bytes=\(prefixCharges.room) ssd=\(prefixCache.disk != nil)")
             let prefix = Gemma4TensorParallelPrefix(cache: keepsPrefixes ? prefixCache : QwenStagePrefixCache(enabled: false),
                 load: loadAgreement, diskPlanScope: diskPlanScope)
             return Gemma4TensorParallelResidentRuntime(admission: admission, control: control, collective: collective,
@@ -264,12 +263,12 @@ public final class Gemma4TensorParallelResidentRuntime {
 
     /// This rank's reserve for requests of `contextTokens` (`Gemma4TensorParallelRequestBudget`)
     /// at the allocator's own bound; `keepsPrefixes` charges the prompt-prefix
-    /// capture and memory tier.
+    /// capture of a prompt of `promptTokens` (the profile's longest by default).
     static func requestBudget(contextTokens: Int, admission: Gemma4ResidentAdmission, chunkTokens: Int? = nil,
-                              keepsPrefixes: Bool = true) throws -> Gemma4TensorParallelRequestBudget {
+                              promptTokens: Int? = nil, keepsPrefixes: Bool = true) throws -> Gemma4TensorParallelRequestBudget {
         try Gemma4TensorParallelRequestBudget.derive(contextTokens: contextTokens,
             chunkTokens: chunkTokens ?? admission.profile.maximumChunkTokens,
-            promptTokens: admission.profile.maximumPromptTokens, keepsPrefixes: keepsPrefixes,
+            promptTokens: promptTokens ?? admission.profile.maximumPromptTokens, keepsPrefixes: keepsPrefixes,
             allocationBound: QwenResidentResourceEnvironment.allocationBound)
     }
 
@@ -284,24 +283,22 @@ public final class Gemma4TensorParallelResidentRuntime {
     }
 
     /// What the live gate asks for beside every held request: the rank's
-    /// activation floor, freed-buffer cache, sealed frames and the prefix
-    /// memory tier's charged budget.
+    /// activation floor, freed-buffer cache and sealed frames.
     var rankReserveBytes: Int {
-        get throws {
-            try Self.requestBudget(contextTokens: admission.profile.maximumContextTokens, admission: admission,
-                keepsPrefixes: prefix.cache.enabled).rankBytes
-        }
+        get throws { try Self.requestBudget(contextTokens: admission.profile.maximumContextTokens, admission: admission).rankBytes }
     }
 
-    /// A request's charge on this rank and what its prefix capture may hold
-    /// beyond the part that charge covers (`Gemma4TensorParallelPrefix.captureLimit`
-    /// less the capture at its deepest boundary): kept entries give way before
-    /// the live gate refuses it, and a capture the gate still refuses is cut
-    /// to its charged part.
+    /// A request's charge on this rank, at its own context with its own
+    /// prompt's prefix capture (none when its cache is off: it neither
+    /// restores nor captures), what that capture may hold
+    /// (`Gemma4TensorParallelPrefix.captureLimit`, at least the charged part)
+    /// and the part beyond the charge: kept entries give way before the live
+    /// gate refuses that part, and a capture the gate still refuses is cut to
+    /// its charged part.
     func prefixCharge(_ request: QwenLayerStageGenerationRequest) throws -> (charge: Int, captureLimit: Int, beyond: Int) {
         let budget = try Self.requestBudget(contextTokens: request.maximumTokens, admission: admission,
-            chunkTokens: request.chunkSize, keepsPrefixes: prefix.cache.enabled)
-        let limit = prefix.captureLimit(request)
+            chunkTokens: request.chunkSize, promptTokens: request.promptCount, keepsPrefixes: prefix.scopes(request) != nil)
+        let limit = prefix.captureLimit(request, chargedBytes: budget.prefixCaptureBytes)
         return (budget.requestBytes, limit, max(0, limit - budget.prefixCaptureBytes))
     }
 

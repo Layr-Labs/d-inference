@@ -14,20 +14,24 @@ import Foundation
 /// of them the collective carries), three float32 rows of the whole
 /// vocabulary (the row a sampled step gathers, the split head's half, the
 /// top-k) and its prompt-prefix capture at its deepest boundary
-/// (`prefixCaptureBytes`: its own heads' full rows for the longest prompt of
-/// that context and one sliding window of every sliding layer).
+/// (`prefixCaptureBytes`: its own heads' full rows for its prompt, the
+/// profile's longest in the LOAD quote, and one sliding window of every
+/// sliding layer).
 ///
 /// Once per rank (`rankBytes`): the conservative activation floor until
 /// hardware measures one for a Gemma tensor-parallel rank (5.5 GiB, the
 /// provider's default reserve, as `GLM5NextServingResources` charges GLM's),
-/// the freed-buffer cache the ready rank keeps, eight sealed frames of the
-/// largest collective (`ClusterTensorParallelRequestAllowance`), and the
-/// prompt-prefix memory tier's charged budget (`prefixResidentBytes`: two
-/// captures of the longest request, as Qwen tensor parallel keeps two banks).
-/// The decode steps' 100-operation command buffers
+/// the freed-buffer cache the ready rank keeps and eight sealed frames of the
+/// largest collective (`ClusterTensorParallelRequestAllowance`). The decode
+/// steps' 100-operation command buffers
 /// (`Gemma4TensorParallelModel.decodeCommandBuffers`) bound only how a step
 /// is submitted, and no prefill is micro-batched: neither adds a buffer
 /// beyond these.
+///
+/// The prompt-prefix memory tier is not charged: as the pipeline's, its
+/// budget is half the room the load measures beside this charge
+/// (`QwenStagePrefixCache.budget(roomBytes:)`), and its entries give way
+/// before a reservation, a lane or a running request is refused for memory.
 struct Gemma4TensorParallelRequestBudget: Equatable {
     static let ranks = 2
     /// `UnifiedMemoryCap.defaultActivationReserveBytes`: 5.5 GiB. A measured
@@ -49,16 +53,12 @@ struct Gemma4TensorParallelRequestBudget: Equatable {
     let logitsBytes: Int
     /// The request's prompt-prefix capture at its deepest boundary.
     let prefixCaptureBytes: Int
-    /// The prompt-prefix memory tier's charged budget on a rank.
-    let prefixResidentBytes: Int
     let allowance: ClusterTensorParallelRequestAllowance
 
     /// What one request of `contextTokens` reserves on a rank.
     var requestBytes: Int { stateBytes + transientBytes + partialBytes + logitsBytes + prefixCaptureBytes }
     /// What a rank holds once beside every request it serves.
-    var rankBytes: Int {
-        Self.activationFloorBytes + Self.freedBufferCacheBytes + allowance.collectiveScratchBytes + prefixResidentBytes
-    }
+    var rankBytes: Int { Self.activationFloorBytes + Self.freedBufferCacheBytes + allowance.collectiveScratchBytes }
 
     /// One prefix capture of a prompt of `promptTokens` at the allocator's
     /// bound: this rank's full-attention rows (keys and values, every token)
@@ -79,10 +79,10 @@ struct Gemma4TensorParallelRequestBudget: Equatable {
         return try QwenLongPrefillCheckedBytes.sum([bound(rows, count: 2 * full), bound(window, count: 2 * sliding)])
     }
 
-    /// `promptTokens`: the longest prompt a request of this context holds
-    /// (the profile's, at most `contextTokens - 1`); nil: `contextTokens - 1`.
-    /// `keepsPrefixes` false charges no prefix capture or tier (the load's
-    /// cache off).
+    /// `promptTokens`: the prompt whose capture is charged (a request's own,
+    /// or the profile's longest in the LOAD quote), at most `contextTokens - 1`;
+    /// nil: `contextTokens - 1`. `keepsPrefixes` false charges no prefix
+    /// capture (the load's cache off, or the request's).
     static func derive(contextTokens: Int, chunkTokens: Int, promptTokens: Int? = nil, keepsPrefixes: Bool = true,
                        allocationBound: (Int) throws -> Int) throws -> Self {
         typealias G = Gemma4StageGeometry
@@ -97,7 +97,6 @@ struct Gemma4TensorParallelRequestBudget: Equatable {
         }
         let prompt = min(promptTokens ?? contextTokens - 1, contextTokens - 1)
         let capture = keepsPrefixes ? try prefixCaptureBytes(promptTokens: max(1, prompt), allocationBound: allocationBound) : 0
-        let resident = try product([capture, 2])
         let b = try Gemma4StateBudget.estimate(maximumTokens: contextTokens, chunkSize: chunk, ranks: ranks)
         let layers = b.fullLayers + b.slidingLayers
         let state = try sum([bound(b.fullKVBytes, count: 2 * b.fullLayers), bound(b.ringKVBytes, count: 2 * b.slidingLayers),
@@ -116,10 +115,10 @@ struct Gemma4TensorParallelRequestBudget: Equatable {
         let request = try sum([state, bound(transientLogical), partials, logits, capture])
         let allowance = try ClusterTensorParallelRequestAllowance(maximumContextTokens: contextTokens,
             maximumChunkTokens: chunk,
-            requestBytesExcludingCollectives: sum([request, activationFloorBytes, freedBufferCacheBytes, resident]),
+            requestBytesExcludingCollectives: sum([request, activationFloorBytes, freedBufferCacheBytes]),
             maximumCollectivePayloadBytes: payload, maximumCollectiveFrameBytes: frame, allocationBound: allocationBound)
         return .init(contextTokens: contextTokens, chunkTokens: chunk, stateBytes: state,
             transientBytes: try bound(transientLogical), partialBytes: partials, logitsBytes: logits,
-            prefixCaptureBytes: capture, prefixResidentBytes: resident, allowance: allowance)
+            prefixCaptureBytes: capture, allowance: allowance)
     }
 }

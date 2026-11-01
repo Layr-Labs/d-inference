@@ -147,9 +147,10 @@ struct Gemma4TensorParallelPrefixTests {
                 let coldLogits = try #require(try cold.prefill(Self.prompt, range: 32 ..< 40, check: check) { $0 }).logits
                 let coldAt40 = try fingerprint(cold)
                 let states = try #require(cold.prefixCapture).states()
+                let deepest: QwenStagePrefixState = try #require(states.last)
                 try cold.retire()
                 let restored = try Gemma4TensorParallelPagedSession(model: model, host: host,
-                    promptCount: Self.prompt.count, outputCount: Self.outputs, restoring: try #require(states.last))
+                    promptCount: Self.prompt.count, outputCount: Self.outputs, restoring: deepest)
                 let restoredAt32 = try fingerprint(restored)
                 let restoredLogits = try #require(try restored.prefill(Self.prompt, range: 32 ..< 40, check: check) { $0 }).logits
                 let restoredAt40 = try fingerprint(restored)
@@ -372,26 +373,73 @@ struct Gemma4TensorParallelPrefixTests {
         }
     }
 
-    /// What one request and a rank charge for prompt prefixes
-    /// (`Gemma4TensorParallelRequestBudget`): the request its capture at its
-    /// deepest boundary (its own full rows and one window of every sliding
-    /// layer), the rank two of them for its memory tier, both in the LOAD
-    /// quote; nothing when the load keeps no prefixes.
-    @Test func prefixMemoryIsChargedInTheRequestBudgetAndTheLoadQuote() throws {
+    /// A tier the measured room leaves without budget (as on two 24 GB Macs)
+    /// keeps nothing resident, but a request still captures what its own
+    /// charge covers (`captureLimit(_:chargedBytes:)`): its deepest boundary
+    /// reaches the SSD tier, and a repeat restores it from there on both
+    /// ranks, bit for bit.
+    @Test func aRequestCapturesWithinItsChargeWhenTheTierHasNoBudget() throws {
+        let directory = try Self.synthetic()
+        let root = try Self.root()
+        defer { try? FileManager.default.removeItem(at: directory); try? FileManager.default.removeItem(at: root) }
+        let pair = Pair(), models = try Self.models(directory, pair)
+        let results = try Pair.run(device: .gpu) { rank -> [String: Bool] in
+            // The deepest boundary's cost, measured as a load's first capture measures it.
+            let probe = try Rank(models.value[rank])
+            let request = try probe.request(Self.prompt)
+            let cold = try probe.serve(request)
+            let charged = try #require(probe.prefix.cache.captureCost).bytes(deepest: 32, frontiers: 1)
+            let tier = QwenStagePrefixCache(strideTokens: Self.chunk, budgetBytes: 0)
+            let fixture = try Rank(models.value[rank], cache: tier, disk: try Self.tier(root, rank: rank))
+            let limit = fixture.prefix.captureLimit(request, chargedBytes: charged)
+            let withoutCharge = fixture.prefix.captureLimit(request)
+            fixture.captureLimit = limit
+            let first = try fixture.serve(request)
+            let disk = try #require(fixture.prefix.disk)
+            let written = disk.drain(timeoutSeconds: 60) && disk.recordCount == 1
+            let repeated = try fixture.serve(request)
+            disk.close(timeoutSeconds: 5)
+            return ["limit": limit == charged && withoutCharge == 0, "stored": first.stored == [32],
+                    "resident": tier.bytesInUse == 0 && tier.count == 0, "written": written,
+                    "restored": repeated.reused == 32 && Self.same(repeated.generation, cold.generation)
+                        && disk.stats.restores == 1]
+        }
+        for (rank, checks) in results.enumerated() {
+            for name in ["limit", "stored", "resident", "written", "restored"] {
+                #expect(checks[name] == true, "rank \(rank): \(name)")
+            }
+        }
+    }
+
+    /// What prompt prefixes charge (`Gemma4TensorParallelRequestBudget`): a
+    /// request its own capture at its deepest boundary (its own full rows and
+    /// one window of every sliding layer), in its reservation and, at the
+    /// profile's longest prompt, in the LOAD quote; a rank nothing for its
+    /// memory tier, whose budget is half the room the load measures
+    /// (`QwenStagePrefixCache.budget(roomBytes:)`), never more than that room;
+    /// nothing when the load keeps no prefixes.
+    @Test func aRequestsCaptureIsChargedAndTheTierStaysWithinItsRoom() throws {
         let bound: (Int) throws -> Int = { $0 + 16_384 }
         let on = try Gemma4TensorParallelRequestBudget.derive(contextTokens: 65_536, chunkTokens: 512, promptTokens: 32_768,
             allocationBound: bound)
         let off = try Gemma4TensorParallelRequestBudget.derive(contextTokens: 65_536, chunkTokens: 512, promptTokens: 32_768,
             keepsPrefixes: false, allocationBound: bound)
         let capture = 10 * (32_768 * 512 * 2 + 16_384) + 50 * (1_024 * 4 * 256 * 2 + 16_384)
-        #expect(on.prefixCaptureBytes == capture && on.prefixResidentBytes == 2 * capture)
-        #expect(on.requestBytes == off.requestBytes + capture && on.rankBytes == off.rankBytes + 2 * capture)
+        #expect(on.prefixCaptureBytes == capture && off.prefixCaptureBytes == 0)
+        #expect(on.requestBytes == off.requestBytes + capture && on.rankBytes == off.rankBytes)
         #expect(on.allowance.reservedBytes == on.requestBytes + on.rankBytes)
-        #expect(on.allowance.reservedBytes == off.allowance.reservedBytes + 3 * capture)
-        #expect(off.prefixCaptureBytes == 0 && off.prefixResidentBytes == 0)
-        // A short request's capture: its own rows and a short window.
-        #expect(try Gemma4TensorParallelRequestBudget.prefixCaptureBytes(promptTokens: 100, allocationBound: bound)
-            == 10 * (100 * 512 * 2 + 16_384) + 50 * (100 * 4 * 256 * 2 + 16_384))
+        #expect(on.allowance.reservedBytes == off.allowance.reservedBytes + capture)
+        // A short request is charged its own prompt's capture: its own rows and a short window.
+        let short = try Gemma4TensorParallelRequestBudget.derive(contextTokens: 8_320, chunkTokens: 512, promptTokens: 100,
+            allocationBound: bound)
+        #expect(short.prefixCaptureBytes == 10 * (100 * 512 * 2 + 16_384) + 50 * (100 * 4 * 256 * 2 + 16_384))
+        // The tier's budget from the measured room: half of it in 256 MiB steps, at most the ceiling.
+        let mib = 1 << 20
+        for room in [0, 1, 511 * mib, 512 * mib, 1_000 * mib, 3 << 30, 1 << 40] {
+            let tier = QwenStagePrefixCache.budget(roomBytes: room)
+            #expect(tier <= room / 2 && tier <= QwenStagePrefixCache.maximumBudgetBytes && tier % (256 * mib) == 0, "room \(room)")
+        }
+        #expect(QwenStagePrefixCache.budget(roomBytes: 511 * mib) == 0 && QwenStagePrefixCache.budget(roomBytes: 1_000 * mib) == 256 * mib)
     }
 
     // MARK: - SSD tier

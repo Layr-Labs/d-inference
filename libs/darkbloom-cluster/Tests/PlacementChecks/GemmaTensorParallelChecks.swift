@@ -101,30 +101,29 @@ private func checkGemmaLayouts(_ layout: ClusterModelLayout, configuration: Data
 }
 
 /// A product layout carries the rank's native reserve (`Gemma4TensorParallelRequestBudget`):
-/// its own heads' state and prompt-prefix capture, the activation floor, the freed-buffer cache,
-/// eight sealed frames and the prompt-prefix memory tier's charged budget.
+/// its own heads' state and prompt-prefix capture, the activation floor, the freed-buffer cache
+/// and eight sealed frames. The prefix memory tier is not charged (its budget is measured room).
 private func checkGemmaRequestAllowance(_ priced: ClusterModelLayout, _ checks: PlacementChecks) throws {
     let allowance = priced.tensorParallel?.family.requestAllowance
     let budget = try Gemma4TensorParallelRequestBudget.derive(contextTokens: 65_536, chunkTokens: 512, promptTokens: 32_768,
         allocationBound: { $0 + 16_384 })
     checks.require("Gemma TP allowance: the layout quotes the rank's budget at the profile's longest request (65,536 tokens, 512-token chunks)",
         allowance == budget.allowance && allowance?.maximumContextTokens == 65_536 && allowance?.maximumChunkTokens == 512)
-    checks.require("Gemma TP allowance: the conservative 5.5 GiB activation floor, the freed-buffer cache and the prefix tier are charged once beside the request",
+    checks.require("Gemma TP allowance: the conservative 5.5 GiB activation floor and the freed-buffer cache are charged once beside the request",
         budget.rankBytes == Gemma4TensorParallelRequestBudget.activationFloorBytes + Gemma4TensorParallelRequestBudget.freedBufferCacheBytes
-            + budget.allowance.collectiveScratchBytes + budget.prefixResidentBytes
-            && Gemma4TensorParallelRequestBudget.activationFloorBytes == 5_905_580_032
+            + budget.allowance.collectiveScratchBytes && Gemma4TensorParallelRequestBudget.activationFloorBytes == 5_905_580_032
             && budget.allowance.reservedBytes == budget.requestBytes + budget.rankBytes)
     // A 32,768-token prompt's own full rows (5 layers x 1 head x 512 x K and V, bf16) and a 1,024-token window
     // of each of the 25 sliding layers (4 heads x 256 x K and V), each array at the allocator's bound.
     let capture = 10 * (32_768 * 512 * 2 + 16_384) + 50 * (1_024 * 4 * 256 * 2 + 16_384)
-    checks.require("Gemma TP allowance: a request's prompt-prefix capture (\(budget.prefixCaptureBytes) bytes) and two of them for the memory tier",
-        budget.prefixCaptureBytes == capture && budget.prefixResidentBytes == 2 * capture
+    checks.require("Gemma TP allowance: the request's own prompt-prefix capture (\(budget.prefixCaptureBytes) bytes), and nothing for the memory tier",
+        budget.prefixCaptureBytes == capture
             && budget.requestBytes == budget.stateBytes + budget.transientBytes + budget.partialBytes + budget.logitsBytes + capture)
     let off = try Gemma4TensorParallelRequestBudget.derive(contextTokens: 65_536, chunkTokens: 512, promptTokens: 32_768,
         keepsPrefixes: false, allocationBound: { $0 + 16_384 })
-    checks.require("Gemma TP allowance: a rank whose prefix cache is off charges neither",
-        off.prefixCaptureBytes == 0 && off.prefixResidentBytes == 0
-            && budget.allowance.reservedBytes - off.allowance.reservedBytes == 3 * capture)
+    checks.require("Gemma TP allowance: a rank whose prefix cache is off charges no capture; the capture is the quote's only prefix term",
+        off.prefixCaptureBytes == 0 && off.rankBytes == budget.rankBytes
+            && budget.allowance.reservedBytes - off.allowance.reservedBytes == capture)
     checks.require("Gemma TP allowance: eight sealed frames of the packed feed-forward collective (512 x 101,376 bytes and the seal)",
         budget.allowance.maximumCollectivePayloadBytes == 512 * 101_376
             && budget.allowance.collectiveScratchBytes == 8 * (budget.allowance.maximumCollectiveFrameBytes + 16_384))
@@ -140,6 +139,12 @@ private func checkGemmaRequestAllowance(_ priced: ClusterModelLayout, _ checks: 
     let pages = (priced.layers.reduce(0) { $0 + $1.weights.tensorCount } + priced.ingress.tensorCount + priced.egress.tensorCount) * SyntheticMac.page
     checks.require("Gemma TP quote: a rank's weights are its exact 8,040,450,108-byte shard in whole pages, and its request need covers the reserve",
         rank?.weightsBytes == 8_040_450_108 + pages && (rank?.requestNeedBytes ?? 0) >= budget.allowance.reservedBytes)
+    // Two idle 24 GB Macs (the fastest-plan checks' M4 Pro) hold a rank each with that quote, the request's capture in it.
+    let small = try [SyntheticMac.idle(24).device("a"), SyntheticMac.idle(24).device("b")]
+    let fitted = try ClusterPlacementPlanner.plan(devices: small, layout: priced, policy: forced).chosen?.ranks ?? []
+    let spare = fitted.map { $0.admissibleNowBytes - $0.needBytes }.min() ?? -1
+    checks.require("Gemma TP quote: two 24 GB Macs each fit a rank now, its request's prompt-prefix capture charged (\(spare) bytes to spare)",
+        fitted.count == 2 && fitted.allSatisfy { $0.fit == .now && $0.requestNeedBytes >= budget.allowance.reservedBytes } && spare >= 0)
 }
 
 /// The fastest-plan rule on constructed pairs, under the provider's own
@@ -201,22 +206,14 @@ private func checkGemmaFastestPlan(_ layout: ClusterModelLayout, _ checks: Place
     checks.require("Gemma fastest plan: without its choice the same layout, Macs and policy put tensor parallel first",
         ruled.chosen?.mode == .tensorParallel)
 
-    // 2. Two small Macs (32 GB M4 Pro), default link costs: tensor parallel where the plan predicts it faster.
-    for gib in [32.0] {
+    // 2. Two small Macs (24 and 32 GB M4 Pro), default link costs: tensor parallel where the plan predicts it faster.
+    for gib in [24.0, 32.0] {
         let small = try pros(gib)
         let decodeHeavy = try plan(small, first(128, 128), .unmeasured), times = predicted(decodeHeavy)
         checks.require("Gemma fastest plan: 2x M4 Pro \(Int(gib)) GB, default link costs, 128 + 128: tensor parallel, predicted faster by the margin (\(times.tensor) s vs \(times.other) s)",
             tensor(decodeHeavy) && times.tensor < times.other * 0.95 && decodeHeavy.chosen?.ranks.allSatisfy({ $0.fit == .now }) == true)
         checks.require("Gemma fastest plan: 2x M4 Pro \(Int(gib)) GB, default link costs, 8,192 + 128: a pipeline (the prompt's sums dominate)",
             pipeline(try plan(small, first(8_192, 128), .unmeasured)))
-    }
-    // Two 24 GB M4 Pro: a rank's share and reserve with its prompt-prefix capture and memory tier charged
-    // (`Gemma4TensorParallelRequestBudget`) exceed what the Mac gives a model, so the pipeline, which keeps
-    // prefixes too, is placed for every request.
-    for (prompt, outputs) in [(128, 128), (8_192, 128)] {
-        let result = try plan(try pros(24), first(prompt, outputs), .unmeasured)
-        checks.require("Gemma fastest plan: 2x M4 Pro 24 GB, \(prompt) + \(outputs): a pipeline, tensor parallel does not fit with its prefix memory charged",
-            result.chosen?.mode == .pipeline && result.tensorParallel?.verdict == .doesNotFit)
     }
 
     // 3. A measured link flips the choice as predicted, both ways.

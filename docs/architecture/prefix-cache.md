@@ -1075,10 +1075,13 @@ restored in chronological writes no larger than
 `PagedKVBackend.pool.config.maxPrefillChunk` by `CBv2PagedPrefixRestore.write`
 in `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/State/CBv2PagedPrefixRestore.swift`.
 This permits a retained window larger than a legal individual write without
-changing its absolute position or dropping tail tokens. Adoption releases its
-new rows when restoration throws. Contiguous rows keep their existing update
-path. This is resident stage restoration; it adds no SSD format, persistent
-cache identity or cross-host KV-transfer contract.
+changing its absolute position or dropping tail tokens. With `reservedTokens`
+(Gemma tensor parallel), the new rows are reserved for the request's first
+tokens and grow as a fresh request's do; without it, as before, for its whole
+length. Adoption releases its new rows when restoration throws. Contiguous
+rows keep their existing update path. This is resident stage restoration; it
+adds no SSD format, persistent cache identity or cross-host KV-transfer
+contract.
 
 ## Nemotron chunk-grid reuse
 
@@ -1287,21 +1290,27 @@ tokens equal the cold request's bit for bit. Gemma records are native
 agreement carries `gemma4-tensor-parallel-prefix-v1` `on`; a rank whose
 `DARKBLOOM_CLUSTER_PREFIX_CACHE=off` loads `off` and its peer refuses it.
 
-Memory: each request's charge includes its capture at its deepest boundary,
-and each rank's reserve two such captures of the longest request for the
-memory tier, both in the LOAD quote
+Memory: each request's charge includes its own prompt's capture at its deepest
+boundary (none when its cache is off), and the LOAD quote the capture of the
+profile's longest prompt
 ([rank memory](hardware-support.md#gemma-4-tensor-parallel-rank-memory)). The
-tier's budget is that charge, or the pipeline's budget when the room beside
-the rank's reserve allows more; a request's capture beyond its charged part is
-asked of the live gate and cut to that part when refused. Kept entries give way
-before a reservation, a lane or a running request is refused for memory, then
-the request's own capture, as in the pipeline; under host pressure an idle rank
-drops them (`releaseIdleMemory`). The SSD tier's configuration, key, owner-only
-directories, TTL, daily write cap, free-space floor and bounded close are every
-cluster family's (`QwenStagePrefixDiskConfiguration`).
+memory tier is charged nowhere: as the pipeline's, its budget is half the room
+the load measures beside the shard and that quote
+(`QwenStagePrefixCache.budget(roomBytes:)`), so it never exceeds that room. A
+request captures what its charge covers whatever the tier's budget
+(`Gemma4TensorParallelPrefix.captureLimit`): a tier the measured room leaves
+without budget keeps nothing resident, and the capture still reaches the SSD
+tier. A capture beyond its charged part (the pipeline's limit) is asked of the
+live gate and cut to that part when refused. Kept entries give way before a
+reservation, a lane or a running request is refused for memory, and a request
+served alone then lets its own capture go, as the pipeline's does; under host
+pressure an idle rank drops them (`releaseIdleMemory`). The SSD tier's
+configuration, key, owner-only directories, TTL, daily write cap, free-space
+floor and bounded close are every cluster family's
+(`QwenStagePrefixDiskConfiguration`).
 
 Logs: `darkbloom-prefix-v1 … family=gemma4 mode=tensor_parallel` at load
-(`budget_bytes=`, `charged_bytes=`, `ssd=`), at each agreed boundary
+(`budget_bytes=`, `capture_charge=`, `room_bytes=`, `ssd=`), at each agreed boundary
 (`agreed=`, `reused=`, `tier=`) and at each keep (`stored=`); the tier's
 `darkbloom-prefix-ssd-v1` lines and `restore-declined`. Tests:
 `Gemma4TensorParallelPrefixTests` (restore against cold bit for bit, the

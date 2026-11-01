@@ -226,13 +226,17 @@ final class Gemma4TensorParallelPrefix {
         return session
     }
 
-    /// What `request`'s capture may hold on this rank: the pipeline's limit
+    /// What `request`'s capture may hold on this rank: what its own charge
+    /// covers (`chargedBytes`, its capture at its deepest boundary) whatever
+    /// the tier's budget, or the pipeline's limit where larger
     /// (`QwenStagePrefixCache.captureLimit`: after the deepest prefix this
     /// rank holds for it, at the measured cost, within the budget); 0 when it
-    /// keeps no prefix.
-    func captureLimit(_ request: QwenLayerStageGenerationRequest) -> Int {
+    /// keeps no prefix. A tier the measured room leaves without budget keeps
+    /// nothing resident, but the charged capture still reaches the SSD tier.
+    func captureLimit(_ request: QwenLayerStageGenerationRequest, chargedBytes: Int = 0) -> Int {
         guard let scopes = scopes(request) else { return 0 }
-        return cache.captureLimit(scope: scopes.resident, tokens: request.promptTokenIDs, chunkSize: request.chunkSize)
+        return max(chargedBytes,
+            cache.captureLimit(scope: scopes.resident, tokens: request.promptTokenIDs, chunkSize: request.chunkSize))
     }
 
     /// After a request retired cleanly on both ranks: its capture becomes

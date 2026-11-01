@@ -1279,7 +1279,10 @@ neither real-weight numerics, a pair qualification nor speed.
    - the request loop (greedy and sampled) and batch lanes through the driver
      continue a restored prefix with the cold tokens;
    - the memory tier's budget and eviction, and a capture within its limit;
-   - the prefix charges in the request budget and the LOAD quote;
+   - a request's own capture charged in its budget and the LOAD quote, no
+     charge for the memory tier, whose budget stays within the measured room;
+     with no tier budget a request still captures within its charge and a
+     repeat restores from the SSD tier;
    - the SSD tier: records restore bit for bit after both tiers reopen,
      encrypted and owner-only; stale, corrupted and other-key records are
      refused on both ranks; no directory or key is no tier, and the daily write
@@ -1293,9 +1296,9 @@ neither real-weight numerics, a pair qualification nor speed.
    14,915,635,260 bytes), and the rank's reserve (`Gemma4TensorParallelRequestBudget`)
    must be quoted. Under the provider's tensor-parallel-first policy it checks the
    fastest-plan rule on constructed pairs: 2x M5 Ultra 256 GB keeps the pipeline on
-   default link costs; 2x M4 Pro 32 GB takes tensor parallel where predicted
-   faster, and 2x M4 Pro 24 GB keeps the pipeline (tensor parallel does not fit
-   with its prompt-prefix memory charged); measured links flip the choice both ways. It also pins the device-index
+   default link costs; 2x M4 Pro 24 or 32 GB takes tensor parallel where predicted
+   faster, each rank quoted with its request's prompt-prefix capture; measured
+   links flip the choice both ways. It also pins the device-index
    prior's choice for 2x M5 Ultra on the measured link: tensor parallel for a
    128 + 128 request.
 

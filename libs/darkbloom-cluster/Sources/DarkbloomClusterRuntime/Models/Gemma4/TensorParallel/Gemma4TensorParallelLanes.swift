@@ -5,8 +5,8 @@ import MLX
 struct Gemma4TensorParallelLaneReservation: QwenTensorParallelBatchReservation {
     let request: QwenLayerStageGenerationRequest
     let deadline: UInt64
-    /// The lane's own charge at its context
-    /// (`Gemma4TensorParallelResidentRuntime.requestChargeBytes`).
+    /// The lane's own charge at its context, with its own prompt's prefix
+    /// capture (`Gemma4TensorParallelResidentRuntime.prefixCharge`).
     let laneStateBytes: Int
     /// What its prefix capture may hold (0: none).
     var prefixCaptureLimit = 0

@@ -307,6 +307,8 @@ extension EngineV2Factory {
                 constructionPurpose: constructionPurpose, checkpointPartition: checkpointPartition)
         schedulerConfig.demandedCaptureBoundaryMinimumTokens = demandedCaptureBoundaryMinimumTokens(
             model: model, store: completePrefixCache)
+        schedulerConfig.demandedLatestCheckpointMinimumTokens = demandedLatestCheckpointMinimumTokens(
+            model: model, backend: preparedBackend.kind, store: completePrefixCache)
         let processOwner: (any CBv2ProcessMemoryOwner)?
         if let glmNative {
             guard glmNative.resources.backend === backend,

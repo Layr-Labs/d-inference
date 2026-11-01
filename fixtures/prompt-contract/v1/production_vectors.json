@@ -3017,69 +3017,30 @@
                 "role": "user"
               }
             ],
+            "additional_context": {
+              "enable_thinking": false
+            },
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
             "prompt_contract_id": "8171fec39018f260e72a606790f54701a5c50ca12c49bf7b86b9365f4a32551a",
-            "prompt_token_count": 803,
+            "prompt_token_count": 767,
             "block_boundaries": [
               {
                 "token_count": 256,
-                "chain_hash": "21394a822365c6d3265b3ff6dd49878ff81bf1b07f805897aadf4c78d2de4fcb"
+                "chain_hash": "c503884829578de2f686b2c34a6b4e0edf67ea483292879b7689210967e349fb"
               },
               {
                 "token_count": 512,
-                "chain_hash": "b6356c6d717b8eeb7837c0730f8c80f9101e7fcab8a6f283264d9ecca10ba267"
-              },
-              {
-                "token_count": 768,
-                "chain_hash": "76a3fc83d66a776a516338420fdaf9eb6c6aee76dee2587cea4465bf1c0829ca"
+                "chain_hash": "d035b20c495a40869194f8fc4682b4c338f4be0f68e8f0046685c658ea29d48a"
               }
             ],
-            "last_complete_block_hash": "76a3fc83d66a776a516338420fdaf9eb6c6aee76dee2587cea4465bf1c0829ca"
+            "last_complete_block_hash": "d035b20c495a40869194f8fc4682b4c338f4be0f68e8f0046685c658ea29d48a"
           },
           "token_ids": [
             248045,
             8678,
             198,
-            24342,
-            286,
-            4879,
-            369,
-            716,
-            310,
-            830,
-            11553,
-            13,
-            5044,
-            1683,
-            15060,
-            1472,
-            279,
-            3274,
-            11,
-            9307,
-            1328,
-            30800,
-            11,
-            2814,
-            47675,
-            25605,
-            11,
-            321,
-            60445,
-            55404,
-            11,
-            27224,
-            11,
-            321,
-            30246,
-            303,
-            279,
-            1534,
-            4087,
-            13,
-            271,
             12123,
             10895,
             13,
@@ -3841,7 +3802,9 @@
             74455,
             198,
             248068,
-            198
+            271,
+            248069,
+            271
           ]
         },
         {
@@ -3938,69 +3901,34 @@
                 "role": "user"
               }
             ],
+            "additional_context": {
+              "enable_thinking": false
+            },
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
             "prompt_contract_id": "8171fec39018f260e72a606790f54701a5c50ca12c49bf7b86b9365f4a32551a",
-            "prompt_token_count": 862,
+            "prompt_token_count": 826,
             "block_boundaries": [
               {
                 "token_count": 256,
-                "chain_hash": "7b7a74ee630acd77181c469764984b2fd603efb8e8e7e80c6b1b4542fa7704dc"
+                "chain_hash": "c333b1ee7f380a22ed7df07f1458b6c04e03ba4d167c5ab818459580e05321c1"
               },
               {
                 "token_count": 512,
-                "chain_hash": "4b51eb47238ad66b8386fd2894030e913c7697c66acc89d29a7da90ec83930af"
+                "chain_hash": "8ee895416c18f0b9668ba843732db7a0d3b9a4f716c399d055a74a38de84bd76"
               },
               {
                 "token_count": 768,
-                "chain_hash": "ec06cea7875c99d0cf10d02c55eef507e47e6277defbafeec8b014e1903b3040"
+                "chain_hash": "7392cda13840113752935012621f7c69863b2d8b9aeb4b200831e224ac396a2c"
               }
             ],
-            "last_complete_block_hash": "ec06cea7875c99d0cf10d02c55eef507e47e6277defbafeec8b014e1903b3040"
+            "last_complete_block_hash": "7392cda13840113752935012621f7c69863b2d8b9aeb4b200831e224ac396a2c"
           },
           "token_ids": [
             248045,
             8678,
             198,
-            24342,
-            286,
-            4879,
-            369,
-            716,
-            310,
-            830,
-            11553,
-            13,
-            5044,
-            1683,
-            15060,
-            1472,
-            279,
-            3274,
-            11,
-            9307,
-            1328,
-            30800,
-            11,
-            2814,
-            47675,
-            25605,
-            11,
-            321,
-            60445,
-            55404,
-            11,
-            27224,
-            11,
-            321,
-            30246,
-            303,
-            279,
-            1534,
-            4087,
-            13,
-            271,
             12123,
             10895,
             13,
@@ -4821,7 +4749,9 @@
             74455,
             198,
             248068,
-            198
+            271,
+            248069,
+            271
           ]
         },
         {
@@ -43806,11 +43736,14 @@
                 "role": "user"
               }
             ],
+            "additional_context": {
+              "enable_thinking": false
+            },
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
             "prompt_contract_id": "507d6d7af32a758c8f3ad6ff99f8a09b1a6bb0f9d93f1bd4b6495e6f90a5315d",
-            "prompt_token_count": 765,
+            "prompt_token_count": 767,
             "block_boundaries": [
               {
                 "token_count": 256,
@@ -44588,7 +44521,9 @@
             74455,
             198,
             248068,
-            198
+            271,
+            248069,
+            271
           ]
         },
         {
@@ -44685,11 +44620,14 @@
                 "role": "user"
               }
             ],
+            "additional_context": {
+              "enable_thinking": false
+            },
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
             "prompt_contract_id": "507d6d7af32a758c8f3ad6ff99f8a09b1a6bb0f9d93f1bd4b6495e6f90a5315d",
-            "prompt_token_count": 824,
+            "prompt_token_count": 826,
             "block_boundaries": [
               {
                 "token_count": 256,
@@ -45530,7 +45468,9 @@
             74455,
             198,
             248068,
-            198
+            271,
+            248069,
+            271
           ]
         },
         {
@@ -52411,11 +52351,14 @@
                 "role": "user"
               }
             ],
+            "additional_context": {
+              "enable_thinking": false
+            },
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
             "prompt_contract_id": "4b92f730e11bdd53c0a1a6c09e90c2fd745b66d232b719a6caec0d63f500d84f",
-            "prompt_token_count": 765,
+            "prompt_token_count": 767,
             "block_boundaries": [
               {
                 "token_count": 256,
@@ -53193,7 +53136,9 @@
             74455,
             198,
             248068,
-            198
+            271,
+            248069,
+            271
           ]
         },
         {
@@ -53290,11 +53235,14 @@
                 "role": "user"
               }
             ],
+            "additional_context": {
+              "enable_thinking": false
+            },
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
             "prompt_contract_id": "4b92f730e11bdd53c0a1a6c09e90c2fd745b66d232b719a6caec0d63f500d84f",
-            "prompt_token_count": 824,
+            "prompt_token_count": 826,
             "block_boundaries": [
               {
                 "token_count": 256,
@@ -54135,7 +54083,9 @@
             74455,
             198,
             248068,
-            198
+            271,
+            248069,
+            271
           ]
         },
         {

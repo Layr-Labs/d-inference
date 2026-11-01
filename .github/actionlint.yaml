@@ -1,9 +1,14 @@
 # actionlint runner-label vocabulary. The repo runs on Blacksmith-hosted
-# runners, whose labels actionlint cannot know about; without this file every
-# job flags [runner-label] and the lint is unusable as a gate.
+# runners and, through .github/workflows/darkbloom-route.yml, on Darkbloom
+# Sandboxes, whose labels actionlint cannot know about; without this file every
+# such job flags [runner-label] and the lint is unusable as a gate.
 self-hosted-runner:
   labels:
     - blacksmith-4vcpu-ubuntu-2404
     - blacksmith-16vcpu-ubuntu-2404
     - blacksmith-12vcpu-macos-27
     - blacksmith-12vcpu-macos-26
+    # Darkbloom Sandboxes also carry the built-in self-hosted, linux or macOS,
+    # and ARM64 labels.
+    - darkbloom-linux-arm64
+    - darkbloom-macos-arm64

@@ -78,10 +78,6 @@
             "integration_id": 15368
           },
           {
-            "context": "Console UI Lint & Build",
-            "integration_id": 15368
-          },
-          {
             "context": "E2E Integration Tests",
             "integration_id": 15368
           }

@@ -146,6 +146,66 @@ struct PromptTokenCacheTests {
         #expect(disabled.storedBytes == 0)
     }
 
+    @Test("batch lookups without old hits leave generations unchanged")
+    func batchLookupWithoutOldHits() {
+        let store = PromptPieceTokenStore(capacityBytes: 4096)
+        let keys = (0..<26).map { Self.digest($0) }
+        let tokens = (0..<25).map { Array(repeating: Int32($0), count: 16) }
+        store.insert(Array(zip(keys.prefix(25), tokens)))
+        #expect(store.storedBytes == 4000)
+
+        #expect(store.lookup([]).isEmpty)
+        #expect(store.lookup([keys[25], keys[25]]) == [nil, nil])
+        #expect(store.lookup([keys[24], keys[13], keys[24]]) == [tokens[24], tokens[13], tokens[24]])
+        #expect(store.lookup([keys[25], keys[24], keys[13], keys[24]]) == [nil, tokens[24], tokens[13], tokens[24]])
+        #expect(store.storedBytes == 4000)
+        // Old entries remain available after hot, missing, and empty batches.
+        #expect(store.lookup(keys) == tokens.map { Optional($0) } + [nil])
+    }
+
+    @Test("batch lookup retains every hit present before promotion rotates generations")
+    func batchLookupSurvivesGenerationRotation() {
+        let store = PromptPieceTokenStore(capacityBytes: 4096)
+        let keys = (0..<26).map { Self.digest($0) }
+        let tokens = (0..<25).map { Array(repeating: Int32($0), count: 16) }
+        // Each piece costs 160 bytes. Thirteen pieces rotate into old;
+        // another twelve leave young just below its 2048-byte threshold.
+        store.insert(Array(zip(keys.prefix(25), tokens)))
+        #expect(store.storedBytes == 4000)
+        // Promoting the first old hit rotates generations. The remaining
+        // twelve old hits must still be returned, including repeated keys.
+        let request = Array(keys.prefix(13)) + [keys[0], keys[24], keys[25]]
+        let expected: [[Int32]?] = Array(tokens.prefix(13)).map { $0 } + [tokens[0], tokens[24], nil]
+        #expect(store.lookup(request) == expected)
+        // The repeated key rotates again, evicting unrequested keys 13...23.
+        // Key 24 is restored from the snapshot even though that rotation drops it.
+        #expect(store.storedBytes == 14 * 160)
+        let retained: [[Int32]?] = (0..<26).map { index in
+            index < 13 || index == 24 ? tokens[index] : nil
+        }
+        #expect(store.lookup(keys) == retained)
+    }
+
+    @Test("repeated batch hits preserve accounting and eviction across multiple rotations")
+    func batchLookupAcrossMultipleRotations() {
+        let store = PromptPieceTokenStore(capacityBytes: 4096)
+        let keys = (0..<26).map { Self.digest($0) }
+        let tokens = (0..<25).map { Array(repeating: Int32($0), count: 16) }
+        store.insert(Array(zip(keys.prefix(25), tokens)))
+
+        let pass = Array(0..<25)
+        let requestIndices = [25] + pass + pass + pass + [0, 0, 25, 24]
+        let expected: [[Int32]?] = requestIndices.map { $0 < 25 ? tokens[$0] : nil }
+        #expect(store.lookup(requestIndices.map { keys[$0] }) == expected)
+        // Six rotations leave keys 3...15 in old and 16...24 plus 0 in young.
+        // Repeated hits count once; keys 1 and 2 are evicted for the next lookup.
+        #expect(store.storedBytes == 23 * 160)
+        let retained: [[Int32]?] = (0..<26).map { index in
+            index == 0 || (3..<25).contains(index) ? tokens[index] : nil
+        }
+        #expect(store.lookup(keys) == retained)
+    }
+
     @Test("a background comparison that disagrees with the unchanged path disables reuse")
     func backgroundMismatchDisablesReuse() async throws {
         let (fixture, tokenizer, cache) = try await Self.markerTemplateTokenizer()

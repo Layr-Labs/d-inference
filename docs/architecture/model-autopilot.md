@@ -1,6 +1,6 @@
 # Provider Autopilot
 
-> Last updated: 2026-10-25
+> Last updated: 2026-10-27
 
 Provider Autopilot offers an external controller the models of a Mac whose
 operator saved Autopilot consent: the saved selection plus every verified
@@ -33,6 +33,13 @@ Failed or expired control cannot manufacture ownership of accepted work.
 Cancellation, disconnect and shutdown must preserve native retirement and
 restore ordinary serving eligibility only through the existing lifecycle.
 Files already on disk are not evidence that a model can load safely.
+
+A control-only cluster member never participates, whatever consent its saved
+configuration records: `autopilotConsented` is false in that role, so it
+advertises no participation and downloads nothing on the operator's behalf
+(`autopilotDownloadsEnabled`), and `consumeClusterMemberEvent` drops a control
+lease or command that arrives anyway. The coordinator does not send one either;
+that guard is in `Layr-Labs/darkbloom-platform`.
 
 ## The Autopilot model set
 
@@ -179,6 +186,9 @@ served outside the saved `enabled_models`; `darkbloom autopilot status` prints
 exactly when the operation policy's busy input is false. A `provider_busy`
 status carries the first reason as `detail`, and consented snapshots report the
 reasons and their age ([protocol](../reference/protocol-messages.md#model_autopilot-state)).
+While a local add-on holds the Mac the reason is `addon_hold`, reported instead
+of `draining` for the drain the hold owns; operations are refused until the
+[hold](addon-hold.md) ends.
 
 `superviseTransitions` runs on the capacity tick while consent is saved. It ages
 each occurrence of a bounded transition (`ModelAutopilotTransition.stallBound`).

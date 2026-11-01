@@ -69,7 +69,7 @@ public struct ProviderSettings: Sendable, Equatable, Codable {
 /// assistants for exact `gemma-4-26b-qat-4bit` and Bonsai 9B targets. Other Gemma artifacts
 /// and Qwen checkpoints without an embedded declaration require explicit `on`, and so does
 /// Nemotron Lightning's embedded head: its plain decode, committing by operation count,
-/// outruns its speculative rounds with the same outputs.
+/// outruns its speculative rounds with the same outputs at temperature 0.
 /// Model IDs are exact catalog identities; model types retain the funnel's
 /// case/whitespace normalization.
 ///

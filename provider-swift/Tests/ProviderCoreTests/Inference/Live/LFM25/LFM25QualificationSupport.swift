@@ -272,7 +272,6 @@ struct LFM25Run: Sendable {
         var run = LFM25Run(id: id, promptTokens: tokens.count)
         let profile = RequestProfileBuilder()
         let signal = EngineV2RequestUsageSignal()
-        let channel = topLogprobs > 0 ? EngineV2LogprobsChannel() : nil
         let start = Date()
         do {
             let stream = try await slot.bridge.submitTokenized(
@@ -280,10 +279,12 @@ struct LFM25Run: Sendable {
                 request: try LFM25Qual.request(
                     maxTokens: maxTokens, topLogprobs: topLogprobs, repetitionPenalty: repetitionPenalty),
                 requestId: id, cacheScope: scope, cacheEnabled: cacheEnabled,
-                logprobsChannel: channel, usageSignal: signal, donationDemand: donationDemand,
+                usageSignal: signal, donationDemand: donationDemand,
                 firstContentDeadline: nil, profile: profile)
             for await event in stream {
                 switch event {
+                case .logprobs(let entries):
+                    run.logprobs += entries
                 case .chunk(let text):
                     run.text += text
                     run.chunks += 1
@@ -305,7 +306,6 @@ struct LFM25Run: Sendable {
             run.error = String(describing: error)
         }
         run.seconds = Date().timeIntervalSince(start)
-        run.logprobs = channel?.drain() ?? []
         run.engine = profile.wireObject().engine
         run.prefillTokensSaved = signal.prefixCachePrefillTokensSaved
         return run

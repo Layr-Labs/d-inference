@@ -194,10 +194,12 @@ private struct TimedRun {
             let stream = try await slot.bridge.submitTokenized(
                 promptTokens: tokens, request: try LFM25Qual.request(maxTokens: maxTokens),
                 requestId: id, cacheScope: "", cacheEnabled: cacheEnabled,
-                logprobsChannel: nil, usageSignal: signal, donationDemand: donationDemand,
+                usageSignal: signal, donationDemand: donationDemand,
                 firstContentDeadline: nil, profile: profile)
             for await event in stream {
                 switch event {
+                case .logprobs:
+                    break
                 case .chunk(let chunk):
                     if run.ttft < 0 { run.ttft = Date().timeIntervalSince(start) }
                     text += chunk

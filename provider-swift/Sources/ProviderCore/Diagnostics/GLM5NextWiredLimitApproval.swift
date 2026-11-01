@@ -19,10 +19,7 @@ public struct GLM5NextWiredLimitRequest: Equatable, Sendable {
 
     /// Nil for a recommendation whose values are not the derivation's own.
     public init?(_ purpose: Purpose) {
-        if case .raise(let value) = purpose,
-           value != GLM5NextWiredLimit.pairRankRecommendation(chipFamily: .m5, memoryGiB: value.memoryGiB) {
-            return nil
-        }
+        if case .raise(let value) = purpose, !GLM5NextWiredLimit.isPairRankRecommendation(value) { return nil }
         self.purpose = purpose
     }
 
@@ -30,27 +27,27 @@ public struct GLM5NextWiredLimitRequest: Equatable, Sendable {
     static var plist: String { GLM5NextWiredLimit.launchDaemonPath }
 
     /// The exact commands, in order, for root. The job definition is built key
-    /// by key from these fixed values; no file anyone prepared is copied into place.
+    /// by key from these fixed values; no file anyone prepared is copied into
+    /// place. It is the one `GLM5NextWiredLimitBootJob` recognises.
     public var commands: [String] {
-        let plist = Self.plist
+        let plist = Self.plist, log = GLM5NextWiredLimit.launchDaemonLogPath
         switch purpose {
         case .raise(let value):
-            let assignments = value.sysctlAssignments
             func insert(_ entry: String) -> String { "/usr/bin/plutil -insert \(entry) \(plist)" }
-            let program = ["/usr/sbin/sysctl"] + assignments
+            let program = value.bootJobProgramArguments
             // A repair replaces a job that is loaded; a first install has none to
             // stop. First, because in the `&&` line its `|| true` would also
             // excuse any failed command before it.
             return ["/bin/launchctl bootout system/\(Self.label) 2>/dev/null || true",
-                    "/usr/sbin/sysctl " + assignments.joined(separator: " "),
+                    program.joined(separator: " "),
                     "/bin/rm -f \(plist)",
                     "/usr/bin/plutil -create xml1 \(plist)",
                     insert("Label -string \(Self.label)"),
                     insert("ProgramArguments -array")]
                 + program.enumerated().map { insert("ProgramArguments.\($0.offset) -string \($0.element)") }
                 + [insert("RunAtLoad -bool true"),
-                   insert("StandardOutPath -string /var/log/\(Self.label).log"),
-                   insert("StandardErrorPath -string /var/log/\(Self.label).log"),
+                   insert("StandardOutPath -string \(log)"),
+                   insert("StandardErrorPath -string \(log)"),
                    "/usr/sbin/chown root:wheel \(plist)",
                    "/bin/chmod 644 \(plist)",
                    "/bin/launchctl bootstrap system \(plist)"]

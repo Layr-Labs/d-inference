@@ -583,9 +583,11 @@ darkbloom cluster gpu-limit [--undo]
 Lets this Mac's GPU keep its memory less 16 GiB resident, so GLM-5.3-Flash runs
 on two 128 GB Macs with room for long requests (M5 Macs of 128 or 256 GB only;
 exit 2 elsewhere). It prints the current and the new limit, asks once (`y`), and
-then macOS asks an administrator to approve. It needs a terminal; without one
-it prints the commands an administrator can run and exits 2. Values,
-persistence and undo: [GPU memory limit for a GLM pair](../reference/configuration.md#gpu-memory-limit-for-a-glm-pair)
+then macOS asks an administrator to approve. Where the limits are already met,
+it installs the boot job that keeps them if that job is missing or differs, and
+changes nothing if it is in place. It needs a terminal; without one it prints
+the commands an administrator can run and exits 2. Values, persistence and
+undo: [GPU memory limit for a GLM pair](../reference/configuration.md#gpu-memory-limit-for-a-glm-pair)
 (`provider-swift/Sources/darkbloom/ClusterGPULimitCommand.swift`).
 
 ### `darkbloom cluster local`

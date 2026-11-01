@@ -4091,8 +4091,9 @@ hold the weights with the memory plan's whole request, and reports each rank's
 serving context (`ClusterModelLayout.requestsOnArrival`,
 `ClusterPlacementRank.servingContextTokens`). Its estimate of one Mac holding
 the whole model alone keeps the full quote, as that Mac's own engine loads it. When a GPU limit binds, the plan
-names it and the command that raises it (`ClusterPlacementRank.gpuWorkingSetShortBytes`,
-`ClusterPlacementFlow.gpuLimitLines`).
+names it, and the command that raises it on the Macs that command runs on
+(`ClusterPlacementRank.gpuWorkingSetShortBytes`, `ClusterPlacementFlow.gpuLimitLines`,
+`GLM5NextGPULimitEligibility`).
 
 A quote above a capacity refuses with the rank, the cut, and each term against
 that capacity (`GLM5NextResidentResourceEnvelope.capacityRefusal`).

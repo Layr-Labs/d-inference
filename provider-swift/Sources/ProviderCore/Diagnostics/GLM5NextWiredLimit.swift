@@ -16,6 +16,7 @@ public enum GLM5NextWiredLimit {
     static let validatedMemoryGiB: UInt64 = 256
     static let launchDaemonLabel = "com.layrlabs.glm53-wired-limits"
     static let launchDaemonPath = "/Library/LaunchDaemons/\(launchDaemonLabel).plist"
+    static let launchDaemonLogPath = "/var/log/\(launchDaemonLabel).log"
 
     public struct Recommendation: Sendable, Equatable {
         public let memoryGiB: UInt64
@@ -51,11 +52,15 @@ public enum GLM5NextWiredLimit {
             "sudo sysctl -w " + sysctlAssignments.joined(separator: " ")
         }
 
+        /// What the boot job runs, the production hosts' job key for key
+        /// (macOS's `sysctl` ignores `-w`): the doctor's text and
+        /// `darkbloom cluster gpu-limit` write the same job.
+        public var bootJobProgramArguments: [String] { ["/usr/sbin/sysctl", "-w"] + sysctlAssignments }
+
         /// Reapplies `sysctlAssignments` at every boot.
         public var launchDaemonPlist: String {
-            let arguments = (["/usr/sbin/sysctl", "-w"] + sysctlAssignments)
-                .map { "\t\t<string>\($0)</string>" }
-            let log = "/var/log/\(GLM5NextWiredLimit.launchDaemonLabel).log"
+            let arguments = bootJobProgramArguments.map { "\t\t<string>\($0)</string>" }
+            let log = GLM5NextWiredLimit.launchDaemonLogPath
             return ([
                 #"<?xml version="1.0" encoding="UTF-8"?>"#,
                 #"<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">"#,
@@ -150,23 +155,27 @@ public enum GLM5NextWiredLimit {
             chipFamily: chipFamily, memoryGiB: ProcessInfo.processInfo.physicalMemory >> 30)
     }
 
-    /// Memory sizes validated for a rank of a GLM-5.3-Flash pair: two 128 GB
-    /// M5 Max hold its pipeline (each about half the model, its load scratch
-    /// and its requests on the GPU) only with the GPU limit raised, and the
-    /// 256 GB production hosts run the same values.
-    static let validatedPairRankMemoryGiB: Set<UInt64> = [128, 256]
-
-    /// The same derivation for a pair rank (`darkbloom cluster gpu-limit`):
-    /// the GPU may keep physical memory less 16 GiB resident. Nil for other
-    /// chips and sizes.
-    public static func pairRankRecommendation(chipFamily: ChipFamily, memoryGiB: UInt64) -> Recommendation? {
-        guard chipFamily == .m5, validatedPairRankMemoryGiB.contains(memoryGiB) else { return nil }
-        return derived(memoryGiB: memoryGiB)
+    /// The same derivation for a rank of a GLM-5.3-Flash pair
+    /// (`darkbloom cluster gpu-limit`): the GPU may keep physical memory less
+    /// 16 GiB resident. Two 128 GB M5 Max hold the pipeline (each about half
+    /// the model, its load scratch and its requests on the GPU) only with the
+    /// limit raised, and the 256 GB production hosts run the same values. Nil
+    /// where the command does not apply (`GLM5NextGPULimitEligibility`).
+    public static func pairRankRecommendation(chipName: String, physicalMemoryBytes: UInt64) -> Recommendation? {
+        guard GLM5NextGPULimitEligibility.applies(chipName: chipName, physicalMemoryBytes: physicalMemoryBytes) else {
+            return nil
+        }
+        return derived(memoryGiB: physicalMemoryBytes >> 30)
     }
 
     public static func pairRankRecommendationForThisMac() -> Recommendation? {
-        let chipFamily = parseChipIdentity((try? sysctlString("machdep.cpu.brand_string")) ?? "").0
-        return pairRankRecommendation(chipFamily: chipFamily, memoryGiB: ProcessInfo.processInfo.physicalMemory >> 30)
+        pairRankRecommendation(chipName: (try? sysctlString("machdep.cpu.brand_string")) ?? "",
+            physicalMemoryBytes: ProcessInfo.processInfo.physicalMemory)
+    }
+
+    /// Whether `value` is a pair rank's recommendation: the only values the command applies.
+    static func isPairRankRecommendation(_ value: Recommendation) -> Bool {
+        GLM5NextGPULimitEligibility.memoryGiB.contains(value.memoryGiB) && value == derived(memoryGiB: value.memoryGiB)
     }
 
     /// The coordinator catalog build or the local qualification download.

@@ -341,20 +341,27 @@ public enum ClusterPlacementFlow {
 
     /// Where a rank's GPU cannot keep resident what it needs there
     /// (`ClusterPlacementRank.gpuWorkingSetShortBytes`), how its owner raises
-    /// that Mac's limit: `darkbloom cluster gpu-limit` on that Mac, one
-    /// confirmation and then macOS's administrator prompt, up to its memory
-    /// less what macOS keeps (`ClusterDeviceProfile.gpuLimitReserveBytes`).
+    /// that Mac's limit, up to its memory less what macOS keeps
+    /// (`ClusterDeviceProfile.gpuLimitReserveBytes`): `darkbloom cluster gpu-limit`
+    /// on a Mac it runs on (`GLM5NextGPULimitEligibility`), one confirmation and
+    /// then macOS's administrator prompt; on any other Mac, the limit and the
+    /// figures, and no command.
     static func gpuLimitLines(_ result: ClusterPlacementResult, profiles: [String: ClusterDeviceProfile]) -> [String] {
         let short = (result.chosen?.ranks ?? result.refusal?.closest?.ranks ?? []).filter { $0.gpuWorkingSetShortBytes != nil }
         guard !short.isEmpty else { return [] }
         func gib(_ bytes: Int) -> String { String(format: "%.2f GiB", Double(bytes) / Double(1 << 30)) }
         return ["GPU memory limit"] + short.compactMap { rank in
-            profiles[rank.device].map { profile in
-                "  \(rank.device): its GPU keeps \(gib(profile.residentCapacityBytes)) resident, too little for its part of this model. "
-                    + "On that Mac run `darkbloom cluster gpu-limit`: it asks once, then macOS asks an administrator to let the GPU keep up to "
-                    + "\(gib(profile.physicalMemoryBytes - ClusterDeviceProfile.gpuLimitReserveBytes)) (its memory less the 16 GiB macOS "
-                    + "keeps), also after restarts. Then run `darkbloom cluster` again."
+            guard let profile = profiles[rank.device], let shortBytes = rank.gpuWorkingSetShortBytes else { return nil }
+            let keeps = profile.residentCapacityBytes
+            let most = gib(profile.physicalMemoryBytes - ClusterDeviceProfile.gpuLimitReserveBytes)
+            guard GLM5NextGPULimitEligibility.applies(chipName: profile.chip, physicalMemoryBytes: UInt64(profile.physicalMemoryBytes)) else {
+                return "  \(rank.device): its GPU keeps \(gib(keeps)) resident and its part of this model needs \(gib(keeps + shortBytes)) "
+                    + "there. macOS's GPU wired-memory limit (`iogpu.wired_limit_mb`) sets what it keeps, at most its memory less the "
+                    + "16 GiB macOS keeps (\(most)); Darkbloom raises it only on \(GLM5NextGPULimitEligibility.macs)."
             }
+            return "  \(rank.device): its GPU keeps \(gib(keeps)) resident, too little for its part of this model. "
+                + "On that Mac run `darkbloom cluster gpu-limit`: it asks once, then macOS asks an administrator to let the GPU keep up to "
+                + "\(most) (its memory less the 16 GiB macOS keeps), also after restarts. Then run `darkbloom cluster` again."
         }
     }
 

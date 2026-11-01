@@ -11,37 +11,52 @@ import Testing
 struct GLM5NextWiredLimitApprovalTests {
     private static let plist = "/Library/LaunchDaemons/com.layrlabs.glm53-wired-limits.plist"
 
+    private static let gib: UInt64 = 1 << 30
+
     @Test("a 128 GB M5 may keep its memory less 16 GiB on the GPU; 256 GB keeps the production values")
     func boundedRecommendations() throws {
-        let max128 = try #require(GLM5NextWiredLimit.pairRankRecommendation(chipFamily: .m5, memoryGiB: 128))
+        let max128 = try #require(GLM5NextWiredLimit.pairRankRecommendation(chipName: "Apple M5 Max", physicalMemoryBytes: 128 * Self.gib))
         #expect(max128.gpuWiredLimitMB == 114_688 && max128.gpuWiredLimitBytes == 120_259_084_288)
         #expect(max128.userWireLimitBytes == 130_567_005_798)
         #expect(max128.gpuWiredLimitBytes <= (128 << 30) - (16 << 30))
-        let ultra = try #require(GLM5NextWiredLimit.pairRankRecommendation(chipFamily: .m5, memoryGiB: 256))
+        let ultra = try #require(GLM5NextWiredLimit.pairRankRecommendation(chipName: "Apple M5 Ultra", physicalMemoryBytes: 256 * Self.gib))
         #expect(ultra == GLM5NextWiredLimit.recommendation(chipFamily: .m5, memoryGiB: 256))
-        for (family, memory) in [(ChipFamily.m3, UInt64(128)), (.m5, 64), (.m5, 96), (.m5, 512), (.m4, 256)] {
-            #expect(GLM5NextWiredLimit.pairRankRecommendation(chipFamily: family, memoryGiB: memory) == nil)
-        }
         // The single-Mac advice is unchanged: no 128 GB recommendation there.
         #expect(GLM5NextWiredLimit.recommendation(chipFamily: .m5, memoryGiB: 128) == nil)
     }
 
+    @Test("the command and the plan's advice share one rule: M5 Macs with 128 or 256 GB, read from the chip's own name")
+    func eligibility() {
+        for (chip, memory) in [("Apple M5 Max", UInt64(128)), ("Apple M5 Ultra", 256), ("Apple M5", 128), ("Apple M5 Pro", 128)] {
+            #expect(GLM5NextGPULimitEligibility.applies(chipName: chip, physicalMemoryBytes: memory * Self.gib))
+            #expect(GLM5NextWiredLimit.pairRankRecommendation(chipName: chip, physicalMemoryBytes: memory * Self.gib) != nil)
+        }
+        // Other chips, other sizes, a virtual machine and names no chip class reads.
+        for (chip, memory) in [("Apple M4 Max", UInt64(128)), ("Apple M3 Ultra", 256), ("Apple M6 Max", 128), ("Apple M5 Max", 64),
+                               ("Apple M5 Max", 96), ("Apple M5 Ultra", 512), ("Apple M5 (Virtual)", 128), ("Apple M55 Max", 128), ("", 128)] {
+            #expect(!GLM5NextGPULimitEligibility.applies(chipName: chip, physicalMemoryBytes: memory * Self.gib))
+            #expect(GLM5NextWiredLimit.pairRankRecommendation(chipName: chip, physicalMemoryBytes: memory * Self.gib) == nil)
+        }
+        #expect(GLM5NextGPULimitEligibility.macs == "M5 Macs with 128 or 256 GB")
+    }
+
     @Test("raising runs the sysctl now and installs the boot job key by key, behind one administrator prompt")
     func raiseCommands() throws {
-        let value = try #require(GLM5NextWiredLimit.pairRankRecommendation(chipFamily: .m5, memoryGiB: 128))
+        let value = try #require(GLM5NextWiredLimit.pairRankRecommendation(chipName: "Apple M5 Max", physicalMemoryBytes: 128 * Self.gib))
         let request = try #require(GLM5NextWiredLimitRequest(.raise(value)))
         let assignments = "iogpu.wired_limit_mb=114688 vm.global_user_wire_limit=130567005798 vm.user_wire_limit=130567005798"
         #expect(request.commands == [
             "/bin/launchctl bootout system/com.layrlabs.glm53-wired-limits 2>/dev/null || true",
-            "/usr/sbin/sysctl " + assignments,
+            "/usr/sbin/sysctl -w " + assignments,
             "/bin/rm -f \(Self.plist)",
             "/usr/bin/plutil -create xml1 \(Self.plist)",
             "/usr/bin/plutil -insert Label -string com.layrlabs.glm53-wired-limits \(Self.plist)",
             "/usr/bin/plutil -insert ProgramArguments -array \(Self.plist)",
             "/usr/bin/plutil -insert ProgramArguments.0 -string /usr/sbin/sysctl \(Self.plist)",
-            "/usr/bin/plutil -insert ProgramArguments.1 -string iogpu.wired_limit_mb=114688 \(Self.plist)",
-            "/usr/bin/plutil -insert ProgramArguments.2 -string vm.global_user_wire_limit=130567005798 \(Self.plist)",
-            "/usr/bin/plutil -insert ProgramArguments.3 -string vm.user_wire_limit=130567005798 \(Self.plist)",
+            "/usr/bin/plutil -insert ProgramArguments.1 -string -w \(Self.plist)",
+            "/usr/bin/plutil -insert ProgramArguments.2 -string iogpu.wired_limit_mb=114688 \(Self.plist)",
+            "/usr/bin/plutil -insert ProgramArguments.3 -string vm.global_user_wire_limit=130567005798 \(Self.plist)",
+            "/usr/bin/plutil -insert ProgramArguments.4 -string vm.user_wire_limit=130567005798 \(Self.plist)",
             "/usr/bin/plutil -insert RunAtLoad -bool true \(Self.plist)",
             "/usr/bin/plutil -insert StandardOutPath -string /var/log/com.layrlabs.glm53-wired-limits.log \(Self.plist)",
             "/usr/bin/plutil -insert StandardErrorPath -string /var/log/com.layrlabs.glm53-wired-limits.log \(Self.plist)",

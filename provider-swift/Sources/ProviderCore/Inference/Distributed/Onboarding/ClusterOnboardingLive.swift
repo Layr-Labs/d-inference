@@ -448,7 +448,7 @@ final class OnboardingLive: @unchecked Sendable {
         do { try childExit.run(process) } catch { return nil }
         guard childExit.wait(timeout: 5) || !process.isRunning else {
             process.terminate()
-            childExit.wait()
+            _ = childExit.wait(timeout: 2)
             return nil
         }
         switch process.terminationStatus {

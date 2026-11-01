@@ -4199,8 +4199,9 @@ sums cross the link: about 0.67-0.93x one M5 Ultra's decode, unmeasured
 **Evidence before tensor parallel.** A `fastest` family takes tensor parallel
 only when every rank of the placement has a measured share step
 (`ClusterDecodeSplit.measured`): a share probe of this model on that Mac
-(`ClusterShareProbeHistory`, or a speed record's shard rates), or the shard
-rates that requests this worker build served in tensor parallel corrected
+(`ClusterShareProbeHistory`; a speed record of this model's shard rates counts
+for every Mac of its chip and OS build), or the shard rates that requests this
+worker build served in tensor parallel corrected
 (`ClusterServedCalibration.tensorParallelMeasurements`). Before that, a Mac's
 share step comes from its device index (`ClusterHardwarePrior.weightSeconds`).
 The index times each operation with its launch latency inside, so it overstates
@@ -4213,8 +4214,8 @@ goes behind the best placement in another mode of its hardware group
 `measured` or `priorOnly`; it is omitted for every other family. The plan's
 "Tensor parallel or pipeline" line says, for example, "Pipeline: tensor parallel
 is predicted 6% faster for requests of 128 prompt and 128 answer tokens (...),
-but from the device index, not its own measured step; it is chosen once its step
-is measured on both Macs (a share probe at a tensor-parallel load, or requests
+but from the device index, not its own measured step; it can be chosen once its
+step is measured on both Macs (a share probe at a tensor-parallel load, or requests
 this build served in tensor parallel)." A plan that chooses tensor parallel on
 measured steps adds ", on its own step as measured on both Macs". The setup's
 model list says `tensor parallel: not measured yet`.

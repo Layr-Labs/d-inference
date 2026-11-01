@@ -355,7 +355,7 @@ on big Macs. Until then the pair serves the pipeline, as follows:
 - Where the estimate says tensor parallel would be faster, the plan's "Tensor
   parallel or pipeline" line says so and keeps the pipeline ("Pipeline: tensor
   parallel is predicted 6% faster ..., but from the device index, not its own
-  measured step; it is chosen once its step is measured on both Macs ..."). The
+  measured step; it can be chosen once its step is measured on both Macs ..."). The
   model list then says "tensor parallel: not measured yet". This holds for short
   prompts with longer answers on two M5 Ultra once the link is measured, and on
   smaller Macs whose decode is limited by memory bandwidth (for example two 24

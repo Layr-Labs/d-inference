@@ -812,12 +812,6 @@ import Foundation
         require("owner pilot: the same model on 2x M4 Max 128 GB is planned", fits.result.chosen != nil && fits.setup != nil)
     }
 
-    /// MiMo V2.6's plan, on its golden layout (read from the real headers, with the family's tensor-parallel facts
-    /// and `fastest_v1`) with the mode list its row now advertises and its MTP head as those headers give it
-    /// (`PipelineSpeculativeChecks`): the guided step's "Tensor parallel or pipeline" lines say the model runs
-    /// tensor parallel only where predicted faster, and that only tensor parallel keeps committed-token logprobs;
-    /// a capability without tensor parallel prints neither. The plan credits MiMo's speculative pipeline the
-    /// speed-up its shipped records measured, the pipeline that tensor parallel must beat.
     /// A worker capability for `layout` (one partition per admitted cut) in `modes`, and the pair description that pins it.
     static func capability(layout: ClusterModelLayout, adapterID: String, profileID: String, vocabularySize: Int,
                            arithmeticPolicyID: String, modes: [ClusterGenerationMode], publicModelID: String,
@@ -872,6 +866,12 @@ import Foundation
             measuredUTC: "2026-10-31T00:00:00Z", provenance: "check: the model alone on one Mac")
     }
 
+    /// MiMo V2.6's plan, on its golden layout (read from the real headers, with the family's tensor-parallel facts
+    /// and `fastest_v1`) with the mode list its row now advertises and its MTP head as those headers give it
+    /// (`PipelineSpeculativeChecks`): the guided step's "Tensor parallel or pipeline" lines say the model runs
+    /// tensor parallel only where predicted faster, and that only tensor parallel keeps committed-token logprobs;
+    /// a capability without tensor parallel prints neither. The plan credits MiMo's speculative pipeline the
+    /// speed-up its shipped records measured, the pipeline that tensor parallel must beat.
     static func mimoFastestPlanLines(description base: [String: Any]) throws {
         let golden = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent(
             "../../../libs/darkbloom-cluster/Tests/PlacementChecks/Golden/layouts/mimo-v2.6-flash-mopd-2026-09-28-r1.json")
@@ -930,7 +930,7 @@ import Foundation
         let priorOnly = try decide([])
         require("MiMo evidence rule: 2x 256 GB on the measured link, nothing served in tensor parallel: the speculative pipeline is kept, and the line says tensor parallel is predicted faster only from the device index (\(line(priorOnly, "  Pipeline:")))",
             priorOnly.result.chosen?.mode == .pipelineMTP && priorOnly.result.tensorParallel?.verdict == .predictedFasterOnPriorOnly
-                && line(priorOnly, "  Pipeline:").contains(", but from the device index, not its own measured step; it is chosen once its step is measured on both Macs")
+                && line(priorOnly, "  Pipeline:").contains(", but from the device index, not its own measured step; it can be chosen once its step is measured on both Macs")
                 && priorOnly.lines.contains(fastestLine) && priorOnly.setup != nil)
         let fast = try decide(served(95, build: hash("a")))
         require("MiMo evidence rule: three requests this build served in tensor parallel at 95 tok/s: tensor parallel, chosen on its own measured step, and the line says so (\(line(fast, "  Tensor parallel:")))",

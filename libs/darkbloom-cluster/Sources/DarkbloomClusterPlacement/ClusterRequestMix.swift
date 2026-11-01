@@ -107,7 +107,7 @@ extension ClusterPlacementExplanation {
         case .predictedFasterOnPriorOnly:
             // A family chosen only where faster (`ClusterTensorParallelChoice.fastest`) waits for its own measured step.
             let basis = "from the device index, not its own measured step"
-            let until = "; it is chosen once its step is measured on both Macs (a share probe at a tensor-parallel load, "
+            let until = "; it can be chosen once its step is measured on both Macs (a share probe at a tensor-parallel load, "
                 + "or requests this build served in tensor parallel)."
             guard let tp = assessment.tensorParallel, !estimated else {
                 return "\(name): tensor parallel is predicted faster for \(request) \(basis)\(estimated ? note : "")" + until

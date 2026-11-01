@@ -226,7 +226,7 @@ private func checkGemmaFastestPlan(_ layout: ClusterModelLayout, _ checks: Place
         held(ultraShort) && short.tensor > short.other * 0.85)
     checks.require("Gemma evidence rule: its plan line says the predicted gain, that it comes from the device index, and what measures it (\(reason(ultraShort)))",
         reason(ultraShort).hasPrefix("Pipeline: tensor parallel is predicted 6% faster for requests of 128 prompt and 128 answer tokens (")
-            && reason(ultraShort).contains(", but from the device index, not its own measured step; it is chosen once its step is measured on both Macs")
+            && reason(ultraShort).contains(", but from the device index, not its own measured step; it can be chosen once its step is measured on both Macs")
             && ClusterPlacementExplanation.tensorParallelNote(ultraShort) == .notMeasuredYet
             && ultraShort.shards?.options.first { $0.kind == .tensorParallel }?.verdict == .predictedFasterOnPriorOnly)
     // A share probe of this model on both Macs (a tensor-parallel load records one): the measured split decides. 10.3 ms

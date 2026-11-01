@@ -37,11 +37,13 @@ final class NativeWorkerRuntime: WorkerRuntime, @unchecked Sendable {
         switch family {
         case .qwenDense where generationMode == .tensorParallel
             && Gemma4TensorParallelResidentRuntime.serves(runtimeModelID: configuration.identity.modelID):
-            // Gemma 4 shares the layer-stage family; its tensor-parallel rank is its own runtime.
+            // Gemma 4 shares the layer-stage family; its tensor-parallel rank is its own runtime,
+            // whose prompt-prefix cache keeps an SSD tier with the owner's key.
             guard speculativeTerms == nil, tensorAssistantPolicy == nil, tensorShares == [1, 1], let dataPlane else {
                 throw WorkerFailure.invalid("Gemma tensor parallel runs equal shares over a keyed data plane without speculation")
             }
-            owner = .gemma4TensorParallel(try .load(configuration, qualification: qualification, dataPlane: dataPlane))
+            owner = .gemma4TensorParallel(try .load(configuration, qualification: qualification, dataPlane: dataPlane,
+                prefixSSDKey: prefixSSDKey))
         case .qwenDense where generationMode == .tensorParallel:
             owner = .qwenTensorParallel(try .load(configuration, shares: tensorShares, qualification: qualification,
                 dataPlane: dataPlane, prefixSSDKey: prefixSSDKey, speculativeTerms: speculativeTerms,
@@ -146,12 +148,14 @@ final class NativeWorkerRuntime: WorkerRuntime, @unchecked Sendable {
         case .glm5Next(let runtime): try runtime.releaseReservation(requestID: id)
         }
     }
-    /// GLM tensor parallel also drops its prompt-prefix entries under host
-    /// pressure; every other family gives back its freed-buffer cache only.
+    /// GLM and Gemma tensor parallel also drop their prompt-prefix entries
+    /// under host pressure; every other family gives back its freed-buffer
+    /// cache only.
     func releaseIdleMemory(underPressure: Bool) -> Int? {
         switch owner {
         case .glm5NextTensorParallel(let runtime): return try? runtime.releaseIdleMemory(underPressure: underPressure)
-        case .qwenDense, .qwenTensorParallel, .mimoV26, .mimoV26TensorParallel, .glm5Next, .gemma4TensorParallel:
+        case .gemma4TensorParallel(let runtime): return try? runtime.releaseIdleMemory(underPressure: underPressure)
+        case .qwenDense, .qwenTensorParallel, .mimoV26, .mimoV26TensorParallel, .glm5Next:
             return ClusterIdleMemory.releaseFreedBuffers()
         }
     }

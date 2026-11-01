@@ -278,22 +278,8 @@ public enum ClusterPlacementFlow {
         // Feature parity (`ClusterModeParity`): tensor parallel is planned only where it keeps every feature of the
         // mode it would replace, as the worker's capability record declares them, and is left out before anything is
         // ranked. A developer's forced mode is placed anyway, and the plan says what it drops.
-        let parity = ClusterModeParity.hold(capability: capability, layout: layout, policy: policy) {
-            try ClusterPlacementPlanner.plan(devices: devices, layout: layout, policy: $0, link: link)
-        }
-        var parityRefusal: String?
-        if let parity, forced == nil {
-            // Where tensor parallel is the only mode that places, the plan refuses rather than save a reduced setup
-            // (owner, 2026-11-01), and says so where a refusal is read (`modesReason`).
-            if !parity.otherModePlaces,
-               let only = (try? ClusterPlacementPlanner.plan(devices: devices, layout: layout, policy: policy, link: link))?.chosen,
-               parity.modes.contains(only.mode) {
-                parityRefusal = parity.refusal
-                policy.modesReason = policy.modesReason ?? parity.refusal
-            }
-            policy.modes = (policy.modes ?? layout.generationModes).filter { !parity.modes.contains($0) }
-            policy.tensorParallelHeldForFeatures = parity.reason
-        }
+        let (parity, parityRefusal) = ClusterModeParity.apply(to: &policy, capability: capability, layout: layout,
+            forced: forced != nil) { try ClusterPlacementPlanner.plan(devices: devices, layout: layout, policy: $0, link: link) }
         let result = try ClusterPlacementPlanner.plan(devices: devices, layout: layout, policy: policy, link: link)
         var lines = (forced.map(ClusterForcedModeSetting.lines) ?? [])
             + (benchCap.map(ClusterPlannerBenchCap.lines(capBytes:)) ?? []) + (benchChip.map(ClusterBenchChip.lines(chipName:)) ?? [])

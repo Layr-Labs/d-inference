@@ -340,7 +340,7 @@ Models that run tensor parallel, and when:
 |---|---|---|
 | Qwen3.5 9B, Qwen3.8 27B, Qwen3.5/3.6 35B A3B | wherever it fits | Qwen3.8 27B keeps images, video and logprobs only in tensor parallel |
 | GLM-5.3-Flash | wherever it fits | Eight concurrent requests by default |
-| Gemma 4 26B (QAT 4-bit, 8-bit) | only where it keeps every feature of the pipeline (not yet: no prompt-prefix or SSD reuse) and the plan predicts it faster from its own measured speed on both Macs | Text only; logprobs in tensor parallel only; one request at a time unless you set `DARKBLOOM_CLUSTER_BATCH_LANES` |
+| Gemma 4 26B (QAT 4-bit, 8-bit) | only where the plan predicts it faster from its own measured speed on both Macs (it keeps every feature of the pipeline, prompt-prefix and SSD reuse included) | Text only; logprobs in tensor parallel only; one request at a time unless you set `DARKBLOOM_CLUSTER_BATCH_LANES` |
 | MiMo V2.6 Flash | only where it keeps every feature of the mode it would replace (it keeps the speculative pipeline's rounds, not the plain pipeline's batch lanes) and the plan predicts it faster from its own measured speed on both Macs | Text only; speculative decoding; logprobs in tensor parallel only; one request at a time; see [MiMo V2.6 Flash on the pair](#mimo-v26-flash-on-the-pair) |
 
 For Gemma 4 and MiMo V2.6 Flash, tensor parallel must first keep every feature
@@ -348,16 +348,16 @@ and caching behavior of the mode it would replace, as the installed cluster
 worker declares them: prompt-prefix and SSD cache reuse, speculative rounds,
 batch lanes, media, penalties and logit bias, stop handling and logprobs. What it
 adds, such as logprobs where the pipeline has none, never counts against it.
-Today Gemma 4's tensor parallel keeps no prompt prefixes, so Gemma pairs serve
-the pipeline. MiMo's tensor parallel decodes in speculative rounds and keeps every
+Gemma 4's tensor parallel keeps every feature of its pipeline, prompt-prefix
+and SSD reuse included, so speed decides there (below). MiMo's tensor parallel decodes in speculative rounds and keeps every
 feature of the speculative pipeline, so speed decides there (below); it is held
 back only where the plain pipeline, with its batch lanes, is the mode it would
 replace. Where tensor parallel is held back:
 
 - The plan's "Tensor parallel or pipeline" line says what tensor parallel would
-  drop ("Pipeline: tensor parallel would drop prompt-prefix reuse and the SSD
-  prefix tier that the pipeline keeps; held back until it keeps them."), and the
-  model list says "tensor parallel: drops a feature".
+  drop ("Pipeline: tensor parallel would drop batch lanes up to 8 (it serves 1)
+  that the pipeline keeps; held back until it keeps them."), and the model list
+  says "tensor parallel: drops a feature".
 - Where only tensor parallel fits the two Macs, the plan refuses and saves no
   setup ("Only tensor parallel fits these Macs, and it would drop ... No
   reduced-feature setup was saved.").
@@ -523,7 +523,10 @@ memory holds its share.
 Both Macs keep the prompt prefixes of every model family, in memory and in the
 encrypted SSD tier: a repeated long prompt starts with its prefix restored, and
 after both Macs restart the SSD tier gives it back. Gemma 4 keeps each
-sliding-window layer's window at every kept frontier; GLM-5.3-Flash in pipeline
+sliding-window layer's window at every kept frontier, in pipeline and in tensor
+parallel, where each Mac keeps its own half of every layer's heads and a prefix
+is restored only when both Macs hold it, with exactly the tokens of a request
+that prefilled the whole prompt; GLM-5.3-Flash in pipeline
 keeps its attention history once per prompt and its linear-attention state per
 frontier. GLM-5.3-Flash in tensor parallel keeps one boundary per prompt, the
 last whole 4,096-token chunk before its final token: each Mac writes its own

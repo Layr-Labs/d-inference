@@ -51,17 +51,49 @@ final class Gemma4TensorParallelPagedSession {
     let state: CBv2OwnedRequestState
     let promptCount: Int
     private(set) var retired = false
+    /// Prompt tokens restored from a kept prefix (0 for a cold request).
+    let reusedPrefixTokens: Int
+    /// This request's prefix capture, taken after the prompt chunks that end
+    /// at its boundaries (`Gemma4TensorParallelPrefixCapture`); nil keeps none.
+    var prefixCapture: Gemma4TensorParallelPrefixCapture?
 
-    init(model: Gemma4TensorParallelModel, host: CBv2StageKVHost, promptCount: Int, outputCount: Int) throws {
+    /// `restoring`: this rank's state at an agreed prefix boundary (its own
+    /// heads' full rows and sliding windows, `Gemma4TensorParallelPrefix`),
+    /// written into fresh pages of the request; the prompt then continues
+    /// from that boundary on the same chunk grid.
+    init(model: Gemma4TensorParallelModel, host: CBv2StageKVHost, promptCount: Int, outputCount: Int,
+         restoring prefix: QwenStagePrefixState? = nil) throws {
         let maximum = promptCount + outputCount
-        guard promptCount > 0, outputCount > 0, maximum <= host.maximumTokensPerRequest else {
+        guard promptCount > 0, outputCount > 0, maximum <= host.maximumTokensPerRequest,
+              (prefix?.committedTokens ?? 0) < promptCount else {
             throw ProbeError("Gemma tensor-parallel request does not fit its KV host")
         }
-        let geometry = try CBv2RequestGeometry(gemma4Stage: model.requestGeometry(maximumTokens: maximum), host: host,
-            maximumTokens: maximum)
+        let geometry = try Self.geometry(model: model, host: host, maximumTokens: maximum)
         self.model = model; self.promptCount = promptCount
-        state = try CBv2OwnedRequestState(geometry: geometry, promptCount: promptCount, outputCount: outputCount,
-            reservedTokens: host.kind == .paged ? min(maximum, promptCount + QwenTensorParallelBatchSession.pageGrowthTokens) : nil)
+        let reserved = host.kind == .paged ? min(maximum, promptCount + QwenTensorParallelBatchSession.pageGrowthTokens) : nil
+        if let prefix {
+            guard Gemma4TensorParallelPrefix.adopts(prefix, into: geometry) else {
+                throw ProbeError("Gemma tensor-parallel prefix differs from this rank's request geometry")
+            }
+            let sliding = Set(geometry.kinds.compactMap { kind -> Int? in
+                if case .slidingWindow = kind.attention { return kind.modelLayerIndex }
+                return nil
+            })
+            state = try CBv2OwnedRequestState(geometry: geometry, promptCount: promptCount, outputCount: outputCount,
+                adoptingCommittedTokens: prefix.committedTokens, attention: prefix.attention,
+                slidingTails: prefix.recurrent.filter { sliding.contains($0.key) }.mapValues { (keys: $0.conv, values: $0.ssm) },
+                recurrent: [:], reservedTokens: reserved)
+        } else {
+            state = try CBv2OwnedRequestState(geometry: geometry, promptCount: promptCount, outputCount: outputCount,
+                reservedTokens: reserved)
+        }
+        reusedPrefixTokens = prefix?.committedTokens ?? 0
+    }
+
+    /// The request geometry a session of `maximumTokens` takes on `host`.
+    static func geometry(model: Gemma4TensorParallelModel, host: CBv2StageKVHost, maximumTokens: Int) throws -> CBv2RequestGeometry {
+        try CBv2RequestGeometry(gemma4Stage: model.requestGeometry(maximumTokens: maximumTokens), host: host,
+            maximumTokens: maximumTokens)
     }
 
     var committedTokens: Int { state.committedTokens }
@@ -101,6 +133,10 @@ final class Gemma4TensorParallelPagedSession {
             logits = row
             return select(row)
         }, validateOutput: { _ in })
+        if let prefixCapture, prefixCapture.frontiers.contains(range.upperBound) {
+            try prefixCapture.capture(state, at: range.upperBound)
+            try check()
+        }
         guard final else { return nil }
         guard let logits else { throw ProbeError("Gemma tensor-parallel prompt produced no logits") }
         try Self.validate(logits, rows: 1, model: model)
@@ -212,6 +248,15 @@ extension Gemma4TensorParallelModel {
         let host = try pagedHost(lanes: 1, maximumTokens: prompt.count + outputCount, chunkTokens: chunk)
         let session = try Gemma4TensorParallelPagedSession(model: self, host: host, promptCount: prompt.count,
             outputCount: outputCount)
+        return try generatePaged(session: session, host: host, prompt: prompt, outputCount: outputCount, chunk: chunk,
+            recordTop: recordTop)
+    }
+
+    /// The same greedy generation on `session` (cold, or restored from a
+    /// prefix: its prompt continues from its committed boundary), retired
+    /// at the end; `host` must drain.
+    func generatePaged(session: Gemma4TensorParallelPagedSession, host: CBv2StageKVHost, prompt: [Int], outputCount: Int,
+                       chunk: Int, recordTop: Int) throws -> Generation {
         let rank: Int
         if case .shard(let r) = role { rank = r } else { rank = 0 }
         let choice = Gemma4TensorParallelChoice(selection: selection, sampler: nil, rank: rank)
@@ -220,7 +265,7 @@ extension Gemma4TensorParallelModel {
             try MLX.withError { error in
                 func checked() throws { try error.check() }
                 let started = Self.now()
-                var offset = 0
+                var offset = session.committedTokens
                 var step: (logits: MLXArray, selected: MLXArray)?
                 while offset < prompt.count {
                     let end = min(prompt.count, offset + chunk)

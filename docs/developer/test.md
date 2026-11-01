@@ -1352,7 +1352,11 @@ registered artifact for them.
      ranks' expert rows add up bit for bit to the exact full-width row that
      one Mac rounds once, through the decode-expert kernel and MLX's sorted
      gather; every partial a rank sums is FP32, and no `o_proj` or dense
-     partial was rounded to BF16 first; the contract v2 strings are pinned;
+     partial was rounded to BF16 first; the contract v2 strings are pinned; a
+     speculative round's verify window (4 rows after a prompt that wrapped the
+     sliding ring) hands each sum the one-token steps' own FP32 partials, row
+     for row and bit for bit, with logits to match
+     (`windowPartialsAreTheOneTokenStepsFloat32Partials`);
    - the vocabulary-split head against the whole head;
    - the resident runtime's verified load: each rank reads exactly its shard's
      bytes, and a tampered or foreign checkpoint is refused;
@@ -1372,9 +1376,17 @@ registered artifact for them.
      what the loaded heads declare; a window's rollback
      (`MiMoV26VerifyWindow.settle`) leaves exactly the cache of one-token
      appends on the registered 128-row ring (two 64-token pages, across its
-     page boundary and wrap) and on a full layer; and exactly tied columns and
-     draft readouts choose the lowest token ID;
-   - what the text row's capability declares of each mode (`ClusterServingFeatures`).
+     page boundary and wrap) and on a full layer; exactly tied columns and
+     draft readouts choose the lowest token ID; the window contract
+     (`windows=row-exact-one-token-float32-partials-v2`) is in the agreement; and
+     the product layout quotes what the LOAD gate charges with rounds on by
+     default: the heads (42 tensors, 1,975,640,448 bytes) and each request's
+     speculative charge beside the reserve, no speed-up credited
+     (`placementQuotesWhatTheLoadGateChargesWithRounds`);
+   - what the text row's capability declares of each mode (`ClusterServingFeatures`):
+     tensor parallel decodes in rounds at `ClusterMiMoTensorParallel.speculativeDepth`,
+     so it drops nothing of the speculative or compact-decode pipeline and only
+     the plain pipeline's batch lanes.
 
    `libs/darkbloom-cluster/Tests/PlacementChecks/run.sh` also runs
    `MiMoTensorParallelChecks.swift` (model-free). It builds the layout from the
@@ -1382,7 +1394,13 @@ registered artifact for them.
    facts (97 sums a step, `fastest_v1`), a rank's share of exactly
    84,013,770,176 bytes, the routing prior (10,767,036,288 bytes a step), no
    facts for the image candidate, the same facts in the golden layout, and the
-   rank's reserve (`MiMoTensorParallelRequestBudget`) in the quote. Under the
+   rank's reserve (`MiMoTensorParallelRequestBudget`) in the quote. With the
+   rounds on by default, it prices them as the product layout does (the SDK's
+   drafter declaration stands in at its registered 438,426,984 bytes plus the
+   window's 36,347,904): each rank holds the 42 head tensors whole in whole pages,
+   its request need carries the speculative charge, its need is exactly the
+   rank's LOAD gate plus its tensors' page padding, decode is credited nothing,
+   and two idle 128 GB M5 Max still fit now (99.9 GiB a rank). Under the
    provider's tensor-parallel-first policy it checks the fastest-plan rule on
    constructed pairs against the plain pipeline: 2x M5 Max 128 GB keeps the
    pipeline where tensor parallel is predicted faster on the device index alone,
@@ -1397,15 +1415,19 @@ registered artifact for them.
    guided step credits MiMo's rounds from its shipped records and prints the
    fastest-plan and logprob lines. Through the guided step it also checks feature
    parity (`ClusterModeParity`) before the evidence rule:
-   - as this build declares them, MiMo's tensor parallel has no rounds, so the
-     speculative pipeline is kept even with this build's served records; Gemma's
-     keeps no prompt prefixes, so the pipeline is kept even with both Macs' share
-     probes, after an update that served tensor parallel, and with nothing
-     measured; each plan says what tensor parallel would drop;
-   - with rounds (MiMo) or prefix reuse (Gemma) declared, the evidence rule
-     decides: MiMo on two 256 GB Macs keeps the speculative pipeline with no
-     served record or another build's and follows this build's served records,
-     and Gemma follows both Macs' share probes;
+   - as this build declares them, MiMo's tensor parallel decodes in rounds, so it
+     keeps every feature of the speculative pipeline and the evidence rule
+     decides: on two 256 GB Macs the speculative pipeline is kept with no served
+     record (prior only) or another build's, and this build's served records
+     choose (95 tok/s: tensor parallel; 60: the speculative pipeline);
+   - a MiMo record without tensor parallel's rounds holds it back even with this
+     build's served records, and where the plain pipeline is the mode it would
+     replace (a record without `pipeline_mtp_v1`), that pipeline's 8 batch lanes
+     hold one-lane tensor parallel back, served records or not;
+   - Gemma's tensor parallel keeps no prompt prefixes, so the pipeline is kept even
+     with both Macs' share probes, after an update that served tensor parallel,
+     and with nothing measured; each plan says what tensor parallel would drop;
+     with prefix reuse declared, Gemma follows both Macs' share probes;
    - where only tensor parallel fits, the plan refuses and saves no setup; the
      forced mode places it and says what it drops; a record without features
      holds it back, and the forced mode then says what it drops is not known;
@@ -2107,7 +2129,10 @@ default.
 
 Run `bash provider-swift/Tests/ClusterInstalledSessionChecks/run.sh`. The CPU
 runner compiles the actual local-owner launcher, installed plan/session and
-member-installation code. `InstalledBatchLanesCheck.swift` launches a real child
+member-installation code. Its generation-mode check also launches MiMo tensor
+parallel: both ranks get `--mtp-depth 2` after the mode exactly where the pinned
+record declares tensor parallel's rounds, and the status then reports the head
+as decoding. `InstalledBatchLanesCheck.swift` launches a real child
 with the fixed owner arguments and checks its exact environment, supported
 lane widths, out-of-range rejection, malformed-override parity even with an
 eight-lane family default, admission/owner/native parity, unsupported

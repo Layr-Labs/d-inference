@@ -4207,7 +4207,7 @@ from the facts its loads bind; the provider keeps no table of them:
 |---|---|---|
 | `promptPrefixReuse`, resident | yes / no | no / no / no |
 | `ssdPrefixTier` | yes / no | no / no / no |
-| `speculativeRounds` (MTP) | no / no | no / yes / no |
+| `speculativeRounds` (MTP) | no / no | no / yes / yes |
 | `maximumLanes` | 8 / 8 | 8 / 1 / 1 |
 | `requestMedia` | none / none | none |
 | `penaltiesAndLogitBias`, `stopHandling` | yes / yes | yes |
@@ -4219,8 +4219,12 @@ Gemma's come from `Gemma4ResidentAdapterDefinition.servingFeatures`, whose
 `MiMoResidentCapabilityMetadata.servingFeatures`: the widest lanes and paged
 histories `MiMoBatchSettings` gives each mode, and
 `MiMoTensorParallelResidentRuntime.servingFeatures`, whose lanes and prefix
-setting its serving agreement binds. A record without features
-(`ClusterRuntimeCapabilityCodec` writes no `modeFeatures`) keeps its bytes.
+setting its serving agreement binds and whose rounds are the depth the installed
+owner launches every MiMo tensor-parallel worker with
+(`ClusterMiMoTensorParallel.speculativeDepth`, bound by the speculative
+agreement fields; [rounds](#mimo-tensor-parallel-speculative-rounds)). A record
+without features (`ClusterRuntimeCapabilityCodec` writes no `modeFeatures`)
+keeps its bytes.
 
 `ClusterModeParity`, in `ClusterPlacementFlow.decide` beside
 `ClusterModelFeaturePolicy.admissibleModes`, applies the rule before the planner
@@ -4248,10 +4252,20 @@ ranks anything:
    back: nothing shows it keeps them.
 
 Today the rule holds Gemma's tensor parallel back everywhere, whatever its
-evidence, and MiMo's wherever the speculative pipeline is the mode it would
-replace; the evidence rule below decides once a worker declares parity. The
-tensor-parallel-first families (Qwen, GLM) declare no features and are not
-gated. Applied to them, the rule would leave GLM unchanged (its tensor parallel
+evidence. MiMo's tensor parallel decodes in speculative rounds, so it keeps every
+feature of the speculative pipeline (and of the compact-decode pipeline and the
+phase split), and the evidence rule below decides wherever one of those is the
+mode it would replace. It is held back only where the plain pipeline is: that
+pipeline declares 8 batch lanes and tensor parallel serves one ("Pipeline: tensor
+parallel would drop batch lanes up to 8 (it serves 1) that the pipeline keeps;
+held back until it keeps them."). On equal idle Macs in the placement checks'
+device model, with MiMo's rounds credited and the heads priced, that is 106 GB
+for 128 + 128 and 118 GB for a fresh pair's 32,768 + 32,768; from 104 GB
+(where tensor parallel first fits) every other size replaces the speculative
+pipeline, and no size fits tensor parallel alone (2026-11-01 scan,
+`mainnet/overnight/mimo-tp-speculative-v2.md`) [INFERENCE: the device model,
+not real Macs]. The tensor-parallel-first families (Qwen, GLM) declare no
+features and are not gated. Applied to them, the rule would leave GLM unchanged (its tensor parallel
 keeps prompt-prefix and SSD reuse and adds rounds, eight lanes, images, video
 and logprobs) but would move Qwen3.5 9B from tensor parallel to its
 speculative pipeline, which its records credit 1.74x: Qwen tensor parallel
@@ -4371,8 +4385,8 @@ are excluded by name and refused as text, as is any unknown or misaligned name:
 
 Every equal half lands on whole quantization groups and packed words, so no
 rank stores padding: 84,013,770,176 B of text weights per rank. A layer issues
-two collectives of one 16,384 B row per token, and a decode step 97. MTP is off
-unless the launch asks for it
+two collectives of one 16,384 B row per token, and a decode step 97. Decode runs
+in MTP rounds by default, the three heads replicated whole beside the shard
 ([speculative rounds](#mimo-tensor-parallel-speculative-rounds)).
 
 The routed experts' partial is not the Qwen and Gemma one, which sums every
@@ -4448,8 +4462,8 @@ tensor parallel's executor contract and one lane:
   whose first logprob is the greedy token's even when an exactly tied token
   leads it; a sampled row publishes the product sampler's own logprobs from
   the gathered row.
-- Speculative rounds when the worker gets `--mtp-depth` (off by default; see
-  below).
+- Speculative rounds at depth 2, on by default: the installed owner launches
+  every MiMo tensor-parallel worker with `--mtp-depth 2` (see below).
 - Not yet: lanes, prompt-prefix reuse, 2,048-token prefill frames and
   micro-batches, building decode steps one ahead.
 - Memory. One formula, `MiMoTensorParallelRequestBudget`, gives the LOAD
@@ -4481,10 +4495,15 @@ the gate.
 
 A MiMo tensor-parallel worker launched with `--mtp-depth N` (1 to 3; MiMo's
 `MiMoMTPTerms`) decodes in `pipeline_mtp_v1`'s rounds through the
-tensor-parallel sums. It is off by default: the installed provider passes no
-depth to a MiMo tensor-parallel worker
-(`DistributedInstalledGenerationSelection` passes one only for Qwen's tensor
-assistant), and the planner credits no speed-up.
+tensor-parallel sums. It is on by default: the installed owner passes both ranks
+`--mtp-depth 2` (`ClusterMiMoTensorParallel.speculativeDepth`, the depth MiMo's
+pipeline measured fastest) wherever the worker's capability record declares
+tensor parallel's rounds (`DistributedInstalledGenerationSelection`), which this
+build's record does (`MiMoTensorParallelResidentRuntime.servingFeatures`), and
+the cluster status reports the head as decoding (`DistributedInstalledSpeculation`).
+A worker launched by hand without the depth decodes one token a step. The
+planner prices the rounds' memory and credits them no speed-up (placement,
+below).
 
 - **Heads.** Both ranks hold the three trained BF16 heads whole
   (3 × 658,546,816 B), named by the pipeline's head inventory
@@ -4499,13 +4518,19 @@ assistant), and the planner credits no speed-up.
   hold 0.83 GiB less, but adds new BF16 partials and two sums per proposal.
 - **Windows.** A round runs `[last, d1 … dk]` through every layer's two sums at
   once (`MiMoV26TextModel.forwardVerifyWindow`). Each row takes one-row decode's
-  arithmetic: the row-exact affine 8-bit projections
-  (`MiMoV26RowExactProjection`), per-row RoPE and router, per-row expert combine,
-  full-attention rows reading their own prefix and sliding layers taking one
-  ring update and one attention per row. So each window row is the one-token
-  step's bits, and greedy rounds are lossless against the one-token path, not
-  only close to it. NAX has no kernel for 2 to 4 rows (MLX's NAX attention needs
-  more than 8 queries), so windows stay on these kernels; prefill is unchanged.
+  arithmetic: the row-exact affine 8-bit projections for queries, keys and values
+  (`MiMoV26RowExactProjection`), per-row RoPE and router, full-attention rows
+  reading their own prefix and sliding layers taking one ring update and one
+  attention per row. The row-parallel partials follow contract v2 (FP32 until the
+  sum, [above](#mimo-v26-tensor-parallel)): `o_proj` is one FP32 product per row
+  (`MiMoV26RectangularDense.tensorParallelProjection`, the one-token step's M=1
+  product; the row-exact kernel is BF16/F16 only), the dense layer's `down_proj`
+  runs row by row (`MiMoV26RectangularDense.tensorParallelPartial`), and the
+  routed layer combines each row's FP32 expert rows (`float32ExpertRows`) as its
+  one-row step does. So each window row is the one-token step's bits, partials
+  included, and rounds are lossless against the one-token path, not only close
+  to it. NAX has no kernel for 2 to 4 rows (MLX's NAX attention needs more than 8
+  queries), so windows stay on these kernels; prefill is unchanged.
 - **Agreement and acceptance.** One sum per round carries, per rank, every
   column's maximum and token (or rank 0's keyed target sample over the gathered
   rows, `QwenStageTokenSampler.verifyRound`), the stop slot and the position.
@@ -4534,18 +4559,19 @@ assistant), and the planner credits no speed-up.
   at the profile's longest request, the drafter's bounded request state and the
   window's extra rows (`MiMoTensorParallelResidentRuntime.speculativeRequestBytes`,
   from the configuration alone). READY's capacity and each reservation add the
-  same two per-request terms. The activation floor stays the conservative
-  default.
+  same two per-request terms, and the placement quote prices the same
+  (`MiMoTensorParallelResidentRuntime.placementRounds`, below). The activation
+  floor stays the conservative default.
 - **Agreement.** The load agreement adds the depth, the verification rule and
-  the head and window contracts (`speculativeAgreementFields`); a load without a
-  depth keeps its agreement unchanged.
+  the head and window contracts (`speculativeAgreementFields`; the window's is
+  `windows=row-exact-one-token-float32-partials-v2`); a load without a depth
+  keeps its agreement unchanged.
 
 Code map: `MiMoTensorParallelRounds.swift` (rounds, agreement, end
 reconciliation), `MiMoTensorParallelSpeculation.swift` (heads, drafter,
-scripted oracle proposals), the SDK's `MiMoV26IndependentHistory.swift` and
-`MiMoV26TensorParallel.swift`. Placement keeps `speculativeHead` nil until a pair
-measures MiMo tensor parallel with and without rounds, as GLM's
-`GLM5NextServingMetadata.measuredTensorParallelDecode` does.
+scripted oracle proposals), `ClusterMiMoTensorParallel` (the installed depth),
+the SDK's `MiMoV26IndependentHistory.swift`, `MiMoV26RectangularDense.swift` and
+`MiMoV26TensorParallel.swift`.
 
 ### MiMo tensor-parallel placement
 
@@ -4558,7 +4584,8 @@ layout carries `tensorParallel`; the image candidate's layout carries none:
 | `reductionsPerLayer`, `reductionsPerStep` | 2 (attention, feed-forward), 1 (vocabulary-split selection): 97 a decode step | `MiMoTensorParallelPlan.reductionsPerLayer` |
 | `partialBytesPerToken` | 16,384 (one FP32 hidden row); no `layerPartialBytesPerToken` | `MiMoTensorParallelPlan.partialBytesPerToken` |
 | `stateDividesByHeads` | true: each rank keeps its own KV heads | `MiMoTensorParallelPlan.kvHeadsPerRank` |
-| `requestAllowance` | the rank's reserve at the profile's longest request (65,536 tokens), where the allocator's bound is known | `MiMoTensorParallelRequestBudget` |
+| `requestAllowance` | the rank's reserve at the profile's longest request (65,536 tokens), with each request's speculative charge beside it, where the allocator's bound is known | `MiMoTensorParallelRequestBudget`, `allowance(speculativeRequestBytes:allocationBound:)` |
+| `speculativeHead` | depth 2; `requestBytes` = one request's speculative charge (the drafter's declaration and the window's rows: 438,426,984 + 36,347,904 B at exact sizes); `decodeSpeedup` 1, credited nothing; the three heads are the layout's `speculativeHead` part (42 tensors, 1,975,640,448 B), held whole on every rank in whole pages | `MiMoTensorParallelResidentRuntime.placementRounds` |
 | `choice` | `fastest_v1` | `ClusterTensorParallelChoice` |
 
 Each stored tensor's cut is the plan's disposition
@@ -4569,19 +4596,36 @@ routing, 8 of 256 experts (`expertRouting`, `isRoutedExpert`, the same
 definition as the pipeline's), so the hardware prior reads 10,767,036,288
 weight bytes per token, 99.1 % of them divided.
 
+The rounds are priced as the LOAD gate charges them, so the planner admits only
+pairs the rank's gate admits: each rank's weights gain the heads in whole pages,
+and its quoted reserve gains each request's speculative charge (the product
+layout computes it with the SDK's drafter declaration at the allocator's bound;
+`placementQuotesWhatTheLoadGateChargesWithRounds` pins it to the LOAD gate's
+sum). Metadata-only layouts, such as the recorded golden one, carry neither, as
+they carry no `requestAllowance`. Two 128 GB Macs still fit: a rank's LOAD gate
+is 107,281,620,648 B (99.9 GiB) at exact sizes, and the planner asks 99.9 GiB of
+an idle 128 GB Mac in the placement checks. No speed-up is credited until
+records measure the rounds: when a pair has served MiMo tensor parallel with and
+without them on the same build, a measured table (as GLM's
+`GLM5NextServingMetadata.measuredTensorParallelDecode`, depth 0 against depth 2)
+sets `decodeSpeedup` to their ratio. Until then served records, which run with
+the rounds, correct the shard rates directly (`ClusterServedCalibration`), so the
+evidence rule weighs what was served.
+
 MiMo opts into the fastest-plan rule
 ([Gemma tensor-parallel placement](#gemma-tensor-parallel-placement)): 97 sealed
 sums a step cross the link, and the pipeline it competes with decodes in
-speculative rounds (`pipeline_mtp_v1`), which tensor parallel does not yet. The
-guided step credits those rounds the decode speed-up MiMo's passing
+speculative rounds (`pipeline_mtp_v1`), as tensor parallel now does, uncredited.
+The guided step credits the pipeline's rounds the decode speed-up MiMo's passing
 qualification records measured, 1.37x (59.18 against 43.05 tok/s;
 `ClusterPairServingGrants.recordedPipelineSpeculativeFactor`), and a fresh pair
 plans for the layout's longest request, 32,768 + 32,768 tokens. On the
 planner's own figures (`PlacementChecks`, `MiMoTensorParallelChecks.swift`;
 constructed Macs: M5 Ultra 57 tok/s, the M5 Max 128 GB from its stage probes at
-40 tok/s), the comparison and the evidence rule place MiMo as follows; the
-guided step's feature parity then keeps the speculative pipeline in the rows
-that end in tensor parallel, until MiMo's tensor parallel decodes in rounds:
+40 tok/s; tensor parallel priced with its rounds), the comparison and the
+evidence rule place MiMo as follows. Tensor parallel keeps every feature of the
+speculative pipeline, so the guided step's feature parity holds none of these
+rows back:
 
 | Pair | Link | Request | Chosen |
 |---|---|---|---|
@@ -4594,7 +4638,7 @@ that end in tensor parallel, until MiMo's tensor parallel decodes in rounds:
 Against the plain pipeline (a capability without `pipeline_mtp_v1`, or no
 passing record of the rounds), tensor parallel would also drop the plain
 pipeline's eight batch lanes (it serves one), so feature parity keeps the
-pipeline there too. On speed alone, two M5 Max are predicted faster in tensor
+pipeline there, whatever the evidence. On speed alone, two M5 Max are predicted faster in tensor
 parallel even on default link costs for decode-heavy requests (128 + 128:
 3.17 s against 3.50 s), on the prior alone, so they keep the pipeline too, as
 they do inside the 5 % margin (1,024 + 128) or for long prompts; two M5 Ultra
@@ -4610,8 +4654,7 @@ MiMo's runtime takes no share probe, so only requests a pair served in tensor
 parallel with the same worker build give it evidence
 (`ClusterServedCalibration`). Only the developer's forced mode, in a debug
 build, serves MiMo tensor parallel before that; a release build cannot force it,
-so release builds keep MiMo on the pipeline until MiMo gets a share probe, and
-feature parity keeps it there until MiMo's tensor parallel decodes in rounds. The
+so release builds keep MiMo on the pipeline until MiMo gets a share probe. The
 recorded golden layout
 gains the facts and routed experts beside its recorded bytes; its golden plans
 keep their placements (pipeline, cut 41 and cut 24), and their tensor-parallel

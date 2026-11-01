@@ -341,15 +341,18 @@ Models that run tensor parallel, and when:
 | Qwen3.5 9B, Qwen3.8 27B, Qwen3.5/3.6 35B A3B | wherever it fits | Qwen3.8 27B keeps images, video and logprobs only in tensor parallel |
 | GLM-5.3-Flash | wherever it fits | Eight concurrent requests by default |
 | Gemma 4 26B (QAT 4-bit, 8-bit) | only where it keeps every feature of the pipeline (not yet: no prompt-prefix or SSD reuse) and the plan predicts it faster from its own measured speed on both Macs | Text only; logprobs in tensor parallel only; one request at a time unless you set `DARKBLOOM_CLUSTER_BATCH_LANES` |
-| MiMo V2.6 Flash | only where it keeps every feature of the mode it would replace (not yet: no speculative rounds) and the plan predicts it faster from its own measured speed on both Macs | Text only; logprobs in tensor parallel only; one request at a time; see [MiMo V2.6 Flash on the pair](#mimo-v26-flash-on-the-pair) |
+| MiMo V2.6 Flash | only where it keeps every feature of the mode it would replace (it keeps the speculative pipeline's rounds, not the plain pipeline's batch lanes) and the plan predicts it faster from its own measured speed on both Macs | Text only; speculative decoding; logprobs in tensor parallel only; one request at a time; see [MiMo V2.6 Flash on the pair](#mimo-v26-flash-on-the-pair) |
 
 For Gemma 4 and MiMo V2.6 Flash, tensor parallel must first keep every feature
 and caching behavior of the mode it would replace, as the installed cluster
 worker declares them: prompt-prefix and SSD cache reuse, speculative rounds,
 batch lanes, media, penalties and logit bias, stop handling and logprobs. What it
 adds, such as logprobs where the pipeline has none, never counts against it.
-Today Gemma 4's tensor parallel keeps no prompt prefixes and MiMo's has no
-speculative rounds, so these pairs serve the pipeline:
+Today Gemma 4's tensor parallel keeps no prompt prefixes, so Gemma pairs serve
+the pipeline. MiMo's tensor parallel decodes in speculative rounds and keeps every
+feature of the speculative pipeline, so speed decides there (below); it is held
+back only where the plain pipeline, with its batch lanes, is the mode it would
+replace. Where tensor parallel is held back:
 
 - The plan's "Tensor parallel or pipeline" line says what tensor parallel would
   drop ("Pipeline: tensor parallel would drop prompt-prefix reuse and the SSD
@@ -569,14 +572,16 @@ KV on the pair yet, and the pair decodes slower than the M5 Ultra alone. Its
 phase split (one Mac decodes alone) is kept off like every hand-off mode.
 
 MiMo V2.6 Flash text can also run tensor parallel: each Mac holds half of every
-layer, about 84 GB of weights and about 98 GiB in all with its reserves
+layer, about 84 GB of weights, and MiMo's three draft heads whole (about 2 GB),
+about 100 GiB in all with its reserves
 ([rank memory](../architecture/hardware-support.md#mimo-v26-tensor-parallel-rank-memory)),
-so two 128 GB Macs that cannot hold MiMo alone can serve it. The plan chooses
-tensor parallel only where it keeps the speculative rounds of the pipeline it
-would replace, which it does not yet, so MiMo pairs keep the pipeline with
-speculative decoding (above). Speed decides only after that: tensor parallel must
-be predicted faster than that pipeline, which MiMo's qualification records
-credit 1.37x, from tensor parallel's own speed measured on both Macs:
+so two 128 GB Macs that cannot hold MiMo alone can serve it. It decodes with
+speculative decoding by default, as the pipeline does, so it keeps the speculative
+pipeline's features. Where the plain pipeline is the mode it would replace, its
+batch lanes keep the pipeline. Speed decides after that: tensor parallel must be
+predicted faster than the speculative pipeline, which MiMo's qualification
+records credit 1.37x, from tensor parallel's own speed measured on both Macs. The
+plan credits tensor parallel's own rounds nothing until they are measured:
 
 - Before a load has measured the link, two 128 GB Macs and two 256 GB Macs
   alike keep the pipeline.
@@ -589,7 +594,8 @@ credit 1.37x, from tensor parallel's own speed measured on both Macs:
   pairs keep the pipeline today.
 
 In tensor parallel MiMo returns logprobs, serves one request at a time and
-runs without speculative decoding; the image candidate stays a pipeline. Speed
+decodes with speculative decoding (up to two drafted tokens a round); its output
+is the same as without drafting. The image candidate stays a pipeline. Speed
 on a real pair is not measured yet. No qualification record covers MiMo tensor
 parallel yet, so its grant names only the modes above and a tensor-parallel
 MiMo pair serves its owner's local endpoint.

@@ -1170,11 +1170,15 @@ headroom. That fits a 128 GB Mac. A reservation asks the live gate for its own r
 per-rank charges. Nothing here is measured on a pair; see
 [inference](inference.md#mimo-tensor-parallel-placement).
 
-A rank launched with speculative rounds (`--mtp-depth`) adds the charges below
-to its own gates only; the planner's quote does not count them yet. The LOAD
-gate adds all three before anything is read, with the per-request terms at the
+Every installed rank decodes in speculative rounds (`--mtp-depth 2`, on by
+default: `ClusterMiMoTensorParallel`) and adds the charges below. The LOAD gate
+adds all three before anything is read, with the per-request terms at the
 profile's longest request; READY's capacity and each reservation add the two
-per-request terms.
+per-request terms. The planner's quote counts the same: the heads whole on
+every rank (the layout's `speculativeHead`, each tensor in whole pages) and the
+two per-request terms in the layout's `requestAllowance`
+(`MiMoTensorParallelResidentRuntime.placementRounds`), so the plan admits only
+pairs the LOAD gate admits.
 
 | Charge | Held | Bytes |
 |---|---|---|
@@ -1183,7 +1187,8 @@ per-request terms.
 | The window's extra rows at depth 2: each sliding ring once more per extra row, one page per layer, the window's rows twice (`MiMoTensorParallelRequestBudget.speculativeWindowBytes`) | per request | 36,347,904 |
 
 With them a rank still fits a 128 GB Mac: 107,281,620,648 bytes (99.9 GiB) with
-the loading headroom, against a 115.2 GiB ceiling. See
+the loading headroom, against a 115.2 GiB ceiling; the placement checks plan two
+idle 128 GB M5 Max in tensor parallel now at 99.9 GiB a rank. See
 [speculative rounds](inference.md#mimo-tensor-parallel-speculative-rounds).
 
 ### Additional TP resident allocations

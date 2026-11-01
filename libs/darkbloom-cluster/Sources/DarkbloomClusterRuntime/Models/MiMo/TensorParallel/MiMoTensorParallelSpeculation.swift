@@ -105,10 +105,13 @@ final class MiMoTensorParallelDraftHead {
     }
 
     /// One request's drafter state at the allocator's bound: the product's own
-    /// bounded declaration for this head (`maximumPrefillTokens` = the chunk).
-    func requestBytes(chunkSize: Int, depth: Int, bound: (Int) throws -> Int) throws -> Int {
-        guard let spec = assistant.boundedRequestAllocation(limits: .init(maximumPrefillTokens: chunkSize,
-                  maximumDraftTokens: depth)) else {
+    /// bounded declaration for these heads (`maximumPrefillTokens` = the chunk).
+    /// It needs the artifact's configuration only, so a rank gates it before
+    /// reading anything.
+    static func requestBytes(configuration: MiMoV26Configuration, chunkSize: Int, depth: Int,
+                             bound: (Int) throws -> Int) throws -> Int {
+        guard let spec = MiMoV26MTPAssistant.boundedRequestAllocation(configuration: configuration,
+                  limits: .init(maximumPrefillTokens: chunkSize, maximumDraftTokens: depth)) else {
             throw ProbeError("MiMo speculative head declares no bounded request allocation")
         }
         var total = spec.hostBytes
@@ -179,9 +182,12 @@ final class MiMoTensorParallelDrafter {
         }
     }
 
-    private func fence() {
+    private func fence() throws {
         guard fencePending, case .heads(let head) = speculation.proposer, let state else { return }
-        eval(head.assistant.evaluationTargets(for: state))
+        try MLX.withError { error in
+            eval(head.assistant.evaluationTargets(for: state))
+            try error.check()
+        }
         fencePending = false
     }
 
@@ -191,7 +197,7 @@ final class MiMoTensorParallelDrafter {
             throw ProbeError("MiMo tensor-parallel drafter observed a row outside its prompt")
         }
         guard case .heads(let head) = speculation.proposer, let state else { return }
-        fence()
+        try fence()
         head.assistant.observeCommittedTarget(.init(tokens: MLXArray(tokens.map(Int32.init)).reshaped([1, tokens.count]),
             hidden: hidden), requestState: state)
         let last = tokens.count - 1
@@ -205,7 +211,7 @@ final class MiMoTensorParallelDrafter {
         guard !released, carry == nil else { throw ProbeError("MiMo tensor-parallel drafter began twice") }
         if case .heads = speculation.proposer {
             guard let promptFrontier else { throw ProbeError("MiMo tensor-parallel drafter starts without a prompt") }
-            fence()
+            try fence()
             carry = (firstToken, promptFrontier)
             self.promptFrontier = nil
         }
@@ -226,7 +232,7 @@ final class MiMoTensorParallelDrafter {
             return ids
         case .heads(let head):
             guard let state, let carry, carry.token == lastToken else { self.carry = nil; return [] }
-            fence()
+            try fence()
             var feed = (tokens: MLXArray([Int32(lastToken)]).reshaped([1, 1]), hidden: carry.hidden)
             var drafted: [MLXArray] = []
             for _ in 0 ..< count {
@@ -263,7 +269,10 @@ final class MiMoTensorParallelDrafter {
         head.assistant.finalizeRound(requestState: state, confirmedInputTokens: 1 + acceptedDrafts,
             committedDraftTokens: draftArray[0..., 0 ..< acceptedDrafts],
             committedTargetHidden: hidden[0..., 0 ..< acceptedDrafts, 0...])
-        eval(head.assistant.evaluationTargets(for: state) + [carryHidden])
+        try MLX.withError { error in
+            eval(head.assistant.evaluationTargets(for: state) + [carryHidden])
+            try error.check()
+        }
         carry = (tokens[tokens.count - 1], carryHidden)
     }
 

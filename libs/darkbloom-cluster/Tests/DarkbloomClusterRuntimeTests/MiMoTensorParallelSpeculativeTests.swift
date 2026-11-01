@@ -227,6 +227,13 @@ struct MiMoTensorParallelSpeculativeTests {
             #expect(Set(inventory.head.map(\.name)) == Set(selected.keys) && inventory.head.count == 42)
             let head = try #require(models.value[0].draftHead)
             #expect(inventory.head.reduce(0) { $0 + $1.byteCount } == head.headBytes && head.headTensors == 42)
+            // The LOAD gate charges the drafter from the configuration alone: what the loaded heads declare.
+            let decoded = try JSONDecoder().decode(MiMoV26Configuration.self, from: configuration)
+            for (chunk, depth) in [(4, 1), (16, 2), (512, 3)] {
+                let limits = CBv2MTPAllocationLimits(maximumPrefillTokens: chunk, maximumDraftTokens: depth)
+                let loaded = try #require(head.assistant.boundedRequestAllocation(limits: limits))
+                #expect(MiMoV26MTPAssistant.boundedRequestAllocation(configuration: decoded, limits: limits) == loaded)
+            }
             // A descriptor set that is not the heads' is refused before any read.
             #expect(throws: (any Error).self) {
                 _ = try MiMoTensorParallelDraftHead.load(descriptors: indexed.filter { !$0.key.hasPrefix("language_model.model.mtp.") },
@@ -256,6 +263,8 @@ struct MiMoTensorParallelSpeculativeTests {
             limits: .init(maximumPrefillTokens: 512, maximumDraftTokens: 2)))
         let drafter = (spec.resident + spec.working).reduce(spec.hostBytes) { $0 + $1.logicalBytes * $1.allocationCount }
         #expect(drafter == 438_426_984)
+        #expect(try MiMoTensorParallelDraftHead.requestBytes(configuration: configuration, chunkSize: 512, depth: 2,
+                                                             bound: exact) == drafter)
         typealias Runtime = MiMoTensorParallelResidentRuntime
         let plain = Runtime.loadAgreementFields(plan: plan, chunkTokens: 512)
         #expect(Runtime.loadAgreementFields(plan: plan, chunkTokens: 512, speculative: nil) == plain)

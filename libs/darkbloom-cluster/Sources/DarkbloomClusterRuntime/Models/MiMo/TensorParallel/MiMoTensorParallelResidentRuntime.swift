@@ -72,6 +72,8 @@ public final class MiMoTensorParallelResidentRuntime {
     let lifecycle = QwenLayerStageResidentLifecycle()
     let loadAgreement: String
     let plan: MiMoTensorParallelPlan
+    /// The artifact's whole configuration (the drafter's charge reads it).
+    let textConfiguration: MiMoV26Configuration
     let slidingWindow: Int
     /// What the live gate asks for beside every held request: the rank's
     /// activation floor, freed-buffer cache and sealed frames.
@@ -119,11 +121,15 @@ public final class MiMoTensorParallelResidentRuntime {
         // The rank's reserve at the profile's longest request: the planner's quote beside the shard.
         let budget = try requestBudget(plan: plan, slidingWindow: window, contextTokens: profile.maximumContextTokens,
                                        chunkTokens: profile.maximumChunkTokens)
+        // Rounds add the drafter's state and the window's rows to that request, from the configuration alone.
+        let speculativeRequestBytes = try speculative.map {
+            try Self.speculativeRequestBytes(configuration: decoded, terms: $0, plan: plan, slidingWindow: window,
+                                             chunkTokens: profile.maximumChunkTokens)
+        } ?? 0
         let control = QwenResidentControl(deadline: configuration.deadlineUptimeNanoseconds, lease: configuration.lease)
         try QwenResidentProcessLease.shared.acquire()
         var loaded: MiMoTensorParallelModel?
         var draftHead: MiMoTensorParallelDraftHead?
-        var speculativeRequestBytes = 0
         weak var retired: MiMoTensorParallelModel?
         var residency: ClusterStageResidency?
         do {
@@ -170,8 +176,9 @@ public final class MiMoTensorParallelResidentRuntime {
                 // freed-buffer cache, sealed frames) beside it: the planner's quote. The read's largest slice
                 // (half an expert bank) lives only while loading, inside the reserve no request holds yet.
                 let shardBytes = try Self.shardBytes(plan: plan, descriptors: source.descriptors)
-                // Speculative rounds: the three heads whole on every rank, beside the shard. The source's
-                // descriptors hold text tensors only; the heads' inventory is the pipeline's, from the headers.
+                // Speculative rounds: the three heads whole on every rank, beside the shard, and that request's
+                // speculative bytes. The source's descriptors hold text tensors only; the heads' inventory is the
+                // pipeline's, from the headers.
                 var headDescriptors: [String: TensorDescriptor] = [:]
                 var headInventory: MiMoMTPHeadInventory?
                 if speculative != nil {
@@ -186,7 +193,7 @@ public final class MiMoTensorParallelResidentRuntime {
                 }
                 let headBytes = headDescriptors.values.reduce(0) { $0 + $1.byteCount }
                 try requireLiveMemory(bytes: try QwenLongPrefillCheckedBytes.sum([shardBytes, headBytes,
-                                                                                  budget.allowance.reservedBytes]))
+                    budget.allowance.reservedBytes, speculativeRequestBytes]))
                 let value = try autoreleasepool {
                     try MiMoTensorParallelVerifiedLoad.load(checkpoint: source.checkpoint,
                         configurationData: admission.configBytes, role: .shard(rank: collective.rank), reduction: group,
@@ -196,7 +203,7 @@ public final class MiMoTensorParallelResidentRuntime {
                 guard value.receipt.verifiedAggregateSHA256 == admission.specification.artifactSHA256 else {
                     throw ProbeError("MiMo tensor-parallel shard was not read from the registered artifact")
                 }
-                if let speculative {
+                if speculative != nil {
                     let head = try autoreleasepool {
                         try MiMoTensorParallelDraftHead.load(descriptors: headDescriptors, checkpoint: source.checkpoint,
                             configurationData: admission.configBytes, target: value.model,
@@ -206,8 +213,6 @@ public final class MiMoTensorParallelResidentRuntime {
                         throw ProbeError("MiMo tensor-parallel draft heads differ from the artifact's")
                     }
                     draftHead = head
-                    speculativeRequestBytes = try Self.speculativeRequestBytes(head: head, terms: speculative,
-                        plan: plan, slidingWindow: window, chunkTokens: profile.maximumChunkTokens)
                 }
                 Memory.clearCache()
                 residency = try ClusterStageResidency(bytes: try QwenLongPrefillCheckedBytes.sum([
@@ -240,9 +245,9 @@ public final class MiMoTensorParallelResidentRuntime {
             guard let model = loaded else { throw ProbeError("MiMo tensor-parallel load returned no shard") }
             try control.loaded()
             return try MiMoTensorParallelResidentRuntime(admission: admission, control: control, collective: collective,
-                group: group, codec: codec, model: model, residency: residency, plan: plan, slidingWindow: window,
-                rankReserveBytes: budget.rankBytes, capacity: capacity, loadAgreement: loadAgreement, linkProbe: probe,
-                speculative: speculative, draftHead: draftHead)
+                group: group, codec: codec, model: model, residency: residency, plan: plan, textConfiguration: decoded,
+                slidingWindow: window, rankReserveBytes: budget.rankBytes, capacity: capacity,
+                loadAgreement: loadAgreement, linkProbe: probe, speculative: speculative, draftHead: draftHead)
         } catch {
             let primary = error; control.fail(); loaded = nil; draftHead = nil
             do {
@@ -298,11 +303,12 @@ public final class MiMoTensorParallelResidentRuntime {
     /// One request's speculative charge: the drafter's own bounded state (the
     /// product's declaration at the allocator's bound) and the window's extra
     /// rows (`MiMoTensorParallelRequestBudget.speculativeWindowBytes`).
-    static func speculativeRequestBytes(head: MiMoTensorParallelDraftHead, terms: MiMoMTPTerms,
+    static func speculativeRequestBytes(configuration: MiMoV26Configuration, terms: MiMoMTPTerms,
                                         plan: MiMoTensorParallelPlan, slidingWindow: Int, chunkTokens: Int) throws -> Int {
         let bound = QwenResidentResourceEnvironment.allocationBound
         return try QwenLongPrefillCheckedBytes.sum([
-            head.requestBytes(chunkSize: chunkTokens, depth: terms.depth, bound: bound),
+            MiMoTensorParallelDraftHead.requestBytes(configuration: configuration, chunkSize: chunkTokens,
+                                                    depth: terms.depth, bound: bound),
             MiMoTensorParallelRequestBudget.speculativeWindowBytes(plan: plan, slidingWindow: slidingWindow,
                 depth: terms.depth, allocationBound: bound)])
     }
@@ -321,13 +327,15 @@ public final class MiMoTensorParallelResidentRuntime {
 
     private init(admission: MiMoResidentAdmission, control: QwenResidentControl, collective: Collective,
                  group: QwenTensorParallelGroup, codec: QwenTensorParallelSealCodec?, model: MiMoTensorParallelModel,
-                 residency: ClusterStageResidency?, plan: MiMoTensorParallelPlan, slidingWindow: Int,
-                 rankReserveBytes: Int, capacity: Int, loadAgreement: String, linkProbe: ClusterWorkerLinkProbe?,
-                 speculative: MiMoMTPTerms?, draftHead: MiMoTensorParallelDraftHead?) throws {
+                 residency: ClusterStageResidency?, plan: MiMoTensorParallelPlan, textConfiguration: MiMoV26Configuration,
+                 slidingWindow: Int, rankReserveBytes: Int, capacity: Int, loadAgreement: String,
+                 linkProbe: ClusterWorkerLinkProbe?, speculative: MiMoMTPTerms?,
+                 draftHead: MiMoTensorParallelDraftHead?) throws {
         self.admission = admission; self.control = control; self.collective = collective; self.group = group
         self.codec = codec; self.model = model; self.residency = residency
         self.speculative = speculative; self.draftHead = draftHead
-        self.plan = plan; self.slidingWindow = slidingWindow; self.rankReserveBytes = rankReserveBytes
+        self.plan = plan; self.textConfiguration = textConfiguration
+        self.slidingWindow = slidingWindow; self.rankReserveBytes = rankReserveBytes
         self.loadAgreement = loadAgreement; self.linkProbe = linkProbe
         baseReady = .init(identity: admission.configuration.identity, rank: collective.rank,
             profile: admission.wireProfile, executionPlanSHA256: admission.plan.fingerprint,
@@ -371,9 +379,10 @@ public final class MiMoTensorParallelResidentRuntime {
         let request = try admission.request(value, id: requestID, now: DispatchTime.now().uptimeNanoseconds)
         var charge = try Self.requestBudget(plan: plan, slidingWindow: slidingWindow, contextTokens: request.maximumTokens,
                                             chunkTokens: request.chunkSize).requestBytes
-        if let speculative, let draftHead {
-            charge = try QwenLongPrefillCheckedBytes.sum([charge, Self.speculativeRequestBytes(head: draftHead,
-                terms: speculative, plan: plan, slidingWindow: slidingWindow, chunkTokens: request.chunkSize)])
+        if let speculative {
+            charge = try QwenLongPrefillCheckedBytes.sum([charge, Self.speculativeRequestBytes(
+                configuration: textConfiguration, terms: speculative, plan: plan, slidingWindow: slidingWindow,
+                chunkTokens: request.chunkSize)])
         }
         try control.check(); try control.reserve(requestID)
         return try control.reserving(requestID, rank: collective.rank, deadline: value.deadlineUptimeNanoseconds) {

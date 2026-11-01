@@ -1142,10 +1142,11 @@ policy `qwen-tp-batch-prefix-depth-v2`):
 
 On TP's 512-token grid this reuses at least one Mac's reuse rounded down to the
 grid for a repeat, a next turn and a shared system prompt within the first
-eight stripes. One Mac's 64-token-margin cut is on a 256-token grid, so it can
-be up to 255 tokens deeper. One Mac keeps three boundaries a donor: its first,
-its latest, and the fork target the coordinator's `cache_repeated_prefix_tokens`
-hint names. TP gets no hint, so it keeps the stripe boundaries instead
+eight stripes. One Mac's 64-token-margin cut is on a 256-token grid, so for
+some prompt lengths it is 256 tokens deeper than TP's deepest boundary. One Mac
+keeps three boundaries a donor: its first, its latest, and the fork target the
+coordinator's `cache_repeated_prefix_tokens` hint names. TP gets no hint, so it
+keeps the stripe boundaries instead
 ([parity checks](../developer/test.md#qwen27-tp-warm-prefix-checks)).
 
 A capture copies the attention rows once, at its deepest boundary, and the

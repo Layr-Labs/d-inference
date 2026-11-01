@@ -130,6 +130,12 @@ public struct ClusterPlacementPolicy: Sendable {
     public var tensorParallelAssumesUnmeasuredLink = false
     /// Why the mode is kept, in plain words: the plan's reason line when the hold decides the choice.
     public var keptModeReason: String?
+    /// Feature parity (owner, 2026-11-01: a mode may be chosen only if it keeps every feature and caching behavior
+    /// of the mode it would replace): why the caller left the tensor-parallel modes out of `modes`, in plain words
+    /// ("tensor parallel would drop prompt-prefix reuse that the pipeline keeps; held back until it keeps them").
+    /// The plan says it (`ClusterTensorParallelAssessment.Verdict.dropsFeatures`). Nil, the default: no mode was
+    /// left out for its features.
+    public var tensorParallelHeldForFeatures: String?
     public init() {}
 }
 
@@ -568,6 +574,7 @@ public enum ClusterPlacementPlanner {
             (policy.modes?.contains(mode) ?? true) && (policy.forcedMode?.admits(mode) ?? true)
         }
         guard !modes.isEmpty else {
+            if let held = policy.tensorParallelHeldForFeatures { return unavailable(.dropsFeatures, held) }
             let why = implemented.contains(where: { policy.modes?.contains($0) == false }) ? policy.modesReason.map { " (\($0))" } ?? "" : ""
             return unavailable(.notQualified, "the placement policy excludes the model's tensor-parallel modes\(why); using pipeline candidates")
         }

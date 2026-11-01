@@ -44,6 +44,9 @@ public struct ClusterShardOption: Codable, Equatable, Sendable {
         case adapterHasNoTensorParallel
         /// A qualification check failed at this shape, so the records keep it out.
         case failedQualification
+        /// It would drop a feature of the mode it would replace
+        /// (`ClusterTensorParallelAssessment.Verdict.dropsFeatures`).
+        case dropsFeatures
         case doesNotFit
         /// Tensor parallel x pipeline needs three or more members.
         case needsMoreMembers
@@ -191,6 +194,7 @@ extension ClusterPlacementPlanner {
         case .predictedFasterOnPriorOnly: verdict = .predictedFasterOnPriorOnly
         case .notExecutedByRuntime: verdict = .notExecutedByRuntime
         case .notQualified: verdict = .failedQualification
+        case .dropsFeatures: verdict = .dropsFeatures
         case .doesNotFit: verdict = .doesNotFit
         case .reductionNotMeasured: verdict = .reductionNotMeasured
         }

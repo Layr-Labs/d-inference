@@ -124,7 +124,7 @@ extension ClusterPlacementExplanation {
             return "\(name): tensor parallel does not fit in these Macs' memory."
         case .notExecutedByRuntime:
             return "\(name): \(assessment.reason)."
-        case .notQualified:
+        case .notQualified, .dropsFeatures:
             return "\(name): \(assessment.reason)."
         }
     }
@@ -151,6 +151,9 @@ extension ClusterPlacementExplanation {
         case pipelineKept = "tensor parallel: pipeline kept"
         /// The placement policy leaves tensor parallel out (`modesReason` says why, when it says).
         case excluded = "tensor parallel: excluded here"
+        /// It would drop a feature of the mode it would replace (feature parity,
+        /// `ClusterTensorParallelAssessment.Verdict.dropsFeatures`).
+        case dropsFeature = "tensor parallel: drops a feature"
         /// This runtime does not execute tensor parallel for this model or rank count.
         case notForThisModel = "no tensor parallel for this model"
     }
@@ -186,6 +189,7 @@ extension ClusterPlacementExplanation {
             guard let best, best.prediction(regime).requestSeconds < chosen.prediction(regime).requestSeconds else { return .slower }
             return .aboutAsFast
         case .predictedFasterOnPriorOnly: return .notMeasuredYet
+        case .dropsFeatures: return .dropsFeature
         }
     }
 }

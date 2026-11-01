@@ -392,6 +392,9 @@ public struct ClusterTensorParallelAssessment: Codable, Equatable, Sendable {
         case notExecutedByRuntime
         /// The policy excludes this mode or every executable shape on these chips.
         case notQualified
+        /// Left out before ranking because it would drop a feature of the mode
+        /// it would replace (`ClusterPlacementPolicy.tensorParallelHeldForFeatures`).
+        case dropsFeatures
         /// No placement in this mode fits.
         case doesNotFit
         /// The reduction over the link was not measured on the keyed data

@@ -4813,6 +4813,17 @@ replace full-artifact qualification. Preserve earlier solo/pair reports and
 failed records; remeasure the candidate with the original comparator and
 qualification schedules. See [the test guide](../developer/test.md).
 
+## GPT-OSS decode command buffers
+
+GPT-OSS's plain decode steps (every row one token) commit a Metal command buffer
+every 100 operations with no input-size bound (`GPTOSSDecodeCommandBuffers`,
+through `CBv2DecodeCommandBufferLimitsProviding`). MLX's defaults commit every 40
+to 50 operations or 40 to 50 M distinct input elements, and a step's inputs include
+the expert banks and each 64 MiB KV segment its history reads, so decode committed
+after almost every MoE layer and waited on MLX's limit of ten command buffers in
+flight. Results do not depend on the partitioning. Prefill chunks keep MLX's
+defaults.
+
 ## Nemotron prefix chunk arithmetic
 
 The registered Nemotron 3.5 Lightning stage preserves the original global

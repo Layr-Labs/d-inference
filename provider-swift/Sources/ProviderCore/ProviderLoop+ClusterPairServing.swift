@@ -136,10 +136,13 @@ extension ProviderLoop: NativePairMemberServingHost {
         guard let context = clusterPairServing, start.rank == 0 else {
             throw ClusterPairSlotError.notServing("this member serves no committed start")
         }
-        guard clusterPairServingEpoch == nil else { throw ClusterPairSlotError.notServing("a committed start is already served") }
         let epoch = start.membershipEpoch
-        clusterPairServingEpoch = epoch; clusterPairServingStopped = false; clusterPairServingForming = true
-        defer { clusterPairServingForming = false }
+        // Its session's stop can reach this actor before its serve does.
+        guard epoch != clusterPairServingEndedEpoch else {
+            throw ClusterPairSlotError.notServing("the committed start already ended")
+        }
+        guard clusterPairServingEpoch == nil else { throw ClusterPairSlotError.notServing("a committed start is already served") }
+        clusterPairServingEpoch = epoch
         let owner: any DistributedResidentExecutionOwner
         do { owner = try await Task.detached { try context.makeOwner(start) }.value }
         catch {
@@ -147,9 +150,10 @@ extension ProviderLoop: NativePairMemberServingHost {
             recordClusterPairIncident(.activationLaunchFailed, error: error, context: context, start: start)
             endClusterPairServing(epoch); throw error
         }
-        // A stop that arrived while the pair formed wins: nothing publishes.
-        guard clusterPairServingEpoch == epoch, !clusterPairServingStopped else {
-            await owner.shutdown(); endClusterPairServing(epoch)
+        // A stop that arrived while the pair formed wins: nothing publishes,
+        // and the next start may already hold the member.
+        guard clusterPairServingEpoch == epoch else {
+            await owner.shutdown()
             throw ClusterPairSlotError.notServing("the committed start ended while the pair formed")
         }
         let wire = start.identity
@@ -169,25 +173,27 @@ extension ProviderLoop: NativePairMemberServingHost {
             modelDirectory: context.modelDirectory, pairTelemetry: telemetry)
         do { try await publishClusterPairSlot(specification, owner: owner) }
         catch { await owner.shutdown(); endClusterPairServing(epoch); throw error }
-        clusterPairServingForming = false
         // A stop during the publication hops retires what was just published.
-        if clusterPairServingStopped { await stopServingCommittedStart(epoch: epoch) }
+        if clusterPairServingEpoch != epoch { await retireCommittedStartSlot(epoch) }
     }
 
     public func stopServingCommittedStart(epoch: UUID) async {
-        guard clusterPairServingEpoch == epoch else { return }
-        clusterPairServingStopped = true
-        // The session sends its release receipt once this returns, so the
-        // slot retires first, even while the serve still forms the pair (its
-        // publication and warmup canary can take minutes). Retirement is
-        // idempotent and the publication stops at a retired slot.
-        if let handle = clusterPairSlot, handle.membershipEpoch == epoch {
-            await retireClusterPairSlot(handle.id, reason: "committed start ended")
-        }
-        // A serve still forming sees the stop and ends the start itself;
-        // ending it here would let the next start begin under it.
-        guard !clusterPairServingForming else { return }
+        // The start ends with its session, now: not when the slot's drain or
+        // a serve still under way ends, which can outlast the session's own
+        // bounded wait (its receipt then lets the coordinator commit the next
+        // start). A serve that lost its start stands down by itself.
+        clusterPairServingEndedEpoch = epoch
         endClusterPairServing(epoch)
+        // The session sends its release receipt once this returns, so every
+        // call waits until the slot retired, even while the serve still forms
+        // the pair (its publication and warmup canary can take minutes).
+        // Retirement is idempotent and the publication stops at a retired slot.
+        await retireCommittedStartSlot(epoch)
+    }
+
+    private func retireCommittedStartSlot(_ epoch: UUID) async {
+        guard let handle = clusterPairSlot, handle.membershipEpoch == epoch else { return }
+        await retireClusterPairSlot(handle.id, reason: "committed start ended")
     }
 
     /// One incident about a committed start this leader serves (S24), with
@@ -206,6 +212,6 @@ extension ProviderLoop: NativePairMemberServingHost {
     /// Clears the served epoch, once, for this epoch only.
     func endClusterPairServing(_ epoch: UUID) {
         guard clusterPairServingEpoch == epoch else { return }
-        clusterPairServingEpoch = nil; clusterPairServingStopped = false; clusterPairServingForming = false
+        clusterPairServingEpoch = nil
     }
 }

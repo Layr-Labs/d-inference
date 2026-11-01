@@ -43,6 +43,8 @@ public final class Gemma4TensorParallelModel {
     public let configurationSHA256: String
     public let loadSeconds: Double
     public let loadedParameterBytes: Int
+    /// The residual's and every layer's key/value dtype (the embedding's scales).
+    public let activationDType: DType
     let model: Gemma4Model
     let reduction: QwenTensorParallelReduction?
 
@@ -156,19 +158,25 @@ public final class Gemma4TensorParallelModel {
         guard model.textModel.headVocabularyRange == vocabulary else {
             throw ProbeError("Gemma tensor parallel load: the head does not project the plan's vocabulary rows")
         }
+        // The embedding's scales are what the residual and every layer's keys and values are computed in.
+        guard let activation = weights["language_model.model.embed_tokens.scales"]?.dtype,
+              [.bfloat16, .float16, .float32].contains(activation) else {
+            throw ProbeError("Gemma tensor parallel load: the embedding has no native activation dtype")
+        }
         return Gemma4TensorParallelModel(role: role, plan: plan, vocabularyRange: vocabulary,
             configurationSHA256: sha256(configurationData),
             loadSeconds: Double(DispatchTime.now().uptimeNanoseconds - started) / 1e9,
             loadedParameterBytes: (parameters + extra).reduce(0) { $0 + $1.nbytes },
-            model: model, reduction: reduction)
+            activationDType: activation, model: model, reduction: reduction)
     }
 
     private init(role: Role, plan: Gemma4TensorParallelPlan, vocabularyRange: Range<Int>,
                  configurationSHA256: String, loadSeconds: Double, loadedParameterBytes: Int,
-                 model: Gemma4Model, reduction: QwenTensorParallelReduction?) {
+                 activationDType: DType, model: Gemma4Model, reduction: QwenTensorParallelReduction?) {
         self.role = role; self.plan = plan; self.vocabularyRange = vocabularyRange
         self.configurationSHA256 = configurationSHA256; self.loadSeconds = loadSeconds
-        self.loadedParameterBytes = loadedParameterBytes; self.model = model; self.reduction = reduction
+        self.loadedParameterBytes = loadedParameterBytes; self.activationDType = activationDType
+        self.model = model; self.reduction = reduction
     }
 
     /// The head's selections over this model's vocabulary rows.

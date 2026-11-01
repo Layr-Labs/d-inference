@@ -26,7 +26,44 @@ public struct Gemma4TensorParallelSelection {
     /// as a whole row's argmax breaks them. One collective of two values per
     /// rank. An `[1]` int32 token, not evaluated.
     public func greedy(_ logits: MLXArray) -> MLXArray {
-        argmaxAcrossRanks(logits.asType(.float32))
+        argmaxAcrossRanks(logits.asType(.float32), carrying: nil).token
+    }
+
+    /// `greedy`, with every rank's `flags` (`[n]` FP32, the same `n` on every
+    /// rank) carried in the same collective: the token and all ranks' flags in
+    /// rank order (`[size n]`). Not evaluated.
+    public func greedy(_ logits: MLXArray, carrying flags: MLXArray) -> (token: MLXArray, flags: MLXArray) {
+        let chosen = argmaxAcrossRanks(logits.asType(.float32), carrying: flags.asType(.float32).reshaped(-1))
+        return (chosen.token, chosen.carried!)
+    }
+
+    /// `greedy` of every row of `logits` (`[B, rows]`, one row a batch lane):
+    /// `[B]` int32 tokens from one collective of two values a row and rank,
+    /// with `greedy`'s tie rule. Not evaluated.
+    public func greedyRows(_ logits: MLXArray) -> MLXArray {
+        let values = logits.asType(.float32)
+        guard let reduction else { return argMax(values, axis: -1).asType(.int32) }
+        let width = values.dim(0)
+        let local = stacked([values.max(axis: -1),
+            argMax(values, axis: -1).asType(.float32) + MLXArray(Float(vocabularyRange.lowerBound))], axis: 1)
+        let zeros = MLXArray.zeros([width, 2], dtype: .float32)
+        let all = reduction.allSum(concatenated((0 ..< reduction.size).map { $0 == reduction.rank ? local : zeros }, axis: 1))
+        var best = all[0..., 0], token = all[0..., 1]
+        for other in 1 ..< reduction.size {
+            let better = all[0..., 2 * other] .> best
+            best = which(better, all[0..., 2 * other], best)
+            token = which(better, all[0..., 2 * other + 1], token)
+        }
+        return token.asType(.int32)
+    }
+
+    /// Every rank's `slots` (`[n]` FP32) in rank order (`[size n]`), each rank
+    /// adding its own at its place and -0 elsewhere. Not evaluated.
+    public func exchange(_ slots: MLXArray) -> MLXArray {
+        let mine = slots.asType(.float32).reshaped(-1)
+        guard let reduction else { return mine }
+        let empty = MLXArray.full([mine.dim(0)], values: MLXArray(Float(-0.0)))
+        return reduction.allSum(concatenated((0 ..< reduction.size).map { $0 == reduction.rank ? mine : empty }, axis: 0))
     }
 
     /// Sampling with keyed noise (Gumbel-max): exactly the token
@@ -40,7 +77,7 @@ public struct Gemma4TensorParallelSelection {
     public func sample(_ logits: MLXArray, temperature: Float, key: MLXArray) -> MLXArray {
         let scaled = logits.asType(.float32) * (1 / temperature)
         let noise = MLXRandom.gumbel([1, vocabularySize], key: key)[0..., vocabularyRange]
-        return argmaxAcrossRanks(noise + scaled)
+        return argmaxAcrossRanks(noise + scaled, carrying: nil).token
     }
 
     /// One choice's candidates: the top `count` tokens of the whole row with
@@ -113,21 +150,25 @@ public struct Gemma4TensorParallelSelection {
         return reduction.allSum(concatenated(parts, axis: -1))
     }
 
-    /// Each rank's local maximum and its token ID in slots of a `2 size`
-    /// collective; the strictly greater value wins, so ties go to the lower
-    /// rank, which holds the lower IDs.
-    private func argmaxAcrossRanks(_ values: MLXArray) -> MLXArray {
-        guard let reduction else { return argMax(values, axis: -1).asType(.int32) }
+    /// Each rank's local maximum, its token ID and `extra` in slots of a
+    /// `(2 + extra) size` collective; the strictly greater value wins, so ties
+    /// go to the lower rank, which holds the lower IDs.
+    private func argmaxAcrossRanks(_ values: MLXArray, carrying extra: MLXArray?) -> (token: MLXArray, carried: MLXArray?) {
+        guard let reduction else { return (argMax(values, axis: -1).asType(.int32), extra) }
+        let width = 2 + (extra?.dim(0) ?? 0)
         let localIndex = argMax(values, axis: -1).asType(.float32) + MLXArray(Float(vocabularyRange.lowerBound))
-        let mine = concatenated([values.max(axis: -1), localIndex], axis: 0)
-        let zeros = MLXArray.zeros([2], dtype: .float32)
+        let mine = concatenated([values.max(axis: -1), localIndex] + (extra.map { [$0] } ?? []), axis: 0)
+        let zeros = MLXArray.zeros([width], dtype: .float32)
         let all = reduction.allSum(concatenated((0 ..< reduction.size).map { $0 == reduction.rank ? mine : zeros }, axis: 0))
         var best = all[0], token = all[1]
         for other in 1 ..< reduction.size {
-            let better = all[2 * other] .> best
-            best = which(better, all[2 * other], best)
-            token = which(better, all[2 * other + 1], token)
+            let better = all[width * other] .> best
+            best = which(better, all[width * other], best)
+            token = which(better, all[width * other + 1], token)
         }
-        return token.asType(.int32).reshaped(1)
+        let carried = extra.map { _ in
+            concatenated((0 ..< reduction.size).map { all[(width * $0 + 2) ..< (width * ($0 + 1))] }, axis: 0)
+        }
+        return (token.asType(.int32).reshaped(1), carried)
     }
 }

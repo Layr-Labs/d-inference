@@ -11,7 +11,7 @@ import MLX
 //       a tiny random Gemma 4 MoE checkpoint with the 26B's structure and request.json (never a model pass)
 //   darkbloom-cluster-tp-check gemma run --mode full|split-sum|simulated|shard|tp --model-dir DIR --request FILE --report FILE
 //       [--record-top K] [--backend ring|socket|jaccl] [--reduction native|sealed-bench] [--shard-rank R]
-//       [--pack yes|no] [--deadline-seconds S]
+//       [--pack yes|no] [--path legacy|paged] [--deadline-seconds S]
 //   darkbloom-cluster-tp-check gemma compare --reference FILE --candidate FILE [--bitwise yes|no] [--near-tie-ulps U]
 //   darkbloom-cluster-tp-check gemma allsum [--backend ring|socket|jaccl] [--count N]
 //
@@ -31,6 +31,11 @@ import MLX
 // `compare` holds a candidate to a reference with QualificationComparator;
 // `--bitwise yes` also requires every token, recorded top logit and log
 // probability and the final row to be bit-identical (tp against simulated).
+// `--path paged` runs every mode but split-sum through the resident runtime's
+// own request path (`Gemma4TensorParallelModel.generatePaged`): paged KV with
+// each rank's own heads, the product's CBv2 prompt entry under the registered
+// prompt policy, and each step's token and stop flags agreed in the step's
+// evaluation; `legacy` (the default) keeps the SDK's legacy caches.
 // A report names roles and chips only, never a host, an address or a path.
 enum GemmaCheck {
     struct Report: Codable {
@@ -52,6 +57,7 @@ enum GemmaCheck {
         var outputCount: Int
         var chunkSize: Int
         var packedFeedForward: Bool
+        var path: String?
         var loadSeconds: Double
         var loadedParameterBytes: Int
         var reductionsPerForward: Int?
@@ -115,9 +121,12 @@ enum GemmaCheck {
               let shardRank = Int(fields["--shard-rank"] ?? "0"), (0 ... 1).contains(shardRank),
               let deadline = Int(fields["--deadline-seconds"] ?? "900"), (30 ... 7200).contains(deadline),
               ["native", "sealed-bench"].contains(fields["--reduction"] ?? "native"),
-              ["yes", "no"].contains(fields["--pack"] ?? "yes") else {
+              ["yes", "no"].contains(fields["--pack"] ?? "yes"),
+              ["legacy", "paged"].contains(fields["--path"] ?? "legacy") else {
             throw Failure("gemma run needs --mode full|split-sum|simulated|shard|tp, --model-dir, --request, a new --report and bounded options")
         }
+        let paged = (fields["--path"] ?? "legacy") == "paged"
+        guard !paged || mode != "split-sum" else { throw Failure("--path paged does not run the split-sum oracle") }
         let sealed = (fields["--reduction"] ?? "native") == "sealed-bench"
         guard !sealed || mode == "tp" else { throw Failure("--reduction sealed-bench applies to a tp rank only") }
         let pack = (fields["--pack"] ?? "yes") == "yes"
@@ -160,7 +169,7 @@ enum GemmaCheck {
             reduction = g
             note("rank \(g.rank) of \(g.size) over \(backend.rawValue)\(backend.correctnessOnly ? " (correctness only, not a pair timing)" : "")")
             // Everything that changes the collectives is agreed before loading.
-            let workload = "\(configurationSHA)|\(request.promptTokenIDsSHA256)|\(request.outputCount)|\(request.chunkSize)|top=\(recordTop)|pack=\(pack)|sealed=\(sealed)|\(Gemma4TensorParallelPlan.arithmeticAgreementFields.joined(separator: ","))"
+            let workload = "\(configurationSHA)|\(request.promptTokenIDsSHA256)|\(request.outputCount)|\(request.chunkSize)|top=\(recordTop)|pack=\(pack)|sealed=\(sealed)|paged=\(paged)|\(Gemma4TensorParallelPlan.arithmeticAgreementFields.joined(separator: ","))"
             guard try g.digestsEqual(fnv(workload)) else {
                 throw Failure("the ranks disagree on the workload, the model configuration or the arithmetic contract")
             }
@@ -186,7 +195,8 @@ enum GemmaCheck {
                 role: .shard(rank: 1), reduction: pair.reduction(rank: 1), packFeedForward: pack)])
             let prompt = request.promptTokenIDs, count = request.outputCount, chunk = request.chunkSize
             let both = try Gemma4TensorParallelLocalPair.run(device: Device.defaultDevice()) { rank in
-                try ranks.models[rank].generate(prompt: prompt, outputCount: count, chunk: chunk, recordTop: recordTop)
+                paged ? try ranks.models[rank].generatePaged(prompt: prompt, outputCount: count, chunk: chunk, recordTop: recordTop)
+                    : try ranks.models[rank].generate(prompt: prompt, outputCount: count, chunk: chunk, recordTop: recordTop)
             }
             func bits(_ rows: [[Float]]) -> [[UInt32]] { rows.map { $0.map(\.bitPattern) } }
             pairAgrees = both[0].tokenIDs == both[1].tokenIDs && bits(both[0].topLogits) == bits(both[1].topLogits)
@@ -194,8 +204,11 @@ enum GemmaCheck {
                 && both[0].finalLogits.map { $0.map(\.bitPattern) } == both[1].finalLogits.map { $0.map(\.bitPattern) }
             generation = both[0]
         } else {
-            generation = try model.generate(prompt: request.promptTokenIDs, outputCount: request.outputCount,
-                                            chunk: request.chunkSize, recordTop: recordTop)
+            generation = paged
+                ? try model.generatePaged(prompt: request.promptTokenIDs, outputCount: request.outputCount,
+                                          chunk: request.chunkSize, recordTop: recordTop)
+                : try model.generate(prompt: request.promptTokenIDs, outputCount: request.outputCount,
+                                     chunk: request.chunkSize, recordTop: recordTop)
         }
         var report = Report(mode: mode, role: mode == "simulated" ? "simulated-tp2" : role.label,
             rank: group?.rank ?? (mode == "shard" ? shardRank : 0),
@@ -204,7 +217,8 @@ enum GemmaCheck {
             plan: Gemma4TensorParallelPlan.name, modelConfigurationSHA256: configurationSHA, modelID: request.modelID,
             requestID: request.requestID, promptTokens: request.promptTokenIDs.count,
             promptTokenIDsSHA256: request.promptTokenIDsSHA256, outputCount: request.outputCount,
-            chunkSize: request.chunkSize, packedFeedForward: pack, loadSeconds: model.loadSeconds,
+            chunkSize: request.chunkSize, packedFeedForward: pack, path: paged ? "paged" : "legacy",
+            loadSeconds: model.loadSeconds,
             loadedParameterBytes: model.loadedParameterBytes,
             reductionsPerForward: ["full", "split-sum"].contains(mode) ? nil : model.plan.reductionsPerForward,
             floatingReductions: group?.floatingReductions,

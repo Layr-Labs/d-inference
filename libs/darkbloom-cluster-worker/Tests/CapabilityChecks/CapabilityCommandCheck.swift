@@ -182,7 +182,7 @@ import Foundation
                         && value.runtimeModelID == model && value.profile.id == model + "_greedy_generation_v1"
                         && value.profile.vocabularySize == 262_144 && value.profile.maximumPromptTokens == 32_768
                         && value.arithmeticPolicyID == "gemma4_cbv2_query128_bf16_tf32_weighted_r1_v1"
-                        && value.supportedGenerationModes == [.pipeline]
+                        && value.supportedGenerationModes == [.pipeline, .tensorParallel]
                         && value.supportedPrefillSchedules == [.serial, .oneChunkLookahead]
                         && value.partitions.map { $0.stages[0].sourceLayerEnd } == Array(1...29)
                         && value.partitions.allSatisfy { $0.stages[1].sourceLayerEnd == 30 },

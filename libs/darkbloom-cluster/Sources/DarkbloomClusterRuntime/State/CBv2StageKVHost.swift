@@ -124,42 +124,15 @@ final class CBv2StageKVHost {
         }
         if kind == .contiguous { try quantization.requireNative("contiguous stage KV", paged: false) }
         if let gemma = model as? Gemma4LayerStageModel {
-            // Every layer owns its rows (no shared keys/values), keyed by the
-            // stage's own storage index; a sliding layer's row is a page ring
-            // of its window plus one speculative span (`PagedKVPool.ringPageCount`).
             let geometry = try gemma.layerStageRequestGeometry(maximumTokens: maximumTokensPerRequest)
-            // A paged request holds whole pages: a ring a page past the window,
-            // a full layer rounded up to a page (`CBv2PagedKVResidency`).
-            // Native pages never undercut the request's own rows; packed
-            // pages are smaller by design.
-            let pages = try Self.pagedRequestBytes(kinds: geometry.kinds, dtype: geometry.kvDType,
-                quantization: quantization, maximumTokens: maximumTokensPerRequest, maximumChunkTokens: maximumChunkTokens)
-            let perRequest = kind == .contiguous ? geometry.kvCapacityBytes
-                : quantization == .native ? max(geometry.kvCapacityBytes, pages) : pages
-            let capacity = try QwenLongPrefillCheckedBytes.sum([
-                QwenLongPrefillCheckedBytes.product([perRequest, lanes]), Self.segmentBytes])
-            let backend: any CBv2KVBackend
-            let caches: [any CBv2AttendingLayerCache]
-            switch kind {
-            case .paged:
-                let paged = try Self.pagedBackend(kinds: geometry.kinds, dtype: geometry.kvDType,
-                    capacity: capacity, maximumTokensPerRequest: maximumTokensPerRequest,
-                    maximumChunkTokens: maximumChunkTokens, quantization: quantization)
-                caches = paged.makeLayerCaches()
-                backend = paged
-            case .contiguous:
-                caches = geometry.kinds.enumerated().map { CBv2LayerCache(layerIndex: $0.offset, kind: $0.element) }
-                backend = CBv2ContiguousKVBackend(config: .init(bytesCapacity: capacity, kvDType: geometry.kvDType))
-            }
-            guard caches.count == geometry.kinds.count,
-                  zip(caches, geometry.kinds).allSatisfy({ $0.kind == $1 && $0.rows.isEmpty }) else {
-                throw ProbeError("Stage KV host caches differ from the Gemma stage's layers")
-            }
-            self.kind = kind; layerKinds = geometry.kinds; self.backend = backend
-            self.caches = caches; bank = CBv2LayerCacheBank(caches: caches)
+            let parts = try Self.gemma4Parts(geometry, kind: kind, lanes: lanes,
+                maximumTokensPerRequest: maximumTokensPerRequest, maximumChunkTokens: maximumChunkTokens,
+                quantization: quantization)
+            self.kind = kind; layerKinds = geometry.kinds; backend = parts.backend
+            caches = parts.caches; bank = CBv2LayerCacheBank(caches: parts.caches)
             kvDType = geometry.kvDType; self.lanes = lanes; self.maximumTokensPerRequest = maximumTokensPerRequest
-            capacityBytes = capacity; self.quantization = quantization; requestPageBytes = perRequest
-            nativeRecentBytesPerRequest = try Self.nativeRecentBytes(backend)
+            capacityBytes = parts.capacity; self.quantization = quantization; requestPageBytes = parts.perRequest
+            nativeRecentBytesPerRequest = try Self.nativeRecentBytes(parts.backend)
             return
         }
         let kinds: [CBv2LayerKind]
@@ -231,6 +204,66 @@ final class CBv2StageKVHost {
         self.kvDType = dtype; self.lanes = lanes; self.maximumTokensPerRequest = maximumTokensPerRequest
         self.capacityBytes = capacity; self.quantization = quantization; self.requestPageBytes = perRequest
         self.nativeRecentBytesPerRequest = try Self.nativeRecentBytes(backend)
+    }
+
+    /// A Gemma 4 host for request state of `geometry`'s layers: a stage's
+    /// (`init(model:)`) or a tensor-parallel rank's own heads of every layer
+    /// (`CBv2RequestGeometry(gemma4TensorParallelKinds:)`).
+    init(gemma4Geometry geometry: CBv2RequestGeometry, kind: ClusterStageKVBackendKind, lanes: Int,
+         maximumTokensPerRequest: Int, maximumChunkTokens: Int,
+         quantization: PagedKVQuantizationSelection = .native) throws {
+        guard (1...8).contains(lanes), maximumTokensPerRequest > 0,
+              maximumTokensPerRequest <= ClusterWorkerLimits.wireContextTokens, maximumChunkTokens > 0,
+              geometry.host == nil, geometry.recurrent.layers.isEmpty else {
+            throw ProbeError("Stage KV host needs 1...8 lanes, a bounded request length and a Gemma geometry")
+        }
+        if kind == .contiguous { try quantization.requireNative("contiguous stage KV", paged: false) }
+        let parts = try Self.gemma4Parts(geometry, kind: kind, lanes: lanes,
+            maximumTokensPerRequest: maximumTokensPerRequest, maximumChunkTokens: maximumChunkTokens,
+            quantization: quantization)
+        self.kind = kind; layerKinds = geometry.kinds; backend = parts.backend
+        caches = parts.caches; bank = CBv2LayerCacheBank(caches: parts.caches)
+        kvDType = geometry.kvDType; self.lanes = lanes; self.maximumTokensPerRequest = maximumTokensPerRequest
+        capacityBytes = parts.capacity; self.quantization = quantization; requestPageBytes = parts.perRequest
+        nativeRecentBytesPerRequest = try Self.nativeRecentBytes(parts.backend)
+    }
+
+    /// A Gemma host's storage. Every layer owns its rows (no shared
+    /// keys/values), keyed by its storage index; a sliding layer's row is a
+    /// page ring of its window plus one speculative span
+    /// (`PagedKVPool.ringPageCount`).
+    private static func gemma4Parts(_ geometry: CBv2RequestGeometry, kind: ClusterStageKVBackendKind, lanes: Int,
+                                    maximumTokensPerRequest: Int, maximumChunkTokens: Int,
+                                    quantization: PagedKVQuantizationSelection) throws
+        -> (backend: any CBv2KVBackend, caches: [any CBv2AttendingLayerCache], capacity: Int, perRequest: Int) {
+        // A paged request holds whole pages: a ring a page past the window,
+        // a full layer rounded up to a page (`CBv2PagedKVResidency`).
+        // Native pages never undercut the request's own rows; packed
+        // pages are smaller by design.
+        let pages = try pagedRequestBytes(kinds: geometry.kinds, dtype: geometry.kvDType,
+            quantization: quantization, maximumTokens: maximumTokensPerRequest, maximumChunkTokens: maximumChunkTokens)
+        let perRequest = kind == .contiguous ? geometry.kvCapacityBytes
+            : quantization == .native ? max(geometry.kvCapacityBytes, pages) : pages
+        let capacity = try QwenLongPrefillCheckedBytes.sum([
+            QwenLongPrefillCheckedBytes.product([perRequest, lanes]), segmentBytes])
+        let backend: any CBv2KVBackend
+        let caches: [any CBv2AttendingLayerCache]
+        switch kind {
+        case .paged:
+            let paged = try pagedBackend(kinds: geometry.kinds, dtype: geometry.kvDType,
+                capacity: capacity, maximumTokensPerRequest: maximumTokensPerRequest,
+                maximumChunkTokens: maximumChunkTokens, quantization: quantization)
+            caches = paged.makeLayerCaches()
+            backend = paged
+        case .contiguous:
+            caches = geometry.kinds.enumerated().map { CBv2LayerCache(layerIndex: $0.offset, kind: $0.element) }
+            backend = CBv2ContiguousKVBackend(config: .init(bytesCapacity: capacity, kvDType: geometry.kvDType))
+        }
+        guard caches.count == geometry.kinds.count,
+              zip(caches, geometry.kinds).allSatisfy({ $0.kind == $1 && $0.rows.isEmpty }) else {
+            throw ProbeError("Stage KV host caches differ from the Gemma stage's layers")
+        }
+        return (backend, caches, capacity, perRequest)
     }
 
     /// True when the cache at compact position `index` is this host's.

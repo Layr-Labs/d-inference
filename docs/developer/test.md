@@ -1243,9 +1243,9 @@ neither real-weight numerics, a pair qualification nor speed.
 
    The plan check covers both registered artifacts' text tensors once per rank
    and matches their registered text bytes. The `Gemma4TensorParallelRuntimeTests`
-   suite needs the GPU: put a source-matched `mlx.metallib` in
-   `libs/darkbloom-cluster/.build/out/Products/Debug/`, not in the `.xctest`
-   bundle. It covers the resident runtime's pieces:
+   suite needs the GPU: put a source-matched `mlx.metallib` in the package's
+   debug products directory (the one `swift build --package-path libs/darkbloom-cluster --show-bin-path`
+   prints), not in the `.xctest` bundle. It covers the resident runtime's pieces:
 
    - each rank's paged request state: its own KV heads of every layer;
    - two in-process ranks on the paged request path, bit for bit equal, with

@@ -62,7 +62,7 @@ struct QwenTensorParallelNativeContextTests {
         }
         let quote = try QwenTensorParallelBatchBudget.derive(geometry: family.geometry, plan: plan, tensors: tensors,
             maximumTokens: memory.maximumContextTokens, chunkSize: memory.maximumChunkTokens, lanes: lanes, paged: true,
-            rank: rank, allocationBound: bound)
+            rank: rank, promptTokens: memory.maximumPromptTokens, allocationBound: bound)
         return .init(charge: .init(geometry: family.geometry, plan: plan, tensors: tensors, lanes: lanes, paged: true,
                 assistant: nil, rank: rank, allocationBound: bound,
                 loadSharedBytes: quote.sharedBytesExcludingCollectives,

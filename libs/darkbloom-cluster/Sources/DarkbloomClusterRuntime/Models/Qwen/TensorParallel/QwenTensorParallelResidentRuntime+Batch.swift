@@ -76,9 +76,12 @@ extension QwenTensorParallelResidentRuntime {
                 throw ProbeError("Qwen TP batch reservation of \(request.maximumTokens) context tokens exceeds its owner ceiling")
             }
             // Gate the entire future state before constructing positions,
-            // pixels, features, cache rows or request samplers' native graphs.
-            try requireBatchMemory(extraState: laneBytes, extraShared: charge.sharedBytes,
-                extraNative: mediaBudget?.nativeBytes ?? 0, extraHost: mediaBudget?.hostBytes ?? 0, entering: true)
+            // pixels, features, cache rows or request samplers' native graphs;
+            // kept prefix entries give way first.
+            try yieldingPrefixMemory {
+                try requireBatchMemory(extraState: laneBytes, extraShared: charge.sharedBytes,
+                    extraNative: mediaBudget?.nativeBytes ?? 0, extraHost: mediaBudget?.hostBytes ?? 0, entering: true)
+            }
             let media: QwenMediaRequestWork?
             if let envelope = value.qwenMedia, let budget = mediaBudget, let visionInventory {
                 media = try .init(state: .init(media: envelope, prompt: request.promptTokenIDs,
@@ -116,11 +119,20 @@ extension QwenTensorParallelResidentRuntime {
     }
     public var hasStartedLanes: Bool { batchBook.hasStarted }
 
+    /// `check` (a live memory gate), with the plain lanes' kept prefix
+    /// entries giving way first: the SSD writer's queue drains, then entries
+    /// go one at a time (`QwenTensorParallelSnapshotCache.yieldingMemory`).
+    private func yieldingPrefixMemory(_ check: () throws -> Void) throws {
+        guard let batchPrefix else { return try check() }
+        try batchPrefix.yieldingMemory(disk: prefixDisk?.tier, check)
+    }
+
     /// Full named future charge minus allocations already made by this sole
     /// native owner; retained casts/fusion and materialized pages are not charged
     /// twice in the allocator ceiling. Host media keeps its separate full bound.
     /// The shared workspaces are held once, at the longest context any held
-    /// (or entering) request has: LOAD's within the memory plan.
+    /// (or entering) request has: LOAD's within the memory plan. The plain
+    /// lanes' kept prefix entries are in no charge, so they are not credited.
     private func requireBatchMemory(extraState: Int = 0, extraShared: Int = 0, extraNative: Int = 0, extraHost: Int = 0,
                                     entering: Bool = false) throws {
         guard batchBudget != nil else { throw ProbeError("Qwen TP batch LOAD quote is missing") }
@@ -130,8 +142,9 @@ extension QwenTensorParallelResidentRuntime {
         let native = try sum([shared, requestCharge.collectiveScratchBytes,
             sum(held.map(\.laneStateBytes)), sum(held.map { $0.media?.budget.nativeBytes ?? 0 }), extraState, extraNative])
         let host = try sum([sum(held.map { $0.media?.budget.hostBytes ?? 0 }), extraHost])
+        let kept = batchPrefix?.bytesInUse ?? 0
         let remaining = try QwenResidentRequestAllowance.continuingRequirement(reservedBytes: native,
-            additionalBytes: 0, grownBytes: max(0, Memory.activeMemory - batchAllocationBaseline))
+            additionalBytes: 0, grownBytes: max(0, Memory.activeMemory - batchAllocationBaseline - kept))
         try QwenResidentResourceEnvironment.requirePower()
         let os = try QwenDenseStageLoadResources.observeOS()
         let free = try sum([remaining, host, entering ? QwenDenseStageLoadPolicy.loadingHeadroomBytes : 0])
@@ -223,7 +236,7 @@ extension QwenTensorParallelResidentRuntime {
                         try error.check(); try self.control.check()
                         let now = DispatchTime.now().uptimeNanoseconds
                         if lastResourceCheck == 0 || now - lastResourceCheck >= 250_000_000 {
-                            try self.requireBatchMemory(); lastResourceCheck = now
+                            try self.yieldingPrefixMemory { try self.requireBatchMemory() }; lastResourceCheck = now
                         }
                         try error.check()
                     })

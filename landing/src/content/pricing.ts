@@ -45,9 +45,9 @@ export async function getPricingSnapshot(): Promise<PricingSnapshot> {
 export async function getPricingMarkdown(): Promise<string> {
   const snapshot = await getPricingSnapshot();
   const lines = ["# Darkbloom pricing", "", pricingExplanation, "", `[Public pricing source](${pricingSource})`, ""];
-  if (!snapshot.available) return [...lines, "Current rates are unavailable. Check the public pricing source or try again later.", "", "[Developers](https://darkbloom.ai/developers) | [Home](https://darkbloom.ai/)", ""].join("\n");
+  if (!snapshot.available) return [...lines, "Current rates are unavailable. Check the public pricing source or try again later.", "", "[Developers](https://darkbloom.ai/developers.md) | [Home](https://darkbloom.ai/)", ""].join("\n");
   lines.push(`Retrieved at: ${snapshot.retrievedAt}. This is the retrieval time, not the source's last-updated time.`, "", "| Model | Input | Output | Cache read |", "| --- | ---: | ---: | ---: |");
   for (const row of snapshot.rows) lines.push(`| ${row.model.replace(/[|\r\n]/g, " ")} | ${formatPrice(row.input)} | ${formatPrice(row.output)} | ${formatPrice(row.cacheRead)} |`);
-  lines.push("", "## Fallback rates", "", `Input: ${formatPrice(snapshot.fallback.input)}. Output: ${formatPrice(snapshot.fallback.output)}. Cache read: ${formatPrice(snapshot.fallback.cacheRead)}. All rates are USD per million tokens.`, "", "[Developers](https://darkbloom.ai/developers) | [Home](https://darkbloom.ai/)", "");
+  lines.push("", "## Fallback rates", "", `Input: ${formatPrice(snapshot.fallback.input)}. Output: ${formatPrice(snapshot.fallback.output)}. Cache read: ${formatPrice(snapshot.fallback.cacheRead)}. All rates are USD per million tokens.`, "", "[Developers](https://darkbloom.ai/developers.md) | [Home](https://darkbloom.ai/)", "");
   return lines.join("\n");
 }

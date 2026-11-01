@@ -121,7 +121,7 @@ enum NemotronSuperLocalBridgeBuilder {
                     return .init(tokenizer: tokenizer,
                         releaseToken: OneShotRelease(release: { _ in }, modelId: model),
                         modelType: "nemotron_h_omni", engineV2Bridge: bridge)
-                }, reusesTextPrefixes: prefixBankBytes > 0)
+                }, reusesTextPrefixes: prefixBankBytes > 0 || bridge.ssdHybridCheckpointStore != nil)
                 textBinding = binding
                 return binding
             }
@@ -360,7 +360,15 @@ enum NemotronSuperLocalBridgeBuilder {
     /// until restart. `mtp` installs speculation for text requests; image
     /// requests on that owner stay target-only. nil keeps the target-only
     /// owner. Either owner may have `NemotronSuperLocalPrefixCache`'s exact
-    /// prefix reuse.
+    /// prefix reuse; with a `routingIdentity` its bank also advertises and
+    /// proves its checkpoints to the coordinator, and without a bank its
+    /// checkpoints are complete SSD checkpoints bound to it, encoded at the
+    /// effective profile of the operator's checkpoint precision
+    /// (`checkpointQuantizationConfig`, its per-model table and
+    /// `DARKBLOOM_CBV2_CHECKPOINT_QUANTIZATION`, as for every other model).
+    /// Test seam: `completeCheckpointIdentity` replaces the store's runtime
+    /// disk identity (binary, metallib and numerics), which a test process
+    /// cannot compute.
     static func make(
         installed: NemotronSuperInstallation.Installed,
         tokenizer: TokenizerHandle, eosTokenIDs: Set<Int>,
@@ -371,6 +379,10 @@ enum NemotronSuperLocalBridgeBuilder {
         environment: [String: String] = ProcessInfo.processInfo.environment,
         physicalBytes: UInt64 = ProcessInfo.processInfo.physicalMemory,
         leaseShares: OwnerShares? = nil,
+        routingIdentity: NemotronSuperLocalPrefixCache.RoutingIdentity? = nil,
+        checkpointQuantizationConfig: String = "balanced",
+        checkpointQuantizationConfigByModel: [String: String] = [:],
+        completeCheckpointIdentity: CBv2CompleteCheckpointIdentity? = nil,
         isolation: isolated (any Actor)? = #isolation
     ) async throws -> Owner {
         let leaseWeightBytes = leaseShares.map { $0.total ?? -1 } ?? installed.receipt.payloadBytes
@@ -391,11 +403,20 @@ enum NemotronSuperLocalBridgeBuilder {
         let prefixCache = NemotronSuperLocalPrefixCache.config(environment: environment,
             kvBytesCapacity: kvBytesCapacity, requests: requests, speculates: mtp != nil,
             pinned: installed.isPinnedCheckpoint, physicalBytes: physicalBytes, modelID: modelID)
+        // The resident bank and complete SSD checkpoints are alternatives: the
+        // engine keeps a durable store's checkpoints, never the bank's.
+        let durable = prefixCache == nil
+            ? NemotronSuperLocalPrefixCache.durableIdentity(environment: environment, modelID: modelID,
+                routingIdentity: routingIdentity)
+            : nil
+        let exactPrefixCheckpoints = prefixCache != nil || durable != nil
+        let checkpointPrecision = try EngineV2KVQuantizationPolicy.resolve(
+            modelType: "nemotron_h_omni", global: checkpointQuantizationConfig,
+            byModel: checkpointQuantizationConfigByModel, modelID: modelID,
+            environment: environment, purpose: .checkpoint)
         let kvBackend = try NemotronSuperLocalKVBackend.resolve(environment: environment)
         try Task.checkCancellation()
-        let (bridge, prefill, laneBytes, workspace) = try installed.withNativeSetup(
-            construction: construction
-        ) { model in
+        let assembly = try installed.withNativeSetup(construction: construction) { model in
             let language = model.languageModel
             guard let limit = language.calibratedPrefillTokenLimit, limit > 0 else {
                 throw Failure.unsupportedSizing
@@ -409,16 +430,37 @@ enum NemotronSuperLocalBridgeBuilder {
             let speculation = try mtp.map {
                 try NemotronSuperLocalMTP.engine(
                     for: model, head: $0, maximumSequenceLength: sizing.maxContextLength,
-                    requests: requests, exactPrefixCheckpoints: prefixCache != nil)
+                    requests: requests, exactPrefixCheckpoints: exactPrefixCheckpoints)
             }
             // Several requests share one row-exact [B, 1] decode step (with
             // speculation, one captured [B, 1 + k] verify window); prompts and
             // media still prefill one request per forward. One row is serial.
             let target: any LanguageModel = try speculation?.model
                 ?? NemotronSuperRecurrentAdapter(model, maximumDecodeRows: requests, decodeProducts: .rowExact,
-                    exactPrefixCheckpoints: prefixCache != nil)
+                    exactPrefixCheckpoints: exactPrefixCheckpoints)
             let draftTokens = mtp?.setting.depth ?? 0
-            let bridge = try EngineV2Factory.makeBridge(
+            // The assistant checkpoints its prompt history, so the bank
+            // serves both owners (`makeProductionBuild` admits it the same way).
+            let backend = try EngineV2Factory.prepareProductionBackend(
+                model: target, modelID: modelID, kvBudget: kvBudget, kvBytesCapacity: kvBytesCapacity,
+                maxConcurrentRequests: requests, kvBackend: kvBackend,
+                maxContextLength: sizing.maxContextLength, environment: environment,
+                hybridPrefixCache: prefixCache,
+                schedulerPolicy: { prefill.apply(to: &$0, requests: requests, draftTokens: draftTokens) })
+            return Assembly(target: target, speculation: speculation, backend: backend,
+                            prefill: prefill, laneBytes: laneBytes, workspace: workspace)
+        }
+        // The effective profile codes only older attention rows; the Mamba
+        // convolution and SSM state and the assistant's history stay exact.
+        var complete: EngineV2SlotFactory.CompletePrefixCachePreparation?
+        if let durable {
+            complete = await prepareDurableStore(assembly, identity: durable, modelID: modelID,
+                checkpointQuantization: checkpointPrecision.configuration,
+                kvBudget: kvBudget, environment: environment, identityOverride: completeCheckpointIdentity)
+        }
+        let store = complete?.cache, storeQuantization = complete?.checkpointQuantization
+        let bridge = try installed.withNativeSetup(construction: construction) { _ in
+            try EngineV2Factory.makeBridge(
                 modelId: modelID, tokenizer: tokenizer,
                 eosTokenIds: eosTokenIDs, defaultMaxTokens: sizing.defaultMaxTokens,
                 maxConcurrentRequests: requests,
@@ -427,22 +469,29 @@ enum NemotronSuperLocalBridgeBuilder {
                 advertisedContextTokens: sizing.maxContextLength,
                 runtimePolicyEnvironment: environment,
                 kvBytesPerToken: sizing.fp16KVBytesPerToken, kvBudget: kvBudget,
+                // Closed by `makeBridge` if the engine is not built.
+                ssdHybridCheckpointStore: store,
+                // The bridge keeps it only when the engine built the bank.
+                residentPrefixCacheEvidence: prefixCache == nil
+                    ? nil : routingIdentity?.evidence(modelID: modelID),
+                prefixCacheStatus: complete.map {
+                    PrefixCacheModelStatus(modelId: modelID, backend: PrefixCacheStatusBackend(assembly.backend.kind),
+                        replayStrategy: .direct, state: $0.status.state, reason: $0.status.reason,
+                        detail: $0.status.failure)
+                },
+                prefixCacheConstructionFailure: complete?.status.failure,
                 makeEngine: {
-                    try EngineV2Factory.makeProductionBuild(
-                        model: target, modelID: modelID,
-                        tokenizer: tokenizer.inner, kvBytesCapacity: kvBytesCapacity,
-                        maxConcurrentRequests: requests, kvBudget: kvBudget,
-                        hybridPrefixCache: prefixCache, mtpDrafter: speculation?.assistant,
-                        mtpConfig: speculation?.config ?? CBv2MTPConfig(),
-                        kvBackend: kvBackend, maxContextLength: sizing.maxContextLength,
-                        environment: environment,
-                        schedulerPolicy: {
-                            prefill.apply(to: &$0, requests: requests, draftTokens: draftTokens)
-                        }
-                    ).addingSuperRequestWorkspace(workspace)
+                    try EngineV2Factory.assembleProductionBuild(
+                        model: assembly.target, tokenizer: tokenizer.inner, prefixCache: nil,
+                        completePrefixCache: store, checkpointQuantization: storeQuantization,
+                        maxConcurrentRequests: requests,
+                        mtpDrafter: assembly.speculation?.assistant,
+                        mtpConfig: assembly.speculation?.config ?? CBv2MTPConfig(),
+                        preparedBackend: assembly.backend, kvBudget: kvBudget
+                    ).addingSuperRequestWorkspace(assembly.workspace)
                 })
-            return (bridge, prefill, laneBytes, workspace)
         }
+        let prefill = assembly.prefill, laneBytes = assembly.laneBytes, workspace = assembly.workspace
         // A policy veto can degrade even an explicit paged selection; Super
         // serves no other storage, so the load fails instead.
         guard await bridge.kvBackendKind == .paged else {
@@ -548,6 +597,37 @@ enum NemotronSuperLocalBridgeBuilder {
                      decodeRowsID: rows?.id, decodeRowsBytes: rows?.bytes ?? 0,
                      mtpRoundID: round?.id, mtpRoundBytes: round?.bytes ?? 0,
                      videoPruningRate: videoPruningRate)
+    }
+
+    /// What the first native setup prepares for the engine. It crosses to
+    /// the durable store's preparation, which reads only its metadata, and
+    /// the engine assembled in the second native setup then owns it.
+    private struct Assembly: @unchecked Sendable {
+        let target: any LanguageModel
+        let speculation: NemotronSuperLocalMTP.Engine?
+        let backend: EngineV2Factory.ProductionBackendPreparation
+        let prefill: NemotronSuperLocalPrefill.Policy
+        let laneBytes: Int
+        let workspace: Int
+    }
+
+    /// The complete-checkpoint store for the prepared backend, built as for
+    /// every other model (`EngineV2SlotFactory.prepareCompletePrefixCache`),
+    /// including its effective checkpoint profile. Off the load transaction:
+    /// the store scans and keys its directory.
+    private static func prepareDurableStore(
+        _ assembly: Assembly, identity: NemotronSuperLocalPrefixCache.RoutingIdentity, modelID: String,
+        checkpointQuantization: PagedKVQuantizationConfig?,
+        kvBudget: GlobalKVCacheBudget, environment: [String: String],
+        identityOverride: CBv2CompleteCheckpointIdentity?
+    ) async -> EngineV2SlotFactory.CompletePrefixCachePreparation? {
+        await EngineV2SlotFactory.prepareCompletePrefixCache(
+            modelId: modelID, model: assembly.target, preparedBackend: assembly.backend,
+            checkpointQuantization: checkpointQuantization,
+            weightHash: identity.modelAggregateHash, promptContractID: identity.promptContractID,
+            mtpDrafter: assembly.speculation?.assistant,
+            mtpConfig: assembly.speculation?.config ?? CBv2MTPConfig(),
+            kvBudget: kvBudget, environment: environment, identityOverride: identityOverride)
     }
 
     /// A bridge that never reached an owner: shut it down and, only once the

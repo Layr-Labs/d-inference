@@ -231,13 +231,23 @@ final class PromptPieceTokenStore: @unchecked Sendable {
 
     func lookup(_ keys: [SHA256Digest]) -> [[Int32]?] {
         lock.withLock {
-            keys.map { key in
+            // Snapshot the whole request before promotion can rotate away old
+            // entries that later pieces still need. Arrays share their backing
+            // storage; this retains hits without copying token payloads.
+            var needsPromotion = false
+            let hits: [[Int32]?] = keys.map { key in
                 if let tokens = young[key] { return tokens }
-                guard let tokens = old.removeValue(forKey: key) else { return nil }
-                oldBytes -= Self.cost(tokens)
-                admit(key, tokens)
+                guard let tokens = old[key] else { return nil }
+                needsPromotion = true
                 return tokens
             }
+            guard needsPromotion else { return hits }
+            for (key, tokens) in zip(keys, hits) {
+                guard young[key] == nil, let tokens else { continue }
+                if let previous = old.removeValue(forKey: key) { oldBytes -= Self.cost(previous) }
+                admit(key, tokens)
+            }
+            return hits
         }
     }
 

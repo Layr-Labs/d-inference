@@ -124,6 +124,7 @@ extension ProviderLoop {
             pendingMTPUpgradeModels().contains(modelID)
         else { return nil }
         isLoadingAny = true
+        transitionGenerations.begin(.modelLoading)
         let deviceActivity = kvBudget.serviceBudget.beginUnboundedActivity()
         defer { deviceActivity.finish() }
         defer { isLoadingAny = false; releaseLoadGateWaiters() }
@@ -229,6 +230,7 @@ extension ProviderLoop {
         // slot/runtime ownership coherent until replacement cleanup completes.
         mtpUpgradeTransitions.insert(modelID)
         defer { finishMTPUpgradeTransition(modelID) }
+        reportPrefixCacheFailure(staged.replacement.bridge.prefixCacheModelStatus())
         await engineV2Runtime.register(modelId: modelID, bridge: staged.replacement.bridge)
         modelSlots[modelID] = ModelSlot(
             engineBundle: staged.replacement, container: originalContainer,

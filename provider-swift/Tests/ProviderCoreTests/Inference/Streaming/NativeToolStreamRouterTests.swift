@@ -415,7 +415,66 @@ struct NativeToolStreamRouterTests {
         #expect(throws: (any Error).self) { try forced.process("No, I won't call it.") }
         var legacy = NativeToolStreamRouter(handler: nil, requiresToolCall: false, nativePrefix: nil)
         #expect(try legacy.process("legacy text") == [.content("legacy text")])
+        #expect(try legacy.process(" \n") == [.content(" \n")])
+        // Legacy Qwen text separates parallel calls with newlines: framing
+        // whitespace is dropped on every forced path, and prose still fails.
         var legacyForced = NativeToolStreamRouter(handler: nil, requiresToolCall: true, nativePrefix: nil)
-        #expect(throws: (any Error).self) { try legacyForced.process(" \n") }
+        #expect(try legacyForced.process(" \n").isEmpty)
+        #expect(throws: (any Error).self) { try legacyForced.process("legacy prose") }
+    }
+
+    /// Forced mode drops only ASCII framing whitespace (space, tab, CR, LF),
+    /// however generation chunks it, on the legacy and native paths alike.
+    /// Prose after it and every other whitespace character still fail.
+    @Test func forcedModeDropsOnlyASCIIFramingWhitespaceAtAnyChunking() throws {
+        let violation = MultiModelBatchSchedulerEngineError.toolChoiceViolation(
+            "forced tool_choice produced visible text before a validated call")
+        let framing = " \t\r\n\r\n \n"
+        let otherWhitespace = ["\u{0B}", "\u{0C}", "\u{85}", "\u{A0}", "\u{200B}", "\u{2028}", "\u{3000}", "\u{FEFF}"]
+        let paths: [(label: String, prefix: String?, mimo: Bool)] = [
+            ("legacy", nil, false), ("native", "<think></think>", false), ("MiMo", "", true),
+        ]
+        for path in paths {
+            func route(_ text: String, width: Int) throws -> [MLXServerGenerationEvent] {
+                var router = NativeToolStreamRouter(handler: nil, requiresToolCall: true,
+                    nativePrefix: path.prefix, nativeMiMoChannels: path.mimo)
+                var events: [MLXServerGenerationEvent] = []
+                for chunk in Self.scalarChunks(text, width: width) { events += try router.process(chunk) }
+                return try events + router.finishText()
+            }
+            for width in 1...framing.unicodeScalars.count {
+                #expect(try route(framing, width: width).isEmpty, "\(path.label) width \(width)")
+                #expect(throws: violation, "\(path.label) width \(width)") {
+                    try route(framing + "Sure.", width: width)
+                }
+            }
+            for character in otherWhitespace {
+                #expect(throws: violation, "\(path.label) \(character.unicodeScalars.map(\.value))") {
+                    try route("\n" + character + "\n", width: 1)
+                }
+            }
+        }
+
+        // Auto mode still streams the same bytes as content.
+        var auto = NativeToolStreamRouter(handler: nil, requiresToolCall: false, nativePrefix: nil)
+        let text = framing + otherWhitespace.joined()
+        var streamed = ""
+        for chunk in Self.scalarChunks(text, width: 1) {
+            for event in try auto.process(chunk) {
+                guard case .content(let content) = event else { Issue.record("unexpected \(event)"); continue }
+                streamed += content
+            }
+        }
+        #expect(streamed.unicodeScalars.elementsEqual(text.unicodeScalars))
+    }
+
+    /// Splits by Unicode scalar, so a CR LF pair can arrive in two chunks.
+    private static func scalarChunks(_ text: String, width: Int) -> [String] {
+        let scalars = Array(text.unicodeScalars)
+        return stride(from: 0, to: scalars.count, by: width).map {
+            var chunk = String.UnicodeScalarView()
+            chunk.append(contentsOf: scalars[$0..<min(scalars.count, $0 + width)])
+            return String(chunk)
+        }
     }
 }

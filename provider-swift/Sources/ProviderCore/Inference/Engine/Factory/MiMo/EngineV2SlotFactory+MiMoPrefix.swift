@@ -106,25 +106,24 @@ extension EngineV2SlotFactory {
             try owner.retireUnusedOwner()
             throw failure
         }
-        let store = await SSDHybridCheckpointStoreFactory.make(modelId: modelId, identity: identity,
+        switch await SSDHybridCheckpointStoreFactory.build(modelId: modelId, identity: identity,
             backendLayout: metadata.backendLayout, kvBudget: prepared.transaction.budget,
-            environment: environment, persistentTestNamespace: persistentTestNamespace)
-        if let store {
+            environment: environment, persistentTestNamespace: persistentTestNamespace) {
+        case .success(let store):
             // Capture the actual returned store BEFORE any cancellation or
             // source recheck; the in-flight setup operation cannot retire early.
             do { try owner.install(store) }
             catch {
-                // Factory.make returned this newly owned unbound store. A
+                // The factory returned this newly owned unbound store. A
                 // mismatch cannot orphan its actual read/write workers.
                 let failure = error
                 await store.closeAndWait()
                 throw failure
             }
-        } else {
+        case .failure(let refusal):
             await owner.closeAndWait()
             try owner.retireUnusedOwner()
-            return .init(metadata: nil, resources: nil,
-                status: .init(state: .error, reason: .cacheInitFailed))
+            return .init(metadata: nil, resources: nil, status: .init(refusal: refusal.reason))
         }
         try prepared.load.recheck()
         try prepared.transaction.recheckSetup()
@@ -187,21 +186,21 @@ extension EngineV2SlotFactory {
         try prepared.load.recheck()
         try prepared.transaction.recheckSetup()
         try paging.preparePrefix(identity: identity, backendLayout: native.backendLayout)
-        let store = await SSDHybridCheckpointStoreFactory.make(modelId: modelId, identity: identity,
+        switch await SSDHybridCheckpointStoreFactory.build(modelId: modelId, identity: identity,
             backendLayout: native.backendLayout, kvBudget: paging.budget,
-            environment: environment, persistentTestNamespace: persistentTestNamespace)
-        if let store {
+            environment: environment, persistentTestNamespace: persistentTestNamespace) {
+        case .success(let store):
             do { try paging.installPrefix(store) }
             catch {
                 let failure = error
                 await store.closeAndWait() // this newly created, unbound store only
                 throw failure
             }
-        } else {
+        case .failure(let refusal):
             await paging.closeAndWait()
             // The SAME zero-charge paging owner remains available for the
             // honest uncached profile; do not retire/recreate a process owner.
-            return .init(metadata: nil, status: .init(state: .error, reason: .cacheInitFailed))
+            return .init(metadata: nil, status: .init(refusal: refusal.reason))
         }
         try prepared.load.recheck()
         try prepared.transaction.recheckSetup()

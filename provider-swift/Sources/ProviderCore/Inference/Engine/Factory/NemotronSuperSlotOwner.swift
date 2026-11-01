@@ -53,11 +53,17 @@ final class NemotronSuperSlotOwner: Sendable {
     /// One coordinator or local-endpoint request: text on the text binding,
     /// inline JPEG/PNG images or one inline video on the image binding
     /// (target-only when the owner speculates). Only the coordinator path
-    /// trusts schema metadata (see `NemotronSuperRequestPlan`).
+    /// trusts schema metadata (see `NemotronSuperRequestPlan`). A `logprobs`
+    /// request's entries leave on `logprobs`. The coordinator's `usageSignal`
+    /// carries a text request's cache outcome to its receipts and usage; its
+    /// `donationDemand` gates a durable write.
     func chatEngine(body: Data, hasMedia: Bool, cacheScope: String?,
-                    trustsSchemaMetadata: Bool) -> any MLXServerEngine {
+                    trustsSchemaMetadata: Bool, logprobs: EngineV2LogprobsChannel? = nil,
+                    usageSignal: EngineV2RequestUsageSignal? = nil,
+                    donationDemand: SSDCheckpointDonationDemand? = nil) -> any MLXServerEngine {
         chat.engine(body: body, hasMedia: hasMedia, cacheScope: cacheScope,
-                    trustsSchemaMetadata: trustsSchemaMetadata)
+                    trustsSchemaMetadata: trustsSchemaMetadata, logprobs: logprobs, usageSignal: usageSignal,
+                    donationDemand: donationDemand)
     }
 
     /// The reference prompt length; see `NemotronSuperLocalImageHTTP`.
@@ -89,6 +95,13 @@ struct NemotronSuperSlotLoader: Sendable {
         let budget: GlobalKVCacheBudget
         /// The loader's `physicalBytes`, which sized the plan's prefix bank.
         let physicalBytes: UInt64
+        /// The aggregate the provider published for this checkpoint; with the
+        /// checkpoint's prompt contract it is the identity the owner's prefix
+        /// bank advertises to the coordinator. nil keeps reuse local.
+        var modelAggregateHash: String? = nil
+        /// The provider's `[backend]` checkpoint precision settings.
+        var checkpointQuantizationConfig = "balanced"
+        var checkpointQuantizationConfigByModel: [String: String] = [:]
     }
 
     /// Whether this loader stages the pinned checkpoint, and the machine
@@ -135,7 +148,11 @@ struct NemotronSuperSlotLoader: Sendable {
                 admissionKVBytes: request.admissionKVBytes,
                 backendAllowanceBytes: NemotronSuperServingPolicy.backendAllowanceBytes,
                 modelID: request.modelID, environment: request.environment,
-                physicalBytes: request.physicalBytes)
+                physicalBytes: request.physicalBytes,
+                routingIdentity: .resolve(modelAggregateHash: request.modelAggregateHash,
+                                          directory: request.directory),
+                checkpointQuantizationConfig: request.checkpointQuantizationConfig,
+                checkpointQuantizationConfigByModel: request.checkpointQuantizationConfigByModel)
             return try await NemotronSuperSlotOwner(transaction: transaction, bridge: bridge,
                 tokenizer: tokenizer, sizing: sizing, templateBytes: templateBytes)
         } catch {

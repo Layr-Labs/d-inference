@@ -1,6 +1,6 @@
 # Build and validate the macOS desktop app
 
-> Last updated: 2026-10-18
+> Last updated: 2026-11-01
 
 Build the Electron frontend and its Swift CLI/backend API in this repository.
 This guide covers development and review artifacts; production distribution also
@@ -104,8 +104,13 @@ requires the release qualifications below.
    `--dir` builds (`make desktop-package`) never embed the file.
 
    The packaged app checks only when `app-update.yml` declares a `generic` https
-   feed. The GUI must never use this repository's GitHub releases. Those are
-   provider runtime releases with no `latest-mac.yml`.
+   feed. It must never use electron-updater's `github` provider: this
+   repository's latest release is the provider runtime, with no
+   `latest-mac.yml`. Release builds (`DARKBLOOM_DESKTOP_RELEASE=1`) refuse to
+   build without a feed. `release-desktop.yml` embeds the fixed `generic` feed
+   `https://github.com/Layr-Labs/d-inference/releases/download/desktop-latest`
+   and replaces that release's assets on every desktop release; see
+   [the update feed](../operations/desktop-release.md#the-update-feed).
 
 ## Signed local preview
 
@@ -547,6 +552,9 @@ preview contains explicitly illustrative release notes and version cutoffs.
 
 ## Release qualification
 
+Signed, notarized releases are built and published by
+`.github/workflows/release-desktop.yml` (tag `desktop-vX.Y.Z`); see
+[Release the macOS desktop app](../operations/desktop-release.md).
 Before public distribution, verify all of the following against the final
 signed frontend and signed provider artifact:
 
@@ -556,9 +564,9 @@ signed frontend and signed provider artifact:
 - Deploy the platform coordinator's desktop account APIs and the console `/link`
   desktop purpose before advertising account features. A missing endpoint
   appears as unavailable data, never sample account results.
-- Choose and host the GUI update feed (`DARKBLOOM_DESKTOP_UPDATE_URL`, step 6),
-  publish the signed zip and `latest-mac.yml` there, and verify GUI update
-  download, restart and rollback separately from native update.
+- Verify the GUI update separately from the native update: an installed release
+  finds the next release on the `desktop-latest` feed, downloads it, installs it
+  on quit and relaunches as the new version (step 6).
 - Verify notarization, Gatekeeper, the provisioned provider bundle, App Attest,
   source-matched metallib/resources, and the existing fan helper on real hardware.
 - Exercise a real eligible model through download, start, inference, local/network

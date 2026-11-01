@@ -153,7 +153,7 @@ final class SSDWriteBehind: @unchecked Sendable {
     /// write budget could not cover a `bytes`-sized donation right now, so
     /// `donate` can skip the device-slice/eval/host-copy extraction for
     /// blocks the consumer would drop anyway. Advisory only — the consumer
-    /// still `tryConsume`s per block (the bucket can drain between check
+    /// still charges before it writes (the bucket can drain between check
     /// and write); correctness never depends on this answer.
     func mightAcceptWrite(bytes: Int) -> Bool {
         rateLimiter.mightAccept(bytes: bytes)
@@ -268,6 +268,12 @@ final class SSDWriteBehind: @unchecked Sendable {
                 return
             }
         }
+        // One charge covers a donation of several blocks, so each block does
+        // not pay its own durable ledger write. When that charge is refused
+        // (near the daily cap, or while another writer holds the shared
+        // ledger), each block is charged before its own write instead, so the
+        // leading blocks that fit are still written.
+        let prepaid = job.blocks.count > 1 && chargeWholeDonation(job)
 
         for block in job.blocks {
             defer { onBlockSettled(block.tag16) }
@@ -293,11 +299,13 @@ final class SSDWriteBehind: @unchecked Sendable {
             let fileBytes: Int
             let sidecar = block.metadata.windowKind == nil ? 0 : 1
             do {
-                let budgetBytes = try SSDBlockStore.serializedByteCount(metadata: block.metadata)
-                guard rateLimiter.tryConsume(bytes: budgetBytes) else {
-                    rateLimited = true
-                    stats.add(donationsDropped: 1, writeRateLimited: 1)
-                    continue
+                if !prepaid {
+                    let budgetBytes = try SSDBlockStore.serializedByteCount(metadata: block.metadata)
+                    guard rateLimiter.tryConsume(bytes: budgetBytes) else {
+                        rateLimited = true
+                        stats.add(donationsDropped: 1, writeRateLimited: 1)
+                        continue
+                    }
                 }
                 if let writeBlock = config.writeBlock {
                     fileBytes = try writeBlock(block, url)
@@ -326,6 +334,22 @@ final class SSDWriteBehind: @unchecked Sendable {
                 blocksWritten: 1, bytesWritten: fileBytes, windowSidecarsWritten: sidecar)
             durableWriteSucceeded = true
         }
+    }
+
+    /// Charges the summed serialized size of every block in one reservation.
+    /// False, with nothing charged, when that sum cannot be computed or the
+    /// reservation is refused. Blocks skipped after a successful charge stay
+    /// charged, like a failed write.
+    private func chargeWholeDonation(_ job: SSDDonationJob) -> Bool {
+        var total = 0
+        for block in job.blocks {
+            guard let bytes = try? SSDBlockStore.serializedByteCount(metadata: block.metadata)
+            else { return false }
+            let (sum, overflow) = total.addingReportingOverflow(bytes)
+            guard !overflow else { return false }
+            total = sum
+        }
+        return rateLimiter.tryConsume(bytes: total)
     }
 
     private func settleAll(_ job: SSDDonationJob, dropped: Int) {

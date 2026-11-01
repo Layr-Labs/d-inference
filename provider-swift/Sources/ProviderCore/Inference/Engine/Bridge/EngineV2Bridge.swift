@@ -27,6 +27,16 @@ public actor EngineV2Bridge {
 
     /// Shutdown drains and releases the engine before the slot owner purges
     /// MLX cache or grows the surviving models' memory grants.
+    let draftMiMoImageConfiguration: Data?
+    let clusterGLMImageConfiguration: Data?
+    /// GLM images and video on the tensor-parallel pair (`ClusterGLMMedia`):
+    /// present only when both ranks serve the media contract.
+    let clusterGLMMediaIngress: DistributedGLMMediaIngress?
+    let clusterQwenMediaIngress: DistributedQwenMediaIngress?
+    let clusterQwenMediaHostBudget: GlobalKVCacheBudget?
+    /// Entries survive terminal HTTP events and are removed only by refused
+    /// admission cleanup or definitive generation retirement.
+    var qwenMediaHostResources: [String: (DistributedQwenMediaLifetime, DistributedQwenMediaLifetime.Submission)] = [:]
     var ownedEngine: (any CBv2Engine)?
     struct NativeShutdownIdentity: Equatable {
         let engineID: UUID
@@ -94,6 +104,11 @@ public actor EngineV2Bridge {
     /// Construction-time fallback reason, retained for heartbeat reporting.
     /// Admission and resizing depend on the actual kvBackendKind only.
     public let kvBackendFallbackReason: String?
+    /// Optional distributed first-token budget policy for the staged cluster
+    /// engine path; nil on every ordinary local engine. A distributed submit
+    /// narrows the origin-anchored deadline context through it without
+    /// granting a fresh budget.
+    let distributedFirstTokenBudgetPolicy: DistributedFirstTokenBudgetPolicy?
     /// `kvBackendFallbackReason` already clamped to the heartbeat budget.
     /// Stored rather than recomputed because the reason is fixed at
     /// construction while the heartbeat rebuilds every slot's capacity every
@@ -106,11 +121,17 @@ public actor EngineV2Bridge {
     /// tokens) — `buildStopTokenIds` semantics, computed ONCE at bridge
     /// construction so B=1 and batched behavior stay identical.
     let stopTokenIds: Set<Int>
+    /// Where client stop strings apply (`ModelEOSPolicy.stopStringScope`);
+    /// nil matches the whole generated text.
+    let stopStringScope: CBv2StopStringScope?
     /// Artifact sampling defaults resolved once at construction
     /// (`EngineV2SamplingDefaults.resolve`); `.legacy` for every family
     /// that has not been admitted.
     let samplingDefaults: EngineV2SamplingDefaults
     let defaultMaxTokens: Int
+    /// A cluster pair's context: an omitted `max_tokens` is the default cut
+    /// to what still fits after the prompt (nil everywhere else).
+    let defaultMaxTokensContextLimit: Int?
     let maxConcurrentRequests: Int
     nonisolated let performanceProfile: ServingPerformanceProfile?
     nonisolated let deadlineProfile: DeadlinePerformanceProfile?
@@ -368,8 +389,10 @@ public actor EngineV2Bridge {
         tokenizer: TokenizerHandle,
         eosTokenIds: Set<Int>,
         extraEOSTokens: [String] = [],
+        stopStringScope: CBv2StopStringScope? = nil,
         samplingDefaults: EngineV2SamplingDefaults = .legacy,
         defaultMaxTokens: Int = 4096,
+        defaultMaxTokensContextLimit: Int? = nil,
         maxConcurrentRequests: Int = 4,
         performanceProfile: ServingPerformanceProfile? = nil,
         deadlineProfile: DeadlinePerformanceProfile? = nil,
@@ -397,6 +420,12 @@ public actor EngineV2Bridge {
         pagedPageSize: Int? = nil,
         kvBackendFallbackReason: String? = nil,
         advertisedContextTokens: Int? = nil,
+        distributedFirstTokenBudgetPolicy: DistributedFirstTokenBudgetPolicy? = nil,
+        draftMiMoImageConfiguration: Data? = nil,
+        clusterGLMImageConfiguration: Data? = nil,
+        clusterGLMMediaIngress: DistributedGLMMediaIngress? = nil,
+        clusterQwenMediaIngress: DistributedQwenMediaIngress? = nil,
+        clusterQwenMediaHostBudget: GlobalKVCacheBudget? = nil,
         calibrationPosturePermitsWork: @escaping @Sendable () -> Bool = {
             !ProcessInfo.processInfo.isLowPowerModeEnabled && ProcessInfo.processInfo.thermalState == .nominal
         },
@@ -404,6 +433,11 @@ public actor EngineV2Bridge {
         glm5NextNativeOwner: GLM5NextNativeOperationOwner? = nil,
         emitTelemetry: (@Sendable (TelemetryEvent) -> Void)? = nil
     ) {
+        self.draftMiMoImageConfiguration = draftMiMoImageConfiguration
+        self.clusterGLMImageConfiguration = clusterGLMImageConfiguration
+        self.clusterGLMMediaIngress = clusterGLMMediaIngress
+        self.clusterQwenMediaIngress = clusterQwenMediaIngress
+        self.clusterQwenMediaHostBudget = clusterQwenMediaHostBudget
         self.ownedEngine = engine
         self.glm5NextNativeOwner = glm5NextNativeOwner
         self.modelId = modelId
@@ -415,6 +449,7 @@ public actor EngineV2Bridge {
         self.kvQuantization = kvQuantization
         self.pagedPageSize = kvBackendKind == .paged && (pagedPageSize ?? 0) > 0 ? pagedPageSize : nil
         self.kvBackendFallbackReason = kvBackendFallbackReason
+        self.distributedFirstTokenBudgetPolicy = distributedFirstTokenBudgetPolicy
         self.advertisedContextTokens =
             Qwen4SupportPolicy.validatedContextTokens(advertisedContextTokens)
             ?? Qwen4SupportPolicy.contextLimit(modelID: modelId)
@@ -428,8 +463,10 @@ public actor EngineV2Bridge {
             extraEOSTokens: extraEOSTokens,
             convertTokenToId: { [inner = tokenizer.inner] in inner.convertTokenToId($0) }
         )
+        self.stopStringScope = stopStringScope
         self.samplingDefaults = samplingDefaults
         self.defaultMaxTokens = defaultMaxTokens
+        self.defaultMaxTokensContextLimit = defaultMaxTokensContextLimit
         self.maxConcurrentRequests = maxConcurrentRequests
         self.performanceProfile = performanceProfile
         self.deadlineProfile = deadlineProfile
@@ -469,7 +506,8 @@ public actor EngineV2Bridge {
         let durableSource: (any DurablePrefixCacheEvidenceSource)? =
             completeStore.map { $0 as any DurablePrefixCacheEvidenceSource } ?? ssdPrefixCache
         let cacheRejected = ssdHybridCheckpointStore != nil && completeStore == nil
-        self.prefixCacheBaseStatus = cacheRejected ? PrefixCacheModelStatus(
+        let constructionFailure = durableSource == nil ? prefixCacheConstructionFailure : nil
+        let baseStatus = cacheRejected ? PrefixCacheModelStatus(
             modelId: modelId, backend: PrefixCacheStatusBackend(kvBackendKind),
             replayStrategy: .unknown, state: .disabled, reason: .unsupportedLayout
         ) : prefixCacheStatus ?? PrefixCacheModelStatus(
@@ -478,14 +516,22 @@ public actor EngineV2Bridge {
             replayStrategy: .unknown,
             state: durableSource == nil ? .disabled : .pending,
             reason: durableSource == nil ? .unsupportedBackend : .scanPending)
-        self.prefixCacheConstructionFailure = durableSource == nil ? prefixCacheConstructionFailure : nil
+        // A refused store reports its typed cause beside the closed reason.
+        self.prefixCacheBaseStatus = PrefixCacheModelStatus(
+            modelId: baseStatus.modelId, backend: baseStatus.backend,
+            replayStrategy: baseStatus.replayStrategy, state: baseStatus.state,
+            reason: baseStatus.reason, detail: baseStatus.detail ?? constructionFailure)
+        self.prefixCacheConstructionFailure = constructionFailure
         self.prefixCacheEvidenceSequencer = durableSource.map {
             PrefixCacheEvidenceSequencer(source: $0)
         }
         // Complete-checkpoint lookup always precedes the resident bank.
         // Do not advertise a tier this engine cannot adopt, including while
         // its durable capability is temporarily absent during a scan/epoch change.
-        let residentEvidence = (engine as? EngineV2)?.hybridPrefixCache == nil
+        // A distributed engine's prefix caches live on its peers; it reports
+        // the frontiers both hold, so it may advertise the memory tier too.
+        let residentEvidence = engine is DistributedCBv2Engine ? residentPrefixCacheEvidence
+            : (engine as? EngineV2)?.hybridPrefixCache == nil
             || (engine as? EngineV2)?.completePrefixCache != nil
             ? nil : residentPrefixCacheEvidence
         self.residentPrefixCacheEvidence = residentEvidence
@@ -496,6 +542,11 @@ public actor EngineV2Bridge {
         }
         if let residentEvidence, let liveEngine = engine as? EngineV2 {
             liveEngine.setResidentPrefixPublicationHandler { [weak residentEvidence] receiptID, positions in
+                residentEvidence?.publish(receiptID: receiptID, checkpointTokens: positions)
+            }
+        }
+        if let residentEvidence, let distributed = engine as? DistributedCBv2Engine {
+            distributed.setResidentPrefixPublicationHandler { [weak residentEvidence] receiptID, positions in
                 residentEvidence?.publish(receiptID: receiptID, checkpointTokens: positions)
             }
         }

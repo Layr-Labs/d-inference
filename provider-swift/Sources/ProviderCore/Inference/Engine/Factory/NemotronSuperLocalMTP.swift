@@ -17,7 +17,8 @@ enum NemotronSuperLocalMTP {
     /// measured acceptance and round cost (rectangular verification only).
     /// A comma list (`3,2,2,2,1`) fixes the depth by the number of requests
     /// decoding in the step: entry N for N requests, the last for more
-    /// (rectangular verification only).
+    /// (rectangular verification only). An entry of 0 decodes that many
+    /// requests target-only; at least one entry must draft.
     static let depthKey = "DARKBLOOM_NEMOTRON_SUPER_MTP_DEPTH"
     /// `rectangular` (default): one exact captured target window per round;
     /// `serial`: one ordinary target step per column.
@@ -83,8 +84,10 @@ enum NemotronSuperLocalMTP {
                 } else if raw.contains(",") {
                     let entries = raw.split(separator: ",", omittingEmptySubsequences: false)
                         .map { Int($0.trimmingCharacters(in: .whitespaces)) }
+                    // A width may decode target-only (0); some width must draft.
                     guard entries.count <= NemotronHModel.superMTPMaximumWindowRequests,
-                        entries.allSatisfy({ $0.map(depths.contains) == true })
+                        entries.allSatisfy({ $0.map((0 ... depths.upperBound).contains) == true }),
+                        entries.contains(where: { ($0 ?? 0) > 0 })
                     else { throw Failure.invalidDepth }
                     depthByRequests = entries.compactMap { $0 }
                     depth = depthByRequests?.max() ?? 1

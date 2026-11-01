@@ -85,14 +85,11 @@ extension Start {
     /// Use the provider's cap, activation and minimum KV safeguards. Catalog
     /// estimates are conservative; the loader rechecks live memory before use.
     static func pickerLoadBudgetGiB(memoryGb: Double, modelIDs: [String]? = nil) -> Double {
-        guard memoryGb.isFinite, memoryGb > 0, memoryGb <= 4096 else { return 0 }
-        let gib = Double(1 << 30)
-        let cap = Double(UnifiedMemoryCap.hardCapBytes(physicalBytes: UInt64(memoryGb * gib))) / gib
-        return max(0, cap - Double(UnifiedMemoryCap.loadHeadroomBytes(modelIDs: modelIDs)) / gib)
+        AutopilotBuildEligibility.loadBudgetGiB(memoryGb: memoryGb, modelIDs: modelIDs)
     }
 
     static func modelFitsBudget(sizeGb: Double, memoryGb: Double, modelIDs: [String]? = nil) -> Bool {
-        sizeGb.isFinite && sizeGb > 0 && sizeGb <= pickerLoadBudgetGiB(memoryGb: memoryGb, modelIDs: modelIDs)
+        AutopilotBuildEligibility.fitsLoadBudget(sizeGb: sizeGb, memoryGb: memoryGb, modelIDs: modelIDs)
     }
 
     enum PickerReserveMode {
@@ -377,17 +374,7 @@ extension Start {
             for entry in missing {
                 print("  Downloading \(entry.displayName) (\(String(format: "%.1f GB", entry.catalogModel.sizeGb)))...")
                 do {
-                    try await downloader.download(model: entry.catalogModel) { progress in
-                        let pct: String
-                        if let total = progress.bytesTotal, total > 0 {
-                            pct = String(format: " %.0f%%", Double(progress.bytesDownloaded) / Double(total) * 100)
-                        } else {
-                            pct = ""
-                        }
-                        let mb = Double(progress.bytesDownloaded) / 1_048_576
-                        print("    \(progress.file)  \(String(format: "%.1f MB", mb))\(pct)")
-                    }
-                    print("  \u{2713} Downloaded \(entry.displayName)")
+                    try await downloader.download(model: entry.catalogModel)
                 } catch {
                     printError("Failed to download \(entry.displayName): \(error)")
                     printError("hint: download manually with `\(BuildEnvironment.current.cliName) models download \(entry.id)`")
@@ -459,11 +446,7 @@ extension Start {
             for entry in missing {
                 print("  Downloading \(entry.displayName) (\(String(format: "%.1f GB", entry.catalogModel.sizeGb)))...")
                 do {
-                    try await downloader.download(model: entry.catalogModel) { progress in
-                        let mb = Double(progress.bytesDownloaded) / 1_048_576
-                        print("    \(progress.file)  \(String(format: "%.1f MB", mb))")
-                    }
-                    print("  \(entry.displayName) downloaded.")
+                    try await downloader.download(model: entry.catalogModel)
                 } catch {
                     printError("Failed to download \(entry.displayName): \(error)")
                     printError("hint: download manually with `\(BuildEnvironment.current.cliName) models download \(entry.id)`")

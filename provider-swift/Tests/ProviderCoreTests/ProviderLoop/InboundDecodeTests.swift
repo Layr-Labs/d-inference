@@ -197,6 +197,7 @@ struct InboundDecodeTests {
         #expect(req.messages[1].toolCalls?.first?.function.name == "get_weather")
         #expect(req.messages[1].toolCalls?.first?.function.arguments == #"{"city":"SF"}"#)
         #expect(req.messages[2].role == .tool)
+        #expect(req.messages[2].toolCallID == "call_legacy_1")
     }
 
     @Test("malformed legacy function_call throws invalidToolPayload")
@@ -282,6 +283,30 @@ struct InboundDecodeTests {
         #expect(controls.reasoningEffort == "xhigh")
         #expect(controls.enableThinking == false)
         #expect(controls.preserveThinking == true)
+    }
+
+    @Test("a positive reasoning.max_tokens budget is recovered from the raw body")
+    func reasoningBudgetExtracted() {
+        func budget(_ reasoning: String) -> Int? {
+            let json = #"{"model":"m","messages":[],"enable_thinking":true,"reasoning":"# + reasoning + "}"
+            let controls = ProviderLoop.extractChatTemplateControls(from: Data(json.utf8))
+            #expect(controls.enableThinking == true, "a malformed budget must not discard siblings")
+            return controls.reasoningBudgetTokens
+        }
+        #expect(budget(#"{"max_tokens":2048}"#) == 2048)
+        #expect(budget(#"{"effort":"high","max_tokens":1}"#) == 1)
+        // JSONDecoder reads Int from integral floats; the prompt sidecar mirrors this.
+        #expect(budget(#"{"max_tokens":2048.0}"#) == 2048)
+        #expect(budget(#"{"max_tokens":1e3}"#) == 1000)
+        for ignored in [#"{"max_tokens":0}"#, #"{"max_tokens":-5}"#, #"{"max_tokens":"2048"}"#,
+                        #"{"max_tokens":2.5}"#, #"{"max_tokens":true}"#, #"{"max_tokens":1.0e19}"#,
+                        #"{"enabled":true}"#, #""high""#, "null"] {
+            #expect(budget(ignored) == nil, "\(ignored)")
+        }
+        // Rendering first resolves an unpinned prompt date; the budget must survive it.
+        let body = Data(#"{"model":"m","messages":[],"reasoning":{"max_tokens":2048}}"#.utf8)
+        let resolved = ProviderLoop.extractChatTemplateControls(from: body).resolvingPromptDate()
+        #expect(resolved.reasoningBudgetTokens == 2048)
     }
 
     @Test("one malformed template control does not discard the others")

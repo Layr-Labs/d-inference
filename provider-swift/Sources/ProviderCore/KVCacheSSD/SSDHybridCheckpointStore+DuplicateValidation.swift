@@ -10,6 +10,7 @@ extension SSDHybridCheckpointStore {
         let incoming = job.source.manifest
         var metadata: SSDBlockMetadata?
         var storedEnvelope: SSDHybridCheckpointEnvelope?
+        var isDelta = false
         statsBox.update { $0.filesRead += 1 }
         try SSDBlockStore.readStreaming(
             from: url, kekKey: kekKey,
@@ -40,8 +41,11 @@ extension SSDHybridCheckpointStore {
                         stored.assistantCodecID == incoming.assistantCodecID,
                         stored.tensors == incoming.tensors,
                         stored.attentionLayers == incoming.attentionLayers,
-                        let metadata
+                        let metadata,
+                        metadata.parentCommitment == nil || self.index.chain(tag16: Data(job.tag.prefix(16))) != nil
                     else { throw CBv2CompleteCheckpointError.incompatibleCheckpoint }
+                    // A delta's chunk sizes are authenticated metadata; its chain resolved above.
+                    if metadata.parentCommitment != nil { return isDelta = true }
                     let envelope = try SSDHybridCheckpointEnvelope(
                         manifest: stored, maximumPlaintextBytes: self.config.maxReadBytes)
                     guard bytes == envelope.manifestBytes,
@@ -49,7 +53,7 @@ extension SSDHybridCheckpointStore {
                                          backendLayout: self.config.backendLayout)
                     else { throw CBv2CompleteCheckpointError.incompatibleCheckpoint }
                     storedEnvelope = envelope
-                } else {
+                } else if !isDelta {
                     guard let storedEnvelope,
                         storedEnvelope.segments.indices.contains(index - 1),
                         bytes.count == storedEnvelope.segments[index - 1].bytes
@@ -58,7 +62,7 @@ extension SSDHybridCheckpointStore {
             })
         // readStreaming authenticates every declared segment and requires EOF;
         // an authenticated manifest alone is not durable checkpoint evidence.
-        guard storedEnvelope != nil else { throw CBv2CompleteCheckpointError.incompleteTransfer }
+        guard storedEnvelope != nil || isDelta else { throw CBv2CompleteCheckpointError.incompleteTransfer }
         try checkWrite(job)
     }
 }

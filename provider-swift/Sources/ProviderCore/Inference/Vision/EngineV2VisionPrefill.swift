@@ -96,7 +96,8 @@ public enum EngineV2MediaKind: String, Sendable {
 /// Construction failures of the v2 media-prefill submission. Every case is
 /// caught by the scheduler engine and REFUSED loudly (ERROR telemetry + a
 /// retriable 503; the coordinator reroutes) except deterministic request
-/// shapes (`noProcessedMedia` and `unsupportedMedia`), which map to 400.
+/// shapes (`noProcessedMedia` and `unsupportedMedia`), which map to 400
+/// (`EngineV2VisionPrefill.clientFault(for:)`).
 /// Messages are operator-facing and must never embed prompt or media content.
 enum EngineV2VisionPrefillError: Error, CustomStringConvertible {
     /// The slot's loaded module is not a supported Gemma 4 or Qwen wrapper.
@@ -311,7 +312,8 @@ public enum EngineV2VisionPrefill {
     /// Throws `EngineV2VisionPrefillError` (and any `MediaError`/processor
     /// error the legacy path would also throw) — callers refuse loudly on
     /// every throw except `MediaError` (deterministic client fault, keeps
-    /// its 4xx mapping) and `CancellationError` (the caller went away).
+    /// its 4xx mapping), the media faults `clientFault(for:)` answers with
+    /// 400, and `CancellationError` (the caller went away).
     static func prepare(
         container: ModelContainer,
         request: OpenAIChatCompletionRequest,
@@ -909,6 +911,45 @@ public enum EngineV2VisionPrefill {
             return String(describing: visionError)
         }
         return String(reflecting: type(of: error))
+    }
+
+    /// The 400 for a media preparation throw that is the request's own fault.
+    /// Every provider serving the artifact, one Mac or a pair, fails it the
+    /// same way, so a retriable refusal would only repeat it elsewhere: the
+    /// deterministic prefill shapes, and the processor refusing the media
+    /// itself (a geometry its resize cannot use, such as Qwen's side below
+    /// `patch_size × merge_size` or aspect ratio over 200:1; a video without a
+    /// decodable track; a media count the processor does not take). nil for
+    /// any other throw, which the caller refuses as a construction failure.
+    /// Processor text carries media dimensions, so the messages are fixed.
+    static func clientFault(for error: Error) -> MultiModelBatchSchedulerEngineError? {
+        if let visionError = error as? EngineV2VisionPrefillError {
+            switch visionError {
+            case .noProcessedMedia:
+                return .multimodalRejected(
+                    "multimodal_rejected: media parts must be attached to user "
+                        + "messages; none of this request's media was consumable")
+            case .unsupportedMedia(let detail):
+                return .multimodalRejected("multimodal_rejected: \(detail)")
+            default:
+                return nil
+            }
+        }
+        guard let processorError = error as? VLMError else { return nil }
+        switch processorError {
+        case .imageProcessingFailure:
+            return .multimodalRejected(
+                "multimodal_rejected: the model's processor cannot resize this media "
+                    + "(a side below its minimum, an aspect ratio above its limit or no frame)")
+        case .noVideoTrackFound, .videoNotDecodable:
+            return .multimodalRejected("multimodal_rejected: the video has no decodable video track")
+        case .imageRequired, .singleImageAllowed, .singleVideoAllowed, .singleMediaTypeAllowed:
+            return .multimodalRejected(
+                "multimodal_rejected: the model's processor does not take this number or mix of media")
+        case .maskRequired, .processing:
+            // Processor configuration or internal agreement, not the media.
+            return nil
+        }
     }
 }
 

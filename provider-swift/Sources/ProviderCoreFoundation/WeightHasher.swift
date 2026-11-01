@@ -21,7 +21,7 @@ public struct WeightHasher: Sendable {
     /// Buffer size for streaming file reads (64 KB).
     private static let bufferSize = 65536
     /// Keep each streaming buffer small even if the constant changes later.
-    private static let maxStreamingBufferSize = 1024 * 1024
+    static let maxStreamingBufferSize = 1024 * 1024
     /// Last-resort whole-file reads are only acceptable for small metadata files.
     static let maxWholeFileFallbackBytes: UInt64 = 64 * 1024 * 1024
 
@@ -179,6 +179,8 @@ public struct WeightHasher: Sendable {
         // Read around the file cache first: hashing touches every weight byte,
         // and cached pages would keep a second copy of the model resident
         // beside the loaded one until memory pressure compresses the weights.
+        // Pages cached before the read (a download, an earlier read) are then
+        // dropped too.
         if let digest = hashSingleFileUncached(at: url) {
             return digest
         }
@@ -239,27 +241,25 @@ public struct WeightHasher: Sendable {
     }
 
     #if canImport(Darwin)
-    /// One reusable page-aligned 1 MiB buffer and `F_NOCACHE`; nil on any
-    /// failure so the caller's existing readers run.
+    /// Bytes per uncached read. Each file being hashed holds two such buffers.
+    static let uncachedChunkBytes = 4 << 20
+
+    /// Page-aligned `F_NOCACHE` reads, one chunk ahead of the hash
+    /// (`OverlappedFileDigest`); nil on any failure so the caller's existing
+    /// readers run. The file's cached pages are dropped afterwards (`PageCache`).
+    /// A cached read would leave every byte resident, and the host memory gate
+    /// of a cluster rank would then refuse that very model's load (M5 Ultra
+    /// leader, 2026-10-13: 213 GiB of cache, 23 GiB free after the hash). The
+    /// cluster worker's verifier and the cable copy also read uncached.
     static func hashSingleFileUncached(at url: URL) -> SHA256Digest? {
         let descriptor = open(url.path, O_RDONLY | O_CLOEXEC)
         guard descriptor >= 0 else { return nil }
-        defer { close(descriptor) }
-        guard fcntl(descriptor, F_NOCACHE, 1) != -1 else { return nil }
-        let capacity = 1 << 20
-        let buffer = UnsafeMutableRawPointer.allocate(byteCount: capacity, alignment: Int(getpagesize()))
-        defer { buffer.deallocate() }
-        var hasher = SHA256()
-        while true {
-            let count = read(descriptor, buffer, capacity)
-            if count == 0 { break }
-            if count < 0 {
-                if errno == EINTR { continue }
-                return nil
-            }
-            hasher.update(bufferPointer: UnsafeRawBufferPointer(start: buffer, count: count))
+        defer {
+            PageCache.drop(descriptor: descriptor)
+            close(descriptor)
         }
-        return hasher.finalize()
+        guard fcntl(descriptor, F_NOCACHE, 1) != -1 else { return nil }
+        return OverlappedFileDigest.sha256(descriptor: descriptor, chunkBytes: uncachedChunkBytes)
     }
     #endif
 

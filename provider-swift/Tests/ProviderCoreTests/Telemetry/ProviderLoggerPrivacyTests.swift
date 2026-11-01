@@ -77,6 +77,37 @@ private final class ProviderLogRecorder: @unchecked Sendable {
     #expect(entries.first?.message.contains("jinja_template") == false)
 }
 
+@Test func refusalPublishesOnlyItsFixedReason() {
+    let recorder = ProviderLogRecorder()
+    let logger = ProviderLogger(
+        subsystem: "test",
+        category: "privacy",
+        sink: { level, visibility, message in
+            recorder.append(level: level, visibility: visibility, message: message)
+        }
+    )
+
+    InferenceFailureLogger(logger: logger).record(
+        requestId: "private-request-id",
+        failure: InferenceFailure(code: .invalidRequest, statusCode: 400),
+        refusal: .unsupportedReasoningControl
+    )
+
+    #expect(recorder.snapshot() == [
+        .init(
+            level: .error,
+            visibility: .public,
+            message: ProviderOperationalMessage.refusalUnsupportedReasoningControl.rawValue
+        ),
+        .init(
+            level: .error,
+            visibility: .private,
+            message: "[private-request-id] inference failure code=invalid_request status=400"
+                + " refusal=unsupported_reasoning_control"
+        ),
+    ])
+}
+
 @Test func publicProviderLogVocabularyIsFixedBoundedText() {
     let messages = ProviderOperationalMessage.allCases.map(\.rawValue)
 

@@ -147,7 +147,7 @@ struct Gemma4TurnStructureTests {
             _ = try Gemma4TemplateFix.normalizeMessages(input)
             Issue.record("expected invalidToolPayload")
         } catch let error as MultiModelBatchSchedulerEngineError {
-            guard case .invalidToolPayload(let message) = error else {
+            guard case .invalidToolPayload(let message, _) = error else {
                 Issue.record("wrong case: \(error)")
                 return
             }

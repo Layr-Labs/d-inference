@@ -43,6 +43,7 @@ extension ProviderLoop {
         modelSwitchStatus = .init(requestID: request.id, outcome: .validating, models: request.models)
         publishModelSwitchStatus()
         let task = Task { await self.performModelSwitch(request: request) }
+        transitionGenerations.begin(.modelSwitch)
         modelSwitchTask = task
         let result = await task.value
         modelSwitchTask = nil

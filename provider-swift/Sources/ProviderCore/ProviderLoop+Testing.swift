@@ -134,10 +134,27 @@ extension ProviderLoop {
         serveUsesHostServices = enabled
     }
 
+    /// Test seam: a shorter member negotiation window, set before `run()`.
+    /// Every window rule stays the same; only its length changes.
+    func setClusterMemberNegotiationWindowForTesting(_ window: Duration) {
+        clusterMemberNegotiationWindow = window
+    }
+
     /// Test seam: toggle the persistence gate independently of the path
     /// override (pins the "inert unless serving" guard).
     func setLoadedModelsPersistenceEnabledForTesting(_ enabled: Bool) {
         loadedModelsPersistenceEnabled = enabled
+    }
+
+    /// Test seam: record verified managed-load hashes to a temp file.
+    func setVerifiedWeightHashesFileForTesting(_ url: URL?) {
+        verifiedWeightHashesFile = url
+    }
+
+    /// Test seam: observe or replace the full weight read behind load-time
+    /// hash captures.
+    func setLoadWeightHasherForTesting(_ hasher: @escaping @Sendable (URL, String) -> String?) {
+        loadWeightHasher = hasher
     }
 
     /// Test seam: the `DARKBLOOM_TTFT_COLD_LOAD_RELEASE` choice, read at init.

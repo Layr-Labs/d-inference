@@ -1,7 +1,10 @@
 import Foundation
 
-/// Opt-in grants control over GPU residency of advertised, already cached builds.
-/// It never grants permission to download new weights or remove disk files.
+/// Saved opt-in. Its selection is the persisted part of the Autopilot model
+/// set; a running provider adds every verified catalog build in its cache
+/// (`AutopilotModelSet`) and may download catalog builds on the operator's
+/// behalf (`ProviderLoop+AutopilotDownload`). It never grants permission to
+/// remove disk files.
 public struct ModelAutopilotSettings: Codable, Sendable, Equatable {
     public var enabled: Bool
     public var consentRecorded: Bool

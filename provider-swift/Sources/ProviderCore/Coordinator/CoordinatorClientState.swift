@@ -1,5 +1,6 @@
 // CoordinatorClient shared state: atomic provider stats + provider state, and
-// the small Sendable concurrency primitives (unfair lock, pong tracker, atomic).
+// the small Sendable concurrency primitives (unfair lock, pong tracker,
+// session recorder, atomic).
 
 import Foundation
 import Network
@@ -202,6 +203,7 @@ public final class ProviderState: @unchecked Sendable {
     private var _backendCapacity: BackendCapacity? = nil
     private var _modelAutopilot: ModelAutopilotSnapshot? = nil
     private var _autopilotInventory: [ModelInfo]? = nil
+    private var _registeredAutopilotInventoryIDs: Set<String>? = nil
     private var _capacityModelAutopilot: ModelAutopilotSnapshot? = nil
     private var _prefixCacheV2Sources: [String: any DurablePrefixCacheEvidenceSource] = [:]
     private var _prefixCacheMemorySources: [String: ResidentPrefixCacheEvidence] = [:]
@@ -210,7 +212,9 @@ public final class ProviderState: @unchecked Sendable {
     private var _publishedCapacity: BackendCapacity? = nil
     private var _capacitySeq: UInt64 = 0
     private var _refusingNewWork = false
+    private var _busy: ProviderBusy? = nil
     private var _modelAdmissionDrains: Set<String> = []
+    private var _memberPairSlotModel: String? = nil
 
     /// Bounded per-(model, warm/cold, prompt-bucket, batch-bucket) end-to-end
     /// TTFT statistics from completed real requests, fed by the ProviderLoop's
@@ -241,9 +245,25 @@ public final class ProviderState: @unchecked Sendable {
         set { lock.withLock { _currentModelHash = newValue } }
     }
 
-    var autopilotInventory: [ModelInfo]? {
-        get { lock.withLock { _autopilotInventory } }
-        set { lock.withLock { _autopilotInventory = newValue } }
+    /// One Autopilot state and the inventory built with it. A registration
+    /// reads both at once, so its inventory always matches the
+    /// `selected_models` it is filtered by.
+    func publishModelAutopilot(_ snapshot: ModelAutopilotSnapshot, inventory: [ModelInfo]) {
+        lock.withLock {
+            _modelAutopilot = snapshot
+            _autopilotInventory = inventory
+        }
+    }
+
+    var modelAutopilotRegistration: (snapshot: ModelAutopilotSnapshot?, inventory: [ModelInfo]?) {
+        lock.withLock { (_modelAutopilot, _autopilotInventory) }
+    }
+
+    /// Autopilot inventory IDs the last registration actually carried; nil
+    /// before the first.
+    var registeredAutopilotInventoryIDs: Set<String>? {
+        get { lock.withLock { _registeredAutopilotInventoryIDs } }
+        set { lock.withLock { _registeredAutopilotInventoryIDs = newValue } }
     }
 
     public var modelAutopilot: ModelAutopilotSnapshot? {
@@ -286,6 +306,22 @@ public final class ProviderState: @unchecked Sendable {
     public var refusingNewWork: Bool {
         get { lock.withLock { _refusingNewWork } }
         set { lock.withLock { _refusingNewWork = newValue } }
+    }
+
+    /// The model of the pair slot a leader member serves (S09), nil when it
+    /// serves none. A member's client hands the loop an inference request only
+    /// while this is set; otherwise it answers the no-model refusal itself.
+    public var memberPairSlotModel: String? {
+        get { lock.withLock { _memberPairSlotModel } }
+        set { lock.withLock { _memberPairSlotModel = newValue } }
+    }
+
+    /// Why the provider refuses work while connected (an add-on hold). Every
+    /// heartbeat and registration copies it; the loop sets it before the
+    /// event heartbeat that announces the hold and clears it on release.
+    public var busy: ProviderBusy? {
+        get { lock.withLock { _busy } }
+        set { lock.withLock { _busy = newValue } }
     }
 
     /// Model admission mirrors are separate from whole-provider draining:
@@ -476,6 +512,35 @@ internal final class PongTracker: @unchecked Sendable {
 
     func elapsed() -> TimeInterval {
         lock.withLock { CFAbsoluteTimeGetCurrent() - lastPong }
+    }
+}
+
+// MARK: - CoordinatorSessionRecorder (how one connection attempt ended)
+
+/// Records how one connection attempt ends, for `CoordinatorReconnectPolicy`.
+/// The actor marks the session open after it sends `register`; the receive
+/// callback records the coordinator's close code on `connectionQueue`. The
+/// actor reads the result after the attempt ends.
+internal final class CoordinatorSessionRecorder: @unchecked Sendable {
+    private let lock = OSAllocatedUnfairLock()
+    private var openedAt: ContinuousClock.Instant?
+    private var closeCode: UInt16?
+
+    func markOpened() {
+        let now = ContinuousClock.now
+        lock.withLock { openedAt = now }
+    }
+
+    /// `receiveLoop` ends at the first close frame, so this runs at most once.
+    func recordCloseCode(_ code: UInt16) {
+        lock.withLock { closeCode = code }
+    }
+
+    func end() -> CoordinatorSessionEnd {
+        let now = ContinuousClock.now
+        return lock.withLock {
+            CoordinatorSessionEnd(openDuration: openedAt.map { now - $0 }, closeCode: closeCode)
+        }
     }
 }
 

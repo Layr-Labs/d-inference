@@ -134,6 +134,35 @@ final class MiMoV26ConsumerParityTests: XCTestCase {
         }
     }
 
+    /// The pinned template renders a tool result's content, never its `name`,
+    /// so a result whose name matches, is empty, or differs from its call (an
+    /// MCP client's unprefixed name) is served with the unnamed history's prompt.
+    func testToolResultNameIsServedWithTheUnnamedPrompt() async throws {
+        let (tokenizer, _) = try await MiMoConsumerFixture.load()
+        func body(_ name: String?) -> Data {
+            let field = name.map { #","name":"\#($0)""# } ?? ""
+            return Data((#"{"model":"fixture","messages":[{"role":"user","content":"go"},{"role":"assistant","content":null,"tool_calls":[{"id":"c1","type":"function","function":{"name":"mcp__fs__read","arguments":"{\"path\":\"a\"}"}}]},{"role":"tool","tool_call_id":"c1""#
+                + field + #","content":"R"}],"tools":[{"type":"function","function":{"name":"mcp__fs__read","parameters":{"type":"object","properties":{"path":{"type":"string"}}}}}]}"#).utf8)
+        }
+        let unnamed = try ProviderPromptContractPipeline.tokenizeProviderBody(
+            body(nil), tokenizer: tokenizer.inner, modelType: "mimo_v2")
+        for name in ["mcp__fs__read", "", "read", "functions.mcp__fs__read"] {
+            let data = body(name)
+            XCTAssertEqual(try ProviderPromptContractPipeline.tokenizeProviderBody(
+                data, tokenizer: tokenizer.inner, modelType: "mimo_v2"), unnamed, name)
+            let serving = MiMoConsumerServing(tokenizer: tokenizer)
+            do {
+                let response = try await serving.service(ProviderLoop.extractChatTemplateControls(from: data))
+                    .createChatCompletion(request: ProviderLoop.decodeOpenAIRequest(data))
+                XCTAssertEqual(response.choices.first?.message.content.text, "Ready", name)
+                XCTAssertEqual(serving.backend.prompts, [unnamed], name)
+            } catch {
+                XCTFail("\(name): \(error)")
+            }
+            await serving.bridge.shutdown()
+        }
+    }
+
     func testTypedResponsesAndApplyTemplateUseSameNativePreparation() async throws {
         let (tokenizer, _) = try await MiMoConsumerFixture.load()
         let body = Data(#"{"model":"fixture","input":"hello","reasoning":{"effort":"none"}}"#.utf8)

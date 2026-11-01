@@ -28,6 +28,25 @@ public struct ModelAutopilotSnapshot: Codable, Sendable, Equatable {
     public var activeCommandId: String?
     public var lastCommandId: String?
     public var lastCommandStatus: ModelAutopilotStatus.State?
+    /// Additive features beyond protocol 3 (`ModelAutopilotCapability` raw
+    /// values). Reported only with consent; absent on older providers.
+    public var capabilities: [String]?
+    /// Inventory models a successful operation adopted: each is resident and
+    /// keeps serving without a control lease.
+    public var adoptedModels: [String]?
+    /// Active placement holds; each held model is resident.
+    public var heldModels: [ModelAutopilotHold]?
+    /// Every condition that refuses a residency operation now, in report order
+    /// (`ModelAutopilotBusyReason` raw values). Absent when not busy.
+    public var busyReasons: [String]?
+    /// The first of `busyReasons`.
+    public var busyReason: String?
+    /// Unix milliseconds since `busyReason` has been continuously observed.
+    public var busySinceMs: Int64?
+    /// Stuck-transition watchdog activations in this process, by transition.
+    public var transitionStalls: [ModelAutopilotTransitionStall]?
+    /// Room for Autopilot downloads; only with `inventory_downloads`.
+    public var downloadStorage: ModelAutopilotDownloadStorage?
 
     public init(enabled: Bool, consentEnabled: Bool? = nil, minDwellSeconds: Int = 1_800, pinnedModels: [String] = [],
                 maxModelSlots: Int = 1, residentModels: [ModelAutopilotResident] = [],
@@ -58,6 +77,88 @@ public struct ModelAutopilotSnapshot: Codable, Sendable, Equatable {
         case residentModels = "resident_models", freeForLoadNoEvictGb = "free_for_load_no_evict_gb"
         case activeCommandId = "active_command_id", lastCommandId = "last_command_id"
         case lastCommandStatus = "last_command_status"
+        case capabilities, adoptedModels = "adopted_models", heldModels = "held_models"
+        case busyReasons = "busy_reasons", busyReason = "busy_reason", busySinceMs = "busy_since_ms"
+        case transitionStalls = "transition_stalls"
+        case downloadStorage = "download_storage"
+    }
+}
+
+/// Closed vocabulary of `ModelAutopilotSnapshot.capabilities`.
+public enum ModelAutopilotCapability: String, CaseIterable, Sendable {
+    /// A succeeded operation's cached inventory target keeps serving after the
+    /// lease ends, and is reported in `adopted_models`.
+    case inventoryAdoption = "inventory_adoption"
+    /// `hold_seconds` protects the loaded target from LRU eviction and idle
+    /// unload, and active holds are reported in `held_models`.
+    case placementHolds = "placement_holds"
+    /// `busy_reason(s)`, `busy_since_ms`, `transition_stalls` and the
+    /// `provider_busy` status `detail` are reported.
+    case busyReasons = "busy_reasons"
+    /// Downloads are on (`[backend.autopilot_downloads]`, the default): a
+    /// `prefetch_model` for a build outside ordinary serving downloads it into
+    /// the Autopilot set (`AutopilotDownloadRefusal` codes on refusal), and
+    /// `download_storage` reports the room for downloads.
+    case inventoryDownloads = "inventory_downloads"
+}
+
+/// Free disk, the reserve and the operator's caps for Autopilot downloads, in
+/// bytes. Usage counts the builds Autopilot downloaded that are still on disk.
+public struct ModelAutopilotDownloadStorage: Codable, Sendable, Equatable {
+    /// Free bytes for important usage on the model cache volume; 0 when unknown.
+    public var diskFreeBytes: Int64
+    /// Bytes a download must leave free.
+    public var reserveBytes: Int64
+    public var usedBytes: Int64
+    public var usedModels: Int
+    /// The storage cap; absent when the operator set none.
+    public var limitBytes: Int64?
+    /// The model cap; absent when the operator set none.
+    public var limitModels: Int?
+
+    public init(diskFreeBytes: Int64, reserveBytes: Int64, usedBytes: Int64, usedModels: Int,
+                limitBytes: Int64? = nil, limitModels: Int? = nil) {
+        self.diskFreeBytes = diskFreeBytes
+        self.reserveBytes = reserveBytes
+        self.usedBytes = usedBytes
+        self.usedModels = usedModels
+        self.limitBytes = limitBytes
+        self.limitModels = limitModels
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case diskFreeBytes = "disk_free_bytes", reserveBytes = "reserve_bytes", usedBytes = "used_bytes"
+        case usedModels = "used_models", limitBytes = "limit_bytes", limitModels = "limit_models"
+    }
+}
+
+public struct ModelAutopilotHold: Codable, Sendable, Equatable {
+    public var modelId: String
+    /// Unix milliseconds at which the hold ends.
+    public var expiresAtMs: Int64
+    public init(modelId: String, expiresAtMs: Int64) {
+        self.modelId = modelId
+        self.expiresAtMs = expiresAtMs
+    }
+    enum CodingKeys: String, CodingKey {
+        case modelId = "model_id", expiresAtMs = "expires_at_ms"
+    }
+}
+
+public struct ModelAutopilotTransitionStall: Codable, Sendable, Equatable {
+    /// `ModelAutopilotTransition` raw value.
+    public var transition: String
+    /// Monotonic per provider process.
+    public var count: UInt64
+    /// Age of the most recent stalled occurrence when the watchdog acted.
+    public var lastAgeMs: Int64
+    public init(transition: String, count: UInt64, lastAgeMs: Int64) {
+        self.transition = transition
+        self.count = count
+        self.lastAgeMs = lastAgeMs
+    }
+    enum CodingKeys: String, CodingKey {
+        case transition, count, lastAgeMs = "last_age_ms"
     }
 }
 
@@ -94,9 +195,13 @@ public struct ModelAutopilotCommand: Codable, Sendable, Equatable {
     public var expectedResidentModels: [String]
     public var expiresAtMs: Int64
     public var leaseSeconds: Int
+    /// Placement hold on the loaded target, `0...86_400` seconds. Absent or
+    /// zero records none; older coordinators omit it.
+    public var holdSeconds: Int?
 
     public init(commandId: String, loadModelId: String? = nil, unloadModelIds: [String] = [],
-                expectedResidentModels: [String] = [], expiresAtMs: Int64, leaseSeconds: Int = 1_800, sessionId: String = "", revision: String = "") {
+                expectedResidentModels: [String] = [], expiresAtMs: Int64, leaseSeconds: Int = 1_800, sessionId: String = "", revision: String = "",
+                holdSeconds: Int? = nil) {
         self.sessionId = sessionId
         self.revision = revision
         self.commandId = commandId
@@ -105,6 +210,7 @@ public struct ModelAutopilotCommand: Codable, Sendable, Equatable {
         self.expectedResidentModels = expectedResidentModels
         self.expiresAtMs = expiresAtMs
         self.leaseSeconds = leaseSeconds
+        self.holdSeconds = holdSeconds
     }
     enum CodingKeys: String, CodingKey {
         case reason
@@ -112,6 +218,7 @@ public struct ModelAutopilotCommand: Codable, Sendable, Equatable {
         case commandId = "command_id", loadModelId = "load_model_id"
         case unloadModelIds = "unload_model_ids", expectedResidentModels = "expected_resident_models"
         case expiresAtMs = "expires_at_ms", leaseSeconds = "lease_seconds"
+        case holdSeconds = "hold_seconds"
     }
 }
 
@@ -120,15 +227,19 @@ public struct ModelAutopilotStatus: Codable, Sendable, Equatable {
     public var commandId: String
     public var status: State
     public var error: String?
+    /// With `provider_busy`, the first `ModelAutopilotBusyReason`.
+    public var detail: String?
     public var modelAutopilot: ModelAutopilotSnapshot
-    public init(commandId: String, status: State, error: String? = nil, modelAutopilot: ModelAutopilotSnapshot) {
+    public init(commandId: String, status: State, error: String? = nil, detail: String? = nil,
+                modelAutopilot: ModelAutopilotSnapshot) {
         self.commandId = commandId
         self.status = status
         self.error = error
+        self.detail = detail
         self.modelAutopilot = modelAutopilot
     }
     enum CodingKeys: String, CodingKey {
-        case commandId = "command_id", status, error
+        case commandId = "command_id", status, error, detail
         case modelAutopilot = "model_autopilot"
     }
 }

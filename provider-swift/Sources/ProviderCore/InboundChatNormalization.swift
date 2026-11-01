@@ -51,6 +51,8 @@ enum InboundChatNormalization {
     /// unknown `function_call`, so this must run on the fast path; otherwise a
     /// following legacy `role: function` result becomes a `tool` message with
     /// no previous assistant tool call and trips Harmony's Jinja assertion.
+    /// The `role: function` result right after a converted call answers it,
+    /// so it takes the call's ID for families that pair results by ID.
     static func normalizeLegacyFunctionCalls(in data: Data) throws -> Data {
         guard data.count <= ToolSchemaNormalization.maxNormalizationBytes else { return data }
         guard data.range(of: Data("\"function_call\"".utf8)) != nil else { return data }
@@ -59,8 +61,16 @@ enum InboundChatNormalization {
         else { return data }
 
         var changed = false
+        var convertedCallID: String?
         root["messages"] = try messages.enumerated().map { index, value in
+            let answeredCallID = convertedCallID
+            convertedCallID = nil
             guard var message = value as? [String: Any] else { return value }
+            if let answeredCallID, (message["role"] as? String) == "function", message["tool_call_id"] == nil {
+                message["tool_call_id"] = answeredCallID
+                changed = true
+                return message
+            }
             guard (message["role"] as? String) == "assistant" else { return value }
             guard message["tool_calls"] == nil else { return value }
             guard let rawFunctionCall = message["function_call"] else { return value }
@@ -81,8 +91,10 @@ enum InboundChatNormalization {
             }
 
             let arguments = try normalizeLegacyFunctionArguments(functionCall["arguments"])
+            let id = "call_legacy_\(index)"
+            convertedCallID = id
             message["tool_calls"] = [[
-                "id": "call_legacy_\(index)",
+                "id": id,
                 "type": "function",
                 "function": [
                     "name": name,

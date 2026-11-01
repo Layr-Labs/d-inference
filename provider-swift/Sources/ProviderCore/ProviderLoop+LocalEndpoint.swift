@@ -63,13 +63,13 @@ extension ProviderLoop {
             modelTypeProvider: { [weak self] modelId in
                 await self?.localModelTypeForAudioAdmission(modelId)
             },
-            managedSuperEngine: { [weak self] body, request in
+            managedSuperEngine: { [weak self] body, request, logprobs in
                 guard request.model == NemotronSuperServingPolicy.modelID else { return nil }
                 return NemotronSuperLocalEndpointEngine(body: body, hasMedia: MediaIngest.hasMedia(request),
                     cacheScope: superCacheScope, acquire: { [weak self] in
                         guard let self else { throw MultiModelBatchSchedulerEngineError.modelNotLoaded(request.model) }
                         return try await self.acquireNemotronSuperForLocal(request.model)
-                    })
+                    }, logprobs: logprobs)
             }
         )
         let log = logger

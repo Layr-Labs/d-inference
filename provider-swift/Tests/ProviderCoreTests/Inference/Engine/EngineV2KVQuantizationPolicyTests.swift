@@ -56,7 +56,9 @@ struct EngineV2KVQuantizationPolicyTests {
             modelType: "nemotron_h", modelID: "m", environment: [:]) == .native)
     }
 
-    @Test(arguments: ["qwen3_5", "gemma4", "gpt_oss", "glm5_next", "prism_hadamard_qwen35", "supported"])
+    @Test(arguments: [
+        "qwen3_5", "gemma4", "gpt_oss", "glm5_next", "nemotron_h_omni", "prism_hadamard_qwen35", "supported",
+    ])
     func otherFamiliesKeepTheirCheckpointDefault(modelType: String) throws {
         #expect(try EngineV2KVQuantizationPolicy.resolve(
             modelType: modelType, global: "balanced", modelID: "m", environment: [:], purpose: .checkpoint) == .balanced)

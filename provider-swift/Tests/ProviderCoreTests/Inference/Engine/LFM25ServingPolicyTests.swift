@@ -197,11 +197,12 @@ struct LFM25ServingPolicyTests {
             #expect(UnifiedMemoryCap.loadHeadroomBytes(modelIDs: [id]) == 3 * gib)
         }
         #expect(UnifiedMemoryCap.activationFloorBytes(forModelIDs: lfmIDs) == 2 * gib)
-        // The default and the other measured entry are unchanged.
+        // The default and the other measured entries are unchanged.
         #expect(UnifiedMemoryCap.defaultActivationReserveBytes == 11 * gib / 2)
         #expect(UnifiedMemoryCap.measuredActivationFloorsBytes["gpt-oss-20b"] == 7 * gib / 2)
+        #expect(UnifiedMemoryCap.measuredActivationFloorsBytes["nvidia-nemotron-3.5-super"] == 2 * gib)
         #expect(Set(UnifiedMemoryCap.measuredActivationFloorsBytes.keys)
-            == Set(["gpt-oss-20b"] + lfmIDs))
+            == Set(["gpt-oss-20b", "nvidia-nemotron-3.5-super"] + lfmIDs))
     }
 
     @Test("look-alike LFM ids stay on the unmeasured default")

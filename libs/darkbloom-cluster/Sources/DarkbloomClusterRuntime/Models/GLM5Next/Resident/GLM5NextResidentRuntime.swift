@@ -125,7 +125,8 @@ public final class GLM5NextResidentRuntime {
             throw ProbeError("GLM shard headers are not the registered inventory")
         }
         let resources = try GLM5NextServingResources.envelope(descriptor: descriptor, inventory: inventory,
-            rank: configuration.rank, buildSHA256: configuration.identity.peers[configuration.rank].buildSHA256)
+            rank: configuration.rank, buildSHA256: configuration.identity.peers[configuration.rank].buildSHA256,
+            admitsRequestsOnArrival: true)
         let runtime = try GLM5NextResidentRuntime(configuration: configuration, descriptor: descriptor, resources: resources)
         runtime.qualification = qualification
         runtime.prefixSSDKey = prefixSSDKey

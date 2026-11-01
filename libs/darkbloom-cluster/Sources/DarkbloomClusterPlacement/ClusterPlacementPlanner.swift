@@ -795,7 +795,8 @@ public enum ClusterPlacementPlanner {
                   earlier: [ClusterModelLayout.Range], mode: ClusterGenerationMode,
                   schedule: ClusterPrefillSchedule) -> ClusterPlacementRank {
             let memory = device.profile.memory, last = rank == count - 1
-            if let terms = layout.requestsOnArrival, !mode.isPhaseSplit {
+            // Only a pair's pipeline rank: one Mac alone serves through its own engine, on the full quote.
+            if let terms = layout.requestsOnArrival, count > 1, !mode.isPhaseSplit {
                 return onArrivalRequirement(rank: rank, of: count, device: device, own: own, mode: mode, terms: terms)
             }
             // Under a phase split the last rank also loads every earlier range,

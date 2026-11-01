@@ -215,7 +215,7 @@ struct GLM5NextTensorParallelLoadMetadata {
         DispatchQueue.concurrentPerform(iterations: 2) { peer in
             let value = Result { () throws -> GLM5NextResidentResourceEnvelope in
                 let resources = try GLM5NextServingResources.envelope(descriptor: descriptor, inventory: inventory,
-                    rank: peer, buildSHA256: buildSHA256[peer], admitsRequestsOnArrival: false)
+                    rank: peer, buildSHA256: buildSHA256[peer])
                 _ = try resources.quote(descriptor: descriptor, maximumBufferBytes: maximumBufferBytes,
                     allocationBound: QwenResidentResourceEnvironment.allocationBound)
                 return resources

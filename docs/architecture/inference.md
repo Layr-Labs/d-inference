@@ -4062,8 +4062,8 @@ The installed run command recomputes the decision from both snapshots, binds it 
 ## GLM pair admission
 
 A serving GLM pipeline rank reserves no request at LOAD
-(`GLM5NextResidentResourceEnvelope.admitsRequestsOnArrival`, set by
-`GLM5NextServingResources.envelope`).
+(`GLM5NextResidentResourceEnvelope.admitsRequestsOnArrival`, which only
+`GLM5NextResidentRuntime.serving` asks `GLM5NextServingResources.envelope` for).
 
 1. **LOAD** holds, and is gated on, the stage's weights at their allocator
    bounds plus what only loading holds: construction copies, host read buffers
@@ -4089,7 +4089,8 @@ A serving GLM pipeline rank reserves no request at LOAD
 The planner places such a rank on what loading needs. It requires the GPU to
 hold the weights with the memory plan's whole request, and reports each rank's
 serving context (`ClusterModelLayout.requestsOnArrival`,
-`ClusterPlacementRank.servingContextTokens`). When a GPU limit binds, the plan
+`ClusterPlacementRank.servingContextTokens`). Its estimate of one Mac holding
+the whole model alone keeps the full quote, as that Mac's own engine loads it. When a GPU limit binds, the plan
 names it and the command that raises it (`ClusterPlacementRank.gpuWorkingSetShortBytes`,
 `ClusterPlacementFlow.gpuLimitLines`).
 

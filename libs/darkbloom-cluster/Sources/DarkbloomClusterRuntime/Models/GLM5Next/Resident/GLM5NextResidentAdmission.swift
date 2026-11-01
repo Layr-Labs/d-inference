@@ -404,9 +404,9 @@ struct GLM5NextResidentAdmission {
               configuration.admitsRequestDeadline(value.deadlineUptimeNanoseconds, now: now) else {
             throw ProbeError("GLM reservation differs from its profile, capacity, route or deadline")
         }
-        // The pipeline's LOAD charged its memory scope, never more: a longer
-        // request is not charged here, so it is not served here (its READY
-        // says so too: `servingContextTokens`).
+        // A pipeline rank charges at most its memory scope, at LOAD or on
+        // arrival: a longer request is not charged here, so it is not served
+        // here (its READY says so too: `servingContextTokens`).
         let memory = descriptor.memoryProfile
         guard value.promptTokenIDs.count <= memory.maximumPromptTokens, value.outputCount <= memory.maximumOutputTokens,
               value.promptTokenIDs.count + value.outputCount <= memory.maximumContextTokens else {

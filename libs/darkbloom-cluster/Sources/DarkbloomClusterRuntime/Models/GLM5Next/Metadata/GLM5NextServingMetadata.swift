@@ -101,13 +101,14 @@ enum GLM5NextServingResources {
     /// layers (`GLM5NextResidentDescriptor.memoryProfile`). The workspace
     /// evidence covers the profile's whole scope, so a runtime that charges a
     /// longer request at its own context (tensor parallel) quotes it here too.
-    /// `admitsRequestsOnArrival` (a pipeline rank): LOAD holds only what
-    /// loading needs and each request is admitted when it arrives; false
-    /// (tensor parallel's quotes of the two stages) reserves the whole
-    /// request at LOAD, as before.
+    /// `admitsRequestsOnArrival`, set only by the serving pipeline rank
+    /// (`GLM5NextResidentRuntime.serving`): LOAD holds only what loading needs
+    /// and each request is admitted when it arrives. Every other caller
+    /// (tensor parallel's quotes of the two stages, the staged reference)
+    /// reserves the whole request at LOAD.
     static func envelope(descriptor: GLM5NextResidentDescriptor, inventory: GLM5NextWeightInventory,
                          rank: Int, buildSHA256: String,
-                         admitsRequestsOnArrival: Bool = true) throws -> GLM5NextResidentResourceEnvelope {
+                         admitsRequestsOnArrival: Bool = false) throws -> GLM5NextResidentResourceEnvelope {
         let environment = try environmentSHA256(buildSHA256: buildSHA256)
         let c = inventory.configuration.textConfig
         let p = descriptor.profile

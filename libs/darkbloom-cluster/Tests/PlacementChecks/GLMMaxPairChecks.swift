@@ -52,6 +52,12 @@ func checkGLMMaxPair(golden: URL, _ checks: PlacementChecks) throws {
     let text = ClusterPlacementExplanation.describe(placed, devices: raisedPair, layout: layout)
     checks.require("glm max: the plan says each rank admits its requests as they arrive, up to 65,536 tokens now",
         text.filter { $0.contains("Its requests are admitted as they arrive: up to 65536 tokens of context fit now.") }.count == 2)
+    // One Mac holding the whole model serves through its own engine, on the full quote: the plan estimates it as it
+    // would without admission on arrival.
+    var reserving = layout; reserving.requestsOnArrival = nil
+    let alone = try ClusterPlacementPlanner.plan(devices: raisedPair, layout: reserving, policy: product).alone
+    checks.require("glm max: one Mac alone is estimated on the full quote, not on admission on arrival",
+        !alone.isEmpty && placed.alone == alone)
 
     // The over-count is gone: weights are the layout's allocator-bound loaded bytes (no page per tensor), and only the
     // last rank carries a chunk's logits.

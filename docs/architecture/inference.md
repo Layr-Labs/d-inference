@@ -4363,9 +4363,9 @@ are excluded by name and refused as text, as is any unknown or misaligned name:
 | Part | Cut per rank | Collective |
 |---|---|---|
 | `q_proj`, `k_proj`, `v_proj`, sliding sink bias | Rows of 32 query heads and the KV heads they read (2 full, 4 sliding); head dims 192/128 as stored | — |
-| `o_proj` | Input columns of those heads (4,096) | BF16 partial, summed in FP32, rounded once, before `post_attention_layernorm` |
+| `o_proj` | Input columns of those heads (4,096) | FP32 partial (its BF16 input widened exactly), summed in FP32, rounded once, before `post_attention_layernorm` |
 | Dense layer 0 (16,384) | Gate/up rows, down input columns (8,192) | Same contract as `o_proj` |
-| Routed experts (`[256, out, in]` banks) | Gate/up axis 1, down axis 2: 1,024 channels, 32 MXFP4 groups | Each rank's 8 expert rows from the stock banks and decode kernels, combined locally in FP32 with the router's weights; one FP32 row summed, rounded once |
+| Routed experts (`[256, out, in]` banks) | Gate/up axis 1, down axis 2: 1,024 channels, 32 MXFP4 groups | Each rank's 8 expert rows from the stock banks and decode kernels, stored as FP32, combined locally in FP32 with the router's weights; one FP32 row summed, rounded once |
 | Router, norms, embedding | Replicated | — |
 | Untied `lm_head` | This rank's 76,288 vocabulary rows | One per selection |
 
@@ -4379,14 +4379,36 @@ selected expert's FP32 row across ranks (`TensorParallelSwitchLinear`). A
 MiMo rank keeps the stock half bank, so decode stays on the MXFP4 expert
 kernel (`MiMoV26DecodeExperts` takes only a plain `QuantizedSwitchLinear`),
 and one FP32 row crosses per token instead of eight: 16,384 B instead of
-131,072 B per routed layer at the registered width. The cost is one more
-rounding. Each expert's down projection over this rank's channels is rounded
-to BF16 before the FP32 combine, where one Mac rounds each expert's whole
-projection once. That is the rounding class of the `o_proj` partial, so
-comparisons against one Mac read `tokensEqualLogitsDiffer` or
-`divergedAtNearTie`. Per-expert FP32 rows would remove only this rounding:
-the `o_proj` partial keeps its own, so ranks would still not be bit-exact
-with one Mac, and routes could still flip.
+131,072 B per routed layer at the registered width.
+
+Every row-parallel product takes an exact FP32 widening of its BF16 input, so
+its partial is stored as FP32 and the only rounding is the one after the
+cross-rank sum. This is arithmetic contract v2
+(`MiMoTensorParallelPlan.arithmeticAgreementFields`, in the load agreement and
+the plan fingerprint); v1 stored each partial as BF16 first, and ranks on
+different contracts refuse each other.
+
+- Expert rows: `SwitchGLU.float32ExpertRows`, through the decode-expert
+  kernel's FP32-output twin (`MiMoV26DecodeExperts`, `float32Rows`) or MLX's
+  FP32 gather.
+- `o_proj` and the dense `down_proj`: MLX's FP32 qmv and qmm
+  (`MiMoV26DecoderLayer.attentionOutput`, `MiMoV26DenseMLP.tensorParallelPartial`).
+  `MiMoV26TensorParallelContext.sum` takes nothing but an FP32 partial.
+
+FP32 holds every BF16 value exactly, and MLX's FP32 MXFP4 and affine kernels
+accumulate in FP32 as the BF16 ones do. On M5 the NAX path runs FP32 inputs at
+TF32 (`MLX_ENABLE_TF32=1`, which `MiMoArithmeticEnvironment` requires). Its 10
+mantissa bits keep a BF16-sourced activation and an MXFP4 weight exactly, and an
+affine 8-bit weight at least as precisely as the BF16 kernel's BF16 weight tile.
+So no rank rounds more than one Mac. A rank never rounds its expert rows: their
+combined row is rounded once, after the sum, where one Mac also rounds each
+expert's whole projection to BF16 before its combine. Ranks are still not
+bit-exact with one Mac, because the halves reassociate the FP32 sums and a near
+tie can flip a route. Comparisons against one Mac read `tokensEqualLogitsDiffer`
+or `divergedAtNearTie`. `MiMoTensorParallelFloat32PartialTests` checks on the
+GPU that two ranks' rows add up bit for bit to the exact full-width row that one
+Mac rounds once, and that no `o_proj` or dense partial was rounded to BF16
+before its sum.
 
 `MiMoV26TensorShard` derives each rank's configuration (half the heads of both
 layer kinds and both channel widths, no MTP heads or towers) and cuts stored

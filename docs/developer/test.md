@@ -1331,7 +1331,9 @@ These checks use synthetic weights on one Mac, over loopback only. They prove
 neither real-weight numerics, a pair qualification nor speed. Never load the
 registered artifact for them.
 
-1. Run the CPU unit tests:
+1. Run the unit tests. The FP32-partial suite runs on the GPU, so stage the
+   source-matched `mlx.metallib` in the test bundle first
+   (`scripts/stage-test-metallib.sh`):
 
    ```bash
    swift test --package-path libs/darkbloom-cluster --filter MiMoTensorParallel
@@ -1346,6 +1348,11 @@ registered artifact for them.
    - the shard configuration and per-rank KV geometry;
    - shard cuts and byte runs against independent slices;
    - two in-process ranks against each other and the whole model;
+   - FP32 partials (`MiMoTensorParallelFloat32PartialTests`, on the GPU): two
+     ranks' expert rows add up bit for bit to the exact full-width row that
+     one Mac rounds once, through the decode-expert kernel and MLX's sorted
+     gather; every partial a rank sums is FP32, and no `o_proj` or dense
+     partial was rounded to BF16 first; the contract v2 strings are pinned;
    - the vocabulary-split head against the whole head;
    - the resident runtime's verified load: each rank reads exactly its shard's
      bytes, and a tampered or foreign checkpoint is refused;

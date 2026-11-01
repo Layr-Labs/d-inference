@@ -5,8 +5,8 @@
 // reasoned ended the request before any answer: finish_reason "stop",
 // reasoning only, empty content. Each scope mirrors the request's reasoning
 // parser, so text it returns as reasoning never matches. Tool-call frames don't
-// either when the request parses tool calls; without declared tools a literal
-// tool tag in an answer is text the client receives, so stops still apply.
+// either when the request parses tool calls; otherwise a literal tool tag in an
+// answer is text the client receives, so stops still apply.
 
 import Foundation
 import MLXLMCommon

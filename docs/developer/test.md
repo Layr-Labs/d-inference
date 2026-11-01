@@ -1,6 +1,6 @@
 # Test Provider And Native Contracts
 
-> Last updated: 2026-10-31
+> Last updated: 2026-11-01
 
 Run isolated Swift, native-resource, public-fixture and landing tests here.
 Backend integration and cross-implementation qualification are platform-owned.
@@ -1238,10 +1238,34 @@ neither real-weight numerics, a pair qualification nor speed.
    ```bash
    bash libs/darkbloom-cluster/Tests/TensorParallelPlanChecks/gemma-run.sh
    swift test --package-path libs/darkbloom-cluster --filter Gemma4TensorParallelTests
+   swift test --package-path libs/darkbloom-cluster --filter Gemma4TensorParallelRuntimeTests
    ```
 
    The plan check covers both registered artifacts' text tensors once per rank
-   and matches their registered text bytes. The unit tests cover:
+   and matches their registered text bytes. The `Gemma4TensorParallelRuntimeTests`
+   suite needs the GPU: put a source-matched `mlx.metallib` in
+   `libs/darkbloom-cluster/.build/out/Products/Debug/`, not in the `.xctest`
+   bundle. It covers the resident runtime's pieces:
+
+   - each rank's paged request state: its own KV heads of every layer;
+   - two in-process ranks on the paged request path, bit for bit equal, with
+     the whole model's tokens and exactly two collectives a layer and one a step;
+   - layer submission, which keeps every bit;
+   - batch lanes (one joining late): every row equals its request's solo row,
+     bit for bit, and the shared batch driver with the Gemma executor
+     publishes each request's solo tokens;
+   - the request loop on two ranks: a stop token, the owner's stop (also one
+     just before a stop token) and one rank's own stop end both ranks after
+     the same step, with logprobs;
+   - the share probe, timed on one rank with every sum local;
+   - each step's choice: greedy with both stop flags, sampled from the gathered
+     row exactly as the product's sampler draws, and greedy logprobs from the
+     split top-k;
+   - the verified load's cut of every text tensor, and its refusals;
+   - the load agreement's fields;
+   - a Gemma layout that advertises tensor parallel but is never planned in it.
+
+   The `Gemma4TensorParallelTests` suite covers:
 
    - the plan against the registered QAT 4-bit artifact's 1,697 header shapes
      (`Tests/StageMetadataChecks/Inputs`), and the 8-bit artifact's derived shapes
@@ -1259,11 +1283,19 @@ neither real-weight numerics, a pair qualification nor speed.
    ```bash
    bash libs/darkbloom-cluster-worker/Tests/GemmaTensorParallelOracles/run.sh \
      /path/to/darkbloom-cluster-tp-check /new/scratch/dir 58123
+   bash libs/darkbloom-cluster-worker/Tests/GemmaTensorParallelOracles/run.sh \
+     /path/to/darkbloom-cluster-tp-check /another/new/dir 58125 paged
    ```
 
    The script synthesizes five variants: 4- and 8-bit, routed and all-expert,
    and FP32. For each, it runs `full`, `split-sum`, `simulated` and two `tp`
-   ranks over the sealed local ring on ports 58123–58124.
+   ranks over the sealed local ring on the given port and the next one. With
+   `paged` as the fourth argument, every mode but `split-sum` runs the
+   resident runtime's own request path: paged KV, the product's CBv2 prompt
+   entry, and each step's choice in its own evaluation. The paged path also
+   runs `gemma lanes`: three requests served together through the batch
+   driver, in one process and over the ring, each of which must take its solo
+   tokens.
 
 3. Verify. Each `tp` rank must equal `simulated` bit for bit (exit status 0).
    The script also prints QualificationComparator's verdict for each rank

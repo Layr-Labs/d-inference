@@ -14,6 +14,7 @@ final class NativeWorkerRuntime: WorkerRuntime, @unchecked Sendable {
         case mimoV26TensorParallel(MiMoTensorParallelResidentRuntime)
         case glm5Next(GLM5NextResidentRuntime)
         case glm5NextTensorParallel(GLM5NextTensorParallelResidentRuntime)
+        case gemma4TensorParallel(Gemma4TensorParallelResidentRuntime)
     }
     private let owner: Owner
     /// The owner's bootstrap connection and native key, held for the worker's lifetime.
@@ -34,6 +35,13 @@ final class NativeWorkerRuntime: WorkerRuntime, @unchecked Sendable {
             throw WorkerFailure.invalid("A tensor assistant policy requires the Qwen tensor runtime")
         }
         switch family {
+        case .qwenDense where generationMode == .tensorParallel
+            && Gemma4TensorParallelResidentRuntime.serves(runtimeModelID: configuration.identity.modelID):
+            // Gemma 4 shares the layer-stage family; its tensor-parallel rank is its own runtime.
+            guard speculativeTerms == nil, tensorAssistantPolicy == nil, tensorShares == [1, 1], let dataPlane else {
+                throw WorkerFailure.invalid("Gemma tensor parallel runs equal shares over a keyed data plane without speculation")
+            }
+            owner = .gemma4TensorParallel(try .load(configuration, qualification: qualification, dataPlane: dataPlane))
         case .qwenDense where generationMode == .tensorParallel:
             owner = .qwenTensorParallel(try .load(configuration, shares: tensorShares, qualification: qualification,
                 dataPlane: dataPlane, prefixSSDKey: prefixSSDKey, speculativeTerms: speculativeTerms,
@@ -81,6 +89,7 @@ final class NativeWorkerRuntime: WorkerRuntime, @unchecked Sendable {
         case .qwenDense(let runtime): runtime.readiness
         case .qwenTensorParallel(let runtime): runtime.readiness
         case .glm5NextTensorParallel(let runtime): runtime.readiness
+        case .gemma4TensorParallel(let runtime): runtime.readiness
         case .mimoV26(let runtime): runtime.readiness
         case .mimoV26TensorParallel(let runtime): runtime.readiness
         case .glm5Next(let runtime): runtime.readiness
@@ -91,6 +100,7 @@ final class NativeWorkerRuntime: WorkerRuntime, @unchecked Sendable {
         case .qwenDense(let runtime): try runtime.reserve(requestID: id, request: value)
         case .qwenTensorParallel(let runtime): try runtime.reserve(requestID: id, request: value)
         case .glm5NextTensorParallel(let runtime): try runtime.reserve(requestID: id, request: value)
+        case .gemma4TensorParallel(let runtime): try runtime.reserve(requestID: id, request: value)
         case .mimoV26(let runtime): try runtime.reserve(requestID: id, request: value)
         case .mimoV26TensorParallel(let runtime): try runtime.reserve(requestID: id, request: value)
         case .glm5Next(let runtime): try runtime.reserve(requestID: id, request: value)
@@ -111,6 +121,7 @@ final class NativeWorkerRuntime: WorkerRuntime, @unchecked Sendable {
         case .qwenTensorParallel(let runtime): result = try runtime.start(requestID: id, tokens: channel)
         // Reads each answer after its next step was submitted.
         case .glm5NextTensorParallel(let runtime): result = try runtime.start(requestID: id, tokens: channel)
+        case .gemma4TensorParallel(let runtime): result = try runtime.start(requestID: id, tokens: channel)
         case .mimoV26(let runtime): result = try runtime.start(requestID: id, onCommittedToken: token)
         // Publishes each token's logprobs when the request asks for them.
         case .mimoV26TensorParallel(let runtime): result = try runtime.start(requestID: id, tokens: channel)
@@ -126,6 +137,7 @@ final class NativeWorkerRuntime: WorkerRuntime, @unchecked Sendable {
         case .qwenDense(let runtime): try runtime.releaseReservation(requestID: id)
         case .qwenTensorParallel(let runtime): try runtime.releaseReservation(requestID: id)
         case .glm5NextTensorParallel(let runtime): try runtime.releaseReservation(requestID: id)
+        case .gemma4TensorParallel(let runtime): try runtime.releaseReservation(requestID: id)
         case .mimoV26(let runtime): try runtime.releaseReservation(requestID: id)
         case .mimoV26TensorParallel(let runtime): try runtime.releaseReservation(requestID: id)
         case .glm5Next(let runtime): try runtime.releaseReservation(requestID: id)
@@ -136,7 +148,7 @@ final class NativeWorkerRuntime: WorkerRuntime, @unchecked Sendable {
     func releaseIdleMemory(underPressure: Bool) -> Int? {
         switch owner {
         case .glm5NextTensorParallel(let runtime): return try? runtime.releaseIdleMemory(underPressure: underPressure)
-        case .qwenDense, .qwenTensorParallel, .mimoV26, .mimoV26TensorParallel, .glm5Next:
+        case .qwenDense, .qwenTensorParallel, .mimoV26, .mimoV26TensorParallel, .glm5Next, .gemma4TensorParallel:
             return ClusterIdleMemory.releaseFreedBuffers()
         }
     }
@@ -146,7 +158,7 @@ final class NativeWorkerRuntime: WorkerRuntime, @unchecked Sendable {
         case .glm5NextTensorParallel(let runtime): runtime.refreshServingContext()
         // Nil for a row whose profile is its memory plan.
         case .qwenTensorParallel(let runtime): runtime.refreshServingContext()
-        case .mimoV26, .mimoV26TensorParallel, .glm5Next: nil
+        case .mimoV26, .mimoV26TensorParallel, .glm5Next, .gemma4TensorParallel: nil
         }
     }
     /// Qwen tensor parallel's lanes re-derive their serving context on a
@@ -164,12 +176,14 @@ final class NativeWorkerRuntime: WorkerRuntime, @unchecked Sendable {
         case .mimoV26TensorParallel: 1
         case .glm5NextTensorParallel(let runtime): runtime.lanes.lanes
         case .qwenTensorParallel(let runtime): runtime.batchLanes
+        case .gemma4TensorParallel(let runtime): runtime.lanes
         case .glm5Next: 1
         }
     }
     /// Native owners explicitly advertise raw-token logprob publication.
     var capturesLogprobs: Bool {
         if case .glm5NextTensorParallel = owner { return true }
+        if case .gemma4TensorParallel(let runtime) = owner { return runtime.capturesLogprobs }
         if case .qwenTensorParallel(let runtime) = owner { return runtime.capturesLogprobs }
         if case .mimoV26TensorParallel(let runtime) = owner { return runtime.capturesLogprobs }
         return false
@@ -179,6 +193,7 @@ final class NativeWorkerRuntime: WorkerRuntime, @unchecked Sendable {
         case .qwenDense(let runtime): try runtime.reserveLane(requestID: id, request: value)
         case .mimoV26(let runtime): try runtime.reserveLane(requestID: id, request: value)
         case .glm5NextTensorParallel(let runtime): try runtime.reserveLane(requestID: id, request: value)
+        case .gemma4TensorParallel(let runtime): try runtime.reserveLane(requestID: id, request: value)
         case .qwenTensorParallel(let runtime): try runtime.reserveLane(requestID: id, request: value)
         case .glm5Next, .mimoV26TensorParallel: throw WorkerFailure.invalid("This family serves one request at a time")
         }
@@ -188,6 +203,7 @@ final class NativeWorkerRuntime: WorkerRuntime, @unchecked Sendable {
         case .qwenDense(let runtime): try runtime.startLane(requestID: id)
         case .mimoV26(let runtime): try runtime.startLane(requestID: id)
         case .glm5NextTensorParallel(let runtime): try runtime.startLane(requestID: id)
+        case .gemma4TensorParallel(let runtime): try runtime.startLane(requestID: id)
         case .qwenTensorParallel(let runtime): try runtime.startLane(requestID: id)
         case .glm5Next, .mimoV26TensorParallel: throw WorkerFailure.invalid("This family serves one request at a time")
         }
@@ -198,6 +214,7 @@ final class NativeWorkerRuntime: WorkerRuntime, @unchecked Sendable {
         case .mimoV26(let runtime): runtime.cancelLane(requestID: id)
         case .glm5NextTensorParallel(let runtime): runtime.cancelLane(requestID: id)
         case .qwenTensorParallel(let runtime): runtime.cancelLane(requestID: id)
+        case .gemma4TensorParallel(let runtime): runtime.cancelLane(requestID: id)
         case .glm5Next, .mimoV26TensorParallel: break
         }
     }
@@ -207,6 +224,7 @@ final class NativeWorkerRuntime: WorkerRuntime, @unchecked Sendable {
         case .mimoV26(let runtime): runtime.withdrawLane(requestID: id)
         case .glm5NextTensorParallel(let runtime): runtime.withdrawLane(requestID: id)
         case .qwenTensorParallel(let runtime): runtime.withdrawLane(requestID: id)
+        case .gemma4TensorParallel(let runtime): runtime.withdrawLane(requestID: id)
         case .glm5Next, .mimoV26TensorParallel: false
         }
     }
@@ -216,6 +234,7 @@ final class NativeWorkerRuntime: WorkerRuntime, @unchecked Sendable {
         case .mimoV26(let runtime): runtime.hasStartedLanes
         case .glm5NextTensorParallel(let runtime): runtime.hasStartedLanes
         case .qwenTensorParallel(let runtime): runtime.hasStartedLanes
+        case .gemma4TensorParallel(let runtime): runtime.hasStartedLanes
         case .glm5Next, .mimoV26TensorParallel: false
         }
     }
@@ -224,6 +243,7 @@ final class NativeWorkerRuntime: WorkerRuntime, @unchecked Sendable {
         case .qwenDense(let runtime): try runtime.serveBatch(host: host)
         case .mimoV26(let runtime): try runtime.serveBatch(host: host)
         case .glm5NextTensorParallel(let runtime): try runtime.serveBatch(host: host)
+        case .gemma4TensorParallel(let runtime): try runtime.serveBatch(host: host)
         case .qwenTensorParallel(let runtime): try runtime.serveBatch(host: host)
         case .glm5Next, .mimoV26TensorParallel: throw WorkerFailure.invalid("This family serves one request at a time")
         }
@@ -232,6 +252,7 @@ final class NativeWorkerRuntime: WorkerRuntime, @unchecked Sendable {
     var retiresCancelledLanes: Bool {
         if case .qwenTensorParallel(let runtime) = owner { return runtime.batchLanes > 1 }
         if case .glm5NextTensorParallel = owner { return true }
+        if case .gemma4TensorParallel(let runtime) = owner { return runtime.lanes > 1 }
         if case .mimoV26(let runtime) = owner {
             return Self.qwenLanesRetireAlone(mode: runtime.generationMode, lanes: runtime.batchLanes)
         }
@@ -248,6 +269,7 @@ final class NativeWorkerRuntime: WorkerRuntime, @unchecked Sendable {
         case .qwenDense(let runtime): runtime.cancel(requestID: id)
         case .qwenTensorParallel(let runtime): runtime.cancel(requestID: id)
         case .glm5NextTensorParallel(let runtime): runtime.cancel(requestID: id)
+        case .gemma4TensorParallel(let runtime): runtime.cancel(requestID: id)
         case .mimoV26(let runtime): runtime.cancel(requestID: id)
         case .mimoV26TensorParallel(let runtime): runtime.cancel(requestID: id)
         case .glm5Next(let runtime): runtime.cancel(requestID: id)
@@ -258,6 +280,7 @@ final class NativeWorkerRuntime: WorkerRuntime, @unchecked Sendable {
         case .qwenDense(let runtime): try runtime.keepWarmPulse()
         case .qwenTensorParallel(let runtime): try runtime.keepWarmPulse()
         case .glm5NextTensorParallel(let runtime): try runtime.keepWarmPulse()
+        case .gemma4TensorParallel(let runtime): try runtime.keepWarmPulse()
         case .mimoV26(let runtime): try runtime.keepWarmPulse()
         case .mimoV26TensorParallel(let runtime): try runtime.keepWarmPulse()
         case .glm5Next(let runtime): try runtime.keepWarmPulse()
@@ -268,6 +291,7 @@ final class NativeWorkerRuntime: WorkerRuntime, @unchecked Sendable {
         case .qwenDense(let runtime): try runtime.dataPlanePing()
         case .qwenTensorParallel(let runtime): try runtime.dataPlanePing()
         case .glm5NextTensorParallel(let runtime): try runtime.dataPlanePing()
+        case .gemma4TensorParallel(let runtime): try runtime.dataPlanePing()
         case .mimoV26(let runtime): try runtime.dataPlanePing()
         case .mimoV26TensorParallel(let runtime): try runtime.dataPlanePing()
         case .glm5Next(let runtime): try runtime.dataPlanePing()
@@ -278,6 +302,7 @@ final class NativeWorkerRuntime: WorkerRuntime, @unchecked Sendable {
         case .qwenDense(let runtime): try runtime.shutdown()
         case .qwenTensorParallel(let runtime): try runtime.shutdown()
         case .glm5NextTensorParallel(let runtime): try runtime.shutdown()
+        case .gemma4TensorParallel(let runtime): try runtime.shutdown()
         case .mimoV26(let runtime): try runtime.shutdown()
         case .mimoV26TensorParallel(let runtime): try runtime.shutdown()
         case .glm5Next(let runtime): try runtime.shutdown()

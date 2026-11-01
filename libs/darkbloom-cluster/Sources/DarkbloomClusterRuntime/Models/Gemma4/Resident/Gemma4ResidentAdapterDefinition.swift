@@ -7,9 +7,13 @@ import Foundation
 enum Gemma4ResidentAdapterDefinition {
     static let supportedCuts = Gemma4LayerStagePlanning.supportedCuts
     static let supportedPrefillSchedules: [ClusterPrefillSchedule] = [.serial, .oneChunkLookahead]
-    /// The pipeline only. Handing a sliding layer's window from one rank to the
-    /// other is not built, so the phase split is not advertised.
-    static let supportedGenerationModes: [ClusterGenerationMode] = [.pipeline]
+    /// The pipeline, and tensor parallel (`Gemma4TensorParallelResidentRuntime`).
+    /// Handing a sliding layer's window from one rank to the other is not
+    /// built, so the phase split is not advertised. The planner places tensor
+    /// parallel only from a layout's tensor-parallel facts, which this family
+    /// does not give yet (`Gemma4PlacementFamily.tensorParallelPlan` is nil):
+    /// until it does, a Gemma pair is never planned in tensor parallel.
+    static let supportedGenerationModes: [ClusterGenerationMode] = [.pipeline, .tensorParallel]
 
     static func profileID(_ model: Gemma4RegisteredModel) -> String { model.rawValue + "_greedy_generation_v1" }
 

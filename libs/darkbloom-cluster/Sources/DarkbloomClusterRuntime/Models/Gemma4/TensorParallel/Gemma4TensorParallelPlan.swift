@@ -430,14 +430,4 @@ public struct Gemma4TensorParallelPlan: Sendable, Equatable {
         }
         return local
     }
-
-    /// The module paths whose outputs are partial sums under this plan: each
-    /// layer's attention output and its dense and expert down projections
-    /// (the last two share one packed collective).
-    public func rowParallelModulePaths() -> [String] {
-        (0 ..< layerCount).flatMap { layer -> [String] in
-            let base = Self.layerRoot(layer)
-            return [base + "self_attn.o_proj", base + "mlp.down_proj", base + "experts.switch_glu.down_proj"]
-        }
-    }
 }

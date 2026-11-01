@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-10-31
+> Last updated: 2026-11-01
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -4035,9 +4035,14 @@ See [focused cluster tests](../developer/test.md#focused-qwen35-moe-tensor-paral
 ## Gemma 4 tensor-parallel foundation
 
 Gemma 4 26B A4B (`gemma-4-26b-qat-4bit`, `gemma-4-26b-8bit`) has a two-rank
-tensor-parallel plan, SDK hooks and one-Mac oracles. Nothing serves it yet:
-`Gemma4ResidentAdapterDefinition` still advertises only the pipeline, and no
-placement family states tensor-parallel facts.
+tensor-parallel plan, SDK hooks, a resident runtime and one-Mac oracles.
+`Gemma4ResidentAdapterDefinition` advertises `tensor_parallel_v1` beside the
+pipeline, and the worker loads it into `Gemma4TensorParallelResidentRuntime`.
+The planner still never places a Gemma pair in tensor parallel:
+`Gemma4PlacementFamily` states no tensor-parallel facts
+(`tensorParallelPlan` is nil), so its layout carries none and the planner
+reports `adapterHasNoTensorParallel`, even when tensor parallel is first-choice
+or forced.
 
 `Gemma4TensorParallelPlan` (`gemma4_heads_and_expert_channels_v1`) gives every
 stored text tensor of both registered artifacts one cut and refuses unknown,
@@ -4066,7 +4071,6 @@ vocabulary-split head. A model without it runs the unchanged single-Mac path.
 `Gemma4TensorParallelSelection` chooses across ranks:
 
 - greedy: a two-value argmax collective;
-- keyed sampling: the whole row's Gumbel-max token under a shared key, through the same collective;
 - top-k logits and log probabilities: one gather of each rank's top-k and log-sum-exp;
 - the whole row: `-0` padding, every bit kept, so the product's sampler draws the single-Mac token on every rank.
 
@@ -4079,11 +4083,71 @@ Oracles run on synthetic checkpoints with the 26B's structure scaled down:
   ranks on the CPU. On an M5 Ultra GPU, a 1,024-row full-attention `k_proj` at
   prefill width rounds some rows unlike its 512-row half.
 
+`tp-check gemma run --path paged` runs `full`, `simulated` and `tp` through the
+resident runtime's own request path instead of the SDK's legacy caches.
+`tp-check gemma lanes` serves several requests together through the batch
+driver and checks each against itself alone.
+
+### Resident runtime
+
+`Gemma4TensorParallelResidentRuntime` serves over a keyed, authenticated data
+plane, and every collective is the sealed all-sum. By default it serves one
+request at a time. With batch lanes (`DARKBLOOM_CLUSTER_BATCH_LANES`, bound
+into the load agreement) it serves several through the shared batch driver
+(`QwenTensorParallelBatchDriver`, with a Gemma executor), which carries joins,
+stops, cancellations and retirements.
+
+- Load. `Gemma4TensorParallelVerifiedLoad` first verifies the whole artifact,
+  as a pipeline load does (`prepareGemma4ResidentSource`). It then checks both
+  pipeline stages' storage commitment and requires every text tensor to have
+  the plan's shape, refusing anything else before a byte is read. Each tensor
+  is one verified read, asked of the host memory gate first, cut to this
+  rank's part and materialized at once.
+- Agreement. `Gemma4TensorParallelLoadAgreement` binds the registered row's
+  fingerprint, the mode's and the plan's terms, the prompt policy, the
+  selection, the lanes, the KV storage and the prefix-cache switch. A rank
+  started with any other value refuses its peer before reading weights.
+- Probes. The load measures the link (`QwenTensorParallelLinkProbe`) and this
+  rank's own decode step with every sum local
+  (`Gemma4TensorParallelShareProbe`). The ready record carries both.
+- Request state. Each rank keeps its own KV heads of every layer (4 sliding,
+  1 full on the 26B) on a paged host
+  (`CBv2RequestGeometry(gemma4TensorParallelKinds:)`); pages grow with the
+  request.
+- Prompt. Each chunk runs through the product's CBv2 entry
+  (`Gemma4TextModel.cbv2Prefill`, whose last layer keeps only the row it
+  projects) under the registered prompt policy (`Gemma4PrefillProjectionScope`),
+  on the request's chunk grid.
+- Decode. One evaluation per step, with 100-operation command buffers. The
+  step is submitted layer by layer as the host builds it
+  (`Gemma4LayerSubmission`; evaluation order only). Lanes decode in one
+  forward under the explicit batch decode scope (`Gemma4BatchDecodeScope`), so
+  each row equals its request's own step bit for bit.
+- Choice. Each step's token is agreed inside the step's own evaluation
+  (`Gemma4TensorParallelChoice`):
+  - greedy: the vocabulary-split argmax, carrying both ranks' stop flags in
+    its one collective;
+  - sampled: the whole row gathered to every rank, rank 0's draw with the
+    product's sampler, and one small collective for the token and flags;
+  - logprobs: a greedy request's from the vocabulary-split top-k gather, a
+    sampled request's from the product's sampler on rank 0.
+
+  A stop on either rank (cancel, deadline, memory, the owner's stop, pages
+  that could not grow) ends both after the same step
+  (`Gemma4TensorParallelRequestLoop`). A rank that stopped commits nothing
+  more, but still ends at a stop token its peer commits.
+
+The request charge is conservative: the whole model's request state for every
+layer, as `Gemma4StateBudget` charges a pipeline stage, and a lane is gated
+with every held lane's whole charge. Prefix caching, speculative decoding,
+media, placement facts and a measured activation floor are not built yet.
+
 Code map:
 
 - `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Gemma4/TensorParallel/`
 - `libs/mlx-swift-lm/Libraries/MLXLLM/Models/Gemma4TensorParallel.swift`
 - `libs/darkbloom-cluster-worker/Sources/TensorParallelCheck/GemmaCheck.swift`
+- `libs/darkbloom-cluster-worker/Sources/DarkbloomClusterWorker/Execution/NativeWorkerRuntime.swift` (routes Gemma `tensor_parallel_v1` loads)
 
 See [focused Gemma 4 tensor-parallel checks](../developer/test.md#focused-gemma-4-tensor-parallel-checks).
 

@@ -588,24 +588,10 @@ struct Gemma4TensorParallelTests {
         }
     }
 
-    /// Keyed noise: each rank's part of the whole vocabulary's Gumbel noise
-    /// and the argmax collective draw exactly the whole row's Gumbel-max
-    /// sample under the same key; the row gather keeps every bit, so the
-    /// product's sampler draws the whole row's token from it on every rank.
-    @Test func keyedSamplingAndRowGatherEqualTheWholeHead() throws {
+    /// The row gather keeps every bit, so the product's sampler draws the
+    /// whole row's token from it on every rank.
+    @Test func rowGatherKeepsEveryBitForTheProductSampler() throws {
         let logits = Self.headLogits(seed: 21)
-        for (seed, temperature) in [(1, 0.7), (2, 1.0), (3, 1.3), (4, 0.2)] as [(UInt64, Float)] {
-            let key = MLXRandom.key(seed)
-            let whole = Device.withDefaultDevice(.cpu) {
-                Int(argMax(MLXRandom.gumbel([1, 512], key: key) + logits * (1 / temperature), axis: -1).item(Int32.self))
-            }
-            let split = try Self.splitHead(logits) { selection, local -> Int in
-                let token = selection.sample(local, temperature: temperature, key: key)
-                eval(token)
-                return Int(token.item(Int32.self))
-            }
-            #expect(split == [whole, whole], "key \(seed) temperature \(temperature)")
-        }
         let rows = try Self.splitHead(logits) { selection, local -> [UInt32] in
             let row = selection.gather(local)
             eval(row)

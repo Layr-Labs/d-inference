@@ -347,8 +347,10 @@ measured the link the plan prices tensor parallel on a slow assumed link. Once
 the link is measured, short prompts with longer answers can be predicted faster
 in tensor parallel, an estimate from each Mac's device index that a
 tensor-parallel load's own measurement then corrects. Two smaller Macs whose
-decode is limited by memory bandwidth (for example 24 or 32 GB M4 Pro) get
-tensor parallel for short prompts with longer answers. The plan's "Tensor
+decode is limited by memory bandwidth (for example 32 GB M4 Pro) get tensor
+parallel for short prompts with longer answers; two 24 GB Macs keep the
+pipeline, because tensor parallel's share with its prompt-prefix memory does
+not fit them. The plan's "Tensor
 parallel or pipeline" lines say which and why
 ([Gemma tensor-parallel placement](../architecture/inference.md#gemma-tensor-parallel-placement)).
 See the [placement planner](../../libs/darkbloom-cluster/Sources/DarkbloomClusterPlacement/ClusterPlacementPlanner.swift)
@@ -484,7 +486,10 @@ memory holds its share.
 Both Macs keep the prompt prefixes of every model family, in memory and in the
 encrypted SSD tier: a repeated long prompt starts with its prefix restored, and
 after both Macs restart the SSD tier gives it back. Gemma 4 keeps each
-sliding-window layer's window at every kept frontier; GLM-5.3-Flash in pipeline
+sliding-window layer's window at every kept frontier, in pipeline and in tensor
+parallel, where each Mac keeps its own half of every layer's heads and a prefix
+is restored only when both Macs hold it, with exactly the tokens of a request
+that prefilled the whole prompt; GLM-5.3-Flash in pipeline
 keeps its attention history once per prompt and its linear-attention state per
 frontier. GLM-5.3-Flash in tensor parallel keeps one boundary per prompt, the
 last whole 4,096-token chunk before its final token: each Mac writes its own

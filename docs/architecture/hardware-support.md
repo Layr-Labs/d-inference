@@ -1133,15 +1133,21 @@ A Gemma 4 tensor-parallel rank is charged its own share, not the whole model
 | Its own KV heads of every layer (4 sliding, 1 full), residual rows | per request | about 364 MB (the whole model's: 719,380,600) |
 | One prompt chunk's attention transient over its 8 query heads | per request | about 145 MB |
 | FP32 partials (attention row, dense row, 8 expert rows and their packed copy) and 3 vocabulary rows | per request | about 113 MB |
+| Prompt-prefix capture at its deepest boundary: its own full-attention rows and one window of every sliding layer (`prefixCaptureBytes`) | per request | about 191 MB (441,384,960 for the profile's 32,768-token prompt) |
 | Activation floor: `UnifiedMemoryCap`'s conservative default, 5.5 GiB, until a pair measures one | per rank | 5,905,580,032 |
 | Freed-buffer cache (half the allocator headroom) | per rank | 1,073,741,824 |
 | Eight sealed frames of the packed collective (512 x 101,376 bytes and the seal) | per rank | about 415 MB |
+| Prompt-prefix memory tier: two captures of the profile's longest prompt (`prefixResidentBytes`) | per rank | 882,769,920 |
 
 The layout's `requestAllowance` quotes one request at the profile's longest
 context (65,536 tokens) plus the per-rank charges, and the worker's LOAD gate
 reserves exactly that beside the shard. A reservation or lane asks the live
 gate for every held request, the new one and the per-rank charges. The planner
 still charges at least the pipeline's whole-model `requestChargeEveryRankBytes`.
+The memory tier's budget is its charge, or the pipeline's room-derived budget
+where it is larger; entries beyond the charge give way before any refusal
+([Gemma TP prompt prefixes](prefix-cache.md#gemma-tp-prompt-prefixes)). A rank
+whose prefix cache is off charges neither prefix term.
 Nothing here is measured on a pair; see
 [inference](inference.md#gemma-tensor-parallel-placement).
 

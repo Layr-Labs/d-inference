@@ -1,6 +1,6 @@
 # Provider Model Registry Boundary
 
-> Last updated: 2026-10-30
+> Last updated: 2026-11-01
 
 Providers discover model identity through external registry manifests, then
 download and verify model bytes locally. The database and catalog API are owned
@@ -54,6 +54,15 @@ Media discovery uses `ModelMediaPolicy.advertisesMedia` in
 `nemotron_h_omni` checkpoints do not advertise media support, even when
 `vision_config` is present. The architecture match ignores surrounding whitespace
 and case and applies independently of Hugging Face repository IDs or local aliases.
+
+### LFM2.5-24B-A2B discovery
+
+`EngineV2SupportedModels.isSupported(model:)` admits `model_type: lfm2_moe` only
+for `LiquidAI/LFM2.5-24B-A2B-MLX-4bit` and its catalog id `lfm2.5-24b-a2b`
+(`isLFM25ListingModelID`); other `lfm2_moe` checkpoints stay unadvertised. Its
+template renders with the Transformers-compatible `string` and `tojson` filters
+(`NemotronTemplateFilters.usesReferenceFilters` in
+`provider-swift/Sources/ProviderCoreFoundation/NemotronTemplateFilters.swift`).
 
 ### Nemotron Super discovery
 

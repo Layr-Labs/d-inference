@@ -36,6 +36,9 @@ public struct ChatTemplateControls: Sendable, Equatable {
     var rawMiMoTools = MiMoV26ToolEvidence()
     var rawGLM5Controls = GLM5NextPromptPolicy.RawControls()
     var rawFlintControls = FlintRequestPolicy.RawControls()
+    // Raw disable controls, kept apart from the precedence-merged fields so a
+    // shadowed disable request stays visible to reasoning-only policies.
+    var thinkingDisableEvidence = ThinkingDisableEvidence()
 
     public init(
         reasoningEffort: String? = nil,

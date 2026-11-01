@@ -156,6 +156,9 @@ public struct SlotSizingSnapshot: Sendable, Equatable {
                     isQwenVLMWrapper: true)
             case let nemotron as NemotronH35Model:
                 rate = fp16KVBytesPerToken(layerKinds: nemotron.cbv2LayerKinds)
+            case let lfm as LFM2MoEModel:
+                // Attention layers only; conv state is a fixed engine charge.
+                rate = fp16KVBytesPerToken(layerKinds: lfm.cbv2LayerKinds)
             case is MLXVLM.Qwen35:
                 return ModuleFacts(
                     bytes: bytes,

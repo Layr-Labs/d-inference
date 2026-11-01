@@ -11,10 +11,21 @@ import MLXLMServer
 /// when explicitly enabled, a close already in content is absorbed and the text
 /// before it stays content. It is never reinterpreted as a reasoning boundary.
 struct NativeChannelSplitter {
+    /// Opaque tool-frame delimiters recognized in content state.
+    struct ToolFrame: Equatable {
+        let start: String
+        let end: String
+        /// Native XML families (Qwen/Nemotron/MiMo); the historical default.
+        static let xml = [ToolFrame(start: "<tool_call>", end: "</tool_call>"),
+                          ToolFrame(start: "<function=", end: "</function>")]
+        /// LFM2.5 pythonic frames (`ToolCallFormat.lfm2`).
+        static let lfm2 = [ToolFrame(start: "<|tool_call_start|>", end: "<|tool_call_end|>")]
+    }
     private enum State { case content, reasoning, tool(end: String) }
     private var state: State
     private var buffer = ""
     private let protectToolFrames: Bool
+    private let toolFrames: [ToolFrame]
     private let qwenStructuredFrames: Bool
     private var toolScanner: Qwen35ToolFrameScanner?
     private let flintFrames: Bool
@@ -30,11 +41,13 @@ struct NativeChannelSplitter {
             + (flintScanner?.bufferedCharacterCount ?? 0)
     }
 
-    init(prefix: String, protectToolFrames: Bool, qwenStructuredFrames: Bool = false, flintFrames: Bool = false,
+    init(prefix: String, protectToolFrames: Bool, toolFrames: [ToolFrame] = ToolFrame.xml,
+         qwenStructuredFrames: Bool = false, flintFrames: Bool = false,
          tools: [[String: any Sendable]]? = nil,
          preserveInnerReasoningSpans: Bool = false, absorbStrayThinkClose: Bool = false) {
         state = prefix == "<think>" ? .reasoning : .content
         self.protectToolFrames = protectToolFrames
+        self.toolFrames = toolFrames
         self.qwenStructuredFrames = qwenStructuredFrames
         self.flintFrames = flintFrames
         self.tools = tools
@@ -105,7 +118,7 @@ struct NativeChannelSplitter {
             case .content:
                 var contentMarkers = ["<think>"]
                 if absorbStrayThinkClose { contentMarkers.append("</think>") }
-                if protectToolFrames { contentMarkers += ["<tool_call>", "<function="] }
+                if protectToolFrames { contentMarkers += toolFrames.map(\.start) }
                 markers = contentMarkers
                 reasoning = false
             case .reasoning:
@@ -128,7 +141,7 @@ struct NativeChannelSplitter {
                         // duplicate close): drop the marker, stay in content.
                     } else {
                         append(marker, reasoning: false, to: &result)
-                        state = .tool(end: marker == "<tool_call>" ? "</tool_call>" : "</function>")
+                        state = .tool(end: toolFrames.first { $0.start == marker }?.end ?? marker)
                         if qwenStructuredFrames && marker == "<tool_call>" {
                             toolScanner = Qwen35ToolFrameScanner()
                         } else if flintFrames && marker == "<tool_call>" {

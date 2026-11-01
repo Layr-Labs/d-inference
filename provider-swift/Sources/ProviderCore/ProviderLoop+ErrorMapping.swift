@@ -69,8 +69,8 @@ extension ProviderLoop {
         case .modelNotLoaded, .noModelLoadedForTokenization:
             return .modelLoad
         case .invalidRole, .invalidToolPayload, .missingUserQuery, .unsupportedReasoningEffort,
-            .unsupportedNativeReasoningEffort, .mediaUnsupportedByModel, .multimodalRejected,
-            .advertisedContextExceeded, .unsupportedOutputControl:
+            .unsupportedNativeReasoningEffort, .reasoningCannotBeDisabled, .responseFormatNotEnforced,
+            .mediaUnsupportedByModel, .multimodalRejected, .advertisedContextExceeded, .unsupportedOutputControl:
             return .clientError
         case .toolChoiceViolation:
             return .toolNoncompliance
@@ -168,7 +168,8 @@ extension ProviderLoop {
             case .modelNotLoaded, .noModelLoadedForTokenization:
                 return .modelUnavailable
             case .invalidRole, .invalidToolPayload, .missingUserQuery, .unsupportedReasoningEffort,
-                .unsupportedNativeReasoningEffort, .advertisedContextExceeded, .unsupportedOutputControl:
+                .unsupportedNativeReasoningEffort, .reasoningCannotBeDisabled, .responseFormatNotEnforced,
+                .advertisedContextExceeded, .unsupportedOutputControl:
                 return .invalidRequest
             case .toolChoiceViolation, .generationFailed:
                 return .generationFailure
@@ -273,7 +274,8 @@ extension ProviderLoop {
                 return 400
             case .invalidToolPayload, .missingUserQuery:
                 return 400
-            case .unsupportedReasoningEffort, .unsupportedNativeReasoningEffort:
+            case .unsupportedReasoningEffort, .unsupportedNativeReasoningEffort, .reasoningCannotBeDisabled,
+                .responseFormatNotEnforced:
                 return 400
             case .advertisedContextExceeded, .unsupportedOutputControl:
                 return 400

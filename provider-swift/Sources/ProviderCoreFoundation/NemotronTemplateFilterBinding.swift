@@ -7,7 +7,7 @@ extension NemotronTemplateFilters {
     /// Bind only the filter identifier to a private name before compilation;
     /// literal text, quoted strings, comments and `is string` remain unchanged.
     public static func bindingFilters(in template: String, modelType: String?) -> String {
-        guard applies(modelType: modelType) else { return template }
+        guard usesReferenceFilters(modelType: modelType) else { return template }
         let input = Array(template.utf8)
         let name = Array("string".utf8)
         let replacement = Array(stringFilterName.utf8)

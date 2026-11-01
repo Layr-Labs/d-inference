@@ -13,13 +13,28 @@ import Jinja
 public enum NemotronTemplateFilters {
     private static let outputLimit = 16 << 20
 
+    /// Nemotron-only request policy (e.g. retaining tool `strict` metadata).
     public static func applies(modelType: String?) -> Bool {
-        modelType?.trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased() == "nemotron_h"
+        normalized(modelType) == "nemotron_h"
+    }
+
+    /// Families whose pinned templates are qualified byte-for-byte against
+    /// Transformers' `string`/`tojson`. LFM2.5 (`lfm2_moe`) renders tool
+    /// schemas with `tojson` and replays pythonic call arguments with
+    /// `string` (`True`/`False`), so it needs the same reference filters.
+    public static func usesReferenceFilters(modelType: String?) -> Bool {
+        switch normalized(modelType) {
+        case "nemotron_h", "lfm2_moe": return true
+        default: return false
+        }
+    }
+
+    private static func normalized(_ modelType: String?) -> String? {
+        modelType?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     }
 
     public static func additionalContext(modelType: String?) -> [String: any Sendable]? {
-        guard applies(modelType: modelType) else { return nil }
+        guard usesReferenceFilters(modelType: modelType) else { return nil }
         return [
             stringFilterName: stringFilter,
             "tojson": toJSONFilter,
@@ -27,7 +42,7 @@ public enum NemotronTemplateFilters {
     }
 
     public static func install(in environment: Environment, modelType: String?) {
-        guard applies(modelType: modelType) else { return }
+        guard usesReferenceFilters(modelType: modelType) else { return }
         environment[stringFilterName] = stringFilter
         environment["tojson"] = toJSONFilter
     }

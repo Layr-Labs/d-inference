@@ -43,6 +43,25 @@ struct SwitchCommandTests {
         #expect(try Switch.selectModels(requested: [], local: local, capabilities: []) == ["a"])
     }
 
+    /// The model only exists in the configured cache, so discovery through the
+    /// default Hugging Face hub would reject the selection.
+    @Test func localModelsResolveThroughConfiguredCacheDirectory() async {
+        await #expect(processExitsWith: .success) {
+            let sandbox = try CLICommandSandbox.enter()
+            defer { sandbox.remove() }
+            let model = try sandbox.makeModel("acme/Switch-Fixture-4bit")
+            try Data(#"{"model_type":"gpt_oss"}"#.utf8).write(
+                to: model.appendingPathComponent("snapshots/local/config.json"))
+            ModelScanner.configureCacheDirectory(nil)
+            let snapshot = try Switch.loadSnapshot(configPath: sandbox.config.path)
+            let hardware = try #require(snapshot.hardware)
+            #expect(ModelScanner.cacheDirectory().standardizedFileURL == sandbox.cache.standardizedFileURL)
+            let local = ModelScanner.scanAllModels(hardwareInfo: hardware)
+            #expect(try Switch.selectModels(
+                requested: ["acme/Switch-Fixture-4bit"], local: local, capabilities: []) == ["acme/Switch-Fixture-4bit"])
+        }
+    }
+
     @Test func matchingReceiptRequiredAndTimeoutNeverSignals() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }

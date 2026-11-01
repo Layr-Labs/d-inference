@@ -46,6 +46,8 @@ struct NativeToolStreamRouter {
             gemmaParser = DiffusionGemmaChannelSplitter()
         } else if let nativePrefix {
             self.parser = NativeChannelSplitter(prefix: nativePrefix, protectToolFrames: handler != nil,
+                toolFrames: handler?.format == .lfm2 ? NativeChannelSplitter.ToolFrame.lfm2
+                    : NativeChannelSplitter.ToolFrame.xml,
                 qwenStructuredFrames: handler?.format == .qwen35 || handler?.format == .mimoV2,
                 flintFrames: handler?.format == .flint,
                 tools: tools,

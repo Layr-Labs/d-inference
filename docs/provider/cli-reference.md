@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-10-31
+> Last updated: 2026-11-01
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -332,7 +332,8 @@ downloader. It checks fresh daemon identity and switch capability before opening
 the picker, and uses the running daemon's runtime capabilities rather than
 initializing a second inference runtime. There is no `--force` or `--config`:
 the daemon's own resolved config path, including a custom path, is authoritative,
-and the command scans local models in that config's `model_cache_directory`.
+and the command scans local models in that config's `model_cache_directory`
+(`Switch.loadSnapshot` in `provider-swift/Sources/darkbloom/SwitchCommand.swift`).
 
 The provider validates local artifacts before fencing new coordinator and
 unified-local admissions, finishes accepted requests and terminal usage, and

@@ -72,6 +72,10 @@ enum SSDHybridCheckpointStoreFactory {
         do {
             try persistentTestNamespace?.validate(environment: environment)
         } catch { return refuse(.keyUnavailable, error) }
+        // An injected key never keys files under the product cache root.
+        guard persistentKeyLoader == nil
+            || SSDPrefixCacheFactory.isolatedTestRoot(environment: environment) != nil
+        else { return refuse(.keyUnavailable) }
         let wholeRoot = SSDPrefixCacheFactory.cacheRootDirectory(environment: environment)
         // Distinct from attention-only blocks; the existing global maintainer
         // recognizes this same12hex/fanout/.dbk3 hierarchy and accounts all files.
@@ -83,6 +87,10 @@ enum SSDHybridCheckpointStoreFactory {
             }
             try SSDBlockStore.prepareModelRoot(dedicatedRoot: wholeRoot, modelRoot: root)
         } catch { return refuse(.unsafePath, error) }
+        // Inside an isolated root it still needs the persistent-key test mode.
+        guard persistentKeyLoader == nil
+            || environment["DARKBLOOM_PREFIX_CACHE_TEST_PERSISTENT_KEY"] == "1"
+        else { return refuse(.keyUnavailable) }
         let material: SSDCacheKeyMaterial
         do {
             material = try await SSDPrefixCacheFactory.loadKeyMaterial(

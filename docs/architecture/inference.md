@@ -4087,6 +4087,57 @@ Code map:
 
 See [focused Gemma 4 tensor-parallel checks](../developer/test.md#focused-gemma-4-tensor-parallel-checks).
 
+## MiMo V2.6 tensor-parallel foundation
+
+MiMo V2.6 Flash (`mimo-v2.6-flash-mopd`) has a two-rank tensor-parallel plan,
+SDK hooks and one-Mac oracles. Nothing serves it yet: the registered row still
+lists only the pipeline modes, and `MiMoPlacementFamily` states no
+tensor-parallel facts.
+
+`MiMoTensorParallelPlan` (`mimo_v26_heads_and_expert_channels_v1`, CPU metadata)
+disposes of every name in the registered 1,732-tensor inventory. The 1,103 text
+tensors are divided or replicated; the 629 MTP, vision, audio and speech tensors
+are excluded by name and refused as text, as is any unknown or misaligned name:
+
+| Part | Cut per rank | Collective |
+|---|---|---|
+| `q_proj`, `k_proj`, `v_proj`, sliding sink bias | Rows of 32 query heads and the KV heads they read (2 full, 4 sliding); head dims 192/128 as stored | — |
+| `o_proj` | Input columns of those heads (4,096) | BF16 partial, summed in FP32, rounded once, before `post_attention_layernorm` |
+| Dense layer 0 (16,384) | Gate/up rows, down input columns (8,192) | Same contract as `o_proj` |
+| Routed experts (`[256, out, in]` banks) | Gate/up axis 1, down axis 2: 1,024 channels, 32 MXFP4 groups | Each rank's 8 expert rows from the stock banks and decode kernels, combined locally in FP32 with the router's weights; one FP32 row summed, rounded once |
+| Router, norms, embedding | Replicated | — |
+| Untied `lm_head` | This rank's 76,288 vocabulary rows | One per selection |
+
+Every equal half lands on whole quantization groups and packed words, so no
+rank stores padding: 84,013,770,176 B of text weights per rank. A layer issues
+two collectives of one 16,384 B row per token, and a decode step 97. MTP stays
+off.
+
+`MiMoV26TensorShard` derives each rank's configuration (half the heads of both
+layer kinds and both channel widths, no MTP heads or towers) and cuts stored
+tensors, including the 3-D expert banks, by slice or by byte runs.
+`MiMoV26TextModel.installTensorParallel(reduce:vocabularyRows:)` adds the two
+sums and makes `lm_head` this rank's rows before the weights load. A model
+without it runs the unchanged single-Mac path. The readout check still means the
+whole vocabulary, so the paged, CBv2 and MTP owners refuse a rank. Selection
+reuses the model-neutral vocabulary-split head
+(`Gemma4TensorParallelSelection`): greedy argmax, top-k log probabilities and
+the bit-exact whole-row gather for the product's sampler.
+
+Oracles run on synthetic checkpoints (`kernel`: hidden 1,024, 16 experts top-8,
+512 expert channels per rank, so every per-rank decode shape takes the
+production MXFP4 expert, router and norm kernels; `tiny`: below those gates).
+`simulated` runs both real shards in one process, and two ranks over the sealed
+loopback ring or socket equal it bit for bit, caches included.
+
+Code map:
+
+- `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/MiMo/TensorParallel/`
+- `libs/mlx-swift-lm/Libraries/MLXLLM/Models/MiMo/MiMoV26TensorParallel.swift`
+- `libs/darkbloom-cluster-worker/Sources/TensorParallelCheck/MiMoCheck.swift`
+
+See [focused MiMo V2.6 tensor-parallel checks](../developer/test.md#focused-mimo-v26-tensor-parallel-checks).
+
 ## Exact-quote placement
 
 `ClusterPlacementPlanner.rankQuoted` is the model-independent decision seam for adapters that provide exact simultaneous native/host peaks and current bounds. It filters infeasible shapes and unsupported modes, then uses the same hardware-only ordering as `plan`: candidates whose every range fits its Mac's hardware (`ClusterDeviceProfile.hardwareFits`: buffer and allocator limits, need within the GPU working set and the at-rest admissible memory `atRestAdmissibleBytes`), then predicted request time, ties and the tensor-parallel margin. Live free memory and file cache never order candidates; each rank's live fit is reported and the load gate still decides each load. A supported TP adapter must supply TP layout facts and keyed reduction measurements. Neither resource balance nor chip-name rules replace request-time scoring; balance only breaks ties. Candidates whose predicted times differ only by rounding (relative 1e-9, as every serial pipeline cut does on identical Macs) are ordered by `capacityBalance`, the smallest share of a rank's hardware capacity (`min(residentCapacityBytes, atRestAdmissibleBytes)`) left beyond its need, before the lower cut, so identical Macs split evenly and live free memory cannot pick the cut. Every structural boundary, including one layer on a slower member, remains available when its adapter quotes fit.

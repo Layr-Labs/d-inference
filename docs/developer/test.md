@@ -1269,6 +1269,45 @@ neither real-weight numerics, a pair qualification nor speed.
    The script also prints QualificationComparator's verdict for each rank
    against `full`.
 
+## Focused MiMo V2.6 tensor-parallel checks
+
+These checks use synthetic weights on one Mac, over loopback only. They prove
+neither real-weight numerics, a pair qualification nor speed. Never load the
+registered artifact for them.
+
+1. Run the CPU unit tests:
+
+   ```bash
+   swift test --package-path libs/darkbloom-cluster --filter MiMoTensorParallelTests
+   ```
+
+   They cover:
+
+   - the plan against the registered 1,732-tensor inventory and configuration
+     (`darkbloom-cluster-worker/Tests/CapabilityChecks/Fixtures`), per-rank
+     bytes and the SDK shard's agreement on every cut axis;
+   - refusals of renamed, foreign, excluded and odd-shaped tensors;
+   - the shard configuration and per-rank KV geometry;
+   - shard cuts and byte runs against independent slices;
+   - two in-process ranks against each other and the whole model;
+   - the vocabulary-split head against the whole head.
+
+2. Build `darkbloom-cluster-tp-check` and put a source-matched `mlx.metallib`
+   beside it ([build](build.md)). Then run the GPU oracles:
+
+   ```bash
+   bash libs/darkbloom-cluster-worker/Tests/MiMoTensorParallelOracles/run.sh \
+     /path/to/darkbloom-cluster-tp-check /new/scratch/dir 58223
+   ```
+
+   The script synthesizes the `kernel`, `tiny` and FP32 `kernel` variants. For
+   each, and for a 40-token and a 6-token prompt around the 8-token window, it
+   runs `full`, `simulated` and two `tp` ranks over the sealed local ring on
+   ports 58223–58224, then the socket backend once.
+
+3. Verify. Each `tp` rank must equal `simulated` bit for bit, KV caches
+   included, and agree with `full` under QualificationComparator (exit status 0).
+
 ## Focused Tooling Checks
 
 For the PR reviewer, run the seven offline suites listed in

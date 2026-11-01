@@ -24,6 +24,7 @@ import MLX
 //       --output FILE [--partials float32|bfloat16] [--near-tie-ulps U]   (appends one qualification record line)
 //   darkbloom-cluster-tp-check glm ...       (GLM-5.3-Flash, GLMBench.swift)
 //   darkbloom-cluster-tp-check gemma ...     (Gemma 4 MoE oracles, GemmaCheck.swift)
+//   darkbloom-cluster-tp-check mimo ...      (MiMo V2.6 oracles, MiMoCheck.swift)
 //
 // `full` is the unsharded model on one Mac (this code path's single-Mac
 // reference); `simulated` is the single-process tensor-parallel oracle (the
@@ -525,6 +526,10 @@ enum CompareCommand {
             }
             if CommandLine.arguments.count > 1, CommandLine.arguments[1] == "gemma" {
                 try GemmaCheck.run(Array(CommandLine.arguments.dropFirst(2)))
+                return
+            }
+            if CommandLine.arguments.count > 1, CommandLine.arguments[1] == "mimo" {
+                try MiMoCheck.run(Array(CommandLine.arguments.dropFirst(2)))
                 return
             }
             let options = try Options(Array(CommandLine.arguments.dropFirst()))

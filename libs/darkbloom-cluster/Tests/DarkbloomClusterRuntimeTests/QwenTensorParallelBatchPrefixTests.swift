@@ -153,9 +153,12 @@ struct QwenTensorParallelBatchPrefixTests {
             promptTokens: 32_768, chunkSize: 512, allocationBound: bound)
         #expect(load.captureBytes == (try QwenTensorParallelBatchPrefixBudget.captureBytes(geometry: g,
             promptCount: 32_768, chunkSize: 512, allocationBound: bound)))
-        #expect(try load.captureBytes(promptCount: 9_000, chunkSize: 512, allocationBound: bound)
-            == (try QwenTensorParallelBatchPrefixBudget.captureBytes(geometry: g, promptCount: 9_000, chunkSize: 512,
-                allocationBound: bound)))
+        // A request is charged and captures to its own context, past LOAD's memory plan too.
+        for prompt in [9_000, 100_000, 262_143] {
+            #expect(try load.captureBytes(promptCount: prompt, chunkSize: 512, allocationBound: bound)
+                == (try QwenTensorParallelBatchPrefixBudget.captureBytes(geometry: g, promptCount: prompt, chunkSize: 512,
+                    allocationBound: bound)))
+        }
         let context = try QwenTensorParallelBatchPrefixBudget.derive(geometry: g, maximumTokens: 4096, chunkSize: 512,
             allocationBound: bound)
         #expect(context.captureBytes == (try QwenTensorParallelBatchPrefixBudget.captureBytes(geometry: g,

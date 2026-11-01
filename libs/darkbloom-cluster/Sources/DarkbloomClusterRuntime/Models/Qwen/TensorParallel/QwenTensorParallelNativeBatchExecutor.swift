@@ -174,8 +174,9 @@ final class QwenTensorParallelNativeBatchExecutor<Reservation: QwenTensorParalle
             }
         } else if admittedAssistant == nil, let prefix, prefix.enabled, let budget = prefixBudget, let scope = prefixScope?(reservation),
                   let allocationBound {
+            // To the request's own context, as its reservation charged its capture; LOAD's memory plan is shorter.
             let candidates = QwenTensorParallelBatchPrefixCache.candidates(promptCount: request.promptCount,
-                chunkSize: request.chunkSize, maximumTokens: budget.maximumTokens)
+                chunkSize: request.chunkSize, maximumTokens: request.maximumTokens)
             let keys = QwenTensorParallelBatchPrefixCache.keys(scope: scope,
                 tokens: request.promptTokenIDs, frontiers: candidates)
             diskScope = prefixDisk == nil ? nil : prefixDiskScope?(reservation)
@@ -192,7 +193,7 @@ final class QwenTensorParallelNativeBatchExecutor<Reservation: QwenTensorParalle
             }
             // The boundaries this request keeps after what it restored, within its own charged capture.
             let frontiers = QwenTensorParallelBatchPrefixBudget.frontiers(promptCount: request.promptCount,
-                chunkSize: request.chunkSize, restored: request.reusedPrefixTokens, maximumTokens: budget.maximumTokens)
+                chunkSize: request.chunkSize, restored: request.reusedPrefixTokens, maximumTokens: request.maximumTokens)
             if !frontiers.isEmpty {
                 captureKeys = QwenTensorParallelBatchPrefixCache.keys(scope: scope, tokens: request.promptTokenIDs, frontiers: frontiers)
                 capture = .init(frontiers: frontiers, limitBytes: try budget.captureBytes(promptCount: request.promptCount,

@@ -86,7 +86,9 @@ struct QwenTensorParallelPrefixDepthTests {
 
     /// A pair of shards of one tiny hybrid checkpoint (three GatedDelta layers,
     /// one attention layer); with `caches`, each rank keeps prompt prefixes
-    /// charged by the real per-request rule on its own heads.
+    /// charged by the real per-request rule on its own heads. LOAD's memory
+    /// plan is shorter than the requests, as the 27B's is beside its native
+    /// context: boundaries still go to each request's own context.
     private func pair(_ configuration: Data, _ tensors: [(String, MLXArray)],
                       caches: [QwenTensorParallelBatchPrefixCache]?) throws -> [Owned] {
         let wire = Rendezvous()
@@ -101,7 +103,7 @@ struct QwenTensorParallelPrefixDepthTests {
             owner.executor = try .init(model: model, configuration: configuration, host: owner.host, group: reduction,
                 prepare: { _, _ in nil }, completedDecode: { _ in }, completedPrefill: {}, releaseResources: { _ in },
                 prefix: caches?[rank],
-                prefixBudget: caches == nil ? nil : .init(maximumTokens: Self.context, captureBytes: 0, geometry: geometry),
+                prefixBudget: caches == nil ? nil : .init(maximumTokens: 8_192, captureBytes: 0, geometry: geometry),
                 prefixScope: caches == nil ? nil : { _ in "depth-load|chunk=512|kv=paged|text" },
                 allocationBound: caches == nil ? nil : { Self.allocationBound($0) })
             return owner

@@ -92,8 +92,8 @@ final class QwenTensorParallelSnapshotCache<Snapshot: QwenTensorParallelPrefixSn
     /// boundaries kept: those that fit the budget with the deepest (none
     /// when the deepest does not fit).
     @discardableResult func insert(_ states: [(key: String, state: Snapshot)], sharedBytes: Int) -> [Int] {
+        let sorted = states.sorted { $0.state.committedTokens < $1.state.committedTokens }
         // An attention-only state holds nothing of its own beside the shared copy.
-        let sorted = states.filter { $0.state.allocatedBytes >= 0 }.sorted { $0.state.committedTokens < $1.state.committedTokens }
         guard enabled, let deepest = sorted.last, sharedBytes >= 0, sharedBytes + deepest.state.allocatedBytes > 0 else { return [] }
         var total = sharedBytes + deepest.state.allocatedBytes
         guard total <= budgetBytes else { return [] }

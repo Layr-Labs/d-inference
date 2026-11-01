@@ -108,9 +108,6 @@ final class QwenTensorParallelPrefixCapture {
     /// The attention copy the kept states view together.
     var sharedBytes: Int { deepest?.bytes ?? 0 }
 
-    /// Everything this capture holds now.
-    var heldBytes: Int { sharedBytes + recurrentBytes.values.reduce(0, +) }
-
     func discard() { recurrent.removeAll(); recurrentBytes.removeAll(); deepest = nil }
 
     static func attentionRows(_ state: CBv2OwnedRequestState, frontier: Int) throws -> [Int: (keys: MLXArray, values: MLXArray)] {

@@ -38,8 +38,8 @@ struct QwenTensorParallelBatchPrefixBudget {
     static let marginFloorTokens = 1024
     static let maximumStripeBoundaries = 8
 
-    /// Boundaries deeper than this are neither voted nor kept: the owner's
-    /// longest request.
+    /// The context LOAD derived `captureBytes` at (the memory plan's). It
+    /// does not bound a request, whose boundaries go to its own context.
     let maximumTokens: Int
     /// The per-lane LOAD term: one capture of the profile's longest prompt.
     let captureBytes: Int
@@ -108,11 +108,12 @@ struct QwenTensorParallelBatchPrefixBudget {
         ])
     }
 
-    /// This request's own capture: priced on `geometry`, else `captureBytes`.
+    /// This request's own capture, as its reservation charged it
+    /// (`QwenTensorParallelRequestCharge`): priced on `geometry`, else `captureBytes`.
     func captureBytes(promptCount: Int, chunkSize: Int, allocationBound: (Int) throws -> Int) throws -> Int {
         guard let geometry else { return captureBytes }
         return try Self.captureBytes(geometry: geometry, promptCount: promptCount, chunkSize: chunkSize,
-            maximumTokens: maximumTokens, allocationBound: allocationBound)
+            allocationBound: allocationBound)
     }
 
     /// LOAD's per-lane term: one capture of a `promptTokens` prompt (the

@@ -1,6 +1,6 @@
 # Install, update, and uninstall the provider
 
-> Last updated: 2026-10-23
+> Last updated: 2026-11-01
 
 How to put the `darkbloom` CLI on an Apple Silicon Mac with `scripts/install.sh`,
 what the script verifies before it touches an existing install, how the binary
@@ -252,6 +252,7 @@ each Mac: `darkbloom cluster`; no SSH, no network settings typed).
 ```bash
 sudo darkbloom fan uninstall    # only if fan control was enabled
 darkbloom cluster link --remove # only if `darkbloom cluster` set up a two-Mac link; asks for approval
+darkbloom cluster gpu-limit --undo # only if you raised the GPU limit with it; asks for approval
 darkbloom stop --uninstall      # stops the daemon, removes both LaunchAgent plists
 darkbloom unenroll              # opens System Settings to remove the MDM profile; offers to delete config + tokens
 rm -rf ~/.darkbloom ~/.config/darkbloom
@@ -267,6 +268,12 @@ for a link set up by an earlier version, removes the root launchd job
 deleting `~/.darkbloom`, which holds the record of what was changed; without
 the record it still removes Darkbloom's own service or job. It changes nothing
 on a Mac that never ran `darkbloom cluster`.
+
+`darkbloom cluster gpu-limit --undo` (`provider-swift/Sources/darkbloom/ClusterGPULimitCommand.swift`)
+removes the root boot job `com.layrlabs.glm53-wired-limits` and returns the GPU
+limit to the macOS default
+([GPU memory limit for a GLM pair](../reference/configuration.md#gpu-memory-limit-for-a-glm-pair)).
+`darkbloom stop --uninstall` leaves that job in place.
 
 `darkbloom stop --uninstall` (`provider-swift/Sources/darkbloom/StopCommand.swift`)
 disarms the watchdog first, deletes `~/Library/LaunchAgents/io.darkbloom.watchdog.plist`

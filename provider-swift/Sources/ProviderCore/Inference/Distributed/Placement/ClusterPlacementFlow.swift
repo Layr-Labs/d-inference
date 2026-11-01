@@ -339,7 +339,6 @@ public enum ClusterPlacementFlow {
         return (lines, result, setup)
     }
 
-    /// Which Mac leads, and a note when no cluster stage adapter runs the
     /// Where a rank's GPU cannot keep resident what it needs there
     /// (`ClusterPlacementRank.gpuWorkingSetShortBytes`), how its owner raises
     /// that Mac's limit: `darkbloom cluster gpu-limit` on that Mac, one
@@ -359,6 +358,7 @@ public enum ClusterPlacementFlow {
         }
     }
 
+    /// Which Mac leads, and a note when no cluster stage adapter runs the
     /// model (the owner's only refusal besides memory, owner 2026-10-14
     /// 08:45). Records never rule a leader, an order or a mode out: the
     /// planner keeps to what a start accepts through

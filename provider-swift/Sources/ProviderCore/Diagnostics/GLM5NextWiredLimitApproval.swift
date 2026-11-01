@@ -19,11 +19,9 @@ public struct GLM5NextWiredLimitRequest: Equatable, Sendable {
 
     /// Nil for a recommendation whose values are not the derivation's own.
     public init?(_ purpose: Purpose) {
-        if case .raise(let value) = purpose {
-            let physical = value.memoryGiB << 30
-            guard GLM5NextWiredLimit.validatedPairRankMemoryGiB.contains(value.memoryGiB),
-                  value.gpuWiredLimitMB == (physical - (16 << 30)) >> 20,
-                  value.userWireLimitBytes == physical * 95 / 100 else { return nil }
+        if case .raise(let value) = purpose,
+           value != GLM5NextWiredLimit.pairRankRecommendation(chipFamily: .m5, memoryGiB: value.memoryGiB) {
+            return nil
         }
         self.purpose = purpose
     }
@@ -40,9 +38,11 @@ public struct GLM5NextWiredLimitRequest: Equatable, Sendable {
             let assignments = value.sysctlAssignments
             func insert(_ entry: String) -> String { "/usr/bin/plutil -insert \(entry) \(plist)" }
             let program = ["/usr/sbin/sysctl"] + assignments
-            return ["/usr/sbin/sysctl " + assignments.joined(separator: " "),
-                    // A repair replaces a job that is loaded; a first install has none to stop.
-                    "/bin/launchctl bootout system/\(Self.label) 2>/dev/null || true",
+            // A repair replaces a job that is loaded; a first install has none to
+            // stop. First, because in the `&&` line its `|| true` would also
+            // excuse any failed command before it.
+            return ["/bin/launchctl bootout system/\(Self.label) 2>/dev/null || true",
+                    "/usr/sbin/sysctl " + assignments.joined(separator: " "),
                     "/bin/rm -f \(plist)",
                     "/usr/bin/plutil -create xml1 \(plist)",
                     insert("Label -string \(Self.label)"),

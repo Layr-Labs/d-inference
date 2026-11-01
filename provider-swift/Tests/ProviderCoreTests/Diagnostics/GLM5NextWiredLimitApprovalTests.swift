@@ -32,8 +32,8 @@ struct GLM5NextWiredLimitApprovalTests {
         let request = try #require(GLM5NextWiredLimitRequest(.raise(value)))
         let assignments = "iogpu.wired_limit_mb=114688 vm.global_user_wire_limit=130567005798 vm.user_wire_limit=130567005798"
         #expect(request.commands == [
-            "/usr/sbin/sysctl " + assignments,
             "/bin/launchctl bootout system/com.layrlabs.glm53-wired-limits 2>/dev/null || true",
+            "/usr/sbin/sysctl " + assignments,
             "/bin/rm -f \(Self.plist)",
             "/usr/bin/plutil -create xml1 \(Self.plist)",
             "/usr/bin/plutil -insert Label -string com.layrlabs.glm53-wired-limits \(Self.plist)",
@@ -50,6 +50,8 @@ struct GLM5NextWiredLimitApprovalTests {
             "/bin/launchctl bootstrap system \(Self.plist)",
         ])
         #expect(request.shellCommand == request.commands.joined(separator: " && "))
+        // In the `&&` line a `|| true` excuses every failure before it: only the first command may carry one.
+        #expect(request.commands.dropFirst().allSatisfy { !$0.contains("||") })
         #expect(request.prompt.contains("up to 112 GiB of its 128 GiB resident, leaving macOS 16 GiB"))
         // One AppleScript literal: nothing in it needs escaping.
         #expect(!request.shellCommand.contains("\"") && !request.shellCommand.contains("\\")

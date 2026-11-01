@@ -130,6 +130,11 @@ public enum GLM5NextWiredLimit {
     /// Nil unless this is an M5-family Mac of the validated memory size.
     public static func recommendation(chipFamily: ChipFamily, memoryGiB: UInt64) -> Recommendation? {
         guard chipFamily == .m5, memoryGiB == validatedMemoryGiB else { return nil }
+        return derived(memoryGiB: memoryGiB)
+    }
+
+    /// The GPU limit leaves macOS 16 GiB; the user wire limits are 95% of memory.
+    private static func derived(memoryGiB: UInt64) -> Recommendation {
         let physicalBytes = memoryGiB << 30
         return Recommendation(
             memoryGiB: memoryGiB,
@@ -156,11 +161,7 @@ public enum GLM5NextWiredLimit {
     /// chips and sizes.
     public static func pairRankRecommendation(chipFamily: ChipFamily, memoryGiB: UInt64) -> Recommendation? {
         guard chipFamily == .m5, validatedPairRankMemoryGiB.contains(memoryGiB) else { return nil }
-        let physicalBytes = memoryGiB << 30
-        return Recommendation(
-            memoryGiB: memoryGiB,
-            gpuWiredLimitMB: (physicalBytes - (16 << 30)) >> 20,
-            userWireLimitBytes: physicalBytes * 95 / 100)
+        return derived(memoryGiB: memoryGiB)
     }
 
     public static func pairRankRecommendationForThisMac() -> Recommendation? {

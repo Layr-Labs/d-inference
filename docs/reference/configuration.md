@@ -1388,12 +1388,20 @@ both the plan and each rank's LOAD read.
   less 16 GiB, which macOS keeps. `GLM5NextWiredLimitRequest` refuses any
   other values, and no operator or peer text enters a command.
 - **Persistence:** the boot job is built key by key with `plutil`, owned by
-  root:wheel with mode 644; no prepared file is copied into place.
+  root:wheel with mode 644; no prepared file is copied into place. It runs
+  `/usr/sbin/sysctl` with the three assignments, with no shell. A raise boots
+  out any loaded job first, applies the values, then writes and loads the job,
+  and stops at the first step that fails.
+- **Shared job:** the label and path are those of the job the `doctor` advice
+  installs by hand on 256 GB hosts
+  ([GLM-5.3-Flash GPU wired-memory limit](../provider/troubleshooting.md#glm-53-flash-gpu-wired-memory-limit)):
+  a raise replaces it and `--undo` removes it.
 
 **Undo:** `darkbloom cluster gpu-limit --undo` removes the job and sets
 `iogpu.wired_limit_mb=0` (the macOS default); the wire limits return to their
-defaults at the next restart. The host memory gate still admits every load and
-request on live memory either way.
+defaults at the next restart. `darkbloom stop --uninstall` leaves the job, so
+run `--undo` before uninstalling. The host memory gate still admits every load
+and request on live memory either way.
 
 ### Link setup v2: isolating the cluster port
 

@@ -123,9 +123,10 @@ never negative), `rankN_weights_bytes`, `rankN_fit` and `rankN_device`.
 Existing per-request
 admission and LOAD safeguards remain authoritative. GLM, private-image and
 coordinator-installed native-member sessions do not use this
-automatic policy; a serial-prefill Gemma 4 pipeline serves its installed
-default lanes instead ([Gemma pipeline lanes](#gemma-pipeline-lanes)).
-Explicit diagnostic mode or lane settings retain their choice.
+automatic policy. A serial-prefill Gemma 4 pipeline, coordinator-installed or
+local, starts at its installed default width
+([Gemma pipeline lanes](#gemma-pipeline-lanes)); on a local pair this policy
+can still widen it. Explicit diagnostic mode or lane settings retain their choice.
 
 Automatic replacement reads the installed plan helper's device profile and the
 current pair's recorded keyed-link costs and served-request history. It uses
@@ -3044,8 +3045,8 @@ step boundaries; a lane without its answer cannot run another forward. The
 leader still exchanges headers and replies when no lane can advance, with
 `role.none` and no model work. This lets the follower admit a joining request
 while the provider's synchronous reservation is holding the queue needed to
-answer an older token. The installed lane default stays one (a serial-prefill
-Gemma 4 pipeline serves [four](#gemma-pipeline-lanes)); multi-lane
+answer an older token. The installed lane default stays one, except for a
+serial-prefill Gemma 4 pipeline ([Gemma pipeline lanes](#gemma-pipeline-lanes)); multi-lane
 sampling, joining and native output equivalence require separate qualification
 (`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Batch/QwenBatchDecisionProgress.swift`,
 `QwenResidentRuntime.leadBatch`).
@@ -4514,9 +4515,7 @@ default.
 | Property | Basis |
 |---|---|
 | A lane costs no request its own tokens | Decode rows keep their one-request arithmetic ([batch decode](#gemma-ordinary-batch-decode-arithmetic)); each prompt frame runs alone on its request's own chunk grid (`QwenBatchSettings`) |
-| Memory | Each lane is charged its whole request state on every rank and admitted against live memory (`QwenResidentRuntime.reserveLane`); a lane the host cannot hold is refused alone, retryably |
-| No load-time allocation | The paged pool reserves pages per request, not per lane (`CBv2StageKVHost`) |
-| Activation floor | Unchanged: one prompt frame runs per step, and decode rows add only M=1 work |
+| Memory | No load-time allocation; each lane is admitted against live memory and the activation floor is unchanged ([Gemma paged cluster lanes](hardware-support.md#gemma-paged-cluster-lanes)) |
 | Cancellation | A cancelled lane retires alone (`DistributedInstalledPlan.lanesRetireAlone`) |
 | One-chunk lookahead | Lanes prefill serially, so a setup that saved `one_chunk_lookahead_v1` keeps its schedule and one lane, as a planned batch width requires serial prefill (`ClusterConfiguration`) |
 
@@ -4905,8 +4904,9 @@ product per selected expert, singleton GeGLU and its own top-K weighted
 reduction, rather than a wide sorted expert graph. All tokens of a frame share
 one call (`SwitchGLU.callAndWeightedReduceRows`). It groups their assignments
 by expert for weight locality but does not give the gathers the sorted hint, so
-every pair keeps the unsorted M=1 route. MLX selects `gather_qmv` from the
-bits, dtype and the N and K widths alone. The rows return to token order before
+every pair keeps the unsorted M=1 route. MLX picks `gather_qmv` and its variant
+from the quantization, dtype and the N and K widths, never from the row count.
+The rows return to token order before
 the top-8 reduction, whose `col_reduce_small` thread layout depends only on the
 hidden width. Each token's bytes therefore equal those of its own one-token
 call. The tokens share one dispatch per operation instead of about six per

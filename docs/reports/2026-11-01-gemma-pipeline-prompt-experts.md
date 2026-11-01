@@ -27,8 +27,9 @@ frame in one call:
 - it groups 64 or more assignments by expert for weight locality, but does
   not give the gathers the sorted hint;
 - every (row, expert) pair is therefore still an M=1 gathered product. MLX
-  selects `gather_qmv` from the bits, dtype and the N and K widths alone,
-  and its grid gives each pair its own threadgroups;
+  picks `gather_qmv` and its variant from the quantization, dtype and the N
+  and K widths, never from the row count, and its grid gives each pair its own
+  threadgroups;
 - the rows return to their order before the top-8 weighted reduction, which
   keeps its one-row `col_reduce_small` thread layout. That layout depends
   only on the hidden width.
@@ -45,6 +46,7 @@ call.
 | Same suite: expert branch against per-token layer calls; decode rows 2, 3 and 8 | CPU | bytes equal |
 | `GEMMA4_EXPERT_ROWS_GPU=1`: hidden 768, width 192, 16 experts (the production kernel classes), 1 to 2,048 rows, 4 and 8 bits | M5 Ultra GPU | bytes equal; values finite and nonzero |
 | `GEMMA4_EXPERT_ROWS_GPU=production`: hidden 2,816, width 704, 128 experts, 1 to 513 rows | M5 Ultra GPU | bytes equal |
+| Every row routed to the same 8 experts (every sort key tied), and a single row: `expertRowsMatchOneRowCallsWithTiedRoutes`, and the GPU check at 9 and 513 tied rows at both geometries | CPU; M5 Ultra GPU | bytes equal |
 | Sensitivity: the shared call against the earlier sorted rectangular call at 512 and 2,048 rows | M5 Ultra GPU | bytes differ, as expected |
 | `Gemma4StagePagedSyntheticTests`: two synthetic stages, lanes joining and leaving | M5 Ultra GPU | each request decodes its tokens alone |
 

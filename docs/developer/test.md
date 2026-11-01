@@ -28,8 +28,9 @@ and long-prompt helper plans, overflow refusal, conservative memory refusal and
 unchanged GLM adapter bounds. `GemmaRoutedExpertChecks.swift` builds the Gemma
 QAT 4-bit layout from the retained real headers in
 `libs/darkbloom-cluster/Tests/StageMetadataChecks/Inputs`, requires it to equal
-its golden layout with `routedExperts` included, and requires the prior to read
-2,424,219,708 weight bytes per token. Run `libs/darkbloom-cluster/Tests/PlacementChecks/run.sh`
+its golden layout with `routedExperts` included, and requires the per-token
+read of the [routed-expert prior](../architecture/inference.md#gemma-routed-expert-prior).
+Run `libs/darkbloom-cluster/Tests/PlacementChecks/run.sh`
 and `provider-swift/Tests/ClusterPlacementChecks/run.sh`; then run
 `provider-swift/Tests/ClusterPlacementChecks/run-flow.sh` for the real child-process
 provider path with a fake installed helper. These checks use recorded metadata
@@ -1875,8 +1876,9 @@ lane widths, out-of-range rejection, malformed-override parity even with an
 eight-lane family default, admission/owner/native parity, unsupported
 mode and image gates, and both member ranks. No model, GPU or real service is
 started. The checks preserve the singleton and GLM tensor-parallel defaults
-and the serial-prefill Gemma 4 pipeline's four default lanes, which reach the
-rank, while a Gemma setup saved with the one-chunk lookahead keeps one lane;
+and the serial-prefill Gemma 4 pipeline's default lanes
+(`DistributedInstalledPlan.gemma4PipelineBatchLanes`), which reach the rank,
+while a Gemma setup saved with the one-chunk lookahead keeps one lane;
 `DistributedInstalledLanesTests` covers the same rules for every adapter and
 schedule. Actual multi-lane output, encrypted transport and retirement still require
 qualification on both Macs. The same real-child checks pass canonical local
@@ -2231,11 +2233,14 @@ token's routes (grouped by expert from 64 assignments), with the oracle's
 bytes, at 7 to 512 tokens. A separate expert-only composition
 check compares complete singleton calls with the shared branch isolated to
 zero, and a decode check requires 2, 3 and 8 independent rows to share one
-call with each row's one-row bytes. Ordinary and verification paths
+call with each row's one-row bytes. A direct check compares the shared call
+with one-row calls for a single row and for rows that all route to the same
+experts. Ordinary and verification paths
 remain covered, and the original rectangular call still sorts. These checks do not
 claim whole-layer singleton equivalence: existing normalization can depend on
 rectangle shape on CPU. With `GEMMA4_EXPERT_ROWS_GPU=1` the suite also
-compares the shared call with one-row calls on the GPU for 1 to 2,048 rows, at
+compares the shared call with one-row calls on the GPU for 1 to 2,048 rows,
+tied routes included, at
 a geometry with the production kernel classes; `=production` adds hidden 2,816,
 expert width 704 and 128 experts. Run the GPU case alone, in an exclusive
 hardware window.

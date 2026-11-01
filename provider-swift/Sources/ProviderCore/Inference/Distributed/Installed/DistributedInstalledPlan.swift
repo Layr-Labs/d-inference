@@ -365,8 +365,8 @@ struct DistributedInstalledPlan: Sendable {
     /// tokens. Each lane is charged its whole request state on every rank
     /// and admitted against live memory; a lane the host cannot hold is
     /// refused alone, retryably. Paged KV reserves pages per request, not per
-    /// lane, so the width adds no load-time allocation. Four of the priced
-    /// pipeline widths (2, 4, 8) until the pair measures more.
+    /// lane, so the width adds no load-time allocation. Four is one of the
+    /// priced pipeline widths (2, 4 and 8), kept until the pair measures more.
     static let gemma4PipelineBatchLanes = 4
     /// Concurrent requests GLM tensor parallel serves by default: the
     /// protocol's lane cap (`ClusterWorkerLaneSession`, `ClusterWorkerPair`).

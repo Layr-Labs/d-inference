@@ -1082,6 +1082,16 @@ full-artifact memory fit, numerical parity or throughput; those require
 paired hardware qualification. The restore mechanism is described in
 [inference](inference.md#gemma-paged-prefix-restoration).
 
+A serial-prefill Gemma 4 pipeline's default width
+(`DistributedInstalledPlan.gemma4PipelineBatchLanes`,
+[Gemma pipeline lanes](inference.md#gemma-pipeline-lanes)) adds no load-time
+allocation: the paged pool's capacity is a ceiling, and pages are reserved per
+request (`CBv2StageKVHost`). Each lane is charged its whole request state on
+every rank and admitted against live memory (`QwenResidentRuntime.reserveLane`);
+a lane the host cannot hold is refused alone, retryably. The measured
+activation floor still applies: prompt frames run one per step and decode rows
+add only M=1 work.
+
 ## Bonsai packed projection arithmetic
 
 Bonsai 27B uses the [packed FP32 row path](inference.md#bonsai-27b-packed-fp32-rows)
@@ -1117,18 +1127,10 @@ Registered Gemma prompt projections use an explicit singleton-token reduction
 policy for supported BF16 affine packing, as described in
 [inference](inference.md#gemma-prompt-projection-reductions). The exact arithmetic
 receipt separates older rectangular-projection results and cache identities.
-The prompt's expert blocks share one dispatch per operation and keep each
-token's bytes, so the receipt is unchanged.
 Component tests do not qualify a complete model, both rank orders, or prompt
 throughput. Keep existing cross-chip failures and require fresh full-artifact
 numerical and timing evidence for both scoped prompt policies. Attention and
 full-model composition retain their independent qualification requirements.
-
-A serial-prefill Gemma 4 pipeline serves four lanes by default
-([Gemma pipeline lanes](inference.md#gemma-pipeline-lanes)). Each lane is
-charged its whole request state on every rank and admitted against live
-memory. The measured activation floor still applies: prompt frames run one at
-a time and decode rows add only M=1 work.
 
 ### Additional TP resident allocations
 

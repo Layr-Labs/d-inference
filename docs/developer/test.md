@@ -1,6 +1,6 @@
 # Test Provider And Native Contracts
 
-> Last updated: 2026-10-31
+> Last updated: 2026-11-01
 
 Run isolated Swift, native-resource, public-fixture and landing tests here.
 Backend integration and cross-implementation qualification are platform-owned.
@@ -1254,8 +1254,9 @@ neither real-weight numerics, a pair qualification nor speed.
    - batch lanes (one joining late): every row equals its request's solo row,
      bit for bit, and the shared batch driver with the Gemma executor
      publishes each request's solo tokens;
-   - the request loop on two ranks: a stop token, the owner's stop and one
-     rank's own stop end both ranks after the same step, with logprobs;
+   - the request loop on two ranks: a stop token, the owner's stop (also one
+     just before a stop token) and one rank's own stop end both ranks after
+     the same step, with logprobs;
    - the share probe, timed on one rank with every sum local;
    - each step's choice: greedy with both stop flags, sampled from the gathered
      row exactly as the product's sampler draws, and greedy logprobs from the

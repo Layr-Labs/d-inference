@@ -13,8 +13,10 @@ import MLX
 /// after the next step ran; a stop answer is acted on one step later (the
 /// extra step is computed and never published). A stop on either rank
 /// (`localStop`: cancel, deadline, memory; or pages that could not grow)
-/// rides in the next step's flags. At the end rank 0's count and finish
-/// cross in one small agreement (`exchange`) and rank 1 adopts them
+/// rides in the next step's flags. A rank that stopped commits nothing more
+/// but still ends at a stop token its peer commits, so both leave after the
+/// same step. At the end rank 0's count and finish cross in one small
+/// agreement (`exchange`) and rank 1 adopts them
 /// (`QwenTensorParallelStopRule.reconcile`), as GLM's tensor parallel does.
 struct Gemma4TensorParallelRequestLoop {
     let session: Gemma4TensorParallelPagedSession
@@ -31,8 +33,6 @@ struct Gemma4TensorParallelRequestLoop {
         var finish: ClusterWorkerFinishReason
         /// The owner answered a token with stop.
         var clientStopped: Bool
-        /// This rank stopped on its own (cancel, deadline, memory).
-        var stoppedHere: Bool
         var pagesRefused: Bool
     }
 
@@ -111,6 +111,10 @@ struct Gemma4TensorParallelRequestLoop {
                     } else if pagesRefused {
                         stopKeep = QwenTensorParallelStopRule.lengthStop(keep: tokens.count)
                     }
+                } else if request.stopTokenIDs.contains(agreed.token) {
+                    // The owner's stop was read after this step ran, so only the
+                    // next step could carry it; the peer ends at this token.
+                    break steps
                 }
                 guard index + 1 < request.outputCount else { break steps }
                 // Pages grow a granule ahead, at least a margin before they are
@@ -136,16 +140,14 @@ struct Gemma4TensorParallelRequestLoop {
         guard agreedEnd.count == 2, let rank0Finish = QwenTensorParallelStopRule.Finish(code: agreedEnd[1]) else {
             throw ProbeError("Gemma tensor-parallel ranks did not agree how the request ended")
         }
-        let stoppedHere = stopKeep > 0 && !clientStopped
         let ended = QwenTensorParallelStopRule.reconcile(rank: rank, localFinish: localFinish, localCount: tokens.count,
-            localStopped: stoppedHere, rank0Finish: rank0Finish, rank0Count: Int(agreedEnd[0]))
+            localStopped: stopKeep > 0 && !clientStopped, rank0Finish: rank0Finish, rank0Count: Int(agreedEnd[0]))
         tokens = Array(tokens.prefix(ended.count))
         switch ended.finish {
         case .eos: finish = .eos
         case .length: finish = .length
         case .clientStop: finish = .clientStop
         }
-        return .init(tokens: tokens, finish: finish, clientStopped: clientStopped,
-            stoppedHere: stoppedHere && stopKeep < QwenTensorParallelStopRule.lengthStopBase, pagesRefused: pagesRefused)
+        return .init(tokens: tokens, finish: finish, clientStopped: clientStopped, pagesRefused: pagesRefused)
     }
 }

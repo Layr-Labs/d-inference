@@ -420,9 +420,10 @@ struct Gemma4TensorParallelRuntimeTests {
     }
 
     /// The request loop on two ranks: plain greedy takes the oracle path's
-    /// tokens; a stop token, the owner's stop and one rank's own stop end both
-    /// ranks with the same tokens after the same step; a greedy request's
-    /// logprobs come from the split top-k, a sampled one's from rank 0's draw.
+    /// tokens; a stop token, the owner's stop (also just before a stop token)
+    /// and one rank's own stop end both ranks with the same tokens after the
+    /// same step; a greedy request's logprobs come from the split top-k, a
+    /// sampled one's from rank 0's draw.
     @Test func theRequestLoopEndsBothRanksAfterTheSameStep() throws {
         let directory = try Self.synthetic()
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -464,6 +465,14 @@ struct Gemma4TensorParallelRuntimeTests {
         let sampled = try Self.loop(models, LoopCase(sampling: sampling(1.0)))
         #expect(sampled[0].tokens == sampled[1].tokens && sampled[0].tokens.count == 8)
         #expect(sampled[0].published == sampled[0].tokens && sampled[0].logprobs.allSatisfy { $0?.top.count == 3 })
+        // The owner stops just before a stop token (keyed draws, so the
+        // tokens vary): rank 1 ends at that token before rank 0's flag can
+        // ride a step, and rank 0 ends there too.
+        let drawn = sampled[0].tokens
+        let raceAt = try #require(drawn.indices.dropFirst().dropLast().first { !drawn[..<$0].contains(drawn[$0]) })
+        let race = try Self.loop(models, LoopCase(stops: [drawn[raceAt]], sampling: sampling(1.0), ownerStopsAt: raceAt - 1))
+        for result in race { #expect(result.tokens == Array(drawn.prefix(raceAt)) && result.finish == .clientStop) }
+        #expect(race[0].clientStopped && race[0].published == Array(drawn.prefix(raceAt)))
     }
 
     // MARK: - The step's choice

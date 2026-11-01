@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-10-31
+> Last updated: 2026-11-01
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -4134,7 +4134,9 @@ stops, cancellations and retirements.
     sampled request's from the product's sampler on rank 0.
 
   A stop on either rank (cancel, deadline, memory, the owner's stop, pages
-  that could not grow) ends both after the same step.
+  that could not grow) ends both after the same step
+  (`Gemma4TensorParallelRequestLoop`). A rank that stopped commits nothing
+  more, but still ends at a stop token its peer commits.
 
 The request charge is conservative: the whole model's request state for every
 layer, as `Gemma4StateBudget` charges a pipeline stage, and a lane is gated

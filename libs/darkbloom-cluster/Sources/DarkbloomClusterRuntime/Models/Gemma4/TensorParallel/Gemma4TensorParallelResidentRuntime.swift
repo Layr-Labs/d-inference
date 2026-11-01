@@ -143,11 +143,13 @@ public final class Gemma4TensorParallelResidentRuntime {
                     hiddenSize: profile.hiddenSize, chunkTokens: profile.maximumChunkTokens, check: checked)
                 probe = measured
                 log(QwenTensorParallelLinkProbe.line(measured, rank: collective.rank))
-                // The load gate admits the shard with the profile's longest request beside it.
-                let request = try requestChargeBytes(contextTokens: profile.maximumContextTokens, admission: admission)
+                // The load gate admits the shard with the profile's longest request and the rank's own
+                // reserve (activation floor, freed-buffer cache, sealed frames) beside it: the planner's quote.
+                let budget = try requestBudget(contextTokens: profile.maximumContextTokens, admission: admission)
+                let request = budget.requestBytes
                 let value = try autoreleasepool {
                     try Gemma4TensorParallelVerifiedLoad.load(admission, rank: collective.rank, reduction: reduction,
-                        additionalResidentBytes: request, check: checked)
+                        additionalResidentBytes: budget.allowance.reservedBytes, check: checked)
                 }
                 loadedModel = value.model; retired = value.model; receipt = value.receipt
                 value.model.model.freeze()
@@ -211,22 +213,29 @@ public final class Gemma4TensorParallelResidentRuntime {
         }
     }
 
-    /// What one request of `contextTokens` costs a rank, conservatively: the
-    /// whole model's request state (`Gemma4StateBudget`, every head of every
-    /// layer, though a rank keeps half the heads) at the allocator's bound,
-    /// one prompt chunk's attention transient over every layer, and the
-    /// chunk's FP32 partials and packed feed-forward rows as sealed frames.
+    /// This rank's reserve for requests of `contextTokens` (`Gemma4TensorParallelRequestBudget`)
+    /// at the allocator's own bound.
+    static func requestBudget(contextTokens: Int, admission: Gemma4ResidentAdmission,
+                              chunkTokens: Int? = nil) throws -> Gemma4TensorParallelRequestBudget {
+        try Gemma4TensorParallelRequestBudget.derive(contextTokens: contextTokens,
+            chunkTokens: chunkTokens ?? admission.profile.maximumChunkTokens,
+            allocationBound: QwenResidentResourceEnvironment.allocationBound)
+    }
+
+    /// What one request of `contextTokens` reserves on a rank: its own KV
+    /// heads, its own query heads' prompt transient, the chunk's FP32
+    /// partials and the vocabulary rows (`Gemma4TensorParallelRequestBudget.requestBytes`).
     static func requestChargeBytes(contextTokens: Int, admission: Gemma4ResidentAdmission,
                                    chunkTokens: Int? = nil) throws -> Int {
-        let chunk = min(contextTokens, chunkTokens ?? admission.profile.maximumChunkTokens)
-        let bound = QwenResidentResourceEnvironment.allocationBound
-        let state = try Gemma4StateBudget.estimate(maximumTokens: contextTokens, chunkSize: chunk).allowance(bound: bound)
-        let transient = try Gemma4PrefillTransient.bytes(layers: admission.plan.stages.flatMap(\.layers),
-            chunkTokens: chunk, contextTokens: contextTokens)
-        // Attention partial and the packed rows (top-8 experts and the dense
-        // branch) per token, FP32; the sum's output and two sealed frames each.
-        let partials = try QwenLongPrefillCheckedBytes.product([chunk, Gemma4StageGeometry.hiddenSize * 4, 1 + 8 + 1, 4])
-        return try QwenLongPrefillCheckedBytes.sum([state.reservedBytes, transient == 0 ? 0 : bound(transient), partials])
+        try requestBudget(contextTokens: contextTokens, admission: admission, chunkTokens: chunkTokens).requestBytes
+    }
+
+    /// What the live gate asks for beside every held request: the rank's
+    /// activation floor, freed-buffer cache and sealed frames.
+    var rankReserveBytes: Int {
+        get throws {
+            try Self.requestBudget(contextTokens: admission.profile.maximumContextTokens, admission: admission).rankBytes
+        }
     }
 
     /// The host memory gate's decision for `bytes` more, as the resident families take it.
@@ -294,7 +303,7 @@ public final class Gemma4TensorParallelResidentRuntime {
                 throw ProbeError("Gemma tensor-parallel reservation exceeds its owner or readiness capacity")
             }
             ClusterIdleMemory.releaseFreedBuffers()
-            try Self.requireLiveMemory(bytes: charge)
+            try Self.requireLiveMemory(bytes: try QwenLongPrefillCheckedBytes.sum([charge, rankReserveBytes]))
             try control.check(deadline: value.deadlineUptimeNanoseconds)
             reservation = .init(request: request, deadline: value.deadlineUptimeNanoseconds)
             return charge

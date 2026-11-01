@@ -271,9 +271,10 @@ extension Gemma4TensorParallelResidentRuntime {
             guard charge <= value.capacityLimitBytes else {
                 throw ProbeError("Gemma tensor-parallel lane exceeds its owner or readiness capacity")
             }
-            // Every held lane at its whole charge, and this one.
+            // Every held lane at its whole charge, this one, and the rank's own reserve once.
             _ = ClusterIdleMemory.releaseFreedBuffers()
-            try Self.requireLiveMemory(bytes: try QwenLongPrefillCheckedBytes.sum([try laneBook.stateBytes(), charge]))
+            try Self.requireLiveMemory(bytes: try QwenLongPrefillCheckedBytes.sum([try laneBook.stateBytes(), charge,
+                rankReserveBytes]))
             try control.check(deadline: value.deadlineUptimeNanoseconds)
             try laneBook.reserve(requestID, .init(request: request, deadline: value.deadlineUptimeNanoseconds,
                 laneStateBytes: charge), lanes: lanes)

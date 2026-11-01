@@ -116,7 +116,9 @@ public struct ClusterPlacementPolicy: Sendable {
     /// say, and neither `tensorParallelMargin` nor `keptMode` holds it back; a better group (one that loads now
     /// while tensor parallel would not) still goes first. Predictions are still made and reported. False, the
     /// default here: the speed comparison decides (the plan tool without `--tensor-parallel-first`, and the
-    /// checks of that comparison).
+    /// checks of that comparison). A family whose plan states `ClusterTensorParallelChoice.fastest` is always
+    /// ranked by the comparison (owner policy 2026-11-01); its first placement prices an unmeasured link
+    /// conservatively (`ClusterTensorParallelChoice.assumedReduction`).
     public var tensorParallelFirst = false
     /// With `tensorParallelFirst`: before a load has measured the link, plan tensor parallel on the keyed
     /// reduction a forced plan assumes (`ClusterForcedMode.assumedReduction`, labelled as assumed), so the first
@@ -420,11 +422,16 @@ public enum ClusterPlacementPlanner {
                 link = link.assumingForcedReduction()
             }
         }
+        // A family whose plan is chosen only where faster (`ClusterTensorParallelChoice.fastest`) is ranked by the
+        // speed comparison, whatever the provider's rule says.
+        let fastestOnly = layout.tensorParallel?.family.choosesFastest == true
+        let tensorParallelFirst = policy.tensorParallelFirst && !fastestOnly
         if policy.tensorParallelFirst, policy.tensorParallelAssumesUnmeasuredLink, policy.forcedMode == nil,
            modes.contains(.tensorParallel),
            let tp = layout.tensorParallel, tp.family.ranks.contains(min(policy.maximumRanges, devices.count)) {
             // Tensor parallel goes first where it fits: before a load measured the link, an assumed keyed reduction.
-            link = link.assumingForcedReduction()
+            // A fastest-only family is compared on a conservative one instead.
+            link = fastestOnly ? link.assuming(ClusterTensorParallelChoice.assumedReduction) : link.assumingForcedReduction()
         }
         let context = Context(devices: devices, layout: layout, prompt: prompt, outputs: outputs,
             modes: modes, schedules: schedules, link: link, policy: policy)
@@ -438,9 +445,9 @@ public enum ClusterPlacementPlanner {
             }
         } ?? admitted
         let byTime = context.ordered(qualified.filter(\.possible), regime: policy.regime)
-        let unheld = policy.tensorParallelFirst ? context.tensorParallelFirst(byTime)
+        let unheld = tensorParallelFirst ? context.tensorParallelFirst(byTime)
             : context.holdingTensorParallelToItsMargin(byTime, regime: policy.regime)
-        let ranked = policy.tensorParallelFirst ? unheld : context.holdingKeptMode(unheld, regime: policy.regime)
+        let ranked = tensorParallelFirst ? unheld : context.holdingKeptMode(unheld, regime: policy.regime)
         if let forced = policy.forcedMode, ranked.isEmpty {
             throw ClusterPlacementError("Developer setting: \(forced.words) forced, but no \(forced.words) placement of \(layout.runtimeModelID) "
                 + (admitted.contains(where: \.possible)
@@ -627,9 +634,13 @@ public enum ClusterPlacementPlanner {
         }
         var link = link
         if mode.usesTensorParallelDecode {
-            // As `plan` does: tensor parallel goes first wherever it fits, on an assumed keyed reduction until a load measures the link.
+            // As `plan` does: tensor parallel goes first wherever it fits, on an assumed keyed reduction until a load
+            // measures the link (a conservative one for a fastest-only family).
             if policy.tensorParallelFirst, policy.tensorParallelAssumesUnmeasuredLink, policy.forcedMode == nil,
-               mode == .tensorParallel { link = link.assumingForcedReduction() }
+               mode == .tensorParallel {
+                link = layout.tensorParallel?.family.choosesFastest == true
+                    ? link.assuming(ClusterTensorParallelChoice.assumedReduction) : link.assumingForcedReduction()
+            }
             guard let tp = layout.tensorParallel, tp.family.ranks.contains(devices.count), link.reduction != nil else {
                 throw ClusterPlacementError("A tensor-parallel placement needs the layout's tensor-parallel facts for this many ranks and a measured reduction")
             }

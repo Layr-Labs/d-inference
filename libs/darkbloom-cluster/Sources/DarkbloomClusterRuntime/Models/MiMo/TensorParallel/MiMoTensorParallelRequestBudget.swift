@@ -111,28 +111,3 @@ struct MiMoTensorParallelRequestBudget: Equatable, Sendable {
             partialBytes: partials, scoreBytes: scores, headBytes: head, allowance: allowance)
     }
 }
-
-extension MiMoTensorParallelRequestBudget {
-    /// What speculative rounds of `depth` add to one request on a rank beside
-    /// the drafter's own bounded state: each sliding layer's ring gathered
-    /// once more per extra window row, one page per layer copied while a
-    /// window's checkpoint holds the old one, and a window's whole rows (FP32)
-    /// for its logprobs or its sampled targets, twice.
-    static func speculativeWindowBytes(plan: MiMoTensorParallelPlan, slidingWindow: Int, depth: Int,
-                                       allocationBound: (Int) throws -> Int) throws -> Int {
-        let sum = QwenLongPrefillCheckedBytes.sum, product = QwenLongPrefillCheckedBytes.product
-        guard slidingWindow > 0, (1 ... MiMoMTPTerms.maximumDepth).contains(depth) else {
-            throw ProbeError("MiMo tensor-parallel speculative budget needs a window and a depth")
-        }
-        var total = 0
-        for layer in 0 ..< plan.layerCount {
-            let rowBytes = try product([plan.kvHeads(layer: layer) / plan.size,
-                                        plan.headDim(layer: layer) + plan.valueHeadDim(layer: layer), 2])
-            if plan.slidingLayers[layer] {
-                total = try sum([total, product([allocationBound(product([slidingWindow, rowBytes])), depth])])
-            }
-            total = try sum([total, allocationBound(product([pageTokens, rowBytes]))])
-        }
-        return try sum([total, product([allocationBound(product([depth + 1, plan.vocabularySize, 4])), 2])])
-    }
-}

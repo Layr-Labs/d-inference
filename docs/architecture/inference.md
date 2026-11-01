@@ -4498,6 +4498,19 @@ and leaving/rejoining rows. Their CPU checks require identical native logits
 and all live KV values. This is not full-artifact GPU, pair or throughput
 qualification; those checks remain required.
 
+### Gemma routed-expert prior
+
+`Gemma4PlacementFamily` states that every layer routes a token to 8 of its 128
+experts (`expertRouting`, from `Gemma4StageGeometry`) and names the
+`experts.switch_glu` banks as routed experts (`isRoutedExpert`). Gemma layouts
+therefore carry `routedExperts`: 12,846,366,720 bytes for the QAT 4-bit
+artifact and 24,265,359,360 bytes for the 8-bit one. The hardware prior
+(`ClusterHardwarePrior.decodeBytesPerToken`) counts 2,424,219,708 weight bytes
+per QAT 4-bit token instead of every layer byte. The golden pipeline plans
+keep their cuts and modes; the prior feeds the device-index and
+tensor-parallel share estimates (`ClusterHardwarePrior.absolute`,
+`ClusterDecodeSplit`).
+
 ### Qualification records for identical catalog files
 
 The plain `gemma-4-26b` and `gemma-4-26b-8bit` catalog entries have identical

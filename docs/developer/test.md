@@ -25,7 +25,11 @@ not native model capabilities, numerical parity or hardware qualification.
 
 The placement checks also cover exact family request scopes, completion-heavy
 and long-prompt helper plans, overflow refusal, conservative memory refusal and
-unchanged GLM adapter bounds. Run `libs/darkbloom-cluster/Tests/PlacementChecks/run.sh`
+unchanged GLM adapter bounds. `GemmaRoutedExpertChecks.swift` builds the Gemma
+QAT 4-bit layout from the retained real headers in
+`libs/darkbloom-cluster/Tests/StageMetadataChecks/Inputs`, requires it to equal
+its golden layout with `routedExperts` included, and requires the prior to read
+2,424,219,708 weight bytes per token. Run `libs/darkbloom-cluster/Tests/PlacementChecks/run.sh`
 and `provider-swift/Tests/ClusterPlacementChecks/run.sh`; then run
 `provider-swift/Tests/ClusterPlacementChecks/run-flow.sh` for the real child-process
 provider path with a fake installed helper. These checks use recorded metadata

@@ -77,6 +77,8 @@ public final class ClusterService: @unchecked Sendable {
     /// The supervision loop's period: one supervise/publish cycle per interval.
     private let supervisionIntervalSeconds: Double
     private let beforePartStart: (@Sendable () -> Void)?
+    /// The environment this Mac's parts start from (`partEnvironment`); nil: this process's own at each start.
+    private let environment: [String: String]?
     /// Main supervision thread only; a pending stop cannot be acknowledged by
     /// a cycle that read the preceding serving intent.
     private var supervisedStopDrainID: UUID?
@@ -161,12 +163,14 @@ public final class ClusterService: @unchecked Sendable {
     /// Internal composition of the service's existing stores. Public callers keep
     /// the canonical user namespace, the normal recovery deadline and the one-second supervision interval.
     init(settings: Settings, paths: ClusterUserPaths, recoveryGraceSeconds: Double = 300,
-         supervisionIntervalSeconds: Double = 1, beforePartStart: (@Sendable () -> Void)? = nil) {
+         supervisionIntervalSeconds: Double = 1, beforePartStart: (@Sendable () -> Void)? = nil,
+         environment: [String: String]? = nil) {
         precondition(recoveryGraceSeconds.isFinite && recoveryGraceSeconds >= 0)
         precondition(supervisionIntervalSeconds.isFinite && supervisionIntervalSeconds > 0)
         self.recoveryGraceSeconds = recoveryGraceSeconds
         self.supervisionIntervalSeconds = supervisionIntervalSeconds
         self.beforePartStart = beforePartStart
+        self.environment = environment
         pairingStore = .default(home: paths.homeDirectory)
         var wizard = settings.wizard
         wizard.derivedPlacement = true
@@ -1124,8 +1128,9 @@ public final class ClusterService: @unchecked Sendable {
             try? self.store.updateRecord { stored in
                 if let note = result.note { stored.approvalNote = note }
                 // The approval set aside is kept while the pair serves locally and dropped once one is saved again.
-                if case .serveLocally(let approval, let reason) = step, result.changed {
-                    stored.approvalSetAside = .init(approval: approval, reason: reason, runtimeBinarySHA256: decided.worker)
+                if result.changed, let setAside = ClusterApprovalCheck.setAside(by: step, worker: decided.worker,
+                                                                                now: Date().timeIntervalSince1970) {
+                    stored.approvalSetAside = setAside
                 }
                 if case .save = step, result.changed { stored.approvalSetAside = nil }
             }
@@ -1293,7 +1298,8 @@ public final class ClusterService: @unchecked Sendable {
                 nextStart = Date().addingTimeInterval(ran >= 120 ? 3 : backoff)
             }
             // A coordinator-paired part that keeps ending right after its start makes the leader serve locally
-            // (`ClusterApprovalCheck.step`); an end because the coordinator was out of reach is not counted.
+            // (`ClusterApprovalCheck.step`); an end the coordinator decided (out of reach, or the member role not
+            // accepted in time) is not counted.
             if lock.withLock({ childIsMember }) {
                 let lastError = Self.lastError(in: serviceFiles.rankLog, from: lock.withLock { childLogOffset })
                 lock.withLock { memberQuickEnds = ClusterApprovalCheck.memberQuickEnds(after: memberQuickEnds, ranSeconds: ran, lastError: lastError) }
@@ -1419,6 +1425,8 @@ public final class ClusterService: @unchecked Sendable {
         let process = Process()
         process.executableURL = settings.wizard.darkbloomExecutable
         process.arguments = arguments
+        process.environment = Self.partEnvironment(environment ?? ProcessInfo.processInfo.environment,
+                                                   serviceDirectory: store.paths.directory)
         process.standardInput = FileHandle.nullDevice
         let log = serviceFiles.rankLog
         if !FileManager.default.fileExists(atPath: log.path) { FileManager.default.createFile(atPath: log.path, contents: nil, attributes: [.posixPermissions: 0o600]) }
@@ -1437,6 +1445,22 @@ public final class ClusterService: @unchecked Sendable {
             if !memberRoute { memberQuickEnds = 0 }
         }
         say("started \(what) (pid \(process.processIdentifier))")
+    }
+
+    /// The environment of this Mac's part: this service's own, except the heartbeat file. Under its supervisor the
+    /// service beats into the file `ClusterSupervisionFiles.healthPathEnvironmentKey` names, and a coordinator-paired
+    /// part (`start --cluster-member`) beats into the file the same key names, with its own pid. Inherited as is, the
+    /// part overwrote the service's heartbeat, and the supervisor's liveness guard reads a beat of another pid as no
+    /// beat: whenever the part's beats landed last at the guard's probes for its down budget, the guard restarted a
+    /// healthy service and the pair dropped. The part beats into a file of its own instead; it keeps the key, so it
+    /// still waits for its registration as a supervised member does.
+    static func partEnvironment(_ environment: [String: String], serviceDirectory: URL) -> [String: String] {
+        var environment = environment
+        let key = ClusterSupervisionFiles.healthPathEnvironmentKey
+        if let path = environment[key], !path.isEmpty {
+            environment[key] = ClusterServiceAgent.partHealthPath(serviceDirectory: serviceDirectory).path
+        }
+        return environment
     }
 
     /// Saves this Mac's setup without its cluster approval (it ended, or the cluster serves locally only). A save

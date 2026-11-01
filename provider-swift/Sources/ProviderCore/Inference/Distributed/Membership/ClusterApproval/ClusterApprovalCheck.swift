@@ -7,9 +7,13 @@ public enum ClusterApprovalFallback: String, Codable, Equatable, Sendable {
     /// The coordinator answers (404, or a list without the saved approval) and serves no other matching entry.
     case withdrawn
     /// The coordinator-paired parts ended `ClusterControlSoloAdmission.maximumQuickEnds` times in a row right after
-    /// starting with the approval (the rule for a solo server that keeps ending). The approval itself is not taken
-    /// again; a later matching one is.
+    /// starting with the approval (the rule for a solo server that keeps ending; `ClusterApprovalCheck.memberQuickEnds`).
+    /// The approval itself is taken again `failingSeconds` after it was set aside; a later matching one at once.
     case failing
+
+    /// How long the same build does not take an approval set aside as `failing` again. Meanwhile each Mac's part that
+    /// serves locally starts its count of quick ends again (`ClusterService`), so the approval comes back with none.
+    public static let failingSeconds: Double = 3_600
 
     /// The one line for the screen, the log and the status.
     func line(_ approval: ClusterRuntimeApproval, grace: Double) -> String {
@@ -22,8 +26,8 @@ public enum ClusterApprovalFallback: String, Codable, Equatable, Sendable {
                 + "until it lists a matching one again"
         case .failing:
             return "The coordinator-paired parts ended \(ClusterControlSoloAdmission.maximumQuickEnds) times in a row right after "
-                + "starting with cluster approval \(approval.id): the pair serves on the leader's local API until the "
-                + "coordinator lists a later one"
+                + "starting with cluster approval \(approval.id): the pair serves on the leader's local API for "
+                + "\(Int(Self.failingSeconds / 60)) minutes, then it is offered again with it, or sooner with a later one the coordinator lists"
         }
     }
 }
@@ -121,10 +125,13 @@ enum ClusterApprovalCheck {
         watch.unreachableSince = nil
         guard answered else { return .keep }
         // Not offered now: the first matching entry, or one listed again for a pair that serves locally. An approval its
-        // parts kept failing with is not taken again by the same build (by any build for a record without one).
+        // parts kept failing with is not taken again by the same build (by any build for a record without one) for
+        // `ClusterApprovalFallback.failingSeconds` after it was set aside. A record from an older build names no time
+        // and is past that bound, as is one whose time lies ahead of a clock that was set back.
         var answer = fetched
         if let setAside, setAside.reason == .failing,
            setAside.runtimeBinarySHA256.map({ $0 == saved.capability.runtimeBinarySHA256 }) ?? true,
+           let setAt = setAside.setAt, (0..<ClusterApprovalFallback.failingSeconds).contains(now - setAt),
            case .approvals(let approvals) = fetched {
             answer = .approvals(approvals.filter { $0.id != setAside.approval.id })
         }
@@ -137,12 +144,26 @@ enum ClusterApprovalCheck {
     /// A coordinator-paired part's quick ends in a row after one more end that ran `ranSeconds`: one more for a quick
     /// end (`ClusterControlSoloAdmission.quickEnds`, the solo server's rule), none after a part that ran long enough,
     /// and none after an end because the coordinator could not be reached (`lastError`), which the no-answer grace
-    /// handles instead.
+    /// handles instead. A quick end because the coordinator did not accept the member role in its negotiation window
+    /// (during a deploy, right after a restart, or when it is slow) leaves the count as it is: the coordinator decided
+    /// it, not this Mac's part. Every other end counts, a crash or a changed input included.
     static func memberQuickEnds(after count: Int, ranSeconds: Double, lastError: String?) -> Int {
         if lastError?.contains(unreachableMemberEnd) == true { return 0 }
+        if lastError?.contains(notAcceptedMemberEnd) == true, ranSeconds < ClusterControlSoloAdmission.quickEndSeconds { return count }
         return ClusterControlSoloAdmission.quickEnds(after: count, ranSeconds: ranSeconds)
     }
 
     /// How a member's error line starts when its registration wait never reached the coordinator.
     static let unreachableMemberEnd = String(ClusterMemberControlError.coordinatorUnreachable.rawValue.prefix(40))
+    /// A member's error line when the coordinator kept its registration open past the negotiation window without an
+    /// acknowledgement that fits it.
+    static let notAcceptedMemberEnd = ClusterMemberControlError.negotiationFailed.rawValue
+
+    /// What the leader keeps once both Macs applied `step` (`ClusterSetupRecord.approvalSetAside`): the approval a
+    /// fallback set aside, with the saved setup's worker digest and the wall-clock seconds it was set aside at; nil for
+    /// any other step.
+    static func setAside(by step: Step, worker: String, now: Double) -> ClusterSetupRecord.ApprovalSetAside? {
+        guard case .serveLocally(let approval, let reason) = step else { return nil }
+        return .init(approval: approval, reason: reason, runtimeBinarySHA256: worker, setAt: now)
+    }
 }

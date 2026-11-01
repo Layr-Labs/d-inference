@@ -13,6 +13,15 @@ CALLER = (ROOT / '.github/workflows/release-swift.yml').read_text()
 RELEASE = (ROOT / '.github/workflows/release-provider.yml').read_text()
 WARM = (ROOT / '.github/workflows/provider-release-cache.yml').read_text()
 ACTION = (ROOT / '.github/actions/provider-release-build/action.yml').read_text()
+FACTS_SCRIPT = (ROOT / 'scripts/provider-cluster-runtime-facts.sh').read_text()
+FACTS_STEP = '- name: Compute cluster runtime facts from the final signed app\n'
+SHOW_STEP = '- name: Show the cluster runtime facts\n'
+RETAIN_STEP = '- name: Retain the cluster runtime facts\n'
+
+
+def step(content, name):
+    """The body of the step that starts with `name`, up to the next step."""
+    return content.split(name, 1)[1].split('\n      - name:', 1)[0].split('\n      # ', 1)[0]
 
 
 def caller_lanes():
@@ -155,7 +164,7 @@ class ReleasePipelineTests(unittest.TestCase):
 
     def test_release_lane_stamps_only_a_resolved_dev_version_after_clean_source_check(self):
         self.assertIn('version: ${{ needs.resolve-env.outputs.version }}', job(RELEASE, 'build-provider'))
-        self.assertNotIn('version:', job(RELEASE, 'qualify-sdk').split('lane: qualification', 1)[1])
+        self.assertNotIn('version:', job(RELEASE, 'qualify-sdk-shard').split('lane: qualification', 1)[1])
         stamp = ACTION.split('- name: Stamp dev release version\n', 1)[1].split('\n    - name:', 1)[0]
         self.assertLess(ACTION.index('- name: Verify checked-out source'), ACTION.index('- name: Stamp dev release version'))
         self.assertLess(ACTION.index('- name: Stamp dev release version'), ACTION.index('- name: Build optimized provider products'))
@@ -165,7 +174,7 @@ class ReleasePipelineTests(unittest.TestCase):
         self.assertNotIn('version:', WARM.split('uses: ./.github/actions/provider-release-build', 1)[1].split('\n      - ', 1)[0])
 
     def test_parallel_lanes_use_sdk27_without_signing_secrets(self):
-        for name, lane in [('build-provider', 'release'), ('qualify-sdk', 'qualification')]:
+        for name, lane in [('build-provider', 'release'), ('qualify-sdk-shard', 'qualification')]:
             content = job(RELEASE, name)
             self.assertRegex(content, r'(?m)^    needs: resolve-env$')
             self.assertIn('runs-on: blacksmith-12vcpu-macos-27', content)
@@ -177,7 +186,7 @@ class ReleasePipelineTests(unittest.TestCase):
     def test_only_the_release_lane_compiles_the_release_environment(self):
         selector = 'DARKBLOOM_RELEASE_ENVIRONMENT: ${{ needs.resolve-env.outputs.environment }}'
         self.assertIn(selector, job(RELEASE, 'build-provider'))
-        qualify = job(RELEASE, 'qualify-sdk')
+        qualify = job(RELEASE, 'qualify-sdk-shard')
         self.assertNotIn(selector, qualify)
         self.assertEqual(re.findall(r'DARKBLOOM_RELEASE_ENVIRONMENT: (\S+)', qualify), ['prod'])
         # Named once, in the job-level env: (no step or shell override).
@@ -197,7 +206,13 @@ class ReleasePipelineTests(unittest.TestCase):
         self.assertIn('needs: [resolve-env, build-provider, qualify-sdk]', content)
         self.assertNotRegex(content, r'(?m)^    environment:')
         self.assertNotRegex(content, r'(?m)^    if:.*always')
-        self.assertNotIn('continue-on-error:', RELEASE)
+        # Every release step is required. The only exceptions are the cluster
+        # runtime facts steps: their failure fails the job only when the
+        # payload carries the block (CLUSTER_RUNTIME_SEND).
+        self.assertEqual(RELEASE.count('continue-on-error:'), 3)
+        self.assertIn("continue-on-error: ${{ env.CLUSTER_RUNTIME_SEND != 'true' }}\n", step(content, FACTS_STEP))
+        for name in (SHOW_STEP, RETAIN_STEP):
+            self.assertIn('continue-on-error: true\n', step(content, name))
         self.assertNotIn('continue-on-error:', ACTION)
         self.assertIn('needs: [resolve-env, build-and-release]', job(RELEASE, 'validate-older-macos'))
 
@@ -247,7 +262,7 @@ class ReleasePipelineTests(unittest.TestCase):
         self.assertLess(resolver.index('ref: ${{ steps.trust.outputs.source_sha }}'),
                         resolver.index('./scripts/resolve-provider-release.sh'))
         self.assertIn('workflow_sha: ${{ steps.trust.outputs.source_sha }}', resolver)
-        for name in ['build-provider', 'qualify-sdk', 'build-and-release',
+        for name in ['build-provider', 'qualify-sdk-shard', 'qualify-sdk', 'build-and-release',
                      'stage-release', 'publish-release', 'validate-older-macos']:
             content = job(RELEASE, name)
             self.assertIn('ref: ${{ needs.resolve-env.outputs.workflow_sha }}', content)
@@ -375,6 +390,9 @@ class ReleasePipelineTests(unittest.TestCase):
         self.assertIn("run-nested-suite.sh testNativeAudioRelease --no-parallel", gate)
         self.assertNotIn("cache-hit", gate)
         self.assertNotIn("continue-on-error:", gate)
+        # Exactly one job runs it: the last shard, or an unsharded qualification.
+        for content in (fixture, gate):
+            self.assertIn("steps.lane.outputs.last == 'true'", content)
 
     def test_image_http_fixtures_reach_the_full_sdk_test_process(self):
         marker = '- name: Prepare MiMo image HTTP fixtures\n'
@@ -435,13 +453,195 @@ class ReleasePipelineTests(unittest.TestCase):
         self.assertIn('PUBLICATION_NAME="provider-publication-${ENV_PREFIX}-${RELEASE_SOURCE_SHA}-${GITHUB_RUN_ATTEMPT}"', sign)
         # Both SDK lanes pass the environment so retained diagnostics never clash.
         self.assertIn('environment: ${{ needs.resolve-env.outputs.environment }}', job(RELEASE, 'build-provider'))
-        self.assertIn('environment: ${{ needs.resolve-env.outputs.environment }}', job(RELEASE, 'qualify-sdk'))
+        self.assertIn('environment: ${{ needs.resolve-env.outputs.environment }}', job(RELEASE, 'qualify-sdk-shard'))
         # Release lanes add an -<environment>- infix; a caller passing no
         # environment (the warm lane) keeps the historical name with no empty
         # double dash.
         self.assertIn("provider-sdk-test-diagnostics${{ inputs.environment != '' && format('-{0}', inputs.environment) || '' }}-", ACTION)
         self.assertNotIn('provider-sdk-test-diagnostics--', ACTION)
         self.assertNotRegex(WARM, r'(?m)^\s+environment:')
+
+    def test_qualification_shards_run_the_ci_plan_and_one_audited_job_gates_signing(self):
+        shards = job(RELEASE, 'qualify-sdk-shard')
+        self.assertIn('    name: Qualify provider with SDK 27 (shard ${{ matrix.shard }})\n', shards)
+        self.assertIn("    if: needs.resolve-env.outputs.resume != 'true'\n", shards)
+        self.assertIn('      fail-fast: false\n', shards)
+        self.assertIn('        shard: [1, 2, 3, 4, 5]\n', shards)
+        self.assertIn('          shard: ${{ matrix.shard }}/${{ strategy.job-total }}\n', shards)
+        # One job carries the qualification result that signing needs and that
+        # recovery binds by name; a shard's name never matches it.
+        identity = (ROOT / 'scripts/provider_release_resume/identity.py').read_text()
+        self.assertIn('QUALIFY_JOB = "Qualify provider with SDK 27"', identity)
+        gate = job(RELEASE, 'qualify-sdk')
+        self.assertIn('    name: Qualify provider with SDK 27\n', gate)
+        self.assertFalse(shards.split('    name: ', 1)[1].split('\n', 1)[0].endswith('Qualify provider with SDK 27'))
+        self.assertRegex(gate, r'(?m)^    needs: \[resolve-env, qualify-sdk-shard\]$')
+        # The implicit success() condition: a failed or skipped shard skips the gate.
+        self.assertIn("    if: needs.resolve-env.outputs.resume != 'true'\n", gate)
+        self.assertNotRegex(gate, r'(?m)^    if:.*(always|cancelled|failure)')
+        self.assertNotIn('secrets.', gate)
+        self.assertIn('contents: read', gate)
+        self.assertNotIn('continue-on-error', gate)
+        # The gate audits what every shard executed against the full suite list.
+        self.assertIn('pattern: provider-sdk-qualification-${{ needs.resolve-env.outputs.environment }}-'
+                      '${{ github.sha }}-shard-*\n', gate)
+        self.assertIn('python3 scripts/provider-test-shards.py audit "${lists[0]}" "$RUNNER_TEMP/provider-sdk-shards"', gate)
+        self.assertLess(gate.index('diff <('), gate.index('provider-test-shards.py audit'))
+        # Each shard uploads its counts and suite list under that pattern.
+        # No attempt in the name: a rerun of failed shards overwrites only theirs.
+        retain = ACTION.split('- name: Retain shard counts for the audit\n', 1)[1].split('\n    - name:', 1)[0]
+        self.assertIn("name: provider-sdk-qualification${{ inputs.environment != '' && format('-{0}', inputs.environment) || '' }}"
+                      "-${{ github.sha }}-shard-${{ steps.lane.outputs.index }}\n", retain)
+        self.assertIn('overwrite: true\n', retain)
+        listing = ACTION.split('- name: List the provider suite for the shard audit\n', 1)[1].split('\n    - name:', 1)[0]
+        self.assertIn('swift test list --skip-build > "$RUNNER_TEMP/provider-sdk-shard/provider-tests.txt"', listing)
+        test = ACTION.split('- name: Test provider with release SDK\n', 1)[1].split('\n    - name:', 1)[0]
+        self.assertIn('export PROVIDER_TEST_SHARD="$QUALIFICATION_SHARD"', test)
+        self.assertIn('export PROVIDER_TEST_REPORT_DIR="$RUNNER_TEMP/provider-sdk-shard"', test)
+        # Prompt Parity runs once, against the test build, and reports both suites.
+        build = ACTION.index('- name: Build SDK test products and stage Metal library\n')
+        for name, script, suite in (('Verify public prompt golden vectors', 'verify-prompt-parity.sh',
+                                     'ProductionPromptParityTests'),
+                                    ('Verify pinned Nemotron prompts', 'verify-nemotron-prompt-parity.sh',
+                                     'NemotronTemplateParityLiveTests')):
+            with self.subTest(step=name):
+                self.assertLess(build, ACTION.index('- name: ' + name + '\n'))
+                parity = ACTION.split('- name: ' + name + '\n', 1)[1].split('\n    - name:', 1)[0]
+                self.assertIn("if: inputs.lane == 'qualification' && steps.lane.outputs.parity == 'true'", parity)
+                self.assertIn('./scripts/' + script, parity)
+                self.assertIn('provider-test-shards.py counts parity ' + suite, parity)
+        self.assertIn("PROMPT_PARITY_SKIP_BUILD: '1'", ACTION)
+        # A shard applies to qualification only; the release lane builds whole.
+        lane = ACTION.split('- name: Validate lane\n', 1)[1].split('\n    - name:', 1)[0]
+        self.assertIn('if [ "$LANE" != qualification ]', lane)
+        self.assertIn('^([1-9][0-9]*)/([1-9][0-9]*)$', lane)
+        self.assertNotIn('shard:', job(RELEASE, 'build-provider'))
+        self.assertNotIn('shard:', WARM)
+
+    def test_cluster_helper_objects_share_the_release_swift_cache(self):
+        # The native worker build reuses objects like the provider build; the
+        # Metal library is never taken from a cache, and the helper checks
+        # always run.
+        worker = 'libs/darkbloom-cluster-worker/.build-native-worker'
+        for name in ('Restore SDK-specific Swift build cache', 'Save SDK-specific Swift build cache'):
+            cache = ACTION.split('- name: ' + name + '\n', 1)[1].split('\n    - name:', 1)[0]
+            self.assertIn('          ' + worker + '\n', cache)
+        restore = ACTION.split('- name: Restore unchanged source timestamps\n', 1)[1].split('\n    - name:', 1)[0]
+        self.assertIn('libs/mlx-swift-lm/.build ' + worker + '; do', restore)
+        self.assertIn('-name mlx.metallib -delete', restore)
+        helpers = ACTION.split('- name: Build cluster helpers (worker and placement tool)\n', 1)[1].split('\n    - name:', 1)[0]
+        self.assertNotIn('cache-hit', helpers)
+        identity = (ROOT / 'scripts/provider_release_cache/identity.py').read_text()
+        for recipe in ('"scripts/build-cluster-helpers.sh"', '"libs/darkbloom-cluster-worker/build-native-worker.sh"'):
+            self.assertIn(recipe, identity)
+
+    def test_cluster_runtime_facts_come_from_the_final_signed_app_without_secrets(self):
+        sign = job(RELEASE, 'build-and-release')
+        facts = step(sign, FACTS_STEP)
+        # Every lane and every run: no condition of its own.
+        self.assertNotIn('\n        if:', facts)
+        # After signing, notarization, the final tar and its hashes; before the
+        # payload is prepared and the keychain is cleaned up.
+        self.assertLess(sign.index('xcrun notarytool submit'), sign.index(FACTS_STEP))
+        self.assertLess(sign.index('echo "BUNDLE_HASH=$BUNDLE_HASH"'), sign.index(FACTS_STEP))
+        for later in ('- name: Record signed validation identity', '- name: Prepare exact signed release identity',
+                      '- name: Cleanup keychain'):
+            self.assertLess(sign.index(FACTS_STEP), sign.index(later))
+        # No secret: none referenced, the two secret-derived GITHUB_ENV values
+        # and the signing keychain removed before release code runs, which then
+        # runs with an empty environment.
+        self.assertNotIn('secrets.', facts)
+        self.assertNotIn('\n        env:', facts)
+        first_run = facts.index('scripts/provider-cluster-runtime-facts.sh "$FACTS_ROOT/app/$APP_NAME" "$CLI_NAME" '
+                                '"$ENV_PREFIX" "$FACTS_ROOT/facts"')
+        for removal in ('unset r2_public_url coordinator_url', 'security delete-keychain "$KEYCHAIN_PATH"\n',
+                        'test ! -e "$KEYCHAIN_PATH"', 'IDENTITIES=$(security find-identity -p codesigning)',
+                        'if grep -F -q -- "$DEVELOPER_ID" <<< "$IDENTITIES"; then'):
+            self.assertLess(facts.index(removal), first_run)
+        # A keychain that cannot be deleted, or an identity still listed, fails the step.
+        self.assertNotIn('|| true', facts)
+        self.assertNotIn('2>/dev/null', facts)
+        # Every identity, not only valid ones: a revoked or expired key left behind is found too.
+        self.assertNotIn('find-identity -v', facts)
+        self.assertLess(facts.index('security delete-keychain'), facts.index('IDENTITIES='))
+        # The final archived bytes, extracted afresh after their hash is checked.
+        self.assertLess(facts.index('= "$BUNDLE_HASH"'), facts.index('tar -xzf /tmp/darkbloom-bundle-macos-arm64.tar.gz'))
+        self.assertLess(facts.index('tar -xzf /tmp/darkbloom-bundle-macos-arm64.tar.gz'), first_run)
+        # A hang ends the step; with the block unsent its failure only warns.
+        self.assertIn('timeout-minutes: 20\n', facts)
+        # The shared script: the app's own CLI only ever runs with an empty
+        # environment, and the metadata comes from the release's environment.
+        self.assertTrue(FACTS_SCRIPT.startswith('#!/usr/bin/env bash\n') and 'set -euo pipefail\n' in FACTS_SCRIPT)
+        self.assertEqual(FACTS_SCRIPT.count('/Contents/MacOS/'), 1)
+        self.assertIn('  env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin HOME="$root/home" DARKBLOOM_NO_UPDATE_CHECK=1 \\\n'
+                      '    "$app/Contents/MacOS/$cli" cluster runtime-facts "$@"\n', FACTS_SCRIPT)
+        fetch = 'python3 "$scripts/provider-cluster-runtime-models.py" --environment "$environment"'
+        self.assertLess(FACTS_SCRIPT.index('runtime_facts --list-release-models'), FACTS_SCRIPT.index(fetch))
+        self.assertLess(FACTS_SCRIPT.index(fetch),
+                        FACTS_SCRIPT.index('runtime_facts --app "$app" --release-candidates "$root/candidates"'))
+        # Any failure fails the script: no swallowed status, no required list.
+        for soft in ('|| status', '|| true', '--require-model', '2>'):
+            self.assertNotIn(soft, FACTS_SCRIPT)
+
+    def test_cluster_runtime_is_sent_only_when_the_environment_variable_is_true(self):
+        sign = job(RELEASE, 'build-and-release')
+        switch = sign.split('      CLUSTER_RUNTIME_SEND: >-\n', 1)[1].split('\n\n', 1)[0]
+        self.assertEqual(' '.join(switch.split()),
+                         "${{ needs.resolve-env.outputs.publish == 'true' && "
+                         "((needs.resolve-env.outputs.environment == 'dev' && vars.DEV_CLUSTER_RUNTIME_ENABLED == 'true') || "
+                         "(needs.resolve-env.outputs.environment == 'staging' && vars.STAGING_CLUSTER_RUNTIME_ENABLED == 'true') || "
+                         "(needs.resolve-env.outputs.environment == 'prod' && vars.PROD_CLUSTER_RUNTIME_ENABLED == 'true')) }}")
+        for variable in ('DEV', 'STAGING', 'PROD'):
+            self.assertEqual(RELEASE.count(f'vars.{variable}_CLUSTER_RUNTIME_ENABLED'), 1)
+        self.assertEqual(RELEASE.count('CLUSTER_RUNTIME_SEND: >-'), 1)
+        # The facts step names the file for prepare only when the block is sent.
+        self.assertEqual(RELEASE.count('CLUSTER_RUNTIME_FILE='), 1)
+        self.assertIn('          if [ "$CLUSTER_RUNTIME_SEND" = true ]; then\n'
+                      '            echo "CLUSTER_RUNTIME_FILE=$FACTS_ROOT/facts/cluster-runtime.json" >> "$GITHUB_ENV"\n'
+                      '          fi\n', step(sign, FACTS_STEP))
+        # Prepare: with the switch off, today's command byte for byte; with it
+        # on, the facts are required and passed.
+        prepare = step(sign, '- name: Prepare exact signed release identity\n')
+        today = ('python3 scripts/provider-release-publication.py prepare \\\n'
+                 '              --directory "$RUNNER_TEMP/provider-publication" --bundle /tmp/darkbloom-bundle-macos-arm64.tar.gz\n')
+        on, off = prepare.split('          if [ "$CLUSTER_RUNTIME_SEND" = true ]; then\n', 1)[1].split('          else\n', 1)
+        off = off.split('          fi\n', 1)[0]
+        self.assertEqual(off, '            ' + today)
+        self.assertIn('test -s "${CLUSTER_RUNTIME_FILE:-}"\n', on)
+        self.assertLess(on.index('test -s'), on.index('prepare'))
+        self.assertIn('--cluster-runtime "$CLUSTER_RUNTIME_FILE"\n', on)
+        self.assertEqual(RELEASE.count('--cluster-runtime'), 1)
+
+    def test_cluster_runtime_facts_are_always_shown_and_retained(self):
+        sign = job(RELEASE, 'build-and-release')
+        for name in (SHOW_STEP, RETAIN_STEP):
+            with self.subTest(step=name):
+                content = step(sign, name)
+                # They also run when the facts step failed, and never fail the job.
+                self.assertIn("if: ${{ !cancelled() && (steps.cluster_runtime.outcome == 'success' || "
+                              "steps.cluster_runtime.outcome == 'failure') }}\n", content)
+                self.assertNotIn('secrets.', content)
+                self.assertLess(sign.index(FACTS_STEP), sign.index(name))
+                self.assertLess(sign.index(name), sign.index('- name: Prepare exact signed release identity'))
+        self.assertIn('        id: cluster_runtime\n', step(sign, FACTS_STEP))
+        show = step(sign, SHOW_STEP)
+        self.assertIn('>> "$GITHUB_STEP_SUMMARY"', show)
+        self.assertIn('python3 -m json.tool --sort-keys "$FACTS/cluster-runtime.json"', show)
+        self.assertIn('cat "$FACTS/skipped.md"', show)
+        retain = step(sign, RETAIN_STEP)
+        self.assertIn('uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a', retain)
+        # Lanes of one run never collide.
+        self.assertIn('name: cluster-runtime-${{ needs.resolve-env.outputs.environment }}-'
+                      '${{ needs.resolve-env.outputs.source_sha }}-${{ github.run_attempt }}\n', retain)
+        self.assertIn('${{ runner.temp }}/cluster-runtime/facts/cluster-runtime.json\n', retain)
+        self.assertIn('if-no-files-found: warn\n', retain)
+
+    def test_the_cluster_runtime_scripts_start_the_release_lanes(self):
+        # The facts script runs the fetch script; a change to either starts
+        # both push lanes, like every other script a release runs.
+        for caller in (CALLER, (ROOT / '.github/workflows/release-dev-branch.yml').read_text()):
+            for script in ('scripts/provider-cluster-runtime-models.py', 'scripts/provider-cluster-runtime-facts.sh'):
+                self.assertIn(f"      - '{script}'\n", caller)
 
 
 if __name__ == '__main__':

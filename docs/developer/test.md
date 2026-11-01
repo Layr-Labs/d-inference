@@ -1330,6 +1330,8 @@ registered artifact for them.
    - paged `full` and `simulated` equal contiguous ones bit for bit;
    - ranks given different agreements refuse;
    - a checkpoint changed after its manifest is refused;
+   - a 192-token prompt (three 64-token pages before decode) gives the same
+     results on both paths and over the ring;
    - recording route sets (`--record-routes yes`) changes nothing.
 
    It also reports, without requiring anything of it, where `simulated` first

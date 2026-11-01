@@ -27,7 +27,10 @@
 # gathered row. The paged matrix also requires paged `full` and `simulated`
 # bitwise equal to contiguous ones, each tp rank to have read exactly its
 # shard's bytes, and two refusals: ranks told different agreements, and a
-# checkpoint byte changed after its manifest.
+# checkpoint byte changed after its manifest. A 192-token prompt (three
+# 64-token pages before decode) runs on both paths and over the ring. Route
+# sets are recorded to report where `simulated` first routes a token to other
+# experts than `full` (informational; recording must change nothing).
 set -euo pipefail
 tp_check="$1"
 scratch="$2"
@@ -180,6 +183,26 @@ EOF
     echo "paged: tampered checkpoint failed for another reason"; failures=$((failures + 1))
   fi
 }
+# A 192-token prompt (three 64-token pages before decode) on the paged path: tp bitwise equal to
+# simulated, each rank reading only its runs, and paged full and simulated bitwise equal to contiguous ones.
+paged_long() {
+  local dir="$scratch/kernel" request=request-long
+  for mode in full simulated; do
+    nice -n 19 "$tp_check" mimo run --mode "$mode" --path paged --model-dir "$dir" --request "$dir/$request.json" \
+      --report "$dir/paged-$request-$mode.json" >"$dir/paged-$request-$mode.log" 2>&1
+    nice -n 19 "$tp_check" mimo run --mode "$mode" --model-dir "$dir" --request "$dir/$request.json" \
+      --report "$dir/$request-$mode.json" >"$dir/$request-$mode.log" 2>&1
+    if "$tp_check" mimo compare --reference "$dir/$request-$mode.json" --candidate "$dir/paged-$request-$mode.json" \
+         --bitwise yes >"$dir/paged-vs-contiguous-$request-$mode.txt" 2>&1; then
+      echo "paged kernel/$request $mode == contiguous $mode, bitwise"
+    else
+      echo "paged kernel/$request $mode DIFFERS from contiguous"; failures=$((failures + 1))
+    fi
+  done
+  tp_pair "$dir" "$request" "paged-$request-tp-ring" ring "" --path paged
+  check_rank "$dir" "paged-$request" "paged-$request-tp-ring" "paged kernel/$request (ring)"
+  for rank in 0 1; do check_read_bytes "$dir/paged-$request-tp-ring-rank$rank.json" "paged kernel/$request tp rank $rank"; done
+}
 # Route sets (informational): where `simulated` (bitwise `tp`) first routes a token to other experts
 # than `full`. Required only that recording the routes changes nothing.
 paged_routes() {
@@ -203,7 +226,7 @@ paged_routes() {
 }
 for path in $paths; do
   run_matrix "$path"
-  if [[ "$path" == paged ]]; then paged_extras; paged_routes; fi
+  if [[ "$path" == paged ]]; then paged_extras; paged_long; paged_routes; fi
 done
 echo "required failures (tp == simulated bitwise, tp against full, paged extras): $failures"
 exit $(( failures == 0 ? 0 : 1 ))

@@ -9,7 +9,8 @@ import MLX
 //   darkbloom-cluster-tp-check mimo synthesize --output /NEW/DIR [--variant kernel|tiny] [--seed N]
 //       [--dtype bfloat16|float32] [--experts N --top-k K]
 //       a random MiMo checkpoint (never a model pass), request.json (40-token prompt, longer than the window
-//       and the 16-token chunk) and request-short.json (6 tokens, shorter than both), 64 outputs each
+//       and the 16-token chunk), request-short.json (6 tokens, shorter than both) and request-long.json
+//       (192 tokens: three 64-token pages before decode), 64 outputs each
 //   darkbloom-cluster-tp-check mimo run --mode full|simulated|shard|tp --model-dir DIR --request FILE --report FILE
 //       [--record-top K] [--backend ring|socket|jaccl] [--reduction native|sealed-bench] [--shard-rank R]
 //       [--deadline-seconds S] [--temperature T [--sample-seed S]] [--path contiguous|paged]
@@ -121,7 +122,7 @@ enum MiMoCheck {
             dtype: dtypeName == "float32" ? .float32 : .bfloat16,
             experts: fields["--experts"].flatMap { Int($0) }, topK: fields["--top-k"].flatMap { Int($0) })
         let vocabulary = MiMoTensorParallelModel.syntheticConfiguration(variant)["vocab_size"] as! Int
-        for (name, count) in [("request.json", 40), ("request-short.json", 6)] {
+        for (name, count) in [("request.json", 40), ("request-short.json", 6), ("request-long.json", 192)] {
             let prompt = (0 ..< count).map { ($0 * 37 + 11) % vocabulary }
             let request: [String: Any] = ["requestID": "synthetic-mimo-\(count)",
                 "modelID": "synthetic-mimo-v26-\(variant.rawValue)-\(dtypeName)-s\(seed)",

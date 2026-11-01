@@ -1,4 +1,5 @@
 import Foundation
+import ProviderAppAttest
 import ProviderCore
 import Testing
 
@@ -195,6 +196,24 @@ struct StatusCommandRunTests {
             print("== KEYCHAIN")
             try await runCLICommand(Status.self, arguments)
 
+            // A legacy Mac on macOS 26: the coordinator refused it at
+            // registration and sent nothing when legacy verification
+            // authorized it moments later.
+            now = Date().timeIntervalSince1970
+            state = try CLICommandSandbox.runningState(
+                now: now,
+                trust: .init(
+                    trustLevel: "self_signed", status: "online",
+                    reason: "SE attestation verified, awaiting MDM verification", receivedAt: now - 1_150,
+                    authorization: ProviderAuthorizationStatus(
+                        appAttestAvailable: true, path: "none", reason: "app_attest_qualification_required",
+                        sessionID: "session", machineID: "")))
+            state.coordinatorConnection = .init(connected: true, since: now - 1_200, connections: 1)
+            state.appAttest = AppAttestLocalStatus(observedAt: now, launchSession: .unknown, availabilityReason: .osBelow27)
+            sandbox.writeState(state)
+            print("== REGISTRATION REFUSAL ONLY")
+            try await runCLICommand(Status.self, arguments)
+
             now = Date().timeIntervalSince1970
             state = try CLICommandSandbox.runningState(
                 now: now,
@@ -213,10 +232,17 @@ struct StatusCommandRunTests {
         #expect(missing.contains("\nTrust: awaiting coordinator status\nTraffic: NOT receiving coordinator work: "
             + "connected for 20m, but the coordinator has not confirmed this connection\n  → fix: run `darkbloom restart`"))
 
-        let keychain = try #require(outputSection(output, from: "== KEYCHAIN", to: "== AUTHORIZED"))
+        let keychain = try #require(outputSection(output, from: "== KEYCHAIN", to: "== REGISTRATION REFUSAL ONLY"))
         #expect(keychain.contains("\nTraffic: NOT receiving coordinator work: the coordinator is not routing work here: "
             + "the login keychain refused this Mac's App Attest key record (it is usually locked)\n"
             + "  → fix: log in at this Mac's console to unlock the login keychain"))
+
+        let registrationOnly = try #require(outputSection(output, from: "== REGISTRATION REFUSAL ONLY", to: "== AUTHORIZED"))
+        let traffic = "\nTraffic: unconfirmed (no current coordinator verdict; the last one, 19m ago, "
+            + "did not authorize this connection: app_attest_qualification_required)\n"
+        #expect(registrationOnly.contains(traffic))
+        #expect(!registrationOnly.contains(traffic + "  → fix:"))
+        #expect(!registrationOnly.contains("NOT receiving"))
 
         let authorized = try #require(outputSection(output, from: "== AUTHORIZED", to: "== END"))
         #expect(authorized.contains("\nTraffic: eligible for coordinator work (App Attest authorized until "))

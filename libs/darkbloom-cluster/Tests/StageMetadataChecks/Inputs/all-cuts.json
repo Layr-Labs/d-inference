@@ -1,0 +1,585 @@
+{
+  "cutSelectionQualified": false,
+  "cuts": [
+    {
+      "cut": 1,
+      "metadataContractSHA256": "707aa9eb9e03830a9098de05853609b4e99ee558127e5e6b8864ad9abd6d3d35",
+      "rankFullLayerCounts": [
+        0,
+        5
+      ],
+      "rankHeaderDerivedPayloadBytes": [
+        882299138,
+        14000625466
+      ],
+      "rankSlidingLayerCounts": [
+        1,
+        24
+      ],
+      "rankTensorCounts": [
+        48,
+        1294
+      ]
+    },
+    {
+      "cut": 2,
+      "metadataContractSHA256": "7c715ec2c19b96eee1fa3878239eacdc56c63aa5afe0872aaadc5885fc69f93e",
+      "rankFullLayerCounts": [
+        0,
+        5
+      ],
+      "rankHeaderDerivedPayloadBytes": [
+        1349362180,
+        13533562424
+      ],
+      "rankSlidingLayerCounts": [
+        2,
+        23
+      ],
+      "rankTensorCounts": [
+        93,
+        1249
+      ]
+    },
+    {
+      "cut": 3,
+      "metadataContractSHA256": "0c6913346f7d61f2f89f88e126923abe2111e80230c5436812c96204b57e744a",
+      "rankFullLayerCounts": [
+        0,
+        5
+      ],
+      "rankHeaderDerivedPayloadBytes": [
+        1816425222,
+        13066499382
+      ],
+      "rankSlidingLayerCounts": [
+        3,
+        22
+      ],
+      "rankTensorCounts": [
+        138,
+        1204
+      ]
+    },
+    {
+      "cut": 4,
+      "metadataContractSHA256": "5408324169b79ab926c2890466f6cc60635d046a4adb8f3151fd267a8a459a13",
+      "rankFullLayerCounts": [
+        0,
+        5
+      ],
+      "rankHeaderDerivedPayloadBytes": [
+        2283488264,
+        12599436340
+      ],
+      "rankSlidingLayerCounts": [
+        4,
+        21
+      ],
+      "rankTensorCounts": [
+        183,
+        1159
+      ]
+    },
+    {
+      "cut": 5,
+      "metadataContractSHA256": "c726c48fd662d09e5f7fa2b640bce6903bf2aa3e8475da0ee7ea2adc8de0cd2b",
+      "rankFullLayerCounts": [
+        0,
+        5
+      ],
+      "rankHeaderDerivedPayloadBytes": [
+        2750551306,
+        12132373298
+      ],
+      "rankSlidingLayerCounts": [
+        5,
+        20
+      ],
+      "rankTensorCounts": [
+        228,
+        1114
+      ]
+    },
+    {
+      "cut": 6,
+      "metadataContractSHA256": "d1a4621e7d5304372214420ec834806848c3cd6e365e15bc52beee8d04d1a09f",
+      "rankFullLayerCounts": [
+        1,
+        4
+      ],
+      "rankHeaderDerivedPayloadBytes": [
+        3225725452,
+        11657199152
+      ],
+      "rankSlidingLayerCounts": [
+        5,
+        20
+      ],
+      "rankTensorCounts": [
+        270,
+        1072
+      ]
+    },
+    {
+      "cut": 7,
+      "metadataContractSHA256": "d31a3b8d42610a8d500582daf26229a3731f1c99515cfa7018e9663aa583c056",
+      "rankFullLayerCounts": [
+        1,
+        4
+      ],
+      "rankHeaderDerivedPayloadBytes": [
+        3692788494,
+        11190136110
+      ],
+      "rankSlidingLayerCounts": [
+        6,
+        19
+      ],
+      "rankTensorCounts": [
+        315,
+        1027
+      ]
+    },
+    {
+      "cut": 8,
+      "metadataContractSHA256": "35f5cdcc8440ebfe5831745992510c4c3d34b8c141bebba533ceb7ee57df07a6",
+      "rankFullLayerCounts": [
+        1,
+        4
+      ],
+      "rankHeaderDerivedPayloadBytes": [
+        4159851536,
+        10723073068
+      ],
+      "rankSlidingLayerCounts": [
+        7,
+        18
+      ],
+      "rankTensorCounts": [
+        360,
+        982
+      ]
+    },
+    {
+      "cut": 9,
+      "metadataContractSHA256": "da436866c4d44fa2778d45720fdb7b222e1c7ff5d931db8e4570feec5a999b40",
+      "rankFullLayerCounts": [
+        1,
+        4
+      ],
+      "rankHeaderDerivedPayloadBytes": [
+        4626914578,
+        10256010026
+      ],
+      "rankSlidingLayerCounts": [
+        8,
+        17
+      ],
+      "rankTensorCounts": [
+        405,
+        937
+      ]
+    },
+    {
+      "cut": 10,
+      "metadataContractSHA256": "2bdde846c007953a365083078cfd67873293eec37c17c1dffadba0af0cd9e65d",
+      "rankFullLayerCounts": [
+        1,
+        4
+      ],
+      "rankHeaderDerivedPayloadBytes": [
+        5093977620,
+        9788946984
+      ],
+      "rankSlidingLayerCounts": [
+        9,
+        16
+      ],
+      "rankTensorCounts": [
+        450,
+        892
+      ]
+    },
+    {
+      "cut": 11,
+      "metadataContractSHA256": "54c63a59b484cbcac04bc03844fc21ceff124b08006b6a3a1b9a1986366583a1",
+      "rankFullLayerCounts": [
+        1,
+        4
+      ],
+      "rankHeaderDerivedPayloadBytes": [
+        5561040662,
+        9321883942
+      ],
+      "rankSlidingLayerCounts": [
+        10,
+        15
+      ],
+      "rankTensorCounts": [
+        495,
+        847
+      ]
+    },
+    {
+      "cut": 12,
+      "metadataContractSHA256": "fc5b1e936cfb45a62474febd49397234e0a1347da370c4284d2afef3d3891158",
+      "rankFullLayerCounts": [
+        2,
+        3
+      ],
+      "rankHeaderDerivedPayloadBytes": [
+        6036214808,
+        8846709796
+      ],
+      "rankSlidingLayerCounts": [
+        10,
+        15
+      ],
+      "rankTensorCounts": [
+        537,
+        805
+      ]
+    },
+    {
+      "cut": 13,
+      "metadataContractSHA256": "757d0eb6b84f3b08a5812affd78f7b036ff64ebf862c81eb6cf21dec812544db",
+      "rankFullLayerCounts": [
+        2,
+        3
+      ],
+      "rankHeaderDerivedPayloadBytes": [
+        6503277850,
+        8379646754
+      ],
+      "rankSlidingLayerCounts": [
+        11,
+        14
+      ],
+      "rankTensorCounts": [
+        582,
+        760
+      ]
+    },
+    {
+      "cut": 14,
+      "metadataContractSHA256": "890c628af1846748d73e5d071d417c270545570d49d51b2d5e24c32f6a7d8b10",
+      "rankFullLayerCounts": [
+        2,
+        3
+      ],
+      "rankHeaderDerivedPayloadBytes": [
+        6970340892,
+        7912583712
+      ],
+      "rankSlidingLayerCounts": [
+        12,
+        13
+      ],
+      "rankTensorCounts": [
+        627,
+        715
+      ]
+    },
+    {
+      "cut": 15,
+      "metadataContractSHA256": "721f61a38bd46f93e8a2f8cd84eb30c385d7756f6c6a03973ed8c776edc53176",
+      "rankFullLayerCounts": [
+        2,
+        3
+      ],
+      "rankHeaderDerivedPayloadBytes": [
+        7437403934,
+        7445520670
+      ],
+      "rankSlidingLayerCounts": [
+        13,
+        12
+      ],
+      "rankTensorCounts": [
+        672,
+        670
+      ]
+    },
+    {
+      "cut": 16,
+      "metadataContractSHA256": "73d020af4f319e4d00486189160e4251aeb5d75cbe47476c0ebe7e53465ac62f",
+      "rankFullLayerCounts": [
+        2,
+        3
+      ],
+      "rankHeaderDerivedPayloadBytes": [
+        7904466976,
+        6978457628
+      ],
+      "rankSlidingLayerCounts": [
+        14,
+        11
+      ],
+      "rankTensorCounts": [
+        717,
+        625
+      ]
+    },
+    {
+      "cut": 17,
+      "metadataContractSHA256": "803f8703be412735b1e3045002b416b6ba7f28a255d694132728b16488a9ba03",
+      "rankFullLayerCounts": [
+        2,
+        3
+      ],
+      "rankHeaderDerivedPayloadBytes": [
+        8371530018,
+        6511394586
+      ],
+      "rankSlidingLayerCounts": [
+        15,
+        10
+      ],
+      "rankTensorCounts": [
+        762,
+        580
+      ]
+    },
+    {
+      "cut": 18,
+      "metadataContractSHA256": "c13e941c6b9dfe0d575418665aa91ccd47025f87e9d6ab2c8641a8a6fa51dc33",
+      "rankFullLayerCounts": [
+        3,
+        2
+      ],
+      "rankHeaderDerivedPayloadBytes": [
+        8846704164,
+        6036220440
+      ],
+      "rankSlidingLayerCounts": [
+        15,
+        10
+      ],
+      "rankTensorCounts": [
+        804,
+        538
+      ]
+    },
+    {
+      "cut": 19,
+      "metadataContractSHA256": "20b283c72a716b0a1dd9c0b653e9502b16ef5ac446ed239a6ff9a20aeab6e680",
+      "rankFullLayerCounts": [
+        3,
+        2
+      ],
+      "rankHeaderDerivedPayloadBytes": [
+        9313767206,
+        5569157398
+      ],
+      "rankSlidingLayerCounts": [
+        16,
+        9
+      ],
+      "rankTensorCounts": [
+        849,
+        493
+      ]
+    },
+    {
+      "cut": 20,
+      "metadataContractSHA256": "85534d8ad390be555411d96121b31909534b12f90d53b70e3c13f4527d31bbd5",
+      "rankFullLayerCounts": [
+        3,
+        2
+      ],
+      "rankHeaderDerivedPayloadBytes": [
+        9780830248,
+        5102094356
+      ],
+      "rankSlidingLayerCounts": [
+        17,
+        8
+      ],
+      "rankTensorCounts": [
+        894,
+        448
+      ]
+    },
+    {
+      "cut": 21,
+      "metadataContractSHA256": "26603a2b141d42fe2ba508ebf5130b93c3936e5abe7444859057cdcd7373eb8e",
+      "rankFullLayerCounts": [
+        3,
+        2
+      ],
+      "rankHeaderDerivedPayloadBytes": [
+        10247893290,
+        4635031314
+      ],
+      "rankSlidingLayerCounts": [
+        18,
+        7
+      ],
+      "rankTensorCounts": [
+        939,
+        403
+      ]
+    },
+    {
+      "cut": 22,
+      "metadataContractSHA256": "b6e2bce1de581f0b3da8d4dfc524138bfe899ce4dde2409d1e4b6dff09a2ed66",
+      "rankFullLayerCounts": [
+        3,
+        2
+      ],
+      "rankHeaderDerivedPayloadBytes": [
+        10714956332,
+        4167968272
+      ],
+      "rankSlidingLayerCounts": [
+        19,
+        6
+      ],
+      "rankTensorCounts": [
+        984,
+        358
+      ]
+    },
+    {
+      "cut": 23,
+      "metadataContractSHA256": "b7c090f572a830853cd190d4394f13fc309c74b4f0503e7f38b87edc4280249a",
+      "rankFullLayerCounts": [
+        3,
+        2
+      ],
+      "rankHeaderDerivedPayloadBytes": [
+        11182019374,
+        3700905230
+      ],
+      "rankSlidingLayerCounts": [
+        20,
+        5
+      ],
+      "rankTensorCounts": [
+        1029,
+        313
+      ]
+    },
+    {
+      "cut": 24,
+      "metadataContractSHA256": "2893ed16ff269aba7dcf1b8806acc36fc24652512e81baa9f7bc0deba25f7e2a",
+      "rankFullLayerCounts": [
+        4,
+        1
+      ],
+      "rankHeaderDerivedPayloadBytes": [
+        11657193520,
+        3225731084
+      ],
+      "rankSlidingLayerCounts": [
+        20,
+        5
+      ],
+      "rankTensorCounts": [
+        1071,
+        271
+      ]
+    },
+    {
+      "cut": 25,
+      "metadataContractSHA256": "fe75aea177fc432c5acc0b69c5871a5da36784e7a0f07243009aeba0132f0df8",
+      "rankFullLayerCounts": [
+        4,
+        1
+      ],
+      "rankHeaderDerivedPayloadBytes": [
+        12124256562,
+        2758668042
+      ],
+      "rankSlidingLayerCounts": [
+        21,
+        4
+      ],
+      "rankTensorCounts": [
+        1116,
+        226
+      ]
+    },
+    {
+      "cut": 26,
+      "metadataContractSHA256": "deafbe9f513fd570a103a6848f55099df6b2f004733d435039070e960cad353e",
+      "rankFullLayerCounts": [
+        4,
+        1
+      ],
+      "rankHeaderDerivedPayloadBytes": [
+        12591319604,
+        2291605000
+      ],
+      "rankSlidingLayerCounts": [
+        22,
+        3
+      ],
+      "rankTensorCounts": [
+        1161,
+        181
+      ]
+    },
+    {
+      "cut": 27,
+      "metadataContractSHA256": "df54184921a73a755cee98169b8d117061e7c5e07bf3331e58e788ddb0422511",
+      "rankFullLayerCounts": [
+        4,
+        1
+      ],
+      "rankHeaderDerivedPayloadBytes": [
+        13058382646,
+        1824541958
+      ],
+      "rankSlidingLayerCounts": [
+        23,
+        2
+      ],
+      "rankTensorCounts": [
+        1206,
+        136
+      ]
+    },
+    {
+      "cut": 28,
+      "metadataContractSHA256": "96e2295161961aa995598d8a816bab24dac94e5e4e3d40c5d5efeabaf1f551c1",
+      "rankFullLayerCounts": [
+        4,
+        1
+      ],
+      "rankHeaderDerivedPayloadBytes": [
+        13525445688,
+        1357478916
+      ],
+      "rankSlidingLayerCounts": [
+        24,
+        1
+      ],
+      "rankTensorCounts": [
+        1251,
+        91
+      ]
+    },
+    {
+      "cut": 29,
+      "metadataContractSHA256": "7f32c26647d6c5d1b60c58506ef492c69c7621470b9d5ae11afe5556ae355689",
+      "rankFullLayerCounts": [
+        4,
+        1
+      ],
+      "rankHeaderDerivedPayloadBytes": [
+        13992508730,
+        890415874
+      ],
+      "rankSlidingLayerCounts": [
+        25,
+        0
+      ],
+      "rankTensorCounts": [
+        1296,
+        46
+      ]
+    }
+  ]
+}

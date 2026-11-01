@@ -80,7 +80,12 @@ struct SSDCheckpointMaintenanceEpochTests {
         let epoch = try #require(store.config.epochStore?.current)
         let victim = f.file(store, position: 256), survivor = f.file(store, position: 512)
         let originalBytes = try Data(contentsOf: survivor)
-        try FileManager.default.setAttributes([.modificationDate: Date().addingTimeInterval(-7200)], ofItemAtPath: victim.path)
+        // Unused for two hours: the sweep reads the mtime, then checks the
+        // loaded store's own last hit before removing.
+        let idleSince = Date().addingTimeInterval(-7200)
+        try FileManager.default.setAttributes([.modificationDate: idleSince], ofItemAtPath: victim.path)
+        let victimTag = try #require(SSDPrefixCache.hexDecode(victim.deletingPathExtension().lastPathComponent))
+        store.index.touch(tags16: [victimTag], now: Int64(idleSince.timeIntervalSince1970))
         let result = SSDWholeRootMaintainer().maintain(root: f.root, ttlSeconds: 3600,
             nowSeconds: Int64(Date().timeIntervalSince1970), budgetBytes: Int.max)
         #expect(result.ttlExpired == 1)

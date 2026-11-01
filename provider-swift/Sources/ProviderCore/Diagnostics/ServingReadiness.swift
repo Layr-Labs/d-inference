@@ -6,20 +6,39 @@ import ProviderAppAttest
 /// can still receive nothing when the coordinator has not authorized the
 /// connection; without this verdict it looks healthy in `status`.
 ///
-/// Diagnostics only: the coordinator owns routing and authorization.
+/// Diagnostics and the re-registration trigger
+/// (`ProviderLoop.superviseServingAuthorization`) only: the coordinator owns
+/// routing and authorization.
 public enum ServingReadiness {
     public enum Verdict: Equatable, Sendable {
-        /// The coordinator currently authorizes this connection.
+        /// The coordinator currently authorizes this connection, or routed it
+        /// a request after its latest status.
         case authorized(String)
-        /// Too early to judge: just connected and no coordinator status yet.
+        /// Too early to judge: just connected, and the coordinator has sent
+        /// no status or one that does not authorize the connection yet.
         case pending(String)
+        /// The coordinator's latest status refused the connection, but it is
+        /// too old to say whether the coordinator routes the connection now.
+        case unconfirmed(String)
         /// The coordinator cannot route work to this connection.
         case blocked(DiagnosticAdvice)
     }
 
     /// A coordinator sends its first status right after registration; none
-    /// after this long means it never confirmed the connection.
+    /// after this long means it never confirmed the connection. A refusal
+    /// this early is not a verdict either: the coordinator computes the
+    /// registration status before it records the connection's first verified
+    /// challenge, which legacy verification requires.
     public static let statusGraceSeconds: Double = 90
+
+    /// How long a refusal (an authorization object with no App Attest lease,
+    /// current or expired, and no legacy verification) describes the
+    /// connection. The coordinator renews a status it maintains every 5 s
+    /// (App Attest leases today), but the current coordinator sends none when
+    /// legacy verification authorizes a connection after its registration
+    /// refusal. Shorter than `statusGraceSeconds`, so the registration status
+    /// alone never blocks.
+    public static let refusalMaxAge: Double = 60
 
     /// Nil when the daemon predates connection reporting (a reader cannot
     /// tell disconnected from connected), an add-on holds the connected Mac,
@@ -30,24 +49,43 @@ public enum ServingReadiness {
         macOSMajorVersion: Int = ProcessInfo.processInfo.operatingSystemVersion.majorVersion
     ) -> Verdict? {
         guard let connection = state.coordinatorConnection else { return nil }
-        let cli = BuildEnvironment.current.cliName
-        // Many registrations in one run with short connections is a reconnect
-        // loop: the coordinator closes each registration before routing it.
-        let registrations = connection.connections > 1 ? "; registration \(connection.connections) since the provider started" : ""
         guard connection.connected else {
             return .blocked(DiagnosticAdvice(
-                message: "not connected to the coordinator (disconnected \(age(since: connection.since, now: now)) ago\(registrations)); the provider reconnects on its own",
-                fix: "check this Mac's network; if it stays disconnected, run `\(cli) restart`"))
+                message: "not connected to the coordinator (disconnected \(age(since: connection.since, now: now)) ago\(registrations(connection))); the provider reconnects on its own",
+                fix: "check this Mac's network; if it stays disconnected, run `\(BuildEnvironment.current.cliName) restart`"))
         }
         // A hold keeps the connection but leaves routing on purpose; its own
         // status line explains the missing work, and authorization does not.
         if state.addonHold?.holds.isEmpty == false { return nil }
-        guard let trust = state.trust else {
-            if now - connection.since < statusGraceSeconds {
-                return .pending("connected \(age(since: connection.since, now: now)) ago\(registrations); waiting for the coordinator's verdict")
+        return verdict(connection: connection, trust: state.trust, appAttest: state.appAttest,
+                       now: now, macOSMajorVersion: macOSMajorVersion)
+    }
+
+    /// The verdict for a live connection. The provider re-registers a
+    /// connection on the same verdict (`ProviderLoop.superviseServingAuthorization`),
+    /// so only current evidence blocks: an explicit `untrusted` or `offline`
+    /// status, an expired App Attest lease, a refusal at most
+    /// `refusalMaxAge` old, or no status at all after `statusGraceSeconds`.
+    /// A request the coordinator routed after its latest status outweighs a
+    /// refusal or a missing status.
+    static func verdict(
+        connection: DaemonState.CoordinatorConnection, trust: DaemonState.Trust?,
+        appAttest: AppAttestLocalStatus? = nil, now: Double,
+        macOSMajorVersion: Int = ProcessInfo.processInfo.operatingSystemVersion.majorVersion
+    ) -> Verdict? {
+        let cli = BuildEnvironment.current.cliName
+        let connectedFor = age(since: connection.since, now: now)
+        let justConnected = now - connection.since < statusGraceSeconds
+        let routed = requestAfterLatestStatus(connection, trust: trust).map {
+            Verdict.authorized("received a coordinator request \(age(since: $0, now: now)) ago")
+        }
+        guard let trust else {
+            if let routed { return routed }
+            if justConnected {
+                return .pending("connected \(connectedFor) ago\(registrations(connection)); waiting for the coordinator's verdict")
             }
             return .blocked(DiagnosticAdvice(
-                message: "connected for \(age(since: connection.since, now: now)), but the coordinator has not confirmed this connection",
+                message: "connected for \(connectedFor), but the coordinator has not confirmed this connection",
                 fix: "run `\(cli) restart`; if it persists, run `\(cli) doctor`"))
         }
         if trust.status == "untrusted" || trust.status == "offline" {
@@ -70,11 +108,36 @@ public enum ServingReadiness {
         if authorization.path == "app_attest", let expiresAt = authorization.expiresAt {
             return .blocked(DiagnosticAdvice(
                 message: "App Attest authorization expired at \(clock(expiresAt)) and has not been renewed",
-                fix: localCause(state.appAttest, macOSMajorVersion: macOSMajorVersion)?.fix
+                fix: localCause(appAttest, macOSMajorVersion: macOSMajorVersion)?.fix
                     ?? "the coordinator retries within 10 minutes; if it persists, run `\(cli) restart`"))
         }
+        // A refusal: it can go out of date, and routed work outweighs it.
+        if let routed { return routed }
+        let reason = authorization.reason.isEmpty ? "" : ": \(authorization.reason)"
+        if justConnected {
+            return .pending("connected \(connectedFor) ago\(registrations(connection)); not authorized so far\(reason)")
+        }
+        guard now - trust.receivedAt <= refusalMaxAge else {
+            return .unconfirmed("no current coordinator verdict; the last one, \(age(since: trust.receivedAt, now: now)) ago, did not authorize this connection\(reason)")
+        }
         return .blocked(blockedCause(
-            reason: authorization.reason, appAttest: state.appAttest, macOSMajorVersion: macOSMajorVersion))
+            reason: authorization.reason, appAttest: appAttest, macOSMajorVersion: macOSMajorVersion))
+    }
+
+    /// When the coordinator last routed this connection a request, if that
+    /// was after its latest status.
+    private static func requestAfterLatestStatus(
+        _ connection: DaemonState.CoordinatorConnection, trust: DaemonState.Trust?
+    ) -> Double? {
+        guard let requestAt = connection.lastRequestAt else { return nil }
+        if let trust, requestAt <= trust.receivedAt { return nil }
+        return requestAt
+    }
+
+    /// Many registrations in one run with short connections is a reconnect
+    /// loop: the coordinator closes each registration before routing it.
+    private static func registrations(_ connection: DaemonState.CoordinatorConnection) -> String {
+        connection.connections > 1 ? "; registration \(connection.connections) since the provider started" : ""
     }
 
     /// The cause of an unauthorized connection. A local App Attest observation

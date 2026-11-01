@@ -10,6 +10,12 @@ struct Status: AsyncParsableCommand {
     @OptionGroup var configOptions: ConfigOptions
 
     mutating func run() async throws {
+        // Asked first, so the add-on answers while the banner and the config
+        // load run; bounded, so the add-on can never hold up or fail status.
+        let sandboxLine = Task.detached {
+            SandboxStatusView.statusLine(SandboxAddon.live().queryStatus(timeout: Sandbox.statusLineTimeout))
+        }
+
         // Best-effort: tell the user if a newer release is published before
         // we dump current status. Bounded by a 2s timeout in UpdateBanner.
         await runUpdateBannerIfEnabled()
@@ -58,9 +64,16 @@ struct Status: AsyncParsableCommand {
         print("Enabled model filter: \(enabledFilter)")
         print("Local MLX models: \(models.count)")
         print("Serving concurrency: \(ServingPerformanceProfiles.summary(backend: config.backend))")
+        if let line = await sandboxLine.value { print(line) }
 
         // Live daemon state (from the state file the running daemon writes).
         print("")
+        if LaunchAgent.installedJobIsClusterMember(),
+           let supervisor = ClusterSupervisionFiles.read(ClusterMemberSupervisorState.self,
+                                                         from: ClusterSupervisionFiles.statePath()) {
+            print(supervisor.summary(now: Date().timeIntervalSince1970))
+        }
+        for line in Self.clusterServiceLines() { print(line) }
         printDaemonStatus(config: config, models: snapshot.models, hardware: snapshot.hardware)
 
         // Crash-loop KV-backend guard — printed whether or not the daemon is

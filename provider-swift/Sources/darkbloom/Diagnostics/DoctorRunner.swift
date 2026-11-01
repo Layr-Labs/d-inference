@@ -14,6 +14,9 @@ enum DoctorRunner {
         case .pending(let detail):
             return Diagnostic(section: .traffic, name: "coordinator traffic", level: .info,
                               message: "not yet eligible (\(detail))", fix: nil)
+        case .unconfirmed(let detail):
+            return Diagnostic(section: .traffic, name: "coordinator traffic", level: .info,
+                              message: "unconfirmed (\(detail))", fix: nil)
         case .blocked(let advice):
             return Diagnostic(section: .traffic, name: "coordinator traffic", level: .fail,
                               message: "NOT receiving coordinator work: \(advice.message)", fix: advice.fix)

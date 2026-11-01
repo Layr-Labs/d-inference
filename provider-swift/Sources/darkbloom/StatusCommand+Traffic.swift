@@ -9,6 +9,8 @@ extension Status {
             return ["Traffic: eligible for coordinator work (\(detail))"]
         case .pending(let detail):
             return ["Traffic: not yet eligible (\(detail))"]
+        case .unconfirmed(let detail):
+            return ["Traffic: unconfirmed (\(detail))"]
         case .blocked(let advice):
             return ["Traffic: NOT receiving coordinator work: \(advice.message)"]
                 + (advice.fix.map { ["  → fix: \($0)"] } ?? [])

@@ -6,7 +6,8 @@ import Testing
 ///
 /// Pins the telemetry wire shape (enum casing, snake_case keys, optional-field
 /// omission) and the `TelemetryKind` set/count so the Go canonical, this Swift
-/// mirror, and `console-ui/src/lib/telemetry-types.ts` cannot drift silently.
+/// mirror, and the platform console's `console-ui/src/lib/telemetry-types.ts`
+/// cannot drift silently.
 @Suite("Telemetry wire symmetry")
 struct TelemetrySymmetryTests {
 

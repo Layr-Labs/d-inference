@@ -684,6 +684,7 @@ final class MiMoV26ServingLoadTests: XCTestCase {
         var reportedCompletion: Int?
         for await event in stream {
             switch event {
+            case .logprobs: break
             case .error(let value): XCTFail(value)
             case .info(_, let count, _, _): reportedCompletion = count
             case .terminal(_, _, _, let count): reportedCompletion = count

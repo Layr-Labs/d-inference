@@ -265,6 +265,28 @@ struct Gemma4TensorParallelRuntimeTests {
         #expect(served[1].tokens.isEmpty && served.allSatisfy(\.drained))
     }
 
+    /// The share probe times one rank's decode step with every sum local, so
+    /// one rank runs it alone; it reports an equal share, retires its request
+    /// and returns every page. A load deadline too close gives no probe.
+    @Test func theShareProbeTimesOneRankAlone() throws {
+        let directory = try Self.synthetic()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let reduction = QwenTensorParallelSwitchableReduction(Pair().reduction(rank: 0))
+        let model = try Gemma4TensorParallelModel.load(modelDirectory: directory, role: .shard(rank: 0), reduction: reduction)
+        let profile = try QwenLayerStageGenerationProfile(identifier: "synthetic-gemma4-tp", vocabularySize: 512,
+            hiddenSize: 256, activationDType: "bfloat16", maximumPromptTokens: 64, maximumChunkTokens: 16,
+            maximumOutputTokens: 32, maximumContextTokens: 128, logitsDType: "float32")
+        let far = DispatchTime.now().uptimeNanoseconds + 600_000_000_000
+        let probe = try #require(try Gemma4TensorParallelShareProbe.measure(model: model, reduction: reduction,
+            profile: profile, deadline: far, admit: { _, _ in true }, check: {}))
+        #expect(probe.sharePerMille == 500 && probe.plainStepMicroseconds > 0 && probe.windowColumns == nil)
+        #expect(probe.rounds >= QwenTensorParallelShareProbe.minimumRounds && probe.valid)
+        #expect(try Gemma4TensorParallelShareProbe.measure(model: model, reduction: reduction, profile: profile,
+            deadline: DispatchTime.now().uptimeNanoseconds + 1_000_000, admit: { _, _ in true }, check: {}) == nil)
+        #expect(try Gemma4TensorParallelShareProbe.measure(model: model, reduction: reduction, profile: profile,
+            deadline: far, admit: { _, _ in false }, check: {}) == nil)
+    }
+
     // MARK: - The request loop
 
     private struct LoopCase: Sendable {

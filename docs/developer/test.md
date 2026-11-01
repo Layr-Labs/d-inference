@@ -1256,6 +1256,7 @@ neither real-weight numerics, a pair qualification nor speed.
      publishes each request's solo tokens;
    - the request loop on two ranks: a stop token, the owner's stop and one
      rank's own stop end both ranks after the same step, with logprobs;
+   - the share probe, timed on one rank with every sum local;
    - each step's choice: greedy with both stop flags, sampled from the gathered
      row exactly as the product's sampler draws, and greedy logprobs from the
      split top-k;

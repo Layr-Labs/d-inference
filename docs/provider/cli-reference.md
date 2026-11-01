@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-10-31
+> Last updated: 2026-11-01
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -569,6 +569,24 @@ per share of this model within 30 days, by member ID), or from
 `--share-probes FILE`; the plan's first lines name the shares used, and without
 any every share is predicted as before. A named file that is not a share probe
 history stops the command.
+
+### `darkbloom cluster gpu-limit`
+
+```bash
+darkbloom cluster gpu-limit [--undo]
+```
+
+| Flag | Type | Default | Effect |
+|---|---|---|---|
+| `--undo` | flag | `false` | Remove the job that keeps the limit raised and return `iogpu.wired_limit_mb` to the macOS default |
+
+Lets this Mac's GPU keep its memory less 16 GiB resident, so GLM-5.3-Flash runs
+on two 128 GB Macs with room for long requests (M5 Macs of 128 or 256 GB only;
+exit 2 elsewhere). It prints the current and the new limit, asks once (`y`), and
+then macOS asks an administrator to approve. It needs a terminal; without one
+it prints the commands an administrator can run and exits 2. Values,
+persistence and undo: [GPU memory limit for a GLM pair](../reference/configuration.md#gpu-memory-limit-for-a-glm-pair)
+(`provider-swift/Sources/darkbloom/ClusterGPULimitCommand.swift`).
 
 ### `darkbloom cluster local`
 

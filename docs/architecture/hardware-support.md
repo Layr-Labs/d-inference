@@ -315,26 +315,40 @@ The provider neither lowers the cap nor changes admission for this; `doctor`,
 
 #### GLM-5.3-Flash pairs on 128 GB Macs
 
-A pair of 128 GB Macs (two M5 Max) does not hold GLM-5.3-Flash at its memory
-plan's request, 65,536 tokens (`GLM5NextRegisteredSpecification.memoryLimits`):
+Two 128 GB Macs (two M5 Max) serve GLM-5.3-Flash as a pipeline. A serving
+rank reserves no request at LOAD
+([GLM pair admission](inference.md#glm-pair-admission)): it loads on its weights
+and what only loading holds, and admits each request when it arrives. Figures
+for the most balanced cut (24), from the worker's quotes on the registered
+artifact's headers (`GLM5NextResidentResourceEnvelope.quote`,
+`budget(descriptor:contextTokens:)`), not measured peaks:
 
-- **Pipeline:** each rank's LOAD quote must fit its load capacity, the GPU's
-  recommended working set, 107.52 GiB on an M5 Max 128 GB
-  (`GLM5NextServingResources.envelope`, `GLM5NextResidentResourceEnvelope.quote`).
-  At the most balanced cut (24) the ranks quote 111.48 and 110.54 GiB. That is
-  83.49 and 83.04 GiB of weights, 7.15 and 6.24 GiB that only loading holds, and
-  20.83 and 21.25 GiB for the request: its KDA chunk state, the 5.5 GiB
-  activation floor and its DSA histories. Every other cut needs more on one rank.
-- **Tensor parallel:** each rank's load gate asks for about 153 GB beside its
-  headroom, more than the Mac's 128 GiB: its shard (88.7 GB), the NextN layer
-  (4.2 GB), the request charge at 65,536 tokens (56.1 GB) and the freed-buffer
-  cache (`GLM5NextTensorParallelLoadMetadata`).
+| | Rank 0 | Rank 1 |
+|---|---|---|
+| Weights at their allocator bounds | 89.65 GB | 89.17 GB |
+| What only loading holds (construction copies, read buffers, metadata) | 7.68 GB | 6.71 GB |
+| Load peak, which must fit the GPU's working set | 97.34 GB | 95.87 GB |
+| A 65,536-token request (KDA chunk state, the 5.5 GiB activation floor, DSA histories; rank 1 also a chunk's logits) | 22.37 GB | 22.83 GB |
+| Weights and that request together | 112.02 GB | 111.99 GB |
 
-The context is not what decides. The DSA histories charge 110,628 bytes a
-token on rank 0 at cut 24, so the pipeline would fit only below about 27K
-tokens. These figures are the quotes' own arithmetic on the registered
-artifact's headers, not measured peaks. Each refusal names its rank, cut,
-request and terms ([GLM pair refusals](inference.md#glm-pair-refusals)).
+The GPU's working set is 107.52 GiB (115.45 GB) on an M5 Max 128 GB by
+default. Both columns fit it, with about 3.4 GB to spare beside a full request.
+Raising the GPU limit to the Mac's memory less 16 GiB, 112 GiB (120.26 GB),
+with [`darkbloom cluster gpu-limit`](../reference/configuration.md#gpu-memory-limit-for-a-glm-pair)
+leaves room for prompt prefixes and MLX's buffers and admits cuts 23 to 25.
+The plan places the same way (`ClusterModelLayout.requestsOnArrival`). At
+cut 24 rank 0 needs 103.24 GB admissible to load (it needed 129.06 GB when the
+plan reserved the request), and the plan reports the longest context each
+rank admits now beside its weights. A request that does not fit then is
+refused at reservation. Requests use the host memory gate's floor and
+headroom, the allocator limit and the GPU's working set beside the loaded
+stage.
+
+Tensor parallel still does not fit: each rank's load gate asks for about 153 GB
+beside its headroom, more than the Mac's 128 GiB. That is its shard (88.7 GB),
+the NextN layer (4.2 GB), the request charge at 65,536 tokens (56.1 GB) and
+the freed-buffer cache (`GLM5NextTensorParallelLoadMetadata`). It still
+reserves its request at LOAD.
 
 `GLM5NextConstructionOwner` retains actual partial-load roots before evaluation.
 `GLM5NextArtifactLoadRoots` retires individual expert sources only after the

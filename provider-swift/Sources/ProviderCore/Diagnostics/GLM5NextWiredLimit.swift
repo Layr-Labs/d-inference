@@ -145,6 +145,29 @@ public enum GLM5NextWiredLimit {
             chipFamily: chipFamily, memoryGiB: ProcessInfo.processInfo.physicalMemory >> 30)
     }
 
+    /// Memory sizes validated for a rank of a GLM-5.3-Flash pair: two 128 GB
+    /// M5 Max hold its pipeline (each about half the model, its load scratch
+    /// and its requests on the GPU) only with the GPU limit raised, and the
+    /// 256 GB production hosts run the same values.
+    static let validatedPairRankMemoryGiB: Set<UInt64> = [128, 256]
+
+    /// The same derivation for a pair rank (`darkbloom cluster gpu-limit`):
+    /// the GPU may keep physical memory less 16 GiB resident. Nil for other
+    /// chips and sizes.
+    public static func pairRankRecommendation(chipFamily: ChipFamily, memoryGiB: UInt64) -> Recommendation? {
+        guard chipFamily == .m5, validatedPairRankMemoryGiB.contains(memoryGiB) else { return nil }
+        let physicalBytes = memoryGiB << 30
+        return Recommendation(
+            memoryGiB: memoryGiB,
+            gpuWiredLimitMB: (physicalBytes - (16 << 30)) >> 20,
+            userWireLimitBytes: physicalBytes * 95 / 100)
+    }
+
+    public static func pairRankRecommendationForThisMac() -> Recommendation? {
+        let chipFamily = parseChipIdentity((try? sysctlString("machdep.cpu.brand_string")) ?? "").0
+        return pairRankRecommendation(chipFamily: chipFamily, memoryGiB: ProcessInfo.processInfo.physicalMemory >> 30)
+    }
+
     /// The coordinator catalog build or the local qualification download.
     public static func isGLM5Next(modelID: String) -> Bool {
         GLM5NextCoordinatorServing.isManagedModelID(modelID)

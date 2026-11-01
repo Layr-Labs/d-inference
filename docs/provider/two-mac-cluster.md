@@ -593,10 +593,13 @@ Automatic updates for a pair are a follow-up. Until then, update by hand:
 - **A model does not fit now**: it is listed after the ones that fit, with what
   frees the memory ("Quit apps on the other Mac (…) first"); the fit is checked
   again right before the start.
-- **GLM-5.3-Flash on two 128 GB Macs**: it is refused whatever is freed. Half of
-  the model and its request need more than the 107.5 GiB a 128 GB Mac's GPU
-  keeps resident ([figures](../architecture/hardware-support.md#glm-53-flash-pairs-on-128-gb-macs)).
-  A start's error names the rank, the cut and the memory that rank needs.
+- **GLM-5.3-Flash on two 128 GB Macs**: it runs as a pipeline, about half the
+  model on each Mac. If the plan says a Mac's GPU keeps too little resident,
+  run `darkbloom cluster gpu-limit` on that Mac (it asks once, then macOS asks an
+  administrator), then `darkbloom cluster` again. Running it on both Macs
+  leaves room for long requests. `darkbloom cluster gpu-limit --undo` takes it
+  back. A request longer than what fits at that moment is refused, not run out
+  of memory ([figures](../architecture/hardware-support.md#glm-53-flash-pairs-on-128-gb-macs)).
 - **The start does not finish**: the screen shows each Mac's last error and
   offers `d` to save a diagnostics file in your home folder (no keys, addresses or
   names in it; nothing is written if any would remain).

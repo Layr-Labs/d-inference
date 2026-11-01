@@ -299,6 +299,7 @@ public enum ClusterPlacementFlow {
                 + "This pair's own figure replaces it once the pair has served the same placement both with and without the rounds.")
         }
         if let note = granted.note { lines.append("Pair serving"); lines.append("  " + note) }
+        lines += gpuLimitLines(result, profiles: [local.id: localProfile, peer.id: peerProfile])
         if let batchScope {
             lines += ["Concurrent request memory", "  \(batchScope.lanes) independent histories, charged at the quoted request bound on both Macs. Stage-rate predictions remain single-request estimates; no batch speed is inferred from the lane count."]
         }
@@ -339,6 +340,25 @@ public enum ClusterPlacementFlow {
     }
 
     /// Which Mac leads, and a note when no cluster stage adapter runs the
+    /// Where a rank's GPU cannot keep resident what it needs there
+    /// (`ClusterPlacementRank.gpuWorkingSetShortBytes`), how its owner raises
+    /// that Mac's limit: `darkbloom cluster gpu-limit` on that Mac, one
+    /// confirmation and then macOS's administrator prompt, up to its memory
+    /// less what macOS keeps (`ClusterDeviceProfile.gpuLimitReserveBytes`).
+    static func gpuLimitLines(_ result: ClusterPlacementResult, profiles: [String: ClusterDeviceProfile]) -> [String] {
+        let short = (result.chosen?.ranks ?? result.refusal?.closest?.ranks ?? []).filter { $0.gpuWorkingSetShortBytes != nil }
+        guard !short.isEmpty else { return [] }
+        func gib(_ bytes: Int) -> String { String(format: "%.2f GiB", Double(bytes) / Double(1 << 30)) }
+        return ["GPU memory limit"] + short.compactMap { rank in
+            profiles[rank.device].map { profile in
+                "  \(rank.device): its GPU keeps \(gib(profile.residentCapacityBytes)) resident, too little for its part of this model. "
+                    + "On that Mac run `darkbloom cluster gpu-limit`: it asks once, then macOS asks an administrator to let the GPU keep up to "
+                    + "\(gib(profile.physicalMemoryBytes - ClusterDeviceProfile.gpuLimitReserveBytes)) (its memory less the 16 GiB macOS "
+                    + "keeps), also after restarts. Then run `darkbloom cluster` again."
+            }
+        }
+    }
+
     /// model (the owner's only refusal besides memory, owner 2026-10-14
     /// 08:45). Records never rule a leader, an order or a mode out: the
     /// planner keeps to what a start accepts through

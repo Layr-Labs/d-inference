@@ -1,6 +1,6 @@
 # Local control channels
 
-> Last updated: 2026-10-27
+> Last updated: 2026-11-01
 
 Two local channels can take a provider out of serving without the coordinator:
 the add-on hold socket and the lifecycle mailbox behind `darkbloom addon`. This
@@ -85,6 +85,22 @@ flowchart LR
    provider serves the default socket — `AddonPeerPolicy.current`,
    `provider-swift/Sources/ProviderCore/Addon/AddonHoldPaths.swift`
    (`AddonHoldPaths.production`).
+
+### Administrator-approved system changes
+
+Two cluster commands change macOS settings as root, each only after a person
+approves macOS's own authorization prompt for one fixed command line. Both run
+through `/usr/bin/osascript` (`ClusterLinkApproval`); Darkbloom never uses
+`sudo`, never sees a password, and adds no privileged helper.
+
+| Command | What it changes | Values | Undo |
+|---|---|---|---|
+| `darkbloom cluster link --fix` | A link-local address on the cluster's Thunderbolt port, and its keeper job | Generated from the port; no operator text (`ClusterLinkPrivilegedRequest`) | `--remove` |
+| `darkbloom cluster gpu-limit` | The GPU and user wire limits, and a boot job that reapplies them | From this Mac's own memory: the GPU keeps at most its memory less 16 GiB; M5 Macs of 128 or 256 GB only (`GLM5NextWiredLimitRequest`) | `--undo` |
+
+`gpu-limit` also requires a terminal and one confirmation before the prompt. A
+raised GPU limit removes no admission check: the host memory gate still decides
+every load and request on live memory.
 
 ## Failure modes and limits
 

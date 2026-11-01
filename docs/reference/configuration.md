@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-10-31
+> Last updated: 2026-11-01
 
 Provider CLI and native-runtime environment variables, compiled defaults and reading symbols. Secrets are named, never valued. Unless specified otherwise, values are read at process start.
 
@@ -1357,6 +1357,43 @@ still removed. Run `darkbloom cluster link --remove` before deleting
 | `removalNotVerified` | 4 | `--remove`: approved, but something of the fix is still found, or the port could not be read afterwards |
 | `isolationRefused` | 1 | `--fix` (link setup v2): a finding in `findings` that the approval cannot cure is in the way, such as `internetSharingToPort`; the message says what the owner can do. No prompt |
 | `appliedButNotIsolated` | 4 | `--fix` (link setup v2): approved, but the findings in `findings` still hold afterwards. What was done stays until `--remove` |
+
+### GPU memory limit for a GLM pair
+
+`darkbloom cluster gpu-limit [--undo]` raises this Mac's macOS GPU wired-memory
+limits for a GLM-5.3-Flash pair rank
+(`provider-swift/Sources/darkbloom/ClusterGPULimitCommand.swift`,
+`GLM5NextWiredLimit.pairRankRecommendation`).
+
+| Setting | Value on a 128 GB M5 | Value on a 256 GB M5 | Source |
+|---|---|---|---|
+| `iogpu.wired_limit_mb` | `114688` (memory less 16 GiB) | `245760` | `Recommendation.gpuWiredLimitMB` |
+| `vm.global_user_wire_limit`, `vm.user_wire_limit` | `130567005798` (95% of memory) | `261134011596` | `Recommendation.userWireLimitBytes` |
+| Persistence | `/Library/LaunchDaemons/com.layrlabs.glm53-wired-limits.plist`, root:wheel 644, reapplies them at boot | same | `GLM5NextWiredLimitRequest.commands` |
+
+Metal then reports the raised GPU limit as its recommended working set, which
+both the plan and each rank's LOAD read.
+
+**Security:**
+- **Who can invoke it:** only someone at the Mac's terminal. The command
+  refuses without one, prints the commands for an administrator, and asks
+  once.
+- **Privilege:** nothing changes without an administrator approving macOS's
+  authorization prompt. Darkbloom passes one fixed command line to
+  `/usr/bin/osascript` (`do shell script … with administrator privileges`,
+  `GLM5NextWiredLimitApproval`) and never uses `sudo` or sees a password. No
+  privileged helper is added or extended.
+- **Value bounds:** every value comes from this Mac's own memory size. Only
+  M5 Macs of 128 or 256 GB get values, and the GPU limit never exceeds memory
+  less 16 GiB, which macOS keeps. `GLM5NextWiredLimitRequest` refuses any
+  other values, and no operator or peer text enters a command.
+- **Persistence:** the boot job is built key by key with `plutil`, owned by
+  root:wheel with mode 644; no prepared file is copied into place.
+
+**Undo:** `darkbloom cluster gpu-limit --undo` removes the job and sets
+`iogpu.wired_limit_mb=0` (the macOS default); the wire limits return to their
+defaults at the next restart. The host memory gate still admits every load and
+request on live memory either way.
 
 ### Link setup v2: isolating the cluster port
 

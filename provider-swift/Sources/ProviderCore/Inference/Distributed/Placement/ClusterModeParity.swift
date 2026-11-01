@@ -75,6 +75,25 @@ enum ClusterModeParity {
         return dropped.isEmpty ? nil : Hold(modes: tensor, replaced: replaced, otherModePlaces: placed != nil, dropped: dropped)
     }
 
+    /// The rule applied to `policy` as `ClusterPlacementFlow.decide` plans it: tensor parallel's modes leave the policy
+    /// where they would drop a feature, unless a developer forced the mode; where tensor parallel is the only mode that
+    /// places, the plan refuses rather than save a reduced setup (owner, 2026-11-01), and `modesReason` says so.
+    /// Not inlined into `decide`: the planner runs below `decide` on a cooperative thread's fixed-size stack.
+    @inline(never)
+    static func apply(to policy: inout ClusterPlacementPolicy, capability: ClusterRuntimeCapability, layout: ClusterModelLayout,
+                      forced: Bool, plan: (ClusterPlacementPolicy) throws -> ClusterPlacementResult) -> (hold: Hold?, refusal: String?) {
+        guard let hold = hold(capability: capability, layout: layout, policy: policy, plan: plan) else { return (nil, nil) }
+        guard !forced else { return (hold, nil) }
+        var refusal: String?
+        if !hold.otherModePlaces, let only = (try? plan(policy))?.chosen, hold.modes.contains(only.mode) {
+            refusal = hold.refusal
+            policy.modesReason = policy.modesReason ?? hold.refusal
+        }
+        policy.modes = (policy.modes ?? layout.generationModes).filter { !hold.modes.contains($0) }
+        policy.tensorParallelHeldForFeatures = hold.reason
+        return (hold, refusal)
+    }
+
     /// The rule, as a plan of a family it applies to says it.
     static let ruleLine = "A mode is chosen only where it keeps every feature and caching behavior of the mode it would "
         + "replace, as this worker build declares them: prompt-prefix and SSD reuse, speculative rounds, batch lanes, "

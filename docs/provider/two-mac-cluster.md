@@ -340,10 +340,30 @@ Models that run tensor parallel, and when:
 |---|---|---|
 | Qwen3.5 9B, Qwen3.8 27B, Qwen3.5/3.6 35B A3B | wherever it fits | Qwen3.8 27B keeps images, video and logprobs only in tensor parallel |
 | GLM-5.3-Flash | wherever it fits | Eight concurrent requests by default |
-| Gemma 4 26B (QAT 4-bit, 8-bit) | only where the plan predicts it faster than a pipeline from its own measured speed on both Macs | Text only; logprobs in tensor parallel only; one request at a time unless you set `DARKBLOOM_CLUSTER_BATCH_LANES` |
-| MiMo V2.6 Flash | only where the plan predicts it faster than a pipeline from its own measured speed on both Macs | Text only; logprobs in tensor parallel only; one request at a time; see [MiMo V2.6 Flash on the pair](#mimo-v26-flash-on-the-pair) |
+| Gemma 4 26B (QAT 4-bit, 8-bit) | only where it keeps every feature of the pipeline (not yet: no prompt-prefix or SSD reuse) and the plan predicts it faster from its own measured speed on both Macs | Text only; logprobs in tensor parallel only; one request at a time unless you set `DARKBLOOM_CLUSTER_BATCH_LANES` |
+| MiMo V2.6 Flash | only where it keeps every feature of the mode it would replace (not yet: no speculative rounds) and the plan predicts it faster from its own measured speed on both Macs | Text only; logprobs in tensor parallel only; one request at a time; see [MiMo V2.6 Flash on the pair](#mimo-v26-flash-on-the-pair) |
 
-For Gemma 4 and MiMo V2.6 Flash the plan uses tensor parallel only when
+For Gemma 4 and MiMo V2.6 Flash, tensor parallel must first keep every feature
+and caching behavior of the mode it would replace, as the installed cluster
+worker declares them: prompt-prefix and SSD cache reuse, speculative rounds,
+batch lanes, media, penalties and logit bias, and stop handling. What it adds,
+such as logprobs, never counts against it. Today Gemma 4's tensor parallel keeps
+no prompt prefixes and MiMo's has no speculative rounds, so these pairs serve the
+pipeline:
+
+- The plan's "Tensor parallel or pipeline" line says what tensor parallel would
+  drop ("Pipeline: tensor parallel would drop prompt-prefix reuse and the SSD
+  prefix tier that the pipeline keeps; held back until it keeps them."), and the
+  model list says "tensor parallel: drops a feature".
+- Where only tensor parallel fits the two Macs, the plan refuses and saves no
+  setup ("Only tensor parallel fits these Macs, and it would drop ... No
+  reduced-feature setup was saved.").
+- The developer's forced mode (`DARKBLOOM_CLUSTER_FORCE_MODE`, debug builds only)
+  still places tensor parallel, and the plan says exactly what it drops.
+
+See [feature parity before tensor parallel](../architecture/inference.md#gemma-tensor-parallel-placement).
+
+Where tensor parallel keeps every feature, the plan also uses it only when
 tensor parallel's own speed has been measured on both Macs. That measurement
 is a timing a tensor-parallel load takes of each Mac's half (Gemma), or requests
 this Darkbloom build served in tensor parallel. An estimate from each Mac's
@@ -552,9 +572,11 @@ MiMo V2.6 Flash text can also run tensor parallel: each Mac holds half of every
 layer, about 84 GB of weights and about 98 GiB in all with its reserves
 ([rank memory](../architecture/hardware-support.md#mimo-v26-tensor-parallel-rank-memory)),
 so two 128 GB Macs that cannot hold MiMo alone can serve it. The plan chooses
-tensor parallel only where it predicts it faster than the pipeline with
-speculative decoding, which MiMo's qualification records credit 1.37x, and only
-from tensor parallel's own speed measured on both Macs:
+tensor parallel only where it keeps the speculative rounds of the pipeline it
+would replace, which it does not yet, so MiMo pairs keep the pipeline with
+speculative decoding (above). Speed decides only after that: tensor parallel must
+be predicted faster than that pipeline, which MiMo's qualification records
+credit 1.37x, from tensor parallel's own speed measured on both Macs:
 
 - Before a load has measured the link, two 128 GB Macs and two 256 GB Macs
   alike keep the pipeline.

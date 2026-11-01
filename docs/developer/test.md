@@ -1263,6 +1263,8 @@ neither real-weight numerics, a pair qualification nor speed.
      split top-k, also at an exactly tied maximum whose other ID leads the gather;
    - the verified load's cut of every text tensor, and its refusals;
    - the load agreement's fields;
+   - what the capability declares of each mode (`ClusterServingFeatures`):
+     tensor parallel's prompt-prefix setting is the one its load agreement binds;
    - the product's Gemma layout with its tensor-parallel facts: big Macs keep
      the pipeline on default link costs; on a measured fast link tensor
      parallel is predicted faster on the device index alone and the pipeline is
@@ -1351,7 +1353,8 @@ registered artifact for them.
      with per-rank paged geometry, the selection rules, logprobs (an exactly
      tied maximum included), every stop kind (the owner's stop just before a
      stop token included), the request and load agreements, the request budget
-     and the text-only launch.
+     and the text-only launch;
+   - what the text row's capability declares of each mode (`ClusterServingFeatures`).
 
    `libs/darkbloom-cluster/Tests/PlacementChecks/run.sh` also runs
    `MiMoTensorParallelChecks.swift` (model-free). It builds the layout from the
@@ -1372,10 +1375,21 @@ registered artifact for them.
    109 us link. Requests served in tensor parallel decide both ways on both
    pairs. `provider-swift/Tests/ClusterPlacementChecks/run.sh` checks that the
    guided step credits MiMo's rounds from its shipped records and prints the
-   fastest-plan and logprob lines. Through the guided step it also checks the
-   evidence rule: MiMo on two 256 GB Macs keeps the speculative pipeline with no
-   served record or another build's, and follows this build's served records;
-   Gemma follows both Macs' share probes.
+   fastest-plan and logprob lines. Through the guided step it also checks feature
+   parity (`ClusterModeParity`) before the evidence rule:
+   - as this build declares them, MiMo's tensor parallel has no rounds, so the
+     speculative pipeline is kept even with this build's served records; Gemma's
+     keeps no prompt prefixes, so the pipeline is kept even with both Macs' share
+     probes, after an update that served tensor parallel, and with nothing
+     measured; each plan says what tensor parallel would drop;
+   - with rounds (MiMo) or prefix reuse (Gemma) declared, the evidence rule
+     decides: MiMo on two 256 GB Macs keeps the speculative pipeline with no
+     served record or another build's and follows this build's served records,
+     and Gemma follows both Macs' share probes;
+   - where only tensor parallel fits, the plan refuses and saves no setup; the
+     forced mode places it and says what it drops; a record without features
+     holds it back; per-mode features cross the capability codec canonically;
+     a GLM record declaring a gap plans exactly as without it.
 
 2. Build `darkbloom-cluster-tp-check` and put a source-matched `mlx.metallib`
    beside it ([build](build.md)). Then run the GPU oracles:

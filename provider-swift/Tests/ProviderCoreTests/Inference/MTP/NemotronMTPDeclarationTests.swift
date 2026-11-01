@@ -11,7 +11,9 @@ struct NemotronMTPDeclarationTests {
     }
     @Test func explicitEmbeddedContractAndMode() {
         #expect(SpecDecStore.declaresNemotronLightningMTP(declaration))
-        #expect(MTPMode.auto.enablesMTP(forModelType: "nemotron_h", embeddedArtifactDeclared: true))
+        // Plain decode outruns the head, so only explicit `on` keeps it.
+        #expect(!MTPMode.auto.enablesMTP(forModelType: "nemotron_h", embeddedArtifactDeclared: true))
+        #expect(MTPMode.on.enablesMTP(forModelType: "nemotron_h", embeddedArtifactDeclared: true))
         #expect(!MTPMode.auto.enablesMTP(forModelType: "nemotron_h", embeddedArtifactDeclared: false))
         #expect(!MTPMode.off.enablesMTP(forModelType: "nemotron_h", embeddedArtifactDeclared: true))
         var copiedMetadata = declaration

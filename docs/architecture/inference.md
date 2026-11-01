@@ -1912,7 +1912,7 @@ and `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/DeadlineAdmiss
 | Target | Drafter | Activation |
 |---|---|---|
 | Qwen3.5 family (`qwen3_5`, `qwen3_5_moe`) | Embedded head (`Qwen35InlineMTPAssistant`, request-stateful) | `mtp_mode = "auto"` (default) when the checkpoint declares the embedded artifact |
-| Nemotron 3.5 Lightning (`nemotron_h`) | Embedded head (`NemotronH35MTPAssistant`, request-stateful) | The MTP artifact must retain the embedded module and declare it; the non-MTP artifact remains target-only |
+| Nemotron 3.5 Lightning (`nemotron_h`) | Embedded head (`NemotronH35MTPAssistant`, request-stateful) | Explicit `mtp_mode = "on"` only: the MTP artifact must retain the embedded module and declare it, and the non-MTP artifact remains target-only. Under `auto` it serves plain decode, which commits every 100 operations with no input-size bound (`NemotronH35DecodeCommandBuffers`) and outruns the head's speculative rounds with the same outputs |
 | Gemma 4 | Separate assistant checkpoint (`Gemma4AssistantDraftModel`, stateless) | Defaults to `auto` for exact `gemma-4-26b-qat-4bit`; other Gemma IDs require `on`. `SpecDecArtifactFunnel` resolves the catalog-declared `spec_dec` artifact, with `mtp_drafter_path` as a directory override |
 
 The shared `MTPMode.enablesMTP` policy receives the exact model ID from both

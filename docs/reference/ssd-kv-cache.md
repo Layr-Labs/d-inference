@@ -1,6 +1,6 @@
 # SSD KV cache reference
 
-> Last updated: 2026-10-28
+> Last updated: 2026-11-01
 
 Exact on-disk format, paths, identity binding, environment knobs, size and
 eviction rules, and per-family reuse capability of the provider's encrypted SSD
@@ -618,7 +618,7 @@ record format are unchanged.
 | Request (`ClusterWorkerReservation.prefixCache`) | SSD record behavior | Enforcement |
 |---|---|---|
 | None (cache on, no salt) | The plan's earlier scope; read and written as before | `ClusterWorkerPrefixCache.scope` in `libs/darkbloom-cluster/Sources/DarkbloomClusterProtocol/ClusterWorkerPrefixCache.swift` |
-| `tenant` | Scope carries `\|tenant=` and the salt's SHA-256 digest; offered, restored and written only for that tenant | the same helper, through `qwenStagePrefixScope`, `QwenTensorParallelResidentRuntime.batchPrefixScope` and `GLM5NextTensorParallelResidentRuntime.prefixDiskScope` |
+| `tenant` | Scope carries `\|tenant=` and the salt's SHA-256 digest; offered, restored and written only for that tenant | the same helper, through `qwenStagePrefixScope`, `QwenTensorParallelResidentRuntime.batchPrefixScope`, `GLM5NextTensorParallelResidentRuntime.prefixDiskScope` and `Gemma4TensorParallelPrefix.scopes` |
 | `disabled` | Nothing offered, restored or written | the same helper (no scope) |
 
 See [cluster prefix tenant partitions](../architecture/prefix-cache.md#cluster-prefix-tenant-partitions).

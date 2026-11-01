@@ -5091,6 +5091,17 @@ acknowledgement. Failed release retains the reservation for cleanup or the
 worker's process fence. Every row's singleton and batch owners publish raw
 selection logprobs through the committed-token channel.
 
+Selection checks finiteness inside its own sealed sum, as the assistant's greedy
+choice does (`QwenTensorParallelNativeBatchExecutor.select`): each rank adds its
+rows' non-finite logit counts beside their maximum and first global index (a
+sampled cohort counts the gathered rows), and both ranks read them from the
+same evaluation that yields the tokens. A non-finite logit on either rank fails
+both ranks before any token is chosen, a sampler advances or anything is
+published; before, the rank that saw it failed alone and its peer waited in the
+selection sum. The decode step no longer pays a separate finiteness read
+(`QwenTensorParallelBatchSession.validateLogits` checks shape and dtype), and
+every selected token is unchanged.
+
 The batch path can restore mutually held original-grid prefix snapshots into
 fresh request-owned state. TP speculative rounds remain a separate integration. Installed owners propagate a priced
 saved width or explicit diagnostic width for every Qwen TP row; automatic placement

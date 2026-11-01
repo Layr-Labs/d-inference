@@ -549,12 +549,14 @@ final class QwenTensorParallelBatchSession: QwenTensorParallelMTPTarget {
             throw ProbeError("Qwen TP positions differ from request-owned three-axis slices")
         }
     }
+    /// Shape and dtype only: selection counts non-finite logits inside its own
+    /// sealed sum (`QwenTensorParallelNativeBatchExecutor.select`), so both
+    /// ranks refuse such a row together and no step pays a separate read.
     private static func validateLogits(_ value: MLXArray, rows: Int, model: QwenTensorParallelModel,
                                        request: QwenLayerStageGenerationRequest) throws {
         guard value.shape == [rows, model.vocabularyRange.count],
-              String(describing: value.dtype) == request.profile.selectedRowDType,
-              all(isFinite(value)).item(Bool.self) else {
-            throw ProbeError("Qwen TP batched logits have an invalid shape, dtype or finite value")
+              String(describing: value.dtype) == request.profile.selectedRowDType else {
+            throw ProbeError("Qwen TP batched logits have an invalid shape or dtype")
         }
     }
 

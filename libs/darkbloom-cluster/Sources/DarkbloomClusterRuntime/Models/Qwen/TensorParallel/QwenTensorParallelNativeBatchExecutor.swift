@@ -415,6 +415,7 @@ final class QwenTensorParallelNativeBatchExecutor<Reservation: QwenTensorParalle
         }
         let values = logits.asType(.float32)
         let selected: MLXArray
+        var nonfinite: MLXArray?
         let sampled = lanes.contains { $0.session.request.sampling != nil }
         if sampled {
             // Sampling/logprobs require complete raw rows. Each rank writes
@@ -425,8 +426,9 @@ final class QwenTensorParallelNativeBatchExecutor<Reservation: QwenTensorParalle
             pieces.append(values)
             if after > 0 { pieces.append(MLXArray.zeros([width, after], dtype: .float32)) }
             let full = group.allSum(pieces.count == 1 ? values : concatenated(pieces, axis: 1))
-            eval(full); try check()
-            guard full.shape == [width, model.plan.vocabularySize], all(isFinite(full)).item(Bool.self) else {
+            let gatheredNonfinite = (1 - isFinite(full).asType(.float32)).sum()
+            eval(full, gatheredNonfinite); try check()
+            guard full.shape == [width, model.plan.vocabularySize], gatheredNonfinite.item(Float.self) == 0 else {
                 throw ProbeError("Qwen TP gathered sampling rows are invalid")
             }
             var choices = MLXArray.zeros([width], dtype: .float32)
@@ -441,14 +443,21 @@ final class QwenTensorParallelNativeBatchExecutor<Reservation: QwenTensorParalle
             selected = group.allSum(choices).asType(.int32)
         } else {
             // Greedy rows retain the scalar TP tie rule: lower rank wins an
-            // equal maximum, hence lower global vocabulary index wins.
+            // equal maximum, hence lower global vocabulary index wins. Each
+            // rank's non-finite count rides the same sum, so a non-finite
+            // logit on either rank fails both, read from this one evaluation.
             let local = stacked([values.max(axis: -1),
-                argMax(values, axis: -1).asType(.float32) + Float(model.vocabularyRange.lowerBound)], axis: 1)
-            let empty = MLXArray.zeros([width, 2], dtype: .float32)
+                argMax(values, axis: -1).asType(.float32) + Float(model.vocabularyRange.lowerBound),
+                (1 - isFinite(values).asType(.float32)).sum(axis: -1)], axis: 1)
+            let empty = MLXArray.zeros([width, 3], dtype: .float32)
             let both = group.allSum(concatenated(rank == 0 ? [local, empty] : [empty, local], axis: 1))
-            selected = which(both[0..., 2] .> both[0..., 0], both[0..., 3], both[0..., 1]).asType(.int32)
+            selected = which(both[0..., 3] .> both[0..., 0], both[0..., 4], both[0..., 1]).asType(.int32)
+            nonfinite = both[0..., 2] + both[0..., 5]
         }
-        eval(selected); try check()
+        eval([selected] + (nonfinite.map { [$0] } ?? [])); try check()
+        guard nonfinite?.asArray(Float.self).allSatisfy({ $0 == 0 }) ?? true else {
+            throw ProbeError("Qwen TP selection rows have a non-finite logit")
+        }
         let tokens = selected.asArray(Int32.self).map(Int.init); try check()
         guard tokens.count == width, tokens.allSatisfy({ (0..<model.plan.vocabularySize).contains($0) }) else {
             throw ProbeError("Qwen TP selection produced an invalid token")

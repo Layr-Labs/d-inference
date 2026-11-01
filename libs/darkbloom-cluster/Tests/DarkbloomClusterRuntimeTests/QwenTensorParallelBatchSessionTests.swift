@@ -458,7 +458,13 @@ struct QwenTensorParallelBatchSessionTests {
         try verifySelectionBoundary(nonfinite: true)
     }
 
-    private func verifySelectionBoundary(nonfinite: Bool) throws {
+    /// Non-finite logits on one rank's vocabulary rows only: the count rides
+    /// the selection's own sum, so both ranks fail before either selects.
+    @Test func nativeNonfiniteRowsOnOneRankFailBothRanks() throws {
+        try verifySelectionBoundary(nonfinite: true, upperRankOnly: true)
+    }
+
+    private func verifySelectionBoundary(nonfinite: Bool, upperRankOnly: Bool = false) throws {
         try Device.withDefaultDevice(device) {
             let fixture = QwenTensorParallelFixtures.checkpoint(hidden: 256, layers: 4, heads: 4, kvHeads: 2, vocabulary: 256)
             var root = try JSONSerialization.jsonObject(with: fixture.configuration) as! [String: Any]
@@ -469,6 +475,12 @@ struct QwenTensorParallelBatchSessionTests {
             for layer in 0..<3 { tensors += attention.map { ($0.0.replacingOccurrences(of: ".layers.3.", with: ".layers.\(layer)."), $0.1) } }
             tensors = tensors.map { name, value in
                 guard name.hasPrefix("language_model.lm_head."), value.dtype != .uint32 else { return (name, value) }
+                if upperRankOnly {
+                    // Rank 1 holds the upper half of the vocabulary rows.
+                    let half = value.dim(0) / 2, rest = Array(value.shape.dropFirst())
+                    return (name, concatenated([MLXArray.zeros([half] + rest, dtype: value.dtype),
+                        MLXArray.full([value.dim(0) - half] + rest, values: MLXArray(Float.nan), dtype: value.dtype)], axis: 0))
+                }
                 return (name, MLXArray.full(value.shape, values: MLXArray(nonfinite ? Float.nan : Float(0)), dtype: value.dtype))
             }
             let configuration = try JSONSerialization.data(withJSONObject: root, options: [.sortedKeys])

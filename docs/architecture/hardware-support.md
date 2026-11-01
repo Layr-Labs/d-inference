@@ -1170,8 +1170,11 @@ headroom. That fits a 128 GB Mac. A reservation asks the live gate for its own r
 per-rank charges. Nothing here is measured on a pair; see
 [inference](inference.md#mimo-tensor-parallel-placement).
 
-A rank launched with speculative rounds (`--mtp-depth`) adds, in its own gates
-only (the planner's quote does not count them yet):
+A rank launched with speculative rounds (`--mtp-depth`) adds the charges below
+to its own gates only; the planner's quote does not count them yet. The LOAD
+gate adds all three before anything is read, with the per-request terms at the
+profile's longest request; READY's capacity and each reservation add the two
+per-request terms.
 
 | Charge | Held | Bytes |
 |---|---|---|

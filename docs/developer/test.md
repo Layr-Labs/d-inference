@@ -1351,8 +1351,10 @@ registered artifact for them.
      every third moved off) equal the one-token path bit for bit, caches
      included; a stop token inside a window, the owner's stop inside a round
      (and just before a stop token of the same round), a cancel between rounds
-     and greedy logprobs for every kept column end both ranks together; and
-     exactly tied columns and draft readouts choose the lowest token ID.
+     and greedy logprobs for every kept column (the one-token path's own) end
+     both ranks together; the LOAD gate's configuration-only drafter charge is
+     what the loaded heads declare; and exactly tied columns and draft readouts
+     choose the lowest token ID.
 
    `libs/darkbloom-cluster/Tests/PlacementChecks/run.sh` also runs
    `MiMoTensorParallelChecks.swift` (model-free). It builds the layout from the
@@ -1418,8 +1420,10 @@ registered artifact for them.
    the heads' own proposals (random, so mostly rejected), proposals scripted
    from the one-token run's tokens (`--mtp-script REPORT`, all kept) and every
    fifth scripted proposal moved off (`--mtp-misses 5`: accepts, rejects and
-   rollback). Two `tp` ranks over the ring must equal `simulated` for the heads,
-   the misses and a sampled run.
+   rollback). Sampled rounds (temperature 0.8: the heads, and the misses scripted
+   from the sampled one-token run) must equal the sampled one-token path bit for
+   bit. Two `tp` ranks over the ring must equal `simulated` for the heads, the
+   misses and a sampled run.
 
    `MIMO_ORACLE_PATHS=paged` runs one matrix.
 

@@ -4336,8 +4336,10 @@ the gate.
 
 A MiMo tensor-parallel worker launched with `--mtp-depth N` (1 to 3; MiMo's
 `MiMoMTPTerms`) decodes in `pipeline_mtp_v1`'s rounds through the
-tensor-parallel sums. Nothing launches it by default yet: the installed provider
-passes no depth in tensor parallel, and the planner credits no speed-up.
+tensor-parallel sums. It is off by default: the installed provider passes no
+depth to a MiMo tensor-parallel worker
+(`DistributedInstalledGenerationSelection` passes one only for Qwen's tensor
+assistant), and the planner credits no speed-up.
 
 - **Heads.** Both ranks hold the three trained BF16 heads whole
   (3 × 658,546,816 B), named by the pipeline's head inventory
@@ -4363,10 +4365,14 @@ passes no depth in tensor parallel, and the planner credits no speed-up.
   column's maximum and token (or rank 0's keyed target sample over the gathered
   rows, `QwenStageTokenSampler.verifyRound`), the stop slot and the position.
   `MiMoMTPAcceptance.kept` keeps drafts while each equals the target before it,
-  then the target, cut at a stop token and the output limit. A request whose
-  sampler does not admit verification (`ClusterWorkerSampling.admitsSpeculativeVerification`:
-  history-dependent transforms, or a sampled request that asks for logprobs)
-  decodes one token a step, as in the pipeline's rounds.
+  then the target, cut at a stop token and the output limit. Column j's target
+  sample is keyed at output index `next + j`, the key the one-token path uses
+  there, so sampled rounds draw the one-token path's tokens too (bit for bit
+  on the synthetic checks). Greedy requests, with or without logprobs, always
+  draft. A gathered-row request drafts only when its sampler admits verification
+  (`ClusterWorkerSampling.admitsSpeculativeVerification`). Penalties, a logit
+  bias, or a sampled request's logprobs make it decode one token a step, as in
+  the pipeline's rounds.
 - **Rollback.** Each cache takes a checkpoint before the window (pages are
   immutable arrays). Unless every row is kept, the cache returns to it and
   replays the kept rows' keys and values as one-token appends
@@ -4376,12 +4382,15 @@ passes no depth in tensor parallel, and the planner credits no speed-up.
   round's agreement; when that round already ends the request, rank 1 adopts rank
   0's count and finish in the end agreement (`QwenTensorParallelStopRule.reconcile`).
 - **Logprobs.** A greedy request takes one vocabulary-split top-k gather per
-  kept column, led by the column's agreed maximum; a sampled request with
-  logprobs decodes one token a step, so its logprobs are the step path's.
-- **Memory.** The LOAD gate adds the heads' bytes; each reservation and READY's
-  capacity add the drafter's bounded request state and the window's extra rows
-  (`MiMoTensorParallelResidentRuntime.speculativeRequestBytes`). The activation
-  floor stays the conservative default.
+  kept column, led by the column's agreed maximum. The rows are the one-token
+  step's, so the published logprobs are the one-token path's. A sampled request
+  with logprobs decodes one token a step, so its logprobs are the step path's.
+- **Memory.** Before anything is read, the LOAD gate adds the heads' bytes and,
+  at the profile's longest request, the drafter's bounded request state and the
+  window's extra rows (`MiMoTensorParallelResidentRuntime.speculativeRequestBytes`,
+  from the configuration alone). READY's capacity and each reservation add the
+  same two per-request terms. The activation floor stays the conservative
+  default.
 - **Agreement.** The load agreement adds the depth, the verification rule and
   the head and window contracts (`speculativeAgreementFields`); a load without a
   depth keeps its agreement unchanged.

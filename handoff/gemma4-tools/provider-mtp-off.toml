@@ -1,0 +1,14 @@
+# The product's defaults with one change: mtp_mode = "off". The model cache is
+# this task's own directory of clones (relative to this file), and the
+# coordinator URL is an address that cannot connect, so nothing in --local mode
+# can reach a coordinator. Nothing here is tuned.
+[backend]
+model_cache_directory = "cache"
+mtp_mode = "off"
+
+[coordinator]
+url = "wss://127.0.0.1:1/ws/provider"
+
+[provider]
+auto_update = false
+auto_restart = false

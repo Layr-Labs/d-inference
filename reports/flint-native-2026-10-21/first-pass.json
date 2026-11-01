@@ -1,0 +1,309 @@
+{
+  "schema": 1,
+  "date": "2026-10-21",
+  "hardware": {
+    "chip": "Apple M5 Max",
+    "memory_gib": 128,
+    "macos": "27.0 (26A428)"
+  },
+  "source": {
+    "provider": "a0a0f23ae857ea5280d34a91bad91c4aceb99191",
+    "sdk": "c0fc8dc4b109895f4d9c65c97c4c83c3413ad3ad",
+    "files": {
+      "darkbloom": "2aec58d3029991a47db7d93e44e41abadad2ec4460a837abfc7fb46a3168f7ce",
+      "mlx.metallib": "fb1ba8f90b9f1cc346246b7240c3986771464bd977c67f0ef03186811f16c85c"
+    },
+    "tf32": false,
+    "kv": "native",
+    "mtp": false,
+    "run": "first prefill optimization, NAX enabled"
+  },
+  "checkpoint": {
+    "repo": "RecursiveSI/flint-int4",
+    "revision": "3b93f9053b530488405ae9fca51d4900d6ce21f0",
+    "format": "group-64 affine INT4 projections/experts, INT8 embedding; native BF16 KV"
+  },
+  "method": {
+    "scope": "production d-inference CBv2 benchmark; not HTTP throughput",
+    "warmup": "bootstrap and actual shape warmups excluded",
+    "measured_repetitions": 3,
+    "decode_prompt_tokens": 1024,
+    "decode_tokens_per_sequence": 128,
+    "tf32": false,
+    "mtp": false,
+    "live_kv": "native",
+    "checkpoint_kv": "native",
+    "profiler": false,
+    "competing_inference_service_observed": false,
+    "host_fully_idle": false
+  },
+  "first_pass": {
+    "prefill": [
+      {
+        "prompt_tokens": 2,
+        "median_tokens_per_second": 48.93
+      },
+      {
+        "prompt_tokens": 8,
+        "median_tokens_per_second": 254.04
+      },
+      {
+        "prompt_tokens": 512,
+        "median_tokens_per_second": 3672.88
+      },
+      {
+        "prompt_tokens": 513,
+        "median_tokens_per_second": 3467.44
+      },
+      {
+        "prompt_tokens": 1024,
+        "median_tokens_per_second": 4412.72
+      },
+      {
+        "prompt_tokens": 4096,
+        "median_tokens_per_second": 4420.75
+      },
+      {
+        "prompt_tokens": 16384,
+        "median_tokens_per_second": 3831.06
+      },
+      {
+        "prompt_tokens": 32768,
+        "median_tokens_per_second": 3083.26
+      }
+    ],
+    "decode": [
+      {
+        "batch": 1,
+        "median_aggregate_tokens_per_second": 102.43,
+        "median_per_sequence_tokens_per_second": 102.43
+      },
+      {
+        "batch": 2,
+        "median_aggregate_tokens_per_second": 136.0,
+        "median_per_sequence_tokens_per_second": 68.0
+      },
+      {
+        "batch": 4,
+        "median_aggregate_tokens_per_second": 145.36,
+        "median_per_sequence_tokens_per_second": 36.34
+      },
+      {
+        "batch": 8,
+        "median_aggregate_tokens_per_second": 153.37,
+        "median_per_sequence_tokens_per_second": 19.17
+      }
+    ],
+    "baseline_token_comparison": {
+      "all_equal": true,
+      "cells": 12,
+      "token_ids_compared": 5805,
+      "reference": "older pre-optimization binary; historical performance has different contention/profiling conditions"
+    }
+  },
+  "portable_diagnostic": {
+    "build": {
+      "command": "swift build -c release --product darkbloom --scratch-path <owned-portable-build> -Xcxx -DMLX_METAL_NO_NAX --disable-automatic-resolution",
+      "temporary_stub_patch_sha256": "9d07d116d0b1643d5901ad21af0a0cc79925140fa9a0997cf089cb0e657cc1ac",
+      "original_source_sha256": "8201a166cc426cd7b1f6983e5e6f282d3ca7a1992cc4c3a80fa42cf8dd237c46",
+      "source_restored": true,
+      "exit_code": 0
+    },
+    "prefill": [
+      {
+        "prompt_tokens": 2,
+        "median_tokens_per_second": 43.27
+      },
+      {
+        "prompt_tokens": 8,
+        "median_tokens_per_second": 210.41
+      },
+      {
+        "prompt_tokens": 512,
+        "median_tokens_per_second": 1136.59
+      },
+      {
+        "prompt_tokens": 513,
+        "median_tokens_per_second": 1097.28
+      },
+      {
+        "prompt_tokens": 1024,
+        "median_tokens_per_second": 1315.48
+      },
+      {
+        "prompt_tokens": 4096,
+        "median_tokens_per_second": 1342.2
+      }
+    ],
+    "decode": [
+      {
+        "batch": 1,
+        "median_aggregate_tokens_per_second": 90.09,
+        "median_per_sequence_tokens_per_second": 90.09
+      },
+      {
+        "batch": 4,
+        "median_aggregate_tokens_per_second": 109.48,
+        "median_per_sequence_tokens_per_second": 27.37
+      },
+      {
+        "batch": 8,
+        "median_aggregate_tokens_per_second": 104.79,
+        "median_per_sequence_tokens_per_second": 13.1
+      }
+    ],
+    "token_comparison": [
+      {
+        "batch": 1,
+        "iteration": 1,
+        "identical_tokens": true
+      },
+      {
+        "batch": 1,
+        "iteration": 2,
+        "identical_tokens": true
+      },
+      {
+        "batch": 1,
+        "iteration": 3,
+        "identical_tokens": true
+      },
+      {
+        "batch": 4,
+        "iteration": 1,
+        "identical_tokens": false
+      },
+      {
+        "batch": 4,
+        "iteration": 2,
+        "identical_tokens": false
+      },
+      {
+        "batch": 4,
+        "iteration": 3,
+        "identical_tokens": false
+      },
+      {
+        "batch": 8,
+        "iteration": 1,
+        "identical_tokens": false
+      },
+      {
+        "batch": 8,
+        "iteration": 2,
+        "identical_tokens": false
+      },
+      {
+        "batch": 8,
+        "iteration": 3,
+        "identical_tokens": false
+      }
+    ],
+    "limitation": "B1 tokens match; B4/B8 differ. Do not claim numerical equivalence or a lossless NAX speedup from this comparison."
+  },
+  "larger_stripe_experiment": {
+    "promoted": false,
+    "prefill": [
+      {
+        "prompt_tokens": 2,
+        "median_tokens_per_second": 41.4
+      },
+      {
+        "prompt_tokens": 8,
+        "median_tokens_per_second": 211.66
+      },
+      {
+        "prompt_tokens": 512,
+        "median_tokens_per_second": 2594.09
+      },
+      {
+        "prompt_tokens": 513,
+        "median_tokens_per_second": 2384.32
+      },
+      {
+        "prompt_tokens": 1024,
+        "median_tokens_per_second": 2789.61
+      },
+      {
+        "prompt_tokens": 4096,
+        "median_tokens_per_second": 3176.95
+      },
+      {
+        "prompt_tokens": 8192,
+        "median_tokens_per_second": 3106.51
+      },
+      {
+        "prompt_tokens": 16384,
+        "median_tokens_per_second": 2802.29
+      }
+    ],
+    "paired_sequence": [
+      {
+        "stripe": 2048,
+        "arm": 1,
+        "prefill": [
+          {
+            "prompt_tokens": 1024,
+            "median_tokens_per_second": 2121.21
+          },
+          {
+            "prompt_tokens": 4096,
+            "median_tokens_per_second": 3099.99
+          }
+        ]
+      },
+      {
+        "stripe": 4096,
+        "arm": 1,
+        "prefill": [
+          {
+            "prompt_tokens": 1024,
+            "median_tokens_per_second": 2311.28
+          },
+          {
+            "prompt_tokens": 4096,
+            "median_tokens_per_second": 3662.92
+          }
+        ]
+      },
+      {
+        "stripe": 2048,
+        "arm": 2,
+        "prefill": [
+          {
+            "prompt_tokens": 1024,
+            "median_tokens_per_second": 2746.3
+          },
+          {
+            "prompt_tokens": 4096,
+            "median_tokens_per_second": 3424.69
+          }
+        ]
+      }
+    ],
+    "decision": "Inconclusive under material baseline variability; retain default2048. No full-model token qualification performed for4096."
+  },
+  "targets": {
+    "minimum_prefill_tokens_per_second": 5000,
+    "two_times_reported_M3_Ultra_prefill_tokens_per_second": 6103,
+    "single_sequence_decode_tokens_per_second": 400,
+    "met": false
+  },
+  "qualification": {
+    "focused_provider_tests": 26,
+    "expanded_live": "Failed context-budget refusal and adversarial tool-history answer; follow-up fixes pending. Other HTTP cases passed.",
+    "generated_coding": "7 executed cases passed, including tuple input and no input mutation.",
+    "full_suite": "6 template-helper failures; corrected focused rerun passed; full suite rerun pending."
+  },
+  "receipt_sha256": {
+    "provider-release-prefill-02.json": "33ea5f27dc349af73a8dfd5265d074f1e8a2651fb6ab3014dad1ae270d5a96ae",
+    "provider-release-sweep-02.json": "96401441b6a972f46cd14fdf9a44d93f764be8bbf835a784b4c2c0a57e2b11c6",
+    "provider-portable-prefill-01.json": "0ae03d270025051cf7f17bea805b7c705644c0ffe836d656f530cfee55deaf4e",
+    "provider-portable-sweep-01.json": "01c10db3ceb39fe7bf613c0035c72c15637c00b8149c68a6bd5ebca50be8a02a",
+    "provider-stripe4096-prefill-01.json": "3a95becc0222df068d4efa60f3b2a9c75291fb071ba959f37f8b50418b857b4e",
+    "provider-stripe2048-paired-01.json": "85820f4bf8a3db4489922506a4382f6128a22f6cb9da67fa81e7f229464b0751",
+    "provider-stripe4096-paired-01.json": "a837044c21683259ba4eb7839e4862d85e5a2857156f99cc5ab06a07f4a0916a",
+    "provider-stripe2048-paired-02.json": "ff0824f010ebd18c4015a0bf0244cd7fea23fd5a93e4782a9c7e4eacd3dec7c8"
+  },
+  "privacy": "Only public synthetic workload aggregate metrics retained here; raw local process/trace logs are excluded."
+}

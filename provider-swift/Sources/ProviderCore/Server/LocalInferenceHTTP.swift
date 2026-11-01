@@ -13,6 +13,8 @@
 // engine-error → OpenAI-envelope mapping; the caller supplies how to acquire a
 // model, resolve a tokenizer, and list the advertised catalog.
 
+import HTTPTypes
+import NIOCore
 import Foundation
 import Hummingbird
 import MLXLMServer
@@ -25,7 +27,7 @@ public struct LocalInferenceHTTPConfig: Sendable {
     /// Bearer token required on every inference route (nil = open / `--no-auth`).
     public let authToken: String?
 
-    public init(host: String = "127.0.0.1", port: UInt16 = 8000, authToken: String? = nil) {
+    public init(host: String = "127.0.0.1", port: UInt16 = BuildEnvironment.current.defaultLocalPort, authToken: String? = nil) {
         self.host = host
         self.port = port
         self.authToken = authToken
@@ -38,10 +40,10 @@ public struct LocalInferenceHTTPConfig: Sendable {
 /// `LocalChatUploadResponder`) → upstream MLXLMServer router.
 public typealias LocalInferenceApplication =
     Application<
-        LocalDisconnectResponder<LocalAuthResponder<
+        LocalDisconnectResponder<LocalRequestOriginResponder<LocalAuthResponder<
             CORSResponder<
                 LocalMetricsResponder<
-                    LocalChatUploadResponder<RouterResponder<BasicRequestContext>>>>>>>
+                    LocalChatUploadResponder<RouterResponder<BasicRequestContext>>>>>>>>
 
 /// Builds the local OpenAI-compatible Hummingbird application from a model
 /// registry expressed as three closures. Shared by `StandaloneServer` and the
@@ -72,7 +74,12 @@ func makeLocalInferenceApplication(
     mtpSlots: @escaping @Sendable () async -> [MTPSlotMetricsSample],
     responseTracker: LocalResponseTracker? = nil,
     onServerRunning: @escaping @Sendable (any Channel) async -> Void = { _ in },
-    modelTypeProvider: (@Sendable (String) async -> String?)? = nil
+    modelTypeProvider: (@Sendable (String) async -> String?)? = nil,
+    clusterStatus: (@Sendable (String) async throws -> ClusterLiveStatus)? = nil,
+    distributedResponses: (any DistributedHTTPResponseProviding)? = nil,
+    nemotronSuperImageHTTP: NemotronSuperLocalImageHTTP? = nil,
+    managedSuperEngine: (@Sendable (Data, OpenAIChatCompletionRequest, EngineV2LogprobsChannel?)
+        -> (any MLXServerEngine)?)? = nil
 ) -> LocalInferenceApplication {
     // The upstream OpenAI request shape intentionally ignores Qwen's
     // template-only controls. Build a lightweight engine/service facade per
@@ -93,21 +100,78 @@ func makeLocalInferenceApplication(
             defaultMaxTokens: defaultMaxTokens,
             templateControls: controls,
             nativeLocalCacheScope: nativeCacheScope,
-            modelTypeProvider: modelTypeProvider
+            modelTypeProvider: modelTypeProvider,
+            seedsContentForUnknownPromptTail: true
         )
         return MLXOpenAIService(
             engine: engine, responseStore: responseStore, metrics: metrics)
     }
     let service = serviceForTemplateControls(.init())
+    // Request-owned metadata is shared by standalone and cluster HTTP. The
+    // distributed response registry controls stream lifetime, not API fields.
+    let serviceForLogprobs: @Sendable (ChatTemplateControls, EngineV2LogprobsPlumbing) -> MLXOpenAIService = {
+        controls, logprobs in
+        MLXOpenAIService(engine: MultiModelBatchSchedulerEngine(
+            acquire: acquire, tokenizerProvider: tokenizerProvider, availableModels: availableModels,
+            defaultMaxTokens: defaultMaxTokens, templateControls: controls,
+            nativeLocalCacheScope: nativeCacheScope, modelTypeProvider: modelTypeProvider,
+            seedsContentForUnknownPromptTail: true, engineV2Logprobs: logprobs),
+            responseStore: responseStore, metrics: metrics)
+    }
+    let reasoningTokenCounter: @Sendable (String) async -> (@Sendable (String) -> Int)? = { model in
+        guard let resolution = try? await tokenizerProvider(model) else { return nil }
+        let tokenizer = resolution.tokenizer
+        return { text in tokenizer.inner.encode(text: text, addSpecialTokens: false).count }
+    }
     let router = MLXServerApplication.buildRouter(service: service)
+    if let clusterStatus {
+        router.get("/v1/cluster/status") { request, _ async throws -> Response in
+            let header = HTTPField.Name(ClusterStatusCodec.nonceHeader)!
+            guard let nonce = request.headers[header], (try? ClusterStatusCodec.nonce(nonce)) != nil else {
+                return Response(status: .badRequest, headers: [.cacheControl: "no-store"])
+            }
+            do {
+                let bytes = try ClusterStatusCodec.encode(await clusterStatus(nonce))
+                return Response(status: .ok, headers: [.contentType: "application/json", .cacheControl: "no-store"],
+                    body: .init(byteBuffer: ByteBuffer(bytes: bytes)))
+            } catch {
+                return Response(status: .serviceUnavailable, headers: [.cacheControl: "no-store"])
+            }
+        }
+    }
     // Chat-completions POSTs are served by the interception responder with
     // the 32 MiB body ceiling (the upstream router's BasicRequestContext
     // pins the Hummingbird 2 MiB default, which 413s inline media — see
     // LocalChatUploadResponder); everything else falls through to the
     // upstream router unchanged.
+    var reasoningParserFor: (@Sendable (String) async -> ReasoningParserFormat?)?
+    if let modelTypeProvider {
+        // Every model's reasoning in its own field, as the coordinator path resolves it. A think-tag stream whose
+        // prompt opens no think block starts in content mode (the local engine's `seedsContentForUnknownPromptTail`),
+        // so the answer streams as it comes instead of waiting for a close marker.
+        reasoningParserFor = { (model: String) async -> ReasoningParserFormat? in
+            guard let type = await modelTypeProvider(model) else { return nil }
+            return ProviderLoop.inferReasoningParser(for: type)
+        }
+    }
     let uploadResponder = LocalChatUploadResponder(
         inner: router.buildResponder(), service: service,
-        serviceForTemplateControls: serviceForTemplateControls)
+        serviceForTemplateControls: serviceForTemplateControls,
+        distributedResponses: distributedResponses,
+        // Both the single-Mac and the cluster API: a request naming no parser gets its model's, as the coordinator
+        // path resolves it; a model of unknown type keeps the request's own.
+        reasoningParserFor: reasoningParserFor,
+        // Like the response store above: one per application, so both serve modes continue conversations alike.
+        responseConversations: LocalResponseConversationStore(),
+        serviceForLogprobs: serviceForLogprobs,
+        reasoningTokenCounter: reasoningTokenCounter,
+        serviceForRawChat: { body, request, logprobs in
+            if let service = nemotronSuperImageHTTP?.service(body: body, request: request,
+                responseStore: responseStore, metrics: metrics, logprobs: logprobs) { return service }
+            return managedSuperEngine?(body, request, logprobs).map {
+                MLXOpenAIService(engine: $0, responseStore: responseStore, metrics: metrics)
+            }
+        })
     // GET /metrics is served by the metrics responder: the upstream
     // ServerMetrics body plus the provider-owned MTP posture lines (see
     // LocalMetricsResponder for why the upstream route cannot be extended).
@@ -119,7 +183,10 @@ func makeLocalInferenceApplication(
     let authedResponder = LocalAuthResponder(inner: corsResponder, token: config.authToken)
 
     return Application(
-        responder: LocalDisconnectResponder(inner: authedResponder, responseTracker: responseTracker),
+        responder: LocalDisconnectResponder(
+            inner: LocalRequestOriginResponder(inner: authedResponder),
+            responseTracker: responseTracker,
+            observeConnection: distributedResponses != nil),
         configuration: .init(
             address: .hostname(config.host, port: Int(config.port)),
             serverName: "darkbloom-provider"

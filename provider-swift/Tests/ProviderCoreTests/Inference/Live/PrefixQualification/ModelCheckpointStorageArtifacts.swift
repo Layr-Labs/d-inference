@@ -33,7 +33,7 @@ struct ModelCheckpointStorageArtifact: Codable, Sendable {
             var manifestData: Data?
             try SSDBlockStore.readStreaming(from: file, kekKey: material.key,
                 maximumChunkBytes: CBv2CompleteCheckpointManifest.maximumSegmentBytes,
-                maximumPlaintextBytes: SSDPrefixCachePolicy.defaultMaxStageBytes,
+                maximumPlaintextBytes: SSDPrefixCachePolicy.completeCheckpointMaxStageBytes(environment: environment),
                 requireEOF: true, validateMetadata: { _ in },
                 consumeChunk: { index, bytes in if index == 0 { manifestData = bytes } })
             let manifest = try SSDHybridCheckpointEnvelope.decodeManifest(#require(manifestData))

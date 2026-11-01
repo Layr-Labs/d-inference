@@ -1,0 +1,22 @@
+{
+  "schema": "nemotron-super-serving-prompts/1",
+  "note": "Natural chat prompts for serving measurements; content is generic, written for this benchmark.",
+  "prompts": [
+    {"id": "code-intervals", "category": "code", "text": "Write a Python function merge_intervals(intervals) that merges overlapping closed intervals given as a list of [start, end] pairs. Include type hints, a docstring, handling for empty input, and three short doctest examples."},
+    {"id": "code-lru", "category": "code", "text": "Implement a thread-safe LRU cache in Go with Get and Put methods and a fixed capacity. Explain briefly how the doubly linked list and the map cooperate, then show the full code."},
+    {"id": "code-sql", "category": "code", "text": "Given tables orders(id, customer_id, total, created_at) and customers(id, name, country), write a SQL query that returns, for each country, the three customers with the highest total spend in 2025, with ties broken by name. Explain each clause."},
+    {"id": "code-review", "category": "code", "text": "Review this JavaScript and point out bugs and improvements:\n\nfunction average(xs) {\n  let sum = 0\n  for (i = 0; i <= xs.length; i++) sum += xs[i]\n  return sum / xs.length\n}\n\nThen give a corrected version with tests."},
+    {"id": "chat-trip", "category": "chat", "text": "I'm planning a relaxed four-day trip to Kyoto in late autumn with my parents, who don't like long walks. Can you suggest a day-by-day plan with a few temples, gardens and good places to eat, and tips for getting around?"},
+    {"id": "chat-decline", "category": "chat", "text": "A colleague asked me to take over a project while I'm already overloaded. How can I decline politely but firmly, and still be helpful? Please give me a short script I could use in a meeting."},
+    {"id": "chat-habits", "category": "chat", "text": "What are some practical habits for sleeping better when working remotely? Keep it friendly and concrete, and explain why each habit helps."},
+    {"id": "chat-explain", "category": "chat", "text": "Explain the difference between a mortgage with a fixed rate and one with a variable rate to someone buying their first home. Include an example with numbers and the main risks of each."},
+    {"id": "math-train", "category": "math", "text": "Two trains leave stations 300 km apart at the same time and travel toward each other, one at 70 km/h and the other at 80 km/h. A bird flies back and forth between them at 120 km/h until they meet. How far does the bird fly? Solve step by step."},
+    {"id": "math-prob", "category": "math", "text": "A bag holds 5 red, 4 blue and 3 green marbles. Three marbles are drawn without replacement. What is the probability that all three are different colours? Show the reasoning step by step and give the answer as a fraction."},
+    {"id": "math-algebra", "category": "math", "text": "Solve the system of equations 3x + 2y - z = 1, 2x - 2y + 4z = -2, -x + 0.5y - z = 0 step by step using elimination, and verify the solution."},
+    {"id": "math-interest", "category": "math", "text": "If I invest 10,000 dollars at 5 percent annual interest compounded monthly, how much will I have after 7 years, and how long does it take to double? Work through the formulas step by step."},
+    {"id": "long-essay", "category": "long-form", "text": "Write a thoughtful essay of about six paragraphs on how public libraries have adapted to the digital age, covering access, community programs, and the challenges they face."},
+    {"id": "long-story", "category": "long-form", "text": "Write a short story about a lighthouse keeper who discovers that the light has been guiding something other than ships. Give it a clear beginning, middle and end."},
+    {"id": "long-report", "category": "long-form", "text": "Write a structured briefing for a city council on introducing protected bike lanes downtown: background, benefits, costs, risks, a phased plan and recommendations."},
+    {"id": "long-history", "category": "long-form", "text": "Give a detailed overview of the history of the printing press, from early woodblock printing to Gutenberg and its effects on science, religion and politics in Europe."}
+  ]
+}

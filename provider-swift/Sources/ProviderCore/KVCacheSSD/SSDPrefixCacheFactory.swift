@@ -19,7 +19,11 @@ import MLXLMCommon
 import os
 #endif
 
-enum SSDPrefixCacheConstructionFailure: String, Sendable {
+/// Typed SSD store construction refusal. Telemetry, the local `/metrics`
+/// `prefix_cache_status` `detail` label and the heartbeat status's optional
+/// `detail` carry the raw value behind an error; the status `reason` keeps the
+/// coordinator's closed `PrefixCacheStatusReason` vocabulary.
+public enum SSDPrefixCacheConstructionFailure: String, Codable, Sendable, CaseIterable {
     case missingWeightHash = "missing_weight_hash"
     case unsupportedPlan = "unsupported_plan"
     case unsafePath = "unsafe_path"
@@ -28,19 +32,23 @@ enum SSDPrefixCacheConstructionFailure: String, Sendable {
     case blockContractMismatch = "block_contract_mismatch"
     case epochUnavailable = "epoch_unavailable"
     case promptContractUnavailable = "prompt_contract_unavailable"
+    case identityUnavailable = "identity_unavailable"
     case layoutUnavailable = "layout_unavailable"
     case writeBudgetUnavailable = "write_budget_unavailable"
+    /// Not a refusal: a built store was closed with its slot (unload,
+    /// retirement or engine recovery) while the slot was still reported.
+    case cacheClosed = "cache_closed"
 }
 
 enum SSDPrefixCacheFactory {
 
     #if canImport(os)
     private static let logger = Logger(
-        subsystem: "com.darkbloom.provider", category: "ssd_prefix_cache")
+        subsystem: BuildEnvironment.current.logSubsystem, category: "ssd_prefix_cache")
     #endif
 
-    /// The SSD tier's OWN root: `<cacheDirectory>/darkbloom/kv3/<modelKey>`
-    /// with `modelKey = SHA256(modelId)[:12]` — stable across weight
+    /// The SSD tier's OWN root: `<cacheDirectory>/<encryptedCacheNamespace>/kv3/<modelKey>`
+    /// (`CacheStorage.root`, one namespace per build environment) with `modelKey = SHA256(modelId)[:12]` — stable across weight
     /// re-downloads (the metadata weightHash binding invalidates stale
     /// files).
     ///

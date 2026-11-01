@@ -74,6 +74,7 @@ extension ProviderLoop {
             throw ModelSelectionFailure("A model load is still in progress.")
         }
         isLoadingAny = true
+        transitionGenerations.begin(.modelLoading)
         defer { isLoadingAny = false; releaseLoadGateWaiters() }
         let next = Dictionary(uniqueKeysWithValues: models.map { ($0.id, $0) })
         let retiring = Set(modelSlots.keys.filter {

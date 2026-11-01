@@ -113,7 +113,8 @@ final class MiMoV26NativePagedPrefixCompositionTests: XCTestCase {
                     metadata: metadata, paging: owner, mtpConfig: config, environment: environment,
                     persistentTestNamespace: nil)
                 guard prefix.metadata == nil, prefix.status.state == .error,
-                      prefix.status.reason == .cacheInitFailed, owner.store == nil else {
+                      prefix.status.reason == .diskUnavailable, prefix.status.failure == .unsafePath,
+                      owner.store == nil else {
                     throw NativeFixtureError.completion
                 }
                 XCTAssertTrue(owner.processOwner === sameProcessOwner)
@@ -178,7 +179,8 @@ final class MiMoV26NativePagedPrefixCompositionTests: XCTestCase {
                     runtimePolicyEnvironment: environment, kvBytesPerToken: native.3, kvBudget: budget,
                     ssdHybridCheckpointStore: nil,
                     prefixCacheStatus: .init(modelId: modelID, backend: .paged, replayStrategy: .none,
-                        state: prefix.status.state, reason: prefix.status.reason)) {
+                        state: prefix.status.state, reason: prefix.status.reason,
+                        detail: prefix.status.failure)) {
                     .init(engine: native.0, fixedRequestBytes: native.4, kvBackendKind: .paged,
                         kvBackendFallbackReason: nil, mtpAdmissionResolution: native.0.resolvedMTPAdmission)
                 }
@@ -197,7 +199,8 @@ final class MiMoV26NativePagedPrefixCompositionTests: XCTestCase {
             XCTAssertTrue(transaction.ownsNativePagedRequestCharge(
                 engine: engine, bridge: bundle.bridge, budget: budget),
                 "closing only an EMPTY cache attempt must not disable the real request-charge owner")
-            XCTAssertEqual(bundle.bridge.prefixCacheModelStatus().reason, .cacheInitFailed)
+            XCTAssertEqual(bundle.bridge.prefixCacheModelStatus().reason, .diskUnavailable)
+            XCTAssertEqual(bundle.bridge.prefixCacheModelStatus().detail, .unsafePath)
             XCTAssertNil(engine.completePrefixCache)
             let submission = try engine.submitWithNativeRetirement(.init(id: .init(97_410),
                 promptTokens: Array(repeating: 12, count: 17), sampling: .init(temperature: 0), maxTokens: 8))

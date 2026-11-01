@@ -24,9 +24,16 @@ struct Doctor: AsyncParsableCommand {
     @Flag(help: "Clear the crash-loop KV-backend guard so backend selection resolves normally on the next model load, then exit.")
     var clearBackendGuard = false
 
+    @Flag(help: "Print the hardware load sampler's capabilities and one sample as JSON, then exit.")
+    var hardware = false
+
     mutating func run() async throws {
         if clearBackendGuard {
             try Self.runClearBackendGuard()
+            return
+        }
+        if hardware {
+            print(try await Self.hardwareReport())
             return
         }
         await runUpdateBannerIfEnabled()
@@ -47,14 +54,14 @@ struct Doctor: AsyncParsableCommand {
             coordinatorURL: coordinatorURL
         )
 
-        print("darkbloom doctor \(ProviderCore.version)")
+        print("\(BuildEnvironment.current.cliName) doctor \(ProviderCore.version)")
         print("Config: \(describeConfigPath(snapshot))")
         print("Build: \(BuildEnvironment.current.rawValue)")
         print("Coordinator: \(coordinatorURL)")
         print("Model CDN: \(ModelDownloader.resolveCDNURL())")
         let daemonState = DaemonStateFile.read()
         let daemonRunning = doctorDaemonProcessMatches(daemonState: daemonState)
-        print("Daemon: \(daemonRunning ? "running" : "NOT running — run `darkbloom start`")")
+        print("Daemon: \(daemonRunning ? "running" : "NOT running — run `\(BuildEnvironment.current.cliName) start`")")
 
         // §16.5: did this box serve the KV backend it was configured for,
         // and is the snapshot that answer comes from still being refreshed?
@@ -79,6 +86,12 @@ struct Doctor: AsyncParsableCommand {
                 now: Date().timeIntervalSince1970,
                 runningVersion: ProviderCore.version))
         }
+        // Here, not in `buildDoctorChecks`: a low limit must not fail `verify`.
+        let glmWiredLimit = GLMWiredLimitAdvice.doctorCheck(
+            hardware: snapshot.hardware,
+            glmInUse: GLMWiredLimitAdvice.glmInUse(snapshot: snapshot, daemonState: daemonState),
+            limits: .live())
+        if let glmWiredLimit { checks.append(glmWiredLimit.check) }
 
         // The high-signal diagnosis first (sectioned, with fixes).
         let color = DoctorTerminalStyle.enabled()
@@ -96,6 +109,11 @@ struct Doctor: AsyncParsableCommand {
         if let guide = bootSecurityActionGuide(bootSecurity) {
             print("")
             print("BOOT SECURITY — ACTION REQUIRED")
+            print(guide)
+        }
+        if let guide = glmWiredLimit?.actionGuide {
+            print("")
+            print(GLMWiredLimitAdvice.actionHeading)
             print(guide)
         }
         if support {
@@ -214,7 +232,8 @@ func bootSecurityActionGuide(_ bootSecurity: BootSecuritySnapshot) -> String? {
 func buildDoctorChecks(
     snapshot: RuntimeSnapshot,
     bootSecurity: BootSecuritySnapshot = .live(),
-    contention: LocalContentionSnapshot = .live()
+    contention: LocalContentionSnapshot = .live(),
+    fanHelperVersion: () -> String? = Fan.runningHelperVersion
 ) -> [DoctorCheck] {
     var checks: [DoctorCheck] = []
 
@@ -321,6 +340,10 @@ func buildDoctorChecks(
 
     // Local coexistence: Ollama / other inference on unified memory (operator feedback).
     checks.append(competingInferenceCheck(contention))
+    if let installed = fanHelperVersion(),
+       let notice = Fan.outdatedHelperNotice(installedVersion: installed) {
+        checks.append(.init(name: "fan helper", status: .warn, detail: notice))
+    }
 
     return checks
 }
@@ -340,17 +363,21 @@ func buildCoordinatorDoctorChecks(
     checks.append(.init(
         name: "account link",
         status: linked ? .pass : .warn,
-        detail: !linked ? "not logged in; run darkbloom login" : "auth token present"
+        detail: !linked ? "not logged in; run \(BuildEnvironment.current.cliName) login" : "auth token present"
     ))
 
-    switch checkMDMEnrollment(coordinatorURL: coordinatorOverride ?? snapshot.config.coordinator.url) {
+    let enrollment = checkMDMEnrollment(coordinatorURL: coordinatorOverride ?? snapshot.config.coordinator.url)
+    switch enrollment {
     case .enrolledDarkbloom:
         checks.append(.init(
             name: "mdm enrollment", status: .pass, detail: "Darkbloom profile installed"))
     case .enrolledOtherMDM(let serverURL):
+        let owner = enrollment.otherInstall != nil
+            ? "\(describeOtherMDM(enrollment)), not this install's. "
+            : "managed by another MDM (\(serverURL)); keep that profile installed. "
         checks.append(.init(
             name: "mdm enrollment", status: appAttestAuthorized ? .pass : .warn,
-            detail: "managed by another MDM (\(serverURL)); keep that profile installed. "
+            detail: owner
                 + (appAttestAuthorized ? "App Attest authorizes this connection." : "Awaiting qualified App Attest serving.")))
     case .notEnrolled:
         checks.append(.init(
@@ -459,7 +486,8 @@ private func doctorFetch(urlString: String, timeout: TimeInterval) async throws 
 func describeMDMEnrollment(_ state: MDMEnrollmentState) -> String {
     switch state {
     case .enrolledDarkbloom: return "yes (darkbloom)"
-    case .enrolledOtherMDM(let serverURL): return "other MDM (\(serverURL))"
+    case .enrolledOtherMDM(let serverURL):
+        return state.otherInstall != nil ? "other install: \(describeOtherMDM(state))" : "other MDM (\(serverURL))"
     case .notEnrolled: return "no"
     case .checkFailed: return "unknown (profiles tool failed)"
     }

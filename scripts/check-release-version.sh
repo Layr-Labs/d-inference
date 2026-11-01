@@ -17,8 +17,8 @@ read_version() {
     printf '%s' "$value"
 }
 
-# The provider owns this release; the retained coordinator copy belongs to
-# the separate platform repository and does not define provider identity.
+# The provider owns this release; the coordinator belongs to the separate
+# platform repository and does not define provider identity.
 PROVIDER_VERSION=$(read_version \
     "$ROOT/provider-swift/Sources/ProviderCore/ProviderCore.swift" \
     'public static let version =')
@@ -28,21 +28,30 @@ if [[ ! "$PROVIDER_VERSION" =~ $SEMVER ]]; then
     echo "release version check: invalid ProviderCore.version: $PROVIDER_VERSION" >&2
     exit 1
 fi
+# A dev release from a dev push is the source version plus
+# -dev.branch.<run number>; a master dev validation build (and the earlier
+# master dev lane) uses -dev.<run number>, so the two never collide. A staging
+# release is the source version plus -staging.<run number>. The release build
+# stamps the full value into ProviderCore.version before compiling.
+RELEASE_VERSION=$PROVIDER_VERSION
 if [ -n "$EXPECTED" ]; then
     EXPECTED=${EXPECTED#v}
-    if [ "$PROVIDER_VERSION" != "$EXPECTED" ]; then
+    if [ "$PROVIDER_VERSION" != "$EXPECTED" ] &&
+        [[ ! "$EXPECTED" =~ ^"$PROVIDER_VERSION"-dev\.(branch\.)?[1-9][0-9]*$ ]] &&
+        [[ ! "$EXPECTED" =~ ^"$PROVIDER_VERSION"-staging\.[1-9][0-9]*$ ]]; then
         echo "release version check: source=$PROVIDER_VERSION requested=$EXPECTED" >&2
         exit 1
     fi
+    RELEASE_VERSION=$EXPECTED
 fi
 if [ -n "$REPORTED" ]; then
     case "$REPORTED" in
-        "$PROVIDER_VERSION"|"darkbloom $PROVIDER_VERSION") ;;
+        "$RELEASE_VERSION"|"darkbloom $RELEASE_VERSION") ;;
         *)
-            echo "release version check: binary reported '$REPORTED', expected '$PROVIDER_VERSION'" >&2
+            echo "release version check: binary reported '$REPORTED', expected '$RELEASE_VERSION'" >&2
             exit 1
             ;;
     esac
 fi
 
-echo "release version integrity: $PROVIDER_VERSION"
+echo "release version integrity: $RELEASE_VERSION"

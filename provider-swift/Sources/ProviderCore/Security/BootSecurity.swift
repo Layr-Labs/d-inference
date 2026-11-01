@@ -64,7 +64,7 @@ public struct BootSecuritySnapshot: Sendable, Equatable {
             case .disabled, .enabledWithCustomConfiguration:
                 fix = "In recoveryOS, run `csrutil enable`, then restart."
             default:
-                fix = "Run `csrutil status`; if it still cannot report SIP, run `darkbloom doctor`."
+                fix = "Run `csrutil status`; if it still cannot report SIP, run `\(BuildEnvironment.current.cliName) doctor`."
             }
             result.append(BootSecurityIssue(
                 name: "System Integrity Protection (SIP)",

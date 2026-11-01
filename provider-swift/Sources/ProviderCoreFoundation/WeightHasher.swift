@@ -21,7 +21,7 @@ public struct WeightHasher: Sendable {
     /// Buffer size for streaming file reads (64 KB).
     private static let bufferSize = 65536
     /// Keep each streaming buffer small even if the constant changes later.
-    private static let maxStreamingBufferSize = 1024 * 1024
+    static let maxStreamingBufferSize = 1024 * 1024
     /// Last-resort whole-file reads are only acceptable for small metadata files.
     static let maxWholeFileFallbackBytes: UInt64 = 64 * 1024 * 1024
 
@@ -175,6 +175,16 @@ public struct WeightHasher: Sendable {
     /// attributes that block raw POSIX open() but are handled transparently by
     /// Foundation URL/file coordination.
     public static func hashSingleFile(at url: URL) -> SHA256Digest? {
+        #if canImport(Darwin)
+        // Read around the file cache first: hashing touches every weight byte,
+        // and cached pages would keep a second copy of the model resident
+        // beside the loaded one until memory pressure compresses the weights.
+        // Pages cached before the read (a download, an earlier read) are then
+        // dropped too.
+        if let digest = hashSingleFileUncached(at: url) {
+            return digest
+        }
+        #endif
         // Reuse InputStream's fixed 64 KiB buffer by default
         // before trying FileHandle's per-read Data allocation. Preserve the
         // full digest and every existing fallback; never skip integrity work.
@@ -229,6 +239,29 @@ public struct WeightHasher: Sendable {
         return body()
         #endif
     }
+
+    #if canImport(Darwin)
+    /// Bytes per uncached read. Each file being hashed holds two such buffers.
+    static let uncachedChunkBytes = 4 << 20
+
+    /// Page-aligned `F_NOCACHE` reads, one chunk ahead of the hash
+    /// (`OverlappedFileDigest`); nil on any failure so the caller's existing
+    /// readers run. The file's cached pages are dropped afterwards (`PageCache`).
+    /// A cached read would leave every byte resident, and the host memory gate
+    /// of a cluster rank would then refuse that very model's load (M5 Ultra
+    /// leader, 2026-10-13: 213 GiB of cache, 23 GiB free after the hash). The
+    /// cluster worker's verifier and the cable copy also read uncached.
+    static func hashSingleFileUncached(at url: URL) -> SHA256Digest? {
+        let descriptor = open(url.path, O_RDONLY | O_CLOEXEC)
+        guard descriptor >= 0 else { return nil }
+        defer {
+            PageCache.drop(descriptor: descriptor)
+            close(descriptor)
+        }
+        guard fcntl(descriptor, F_NOCACHE, 1) != -1 else { return nil }
+        return OverlappedFileDigest.sha256(descriptor: descriptor, chunkBytes: uncachedChunkBytes)
+    }
+    #endif
 
     private static func hashSingleFileViaHandle(at url: URL) -> SHA256Digest? {
         guard let handle = try? FileHandle(forReadingFrom: url) else {

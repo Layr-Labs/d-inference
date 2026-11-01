@@ -14,6 +14,11 @@ public enum MTPAutomaticVerificationPolicy {
         hasBenchmarkVerificationOverride: Bool = false
     ) -> (maximum: Int, fixed: Int?) {
         if usesRequestStatefulDrafter {
+            if Bonsai9BModelPolicy.matchesModelID(modelID) {
+                // Publisher's private 9B reference depth; retain a bounded
+                // fixed comparison until this separate head is qualified.
+                return (2, 2)
+            }
             return (CBv2MTPConfig.testedMaxDraftTokens, nil)
         }
         if modelID == "gemma-4-26b-qat-4bit", !hasBenchmarkVerificationOverride {

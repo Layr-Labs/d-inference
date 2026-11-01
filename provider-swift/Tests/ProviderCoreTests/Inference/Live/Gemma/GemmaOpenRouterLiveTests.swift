@@ -59,18 +59,28 @@ struct GemmaOpenRouterLiveTests {
         reasoningEnabled: Bool,
         service: MLXOpenAIService
     ) async throws {
-        var calls: [OpenAIToolCall] = []
         var content = ""
         var reasoning = ""
         var finishReason = ""
+        // `auto` calls arrive as OpenAI fragments: id/name first, then
+        // argument pieces, all keyed by the wire index.
+        var fragments: [Int: OpenAIToolCall] = [:]
         let frames = try await service.streamChatCompletionFrames(request: scenario.request)
         for try await frame in frames {
             guard let parsed = ProviderLoop.parseStreamChunk(frame) else { continue }
             if let delta = parsed.contentDelta { content += delta }
             if let delta = parsed.reasoningDelta { reasoning += delta }
-            if let delta = parsed.toolCallsDelta { calls.append(contentsOf: delta) }
+            for delta in parsed.toolCallsDelta ?? [] {
+                let index = delta.index ?? fragments.count
+                var call = fragments[index] ?? OpenAIToolCall(id: "", function: .init(name: "", arguments: ""))
+                if let id = delta.id { call.id = id }
+                if let name = delta.function?.name { call.function.name = name }
+                call.function.arguments += delta.function?.arguments ?? ""
+                fragments[index] = call
+            }
             if let reason = parsed.finishReason { finishReason = reason }
         }
+        let calls = fragments.sorted { $0.key < $1.key }.map(\.value)
 
         print(
             "[openrouter-live] \(scenario.name) reasoning=\(reasoningEnabled) "

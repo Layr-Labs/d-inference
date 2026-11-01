@@ -28,7 +28,8 @@ extension Start {
         let selection = try await Self.prepareModelSelection(autopilot: enableAutopilot,
             select: {
                 try await selectStartupModels(snapshot: snapshot, config: config,
-                    coordinatorURL: coordinatorURL, runtimeCapabilities: runtimeCapabilities)
+                    coordinatorURL: coordinatorURL, runtimeCapabilities: runtimeCapabilities,
+                    autopilot: enableAutopilot)
             }, inventory: { selected in
                 try await downloadedAutopilotInventory(snapshot: snapshot, coordinatorURL: coordinatorURL,
                     runtimeCapabilities: runtimeCapabilities, selectedStartupModels: selected)
@@ -106,22 +107,22 @@ extension Start {
         if enableAutopilot {
             print("  Autopilot: enrolled (Experimental; shadow rollout by default)")
             print("  Reporting downloaded network models; your selected startup and memory preferences apply.")
-            print("  Enrollment is not activation. Run `darkbloom autopilot status` for the current mode.")
-            print("  Manage: darkbloom autopilot status | pause | disable")
+            print("  Enrollment is not activation. Run `\(BuildEnvironment.current.cliName) autopilot status` for the current mode.")
+            print("  Manage: \(BuildEnvironment.current.cliName) autopilot status | pause | disable")
         }
-        print("  Memory:  \(IdleUnloadPolicy.describe(minutes: idleMinutes)) - `darkbloom idle` to change")
+        print("  Memory:  \(IdleUnloadPolicy.describe(minutes: idleMinutes)) - `\(BuildEnvironment.current.cliName) idle` to change")
         if localEndpoint {
             let shownURL = "http://\(bind == "0.0.0.0" ? "127.0.0.1" : bind):\(port)/v1"
-            print("  Local:   \(shownURL) (unified mode — run `darkbloom local` for the API key)")
+            print("  Local:   \(shownURL) (unified mode — run `\(BuildEnvironment.current.cliName) local` for the API key)")
         }
         print("  Logs:    \(logPath)")
         if autoRestartOn {
             print("  Recovery: auto-restart on (relaunches ~5 min after a crash)")
         }
         print()
-        print("  darkbloom stop     Stop the provider")
-        print("  darkbloom restart  Restart with the current selection")
-        print("  darkbloom status   Check status")
+        print("  \(BuildEnvironment.current.cliName) stop     Stop the provider")
+        print("  \(BuildEnvironment.current.cliName) restart  Restart with the current selection")
+        print("  \(BuildEnvironment.current.cliName) status   Check status")
     }
 
     // MARK: - Idle-memory policy prompt

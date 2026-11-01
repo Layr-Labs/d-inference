@@ -28,7 +28,7 @@ struct SSDHybridCheckpointStoreKeyLoaderTests {
     }
 
     private func root() -> URL {
-        FileManager.default.temporaryDirectory
+        FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
             .appendingPathComponent("ssd-key-loader-\(UUID().uuidString)", isDirectory: true)
     }
 
@@ -40,11 +40,11 @@ struct SSDHybridCheckpointStoreKeyLoaderTests {
     }
 
     private func make(env: [String: String], spy: LoaderSpy) async -> SSDHybridCheckpointStore? {
-        await SSDHybridCheckpointStoreFactory.make(
+        try? await SSDHybridCheckpointStoreFactory.build(
             modelId: "key-loader-model", identity: Self.identity,
             backendLayout: CBv2CompleteCheckpointManifest.pagedLayout,
             kvBudget: nil, environment: env,
-            persistentLoader: { try spy.load($0) })
+            persistentKeyLoader: { try spy.load($0) }).get()
     }
 
     @Test("isolated persistent mode uses the injected key; a reopened store shares its epoch")
@@ -85,10 +85,10 @@ struct SSDHybridCheckpointStoreKeyLoaderTests {
     func defaultIsolatedModeStaysEphemeral() async throws {
         let root = root()
         defer { try? FileManager.default.removeItem(at: root) }
-        let store = try #require(await SSDHybridCheckpointStoreFactory.make(
+        let store = try await SSDHybridCheckpointStoreFactory.build(
             modelId: "key-loader-model", identity: Self.identity,
             backendLayout: CBv2CompleteCheckpointManifest.pagedLayout,
-            kvBudget: nil, environment: environment(root: root, persistent: false)))
+            kvBudget: nil, environment: environment(root: root, persistent: false)).get()
         #expect(store.usesEphemeralKey)
         store.close()
     }

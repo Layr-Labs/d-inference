@@ -14,8 +14,9 @@
 ///     drops anything still queued)
 ///   - short-circuits to `.verified` when the build is already
 ///     loaded/on-disk-and-valid
-///   - fires a re-advertise hook on `.verified` so the coordinator learns the
-///     provider can now serve the build
+///   - fires a publish hook once the build is verified, so the host can apply
+///     it (advertise it, or add it to the Autopilot set); a refusal makes the
+///     terminal status `.failed`
 ///
 /// Kept separate from `ProviderLoop` (and tested in isolation) so the
 /// download/verify/coalesce/advertise logic does not depend on the GPU model
@@ -50,9 +51,11 @@ public actor ModelPrefetchCoordinator {
     private let prefetcher: any ModelPrefetcher
     /// Answers whether a build is already available without downloading.
     private let preCheck: @Sendable (String) async -> PrefetchPreCheck
-    /// Fired on `.verified` so the host can add the build to the advertised set
-    /// and re-register. Returns when the re-advertise has been applied.
-    private let onVerified: @Sendable (String) async -> Void
+    /// Fired once the build is on disk and verified, so the host can apply it
+    /// (advertise it, or add it to the Autopilot set). Returns nil when the
+    /// terminal status is `.verified`, or the `error` of a `.failed` status
+    /// when the host could not apply the build.
+    private let publish: @Sendable (String) async -> String?
 
     /// In-flight prefetch tasks keyed by model id (coalescing key). A second
     /// request for the same id attaches as a subscriber instead of starting a
@@ -109,9 +112,23 @@ public actor ModelPrefetchCoordinator {
         maxConcurrent: Int = 1,
         onTaskStarted: (@Sendable (String) -> Void)? = nil
     ) {
+        self.init(prefetcher: prefetcher, preCheck: preCheck,
+                  publish: { modelId in await onVerified(modelId); return nil },
+                  maxConcurrent: maxConcurrent, onTaskStarted: onTaskStarted)
+    }
+
+    /// `publish` may refuse a verified build: its terminal status is then
+    /// `.failed` with the returned error.
+    public init(
+        prefetcher: any ModelPrefetcher,
+        preCheck: @escaping @Sendable (String) async -> PrefetchPreCheck,
+        publish: @escaping @Sendable (String) async -> String?,
+        maxConcurrent: Int = 1,
+        onTaskStarted: (@Sendable (String) -> Void)? = nil
+    ) {
         self.prefetcher = prefetcher
         self.preCheck = preCheck
-        self.onVerified = onVerified
+        self.publish = publish
         self.maxConcurrent = max(1, maxConcurrent)
         self.onTaskStarted = onTaskStarted
     }
@@ -120,10 +137,10 @@ public actor ModelPrefetchCoordinator {
     public func inFlightCount() -> Int { prefetchTasks.count }
 
     /// Whether a prefetch for `modelId` is still running — including the
-    /// tail of an attempt whose `onVerified` callback has returned but whose
+    /// tail of an attempt whose `publish` hook has returned but whose
     /// terminal status has not been emitted yet. A new `handlePrefetch` for
     /// the same id during that window coalesces into the running attempt
-    /// (no second `onVerified`), so callers that need a genuinely NEW pass
+    /// (no second `publish`), so callers that need a genuinely NEW pass
     /// must wait until this is false.
     public func isInFlight(modelId: String) -> Bool { prefetchTasks[modelId] != nil }
 
@@ -220,8 +237,8 @@ public actor ModelPrefetchCoordinator {
     /// Called from the host's shutdown path.
     ///
     /// The wait is bounded by `timeout` and MUST NOT block on a task that
-    /// cancellation cannot stop: a prefetch parked in its verified→re-advertise
-    /// hook can be awaiting an off-actor synchronous weight-hash (multi-GB,
+    /// cancellation cannot stop: a prefetch parked in its `publish` hook can
+    /// be awaiting an off-actor synchronous weight-hash (multi-GB,
     /// uninterruptible). We therefore resume on whichever of "drain completed"
     /// or "deadline elapsed" fires FIRST, using an unstructured drain task +
     /// timer (a structured `withTaskGroup` cannot return while a child is still
@@ -275,8 +292,7 @@ public actor ModelPrefetchCoordinator {
         // Short-circuit if already available (loaded or on-disk-and-valid).
         let pre = await preCheck(modelId)
         if case .alreadyAvailable = pre {
-            await onVerified(modelId)
-            finish(modelId: modelId, taskId: taskId, status: .verified, bytesDone: 0, bytesTotal: 0, error: nil)
+            finishPublished(modelId: modelId, taskId: taskId, refusal: await publish(modelId))
             return
         }
 
@@ -297,16 +313,20 @@ public actor ModelPrefetchCoordinator {
         do {
             try await prefetcher.prefetchToDisk(modelID: modelId, onByteProgress: onByteProgress)
             if Task.isCancelled || isShuttingDown { return }
-            // Build is on disk + aggregate-verified. Re-advertise, then report
-            // terminal success.
-            await onVerified(modelId)
-            finish(modelId: modelId, taskId: taskId, status: .verified, bytesDone: 0, bytesTotal: 0, error: nil)
+            // Build is on disk + aggregate-verified. Apply it, then report
+            // the terminal outcome.
+            finishPublished(modelId: modelId, taskId: taskId, refusal: await publish(modelId))
         } catch {
             // Cancelled (shutdown or explicit) — emit nothing terminal.
             if error is CancellationError { return }
             if isShuttingDown { return }
             finish(modelId: modelId, taskId: taskId, status: .failed, bytesDone: 0, bytesTotal: 0, error: error.localizedDescription)
         }
+    }
+
+    private func finishPublished(modelId: String, taskId: UUID, refusal: String?) {
+        finish(modelId: modelId, taskId: taskId, status: refusal == nil ? .verified : .failed,
+               bytesDone: 0, bytesTotal: 0, error: refusal)
     }
 
     /// Emit a throttled `.downloading` progress update to every subscriber.

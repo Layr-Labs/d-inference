@@ -16,8 +16,9 @@ import Darwin
 ///
 /// Every file the commands under test read or write is in `root`: the
 /// daemon state file, the auth token, the KV-backend guard, the watchdog
-/// state, the provider config and the model cache. The coordinator is the
-/// in-process stub `CoordinatorStub`, so no request leaves the process.
+/// state, the provider config, the model cache and the Darkbloom Sandbox
+/// add-on root. The coordinator is the in-process stub `CoordinatorStub`, so
+/// no request leaves the process.
 struct CLICommandSandbox {
     static let coordinatorURL = "https://coordinator.invalid"
 
@@ -28,6 +29,9 @@ struct CLICommandSandbox {
     let tokenFile: URL
     let guardFile: URL
     let watchdogStateFile: URL
+    /// The Darkbloom Sandbox add-on root the commands use; empty until a test
+    /// puts a fake add-on there.
+    var sandboxAddonRoot: URL { root.appendingPathComponent("DarkbloomSandbox", isDirectory: true) }
 
     static func enter(
         enabledModels: [String] = [],
@@ -39,6 +43,7 @@ struct CLICommandSandbox {
         setenv("DARKBLOOM_AUTH_TOKEN_PATH", sandbox.tokenFile.path, 1)
         setenv(KVBackendGuardStore.pathEnvKey, sandbox.guardFile.path, 1)
         setenv("DARKBLOOM_WATCHDOG_STATE", sandbox.watchdogStateFile.path, 1)
+        setenv(SandboxAddon.rootOverrideVariable, sandbox.sandboxAddonRoot.path, 1)
         setenv("DARKBLOOM_NO_UPDATE_CHECK", "1", 1)
         setenv("NO_COLOR", "1", 1)
         unsetenv("SUDO_USER")

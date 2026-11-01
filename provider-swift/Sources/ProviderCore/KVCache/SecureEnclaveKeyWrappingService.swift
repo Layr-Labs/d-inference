@@ -42,28 +42,23 @@ public final class SecureEnclaveKeyWrappingService: KeyWrappingService, @uncheck
         do {
             return try enclaveKey.eciesDecrypt(wrapped)
         } catch let e as PersistentEnclaveKeyError {
-            // Classify by the structured OSStatus rather than the
-            // localized error string (which is locale-dependent and
-            // brittle). The SE surfaces tamper / wrong-key / corrupt-
-            // ciphertext as these decode/auth statuses.
-            if case .signingFailed(let status, _) = e, Self.isAuthFailure(status) {
-                throw KeyWrappingError.authenticationFailed(String(describing: e))
-            }
-            throw KeyWrappingError.backendError(String(describing: e))
+            throw Self.unwrapError(e)
         }
     }
 
-    /// OSStatus values the Security framework returns for an ECIES
-    /// open that fails because the ciphertext was tampered, truncated,
-    /// or sealed to a different key.
-    private static func isAuthFailure(_ status: OSStatus) -> Bool {
-        switch status {
-        case errSecDecode,        // -26275: corrupt / wrong-key ciphertext
-             errSecAuthFailed,    // -25293: authentication failed
-             errSecParam:         // -50: malformed input to the decrypt
-            return true
-        default:
-            return false
+    /// `KVCacheKEK` replaces a persisted entry whose unwrap fails
+    /// authentication, so only a ciphertext this key can never open is
+    /// `authenticationFailed`. Classified by the structured OSStatus, not the
+    /// locale-dependent message. The Secure Enclave reports a ciphertext
+    /// sealed to another key, tampered or truncated as `errSecParam` (-50,
+    /// "ECIES: Failed to aes-gcm decrypt data" / "Input data too short").
+    /// Failing to reach or use the key (a locked keychain, an access-control
+    /// refusal such as `errSecAuthFailed`, an operation the key cannot run) is
+    /// a backend error that leaves the entry in place.
+    static func unwrapError(_ error: PersistentEnclaveKeyError) -> KeyWrappingError {
+        if case .signingFailed(let status, _) = error, status == errSecParam || status == errSecDecode {
+            return .authenticationFailed(String(describing: error))
         }
+        return .backendError(String(describing: error))
     }
 }

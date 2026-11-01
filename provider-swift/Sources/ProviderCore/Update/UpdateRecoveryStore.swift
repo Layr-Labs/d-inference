@@ -29,7 +29,7 @@ final class UpdateRecoveryStore: @unchecked Sendable {
             case .corruptTransaction(let reason):
                 return "update transaction journal is unreadable: \(reason)"
             case .missingLiveInstall:
-                return "current provider install is incomplete; no signed Darkbloom.app found"
+                return "current provider install is incomplete; no signed \(BuildEnvironment.current.appBundleName) found"
             case .missingPredecessor(let reason):
                 return "verified predecessor unavailable: \(reason)"
             case .predecessorVerificationFailed(let reason):

@@ -1,0 +1,24 @@
+.tabs {
+  display: inline-flex;
+  justify-self: start;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+}
+.tabs button {
+  padding: 7px 14px;
+  border-radius: 5px;
+  font-size: 12px;
+  color: var(--muted);
+  transition:
+    background var(--hover-duration),
+    color var(--hover-duration);
+}
+.tabs button:hover {
+  color: var(--text-primary);
+}
+.tabs button[aria-selected='true'] {
+  background: var(--raised-bg);
+  color: var(--text-primary);
+}

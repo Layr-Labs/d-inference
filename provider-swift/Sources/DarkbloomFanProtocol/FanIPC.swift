@@ -2,13 +2,26 @@ import Foundation
 
 public enum FanIPC {
     public static let machServiceName = "io.darkbloom.fan"
+    /// XPC message format. Unchanged by version 2 of the helper, so providers
+    /// and helpers of both versions still talk to each other.
     public static let protocolVersion = 1
-    public static let helperVersion = "1"
+    /// Integer helper release. Version 2 keeps one lease per provider session,
+    /// so a dev and a production provider on one Mac do not replace each
+    /// other's lease. Version 1 kept one lease for the whole Mac.
+    public static let helperVersion = "2"
     public static let helperIdentifier = "io.darkbloom.fan-helper"
     public static let providerIdentifier = "io.darkbloom.provider"
     public static let teamID = "SLDQ2GJ6TL"
     public static let leaseDurationSeconds: TimeInterval = 15
     public static let renewalIntervalSeconds: TimeInterval = 5
+
+    /// Compares an installed helper's version with the one this build ships.
+    /// Nil when the installed value is not an integer.
+    public static func compareHelperVersion(_ installed: String) -> ComparisonResult? {
+        guard let installed = Int(installed), let shipped = Int(helperVersion) else { return nil }
+        if installed == shipped { return .orderedSame }
+        return installed < shipped ? .orderedAscending : .orderedDescending
+    }
 }
 
 @objc public protocol DarkbloomFanHelperProtocol {

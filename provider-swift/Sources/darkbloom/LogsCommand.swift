@@ -33,7 +33,7 @@ struct Logs: AsyncParsableCommand {
     @Option(name: [.short, .long], help: "Number of lines to show (only applies with --file).")
     var lines: Int = 50
 
-    static let subsystem = "dev.darkbloom.provider"
+    static let subsystem = BuildEnvironment.current.serviceLogSubsystem
     static let predicate = #"subsystem == "\#(subsystem)""#
 
     mutating func run() async throws {
@@ -157,7 +157,7 @@ struct Logs: AsyncParsableCommand {
 
         guard FileManager.default.fileExists(atPath: path.path) else {
             print("No log file at \(path.path)")
-            print("Start the provider first: darkbloom start")
+            print("Start the provider first: \(BuildEnvironment.current.cliName) start")
             return
         }
 

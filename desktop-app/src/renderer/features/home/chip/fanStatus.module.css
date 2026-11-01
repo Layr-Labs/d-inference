@@ -1,0 +1,31 @@
+.status {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 30px;
+  padding: 5px 9px;
+  border-radius: 6px;
+  font-size: 11px;
+  white-space: nowrap;
+  color: var(--muted);
+  transition:
+    color 0.4s ease,
+    background var(--hover-duration);
+}
+.status[data-enabled='true'] {
+  color: var(--accent-brand);
+}
+.status:hover {
+  background: var(--raised-bg);
+}
+.status span {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Warms from amber to red above 60 °C; darker in light theme so it stays readable. */
+.status[data-heat] {
+  color: hsl(var(--heat-hue) 80% 58%);
+}
+:global(:root[data-theme='light']) .status[data-heat] {
+  color: hsl(var(--heat-hue) 80% 36%);
+}

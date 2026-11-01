@@ -1,0 +1,108 @@
+.chart {
+  position: relative;
+  --bars-height: 160px;
+  padding-left: 46px;
+}
+.scale {
+  position: absolute;
+  top: 0;
+  left: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  height: var(--bars-height, 160px);
+  font-size: 10px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.bars {
+  display: grid;
+  grid-template-columns: repeat(24, minmax(0, 1fr));
+  align-items: end;
+  gap: clamp(2px, 0.45vw, 6px);
+  height: var(--bars-height, 160px);
+  border-bottom: 1px solid var(--line);
+  background: repeating-linear-gradient(
+    to top,
+    transparent 0,
+    transparent calc(50% - 1px),
+    var(--line) 50%
+  );
+}
+.bar {
+  display: flex;
+  align-items: flex-end;
+  height: 100%;
+  min-width: 0;
+  padding: 0;
+  border-radius: 4px 4px 0 0;
+  transition: background var(--hover-duration);
+}
+.bar:hover,
+.bar[aria-pressed='true'] {
+  background: color-mix(in srgb, var(--accent-brand) 8%, transparent);
+}
+.bar:focus-visible {
+  outline: 2px solid var(--accent-brand);
+  outline-offset: 2px;
+}
+.bar > span {
+  display: block;
+  width: 100%;
+  min-height: 2px;
+  border-radius: 3px 3px 0 0;
+  background: var(--accent-brand);
+  opacity: 0.72;
+  transition:
+    height 0.3s ease,
+    opacity var(--hover-duration);
+}
+.bar:hover > span,
+.bar[aria-pressed='true'] > span {
+  opacity: 1;
+}
+.bar[data-partial='true'] > span {
+  background: repeating-linear-gradient(
+    135deg,
+    var(--accent-brand) 0 4px,
+    color-mix(in srgb, var(--accent-brand) 45%, transparent) 4px 6px
+  );
+}
+.bar[data-empty='true'] > span {
+  height: 14px;
+  border: 1px dashed var(--border-default);
+  border-bottom: 0;
+  background: none;
+  opacity: 1;
+}
+.axis {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 10px;
+  font-size: 10px;
+  color: var(--muted);
+}
+.detail {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 18px;
+  min-height: 20px;
+  margin-top: 16px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.detail strong {
+  font-weight: 500;
+  color: var(--text-primary);
+}
+.chart[data-compact='true'] {
+  --bars-height: 92px;
+}
+.chart[data-compact='true'] .axis {
+  margin-top: 6px;
+}
+.chart[data-compact='true'] + .detail {
+  min-height: 16px;
+  margin-top: 8px;
+  font-size: 11px;
+}

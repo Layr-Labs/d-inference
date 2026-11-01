@@ -59,8 +59,10 @@ extension ProviderLoop {
     /// Single tick: check each loaded model for idle timeout. Unloads any
     /// model that has no in-flight requests and has exceeded the timeout.
     /// Re-validates each candidate before unloading since `await unloadModel`
-    /// is a suspension point that could allow new requests to arrive.
-    private func tickIdleMonitor(timeout: Duration) async {
+    /// is a suspension point that could allow new requests to arrive. An
+    /// Autopilot placement hold defers the timeout to its expiry
+    /// (`autopilotIdleSince`).
+    internal func tickIdleMonitor(timeout: Duration) async {
         guard modelSwitchTask == nil, !modelSlots.isEmpty, !autopilotManagesResidency, autopilotCommand == nil else { return }
 
         let now = ContinuousClock.now
@@ -69,7 +71,7 @@ extension ProviderLoop {
         let modelsWithInflight = Set(requestToModel.values)
         for (modelId, slot) in modelSlots {
             if modelsUnloading.contains(modelId) || isMTPUpgradeTargetRetained(modelId) { continue }
-            let elapsed = now - slot.lastInferenceAt
+            let elapsed = now - autopilotIdleSince(modelId, lastInferenceAt: slot.lastInferenceAt)
             let hasInflight = modelsWithInflight.contains(modelId) || hasLocalReservation(modelId)
             if IdleTimeoutPolicy.shouldUnload(
                 elapsed: elapsed,
@@ -91,7 +93,9 @@ extension ProviderLoop {
                   !modelsUnloading.contains(modelId),
                   let slot = modelSlots[modelId] else { continue }
 
-            let elapsed = ContinuousClock.now - slot.lastInferenceAt
+            // A settled operation can have placed a hold on this candidate
+            // during an earlier candidate's unload.
+            let elapsed = ContinuousClock.now - autopilotIdleSince(modelId, lastInferenceAt: slot.lastInferenceAt)
             guard IdleTimeoutPolicy.shouldUnload(
                 elapsed: elapsed,
                 timeout: timeout,

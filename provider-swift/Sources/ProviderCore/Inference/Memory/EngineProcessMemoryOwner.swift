@@ -8,12 +8,15 @@ final class EngineProcessMemoryOwner: CBv2ProcessMemoryOwner, @unchecked Sendabl
     private let lock = NSLock()
     private let ledger: ProcessMemoryLedger
     private var state: ProcessMemoryLedger.OwnerState
+    /// Non-blocking signal with the bytes a refused growth was short by.
+    private let onRefusal: (@Sendable (UInt64) -> Void)?
 
-    init(ledger: ProcessMemoryLedger) {
+    init(ledger: ProcessMemoryLedger, onRefusal: (@Sendable (UInt64) -> Void)? = nil) {
         // Construction precedes native Admission and therefore every native
         // lock. First allocator/device access cannot occur in replaceCharge.
         ledger.prepareUsageReader()
         self.ledger = ledger
+        self.onRefusal = onRefusal
         state = ledger.createOwner()
     }
 
@@ -55,8 +58,17 @@ final class EngineProcessMemoryOwner: CBv2ProcessMemoryOwner, @unchecked Sendabl
     }
 
     private func replace(_ bytes: UInt64) throws {
-        state = try ledger.replaceCharge(
-            owner: state.owner, expectedRevision: state.revision,
-            expectedPolicyEpoch: ledger.policySnapshot().epoch, chargedBytes: bytes)
+        do {
+            state = try ledger.replaceCharge(
+                owner: state.owner, expectedRevision: state.revision,
+                expectedPolicyEpoch: ledger.policySnapshot().epoch, chargedBytes: bytes)
+        } catch ProcessMemoryLedger.Refusal.insufficientCapacity {
+            if let onRefusal, bytes > state.chargedBytes {
+                // The deficit includes commitment debt the growth adds to.
+                let shortfall = ledger.capacityShortfall(growthBytes: bytes - state.chargedBytes)
+                if shortfall > 0 { onRefusal(shortfall) }
+            }
+            throw ProcessMemoryLedger.Refusal.insufficientCapacity
+        }
     }
 }

@@ -73,6 +73,70 @@ struct SSDShorterCheckpointRestoreTests {
         }
     }
 
+    /// The refusal above, with the budget actor parked inside a concurrent
+    /// reservation: the attempt's host IO refund queues behind it, so the
+    /// cold result cannot return; once released, it returns with nothing
+    /// staged. Returning before the refund left 20 MiB staged.
+    @Test("AR allocation refusal returns only after its host IO refund")
+    func autoregressiveRefusalReturnsAfterItsRefund() async throws {
+        try await SSDShorterRestoreFixture.withStore(shared: true) { fixture, donor in
+            await donor.closeAndWait()
+            let barrier = SSDReservationBarrier()
+            let budget = GlobalKVCacheBudget(capFraction: 0.9, activationReserveBytes: 0,
+                                             memorySnapshot: barrier.sample)
+            let store = SSDHybridCheckpointStore(config: donor.config, kekKey: fixture.key, kvBudget: budget,
+                diskBudget: SSDDiskBudget(), maxWriteBytesPerDay: 1 << 30)
+            store.scanOnDisk()
+            let probe = SSDShorterRestoreProbe()
+            let gate = SSDShorterRestoreGate()
+            let stage = Task {
+                let result = await store.stage(requestID: .init(902), request: fixture.request(),
+                    reserveReadScratch: { try probe.scratch(fixture) }) { manifest in
+                        probe.record(manifest.position)
+                        let plan = try probe.cpuPlan(manifest, fixture: fixture)
+                        let required = plan.nativeDestinationBytes + plan.scratchBytes
+                        let pressureBytes = fixture.codec.admission.bytesCapacity
+                            - fixture.codec.admission.bytesReserved - required + 1
+                        try #require(pressureBytes > 0)
+                        let pressure = try fixture.codec.admission.reserveTransient(bytes: pressureBytes)
+                        plan.evaluateDestinations = { arrays in
+                            withExtendedLifetime(pressure) {
+                                Issue.record("destination reached allocation despite typed admission refusal")
+                                Device.withDefaultDevice(.cpu) { eval(arrays) }
+                            }
+                        }
+                        gate.block()
+                        return plan
+                    }
+                probe.didCompleteStage()
+                return result
+            }
+            #expect(await gate.waitUntilEntered())
+            #expect(store.stats().stagedBytesInUse == SSDHybridCheckpointStore.ioScratchBytes)
+            barrier.arm()
+            let competitor = Task { await budget.reserveBytes(requestID: "parked-competitor", bytes: 1) }
+            let parked = await SSDShorterRestoreGate.waitUntil { barrier.didEnter() }
+            #expect(parked)
+            gate.open()
+            // Nothing between parking and release may throw: the barrier must open.
+            let deadline = ContinuousClock.now.advanced(by: .milliseconds(500))
+            while !probe.stageCompleted, ContinuousClock.now < deadline {
+                try? await Task.sleep(for: .milliseconds(5))
+            }
+            #expect(!probe.stageCompleted, "a cold result returned before its host IO refund")
+            #expect(store.stats().stagedBytesInUse == SSDHybridCheckpointStore.ioScratchBytes)
+            barrier.release.signal()
+            #expect(await competitor.value)
+            let result = await stage.value
+            #expect(result.disposition == .skippedCapacity)
+            #expect(store.stats().stagedBytesInUse == 0)
+            #expect(probe.positions == [512])
+            await budget.release(requestID: "parked-competitor")
+            await store.closeAndWait()
+            #expect(await budget.outstandingReservedBytes() == 0)
+        }
+    }
+
     @Test("provider destination budget admits the shorter peak without overlapping charges")
     func destinationBudgetFallsBack() async throws {
         try await SSDShorterRestoreFixture.withStore { fixture, donor in
@@ -240,8 +304,8 @@ struct SSDShorterCheckpointRestoreTests {
     @Test("same-ID replacement owns its registration while the old attempt unwinds")
     func sameIDReplacementCannotBeErasedOrRetryAsOldWork() async throws {
         try await SSDShorterRestoreFixture.withStore { fixture, store in
-            let gate = SSDShorterRestoreGate()
-            defer { gate.open() }
+            let gate = SSDShorterRestoreGate(), replacementGate = SSDShorterRestoreGate()
+            defer { gate.open(); replacementGate.open() }
             let oldProbe = SSDShorterRestoreProbe(), newProbe = SSDShorterRestoreProbe()
             let id = CBv2RequestID(908)
             let old = Task {
@@ -263,20 +327,25 @@ struct SSDShorterCheckpointRestoreTests {
                 await store.stage(requestID: id, request: fixture.request(),
                     reserveReadScratch: { try newProbe.scratch(fixture) }) { manifest in
                         newProbe.record(manifest.position)
+                        replacementGate.block()
                         return try newProbe.cpuPlan(manifest, fixture: fixture)
                     }
             }
-            let registered = await SSDShorterRestoreGate.waitUntil {
-                store.fileCoordinator.pendingCount(for: fixture.file(store, position: 512)) == 1
-            }
-            guard registered else {
-                Issue.record("replacement did not register behind the exact first-file lease")
-                old.cancel(); replacement.cancel(); store.close(); gate.open()
+            // Both reads share the first file's lease: the replacement is
+            // registered and inside its own read while the old one still holds.
+            guard await replacementGate.waitUntilEntered() else {
+                Issue.record("replacement did not reach its plan beside the old read")
+                old.cancel(); replacement.cancel(); store.close(); gate.open(); replacementGate.open()
                 _ = await old.value; _ = await replacement.value
                 return
             }
+            #expect(store.fileCoordinator.pendingCount(for: fixture.file(store, position: 512)) == 0)
             gate.open()
-            let oldResult = await old.value, newResult = await replacement.value
+            let oldResult = await old.value
+            #expect(store.lock.withLock { store.reading[id] != nil },
+                "the old attempt unwound without erasing the replacement's registration")
+            replacementGate.open()
+            let newResult = await replacement.value
             #expect(oldResult.disposition == .skippedPolicy && oldProbe.positions == [512])
             #expect(newResult.stagedTokens == 512 && newProbe.positions == [512])
             #expect(store.lock.withLock { store.reading.isEmpty && store.stages.count == 1 })

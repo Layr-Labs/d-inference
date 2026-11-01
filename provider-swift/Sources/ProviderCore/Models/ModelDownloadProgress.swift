@@ -1,264 +1,202 @@
-/// Download progress tracking + terminal rendering for the foreground model
-/// download path (`darkbloom models download` / the interactive picker).
-///
-/// Split out of `ModelCatalog.swift` so that file stays focused on catalog +
-/// download orchestration. The tracker here is callback-driven (fed by the
-/// streaming, byte-resumable downloader in `ModelCatalog.swift`) rather than a
-/// `URLSessionDownloadDelegate`: downloads now stream straight to a `.part`
-/// file for true byte-level resume, so there is no `URLSessionDownloadTask` to
-/// observe — progress arrives as cumulative-bytes-on-disk callbacks instead.
+/// Progress of the foreground model download (`darkbloom models download`, the
+/// `darkbloom start` picker): the byte counts the streaming downloader reports
+/// for each file, and the one line that shows them.
 
 import Foundation
 #if canImport(Darwin)
 import Darwin
 #endif
 
-// MARK: - Per-file progress
+// MARK: - Byte counts
 
-/// Per-file progress state rendered by `ProgressRenderer`.
-struct FileProgress: Sendable {
-    let label: String
-    let expectedBytes: Int64
-    var downloadedBytes: Int64 = 0
-    /// Bytes already on disk when tracking started (a resumed `.part` prefix).
-    /// Excluded from the speed/ETA math so a resume doesn't report an inflated
-    /// instantaneous rate for bytes it never actually transferred this run.
-    var baselineBytes: Int64 = 0
-    var startTime: Date = Date()
-    var completed: Bool = false
-    var completionTime: Date?
-
-    /// Bytes/second over this run's transfer (excludes the resumed prefix).
-    var speed: Double {
-        let elapsed = (completionTime ?? Date()).timeIntervalSince(startTime)
-        guard elapsed > 0.1 else { return 0 }
-        return Double(max(0, downloadedBytes - baselineBytes)) / elapsed
-    }
-
-    /// Estimated seconds remaining.
-    var eta: Double? {
-        guard speed > 0, expectedBytes > 0 else { return nil }
-        let remaining = Double(expectedBytes - downloadedBytes)
-        guard remaining > 0 else { return nil }
-        return remaining / speed
-    }
-
-    var fraction: Double {
-        guard expectedBytes > 0 else { return 0 }
-        return min(1.0, Double(downloadedBytes) / Double(expectedBytes))
-    }
-}
-
-// MARK: - Tracker
-
-/// Thread-safe per-file download progress keyed by file label (manifest path).
-///
-/// Fed by byte-progress callbacks from the streaming downloader and read on a
-/// timer by `ProgressRenderer`. Registration order is preserved so the rendered
-/// rows stay stable across frames.
+/// Bytes on disk of each file of a manifest download, fed by the streaming
+/// downloader's cumulative bytes-on-disk callbacks (`ModelDownloader+HTTP.swift`)
+/// and summed on a timer for the progress line. Thread-safe.
 final class ManifestDownloadProgress: @unchecked Sendable {
+    private struct File {
+        let expectedBytes: Int64
+        var bytesOnDisk: Int64
+    }
 
     private let lock = NSLock()
-    private var progress: [String: FileProgress] = [:]
-    private var order: [String] = []
+    private var files: [String: File] = [:]
 
-    /// Register a file to track. `initialBytes` seeds a resumed `.part` prefix
-    /// so the bar starts where the previous run left off (and is excluded from
-    /// the speed math via `baselineBytes`).
+    /// Track a file. `initialBytes` is a resumed `.part` prefix already on disk.
     func register(label: String, expectedBytes: Int64, initialBytes: Int64 = 0) {
-        lock.lock()
-        defer { lock.unlock() }
-        if progress[label] == nil { order.append(label) }
-        var p = FileProgress(label: label, expectedBytes: expectedBytes)
-        p.downloadedBytes = max(0, initialBytes)
-        p.baselineBytes = max(0, initialBytes)
-        progress[label] = p
+        lock.withLock { files[label] = File(expectedBytes: expectedBytes, bytesOnDisk: max(0, initialBytes)) }
     }
 
-    /// Update cumulative bytes-on-disk for a file.
+    /// The file's bytes on disk now. Fewer than before means its `.part` was
+    /// discarded and the transfer restarted (the Hugging Face to R2 fallback,
+    /// a checksum retry).
     func update(label: String, downloadedBytes: Int64) {
-        lock.lock()
-        defer { lock.unlock() }
-        guard var p = progress[label] else { return }
-        p.downloadedBytes = downloadedBytes
-        progress[label] = p
+        lock.withLock { files[label]?.bytesOnDisk = downloadedBytes }
     }
 
-    /// Mark a file complete (full size, stop the clock).
+    /// The file is complete at its expected size.
     func complete(label: String) {
-        lock.lock()
-        defer { lock.unlock() }
-        guard var p = progress[label] else { return }
-        p.downloadedBytes = p.expectedBytes > 0 ? p.expectedBytes : p.downloadedBytes
-        p.completed = true
-        p.completionTime = Date()
-        progress[label] = p
+        lock.withLock {
+            guard let file = files[label], file.expectedBytes > 0 else { return }
+            files[label]?.bytesOnDisk = file.expectedBytes
+        }
     }
 
-    /// Thread-safe snapshot of all tracked file progress, in registration order.
-    var allProgress: [FileProgress] {
-        lock.lock()
-        defer { lock.unlock() }
-        return order.compactMap { progress[$0] }
+    /// Bytes on disk across every tracked file.
+    var downloadedBytes: Int64 {
+        lock.withLock { files.values.reduce(0) { $0 + $1.bytesOnDisk } }
     }
 }
 
-// MARK: - Renderer
+// MARK: - Output
 
-/// Renders a multi-line progress display to the terminal using ANSI escape
-/// codes. Falls back to simple per-file messages when stdout is not a TTY.
-final class ProgressRenderer: @unchecked Sendable {
+/// Where `DownloadProgressRenderer` writes, and what it knows about it.
+struct DownloadProgressTerminal: Sendable {
+    /// The line can be redrawn in place: a terminal other than `TERM=dumb`.
+    var isTerminal: Bool
+    var columns: @Sendable () -> Int
+    /// Seconds on a monotonic clock.
+    var clock: @Sendable () -> TimeInterval
+    var output: @Sendable (String) -> Void
 
-    private let isTTY: Bool
-    private var linesPrinted: Int = 0
-    private let lock = NSLock()
-    /// Set of labels already printed in non-TTY mode.
-    private var printedLabels: Set<String> = []
+    static let standardOutput = DownloadProgressTerminal(
+        isTerminal: isatty(STDOUT_FILENO) != 0 && ProcessInfo.processInfo.environment["TERM"] != "dumb",
+        columns: { currentColumns() },
+        clock: { ProcessInfo.processInfo.systemUptime },
+        output: { writeToStandardOutput($0) })
 
-    init() {
-        self.isTTY = isatty(STDOUT_FILENO) != 0
-    }
-
-    /// Render a frame given the current file progress snapshot.
-    func render(_ files: [FileProgress]) {
-        lock.lock()
-        defer { lock.unlock() }
-
-        if !isTTY {
-            renderPlain(files)
-            return
-        }
-        renderANSI(files)
-    }
-
-    /// Final render: clear the progress area and print completion summary.
-    func finish(_ files: [FileProgress]) {
-        lock.lock()
-        defer { lock.unlock() }
-
-        if isTTY {
-            // Move up and clear all lines.
-            if linesPrinted > 0 {
-                print("\u{1B}[\(linesPrinted)A", terminator: "")
-                for _ in 0..<linesPrinted {
-                    print("\u{1B}[2K")
-                }
-                print("\u{1B}[\(linesPrinted)A", terminator: "")
-                linesPrinted = 0
-            }
-        }
-
-        // Print final summary lines.
-        for f in files {
-            let totalStr = Self.formatBytes(f.expectedBytes > 0 ? f.expectedBytes : f.downloadedBytes)
-            let elapsed = (f.completionTime ?? Date()).timeIntervalSince(f.startTime)
-            let avgSpeed = elapsed > 0.1 ? Double(max(0, f.downloadedBytes - f.baselineBytes)) / elapsed : 0
-            let speedStr = Self.formatSpeed(avgSpeed)
-            let timeStr = Self.formatDuration(elapsed)
-            print("  \u{2713} \(f.label)  \(totalStr)  \(speedStr)  \(timeStr)")
-        }
-    }
-
-    // MARK: - ANSI rendering
-
-    private func renderANSI(_ files: [FileProgress]) {
-        // Move cursor up to overwrite previous render.
-        if linesPrinted > 0 {
-            print("\u{1B}[\(linesPrinted)A", terminator: "")
-        }
-
-        let termWidth = Self.terminalWidth()
-        var lines = 0
-        for f in files {
-            print("\u{1B}[2K", terminator: "")  // Clear the line
-            let line = Self.formatLine(f, termWidth: termWidth)
-            print(line)
-            lines += 1
-        }
-        linesPrinted = lines
-        fflush(stdout)
-    }
-
-    private func renderPlain(_ files: [FileProgress]) {
-        for f in files where f.completed && !printedLabels.contains(f.label) {
-            printedLabels.insert(f.label)
-            let totalStr = Self.formatBytes(f.expectedBytes > 0 ? f.expectedBytes : f.downloadedBytes)
-            print("  \u{2713} \(f.label)  \(totalStr)")
-        }
-    }
-
-    // MARK: - Line formatting
-
-    private static func formatLine(_ f: FileProgress, termWidth: Int) -> String {
-        if f.completed {
-            let totalStr = formatBytes(f.expectedBytes > 0 ? f.expectedBytes : f.downloadedBytes)
-            let elapsed = (f.completionTime ?? Date()).timeIntervalSince(f.startTime)
-            let avgSpeed = elapsed > 0.1 ? Double(max(0, f.downloadedBytes - f.baselineBytes)) / elapsed : 0
-            return "  \u{2713} \(f.label)  \(totalStr)  \(formatSpeed(avgSpeed))  done"
-        }
-
-        let pct = Int(f.fraction * 100)
-        let dlStr = formatBytes(f.downloadedBytes)
-        let totStr = formatBytes(f.expectedBytes)
-        let speedStr = formatSpeed(f.speed)
-        let etaStr: String
-        if let eta = f.eta {
-            etaStr = "ETA \(formatDuration(eta))"
-        } else {
-            etaStr = "---"
-        }
-
-        // Assemble the suffix: "  62%  2.1/4.8 GB  113 MB/s  ETA 24s"
-        let suffix = "  \(String(format: "%3d", pct))%  \(dlStr)/\(totStr)  \(speedStr)  \(etaStr)"
-
-        // Calculate bar width: total - label - prefix - suffix - brackets - spaces
-        let labelMaxWidth = min(f.label.count, 45)
-        let label = f.label.count > labelMaxWidth
-            ? String(f.label.suffix(labelMaxWidth - 1)).padding(toLength: labelMaxWidth, withPad: " ", startingAt: 0)
-            : f.label
-        let prefix = "  \(label)  ["
-        let postfix = "]\(suffix)"
-        let barWidth = max(10, termWidth - prefix.count - postfix.count)
-
-        let filled = Int(f.fraction * Double(barWidth))
-        let empty = barWidth - filled
-        let bar = String(repeating: "\u{2588}", count: filled) + String(repeating: "\u{2591}", count: empty)
-
-        return "\(prefix)\(bar)\(postfix)"
-    }
-
-    // MARK: - Formatting helpers
-
-    static func formatBytes(_ bytes: Int64) -> String {
-        let b = Double(bytes)
-        if b < 1024 { return "\(bytes) B" }
-        if b < 1_048_576 { return String(format: "%.1f KB", b / 1024) }
-        if b < 1_073_741_824 { return String(format: "%.1f MB", b / 1_048_576) }
-        return String(format: "%.1f GB", b / 1_073_741_824)
-    }
-
-    static func formatSpeed(_ bytesPerSec: Double) -> String {
-        if bytesPerSec < 1024 { return String(format: "%.0f B/s", bytesPerSec) }
-        if bytesPerSec < 1_048_576 { return String(format: "%.0f KB/s", bytesPerSec / 1024) }
-        if bytesPerSec < 1_073_741_824 { return String(format: "%.0f MB/s", bytesPerSec / 1_048_576) }
-        return String(format: "%.1f GB/s", bytesPerSec / 1_073_741_824)
-    }
-
-    static func formatDuration(_ seconds: Double) -> String {
-        DurationFormatting.compact(
-            seconds,
-            secondsInMinuteRange: true,
-            elideZeroMinutesInHourRange: false
-        )
-    }
-
-    static func terminalWidth() -> Int {
+    /// The window's width, or 80 when it cannot be read.
+    static func currentColumns() -> Int {
         #if canImport(Darwin)
-        var w = winsize()
-        if ioctl(STDOUT_FILENO, TIOCGWINSZ, &w) == 0, w.ws_col > 0 {
-            return Int(w.ws_col)
-        }
+        var size = winsize()
+        if ioctl(STDOUT_FILENO, TIOCGWINSZ, &size) == 0, size.ws_col > 0 { return Int(size.ws_col) }
         #endif
         return 80
+    }
+
+    /// Writes `text` with as few `write(2)` calls as possible (normally one),
+    /// after flushing stdio so it lands below everything `print` wrote first.
+    static func writeToStandardOutput(_ text: String) {
+        fflush(stdout)
+        var bytes = Array(text.utf8)[...]
+        while !bytes.isEmpty {
+            let written = bytes.withUnsafeBytes { write(STDOUT_FILENO, $0.baseAddress, $0.count) }
+            if written < 0 {
+                if errno == EINTR { continue }
+                return
+            }
+            bytes = bytes.dropFirst(written)
+        }
+    }
+}
+
+/// A foreground model download as one line (`TransferProgressLine`), indented
+/// under the command's own lines.
+///
+/// On a terminal the line is redrawn in place (a carriage return, the line,
+/// erase to its end) at most every `TransferProgressLine.redrawInterval`, in
+/// columns that stay put while the window keeps its width. It reads
+/// "Verifying …" while the files are checked; the download's one completion
+/// line, or where it stopped, then takes its place and ends it. Elsewhere (a
+/// pipe, a log, the desktop app) nothing is redrawn: plain lines, the first at
+/// once, the next only after 10 points and 30 s, and one when the last byte
+/// arrived, then the same last lines.
+final class DownloadProgressRenderer: @unchecked Sendable {
+    private static let indent = "  "
+
+    private let modelID: String
+    private let displayName: String
+    private let terminal: DownloadProgressTerminal
+    private let lock = NSLock()
+    private var line: TransferProgressLine
+    /// The layout for the window's width at the last redraw.
+    private var layout: TransferProgressLine.Layout?
+
+    /// `startBytes`: the download's bytes already on disk, which the rate leaves out.
+    init(modelID: String, displayName: String, totalBytes: Int64, startBytes: Int64,
+         terminal: DownloadProgressTerminal = .standardOutput) {
+        self.modelID = modelID
+        self.displayName = displayName
+        self.terminal = terminal
+        line = TransferProgressLine(label: "Downloading \(modelID)", totalBytes: totalBytes,
+                                    startBytes: startBytes, startTime: terminal.clock())
+    }
+
+    /// `done`: the download's bytes on disk now.
+    func update(done: Int64) {
+        lock.withLock {
+            let now = terminal.clock()
+            if terminal.isTerminal {
+                guard line.takeRedraw(now: now) else { return }
+                let width = liveWidth
+                let layout = self.layout.flatMap { $0.width == width ? $0 : nil } ?? line.layout(width: width)
+                self.layout = layout
+                terminal.output("\r" + Self.indent + line.text(done: done, now: now, layout: layout) + "\u{1B}[K")
+            } else if line.takeLogLine(done: done, now: now) {
+                terminal.output(Self.indent + line.text(done: done, now: now) + "\n")
+            }
+        }
+    }
+
+    /// Every byte is on disk; the files are being checked against the manifest.
+    /// A log gets the transfer's last figures first.
+    func verifying() {
+        lock.withLock {
+            let text = "Verifying \(modelID) (\(TransferProgressLine.bytes(line.totalBytes)))\u{2026}"
+            if terminal.isTerminal {
+                terminal.output("\r" + Self.indent + TransferProgressLine.clipped(text, to: liveWidth) + "\u{1B}[K")
+                return
+            }
+            let now = terminal.clock()
+            if line.takeLogLine(done: line.totalBytes, now: now, ended: true) {
+                terminal.output(Self.indent + line.text(done: line.totalBytes, now: now) + "\n")
+            }
+            terminal.output(Self.indent + text + "\n")
+        }
+    }
+
+    /// The download's completion line: "✓ Downloaded <name> (16.3 GB in 2m 10s)".
+    func finish() {
+        lock.withLock {
+            var summary = "\u{2713} Downloaded \(displayName) (\(TransferProgressLine.bytes(line.totalBytes)) in "
+                + TransferProgressLine.duration(terminal.clock() - line.startTime)
+            if line.startBytes > 0 {
+                summary += "; \(TransferProgressLine.bytes(line.startBytes)) of it was already on disk"
+            }
+            end(summary + ")")
+        }
+    }
+
+    /// The completion line when the model's files were already there and verified.
+    func alreadyDownloaded() {
+        lock.withLock { end("\u{2713} \(displayName) is already downloaded (\(TransferProgressLine.bytes(line.totalBytes)))") }
+    }
+
+    /// Where the download stopped. The caller says why.
+    func fail(done: Int64) {
+        lock.withLock {
+            end("Download of \(modelID) stopped at \(line.percent(done: done))% "
+                + "(\(TransferProgressLine.bytes(done, of: line.totalBytes)))")
+        }
+    }
+
+    /// The files did not pass their check against the manifest, or could not
+    /// be published after it; `error` says why.
+    func verificationFailed(_ error: any Error) {
+        let reason: String
+        if case .downloadFailed(let detail) = error as? ModelCatalogError {
+            reason = detail
+        } else {
+            reason = error.localizedDescription
+        }
+        lock.withLock { end("Verification of \(modelID) failed: \(reason)") }
+    }
+
+    /// Leaves the window's last column free, so a full line never wraps.
+    private var liveWidth: Int { max(1, terminal.columns() - 1 - Self.indent.count) }
+
+    /// Takes the live line's place for good. The row is cleared first: a line
+    /// longer than the window wraps, and erasing after it would cut its end.
+    private func end(_ text: String) {
+        terminal.output((terminal.isTerminal ? "\r\u{1B}[K" : "") + Self.indent + text + "\n")
     }
 }

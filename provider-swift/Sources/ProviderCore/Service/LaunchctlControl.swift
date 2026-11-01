@@ -109,7 +109,9 @@ enum LaunchctlControl {
             }
             return String(cString: buffer)
         }
-        return FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".darkbloom/bin/darkbloom").path
+        let environment = BuildEnvironment.current
+        return environment.installDirectory()
+            .appendingPathComponent("bin")
+            .appendingPathComponent(environment.cliName).path
     }
 }

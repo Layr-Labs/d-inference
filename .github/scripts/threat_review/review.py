@@ -2,6 +2,7 @@
 import json
 import re
 from .client import ReviewUnavailable, request_json
+from .diagnostics import ReviewFailure, parse_object, response_metadata
 
 DEFAULT_MODEL = "anthropic/claude-opus-5.5"
 MAX_DIFF = 80_000
@@ -32,6 +33,10 @@ including authorization, attestation, encryption, data exposure, billing and ava
 Flag concrete security regressions, new attack surface, invalidated threat assumptions,
 and material gaps where the threat model needs updating because of this PR.
 Do not restate pre-existing issues, invent deployment settings, or claim a full security audit.
+An imagined older deployment or missing external implementation is not proof of a
+regression. Unless supplied evidence establishes that prerequisite, record the
+unverified contract in analysis and request further review instead of a finding.
+Distinguish an observed missing control from a control outside the supplied evidence.
 Describe a plausible trigger, impact, and fix. Cite a changed file and an actual visible
 line on the indicated base/head side. For an existing empty file, line=0 cites its
 metadata only on a side listed in metadata_citation_sides; never invent a source line.
@@ -50,6 +55,7 @@ class FindingCapacityReached(ReviewUnavailable):
     def __init__(self, findings):
         super().__init__("Finding capacity reached; scan incomplete")
         self.findings = findings
+        self.diagnostic = {"code": "FINDING_CAPACITY_REACHED", "finding_limit": 32}
 
 
 def patch_lines(patch):
@@ -115,7 +121,8 @@ def validate_findings(result, evidence, threat_model):
         if finding["severity"] not in ("high", "medium", "low"):
             raise ReviewUnavailable("Model returned an invalid severity")
         for key, maximum in (("title", 160), ("detail", 1600)):
-            if not isinstance(finding[key], str) or not 1 <= len(finding[key].strip()) <= maximum:
+            if (not isinstance(finding[key], str) or not finding[key].strip()
+                    or len(finding[key]) > maximum):
                 raise ReviewUnavailable("Model returned invalid finding text")
         ids = finding["threat_ids"]
         if not isinstance(ids, list) or any(not isinstance(i, str) or i not in known_ids for i in ids):
@@ -137,15 +144,27 @@ def model_call(message, evidence, threat_model, key, model, transport, schema=SC
     try:
         choice = response["choices"][0]
         if choice["finish_reason"] != "stop":
-            raise ReviewUnavailable("Model response was incomplete")
-        result = json.loads(choice["message"]["content"])
-        if not isinstance(result, dict) or set(result) != set(schema["required"]):
-            raise ReviewUnavailable("Model returned an invalid scan object")
+            raise ReviewFailure("Model response was incomplete", "RESPONSE_INCOMPLETE")
+        text = choice["message"]["content"]
+    except (KeyError, IndexError, TypeError):
+        raise ReviewFailure("Model returned an invalid response envelope", "RESPONSE_ENVELOPE_INVALID") from None
+    result = parse_object(text)
+    if set(result) != set(schema["required"]):
+        raise ReviewFailure("Model returned an invalid scan object", "RESPONSE_FIELDS_INVALID",
+                            missing_fields=sorted(set(schema["required"]) - set(result)),
+                            unexpected_field_count=len(set(result) - set(schema["required"])),
+                            **response_metadata(text))
+    try:
         findings = validate_findings({"findings": result["findings"]}, evidence, threat_model)
         if len(findings) == 32:
             raise FindingCapacityReached(findings)
+    except FindingCapacityReached:
+        raise
+    except ReviewUnavailable as error:
+        raise ReviewFailure(str(error), "FINDING_VALIDATION_FAILED", **response_metadata(text)) from None
     except (KeyError, IndexError, TypeError, ValueError):
-        raise ReviewUnavailable("Model returned an invalid review response") from None
+        raise ReviewFailure("Model returned invalid finding fields", "FINDING_SHAPE_INVALID",
+                            **response_metadata(text)) from None
     return result
 
 

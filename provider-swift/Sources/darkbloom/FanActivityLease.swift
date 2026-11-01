@@ -2,12 +2,14 @@ import DarkbloomFanProtocol
 import DarkbloomFanService
 import Foundation
 import OSLog
+import ProviderCore
 
 /// Best-effort provider-activity lease for the optional root fan helper.
 /// Absence or failure of the helper must never block inference startup.
 actor FanActivityLease {
+    // The service subsystem, so `logs` and `report` include fan-lease events.
     private let logger = Logger(
-        subsystem: "io.darkbloom.provider",
+        subsystem: BuildEnvironment.current.serviceLogSubsystem,
         category: "fan-lease"
     )
     private let providerVersion: String

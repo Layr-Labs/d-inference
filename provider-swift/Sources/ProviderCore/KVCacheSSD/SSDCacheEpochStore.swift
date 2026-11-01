@@ -52,7 +52,7 @@ final class SSDCacheEpochStore: @unchecked Sendable {
     private static let recordLock = NSLock()
     #if canImport(os)
     private static let logger = Logger(
-        subsystem: "com.darkbloom.provider", category: "ssd_cache_epoch_store")
+        subsystem: BuildEnvironment.current.logSubsystem, category: "ssd_cache_epoch_store")
     #endif
 
     private let lock = NSLock()

@@ -13,6 +13,11 @@ extension EngineV2Bridge {
     /// publish a second observation.
     func consumePrefillReceipt(id: String, receipt: EnginePrefillReceipt) {
         guard let sample = receipt.take() else { return }
+        let calibration = receipt.calibrationCell
+        // Engine retirement does not join the callback's actor Task. Discard a
+        // late calibration receipt after cell validation/cleanup; never publish
+        // it as independent serving evidence or count it as customer work.
+        guard calibration == nil || modelCalibration.requests[id] != nil else { return }
         if prefillEvidenceRecovery.owner == id {
             // The SDK callback proves prompt completion even if cache reuse or
             // contention prevents a new cold rate. Keep the ordinary lease and
@@ -20,7 +25,6 @@ extension EngineV2Bridge {
             serviceBudget?.reduceExclusiveAllowance(ownerID: serviceOwnerPrefix + ":" + id,
                 concurrency: prefillEvidenceRecovery.servingConcurrency)
         }
-        let calibration = mimoCalibration.requests[id]
         guard calibration?.warmup != true else { return }
         let usage = sample.usage
         let saved = max(usage.prefixCachePrefillTokensSaved, usage.prefixCacheHitTokens)
@@ -35,6 +39,7 @@ extension EngineV2Bridge {
         // Valid computed work is useful even when vision/reuse or the timing
         // window excludes the rate. Publish after all counters and EWMAs agree.
         defer { performanceUpdates?.notify() }
+        guard receipt.measurementPurpose == .serving else { return }
         guard usage.timing.visionChunks == 0 || receipt.nativeCausalMedia,
             saved > 0 ? usage.prefixCacheOutcome == .hit : Self.isColdPrefillSample(usage: usage),
             let seconds = EngineV2NativeBlockTiming.prefillSeconds(usage.timing),
@@ -65,21 +70,12 @@ extension EngineV2Bridge {
         }
         let name = saved > 0 ? "reuse_prefill"
             : sample.overlap.contended ? "contended_prefill" : "isolated_prefill"
-        let resetIsolated = name == "isolated_prefill" && isolatedPrefillEvidenceExpired(at: sample.at)
-        let resetPrefill = saved == 0
-            && performanceMeasurements.freshRate("isolated_prefill", now: sample.at) == nil
-            && performanceMeasurements.freshRate("contended_prefill", now: sample.at) == nil
-        let aggregate = calibration == nil || (calibration?.width == 1 && !sample.overlap.contended)
-        performanceMeasurements.observe(name, tps: tps, prompt: work,
-            context: usage.promptTokens, cache: saved > 0 ? "reused" : "cold",
-            overlap: sample.overlap, at: sample.at,
-            deadlinePostureEpoch: sample.deadlineRateEvidence?.currentEpoch(), recordAggregate: aggregate,
-            restartEstimate: calibration != nil && aggregate)
-        guard aggregate, saved == 0 else { return }
-        if resetIsolated || calibration != nil { isolatedPrefillEwmaInitialized = false }
-        if resetPrefill || calibration != nil { prefillEwmaInitialized = false }
-        updatePrefillTpsEwma(tps, isolated: !sample.overlap.contended)
-        if name == "isolated_prefill" { prefillEvidenceRecovery.observe(id) }
+        recordRateObservation(EngineRateObservation(
+            phase: name, tps: tps, prompt: work, context: usage.promptTokens,
+            cache: saved > 0 ? "reused" : "cold", overlap: sample.overlap, at: sample.at,
+            postureEpoch: sample.deadlineRateEvidence?.currentEpoch(),
+            aggregate: calibration == nil || (calibration?.width == 1 && !sample.overlap.contended)),
+            requestID: id)
     }
 
     func updatePrefillTpsEwma(_ tps: Double, isolated: Bool) {
@@ -112,6 +108,29 @@ extension EngineV2Bridge {
         return tps.isFinite && tps > 0 && tps <= 20_000 ? tps : nil
     }
 
+    /// The decode steps behind `engineDecodeRate`, which starts after the
+    /// first-token step: mean token-producing rows, confirmed tokens and
+    /// assigned width per decode step. Without the first-token step's rows
+    /// (`EnginePrefillReceipt.firstTokenStepRows`), rows are averaged over
+    /// that step as well. Native block engines serve one plain row per step.
+    static func engineDecodeShape(usage: CBv2Usage, nativeBlock: Bool,
+        firstTokenStepRows: UInt64? = nil) -> CBv2DecodeRateShape {
+        let timing = usage.timing
+        let decodeSteps = Double(timing.decodeSteps)
+        guard !nativeBlock, decodeSteps > 0 else { return .init(batchRows: 1) }
+        func clamped(_ value: Double) -> Double { value.isFinite ? min(64, max(1, value)) : 1 }
+        let tokensPerStep = clamped(Double(max(0, usage.completionTokens - 1)) / decodeSteps)
+        let decodeRowsSum = firstTokenStepRows.flatMap {
+            $0 <= timing.batchRowsSum ? timing.batchRowsSum - $0 : nil
+        }
+        let batchRows = decodeRowsSum.map { Double($0) / decodeSteps }
+            ?? Double(timing.batchRowsSum) / (decodeSteps + 1)
+        return .init(
+            batchRows: clamped(batchRows),
+            tokensPerStep: tokensPerStep,
+            stepWidth: max(tokensPerStep, clamped(1 + Double(timing.mtpProposed) / decodeSteps)))
+    }
+
     static func engineObservationInstant(
         timing: CBv2RequestTiming, now: ContinuousClock.Instant,
         uptimeNanos: UInt64 = DispatchTime.now().uptimeNanoseconds
@@ -127,23 +146,26 @@ extension EngineV2Bridge {
         id: String, state: ActiveRequestState, usage: CBv2Usage, completion: Int,
         deliveredTps: Double, now: ContinuousClock.Instant
     ) {
-        let calibration = mimoCalibration.requests[id]
+        let calibration = modelCalibration.requests[id]
         guard calibration?.warmup != true else { return }
+        guard state.prefillReceipt?.measurementPurpose != .startupWarmup else {
+            recordGenerationWork(completion: completion)
+            return
+        }
         let overlap = state.prefillReceipt?.overlap
             ?? EngineMeasurementActivity.Overlap(contended: true, otherModel: true)
         let cached = max(usage.prefixCachePrefillTokensSaved, usage.prefixCacheHitTokens) > 0
         if let tps = Self.engineDecodeRate(usage: usage, nativeBlock: usesNativeBlockTiming),
             let observedAt = Self.engineObservationInstant(timing: usage.timing, now: now) {
-            let aggregate = calibration == nil || (calibration?.width == 1 && !overlap.contended)
-            if aggregate && (calibration != nil || performanceMeasurements.rateExpiration("decode").map { observedAt > $0 } == true) {
-                ewmaInitialized = false
-            }
-            if aggregate { updateDecodeTpsEwma(tps) }
-            performanceMeasurements.observe("decode", tps: tps, prompt: state.promptTokens,
+            recordRateObservation(EngineRateObservation(
+                phase: "decode", tps: tps, prompt: state.promptTokens,
                 context: state.promptTokens + completion, cache: cached ? "reused" : "cold",
                 overlap: overlap, at: observedAt,
-                deadlinePostureEpoch: state.prefillReceipt?.deadlineRateEvidence?.currentEpoch(), recordAggregate: aggregate,
-                restartEstimate: calibration != nil && aggregate)
+                postureEpoch: state.prefillReceipt?.deadlineRateEvidence?.currentEpoch(),
+                aggregate: calibration == nil || (calibration?.width == 1 && !overlap.contended),
+                decodeShape: Self.engineDecodeShape(usage: usage, nativeBlock: usesNativeBlockTiming,
+                    firstTokenStepRows: state.prefillReceipt?.firstTokenStepRows)),
+                requestID: id)
         }
         if calibration != nil { performanceUpdates?.notify(); return }
         performanceMeasurements.observe("delivered_decode", tps: deliveredTps,
@@ -159,7 +181,7 @@ extension EngineV2Bridge {
     }
 
     func recordGenerationWork(completion: Int, requestID: String? = nil) {
-        if let requestID, mimoCalibration.requests[requestID] != nil { return }
+        if let requestID, modelCalibration.requests[requestID] != nil { return }
         generatedTokensTotal = Self.saturatingCounter(generatedTokensTotal, adding: completion)
         generationRequestsTotal = Self.saturatingCounter(generationRequestsTotal, adding: 1)
         performanceUpdates?.notify()

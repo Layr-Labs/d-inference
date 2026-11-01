@@ -23,7 +23,8 @@ extension ProviderLoop {
     private func performPreRegistrationShutdown() async -> Bool {
         isShuttingDown = true
         closeNativeMiMoLifecycle()
-        if !servingDrain.refusing { beginServingDrain(owner: .lifecycle) }
+        // A stop supersedes an add-on hold; the hold record stays for the next start.
+        if !servingDrain.refusingForServiceChange { beginServingDrain(owner: .lifecycle) }
         stopLocalEndpoint()
         startupPreloadTask?.cancel()
         startupPreloadGateWaiter?.cancel()

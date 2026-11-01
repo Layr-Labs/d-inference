@@ -38,6 +38,13 @@ public struct ChatCompletionRequest: Codable, Sendable {
     /// OpenAI `top_logprobs` (0–20, meaningful when `logprobs == true`).
     /// v2 engine path only; ignored by legacy.
     public let top_logprobs: Int?
+    /// OpenAI-compatible `min_p`. Applied on every slot: a single Mac's v2
+    /// engine gets it from `EngineV2Bridge` after translation
+    /// (`EngineV2Translation.samplingParams` leaves it 0), and a cluster pair's
+    /// decoding rank samples with it. The samplers count a value above 1 as 1
+    /// and ignore 0, negative and NaN values; MiMo native media and Nemotron
+    /// Super refuse a non-zero value instead.
+    public let min_p: Float?
 
     public init(
         model: String,
@@ -59,7 +66,8 @@ public struct ChatCompletionRequest: Codable, Sendable {
         prompt_cache_key: String? = nil,
         logit_bias: [String: Float]? = nil,
         logprobs: Bool? = nil,
-        top_logprobs: Int? = nil
+        top_logprobs: Int? = nil,
+        min_p: Float? = nil
     ) {
         self.model = model
         self.messages = messages
@@ -81,6 +89,7 @@ public struct ChatCompletionRequest: Codable, Sendable {
         self.logit_bias = logit_bias
         self.logprobs = logprobs
         self.top_logprobs = top_logprobs
+        self.min_p = min_p
     }
 }
 

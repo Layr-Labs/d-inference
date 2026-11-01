@@ -19,8 +19,11 @@ private final class ProcessBudgetUsage: @unchecked Sendable {
 
 @Test func processBudgetFreeOnlyPolicyRejectsSharedHostLoadAndRechecks() async throws {
     func available(_ freeGiB: UInt64, _ policy: SystemMemory.AvailabilityPolicy) -> UInt64 {
-        SystemMemory.availableBytes(freePages: freeGiB * processBudgetGiB / 16_384,
-            inactivePages: 211 * processBudgetGiB / 16_384,
+        SystemMemory.availableBytes(
+            stats: machVMStatistics(
+                freePages: freeGiB * processBudgetGiB / 16_384,
+                inactivePages: 211 * processBudgetGiB / 16_384,
+                fileBackedPages: 211 * processBudgetGiB / 16_384),
             pageSize: 16_384, policy: policy) ?? .max
     }
     for policy in [SystemMemory.AvailabilityPolicy.reclaimable, .freeOnly] {

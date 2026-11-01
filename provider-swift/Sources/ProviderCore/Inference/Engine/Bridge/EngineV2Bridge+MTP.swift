@@ -7,7 +7,7 @@ import os
 extension EngineV2Bridge {
     #if canImport(os)
     private static let mtpLogger = Logger(
-        subsystem: "com.darkbloom.provider", category: "engine_v2_mtp")
+        subsystem: BuildEnvironment.current.logSubsystem, category: "engine_v2_mtp")
     #endif
 
     /// Record MTP activation, emit the opening per-slot posture, and
@@ -118,7 +118,8 @@ extension EngineV2Bridge {
             checkpointBackendLayout: ssdHybridCheckpointStore?.config.backendLayout,
             mtpEnabled: snapshot.configured,
             mtpActive: snapshot.active,
-            mtpInactiveReason: snapshot.fallbackReason?.rawValue)
+            mtpInactiveReason: snapshot.fallbackReason?.rawValue,
+            prefixCache: prefixCacheModelStatus())
     }
 
     /// The producer for the v0.8.0 MTP and paged-pool telemetry fields.

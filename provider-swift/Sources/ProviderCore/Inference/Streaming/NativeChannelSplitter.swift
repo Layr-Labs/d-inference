@@ -28,20 +28,29 @@ struct NativeChannelSplitter {
     private let toolFrames: [ToolFrame]
     private let qwenStructuredFrames: Bool
     private var toolScanner: Qwen35ToolFrameScanner?
+    private let flintFrames: Bool
+    private let tools: [[String: any Sendable]]?
+    private var flintScanner: FlintToolFrameScanner?
     private let preserveInnerReasoningSpans: Bool
     private let absorbStrayThinkClose: Bool
     private var innerReasoningDepth = 0
     private(set) var reasoningNestingLimitExceeded = false
     static let maximumInnerReasoningDepth = 32
-    var bufferedCharacterCount: Int { buffer.count + (toolScanner?.bufferedCharacterCount ?? 0) }
+    var bufferedCharacterCount: Int {
+        buffer.count + (toolScanner?.bufferedCharacterCount ?? 0)
+            + (flintScanner?.bufferedCharacterCount ?? 0)
+    }
 
     init(prefix: String, protectToolFrames: Bool, toolFrames: [ToolFrame] = ToolFrame.xml,
-         qwenStructuredFrames: Bool = false,
+         qwenStructuredFrames: Bool = false, flintFrames: Bool = false,
+         tools: [[String: any Sendable]]? = nil,
          preserveInnerReasoningSpans: Bool = false, absorbStrayThinkClose: Bool = false) {
         state = prefix == "<think>" ? .reasoning : .content
         self.protectToolFrames = protectToolFrames
         self.toolFrames = toolFrames
         self.qwenStructuredFrames = qwenStructuredFrames
+        self.flintFrames = flintFrames
+        self.tools = tools
         self.preserveInnerReasoningSpans = preserveInnerReasoningSpans
         self.absorbStrayThinkClose = absorbStrayThinkClose
     }
@@ -56,12 +65,33 @@ struct NativeChannelSplitter {
         guard !reasoningNestingLimitExceeded else { return [] }
         let pieces = drain(final: true)
         toolScanner = nil
+        flintScanner = nil
         return pieces
     }
 
     private mutating func drain(final: Bool) -> [ParsedReasoning] {
         var result: [ParsedReasoning] = []
         while !buffer.isEmpty {
+            if var scanner = flintScanner {
+                var end: String.Index?
+                for index in buffer.unicodeScalars.indices {
+                    if scanner.consume(buffer.unicodeScalars[index]) {
+                        end = buffer.unicodeScalars.index(after: index)
+                        break
+                    }
+                }
+                if let end {
+                    append(String(buffer[..<end]), reasoning: false, to: &result)
+                    buffer.removeSubrange(buffer.startIndex..<end)
+                    flintScanner = nil
+                    state = .content
+                    continue
+                }
+                append(buffer, reasoning: false, to: &result)
+                buffer = ""
+                flintScanner = final ? nil : scanner
+                break
+            }
             if var scanner = toolScanner {
                 var end: String.Index?
                 for index in buffer.unicodeScalars.indices {
@@ -114,6 +144,8 @@ struct NativeChannelSplitter {
                         state = .tool(end: toolFrames.first { $0.start == marker }?.end ?? marker)
                         if qwenStructuredFrames && marker == "<tool_call>" {
                             toolScanner = Qwen35ToolFrameScanner()
+                        } else if flintFrames && marker == "<tool_call>" {
+                            flintScanner = FlintToolFrameScanner(tools: tools)
                         }
                     }
                 case .reasoning:

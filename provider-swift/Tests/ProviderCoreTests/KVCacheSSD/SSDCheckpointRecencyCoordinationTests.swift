@@ -85,7 +85,7 @@ struct SSDCheckpointRecencyCoordinationTests {
         #expect(try Data(contentsOf: fixture.file) == original)
     }
 
-    @Test("queued recency touch cannot invalidate an active authenticated snapshot", arguments: [false, true])
+    @Test("an overlapping reader cannot touch, so an active authenticated snapshot holds", arguments: [false, true])
     func coordinatedOverlappingReads(publishedBeforeAccess: Bool) async throws {
         let fixture = try Fixture(publish: publishedBeforeAccess,
                                   directory: URL(fileURLWithPath: "/tmp", isDirectory: true))
@@ -93,41 +93,50 @@ struct SSDCheckpointRecencyCoordinationTests {
         let coordinator = SSDCheckpointFileCoordinator()
         let coordinationURL = URL(fileURLWithPath: "/private" + fixture.file.path, isDirectory: false)
         let barrier = SSDCheckpointCoordinationTestSupport.Barrier()
-        let secondTouch = SSDCheckpointCoordinationTestSupport.Barrier()
-        defer { barrier.release(); secondTouch.release() }
-        let firstAccess = coordinator.makeAccess(to: coordinationURL)
+        defer { barrier.release() }
+        // As a stage read does: publication and recency touches need the file
+        // alone, through an upgrade of the reader's shared access.
+        @Sendable func mutateIfAlone(_ access: SSDCheckpointFileCoordinator.Access, publish: Bool = false) throws -> Bool {
+            guard access.tryUpgrade() else { return false }
+            defer { access.downgrade() }
+            if publish { try fixture.write() } else { fixture.touch() }
+            return true
+        }
+        let firstAccess = coordinator.makeAccess(to: coordinationURL, mode: .shared)
         let first = Task.detached {
             try await firstAccess.acquire()
             defer { firstAccess.release() }
-            if !publishedBeforeAccess { try fixture.write() }
-            fixture.touch()
-            return try fixture.read { index in if index == 0 { try barrier.block() } }
+            let touched = try mutateIfAlone(firstAccess, publish: !publishedBeforeAccess)
+            return (touched, try fixture.read { index in if index == 0 { try barrier.block() } })
         }
         defer { first.cancel(); barrier.release() }
         try await SSDCheckpointCoordinationTestSupport.waitUntil { barrier.isEntered }
-        let secondAccess = coordinator.makeAccess(to: coordinationURL)
+        let secondAccess = coordinator.makeAccess(to: coordinationURL, mode: .shared)
         let second = Task.detached {
             try await secondAccess.acquire()
             defer { secondAccess.release() }
-            fixture.touch()
-            try secondTouch.block()
-            return try fixture.read()
+            return (try mutateIfAlone(secondAccess), try fixture.read())
         }
         defer { second.cancel() }
-        try await SSDCheckpointCoordinationTestSupport.waitUntil {
-            coordinator.pendingCount(for: coordinationURL) == 1 || secondTouch.isEntered
-        }
-        #expect(coordinator.trackedFileCount == 1)
-        #expect(coordinator.pendingCount(for: coordinationURL) == 1)
-        #expect(!secondTouch.isEntered)
+        // The second reader authenticates the whole file while the first is mid-read.
+        let (secondTouched, secondProof) = try await second.value
+        #expect(!secondTouched)
+        #expect(barrier.isEntered && coordinator.trackedFileCount == 1, "the first reader still holds the file")
+        #expect(coordinator.pendingCount(for: coordinationURL) == 0)
         barrier.release()
-        secondTouch.release()
-        let firstResult = await first.result
-        let secondResult = await second.result
-        let firstProof = try firstResult.get()
-        let secondProof = try secondResult.get()
-        #expect(firstProof != secondProof)
-        #expect(secondProof.matches(url: fixture.file))
+        let (firstTouched, firstProof) = try await first.value
+        #expect(firstTouched)
+        #expect(firstProof == secondProof)
+        #expect(firstProof.matches(url: fixture.file))
+        // Alone again, a reader may refresh recency, which moves the identity.
+        let third = coordinator.makeAccess(to: coordinationURL, mode: .shared)
+        try await third.acquire()
+        #expect(try mutateIfAlone(third))
+        let thirdProof = try fixture.read()
+        third.release()
+        #expect(thirdProof != firstProof)
+        #expect(!firstProof.matches(url: fixture.file))
+        #expect(thirdProof.matches(url: fixture.file))
         #expect(coordinator.trackedFileCount == 0)
     }
 

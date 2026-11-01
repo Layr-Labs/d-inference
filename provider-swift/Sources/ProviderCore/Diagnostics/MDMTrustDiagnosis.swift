@@ -84,18 +84,24 @@ public enum MDMTrustDiagnosis {
             return Diagnostic(
                 section: .trust, name: "mdm verification", level: .warn,
                 message: "this Mac IS enrolled in Darkbloom MDM, but the coordinator's live MDM SecurityInfo check hasn't completed — trust is still self_signed, so you're ONLINE but will receive NO traffic until that check passes (this network requires hardware trust). Apple throttles SecurityInfo, so a sleeping or flaky machine can keep this pending.",
-                fix: "keep the Mac awake and APNs reachable (don't let it sleep / drop network), then wait a few minutes for the coordinator's next SecurityInfo check (it retries within ~2 min, then about every 15 min). If it's still self_signed after >15 min, open System Settings → General → Device Management (Profiles) and confirm the Darkbloom profile is installed and NOT showing as Pending; if it's pending, approve it, otherwise re-run `darkbloom enroll`.")
+                fix: "keep the Mac awake and APNs reachable (don't let it sleep / drop network), then wait a few minutes for the coordinator's next SecurityInfo check (it retries within ~2 min, then about every 15 min). If it's still self_signed after >15 min, open System Settings → General → Device Management (Profiles) and confirm the Darkbloom profile is installed and NOT showing as Pending; if it's pending, approve it, otherwise re-run `\(BuildEnvironment.current.cliName) enroll`.")
         case .enrolledOtherMDM(let serverURL):
+            if enrollment.otherInstall != nil {
+                return Diagnostic(
+                    section: .trust, name: "mdm enrollment", level: .warn,
+                    message: "this Mac has \(describeOtherMDM(enrollment)). It is not this install's enrollment, so this install has no legacy MDM path while it is installed.",
+                    fix: "keep that profile for the other install, or remove it with that install's command. Check this install's serving authorization with `\(BuildEnvironment.current.cliName) status`.")
+            }
             return Diagnostic(
                 section: .trust, name: "mdm enrollment", level: .warn,
                 message: "this Mac is managed by another MDM (\(serverURL)); Darkbloom's legacy MDM path is unavailable. App Attest serving requires a qualified connection on a coordinator that supports it.",
-                fix: "keep your organization's profile installed. Start the current Darkbloom provider and check its serving authorization with `darkbloom status`.")
+                fix: "keep your organization's profile installed. Start the current Darkbloom provider and check its serving authorization with `\(BuildEnvironment.current.cliName) status`.")
         case .notEnrolled:
             return Diagnostic(
                 section: .trust, name: "mdm enrollment", level: .warn,
                 message: "this Mac is not enrolled in MDM — hardware trust can't be granted, so you won't receive traffic on a hardware-trust network.",
                 fix: ProviderOnboardingPolicy.retirementNotice
-                    + " On older macOS, run `darkbloom enroll` and approve the profile in System Settings → Profiles, then wait ~5 min.")
+                    + " On older macOS, run `\(BuildEnvironment.current.cliName) enroll` and approve the profile in System Settings → Profiles, then wait ~5 min.")
         case .checkFailed:
             // Unknown state — asserting "not enrolled" here would send an
             // enrolled operator down the wrong flow, so stay silent (the

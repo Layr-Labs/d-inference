@@ -5,6 +5,7 @@
 // after the model family so future fixes do not bleed across templates.
 
 import Foundation
+import MLXLMCommon
 import MLXLMServer
 
 struct ChatTemplateFixContext: Sendable {
@@ -31,10 +32,15 @@ enum ChatTemplateFixes {
         if MiMoV26TemplateFix.applies(to: context) {
             return try MiMoV26TemplateFix.normalizeMessages(messages)
         }
+        if context.modelType == "flint" {
+            try validateGenericToolHistory(messages)
+            return messages.map(FlintTemplateNormalization.object)
+        }
         let sanitized = sanitizeJinjaMessages(messages)
         var normalized = Qwen35TemplateFix.applies(to: context)
             ? Qwen35TemplateFix.normalizeMessages(sanitized)
             : sanitized
+        try Qwen35TemplateFix.validateUserQuery(normalized, context: context)
 
         if GPTOSSHarmonyTemplateFix.applies(to: context) {
             normalized = try GPTOSSHarmonyTemplateFix.normalizeMessages(normalized)
@@ -65,6 +71,9 @@ enum ChatTemplateFixes {
         let metadataScoped = normalizeToolMetadata(tools, context: context)
         if MiMoV26TemplateFix.applies(to: context) {
             return MiMoV26TemplateFix.normalizeTools(metadataScoped)
+        }
+        if context.modelType == "flint" {
+            return metadataScoped?.map(FlintTemplateNormalization.object)
         }
         guard let sanitized = sanitizeTools(metadataScoped) else { return nil }
         if GPTOSSHarmonyTemplateFix.applies(to: context) {
@@ -122,6 +131,11 @@ enum ChatTemplateFixes {
             ids.formUnion(Gemma4TemplateFix.extraEOSTokenIds(tokenToId: tokenToId))
         }
         return ids
+    }
+
+    static func stopStringScope(context: ChatTemplateFixContext) -> CBv2StopStringScope? {
+        GPTOSSHarmonyTemplateFix.applies(to: context)
+            ? GPTOSSHarmonyTemplateFix.finalChannelStopScope : nil
     }
 
     static func validateGenericToolHistory(

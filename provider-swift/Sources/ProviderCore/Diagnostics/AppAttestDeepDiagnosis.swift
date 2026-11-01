@@ -5,7 +5,7 @@ import ProviderAppAttest
 /// (process start, boot security, preflight, current key and APNs push history,
 /// last native Apple error). Pure; rendered by `darkbloom doctor` in APP ATTEST.
 public enum AppAttestDeepDiagnosis {
-    static let reportAdvice = "run `darkbloom report` from an administrator account (or `sudo darkbloom report` if this account is allowed to use sudo) so support receives key_history and devicecheckd evidence."
+    static let reportAdvice = "run `\(BuildEnvironment.current.cliName) report` from an administrator account (or `sudo \(BuildEnvironment.current.cliName) report` if this account is allowed to use sudo) so support receives key_history and devicecheckd evidence."
 
     public static func evaluate(_ status: AppAttestLocalStatus, pushHistory: APNsPushHistory?, now: Double) -> [Diagnostic] {
         var out: [Diagnostic] = []
@@ -56,12 +56,12 @@ public enum AppAttestDeepDiagnosis {
         if p.consoleUserActive == true {
             return Diagnostic(section: .appAttest, name: "gui session", level: .warn,
                               message: "a user is logged in at the console, but the provider was launched outside that GUI session (e.g. over SSH or by a system daemon).",
-                              fix: "run `darkbloom restart` from the logged-in desktop session (Terminal on the Mac, or Screen Sharing) so launchd starts it inside the GUI session.")
+                              fix: "run `\(BuildEnvironment.current.cliName) restart` from the logged-in desktop session (Terminal on the Mac, or Screen Sharing) so launchd starts it inside the GUI session.")
         }
         if p.consoleUserActive == false {
             return Diagnostic(section: .appAttest, name: "gui session", level: .warn,
                               message: "no user is logged in at the console, so no GUI session exists for the provider.",
-                              fix: "log in at the Mac's login window (or via Screen Sharing), enable automatic login, then `darkbloom restart`.")
+                              fix: "log in at the Mac's login window (or via Screen Sharing), enable automatic login, then `\(BuildEnvironment.current.cliName) restart`.")
         }
         return nil
     }
@@ -99,7 +99,7 @@ public enum AppAttestDeepDiagnosis {
         if !problems.isEmpty {
             return Diagnostic(section: .appAttest, name: "app signing", level: .fail,
                               message: problems.joined(separator: "; ") + ".",
-                              fix: "reinstall the signed release: `curl -fsSL \(BuildEnvironment.current.coordinatorHTTPURL)/install.sh | bash`, then `darkbloom restart`.")
+                              fix: "reinstall the signed release: `curl -fsSL \(BuildEnvironment.current.coordinatorHTTPURL)/install.sh | bash`, then `\(BuildEnvironment.current.cliName) restart`.")
         }
         guard p.optInEntitlement != nil || p.environmentEntitlement != nil
             || p.profilePresent != nil || p.profileExpired != nil else { return nil }
@@ -111,18 +111,18 @@ public enum AppAttestDeepDiagnosis {
         if !unknown.isEmpty {
             return Diagnostic(section: .appAttest, name: "app signing", level: .warn,
                               message: "could not verify " + unknown.joined(separator: ", ") + ".",
-                              fix: "run `darkbloom report` so support can inspect the local signing evidence.")
+                              fix: "run `\(BuildEnvironment.current.cliName) report` so support can inspect the local signing evidence.")
         }
         let location: String
         switch p.bundlePathClass {
-        case .userInstall?: location = "installed in ~/.darkbloom"
+        case .userInstall?: location = "installed in ~/\(BuildEnvironment.current.installDirectoryName)"
         case .applications?: location = "installed in Applications"
         case .other?: location = "running from an unusual location"
         case nil: location = "install location unknown"
         }
         return Diagnostic(section: .appAttest, name: "app signing", level: p.bundlePathClass == .other ? .warn : .pass,
                           message: "App Attest opt-in and environment checks passed; provisioning profile present and not expired; \(location).",
-                          fix: p.bundlePathClass == .other ? "run the installed release from ~/.darkbloom (`darkbloom update`)." : nil)
+                          fix: p.bundlePathClass == .other ? "run the installed release from ~/\(BuildEnvironment.current.installDirectoryName) (`\(BuildEnvironment.current.cliName) update`)." : nil)
     }
 
     // MARK: - Key history
@@ -186,7 +186,7 @@ public enum AppAttestDeepDiagnosis {
         if history.deviceTokenPresent == false {
             return Diagnostic(section: .attestationReadiness, name: "apns pushes", level: .warn,
                               message: "the provider has no APNs device token, so the coordinator cannot push code-identity checks (APNs registration failed).",
-                              fix: "keep the provider running inside the logged-in GUI session with network access, then `darkbloom restart`.")
+                              fix: "keep the provider running inside the logged-in GUI session with network access, then `\(BuildEnvironment.current.cliName) restart`.")
         }
         let received = summary.pushesReceivedLast24h ?? 0
         let lastReply = summary.lastReplySentAgeSeconds.map { "last reply \(duration($0)) ago" } ?? "no reply recorded"
@@ -198,7 +198,7 @@ public enum AppAttestDeepDiagnosis {
         let repliedAfter = (summary.lastReplySentAgeSeconds ?? Int.max) <= (summary.lastPushReceivedAgeSeconds ?? Int.max)
         return Diagnostic(section: .attestationReadiness, name: "apns pushes", level: repliedAfter ? .pass : .warn,
                           message: "\(received) code-identity push(es) received in 24 h (\(lastPush); \(lastReply)).",
-                          fix: repliedAfter ? nil : "the latest push was received but not answered; `darkbloom restart` and re-run `darkbloom doctor`.")
+                          fix: repliedAfter ? nil : "the latest push was received but not answered; `\(BuildEnvironment.current.cliName) restart` and re-run `\(BuildEnvironment.current.cliName) doctor`.")
     }
 
     private static func duration(_ seconds: Int) -> String {

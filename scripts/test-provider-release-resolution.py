@@ -8,6 +8,11 @@ import tempfile
 import unittest
 
 
+def branch_push(branch):
+    return {"GITHUB_EVENT_NAME": "push", "GITHUB_REF_TYPE": "branch",
+            "GITHUB_REF": "refs/heads/" + branch, "GITHUB_REF_NAME": branch}
+
+
 class ReleaseResolutionTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
@@ -18,7 +23,6 @@ class ReleaseResolutionTests(unittest.TestCase):
             shutil.copy2(Path(__file__).parent / name, self.root / "scripts" / name)
         for name, content in (
             ("provider-swift/Sources/ProviderCore/ProviderCore.swift", 'public static let version = "0.9.0"'),
-            ("coordinator/api/server.go", 'var LatestProviderVersion = "0.9.0"'),
         ):
             path = self.root / name
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -29,19 +33,101 @@ class ReleaseResolutionTests(unittest.TestCase):
         output.write_text("")
         env = {"PATH": os.environ["PATH"], "GITHUB_OUTPUT": str(output),
                "GITHUB_EVENT_NAME": "workflow_dispatch", "GITHUB_REF_TYPE": "branch",
-               "GITHUB_REF_NAME": "candidate", "RELEASE_ENVIRONMENT": "dev"}
+               "GITHUB_REF_NAME": "candidate", "GITHUB_RUN_NUMBER": "42", "RELEASE_ENVIRONMENT": "dev"}
         env.update(overrides)
         result = subprocess.run(["bash", "scripts/resolve-provider-release.sh"], cwd=self.root,
                                 env=env, capture_output=True, text=True, timeout=10)
         values = dict(line.split("=", 1) for line in output.read_text().splitlines())
         return result, values
 
-    def test_manual_dev_release_and_signed_validation_have_distinct_destinations(self):
-        for validation, publish in (("", "true"), ("false", "true"), ("true", "false")):
+    def test_dev_resolves_only_as_an_unpublished_validation_build(self):
+        # Master publishes no dev release: DevNet's dev releases come from dev
+        # pushes. A dispatched dev lane resolves only as a signed validation
+        # build; a dev publication without a dev push fails closed.
+        result, values = self.resolve(RELEASE_VALIDATION_ONLY="true")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(values, {"environment": "dev", "version": "0.9.0-dev.42", "publish": "false"})
+        for validation in ("", "false"):
             with self.subTest(validation=validation):
                 result, values = self.resolve(RELEASE_VALIDATION_ONLY=validation)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("A dev release requires a push to the dev branch", result.stderr)
+                self.assertEqual(values, {})
+
+    def test_master_push_publishes_staging_only(self):
+        # A master push publishes staging only; the caller routes the lane and
+        # passes RELEASE_ENVIRONMENT. The push itself carries no dispatch inputs,
+        # so validation and version overrides are ignored.
+        push = branch_push("master")
+        for extra in ({}, {"RELEASE_VALIDATION_ONLY": "true"}, {"RELEASE_VERSION_OVERRIDE": "0.9.1"}):
+            with self.subTest(extra=extra):
+                result, values = self.resolve(**push, RELEASE_ENVIRONMENT="staging", **extra)
                 self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertEqual(values, {"environment": "dev", "version": "0.9.0", "publish": publish})
+                self.assertEqual(values, {"environment": "staging", "version": "0.9.0-staging.42", "publish": "true"})
+        # A push with no routed environment, or a push routed to dev or prod,
+        # fails closed with no authorization outputs, also when it asks for a
+        # validation build: a push never publishes dev and never reaches the
+        # production signing identity.
+        for environment in ("", "dev", "prod"):
+            for extra in ({}, {"RELEASE_VALIDATION_ONLY": "true"}):
+                with self.subTest(environment=environment, extra=extra):
+                    result, values = self.resolve(**push, RELEASE_ENVIRONMENT=environment, **extra)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn("Master pushes publish staging only", result.stderr)
+                    self.assertEqual(values, {})
+
+    def test_dev_push_publishes_a_dev_branch_build_only(self):
+        # A dev push publishes dev only, stamped -dev.branch.N apart from the
+        # -dev.N validation builds. The push carries no dispatch inputs, so
+        # validation and version overrides are ignored.
+        push = branch_push("dev")
+        for extra in ({}, {"RELEASE_VALIDATION_ONLY": "true"}, {"RELEASE_VERSION_OVERRIDE": "0.9.1"}):
+            with self.subTest(extra=extra):
+                result, values = self.resolve(**push, RELEASE_ENVIRONMENT="dev", **extra)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(values, {"environment": "dev", "version": "0.9.0-dev.branch.42", "publish": "true"})
+        # Prod or staging from a dev push, or no environment, fails closed.
+        for environment in ("", "prod", "staging"):
+            with self.subTest(environment=environment):
+                result, values = self.resolve(**push, RELEASE_ENVIRONMENT=environment)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("Dev branch pushes publish dev only", result.stderr)
+                self.assertEqual(values, {})
+        # Dev from any other branch fails closed.
+        for ref in ("refs/heads/candidate", "refs/heads/devx", "refs/heads/dev/x", ""):
+            with self.subTest(ref=ref):
+                result, values = self.resolve(**dict(push, GITHUB_REF=ref), RELEASE_ENVIRONMENT="dev")
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("Branch pushes publish releases only from master or dev", result.stderr)
+                self.assertEqual(values, {})
+        # A dev push still needs a valid run number.
+        result, values = self.resolve(**push, RELEASE_ENVIRONMENT="dev", GITHUB_RUN_NUMBER="0")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(values, {})
+
+    def test_prerelease_versions_carry_the_run_number_and_production_does_not(self):
+        summary = self.root / "summary"
+        result, values = self.resolve(**branch_push("master"), GITHUB_RUN_NUMBER="1077",
+                                      RELEASE_ENVIRONMENT="staging", GITHUB_STEP_SUMMARY=str(summary))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(values["version"], "0.9.0-staging.1077")
+        self.assertEqual(summary.read_text(), "### staging provider release 0.9.0-staging.1077\n")
+        summary.unlink()
+        # A dev push (the d-inference dev caller) stamps -dev.branch.<run number>.
+        result, values = self.resolve(**branch_push("dev"), GITHUB_RUN_NUMBER="1077",
+                                      RELEASE_ENVIRONMENT="dev", GITHUB_STEP_SUMMARY=str(summary))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(values, {"environment": "dev", "version": "0.9.0-dev.branch.1077", "publish": "true"})
+        self.assertEqual(summary.read_text(), "### dev provider release 0.9.0-dev.branch.1077\n")
+        summary.unlink()
+        result, values = self.resolve(RELEASE_VALIDATION_ONLY="true", GITHUB_STEP_SUMMARY=str(summary))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(summary.read_text(),
+                         "### dev provider validation build 0.9.0-dev.42 (not published)\n")
+        result, values = self.resolve(GITHUB_EVENT_NAME="push", GITHUB_REF_TYPE="tag",
+                                      GITHUB_REF_NAME="v0.9.0", RELEASE_ENVIRONMENT="")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(values["version"], "0.9.0")
 
     def test_production_tag_keeps_source_version(self):
         result, values = self.resolve(GITHUB_EVENT_NAME="push", GITHUB_REF_TYPE="tag",
@@ -59,15 +145,26 @@ class ReleaseResolutionTests(unittest.TestCase):
                 self.assertEqual(values, {})
 
     def test_invalid_routes_emit_no_authorization_outputs(self):
+        # Dev cases ask for a validation build so that each one reaches the
+        # check it names, past the refusal of a dev publication.
+        validation = {"RELEASE_VALIDATION_ONLY": "true"}
         cases = [
             {"RELEASE_ENVIRONMENT": "prod"},
             {"RELEASE_ENVIRONMENT": "prod", "RELEASE_VALIDATION_ONLY": "true", "GITHUB_REF_TYPE": "tag"},
             {"RELEASE_VALIDATION_ONLY": "true", "GITHUB_EVENT_NAME": "push"},
-            {"GITHUB_REF_TYPE": "tag", "GITHUB_REF_NAME": "v0.9.0-dev.1"},
-            {"RELEASE_VERSION_OVERRIDE": "0.9.1"},
+            {**validation, "GITHUB_REF_TYPE": "tag", "GITHUB_REF_NAME": "v0.9.0-dev.1"},
+            {"RELEASE_ENVIRONMENT": "staging", "GITHUB_REF_TYPE": "tag", "GITHUB_REF_NAME": "v0.9.0-staging.1"},
+            {**validation, "RELEASE_VERSION_OVERRIDE": "0.9.1"},
             {"RELEASE_ENVIRONMENT": "dev\npublish=true"},
             {"RELEASE_VALIDATION_ONLY": "1"},
-            {"RELEASE_VERSION_OVERRIDE": "$(touch unexpected-command)"},
+            {**validation, "RELEASE_VERSION_OVERRIDE": "$(touch unexpected-command)"},
+            {**validation, "RELEASE_VERSION_OVERRIDE": "0.9.0-dev.1"},
+            {**validation, "GITHUB_RUN_NUMBER": ""},
+            {**validation, "GITHUB_RUN_NUMBER": "0"},
+            {**validation, "GITHUB_RUN_NUMBER": "1\npublish=false"},
+            {},
+            {"GITHUB_EVENT_NAME": "push", "GITHUB_REF_TYPE": "branch", "GITHUB_REF": "refs/heads/candidate"},
+            {"GITHUB_EVENT_NAME": "push", "GITHUB_REF_TYPE": "branch", "GITHUB_REF": ""},
         ]
         for case in cases:
             with self.subTest(case=case):
@@ -76,11 +173,26 @@ class ReleaseResolutionTests(unittest.TestCase):
                 self.assertEqual(values, {})
         self.assertFalse((self.root / "unexpected-command").exists())
 
+    def test_missing_malformed_or_ambiguous_provider_version_fails_before_outputs(self):
+        source = self.root / "provider-swift/Sources/ProviderCore/ProviderCore.swift"
+        for content in (None, "", 'public static let version = "invalid"',
+                        'public static let version = "0.9.0"\npublic static let version = "0.9.0"'):
+            with self.subTest(content=content):
+                if content is None:
+                    source.unlink()
+                else:
+                    source.write_text(content)
+                result, values = self.resolve(RELEASE_VALIDATION_ONLY="true")
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(values, {})
+
     def test_retained_coordinator_version_does_not_control_provider_release(self):
-        (self.root / "coordinator/api/server.go").write_text('var LatestProviderVersion = "0.9.1"\n')
+        source = self.root / "coordinator/api/server.go"
+        source.parent.mkdir(parents=True)
+        source.write_text('var LatestProviderVersion = "0.9.1"\n')
         result, values = self.resolve(RELEASE_VALIDATION_ONLY="true")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(values["version"], "0.9.0")
+        self.assertEqual(values["version"], "0.9.0-dev.42")
         self.assertEqual(values["publish"], "false")
         shutil.rmtree(self.root / "coordinator")
         result, values = self.resolve(GITHUB_EVENT_NAME="push", GITHUB_REF_TYPE="tag",
@@ -98,6 +210,17 @@ class ReleaseResolutionTests(unittest.TestCase):
             (["v0.9.1"], False),
             (["0.9.0", "darkbloom 0.9.1"], False),
             (["0.9.0", "unexpected 0.9.0"], False),
+            (["0.9.0-dev.7"], True),
+            (["0.9.0-dev.7", "darkbloom 0.9.0-dev.7"], True),
+            (["0.9.0-dev.7", "darkbloom 0.9.0"], False),
+            (["0.9.0", "darkbloom 0.9.0-dev.7"], False),
+            (["0.9.0-dev.0"], False),
+            (["0.9.0-dev.07"], False),
+            (["0.9.0-dev."], False),
+            (["0.9.1-dev.7"], False),
+            (["0.9.0-rc.1"], False),
+            (["0.9.0-dev.7-dev.8"], False),
+            (["0X9X0-dev.7"], False),
         ]
         for arguments, succeeds in cases:
             with self.subTest(arguments=arguments):
@@ -105,15 +228,6 @@ class ReleaseResolutionTests(unittest.TestCase):
                                         cwd=self.root, capture_output=True, text=True, timeout=10)
                 self.assertEqual(result.returncode == 0, succeeds, result.stderr)
 
-    def test_invalid_or_ambiguous_source_version_is_rejected(self):
-        source = self.root / "provider-swift/Sources/ProviderCore/ProviderCore.swift"
-        for content in ('', 'public static let version = "invalid"\n',
-                        'public static let version = "0.9.0"\n' * 2):
-            with self.subTest(content=content):
-                source.write_text(content)
-                result, values = self.resolve(RELEASE_VALIDATION_ONLY="true")
-                self.assertNotEqual(result.returncode, 0)
-                self.assertEqual(values, {})
 
 
 if __name__ == "__main__":

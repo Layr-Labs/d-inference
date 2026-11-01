@@ -32,6 +32,9 @@ extension EngineV2Bridge {
     public func updateKVBytesCapacity(_ bytes: Int) {
         let requested = max(0, bytes)
         guard let engine = ownedEngine else { return }
+        // A retained GLM engine may still hold pages up to its grant: a shrink
+        // would hand survivors bytes it may occupy, and growth is never safe.
+        if isGLM5NextManaged, GLM5NextLoadFaultState.isRetained { return }
         lastRequestedKVBytesCapacity = requested
         guard kvBackendKind == .paged else {
             engine.updateKVBytesCapacity(requested)

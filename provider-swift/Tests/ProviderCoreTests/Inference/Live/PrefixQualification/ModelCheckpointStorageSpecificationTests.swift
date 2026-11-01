@@ -72,6 +72,8 @@ struct ModelCheckpointStorageSpecificationTests {
         let stripe = ModelPrefixBenchmarkFixture.checkpointEnvironment(
             root: URL(fileURLWithPath: "/tmp/owned-prefix-root"), soloPrefillStripeTokens: 2_048)
         #expect(stripe[EngineV2Factory.soloPrefillStripeKey] == "2048")
+        #expect(stripe[EngineV2Factory.prefillChunkKey] == "512")
+        #expect(stripe[EngineV2Factory.stepTokenBudgetKey] == "2048")
     }
 
     @Test("performance runs do not silently enable expensive logprob diagnostics")

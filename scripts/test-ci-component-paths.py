@@ -22,57 +22,56 @@ spec.loader.exec_module(workflow)
 
 class ComponentPathsTests(unittest.TestCase):
     def test_only_same_workflow_pr_revisions_share_cancellation_group(self):
-        for filename in ("ci.yml", "integration.yml"):
-            source = (ROOT / ".github/workflows" / filename).read_text()
-            concurrency = source.split("\nconcurrency:\n", 1)[1].split("\njobs:\n", 1)[0]
-            self.assertIn("  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}\n", concurrency)
-            self.assertIn("  cancel-in-progress: ${{ github.event_name == 'pull_request' }}\n", concurrency)
+        source = (ROOT / ".github/workflows/ci.yml").read_text()
+        concurrency = source.split("\nconcurrency:\n", 1)[1].split("\njobs:\n", 1)[0]
+        self.assertIn("  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}\n", concurrency)
+        self.assertIn("  cancel-in-progress: ${{ github.event_name == 'pull_request' }}\n", concurrency)
 
     def test_instructions_and_docs_never_select_expensive_lanes(self):
         paths = ["AGENTS.md", "docs/AGENTS.md", "docs/developer/test.md",
-                 "provider-swift/AGENTS.md", "console-ui/AGENTS.md",
+                 "provider-swift/AGENTS.md",
                  "scripts/docs-check.sh", "scripts/test-docs-impact-check.py",
                  "scripts/admin.sh", "landing/src/app/page.tsx"]
         self.assertFalse(any(routing.classify(paths).values()))
 
     def test_component_and_shared_dependency_matrix(self):
         cases = {
-            "provider-swift/Sources/ProviderCore/ProviderCore.swift": {"coordinator", "provider", "integration", "benchmark"},
-            "libs/mlx-swift-lm": {"provider", "integration", "benchmark"},
-            "libs/mlx-swift": {"provider", "integration", "benchmark"},
-            "coordinator/store/postgres/users.go": {"coordinator", "integration", "benchmark"},
-            "console-ui/package-lock.json": {"console"},
-            "coordinator/protocol/messages.go": {"coordinator", "provider", "sidecar", "integration", "benchmark"},
-            "coordinator/tests/protocol/testdata/messages.json": {"coordinator", "provider", "sidecar", "integration", "benchmark"},
-            "fixtures/prompt-contract/v1/corpus.json": {"coordinator", "provider", "sidecar", "integration", "benchmark"},
-            "coordinator/internal/promptproof/load.go": {"coordinator", "provider", "sidecar", "integration", "benchmark"},
-            "coordinator/promptsidecar/Cargo.lock": {"coordinator", "provider", "sidecar", "integration", "benchmark"},
-            "go.sum": {"coordinator", "provider", "sidecar", "integration", "benchmark"},
-            "scripts/run-coordinator-tests.py": {"coordinator", "integration", "benchmark"},
-            "scripts/coordinator-statement-coverage.sh": {"coordinator", "integration", "benchmark"},
-            "scripts/install-release-rust.sh": {"provider", "sidecar", "integration", "benchmark"},
-            ".github/actions/provider-ci-build/action.yml": {"provider", "integration", "benchmark"},
-            ".github/workflows/ci.yml": {"coordinator", "provider", "sidecar", "console"},
-            ".github/workflows/integration.yml": {"integration"},
-            "scripts/test-integration-ci-workflow.py": {"integration"},
-            ".github/workflows/benchmarks.yml": {"benchmark"},
+            "provider-swift/Sources/ProviderCore/ProviderCore.swift": {"provider"},
+            "libs/mlx-swift-lm": {"provider", "sdk"},
+            "libs/mlx-swift-lm/Libraries/MLXLMCommon/Generate.swift": {"provider", "sdk"},
+            "libs/mlx-swift": {"provider", "sdk"},
+            "libs/mlx": {"provider"},
+            "libs/darkbloom-cluster/Package.swift": {"provider"},
+            "fixtures/prompt-contract/v1/corpus.json": {"provider"},
+            ".github/actions/provider-ci-build/action.yml": {"provider", "sdk"},
+            ".github/workflows/ci.yml": {"provider", "sdk"},
+            "scripts/run-paged-kernel-tests.sh": {"provider", "sdk"},
+            "scripts/run-provider-tests.sh": {"provider"},
+            "coordinator/store/postgres/users.go": set(),
+            "coordinator/protocol/messages.go": set(),
+            "console-ui/package-lock.json": set(),
+            "go.sum": set(),
+            "scripts/run-coordinator-tests.py": set(),
+            ".github/workflows/integration.yml": set(),
+            ".github/workflows/benchmarks.yml": set(),
         }
         for path, expected in cases.items():
             with self.subTest(path=path):
                 self.assertEqual({name for name, value in routing.classify([path]).items() if value}, expected)
         for path in routing.COMMON:
             self.assertTrue(all(routing.classify([path]).values()), path)
+        # Every SDK-lane input is also a provider input.
+        for pattern in routing.SDK:
+            path = pattern.replace("**", "x")
+            self.assertTrue(routing.classify([path])["provider"], path)
 
-    def test_rust_embedded_swift_corpora_select_sidecar_only_when_consumed(self):
+    def test_swift_prompt_corpora_select_provider(self):
         for filename in ("nemotron-prompt-edge-corpus.json", "nemotron-reference-corpus.json"):
             path = "provider-swift/Tests/ProviderCoreTests/Fixtures/" + filename
             with self.subTest(path=path):
                 self.assertTrue((ROOT / path).is_file(), path)
                 selected = routing.classify([path])
-                self.assertEqual({name for name, value in selected.items() if value},
-                                 {"provider", "sidecar", "integration", "benchmark"})
-        unrelated = "provider-swift/Tests/ProviderCoreTests/Fixtures/other-corpus.json"
-        self.assertFalse(routing.classify([unrelated])["sidecar"])
+                self.assertEqual({name for name, value in selected.items() if value}, {"provider"})
 
     def test_selected_executable_dependencies_are_classified(self):
         # Explicitly pin the executable dependencies, not every scripts/** file.
@@ -82,15 +81,14 @@ class ComponentPathsTests(unittest.TestCase):
             "scripts/provider_release_cache/mtimes.py", "scripts/fetch-metallib.sh",
             "scripts/stage-test-metallib.sh", "scripts/run-provider-tests.sh",
             "scripts/run-nested-suite.sh", "scripts/run-paged-kernel-tests.sh",
-            "scripts/run-exclusive-native-gpu-test.sh",
+            "scripts/run-exclusive-native-gpu-test.sh", "scripts/provider-test-shards.py",
+            "scripts/provider-test-shard-weights.json",
             "scripts/run-provider-test-watchdog.py", "scripts/prepare-mimo-audio-fixtures.py",
             "scripts/prepare-mimo-provider-fixtures.py", "scripts/prepare-mimo-prompt-fixtures.py",
+            "scripts/prepare-prompt-fixtures.py", "scripts/test-prepare-prompt-fixtures.py",
             "scripts/test-profile-inventory-auth.py", "scripts/test-qwen4-packaged-resources.py",
             "scripts/verify-prompt-parity.sh", "scripts/verify-nemotron-prompt-parity.sh",
-            "scripts/install.sh", "scripts/test-install-atomic.sh",
-            "coordinator/internal/promptcontract/endpoint/endpoint_lower.go",
-            "coordinator/cmd/promptfixtureinput/main.go",
-            "coordinator/cmd/promptsidecarloadproof/main.go",
+            "scripts/install.sh", "scripts/test-install-atomic.sh", "scripts/test-desktop-api.py",
         ):
             self.assertTrue((ROOT / path).is_file(), path)
             self.assertTrue(routing.classify([path])["provider"], path)
@@ -165,19 +163,26 @@ class GitDiffTests(unittest.TestCase):
         base = self.commit()
         (self.repo / "docs").mkdir()
         self.git("mv", "provider-swift/original.swift", "docs/moved.md")
-        self.write("console-ui/file with\nnewline.ts")
         self.write("coordinator/new.go")
         head = self.commit()
         selected = self.pr(base, head)
         self.assertTrue(selected["provider"], "rename source must be considered")
-        self.assertTrue(selected["console"])
-        self.assertTrue(selected["coordinator"])
+        self.assertEqual(set(selected), set(routing.COMPONENTS))
+        self.assertFalse(selected["sdk"], "provider sources are not SDK-lane inputs")
         base = head
         self.git("mv", "docs/moved.md", "provider-swift/new.swift")
         head = self.commit()
         self.assertTrue(self.pr(base, head)["provider"], "rename destination must be considered")
         self.git("rm", "provider-swift/new.swift")
-        self.assertTrue(self.pr(head, self.commit())["provider"], "deletions must be considered")
+        deleted = self.commit()
+        self.assertTrue(self.pr(head, deleted)["provider"], "deletions must be considered")
+        # Names are read verbatim: a newline must neither split a docs name into
+        # a provider path nor hide a provider name behind Git's path quoting.
+        self.write("docs/notes\nprovider-swift/new.swift")
+        head = self.commit()
+        self.assertFalse(self.pr(deleted, head)["provider"], "names must stay NUL-delimited")
+        self.write("provider-swift/file with\nnewline.swift")
+        self.assertTrue(self.pr(head, self.commit())["provider"], "names must stay unquoted")
 
     def test_submodule_pointer_change_selects_provider(self):
         self.git("update-index", "--add", "--cacheinfo", f"160000,{self.base},libs/mlx-swift-lm")
@@ -189,12 +194,10 @@ class GitDiffTests(unittest.TestCase):
         self.assertTrue(self.pr(head, self.git("rev-parse", "HEAD"))["provider"])
 
     def test_push_before_after_and_new_branch_and_manual(self):
-        self.write("console-ui/new.ts")
+        self.write("landing/new.ts")
         head = self.commit()
         event = {"before": self.base, "after": head, "ref": "refs/heads/topic"}
-        selected = self.run_detector("push", event)
-        self.assertTrue(selected["console"])
-        self.assertFalse(selected["provider"])
+        self.assertFalse(any(self.run_detector("push", event).values()))
         for ref in ("refs/heads/master", "refs/heads/main"):
             self.assertTrue(all(self.run_detector("push", {**event, "ref": ref}).values()))
         self.assertTrue(all(self.run_detector("push", {**event, "before": "0" * 40}).values()))
@@ -208,24 +211,48 @@ class GitDiffTests(unittest.TestCase):
 
 
 class WorkflowRoutingTests(unittest.TestCase):
+    def test_public_provider_workflows_have_no_backend_execution_or_private_access(self):
+        for filename in ("ci.yml", "component-changes.yml", "provider-release-cache.yml",
+                         "provider-signing-validation.yml", "release-swift.yml",
+                         "release-provider.yml"):
+            text = (ROOT / ".github/workflows" / filename).read_text()
+            with self.subTest(filename=filename):
+                for forbidden in ("actions/setup-go@", "go.mod", "coordinator/", "admin-ui/",
+                                  "console-ui/", "e2e/", "install-release-rust.sh", "cargo "):
+                    self.assertNotIn(forbidden, text)
+                self.assertNotRegex(text, r"(?m)^\s+repository:")
+        for filename in ("integration.yml", "benchmarks.yml", "telemetry-archive.yml"):
+            self.assertFalse((ROOT / ".github/workflows" / filename).exists())
+        for filename in ("ci.yml", "provider-release-cache.yml", "component-changes.yml"):
+            text = (ROOT / ".github/workflows" / filename).read_text()
+            self.assertNotIn("secrets.", text)
+            self.assertNotRegex(text, r"(?m)^\s+(environment:|id-token:|repository:)")
+
     def test_expensive_jobs_depend_on_successful_classifier(self):
         expected = {
-            "ci.yml": {"test-coordinator": "coordinator", "lint-coordinator": "coordinator",
-                       "test-prompt-sidecar": "sidecar", "test-provider": "provider",
-                       "test-provider-sdk": "provider", "test-provider-parity": "provider",
-                       "lint-console": "console"},
-            "integration.yml": {"integration-tests": "integration"},
-            "benchmarks.yml": {"benchmark": "benchmark"},
+            "ci.yml": {"test-provider": "provider", "test-cluster-checks": "provider"},
         }
         for name, lanes in expected.items():
             jobs = workflow.job_blocks((ROOT / ".github/workflows" / name).read_text())
             self.assertIn("uses: ./.github/workflows/component-changes.yml", jobs["changes"])
             self.assertIn("contents: read", jobs["changes"])
+            # Runner routing follows the classifier, so only selected lanes are requested.
+            self.assertIn("    needs: changes\n", jobs["route"])
             for lane, component in lanes.items():
-                self.assertIn("    needs: changes\n", jobs[lane])
+                self.assertIn("    needs: [changes, route]\n", jobs[lane])
                 self.assertIn("    if: ${{ needs.changes.outputs." + component + " == 'true' }}\n", jobs[lane])
                 self.assertNotIn("continue-on-error:", jobs[lane])
         ci = workflow.job_blocks((ROOT / ".github/workflows/ci.yml").read_text())
+        # The SDK lane runs on every push and on pull requests that change its inputs.
+        self.assertIn("    needs: [changes, route]\n", ci["test-provider-sdk"])
+        self.assertIn("    if: ${{ github.event_name == 'push' || needs.changes.outputs.sdk == 'true' }}\n",
+                      ci["test-provider-sdk"])
+        self.assertNotIn("continue-on-error:", ci["test-provider-sdk"])
+        # The summary runs after failed shards too, but only when the shards were selected.
+        self.assertIn("    needs: [changes, route, test-provider]\n", ci["test-provider-summary"])
+        self.assertIn("    if: ${{ !cancelled() && needs.changes.outputs.provider == 'true' }}\n",
+                      ci["test-provider-summary"])
+        self.assertNotIn("continue-on-error:", ci["test-provider-summary"])
         for policy in ("release-integrity", "docs"):
             self.assertNotIn("    if:", ci[policy])
         self.assertIn("python3 scripts/test-ci-component-paths.py", ci["release-integrity"])
@@ -234,6 +261,8 @@ class WorkflowRoutingTests(unittest.TestCase):
     def test_detector_has_full_history_no_credentials_or_api_truncation(self):
         text = (ROOT / ".github/workflows/component-changes.yml").read_text()
         self.assertIn("fetch-depth: 0", text)
+        # Blobless: full commit and tree history, file contents on demand.
+        self.assertIn("filter: blob:none", text)
         self.assertIn("persist-credentials: false", text)
         self.assertIn("contents: read", text)
         self.assertNotIn("secrets.", text)
@@ -246,25 +275,29 @@ class WorkflowRoutingTests(unittest.TestCase):
     def test_provider_aggregate_exhaustive_truth_table(self):
         jobs = workflow.job_blocks((ROOT / ".github/workflows/ci.yml").read_text())
         gate = jobs["provider-test-gate"]
-        self.assertIn("needs: [changes, test-provider, test-provider-sdk, test-provider-parity]", gate)
+        self.assertIn("needs: [changes, test-provider, test-provider-summary]", gate)
+        self.assertNotIn("test-provider-sdk", gate)
         self.assertIn("if: ${{ always() }}", gate)
         self.assertNotIn("continue-on-error:", gate)
         step = workflow.step_blocks(gate)[0]
         for name, expression in {
             "CHANGES_RESULT": "needs.changes.result", "PROVIDER_CHANGED": "needs.changes.outputs.provider",
-            "UNIT_RESULT": "needs.test-provider.result", "SDK_RESULT": "needs.test-provider-sdk.result",
-            "PARITY_RESULT": "needs.test-provider-parity.result",
+            "UNIT_RESULT": "needs.test-provider.result", "SUMMARY_RESULT": "needs.test-provider-summary.result",
         }.items():
             self.assertIn(name + ": ${{ " + expression + " }}", step)
         command = workflow.run_command(step)
         results = ("success", "skipped", "failure", "cancelled")
-        for detector, changed, unit, sdk, parity in itertools.product(results, ("true", "false", ""), results, results, results):
+        # Prompt Parity runs in a provider shard, so UNIT_RESULT carries it.
+        self.assertNotIn("PARITY_RESULT", step)
+        for detector, changed, unit, summary in itertools.product(
+                results, ("true", "false", ""), results, results):
             result = subprocess.run(["bash", "-e", "-c", command], capture_output=True, timeout=5,
                                     env={**os.environ, "CHANGES_RESULT": detector, "PROVIDER_CHANGED": changed,
-                                         "UNIT_RESULT": unit, "SDK_RESULT": sdk, "PARITY_RESULT": parity})
-            expected = detector == "success" and ((changed == "true" and unit == sdk == parity == "success") or
-                                                  (changed == "false" and unit == sdk == parity == "skipped"))
-            self.assertEqual(result.returncode == 0, expected, (detector, changed, unit, sdk, parity))
+                                         "UNIT_RESULT": unit, "SUMMARY_RESULT": summary})
+            lanes = (unit, summary)
+            expected = detector == "success" and ((changed == "true" and set(lanes) == {"success"}) or
+                                                  (changed == "false" and set(lanes) == {"skipped"}))
+            self.assertEqual(result.returncode == 0, expected, (detector, changed, *lanes))
 
 
 if __name__ == "__main__":

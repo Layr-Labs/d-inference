@@ -28,9 +28,9 @@ ${publicFacts.privacy}
 
 ## Explore
 
-- [Developer guide](/developers)
+- [Developer guide](/developers.md)
 - [Pricing](/pricing)
-- [Contact](/contact)
+- [Contact](/contact.md)
 - [About](/about)
 - [Privacy policy](/privacy)
 - [Terms](/terms)
@@ -51,7 +51,7 @@ Use Darkbloom when a consumer needs an authenticated OpenAI-compatible inference
 ## Consumer integration
 
 - [Product overview](${siteOrigin}/index.md)
-- [Developer guide](${siteOrigin}/developers): API examples and the separate provider CLI.
+- [Developer guide](${siteOrigin}/developers.md): API examples and the separate provider CLI.
 - [Authentication](${siteOrigin}/auth.md): create a consumer API key and fund the account before paid inference.
 - [OpenAPI](${siteOrigin}/openapi.json): reviewed consumer contract subset, not every platform endpoint.
 - [Pricing](${siteOrigin}/pricing.md): public rates and fetch freshness; verify current rates before use.
@@ -71,7 +71,7 @@ Use Darkbloom when a consumer needs an authenticated OpenAI-compatible inference
 - [About](${siteOrigin}/about)
 - [Privacy](${siteOrigin}/privacy): ${publicFacts.privacy}
 - [Terms](${siteOrigin}/terms)
-- [Contact](${siteOrigin}/contact)
+- [Contact](${siteOrigin}/contact.md)
 
 Do not send secrets in URLs or public messages. API authentication, account funding and model availability still apply. This index does not advertise an MCP service, OAuth server, free sandbox or anonymous paid inference.
 `;
@@ -95,7 +95,7 @@ Use a returned model ID in inference requests. An invalid or missing key returns
 
 The provider device token is not a consumer API key. The provider CLI login manages a Mac's provider identity; it does not create a key for consumer integrations. Do not put provider credentials into consumer requests.
 
-For implementation details, see [Developers](/developers), [OpenAPI](/openapi.json), [official authentication documentation](https://docs.darkbloom.dev/api/authentication), and [home](/index.md).
+For implementation details, see [Developers](/developers.md), [OpenAPI](/openapi.json), [official authentication documentation](https://docs.darkbloom.dev/api/authentication), and [home](/index.md).
 `;
 }
 

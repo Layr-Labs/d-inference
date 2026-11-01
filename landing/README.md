@@ -45,9 +45,13 @@ project settings or DNS.
 The old `/index.html`, `/terms.html` and `/privacy.html` URLs permanently
 redirect to `/`, `/terms` and `/privacy`. The published terms and privacy
 text is preserved. The old homepage earnings calculator is replaced by the
-new site's About page; the console's calculator remains available in
-`console-ui/`. `assets/cube-hero.png` is retained solely for existing
-inference test fixtures.
+new site's About page; the console is owned by the sibling
+[platform repository](https://github.com/Layr-Labs/darkbloom-platform/tree/48a198c71a2d30feec5597bacf1101120f7f955d/console-ui).
+`assets/cube-hero.png` remains available to public native inference fixtures.
+
+Hosting operations require specific human approval. Landing keeps its own
+server-side API routes; it does not build or deploy the centralized coordinator.
+Existing upstream endpoints and environment variables are unchanged.
 
 Use a budget-capped coordinator key for the public demo. The chat route's
 in-memory rate limiter is per instance; distributed enforcement belongs in
@@ -56,10 +60,16 @@ the deployment's shared limiter or edge controls.
 ## Public discovery and representations
 
 The public entry points are `/llms.txt`, `/auth.md`, `/openapi.json`,
-`/sitemap.xml`, `/developers`, `/pricing` and `/contact`. The homepage and
-explanatory pages support explicit Markdown twins (`/index.md`,
-`/developers.md`, `/pricing.md`, `/contact.md`) and `Accept: text/markdown`.
-Normal browser requests retain HTML. Read [API-CONTRACT.md](API-CONTRACT.md)
+`/sitemap.xml`, `/developers.md`, `/pricing` and `/contact.md`. The homepage
+and pricing page support explicit Markdown twins (`/index.md`, `/pricing.md`)
+and `Accept: text/markdown`; normal browser requests retain HTML.
+Developer and contact guidance remain Markdown documents, discoverable through
+`/llms.txt`. `/developers` and `/contact` return Markdown when requested with
+`Accept: text/markdown`, and HTTP 404 for ordinary browser requests. Their HTML
+pages, site navigation links and XML sitemap entries are removed. Human-facing
+API links lead to the official documentation. Direct `.md` URLs remain public
+and readable by any client; format selection is not access control.
+Read [API-CONTRACT.md](API-CONTRACT.md)
 for the exact reviewed operation subset and its platform source revision.
 
 Pricing reads the public coordinator source server-side, labels USD per million

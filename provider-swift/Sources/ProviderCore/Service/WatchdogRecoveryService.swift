@@ -424,10 +424,10 @@ public struct WatchdogRecoveryService: Sendable {
                 deps.log(
                     "crash-loop backend guard tripped after \(scopedCrashLoopCount) short-uptime "
                         + "restarts — `.auto` resolves contiguous on this box until the next "
-                        + "release or `darkbloom doctor --clear-backend-guard`")
+                        + "release or `\(BuildEnvironment.current.cliName) doctor --clear-backend-guard`")
             } else {
                 deps.log(
-                    "crash-loop backend guard could not be persisted (check ~/.darkbloom) — "
+                    "crash-loop backend guard could not be persisted (check ~/\(BuildEnvironment.current.installDirectoryName)) — "
                         + "a slot with an explicit paged selection will keep resolving "
                         + "paged and the crash loop may continue")
             }
@@ -618,6 +618,29 @@ public struct WatchdogRecoveryService: Sendable {
 
         do {
             var state = try session.readState()
+            let before = state
+            // The previous watchdog may have exited after kickstart but
+            // before persisting its launch receipt. Require comparable
+            // evidence of a new launch; a health tick can precede kickstart.
+            // Keep unproven intent available for a later observation.
+            if let baseline = state.candidate?.launchIntent?.baseline,
+               let snapshot = deps.launchSnapshot(),
+               snapshot.label == baseline.label
+            {
+                let runsAdvanced = if let previous = baseline.runs, let current = snapshot.runs {
+                    current > previous
+                } else {
+                    false
+                }
+                let processChanged = if let previous = baseline.process, let current = snapshot.process {
+                    current != previous
+                } else {
+                    false
+                }
+                if runsAdvanced || processChanged {
+                    _ = state.reconcileLaunchIntent(snapshot: snapshot, now: now)
+                }
+            }
             guard let candidate = state.candidate else { return .noCandidate }
             let freshMatchingHeartbeat: Bool
             if let daemonState {
@@ -629,7 +652,6 @@ public struct WatchdogRecoveryService: Sendable {
                 freshMatchingHeartbeat = false
             }
 
-            let before = state
             let promoted = state.observeCandidateHealth(
                 healthySignal: freshMatchingHeartbeat,
                 processStartedAt: daemonState?.startedAt,

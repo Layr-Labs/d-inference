@@ -1,6 +1,6 @@
 # Provider process
 
-> Last updated: 2026-10-12
+> Last updated: 2026-10-26
 
 The provider is the Apple Silicon Mac that decrypts prompts and runs inference.
 It ships as one Swift package (`provider-swift/`) producing the `darkbloom` CLI,
@@ -27,7 +27,7 @@ lives inside this one hardened process. The authoritative provider version is
 | Product | Kind | Role |
 |---|---|---|
 | `darkbloom` | executable | CLI: `start`, `status`, `doctor`, `logs`, `benchmark`, `models`, `fan`, `watchdog`; long-running serve modes host an `NSApplication(.accessory)` run loop for APNs pushes (`provider-swift/Sources/darkbloom/main.swift`, `provider-swift/Sources/darkbloom/Darkbloom.swift`) |
-| `darkbloom-enclave` | executable | Secure Enclave helper used by `coordinator/api/install.sh` before the daemon runs: `attest`, `sign`, `info` (`provider-swift/Sources/darkbloom-enclave-cli/`) |
+| `darkbloom-enclave` | executable | Secure Enclave helper used by [coordinator/api/install.sh](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/api/install.sh) before the daemon runs: `attest`, `sign`, `info` (`provider-swift/Sources/darkbloom-enclave-cli/`) |
 | `darkbloom-fan-helper` | executable | Opt-in root LaunchDaemon for fan control; never installed by default (`provider-swift/Sources/DarkbloomFanHelper/`) |
 | `ProviderCore` | library | Everything below; shared by the CLI and helpers |
 | `ProviderCoreFoundation` | library | Pure-Foundation pieces also linked by publish tooling: `WeightHasher`, `PromptContractIdentity`, `TemplateRenderCheck`, `ModelScanner`, `Manifest` (`provider-swift/Sources/ProviderCoreFoundation/`) |
@@ -37,7 +37,7 @@ lives inside this one hardened process. The authoritative provider version is
 
 | Component | Responsibility | Code |
 |---|---|---|
-| Coordinator client | WebSocket connection, reconnection backoff, protocol codec, registration | `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient.swift`, `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClientCodec.swift` |
+| Coordinator client | WebSocket connection, reconnect policy, protocol codec, registration | `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient.swift`, `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorReconnectPolicy.swift`, `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClientCodec.swift` |
 | `ProviderLoop` (actor) | Event loop: inference requests and cancellations, `load_model` / `prefetch_model` / `desired_models`, heartbeats and capacity, attestation challenges, startup preload, idle timeout, auto-update | `provider-swift/Sources/ProviderCore/ProviderLoop.swift` and its `ProviderLoop+*.swift` extensions |
 | Inference | `MultiModelBatchSchedulerEngine` → one `EngineV2Bridge` per model → CBv2; slot construction, memory model, deadlines, MTP, vision | `provider-swift/Sources/ProviderCore/Inference/` — [`../inference.md`](../inference.md), [`../hardware-support.md`](../hardware-support.md) |
 | KV cache tiers | Encrypted SSD attention snapshots and complete checkpoints (`KVCacheSSD/`); resident paged blocks and recurrent checkpoints require explicit memory opt-in. `KVCache/` retains the legacy cache API and the shared key-wrapping service | `provider-swift/Sources/ProviderCore/KVCacheSSD/`, `provider-swift/Sources/ProviderCore/KVCache/` — [`../prefix-cache.md`](../prefix-cache.md) |
@@ -73,6 +73,21 @@ serve invocation; shutdown finishes the work stream and waits for its consumer.
 The [attestation lifecycle](../security/attestation.md#provider-connection-control)
 owns the connection and trust guarantees.
 
+An accepted request whose model is not resident releases the work consumer when
+it starts waiting for the load (`releaseWorkFIFO` in
+`provider-swift/Sources/ProviderCore/ProviderLoop+WorkFIFO.swift`), so later
+inference requests, cancels and attestation challenges are not held behind
+weight loading. A coordinator cancel for the waiting request is applied when its
+admission returns, where the serial consumer applied it. Connection, drain and
+model-management events, and the end of the work stream, still wait for it. So
+does a request for another model that is not resident, before its pre-accept
+capacity check (`awaitReleasedLoads`): the waiting load may not yet hold the
+memory or slot that check sizes. A request for the model being loaded is checked
+at once; if the check fails, it waits for that load and is checked again,
+because the load already holds the memory the check sized for a second copy.
+Native MiMo requests keep the serial consumer.
+`DARKBLOOM_TTFT_COLD_LOAD_RELEASE=0` restores the fully serial consumer.
+
 - **In-process inference.** The MLX stack is linked into the `darkbloom`
   binary; there is no Python interpreter and no inference subprocess. Runtime verification can launch a child for paged-kernel preflight
   (`PagedKernelPreflight`, `runtime-smoke`); platform checks and service
@@ -86,7 +101,7 @@ owns the connection and trust guarantees.
   `provider-swift/Sources/DarkbloomFanHelper/FanXPCService.swift`).
 - **promptsidecar** is a coordinator-side process; the provider computes the
   same contract identity locally and never talks to it
-  ([`../prompt-contract-sidecar.md`](../prompt-contract-sidecar.md)).
+  ([../prompt-contract-sidecar.md](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/architecture/prompt-contract-sidecar.md)).
 
 ### Reconnect and attestation lifecycle
 
@@ -100,6 +115,32 @@ model-state change or key persistence. It proves custody only; the platform deci
 whether the new connection may serve. Unexpected disconnect still cancels that
 connection's inference requests; this does not resume interrupted completions
 or prove two-minute engine continuity.
+
+When a connection attempt fails or a session ends with an error,
+`CoordinatorClient.runLoop` waits before the next attempt.
+`CoordinatorReconnectPolicy` chooses the range of that wait from how the last
+attempt ended, and `runLoop` draws the wait at random from that range.
+`CoordinatorSessionRecorder` records how long the session stayed open after its
+`register` frame. It also records the code of a close frame from the coordinator
+side. A session that stayed open for `stableSessionDuration` or more resets the
+backoff. A drop after a long session then does not pay the waits that earlier
+drops grew. A close frame with code `1012` (service restart) gives
+`serviceRestartDelayRange`, and the backoff does not grow. Every other end takes
+the next `ExponentialBackoff` range and grows the backoff. The receive callback
+records the close code on the connection queue, because the transport state
+change that follows the frame can end the session first. Network.framework
+reports a code that it does not name, such as `1012`, as `noStatusReceived`;
+the callback then reads the code from the first two bytes of the frame's
+payload (`sentCloseCode`). The
+[close codes](../../reference/protocol-messages.md#close-codes-and-the-reconnect-wait)
+and the [runtime constants](../../provider/cli-reference.md#runtime-constants)
+give the codes and the values. Sources:
+`provider-swift/Sources/ProviderCore/Coordinator/CoordinatorReconnectPolicy.swift`
+(`CoordinatorReconnectPolicy`),
+`provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClientState.swift`
+(`CoordinatorSessionRecorder`) and
+`provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient+Connection.swift`
+(`runLoop`, `receiveLoop`, `sentCloseCode`).
 
 Apple exchanges use `AppAttestShadowReply`, a capability bound to their original
 `NWConnection`, rather than the reconnectable outbound router. Late results are
@@ -168,5 +209,5 @@ work (`provider-swift/Sources/ProviderCore/ProviderLoop+AppAttestShadow.swift`,
 - [`mlx-swift.md`](mlx-swift.md) — the three pinned submodules and the metallib
 - [`../inference.md`](../inference.md), [`../prefix-cache.md`](../prefix-cache.md), [`../hardware-support.md`](../hardware-support.md)
 - [`../security/encryption.md`](../security/encryption.md), [`../../provider/attestation.md`](../../provider/attestation.md)
-- [`coordinator.md`](coordinator.md) — the other side of the WebSocket
+- [coordinator.md](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/architecture/components/coordinator.md) — the other side of the WebSocket
 - [`../../provider/cli-reference.md`](../../provider/cli-reference.md), [`../../provider/fan-control.md`](../../provider/fan-control.md)

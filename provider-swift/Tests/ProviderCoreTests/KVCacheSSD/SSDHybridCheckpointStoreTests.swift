@@ -203,6 +203,42 @@ struct SSDHybridCheckpointStoreTests {
         #expect(store.stats().stagedBytesInUse == 0)
     }
 
+    @Test("the writer buffer accepts a checkpoint the gate admits while its predecessor settles")
+    func bufferAcceptsJobAdmittedDuringSettlement() async throws {
+        let f = try SSDHybridCheckpointTestFixture(tokenCount: 6_145)
+        defer { f.remove() }
+        let outcomes = PrefixCacheDonationTelemetry()
+        let store = try f.makeStore(donationRecorder: outcomes)
+        defer { store.close() }
+        let publishing = SSDCheckpointCoordinationTestSupport.Barrier()
+        let settling = SSDCheckpointCoordinationTestSupport.Barrier()
+        defer { publishing.release(); settling.release() }
+        store.afterPublishBeforeIndexForTesting = { try? publishing.block() }
+        // The first completion runs on the writer after `settle` frees its
+        // `writing` entry and before the writer dequeues the next job.
+        let first = try f.startDonation(store, position: 256) { try? settling.block() }
+        try await SSDCheckpointCoordinationTestSupport.waitUntil { publishing.isEntered }
+        let positions = [512, 768, 1_024, 1_280, 1_536]
+        let queued = try positions.map { try f.startDonation(store, position: $0) }
+        try await SSDCheckpointCoordinationTestSupport.waitUntil { store.pipeline.acceptedCount == 6 }
+        publishing.release()
+        try await SSDCheckpointCoordinationTestSupport.waitUntil { settling.isEntered }
+        #expect(store.lock.withLock { store.writing.count } == 5)
+        // Synchronous, so a refusal would settle before `donate` returns.
+        let late = try f.source(position: 1_792)
+        store.donate(late, requestID: .init(10), tokens: f.tokens, cacheSalt: "tenant-a") { _ in }
+        #expect(store.pipeline.droppedCount == 0)
+        #expect(outcomes.snapshot().first { $0.outcome == .writeQueueFull } == nil)
+        settling.release()
+        #expect(await first.value == [256])
+        for (task, position) in zip(queued, positions) {
+            #expect(await task.value == [position])
+        }
+        await store.waitForWritesForTesting()
+        #expect(store.stats().filesWritten == 7)
+        await store.closeAndWait()
+    }
+
     @Test("overlapping stages reauthenticate changed recency without deleting valid ciphertext")
     func overlappingStagesPreserveFile() async throws {
         let f = try SSDHybridCheckpointTestFixture()

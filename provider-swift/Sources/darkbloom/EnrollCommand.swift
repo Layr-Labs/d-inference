@@ -9,7 +9,7 @@ struct Enroll: AsyncParsableCommand {
         New providers require macOS 27 or later and coordinator-qualified App Attest.
         The OS version alone does not establish eligibility.
         On macOS 27 or later, use App Attest without downloading an MDM profile.
-        Link your account, start the provider and check darkbloom status for
+        Link your account, start the provider and check \(BuildEnvironment.current.cliName) status for
         coordinator approval. Existing management profiles are kept in place.
 
         Darkbloom MDM will be deactivated soon. Upgrade to macOS 27 or later
@@ -70,7 +70,7 @@ struct Enroll: AsyncParsableCommand {
 
         if alreadyEnrolled {
             print("  Legacy eligibility confirmed; already enrolled. No profile installation needed.")
-            print("  Verify current serving authorization with: darkbloom status")
+            print("  Verify current serving authorization with: \(BuildEnvironment.current.cliName) status")
             return
         }
 
@@ -93,12 +93,12 @@ struct Enroll: AsyncParsableCommand {
             print("  Darkbloom CANNOT erase, lock, or control your Mac.")
         }
 
-        print("After installing, verify with: darkbloom doctor")
+        print("After installing, verify with: \(BuildEnvironment.current.cliName) doctor")
     }
 
     static let eligibilityNotice =
         "New providers require macOS 27 or later and coordinator-qualified App Attest. "
-        + "Check App Attest qualification with `darkbloom status`; the OS version alone is not approval. "
+        + "Check App Attest qualification with `\(BuildEnvironment.current.cliName) status`; the OS version alone is not approval. "
         + "Grandfathered MDM machines may serve temporarily, but MDM-only providers receive no base rewards. "
         + "Base rewards require current qualified App Attest authorization."
 }

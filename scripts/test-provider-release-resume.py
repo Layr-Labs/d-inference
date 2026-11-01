@@ -35,8 +35,10 @@ class FakeAPI:
         self.artifacts = [{"id":10,"name":f"unsigned-provider-{SHA}-1","expired":False,"size_in_bytes":100,
                           "digest":"sha256:" + "b"*64,"workflow_run":{"id":123,"head_sha":SHA}}]
         self.provider_version = "0.9.13"
+        self.provider_source = None
         self.content_requests = []
         self.comparison = {"status": "ahead", "merge_base_commit": {"sha": SHA}}
+        self.dev_comparison = {"status": "ahead", "merge_base_commit": {"sha": SHA}}
     def get(self,path):
         if path == "actions/runs/123":return self.run
         if path == "git/ref/tags/v0.9.13":return {"object":{"type":"tag","sha":"c"*40}}
@@ -45,13 +47,15 @@ class FakeAPI:
         if path == "commits/" + "d"*40:return self.commit
         if path == "git/ref/heads/master":return {"object":{"sha":"d"*40}}
         if path == f"compare/{SHA}..." + "d"*40:return self.comparison
+        if path == "git/ref/heads/dev":return {"object":{"sha":"f"*40}}
+        if path == f"compare/{SHA}..." + "f"*40:return self.dev_comparison
         if path == "compare/" + "d"*40 + "..." + "d"*40:
             return {"status":"identical","merge_base_commit":{"sha":"d"*40}}
         if path.startswith("contents/"):
             self.content_requests.append(path)
             if path != f"contents/provider-swift/Sources/ProviderCore/ProviderCore.swift?ref={SHA}":
                 raise AssertionError("Release recovery read a non-provider version source: " + path)
-            source = 'public static let version = "'+self.provider_version+'"'
+            source = self.provider_source if self.provider_source is not None else 'public static let version = "'+self.provider_version+'"'
             return {"content":base64.b64encode(source.encode()).decode()}
         raise AssertionError(path)
     def pages(self,path,key):
@@ -61,6 +65,24 @@ class FakeAPI:
 
 
 class RecoveryTests(unittest.TestCase):
+    def test_missing_or_malformed_source_response_is_rejected(self):
+        for response in ({}, {"content": None}, {"content": "not-valid-base64!"}):
+            with self.subTest(response=response):
+                api = FakeAPI()
+                get = api.get
+                with patch.object(api, "get", side_effect=lambda path: response if path.startswith("contents/") else get(path)):
+                    with self.assertRaises(ValueError):
+                        select(api, "123", "1")
+
+    def test_missing_malformed_or_ambiguous_provider_source_is_rejected(self):
+        for source in ("", 'public static let version = "invalid"',
+                       'public static let version = "0.9.13"\npublic static let version = "0.9.13"'):
+            with self.subTest(source=source):
+                api = FakeAPI()
+                api.provider_source = source
+                with self.assertRaises(ValueError):
+                    select(api, "123", "1")
+
     def test_signed_tag_requires_verified_source_on_master_ancestry(self):
         env = {"GITHUB_EVENT_NAME": "push", "GITHUB_REF_TYPE": "tag",
                "GITHUB_REF_NAME": "v0.9.13", "GITHUB_REF": "refs/tags/v0.9.13", "GITHUB_SHA": SHA}
@@ -92,6 +114,63 @@ class RecoveryTests(unittest.TestCase):
                            ("GITHUB_EVENT_NAME", "pull_request_target"), ("GITHUB_EVENT_NAME", "workflow_run")]:
             with self.subTest(key=key, value=value), self.assertRaises(ValueError):
                 verify_workflow_source(FakeAPI(), dict(env, **{key: value}))
+
+    def test_master_push_source_must_be_verified_master_ancestry(self):
+        # Master may advance before the job starts; ancestry is the boundary.
+        env = {"GITHUB_EVENT_NAME": "push", "GITHUB_REF_TYPE": "branch",
+               "GITHUB_REF_NAME": "master", "GITHUB_REF": "refs/heads/master", "GITHUB_SHA": SHA}
+        self.assertEqual(verify_workflow_source(FakeAPI(), env), SHA)
+        for key, value in [("GITHUB_REF", "refs/heads/candidate"), ("GITHUB_REF", "refs/tags/v0.9.13"),
+                           ("GITHUB_REF", ""), ("GITHUB_REF_TYPE", "")]:
+            with self.subTest(key=key, value=value), self.assertRaises(ValueError):
+                verify_workflow_source(FakeAPI(), dict(env, **{key: value}))
+        for mutate in [lambda api: api.commit["commit"]["verification"].update(verified=False),
+                       lambda api: api.comparison.update(status="diverged"),
+                       lambda api: api.comparison["merge_base_commit"].update(sha="e"*40)]:
+            api = FakeAPI()
+            mutate(api)
+            with self.assertRaises(ValueError):
+                verify_workflow_source(api, env)
+
+    def test_dev_push_source_must_be_verified_dev_ancestry_for_dev_only(self):
+        # master's gate admits a dev push for environment dev only. The commit
+        # must be GitHub-verified and on dev ancestry; dev may advance first.
+        env = {"GITHUB_EVENT_NAME": "push", "GITHUB_REF_TYPE": "branch", "GITHUB_REF_NAME": "dev",
+               "GITHUB_REF": "refs/heads/dev", "GITHUB_SHA": SHA, "RELEASE_ENVIRONMENT": "dev"}
+        self.assertEqual(verify_workflow_source(FakeAPI(), env), SHA)
+        # Prod or staging from a dev push, or no environment, is refused.
+        for environment in ("prod", "staging", ""):
+            with self.subTest(environment=environment), \
+                    self.assertRaisesRegex(ValueError, "require environment dev"):
+                verify_workflow_source(FakeAPI(), dict(env, RELEASE_ENVIRONMENT=environment))
+        without = dict(env)
+        del without["RELEASE_ENVIRONMENT"]
+        with self.assertRaisesRegex(ValueError, "require environment dev"):
+            verify_workflow_source(FakeAPI(), without)
+        # An unverified commit, or one that dev does not contain, is refused.
+        for mutate, message in [
+                (lambda api: api.commit["commit"]["verification"].update(verified=False), "not verified"),
+                (lambda api: api.dev_comparison.update(status="diverged"), "not on dev ancestry"),
+                (lambda api: api.dev_comparison.update(status="behind"), "not on dev ancestry"),
+                (lambda api: api.dev_comparison["merge_base_commit"].update(sha="e"*40), "not on dev ancestry")]:
+            api = FakeAPI()
+            mutate(api)
+            with self.subTest(message=message), self.assertRaisesRegex(ValueError, message):
+                verify_workflow_source(api, env)
+        # Dev from any other branch or trigger is refused: another branch push,
+        # a dispatch on dev, and a pull request.
+        for key, value, message in [("GITHUB_REF", "refs/heads/candidate", "require master or dev"),
+                                    ("GITHUB_REF", "refs/heads/devx", "require master or dev"),
+                                    ("GITHUB_EVENT_NAME", "workflow_dispatch", "current reviewed master"),
+                                    ("GITHUB_EVENT_NAME", "pull_request", "trusted tag push")]:
+            with self.subTest(key=key, value=value), self.assertRaisesRegex(ValueError, message):
+                verify_workflow_source(FakeAPI(), dict(env, **{key: value}))
+        # Dev ancestry never stands in for master ancestry on a master route.
+        api = FakeAPI()
+        api.comparison.update(status="diverged")
+        master_push = dict(env, GITHUB_REF_NAME="master", GITHUB_REF="refs/heads/master")
+        with self.assertRaisesRegex(ValueError, "not on reviewed master ancestry"):
+            verify_workflow_source(api, master_push)
 
     def test_failed_source_verification_emits_no_trusted_outputs(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -179,8 +258,27 @@ class RecoveryTests(unittest.TestCase):
                 else:
                     with self.assertRaises(ValueError):extract_transport(archive,digest,root/"out")
 
+    def test_nested_reusable_workflow_job_names_still_bind_recovery(self):
+        # release-swift.yml calls the reusable release-provider.yml, so the
+        # Actions API reports each job as "<caller-job-id> / <job-name>". Recovery
+        # must bind the nested prod jobs, and still reject a run that lacks the
+        # one build, qualification and signing job.
+        api=FakeAPI()
+        api.jobs=[{"name":"prod / "+name,"status":"completed","conclusion":"success"}
+                  for name in (BUILD_JOB,QUALIFY_JOB)]
+        api.jobs.append({"name":"prod / "+SIGN_JOB,"status":"completed","conclusion":"failure"})
+        self.assertEqual(select(api,"123","1")["source_sha"],SHA)
+        for mutate in [lambda x:x.jobs[0].update(name="prod / Unrelated job"),
+                       lambda x:x.jobs[2].update(name="prod / Unrelated job")]:
+            nested=FakeAPI()
+            nested.jobs=[{"name":"prod / "+name,"status":"completed","conclusion":"success"}
+                         for name in (BUILD_JOB,QUALIFY_JOB)]
+            nested.jobs.append({"name":"prod / "+SIGN_JOB,"status":"completed","conclusion":"failure"})
+            mutate(nested)
+            with self.assertRaises(ValueError):select(nested,"123","1")
+
     def test_workflow_success_guard_truth_table(self):
-        source=(ROOT/".github/workflows/release-swift.yml").read_text()
+        source=(ROOT/".github/workflows/release-provider.yml").read_text()
         resolver=source.split("  resolve-env:\n",1)[1].split("  build-provider:\n",1)[0]
         self.assertIn("      actions: read",resolver)
         self.assertNotIn("secrets.",resolver)
@@ -195,7 +293,7 @@ class RecoveryTests(unittest.TestCase):
             actual=eval(expression,{"__builtins__":{}},locals())
             expected=not cancelled and resolve=="success" and ((resume=="true" and build==qualify=="skipped") or (resume=="false" and build==qualify=="success"))
             self.assertEqual(actual,expected)
-        for name in ["build-provider","qualify-sdk"]:
+        for name in ["build-provider","qualify-sdk-shard","qualify-sdk"]:
             body=source.split("  "+name+":\n",1)[1].split("    runs-on:",1)[0]
             self.assertIn("if: needs.resolve-env.outputs.resume != 'true'",body)
 

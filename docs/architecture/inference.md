@@ -4340,8 +4340,10 @@ tensor-parallel sums. Nothing launches it by default yet: the installed provider
 passes no depth in tensor parallel, and the planner credits no speed-up.
 
 - **Heads.** Both ranks hold the three trained BF16 heads whole
-  (3 × 658,546,816 B), read through the verified checkpoint, beside their shard
-  (`MiMoTensorParallelDraftHead`). The drafter is the product's
+  (3 × 658,546,816 B), named by the pipeline's head inventory
+  (`MiMoMTPHeadInventory`) and read through the verified checkpoint beside their
+  shard (`MiMoTensorParallelDraftHead`); both ranks compare the inventory's
+  digest before either is ready. The drafter is the product's
   (`MiMoV26MTPAssistant`); its target is a one-layer shell that lends it this
   rank's embedding and vocabulary rows. A proposal is the whole vocabulary's
   argmax from one small sum (`MiMoV26TextModel.readoutArgMax`), so both ranks

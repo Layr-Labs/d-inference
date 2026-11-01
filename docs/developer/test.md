@@ -1348,8 +1348,8 @@ registered artifact for them.
    each, and for a 40-token and a 6-token prompt around the 8-token window, it
    runs `full`, `simulated` and two `tp` ranks over the sealed local ring on
    the given port and the next one. It then runs the socket backend once, and
-   one sampled run: temperature 0.8, drawn by the product's sampler from the
-   gathered row. It runs this matrix twice:
+   one sampled run: temperature 0.8, drawn from the gathered row (by the
+   product's sampler on the paged path). It runs this matrix twice:
 
    - `contiguous`: the foundation's path (tensors read whole and cut, ordinary
      caches);

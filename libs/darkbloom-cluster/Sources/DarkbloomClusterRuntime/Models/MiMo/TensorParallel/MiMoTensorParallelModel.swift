@@ -224,8 +224,9 @@ public final class MiMoTensorParallelModel {
         public var peakActiveBytes = 0
     }
 
-    /// Sampling as the product samples one row: `MLXRandom.categorical` over
-    /// the whole row scaled by `1 / temperature`, keyed by `seed + step`.
+    /// A keyed draw from the whole row: `MLXRandom.categorical` over it scaled
+    /// by `1 / temperature`, keyed by `seed + step` in `generate`;
+    /// `generatePaged` draws with the product's sampler instead.
     public struct Sampling: Sendable, Equatable {
         public let temperature: Float
         public let seed: UInt64

@@ -15,8 +15,8 @@ import MLX
 //       [--record-top K] [--backend ring|socket|jaccl] [--reduction native|sealed-bench] [--shard-rank R]
 //       [--deadline-seconds S] [--temperature T [--sample-seed S]] [--path contiguous|paged]
 //       [--agreement-tamper yes] [--record-routes yes]
-//       greedy, or with --temperature the product's sampler (MLXRandom.categorical, key seed + step) over the
-//       whole row, which every rank gathers bit for bit. `--path paged` is the resident runtime's path: the
+//       greedy, or with --temperature a keyed draw (MLXRandom.categorical, key seed + step) over the whole
+//       row, which every rank gathers bit for bit. `--path paged` is the resident runtime's path: the
 //       verified load (the manifest first, then only this rank's byte runs), paged KV, the per-step
 //       agreement sum, 100-op decode buffers, greedy logprobs through the split top-k gather and sampling
 //       with the product's QwenStageTokenSampler over the gathered row. `--agreement-tamper yes` changes this

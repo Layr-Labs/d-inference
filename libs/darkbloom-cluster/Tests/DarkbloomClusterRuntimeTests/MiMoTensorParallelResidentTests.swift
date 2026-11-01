@@ -263,6 +263,45 @@ struct MiMoTensorParallelResidentTests {
         let local = try Self.run(models, rule: .greedy, stopAfter: { rank, commits in rank == 1 && commits == 3 })
         for ran in local { #expect(ran.outcome.tokens == Array(tokens.prefix(3)) && ran.outcome.finish == .clientStop) }
         #expect(local[1].outcome.stoppedHere && !local[0].outcome.stoppedHere && !local[0].outcome.ownerStopped)
+        // The owner's stop answer to the token just before a stop token: the stop rides that
+        // step's agreement, so neither rank commits the stop token and both leave together.
+        let before = try #require((0 ..< tokens.count - 1).first { !tokens[0 ... $0].contains(tokens[$0 + 1]) })
+        let raced = try Self.run(models, rule: .greedy, stops: [tokens[before + 1]],
+                                 answer: { rank, ordinal in !(rank == 0 && ordinal == before) })
+        for ran in raced { #expect(ran.outcome.tokens == Array(tokens.prefix(before + 1)) && ran.outcome.finish == .clientStop) }
+        #expect(raced[0].outcome.ownerStopped && raced[0].published.map(\.token) == Array(tokens.prefix(before + 1)))
+    }
+
+    /// A greedy token's logit is the row's maximum, so its logprob is the
+    /// split top-k gather's first even when an exactly tied token (BF16
+    /// logits tie often) leads the gather: rank 0 publishes the requested
+    /// logprobs for every token.
+    @Test func greedyLogprobsSurviveAnExactlyTiedMaximum() throws {
+        let tied = MiMoTensorParallelDecoding.Choice(token: 20, stop: nil, logits: MLXArray.zeros([1, 4]), row: nil,
+            top: (tokenIDs: [10], logits: [4], logprobs: [-0.25]), sampledLogprobs: nil)
+        let logprobs = try #require(tied.logprobs)
+        #expect(logprobs.logprob == -0.25 && logprobs.top == [.init(tokenID: 10, logprob: -0.25)])
+        // Through both ranks' selection: IDs 10 and 20 tie at rank 0's maximum.
+        let directory = try Self.synthetic()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let models = try Self.ranks(directory, pair: Pair())
+        let half = models.value[0].plan.vocabularySize / 2
+        for count in 1 ... 3 {
+            let chosen = try Pair.run(device: .cpu) { rank in
+                var row = [Float](repeating: -1, count: half)
+                if rank == 0 { row[10] = 4; row[20] = 4 } else { row[5] = 3.5 }
+                let choice = try MiMoTensorParallelDecoding(model: models.value[rank]).select(
+                    MLXArray(row).reshaped(1, half).asType(.bfloat16),
+                    request: .init(prompt: [1], outputCount: 1, chunk: 1, stopTokenIDs: [],
+                                   rule: .greedyLogprobs(top: count), sampler: nil),
+                    stop: 0, position: 0)
+                return (token: choice.token, logprobs: choice.logprobs)
+            }
+            #expect(chosen[0].token == chosen[1].token && [10, 20].contains(chosen[0].token))
+            let published = try #require(chosen[0].logprobs)
+            #expect(published.top.count == count && published.logprob == published.top[0].logprob && published.logprob < 0)
+            #expect(published.top.prefix(2).allSatisfy { [10, 20].contains($0.tokenID) && $0.logprob == published.logprob })
+        }
     }
 
     /// Route sets: both ranks route every position to the same experts (the

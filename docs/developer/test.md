@@ -1326,9 +1326,10 @@ registered artifact for them.
    - the resident runtime's verified load: each rank reads exactly its shard's
      bytes, and a tampered or foreign checkpoint is refused;
    - its paged requests: ranks agree bit for bit and equal the ordinary caches,
-     with per-rank paged geometry, the selection rules, logprobs, every stop
-     kind, the request and load agreements, the request budget and the
-     text-only launch.
+     with per-rank paged geometry, the selection rules, logprobs (an exactly
+     tied maximum included), every stop kind (the owner's stop just before a
+     stop token included), the request and load agreements, the request budget
+     and the text-only launch.
 
    The placement checks (`libs/darkbloom-cluster/Tests/PlacementChecks/run.sh`)
    confirm that the planner never places MiMo in tensor parallel while its
@@ -1346,9 +1347,9 @@ registered artifact for them.
    token taking all 8 experts (no route can flip), and FP32 `kernel`. For
    each, and for a 40-token and a 6-token prompt around the 8-token window, it
    runs `full`, `simulated` and two `tp` ranks over the sealed local ring on
-   ports 58223–58224. It then runs the socket backend once, and one sampled
-   run: temperature 0.8, drawn by the product's sampler from the gathered row.
-   It runs this matrix twice:
+   the given port and the next one. It then runs the socket backend once, and
+   one sampled run: temperature 0.8, drawn by the product's sampler from the
+   gathered row. It runs this matrix twice:
 
    - `contiguous`: the foundation's path (tensors read whole and cut, ordinary
      caches);

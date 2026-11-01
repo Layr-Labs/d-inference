@@ -4209,9 +4209,13 @@ tensor parallel's executor contract and one lane:
   agreement sum per rank of `[value, token, stop, position]`: the
   vocabulary-split argmax, or rank 0's draw from the gathered row with the
   product's sampler. A stop on either rank ends both after the same step, and
-  positions that differ end the request.
-- Logprobs. A greedy row that asks for them takes the split top-k gather; a
-  sampled row publishes the product sampler's own logprobs from the gathered row.
+  positions that differ end the request. Both ranks read a step's stop flags
+  before either commits its token, and rank 0 hears each owner answer before
+  the next step is built, so neither rank commits a token its peer skipped.
+- Logprobs. A greedy row that asks for them takes the split top-k gather,
+  whose first logprob is the greedy token's even when an exactly tied token
+  leads it; a sampled row publishes the product sampler's own logprobs from
+  the gathered row.
 - Not yet: lanes, prompt-prefix reuse, MTP, 2,048-token prefill frames and
   micro-batches, building decode steps one ahead.
 - Memory. `MiMoTensorParallelRequestBudget` charges each request

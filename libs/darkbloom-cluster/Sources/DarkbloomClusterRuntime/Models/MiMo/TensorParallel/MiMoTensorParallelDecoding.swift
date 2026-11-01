@@ -53,8 +53,11 @@ enum MiMoTensorParallelSelectionRule: Equatable, Sendable {
 /// draw (rank 1 an ignored value that still depends on the row, so its sums
 /// keep their order). A positive stop slot on either rank ends both after
 /// that step (`QwenTensorParallelStopRule`); positions that differ end the
-/// request as diverged state. Without a reduction (`full`) every choice is
-/// local and no collective runs.
+/// request as diverged state. Both ranks read a step's stop slots before
+/// either commits its token, and rank 0 hears the owner's answer before the
+/// next step is built, so no rank commits a token its peer skipped (the
+/// late-answer race `Gemma4TensorParallelRequestLoop` guards against). Without
+/// a reduction (`full`) every choice is local and no collective runs.
 struct MiMoTensorParallelDecoding {
     /// Decode steps' command-buffer commit limits on the encoding thread, as
     /// GLM and Qwen tensor parallel set them (`GLM5NextTensorParallelResidentRuntime.decodeCommandBuffers`):
@@ -119,7 +122,7 @@ struct MiMoTensorParallelDecoding {
         var slots = [Float](repeating: 0, count: 4 * reduction.size)
         for index in 0 ..< 4 { slots[4 * reduction.rank + index] = mine[index] }
         let summed = reduction.allSum(MLXArray(slots))
-        eval(summed)
+        try MLX.withError { error in eval(summed); try error.check() }
         let values = summed.asArray(Float.self)
         return (0 ..< reduction.size).allSatisfy { Array(values[(4 * $0) ..< (4 * $0 + 4)]) == mine }
     }
@@ -201,7 +204,10 @@ struct MiMoTensorParallelDecoding {
             let end = min(prompt.count, offset + chunk)
             let logits = try forward(Array(prompt[offset ..< end]), caches: caches)
             if end == prompt.count { return logits }
-            eval(caches.flatMap { $0.innerState() } + (routes?.pending ?? []))
+            try MLX.withError { error in
+                eval(caches.flatMap { $0.innerState() } + (routes?.pending ?? []))
+                try error.check()
+            }
             routes?.flush()
             offset = end
         }
@@ -225,12 +231,13 @@ struct MiMoTensorParallelDecoding {
             .init(index: index, token: token, logits: logits, row: row, top: top, sampledLogprobs: sampledLogprobs)
         }
 
-        /// The committed token's logprobs, when the request asks for them.
+        /// The committed token's logprobs, when the request asks for them. A
+        /// greedy token's logit is the row's maximum, the gather's first
+        /// (`select` checks it), even when an exactly tied token leads the gather.
         var logprobs: ClusterWorkerTokenLogprobs? {
             if let sampledLogprobs { return sampledLogprobs }
-            guard let top, let first = top.tokenIDs.first, first == token else { return nil }
-            return .init(logprob: top.logprobs[0],
-                         top: zip(top.tokenIDs, top.logprobs).map { .init(tokenID: $0, logprob: $1) })
+            guard let top, let first = top.logprobs.first else { return nil }
+            return .init(logprob: first, top: zip(top.tokenIDs, top.logprobs).map { .init(tokenID: $0, logprob: $1) })
         }
     }
 
@@ -276,9 +283,9 @@ struct MiMoTensorParallelDecoding {
         }
         let stops = (0 ..< ranks).map { slot($0, 2) }.filter { $0 > 0 }
         var token = Int(slot(0, 1))
+        var best = slot(0, 0)
         if request.rule != .gatheredRow {
             // The strictly greater maximum wins: ties go to the lower rank, which holds the lower IDs.
-            var best = slot(0, 0)
             for other in 1 ..< ranks where slot(other, 0) > best { best = slot(other, 0); token = Int(slot(other, 1)) }
         }
         guard (0 ..< model.plan.vocabularySize).contains(token) else {
@@ -288,7 +295,13 @@ struct MiMoTensorParallelDecoding {
         var sampled: ClusterWorkerTokenLogprobs?
         if stops.isEmpty {
             switch request.rule {
-            case .greedyLogprobs(let count): top = try selection.topK(logits, count: count)
+            case .greedyLogprobs(let count):
+                let gathered = try selection.topK(logits, count: count)
+                // Both ranks hold the same values, so a refusal here ends both alike.
+                guard gathered.logits.first == best else {
+                    throw ProbeError("MiMo tensor parallel logprobs do not lead with the greedy token's logit")
+                }
+                top = gathered
             case .gatheredRow where rank == 0: sampled = request.sampler!.takePendingLogprobs()
             default: break
             }
@@ -304,7 +317,7 @@ struct MiMoTensorParallelDecoding {
         slots[2 * reduction.rank] = Float(outcome.tokens.count)
         slots[2 * reduction.rank + 1] = Float(outcome.finish.code)
         let summed = reduction.allSum(MLXArray(slots))
-        eval(summed)
+        try MLX.withError { error in eval(summed); try error.check() }
         let values = summed.asArray(Float.self)
         guard (0 ..< reduction.size).allSatisfy({ values[2 * $0] == values[0] && values[2 * $0 + 1] == values[1] }) else {
             throw ProbeError("MiMo tensor-parallel ranks ended the request differently")

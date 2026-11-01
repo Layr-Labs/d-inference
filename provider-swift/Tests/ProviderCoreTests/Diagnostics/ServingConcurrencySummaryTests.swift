@@ -9,7 +9,7 @@ import Testing
     #expect(!backend.engineV2MaxConcurrentIsExplicit)
 
     let summary = ServingPerformanceProfiles.summary(backend: backend)
-    #expect(summary.hasPrefix("Automatic default; unknown profiles keep default 4;"))
+    #expect(summary.hasPrefix("Automatic default; unknown profiles keep default 4 (8 for automatically paged models on M5 Pro, Max and Ultra);"))
     #expect(summary.contains("model overrides: gemma-4-26b-qat-4bit=1, z-model=2;"))
     #expect(summary.contains("higher widths require an exact reviewed model/runtime/hardware profile"))
 }
@@ -39,7 +39,7 @@ import Testing
     let explicit = BackendSettings(engineV2MaxConcurrent: 4)
     let automaticSummary = ServingPerformanceProfiles.summary(backend: automatic)
     let explicitSummary = ServingPerformanceProfiles.summary(backend: explicit)
-    #expect(automaticSummary.hasPrefix("Automatic default; unknown profiles keep default 4;"))
+    #expect(automaticSummary.hasPrefix("Automatic default; unknown profiles keep default 4 (8 for automatically paged models on M5 Pro, Max and Ultra);"))
     #expect(explicitSummary.hasPrefix("Default operator cap 4; unknown profiles keep cap 4;"))
     #expect(!automaticSummary.contains("model overrides"))
     #expect(!explicitSummary.contains("model overrides"))

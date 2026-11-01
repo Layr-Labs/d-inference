@@ -1,7 +1,7 @@
 import Foundation
 
 /// StartupPreloader -- sequential boot-time model preload with memory
-/// admission and an optional per-model self-test decode.
+/// admission, an optional per-model self-test decode and shape warmup.
 ///
 /// Fixes the fleet-rollover cold-start failure mode: after a release restart
 /// the provider used to register (and attract routing) with NOTHING loaded, so
@@ -52,6 +52,10 @@ public struct StartupPreloader: Sendable {
         /// Optional 1-token decode through the serving path after each load.
         /// nil = self-test disabled. Returns the decode duration.
         public var selfTest: (@Sendable (String) async throws -> Duration)?
+        /// Optional excluded first-use shape warmup after the load and a
+        /// passing self-test, before the next candidate and before the caller
+        /// serves: the first routed prompt then finds its kernels compiled.
+        public var shapeWarmup: (@Sendable (String) async -> Void)?
         /// When true, a failed self-test retires the model (see `retire`).
         public var selfTestFailClosed: Bool
         /// Retire a model whose self-test failed (fail-closed only):
@@ -80,11 +84,19 @@ public struct StartupPreloader: Sendable {
         /// Closed-category operational warning; detailed model and memory
         /// values remain in owner-only state/diagnostics, not public logs.
         public var onInsufficientMemory: (@Sendable () -> Void)?
+        /// Returns memory a load reclaims without evicting (retained free KV
+        /// segments, MLX's buffer cache) before a candidate is skipped; the
+        /// requirement and free memory are then sampled again.
+        public var reclaimBeforeSkip: (@Sendable () async -> Void)?
+        /// Sees each failed load or self-test (modelId, error); production
+        /// prints the GLM wired-limit fix for a Metal out-of-memory failure.
+        public var onFailure: @Sendable (String, any Error) -> Void
 
         public init(
             freeMemoryGb: @escaping @Sendable () async -> Double,
             load: @escaping @Sendable (String) async throws -> Void,
             selfTest: (@Sendable (String) async throws -> Duration)? = nil,
+            shapeWarmup: (@Sendable (String) async -> Void)? = nil,
             selfTestFailClosed: Bool = false,
             retire: @escaping @Sendable (String) async -> Void = { _ in },
             onSelfTestFailed: @escaping @Sendable (String, String) -> Void = { _, _ in },
@@ -92,11 +104,16 @@ public struct StartupPreloader: Sendable {
             currentRequiredGb: (@Sendable (String) async -> Double?)? = nil,
             canLoadMore: (@Sendable () async -> Bool)? = nil,
             onCandidateStarted: (@Sendable (String) async -> Void)? = nil,
-            onInsufficientMemory: (@Sendable () -> Void)? = nil
+            onInsufficientMemory: (@Sendable () -> Void)? = nil,
+            reclaimBeforeSkip: (@Sendable () async -> Void)? = nil,
+            onFailure: @escaping @Sendable (String, any Error) -> Void = { modelId, error in
+                GLM5NextWiredLimitNotice.report(error, modelID: modelId)
+            }
         ) {
             self.freeMemoryGb = freeMemoryGb
             self.load = load
             self.selfTest = selfTest
+            self.shapeWarmup = shapeWarmup
             self.selfTestFailClosed = selfTestFailClosed
             self.retire = retire
             self.onSelfTestFailed = onSelfTestFailed
@@ -105,6 +122,8 @@ public struct StartupPreloader: Sendable {
             self.canLoadMore = canLoadMore
             self.onCandidateStarted = onCandidateStarted
             self.onInsufficientMemory = onInsufficientMemory
+            self.reclaimBeforeSkip = reclaimBeforeSkip
+            self.onFailure = onFailure
         }
     }
 
@@ -142,12 +161,15 @@ public struct StartupPreloader: Sendable {
             // Memory admission WITHOUT eviction (see the design rules above).
             // Requirement recomputed LIVE when the hook is wired: an earlier
             // fail-closed retirement can have relaxed the serving-set floor
-            // since plan time.
-            var requiredGb = candidate.requiredGb
-            if let live = deps.currentRequiredGb, let liveGb = await live(modelId) {
-                requiredGb = liveGb
+            // since plan time. A short sample first gets back what the load
+            // gate would reclaim without evicting, as that gate does.
+            var requiredGb = await requirement(of: candidate)
+            var freeGb = await deps.freeMemoryGb()
+            if freeGb < requiredGb, let reclaimBeforeSkip = deps.reclaimBeforeSkip {
+                await reclaimBeforeSkip()
+                requiredGb = await requirement(of: candidate)
+                freeGb = await deps.freeMemoryGb()
             }
-            let freeGb = await deps.freeMemoryGb()
             guard freeGb >= requiredGb else {
                 deps.onInsufficientMemory?()
                 deps.log(
@@ -172,6 +194,7 @@ public struct StartupPreloader: Sendable {
                 // The gate and its pending-load rechecks use two bounded
                 // insufficient-memory message shapes. Keep public text closed.
                 if Self.isInsufficientMemoryLoad(error) { deps.onInsufficientMemory?() }
+                deps.onFailure(modelId, error)
                 deps.log(
                     "WARN: startup preload failed for '\(modelId)': "
                         + "\(error.localizedDescription) — will lazy-load on first request")
@@ -179,17 +202,23 @@ public struct StartupPreloader: Sendable {
                 continue
             }
 
-            guard let selfTest = deps.selfTest else { continue }
+            guard let selfTest = deps.selfTest else {
+                await deps.shapeWarmup?(modelId)
+                continue
+            }
             let selfTestStart = clock.now
             do {
                 let decodeTook = try await selfTest(modelId)
                 deps.log(
                     "startup self-test: '\(modelId)' decoded 1 token in \(Self.secs(decodeTook)) "
                         + "(end-to-end \(Self.secs(clock.now - selfTestStart)))")
+                // A failed self-test never warms; cancellation stops at the next candidate.
+                await deps.shapeWarmup?(modelId)
             } catch is CancellationError {
                 break
             } catch {
                 summary.selfTestFailed.append(modelId)
+                deps.onFailure(modelId, error)
                 deps.onSelfTestFailed(modelId, error.localizedDescription)
                 if deps.selfTestFailClosed {
                     await deps.retire(modelId)
@@ -207,6 +236,14 @@ public struct StartupPreloader: Sendable {
             }
         }
         return summary
+    }
+
+    /// The live requirement when the hook resolves one, else the planned figure.
+    private func requirement(of candidate: Candidate) async -> Double {
+        guard let live = deps.currentRequiredGb, let liveGb = await live(candidate.modelId) else {
+            return candidate.requiredGb
+        }
+        return liveGb
     }
 
     private static func isInsufficientMemoryLoad(_ error: any Error) -> Bool {

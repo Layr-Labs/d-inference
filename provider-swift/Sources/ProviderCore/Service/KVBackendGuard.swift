@@ -107,8 +107,8 @@ public enum KVBackendGuardStore {
         {
             return URL(fileURLWithPath: override)
         }
-        return FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".darkbloom/kv-backend-guard.json")
+        return BuildEnvironment.current.installDirectory()
+            .appendingPathComponent("kv-backend-guard.json")
     }
 
     /// How far in the FUTURE a `tripped_at` may sit before the record is

@@ -1,0 +1,66 @@
+{
+  "schema_version": 1,
+  "model_id": "EigenLabs/Ternary-Bonsai-2-9B-MLX-2bit",
+  "version": "2026-10-15-base-r2",
+  "r2_prefix": "v2/EigenLabs-Ternary-Bonsai-2-9B-MLX-2bit--e6e52cb29efb/2026-10-15-base-r2",
+  "aggregate_sha256": "3bfbed188a821cb7b16321b6be54245c6b162fc7d0ea064d5f663d0b07ee713d",
+  "total_size_bytes": 3475181460,
+  "file_count": 9,
+  "files": [
+    {
+      "path": "chat_template.jinja",
+      "role": "template",
+      "sha256": "a4aee8afcf2e0711942cf848899be66016f8d14a889ff9ede07bca099c28f715",
+      "size_bytes": 7756
+    },
+    {
+      "path": "config.json",
+      "role": "config",
+      "sha256": "b028784e087316b7ce0fb7ae3d2d6eaeb0b15144dd3f234da4c5d57ef1ffbacb",
+      "size_bytes": 30202
+    },
+    {
+      "path": "generation_config.json",
+      "role": "config",
+      "sha256": "a3345cadb9d63a91a11c2c12135da7eadc3d0c820e3287b04682b51cad1b12d2",
+      "size_bytes": 201
+    },
+    {
+      "path": "hadamard.json",
+      "role": "config",
+      "sha256": "6d0b37a136e1b5b25b3e8b0467599c78dd0a90c341b640a1f49271cb0be7c73b",
+      "size_bytes": 168574
+    },
+    {
+      "path": "model.safetensors",
+      "role": "weight",
+      "sha256": "b8ebd13459dcd53504432a4a0a797287c3a4c00d80835466dbb499f05b7512bb",
+      "size_bytes": 3462149260
+    },
+    {
+      "path": "preprocessor_config.json",
+      "role": "preprocessor",
+      "sha256": "27225450ac9c6529872ee1924fcb0962ff5634834f817040f444118116f4e516",
+      "size_bytes": 390
+    },
+    {
+      "path": "tokenizer.json",
+      "role": "tokenizer",
+      "sha256": "5f9e4d4901a92b997e463c1f46055088b6cca5ca61a6522d1b9f64c4bb81cb42",
+      "size_bytes": 12807982
+    },
+    {
+      "path": "tokenizer_config.json",
+      "role": "tokenizer",
+      "sha256": "316230d6a809701f4db5ea8f8fc862bc3a6f3229c937c174e674ff3ca0a64ac8",
+      "size_bytes": 16710
+    },
+    {
+      "path": "video_preprocessor_config.json",
+      "role": "preprocessor",
+      "sha256": "7768af27c1fafa9cc9011c1dc20067e03f8915e03b63504550e11d5066986d13",
+      "size_bytes": 385
+    }
+  ],
+  "created_at": "2026-10-15T19:45:52.441472Z"
+}

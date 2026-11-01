@@ -4,11 +4,40 @@ import MLXLMCommon
 struct PrefixCacheConstructionStatus: Sendable {
     let state: PrefixCacheStatusState
     let reason: PrefixCacheStatusReason
+    /// Typed refusal behind an error status; the heartbeat status carries it
+    /// as `detail` (`PrefixCacheModelStatus`).
+    var failure: SSDPrefixCacheConstructionFailure? = nil
 
     static let configDisabled = PrefixCacheConstructionStatus(
         state: .disabled, reason: .configDisabled)
     static let scanPending = PrefixCacheConstructionStatus(
         state: .pending, reason: .scanPending)
+}
+
+extension PrefixCacheConstructionStatus {
+    /// The status of a refused store, shared by the attention-block and
+    /// complete-checkpoint factories: a disk problem is `disk_unavailable`,
+    /// layout and weight-hash refusals are their disabled reasons, and every
+    /// other refusal is `cache_init_failed`. An error status keeps its typed
+    /// cause. `capability` only distinguishes attention-block plan refusals.
+    init(refusal failure: SSDPrefixCacheConstructionFailure,
+         capability: CBv2PrefixReuseCapability? = nil) {
+        switch failure {
+        case .missingWeightHash:
+            self.init(state: .disabled, reason: .weightHashUnavailable)
+        case .unsupportedPlan:
+            let dualCursor = capability?.unsupportedReason?.rawValue == "paged_hybrid_requires_dual_cursor"
+            self.init(state: .disabled, reason: dualCursor ? .pagedHybridUnsupported : .unsupportedLayout)
+        case .layoutUnavailable:
+            self.init(state: .disabled, reason: .unsupportedLayout)
+        case .unsafePath:
+            self.init(state: .error, reason: .diskUnavailable, failure: failure)
+        case .keyUnavailable, .ephemeralKeyUnavailable, .blockContractMismatch,
+            .epochUnavailable, .promptContractUnavailable, .identityUnavailable,
+            .writeBudgetUnavailable, .cacheClosed:
+            self.init(state: .error, reason: .cacheInitFailed, failure: failure)
+        }
+    }
 }
 
 final class PrefixCacheConstructionStatusBox: @unchecked Sendable {
@@ -20,41 +49,12 @@ final class PrefixCacheConstructionStatusBox: @unchecked Sendable {
         capability: CBv2PrefixReuseCapability
     ) {
         lock.withLock {
-            value = Self.status(failure: failure, capability: capability)
+            value = PrefixCacheConstructionStatus(refusal: failure, capability: capability)
         }
     }
 
     var snapshot: PrefixCacheConstructionStatus? {
         lock.withLock { value }
-    }
-
-    private static func status(
-        failure: SSDPrefixCacheConstructionFailure,
-        capability: CBv2PrefixReuseCapability
-    ) -> PrefixCacheConstructionStatus {
-        switch failure {
-        case .missingWeightHash:
-            return PrefixCacheConstructionStatus(
-                state: .disabled, reason: .weightHashUnavailable)
-        case .unsupportedPlan:
-            let reason: PrefixCacheStatusReason
-            if capability.unsupportedReason?.rawValue == "paged_hybrid_requires_dual_cursor" {
-                reason = .pagedHybridUnsupported
-            } else {
-                reason = .unsupportedLayout
-            }
-            return PrefixCacheConstructionStatus(state: .disabled, reason: reason)
-        case .layoutUnavailable:
-            return PrefixCacheConstructionStatus(
-                state: .disabled, reason: .unsupportedLayout)
-        case .unsafePath:
-            return PrefixCacheConstructionStatus(
-                state: .error, reason: .diskUnavailable)
-        case .keyUnavailable, .ephemeralKeyUnavailable, .blockContractMismatch,
-            .epochUnavailable, .promptContractUnavailable, .writeBudgetUnavailable:
-            return PrefixCacheConstructionStatus(
-                state: .error, reason: .cacheInitFailed)
-        }
     }
 }
 

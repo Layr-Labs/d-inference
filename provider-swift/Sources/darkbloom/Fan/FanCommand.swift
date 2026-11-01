@@ -7,6 +7,27 @@ import ProviderCore
 
 struct Fan: AsyncParsableCommand {
     static let packagedCapability = "darkbloom-fan-helper-v1"
+    /// The root helper is one system service for the Mac: `disable` and
+    /// `uninstall` also affect the other build environment's provider.
+    static var sharedHelperNotice: String {
+        let providers = BuildEnvironment.allCases.map { "`\($0.cliName)`" }.joined(separator: " and ")
+        return "The fan helper serves every Darkbloom provider on this Mac (\(providers)). This change applies to all of them."
+    }
+
+    /// Version of the running helper, or nil when it is not loaded or does
+    /// not answer.
+    static func runningHelperVersion() -> String? {
+        guard FanServiceManager().isLoaded() else { return nil }
+        return try? FanHelperClient().status().helperVersion
+    }
+
+    /// Text for an installed helper that is older than the one this build
+    /// ships, or nil when it is current, newer or unknown.
+    static func outdatedHelperNotice(installedVersion: String) -> String? {
+        guard FanIPC.compareHelperVersion(installedVersion) == .orderedAscending else { return nil }
+        return "The installed fan helper is version \(installedVersion); this build ships version "
+            + "\(FanIPC.helperVersion). Update it with `sudo \(BuildEnvironment.current.cliName) fan enable`."
+    }
     private static var commandTypes: [ParsableCommand.Type] {
         var commands: [ParsableCommand.Type] = [
             Status.self, Diagnose.self, Enable.self, Configure.self,
@@ -115,6 +136,9 @@ extension Fan {
             output.append("Installed: \(report.installed ? "yes" : "no")")
             output.append("Service: \(report.loaded ? "running" : "stopped")")
             if let helper = report.helper {
+                if let notice = Fan.outdatedHelperNotice(installedVersion: helper.helperVersion) {
+                    output.append("Helper: \(notice)")
+                }
                 output.append("Mode: \(helper.mode.rawValue)")
                 output.append("Provider active: \(helper.providerActive ? "yes" : "no")")
                 output.append(
@@ -157,7 +181,7 @@ extension Fan {
                 output.append("GPU sensors: \(sensors)")
             }
             if !report.installed {
-                output.append("Enable with: sudo darkbloom fan enable")
+                output.append("Enable with: sudo \(BuildEnvironment.current.cliName) fan enable")
             }
             return output
         }
@@ -218,7 +242,7 @@ extension Fan {
                         + "\(String(format: "%.0f", status.triggerTemperatureC)) C"
                 )
                 Swift.print("  Active only while the Darkbloom provider is running.")
-                Swift.print("  Disable with: sudo darkbloom fan disable")
+                Swift.print("  Disable with: sudo \(BuildEnvironment.current.cliName) fan disable")
             }
         }
     }
@@ -257,6 +281,7 @@ extension Fan {
         )
 
         mutating func run() async throws {
+            Swift.print(Fan.sharedHelperNotice)
             try runMutation {
                 try FanServiceManager().disable()
                 Swift.print("Fan control disabled; macOS automatic control restored.")
@@ -270,6 +295,7 @@ extension Fan {
         )
 
         mutating func run() async throws {
+            Swift.print(Fan.sharedHelperNotice)
             try runMutation {
                 try FanServiceManager().uninstall()
                 Swift.print("Fan helper uninstalled; macOS automatic control restored.")

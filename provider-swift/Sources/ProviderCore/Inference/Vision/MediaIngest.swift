@@ -280,10 +280,8 @@ public enum MediaIngest {
             tools, context: .init(modelId: request.model, modelType: modelType))
         let additionalContext = MultiModelBatchSchedulerEngine.templateAdditionalContext(
             for: request, controls: templateControls, modelType: modelType, hasMedia: true)
-        if preserveTemplateFields {
-            try Qwen4SupportPolicy.validateReasoningContext(
-                modelID: request.model, modelType: modelType, additionalContext: additionalContext)
-        }
+        try Qwen4SupportPolicy.validateReasoningContext(
+            modelID: request.model, modelType: modelType, additionalContext: additionalContext)
         var chatMessages: [Chat.Message] = []
         let retainToolMedia = preserveTemplateFields && modelType == "diffusion_gemma"
         var totalPixels = 0
@@ -421,7 +419,7 @@ public enum MediaIngest {
                     // header was readable both are equal; when it was nil the
                     // extent is the real charge. Re-check so a nil-header image
                     // can't slip an over-aggregate raster through.
-                    if case .ciImage(let ci) = image {
+                    if case .ciImage(let ci) = image.source {
                         let realized = safeExtentPixels(ci.extent)
                         let charge = max(headerPixels, realized)
                         let (sum, overflow) =

@@ -42,6 +42,48 @@ struct KVBackendPostureTests {
         #expect(!KVBackendPosture.slotLine(.init(model: "older", kvBackend: "paged")).contains("live_kv="))
     }
 
+    @Test("status and doctor name a failed SSD prefix cache, its cause and the fix")
+    func prefixCacheFailureCarriesCauseAndFix() {
+        func status(_ state: PrefixCacheStatusState, _ reason: PrefixCacheStatusReason,
+                    _ detail: SSDPrefixCacheConstructionFailure? = nil) -> PrefixCacheModelStatus {
+            .init(modelId: "m", backend: .paged, replayStrategy: .direct, state: state,
+                  reason: reason, detail: detail)
+        }
+        let failed = DaemonState.SlotPosture(model: "failed", kvBackend: "paged", kvQuantization: "native",
+            prefixCache: status(.error, .cacheInitFailed, .keyUnavailable))
+        let disk = DaemonState.SlotPosture(model: "disk", kvBackend: "paged", kvQuantization: "native",
+            prefixCache: status(.error, .diskUnavailable, .unsafePath))
+        let ready = DaemonState.SlotPosture(model: "ready", kvBackend: "paged", kvQuantization: "native",
+            prefixCache: status(.ready, .ready))
+        let closing = DaemonState.SlotPosture(model: "closing", kvBackend: "paged", kvQuantization: "native",
+            prefixCache: status(.error, .cacheInitFailed, .cacheClosed))
+        let off = DaemonState.SlotPosture(model: "off", kvBackend: "contiguous", kvQuantization: "native",
+            prefixCache: status(.disabled, .configDisabled))
+
+        let text = KVBackendPosture.statusLines(
+            state: state(slots: [failed, disk, ready, closing, off]), now: 1002,
+            heartbeatIntervalSecs: heartbeat).joined(separator: "\n")
+        #expect(text.contains("failed: kv=paged (requested auto)"))
+        #expect(text.contains("| prefix_cache=FAILED (cache_init_failed: key_unavailable)"))
+        #expect(text.contains("| prefix_cache=FAILED (disk_unavailable: unsafe_path)"))
+        #expect(text.contains("ready: kv=paged (requested auto) | mtp=disabled | live_kv=native checkpoint_kv=off | prefix_cache=ready"))
+        #expect(text.contains("| prefix_cache=closed (unloading)"))
+        #expect(text.contains("| prefix_cache=off (config_disabled)"))
+        #expect(text.contains("→ fix: run the signed release"))
+        #expect(text.contains("cache set --reset-directory"))
+        #expect(text.components(separatedBy: "→ fix:").count == 3, "one fix per failed cache, none for the rest")
+        // An older daemon's state file has no prefix-cache fields.
+        #expect(!KVBackendPosture.slotLine(.init(model: "older", kvBackend: "paged")).contains("prefix_cache"))
+
+        let checks = PrefixCacheDiagnosis.diagnostics(slots: [failed, disk, ready, closing, off])
+        #expect(checks.count == 2 && checks.allSatisfy { $0.level == .warn && $0.name == "prefix cache" })
+        #expect(checks.first?.message.contains("failed serves uncached (cache_init_failed: key_unavailable)") == true)
+        #expect(checks.allSatisfy { $0.fix?.contains("restart") == true })
+        let healthy = PrefixCacheDiagnosis.diagnostics(slots: [ready, closing, off])
+        #expect(healthy.count == 1 && healthy.first?.level == .pass)
+        #expect(PrefixCacheDiagnosis.diagnostics(slots: [.init(model: "older", kvBackend: "paged")]).isEmpty)
+    }
+
     @Test("status names the resolved backend for paged, contiguous, and failed slots")
     func statusReportsBackendPerSlot() {
         let lines = KVBackendPosture.statusLines(

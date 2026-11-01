@@ -1,10 +1,18 @@
 import ArgumentParser
+import ProviderCore
 import Testing
 
 @testable import darkbloom
 
 @Suite("Fan command")
 struct FanCommandTests {
+    @Test("disable and uninstall name every provider the shared helper serves")
+    func sharedHelperNoticeNamesBothInstalls() {
+        for environment in BuildEnvironment.allCases {
+            #expect(Fan.sharedHelperNotice.contains("`\(environment.cliName)`"))
+        }
+    }
+
     @Test("fan is registered and defaults to status")
     func fanParses() throws {
         let command = try Darkbloom.parseAsRoot(["fan"])

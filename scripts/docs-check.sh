@@ -167,6 +167,10 @@ done
 # ---------------------------------------------------------------------------
 # 3. Code-path citations in inline code
 # ---------------------------------------------------------------------------
+# Roots deleted from this repository (coordinator, admin-ui, deploy, e2e,
+# console-ui, .githooks) stay listed here and in historical_source_exists on
+# purpose: a current doc citing one fails, and frozen records still resolve
+# their relative source links through Git history.
 CITE_ROOTS='coordinator|provider-swift|console-ui|admin-ui|landing|scripts|deploy|e2e|docs|\.github|\.githooks|libs|fixtures'
 
 check_citations() {

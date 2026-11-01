@@ -1,62 +1,13 @@
 .DEFAULT_GOAL := help
-.PHONY: help \
-        coordinator-test coordinator-build coordinator-build-linux coordinator \
-        sqlc-generate sqlc-check \
-        prompt-sidecar-format prompt-sidecar-check prompt-sidecar-test prompt-sidecar-build prompt-sidecar \
-        provider-build provider-test provider benchmark-gemma-contbatch benchmark-wrapper-test \
-        ui-install ui-build ui-lint ui-test ui \
+.PHONY: help provider-build provider-test provider \
+        benchmark-gemma-contbatch benchmark-wrapper-test \
         landing-install landing-build landing-lint landing-test landing \
-        e2e-integration e2e-benchmark e2e \
         docs-check docs-impact-check docs-stamp changelog-check changelog-preview \
         test build all clean
 
 help:
 	@awk 'BEGIN {FS = ":.*##"; printf "Usage: make <target>\n\nTargets:\n"} \
 	     /^[a-zA-Z0-9_-]+:.*##/ {printf "  %-22s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
-
-# ---- Coordinator (Go) ------------------------------------------------------
-
-coordinator-test: ## Run Go unit tests for the coordinator
-	python3 scripts/test-coordinator-tests.py
-	python3 scripts/run-coordinator-tests.py
-
-coordinator-build: ## Build the coordinator binary for the host platform
-	cd coordinator && go build ./cmd/coordinator
-
-coordinator-build-linux: ## Cross-compile coordinator for linux/amd64 (EigenCloud)
-	cd coordinator && GOOS=linux GOARCH=amd64 CGO_ENABLED=0 \
-	    go build -o coordinator-linux ./cmd/coordinator
-
-coordinator: coordinator-test coordinator-build ## Test + build coordinator
-
-# Keep sqlc pinned independently of application dependencies.
-SQLC := go run github.com/sqlc-dev/sqlc/cmd/sqlc@v1.31.1
-SQLC_CONFIG := coordinator/store/postgres/sqlc.yaml
-
-sqlc-generate: ## Regenerate coordinator/store/postgres/storedb from coordinator/store/postgres/queries
-	$(SQLC) generate -f $(SQLC_CONFIG)
-
-sqlc-check: ## Fail if storedb or coordinator/store/postgres/schema/schema.sql is stale (needs DATABASE_URL)
-	@test -n "$$DATABASE_URL" || { echo "sqlc-check: set DATABASE_URL to a disposable Postgres server"; exit 1; }
-	go test ./coordinator/tests/store/postgres -run '^TestMigrationsBuildCheckedInSchema$$' -count=1 -v
-	$(SQLC) diff -f $(SQLC_CONFIG)
-
-# ---- Prompt-contract sidecar (Rust) ---------------------------------------
-
-prompt-sidecar-format: ## Check Rust sidecar formatting
-	cd coordinator/promptsidecar && cargo fmt --all -- --check
-
-prompt-sidecar-check: ## Check and lint all Rust sidecar targets
-	cd coordinator/promptsidecar && cargo check --locked --all-targets
-	cd coordinator/promptsidecar && cargo clippy --locked --all-targets -- -D warnings
-
-prompt-sidecar-test: ## Run Rust sidecar tests
-	cd coordinator/promptsidecar && cargo test --locked --all-targets
-
-prompt-sidecar-build: ## Build the Rust sidecar for the host platform
-	cd coordinator/promptsidecar && cargo build --locked --release --bin promptsidecar
-
-prompt-sidecar: prompt-sidecar-format prompt-sidecar-check prompt-sidecar-test prompt-sidecar-build ## Format + lint + test + build Rust sidecar
 
 # ---- Provider (Swift, Apple Silicon) --------------------------------------
 
@@ -67,6 +18,7 @@ provider-build: ## Build the Swift provider CLI with its source-matched metallib
 	    ./scripts/fetch-metallib.sh "$$bin_path"
 
 provider-test: ## Build and run Swift provider tests with source-matched metallibs
+	python3 provider-swift/Tests/test_protocol_fixture_resources.py
 	python3 scripts/test-stage-test-metallib.py
 	python3 scripts/test-stage-swiftpm-resource-bundles.py
 	cd provider-swift && swift build --build-tests
@@ -87,21 +39,23 @@ benchmark-wrapper-test: ## Unit-test benchmark wrappers (no GPU or weights)
 benchmark-gemma-contbatch: ## Build and benchmark Gemma 4 26B continuous batching
 	python3 scripts/benchmark-gemma-contbatch.py $(GEMMA_BENCHMARK_ARGS)
 
-# ---- Console UI (Next.js 16) ----------------------------------------------
+# ---- Desktop frontend ------------------------------------------------------
+.PHONY: desktop-install desktop-build desktop-test desktop-package desktop-api-test
 
-ui-install: ## npm install for console-ui
-	cd console-ui && npm install
+desktop-install: ## Install Electron app dependencies
+	cd desktop-app && npm ci
 
-ui-build: ## next build for console-ui
-	cd console-ui && npm run build
+desktop-build: ## Build the Electron frontend and native bridge
+	cd desktop-app && npm run build
 
-ui-lint: ## eslint check for console-ui sources
-	cd console-ui && npx eslint src/
+desktop-test: ## Test desktop user journeys and IPC boundaries
+	cd desktop-app && npm test
 
-ui-test: ## vitest for console-ui
-	cd console-ui && npm test
+desktop-package: ## Create a macOS app for review without publishing
+	cd desktop-app && npm run package
 
-ui: ui-install ui-lint ui-test ui-build ## Install, lint, test, build console-ui
+desktop-api-test: ## Test the real Swift desktop API with isolated local fixtures
+	python3 scripts/test-desktop-api.py provider-swift/.build/debug/darkbloom
 
 # ---- Marketing site (Next.js 16) ------------------------------------------
 
@@ -119,18 +73,7 @@ landing-test: landing-build ## Test landing routes against its production server
 
 landing: landing-install landing-lint landing-test ## Install, lint, build and test landing
 
-# ---- E2E integration tests -------------------------------------------------
-# Requires Postgres + Swift provider binary + MLX model downloaded.
-
-e2e-integration: ## go test ./e2e/... -run TestIntegration
-	go test ./e2e/... -run TestIntegration -v
-
-e2e-benchmark: ## go test ./e2e/... -run TestBenchmark (load benchmarks)
-	go test ./e2e/... -run TestBenchmark -v
-
-e2e: e2e-integration ## Run the integration suite
-
-# ---- Docs -------------------------------------------------------------------
+# ---- Docs ----------------------------------------------------------------
 
 docs-check: ## Lint docs/: freshness stamps, relative links, cited code paths, orphans
 	./scripts/docs-check.sh
@@ -149,13 +92,12 @@ changelog-preview: ## Preview pending release notes without changing files
 
 # ---- Aggregates ------------------------------------------------------------
 
-test: coordinator-test prompt-sidecar-test provider-test ui-test landing-test benchmark-wrapper-test changelog-check docs-check ## Run all tests + docs lint
+test: provider-test landing-test benchmark-wrapper-test changelog-check docs-check ## Run provider and landing tests + docs lint
 
-build: coordinator-build prompt-sidecar-build provider-build ui-build landing-build ## Build all components
+build: provider-build landing-build ## Build provider and landing
 
 all: test build ## Test + build everything
 
 clean: ## Remove built artifacts
-	rm -f coordinator/coordinator coordinator/coordinator-linux
-	rm -rf coordinator/promptsidecar/target provider-swift/.build console-ui/.next console-ui/node_modules
+	rm -rf provider-swift/.build
 	rm -rf landing/.next landing/node_modules

@@ -169,7 +169,7 @@ extension ProviderLoop {
     /// One existing slot's re-slice bookkeeping: its sizing inputs, its
     /// engine grant BEFORE this re-slice (the restore point), and the
     /// bridge whose ceiling gets updated.
-    private struct ExistingSlotGrant {
+    fileprivate struct ExistingSlotGrant {
         let slot: EngineV2KVSizing.ResliceSlot
         let previousGrant: Int
         let minimumGrantBytes: Int
@@ -178,7 +178,9 @@ extension ProviderLoop {
 
     /// Fleet KV budget for a prospective residency set: the unified-memory
     /// cap minus Σ resident weights (ALL slots, including any mid-unload —
-    /// their weights are still resident — plus the newcomer's), minus the
+    /// their weights are still resident — plus the newcomer's and memory
+    /// charged to retained GLM owners outside any slot) and the
+    /// reservations Super owners hold beside their grants, minus the
     /// activation reserve, honoring the operator `memory_reserve_gb`.
     /// `activationReserveBytes` overrides the live serving-set reserve for a
     /// PROSPECTIVE set (an advertise-only raise preflight); nil reads live.
@@ -197,16 +199,35 @@ extension ProviderLoop {
             let (sum, overflow) = totalWeights.addingReportingOverflow(UInt64(max(0, sizing.weightsBytes)))
             totalWeights = overflow ? .max : sum
         }
+        let (withRetainedSuper, superOverflow) = totalWeights.addingReportingOverflow(
+            nemotronSuperRetainedWeightBytes)
+        totalWeights = superOverflow ? .max : withRetainedSuper
+        let (withSuperReservations, reservationOverflow) = totalWeights.addingReportingOverflow(
+            nemotronSuperReservedBesideGrantBytes(excludingModelIDs: excludingModelIDs))
+        totalWeights = reservationOverflow ? .max : withSuperReservations
         let physical = engineV2SlotHooks?.physicalMemoryBytes
             ?? ProcessInfo.processInfo.physicalMemory
         return UnifiedMemoryCap.kvBudgetBytes(
             physicalBytes: physical,
-            residentWeightBytes: totalWeights,
+            residentWeightBytes: GLM5NextLoadFaultState.addingRetainedResidentBytes(to: totalWeights),
             // The serving set's resolved reserve, so engine grants carve the
             // same activation floor the load gate and runtime KV gate hold.
             activationReserveBytes: activationReserveBytes ?? resolvedActivationReserveBytes,
             configReserveBytes: Self.memoryReserveBytes(
                 forGiB: loopConfig.config.provider.memoryReserveGB))
+    }
+
+    /// The prefill lanes, paged decode rows and MTP round work that resident
+    /// Super owners hold in the shared budget beside their KV grants. No
+    /// grant or heartbeat budget may offer these bytes as KV.
+    func nemotronSuperReservedBesideGrantBytes(excludingModelIDs: Set<String> = []) -> UInt64 {
+        var total: UInt64 = 0
+        for (id, slot) in modelSlots where !excludingModelIDs.contains(id) {
+            guard let owner = slot.modelContainer.nemotronSuper else { continue }
+            let (sum, overflow) = total.addingReportingOverflow(UInt64(max(0, owner.reservedBesideGrantBytes)))
+            total = overflow ? .max : sum
+        }
+        return total
     }
 
     /// Preflight for an advertise-only reserve raise (no newcomer slot —
@@ -225,15 +246,21 @@ extension ProviderLoop {
     ) async -> Bool {
         let survivors = await existingSlotGrants(excludingModelId: "", excludingModelIDs: excludingModelIDs)
         guard !survivors.isEmpty else { return true }
+        let minimumGrants = Self.minimumGrantBytes(survivors)
         let targets = EngineV2KVSizing.resliceGrants(
             existing: survivors.map(\.slot),
             newcomer: nil,
             fleetKVBudgetBytes: fleetKVBudgetBytes(
                 extraWeightBytes: 0, activationReserveBytes: reserveBytes,
-                excludingModelIDs: excludingModelIDs))
-        return EngineV2KVSizing.resliceMeetsServiceabilityFloor(
-            targets, minimumGrantBytes: Dictionary(uniqueKeysWithValues:
-                survivors.map { ($0.slot.modelId, $0.minimumGrantBytes) }))
+                excludingModelIDs: excludingModelIDs),
+            minimumGrantBytes: minimumGrants)
+        return EngineV2KVSizing.resliceMeetsServiceabilityFloor(targets, minimumGrantBytes: minimumGrants)
+    }
+
+    /// Every slot's serviceability floor by model, for `resliceGrants` and
+    /// `resliceMeetsServiceabilityFloor`.
+    private static func minimumGrantBytes(_ slots: [ExistingSlotGrant]) -> [String: Int] {
+        Dictionary(uniqueKeysWithValues: slots.map { ($0.slot.modelId, $0.minimumGrantBytes) })
     }
 
     /// Existing v2 slots eligible for re-slicing: live (not mid-unload)
@@ -281,6 +308,7 @@ extension ProviderLoop {
             }
         }
         isReslicing = true
+        resliceGateGeneration &+= 1
     }
 
     internal func releaseResliceGate() {
@@ -359,6 +387,7 @@ extension ProviderLoop {
                 modelDirectory: modelDirectory,
                 container: newcomerBox.borrowModel(),
                 specDecPreparation: specDecPreparation,
+                maximumContextLength: targetSizing.maxContextLength,
                 assistantLoader: engineV2SlotHooks?.assistantLoader
                     ?? ProductionProviderMTPAssistantLoader(),
                 emitTelemetry: engineV2SlotHooks?.emitTelemetry,
@@ -366,9 +395,12 @@ extension ProviderLoop {
                 logWarning: { slotLogger.warning($0) })
         } catch {
             if nativeLoad != nil { throw error } // real TX owns native unwind
+            let failure = await GLM5NextRetirement.validatedFailure(error, retaining: [newcomerBox],
+                charging: newcomerBox, residentBytes: GLM5NextLoadFaultState.residentBytes(targetSizing.weightsBytes))
+            if GLM5NextLoadFunnel.isUnproven(failure) { throw failure }
             await newcomerBox.releaseAfterExternalResources()
             clearCacheAfterConfirmedNativeOwnership()
-            throw error
+            throw failure
         }
         // Prepare-stage fail-open (artifact revalidation, assistant load, or
         // bind failure): the drafter never became resident, so drop its share
@@ -388,27 +420,28 @@ extension ProviderLoop {
             modelId: modelId,
             fp16KVBytesPerToken: sizing.fp16KVBytesPerToken,
             maxContextLength: sizing.maxContextLength)
+        let minimumGrants = Self.minimumGrantBytes(existing)
         var fleetBudget = fleetKVBudgetBytes(extraWeightBytes: sizing.weightsBytes)
         var targets = EngineV2KVSizing.resliceGrants(
             existing: existing.map(\.slot),
             newcomer: newcomer,
-            fleetKVBudgetBytes: fleetBudget)
-        let minimumGrants = Dictionary(uniqueKeysWithValues:
-            existing.map { ($0.slot.modelId, $0.minimumGrantBytes) })
+            fleetKVBudgetBytes: fleetBudget,
+            minimumGrantBytes: minimumGrants)
 
         // Serviceability floor (fail loud): a slice that would leave ANY
         // slot below the minimum serveable grant is refused outright —
         // thrashing every co-resident model below serviceability serves
         // no one. ERROR telemetry + 503 (the coordinator reroutes).
         if !EngineV2KVSizing.resliceMeetsServiceabilityFloor(
-            targets, minimumGrantBytes: minimumGrants), prepared.assistant != nil
+            targets, minimumGrantBytes: minimumGrants), prepared.assistant != nil,
+            !prepared.requiresGLM5NextNativeMTP
         {
             logger.warning(
                 "mtp: model=\(modelId) fallback reason="
                     + "\(MTPFallbackReason.assistantResliceFloor.rawValue); "
                     + "retrying target-only before refusing the load")
             prepared.assistant?.release()
-            prepared = prepared.fallingBack(.assistantResliceFloor)
+            prepared = try prepared.fallingBack(.assistantResliceFloor)
             sizing = targetSizing.replacingAuxiliaryWeightBytes(0)
             if let pendingLoad = pendingLoadLeases[modelId] {
                 await kvBudget.reducePendingLoad(pendingLoad, remainingWeightBytes: 0)
@@ -418,7 +451,8 @@ extension ProviderLoop {
             targets = EngineV2KVSizing.resliceGrants(
                 existing: existing.map(\.slot),
                 newcomer: newcomer,
-                fleetKVBudgetBytes: fleetBudget)
+                fleetKVBudgetBytes: fleetBudget,
+                minimumGrantBytes: minimumGrants)
         }
         guard EngineV2KVSizing.resliceMeetsServiceabilityFloor(
             targets, minimumGrantBytes: minimumGrants)
@@ -447,11 +481,8 @@ extension ProviderLoop {
         // Phase 1 — SHRINKS first, so Σ(ceilings) never exceeds the fleet
         // budget at any instant. Engine-side shrink semantics: in-flight
         // reservations untouched; new reserves fail until the pool drains.
-        for entry in existing {
-            if let target = targets[entry.slot.modelId], target < entry.previousGrant {
-                await entry.bridge.updateKVBytesCapacity(target)
-            }
-        }
+        let reslice = NewcomerReslice(grantBytes: targets[modelId] ?? 0, existing: existing, targets: targets)
+        await shrinkSurvivors(reslice)
 
         // Phase 2 — build the newcomer with its grant. Restore-on-throw,
         // in the Codex-review order: (1) release the newcomer's weights,
@@ -472,7 +503,7 @@ extension ProviderLoop {
                 container: newcomerBox.borrowModel(),
                 tokenizer: tokenizer,
                 sizing: sizing,
-                kvBytesCapacity: targets[modelId] ?? 0,
+                kvBytesCapacity: reslice.grantBytes,
                 specDecPreparation: specDecPreparation,
                 preparedModel: prepared,
                 modelArtifactSHA256: modelArtifactSHA256,
@@ -480,26 +511,92 @@ extension ProviderLoop {
                 registerInRuntime: registerInRuntime)
         } catch {
             if nativeLoad != nil { throw error } // no release, Void proof, or speculative restore
+            var owners: [AnyObject] = [newcomerBox]
+            if let assistant = prepared.assistant { owners.append(assistant) }
+            // Unproven: survivors stay shrunk; the newcomer's weights and grant stay charged.
+            let failure = await GLM5NextRetirement.validatedFailure(error, retaining: owners,
+                charging: newcomerBox,
+                residentBytes: GLM5NextLoadFaultState.residentBytes(sizing.weightsBytes, targets[modelId] ?? 0))
+            if GLM5NextLoadFunnel.isUnproven(failure) { throw failure }
             prepared.assistant?.release()
             await newcomerBox.releaseAfterExternalResources()
             clearCacheAfterConfirmedNativeOwnership()
-            for entry in existing {
-                guard nativeMiMoAllowsReclamation() else { break }
-                await entry.bridge.updateKVBytesCapacity(entry.previousGrant)
-            }
-            throw error
+            await restoreNewcomerReslice(reslice)
+            throw failure
         }
 
         // Phase 3 — grow-side targets (rare on load: the budget shrank, so
         // proportional shares shrink too; kept for self-healing when a
         // previous state left a slot under-granted).
-        for entry in existing {
-            if let target = targets[entry.slot.modelId], target > entry.previousGrant {
+        await completeNewcomerReslice(reslice)
+        return EngineV2SlotBuild(bundle: bundle, sizing: sizing)
+    }
+
+    /// A newcomer's re-sliced grant with every survivor's target and restore
+    /// point: built by `resliceAndBuildEngineV2Bundle`, or by
+    /// `resliceShrinkingForNewcomer` for an engine its own owner builds.
+    struct NewcomerReslice {
+        let grantBytes: Int
+        fileprivate let existing: [ExistingSlotGrant]
+        fileprivate let targets: [String: Int]
+    }
+
+    /// Phase 1 of `resliceAndBuildEngineV2Bundle` for an owner-built engine
+    /// (the managed Super load): refuse a slice leaving any slot below its
+    /// floor, else shrink survivors and return the newcomer's grant. CALLER
+    /// HOLDS the re-slice gate through installation and calls
+    /// `completeNewcomerReslice` or, once a failed newcomer's memory is
+    /// released, `restoreNewcomerReslice`.
+    internal func resliceShrinkingForNewcomer(
+        modelId: String, weightBytes: Int, fp16KVBytesPerToken: Int, maxContextLength: Int
+    ) async throws -> NewcomerReslice {
+        let existing = await existingSlotGrants(excludingModelId: modelId)
+        let minimumGrants = Self.minimumGrantBytes(existing)
+        let fleetBudget = fleetKVBudgetBytes(extraWeightBytes: weightBytes)
+        let targets = EngineV2KVSizing.resliceGrants(
+            existing: existing.map(\.slot),
+            newcomer: .init(modelId: modelId, fp16KVBytesPerToken: fp16KVBytesPerToken,
+                            maxContextLength: maxContextLength),
+            fleetKVBudgetBytes: fleetBudget,
+            minimumGrantBytes: minimumGrants)
+        guard EngineV2KVSizing.resliceMeetsServiceabilityFloor(targets, minimumGrantBytes: minimumGrants)
+        else {
+            EngineV2Factory.emitRefusalTelemetry(modelId: modelId, reason: .resliceFloor, error: nil,
+                emitTelemetry: engineV2SlotHooks?.emitTelemetry)
+            throw InferenceError.modelLoadFailed("loading '\(modelId)' would leave a model below its "
+                + "serviceable KV grant (fleet KV budget \(fleetBudget) B across \(existing.count + 1) slots) — refused")
+        }
+        let reslice = NewcomerReslice(grantBytes: targets[modelId] ?? 0, existing: existing, targets: targets)
+        await shrinkSurvivors(reslice)
+        return reslice
+    }
+
+    /// Phase 1: shrink-side targets, before the newcomer allocates.
+    private func shrinkSurvivors(_ reslice: NewcomerReslice) async {
+        for entry in reslice.existing {
+            if let target = reslice.targets[entry.slot.modelId], target < entry.previousGrant {
+                await entry.bridge.updateKVBytesCapacity(target)
+            }
+        }
+    }
+
+    /// Phase 3 after the newcomer's slot is installed: grow-side targets.
+    internal func completeNewcomerReslice(_ reslice: NewcomerReslice) async {
+        for entry in reslice.existing {
+            if let target = reslice.targets[entry.slot.modelId], target > entry.previousGrant {
                 guard nativeMiMoAllowsReclamation() else { break }
                 await entry.bridge.updateKVBytesCapacity(target)
             }
         }
-        return EngineV2SlotBuild(bundle: bundle, sizing: sizing)
+    }
+
+    /// The newcomer failed and its memory is released (or retained in the
+    /// fleet budget): every survivor gets back its exact previous grant.
+    internal func restoreNewcomerReslice(_ reslice: NewcomerReslice) async {
+        for entry in reslice.existing {
+            guard nativeMiMoAllowsReclamation() else { break }
+            await entry.bridge.updateKVBytesCapacity(entry.previousGrant)
+        }
     }
 
     /// Failure unwind AFTER a successful bridge build (the post-bridge
@@ -507,18 +604,24 @@ extension ProviderLoop {
     /// weights, and only then regrow the survivors — in that order (Codex
     /// review), so the regrow's fleet budget reflects true residency and
     /// Σ(grants) never exceeds it. Caller holds the re-slice gate.
+    /// An unproven GLM retirement retains the bundle and newcomer and THROWS:
+    /// no weight release, cache clear or regrowth may follow it.
     internal func unwindBuiltSlotAndRegrow(
         modelId: String,
         bundle: ProviderEngineBundle,
         newcomer: EngineV2NewcomerBox
-    ) async {
+    ) async throws {
         if let container = newcomer.modelContainer, Self.nativeMiMoLoad(in: container) != nil {
             // Native callers must leave the setup operation/task and use the
             // actual transaction path; generic unwind is not native authority.
             return
         }
         await engineV2Runtime.unregister(modelId: modelId)
-        await bundle.bridge.shutdown()
+        do { try await GLM5NextRetirement.beforeRelease(bundle.bridge) }
+        catch {
+            GLM5NextLoadFaultState.retain([bundle, newcomer])
+            throw GLM5NextManagedLoadError.retirementUnproven
+        }
         bundle.releaseAssistant()
         await newcomer.releaseAfterExternalResources()
         clearCacheAfterConfirmedNativeOwnership()
@@ -530,8 +633,8 @@ extension ProviderLoop {
         modelId: String,
         bridge: EngineV2Bridge,
         newcomer: EngineV2NewcomerBox
-    ) async {
-        await unwindBuiltSlotAndRegrow(
+    ) async throws {
+        try await unwindBuiltSlotAndRegrow(
             modelId: modelId,
             bundle: ProviderEngineBundle(targetOnly: bridge),
             newcomer: newcomer)
@@ -551,7 +654,9 @@ extension ProviderLoop {
     /// Regrow body — caller holds the re-slice gate. Shrink targets, if
     /// the budget somehow contracted, are applied first so the Σ ≤ budget
     /// invariant holds throughout. Used directly by `ensureModelLoaded`'s
-    /// post-bridge-guard failure path, which already holds the gate.
+    /// post-bridge-guard failure path, which already holds the gate. The
+    /// floors keep a slot a load funded to its floor from being shrunk
+    /// back below it.
     internal func resliceGrowSurvivorsLocked() async {
         guard nativeMiMoAllowsReclamation() else { return }
         let survivors = await existingSlotGrants(excludingModelId: "")
@@ -561,7 +666,8 @@ extension ProviderLoop {
         let targets = EngineV2KVSizing.resliceGrants(
             existing: survivors.map(\.slot),
             newcomer: nil,
-            fleetKVBudgetBytes: fleetBudget)
+            fleetKVBudgetBytes: fleetBudget,
+            minimumGrantBytes: Self.minimumGrantBytes(survivors))
         for entry in survivors {
             if let target = targets[entry.slot.modelId], target < entry.previousGrant {
                 await entry.bridge.updateKVBytesCapacity(target)
@@ -725,6 +831,7 @@ extension ProviderLoop {
         // budget bookkeeping, stats loggers, and the cache-state log line
         // all live inside the shared slot factory.)
         if registerInRuntime {
+            reportPrefixCacheFailure(bridge.prefixCacheModelStatus())
             await engineV2Runtime.register(modelId: modelId, bridge: bridge)
         }
         if isVLM {
@@ -739,5 +846,15 @@ extension ProviderLoop {
                     + "[kv=\(bridge.kvBackendKind.rawValue)]")
         }
         return bundle
+    }
+
+    /// A slot whose SSD store did not start serves uncached until it next
+    /// loads. Say so where operators look: a fixed public line for
+    /// `darkbloom logs`, and the model, cause and fix in `provider.log`.
+    /// Called once per published slot, just before its bridge is registered.
+    func reportPrefixCacheFailure(_ status: PrefixCacheModelStatus) {
+        guard let notice = PrefixCacheDiagnosis.loadNotice(status) else { return }
+        logger.warning(.prefixCacheUnavailable)
+        FileHandle.standardError.write(Data("WARN: \(notice)\n".utf8))
     }
 }

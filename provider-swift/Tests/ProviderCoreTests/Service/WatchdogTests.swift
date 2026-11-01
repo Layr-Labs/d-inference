@@ -382,11 +382,11 @@ struct WatchdogAgentPlistTests {
     @Test("plist keeps one persistent watchdog alive and delegates cadence internally")
     func plistShape() {
         let plist = WatchdogAgent.makeWatchdogPlist(
-            label: "io.darkbloom.watchdog",
+            label: WatchdogAgent.label,
             programArguments: ["/usr/local/bin/darkbloom", "watchdog"],
             logPath: "/tmp/watchdog.log"
         )
-        #expect(plist["Label"] as? String == "io.darkbloom.watchdog")
+        #expect(plist["Label"] as? String == BuildEnvironment.current.watchdogAgentLabel)
         #expect(plist["ProgramArguments"] as? [String] == ["/usr/local/bin/darkbloom", "watchdog"])
         #expect(plist["StartInterval"] == nil)
         #expect(plist["RunAtLoad"] as? Bool == true)

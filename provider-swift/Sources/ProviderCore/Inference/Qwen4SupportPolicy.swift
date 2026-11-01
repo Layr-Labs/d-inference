@@ -29,14 +29,16 @@ enum Qwen4SupportPolicy {
 
     /// Validate this owned artifact's template contract after the existing
     /// boolean/effort precedence has resolved. Other Qwen4 artifacts may ship
-    /// different templates, so architecture identity alone is insufficient.
+    /// different templates, so architecture identity alone is insufficient;
+    /// the concrete Qwen3.8-27B builds ship the same effort contract.
     /// Never coerce an unsupported effort or change disabled-thinking behavior.
     static func validateReasoningContext(
         modelID: String,
         modelType: String?,
         additionalContext: [String: any Sendable]?
     ) throws {
-        guard isOwnedModelID(modelID), isQwen4ModelType(modelType),
+        guard (isOwnedModelID(modelID) && isQwen4ModelType(modelType))
+                || ModelRuntimeRequirements.qwen38ConcreteModelIDs.contains(modelID),
             additionalContext?["enable_thinking"] as? Bool != false,
             let effort = additionalContext?["reasoning_effort"] as? String
         else { return }

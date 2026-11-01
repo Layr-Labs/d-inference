@@ -99,14 +99,12 @@ extension Start {
         var verified: [String] = []
         var seen = Set<String>()
         for model in local.sorted(by: { $0.id < $1.id }) {
+            // The same rules decide which cached builds a running provider
+            // adds to the Autopilot set.
             guard seen.insert(model.id).inserted, approved?.contains(model.id) ?? true,
-                  let entry = byID[model.id], entry.active != false,
-                  (entry.minRamGb ?? 0) <= Int(memoryGb),
-                  model.id.utf8.count <= 256, !model.id.isEmpty,
-                  EngineV2SupportedModels.isSupported(model: model),
-                  ModelRuntimeRequirements.isEligible(modelID: model.id,
-                      catalogRequirements: entry.requiredProviderCapabilities, available: runtimeCapabilities),
-                  Self.modelFitsBudget(sizeGb: model.estimatedMemoryGb, memoryGb: memoryGb) else { continue }
+                  let entry = byID[model.id],
+                  AutopilotBuildEligibility.allowsCachedBuild(model, entry: entry, memoryGb: memoryGb,
+                      runtimeCapabilities: runtimeCapabilities) else { continue }
             do {
                 try Task.checkCancellation()
                 verifying(model.id)
@@ -122,7 +120,7 @@ extension Start {
         }
         try Task.checkCancellation()
         if let approved, Set(verified) != approved {
-            throw ValidationError("Could not validate every enrolled model. The recorded Autopilot inventory is unchanged; retry start, or explicitly refresh it with darkbloom autopilot models.")
+            throw ValidationError("Could not validate every enrolled model. The recorded Autopilot inventory is unchanged; retry start, or explicitly refresh it with \(BuildEnvironment.current.cliName) autopilot models.")
         }
         guard !verified.isEmpty else {
             throw ValidationError("No verified downloaded models supported by the network are available. Autopilot was not enrolled; download a supported model separately or use --no-autopilot.")

@@ -1,6 +1,6 @@
 # Maintain a pull-request stack
 
-> Last updated: 2026-10-06
+> Last updated: 2026-10-09
 
 How to keep dependent PRs reviewable before approval and restore their ancestry
 after a parent is squash-merged. This procedure updates branches, not product
@@ -85,4 +85,4 @@ fresh approval when an earlier approval was dismissed.
 
 - [Contribution rules](../../CONTRIBUTING.md)
 - [Build](build.md)
-- [Restacking tests](test.md#pull-request-restacking)
+- [Restacking tests](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/developer/test.md#pull-request-restacking)

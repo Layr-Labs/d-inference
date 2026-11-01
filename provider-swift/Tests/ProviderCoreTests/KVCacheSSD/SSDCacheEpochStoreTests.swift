@@ -5,14 +5,13 @@ import Testing
 
 @testable import ProviderCore
 
-private actor EpochOpenState {
-    private var complete = false
-
-    func markComplete() {
-        complete = true
+/// Runs blocking work on a GCD thread. While a test holds the process-wide
+/// epoch record lock, parallel suites blocked on it can fill the cooperative
+/// pool, so nothing that releases the lock may need a pool thread.
+private func onGCD<T: Sendable>(_ work: @escaping @Sendable () throws -> T) async throws -> T {
+    try await withCheckedThrowingContinuation { continuation in
+        DispatchQueue.global().async { continuation.resume(with: Result(catching: work)) }
     }
-
-    var isComplete: Bool { complete }
 }
 
 @Suite("SSD cache epoch persistence")
@@ -286,33 +285,27 @@ struct SSDCacheEpochStoreTests {
         let original = try SSDCacheEpochStore(root: root, binding: binding)
         let originalEpoch = try #require(original.current)
         #expect(original.takeNextSequence(expectedEpoch: originalEpoch) == 1)
-        let (entered, enteredContinuation) = AsyncStream.makeStream(
-            of: Void.self, bufferingPolicy: .bufferingNewest(1))
-        let release = DispatchSemaphore(value: 0)
-        let mutation = Task.detached {
+        let holding = DispatchSemaphore(value: 0)
+        let unchanged = DispatchSemaphore(value: 0)
+        let deleted = DispatchSemaphore(value: 0)
+        async let mutation = onGCD {
             SSDCacheEpochStore.performUnloadedDestructiveChange(root: root) {
-                enteredContinuation.yield(())
-                release.wait()
+                holding.signal()
+                Thread.sleep(forTimeInterval: 0.05)
+                // Per-file deletion on an unloaded root neither suspends nor
+                // replaces the generation; it only holds the initialization lock.
+                if original.current == originalEpoch { unchanged.signal() }
+                deleted.signal()
             }
         }
-        var enteredIterator = entered.makeAsyncIterator()
-        _ = await enteredIterator.next()
-        // Per-file deletion on an unloaded root neither suspends nor
-        // replaces the generation; it only holds the initialization lock.
-        #expect(original.current == originalEpoch)
-
-        let openState = EpochOpenState()
-        let reopen = Task.detached {
+        async let reopen = onGCD {
+            holding.wait()
             let store = try SSDCacheEpochStore(root: root, binding: binding)
-            await openState.markComplete()
-            return store
+            return (store, deleted.wait(timeout: .now()) == .success, unchanged.wait(timeout: .now()) == .success)
         }
-        try await Task.sleep(for: .milliseconds(50))
-        #expect(!(await openState.isComplete))
-
-        release.signal()
-        #expect(await mutation.value)
-        let reopened = try await reopen.value
+        #expect(try await mutation)
+        let (reopened, waitedForDeletion, epochUnchanged) = try await reopen
+        #expect(waitedForDeletion && epochUnchanged)
         #expect(reopened.current == originalEpoch)
         #expect(original.current == originalEpoch)
         #expect(reopened.takeNextSequence(expectedEpoch: originalEpoch) == 2)

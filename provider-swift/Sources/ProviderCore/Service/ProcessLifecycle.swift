@@ -19,8 +19,8 @@ public enum ProcessLifecycle {
         if let override = ProcessInfo.processInfo.environment["DARKBLOOM_PID_FILE"] {
             return URL(fileURLWithPath: override)
         }
-        return FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".darkbloom/provider.pid")
+        return BuildEnvironment.current.installDirectory()
+            .appendingPathComponent("provider.pid")
     }
 
     private static let instanceLocks = InstanceLocks()
@@ -34,7 +34,7 @@ public enum ProcessLifecycle {
         case alreadyRunning(Int32)
         public var description: String {
             switch self {
-            case .alreadyRunning(let pid): return "Provider process \(pid) is still running. Drain it with darkbloom stop/restart before replacing it."
+            case .alreadyRunning(let pid): return "Provider process \(pid) is still running. Drain it with \(BuildEnvironment.current.cliName) stop/restart before replacing it."
             }
         }
     }
@@ -167,11 +167,15 @@ public enum ProcessLifecycle {
 
         var argv: [UnsafeMutablePointer<CChar>?] = cStrings.map { $0 }
         argv.append(nil)
-        execv(executablePath, &argv)
+        var execError: Int32 = 0
+        ProviderStopSignals.withHangupAsAtStart {
+            execv(executablePath, &argv)
+            execError = errno
+        }
         throw NSError(
             domain: NSPOSIXErrorDomain,
-            code: Int(errno),
-            userInfo: [NSLocalizedDescriptionKey: String(cString: strerror(errno))]
+            code: Int(execError),
+            userInfo: [NSLocalizedDescriptionKey: String(cString: strerror(execError))]
         )
         #else
         throw NSError(

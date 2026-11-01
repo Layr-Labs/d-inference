@@ -112,7 +112,7 @@ public final class MTPProductionModelBundle: @unchecked Sendable {
             throw MTPBenchmarkError.mtpRequestedButInactive(
                 "target model \(type(of: servingModel)) is not Gemma4MTPTarget")
         }
-        let assistant = try await Gemma4AssistantDraftModel.load(from: assistantDirectory)
+        let assistant = try await MLXLLM.Gemma4AssistantDraftModel.load(from: assistantDirectory)
         let drafter = try Gemma4CBv2MTPDrafter(drafter: assistant, target: target)
         let residentWeightBytes = MTPBenchmarkSizing.totalResidentWeightBytes(
             targetWeightBytes: snapshot.weightBytes,

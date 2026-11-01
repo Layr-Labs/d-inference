@@ -4,7 +4,7 @@ import ProviderCore
 
 func changeAutopilotPolicy(configPath: String?, change: (inout ModelAutopilotSettings) throws -> Void) throws {
     try withMutableConfig(configPath: configPath) { path, config in
-        guard config.backend.modelAutopilot.hasConsent else { throw ValidationError("Enable Autopilot and select models first: darkbloom autopilot enable") }
+        guard config.backend.modelAutopilot.hasConsent else { throw ValidationError("Enable Autopilot and select models first: \(BuildEnvironment.current.cliName) autopilot enable") }
         try change(&config.backend.modelAutopilot)
         config.backend.modelAutopilot.revision = UUID().uuidString
         try ConfigManager.save(config, to: path)

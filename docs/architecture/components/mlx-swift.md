@@ -1,6 +1,6 @@
 # MLX stack: the three pinned submodules and the metallib
 
-> Last updated: 2026-09-30
+> Last updated: 2026-10-09
 
 What the provider links from `libs/`, at which commits, what each submodule
 contributes, how the Metal kernel library (`mlx.metallib`) is built from the
@@ -136,7 +136,7 @@ flowchart LR
   kernels are compiled, and refuses a library missing any symbol of its
   `COMPLETENESS_CONTRACT` (`_nax`, `gemv`, the Gemma 4 expert-tile builders
   and the `affine_qmv_wide_*` kernels). Default, invocation and cache knobs:
-  [`../../developer/build.md#5-provider-cli-swift-with-source-matched-metallib`](../../developer/build.md#5-provider-cli-swift-with-source-matched-metallib).
+  [../../developer/build.md#5-provider-cli-swift-with-source-matched-metallib](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/developer/build.md#5-provider-cli-swift-with-source-matched-metallib).
 - **Locate.** MLX's C++ loader tries the colocated `mlx.metallib` before
   `Resources/mlx.metallib` (`load_colocated_library`,
   `libs/mlx-swift/Source/Cmlx/mlx/mlx/backend/metal/device.cpp`);

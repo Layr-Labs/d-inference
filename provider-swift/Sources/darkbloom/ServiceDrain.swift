@@ -151,7 +151,7 @@ enum ServiceDrain {
             }
             try await Task.sleep(nanoseconds: 500_000_000)
         }
-        throw ValidationError("Restart launched, but fresh authorization was not confirmed within \(timeout)s. The new service is still starting; inspect darkbloom status. No second restart was issued.")
+        throw ValidationError("Restart launched, but fresh authorization was not confirmed within \(timeout)s. The new service is still starting; inspect \(BuildEnvironment.current.cliName) status. No second restart was issued.")
     }
     static func restartReady(state: DaemonState, previous: ProcessIdentity?, now: Double,
                              isCurrent: (ProcessIdentity) -> Bool = { $0.isCurrent() }) -> Bool {

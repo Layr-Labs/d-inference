@@ -1025,6 +1025,7 @@ final class MiMoV26NativeLoadTransactionTests: XCTestCase {
             var warmText = "", warmTerminals = 0
             for await event in repeated {
                 switch event {
+                case .logprobs: break
                 case .chunk(let text): warmText += text
                 case .info(_, let count, _, _): XCTAssertGreaterThan(count, 0); warmTerminals += 1
                 case .error(let error): XCTFail(error)

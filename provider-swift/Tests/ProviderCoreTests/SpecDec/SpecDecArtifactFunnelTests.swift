@@ -302,6 +302,33 @@ struct SpecDecArtifactFunnelTests {
         #expect(await catalog.calls == 0)
     }
 
+    @Test("automatic Bonsai resolves catalog metadata and fails open until a verified assistant is cached",
+          arguments: [Bonsai9BModelPolicy.modelID, Bonsai9BModelPolicy.eigenModelID])
+    func automaticBonsaiUsesCatalog(modelID: String) async throws {
+        let store = FileManager.default.temporaryDirectory
+            .appendingPathComponent("bonsai-catalog-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: store) }
+        for (metadata, reason) in [
+            (nil, MTPFallbackReason.metadataMissing),
+            (["spec_dec": .object([("r2_prefix", .string("../escape"))])], .metadataMalformed),
+            (qwen38SpecDecMetadata(), .artifactNotCached),
+        ] as [([String: JSONValue]?, MTPFallbackReason)] {
+            let catalog = FunnelCatalog(funnelModel(id: modelID, metadata: metadata))
+            let artifactFunnel = funnel(catalog: catalog, root: store)
+            let prepared = await artifactFunnel.prepare(.init(
+                modelId: modelID, modelType: "prism_hadamard_qwen35",
+                enabled: BackendSettings().mtpMode.enablesMTP(
+                    forModelType: "prism_hadamard_qwen35", embeddedArtifactDeclared: false,
+                    modelID: modelID),
+                localPath: nil, allowDownload: false, environment: [:]))
+            #expect(prepared.status.configured)
+            #expect(prepared.artifact == nil)
+            #expect(prepared.status.reason == reason)
+            #expect(await artifactFunnel.prefetchInFlightForTesting == 0)
+            await artifactFunnel.shutdown()
+        }
+    }
+
     @Test("dense Qwen target without spec_dec falls back target-only with metadata_missing")
     func qwenStandaloneAssistantMissingMetadataFallsBack() async throws {
         let directory = try makeDenseQwenTargetWithoutInlineMTP()

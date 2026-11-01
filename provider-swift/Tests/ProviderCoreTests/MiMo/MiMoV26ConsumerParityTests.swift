@@ -6,7 +6,7 @@ import XCTest
 @testable import ProviderCore
 
 final class MiMoV26ConsumerParityTests: XCTestCase {
-    func testRecordedTypelessAndBooleanSchemaIngressDivergence() async throws {
+    func testRecordedTypelessAndBooleanSchemaIngressParity() async throws {
         try MiMoTestPrerequisites.requireOptIn("MIMO_CONSUMER_DIVERGENCE_TESTS")
         struct Vectors: Decodable {
             struct Row: Decodable { let id: String; let request_json: String }
@@ -30,8 +30,8 @@ final class MiMoV26ConsumerParityTests: XCTestCase {
                 prepared: ToolChoicePromptPolicy.prepare(local.request, modelType: "mimo_v2", allowInternalSchemaMetadata: false),
                 request: local.request, tokenizer: tokenizer.inner, modelType: "mimo_v2",
                 templateControls: local.templateControls)
-            XCTAssertNotEqual(remoteIDs, localIDs, "Known unresolved normalization divergence, NOT parity")
-            let record: [String: Any] = ["id": row.id, "status": "observed-known-divergence",
+            XCTAssertEqual(remoteIDs, localIDs, "Native MiMo ingress must preserve tool schema declarations")
+            let record: [String: Any] = ["id": row.id, "status": "exact-parity",
                 "provider_tokens": remoteIDs, "local_tokens": localIDs,
                 "provider_rendered_decode": tokenizer.inner.decode(tokenIds: remoteIDs, skipSpecialTokens: false),
                 "local_rendered_decode": tokenizer.inner.decode(tokenIds: localIDs, skipSpecialTokens: false),
@@ -131,6 +131,35 @@ final class MiMoV26ConsumerParityTests: XCTestCase {
             XCTAssertEqual(actual, expected, row.id)
             XCTAssertEqual(ProviderLoop.promptTokenFloor(request: local.request, tokenizer: tokenizer,
                 modelType: "mimo_v2", templateControls: local.templateControls), expected.count, row.id)
+        }
+    }
+
+    /// The pinned template renders a tool result's content, never its `name`,
+    /// so a result whose name matches, is empty, or differs from its call (an
+    /// MCP client's unprefixed name) is served with the unnamed history's prompt.
+    func testToolResultNameIsServedWithTheUnnamedPrompt() async throws {
+        let (tokenizer, _) = try await MiMoConsumerFixture.load()
+        func body(_ name: String?) -> Data {
+            let field = name.map { #","name":"\#($0)""# } ?? ""
+            return Data((#"{"model":"fixture","messages":[{"role":"user","content":"go"},{"role":"assistant","content":null,"tool_calls":[{"id":"c1","type":"function","function":{"name":"mcp__fs__read","arguments":"{\"path\":\"a\"}"}}]},{"role":"tool","tool_call_id":"c1""#
+                + field + #","content":"R"}],"tools":[{"type":"function","function":{"name":"mcp__fs__read","parameters":{"type":"object","properties":{"path":{"type":"string"}}}}}]}"#).utf8)
+        }
+        let unnamed = try ProviderPromptContractPipeline.tokenizeProviderBody(
+            body(nil), tokenizer: tokenizer.inner, modelType: "mimo_v2")
+        for name in ["mcp__fs__read", "", "read", "functions.mcp__fs__read"] {
+            let data = body(name)
+            XCTAssertEqual(try ProviderPromptContractPipeline.tokenizeProviderBody(
+                data, tokenizer: tokenizer.inner, modelType: "mimo_v2"), unnamed, name)
+            let serving = MiMoConsumerServing(tokenizer: tokenizer)
+            do {
+                let response = try await serving.service(ProviderLoop.extractChatTemplateControls(from: data))
+                    .createChatCompletion(request: ProviderLoop.decodeOpenAIRequest(data))
+                XCTAssertEqual(response.choices.first?.message.content.text, "Ready", name)
+                XCTAssertEqual(serving.backend.prompts, [unnamed], name)
+            } catch {
+                XCTFail("\(name): \(error)")
+            }
+            await serving.bridge.shutdown()
         }
     }
 

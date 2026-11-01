@@ -92,26 +92,46 @@ extension EngineV2Bridge {
         var prefillRate = isolatedPrefillEwmaInitialized
             && isolatedPrefillTpsEwma.isFinite && isolatedPrefillTpsEwma > 0
             ? isolatedPrefillTpsEwma : nil
+        if admissionFixes, !supportsPrefillRecoveryRetirement {
+            // Ordinary engines have no recovery probe: a contended sample must
+            // not lock admission until restart. The anchor bounds only the
+            // aggregate; the fresh prompt-size bucket below may still tighten it.
+            prefillRate = IsolatedPrefillAdmissionRate.resolve(
+                observed: prefillRate, anchor: calibratedIsolatedPrefillTps,
+                evidenceAge: performanceMeasurements.observationAge("isolated_prefill"),
+                macIdle: macIdle(except: requestID),
+                nominalPosture: calibrationPosturePermitsWork())
+        }
         if promptTokens > 0, let shapeRate = performanceMeasurements.freshIsolatedPrefillRate(promptTokens: promptTokens) {
             prefillRate = prefillRate.map { min($0, shapeRate) } ?? shapeRate
         }
-        let decodeRate =
-            ewmaInitialized && observedDecodeTpsEwma.isFinite && observedDecodeTpsEwma > 0
-            ? observedDecodeTpsEwma
-            : nil
         let calibration = requestID.flatMap {
             calibratedDeadlinePolicy(requestID: $0, promptTokens: promptTokens, promptWork: promptWork)
         }
         guard prefillRate != nil || calibration != nil || nativeMedia else { return nil }
+        // The decode EWMA is a per-request rate: charge one measured step per
+        // projected batch step, not every row's tokens.
+        let decode = DeadlineAdmissionFixes.decodeCharge(
+            perRequestRate: ewmaInitialized && observedDecodeTpsEwma.isFinite && observedDecodeTpsEwma > 0
+                ? observedDecodeTpsEwma : nil,
+            measuredStep: observedDecodeStep, enabled: admissionFixes, calibrated: calibration != nil)
 
         return CBv2FirstTokenDeadlineAdmission(
             deadline: deadline.instant,
             conservativePrefillTokensPerSecond: prefillRate,
-            conservativeDecodeTokensPerSecond: decodeRate,
+            conservativeDecodeTokensPerSecond: decode.rate,
             calibration: calibration,
             nativeTargetPrefill: nativeMedia
                 ? nativeMediaDeadlinePolicy(requestID: requestID, promptTokens: promptTokens,
-                    evidence: nativeMediaEvidence) : nil)
+                    evidence: nativeMediaEvidence) : nil,
+            decodeRateShape: decode.shape)
+    }
+
+    /// Nothing but `requestID` occupies this engine and, through the shared
+    /// service budget, no other model's request or device activity holds the Mac.
+    private func macIdle(except requestID: String?) -> Bool {
+        guard active.isEmpty, pendingSubmissionIDs.allSatisfy({ $0 == requestID }) else { return false }
+        return serviceBudget?.isIdle(except: requestID.map { serviceOwnerPrefix + ":" + $0 }) ?? true
     }
 
     /// Move post-commit cancellation cleanup out of the cancelling task. The

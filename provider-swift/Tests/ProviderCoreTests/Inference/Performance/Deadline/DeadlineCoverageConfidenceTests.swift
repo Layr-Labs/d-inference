@@ -15,13 +15,9 @@ private struct CoverageFixture: Decodable {
 }
 
 @Test func deadlineCoverageMatchesPythonConfidenceBoundAndCatalogValidation() throws {
-    var root = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
-    while !FileManager.default.fileExists(atPath: root.appendingPathComponent("coordinator/protocol").path) {
-        let parent = root.deletingLastPathComponent()
-        guard parent != root else { throw CocoaError(.fileNoSuchFile) }
-        root = parent
-    }
-    let data = try Data(contentsOf: root.appendingPathComponent("coordinator/tests/protocol/testdata/deadline_coverage_confidence.json"))
+    let fixture = try #require(Bundle.module.url(
+        forResource: "deadline_coverage_confidence", withExtension: "json", subdirectory: "Fixtures/Protocol"))
+    let data = try Data(contentsOf: fixture)
     let decoder = JSONDecoder()
     decoder.keyDecodingStrategy = .convertFromSnakeCase
     let shared = try decoder.decode(CoverageFixture.self, from: data)

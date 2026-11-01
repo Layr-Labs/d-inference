@@ -1,6 +1,6 @@
 # Native block-generation adapter
 
-> Last updated: 2026-09-20
+> Last updated: 2026-10-09
 
 This page explains the native block engine and its provider bridge boundary.
 DiffusionGemma uses explicit native-container ownership through ordinary slot
@@ -275,7 +275,7 @@ the existing model-noncompliance reason), preserving bounded failover and the
 provider-reputation exemption rather than reclassifying it as a node fault.
 
 The coordinator planner mirrors these controls in
-`coordinator/promptsidecar/src/diffusion.rs` (`apply_reasoning`). Swift's
+[coordinator/promptsidecar/src/diffusion.rs](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/promptsidecar/src/diffusion.rs) (`apply_reasoning`). Swift's
 `ChatTemplateFixes` and the Rust `gemma4` input hook share native turn/tool-schema
 normalization for the exact family. Input-format reuse does not broaden
 `Gemma4TemplateFix.applies` or `Gemma4ToolConstraintContract.supports`, which

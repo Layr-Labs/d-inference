@@ -253,7 +253,7 @@ public struct ModelBenchmark: Sendable {
                     prefillLatencyMs = info.promptTime * 1000
                 }
 
-            case .toolCall:
+            case .toolCall, .rejectedToolCall:
                 break
             }
         }

@@ -30,6 +30,11 @@ from pathlib import Path
 #       delta; the exact-match schema pin refuses them.
 # Raw sweep 8 / arrival 6 add verified scheduler-cap metadata; existing metrics
 # and wrapper baseline comparability are unchanged, so the wrapper stays at 6.
+# Raw scheduler prefill 5 records the plain chunk and step budget. Gemma 4's
+# 2,048-token chunk and 4,096-token step leave the default workload's chunking
+# unchanged (each prompt is one chunk, no step exceeds 2,048 tokens), so the
+# wrapper stays at 6; prompts above 512 tokens beside decode rows chunk
+# differently and do not compare across that change.
 SCHEMA_VERSION = 6
 
 

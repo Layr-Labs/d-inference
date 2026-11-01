@@ -8,6 +8,7 @@ public enum ProviderCapabilityLabels {
         switch capability {
         case .appleM5: return "Apple M5"
         case .mlxNAX: return "NAX runtime"
+        case .glm5Next: return "M5 Max/Ultra with 256 GB"
         default: return capability.rawValue
         }
     }

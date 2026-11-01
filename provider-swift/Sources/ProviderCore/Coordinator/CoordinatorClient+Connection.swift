@@ -1,5 +1,6 @@
-// CoordinatorClient connection lifecycle: reconnect loop with backoff, a single
-// WebSocket session (ping/heartbeat/reachability), the receive loop, and reconnect telemetry.
+// CoordinatorClient connection lifecycle: reconnect loop with its reconnect
+// policy, a single WebSocket session (ping/heartbeat/reachability), the receive
+// loop with its close-code reader, and reconnect telemetry.
 
 import Foundation
 import Network
@@ -9,26 +10,35 @@ extension CoordinatorClient {
     // MARK: - Connection Loop
 
     internal func runLoop() async {
-        var backoff = ExponentialBackoff(base: 1.0, max: 30.0)
+        var policy = reconnectPolicy
         var reconnectCount: UInt64 = 0
 
         while !shutdownRequested {
             logger.info(.connectingToCoordinator)
             logger.info("Coordinator URL: \(self.config.url)")
+            let session = CoordinatorSessionRecorder()
 
             do {
-                try await connectAndRun()
+                try await connectAndRun(session)
                 logger.info(.coordinatorConnectionClosed)
-                backoff.reset()
+                // A clean close ends a final attempt too; it reconnects at once.
+                memberFinalAttemptUntil = nil
+                if memberRoleFailure { break }
+                policy.reset()
                 continue
             } catch {
-                if shutdownRequested { break }
+                if shutdownRequested || memberRoleFailure { break }
 
+                // Placed before the event: a waiting member reads the
+                // attempt's outcome when it sees the disconnect.
+                let end = session.end()
+                let delay = nextMemberAwareReconnectDelay(
+                    backoff: TimeInterval.random(in: policy.nextDelayRange(after: end)))
                 eventContinuation?.yield(.disconnected)
-                let delay = backoff.nextDelay()
                 let reachable = reachability.isReachable
+                let closeCode = end.closeCode.map { "\($0)" } ?? "none"
                 logger.warning(.coordinatorConnectionFailed)
-                logger.warning("Coordinator connection error: \(error.localizedDescription). network_reachable=\(reachable). Reconnecting in \(delay)s")
+                logger.warning("Coordinator connection error: \(error.localizedDescription). network_reachable=\(reachable). close_code=\(closeCode). Reconnecting in \(delay)s")
 
                 reconnectCount += 1
                 if shouldEmitReconnectTelemetry(count: reconnectCount) {
@@ -50,17 +60,20 @@ extension CoordinatorClient {
 
     // MARK: - Single Connection Session
 
-    private func connectAndRun() async throws {
-        guard let url = URL(string: config.url) else {
-            throw CoordinatorError.invalidURL(config.url)
-        }
-
+    /// Transport stack for one coordinator connection: TCP, TLS for a
+    /// `wss`/`https` URL, and the WebSocket protocol on top.
+    static func connectionParameters(for url: URL) -> NWParameters {
         // ws:// (integration tests) vs wss:// (production). The transport security
         // MUST match the URL scheme: pairing `.tcp` params with a wss URL makes the
         // WebSocket server-response validation fail.
         let scheme = url.scheme?.lowercased()
         let useTLS = (scheme == "wss" || scheme == "https")
-        let params = useTLS ? NWParameters.tls : NWParameters.tcp
+        // A debug build may pin a local test coordinator's certificate
+        // (`CoordinatorDebugCertificatePin`); release builds always use the
+        // system's trust evaluation.
+        let params = useTLS
+            ? (CoordinatorDebugCertificatePin.tlsOptions().map { NWParameters(tls: $0) } ?? NWParameters.tls)
+            : NWParameters.tcp
 
         // Disable Nagle's algorithm (TCP_NODELAY). Without this, the kernel
         // batches small WebSocket frames (~200 bytes each) and delays sending
@@ -87,12 +100,19 @@ extension CoordinatorClient {
         // headers), so there are none to forward via
         // `wsOptions.setAdditionalHeaders(...)` here.
         params.defaultProtocolStack.applicationProtocols.insert(wsOptions, at: 0)
+        return params
+    }
+
+    private func connectAndRun(_ session: CoordinatorSessionRecorder) async throws {
+        guard let url = URL(string: config.url) else {
+            throw CoordinatorError.invalidURL(config.url)
+        }
 
         // WebSocket REQUIRES a URL endpoint: Network.framework derives host, port,
         // AND the request path (e.g. /v1/providers/ws) from it. A `.hostPort`
         // endpoint drops the path, so the handshake would issue `GET / HTTP/1.1`
         // and the coordinator's WS route would reject it.
-        let connection = NWConnection(to: .url(url), using: params)
+        let connection = NWConnection(to: .url(url), using: Self.connectionParameters(for: url))
         self.nwConnection = connection
         self.appAttestResumeNonce = appAttestResumeResponder == nil ? nil
             : Data(Sodium().randomBytes.buf(length: 32)!).base64EncodedString()
@@ -101,8 +121,13 @@ extension CoordinatorClient {
         // Mid-session connection drops are published here by the persistent state
         // handler and rethrown by a task-group child to drive the reconnect loop.
         let (failureStream, failureCont) = AsyncStream<Error>.makeStream()
+        var memberTimeout: Task<Void, Never>?
         defer {
+            memberTimeout?.cancel()
             failureCont.finish()
+            // Before the reconnect loop announces the end: a waiting member
+            // past its deadline must not wait on a connection that is gone.
+            self.noteMemberAttemptEnded()
             // Tear down this connection on every exit (error OR clean reconnect),
             // so a stale NWConnection (and its internal retry) never lingers.
             // Nil the stored reference so sendOnCurrentConnection fast-returns
@@ -115,6 +140,11 @@ extension CoordinatorClient {
             // quote snapshot is dropped with it so quotes never answer from a
             // session the new coordinator connection has not seen.
             self.sessionRegistered = false
+            // One negotiation per connection: a late prior acknowledgment must
+            // never open the next connection's member wait.
+            self.memberNegotiation = nil
+            // No grant or key is retained across a connection boundary.
+            self.detachNativePairMember()
             self.failDrainBarriers()
             self.failModelReplacements()
             self.state.resetCapacitySession()
@@ -128,56 +158,54 @@ extension CoordinatorClient {
 
         let logger = self.logger
 
-        // Wait for the handshake to complete (.ready). The one-shot handler set
-        // here is swapped for a persistent failure-forwarding handler the instant
-        // the connection is ready — done inside the `.ready` branch (serial on
-        // connectionQueue) so no post-ready state change slips through the gap
-        // between resuming the continuation and installing the persistent handler.
-        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
-            connection.stateUpdateHandler = { state in
-                switch state {
-                case .ready:
-                    connection.stateUpdateHandler = { laterState in
-                        switch laterState {
-                        case .failed(let error):
-                            failureCont.yield(CoordinatorError.connectionClosed(error))
-                        case .waiting(let error):
-                            failureCont.yield(CoordinatorError.connectionClosed(error))
-                        case .cancelled:
-                            failureCont.yield(CoordinatorError.connectionClosed(NWError.posix(.ECANCELED)))
-                        default:
-                            break
-                        }
+        // Wait for the handshake to complete (.ready), bounded by the
+        // handshake deadline. The persistent failure-forwarding handler is
+        // installed inside the `.ready` callback (serial on connectionQueue) so
+        // no post-ready state change slips through the gap between resuming
+        // and installing it.
+        noteMemberAttemptStarted()
+        do {
+            try await CoordinatorConnectionHandshake.start(
+                connection, on: connectionQueue, timeout: config.handshakeTimeout
+            ) {
+                connection.stateUpdateHandler = { laterState in
+                    if let error = CoordinatorError(terminalState: laterState) {
+                        failureCont.yield(error)
                     }
-                    cont.resume()
-                case .failed(let error):
-                    connection.stateUpdateHandler = nil
-                    cont.resume(throwing: CoordinatorError.connectionClosed(error))
-                case .waiting(let error):
-                    // Can't establish yet (DNS failure, connection refused, no
-                    // route). Don't sit in NWConnection's internal wait/retry —
-                    // surface it so the client's own backoff loop owns reconnect.
-                    connection.stateUpdateHandler = nil
-                    cont.resume(throwing: CoordinatorError.connectionClosed(error))
-                case .cancelled:
-                    connection.stateUpdateHandler = nil
-                    cont.resume(throwing: CoordinatorError.connectionClosed(NWError.posix(.ECANCELED)))
-                default:
-                    break
                 }
             }
-            connection.start(queue: self.connectionQueue)
+        } catch {
+            // Not reached at all: a waiting member says so instead of
+            // reporting a role refusal (F11).
+            noteMemberAttemptUnreachable(error)
+            throw error
         }
 
         logger.info(.coordinatorTransportReady)
 
+        // A member registration carries this connection's fresh negotiation
+        // nonce; the coordinator's acceptance must echo it within the
+        // negotiation window (ten seconds in production).
+        memberNegotiation = config.executionRole == .clusterMember
+            ? .init(window: config.memberNegotiationWindow) : nil
+        memberOrdinaryAnswer = false
+        noteMemberTransportReady(memberNegotiation)
+        if let negotiation = memberNegotiation {
+            memberTimeout = Task { [weak self] in
+                do { try await ContinuousClock().sleep(until: negotiation.deadline) } catch { return }
+                guard !Task.isCancelled else { return }
+                await self?.expireMemberNegotiation(nonce: negotiation.nonce)
+            }
+        }
         try await sendRegistration(connection: connection)
         logger.info(.coordinatorRegistrationSent)
         // Fresh capacity-seq session for this connection (routing v2): seq
         // restarts at 1 on the first heartbeat and out-of-band event
         // heartbeats are permitted from here on.
         state.resetCapacitySession()
-        sessionRegistered = true
+        sessionRegistered = config.executionRole == .solo
+        // The reconnect policy measures how long the session stays open from here.
+        session.markOpened()
 
         // Fresh outbound stream for THIS connection. AsyncStream is single-shot:
         // its iterator is terminated when the previous session's consumer task is
@@ -200,19 +228,23 @@ extension CoordinatorClient {
             chunkWriter.write(frames)
         }
 
-        eventContinuation?.yield(.connected)
+        // A member connection is announced only by its nonce-bound acceptance
+        // (CoordinatorClient+Inbound), never by the registration send.
+        if config.executionRole == .solo { eventContinuation?.yield(.connected) }
 
         try await sessionLoop(
             connection: connection,
             outboundStream: outboundStream,
-            failureStream: failureStream
+            failureStream: failureStream,
+            session: session
         )
     }
 
     private func sessionLoop(
         connection: NWConnection,
         outboundStream: AsyncStream<OutboundMessage>,
-        failureStream: AsyncStream<Error>
+        failureStream: AsyncStream<Error>,
+        session: CoordinatorSessionRecorder
     ) async throws {
         let pingInterval: TimeInterval = 10.0
         let pongTimeout: TimeInterval = 30.0
@@ -239,7 +271,7 @@ extension CoordinatorClient {
             // Task 1: Receive messages from coordinator
             group.addTask { [weak self] in
                 guard let self else { return }
-                try await self.receiveLoop(connection: connection)
+                try await self.receiveLoop(connection: connection, session: session)
             }
 
             // Task 2: Forward outbound messages to coordinator
@@ -370,7 +402,9 @@ extension CoordinatorClient {
 
     // MARK: - Receive Loop
 
-    private func receiveLoop(connection: NWConnection) async throws {
+    private func receiveLoop(
+        connection: NWConnection, session: CoordinatorSessionRecorder
+    ) async throws {
         while !shutdownRequested {
             guard !Task.isCancelled, nwConnection === connection else { throw CancellationError() }
             // NWProtocolWebSocket delivers one complete WebSocket message per
@@ -382,8 +416,8 @@ extension CoordinatorClient {
             // callback won't fire until the connection is cancelled. Cancel it
             // here so the continuation unblocks and the reconnect loop proceeds
             // immediately instead of hanging until the transport times out.
-            let (data, context, receivedAt, profileAnchor):
-                (Data?, NWConnection.ContentContext?, ContinuousClock.Instant,
+            let (data, wsMeta, receivedAt, profileAnchor):
+                (Data?, NWProtocolWebSocket.Metadata?, ContinuousClock.Instant,
                  SuspendingClock.Instant) =
                 try await withTaskCancellationHandler {
                     try await withCheckedThrowingContinuation { cont in
@@ -397,11 +431,23 @@ extension CoordinatorClient {
                             // domain). Taken beside — never instead of — the
                             // continuous deadline stamp (plan v2 P3).
                             let profileAnchor = SuspendingClock.now
+                            // WS metadata for opcode inspection.
+                            let wsMeta = context?.protocolMetadata(
+                                definition: NWProtocolWebSocket.definition
+                            ) as? NWProtocolWebSocket.Metadata
+                            // Record a close frame's code here, on connectionQueue,
+                            // also when the receive ends with an error: the transport
+                            // state change that follows the frame can end the session
+                            // before this task reads the frame.
+                            if let wsMeta, wsMeta.opcode == .close,
+                               let closeCode = wsMeta.sentCloseCode(content: data) {
+                                session.recordCloseCode(closeCode)
+                            }
                             if let error {
                                 cont.resume(throwing: CoordinatorError.connectionClosed(error))
                                 return
                             }
-                            cont.resume(returning: (data, context, receivedAt, profileAnchor))
+                            cont.resume(returning: (data, wsMeta, receivedAt, profileAnchor))
                         }
                     }
                 } onCancel: {
@@ -410,14 +456,9 @@ extension CoordinatorClient {
 
             guard !Task.isCancelled, nwConnection === connection else { throw CancellationError() }
 
-            // Extract WS metadata for opcode inspection.
-            let wsMeta = context?.protocolMetadata(
-                definition: NWProtocolWebSocket.definition
-            ) as? NWProtocolWebSocket.Metadata
-
-            // A WebSocket close frame arrives as a (typically dataless) message
-            // tagged `.close`; surface it as a connection close so runLoop
-            // reconnects rather than spinning on empty receives.
+            // A WebSocket close frame arrives as a message tagged `.close`. Its
+            // content, if any, is the close payload, not a JSON message: surface
+            // it as a connection close so runLoop reconnects.
             if let wsMeta, wsMeta.opcode == .close {
                 throw CoordinatorError.connectionClosed(NWError.posix(.ECONNRESET))
             }
@@ -467,5 +508,40 @@ extension CoordinatorClient {
             ]
         )
         logger.warning("Reconnect telemetry: count=\(count) network_reachable=\(reachable) error=\(error.localizedDescription)")
+    }
+}
+
+extension NWProtocolWebSocket.CloseCode {
+    /// The close code number as sent on the wire, for every case that
+    /// Network.framework reports.
+    var wireValue: UInt16? {
+        switch self {
+        case .protocolCode(let code):
+            return code.rawValue
+        case .applicationCode(let code), .privateCode(let code):
+            return code
+        @unknown default:
+            return nil
+        }
+    }
+}
+
+extension NWProtocolWebSocket.Metadata {
+    /// The status code of this close frame as the peer sent it.
+    ///
+    /// `closeCode` names only the codes that Network.framework knows. It reports
+    /// other codes, such as 1012 (service restart), as `noStatusReceived`, but it
+    /// delivers the frame's payload as the message content. The payload starts
+    /// with the code in network byte order (RFC 6455, section 5.5.1), so the code
+    /// is read from the content in that case.
+    func sentCloseCode(content: Data?) -> UInt16? {
+        let reported = closeCode.wireValue
+        let noStatus = NWProtocolWebSocket.CloseCode.Defined.noStatusReceived.rawValue
+        guard reported == nil || reported == noStatus, let content, content.count >= 2 else {
+            return reported
+        }
+        let high = content[content.startIndex]
+        let low = content[content.index(after: content.startIndex)]
+        return UInt16(high) << 8 | UInt16(low)
     }
 }

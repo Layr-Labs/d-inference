@@ -28,7 +28,7 @@ struct Restart: AsyncParsableCommand {
     mutating func run() async throws {
         let wasLoaded = LaunchAgent.isLoaded()
         guard LaunchAgent.isInstalled() || wasLoaded else {
-            throw ValidationError("No launchd configuration is installed. Use darkbloom start to select the replacement configuration; the foreground provider was left running.")
+            throw ValidationError("No launchd configuration is installed. Use \(BuildEnvironment.current.cliName) start to select the replacement configuration; the foreground provider was left running.")
         }
         let previous = DaemonStateFile.read()?.processIdentity ?? LaunchAgent.launchSnapshot()?.process
         let session = try await ServiceDrain.prepare(options: drain)
@@ -37,7 +37,7 @@ struct Restart: AsyncParsableCommand {
             try await ServiceDrain.stopDrainedProvider(unloadService: false)
             try LaunchAgent.restartAfterDrain()
         } catch LaunchAgentError.notInstalled {
-            printError("Provider is not running. Start it with `darkbloom start`.")
+            printError("Provider is not running. Start it with `\(BuildEnvironment.current.cliName) start`.")
             throw ExitCode.failure
         }
         if wasLoaded {
@@ -51,6 +51,6 @@ struct Restart: AsyncParsableCommand {
         // Let startup/update confirmation acquire its own process lease.
         session.release()
         try await ServiceDrain.waitForRestart(previous: previous, timeout: startupTimeout)
-        print("  darkbloom status  Check status")
+        print("  \(BuildEnvironment.current.cliName) status  Check status")
     }
 }

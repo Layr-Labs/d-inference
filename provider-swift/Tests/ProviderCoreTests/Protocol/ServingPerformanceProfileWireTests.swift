@@ -3,9 +3,8 @@ import Testing
 @testable import ProviderCore
 
 @Test func servingPerformanceCapacityWireSymmetryAndLegacyOmission() throws {
-    var root = URL(fileURLWithPath: #filePath)
-    for _ in 0..<5 { root.deleteLastPathComponent() }
-    let fixture = root.appendingPathComponent("coordinator/tests/protocol/testdata/performance_capacity_wire_fixture.json")
+    let fixture = try #require(Bundle.module.url(
+        forResource: "performance_capacity_wire_fixture", withExtension: "json", subdirectory: "Fixtures/Protocol"))
     let capacity = try JSONDecoder().decode(BackendCapacity.self, from: Data(contentsOf: fixture))
     #expect(capacity.wholeMacServiceUsed == 0.5)
     #expect(capacity.wholeMacServiceRetirementProtocol == 1)
@@ -35,9 +34,8 @@ import Testing
 }
 
 @Test func calibratedPerformanceCapacityWireSymmetry() throws {
-    var root = URL(fileURLWithPath: #filePath)
-    for _ in 0..<5 { root.deleteLastPathComponent() }
-    let fixture = root.appendingPathComponent("coordinator/tests/protocol/testdata/calibrated_capacity_wire_fixture.json")
+    let fixture = try #require(Bundle.module.url(
+        forResource: "calibrated_capacity_wire_fixture", withExtension: "json", subdirectory: "Fixtures/Protocol"))
     let capacity = try JSONDecoder().decode(BackendCapacity.self, from: Data(contentsOf: fixture))
     let slot = try #require(capacity.slots.first)
     let identity = try #require(slot.promptWorkIdentity)

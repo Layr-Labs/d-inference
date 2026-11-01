@@ -2,10 +2,12 @@
 """Bounded synthetic source/integration checks for each configured Bedrock model."""
 import os
 import signal
+import json
 from threat_review.bedrock import BedrockCalls, MODELS
 from threat_review.budget_scan import Scanner
 from threat_review.client import ScanTimeout
 from threat_review.context import ThreatContext
+from threat_review.diagnostics import failure_record
 
 
 def expired(*args):
@@ -23,7 +25,8 @@ def smoke_model(threat, files, model, calls):
         raise ValueError("Synthetic source did not complete cleanly")
     deeper = {"source": result["needs_deeper_review"]}
     result = scanner.integrate(model, [{"id": "0", "analysis": result["analysis"],
-                                       "findings": result["findings"]}])
+                                       "findings": result["findings"],
+                                       "needs_deeper_review": result["needs_deeper_review"]}])
     if result["findings"]:
         raise ValueError("Synthetic integration did not complete cleanly")
     return dict(deeper, integration=result["needs_deeper_review"])
@@ -47,7 +50,10 @@ if __name__ == "__main__":
                   f"needs_deeper_review={deeper}; compatibility only, not security clearance")
         if calls.calls != 6 or calls.unknown:
             raise ValueError("Unexpected usage completeness")
-    except Exception:
+    except Exception as error:
+        detail = failure_record(error, {"stage": "smoke", **calls.last_request})
+        calls.record(event="diagnostic", diagnostic=detail)
+        print(json.dumps(detail, sort_keys=True))
         print("Bedrock smoke test failed; no fallback or automatic model retry was attempted.")
         raise SystemExit(1) from None
     finally:

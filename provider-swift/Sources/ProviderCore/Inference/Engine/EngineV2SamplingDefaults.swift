@@ -15,11 +15,16 @@
 // Rules:
 // * Applied ONLY to fields the request omits. Explicit request values
 //   always win (`temperature: 0` still means greedy).
-// * `seed`, `logit_bias`, the frequency/presence penalties and `max_tokens`
-//   are untouched.
+// * `seed`, `logit_bias`, the frequency penalty and `max_tokens` are
+//   untouched; only a model-card default sets the presence penalty.
 // * Gated per model family with explicit admission, like
-//   `ToolChoiceEnforcementPolicy.nativeStructuredTarget`: today only the
-//   qualified Nemotron 3.5 Lightning listing honors its artifact defaults.
+//   `ToolChoiceEnforcementPolicy.nativeStructuredTarget`: the admitted Nemotron
+//   and owned Bonsai 9B listings, native Flint and the exact GLM-5.3-Flash
+//   identities (catalog `glm-5.3-flash` and the local qualification download)
+//   honor their artifact defaults.
+//   The catalog Qwen 3.5/3.6 builds ship no `generation_config.json`; they
+//   take their model cards' thinking-mode values (`qwen35CardDefaults`),
+//   whose presence penalty stops greedy decoding looping to `max_tokens`.
 //   Every other model keeps the legacy defaults byte-for-byte.
 // * `do_sample: false` in the file means greedy (legacy), matching HF
 //   semantics; an absent or unreadable file is legacy.
@@ -39,15 +44,17 @@ public struct EngineV2SamplingDefaults: Sendable, Equatable {
     public var topP: Float?
     public var topK: Int?
     public var repetitionPenalty: Float?
+    public var presencePenalty: Float?
 
     public init(
         temperature: Float? = nil, topP: Float? = nil, topK: Int? = nil,
-        repetitionPenalty: Float? = nil
+        repetitionPenalty: Float? = nil, presencePenalty: Float? = nil
     ) {
         self.temperature = temperature
         self.topP = topP
         self.topK = topK
         self.repetitionPenalty = repetitionPenalty
+        self.presencePenalty = presencePenalty
     }
 
     /// Legacy behavior: every omitted knob collapses to the contract's no-op
@@ -56,18 +63,34 @@ public struct EngineV2SamplingDefaults: Sendable, Equatable {
     /// produced before artifact defaults existed.
     public static let legacy = EngineV2SamplingDefaults()
 
+    /// The model cards' thinking-mode values (the template default), shared by
+    /// these exact catalog builds and their `model_type`.
+    static let qwen35CardDefaults = EngineV2SamplingDefaults(
+        temperature: 1.0, topP: 0.95, topK: 20, presencePenalty: 1.5)
+    static let qwen35CardModelTypes = [
+        "Qwen3.5-9B": "qwen3_5",
+        "qwen3.5-35b-a3b": "qwen3_5_moe",
+        "qwen3.6-35b-a3b-vl-mtp-mxfp8": "qwen3_5_moe",
+    ]
+
     public var isLegacy: Bool { self == .legacy }
 
     #if canImport(os)
     private static let logger = Logger(
-        subsystem: "com.darkbloom.provider", category: "engine_v2")
+        subsystem: BuildEnvironment.current.logSubsystem, category: "engine_v2")
     #endif
 
     /// Family gate. Explicit admission per model onboarding; sharing the
     /// `model_type` is not enough (Nano and Lightning share `nemotron_h`).
     static func honorsArtifactDefaults(modelId: String, modelType: String?) -> Bool {
-        modelType?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "nemotron_h"
-            && EngineV2SupportedModels.isNemotron35ListingModelID(modelId)
+        if Bonsai9BModelPolicy.matches(modelId: modelId, modelType: modelType) || modelType == "flint" {
+            return true
+        }
+        switch modelType?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "nemotron_h": return EngineV2SupportedModels.isNemotron35ListingModelID(modelId)
+        case "glm5_next": return GLM5NextCoordinatorServing.isManagedModelID(modelId)
+        default: return false
+        }
     }
 
     /// Resolve once at slot construction. `.legacy` when the gate is off,
@@ -76,6 +99,7 @@ public struct EngineV2SamplingDefaults: Sendable, Equatable {
     static func resolve(
         modelId: String, modelType: String?, modelDirectory: URL?
     ) -> EngineV2SamplingDefaults {
+        if let type = qwen35CardModelTypes[modelId], type == modelType { return qwen35CardDefaults }
         guard honorsArtifactDefaults(modelId: modelId, modelType: modelType),
             let modelDirectory
         else { return .legacy }

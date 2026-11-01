@@ -11,17 +11,17 @@ extension Start {
 
     /// Interactive multi-select model picker using raw terminal mode.
     /// Arrow keys navigate, Space toggles selection, Enter confirms, Esc/q cancels.
+    /// Input that ends (the terminal closed) or can no longer be read cancels too.
     /// Enforces memory budget and shows two sections: downloaded and available.
     /// `inputFD` and `outputFD` default to the terminal; tests pass other descriptors.
     internal func runModelPicker(
         entries: [PickerEntry],
         memoryGb: Double,
+        reserveMode: PickerReserveMode = .selectedModels,
         preselectDownloaded: Bool = true,
         inputFD: Int32 = STDIN_FILENO,
         outputFD: Int32 = STDOUT_FILENO
     ) throws -> [Int] {
-        let budget = Start.pickerLoadBudgetGiB(memoryGb: memoryGb)
-
         var cursorPos = 0
         var selected = [Bool](repeating: false, count: entries.count)
 
@@ -58,7 +58,16 @@ extension Start {
         }
 
         func canFitIndividually(_ entry: PickerEntry) -> Bool {
-            Start.modelFitsBudget(sizeGb: entry.sizeGb, memoryGb: memoryGb)
+            Start.pickerSelectionFitsBudget([entry], memoryGb: memoryGb, reserveMode: reserveMode)
+        }
+
+        func selectedEntries(_ selection: [Bool]) -> [PickerEntry] {
+            entries.enumerated().filter { selection[$0.offset] }.map(\.element)
+        }
+
+        func canAdd(_ entry: PickerEntry, to selection: [Bool]) -> Bool {
+            Start.pickerSelectionFitsBudget(
+                selectedEntries(selection) + [entry], memoryGb: memoryGb, reserveMode: reserveMode)
         }
 
         // Pre-select the largest downloaded model that can fit on this machine.
@@ -77,11 +86,11 @@ extension Start {
             // Carriage return + clear to end of screen.
             output += "\r\u{1B}[J"
 
-            let used: Double = entries.enumerated()
-                .filter { sel[$0.offset] }
-                .map(\.element.sizeGb)
-                .reduce(0, +)
-            let count = sel.filter { $0 }.count
+            let chosenEntries = selectedEntries(sel)
+            let used = chosenEntries.map(\.sizeGb).reduce(0, +)
+            let count = chosenEntries.count
+            let budget = Start.pickerLoadBudgetGiB(
+                memoryGb: memoryGb, modelIDs: reserveMode.modelIDs(for: chosenEntries))
             let fitsSimultaneously = used <= budget
 
             var lines = 0
@@ -109,7 +118,12 @@ extension Start {
                     let reset = highlight.isEmpty ? "" : "\u{1B}[0m"
                     // A downloaded model that exceeds this box's budget is shown
                     // (it IS on disk) but flagged "won't fit" — never hidden.
-                    let warn = canFitIndividually(entry) ? "" : " \u{26A0} won't fit"
+                    let warn: String
+                    if !canFitIndividually(entry) {
+                        warn = " \u{26A0} won't fit"
+                    } else {
+                        warn = canAdd(entry, to: sel) ? "" : " \u{26A0} won't fit selection"
+                    }
                     output += "    \(highlight)\(arrow) [\(check)] \(entry.displayName) (~\(formattedGB(entry.sizeGb)) GiB load)\(warn)\(reset)\r\n"
                     lines += 1
                     idx += 1
@@ -128,19 +142,19 @@ extension Start {
                     let arrow = idx == pos ? "\u{25B8}" : " "
                     let check = sel[idx] ? "\u{2713}" : " "
                     let tooLargeForMachine = !canFitIndividually(entry)
+                    let fitsSelection = canAdd(entry, to: sel)
                     let highlight: String
                     if idx == pos {
                         highlight = "\u{1B}[33m"
-                    } else if tooLargeForMachine {
+                    } else if !fitsSelection {
                         highlight = "\u{1B}[2;31m"
                     } else {
                         highlight = "\u{1B}[2m"
                     }
-                    let note: String
-                    if entry.resumable {
-                        note = tooLargeForMachine ? " \u{21BB} resuming \u{00B7} \u{26A0} exceeds RAM" : " \u{21BB} resuming"
-                    } else {
-                        note = tooLargeForMachine ? " \u{26A0} exceeds RAM" : ""
+                    var note = entry.resumable ? " \u{21BB} resuming" : ""
+                    if !fitsSelection {
+                        let reason = tooLargeForMachine ? "exceeds RAM" : "won't fit selection"
+                        note += (entry.resumable ? " \u{00B7}" : "") + " \u{26A0} \(reason)"
                     }
                     output += "    \(highlight)\(arrow) [\(check)] \u{2193} \(entry.displayName) (\(formattedGB(entry.catalogModel.sizeGb)) GB download; ~\(formattedGB(entry.sizeGb)) GiB load)\(note)\u{1B}[0m\r\n"
                     lines += 1
@@ -163,7 +177,13 @@ extension Start {
         var buf = [UInt8](repeating: 0, count: 3)
         while true {
             let n = read(inputFD, &buf, 3)
-            guard n > 0 else { continue }
+            if n < 0, Self.waitToRetryPickerRead(on: inputFD, after: errno) { continue }
+            guard n > 0 else {
+                // No key can arrive any more: the input ended (the terminal
+                // went away) or the read failed for good. Cancel, as Esc does.
+                print()
+                return []
+            }
 
             if n == 1 {
                 switch buf[0] {
@@ -178,16 +198,16 @@ extension Start {
                     if selected[cursorPos] {
                         selected[cursorPos] = false
                     } else {
-                        // Allow selection if the model individually fits in memory.
-                        // Multiple models can be selected even if their total exceeds
-                        // available RAM — only one will be warm (loaded) at a time;
-                        // the coordinator manages model swaps on demand.
-                        if canFitIndividually(entries[cursorPos]) {
+                        // Adding an unmeasured model can raise the shared reserve
+                        // and invalidate a previously selected measured model.
+                        if canAdd(entries[cursorPos], to: selected) {
                             selected[cursorPos] = true
                         }
                     }
                 case 0x0A, 0x0D: // Enter — confirm.
-                    if selected.contains(true) {
+                    if selected.contains(true), Start.pickerSelectionFitsBudget(
+                        selectedEntries(selected), memoryGb: memoryGb, reserveMode: reserveMode
+                    ) {
                         print()
                         return selected.enumerated()
                             .filter(\.element)
@@ -210,6 +230,26 @@ extension Start {
             }
 
             lastLineCount = render(pos: cursorPos, sel: selected, prevLines: lastLineCount)
+        }
+    }
+
+    /// Decides whether a failed read of the picker's input is repeated, and
+    /// waits first when the retry needs it. A read that a signal interrupted
+    /// is repeated at once. A non-blocking descriptor with nothing to read yet
+    /// is repeated once it is readable; waiting here is what keeps that retry
+    /// from spinning. Any other failure will not clear, so the picker must
+    /// stop reading.
+    private static func waitToRetryPickerRead(on inputFD: Int32, after readError: Int32) -> Bool {
+        switch readError {
+        case EINTR:
+            return true
+        case EAGAIN:
+            var input = pollfd(fd: inputFD, events: Int16(POLLIN), revents: 0)
+            // The repeated read reports whatever ended the wait. A wait that
+            // cannot be made at all would turn the retry back into a spin.
+            return poll(&input, 1, -1) >= 0 || errno == EINTR
+        default:
+            return false
         }
     }
 }

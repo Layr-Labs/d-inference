@@ -27,13 +27,13 @@ public struct CacheSettings: Codable, Equatable, Sendable {
             }
         }
         guard (directory == nil) == (volumeUUID == nil) else {
-            throw ConfigError.parseFailed(detail: "cache.directory and cache.volume_uuid must be set together using darkbloom cache set --directory")
+            throw ConfigError.parseFailed(detail: "cache.directory and cache.volume_uuid must be set together using \(BuildEnvironment.current.cliName) cache set --directory")
         }
         if let directory, let volumeUUID {
             guard directory.hasPrefix("/"), !directory.utf8.contains(0),
                   !directory.split(separator: "/").contains(where: { $0 == "." || $0 == ".." }),
                   UUID(uuidString: volumeUUID) != nil else {
-                throw ConfigError.parseFailed(detail: "invalid cache directory or volume UUID; use darkbloom cache set --directory")
+                throw ConfigError.parseFailed(detail: "invalid cache directory or volume UUID; use \(BuildEnvironment.current.cliName) cache set --directory")
             }
         }
     }

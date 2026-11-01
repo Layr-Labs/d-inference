@@ -1,12 +1,10 @@
-# Encryption and privacy model
+# Provider Encryption And Privacy
 
-> Last updated: 2026-10-08
+> Last updated: 2026-10-26
 
-An inference request crosses three NaCl Box hops: consumer → coordinator
-(optional), coordinator → provider (mandatory), provider → coordinator
-(mandatory). This page is the canonical home for what each hop encrypts, which
-key opens it, and what each party can observe. Every other page links here
-instead of restating it.
+This page describes the provider's plaintext boundary, encrypted network traffic
+and local cache storage. Backend cryptographic implementation and consumer
+transport details are maintained in the external platform, not copied here.
 
 ## Context
 
@@ -27,14 +25,14 @@ network legs and constrains the endpoints:
 Primitive on all three hops: NaCl `box` (X25519 key agreement, XSalsa20-Poly1305
 authenticated encryption) from `golang.org/x/crypto/nacl/box` on the
 coordinator, `provider-swift/Sources/ProviderCore/Crypto/NodeKeyPair.swift` on
-the provider, `console-ui/src/lib/encryption.ts` in the console.
+the provider, [console-ui/src/lib/encryption.ts](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/console-ui/src/lib/encryption.ts) in the console.
 
 Fresh sender keys do not provide forward secrecy against compromise of a
 recipient's private key. The provider's X25519 key lasts for its process
 lifetime; that key and the transmitted ephemeral public keys can decrypt
 recorded requests from the same lifetime
 (`provider-swift/Sources/ProviderCore/ProviderLoop.swift`, `NodeKeyPair.generate`;
-`coordinator/internal/e2e/e2e.go`, `SessionKeys`).
+[coordinator/internal/e2e/e2e.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/internal/e2e/e2e.go), `SessionKeys`).
 
 Hardened Runtime and debugger restrictions protect the provider process;
 they do not guarantee that every prompt, response or model buffer is zeroed
@@ -48,76 +46,26 @@ is an independent path and never implies legacy MDA/APNs verification.
 
 ## Mechanism
 
-```mermaid
-sequenceDiagram
-    participant C as Consumer
-    participant K as Coordinator
-    participant P as Provider
+The external coordinator decrypts requests transiently for routing/billing, then
+re-seals each request to the provider's registered X25519 key with a fresh session
+key. The provider decrypts in-process and encrypts response chunks to that session.
+Optional consumer sealing terminates at the coordinator; it does not hide content
+from either endpoint. See the immutable [platform transport contract](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/architecture/security/encryption.md).
 
-    Note over C,K: Hop 1 (optional) — sender sealing
-    C->>K: GET /v1/encryption-key
-    K-->>C: {kid, public_key, algorithm: "x25519-nacl-box"}
-    C->>K: POST /v1/chat/completions<br/>Content-Type: application/eigeninference-sealed+json<br/>{kid, ephemeral_public_key, ciphertext = nonce || box}
-    Note over K: sealedTransport opens with the coordinator X25519 key<br/>(HKDF-SHA256 of the mnemonic, info "eigeninference-coordinator-e2e-v1")<br/>plaintext handed to the handler as application/json
-
-    Note over K,P: Hop 2 (mandatory) — coordinator → provider
-    K->>P: inference_request<br/>encrypted_body = {ephemeral_public_key: session pub, ciphertext = nonce || box}<br/>sealed to the provider's registered X25519 key K
-    Note over P: K opens it — plaintext exists only in the provider process
-
-    Note over P,K: Hop 3 (mandatory) — provider → coordinator
-    P->>K: inference_response_chunk<br/>encrypted_data = {ephemeral_public_key: K (static), ciphertext}<br/>sealed to the request's session public key
-    Note over K: ephemeral_public_key must equal Provider.PublicKey<br/>shared key memoized per request (chunkKeyCache)
-
-    Note over K,C: Response returns on hop 1
-    K-->>C: X-Eigen-Sealed: true · X-Eigen-Sealed-Kid<br/>X-Provider-* · X-Attestation-Se-Public-Key<br/>body / SSE events sealed to the sender's ephemeral key when hop 1 was used
-```
-
-### Hop 1 — consumer → coordinator (optional)
-
-| Property | Value | Code |
-|---|---|---|
-| Transport | HTTPS; plaintext JSON bodies are accepted on the same routes | `coordinator/api/inference/sender_encryption.go` (`SealedTransport` wraps `/v1/chat/completions`, `/v1/responses`, `/v1/completions`, `/v1/messages`) |
-| Key discovery | `GET /v1/encryption-key` (no auth) → `{kid, public_key, algorithm: "x25519-nacl-box"}`, `Cache-Control: public, max-age=300`; `503 encryption_unavailable` when no coordinator key is configured | `coordinator/api/inference/sender_encryption.go` (`HandleEncryptionKey`) |
-| Coordinator key | BIP39 mnemonic from `MNEMONIC` / `EIGENINFERENCE_MNEMONIC` ([configuration](../../reference/configuration.md#auth-admin-key-privy-release-key-sender-encryption)) → seed → HKDF-SHA256 with info `eigeninference-coordinator-e2e-v1` → X25519 private key; `kid` = first 16 hex chars of SHA-256(public key) | `coordinator/internal/e2e/coordinator_key.go` (`DeriveCoordinatorKey`, `CoordinatorKeyHKDFInfo`) |
-| Detection | `Content-Type: application/eigeninference-sealed+json` only (parameters ignored, case-insensitive); there is no marker header | `coordinator/api/inference/sender_encryption.go` (`SealedContentType`, `isSealedContentType`) |
-| Request envelope | `{kid, ephemeral_public_key, ciphertext}`; `ciphertext` = base64(24-byte nonce ‖ `box.Seal` output); body read capped at the [inference body limit](../../reference/api-contracts.md#limits-and-validation) | `coordinator/api/inference/sender_encryption.go` (`sealedRequestEnvelope`, `SealedTransport`) |
-| Console preflight | Checks the full plaintext UTF-8 size and a ciphertext-only base64 lower bound before key discovery. Near the limit, key discovery and sealing may be needed; the actual serialized envelope is checked before the chat POST. A size refusal retains the encryption setting and reports how to reduce the request. Server body and rewrite checks remain authoritative | `console-ui/src/lib/chat/request-budget.ts` (`assertChatRequestBudget`), `console-ui/src/lib/chat/stream.ts` (`prepareBody`, `streamChat`) |
-| Errors | `400 invalid_request_error` (body unreadable / over cap), `400 invalid_sealed_envelope`, `400 kid_mismatch`, `400 decryption_failed`, `503 encryption_unavailable` | `coordinator/api/inference/sender_encryption.go` (`SealedTransport`) |
-| Handoff | Plaintext is re-injected as `application/json` with `sealedCtxKey` on the request context; sealed requests refuse remote-media URL fetching (`isSealedRequest`) | `coordinator/api/inference/sender_encryption.go` (`SealedTransport`, `isSealedRequest`); `coordinator/api/inference/media_bridge.go` (`gateRemoteMediaPreDispatch`) delegates to `coordinator/internal/inference/media/media_resolve.go` (`Bridge.Gate`) |
-| Response | Sealed to the sender's `ephemeral_public_key` with the coordinator key. Non-streaming: body = `{kid, ciphertext}`. SSE: one sealed event per `\n\n` boundary, written as `data: <base64(nonce ‖ sealed event)>\n\n`. Headers `X-Eigen-Sealed: true`, `X-Eigen-Sealed-Kid: <kid>` | `coordinator/api/inference/sender_encryption.go` (`sealingResponseWriter`, `sealedResponseEnvelope`) |
-| Scope | Terminates at the coordinator. The coordinator re-encrypts to the provider with a separate per-request key (hop 2) | — |
-
-### Hop 2 — coordinator → provider (mandatory)
-
-| Property | Value | Code |
-|---|---|---|
-| Session key | Fresh X25519 key pair per request (`SessionKeys`); the private key lives only in the in-flight `PendingRequest.SessionPrivKey` | `coordinator/internal/e2e/e2e.go` (`GenerateSessionKeys`) |
-| Recipient key | `Provider.PublicKey` — the X25519 key from `register.public_key`, which must equal the SE-signed blob's `encryptionPublicKey` ([`identity-binding.md`](./identity-binding.md)) | `coordinator/api/provider/trust/attestation.go` (`VerifyProviderAttestation`); `coordinator/internal/e2e/e2e.go` (`ParsePublicKey`) |
-| Encrypt | `box.Seal` with a random 24-byte nonce → `EncryptedPayload{ephemeral_public_key, ciphertext}` where `ciphertext` = base64(nonce ‖ box) | `coordinator/internal/e2e/e2e.go` (`Encrypt`); `coordinator/protocol/messages.go` (`EncryptedPayload`) |
-| Body preparation | The parsed request map is re-marshalled with HTML escaping disabled; plaintext inference bodies are capped at `maxInferenceBodyBytes` ([limits](../../reference/api-contracts.md#limits-and-validation)) before sealing | `coordinator/api/inference/inference_preprocess.go` (`MarshalForwardBody`, `maxInferenceBodyBytes`) |
-| Wire message | `inference_request` with `encrypted_body` set and `body` empty | `coordinator/protocol/messages.go` (`InferenceRequestMessage`) |
-| Eligibility | Only providers passing `providerSupportsPrivateTextLocked` receive requests; a missing key fails that gate ([`attestation.md`](./attestation.md#routing-gate)) | `coordinator/registry/attestation_policy.go` (`providerSupportsPrivateTextLocked`) |
-
-### Hop 3 — provider → coordinator (mandatory)
-
-| Property | Value | Code |
-|---|---|---|
-| Wire message | `inference_response_chunk` with `encrypted_data = {ephemeral_public_key, ciphertext}` and `data` empty | `coordinator/protocol/messages.go` (`InferenceResponseChunkMessage`) |
-| Sender key | The provider's **static** registered X25519 key `K`; `encrypted_data.ephemeral_public_key` must equal `Provider.PublicKey`. Only the coordinator side of this hop is per-request | `coordinator/api/inference/provider_inference.go` (`decryptTextResponseChunk`) |
-| Recipient key | The request's session public key from hop 2 | `provider-swift/Sources/ProviderCore/ProviderLoop.swift` |
-| Decrypt | Shared key `box.Precompute(K, SessionPrivKey)` memoized per request in `chunkkeys.Cache` (keyed by the `SessionPrivKey` pointer, cap `chunkkeys.MaxEntries` = 8192, dropped wholesale when full); per chunk only `box.OpenAfterPrecomputation` runs | `coordinator/internal/inference/chunkkeys/chunk_key_cache.go` (`SharedKey`, `Forget`); `coordinator/internal/e2e/e2e.go` (`PrecomputeSharedKey`, `DecryptWithSharedKey`) |
-| Requirement | The provider must register with `encrypted_response_chunks: true`; otherwise it never passes `providerSupportsPrivateTextLocked` | `coordinator/protocol/messages.go` (`RegisterMessage`) |
-| Violation | A plaintext chunk, a mixed chunk, or a sender key ≠ `K` marks the provider `untrusted` and fails the request with `502` / `FailureCodeEncryptionFailure` | `coordinator/api/inference/provider_inference.go` (`decryptTextResponseChunk`, `errTextChunkViolation`) |
+Provider cryptography is implemented by
+`provider-swift/Sources/ProviderCore/Crypto/NodeKeyPair.swift` and the provider loop.
+Authentication, code identity and encrypted transport are distinct properties.
+No inference result is proven correct merely by attesting its executable.
 
 ### Provider-bound field minimization
 
 Before serializing and re-sealing an inference request, the shared
-`parseInferencePrelude` (`coordinator/api/inference/prelude_parser.go`) runs
+`parseInferencePrelude` ([coordinator/api/inference/prelude_parser.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/api/inference/prelude_parser.go)) runs
 `Parser.Parse`, which invokes `stripProviderCallerIdentity` to remove only
 caller-supplied top-level `user`, generic `metadata`, `safety_identifier` and
 caller `prompt_cache_key`
-(`coordinator/internal/inference/prelude/request_prelude.go`,
-`coordinator/internal/inference/prelude/provider_body_privacy.go`).
+([coordinator/internal/inference/prelude/request_prelude.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/internal/inference/prelude/request_prelude.go),
+[coordinator/internal/inference/prelude/provider_body_privacy.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/internal/inference/prelude/provider_body_privacy.go)).
 Direct, queued and retried requests use that prepared body. The original input
 bytes remain available in request memory for existing validation; they are not
 substituted back into the provider payload.
@@ -138,7 +86,7 @@ accounts. It remains the plaintext endpoint for requests routed to it.
 
 ### What each party can observe
 
-This table is the privacy statement. [`../../consumer/privacy-expectations.md`](../../consumer/privacy-expectations.md) and [`../../provider/attestation.md`](../../provider/attestation.md) link to it and do not restate it.
+This table is the privacy statement. [../../consumer/privacy-expectations.md](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/consumer/privacy-expectations.md) and [`../../provider/attestation.md`](../../provider/attestation.md) link to it and do not restate it.
 
 | Data | Consumer | Coordinator | Provider |
 |---|---|---|---|
@@ -152,43 +100,43 @@ This table is the privacy statement. [`../../consumer/privacy-expectations.md`](
 | Provider X25519 private key, SE private key | no | no | own process / Secure Enclave |
 | Other consumers' prompts | no | for requests it processes | only requests routed to that provider; it may serve multiple accounts |
 
-### What the coordinator logs and retains
-
-| Retained or logged (metadata only) | Code |
-|---|---|
-| Access log, one `request` line per HTTP request: `request_id`, `method`, `path`, `route`, `status`, `duration_ms`, `user_id` (account, when authenticated) | `coordinator/internal/api/middleware/middleware.go` (`loggingMiddleware`) |
-| `inference request dispatched`: `trace_id`, `request_id`, `model`, `provider_id`, `stream`, `attempt` | `coordinator/api/inference/dispatch.go` |
-| Request / route records: token counts, timing, non-content params (`temperature`, `top_p`); the record types document that they contain no prompt or response content | `coordinator/store/interface.go` |
-| Cache-affinity keys: keyed digests of identity / prefix bytes; raw bytes are never stored, logged, or returned | `coordinator/registry/cache_route_keys.go` |
-| Provider identity rows: SE public key, serial, MDA UDID and chain, posture bits (`ProviderTrustReuse`); code-identity proofs `CodeAttestation{se_pubkey, version, attested_at, apns_token, node_public_key, binary_hash}`; push budgets keyed by SE key + APNs token hash | `coordinator/store/interface.go` (`ProviderTrustReuse`, `CodeAttestation`, `CodeAttestPushBudget`); `coordinator/internal/provider/reuse/trust_reuse.go`; `coordinator/internal/provider/identity/code_attest_throttle.go` |
-| MDM webhook body: `body_size` at `Debug` level | `coordinator/api/provider/trust/settings.go` (`HandleMDMWebhook`) |
-| Device-code lifecycle: `user_code`, `account_id` at `Info` level | `coordinator/api/access/device/handlers.go` |
-
-| Explicitly avoided | Code |
-|---|---|
-| Prompt content is decrypted for routing "but never logs prompt content, then re-encrypts each request to the provider" | `coordinator/api/inference/consumer.go` (package comment) |
-| Provider inference errors are reduced to a closed vocabulary before logging or returning. The coordinator-only `response_limit` terminal carries one fixed message and cannot be set from a provider frame | `coordinator/internal/inference/failure/inference_error_sanitize.go` (`SanitizeProviderError`, `ClientSafeMessage`, `NonStreamingResponseLimitError`) |
-| The coordinator has no client telemetry ingestion route (the retired `POST /v1/telemetry/events` is unregistered), because provider telemetry had free-form `message` / `stack` fields | `coordinator/api/routes.go` (`routes`); `coordinator/tests/api/operations/contracts/telemetry_e2e_test.go` (`TestTelemetryE2E_NoClientIngestionRoute`) |
-| Sealed requests never trigger remote-media fetching (no coordinator egress derived from sealed content) | `coordinator/api/inference/sender_encryption.go` (`isSealedRequest`) |
-| Session private key and memoized shared key are dropped at request end | `coordinator/internal/inference/chunkkeys/chunk_key_cache.go` (`Forget`) |
-| Process logs carry no email address, IP address (`RemoteAddr` or `X-Forwarded-For`), device serial number or UDID; log lines name accounts by `account_id` (`user_id` in the access log) and providers by `provider_id`. Logs go to Datadog, so erasing a store row would not erase them | `coordinator/tests/api/log_personal_data_test.go` |
-
 ## Provider cache storage
 
 The provider encrypts attention blocks and complete checkpoints before disk I/O
 using the existing DBK3 authenticated-encryption format. Keys remain in the
 Mac's Secure Enclave/Keychain hierarchy; selecting a different payload volume
-does not copy keys there. Lookup names remain keyed HMACs. Some operational
+does not copy keys there. A dev build has its own installation KEK and Secure
+Enclave key (keychain prefix `io.darkbloom.dev`), so it cannot read a production
+provider's cache, and the reverse. An ad hoc signed build has no keychain access
+group, so it gets no persistent cache key: its SSD stores are refused with
+`key_unavailable` unless an ephemeral key is explicitly allowed. For
+qualification only, a DEBUG build can instead derive the KEK from an
+operator-created private file (`DARKBLOOM_DEBUG_CACHE_KEY_FILE`,
+`provider-swift/Sources/ProviderCore/KVCacheSSD/SSDDebugCacheKeyFile.swift`).
+That key material sits on disk protected only by file ownership, mode `0600`
+and the volume's encryption, not the Secure Enclave; release builds do not
+contain this path. Lookup names remain keyed HMACs. Some operational
 metadata (sizes, model/layout binding and times) remains visible; the precise
 [format and observable fields](../../reference/ssd-kv-cache.md#dbk3-file-format)
-are unchanged. TTL checks on reuse, tenant binding and authentication remain in
+list it. A delta checkpoint names its parent only through a keyed commitment, so
+files of one conversation stay unlinkable without the cache key. TTL checks on reuse, tenant binding and authentication remain in
 force. Switching locations leaves earlier ciphertext in its old location; the
 new location's maintenance does not sweep the old one or securely erase a disk.
 TTL limits ordinary cache reuse, not physical retention: detached or inaccessible
 media can retain ciphertext and metadata indefinitely. TTL/LRU deletion requires the
 selected volume to be mounted and accessible. Destroying the installation KEK
 provides a cryptographic purge for retained encrypted copies; it does not erase
-their bytes or visible metadata.
+their bytes or visible metadata. A Keychain KEK sealed to a Secure Enclave key
+that no longer exists (the attestation key's self-repair re-mints it;
+`darkbloom unenroll` deletes it) can never be unwrapped again, so the provider
+replaces it with a fresh KEK sealed to the current key, and each store wipes
+the files it can no longer read when it next starts
+(`provider-swift/Sources/ProviderCore/KVCache/KVCacheKEK.swift`). Only a
+ciphertext the current key cannot open triggers this; a failure to reach or use
+the key, such as a locked keychain or an access-control refusal, leaves the
+entry untouched
+(`provider-swift/Sources/ProviderCore/KVCache/SecureEnclaveKeyWrappingService.swift`,
+`unwrapError`).
 Restart scanning seeds freshness from file modification times, so TTL is not
 an anti-rollback guarantee against a malicious disk replaying data and metadata.
 
@@ -236,52 +184,148 @@ Code: `provider-swift/Sources/ProviderCore/KVCacheSSD/CacheVolume.swift`,
 `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDNoFollowIO.swift`.
 Operator steps: [cache storage](../../provider/cache-storage.md).
 
-## Invariants
+## Two-Mac cluster (experimental)
 
-1. A request is dispatched only to a provider that passes `providerSupportsPrivateTextLocked`: non-empty X25519 key, `mlx-swift` backend, `encrypted_response_chunks`, runtime manifest checked, coordinator-verified SIP, code identity when enforced, and the five required `PrivacyCapabilities` — `coordinator/registry/attestation_policy.go` (`providerSupportsPrivateTextLocked`). The full gate is tabulated in [`attestation.md`](./attestation.md#routing-gate).
-2. Every hop-2 payload uses a fresh X25519 session key pair and a random 24-byte nonce — `coordinator/internal/e2e/e2e.go` (`GenerateSessionKeys`, `Encrypt`).
-3. A response chunk is accepted only if it is encrypted, carries no plaintext, and its `ephemeral_public_key` equals `Provider.PublicKey`; any other chunk untrusts the provider and fails the request — `coordinator/api/inference/provider_inference.go` (`decryptTextResponseChunk`).
-4. The provider's X25519 key is the one bound to its Secure Enclave identity: `register.public_key` must equal the signed blob's `encryptionPublicKey` — `coordinator/api/provider/trust/attestation.go` (`VerifyProviderAttestation`).
-5. A sealed request that fails to open is rejected (`decryption_failed`) and never falls through to plaintext handling; a sealed request is recognised by `Content-Type` alone — `coordinator/api/inference/sender_encryption.go` (`SealedTransport`, `isSealedContentType`).
-6. A sealed request never causes the coordinator to fetch remote media — `coordinator/internal/inference/media/media_resolve.go` (`Bridge.Gate`), `coordinator/api/inference/sender_encryption.go` (`isSealedRequest`).
-7. The hop-2 session private key and the memoized hop-3 shared key exist only in the in-flight request state and are forgotten when the request completes, errors, or the provider disconnects — `coordinator/internal/inference/chunkkeys/chunk_key_cache.go` (`Forget`).
-8. No request body, prompt, or completion text reaches structured logs or the store; the only content-derived artifacts are keyed digests for cache routing — `coordinator/api/inference/dispatch.go`, `coordinator/store/interface.go`, `coordinator/registry/cache_route_keys.go`.
-9. The coordinator accepts no client telemetry: no ingestion route is registered — `coordinator/api/routes.go`, pinned by `coordinator/tests/api/operations/contracts/telemetry_e2e_test.go` (`TestTelemetryE2E_NoClientIngestionRoute`).
+A [two-Mac cluster](../../provider/two-mac-cluster.md) keeps the same rules
+across the Thunderbolt cable:
 
-## Failure modes
+- **Pairing.** Each Mac's Secure Enclave identity signs the pairing (S17); both
+  screens show the same six-digit code and both owners confirm it. The peer's
+  pin is stored owner-only (0600), and both Macs verify each other before any
+  data-plane key exists. A DEBUG build without the signed build's keychain
+  entitlement may keep its Secure Enclave key's opaque handle in an owner-only
+  file (`DARKBLOOM_DEBUG_SE_KEY_FILE`, `SecureEnclaveIdentity.debugPersisted`);
+  the key itself never leaves the Secure Enclave, and a release build has no
+  such path.
+- **Cable bytes.** The link control channel (commands, control leases, model
+  copies) is keyed by the pairing's edge secret with fresh nonces both ways;
+  the data plane (activations, KV hand-offs, cache transfers) is encrypted and
+  authenticated with rekeying, and tampered records are refused. The control
+  lease runs on a listener and epoch label of its own; no key material crosses
+  Macs when control fails over.
+  Every installed paired-link text session requires the same keyed worker build
+  on both Macs; unsupported or different builds are refused before launch.
+  The leader issues fresh session credentials, sends each rank only its own
+  credential over its authenticated owner route, and the follower checks the
+  epoch and rank before opening its local owner. The native worker verifies
+  the certificate and pinned peer. Serving begins only after both workers
+  report one matching encrypted, peer-verified data plane. Authenticated
+  control/bootstrap status alone cannot satisfy that condition
+  (`provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/ClusterMiMoPrivateImagePolicy.swift`,
+  `keysDataPlane`, `followerDataPlaneTrust`;
+  `provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledSession.swift`,
+  `launch`; `libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterDataPlaneLaunch.swift`).
+- **Qwen batch records.** Both ranks derive one batch identity from their
+  pinned membership epoch, execution plan, lane count and increasing batch
+  ordinal. Control records bind the phase, direction and step. Residual records
+  also bind the ordered local request identities, fingerprints and frontiers;
+  prefill binds its frame bounds. The producer captures these facts before
+  forward computation advances its state, and the consumer before receiving.
+  The array codec additionally binds shape, dtype, chunk index and byte length.
+  Directional record sequences continue across batches and rekeys: replay,
+  wrong scope or authentication failure fences the session without a plaintext
+  retry (`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Batch/QwenBatchRecordBinding.swift`,
+  `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Resident/QwenResidentRuntime+Batch.swift`,
+  `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Transport/CollectiveAuthenticatedRecords.swift`).
+- **Model copies.** A Mac accepts a model from its paired Mac only when this
+  build's qualification records pin the manifest's aggregate digest, verifies
+  every file as it arrives, has its own worker check the staged files before
+  the folder is renamed into place, and refuses hard links and unexpected files.
+- **Cluster prompt cache at rest.** AES-GCM under a key derived from the
+  Secure Enclave-rooted KEK (`provider-swift/Sources/ProviderCore/KVCacheSSD/ClusterPrefixSSDKeyMaterial.swift`),
+  passed to ranks on an input pipe (never in an environment), scoped to model,
+  plan, rank and Mac.
+- **Cluster prompt cache partitions.** Both ranks keep and look up every
+  prompt prefix, in memory and in their SSD tiers, only under the request's own
+  partition, as one Mac does with the request's cache scope: a coordinator
+  request's authenticated cache scope reaches the ranks only as a SHA-256 digest
+  (`ClusterWorkerPrefixCache.tenantDigest`, domain
+  `darkbloom-cluster-prefix-tenant-v1|`), which every key and record
+  scope carries, so one scope's requests never restore or probe another's prefixes. A
+  request whose cache is off (a remote request without an authenticated scope,
+  or one with GLM or Qwen media) restores and keeps nothing on either rank. The
+  scope itself never leaves the leader's provider process; the digest stays out
+  of descriptions and logs (`ClusterWorkerPrefixCache.description`), though it
+  links one scope's requests within the cache as the scope does. Both ranks bind
+  the partition into the request fingerprint they compare first, so ranks given
+  different partitions fail the request rather than share state. Requests from
+  the local endpoint carry no partition and share only one another's prefixes
+  (`libs/darkbloom-cluster/Sources/DarkbloomClusterProtocol/ClusterWorkerPrefixCache.swift`,
+  `provider-swift/Sources/ProviderCore/Inference/Distributed/DistributedPipeExecutionOwner.swift`;
+  [mechanism](../prefix-cache.md#cluster-prefix-tenant-partitions)).
+- **Helpers.** The cluster worker and placement tool ship in
+  `Darkbloom.app/Contents/Helpers`, Developer ID signed with hardened runtime
+  and network client/server entitlements only
+  (`provider-swift/entitlements-cluster-worker.plist`).
 
-| Failure | Observed behaviour | Code |
-|---|---|---|
-| No coordinator mnemonic configured | `GET /v1/encryption-key` and sealed requests return `503 encryption_unavailable`; plaintext requests still work | `coordinator/api/inference/sender_encryption.go` |
-| Sender used an old `kid` after key rotation | `400 kid_mismatch`; the client must refetch `GET /v1/encryption-key` | `coordinator/api/inference/sender_encryption.go` |
-| Corrupt envelope or wrong key | `400 invalid_sealed_envelope` / `400 decryption_failed`; nothing is forwarded | `coordinator/api/inference/sender_encryption.go` |
-| Sealed body over the [inference body limit](../../reference/api-contracts.md#limits-and-validation) | `400 invalid_request_error` | `coordinator/api/inference/sender_encryption.go` |
-| Plaintext inference body over `maxInferenceBodyBytes` | `413 invalid_request_error`; the global ceiling for any body is `maxRequestBodyBytes` ([limits](../../reference/api-contracts.md#limits-and-validation)) | `coordinator/api/inference/inference_preprocess.go` (`parseInferencePrelude`, `maxInferenceBodyBytes`); `coordinator/internal/api/middleware/middleware.go` (`bodyLimitMiddleware`) |
-| Provider registered without an X25519 key or without `encrypted_response_chunks` | Never routable for private text | `coordinator/registry/attestation_policy.go` (`providerSupportsPrivateTextLocked`) |
-| Provider returns a plaintext or wrong-key chunk | Provider marked `untrusted`; request fails `502` with `FailureCodeEncryptionFailure` | `coordinator/api/provider/` |
-| Provider disconnects mid-stream | Session key forgotten; `chunkKeyCache` cap (8192) bounds leaked entries and drops the cache wholesale when full | `coordinator/internal/inference/chunkkeys/chunk_key_cache.go` |
+## Invariants And Failure Modes
 
-## Code map
-
-| Concern | File (symbol) |
-|---|---|
-| Sealed request middleware, key endpoint, response sealing | `coordinator/api/inference/sender_encryption.go` (`SealedTransport`, `HandleEncryptionKey`, `sealingResponseWriter`) |
-| Coordinator key derivation | `coordinator/internal/e2e/coordinator_key.go` (`DeriveCoordinatorKey`) |
-| NaCl Box helpers | `coordinator/internal/e2e/e2e.go` (`GenerateSessionKeys`, `Encrypt`, `Decrypt`, `PrecomputeSharedKey`, `DecryptWithSharedKey`) |
-| Per-request shared-key memoization | `coordinator/internal/inference/chunkkeys/chunk_key_cache.go` (`chunkKeyCache`) |
-| Request body cap and forward marshalling | `coordinator/api/inference/inference_preprocess.go` (`maxInferenceBodyBytes`, `MarshalForwardBody`) |
-| Chunk decryption and violation handling | `coordinator/api/inference/provider_inference.go` (`decryptTextResponseChunk`) |
-| Wire types | `coordinator/protocol/messages.go` (`EncryptedPayload`, `InferenceRequestMessage`, `InferenceResponseChunkMessage`, `RegisterMessage`) |
-| Private-text routing gate | `coordinator/registry/attestation_policy.go` (`providerSupportsPrivateTextLocked`) |
-| Consumer-visible headers | `coordinator/api/inference/response/response_metadata.go` (`WriteCommittedProviderHeaders`) |
-| No telemetry ingestion route | `coordinator/api/routes.go`; `coordinator/tests/api/operations/contracts/telemetry_e2e_test.go` (`TestTelemetryE2E_NoClientIngestionRoute`) |
-| Provider key pair and decrypt/encrypt | `provider-swift/Sources/ProviderCore/Crypto/NodeKeyPair.swift`, `provider-swift/Sources/ProviderCore/ProviderLoop.swift` |
-| Console sealing | `console-ui/src/lib/encryption.ts` |
+- Do not fall back to plaintext when decryption/authentication fails.
+- Bind the registered key to the attested process identity. Preserve fresh
+  request session keys and terminal cleanup in the external protocol.
+- A missing, replaced or no-longer-encrypted cache volume refuses cache I/O;
+  inference may recompute, but must not redirect payloads to another disk.
+- Keep cache keys and persistent write accounting on the Mac. Changing the
+  payload volume does not reset accounting or erase old ciphertext.
+- A cluster rank receives a request's cache scope only as its digest, and
+  offers, restores and keeps prompt prefixes only within the request's partition.
+- Do not claim guaranteed buffer zeroization, forward secrecy against recipient
+  key compromise, peripheral attestation or correct computation from these controls.
 
 ## Related
 
-- [`attestation.md`](./attestation.md) — trust levels, challenge cadence, and the routing gate that decides which provider receives hop 2.
-- [`identity-binding.md`](./identity-binding.md) — how `K`, the SE key, the APNs token, and the MDA chain are bound.
-- [`../../consumer/privacy-expectations.md`](../../consumer/privacy-expectations.md) — consumer-facing summary that links to this page.
-- [`../../consumer/verification.md`](../../consumer/verification.md) — how to read the `X-Provider-*` headers and `GET /v1/providers/attestation`.
-- [`../../reference/api-contracts.md`](../../reference/api-contracts.md) — HTTP contract for the inference routes.
+- [Cache-storage procedure](../../provider/cache-storage.md)
+- [Cache format](../../reference/ssd-kv-cache.md)
+- [Attestation](attestation.md)
+- [Identity binding](identity-binding.md)
+
+### Drained batch setup adoption
+
+The private `batchSetup` command uses the existing authenticated pair-control
+channel. The receiver authorizes its saved serving rank 0 and checks unchanged
+model, capability, peers, trust, ranks and request limits before publishing a
+new setup under the ordinary empty-device lease gate. A compare-and-swap on
+the previous full digest refuses an unrelated later choice; retrying the exact
+already-selected target is idempotent. The running follower's full setup digest
+fences a stale control client before a new native epoch opens. These checks
+grant neither coordinator membership nor worker ownership. Sources:
+`provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/ClusterAutomaticBatchSetupTransaction.swift`
+and `provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/ClusterService.swift`.
+
+### Qwen media reservation identity
+
+The optional `qwen35_tp_media_v1` carrier uses at most 16 images, eight videos and
+32 MiB of encoded input, with bounded source-raster totals and checked grid/span
+arithmetic. Its fingerprint binds all immutable identity and geometry fields but
+not encoded-byte presence, so the local payload and peer metadata agree. Rank
+zero must separately verify encoded and prepared-patch digests before execution;
+a supplied digest is not a decoded-feature authorization. The carrier cannot be
+combined with another media contract or request route. Existing record sealing,
+worker trust and actual memory admission remain required; this codec change does
+not advertise a media-capable runtime or endpoint.
+
+The Qwen27 native media seam sends rank-zero vision features through the
+existing authenticated TP collective records. The receiver copies rank-zero
+values without a numerical sum, and both ranks verify the same media fingerprint
+and recomputed three-axis position identity. Encoded source media is retained
+only on its declared rank. `WorkerQwenMediaAdmission` rejects an unsupported
+runtime, missing verified data plane, wrong rank payload or mismatched artifact
+before reservation. These checks do not grant provider ingress or qualify media
+numerics. Source:
+`libs/darkbloom-cluster-worker/Sources/DarkbloomClusterWorker/Execution/WorkerQwenMediaAdmission.swift`.
+
+Qwen media transport preserves the typed envelope through owner and peer-link
+clock translation. The pair sends encoded inputs to rank 0 only; rank 1 receives
+metadata and the same content-bound fingerprint. A caller cancellation or early
+resource-release attempt cannot release the owner's encoded alias before the
+request has retired. Other model media contracts retain their existing behavior.
+
+Provider Qwen media ingress binds encoded bytes to the loaded artifact, model
+configuration, resolved processor, expanded prompt, prepared patches and
+three-axis position digest. The bridge checks this binding before submission;
+local SDK engines refuse the opaque cluster carrier before allocating KV state.
+The process-wide host reservation follows an explicit generation/request owner
+through submission and definitive native retirement. Cancellation or HTTP stream
+termination is not an encoded-buffer release receipt. No media, token IDs or
+prompt content is added to telemetry by this path. The lifetime implementation is
+`provider-swift/Sources/ProviderCore/Inference/Distributed/Requests/DistributedQwenMediaLifetime.swift`.

@@ -1,6 +1,6 @@
 # KV cache layouts and prefix caching
 
-> Last updated: 2026-10-09
+> Last updated: 2026-10-28
 
 How the provider lays out a request's KV cache, how it decides whether a
 previously computed prefix can be reused, and where reusable state lives:
@@ -10,7 +10,7 @@ Read this to understand why a box
 serves a repeated prompt cold or warm; for the file format and every SSD knob
 see [`../reference/ssd-kv-cache.md`](../reference/ssd-kv-cache.md), and for the
 coordinator's use of cache state in routing see
-[`cache-aware-routing.md`](cache-aware-routing.md).
+[cache-aware-routing.md](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/architecture/cache-aware-routing.md).
 
 ## Context
 
@@ -49,7 +49,7 @@ change backend selection or native serving-memory charges.
 | Prefix-reuse backend | `.contiguousUnquantized` | `.pagedFP16` |
 
 The default setting remains `"auto"`. In the candidate, it prefers paged only
-for these exact fleet/private-candidate identities, not family names, aliases or substrings:
+for these exact fleet/candidate identities, not family names, aliases or substrings:
 
 - `Qwen3.5-9B` (the production catalog ID, matched case-sensitively; the
   lowercase `qwen3.5-9b` and the `Qwen/Qwen3.5-9B` repo path are not listed)
@@ -65,6 +65,8 @@ for these exact fleet/private-candidate identities, not family names, aliases or
 - `ternary-bonsai-2-27b`
 - `EigenLabs/Ternary-Bonsai-2-27B-MLX-2bit`
 - `prism-ml/Ternary-Bonsai-2-27B-mlx-2bit`
+- `prism-ml/Ternary-Bonsai-2-9B-mlx-2bit` (separate 9B policy)
+- `EigenLabs/Ternary-Bonsai-2-9B-MLX-2bit` (same separate 9B policy)
 - The [owned Flash-Next candidate](../reference/qwen4-next-support.md#identity-and-serving-policy)
 
 Every other ID, including unlisted Qwen artifacts, Gemma 8-bit and unknown
@@ -104,15 +106,18 @@ Historical attention checkpoints require an exact loaded layer/owner/type map;
 contiguous construction additionally receives the observed
 `completeCheckpointKVDTypes`. Ordinary attention snapshots remain a separate codec.
 
-**Release acceptance remains incomplete.** The [final versioned build](../reports/2026-09-07-release090-final-build.md),
-[Qwen 3.5/3.6 concurrency checks](../reports/2026-09-07-qwen-concurrency-final.md)
+**Release acceptance remains incomplete.** The [final versioned build](https://github.com/Layr-Labs/d-inference/blob/4230fa03ddbc84e34e2de150c89431744d6f1c55/docs/reports/2026-09-07-release090-final-build.md),
+[Qwen 3.5/3.6 concurrency checks](https://github.com/Layr-Labs/d-inference/blob/4230fa03ddbc84e34e2de150c89431744d6f1c55/docs/reports/2026-09-07-qwen-concurrency-final.md)
 and [memory lifecycle checks](../reports/2026-09-06-coresidency-lifecycle.md)
 record completed validation. Final sustained, connected-serving, quality and
 production-key restart checks remain subject to the
-[acceptance criteria](../design/release-090-acceptance.md).
+[acceptance criteria](https://github.com/Layr-Labs/d-inference/blob/4230fa03ddbc84e34e2de150c89431744d6f1c55/docs/design/release-090-acceptance.md).
 This selection change is not a release or deployment claim. SSD prefix reuse
 defaults on for the exact Qwen, Nemotron Lightning and Bonsai 2 IDs above,
-`gemma-4-26b-qat-4bit`, `gpt-oss-20b` and the exact MiMo identities below.
+`gemma-4-26b-qat-4bit`, `gpt-oss-20b`, the exact MiMo identities below and the
+managed `nvidia-nemotron-3.5-super` slot, whose complete checkpoints replace
+its resident bank unless the operator selects the bank (see
+[`inference.md`](inference.md#managed-nemotron-super-slot)).
 GPT-OSS 20B and Gemma QAT normally use paged historical-attention checkpoints;
 eligible native contiguous fallback uses a distinct complete layout rather than
 reinterpreting the paged file. Gemma automatic MTP resolves its catalog
@@ -124,6 +129,40 @@ local/connected load hashing and benchmark expectations use the model-scoped
 `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy+Activation.swift`.
 Resident retention remains off unless explicitly enabled through the separate
 memory flag (`PrefixCachePolicy.isMemoryEnabled`).
+
+### Unregistered GLM sparse-state candidate
+
+`GLM5NextPagedSparseState` owns aligned latent, index-key, pool-gate, validity
+and position history in the native candidate. Its checkpoint includes partial
+pages; opt-in `PagedImmutableSnapshot` ownership requires copy-on-write before
+successor writes. The contiguous transaction owner is a separate baseline, not
+proof of paged execution
+(`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/GLM5Next/GLM5NextPagedSparseState.swift`,
+`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedImmutableSnapshot.swift`).
+
+The full-state codec adds the distinct
+`native-paged-glm5next-full-state-v2` layout, preserving the asymmetric payload
+and exact convolution/recurrence state
+(`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/GLM5Next/`).
+Roles that only widen an activation dtype are stored at that dtype and widened
+back exactly on restore; the
+[SSD reference](../reference/ssd-kv-cache.md#complete-checkpoint-payload) lists
+the roles, their wire dtypes and the retired v1 layout. Under the default
+`balanced` checkpoint precision the protected tuple binds the distinct
+`native-paged-glm5next-affine-checkpoint-full-state-v1` store instead: older
+latent rows are coded and restore approximately, while the index/gate/validity
+rows, KDA state and MTP history restore exactly
+([checkpoint precision](kv-cache-quantization.md#native-execution-with-quantized-checkpoints)).
+Its existence does not add a qualified provider cache capability. Complete reuse
+still requires one accepted frontier across sparse pages, convolution/recurrence
+and trained MTP, charged import/export ownership, the protected native binding,
+and a verified encrypted restore path. For the locally selected
+`EigenLabs/GLM-5.3-Flash-MLX-NVFP4-mtp`, SSD eligibility defaults on
+(`PrefixCachePolicy.isGLM5NextDefaultModel`) and binds the protected tuple's
+full-state store; `DARKBLOOM_PREFIX_CACHE=0` opts out. GLM remains outside the
+registered coordinator serving models; see the
+[integration gates](../design/glm53-flash-native.md). Existing families' opt-in
+and recovery policies above are unchanged.
 
 ### MiMo complete state
 
@@ -151,6 +190,19 @@ or full-artifact qualification; use the [release acceptance steps](../operations
 
 ### Bonsai complete state
 
+The 9B identity independently defaults to paged attention and SSD prefix
+caching; it does not join the 27B admission or MTP cohort. The qualification
+configuration selects native live KV and native checkpoint precision. Runtime
+capability, authenticated cache identity, key availability, operator opt-outs
+and write-budget checks still apply. Ordinary 9B vision submissions remain
+ineligible for prefix reuse; a warm model is not a cache hit.
+The optional explicit local 9B MTP binding retains the native Qwen text model's
+cache identity and complete assistant checkpoints; see
+[inference policy](inference.md) and `PrismHadamardQwen35.cbv2MTPTargetIdentity` in
+`libs/mlx-swift-lm/Libraries/MLXVLM/Models/PrismHadamardQwen35.swift`.
+Plain, serial-MTP and rectangular-MTP restoration require separate actual-model
+qualification; identity forwarding alone does not establish cache parity.
+
 Bonsai uses the existing complete-checkpoint path to restore attention KV and
 recurrent state together. `EngineV2SupportedModels.isBonsai2ListingModelID`
 selects the three exact MLX identities above for default SSD eligibility; the
@@ -163,7 +215,7 @@ still gate cache construction in `EngineV2SlotFactory`.
 `BonsaiEncryptedCheckpointLiveTests` exercises an encrypted full checkpoint
 with a fixture key and real weights; it does not establish signed Keychain
 persistence or hosted routing readiness. Use the
-[Bonsai rollout procedure](../operations/cache-routing-rollout.md#add-bonsai-to-an-existing-routing-cohort)
+[Bonsai rollout procedure](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/operations/cache-routing-rollout.md#add-bonsai-to-an-existing-routing-cohort)
 to qualify the final signed artifact and add its exact coordinator tuple.
 
 ### Flash-Next complete state
@@ -192,7 +244,7 @@ those promises as contiguous-style request reservations. Contiguous slots retain
 their existing provider reservation path. See
 [process ownership](hardware-support.md#process-ownership).
 
-The [provider integration report](../reports/2026-09-05-paged-complete-provider.md)
+The [provider integration report](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/reports/2026-09-05-paged-complete-provider.md)
 records factory and ownership tests, with exact-model and release gates still open.
 
 ### Block hashing
@@ -206,7 +258,7 @@ on that stride; `acceptsCheckpoint` still enforces the 1,024-token floor and
 block alignment on the provider. The coordinator's promptsidecar computes the same chain
 (`darkbloom-block-chain-v1`, `PromptContractIdentity.blockHashVersion`) so it
 can predict which provider holds a prefix — see
-[`prompt-contract-sidecar.md`](prompt-contract-sidecar.md).
+[prompt-contract-sidecar.md](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/architecture/prompt-contract-sidecar.md).
 
 Each ordinary COMPLETE donation hashes only through its validated checkpoint
 position, bounded by the same backend lookup maximum. Earlier retained windows
@@ -271,18 +323,27 @@ replay error cannot persist into full-attention state
 
 Both tiers require `DARKBLOOM_PREFIX_CACHE_MEMORY=1` and the global cache
 switch to remain enabled (`PrefixCachePolicy.isMemoryEnabled`). They retain
-no reusable payloads by default. The measurements in this section describe the
+no reusable payloads by default. GLM-5.3-Flash's protected engine hosts
+neither tier: with the opt-in set, its slot logs that it ignores it and keeps
+its complete SSD checkpoints instead of refusing the load
+(`EngineV2SlotFactory.makeProductionBundle`). The measurements in this section describe the
 previous resident implementation, not SSD performance.
 
 | Tier | Lookup and ownership | Gate |
 |---|---|---|
 | Paged resident blocks | Tenant-scoped chained page hashes; generation-validated page handles; shared rows retain physical pages until release | Paged backend and `supportsPrefixReuse`; configured by `PrefixCachePolicy.residentConfig` |
-| Recurrent checkpoint bank | Exact token radix index per `cacheSalt`; immutable recurrent checkpoints plus full-attention KV; each adopter receives independent mutable state | Eligible dense or MoE Qwen `supportsRecurrentCheckpointReuse`, native-precision contiguous KV, owning full-attention rows, and a valid slot cache budget |
+| Recurrent checkpoint bank | Exact token radix index per `cacheSalt`; immutable recurrent checkpoints plus full-attention KV; each adopter receives independent mutable state | Eligible dense or MoE Qwen on native-precision contiguous KV, or either Nemotron Super owner on its segmented paged KV (`CBv2HybridPrefixCacheConfig.permitsPagedStorage`); `supportsRecurrentCheckpointReuse`, owning full-attention rows, and a valid slot cache budget |
 
 The recurrent bank captures at every 256-token-aligned prompt range end,
 whatever chunk produced it: dense Qwen's solo prefill stripe is normally 4,096
 tokens, plain chunks under decode company 512. Packed prefill and preemption
-disarm capture; a ragged range end is simply not a boundary. A bank adopter
+disarm capture; a ragged range end is simply not a boundary. A model whose
+prefill output depends on the chunk partition sets
+`alignsRecurrentCheckpointsToPrefillChunks` instead: Nemotron Super's tiled
+prefill is captured only at multiples of its fixed prefill chunk reached by
+whole chunks, so a restored request runs the same chunk partition as a cold one
+and continues it bit for bit (`NemotronSuperLocalPrefixCache`, see
+[`inference.md`](inference.md)). A bank adopter
 resumes at the restored boundary under ordinary chunking, out of packed
 prefill, exactly as a complete-checkpoint adopter does
 (`EngineV2.hybridPrefixLookup`). Completed `stop`/`length` donors publish after the
@@ -321,6 +382,11 @@ state to disk (`HybridPrefixCache.swift` / `resizeReservation`,
 `HybridCheckpointOwnership.swift`, `EngineV2.swift` / `updateKVBytesCapacity`,
 `Prefix/EngineV2+HybridPrefix.swift` / `hybridPrefixLookup`). Configurable limits are in
 [`../reference/configuration.md#resident-recurrent-prefix-cache`](../reference/configuration.md#resident-recurrent-prefix-cache).
+The bank budget is `DARKBLOOM_CBV2_HYBRID_PREFIX_BYTES` when set. Otherwise a
+model policy may pass its own default (the pinned Nemotron Super owner sizes
+its bank from the KV grant and the machine, see [inference.md](inference.md)),
+and every other model gets the lesser of 1 GiB and an eighth of the grant
+(`PrefixCachePolicy.hybridConfig`).
 
 A persistent MTP assistant must implement `CBv2MTPPrefixCheckpointDrafter`.
 `Qwen35InlineMTPAssistant` captures the complete normalized trusted prompt
@@ -356,10 +422,14 @@ reservations described above.
 Only the recurrent bank currently publishes resident-ready routing evidence.
 It requires verified weight and prompt-contract identities to advertise
 `prefix_cache_memory_models`; local reuse can operate without the attested
-weight hash because entries never cross loaded model instances. Paged resident
+weight hash because entries never cross loaded model instances. The managed
+Nemotron Super owner supplies them from its own load
+(`NemotronSuperLocalPrefixCache.RoutingIdentity`, see
+[`inference.md`](inference.md)), and binds its default complete SSD
+checkpoints to the same identity. Paged resident
 hits report the memory tier locally but do not yet publish coordinator holder
 anchors. Resident and durable SSD routing evidence remain separate; see
-[`cache-aware-routing.md`](cache-aware-routing.md).
+[cache-aware-routing.md](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/architecture/cache-aware-routing.md).
 
 ### SSD provider gates
 
@@ -456,8 +526,28 @@ state validation. Missing/replaced indexed files and corruption reconcile only t
 entries, preserving the current per-file eviction policy. Binding drift and
 whole-root rebuilds retain their epoch barriers; unloaded-root maintenance
 validates the durable record without rotating it.
-See [routing evidence lifecycle](cache-aware-routing.md) and
+See [routing evidence lifecycle](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/architecture/cache-aware-routing.md) and
 [eviction rules](../reference/ssd-kv-cache.md#size-and-eviction-rules).
+
+Both active SSD stores use `SSDOwnedEntryRetirement.evictOldest` to try one
+linear `SSDBlockIndex.oldest` probe before copying the index. If that file is
+busy or cannot be unlinked, one `SSDBlockIndex.oldestFirstSnapshot` bounds the
+remaining attempts. It yields the probe's order (last hit, then
+lexicographic tag) from a binary heap: O(n) to copy and build, then O(log n)
+per candidate tried, so the pass orders only as many entries as it walks. The
+snapshot includes recency and membership changes during the first attempt;
+later changes cannot extend or reorder the pass. The first tag is excluded,
+even if it was touched or replaced. Stable inputs keep the same LRU order;
+concurrent schedules can select different victims from a snapshot taken
+before the first attempt. File leases, epoch validation and the store's
+removal lock still govern retirement; external loss returns control to the
+disk budget after reconciliation so it can recheck usage before deleting
+another file. A closed store refuses every removal and is never reopened, so
+eviction makes no attempt in a store that is closed when the pass starts and
+ends the pass at the first attempt that frees nothing after the store closes.
+Other refusals (an unsafe root, a lost or unreadable epoch record) can clear,
+so the pass continues past them. Source:
+`provider-swift/Sources/ProviderCore/KVCacheSSD/SSDOwnedEntryRetirement.swift`.
 
 A natural `stop`/`length` donor exports its actual complete prompt checkpoints,
 one per file. A remote donor writes them only on evidence of demand: the
@@ -472,6 +562,9 @@ effective checkpoint encoder may compress older attention rows; native recent
 and recurrent/auxiliary state remain exact. Native checkpoint storage preserves
 all captured bytes. See the
 [payload reference](../reference/ssd-kv-cache.md#complete-checkpoint-payload).
+On the native recurrent layouts a request that consumed a restore stores
+its later checkpoints as deltas of the restored file, and a restore reads that
+chain forward together ([delta checkpoints](../reference/ssd-kv-cache.md#delta-complete-checkpoints)).
 Checkpoint encoding does not change capture scheduling. Recurrent (Qwen,
 Nemotron, Bonsai) checkpoints exist at every contiguous computed-range end inside the
 prompt that is a multiple of 256 tokens
@@ -483,7 +576,7 @@ or above the store's 1,024-token floor, so a donor prefilled in 512-token
 chunks retains 1,024 first. The durable path skips the prompt end itself
 because export needs a token after the checkpoint; the resident
 bank keeps that endpoint, since a longer next turn restores it. The rule rests on the
-[native-checkpoint chunk-partition parity measurement](../reports/2026-09-27-qwen-chunk-partition-parity.md):
+[native-checkpoint chunk-partition parity measurement](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/reports/2026-09-27-qwen-chunk-partition-parity.md):
 on dense Qwen3.5-9B the recurrent state at a boundary is bit-identical under
 every partition tried and a restore continues token-exactly under any
 partition; on the MoE Qwen3.6-35B-A3B the state depends on the partition from
@@ -567,9 +660,9 @@ canonical `nvidia-nemotron-3.5-lightning` ID, the qualified model aggregate,
 actual `NemotronH35Model` with nonempty recurrent state, and a store minimum of
 at least 1,024 tokens. Aliases, replacement weights and other recurrent families
 remain excluded; the historical evidence and three-pair limits are recorded in the
-[all-model qualification report](../reports/2026-10-03-all-model-prefix-qualification.md).
+[all-model qualification report](https://github.com/Layr-Labs/d-inference/blob/4230fa03ddbc84e34e2de150c89431744d6f1c55/docs/reports/2026-10-03-all-model-prefix-qualification.md).
 Those measurements remain bound to their recorded sources and runtime settings;
-they do not qualify the [current combined dependency pins](../developer/build.md#pinned-mlx-dependencies).
+they do not qualify the [current combined dependency pins](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/developer/build.md#pinned-mlx-dependencies).
 Bonsai additionally requires canonical `ternary-bonsai-2-27b`, aggregate
 `ea1e901e4946c0ba9ad70c78517548808b353db6b3a13e87a8fa20468d81244c`,
 the actual final `PrismHadamardQwen35` wrapper with nonempty recurrent state,
@@ -593,6 +686,58 @@ live in `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/Dem
 (`canScheduleDemandedShortCheckpoint`) and
 `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineLoopV2.swift`
 (`executeMixed`). Existing checkpoint count/byte and storage floors remain.
+
+A dense Qwen donor's deepest boundary is otherwise the last full solo stripe
+end, up to 4,095 tokens below the prompt end. The next turn of a growing
+conversation re-prefills that gap. The engine with its paged complete store
+therefore also sets
+`CBv2SchedulerConfig.demandedLatestCheckpointMinimumTokens` to the store floor
+(`EngineV2Factory.demandedLatestCheckpointMinimumTokens`). A request the store
+would write then ends one range at the deepest aligned boundary at least
+`demandedLatestPromptEndMarginTokens = 64` tokens below its prompt end. The
+margin keeps the boundary inside the prefix the next turn shares even after
+the template re-renders the generation prompt. The cut is made only when it
+saves at least the floor over the start of the range it shortens. Beside
+decoding requests (512-token chunks) no cut qualifies at the default floor, so
+the ordinary geometry stays. The short-prompt fork target, the retained
+first/target/latest roles and fleet-novel refusal are unchanged; the cut
+boundary becomes the rolling latest. Dense Qwen restores token-exactly under
+any partition, as the parity rule above records. The partition is
+`demandedLatestCheckpointRange` in
+`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/DemandedShortCheckpointRange.swift`;
+scheduling and the first-token projection share it through
+`demandedCheckpointRange`.
+
+GLM-5.3-Flash captures its KDA state under the same range-end rule, but it has
+no solo stripe and its prefill chunk shares one 2,048-token step budget with
+the decode rows of other requests (`EngineV2Factory.glm5NextMaximumStepTokens`).
+Beside a decoding request every range is 2,044–2,047 tokens and none ends on
+the 256-token grid, so such a donor captured nothing, with no disarm or counter
+(one of six donors in a concurrent burst). The protected GLM engine with its
+GLM store therefore sets `CBv2SchedulerConfig.demandedCaptureBoundaryMinimumTokens`
+to the store floor (`EngineV2Factory.demandedCaptureBoundaryMinimumTokens`). A
+request the store would write (a hint at or above the floor, or no hint) ends a
+range at its hinted fork target and at the deepest aligned boundary below its
+prompt end, whatever chunk its company left it. A range that would stop less
+than one 128-token query block short of such a boundary ends on the query grid
+instead, so the range that reaches the boundary keeps the ordinary prefill
+kernels. A hint below the floor marks a fleet-novel prompt and keeps the
+ordinary geometry. The same cut lowers GLM's reuse granularity from 2,048 to
+256 tokens (a 32,682-token prompt publishes 32,512 instead of 30,720). GLM
+adopters resume under ordinary chunking: a forced donor-sized chunk waited
+whenever decode rows shortened the budget and cold-restarted the hit after
+three waits
+(`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/EngineV2+CompleteCheckpoint.swift`,
+`completeCheckpointLookup`). GLM's cold prefill depends
+on its partition (the KDA four-token groups, the attention history/current
+split and MoE routing), so as for the MoE Qwen a checkpoint is exactly the
+state its own donor computed. On an M5 Ultra, solo donors of one prompt wrote
+bit-identical checkpoints; a donor beside decoding requests differed from its
+first partial KDA group on (relative L2 about 0.1 in the deepest layers), and
+first-token logprobs of three partitions spread over 0.1 nat while each
+partition repeated exactly. The partition is `demandedCaptureBoundaryRange` in
+`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/DemandedShortCheckpointRange.swift`;
+it shares `demandedCheckpointRange` with the first-token projection.
 
 The benchmark SPI can explicitly select
 `EngineV2BenchmarkCheckpointPartition.demandedRecurrentQualification` to measure
@@ -660,7 +805,7 @@ measurements for the independent checkpoint profile:
 
 | Model | Fixed state per checkpoint (window, or recurrent state) | Full rows per 1,024 tokens | File at 6,144 tokens |
 |---|---:|---:|---:|
-| gpt-oss-20b (K/V float32 on 23 of 24 layers) | 6.03 MB | 50.33 MB (49,152 B per token) | 308.0 MB |
+| gpt-oss-20b (bf16 K/V on all 24 layers) | 3.15 MB | 25.17 MB (24,576 B per token) | 154.1 MB |
 | gemma-4-26b-qat-4bit | 209.7 MB | 20.97 MB | 335.5 MB |
 | qwen3.5-9b (conv/SSM state plus MTP history) | 51.5 MB | 41.95 MB | 303.2 MB |
 
@@ -695,6 +840,15 @@ reads each candidate's size and recency under one lock, so request lookup visits
 only its prefix candidates and does not scan unrelated cached entries. A probe
 does not extend TTL; authenticated use still controls recency updates and
 validates replacements or evictions (`SSDHybridCheckpointStore+Read.swift`).
+Restores of one checkpoint share its per-file lease and read it in parallel;
+its writer and duplicate validation take the lease exclusively, in arrival
+order, and maintenance takes it only when no request holds or awaits it. A
+reader rewrites the file's mtime or removes a corrupt file only while it holds
+the file alone
+([same-file coordination](../reference/ssd-kv-cache.md#complete-checkpoint-payload)),
+so that mtime can trail the last hit. Whole-root TTL expiry therefore checks a
+loaded store's in-memory last hit before deleting its file and records a newer
+hit as the mtime (`SSDOwnedEntryRetirement.swift`).
 Before file I/O, the provider reserves bounded host read scratch. A shared
 native process owner prices destinations, zero-fill scratch, metadata and full
 request promises through Admission; it does not duplicate the provider's host
@@ -735,7 +889,7 @@ capacity and exactness gates still decide whether adoption can proceed
 (`EngineV2Bridge+SSDPrefixCache.swift`, `SSDPrefixCache+StagePlan.swift`).
 
 Coordinator receipt negotiation and local Go tests are recorded in
-[`cache-aware-routing.md`](cache-aware-routing.md). The initial complete SSD
+[cache-aware-routing.md](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/architecture/cache-aware-routing.md). The initial complete SSD
 implementation passed [121 native tests](../reports/evidence/ssd-prefix-2026-09-05/native-initial/manifest.json)
 and [266 focused provider tests](../reports/evidence/ssd-prefix-2026-09-05/provider-initial/manifest.json).
 The combined follow-up source snapshot, including bounded attention reads,
@@ -766,7 +920,15 @@ checkpoint ownership remain authoritative. Nested scopes release independently;
 ending a transfer never makes a previously captured calibration guard valid
 again (`SSDPrefixCache`, `SSDHybridCheckpointStore`,
 `provider-swift/Sources/ProviderCore/Inference/Performance/Deadline/WholeMacUnboundedActivity.swift`).
-See [first-content routing](first-content-routing.md) for the calibrated-work
+A provider-staged complete-checkpoint import is the exception: it creates its
+destinations already available from host bytes and evaluates or fences none of
+them, so staging never waits for MLX-Swift's process-wide `evalLock`, which the
+engine holds for another request's whole prefill chunk. The import plan charges
+the largest host-zero source as staging scratch
+([destination contract](../reference/ssd-kv-cache.md#complete-checkpoint-payload),
+`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/CompleteCheckpointTransfer.swift`
+(`CBv2CompleteCheckpointImport`)).
+See [first-content routing](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/architecture/first-content-routing.md) for the calibrated-work
 rules applied to these signals.
 
 ## Invariants
@@ -807,7 +969,7 @@ rules applied to these signals.
 | `pending` / `scan_pending`, `error` / `scan_failed` | Startup disk scan not finished or failed | `SSDPrefixCache.swift` |
 | SSD repeat served cold | Prefix shorter than one block; staging reservation refused; donation below the effective-token floor; TTL expiry; box-wide LRU eviction | `SSDPrefixCache.swift` (`donate`), `SSDBlockIndex.swift` |
 | Recurrent repeat served cold | No actual checkpoint, incompatible geometry/identity, scope mismatch, SSD stage refusal/eviction, or opt-in memory bank eviction | `HybridPrefixCache.swift`, `EngineLoopV2+HybridPrefix.swift`, `PrefixCachePolicy+Hybrid.swift` |
-| Local memory hit gives no coordinator routing preference | Paged resident publication is not implemented; recurrent slot missing verified identity; or holder evidence expired/invalidated | `ResidentPrefixCacheEvidence.swift`, `coordinator/registry/cache_routing_hints.go` |
+| Local memory hit gives no coordinator routing preference | Paged resident publication is not implemented; recurrent slot missing verified identity; or holder evidence expired/invalidated | `ResidentPrefixCacheEvidence.swift`, [coordinator/registry/cache_routing_hints.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/registry/cache_routing_hints.go) |
 | Load refused with `pagedUnavailable` | Explicit `paged` and preflight/capacity/pool construction failed | `EngineV2Factory+BackendPreparation.swift` |
 | Every slot contiguous despite `paged` config | `DARKBLOOM_CBV2_PAGED_KV` set to a negative value, or `supportsPagedKV == false` | `EngineV2KVBackendPolicy.swift`, `EngineV2Factory+BackendPreparation.swift` |
 
@@ -835,7 +997,266 @@ rules applied to these signals.
 ## Related
 
 - [`../reference/ssd-kv-cache.md`](../reference/ssd-kv-cache.md) — DBK3 format, paths, env knobs, eviction, per-family table
-- [`cache-aware-routing.md`](cache-aware-routing.md) — how the coordinator consumes cache state
+- [cache-aware-routing.md](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/architecture/cache-aware-routing.md) — how the coordinator consumes cache state
 - [`inference.md`](inference.md) — the request path this cache sits in
 - [`hardware-support.md`](hardware-support.md) — the KV budget the grants come from
 - [`../design/ssd-kv-cache.md`](../design/ssd-kv-cache.md), [`../design/kv-cache-lookup-shadowing.md`](../design/kv-cache-lookup-shadowing.md) — superseded design records
+
+## GLM cluster image prefix isolation
+
+The bounded GLM cluster still-image slice always offers a disabled prefix cache
+on both ranks. It neither restores nor captures image prompt state. The full
+encoded-media/config/span commitment participates in the bilateral generation
+request identity, while authenticated cache scope remains caller-owned. This
+keeps token-identical prompts with different pixels from sharing native state;
+text prefix behavior is unchanged.
+
+Sources: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/GLM5Next/Prefix/GLM5NextStagePrefix.swift`
+(`agreeGLM5NextStagePrefixPlan`) and
+`provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Submission.swift`
+(`submitTokenized`).
+
+## Cluster prefix tenant partitions
+
+A two-Mac pair's ranks keep prompt prefixes in their own resident caches and
+SSD tiers, outside the leader's CBv2 engine, so the request's two cache fields
+reach both ranks in its reservation: `ClusterWorkerReservation.prefixCache`
+(`ClusterWorkerPrefixCache`), which the pair's owner derives from
+`CBv2Request.prefixCacheEnabled` and `CBv2Request.cacheSalt`
+(`DistributedPipeExecutionOwner.reserve`). The privacy statement is in
+[encryption](security/encryption.md#two-mac-cluster-experimental).
+
+| Request | Reservation field | Both ranks |
+|---|---|---|
+| Cache on, no salt: the local endpoint and the qualification tools | absent; the reservation's bytes are a worker's without it | the earlier scopes, which only such requests use |
+| Cache on, a salt: a coordinator request with its authenticated cache scope | `{"enabled":true,"tenantSHA256":<digest>}` | every key and SSD record scope carries `\|tenant=<digest>`; only requests with the same salt find them |
+| Cache off: a remote request without an authenticated scope, or one with GLM or Qwen media (`EngineV2Bridge.submitTokenized` turns the cache off for those) | `{"enabled":false}` | no offer, vote, restore, capture or SSD record |
+
+- The digest is the SHA-256 of `darkbloom-cluster-prefix-tenant-v1|` and the
+  salt (`ClusterWorkerPrefixCache.tenantDigest`); the salt never leaves the
+  leader's provider process. Any salt partitions, as `CBv2Request.cacheSalt`
+  does on one Mac.
+- Every prefix path takes its scope from `ClusterWorkerPrefixCache.scope`: the
+  stage families through `qwenStagePrefixScope` (resident cache, SSD tier,
+  speculative history), GLM tensor parallel through
+  `GLM5NextTensorParallelResidentRuntime.prefixScope` (vote, restore and kept
+  boundary) and `prefixDiskScope` (its SSD records), and the Qwen
+  tensor-parallel batch owner through
+  `QwenTensorParallelResidentRuntime.batchPrefixScope` (both tiers and the
+  assistant's donors).
+- A request whose cache is off keeps the frame plan a cache-on request has (the
+  stage final-token split, GLM's kept boundary) and only offers and keeps
+  nothing, so it computes exactly what a cold request computes; the batch it
+  runs in is unchanged.
+- Both ranks bind the partition into the request fingerprint
+  (`QwenLayerStageGenerationRequest.fingerprint`, field `prefix-cache=`), which
+  they compare before any prefix exchange: ranks told different partitions fail
+  the request. A reservation without one keeps the earlier fingerprint, so
+  requests without a partition and their arithmetic are unchanged.
+- A worker without the field refuses a reservation that carries it (the codec
+  refuses unknown fields), so a mixed pair fails closed instead of sharing.
+
+Code: `libs/darkbloom-cluster/Sources/DarkbloomClusterProtocol/ClusterWorkerPrefixCache.swift`
+(`ClusterWorkerPrefixCache`) and its codec in `ClusterWorkerCodec.swift`;
+`provider-swift/Sources/ProviderCore/Inference/Distributed/DistributedPipeExecutionOwner.swift`
+(`reserve`). Tests: `PrefixTenantScopeTests`, `PrefixDiskTierTests`
+(`aTenantsRecordsAreFoundOnlyUnderThatTenant`), `QwenTensorParallelBatchSessionTests`
+(`partitionedPrefixesNeverCrossTenantsAndADisabledRequestKeepsNothing`),
+`GLM5NextPipelineGenerationTests`, `GLM5NextTensorParallelPrefixCacheTests`,
+`GLM5NextTensorParallelPrefixDiskTests` (`aRequestsRecordsAreItsOwnPartitions`)
+and the provider's `DistributedPrefixPartitionTests`.
+
+## Cluster sliding prefix adoption
+
+`CBv2OwnedRequestState.adopt` allocates fresh request rows for an agreed
+checkpoint. A sliding tail is positioned at `committed - retainedTokens` and
+restored in chronological writes no larger than
+`PagedKVBackend.pool.config.maxPrefillChunk` by `CBv2PagedPrefixRestore.write`
+in `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/State/CBv2PagedPrefixRestore.swift`.
+This permits a retained window larger than a legal individual write without
+changing its absolute position or dropping tail tokens. Adoption releases its
+new rows when restoration throws. Contiguous rows keep their existing update
+path. This is resident stage restoration; it adds no SSD format, persistent
+cache identity or cross-host KV-transfer contract.
+
+## Nemotron chunk-grid reuse
+
+Registered Nemotron retains states only at existing global chunk boundaries
+strictly before the prompt end. A repeated prompt recomputes its last complete
+or partial chunk; it does not create a new singleton final-token frame. A
+grid-aligned restore executes the same suffix chunk shapes as the cold request.
+Both resident and SSD offers are filtered before selection, and the request
+constructor refuses an off-grid restore. The batch lane path uses the same
+request policy and filter.
+
+`QwenStagePrefixChoice.choose` in
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Prefix/QwenStagePrefixAgreement.swift`
+still requires both ranks to confirm the same frontier, key and successful
+restore. Failure falls back to cold original chunking. Capture remains subject
+to the existing byte allowance, pressure withdrawal and clean-retirement gate.
+The numerical-policy SHA changes the prefix namespace, excluding older
+final-token-split entries. Other registered families retain their existing
+final-token capture policy.
+
+## Gemma chunk-grid reuse
+
+All three registered Gemma 4 rows use the same
+[existing-chunk frontier rule](#nemotron-chunk-grid-reuse): capture and restore
+only original global chunk ends before the prompt end, and recompute the last
+chunk on repeat. The serial resident/SSD and batch paths apply the shared
+request policy, offer filtering and bilateral confirmation. Gemma's own
+`gemma4-original-chunk-grid-v1` receipt field changes its cache namespace;
+Qwen, Bonsai, MiMo and GLM retain their existing prefix framing.
+
+### MiMo cluster paged mode boundary
+
+Cluster MiMo text plain, compact, MTP and phase modes keep prefix reuse disabled
+when using their independent page histories. The trained-head COMPLETE codec
+accepts only its explicit contiguous storage policy; it cannot reinterpret
+page metadata as an older prefix checkpoint. Standalone native contiguous
+MiMo COMPLETE-prefix behavior is unchanged. See `MiMoBatchSettings` in
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/MiMo/Batch/MiMoBatchSettings.swift`
+and `MiMoV26MTPPrefixCheckpoint.swift` in
+`libs/mlx-swift-lm/Libraries/MLXLLM/Models/MiMo/`.
+
+Qwen27 TP media prefixes bind `QwenMediaRequestState.prefixIdentity`, including
+authenticated source/processor/position metadata, in addition to the existing
+text request identity. Request-owned positions and feature roots are not model
+globals. Native retirement releases them only after preparation completion and
+checked drain. This preserves identity separation; it is not a full-artifact
+media-prefix performance qualification. The provider's media ingress sends
+every such request with its prefix cache off, so both ranks neither restore nor
+keep it ([tenant partitions](#cluster-prefix-tenant-partitions)). Source:
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Media/QwenMediaRequestState.swift`.
+
+The exact27 multi-lane TP owner retains one compact snapshot per completed
+request at an original chunk boundary, at most 4,096 prompt tokens. The resident
+LRU holds at most 32 entries and two maximum-sized snapshot banks. A sealed
+vote selects the longest boundary both ranks hold; a one-sided miss computes
+cold on both ranks. Restoration writes fresh request-owned attention storage
+and adopts immutable confirmed conv/SSM state. It never splits the final chunk.
+
+Keys bind the loaded agreement, backend, chunk size, prompt prefix and media
+identity. The native owner completes media preparation before reuse, so cached
+history cannot substitute another request's positions or features. Both ranks
+must prove native and media retirement before a clean capture enters the cache;
+cancelled or failed requests donate nothing. Reused/stored counts are published
+through the existing prompt-cache report. Cache entries are separate from live
+paged rows, swept on failure and shutdown, and explicitly charged beside them.
+The existing prefix disable switch offers and captures nothing. Capacity one
+is the same batch owner one lane wide, with both tiers; other models retain
+their existing behavior. The SSD tier is described below.
+
+Source: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/TensorParallel/QwenTensorParallelBatchPrefixCache.swift`
+(`QwenTensorParallelBatchPrefixCache`) and
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/TensorParallel/QwenTensorParallelNativeBatchExecutor.swift`
+(`open`, `confirmedRetirement`). Tiny fixtures do not qualify full-artifact
+warm-prefix correctness, media parity, RDMA or useful speed.
+
+### Qwen27 TP assistant prefix ownership
+
+The TP assistant prefix donor binds a compact target attention/recurrent snapshot and the same assistant's trusted prompt history at one confirmed original prompt frontier. Restore creates request-owned mutable state and both ranks negotiate the common usable frontier. The bounded cache publishes donors only after checked retirement and a final cancellation/deadline vote; a failed decoder cannot donate. Captured speculative target windows, pending assistant drafts and queued accepted tokens are not prefix donors. Both resident donor banks and the temporary capture bank remain in the complete quote.
+
+Code: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/TensorParallel/QwenTensorParallelMTPPrefix.swift` (`QwenTensorParallelMTPPrefixState`), `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/TensorParallel/QwenTensorParallelMTPPrefixBudget.swift`, and `libs/mlx-swift-lm/Libraries/MLXLLM/Models/Qwen35MTP+PrefixCheckpoint.swift` (`Qwen35InlineMTPAssistant`). Full-artifact warm-prefix numerical and cancellation checks remain separate from tiny ownership fixtures.
+
+### Qwen27 TP prefix SSD tier
+
+Both ranks of every Qwen TP row's batch owner (9B, 27B, Qwen3.5/3.6 35B A3B) also keep their prefix snapshots in the
+pipeline's encrypted SSD tier (`QwenStagePrefixDiskTier`), so a repeated long
+prompt restores its prefix after both Macs restart. Each rank writes only its
+own shard: its heads' attention rows and its recurrent state at the captured
+boundary, and for a speculating owner the assistant's trusted history at that
+boundary as the record's speculative history. Records are written behind
+serving after bilateral clean retirement, and only for a capture the resident
+tier accepted, so a restore fits that tier again. The record directory is
+named by the plan and shares, the verified artifact, this rank's storage
+commitment, both builds and the assistant policy, never by the membership
+epoch. A restarted pair finds what the last one kept; a re-split, a reinstall
+or another assistant starts a new directory.
+
+The sealed vote counts a boundary held in memory or as a complete SSD record.
+Each rank restores the agreed boundary from its own tiers, memory first. It
+checks that an SSD shard adopts into its request geometry before any page is
+written, and charges the shard to the resident tier at once. A second sealed
+exchange confirms that both ranks restored. Otherwise both prefill from zero,
+and a rank that did read its record keeps it resident, so the next offer finds
+it in memory. An unreadable or unadoptable record is deleted. The load
+agreement carries `qwen-tensor-parallel-prefix-v2`.
+
+Attention rows are stored at the pair's checkpoint precision (`balanced` by
+default): a shard restored from its record has older rows approximate and the
+record's newest 128 rows exact, in the native shapes the adoption checks, and
+the request then differs from a cold one. The load agreement then also carries
+`cluster-prefix-ssd-records-v1`; see
+[cluster SSD prefix record encoding](inference.md#cluster-ssd-prefix-record-encoding).
+
+The tier logs `darkbloom-prefix-ssd-v1` lines (`open`, `persist`, `restore`,
+`restore-confirmed`, `restore-declined`, `close`); the
+`darkbloom-tp-batch-prefix-v1` events are unchanged. Shutdown closes the tier
+(queued writes finish, bounded) before the model is released.
+
+Code: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/TensorParallel/QwenTensorParallelPrefixDisk.swift`,
+`QwenTensorParallelNativeBatchExecutor.swift` (`agreePrefix`, `confirmedRetirement`) and
+`QwenTensorParallelResidentRuntime.swift` (load and shutdown) in the same directory.
+Tests: `QwenTensorParallelBatchSessionTests` (`ssd…AfterTheTiersReopen`) and
+`QwenTensorParallelMTPSessionTests` (the SSD round trip onto a newly loaded head).
+
+### GLM TP prefix SSD tier
+
+Both ranks of GLM-5.3-Flash tensor parallel keep their prompt prefixes in the
+same encrypted SSD tier (`QwenStagePrefixDiskTier`) beside the memory tier
+(`GLM5NextTensorParallelPrefixCache`), so a repeated long prompt restores its
+prefix after both Macs restart. The memory tier keeps one boundary per
+request, the last whole 4,096-token chunk before the final token; a rank's
+record holds its state there: its heads' KDA convolution and recurrent state,
+its copy of every DSA layer's latents, index keys and pool gates, and the
+NextN history, which a restored request needs to propose as a prefilled one
+does (`GLM5NextTensorParallelPrefixRecord`). The record shape is the GLM
+pipeline's (`GLM5NextStagePrefixSnapshot`): DSA latents as attention `keys`
+`[1, 1, T, kvLoraRank]`, index keys and pool gates side by side as `values`,
+the NextN history the same way under the NextN layer's own index
+(`hiddenLayers`), KDA state as the `recurrent` pair; validity is not stored.
+
+| Step | What happens |
+|---|---|
+| Persist | After a request retired cleanly (a lane that left with a finish; a solo request that this rank did not stop), its boundary goes to the writer queue only if the memory tier still holds it. The job holds that entry's pages (`GLM5NextDSAHistoryRows`, shared as a copy holds them) and its KDA arrays; the writer reads each 4,096-row unit from the page slabs on the host. Nothing is gathered or copied on the serving thread, and the queue's bounds (`maximumQueuedJobs`, `maximumQueuedBytes`) count the held pages. |
+| Scope | `GLM5NextTensorParallelPrefixDisk.planScope`: the plan name and shares, the partials transport, the verified artifact and inventory, both builds and the NextN depth; a request adds its prefill chunk and whether its histories are paged (`scope(chunk:)`), then its [tenant partition](#cluster-prefix-tenant-partitions) (`GLM5NextTensorParallelResidentRuntime.prefixDiskScope`). Never the membership epoch, and never the installed cut, which tensor parallel does not compute with. |
+| Vote | Each rank offers 1 for a boundary in memory and 3 for one held only as a complete record (`QwenTensorParallelPrefixCache.offer`); one sealed sum chooses the deepest boundary both offer (2, 4 or 6). Without records the words and the decision are the memory-only vote's, and a memory agreement restores as before. |
+| SSD restore | When either rank takes the agreed boundary from SSD, each rank takes it from memory when it holds it there, else reads its record and checks every layer's shape and element type before anything is written (`Restorable`). A second sealed exchange (`QwenTensorParallelPrefixCache.confirm`) shows both ranks have it; only then are the record's rows written into fresh pages of the request's page account and the NextN history into its MTP state, and the memory tier keeps the result. Otherwise both prefill from zero. An unreadable record is deleted by the tier, one that does not adopt by the rank, and a request that stops while its record is read declines without deleting it. |
+
+A record stores every DSA layer's latents at the pair's checkpoint precision
+(`balanced` by default; `GLM5NextTensorParallelPrefixDisk.encoding`): a
+restored state holds the bits the memory entry held except the latents' older
+rows, which are approximate (the record's newest 128 rows are exact), so a
+request restored from SSD is close to, not identical with, the same request
+prefilled from zero. Index keys, pool gates, the NextN history and the KDA
+state are always exact, and with `native` records a restore produces the
+tokens and logits of the request prefilled from zero
+([record encoding](inference.md#cluster-ssd-prefix-record-encoding)). The load
+agreement carries `glm5-next-tensor-parallel-prefix-v2` and, while the cache
+is on, the record encoding. The
+configuration, budgets, TTL, daily write cap, free-space floor and per-rank
+owner-only directories are the Qwen TP tier's (`QwenStagePrefixDiskConfiguration`),
+with the key the owner sends on the worker's input. Media requests neither
+restore nor keep prefixes.
+
+Logs: the tier's `darkbloom-prefix-ssd-v1` lines (`open`, `persist`,
+`persist-dropped`, `restore`, `restore-failed`, `close`), the rank's
+`restore-confirmed` (with `kept=`), `restore-declined` (`tier=`, `local=`) and
+`restore-rejected`, and at load `darkbloom-prefix-v1 … family=glm mode=tensor_parallel … ssd=`.
+Shutdown closes the tier (queued writes finish, bounded) before the model is
+released.
+
+Code: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/GLM5Next/TensorParallel/GLM5NextTensorParallelPrefixDisk.swift`
+(`GLM5NextTensorParallelPrefixDisk`, `GLM5NextTensorParallelPrefixRecord`,
+`restoreAgreedFromEitherTier`, `persistPrefix`),
+`GLM5NextTensorParallelResidentRuntime.swift` (`openRequest`, load and shutdown) in
+the same directory, and `libs/mlx-swift-lm/Libraries/MLXLLM/Models/GLM5NextPagedDSA.swift`
+(`GLM5NextDSAHistoryRows`). Tests: `GLM5NextTensorParallelPrefixDiskTests`
+(records across a restart, scopes, budgets and expiry, the vote and its
+confirmation across two ranks), `GLM5NextTensorParallelPrefixRestoreTests`
+(paged and contiguous rank states restored and continued bit for bit from
+native records; `GLM53_PREFIX_SSD=1` on the serving-width synthetic stage,
+also through a balanced record) and
+`GLM5NextTensorParallelPrefixRecordEncodingTests` (a balanced record encodes
+only the DSA latents and adopts).

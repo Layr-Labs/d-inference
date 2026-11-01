@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import ProviderCore
 
-@Test func MimoCalibrationConcurrencyWireKeepsLegacyOmissionAndMeasuredWidth() throws {
+@Test func ModelCalibrationConcurrencyWireKeepsLegacyOmissionAndMeasuredWidth() throws {
     var bucket = PerformanceWorkloadBucket(phase: "decode", promptTokenBucket: 1_024,
         contextTokenBucket: 1_024, cacheState: "cold", contention: "isolated",
         otherModelActivity: false,

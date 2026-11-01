@@ -82,7 +82,7 @@ struct Gemma4ToolCallArgumentsTests {
                 _ = try Gemma4TemplateFix.normalizeMessages(assistantCall(arguments: raw))
                 Issue.record("\(raw.debugDescription): expected invalidToolPayload")
             } catch let error as MultiModelBatchSchedulerEngineError {
-                guard case .invalidToolPayload(let message) = error else {
+                guard case .invalidToolPayload(let message, _) = error else {
                     Issue.record("\(raw.debugDescription): wrong case \(error)")
                     continue
                 }

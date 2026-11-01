@@ -38,7 +38,8 @@ private struct NativeLoopTestFailure: Error {}
 // Admission-only peer: never generates or stands in for a real-model smoke pass.
 // The MiMo failure below still uses the actual native fixture/owner/retirement.
 private final class NativeFaultPeerModel: Module, LanguageModel {
-    func prepare(_ input: LMInput, cache: [KVCache], windowSize: Int?) throws -> PrepareResult {
+    func prepare(_ input: LMInput, cache: [KVCache], state: LMOutput.State?, prefill: PrefillParameters) throws
+        -> PrepareResult {
         .tokens(input.text)
     }
     func newCache(parameters: GenerateParameters?) -> [KVCache] { [] }
@@ -99,6 +100,23 @@ private final class NativeLoopControllerJoinObservation: @unchecked Sendable {
 }
 
 private extension ProviderLoop {
+    func nativePublicationCalibrationHandoff(modelID: String) async throws -> Bool {
+        guard let bridge = modelSlots[modelID]?.engineV2 else { throw NativeLoopTestFailure() }
+        isLoadingAny = true
+        modelsLoading.insert(modelID)
+        let activity = kvBudget.serviceBudget.beginUnboundedActivity()
+        defer { activity.finish() }
+        try await finishNativeMiMoSlotPublication(modelID: modelID, deviceActivity: activity)
+        // Automatic scheduling retains its real posture gate. If that gate is
+        // closed on this host, directly request a probe without the posture
+        // gate to verify the construction receipt no longer blocks ownership.
+        let started = await bridge.startModelCalibrationIfNeeded(requireNominalPosture: false)
+        let attempted = await bridge.nativePublicationCalibrationAttempted()
+        let gateReleased = !isLoadingAny && !modelsLoading.contains(modelID)
+        await bridge.stopModelCalibration()
+        return gateReleased && (started || attempted)
+    }
+
     func nativeLifetimeBoundary(_ body: (@Sendable (String) async throws -> Void)?) {
         nativeMiMoBoundaryForTesting = body
     }
@@ -422,6 +440,23 @@ final class ProviderLoopNativeMiMoLifetimeTests: XCTestCase {
         XCTAssertEqual(actualBudget.processLedger.state(for: before.owner), before)
         let retired = await owner.retireNativeMiMoOwner(modelID: modelID)
         XCTAssertTrue(retired)
+    }
+
+    func testNativePublicationReleasesConstructionActivityForCalibration() async throws {
+        try nativeLane()
+        let (owner, load, registry) = try await loaded()
+        try await isolateLifecycleState(owner)
+        let transaction = try XCTUnwrap(load.transaction)
+        do {
+            let scheduled = try await owner.nativePublicationCalibrationHandoff(modelID: modelID)
+            XCTAssertTrue(scheduled)
+            XCTAssertEqual(transaction.snapshot().phase, .published)
+            try await finish(owner, registry)
+            XCTAssertEqual(transaction.snapshot().phase, .retired)
+        } catch {
+            try await finish(owner, registry)
+            throw error
+        }
     }
 
     func testActualSealedCandidateCannotPublishAfterOwnerStop() async throws {
@@ -932,5 +967,11 @@ final class ProviderLoopNativeMiMoLifetimeTests: XCTestCase {
         XCTAssertTrue(registry.retainedTransactionIDs.isEmpty)
         let count = await owner.nativeLifetimeSlotCount()
         XCTAssertEqual(count, 0)
+    }
+}
+
+private extension EngineV2Bridge {
+    func nativePublicationCalibrationAttempted() -> Bool {
+        modelCalibration.task != nil || modelCalibration.nextAttempt != nil
     }
 }

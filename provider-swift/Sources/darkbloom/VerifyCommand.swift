@@ -22,7 +22,7 @@ struct Verify: AsyncParsableCommand {
             coordinatorOverride: coordinator
         ))
 
-        print("darkbloom verify")
+        print("\(BuildEnvironment.current.cliName) verify")
         print("Config: \(describeConfigPath(snapshot))")
         for check in checks {
             print("\(check.status.marker) \(check.name): \(check.detail)")

@@ -104,11 +104,13 @@ private struct StandaloneUpgradeFixture: Sendable {
 }
 
 private extension StandaloneServer {
-    func installStandaloneUpgradeFixture(_ bridge: EngineV2Bridge) {
+    func installStandaloneUpgradeFixture(_ bridge: EngineV2Bridge,
+                                         modelID: String = standaloneUpgradeModelID,
+                                         modelType: String = "gemma4") {
         lifecycleState = .running
-        slots[standaloneUpgradeModelID] = CachedSlot(bundle: .init(targetOnly: bridge),
+        slots[modelID] = CachedSlot(bundle: .init(targetOnly: bridge),
             container: mtpFloorContainer(), tokenizer: TokenizerHandle(MTPFloorTokenizer()),
-            modelType: "gemma4", isVLM: false, sizing: mtpFloorSizing(weightsGiB: 1),
+            modelType: modelType, isVLM: false, sizing: mtpFloorSizing(weightsGiB: 1),
             lastUsedAt: .now, cacheEligibleWeightHash: String(repeating: "a", count: 64))
     }
     func cleanStandaloneUpgradeFixture() async {
@@ -137,6 +139,27 @@ private extension StandaloneServer {
 @Suite("Standalone assistant upgrade integration", .serialized)
 struct StandaloneMTPUpgradeTests {
     init() { _ = LiveInferenceFixtures.ensureMetallibColocated() }
+
+    @Test("default Bonsai idle upgrade selects exact model and architecture only",
+          arguments: [Bonsai9BModelPolicy.modelID, Bonsai9BModelPolicy.eigenModelID])
+    func bonsaiIdleCandidate(modelID: String) async throws {
+        for (id, type, mode, selected) in [
+            (modelID, "prism_hadamard_qwen35", MTPMode.auto, true),
+            (modelID, "prism_hadamard_qwen35", .off, false),
+            (modelID, "gemma4", .auto, false),
+            (modelID + "-copy", "prism_hadamard_qwen35", .on, false),
+        ] {
+            let server = StandaloneServer(config: .init(mtpMode: mode),
+                models: [ModelInfo(id: id, modelType: type, sizeBytes: 1, estimatedMemoryGb: 1)],
+                kvBudgetForTesting: ScriptedProviderMemory.budget(modelIDs: [id]))
+            let bridge = EngineV2Bridge(engine: StandaloneUpgradeScriptedEngine(bytes: 1 << 20),
+                modelId: id, tokenizer: TokenizerHandle(MTPFloorTokenizer()), eosTokenIds: [])
+            await server.installStandaloneUpgradeFixture(bridge, modelID: id, modelType: type)
+            #expect(await server.pendingMTPUpgradeModels() == (selected ? [id] : []))
+            await server.cleanStandaloneUpgradeFixture()
+            #expect(await server.pendingMTPUpgradeModels().isEmpty)
+        }
+    }
 
     @Test("local reservations and engine work preserve the old engine until idle")
     func busyThenIdle() async throws {

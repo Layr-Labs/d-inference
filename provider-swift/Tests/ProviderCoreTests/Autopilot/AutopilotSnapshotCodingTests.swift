@@ -107,6 +107,37 @@ struct AutopilotSnapshotCodingTests {
     }
 
     @Test(arguments: [false, true])
+    func providerReportFieldsUseSnakeCaseAndDecodeBothKeyStrategies(convertSnakeCase: Bool) throws {
+        var expected = snapshot()
+        expected.capabilities = ["inventory_adoption", "placement_holds", "busy_reasons"]
+        expected.adoptedModels = ["qwen"]
+        expected.heldModels = [.init(modelId: "gemma", expiresAtMs: 1_000)]
+        expected.busyReasons = ["startup_preload", "load_gate"]
+        expected.busyReason = "startup_preload"
+        expected.busySinceMs = 500
+        expected.transitionStalls = [.init(transition: "startup_preload", count: 2, lastAgeMs: 601_000)]
+        let data = try JSONEncoder().encode(expected)
+        let decoder = JSONDecoder()
+        if convertSnakeCase { decoder.keyDecodingStrategy = .convertFromSnakeCase }
+        #expect(try decoder.decode(ModelAutopilotSnapshot.self, from: data) == expected)
+        let json = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        #expect(json["adopted_models"] as? [String] == ["qwen"])
+        #expect(json["busy_reason"] as? String == "startup_preload")
+        #expect(json["busy_since_ms"] as? Int == 500)
+        let held = try #require(json["held_models"] as? [[String: Any]])
+        #expect(held.first?["model_id"] as? String == "gemma")
+        #expect(held.first?["expires_at_ms"] as? Int == 1_000)
+        let stalls = try #require(json["transition_stalls"] as? [[String: Any]])
+        #expect(stalls.first?["last_age_ms"] as? Int == 601_000)
+
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("autopilot-report-\(UUID()).json")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let state = DaemonState(pid: 123, version: "test", writtenAt: 100, startedAt: 90, autopilot: expected)
+        DaemonStateFile.write(state, to: url)
+        #expect(try #require(DaemonStateFile.read(from: url)).autopilot == expected)
+    }
+
+    @Test(arguments: [false, true])
     func missingRequiredFieldsAreStillRejected(convertSnakeCase: Bool) throws {
         var json = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(snapshot())) as? [String: Any])
         json.removeValue(forKey: "observe_only")

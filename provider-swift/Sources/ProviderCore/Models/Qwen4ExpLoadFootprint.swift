@@ -118,8 +118,13 @@ enum Qwen4ExpLoadFootprint {
 
     /// Hashing/hooks may suspend between scan/admission and actual allocation.
     /// An obsolete smaller native allowance must fail closed before loading.
+    /// Exact `glm5_next` declares its own supplement, rechecked against the
+    /// selected plan by `ModelScanner.glm5NextLoadQuotationIsCurrent`; any other
+    /// unverifiable declaration still fails closed here.
     static func isCurrent(_ info: ModelInfo, directory: URL) -> Bool {
-        guard let declared = info.nativeLoadTransientBytes else { return true }
+        guard let declared = info.nativeLoadTransientBytes, info.modelType != "glm5_next" else {
+            return true
+        }
         guard let excluded = info.ssdOffloadedWeightBytes,
             let current = estimate(snapshotDir: directory, modelType: info.modelType,
                 sizeBytes: info.sizeBytes, offloadedBytes: excluded),

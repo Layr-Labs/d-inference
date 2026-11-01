@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-10-31
+> Last updated: 2026-11-01
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -4774,6 +4774,48 @@ Code: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/MiMo/Reside
 `libs/mlx-swift-lm/Libraries/MLXLLM/Models/MiMo/MiMoV26IndependentHistory.swift`
 and `MiMoV26IndependentHistoryCache.swift`. See
 [MiMo independent-history checks](../developer/test.md#mimo-independent-history-batch-checks).
+
+### MiMo pipeline decode command buffers
+
+MiMo stage decode encodes its Metal command buffers as GLM's and Qwen's
+tensor-parallel decode do: up to 100 operations a buffer with no input-size
+bound (`MiMoLayerStageSession.decodeCommandBuffers`), on the thread that encodes
+the step. The rank's own limits are the worker's 16-operation guard
+(`ClusterWorkerEnvironmentGuards`) and MLX's per-chip size bound, and each
+routed layer's expert launch takes a whole 1 GiB expert bank as input, so under
+those limits a decode step commits a buffer every few launches. Prefill frames
+keep the rank's limits.
+
+| Work | Where the limits apply |
+|---|---|
+| Plain and compact decode frames, phase-split and alone-route decode | `MiMoLayerStageSession.decode` |
+| Lane steps of independent histories | `MiMoLayerStageSession.decodeBatch` |
+| Speculative rounds of `pipeline_mtp_v1`: drafts, verify windows, settlement | `MiMoMTPGeneration.runProducer`, `MiMoMTPGeneration.runConsumer` |
+
+Only the commit points move: every kernel, input and rounded value is the
+same. `MiMoDecodeCommandBufferTests` compares residuals, logits rows and every
+cache and page array byte for byte under both limits on synthetic stages.
+
+MLX keeps up to ten command buffers in flight (`MLX_MAX_ACTIVE_TASKS`), so under
+the decode limits a whole stage step can be in flight at once. A request's
+workspace therefore holds every full-attention layer's scores for its decode
+rows at the same time (`MiMoRequestStateBudget.estimate`, `decodeRows`: one row,
+or the verify window's `depth + 1`). It never charges less than one prompt
+frame's scores on one layer. Gathered page views are already charged for every
+layer (`MiMoPagedKVAllowance.pages`). The decode speed effect on the registered
+model is not measured yet.
+
+### MiMo routed experts in placement
+
+`MiMoPlacementFamily` states MiMo's routing: each of the 47 routed layers sends
+a token to 8 of its 256 experts (`expertRouting`). Its routed-expert tensors are
+each layer's `mlp.switch_mlp` banks and their block scales (`isRoutedExpert`).
+The router and its score correction are read on every step. The layout then
+carries `routedExperts`, and the hardware prior
+(`ClusterHardwarePrior.decodeBytesPerToken`) counts 10,767,036,288 bytes for one
+decode step instead of every expert's 166,600,109,952. The prior prices tensor
+parallel only. MiMo has no tensor-parallel plan, so its pipeline plans are
+unchanged.
 
 ### Gemma paged prefix restoration
 

@@ -1,6 +1,6 @@
 # Test Provider And Native Contracts
 
-> Last updated: 2026-10-31
+> Last updated: 2026-11-01
 
 Run isolated Swift, native-resource, public-fixture and landing tests here.
 Backend integration and cross-implementation qualification are platform-owned.
@@ -2185,6 +2185,34 @@ off|tenant:SALT` writes a request with that partition (the file holds only the
 salt's digest); a repeat under another tenant must report no reused tokens.
 These are synthetic checks: tenant isolation on a real model and pair, and GLM
 bit-identity with no partition, are hardware gates.
+
+## MiMo pipeline decode command buffers
+
+`MiMoDecodeCommandBufferTests` (cluster runtime, GPU) drives two random MiMo
+stages as `MiMoLayerStageSession` drives them. The prompt runs under the rank's
+16-operation guard. Decode steps, a verify window rolled back to two rows and
+lane steps then run twice: once under the guard and once under
+`MiMoLayerStageSession.decodeCommandBuffers`. Every residual crossing the cut,
+every logits row and every cache or page array must be byte-equal. The tests
+cover a tiny BF16 model and one quantized like the registered row (MXFP4
+experts, affine 8-bit projections, key width 192, value width 128), each on
+ordinary caches and on request-owned pages. Build and stage the runtime tests
+as described for the cluster runtime tests above, then, with the same build
+flags:
+
+```bash
+swift test --package-path libs/darkbloom-cluster -c release --skip-build --no-parallel \
+  --filter 'MiMoDecodeCommandBufferTests|MiMoResidentAdmissionTests|MiMoPagedAdmissionTests'
+bash libs/darkbloom-cluster/Tests/PlacementChecks/run.sh
+```
+
+The admission tests check that every full-attention layer's decode-row scores
+are charged at once (`MiMoRequestStateBudget`). The placement run includes
+`MiMoRoutedExpertChecks`: the MiMo layout built from the registered headers
+names 282 routed-expert tensors (160,859,947,008 bytes). The hardware prior
+reads 10,767,036,288 bytes for one decode step, and the golden plans change only
+by the layout they echo. These are synthetic and metadata checks. They run no
+registered weights and measure no speed.
 
 ## MiMo paged speculative and phase checks
 

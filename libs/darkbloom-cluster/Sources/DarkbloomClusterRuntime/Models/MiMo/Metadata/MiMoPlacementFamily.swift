@@ -105,6 +105,17 @@ struct MiMoPlacementFamily: ClusterPlacementFamily {
         name.hasPrefix(MiMoLayerStagePlan.sourceNamespace + "model.mtp.")
     }
 
+    /// Each routed layer sends a token to `expertsPerToken` of its `experts`.
+    var expertRouting: ClusterExpertRouting? {
+        ClusterExpertRouting(selected: specification.expertsPerToken, experts: specification.experts)
+    }
+
+    /// A routed layer's packed expert banks and their block scales; its router
+    /// and score correction are read on every step.
+    func isRoutedExpert(storedTensor name: String) -> Bool {
+        layer(ofStoredTensor: name) != nil && name.contains(".mlp.switch_mlp.")
+    }
+
     /// The text tensors (every indexed tensor no stage excludes) are the
     /// registered inventory.
     func requireRegisteredInventory(_ tensors: [ClusterPlacementStoredTensor]) throws {

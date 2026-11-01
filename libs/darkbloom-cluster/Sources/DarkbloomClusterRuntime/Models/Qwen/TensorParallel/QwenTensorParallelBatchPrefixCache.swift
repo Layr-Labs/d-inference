@@ -165,11 +165,22 @@ final class QwenTensorParallelSnapshotCache<Snapshot: QwenTensorParallelPrefixSn
     }
 
     private func evict(reserving: Int, adding: Int) {
-        while groups.count + (adding > 0 ? 1 : 0) > Self.maximumGroups || entries.count + adding > Self.maximumEntries
+        // Over the capture count: the least recently used capture goes whole
+        // (thinning other captures would not lower the count).
+        while groups.count + (adding > 0 ? 1 : 0) > Self.maximumGroups, let group = leastRecentlyUsedGroup() {
+            for (key, entry) in entries where entry.group == group { remove(key, entry); evictions += 1 }
+        }
+        while entries.count + adding > Self.maximumEntries
                 || (bytesInUse > 0 && bytesInUse > budgetBytes - min(budgetBytes, reserving)),
               let (key, entry) = victim() {
             remove(key, entry); evictions += 1
         }
+    }
+
+    private func leastRecentlyUsedGroup() -> UInt64? {
+        var latest: [UInt64: UInt64] = [:]
+        for entry in entries.values { latest[entry.group] = max(latest[entry.group] ?? 0, entry.lastUse) }
+        return latest.min(by: { ($0.value, $0.key) < ($1.value, $1.key) })?.key
     }
 
     /// The least recently used shallower boundary of a capture other than the

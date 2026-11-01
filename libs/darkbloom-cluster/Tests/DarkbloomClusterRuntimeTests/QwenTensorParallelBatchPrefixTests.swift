@@ -201,6 +201,20 @@ struct QwenTensorParallelBatchPrefixTests {
         #expect(group("f", [4], own: 10, shared: 0) == [])
     }
 
+    @Test func pastTheCaptureLimitTheLeastRecentCaptureGoesWhole() throws {
+        let cache = QwenTensorParallelBatchPrefixCache(enabled: true, budgetBytes: 1 << 30)
+        let limit = QwenTensorParallelBatchPrefixCache.maximumGroups
+        for index in 0..<limit {
+            cache.insert([(key: "\(index)-4", state: state(4, 1)), (key: "\(index)-8", state: state(8, 1))], sharedBytes: 1)
+        }
+        _ = try cache.restore(key: "0-8", frontier: 8)
+        cache.insert([(key: "new-4", state: state(4, 1)), (key: "new-8", state: state(8, 1))], sharedBytes: 1)
+        // Capture 1, the least recently used, went whole; every other kept both boundaries.
+        #expect(cache.heldFrontiers.count == 2 * limit && cache.bytesInUse == 3 * limit)
+        #expect(!cache.holds(key: "1-4", frontier: 4) && !cache.holds(key: "1-8", frontier: 8))
+        #expect(cache.holds(key: "0-4", frontier: 4) && cache.holds(key: "new-8", frontier: 8))
+    }
+
     @Test func entriesGiveWayBeforeALiveGateRefuses() throws {
         let cache = QwenTensorParallelBatchPrefixCache(enabled: true, budgetBytes: 100)
         cache.insert([(key: "a-4", state: state(4, 10)), (key: "a-8", state: state(8, 10))], sharedBytes: 30)

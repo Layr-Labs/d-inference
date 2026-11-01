@@ -3,7 +3,8 @@ import Foundation
 
 /// Persists active holds so a restarted or updated provider comes back held.
 /// Owner-only like the lifecycle mailbox: `0600` file in the `0700` runtime
-/// directory, written by atomic rename, read without following links.
+/// directory, written by atomic rename, read without following links or
+/// blocking: a FIFO at the path would otherwise wait for a writer forever.
 struct AddonHoldStore: Sendable {
     enum Contents: Sendable, Equatable {
         case absent
@@ -23,7 +24,7 @@ struct AddonHoldStore: Sendable {
     let url: URL
 
     func read() -> Contents {
-        let fd = open(url.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+        let fd = open(url.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
         guard fd >= 0 else { return errno == ENOENT ? .absent : .invalid }
         let file = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
         defer { try? file.close() }

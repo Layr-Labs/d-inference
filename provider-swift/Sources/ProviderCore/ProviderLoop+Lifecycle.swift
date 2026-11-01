@@ -100,6 +100,14 @@ extension ProviderLoop {
         if !Task.isCancelled, lifecycleRemaining == 0, let client = coordinatorClient, ContinuousClock.now < finishDeadline {
             acknowledged = await client.acknowledgeDrain(timeout: ContinuousClock.now.duration(to: finishDeadline))
         }
+        // Without a registered session there is no coordinator to acknowledge:
+        // a disconnect already cancelled accepted work and outbound messages
+        // are never carried to a later connection. Waiting would leave a
+        // provider whose reconnect keeps failing unable to stop gracefully.
+        var coordinatorSettled = acknowledged || coordinatorClient == nil
+        if !coordinatorSettled, !Task.isCancelled, let client = coordinatorClient {
+            coordinatorSettled = await !client.hasRegisteredConnection()
+        }
         lifecycleStatus.remaining = lifecycleRemaining
         lifecycleStatus.coordinatorAcknowledged = acknowledged
         let workerRetired = await stopAppAttestWorkerAndWait()
@@ -108,7 +116,7 @@ extension ProviderLoop {
         } else if request.force {
             lifecycleStatus.outcome = .forced
             servingDrain.drained()
-        } else if nativeOwnersDrained, lifecycleRemaining == 0 && (acknowledged || coordinatorClient == nil) {
+        } else if nativeOwnersDrained, lifecycleRemaining == 0, coordinatorSettled {
             lifecycleStatus.outcome = .drained
             servingDrain.drained()
         } else {
@@ -163,6 +171,17 @@ extension ProviderLoop {
 
     /// OS termination and schedule cancellation use the same admission/drain
     /// path. Neither cancels the event reader or closes the socket first.
+    /// A stopped cluster member serves nothing but its pair slot. With nothing
+    /// in flight, a drain that timed out only on the coordinator's
+    /// acknowledgement (its control connection was replaced meanwhile, as when
+    /// the pair's leader left at the same moment) must not keep the member
+    /// running after its stop signal: the stream ends, the slot retires.
+    internal func shutdownStoppedClusterMember() async {
+        guard isClusterMember, lifecycleRemaining == 0, await drainNativeMiMoOwners() else { return }
+        await releaseClusterMemberSessionBeforeClose()
+        await coordinatorClient?.shutdown()
+    }
+
     public func drainAndShutdown(timeoutSeconds: Int = 600) async -> Bool {
         await drainAndShutdown(timeoutSeconds: timeoutSeconds,
             beforeAwaitingExistingControllerForTesting: nil)
@@ -177,7 +196,10 @@ extension ProviderLoop {
         if servingDrain.phase == .drained {
             guard await drainNativeMiMoOwners() else { return false }
             guard await stopAppAttestWorkerAndWait() else { return false }
-            if coordinatorEventLoopStarted { await coordinatorClient?.shutdown() }
+            if coordinatorEventLoopStarted {
+                await releaseClusterMemberSessionBeforeClose()
+                await coordinatorClient?.shutdown()
+            }
             else if !(await shutdownBeforeRegistration()) { return false }
             return true
         }
@@ -196,7 +218,10 @@ extension ProviderLoop {
         // shutdown success until their actual transaction retirement finishes.
         guard await drainNativeMiMoOwners() else { return false }
         guard await stopAppAttestWorkerAndWait() else { return false }
-        if coordinatorEventLoopStarted { await coordinatorClient?.shutdown() }
+        if coordinatorEventLoopStarted {
+            await releaseClusterMemberSessionBeforeClose()
+            await coordinatorClient?.shutdown()
+        }
         else if !(await shutdownBeforeRegistration()) { return false }
         return true
     }

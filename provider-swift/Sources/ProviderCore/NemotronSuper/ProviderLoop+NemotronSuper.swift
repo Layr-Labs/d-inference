@@ -43,6 +43,7 @@ extension ProviderLoop {
         if let beforeModelLoad { await beforeModelLoad(modelID) }
         try Task.checkCancellation()
         if isShuttingDown { throw CancellationError() }
+        if let refusal = addonHoldLoadRefusal(for: modelID) { throw refusal }
         _ = try GPUEnforcement.requireMetal()
         MLXMemoryGuard.configureOnce()
 
@@ -166,6 +167,7 @@ extension ProviderLoop {
         guard !isShuttingDown, modelSlots[modelID] == nil, !modelsUnloading.contains(modelID) else {
             throw CancellationError()
         }
+        if let refusal = addonHoldLoadRefusal(for: modelID) { throw refusal }
         try throwIfRetiring(modelID)
         reportPrefixCacheFailure(owner.bridge.prefixCacheModelStatus())
         await engineV2Runtime.register(modelId: modelID, bridge: owner.bridge)

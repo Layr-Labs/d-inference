@@ -43,6 +43,7 @@ extension ProviderLoop {
     /// `.started` status is queued; the download runs on a low-priority task and
     /// never consumes a GPU slot or blocks inference.
     func handlePrefetchModelRequest(modelId: String, priority: Int, send: SendHandle) async {
+        if isClusterMember { rejectClusterMemberPrefetch(modelId, send: send); return }
         // With saved consent, a build outside ordinary serving never takes the
         // ordinary path, not even under a live lease, or a `models_update`
         // would make it ordinary: it is an Autopilot download into the set

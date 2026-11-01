@@ -856,7 +856,12 @@ struct SelfUpdaterTests {
 private func runTarCreate(sourceDir: URL, tarball: URL) throws {
     let process = Process()
     process.executableURL = URL(fileURLWithPath: "/usr/bin/tar")
-    process.arguments = ["czf", tarball.path, "-C", sourceDir.path, "."]
+    // A stored (level 0) gzip stream is still what the updater's `tar xzf`
+    // reads; compressing the copied debug binaries took most of each test.
+    process.arguments = [
+        "-c", "-z", "--options", "gzip:compression-level=0",
+        "-f", tarball.path, "-C", sourceDir.path, ".",
+    ]
     try process.run()
     process.waitUntilExit()
     #expect(process.terminationStatus == 0)

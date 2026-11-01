@@ -10,6 +10,12 @@ struct Status: AsyncParsableCommand {
     @OptionGroup var configOptions: ConfigOptions
 
     mutating func run() async throws {
+        // Asked first, so the add-on answers while the banner and the config
+        // load run; bounded, so the add-on can never hold up or fail status.
+        let sandboxLine = Task.detached {
+            SandboxStatusView.statusLine(SandboxAddon.live().queryStatus(timeout: Sandbox.statusLineTimeout))
+        }
+
         // Best-effort: tell the user if a newer release is published before
         // we dump current status. Bounded by a 2s timeout in UpdateBanner.
         await runUpdateBannerIfEnabled()
@@ -58,9 +64,16 @@ struct Status: AsyncParsableCommand {
         print("Enabled model filter: \(enabledFilter)")
         print("Local MLX models: \(models.count)")
         print("Serving concurrency: \(ServingPerformanceProfiles.summary(backend: config.backend))")
+        if let line = await sandboxLine.value { print(line) }
 
         // Live daemon state (from the state file the running daemon writes).
         print("")
+        if LaunchAgent.installedJobIsClusterMember(),
+           let supervisor = ClusterSupervisionFiles.read(ClusterMemberSupervisorState.self,
+                                                         from: ClusterSupervisionFiles.statePath()) {
+            print(supervisor.summary(now: Date().timeIntervalSince1970))
+        }
+        for line in Self.clusterServiceLines() { print(line) }
         printDaemonStatus(config: config, models: snapshot.models, hardware: snapshot.hardware)
 
         // Crash-loop KV-backend guard — printed whether or not the daemon is
@@ -145,6 +158,10 @@ struct Status: AsyncParsableCommand {
         } else {
             print("Trust: awaiting coordinator status")
         }
+        if Self.lifecycleDrainLine(state.lifecycle) == nil, !state.isStale(now: now),
+           let verdict = ServingReadiness.verdict(state, now: now) {
+            for line in Self.trafficLines(verdict) { print(line) }
+        }
 
         print("Warm models: \(WarmModelsFormat.warmModelsLine(warmModels: state.warmModels, currentModel: state.currentModel))")
         for line in Self.selectionLines(state: state, enabledModels: config.backend.enabledModels)
@@ -172,7 +189,7 @@ struct Status: AsyncParsableCommand {
         }
         for line in Self.evictionExclusionLines(state: state) { print(line) }
         print("\(WarmModelsFormat.mostRecentlyUsedLabel): \(WarmModelsFormat.mostRecentlyUsedLine(currentModel: state.currentModel))")
-        print("Requests served: \(state.stats.requestsServed)  |  tokens: \(state.stats.tokensGenerated)")
+        for line in Self.servedRequestLines(state: state, now: now) { print(line) }
         if let err = state.lastModelLoadError {
             print("Last model-load error: \(err.model): \(err.message)")
             print("  Recorded \(Self.compactDuration(now - err.at)) ago")

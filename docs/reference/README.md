@@ -2,7 +2,7 @@
 
 > Last updated: 2026-10-27
 
-Exact public wire shapes, manifests and provider/retained-console configuration.
+Exact public wire shapes, manifests and provider configuration.
 
 - [Add-on hold IPC](addon-hold-ipc.md): local `hold.v1` socket, operations, errors and peer checks
 - [App Attest shadow protocol, machine inventory, and evidence](app-attest-shadow.md)

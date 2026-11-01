@@ -33,6 +33,34 @@ struct AddonRuntimeFixture {
     }
 }
 
+/// Makes a writerless FIFO at `path` and runs `read` on its own thread. A
+/// read that blocks is released by a writer after `timeout` so the test
+/// process never hangs; `finished` says whether it returned by itself.
+func readFIFOWithoutWriter<Value: Sendable>(
+    at path: URL, timeout: Duration = .seconds(2), _ read: @escaping @Sendable () -> Value
+) throws -> (finished: Bool, value: Value?) {
+    try #require(mkfifo(path.path, 0o600) == 0)
+    let result = AddonResultBox<Value>()
+    Thread { result.set(read()) }.start()
+    let finished = addonPoll(timeout) { result.isSet }
+    if !finished {
+        // The reader waits in open(2) for a writer: become that writer.
+        let writer = open(path.path, O_WRONLY)
+        if writer >= 0 { close(writer) }
+        _ = addonPoll(.seconds(5)) { result.isSet }
+    }
+    return (finished, result.value)
+}
+
+final class AddonResultBox<Value>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: Value?
+    private var done = false
+    var isSet: Bool { lock.withLock { done } }
+    var value: Value? { lock.withLock { stored } }
+    func set(_ value: Value) { lock.withLock { stored = value; done = true } }
+}
+
 @Suite("Add-on hold persistence and machine lock")
 struct AddonHoldStoreTests {
     @Test func recordRoundTripsOwnerOnlyAndEmptyRemovesIt() throws {
@@ -67,6 +95,15 @@ struct AddonHoldStoreTests {
         try FileManager.default.removeItem(at: url)
         try FileManager.default.createSymbolicLink(at: url, withDestinationURL: fixture.paths.machineLock)
         #expect(store.read() == .invalid)
+    }
+
+    @Test func aFIFOAtTheRecordPathIsRefusedWithoutBlocking() throws {
+        let fixture = try AddonRuntimeFixture()
+        defer { fixture.remove() }
+        let store = AddonHoldStore(url: fixture.paths.holdState)
+        let read = try readFIFOWithoutWriter(at: fixture.paths.holdState) { store.read() }
+        #expect(read.finished, "reading a FIFO hold record blocked until a writer appeared")
+        #expect(read.value == .invalid)
     }
 
     @Test func runtimeDirectoryIsTightenedAndSymlinksRefused() throws {

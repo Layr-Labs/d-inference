@@ -7,8 +7,12 @@ import DarkbloomClusterProtocol
 /// step is built after its token is known (the sampler draws at the output
 /// index with the history up to it). Each step's agreement carries both
 /// ranks' tokens and stop flags (`GLM5NextTensorParallelResidentRuntime.choose`),
-/// and a flag on either rank ends both after that step. The runtime supplies
-/// the steps and its request's state, so two ranks can run it without a model.
+/// and a flag on either rank ends both after that step. A rank that stopped
+/// after a step was built (rank 0 reads the owner's answer late) commits
+/// nothing more, but still ends at a stop token its peer commits, as MTP
+/// rounds do; both then reconcile to rank 0's count and finish
+/// (`QwenTensorParallelStopRule.reconcile`). The runtime supplies the steps
+/// and its request's state, so two ranks can run it without a model.
 struct GLM5NextTensorParallelStepLoop<Selection> {
     let outputCount: Int
     let promptCount: Int
@@ -65,6 +69,10 @@ struct GLM5NextTensorParallelStepLoop<Selection> {
                 } else if pagesRefused() {
                     setStopKeep(QwenTensorParallelStopRule.lengthStop(keep: committed()))
                 }
+            } else if stopTokenIDs.contains(value) {
+                // This rank's flag rides only a later step, which the peer,
+                // ending at this stop token, would never join.
+                break steps
             }
             if !pipelined, index + 1 < outputCount {
                 growPages(promptCount + index + 2)

@@ -288,8 +288,9 @@ public enum ClusterPlacementFlow {
             lines += ["Tensor parallel or pipeline", "  " + why]
             // A plan chosen only where faster (`ClusterTensorParallelChoice.fastest`) says so, and what each mode keeps.
             if layout.tensorParallel?.family.choosesFastest == true, admissibleModes.contains(.tensorParallel) {
-                lines.append("  This model runs tensor parallel only where it is predicted faster than a pipeline; until a load "
-                    + "measures the link, tensor parallel is priced on a slow assumed link.")
+                lines.append("  This model runs tensor parallel only where it is predicted faster than a pipeline on its own step "
+                    + "as measured on both Macs, never on the device index alone; until a load measures the link, tensor parallel "
+                    + "is priced on a slow assumed link.")
                 if let note = ClusterModelFeaturePolicy.modeFeatureNote(capability) { lines.append("  " + note) }
             }
         }

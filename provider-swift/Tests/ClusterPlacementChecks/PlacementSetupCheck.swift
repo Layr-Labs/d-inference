@@ -818,6 +818,60 @@ import Foundation
     /// tensor parallel only where predicted faster, and that only tensor parallel keeps committed-token logprobs;
     /// a capability without tensor parallel prints neither. The plan credits MiMo's speculative pipeline the
     /// speed-up its shipped records measured, the pipeline that tensor parallel must beat.
+    /// A worker capability for `layout` (one partition per admitted cut) in `modes`, and the pair description that pins it.
+    static func capability(layout: ClusterModelLayout, adapterID: String, profileID: String, vocabularySize: Int,
+                           arithmeticPolicyID: String, modes: [ClusterGenerationMode], publicModelID: String,
+                           description base: [String: Any]) throws -> (ClusterRuntimeCapability, ClusterPairDescription) {
+        let cuts = layout.admittedCuts, layers = layout.layerCount
+        let value = try ClusterRuntimeCapability(runtimeBinarySHA256: hash("a"), adapterID: adapterID, adapterVersion: 1,
+            runtimeModelID: layout.runtimeModelID, artifactSHA256: layout.artifactSHA256,
+            configurationSHA256: layout.configurationSHA256, manifestSHA256: hash("d"),
+            profile: .init(id: profileID, vocabularySize: vocabularySize,
+                maximumPromptTokens: layout.maximumPromptTokens, maximumOutputTokens: layout.maximumOutputTokens,
+                maximumChunkTokens: layout.maximumChunkTokens, maximumContextTokens: layout.maximumContextTokens),
+            profileFingerprint: hash("e"), partitions: cuts.map { cut in
+                .init(planSHA256: String(repeating: "7", count: 62) + String(format: "%02d", cut), stages: [
+                    .init(rank: 0, sourceLayerStart: 0, sourceLayerEnd: cut, stagePlanSHA256: String(repeating: "1", count: 62) + String(format: "%02d", cut),
+                          constructionConfigurationSHA256: hash("2")),
+                    .init(rank: 1, sourceLayerStart: cut, sourceLayerEnd: layers, stagePlanSHA256: String(repeating: "3", count: 62) + String(format: "%02d", cut),
+                          constructionConfigurationSHA256: hash("4"))]) },
+            arithmeticPolicyID: arithmeticPolicyID, arithmeticPolicySHA256: hash("5"),
+            supportedPrefillSchedules: [.serial, .oneChunkLookahead], supportedGenerationModes: modes)
+        var description = base
+        description["capabilitySHA256"] = ClusterConfigurationCodec.sha256(try ClusterRuntimeCapabilityCodec.encode(value))
+        description["publicModelID"] = publicModelID
+        return (value, try ClusterPairDescription.decode(JSONSerialization.data(withJSONObject: description)))
+    }
+
+    /// The line the guided step prints for a model chosen only where faster (`ClusterTensorParallelChoice.fastest`).
+    static let fastestLine = "  This model runs tensor parallel only where it is predicted faster than a pipeline on its own step "
+        + "as measured on both Macs, never on the device index alone; until a load measures the link, tensor parallel "
+        + "is priced on a slow assumed link."
+
+    /// Two 256 GB Macs that report the M5 Ultra's measured device index (`qmm_h4096_b4_g64_x16_v1`), and the pair's
+    /// measured link (two M5 Ultra, keyed JACCL, 2026-10-31: sealed all-sum 29 us at 16 KB, 3,919 us at 32 MiB).
+    static func indexedUltras() throws -> (local: ClusterDeviceProfile, peer: ClusterDeviceProfile, link: ClusterLinkCosts) {
+        func ultra(_ label: String) throws -> ClusterDeviceProfile {
+            var profile = try device(label, physicalGiB: 256, freeGiB: 240, prefill: 1, decode: 1).profile
+            profile.speedIndex = .init(chip: profile.chip, osBuild: profile.osBuild, benchmark: "qmm_h4096_b4_g64_x16_v1",
+                prefillIndex: 2_337_768, decodeIndex: 46_409)
+            return profile
+        }
+        let link = ClusterLinkCosts(probe: ClusterWorkerLinkProbe(transport: "jaccl", keyed: true, pointToPointSmallBytes: 64,
+            pointToPointSmallMicroseconds: 180, pointToPointLargeBytes: 4 << 20, pointToPointLargeMicroseconds: 2_502,
+            allSumSmallBytes: 16_384, allSumSmallMicroseconds: 29, allSumLargeBytes: 32 << 20, allSumLargeMicroseconds: 3_919),
+            measuredUTC: "2026-10-31T00:00:00Z")!
+        return (try ultra("mac-one"), try ultra("mac-two"), link)
+    }
+
+    /// A model's whole-model speed on the check Macs' chip, as a speed probe records it.
+    static func aloneSpeed(_ layout: ClusterModelLayout, prefill: Double, decode: Double) throws -> ClusterSpeedMeasurement {
+        try .init(key: .init(artifactSHA256: layout.artifactSHA256, chip: "Check chip", osBuild: "CHECK", runtimeBinarySHA256: hash("a"),
+                probe: "check"), promptTokens: 512, chunkTokens: 512, probedLayers: layout.layerCount, layerCount: layout.layerCount,
+            rested: .init(prefillTokensPerSecond: prefill, decodeTokensPerSecond: decode), sustained: nil,
+            measuredUTC: "2026-10-31T00:00:00Z", provenance: "check: the model alone on one Mac")
+    }
+
     static func mimoFastestPlanLines(description base: [String: Any]) throws {
         let golden = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent(
             "../../../libs/darkbloom-cluster/Tests/PlacementChecks/Golden/layouts/mimo-v2.6-flash-mopd-2026-09-28-r1.json")
@@ -828,30 +882,12 @@ import Foundation
                                      "tensorCount": 42, "requestWorkBytes": 0]
         let layout = try ClusterModelLayout.decode(JSONSerialization.data(withJSONObject: object))
         func capability(_ modes: [ClusterGenerationMode]) throws -> (ClusterRuntimeCapability, ClusterPairDescription) {
-            let cuts = layout.admittedCuts, layers = layout.layerCount
-            let value = try ClusterRuntimeCapability(runtimeBinarySHA256: hash("a"), adapterID: "mimo-v26-layer-stage", adapterVersion: 1,
-                runtimeModelID: layout.runtimeModelID, artifactSHA256: layout.artifactSHA256,
-                configurationSHA256: layout.configurationSHA256, manifestSHA256: hash("d"),
-                profile: .init(id: "registered_mimo_v26_flash_mopd_greedy_generation_v1", vocabularySize: 152_576,
-                    maximumPromptTokens: layout.maximumPromptTokens, maximumOutputTokens: layout.maximumOutputTokens,
-                    maximumChunkTokens: layout.maximumChunkTokens, maximumContextTokens: layout.maximumContextTokens),
-                profileFingerprint: hash("e"), partitions: cuts.map { cut in
-                    .init(planSHA256: String(repeating: "7", count: 62) + String(format: "%02d", cut), stages: [
-                        .init(rank: 0, sourceLayerStart: 0, sourceLayerEnd: cut, stagePlanSHA256: String(repeating: "1", count: 62) + String(format: "%02d", cut),
-                              constructionConfigurationSHA256: hash("2")),
-                        .init(rank: 1, sourceLayerStart: cut, sourceLayerEnd: layers, stagePlanSHA256: String(repeating: "3", count: 62) + String(format: "%02d", cut),
-                              constructionConfigurationSHA256: hash("4"))]) },
-                arithmeticPolicyID: "mimo_v26_text_ordinary_cache_bf16_defaults_v1", arithmeticPolicySHA256: hash("5"),
-                supportedPrefillSchedules: [.serial, .oneChunkLookahead], supportedGenerationModes: modes)
-            var description = base
-            description["capabilitySHA256"] = ClusterConfigurationCodec.sha256(try ClusterRuntimeCapabilityCodec.encode(value))
-            description["publicModelID"] = "fixture/mimo"
-            return (value, try ClusterPairDescription.decode(JSONSerialization.data(withJSONObject: description)))
+            try Self.capability(layout: layout, adapterID: "mimo-v26-layer-stage", profileID: "registered_mimo_v26_flash_mopd_greedy_generation_v1",
+                vocabularySize: 152_576, arithmeticPolicyID: "mimo_v26_text_ordinary_cache_bf16_defaults_v1", modes: modes,
+                publicModelID: "fixture/mimo", description: base)
         }
         let local = try device("mac-one", physicalGiB: 128, freeGiB: 116, prefill: 400, decode: 40).profile
         let peer = try device("mac-two", physicalGiB: 128, freeGiB: 116, prefill: 400, decode: 40).profile
-        let fastestLine = "  This model runs tensor parallel only where it is predicted faster than a pipeline; until a load "
-            + "measures the link, tensor parallel is priced on a slow assumed link."
         let logprobLine = "  Committed-token logprobs are captured in tensor parallel only; a pipeline pair refuses requests for them."
         let (both, bothDescription) = try capability(rowModes)
         let planned = try ClusterPlacementFlow.decide(description: bothDescription, capability: both, localMemberID: "mac-one",
@@ -870,6 +906,82 @@ import Foundation
             localProfile: local, peerProfile: peer, layout: layout)
         require("MiMo plan lines: a capability without tensor parallel prints neither line",
             !piped.lines.contains(fastestLine) && !piped.lines.contains(logprobLine))
+
+        // The evidence rule through the guided step (`ClusterTensorParallelChoice.fastest`): two 256 GB Macs with the M5
+        // Ultra's index, MiMo alone at 57 tok/s and the pair's measured link. On the index alone tensor parallel is
+        // predicted faster than the credited rounds for 128 + 128, so the speculative pipeline is kept. MiMo's runtime
+        // takes no share probe: requests this build served in tensor parallel are its only evidence.
+        let ultras = try indexedUltras(), alone = try aloneSpeed(layout, prefill: 1_000, decode: 57)
+        func served(_ decode: Double, build: String) -> [ClusterServedSpeedRecords.Entry] {
+            let setup = ClusterServedSpeedRecords.Setup(modelID: bothDescription.publicModelID, mode: ClusterGenerationMode.tensorParallel.rawValue,
+                cut: ClusterServedSpeedRecords.Setup.cut([], layerCount: layout.layerCount, mode: .tensorParallel, ranks: 2),
+                ranks: ["mac-one", "mac-two"], rankBuildSHA256: [build, build])
+            return (0..<3).map { .init(setup: setup, sample: .init(route: .pair, member: nil, promptTokens: 128, outputTokens: 128,
+                firstTokenSeconds: 0.08, decodeTokensPerSecond: decode, finishedAt: Double($0))) }
+        }
+        func decide(_ records: [ClusterServedSpeedRecords.Entry]) throws -> (lines: [String], result: ClusterPlacementResult, setup: ClusterPlacementSetup?) {
+            try ClusterPlacementFlow.decide(description: bothDescription, capability: both, localMemberID: "mac-one",
+                localProfile: ultras.local, peerProfile: ultras.peer, layout: layout, measurements: [alone],
+                promptTokens: 128, outputTokens: 128, served: records, link: ultras.link, environment: [:], benchDebugBuild: false)
+        }
+        func line(_ decided: (lines: [String], result: ClusterPlacementResult, setup: ClusterPlacementSetup?), _ prefix: String) -> String {
+            decided.lines.first { $0.hasPrefix(prefix) } ?? "-"
+        }
+        let priorOnly = try decide([])
+        require("MiMo evidence rule: 2x 256 GB on the measured link, nothing served in tensor parallel: the speculative pipeline is kept, and the line says tensor parallel is predicted faster only from the device index (\(line(priorOnly, "  Pipeline:")))",
+            priorOnly.result.chosen?.mode == .pipelineMTP && priorOnly.result.tensorParallel?.verdict == .predictedFasterOnPriorOnly
+                && line(priorOnly, "  Pipeline:").contains(", but from the device index, not its own measured step; it is chosen once its step is measured on both Macs")
+                && priorOnly.lines.contains(fastestLine) && priorOnly.setup != nil)
+        let fast = try decide(served(95, build: hash("a")))
+        require("MiMo evidence rule: three requests this build served in tensor parallel at 95 tok/s: tensor parallel, chosen on its own measured step, and the line says so (\(line(fast, "  Tensor parallel:")))",
+            fast.result.chosen?.mode == .tensorParallel && fast.result.tensorParallel?.evidence == .measured
+                && line(fast, "  Tensor parallel:").hasSuffix(", on its own step as measured on both Macs.") && fast.setup != nil)
+        let slow = try decide(served(60, build: hash("a")))
+        require("MiMo evidence rule: served in tensor parallel at 60 tok/s: the speculative pipeline, tensor parallel predicted slower on the served split",
+            slow.result.chosen?.mode == .pipelineMTP && slow.result.tensorParallel?.verdict == .predictedSlower
+                && slow.result.tensorParallel?.evidence == .measured)
+        let otherBuild = try decide(served(95, build: hash("9")))
+        require("MiMo evidence rule: another worker build's tensor-parallel records are no evidence: the speculative pipeline is kept, and the plan says they were ignored",
+            otherBuild.result.chosen?.mode == .pipelineMTP && otherBuild.result.tensorParallel?.verdict == .predictedFasterOnPriorOnly
+                && otherBuild.lines.contains { $0.hasPrefix("  3 record(s) from other worker builds ignored") })
+    }
+
+    /// Gemma 4 QAT 4-bit (its golden layout, with the family's tensor-parallel facts and `fastest_v1`) through the
+    /// guided step: on two 256 GB Macs with the M5 Ultra's index, Gemma alone at 90 tok/s and the pair's measured link,
+    /// a 128 + 128 request keeps the pipeline on the device index alone; the share probes a Gemma tensor-parallel load
+    /// records (`Gemma4TensorParallelShareProbe`, kept by `ClusterShareProbeHistory`) then decide.
+    static func gemmaEvidenceLines(description base: [String: Any]) throws {
+        let golden = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent(
+            "../../../libs/darkbloom-cluster/Tests/PlacementChecks/Golden/layouts/gemma-4-26b-qat-4bit.json")
+        let layout = try ClusterModelLayout.decode(Data(contentsOf: golden))
+        let (capability, description) = try capability(layout: layout, adapterID: "gemma4-layer-stage",
+            profileID: "registered_gemma4_26b_qat_4bit_greedy_generation_v1", vocabularySize: 262_144,
+            arithmeticPolicyID: "gemma4_cbv2_query128_bf16_tf32_weighted_r1_v1", modes: [.pipeline, .tensorParallel],
+            publicModelID: "fixture/gemma", description: base)
+        let ultras = try indexedUltras(), alone = try aloneSpeed(layout, prefill: 7_000, decode: 90)
+        func probes(halfStepMicroseconds: Int) -> [String: [ClusterShareRate]] {
+            ClusterShareProbeHistory().recording(["mac-one", "mac-two"].map {
+                .init(member: $0, buildSHA256: hash("a"), probe: .init(sharePerMille: 500, plainStepMicroseconds: halfStepMicroseconds, rounds: 7))
+            }, artifactSHA256: layout.artifactSHA256, now: 1_000).shareRates(artifactSHA256: layout.artifactSHA256,
+                members: ["mac-one", "mac-two"], now: 1_060)
+        }
+        func decide(_ shareProbes: [String: [ClusterShareRate]]) throws -> (lines: [String], result: ClusterPlacementResult, setup: ClusterPlacementSetup?) {
+            try ClusterPlacementFlow.decide(description: description, capability: capability, localMemberID: "mac-one",
+                localProfile: ultras.local, peerProfile: ultras.peer, layout: layout, measurements: [alone],
+                promptTokens: 128, outputTokens: 128, link: ultras.link, shareProbes: shareProbes, environment: [:], benchDebugBuild: false)
+        }
+        let priorOnly = try decide([:])
+        require("Gemma evidence rule: 2x 256 GB on the measured link, no share probe: the pipeline is kept and the line says why",
+            priorOnly.result.chosen?.mode == .pipeline && priorOnly.result.tensorParallel?.verdict == .predictedFasterOnPriorOnly
+                && priorOnly.lines.contains { $0.hasPrefix("  Pipeline: tensor parallel is predicted") && $0.contains("from the device index") }
+                && priorOnly.lines.contains(fastestLine))
+        let measured = try decide(probes(halfStepMicroseconds: 7_000)), planned = try decide(probes(halfStepMicroseconds: 10_300))
+        require("Gemma evidence rule: both Macs' share probes at 7.0 ms a half step: tensor parallel, chosen on its measured step",
+            measured.result.chosen?.mode == .tensorParallel && measured.result.tensorParallel?.evidence == .measured
+                && measured.lines.contains { $0.hasPrefix("  Tensor parallel: predicted") && $0.hasSuffix(", on its own step as measured on both Macs.") })
+        require("Gemma evidence rule: both Macs' share probes at 10.3 ms a half step: the pipeline, tensor parallel predicted slower on its measured step",
+            planned.result.chosen?.mode == .pipeline && planned.result.tensorParallel?.verdict == .predictedSlower
+                && planned.result.tensorParallel?.evidence == .measured)
     }
 
     static func main() throws {
@@ -990,6 +1102,7 @@ import Foundation
         try qualifiedShapes(description: descriptionObject, slowTwo: slowTwo)
         try ownerPilot(description: descriptionObject)
         try mimoFastestPlanLines(description: descriptionObject)
+        try gemmaEvidenceLines(description: descriptionObject)
         try benchCap(layout: layout, description: description, capability: capability, slowTwo: slowTwo)
         try forcedMode(layout: layout, description: description, capability: capability, slowTwo: slowTwo)
         try requestMix(layout: layout, description: description, capability: capability, slowTwo: slowTwo)

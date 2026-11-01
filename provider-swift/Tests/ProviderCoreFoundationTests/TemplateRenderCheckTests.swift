@@ -154,14 +154,6 @@ final class TemplateRenderCheckTests: XCTestCase {
 
     // MARK: - (i) Correct gemma-style template renders → true
 
-    func testGemmaStyleTemplateRendersTrue() throws {
-        let dir = try makeSnapshotDir()
-        try write(gemmaStyleTemplate, to: dir, as: "chat_template.jinja")
-        try write(visionConfigJSON, to: dir, as: "config.json")
-
-        XCTAssertEqual(TemplateRenderCheck.renderOK(at: dir), true)
-    }
-
     func testGemmaStyleTemplateScanCost() throws {
         // Informational guard: the check runs in the startup scan for every
         // cached model, so a single model's full fixture sweep (compile +

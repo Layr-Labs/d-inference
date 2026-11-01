@@ -4,8 +4,8 @@ import TOMLKit
 import Darwin
 #endif
 
-/// Serializes config writers on a stable sidecar: ConfigManager.save replaces
-/// the TOML inode atomically, so locking the config itself would not serialize.
+/// Serializes config writers on a stable sidecar: every writer replaces the
+/// TOML inode atomically, so locking the config itself would not serialize.
 @discardableResult
 public func withExclusiveConfigLock<T>(at configPath: URL, _ body: () throws -> T) throws -> T {
     let directory = configPath.deletingLastPathComponent()
@@ -96,7 +96,7 @@ public enum ProviderModelSelection {
         table["backend"]?.table?["enabled_models"] = TOMLArray(modelIDs)
         let written = Data(table.convert().utf8)
         do {
-            try written.write(to: configPath, options: .atomic)
+            try ProviderConfigFile.replace(configPath, with: written)
         } catch {
             throw ConfigError.writeFailed(path: configPath.path, underlying: error)
         }
@@ -109,7 +109,7 @@ public enum ProviderModelSelection {
         let current = try contents(at: path)
         if current == replacement.written {
             if let original = replacement.original {
-                try original.write(to: path, options: .atomic)
+                try ProviderConfigFile.replace(path, with: original)
             } else {
                 try FileManager.default.removeItem(at: path)
             }
@@ -129,7 +129,7 @@ public enum ProviderModelSelection {
         } else {
             backend.remove(at: "enabled_models")
         }
-        try Data(parsed.table.convert().utf8).write(to: path, options: .atomic)
+        try ProviderConfigFile.replace(path, with: Data(parsed.table.convert().utf8))
     }
 
     private static func contents(at path: URL) throws -> Data? {

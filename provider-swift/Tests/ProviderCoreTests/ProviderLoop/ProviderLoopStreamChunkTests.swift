@@ -422,6 +422,10 @@ func injectLogprobsContentFrame() throws {
     #expect((top[1]["bytes"] as? [Int]) == [72, 105])
 }
 
+// The canonical SDK encoder bounds the ordered path's pending logprobs; its
+// unit tests exercise overflow and frame attachment. The relay channel
+// (GLM5-Next, Nemotron Super) keeps its own bound, checked here.
+
 // MARK: - Pending-logprobs bounding (round-3 PR#499 P2)
 
 private func logprobEntry(_ index: Int) -> SSETokenLogprob {

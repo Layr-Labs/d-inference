@@ -15,6 +15,13 @@ enum ToolChoicePromptPolicy {
         var responseFormat: JSONAnswerFormat? = nil
         /// GLM JSON content contract: the answer is withheld and validated.
         var glmResponseFormat: GLM5NextResponseFormat? = nil
+        /// A GLM request served by a cluster pair. Set by the scheduler from
+        /// the acquired slot's engine, never from the request. Forced tool
+        /// choice, JSON output and withheld reasoning are served alike on
+        /// every GLM slot; a pair also asks for at most one call when
+        /// automatic choice has `parallel_tool_calls: false`
+        /// (`singleCallInstruction`), which the validator holds it to.
+        var glm5PairPostValidation = false
 
         var requiresToolCall: Bool {
             switch mode {
@@ -27,11 +34,21 @@ enum ToolChoicePromptPolicy {
     static func prepare(
         _ request: OpenAIChatCompletionRequest,
         modelType: String? = nil,
-        allowInternalSchemaMetadata: Bool = true
+        allowInternalSchemaMetadata: Bool = true,
+        glm5PairPostValidation: Bool = false
     ) throws -> Prepared {
         let responseFormat = try FlintResponseFormat.resolve(request, modelType: modelType)
         var choice = try prepareToolChoice(
             request, modelType: modelType, allowInternalSchemaMetadata: allowInternalSchemaMetadata)
+        // GLM on a pair: `parallel_tool_calls: false` with automatic choice
+        // asks for at most one call, which the validator then holds it to.
+        if glm5PairPostValidation, choice.mode == .auto, !choice.allowsParallelCalls,
+           choice.tools?.isEmpty == false {
+            choice = Prepared(messages: appendingToLastUser(singleCallInstruction, in: choice.messages),
+                tools: choice.tools, mode: choice.mode, compiledTools: choice.compiledTools,
+                allowsParallelCalls: false, allowedToolNames: choice.allowedToolNames)
+        }
+        choice.glm5PairPostValidation = glm5PairPostValidation
         choice.glmResponseFormat = try GLM5NextResponseFormat.resolve(request, modelType: modelType)
         guard let responseFormat else { return choice }
         // Recursive's Flint contract: tools plus a response format get only the
@@ -47,6 +64,9 @@ enum ToolChoicePromptPolicy {
         prepared.responseFormat = responseFormat
         return prepared
     }
+
+    static let singleCallInstruction =
+        "If you call a tool in this response, call exactly one tool once; make any further call after its result."
 
     private static func prepareToolChoice(
         _ request: OpenAIChatCompletionRequest,
@@ -223,6 +243,18 @@ enum ToolChoicePromptPolicy {
         var messages = addingInstruction(instruction, to: messages)
         guard let userIndex = messages.lastIndex(where: { $0.role == .user }) else {
             return messages
+        }
+        appendInstruction(instruction, to: &messages[userIndex])
+        return messages
+    }
+
+    private static func appendingToLastUser(
+        _ instruction: String,
+        in messages: [OpenAIChatMessage]
+    ) -> [OpenAIChatMessage] {
+        var messages = messages
+        guard let userIndex = messages.lastIndex(where: { $0.role == .user }) else {
+            return addingInstruction(instruction, to: messages)
         }
         appendInstruction(instruction, to: &messages[userIndex])
         return messages

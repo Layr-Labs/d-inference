@@ -214,6 +214,7 @@ public final class ProviderState: @unchecked Sendable {
     private var _refusingNewWork = false
     private var _busy: ProviderBusy? = nil
     private var _modelAdmissionDrains: Set<String> = []
+    private var _memberPairSlotModel: String? = nil
 
     /// Bounded per-(model, warm/cold, prompt-bucket, batch-bucket) end-to-end
     /// TTFT statistics from completed real requests, fed by the ProviderLoop's
@@ -305,6 +306,14 @@ public final class ProviderState: @unchecked Sendable {
     public var refusingNewWork: Bool {
         get { lock.withLock { _refusingNewWork } }
         set { lock.withLock { _refusingNewWork = newValue } }
+    }
+
+    /// The model of the pair slot a leader member serves (S09), nil when it
+    /// serves none. A member's client hands the loop an inference request only
+    /// while this is set; otherwise it answers the no-model refusal itself.
+    public var memberPairSlotModel: String? {
+        get { lock.withLock { _memberPairSlotModel } }
+        set { lock.withLock { _memberPairSlotModel = newValue } }
     }
 
     /// Why the provider refuses work while connected (an add-on hold). Every

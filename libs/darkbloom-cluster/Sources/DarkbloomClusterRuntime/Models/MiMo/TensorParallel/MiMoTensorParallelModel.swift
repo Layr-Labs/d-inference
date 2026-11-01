@@ -200,25 +200,46 @@ public final class MiMoTensorParallelModel {
         public var peakActiveBytes = 0
     }
 
-    /// Greedy generation of `outputCount` tokens after `prompt`, prefilled in
-    /// chunks of `chunk`. `recordTop` > 0 records each step's top logits and
-    /// log probabilities (a shard through the vocabulary-split top-k gather),
-    /// each step's whole row digest and the final row (a shard through the
-    /// row gather). Every rank issues its collectives in one fixed order: the
-    /// forward's, the selection, the top-k gather, then the row gather.
-    public func generate(prompt: [Int], outputCount: Int, chunk: Int, recordTop: Int = 0) throws -> Generation {
+    /// Sampling as the product samples one row: `MLXRandom.categorical` over
+    /// the whole row scaled by `1 / temperature`, keyed by `seed + step`.
+    public struct Sampling: Sendable, Equatable {
+        public let temperature: Float
+        public let seed: UInt64
+        public init(temperature: Float, seed: UInt64) { self.temperature = temperature; self.seed = seed }
+    }
+
+    /// Generation of `outputCount` tokens after `prompt`, prefilled in chunks
+    /// of `chunk`: greedy through the vocabulary-split argmax, or `sampling`
+    /// over the whole row gathered bit for bit on every rank, so each rank
+    /// draws the token one Mac draws from the same row. `recordTop` > 0
+    /// records each step's top logits and log probabilities (a shard through
+    /// the vocabulary-split top-k gather), each step's whole row digest and
+    /// the final row (a shard through the row gather). Every rank issues its
+    /// collectives in one fixed order: the forward's, the selection, the
+    /// top-k gather, then the row gather.
+    public func generate(prompt: [Int], outputCount: Int, chunk: Int, recordTop: Int = 0,
+                         sampling: Sampling? = nil) throws -> Generation {
         guard !prompt.isEmpty, outputCount >= 1, chunk >= 1,
               prompt.allSatisfy({ (0 ..< plan.vocabularySize).contains($0) }) else {
             throw ProbeError("MiMo tensor parallel generation: empty or out-of-vocabulary request")
         }
         guard (0 ... 64).contains(recordTop) else { throw ProbeError("MiMo tensor parallel generation: at most 64 logits per step") }
+        guard sampling.map({ $0.temperature.isFinite && $0.temperature > 0 }) ?? true else {
+            throw ProbeError("MiMo tensor parallel generation: sampling needs a positive temperature")
+        }
         let selection = self.selection
         let cache = newCache()
         var result = Generation()
         let started = Self.now()
         var logits = try prefill(prompt, chunk: chunk, cache: cache)
         for step in 0 ..< outputCount {
-            let token = selection.greedy(logits)
+            let token: MLXArray
+            if let sampling {
+                token = MLXRandom.categorical(selection.gather(logits) * (1 / sampling.temperature),
+                                              key: MLXRandom.key(sampling.seed &+ UInt64(step))).asType(.int32)
+            } else {
+                token = selection.greedy(logits)
+            }
             eval(token)
             let id = Int(token.item(Int32.self))
             if recordTop > 0 {

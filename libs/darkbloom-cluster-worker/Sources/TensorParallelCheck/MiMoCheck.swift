@@ -12,7 +12,9 @@ import MLX
 //       and the 16-token chunk) and request-short.json (6 tokens, shorter than both), 64 outputs each
 //   darkbloom-cluster-tp-check mimo run --mode full|simulated|shard|tp --model-dir DIR --request FILE --report FILE
 //       [--record-top K] [--backend ring|socket|jaccl] [--reduction native|sealed-bench] [--shard-rank R]
-//       [--deadline-seconds S]
+//       [--deadline-seconds S] [--temperature T [--sample-seed S]]
+//       greedy, or with --temperature the product's sampler (MLXRandom.categorical, key seed + step) over the
+//       whole row, which every rank gathers bit for bit
 //   darkbloom-cluster-tp-check mimo compare --reference FILE --candidate FILE [--bitwise yes|no] [--near-tie-ulps U]
 //   darkbloom-cluster-tp-check mimo allsum [--backend ring|socket|jaccl] [--count N]
 //
@@ -49,6 +51,9 @@ enum MiMoCheck {
         var promptTokenIDsSHA256: String
         var outputCount: Int
         var chunkSize: Int
+        /// Set when the run sampled (the product's sampler over the gathered row).
+        var temperature: Float?
+        var sampleSeed: UInt64?
         var loadSeconds: Double
         var loadedParameterBytes: Int
         var reductionsPerForward: Int?
@@ -118,8 +123,13 @@ enum MiMoCheck {
               let recordTop = Int(fields["--record-top"] ?? "8"), (0 ... 64).contains(recordTop),
               let shardRank = Int(fields["--shard-rank"] ?? "0"), (0 ... 1).contains(shardRank),
               let deadline = Int(fields["--deadline-seconds"] ?? "900"), (30 ... 7200).contains(deadline),
-              ["native", "sealed-bench"].contains(fields["--reduction"] ?? "native") else {
+              ["native", "sealed-bench"].contains(fields["--reduction"] ?? "native"),
+              fields["--temperature"].map({ Float($0).map { $0.isFinite && $0 > 0 } ?? false }) ?? true,
+              fields["--sample-seed"].map({ UInt64($0) != nil }) ?? true else {
             throw Failure("mimo run needs --mode full|simulated|shard|tp, --model-dir, --request, a new --report and bounded options")
+        }
+        let sampling = fields["--temperature"].map {
+            MiMoTensorParallelModel.Sampling(temperature: Float($0)!, seed: UInt64(fields["--sample-seed"] ?? "1")!)
         }
         let sealed = (fields["--reduction"] ?? "native") == "sealed-bench"
         guard !sealed || mode == "tp" else { throw Failure("--reduction sealed-bench applies to a tp rank only") }
@@ -163,7 +173,7 @@ enum MiMoCheck {
             reduction = g
             note("rank \(g.rank) of \(g.size) over \(backend.rawValue)\(backend.correctnessOnly ? " (correctness only, not a pair timing)" : "")")
             // Everything that changes the collectives is agreed before loading.
-            let workload = "\(configurationSHA)|\(request.promptTokenIDsSHA256)|\(request.outputCount)|\(request.chunkSize)|top=\(recordTop)|sealed=\(sealed)|\(plan.fingerprint)"
+            let workload = "\(configurationSHA)|\(request.promptTokenIDsSHA256)|\(request.outputCount)|\(request.chunkSize)|top=\(recordTop)|sealed=\(sealed)|sampling=\(sampling.map { "\($0.temperature.bitPattern):\($0.seed)" } ?? "greedy")|\(plan.fingerprint)"
             guard try g.digestsEqual(fnv(workload)) else {
                 throw Failure("the ranks disagree on the workload, the model configuration or the arithmetic contract")
             }
@@ -189,7 +199,8 @@ enum MiMoCheck {
                 role: .shard(rank: 1), reduction: pair.reduction(rank: 1))])
             let prompt = request.promptTokenIDs, count = request.outputCount, chunk = request.chunkSize
             let both = try Gemma4TensorParallelLocalPair.run(device: Device.defaultDevice()) { rank in
-                try ranks.models[rank].generate(prompt: prompt, outputCount: count, chunk: chunk, recordTop: recordTop)
+                try ranks.models[rank].generate(prompt: prompt, outputCount: count, chunk: chunk, recordTop: recordTop,
+                                                sampling: sampling)
             }
             func bits(_ rows: [[Float]]) -> [[UInt32]] { rows.map { $0.map(\.bitPattern) } }
             pairAgrees = both[0].tokenIDs == both[1].tokenIDs && bits(both[0].topLogits) == bits(both[1].topLogits)
@@ -199,7 +210,7 @@ enum MiMoCheck {
             caches = both.map(\.cacheSHA256)
         } else {
             generation = try model.generate(prompt: request.promptTokenIDs, outputCount: request.outputCount,
-                                            chunk: request.chunkSize, recordTop: recordTop)
+                                            chunk: request.chunkSize, recordTop: recordTop, sampling: sampling)
             switch role {
             case .full: caches = [generation.cacheSHA256]
             case .shard(let rank): caches = (0 ..< 2).map { $0 == rank ? generation.cacheSHA256 : nil }
@@ -213,7 +224,8 @@ enum MiMoCheck {
             plan: MiMoTensorParallelPlan.name, planFingerprint: plan.fingerprint, modelConfigurationSHA256: configurationSHA,
             modelID: request.modelID, requestID: request.requestID, promptTokens: request.promptTokenIDs.count,
             promptTokenIDsSHA256: request.promptTokenIDsSHA256, outputCount: request.outputCount,
-            chunkSize: request.chunkSize, loadSeconds: model.loadSeconds, loadedParameterBytes: model.loadedParameterBytes,
+            chunkSize: request.chunkSize, temperature: sampling?.temperature, sampleSeed: sampling?.seed,
+            loadSeconds: model.loadSeconds, loadedParameterBytes: model.loadedParameterBytes,
             reductionsPerForward: mode == "full" ? nil : plan.reductionsPerForward,
             floatingReductions: group?.floatingReductions,
             tokenIDs: generation.tokenIDs, tokenIDsSHA256: tokenDigest(generation.tokenIDs),

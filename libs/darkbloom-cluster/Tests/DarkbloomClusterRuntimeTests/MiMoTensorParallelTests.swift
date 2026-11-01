@@ -323,6 +323,32 @@ struct MiMoTensorParallelTests {
         #expect(heads == [plan.kvHeadsPerRank, plan.kvHeadsPerRank].map { $0.map { Optional($0) } })
     }
 
+    /// Sampling through the gathered row: both ranks draw the same tokens with
+    /// the product's sampler, and (FP32) the whole model's tokens under the same keys.
+    @Test func sampledRanksDrawTheWholeModelsTokens() throws {
+        let directory = try Self.synthetic(dtype: .float32)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let sampling = MiMoTensorParallelModel.Sampling(temperature: 0.8, seed: 5)
+        let pair = Pair()
+        let models = try (0 ..< 2).map { rank in
+            try Device.withDefaultDevice(.cpu) {
+                try MiMoTensorParallelModel.load(modelDirectory: directory, role: .shard(rank: rank),
+                                                 reduction: pair.reduction(rank: rank))
+            }
+        }
+        let shared = Box(models)
+        let generations = try Pair.run(device: .cpu) { rank in
+            try shared.value[rank].generate(prompt: Self.prompt, outputCount: 8, chunk: 4, sampling: sampling)
+        }
+        let whole = try Device.withDefaultDevice(.cpu) {
+            try MiMoTensorParallelModel.load(modelDirectory: directory, role: .full, reduction: nil)
+                .generate(prompt: Self.prompt, outputCount: 8, chunk: 4, sampling: sampling)
+        }
+        #expect(generations[0].tokenIDs == generations[1].tokenIDs)
+        #expect(generations[0].tokenIDs == whole.tokenIDs)
+        #expect(generations[0].cacheSHA256 != generations[1].cacheSHA256)
+    }
+
     // MARK: - The vocabulary-split head
 
     /// The shard's head rows give the whole head's logits for its rows bit
@@ -372,7 +398,7 @@ struct MiMoTensorParallelTests {
     }
 
     private struct Choice: Sendable {
-        let greedy: Int, tokenIDs: [Int], logits: [UInt32], logprobs: [Float], row: [UInt32]
+        let greedy: Int, sampled: Int, tokenIDs: [Int], logits: [UInt32], logprobs: [Float], row: [UInt32]
     }
 
     private static func checkSplitSelection(whole: MLXArray, shards: [MiMoTensorParallelModel], seed: UInt64,
@@ -383,9 +409,13 @@ struct MiMoTensorParallelTests {
                 .topK(values, count: 8)
         }
         let greedy = Device.withDefaultDevice(.cpu) { Int(argMax(values, axis: -1).item(Int32.self)) }
+        let key = MLXRandom.key(seed)
+        let sampled = Device.withDefaultDevice(.cpu) {
+            Int(MLXRandom.categorical(values * (1 / Float(0.8)), key: key).item(Int32.self))
+        }
         let logSoftmax = Device.withDefaultDevice(.cpu) { (values - logSumExp(values, axis: -1, keepDims: true)).asArray(Float.self) }
         let row = Device.withDefaultDevice(.cpu) { values.asArray(Float.self).map(\.bitPattern) }
-        let shared = Box((values, shards))
+        let shared = Box((values, shards, key))
         let choices = try Pair.run(device: .cpu) { rank -> Choice in
             let shard = shared.value.1[rank]
             let local = shared.value.0[0..., shard.vocabularyRange]
@@ -395,12 +425,15 @@ struct MiMoTensorParallelTests {
             let top = try selection.topK(local, count: 8)
             let gathered = selection.gather(local)
             eval(gathered)
-            return Choice(greedy: Int(token.item(Int32.self)), tokenIDs: top.tokenIDs, logits: top.logits.map(\.bitPattern),
-                          logprobs: top.logprobs, row: gathered.asArray(Float.self).map(\.bitPattern))
+            let draw = MLXRandom.categorical(gathered * (1 / Float(0.8)), key: shared.value.2)
+            return Choice(greedy: Int(token.item(Int32.self)), sampled: Int(draw.item(Int32.self)), tokenIDs: top.tokenIDs,
+                          logits: top.logits.map(\.bitPattern), logprobs: top.logprobs,
+                          row: gathered.asArray(Float.self).map(\.bitPattern))
         }
         if let expectedGreedy { #expect(greedy == expectedGreedy) }
         for choice in choices {
             #expect(choice.greedy == greedy, "seed \(seed)")
+            #expect(choice.sampled == sampled, "seed \(seed): the product's sampler over the gathered row")
             #expect(choice.tokenIDs == wholeTop.tokenIDs && choice.logits == wholeTop.logits.map(\.bitPattern))
             for (index, id) in choice.tokenIDs.enumerated() {
                 #expect(abs(choice.logprobs[index] - logSoftmax[id]) <= 2e-6, "seed \(seed) token \(id)")

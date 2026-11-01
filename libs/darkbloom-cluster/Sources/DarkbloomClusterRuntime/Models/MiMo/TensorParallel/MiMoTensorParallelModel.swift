@@ -216,6 +216,9 @@ public final class MiMoTensorParallelModel {
         public var finalLogits: [Float]?
         /// SHA-256 of this model's KV caches after the last step.
         public var cacheSHA256 = ""
+        /// Per position (prompt, then each fed output token), each routed
+        /// layer's selected experts, ascending; when recorded.
+        public var routeSets: [[[Int]]]?
         public var firstTokenSeconds = 0.0
         public var decodeSeconds = 0.0
         public var peakActiveBytes = 0

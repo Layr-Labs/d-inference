@@ -66,6 +66,10 @@ struct MiMoTensorParallelDecoding {
     static let agreementSlots = 4
 
     let model: MiMoTensorParallelModel
+    /// Records every forward's routed expert sets when set (oracles only):
+    /// each prefill chunk's are evaluated with its caches, each step's with
+    /// its selection. Values never change.
+    var routes: MiMoTensorParallelRouteRecorder? = nil
 
     struct Request {
         let prompt: [Int]
@@ -154,6 +158,7 @@ struct MiMoTensorParallelDecoding {
         steps: for index in 0 ..< request.outputCount {
             let position = caches[0].offset
             let choice = try select(logits, request: request, stop: stopKeep, position: position)
+            routes?.flush()
             if let slot = choice.stop {
                 // A rank asked both to stop: both keep the tokens it named.
                 let stop = QwenTensorParallelStopRule.stop(slot: slot)
@@ -196,7 +201,8 @@ struct MiMoTensorParallelDecoding {
             let end = min(prompt.count, offset + chunk)
             let logits = try forward(Array(prompt[offset ..< end]), caches: caches)
             if end == prompt.count { return logits }
-            eval(caches.flatMap { $0.innerState() })
+            eval(caches.flatMap { $0.innerState() } + (routes?.pending ?? []))
+            routes?.flush()
             offset = end
         }
     }
@@ -306,6 +312,30 @@ struct MiMoTensorParallelDecoding {
     }
 }
 
+/// Every forward's routed expert sets, per position and routed layer, for the
+/// route-set oracle: the model hands it each selection
+/// (`MiMoV26TextModel.observeRoutes`), and the engine reads them back after
+/// each forward's evaluation (`flush`).
+final class MiMoTensorParallelRouteRecorder {
+    /// The current forward's selections `[1, L, K]`, one per routed layer.
+    private(set) var pending: [MLXArray] = []
+    /// `[position][routed layer]`: the selected experts, ascending.
+    private(set) var sets: [[[Int]]] = []
+
+    func observe(_ indices: MLXArray) { pending.append(indices) }
+
+    func flush() {
+        guard !pending.isEmpty else { return }
+        eval(pending)
+        let positions = pending[0].dim(1), count = pending[0].dim(2)
+        let layers = pending.map { $0.asType(.int32).reshaped(-1).asArray(Int32.self) }
+        for position in 0 ..< positions {
+            sets.append(layers.map { $0[(position * count) ..< ((position + 1) * count)].map(Int.init).sorted() })
+        }
+        pending = []
+    }
+}
+
 extension MiMoTensorParallelModel {
     /// The resident runtime's path for one request (`MiMoTensorParallelDecoding`:
     /// paged KV, the per-step agreement sum, decode command buffers), with the
@@ -314,8 +344,9 @@ extension MiMoTensorParallelModel {
     /// `sampling` draws with the product's sampler over the gathered row
     /// (keyed on `seed`, stream 0). After each agreed step every rank also
     /// gathers the whole row for its digest (oracle only), in one fixed order.
+    /// `recordRoutes` records every position's routed expert sets.
     public func generatePaged(prompt: [Int], outputCount: Int, chunk: Int, recordTop: Int = 0,
-                              sampling: Sampling? = nil) throws -> Generation {
+                              sampling: Sampling? = nil, recordRoutes: Bool = false) throws -> Generation {
         guard (0 ... 64).contains(recordTop) else { throw ProbeError("MiMo tensor parallel generation: at most 64 logits per step") }
         let wire = sampling.map {
             ClusterWorkerSampling(temperature: $0.temperature, topP: 1, topK: 0, minP: 0, repetitionPenalty: 1,
@@ -326,7 +357,10 @@ extension MiMoTensorParallelModel {
         let sampler = try wire.map { QwenStageTokenSampler(try QwenStageSamplingState($0, promptTokens: prompt)) }
         let selection = self.selection
         var result = Generation()
-        let outcome = try MiMoTensorParallelDecoding(model: self).run(
+        let recorder = recordRoutes ? MiMoTensorParallelRouteRecorder() : nil
+        if let recorder { model.observeRoutes { _, indices in recorder.observe(indices) } }
+        defer { if recordRoutes { model.observeRoutes(nil) } }
+        let outcome = try MiMoTensorParallelDecoding(model: self, routes: recorder).run(
             .init(prompt: prompt, outputCount: outputCount, chunk: chunk, stopTokenIDs: [], rule: rule, sampler: sampler),
             observe: { step in
                 guard recordTop > 0 else { return }
@@ -341,6 +375,7 @@ extension MiMoTensorParallelModel {
                 if step.index == outputCount - 1 { result.finalLogits = values }
             })
         result.tokenIDs = outcome.tokens
+        result.routeSets = recorder?.sets
         result.firstTokenSeconds = outcome.firstTokenSeconds
         result.decodeSeconds = outcome.decodeSeconds
         let state = outcome.caches.flatMap(\.state)

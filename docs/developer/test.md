@@ -1329,7 +1329,12 @@ registered artifact for them.
    - each rank read only its byte runs;
    - paged `full` and `simulated` equal contiguous ones bit for bit;
    - ranks given different agreements refuse;
-   - a checkpoint changed after its manifest is refused.
+   - a checkpoint changed after its manifest is refused;
+   - recording route sets (`--record-routes yes`) changes nothing.
+
+   It also reports, without requiring anything of it, where `simulated` first
+   routes a token to other experts than `full`, over the positions whose inputs
+   are still equal (`mimo compare` prints a `route sets:` line).
 
    `MIMO_ORACLE_PATHS=paged` runs one matrix.
 

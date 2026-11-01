@@ -13,13 +13,14 @@ import MLX
 //   darkbloom-cluster-tp-check mimo run --mode full|simulated|shard|tp --model-dir DIR --request FILE --report FILE
 //       [--record-top K] [--backend ring|socket|jaccl] [--reduction native|sealed-bench] [--shard-rank R]
 //       [--deadline-seconds S] [--temperature T [--sample-seed S]] [--path contiguous|paged]
-//       [--agreement-tamper yes]
+//       [--agreement-tamper yes] [--record-routes yes]
 //       greedy, or with --temperature the product's sampler (MLXRandom.categorical, key seed + step) over the
 //       whole row, which every rank gathers bit for bit. `--path paged` is the resident runtime's path: the
 //       verified load (the manifest first, then only this rank's byte runs), paged KV, the per-step
 //       agreement sum, 100-op decode buffers, greedy logprobs through the split top-k gather and sampling
 //       with the product's QwenStageTokenSampler over the gathered row. `--agreement-tamper yes` changes this
-//       rank's agreement (a tp rank must then refuse before loading).
+//       rank's agreement (a tp rank must then refuse before loading). `--record-routes yes` (paged) records
+//       every position's routed expert sets; `compare` then reports where they first differ.
 //   darkbloom-cluster-tp-check mimo compare --reference FILE --candidate FILE [--bitwise yes|no] [--near-tie-ulps U]
 //   darkbloom-cluster-tp-check mimo allsum [--backend ring|socket|jaccl] [--count N]
 //
@@ -82,6 +83,8 @@ enum MiMoCheck {
         var verifiedAggregateSHA256: String?
         var readBytes: Int?
         var textBytes: Int?
+        /// Per position (prompt, then each fed output token), each routed layer's experts.
+        var routeSets: [[[Int]]]?
     }
 
     static func run(_ arguments: [String]) throws {
@@ -140,13 +143,15 @@ enum MiMoCheck {
               fields["--temperature"].map({ Float($0).map { $0.isFinite && $0 > 0 } ?? false }) ?? true,
               fields["--sample-seed"].map({ UInt64($0) != nil }) ?? true,
               ["contiguous", "paged"].contains(fields["--path"] ?? "contiguous"),
-              (fields["--agreement-tamper"] ?? "no") == "no" || (fields["--agreement-tamper"] == "yes" && fields["--mode"] == "tp") else {
+              (fields["--agreement-tamper"] ?? "no") == "no" || (fields["--agreement-tamper"] == "yes" && fields["--mode"] == "tp"),
+              (fields["--record-routes"] ?? "no") == "no" || (fields["--record-routes"] == "yes" && fields["--path"] == "paged") else {
             throw Failure("mimo run needs --mode full|simulated|shard|tp, --model-dir, --request, a new --report and bounded options")
         }
         let sampling = fields["--temperature"].map {
             MiMoTensorParallelModel.Sampling(temperature: Float($0)!, seed: UInt64(fields["--sample-seed"] ?? "1")!)
         }
         let paged = fields["--path"] == "paged"
+        let recordRoutes = fields["--record-routes"] == "yes"
         let sealed = (fields["--reduction"] ?? "native") == "sealed-bench"
         guard !sealed || mode == "tp" else { throw Failure("--reduction sealed-bench applies to a tp rank only") }
         try ProcessForcedExit.routeTerminationSignals()
@@ -228,7 +233,8 @@ enum MiMoCheck {
             let prompt = request.promptTokenIDs, count = request.outputCount, chunk = request.chunkSize
             let both = try Gemma4TensorParallelLocalPair.run(device: Device.defaultDevice()) { rank in
                 paged ? try ranks.models[rank].generatePaged(prompt: prompt, outputCount: count, chunk: chunk,
-                                                             recordTop: recordTop, sampling: sampling)
+                                                             recordTop: recordTop, sampling: sampling,
+                                                             recordRoutes: recordRoutes)
                     : try ranks.models[rank].generate(prompt: prompt, outputCount: count, chunk: chunk,
                                                       recordTop: recordTop, sampling: sampling)
             }
@@ -241,7 +247,8 @@ enum MiMoCheck {
         } else {
             generation = paged
                 ? try model.generatePaged(prompt: request.promptTokenIDs, outputCount: request.outputCount,
-                                          chunk: request.chunkSize, recordTop: recordTop, sampling: sampling)
+                                          chunk: request.chunkSize, recordTop: recordTop, sampling: sampling,
+                                          recordRoutes: recordRoutes)
                 : try model.generate(prompt: request.promptTokenIDs, outputCount: request.outputCount,
                                      chunk: request.chunkSize, recordTop: recordTop, sampling: sampling)
             switch role {
@@ -267,7 +274,8 @@ enum MiMoCheck {
             stepRowSHA256: recordTop > 0 ? generation.stepRowSHA256 : nil, finalLogits: generation.finalLogits,
             cacheSHA256: caches, firstTokenSeconds: generation.firstTokenSeconds, decodeSeconds: generation.decodeSeconds,
             ranksAgree: pairAgrees, passed: pairAgrees ?? true, path: paged ? "paged" : nil,
-            verifiedAggregateSHA256: verified?.aggregate, readBytes: verified?.readBytes, textBytes: verified?.textBytes)
+            verifiedAggregateSHA256: verified?.aggregate, readBytes: verified?.readBytes, textBytes: verified?.textBytes,
+            routeSets: generation.routeSets)
         if let group {
             // Ranks hold different caches; they must agree on everything else.
             let evidence = report.tokenIDsSHA256 + "|" + (generation.stepRowSHA256.last ?? "")
@@ -316,9 +324,43 @@ enum MiMoCheck {
                 + (equal ? "IDENTICAL" : "DIFFER"))
             passed = passed && equal
         }
+        if let referenceRoutes = reference.routeSets, let candidateRoutes = candidate.routeSets {
+            lines.append(routeDiagnostic(reference: referenceRoutes, candidate: candidateRoutes,
+                promptTokens: reference.promptTokens,
+                tokenDivergence: reference.tokenIDs.indices.first { index in
+                    index >= candidate.tokenIDs.count || reference.tokenIDs[index] != candidate.tokenIDs[index]
+                }))
+        }
         lines.append("verdict \(comparison.verdict.rawValue); passed \(passed)")
         print(lines.joined(separator: "\n"))
         Darwin.exit(passed ? 0 : 3)
+    }
+
+    /// Where two runs' routed expert sets first differ, over the positions whose
+    /// inputs are still equal: the prompt, then each output token fed back before
+    /// the first token divergence. Reported, never required. Routed layers are
+    /// numbered among the routed layers only.
+    private static func routeDiagnostic(reference: [[[Int]]], candidate: [[[Int]]], promptTokens: Int,
+                                        tokenDivergence: Int?) -> String {
+        let comparable = min(reference.count, candidate.count, promptTokens + (tokenDivergence ?? Int.max / 2))
+        var differing = 0, layers = 0
+        var first: (position: Int, layer: Int)?
+        for position in 0 ..< comparable {
+            let count = min(reference[position].count, candidate[position].count)
+            layers = max(layers, count)
+            for layer in 0 ..< count where reference[position][layer] != candidate[position][layer] {
+                differing += 1
+                if first == nil { first = (position, layer) }
+            }
+        }
+        var line = "route sets: \(comparable) positions x \(layers) routed layers with equal inputs (prompt \(promptTokens), "
+            + "first token divergence \(tokenDivergence.map(String.init) ?? "none")): \(differing) differ"
+        if let first {
+            let place = first.position < promptTokens ? "prompt position \(first.position)" : "output \(first.position - promptTokens)"
+            line += "; first at \(place), routed layer \(first.layer): reference \(reference[first.position][first.layer])"
+                + " candidate \(candidate[first.position][first.layer])"
+        }
+        return line
     }
 
     /// One report as the comparator reads it. Each step's near-tie unit is a

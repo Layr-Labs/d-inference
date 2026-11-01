@@ -180,9 +180,30 @@ EOF
     echo "paged: tampered checkpoint failed for another reason"; failures=$((failures + 1))
   fi
 }
+# Route sets (informational): where `simulated` (bitwise `tp`) first routes a token to other experts
+# than `full`. Required only that recording the routes changes nothing.
+paged_routes() {
+  local name request dir
+  for name_request in kernel/request kernel/request-short tiny/request kernel-all-experts/request; do
+    name="${name_request%/*}" request="${name_request#*/}" dir="$scratch/$name"
+    for mode in full simulated; do
+      nice -n 19 "$tp_check" mimo run --mode "$mode" --path paged --record-routes yes --model-dir "$dir" \
+        --request "$dir/$request.json" --report "$dir/routes-$request-$mode.json" >"$dir/routes-$request-$mode.log" 2>&1
+    done
+    if "$tp_check" mimo compare --reference "$dir/paged-$request-simulated.json" \
+         --candidate "$dir/routes-$request-simulated.json" --bitwise yes >/dev/null 2>&1; then
+      echo "paged $name/$request: recording routes changes nothing (bitwise)"
+    else
+      echo "paged $name/$request: RECORDING ROUTES CHANGED THE RUN"; failures=$((failures + 1))
+    fi
+    "$tp_check" mimo compare --reference "$dir/routes-$request-full.json" \
+      --candidate "$dir/routes-$request-simulated.json" >"$dir/routes-$request.txt" 2>&1 || true
+    echo "paged $name/$request: $(grep '^route sets:' "$dir/routes-$request.txt")"
+  done
+}
 for path in $paths; do
   run_matrix "$path"
-  if [[ "$path" == paged ]]; then paged_extras; fi
+  if [[ "$path" == paged ]]; then paged_extras; paged_routes; fi
 done
 echo "required failures (tp == simulated bitwise, tp against full, paged extras): $failures"
 exit $(( failures == 0 ? 0 : 1 ))

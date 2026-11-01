@@ -265,6 +265,38 @@ struct MiMoTensorParallelResidentTests {
         #expect(local[1].outcome.stoppedHere && !local[0].outcome.stoppedHere && !local[0].outcome.ownerStopped)
     }
 
+    /// Route sets: both ranks route every position to the same experts (the
+    /// router is replicated and reads bit-identical residuals), one set per
+    /// routed layer for the prompt and each fed output token; recording them
+    /// changes no token, row or cache.
+    @Test func routeSetsAreRecordedIdenticallyOnBothRanks() throws {
+        let directory = try Self.synthetic()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let models = try Self.ranks(directory, pair: Pair())
+        let steps = 5
+        let plain = try Pair.run(device: .cpu) { rank in
+            try models.value[rank].generatePaged(prompt: Self.prompt, outputCount: steps, chunk: 4, recordTop: 2)
+        }
+        let recorded = try Pair.run(device: .cpu) { rank in
+            try models.value[rank].generatePaged(prompt: Self.prompt, outputCount: steps, chunk: 4, recordTop: 2,
+                                                 recordRoutes: true)
+        }
+        let plan = models.value[0].plan
+        let routes = try #require(recorded[0].routeSets)
+        #expect(recorded[1].routeSets == routes && plain[0].routeSets == nil)
+        #expect(routes.count == Self.prompt.count + steps - 1)
+        #expect(routes.allSatisfy { position in
+            position.count == plan.routedLayers.filter { $0 }.count && position.allSatisfy { experts in
+                experts.count == plan.expertsPerToken && experts == Array(Set(experts)).sorted()
+                    && experts.allSatisfy { (0 ..< plan.expertCount).contains($0) }
+            }
+        })
+        for rank in 0 ..< 2 {
+            #expect(recorded[rank].tokenIDs == plain[rank].tokenIDs && recorded[rank].cacheSHA256 == plain[rank].cacheSHA256)
+            #expect(recorded[rank].stepRowSHA256 == plain[rank].stepRowSHA256)
+        }
+    }
+
     /// Ranks given different requests both learn it before any forward.
     @Test func requestAgreementComparesBothRanks() throws {
         let directory = try Self.synthetic()

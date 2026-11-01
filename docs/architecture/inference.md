@@ -4161,7 +4161,12 @@ production MXFP4 expert, router and norm kernels; `tiny`: below those gates).
 loopback ring or socket equal it bit for bit, caches included, on the
 foundation's ordinary caches and on the resident runtime's paged path
 (`--path paged`). There each rank reads exactly its shard's bytes, and paged runs
-equal ordinary ones bit for bit.
+equal ordinary ones bit for bit. A route-set diagnostic (`--record-routes yes`,
+through the SDK's observation-only `MiMoV26TextModel.observeRoutes`) reports
+where a tensor-parallel run first routes a token to other experts than the
+whole model. With random synthetic routers that already happens in the
+prompt, well before the first token differs. Real-weight qualification remains
+the gate.
 
 Code map:
 

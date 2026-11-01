@@ -279,6 +279,66 @@ struct MiMoTensorParallelSpeculativeTests {
         #expect(two.contains("depth=2") && two.contains("windows=row-exact-one-token-bits"))
     }
 
+    /// A window's settle at the registered sliding window (a 128-row ring over two 64-token
+    /// pages) and on a full layer leaves exactly the cache that one-token appends leave: the
+    /// same rows in the same physical order, offset and ring index, for every window size and
+    /// kept count, across the ring's page boundary and its wrap, after a prompt chunk longer
+    /// than the window.
+    @Test func settleEqualsOneTokenAppendsOnTheRegisteredRing() throws {
+        try Device.withDefaultDevice(.cpu) {
+            let model = UUID()
+            for window in [128, nil] as [Int?] {
+                func cache() -> MiMoV26IndependentHistoryCache {
+                    MiMoV26IndependentHistoryCache(modelIdentity: model, requestIdentity: UUID(), layerIndex: 0,
+                        maximumContext: 4096, heads: 1, keyWidth: 2, valueWidth: 2, dtype: .bfloat16, window: window)
+                }
+                // Each position's row is unique: (position mod 64, position / 64), exact in BF16.
+                func rows(_ start: Int, _ count: Int) -> (keys: MLXArray, values: MLXArray) {
+                    let values = (start ..< (start + count)).flatMap { [Float($0 % 64), Float($0 / 64)] }
+                    let keys = MLXArray(values).reshaped(1, 1, count, 2).asType(.bfloat16)
+                    return (keys, -keys)
+                }
+                let windowed = cache(), stepped = cache()
+                let prompt = rows(0, 150)
+                _ = windowed.update(keys: prompt.keys, values: prompt.values)
+                _ = stepped.update(keys: prompt.keys, values: prompt.values)
+                var position = 150, round = 0
+                while position < 470 {
+                    let width = 2 + round % 3, keep = 1 + (round / 3) % width
+                    let checkpoint = windowed.checkpoint()
+                    var written: [(keys: MLXArray, values: MLXArray)] = []
+                    if window == nil {
+                        let all = rows(position, width)
+                        _ = windowed.update(keys: all.keys, values: all.values)
+                        written = (0 ..< width).map { j in
+                            (all.keys[0..., 0..., j ..< (j + 1), 0...], all.values[0..., 0..., j ..< (j + 1), 0...])
+                        }
+                    } else {
+                        for j in 0 ..< width {
+                            let row = rows(position + j, 1)
+                            _ = windowed.update(keys: row.keys, values: row.values)
+                            written.append(row)
+                        }
+                    }
+                    try MiMoV26VerifyWindow(logits: MLXArray.zeros([1, width, 1]),
+                        normalizedHiddenStates: MLXArray.zeros([1, width, 1]), firstPosition: position,
+                        caches: [windowed], checkpoints: [checkpoint], written: [written]).settle(keeping: keep)
+                    for j in 0 ..< keep {
+                        let row = rows(position + j, 1)
+                        _ = stepped.update(keys: row.keys, values: row.values)
+                    }
+                    position += keep; round += 1
+                    let label = "window \(window.map(String.init) ?? "none") at \(position)"
+                    #expect(windowed.offset == stepped.offset && windowed.metaState == stepped.metaState, "\(label)")
+                    #expect(windowed.pageCount == stepped.pageCount, "\(label)")
+                    let (a, b) = (windowed.state, stepped.state)
+                    #expect(a.map { $0.asType(.float32).asArray(Float.self) } == b.map { $0.asType(.float32).asArray(Float.self) },
+                            "\(label)")
+                }
+            }
+        }
+    }
+
     /// Exactly tied maxima in a window's columns: inside one rank's half the
     /// lower ID wins, across halves rank 0's (the lower IDs); a column's
     /// logprobs lead with its agreed maximum even when a tied token leads the

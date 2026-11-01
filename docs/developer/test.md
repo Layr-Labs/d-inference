@@ -1353,8 +1353,11 @@ registered artifact for them.
      (and just before a stop token of the same round), a cancel between rounds
      and greedy logprobs for every kept column (the one-token path's own) end
      both ranks together; the LOAD gate's configuration-only drafter charge is
-     what the loaded heads declare; and exactly tied columns and draft readouts
-     choose the lowest token ID.
+     what the loaded heads declare; a window's rollback
+     (`MiMoV26VerifyWindow.settle`) leaves exactly the cache of one-token
+     appends on the registered 128-row ring (two 64-token pages, across its
+     page boundary and wrap) and on a full layer; and exactly tied columns and
+     draft readouts choose the lowest token ID.
 
    `libs/darkbloom-cluster/Tests/PlacementChecks/run.sh` also runs
    `MiMoTensorParallelChecks.swift` (model-free). It builds the layout from the

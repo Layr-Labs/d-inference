@@ -4248,8 +4248,9 @@ are excluded by name and refused as text, as is any unknown or misaligned name:
 
 Every equal half lands on whole quantization groups and packed words, so no
 rank stores padding: 84,013,770,176 B of text weights per rank. A layer issues
-two collectives of one 16,384 B row per token, and a decode step 97. MTP stays
-off.
+two collectives of one 16,384 B row per token, and a decode step 97. MTP is off
+unless the launch asks for it
+([speculative rounds](#mimo-tensor-parallel-speculative-rounds)).
 
 The routed experts' partial is not the Qwen and Gemma one, which sums every
 selected expert's FP32 row across ranks (`TensorParallelSwitchLinear`). A
@@ -4270,9 +4271,10 @@ layer kinds and both channel widths, no MTP heads or towers) and cuts stored
 tensors, including the 3-D expert banks, by slice or by byte runs.
 `MiMoV26TextModel.installTensorParallel(reduce:vocabularyRows:)` adds the two
 sums and makes `lm_head` this rank's rows before the weights load. A model
-without it runs the unchanged single-Mac path. The CBv2 and MTP owners still
-require the whole vocabulary's readout and refuse a rank; the independent-history
-pages serve a rank one row at a time. Selection reuses the model-neutral
+without it runs the unchanged single-Mac path. The CBv2 owner still requires
+the whole vocabulary's readout and refuses a rank; the MTP drafter reads a
+rank's rows through one cross-rank argmax sum; the independent-history pages
+serve a rank one row, or one row-exact verify window, at a time. Selection reuses the model-neutral
 vocabulary-split head (`Gemma4TensorParallelSelection`): greedy argmax, top-k log
 probabilities and the bit-exact whole-row gather for the product's sampler.
 
@@ -4301,7 +4303,9 @@ tensor parallel's executor contract and one lane:
   whose first logprob is the greedy token's even when an exactly tied token
   leads it; a sampled row publishes the product sampler's own logprobs from
   the gathered row.
-- Not yet: lanes, prompt-prefix reuse, MTP, 2,048-token prefill frames and
+- Speculative rounds when the worker gets `--mtp-depth` (off by default; see
+  below).
+- Not yet: lanes, prompt-prefix reuse, 2,048-token prefill frames and
   micro-batches, building decode steps one ahead.
 - Memory. One formula, `MiMoTensorParallelRequestBudget`, gives the LOAD
   gate, each reservation's charge and the placement's `requestAllowance`
@@ -4327,6 +4331,63 @@ where a tensor-parallel run first routes a token to other experts than the
 whole model. With random synthetic routers that already happens in the
 prompt, well before the first token differs. Real-weight qualification remains
 the gate.
+
+### MiMo tensor-parallel speculative rounds
+
+A MiMo tensor-parallel worker launched with `--mtp-depth N` (1 to 3; MiMo's
+`MiMoMTPTerms`) decodes in `pipeline_mtp_v1`'s rounds through the
+tensor-parallel sums. Nothing launches it by default yet: the installed provider
+passes no depth in tensor parallel, and the planner credits no speed-up.
+
+- **Heads.** Both ranks hold the three trained BF16 heads whole
+  (3 × 658,546,816 B), read through the verified checkpoint, beside their shard
+  (`MiMoTensorParallelDraftHead`). The drafter is the product's
+  (`MiMoV26MTPAssistant`); its target is a one-layer shell that lends it this
+  rank's embedding and vocabulary rows. A proposal is the whole vocabulary's
+  argmax from one small sum (`MiMoV26TextModel.readoutArgMax`), so both ranks
+  propose the same tokens with the single-Mac drafter's arithmetic. Splitting the
+  heads like the main layers would read about 30% fewer bytes per proposal and
+  hold 0.83 GiB less, but adds new BF16 partials and two sums per proposal.
+- **Windows.** A round runs `[last, d1 … dk]` through every layer's two sums at
+  once (`MiMoV26TextModel.forwardVerifyWindow`). Each row takes one-row decode's
+  arithmetic: the row-exact affine 8-bit projections
+  (`MiMoV26RowExactProjection`), per-row RoPE and router, per-row expert combine,
+  full-attention rows reading their own prefix and sliding layers taking one
+  ring update and one attention per row. So each window row is the one-token
+  step's bits, and greedy rounds are lossless against the one-token path, not
+  only close to it. NAX has no kernel for 2 to 4 rows (MLX's NAX attention needs
+  more than 8 queries), so windows stay on these kernels; prefill is unchanged.
+- **Agreement and acceptance.** One sum per round carries, per rank, every
+  column's maximum and token (or rank 0's keyed target sample over the gathered
+  rows, `QwenStageTokenSampler.verifyRound`), the stop slot and the position.
+  `MiMoMTPAcceptance.kept` keeps drafts while each equals the target before it,
+  then the target, cut at a stop token and the output limit. A request whose
+  sampler does not admit verification decodes one token a step.
+- **Rollback.** Each cache takes a checkpoint before the window (pages are
+  immutable arrays). Unless every row is kept, the cache returns to it and
+  replays the kept rows' keys and values as one-token appends
+  (`MiMoV26VerifyWindow.settle`), so sliding rings keep their physical order.
+- **Stops.** A round's stop slots are read before either rank commits any of its
+  tokens. A client stop inside a round stops rank 0's commits and rides the next
+  round's agreement; when that round already ends the request, rank 1 adopts rank
+  0's count and finish in the end agreement (`QwenTensorParallelStopRule.reconcile`).
+- **Logprobs.** One vocabulary-split top-k gather per kept column, led by the
+  column's agreed maximum; sampled rows publish the product sampler's
+  `takeRoundLogprobs`.
+- **Memory.** The LOAD gate adds the heads' bytes; each reservation and READY's
+  capacity add the drafter's bounded request state and the window's extra rows
+  (`MiMoTensorParallelResidentRuntime.speculativeRequestBytes`). The activation
+  floor stays the conservative default.
+- **Agreement.** The load agreement adds the depth, the verification rule and
+  the head and window contracts (`speculativeAgreementFields`); a load without a
+  depth keeps its agreement unchanged.
+
+Code map: `MiMoTensorParallelRounds.swift` (rounds, agreement, end
+reconciliation), `MiMoTensorParallelSpeculation.swift` (heads, drafter,
+scripted oracle proposals), the SDK's `MiMoV26IndependentHistory.swift` and
+`MiMoV26TensorParallel.swift`. Placement keeps `speculativeHead` nil until a pair
+measures MiMo tensor parallel with and without rounds, as GLM's
+`GLM5NextServingMetadata.measuredTensorParallelDecode` does.
 
 ### MiMo tensor-parallel placement
 

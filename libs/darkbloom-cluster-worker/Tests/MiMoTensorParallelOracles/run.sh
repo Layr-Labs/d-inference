@@ -5,7 +5,7 @@
 # TP_CHECK is a built darkbloom-cluster-tp-check with a source-matched
 # mlx.metallib beside it; SCRATCH_DIR a new directory; PORT the first of two
 # free 127.0.0.1 ports for the local ring and socket (default 58223).
-# MIMO_ORACLE_PATHS (default "contiguous paged") picks the matrices to run.
+# MIMO_ORACLE_PATHS (default "contiguous paged mtp") picks the matrices to run.
 #
 # For each synthetic variant and each request (40 prompt tokens: longer than
 # the 8-token window and the 16-token chunk; 6 tokens: shorter than both; 64
@@ -31,11 +31,20 @@
 # 64-token pages before decode) runs on both paths and over the ring. Route
 # sets are recorded to report where `simulated` first routes a token to other
 # experts than `full` (informational; recording must change nothing).
+#
+# `mtp` runs speculative rounds (`--mtp-depth`) on checkpoints with three
+# random trained heads (`--mtp yes`; the text weights equal the plain
+# variant's). Required, on the paged path: every round run bitwise equal to
+# the one-token path (tokens, rows, caches: lossless greedy), with the heads'
+# own proposals (random, so mostly rejected), with proposals scripted from the
+# one-token tokens (forced acceptance: every draft kept) and with every fifth
+# scripted proposal moved off (accepts, rejects and rollback); and each tp
+# rank bitwise equal to `simulated` for the heads, the script and a sampled run.
 set -euo pipefail
 tp_check="$1"
 scratch="$2"
 port="${3:-58223}"
-paths="${MIMO_ORACLE_PATHS:-contiguous paged}"
+paths="${MIMO_ORACLE_PATHS:-contiguous paged mtp}"
 if [[ ! -x "$tp_check" || -e "$scratch" ]]; then
   echo 'usage: run.sh TP_CHECK NEW_SCRATCH_DIR [PORT]' >&2
   exit 2
@@ -224,9 +233,61 @@ paged_routes() {
     echo "paged $name/$request: $(grep '^route sets:' "$dir/routes-$request.txt")"
   done
 }
+# Required bitwise equality of two reports.
+same_bits() {
+  local reference="$1" candidate="$2" label="$3"
+  if "$tp_check" mimo compare --reference "$reference" --candidate "$candidate" --bitwise yes \
+       >"${candidate%.json}-vs-$(basename "${reference%.json}").txt" 2>&1; then
+    echo "$label: bitwise identical"
+  else
+    echo "$label: DIFFERS"; failures=$((failures + 1))
+  fi
+}
+mtp_matrix() {
+  local name request dir rounds
+  for name in kernel tiny; do
+    dir="$scratch/$name-mtp"
+    synthesize "$dir" --variant "$name" --mtp yes
+    for request in request request-short request-long; do
+      [[ "$name" == tiny && "$request" == request-long ]] && continue
+      run() { local tag="$1"; shift
+        nice -n 19 "$tp_check" mimo run --mode simulated --path paged --model-dir "$dir" --request "$dir/$request.json" \
+          --report "$dir/$request-$tag-simulated.json" "$@" >"$dir/$request-$tag-simulated.log" 2>&1; }
+      run plain
+      run heads --mtp-depth 2
+      run script --mtp-depth 2 --mtp-script "$dir/$request-plain-simulated.json"
+      run misses --mtp-depth 3 --mtp-script "$dir/$request-plain-simulated.json" --mtp-misses 5
+      for tag in heads script misses; do
+        rounds=$(grep -o 'speculative rounds.*' "$dir/$request-$tag-simulated.log" || echo 'no rounds')
+        same_bits "$dir/$request-plain-simulated.json" "$dir/$request-$tag-simulated.json" \
+          "mtp $name/$request $tag ($rounds) == one-token path"
+      done
+      tp_pair "$dir" "$request" "$request-heads-tp-ring" ring "" --path paged --mtp-depth 2
+      tp_pair "$dir" "$request" "$request-misses-tp-ring" ring "" --path paged --mtp-depth 3 \
+        --mtp-script "$dir/$request-plain-simulated.json" --mtp-misses 5
+      for rank in 0 1; do
+        same_bits "$dir/$request-heads-simulated.json" "$dir/$request-heads-tp-ring-rank$rank.json" \
+          "mtp $name/$request heads tp rank $rank == simulated"
+        same_bits "$dir/$request-misses-simulated.json" "$dir/$request-misses-tp-ring-rank$rank.json" \
+          "mtp $name/$request misses tp rank $rank == simulated"
+      done
+    done
+  done
+  # Sampled rounds (the product's keyed target sample per column over the gathered rows): tp == simulated.
+  dir="$scratch/kernel-mtp"
+  nice -n 19 "$tp_check" mimo run --mode simulated --path paged --model-dir "$dir" --request "$dir/request.json" \
+    --report "$dir/sampled-heads-simulated.json" --temperature 0.8 --sample-seed 11 --mtp-depth 2 \
+    >"$dir/sampled-heads-simulated.log" 2>&1
+  tp_pair "$dir" request sampled-heads-tp-ring ring "" --path paged --temperature 0.8 --sample-seed 11 --mtp-depth 2
+  for rank in 0 1; do
+    same_bits "$dir/sampled-heads-simulated.json" "$dir/sampled-heads-tp-ring-rank$rank.json" \
+      "mtp kernel/request sampled tp rank $rank == simulated"
+  done
+}
 for path in $paths; do
+  if [[ "$path" == mtp ]]; then mtp_matrix; continue; fi
   run_matrix "$path"
   if [[ "$path" == paged ]]; then paged_extras; paged_long; paged_routes; fi
 done
-echo "required failures (tp == simulated bitwise, tp against full, paged extras): $failures"
+echo "required failures (tp == simulated bitwise, tp against full, paged extras, mtp rounds): $failures"
 exit $(( failures == 0 ? 0 : 1 ))

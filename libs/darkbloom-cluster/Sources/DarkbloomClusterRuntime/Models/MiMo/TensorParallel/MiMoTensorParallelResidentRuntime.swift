@@ -12,7 +12,10 @@ import MLXLLM
 /// step together, and sum each layer's attention and feed-forward partials
 /// with the sealed all-sum inside the lazy graph, under the session's keyed
 /// data plane. Text only: the private image candidate stays a pipeline
-/// candidate, and MTP stays off (no rank holds the trained heads).
+/// candidate. With a speculative depth (`--mtp-depth`, off by default) both
+/// ranks also hold the three trained heads whole and decode in rounds
+/// (`MiMoTensorParallelDecoding.runRounds`): row-exact verify windows through
+/// the same sums, so greedy tokens are the one-token path's.
 ///
 /// The executor contract of `GLM5NextTensorParallelResidentRuntime`, one
 /// lane: one request at a time, cancel from the control thread, an enclosing
@@ -45,12 +48,20 @@ public final class MiMoTensorParallelResidentRuntime {
          "decode-buffers=\(MiMoTensorParallelDecoding.decodeCommandBuffers.operations)", "prefix=off"]
     }
 
-    /// The load agreement's fields after the admission's fingerprint.
-    static func loadAgreementFields(plan: MiMoTensorParallelPlan, chunkTokens: Int) -> [String] {
+    /// The load agreement's fields after the admission's fingerprint; speculative
+    /// rounds add their terms (none without, so a plain load's agreement is unchanged).
+    static func loadAgreementFields(plan: MiMoTensorParallelPlan, chunkTokens: Int,
+                                    speculative: MiMoMTPTerms? = nil) -> [String] {
         ["mimo-v26-tensor-parallel-load-v1", MiMoTensorParallelPlan.name, plan.fingerprint]
             + MiMoTensorParallelPlan.arithmeticAgreementFields + servingAgreementFields(chunkTokens: chunkTokens)
             + ClusterGenerationMode.tensorParallel.loadAgreementFields + [QwenTensorParallelLinkProbe.loadAgreementField]
-            + ClusterDataPlaneAgreement.loadAgreementFields
+            + ClusterDataPlaneAgreement.loadAgreementFields + (speculative.map(speculativeAgreementFields) ?? [])
+    }
+
+    /// Rounds of `terms.depth` proposals from heads replicated whole, verified in row-exact windows.
+    static func speculativeAgreementFields(_ terms: MiMoMTPTerms) -> [String] {
+        ["mimo-v26-tensor-parallel-speculative-v1"] + terms.loadAgreementFields
+            + ["heads=replicated-whole", "draft=split-argmax-sum", "windows=row-exact-one-token-bits"]
     }
 
     let admission: MiMoResidentAdmission
@@ -65,6 +76,8 @@ public final class MiMoTensorParallelResidentRuntime {
     /// What the live gate asks for beside every held request: the rank's
     /// activation floor, freed-buffer cache and sealed frames.
     let rankReserveBytes: Int
+    let speculative: MiMoMTPTerms?
+    private var draftHead: MiMoTensorParallelDraftHead?
     private let operation = NSLock()
     private let keepWarm = ClusterKeepWarm()
     private var model: MiMoTensorParallelModel?
@@ -81,12 +94,13 @@ public final class MiMoTensorParallelResidentRuntime {
 
     // MARK: - Load
 
-    public static func load(_ configuration: QwenResidentLoadConfiguration,
+    public static func load(_ configuration: QwenResidentLoadConfiguration, speculativeDepth: Int? = nil,
                             qualification: QwenResidentQualificationSwitches = .refused,
                             dataPlane credential: ClusterDataPlaneCredential) throws -> MiMoTensorParallelResidentRuntime {
         let environment = ProcessInfo.processInfo.environment
         try qualification.admit(environment: environment)
         try requireTextLaunch(configuration, environment: environment)
+        let speculative = try speculativeDepth.map { try MiMoMTPTerms(depth: $0) }
         let directory = configuration.modelDirectory
         func read(_ url: URL, _ limit: Int) throws -> Data { try BoundedProbeInput.data(url, maximumBytes: limit) }
         let admission = try MiMoResidentAdmission(configuration: configuration,
@@ -108,6 +122,8 @@ public final class MiMoTensorParallelResidentRuntime {
         let control = QwenResidentControl(deadline: configuration.deadlineUptimeNanoseconds, lease: configuration.lease)
         try QwenResidentProcessLease.shared.acquire()
         var loaded: MiMoTensorParallelModel?
+        var draftHead: MiMoTensorParallelDraftHead?
+        var speculativeRequestBytes = 0
         weak var retired: MiMoTensorParallelModel?
         var residency: ClusterStageResidency?
         do {
@@ -119,7 +135,7 @@ public final class MiMoTensorParallelResidentRuntime {
                                                    transport: collective.transport)
             let loadAgreement = sha256(try canonicalJSONData([try admission.loadAgreementFingerprint(
                 mode: .tensorParallel, transport: collective.transport, residency: true, measuredGate: false)]
-                + loadAgreementFields(plan: plan, chunkTokens: profile.maximumChunkTokens)))
+                + loadAgreementFields(plan: plan, chunkTokens: profile.maximumChunkTokens, speculative: speculative)))
             try ClusterDataPlaneAgreement.establish(collective: collective, credential: credential,
                 loadAgreement: loadAgreement, tamper: nil, tensorParallelSeal: true, check: { try control.check() })
             guard collective.workerDataPlane?.peerVerified == true else {
@@ -154,7 +170,11 @@ public final class MiMoTensorParallelResidentRuntime {
                 // freed-buffer cache, sealed frames) beside it: the planner's quote. The read's largest slice
                 // (half an expert bank) lives only while loading, inside the reserve no request holds yet.
                 let shardBytes = try Self.shardBytes(plan: plan, descriptors: source.descriptors)
-                try requireLiveMemory(bytes: try QwenLongPrefillCheckedBytes.sum([shardBytes, budget.allowance.reservedBytes]))
+                // Speculative rounds: the three heads whole on every rank, beside the shard.
+                let headBytes = speculative == nil ? 0 : source.descriptors
+                    .filter { $0.key.hasPrefix(MiMoTensorParallelDraftHead.prefix) }.reduce(0) { $0 + $1.value.byteCount }
+                try requireLiveMemory(bytes: try QwenLongPrefillCheckedBytes.sum([shardBytes, headBytes,
+                                                                                  budget.allowance.reservedBytes]))
                 let value = try autoreleasepool {
                     try MiMoTensorParallelVerifiedLoad.load(checkpoint: source.checkpoint,
                         configurationData: admission.configBytes, role: .shard(rank: collective.rank), reduction: group,
@@ -164,9 +184,22 @@ public final class MiMoTensorParallelResidentRuntime {
                 guard value.receipt.verifiedAggregateSHA256 == admission.specification.artifactSHA256 else {
                     throw ProbeError("MiMo tensor-parallel shard was not read from the registered artifact")
                 }
+                if let speculative {
+                    let head = try autoreleasepool {
+                        try MiMoTensorParallelDraftHead.load(checkpoint: source.checkpoint,
+                            configurationData: admission.configBytes, target: value.model,
+                            beforeRead: { _, _ in try checked() }, check: checked)
+                    }
+                    guard head.headBytes == headBytes else {
+                        throw ProbeError("MiMo tensor-parallel draft heads differ from the artifact's")
+                    }
+                    draftHead = head
+                    speculativeRequestBytes = try Self.speculativeRequestBytes(head: head, terms: speculative,
+                        plan: plan, slidingWindow: window, chunkTokens: profile.maximumChunkTokens)
+                }
                 Memory.clearCache()
                 residency = try ClusterStageResidency(bytes: try QwenLongPrefillCheckedBytes.sum([
-                    Memory.activeMemory, requestReserve, bufferCacheBytes]))
+                    Memory.activeMemory, requestReserve, speculativeRequestBytes, bufferCacheBytes]))
                 try configuration.allocatorPolicy.prepareReady(
                     synchronize: { Stream.gpu.synchronize(); Stream.cpu.synchronize() },
                     snapshot: {
@@ -175,7 +208,8 @@ public final class MiMoTensorParallelResidentRuntime {
                     }, clearCache: { Memory.clearCache() }, check: checked)
                 if bufferCacheBytes > 0 { Memory.cacheLimit = bufferCacheBytes; try checked() }
                 let loadedIdentity = sha256(try canonicalJSONData([loadAgreement, value.receipt.verifiedAggregateSHA256,
-                    value.receipt.planFingerprint, String(value.receipt.shardBytes), String(value.receipt.textTensors)]))
+                    value.receipt.planFingerprint, String(value.receipt.shardBytes), String(value.receipt.textTensors)]
+                    + (draftHead.map { ["draft-heads", String($0.headTensors), String($0.headBytes)] } ?? [])))
                 _ = try requireQwenLongPrefillReadinessDigest(collective: collective,
                     material: { .residentLoaded(agreementFingerprint: loadedIdentity) },
                     disagreementMessage: "MiMo tensor-parallel peers did not load matching shards",
@@ -185,16 +219,19 @@ public final class MiMoTensorParallelResidentRuntime {
                     + " text_bytes=\(value.receipt.textBytes) tensors=\(value.receipt.textTensors)"
                     + " excluded=\(value.receipt.excludedTensors) load_ns=\(DispatchTime.now().uptimeNanoseconds - started)"
                     + " sealed=1 buffer_cache=\(bufferCacheBytes) wired_limit=\(residency?.receipt.appliedBytes ?? 0)"
-                    + " lanes=1 paged_kv=\(MiMoTensorParallelRequestBudget.pageTokens) mtp=off")
-                return requestReserve
+                    + " lanes=1 paged_kv=\(MiMoTensorParallelRequestBudget.pageTokens)"
+                    + " mtp=\(speculative.map { "depth\($0.depth)" } ?? "off") draft_head_bytes=\(draftHead?.headBytes ?? 0)"
+                    + " speculative_request_bytes=\(speculativeRequestBytes)")
+                return try QwenLongPrefillCheckedBytes.sum([requestReserve, speculativeRequestBytes])
             }
             guard let model = loaded else { throw ProbeError("MiMo tensor-parallel load returned no shard") }
             try control.loaded()
             return try MiMoTensorParallelResidentRuntime(admission: admission, control: control, collective: collective,
                 group: group, codec: codec, model: model, residency: residency, plan: plan, slidingWindow: window,
-                rankReserveBytes: budget.rankBytes, capacity: capacity, loadAgreement: loadAgreement, linkProbe: probe)
+                rankReserveBytes: budget.rankBytes, capacity: capacity, loadAgreement: loadAgreement, linkProbe: probe,
+                speculative: speculative, draftHead: draftHead)
         } catch {
-            let primary = error; control.fail(); loaded = nil
+            let primary = error; control.fail(); loaded = nil; draftHead = nil
             do {
                 try MLX.withError { nativeError in
                     Stream.gpu.synchronize(); Stream.cpu.synchronize()
@@ -245,6 +282,18 @@ public final class MiMoTensorParallelResidentRuntime {
             chunkTokens: chunkTokens, allocationBound: QwenResidentResourceEnvironment.allocationBound)
     }
 
+    /// One request's speculative charge: the drafter's own bounded state (the
+    /// product's declaration at the allocator's bound) and the window's extra
+    /// rows (`MiMoTensorParallelRequestBudget.speculativeWindowBytes`).
+    static func speculativeRequestBytes(head: MiMoTensorParallelDraftHead, terms: MiMoMTPTerms,
+                                        plan: MiMoTensorParallelPlan, slidingWindow: Int, chunkTokens: Int) throws -> Int {
+        let bound = QwenResidentResourceEnvironment.allocationBound
+        return try QwenLongPrefillCheckedBytes.sum([
+            head.requestBytes(chunkSize: chunkTokens, depth: terms.depth, bound: bound),
+            MiMoTensorParallelRequestBudget.speculativeWindowBytes(plan: plan, slidingWindow: slidingWindow,
+                depth: terms.depth, allocationBound: bound)])
+    }
+
     /// The host memory gate's decision for `bytes` more, as the resident families take it.
     static func requireLiveMemory(bytes: Int) throws {
         try QwenResidentResourceEnvironment.require()
@@ -260,9 +309,11 @@ public final class MiMoTensorParallelResidentRuntime {
     private init(admission: MiMoResidentAdmission, control: QwenResidentControl, collective: Collective,
                  group: QwenTensorParallelGroup, codec: QwenTensorParallelSealCodec?, model: MiMoTensorParallelModel,
                  residency: ClusterStageResidency?, plan: MiMoTensorParallelPlan, slidingWindow: Int,
-                 rankReserveBytes: Int, capacity: Int, loadAgreement: String, linkProbe: ClusterWorkerLinkProbe?) throws {
+                 rankReserveBytes: Int, capacity: Int, loadAgreement: String, linkProbe: ClusterWorkerLinkProbe?,
+                 speculative: MiMoMTPTerms?, draftHead: MiMoTensorParallelDraftHead?) throws {
         self.admission = admission; self.control = control; self.collective = collective; self.group = group
         self.codec = codec; self.model = model; self.residency = residency
+        self.speculative = speculative; self.draftHead = draftHead
         self.plan = plan; self.slidingWindow = slidingWindow; self.rankReserveBytes = rankReserveBytes
         self.loadAgreement = loadAgreement; self.linkProbe = linkProbe
         baseReady = .init(identity: admission.configuration.identity, rank: collective.rank,
@@ -305,8 +356,12 @@ public final class MiMoTensorParallelResidentRuntime {
             throw ProbeError("MiMo tensor parallel serves text requests only")
         }
         let request = try admission.request(value, id: requestID, now: DispatchTime.now().uptimeNanoseconds)
-        let charge = try Self.requestBudget(plan: plan, slidingWindow: slidingWindow, contextTokens: request.maximumTokens,
+        var charge = try Self.requestBudget(plan: plan, slidingWindow: slidingWindow, contextTokens: request.maximumTokens,
                                             chunkTokens: request.chunkSize).requestBytes
+        if let speculative, let draftHead {
+            charge = try QwenLongPrefillCheckedBytes.sum([charge, Self.speculativeRequestBytes(head: draftHead,
+                terms: speculative, plan: plan, slidingWindow: slidingWindow, chunkTokens: request.chunkSize)])
+        }
         try control.check(); try control.reserve(requestID)
         return try control.reserving(requestID, rank: collective.rank, deadline: value.deadlineUptimeNanoseconds) {
             guard model != nil else { throw ProbeError("Resident model already released") }
@@ -369,7 +424,7 @@ public final class MiMoTensorParallelResidentRuntime {
                     Stream.gpu.synchronize(); Stream.cpu.synchronize(); try error.check()
                     weak var released: MiMoTensorParallelModel?
                     released = model
-                    reservation = nil; model = nil
+                    reservation = nil; draftHead = nil; model = nil
                     guard released == nil else { throw ProbeError("MiMo tensor-parallel model remains retained") }
                     try residency?.end(); residency = nil
                     Memory.clearCache(); try error.check()
@@ -404,8 +459,13 @@ public final class MiMoTensorParallelResidentRuntime {
         }
         let sampler = request.sampler
         let rule = MiMoTensorParallelSelectionRule.rule(request.sampling?.wire)
+        let speculation = try speculative.map { terms -> MiMoTensorParallelSpeculation in
+            guard let draftHead else { throw ProbeError("MiMo tensor-parallel draft heads were released") }
+            return try .init(depth: terms.depth, proposer: .heads(draftHead))
+        }
         let outcome = try decoding.run(.init(prompt: request.promptTokenIDs, outputCount: request.outputCount,
-            chunk: request.chunkSize, stopTokenIDs: request.stopTokenIDs, rule: rule, sampler: sampler),
+            chunk: request.chunkSize, stopTokenIDs: request.stopTokenIDs, rule: rule, sampler: sampler,
+            speculation: speculation),
             localStop: localStop, publish: { ordinal, token, logprobs in
                 try channel.publishToken(ordinal, token, request.promptCount + ordinal, logprobs)
                 return try channel.answer()
@@ -424,6 +484,7 @@ public final class MiMoTensorParallelResidentRuntime {
             + " family=mimo prompt=\(request.promptCount) output=\(outcome.tokens.count) finish=\(finish.rawValue)"
             + " rule=\(rule.label) frames=\(codec?.sealedFrames ?? 0) key_generation=\(codec?.keyGeneration ?? 0)"
             + " kv_pages=\(outcome.caches.reduce(0) { $0 + $1.pageCount })"
+            + (outcome.statistics.map { " " + $0.diagnosticFields.prefix(6).joined(separator: " ") } ?? "")
             + String(format: " first_token_ms=%.1f decode_ms=%.1f", outcome.firstTokenSeconds * 1000, outcome.decodeSeconds * 1000))
         return QwenResidentGenerationCompletion(requestID: request.requestID, finishReason: finish,
             selectedTokenIDs: outcome.tokens, completedFrames: outcome.tokens.count,

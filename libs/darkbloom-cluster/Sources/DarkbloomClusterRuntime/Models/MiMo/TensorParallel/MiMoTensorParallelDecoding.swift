@@ -82,6 +82,8 @@ struct MiMoTensorParallelDecoding {
         let rule: MiMoTensorParallelSelectionRule
         /// The product's sampler; required for `gatheredRow` (rank 0 draws).
         let sampler: QwenStageTokenSampler?
+        /// Speculative rounds (`runRounds`); nil decodes one token a step.
+        var speculation: MiMoTensorParallelSpeculation? = nil
     }
 
     /// What a step's selection made, for logprobs and oracle evidence.
@@ -109,6 +111,8 @@ struct MiMoTensorParallelDecoding {
         var caches: [MiMoV26IndependentHistoryCache] = []
         var firstTokenSeconds = 0.0
         var decodeSeconds = 0.0
+        /// Speculative rounds' proposals and acceptance.
+        var statistics: MiMoMTPStatistics?
     }
 
     var reduction: QwenTensorParallelReduction? { model.reduction }
@@ -148,6 +152,12 @@ struct MiMoTensorParallelDecoding {
         }
         guard request.rule != .gatheredRow || request.sampler != nil else {
             throw ProbeError("MiMo tensor parallel generation: a gathered row needs the product's sampler")
+        }
+        if let speculation = request.speculation {
+            var result = try runRounds(request, speculation: speculation, localStop: localStop, publish: publish,
+                                       observe: observe)
+            result.outcome.statistics = result.statistics
+            return result.outcome
         }
         let started = MiMoTensorParallelModel.now()
         let caches = try model.model.makeIndependentHistoryCaches()
@@ -359,8 +369,21 @@ extension MiMoTensorParallelModel {
     /// gathers the whole row for its digest (oracle only), in one fixed order.
     /// `recordRoutes` records every position's routed expert sets.
     public func generatePaged(prompt: [Int], outputCount: Int, chunk: Int, recordTop: Int = 0,
-                              sampling: Sampling? = nil, recordRoutes: Bool = false) throws -> Generation {
+                              sampling: Sampling? = nil, recordRoutes: Bool = false,
+                              speculative: SpeculativeOptions? = nil) throws -> Generation {
         guard (0 ... 64).contains(recordTop) else { throw ProbeError("MiMo tensor parallel generation: at most 64 logits per step") }
+        guard speculative == nil || !recordRoutes else {
+            throw ProbeError("MiMo tensor parallel generation: route sets are recorded without speculative rounds")
+        }
+        let speculation = try speculative.map { options -> MiMoTensorParallelSpeculation in
+            switch options.proposals {
+            case .heads:
+                guard let draftHead else { throw ProbeError("MiMo speculative rounds need the draft heads loaded") }
+                return try .init(depth: options.depth, proposer: .heads(draftHead))
+            case .scripted(let tokens, let missEvery):
+                return try .init(depth: options.depth, proposer: .scripted(script: tokens, missEvery: missEvery))
+            }
+        }
         let wire = sampling.map {
             ClusterWorkerSampling(temperature: $0.temperature, topP: 1, topK: 0, minP: 0, repetitionPenalty: 1,
                 repetitionContextSize: 0, frequencyPenalty: 0, presencePenalty: 0, seed: $0.seed, stream: 0, logitBias: [])
@@ -374,7 +397,8 @@ extension MiMoTensorParallelModel {
         if let recorder { model.observeRoutes { _, indices in recorder.observe(indices) } }
         defer { if recordRoutes { model.observeRoutes(nil) } }
         let outcome = try MiMoTensorParallelDecoding(model: self, routes: recorder).run(
-            .init(prompt: prompt, outputCount: outputCount, chunk: chunk, stopTokenIDs: [], rule: rule, sampler: sampler),
+            .init(prompt: prompt, outputCount: outputCount, chunk: chunk, stopTokenIDs: [], rule: rule, sampler: sampler,
+                  speculation: speculation),
             observe: { step in
                 guard recordTop > 0 else { return }
                 let top = try step.top ?? selection.topK(step.logits, count: recordTop)
@@ -389,6 +413,12 @@ extension MiMoTensorParallelModel {
             })
         result.tokenIDs = outcome.tokens
         result.routeSets = recorder?.sets
+        if let statistics = outcome.statistics {
+            result.speculativeRounds = statistics.rounds
+            result.draftedTokens = statistics.drafted
+            result.acceptedDrafts = statistics.accepted
+            result.acceptedByPosition = statistics.acceptedByPosition
+        }
         result.firstTokenSeconds = outcome.firstTokenSeconds
         result.decodeSeconds = outcome.decodeSeconds
         let state = outcome.caches.flatMap(\.state)

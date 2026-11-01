@@ -1344,7 +1344,15 @@ registered artifact for them.
      with per-rank paged geometry, the selection rules, logprobs (an exactly
      tied maximum included), every stop kind (the owner's stop just before a
      stop token included), the request and load agreements, the request budget
-     and the text-only launch.
+     and the text-only launch;
+   - speculative rounds (`MiMoTensorParallelSpeculativeTests`, a checkpoint with
+     three random trained heads): rounds of the heads' own proposals and of
+     proposals scripted from the one-token path's tokens (every one kept, or
+     every third moved off) equal the one-token path bit for bit, caches
+     included; a stop token inside a window, the owner's stop inside a round
+     (and just before a stop token of the same round), a cancel between rounds
+     and greedy logprobs for every kept column end both ranks together; and
+     exactly tied columns and draft readouts choose the lowest token ID.
 
    `libs/darkbloom-cluster/Tests/PlacementChecks/run.sh` also runs
    `MiMoTensorParallelChecks.swift` (model-free). It builds the layout from the
@@ -1401,6 +1409,17 @@ registered artifact for them.
    It also reports, without requiring anything of it, where `simulated` first
    routes a token to other experts than `full`, over the positions whose inputs
    are still equal (`mimo compare` prints a `route sets:` line).
+
+   A third matrix, `mtp`, runs speculative rounds (`--mtp-depth`) on `kernel`
+   and `tiny` checkpoints with three random trained heads
+   (`mimo synthesize --mtp yes`; the text weights equal the plain variant's).
+   For each prompt (40, 6 and, on `kernel`, 192 tokens) it requires every
+   round run to equal the one-token path bit for bit (tokens, rows and caches):
+   the heads' own proposals (random, so mostly rejected), proposals scripted
+   from the one-token run's tokens (`--mtp-script REPORT`, all kept) and every
+   fifth scripted proposal moved off (`--mtp-misses 5`: accepts, rejects and
+   rollback). Two `tp` ranks over the ring must equal `simulated` for the heads,
+   the misses and a sampled run.
 
    `MIMO_ORACLE_PATHS=paged` runs one matrix.
 

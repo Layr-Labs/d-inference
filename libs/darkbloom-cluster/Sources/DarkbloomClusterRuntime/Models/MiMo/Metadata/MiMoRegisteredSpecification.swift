@@ -62,7 +62,10 @@ struct MiMoRegisteredSpecification {
     /// every layer (all `sourceBytes`) and decodes alone after the other rank
     /// prefilled its share and handed its state over, or serves a request alone.
     /// Whether a Mac can hold every layer is the planner's and the load gate's
-    /// question on the Macs at hand, not this row's.
+    /// question on the Macs at hand, not this row's. Tensor parallel
+    /// (`MiMoTensorParallelResidentRuntime`, text only) is served when a
+    /// launch asks for it; the planner places it only once the placement
+    /// family states tensor-parallel facts, which it does not yet.
     let supportedGenerationModes: [ClusterGenerationMode]
 
     // The earlier fixed reservation every profile started with; the row's
@@ -101,7 +104,7 @@ struct MiMoRegisteredSpecification {
             fullKeyValueHeads: 4, slidingKeyValueHeads: 8, keyWidth: 192, valueWidth: 128,
             declaredContextTokens: 1_048_576,
             supportedPrefillSchedules: [.serial, .oneChunkLookahead],
-            supportedGenerationModes: [.pipeline, .pipelineCompactDecode, .phaseSplit, .pipelineMTP]),
+            supportedGenerationModes: [.pipeline, .pipelineCompactDecode, .phaseSplit, .tensorParallel, .pipelineMTP]),
     ]
 
     static func specification(_ model: MiMoRegisteredModel) throws -> Self {

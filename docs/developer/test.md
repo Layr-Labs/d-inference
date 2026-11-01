@@ -1264,8 +1264,10 @@ neither real-weight numerics, a pair qualification nor speed.
    - the verified load's cut of every text tensor, and its refusals;
    - the load agreement's fields;
    - the product's Gemma layout with its tensor-parallel facts: big Macs keep
-     the pipeline on default link costs, a measured fast link takes tensor
-     parallel, the forced mode places it, and each rank is charged its own heads.
+     the pipeline on default link costs; on a measured fast link tensor
+     parallel is predicted faster on the device index alone and the pipeline is
+     kept, until each rank's share probe lets it be chosen; the forced mode
+     places it; and each rank is charged its own heads.
 
    `libs/darkbloom-cluster/Tests/PlacementChecks/run.sh` also runs
    `GemmaTensorParallelChecks.swift` (model-free). It builds the QAT 4-bit
@@ -1275,10 +1277,15 @@ neither real-weight numerics, a pair qualification nor speed.
    14,915,635,260 bytes), and the rank's reserve (`Gemma4TensorParallelRequestBudget`)
    must be quoted. Under the provider's tensor-parallel-first policy it checks the
    fastest-plan rule on constructed pairs: 2x M5 Ultra 256 GB keeps the pipeline on
-   default link costs; 2x M4 Pro 24 or 32 GB takes tensor parallel where predicted
-   faster; measured links flip the choice both ways. It also pins the device-index
-   prior's choice for 2x M5 Ultra on the measured link: tensor parallel for a
-   128 + 128 request.
+   default link costs. Where tensor parallel is predicted faster on the device
+   index alone (2x M4 Pro 24 or 32 GB, and 2x M5 Ultra for a 128 + 128 request on
+   the measured 29 us link), the pipeline is kept with the verdict
+   `predictedFasterOnPriorOnly`, its plan line and model-list note. Share probes
+   of the model on both Macs (through `ClusterShareProbeHistory`) and requests
+   served in tensor parallel (through `ClusterServedCalibration`) then decide
+   both ways. A probe on one Mac or of another model is no evidence. A kept mode
+   still applies, the forced mode still places tensor parallel, and the same
+   layout without its choice still takes tensor parallel on the prior.
 
    The `Gemma4TensorParallelTests` suite covers:
 
@@ -1354,17 +1361,21 @@ registered artifact for them.
    facts for the image candidate, the same facts in the golden layout, and the
    rank's reserve (`MiMoTensorParallelRequestBudget`) in the quote. Under the
    provider's tensor-parallel-first policy it checks the fastest-plan rule on
-   constructed pairs against the plain pipeline: 2x M5 Max 128 GB takes tensor
-   parallel where predicted faster and keeps the pipeline inside the margin or
-   for long prompts; 2x M5 Ultra 256 GB keeps the pipeline on default link
-   costs; measured links flip the choice both ways. As the provider plans MiMo
-   (the speculative pipeline credited the 1.37x its records measured, a fresh
-   pair's 32,768 + 32,768 request), both pairs keep the speculative pipeline
-   until a load measures the link, take tensor parallel for that request on the
-   measured 29 us link, and keep the pipeline for 8,192 + 128 or on a 109 us
-   link. `provider-swift/Tests/ClusterPlacementChecks/run.sh` checks that the
+   constructed pairs against the plain pipeline: 2x M5 Max 128 GB keeps the
+   pipeline where tensor parallel is predicted faster on the device index alone,
+   inside the margin and for long prompts; 2x M5 Ultra 256 GB keeps the pipeline
+   on default link costs. As the provider plans MiMo (the speculative pipeline
+   credited the 1.37x its records measured, a fresh pair's 32,768 + 32,768
+   request), both pairs keep the speculative pipeline before a load measures the
+   link and on the measured 29 us link, where tensor parallel is predicted faster
+   on the prior alone (`predictedFasterOnPriorOnly`), and for 8,192 + 128 or on a
+   109 us link. Requests served in tensor parallel decide both ways on both
+   pairs. `provider-swift/Tests/ClusterPlacementChecks/run.sh` checks that the
    guided step credits MiMo's rounds from its shipped records and prints the
-   fastest-plan and logprob lines.
+   fastest-plan and logprob lines. Through the guided step it also checks the
+   evidence rule: MiMo on two 256 GB Macs keeps the speculative pipeline with no
+   served record or another build's, and follows this build's served records;
+   Gemma follows both Macs' share probes.
 
 2. Build `darkbloom-cluster-tp-check` and put a source-matched `mlx.metallib`
    beside it ([build](build.md)). Then run the GPU oracles:

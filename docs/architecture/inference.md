@@ -4796,14 +4796,20 @@ Only the commit points move: every kernel, input and rounded value is the
 same. `MiMoDecodeCommandBufferTests` compares residuals, logits rows and every
 cache and page array byte for byte under both limits on synthetic stages.
 
-MLX keeps up to ten command buffers in flight (`MLX_MAX_ACTIVE_TASKS`), so under
-the decode limits a whole stage step can be in flight at once. A request's
-workspace therefore holds every full-attention layer's scores for its decode
-rows at the same time (`MiMoRequestStateBudget.estimate`, `decodeRows`: one row,
-or the verify window's `depth + 1`). It never charges less than one prompt
-frame's scores on one layer. Gathered page views are already charged for every
-layer (`MiMoPagedKVAllowance.pages`). The decode speed effect on the registered
-model is not measured yet.
+MLX keeps up to ten command buffers in flight (`MLX_MAX_ACTIVE_TASKS`) and frees
+a buffer's temporaries when it completes, so under the decode limits a whole
+stage step's temporaries can be alive at once. A request's workspace charge
+therefore prices every full-attention layer's float32 score rows for its decode
+rows together (`MiMoRequestStateBudget.estimate`, `decodeRows`: one row, or the
+verify window's `depth + 1`), and never less than one prompt frame's scores on
+one layer. Gathered page views are already charged for every layer
+(`MiMoPagedKVAllowance.pages`). A verify window of three or four rows takes
+MLX's unfused path, which builds those scores in bfloat16. One or two rows take
+its fused vector attention instead, whose
+float32 partials on Max and Ultra GPUs (`sdpa_vector_2pass` in
+`libs/mlx-swift/Source/Cmlx/mlx/mlx/backend/metal/scaled_dot_product_attention.cpp`)
+can exceed a score row and are not priced separately. The decode speed effect
+and peak memory on the registered model are not measured yet.
 
 ### MiMo routed experts in placement
 

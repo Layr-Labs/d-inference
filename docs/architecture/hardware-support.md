@@ -1050,9 +1050,9 @@ attention views and sliding repack storage. Keys and values are priced with
 their distinct registered widths. Host prompt/selected-token histories and
 shared native decode workspace remain additional. Both MTP target ranks price
 the larger of the prompt chunk and the admitted `depth + 1` verification window.
-Every MiMo rank's workspace also holds each of its full-attention layers'
-scores for the decode rows at once, because decode command buffers keep a
-whole step in flight (`MiMoRequestStateBudget`, `decodeRows`;
+Every MiMo rank's workspace charge also prices each of its full-attention
+layers' score rows for the decode rows at once, because decode command buffers
+can keep a whole step in flight (`MiMoRequestStateBudget`, `decodeRows`;
 [MiMo pipeline decode command buffers](inference.md#mimo-pipeline-decode-command-buffers)).
 The trained assistant preserves its whole previous allocation envelope and adds
 separately rounded resident and working pages. Phase rank 1 prices every target

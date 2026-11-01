@@ -803,7 +803,7 @@ final class EndpointBox: @unchecked Sendable {
     /// Both installed and member serving derive their profile through the same
     /// selected-mode initializer; a pipeline must not inherit GLM TP capture.
     static func logprobModeAdmission(_ f: InstalledFixture) throws {
-        for adapter in [ClusterRuntimeAdapter.qwen35Dense, .glm5NextLayerStage] {
+        for adapter in [ClusterRuntimeAdapter.qwen35Dense, .glm5NextLayerStage, .gemma4LayerStage] {
             let registered = adapter.registeredProfiles[0]
             for mode in [ClusterGenerationMode.pipeline, .tensorParallel] {
                 let fixture = try InstalledFixture.make(root: f.root.appendingPathComponent("logprobs-\(adapter.rawValue)-\(mode.rawValue)"),
@@ -817,8 +817,8 @@ final class EndpointBox: @unchecked Sendable {
                 let memberProfile = try DistributedResidentExecutionProfile(capability: prepared.plan.capability,
                     generationMode: prepared.plan.configuration.selectedGenerationMode,
                     requestTimeout: .seconds(prepared.plan.configuration.requestTimeoutSeconds))
-                // GLM and every Qwen TP row capture logprobs in tensor parallel; no pipeline does.
-                let supported = mode == .tensorParallel && (adapter == .glm5NextLayerStage
+                // GLM, Gemma 4 and every Qwen TP row capture logprobs in tensor parallel; no pipeline does.
+                let supported = mode == .tensorParallel && (adapter == .glm5NextLayerStage || adapter == .gemma4LayerStage
                     || adapter.servesQwenTensorLanes(runtimeModelID: registered.runtimeModelID))
                 try require(installed.profile.supportsLogprobs == supported && memberProfile.supportsLogprobs == supported,
                     "logprob support did not follow the installed adapter and selected mode")

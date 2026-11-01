@@ -182,10 +182,13 @@ actor NemotronSuperLocalBinding {
         await withTaskCancellationHandler {
             let stream = await bridge.submitTokenized(
                 promptTokens: tokens, request: request, requestId: requestID,
-                cacheScope: cacheScope ?? "", cacheEnabled: cacheScope != nil, logprobsChannel: logprobs,
+                cacheScope: cacheScope ?? "", cacheEnabled: cacheScope != nil,
                 usageSignal: usage, donationDemand: donationDemand)
             for await event in stream {
                 if Task.isCancelled { break }
+                // The bridge yields a delta's entries just before its text;
+                // they leave on the request's channel in that order.
+                if case .logprobs(let entries) = event { logprobs?.append(entries); continue }
                 await onEvent(event)
             }
             if Task.isCancelled { await bridge.cancel(requestId: requestID) }

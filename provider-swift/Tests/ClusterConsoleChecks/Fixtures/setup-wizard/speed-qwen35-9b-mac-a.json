@@ -1,0 +1,20 @@
+{
+ "chunkTokens": 512,
+ "key": {
+  "artifactSHA256": "127de76b4ef82b7aaa0acaac0ee31c784cff066eda64291f521f051469b7c24b",
+  "chip": "Apple M3 Ultra",
+  "osBuild": "26B5091g",
+  "probe": "recorded_solo_whole_model_prompt8192_chunk512_out128",
+  "runtimeBinarySHA256": "7eb539c49bbae133c66cc755749c8a6014227aefef8d1517bb66278961c5b7b4"
+ },
+ "layerCount": 32,
+ "measuredUTC": "2026-10-09T03:30:00Z",
+ "probedLayers": 32,
+ "promptTokens": 8192,
+ "provenance": "Mac A alone in the G2 session, cluster runtime reference at 8,192 prompt tokens: prefill 971, decode 60 to 65 (handoff/HANDOFF.md, gate G2). No repeated-request run",
+ "rested": {
+  "decodeTokensPerSecond": 62.5,
+  "prefillTokensPerSecond": 971
+ },
+ "schema": "darkbloom_cluster_speed_measurement_v1"
+}

@@ -110,8 +110,9 @@ struct Qwen35CheckpointRetentionLiveTests {
         }
     }
 
-    /// A ~6.2k donor with the same fork hint: 4,096 is one 2,048 chunk
-    /// below its 6,144 deepest, is kept beside the first and the deepest.
+    /// A donor whose last full 2,048 chunk ends at 6,144, with the same fork
+    /// hint: 4,096 is kept beside the first and the deepest, the end-of-prompt
+    /// boundary above that chunk end.
     @Test("a fork target one 2,048 chunk below the deepest is kept",
           .timeLimit(.minutes(10)), .enabled(if: enabled))
     func targetOneChunkBelowDeepestIsKept() async throws {
@@ -127,7 +128,12 @@ struct Qwen35CheckpointRetentionLiveTests {
             try await requireQwen35CheckpointIdle(bridge)
             await store.waitForWritesForTesting()
             let kept = try fixture.positions(scope: "tenant-b", prefixOf: tokens)
-            #expect(kept.positions == [2_048, 4_096, 6_144], "the demanded fork and deepest serve different continuations")
+            // `CBv2SchedulerConfig.demandedLatestPromptEndMarginTokens`; the
+            // cut saves at least the 1,024-token floor over the 6,144 chunk end.
+            let promptEndMargin = 64
+            let latest = (tokens.count - 1 - promptEndMargin) / PrefixCachePolicy.blockSize * PrefixCachePolicy.blockSize
+            try #require(latest - 6_144 >= 1_024, "fixture geometry: donor \(tokens.count) tokens")
+            #expect(kept.positions == [2_048, 4_096, latest], "the demanded fork and deepest serve different continuations")
             #expect(store.stats().filesWritten == 3)
             print("[qwen35-retention-adjacent] prompt=\(tokens.count) hint=5120 positions=\(kept.positions) "
                 + "tensorBytes=\(kept.bytes) bytesWritten=\(store.stats().bytesWritten) mtp=\(fixture.mtpActive)")

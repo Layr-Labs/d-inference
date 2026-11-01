@@ -80,8 +80,9 @@ public func checkSIPEnabled(runner: SecurityCommandRunner = .live) -> Bool {
 /// RDMA over Thunderbolt exposes IOMMU-mapped memory regions registered by
 /// the RDMA runtime. It is allowed for RDMA-aware provider modes, but must be
 /// reported truthfully so the coordinator can apply the correct routing policy.
-/// Enabling RDMA requires booting into Recovery OS and running
-/// `rdma_ctl enable`.
+/// Enabling RDMA is Apple's System Settings switch from macOS 27 (Privacy &
+/// Security, after a restart); before that it requires booting into Recovery
+/// OS and running `rdma_ctl enable`.
 ///
 /// Returns true if RDMA is disabled (safe) or if rdma_ctl is not
 /// available (older macOS without RDMA support).

@@ -34,7 +34,8 @@ extension ModelDownloader {
         cacheDir: URL,
         activate: Bool = true
     ) throws {
-        let aggregate = WeightHasher.hashFilesWithRelativeKey(jobs.map { (file: $0.destination, sortKey: $0.file.path) })
+        let keyed = jobs.map { (file: $0.destination, sortKey: $0.file.path) }
+        let aggregate = uncachedWrites ? Self.aggregateUncached(keyed) : WeightHasher.hashFilesWithRelativeKey(keyed)
         guard aggregate == manifest.aggregateSHA256 else {
             try? FileManager.default.removeItem(at: stagingDir)
             throw ModelCatalogError.downloadFailed("aggregate hash mismatch for \(model.id)")

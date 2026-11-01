@@ -1227,6 +1227,47 @@ not load a model or qualify its output. Sources:
 The [routed-expert TP architecture](../architecture/inference.md#qwen35-routed-expert-tensor-parallel)
 states the arithmetic descriptor and supported scope.
 
+## Focused Gemma 4 tensor-parallel checks
+
+These checks use synthetic weights on one Mac, over loopback only. They prove
+neither real-weight numerics, a pair qualification nor speed.
+
+1. Run the model-free plan check (no MLX; it compiles in seconds) and the CPU
+   unit tests:
+
+   ```bash
+   bash libs/darkbloom-cluster/Tests/TensorParallelPlanChecks/gemma-run.sh
+   swift test --package-path libs/darkbloom-cluster --filter Gemma4TensorParallelTests
+   ```
+
+   The plan check covers both registered artifacts' text tensors once per rank
+   and matches their registered text bytes. The unit tests cover:
+
+   - the plan against the registered QAT 4-bit artifact's 1,697 header shapes
+     (`Tests/StageMetadataChecks/Inputs`), and the 8-bit artifact's derived shapes
+     and registered text bytes;
+   - refusals of unknown, misaligned and vision tensors;
+   - shard parameters against independent slices;
+   - two in-process ranks against the split-sum oracle, bit for bit;
+   - the packed feed-forward collective against separate collectives;
+   - the vocabulary-split head against the whole head.
+
+2. Build `darkbloom-cluster-tp-check` and put a source-matched `mlx.metallib`
+   beside it ([build](build.md)). Then run the GPU oracles:
+
+   ```bash
+   bash libs/darkbloom-cluster-worker/Tests/GemmaTensorParallelOracles/run.sh \
+     /path/to/darkbloom-cluster-tp-check /new/scratch/dir 58123
+   ```
+
+   The script synthesizes five variants: 4- and 8-bit, routed and all-expert,
+   and FP32. For each, it runs `full`, `split-sum`, `simulated` and two `tp`
+   ranks over the sealed local ring on ports 58123–58124.
+
+3. Verify. Each `tp` rank must equal `simulated` bit for bit (exit status 0).
+   The script also prints QualificationComparator's verdict for each rank
+   against `full`.
+
 ## Focused Tooling Checks
 
 For the PR reviewer, run the seven offline suites listed in

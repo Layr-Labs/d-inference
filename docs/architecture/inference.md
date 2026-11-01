@@ -4027,9 +4027,65 @@ Code: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Reside
 `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/TensorParallel/QwenTensorParallelPlan.swift`,
 `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/TensorParallel/QwenTensorParallelLinear.swift`,
 `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/TensorParallel/QwenTensorParallelResidentRuntime.swift`,
-`libs/mlx-swift-lm/Libraries/MLXLMCommon/Qwen35TensorParallelSwitchLinear.swift`,
+`libs/mlx-swift-lm/Libraries/MLXLMCommon/TensorParallelSwitchLinear.swift`
+(`TensorParallelSwitchLinear`, still also named `Qwen35TensorParallelSwitchLinear`),
 `libs/mlx-swift-lm/Libraries/MLXLLM/Models/Qwen35.swift` (`Qwen35SparseMoeBlock`).
 See [focused cluster tests](../developer/test.md#focused-qwen35-moe-tensor-parallel-checks).
+
+## Gemma 4 tensor-parallel foundation
+
+Gemma 4 26B A4B (`gemma-4-26b-qat-4bit`, `gemma-4-26b-8bit`) has a two-rank
+tensor-parallel plan, SDK hooks and one-Mac oracles. Nothing serves it yet:
+`Gemma4ResidentAdapterDefinition` still advertises only the pipeline, and no
+placement family states tensor-parallel facts.
+
+`Gemma4TensorParallelPlan` (`gemma4_heads_and_expert_channels_v1`) gives every
+stored text tensor of both registered artifacts one cut and refuses unknown,
+misaligned, untied-head and vision tensors:
+
+| Part | Cut per rank | Collective |
+|---|---|---|
+| `q_proj`, `k_proj`, sliding `v_proj` | Rows of 8 query heads and their KV heads (4 sliding, 1 full); full layers keep K=V | — |
+| `o_proj` | Input columns of those heads | FP32 partial summed before `post_attention_layernorm` |
+| Dense MLP (2,112 = 33 groups) and every expert (704 = 11 groups) | Gate/up rows of half the channels; down input columns widened to whole groups | One packed collective per layer: every selected expert's FP32 row and the dense row, each summed before rounding, router weighting and its branch's post-norm |
+| Router, norms, `layer_scalar`, embedding | Replicated | — |
+| Tied head | This rank's half of the vocabulary rows (views of the embedding) | One per selection |
+
+An odd group count cannot split evenly, so both ranks store the middle group.
+Each rank's gate and up projections carry zero rows (zero words, scales and
+offsets) for the other rank's half of that group. Those channels are exactly
+zero, the shared down columns add nothing on the rank that does not own them,
+and both ranks hold 1,088 dense and 384 expert channels: equal shares.
+A layer issues two collectives and a decode step 61.
+
+`Gemma4TensorShard` builds each rank from the SDK's own modules with half the
+heads and the local widths. `Gemma4TextModel.installTensorParallel` then sets
+three things: the `o_proj` sum, the packed feed-forward
+(`TensorParallelSwitchLinear.carrying`, generalized from Qwen's), and the
+vocabulary-split head. A model without it runs the unchanged single-Mac path.
+`Gemma4TensorParallelSelection` chooses across ranks:
+
+- greedy: a two-value argmax collective;
+- keyed sampling: the whole row's Gumbel-max token under a shared key, through the same collective;
+- top-k logits and log probabilities: one gather of each rank's top-k and log-sum-exp;
+- the whole row: `-0` padding, every bit kept, so the product's sampler draws the single-Mac token on every rank.
+
+Oracles run on synthetic checkpoints with the 26B's structure scaled down:
+
+- `simulated`: both real shards in one process, summing FP32 partials. Two
+  ranks over the sealed loopback ring equal it bit for bit.
+- `split-sum`: the whole model with each row-parallel projection replaced by
+  two FP32 partials. It is the decomposition's oracle, bitwise equal to the
+  ranks on the CPU. On an M5 Ultra GPU, a 1,024-row full-attention `k_proj` at
+  prefill width rounds some rows unlike its 512-row half.
+
+Code map:
+
+- `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Gemma4/TensorParallel/`
+- `libs/mlx-swift-lm/Libraries/MLXLLM/Models/Gemma4TensorParallel.swift`
+- `libs/darkbloom-cluster-worker/Sources/TensorParallelCheck/GemmaCheck.swift`
+
+See [focused Gemma 4 tensor-parallel checks](../developer/test.md#focused-gemma-4-tensor-parallel-checks).
 
 ## Exact-quote placement
 

@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-10-31
+> Last updated: 2026-11-01
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -5184,6 +5184,23 @@ Sources: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Ten
 (`requireWithinMemoryProfile`) and
 `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/State/CBv2OwnedRequestState.swift`
 (`growReservation`).
+
+### Qwen27 tensor-parallel prompt-prefix depth
+
+A plain Qwen tensor-parallel lane keeps prompt-prefix boundaries to its request's
+context on its own 512-token chunk grid, not to a fixed 4,096 tokens: the
+deepest whole chunk before the final token, a boundary 64 tokens before the
+prompt end for the next turn, and one Mac's 4,096-token stripe boundaries for
+a shared system prompt (`QwenTensorParallelBatchPrefixBudget`, policy
+`qwen-tp-batch-prefix-depth-v2`, which the load agreement binds). A repeated
+33K-token prompt restores 32,768 tokens on both ranks, as one Mac reuses; the
+restored request computes exactly what a cold one computes on the same grid.
+The mechanism, the parity cases and the SSD records are in
+[the Qwen27 TP prefixes](prefix-cache.md#qwen27-tp-prefix-ssd-tier) and the
+section before it; the memory each request and LOAD charge is in
+[Qwen27 TP batch prefix ownership](hardware-support.md#qwen27-tp-batch-prefix-ownership).
+The assistant's lanes keep one boundary of at most 4,096 tokens
+([assistant prefix ownership](prefix-cache.md#qwen27-tp-assistant-prefix-ownership)).
 
 ### Qwen27 cluster media ingress ownership
 

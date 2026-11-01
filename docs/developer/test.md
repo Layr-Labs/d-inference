@@ -1,6 +1,6 @@
 # Test Provider And Native Contracts
 
-> Last updated: 2026-10-31
+> Last updated: 2026-11-01
 
 Run isolated Swift, native-resource, public-fixture and landing tests here.
 Backend integration and cross-implementation qualification are platform-owned.
@@ -2399,7 +2399,17 @@ separate hardware gates.
 ### Qwen27 TP warm-prefix checks
 
 `QwenTensorParallelBatchPrefixTests` checks original-grid boundaries, bilateral
-misses, media/key isolation, allocator rounding and bounded LRU eviction. The
+misses, media/key isolation, allocator rounding and bounded LRU eviction. It
+also checks, for every prompt from 1,100 to 70,000 tokens, that the kept
+boundaries reuse at least one Mac's reuse rounded to the 512-token grid (a
+repeat, the next turn, a shared system prompt). It checks each request's
+charge, LOAD's one capture per lane, the shared-copy eviction order, the
+memory tier giving way before a refusing gate, and that a record of another
+prefix policy is in another scope. On the GPU (`QWEN_TP_BATCH_GPU=1`),
+`QwenTensorParallelPrefixDepthTests` restores a 33,000-token prompt's
+boundaries at 32,768, 32,256, 16,384 and 8,192 on two synthetic hybrid
+shards and compares the final logits and every attention, convolution and SSM
+array with a cold prefill on the same grid, byte for byte, on both ranks. The
 real-shard `QwenTensorParallelBatchSessionTests` compares cold and restored
 outputs plus attention/conv/SSM state at widths 2, 4 and 8, mixed positions,
 reordered decode and one-sided cache loss. Run it with both contiguous and

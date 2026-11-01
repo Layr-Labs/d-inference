@@ -1260,7 +1260,7 @@ neither real-weight numerics, a pair qualification nor speed.
    - the share probe, timed on one rank with every sum local;
    - each step's choice: greedy with both stop flags, sampled from the gathered
      row exactly as the product's sampler draws, and greedy logprobs from the
-     split top-k;
+     split top-k, also at an exactly tied maximum whose other ID leads the gather;
    - the verified load's cut of every text tensor, and its refusals;
    - the load agreement's fields;
    - the product's Gemma layout with its tensor-parallel facts: big Macs keep

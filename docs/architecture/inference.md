@@ -4130,7 +4130,11 @@ stops, cancellations and retirements.
   - sampled: the whole row gathered to every rank, rank 0's draw with the
     product's sampler, and one small collective for the token and flags;
   - logprobs: a greedy request's from the vocabulary-split top-k gather, a
-    sampled request's from the product's sampler on rank 0.
+    sampled request's from the product's sampler on rank 0. The greedy
+    token's logit is the row's maximum, agreed with the token, so its logprob
+    is the gather's first even when an exactly tied ID leads the gather (which
+    of a rank's tied IDs the partition keeps is not the argmax's rule). A
+    gather that does not lead with that logit is refused on both ranks.
 
   A stop on either rank (cancel, deadline, memory, the owner's stop, pages
   that could not grow) ends both after the same step

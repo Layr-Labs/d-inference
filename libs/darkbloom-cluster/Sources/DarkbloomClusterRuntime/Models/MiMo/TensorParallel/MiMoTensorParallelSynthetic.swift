@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import MLX
 import MLXLLM
@@ -121,5 +122,30 @@ extension MiMoTensorParallelModel {
                                     "weight_map": Dictionary(uniqueKeysWithValues: arrays.keys.map { ($0, "model.safetensors") })]
         try JSONSerialization.data(withJSONObject: index, options: [.sortedKeys, .prettyPrinted])
             .write(to: directory.appendingPathComponent("model.safetensors.index.json"))
+        try writeSyntheticManifest(directory: directory,
+                                   files: ["config.json", "model.safetensors", "model.safetensors.index.json"])
+    }
+
+    /// `manifest.json` over `files` as a published artifact's (each file's
+    /// SHA-256 and size; the aggregate is the SHA-256 of the digests in path
+    /// order), so a verified load hashes the synthetic checkpoint first.
+    /// Returns the aggregate.
+    @discardableResult
+    static func writeSyntheticManifest(directory: URL, files: [String]) throws -> String {
+        var entries: [[String: Any]] = [], aggregate = SHA256(), total = 0
+        for path in files.sorted() {
+            let data = try Data(contentsOf: directory.appendingPathComponent(path))
+            let digest = SHA256.hash(data: data)
+            digest.withUnsafeBytes { aggregate.update(bufferPointer: $0) }
+            entries.append(["path": path, "sha256": digest.map { String(format: "%02x", $0) }.joined(),
+                            "size_bytes": data.count])
+            total += data.count
+        }
+        let hex = aggregate.finalize().map { String(format: "%02x", $0) }.joined()
+        let manifest: [String: Any] = ["aggregate_sha256": hex, "file_count": entries.count,
+                                       "total_size_bytes": total, "files": entries]
+        try JSONSerialization.data(withJSONObject: manifest, options: [.sortedKeys, .prettyPrinted])
+            .write(to: directory.appendingPathComponent("manifest.json"))
+        return hex
     }
 }

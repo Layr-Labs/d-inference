@@ -66,10 +66,21 @@ public final class MiMoTensorParallelModel {
         }
     }
 
+    /// What `assemble`'s tensors hand to `keep`.
+    enum Parts {
+        /// Every stored tensor whole; `keep` cuts this rank's part.
+        case whole
+        /// Only this rank's part of each tensor, already cut where the plan
+        /// divides it (`MiMoTensorParallelVerifiedLoad`): checked, never cut.
+        case rankParts
+    }
+
     /// The model of `role` from a configuration and its stored tensors:
     /// `tensors` hands every stored tensor (by indexed name) to `keep`, which
-    /// cuts this rank's part and materializes it at once.
+    /// cuts this rank's part (or checks a part already cut) and materializes
+    /// it at once.
     static func assemble(configurationData: Data, role: Role, reduction: QwenTensorParallelReduction?,
+                         parts: Parts = .whole,
                          tensors: (_ keep: (String, MLXArray) throws -> Void) throws -> Void) throws
         -> MiMoTensorParallelModel {
         let started = DispatchTime.now().uptimeNanoseconds
@@ -111,18 +122,28 @@ public final class MiMoTensorParallelModel {
             if case .excluded = try plan.disposition(of: key) { return }
             let local = String(key.dropFirst(MiMoTensorParallelPlan.textNamespace.count))
             guard weights[local] == nil else { throw ProbeError("MiMo tensor parallel load: \(key) was given twice") }
-            guard try plan.expectedShape(key: key) == value.shape else {
-                throw ProbeError("MiMo tensor parallel load: \(key) has shape \(value.shape), not the plan's")
-            }
+            let stored = try plan.expectedShape(key: key)
             let axis = try plan.cut(key: key)
             guard try MiMoV26TensorShard.splitAxis(local) == axis else {
                 throw ProbeError("MiMo tensor parallel load: the plan and the SDK cut \(key) differently")
             }
             var part = value
-            if let shard {
+            switch (parts, shard) {
+            case (.rankParts, .some):
+                guard value.shape == (try plan.localShape(key: key, shape: stored)) else {
+                    throw ProbeError("MiMo tensor parallel load: \(key)'s part has shape \(value.shape), not the plan's")
+                }
+            case (_, let shard?):
+                guard stored == value.shape else {
+                    throw ProbeError("MiMo tensor parallel load: \(key) has shape \(value.shape), not the plan's")
+                }
                 part = try shard.slice(value, axis: axis)
                 guard part.shape == (try plan.localShape(key: key, shape: value.shape)) else {
                     throw ProbeError("MiMo tensor parallel load: \(key) cut to \(part.shape), not the plan's")
+                }
+            case (_, nil):
+                guard stored == value.shape else {
+                    throw ProbeError("MiMo tensor parallel load: \(key) has shape \(value.shape), not the plan's")
                 }
             }
             // Materialize each part now: the stored tensor is released before the next read.

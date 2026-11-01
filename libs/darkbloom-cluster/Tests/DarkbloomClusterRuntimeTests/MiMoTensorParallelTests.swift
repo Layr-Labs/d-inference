@@ -459,7 +459,7 @@ struct MiMoTensorParallelTests {
             let pair = Pair()
             let rank = try MiMoTensorParallelModel.load(modelDirectory: directory, role: .shard(rank: 1),
                                                         reduction: pair.reduction(rank: 1))
-            // Paged, CBv2 and MTP owners require the whole vocabulary's readout.
+            // CBv2 and MTP owners require the whole vocabulary's readout.
             #expect(throws: (any Error).self) { try MiMoV26CBv2Adapter(target: rank.model) }
             #expect(throws: (any Error).self) {
                 try MiMoTensorParallelModel.load(modelDirectory: directory, role: .shard(rank: 1), reduction: nil)

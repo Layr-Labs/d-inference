@@ -12,9 +12,14 @@ import MLX
 //       and the 16-token chunk) and request-short.json (6 tokens, shorter than both), 64 outputs each
 //   darkbloom-cluster-tp-check mimo run --mode full|simulated|shard|tp --model-dir DIR --request FILE --report FILE
 //       [--record-top K] [--backend ring|socket|jaccl] [--reduction native|sealed-bench] [--shard-rank R]
-//       [--deadline-seconds S] [--temperature T [--sample-seed S]]
+//       [--deadline-seconds S] [--temperature T [--sample-seed S]] [--path contiguous|paged]
+//       [--agreement-tamper yes]
 //       greedy, or with --temperature the product's sampler (MLXRandom.categorical, key seed + step) over the
-//       whole row, which every rank gathers bit for bit
+//       whole row, which every rank gathers bit for bit. `--path paged` is the resident runtime's path: the
+//       verified load (the manifest first, then only this rank's byte runs), paged KV, the per-step
+//       agreement sum, 100-op decode buffers, greedy logprobs through the split top-k gather and sampling
+//       with the product's QwenStageTokenSampler over the gathered row. `--agreement-tamper yes` changes this
+//       rank's agreement (a tp rank must then refuse before loading).
 //   darkbloom-cluster-tp-check mimo compare --reference FILE --candidate FILE [--bitwise yes|no] [--near-tie-ulps U]
 //   darkbloom-cluster-tp-check mimo allsum [--backend ring|socket|jaccl] [--count N]
 //
@@ -72,6 +77,11 @@ enum MiMoCheck {
         var decodeSeconds: Double
         var ranksAgree: Bool?
         var passed: Bool
+        /// `paged`: the resident runtime's path, read through the verified load.
+        var path: String?
+        var verifiedAggregateSHA256: String?
+        var readBytes: Int?
+        var textBytes: Int?
     }
 
     static func run(_ arguments: [String]) throws {
@@ -128,12 +138,15 @@ enum MiMoCheck {
               let deadline = Int(fields["--deadline-seconds"] ?? "900"), (30 ... 7200).contains(deadline),
               ["native", "sealed-bench"].contains(fields["--reduction"] ?? "native"),
               fields["--temperature"].map({ Float($0).map { $0.isFinite && $0 > 0 } ?? false }) ?? true,
-              fields["--sample-seed"].map({ UInt64($0) != nil }) ?? true else {
+              fields["--sample-seed"].map({ UInt64($0) != nil }) ?? true,
+              ["contiguous", "paged"].contains(fields["--path"] ?? "contiguous"),
+              (fields["--agreement-tamper"] ?? "no") == "no" || (fields["--agreement-tamper"] == "yes" && fields["--mode"] == "tp") else {
             throw Failure("mimo run needs --mode full|simulated|shard|tp, --model-dir, --request, a new --report and bounded options")
         }
         let sampling = fields["--temperature"].map {
             MiMoTensorParallelModel.Sampling(temperature: Float($0)!, seed: UInt64(fields["--sample-seed"] ?? "1")!)
         }
+        let paged = fields["--path"] == "paged"
         let sealed = (fields["--reduction"] ?? "native") == "sealed-bench"
         guard !sealed || mode == "tp" else { throw Failure("--reduction sealed-bench applies to a tp rank only") }
         try ProcessForcedExit.routeTerminationSignals()
@@ -176,7 +189,13 @@ enum MiMoCheck {
             reduction = g
             note("rank \(g.rank) of \(g.size) over \(backend.rawValue)\(backend.correctnessOnly ? " (correctness only, not a pair timing)" : "")")
             // Everything that changes the collectives is agreed before loading.
-            let workload = "\(configurationSHA)|\(request.promptTokenIDsSHA256)|\(request.outputCount)|\(request.chunkSize)|top=\(recordTop)|sealed=\(sealed)|sampling=\(sampling.map { "\($0.temperature.bitPattern):\($0.seed)" } ?? "greedy")|\(plan.fingerprint)"
+            var workload = "\(configurationSHA)|\(request.promptTokenIDsSHA256)|\(request.outputCount)|\(request.chunkSize)|top=\(recordTop)|sealed=\(sealed)|sampling=\(sampling.map { "\($0.temperature.bitPattern):\($0.seed)" } ?? "greedy")|\(plan.fingerprint)"
+            if paged {
+                // The resident runtime's load agreement: the plan, its arithmetic and the serving contract.
+                workload += "|" + (MiMoTensorParallelPlan.arithmeticAgreementFields
+                    + MiMoTensorParallelResidentRuntime.servingAgreementFields(chunkTokens: request.chunkSize)).joined(separator: "|")
+            }
+            if fields["--agreement-tamper"] == "yes" { workload += "|tampered-on-rank-\(g.rank)" }
             guard try g.digestsEqual(fnv(workload)) else {
                 throw Failure("the ranks disagree on the workload, the model configuration or the arithmetic contract")
             }
@@ -189,8 +208,15 @@ enum MiMoCheck {
                 note("sealed all-sum installed (BENCH keys: unauthenticated ephemeral exchange; cost measurement only)")
             }
         }
-        note("loading \(mode == "simulated" ? "both ranks in one process" : role.label)")
-        let model = try MiMoTensorParallelModel.load(modelDirectory: modelDirectory, role: role, reduction: reduction)
+        note("loading \(mode == "simulated" ? "both ranks in one process" : role.label)\(paged ? " (verified, this rank's byte runs)" : "")")
+        var verified: (aggregate: String, readBytes: Int, textBytes: Int)?
+        func load(_ role: MiMoTensorParallelModel.Role, _ reduction: QwenTensorParallelReduction?) throws -> MiMoTensorParallelModel {
+            guard paged else { return try MiMoTensorParallelModel.load(modelDirectory: modelDirectory, role: role, reduction: reduction) }
+            let value = try MiMoTensorParallelModel.loadVerified(modelDirectory: modelDirectory, role: role, reduction: reduction)
+            if verified == nil { verified = (value.aggregateSHA256, value.readBytes, value.textBytes) }
+            return value.model
+        }
+        let model = try load(role, reduction)
         note("loaded in \(String(format: "%.2f", model.loadSeconds)) s, \(model.loadedParameterBytes) parameter bytes")
         if let group { guard try group.agree([7]) else { throw Failure("load barrier failed") } }
         let generation: MiMoTensorParallelModel.Generation
@@ -198,12 +224,13 @@ enum MiMoCheck {
         var pairAgrees: Bool?
         if let pair {
             final class Ranks: @unchecked Sendable { let models: [MiMoTensorParallelModel]; init(_ m: [MiMoTensorParallelModel]) { models = m } }
-            let ranks = Ranks([model, try MiMoTensorParallelModel.load(modelDirectory: modelDirectory,
-                role: .shard(rank: 1), reduction: pair.reduction(rank: 1))])
+            let ranks = Ranks([model, try load(.shard(rank: 1), pair.reduction(rank: 1))])
             let prompt = request.promptTokenIDs, count = request.outputCount, chunk = request.chunkSize
             let both = try Gemma4TensorParallelLocalPair.run(device: Device.defaultDevice()) { rank in
-                try ranks.models[rank].generate(prompt: prompt, outputCount: count, chunk: chunk, recordTop: recordTop,
-                                                sampling: sampling)
+                paged ? try ranks.models[rank].generatePaged(prompt: prompt, outputCount: count, chunk: chunk,
+                                                             recordTop: recordTop, sampling: sampling)
+                    : try ranks.models[rank].generate(prompt: prompt, outputCount: count, chunk: chunk,
+                                                      recordTop: recordTop, sampling: sampling)
             }
             func bits(_ rows: [[Float]]) -> [[UInt32]] { rows.map { $0.map(\.bitPattern) } }
             pairAgrees = both[0].tokenIDs == both[1].tokenIDs && bits(both[0].topLogits) == bits(both[1].topLogits)
@@ -212,8 +239,11 @@ enum MiMoCheck {
             generation = both[0]
             caches = both.map(\.cacheSHA256)
         } else {
-            generation = try model.generate(prompt: request.promptTokenIDs, outputCount: request.outputCount,
-                                            chunk: request.chunkSize, recordTop: recordTop, sampling: sampling)
+            generation = paged
+                ? try model.generatePaged(prompt: request.promptTokenIDs, outputCount: request.outputCount,
+                                          chunk: request.chunkSize, recordTop: recordTop, sampling: sampling)
+                : try model.generate(prompt: request.promptTokenIDs, outputCount: request.outputCount,
+                                     chunk: request.chunkSize, recordTop: recordTop, sampling: sampling)
             switch role {
             case .full: caches = [generation.cacheSHA256]
             case .shard(let rank): caches = (0 ..< 2).map { $0 == rank ? generation.cacheSHA256 : nil }
@@ -236,7 +266,8 @@ enum MiMoCheck {
             topLogprobs: recordTop > 0 ? generation.topLogprobs : nil,
             stepRowSHA256: recordTop > 0 ? generation.stepRowSHA256 : nil, finalLogits: generation.finalLogits,
             cacheSHA256: caches, firstTokenSeconds: generation.firstTokenSeconds, decodeSeconds: generation.decodeSeconds,
-            ranksAgree: pairAgrees, passed: pairAgrees ?? true)
+            ranksAgree: pairAgrees, passed: pairAgrees ?? true, path: paged ? "paged" : nil,
+            verifiedAggregateSHA256: verified?.aggregate, readBytes: verified?.readBytes, textBytes: verified?.textBytes)
         if let group {
             // Ranks hold different caches; they must agree on everything else.
             let evidence = report.tokenIDsSHA256 + "|" + (generation.stepRowSHA256.last ?? "")

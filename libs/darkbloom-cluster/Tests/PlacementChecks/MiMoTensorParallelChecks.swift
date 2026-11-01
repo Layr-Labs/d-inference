@@ -113,9 +113,10 @@ private func checkMiMoRounds(_ priced: ClusterModelLayout, rounds: ClusterModelL
         try ClusterPlacementPlanner.evaluate(devices: maxes, cuts: [41], mode: .pipeline, prefillSchedule: .serial, layout: rounds,
             policy: ClusterPlacementPolicy(), link: link) == ClusterPlacementPlanner.evaluate(devices: maxes, cuts: [41],
                 mode: .pipeline, prefillSchedule: .serial, layout: priced, policy: ClusterPlacementPolicy(), link: link))
-    checks.require("mimo rounds: the layout's description says the rounds and their charge",
-        ClusterPlacementExplanation.layout(rounds).contains { $0.contains("speculative rounds of up to 2 proposals") }
-            && !ClusterPlacementExplanation.layout(priced).contains { $0.contains("speculative rounds of up to") })
+    checks.require("mimo rounds: the layout's description says the rounds, their charge and that decode is credited nothing until measured",
+        ClusterPlacementExplanation.layout(rounds).contains {
+            $0.contains("speculative rounds of up to 2 proposals") && $0.hasSuffix("credited nothing over one token per step until the rounds are measured.")
+        } && !ClusterPlacementExplanation.layout(priced).contains { $0.contains("speculative rounds of up to") })
 }
 
 /// What one rank holds of a layout's tensor-parallel facts: every part's

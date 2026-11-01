@@ -32,6 +32,20 @@ public struct SSDHybridCheckpointStats: Sendable {
     /// written a file; geometry (non-contiguous, overrun), preemption and
     /// media disarms are not counted.
     public var recurrentCaptureDisarmedPacked = 0
+    /// Speculative first-sight checkpoints (`cache_first_sight_tokens`).
+    /// Local counts only; the coordinator sees ordinary donation outcomes.
+    public var speculativeFilesWritten = 0
+    public var speculativeBytesWritten = 0
+    /// Admitted by the coordinator but refused here: the speculative lane was
+    /// full, the speculative allowance was spent or paused, or the disk
+    /// budget had no room without evicting another entry.
+    public var speculativeRefusedBusy = 0
+    public var speculativeRefusedBudget = 0
+    public var speculativeRefusedDisk = 0
+    /// Withdrawn after a concurrent write left the disk budget exceeded.
+    public var speculativeWithdrawn = 0
+    /// Speculative jobs a proven donation of the same checkpoint promoted.
+    public var speculativePromoted = 0
     public var entries = 0
     public var bytesOnDisk = 0
     /// Cumulative wall time in write jobs, including authentication/maintenance.

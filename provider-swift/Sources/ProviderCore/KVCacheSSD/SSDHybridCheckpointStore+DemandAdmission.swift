@@ -24,7 +24,7 @@ extension SSDHybridCheckpointStore {
     /// history verdict (`writeDemand.observe`), recorded before the gate so a
     /// second local sighting qualifies even when the coordinator hint is 0.
     func donationWritePolicy(requestID: CBv2RequestID?, localRepeat: Bool, checkpointPosition: Int)
-        -> (refusal: PrefixCacheDonationOutcome?, repeated: Bool) {
+        -> (refusal: PrefixCacheDonationOutcome?, repeated: Bool, speculative: Bool) {
         let demand = donationDemandHints.demand(for: requestID)
         let admitted = SSDCheckpointDemand.admitsWrite(
             demand: demand, localRepeat: localRepeat, minEffectiveTokens: config.minEffectiveTokens)
@@ -34,6 +34,11 @@ extension SSDHybridCheckpointStore {
         // not manufacture fleet repetition; local exact-tag history remains.
         let repeated = localRepeat || (checkpointPosition > 0
             && (demand?.repeatedPrefixTokens ?? 0) >= checkpointPosition)
-        return (admitted ? nil : .skippedNovel, repeated)
+        if admitted { return (nil, repeated, false) }
+        // A refusal stays `skipped_novel` unless the coordinator admitted a
+        // first-sight write; its own gates may still refuse it as novel.
+        let speculative = SSDCheckpointDemand.admitsSpeculativeWrite(
+            demand: demand, checkpointPosition: checkpointPosition, minEffectiveTokens: config.minEffectiveTokens)
+        return (speculative ? nil : .skippedNovel, repeated, speculative)
     }
 }

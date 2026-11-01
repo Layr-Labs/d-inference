@@ -859,11 +859,15 @@ import Foundation
     }
 
     /// Gemma 4's modes as its worker declares them (`Gemma4ResidentAdapterDefinition.servingFeatures`, pinned by
-    /// `Gemma4TensorParallelRuntimeTests`): tensor parallel keeps no prompt prefix yet, and adds logprobs.
+    /// `Gemma4TensorParallelRuntimeTests`): tensor parallel keeps prompt prefixes resident and on the SSD tier, as the
+    /// pipeline does, and adds logprobs.
     static let gemmaFeatures: [ClusterGenerationMode: ClusterServingFeatures] = [
         .pipeline: .init(promptPrefixReuse: true, ssdPrefixTier: true, speculativeRounds: false, maximumLanes: 8, logprobs: false),
-        .tensorParallel: .init(promptPrefixReuse: false, ssdPrefixTier: false, speculativeRounds: false, maximumLanes: 8, logprobs: true),
+        .tensorParallel: .init(promptPrefixReuse: true, ssdPrefixTier: true, speculativeRounds: false, maximumLanes: 8, logprobs: true),
     ]
+    /// Gemma 4's modes as a worker build whose tensor parallel kept no prompt prefix declared them (before 0.10.7):
+    /// the record the rule must hold back.
+    static let gemmaFeaturesWithoutPrefixes = with(gemmaFeatures, tensorParallelPrefixes: false)
     /// MiMo V2.6's text modes as its worker declares them (`MiMoResidentCapabilityMetadata.servingFeatures`, pinned
     /// by `MiMoTensorParallelResidentTests`): no mode keeps prompt prefixes, only the plain pipeline batches lanes, the
     /// speculative pipeline decodes in rounds, and tensor parallel serves one lane without rounds and adds logprobs.
@@ -1034,15 +1038,15 @@ import Foundation
     }
 
     /// Gemma 4 QAT 4-bit through the guided step, on two 256 GB Macs with the M5 Ultra's index, Gemma alone at 90 tok/s
-    /// and the pair's measured link, for a 128 + 128 request. Feature parity first: as this build declares it, Gemma's
-    /// tensor parallel keeps no prompt prefix, resident or on the SSD tier, which the pipeline it would replace keeps,
-    /// so it is held back whatever the evidence, a kept mode or the device index say; a developer's forced mode places
-    /// it and says what it drops. Once its record declares prefix reuse (as a later build's may), the evidence rule
-    /// decides: the device index alone keeps the pipeline, and the share probes a Gemma tensor-parallel load records
+    /// and the pair's measured link, for a 128 + 128 request. Feature parity first: a record whose tensor parallel keeps
+    /// no prompt prefix, resident or on the SSD tier, which the pipeline it would replace keeps (as builds before 0.10.7
+    /// declared it), is held back whatever the evidence, a kept mode or the device index say; a developer's forced mode
+    /// places it and says what it drops. As this build declares it (prefix reuse kept), the evidence rule decides: the
+    /// device index alone keeps the pipeline, and the share probes a Gemma tensor-parallel load records
     /// (`Gemma4TensorParallelShareProbe`, kept by `ClusterShareProbeHistory`) decide.
     static func gemmaEvidenceLines(description base: [String: Any]) throws {
-        let asBuilt = try gemma(features: gemmaFeatures, description: base)
-        let (layout, capability, description) = try gemma(features: with(gemmaFeatures, tensorParallelPrefixes: true), description: base)
+        let withoutPrefixes = try gemma(features: gemmaFeaturesWithoutPrefixes, description: base)
+        let (layout, capability, description) = try gemma(features: gemmaFeatures, description: base)
         let ultras = try indexedUltras(), alone = try aloneSpeed(layout, prefill: 7_000, decode: 90)
         func probes(halfStepMicroseconds: Int) -> [String: [ClusterShareRate]] {
             ClusterShareProbeHistory().recording(["mac-one", "mac-two"].map {
@@ -1050,9 +1054,10 @@ import Foundation
             }, artifactSHA256: layout.artifactSHA256, now: 1_000).shareRates(artifactSHA256: layout.artifactSHA256,
                 members: ["mac-one", "mac-two"], now: 1_060)
         }
-        func decide(_ shareProbes: [String: [ClusterShareRate]], asBuilt built: Bool = false, incumbentMode: ClusterGenerationMode? = nil,
+        func decide(_ shareProbes: [String: [ClusterShareRate]], keepingNoPrefix reduced: Bool = false, incumbentMode: ClusterGenerationMode? = nil,
                     environment: [String: String] = [:]) throws -> (lines: [String], result: ClusterPlacementResult, setup: ClusterPlacementSetup?) {
-            try ClusterPlacementFlow.decide(description: built ? asBuilt.description : description, capability: built ? asBuilt.capability : capability,
+            try ClusterPlacementFlow.decide(description: reduced ? withoutPrefixes.description : description,
+                capability: reduced ? withoutPrefixes.capability : capability,
                 localMemberID: "mac-one", localProfile: ultras.local, peerProfile: ultras.peer, layout: layout, measurements: [alone],
                 promptTokens: 128, outputTokens: 128, link: ultras.link, shareProbes: shareProbes, incumbentMode: incumbentMode,
                 environment: environment, benchDebugBuild: !environment.isEmpty)
@@ -1060,17 +1065,17 @@ import Foundation
         let prefixLine = heldLine("prompt-prefix reuse and the SSD prefix tier that the pipeline keeps")
         for (name, shareProbes) in [("no share probe", [String: [ClusterShareRate]]()),
                                     ("both Macs' share probes at 7.0 ms a half step", probes(halfStepMicroseconds: 7_000))] {
-            let held = try decide(shareProbes, asBuilt: true)
-            require("Gemma parity: as this build declares it, tensor parallel keeps no prompt prefix, so with \(name) the pipeline is kept and the line says what tensor parallel would drop (\(held.lines.first { $0.hasPrefix("  Pipeline:") } ?? "-"))",
+            let held = try decide(shareProbes, keepingNoPrefix: true)
+            require("Gemma parity: a record whose tensor parallel keeps no prompt prefix, with \(name): the pipeline is kept and the line says what tensor parallel would drop (\(held.lines.first { $0.hasPrefix("  Pipeline:") } ?? "-"))",
                 held.result.chosen?.mode == .pipeline && held.result.tensorParallel?.verdict == .dropsFeatures
                     && held.lines.contains(prefixLine) && held.lines.contains("  " + ClusterModeParity.ruleLine) && held.setup != nil
                     && ClusterPlacementExplanation.tensorParallelNote(held.result) == .dropsFeature
                     && !held.result.alternatives.contains { $0.mode == .tensorParallel })
         }
-        let kept = try decide(probes(halfStepMicroseconds: 7_000), asBuilt: true, incumbentMode: .tensorParallel)
+        let kept = try decide(probes(halfStepMicroseconds: 7_000), keepingNoPrefix: true, incumbentMode: .tensorParallel)
         require("Gemma parity: a pair that served tensor parallel before an update is planned as the pipeline (parity before the kept mode)",
             kept.result.chosen?.mode == .pipeline && kept.result.tensorParallel?.verdict == .dropsFeatures && kept.lines.contains(prefixLine))
-        let forced = try decide([:], asBuilt: true, environment: [ClusterForcedModeSetting.environmentName: "tensor_parallel_v1"])
+        let forced = try decide([:], keepingNoPrefix: true, environment: [ClusterForcedModeSetting.environmentName: "tensor_parallel_v1"])
         require("Gemma parity: the developer's forced mode places tensor parallel and the plan says exactly what it drops",
             forced.result.chosen?.mode == .tensorParallel && forced.setup != nil
                 && forced.lines.contains("  Developer setting: tensor parallel is placed because it is forced; it drops "
@@ -1081,7 +1086,7 @@ import Foundation
                 && priorOnly.lines.contains { $0.hasPrefix("  Pipeline: tensor parallel is predicted") && $0.contains("from the device index") }
                 && priorOnly.lines.contains(fastestLine))
         let measured = try decide(probes(halfStepMicroseconds: 7_000)), planned = try decide(probes(halfStepMicroseconds: 10_300))
-        require("Gemma parity and evidence: once its record declares prefix reuse resident and on the SSD tier, tensor parallel is admissible; both Macs' share probes at 7.0 ms a half step: tensor parallel, chosen on its measured step",
+        require("Gemma parity and evidence: as this build declares it, tensor parallel keeps prefix reuse resident and on the SSD tier and is admissible; both Macs' share probes at 7.0 ms a half step: tensor parallel, chosen on its measured step",
             measured.result.chosen?.mode == .tensorParallel && measured.result.tensorParallel?.evidence == .measured
                 && !measured.lines.contains { $0.contains("would drop") }
                 && measured.lines.contains { $0.hasPrefix("  Tensor parallel: predicted") && $0.hasSuffix(", on its own step as measured on both Macs.") })
@@ -1095,7 +1100,7 @@ import Foundation
     /// where only tensor parallel fits and it drops a feature, the plan refuses and saves nothing (owner, 2026-11-01),
     /// and the same Macs place it once its record keeps that feature.
     static func featureParity(description base: [String: Any]) throws {
-        let built = try gemma(features: gemmaFeatures, description: base)
+        let built = try gemma(features: gemmaFeaturesWithoutPrefixes, description: base)
         let data = try ClusterRuntimeCapabilityCodec.encode(built.capability)
         let decoded = try ClusterRuntimeCapabilityCodec.decode(data)
         require("parity record: a capability's per-mode serving features cross the codec canonically", decoded == built.capability
@@ -1138,8 +1143,8 @@ import Foundation
         // Only tensor parallel fits: the layout admits one cut only, 1, whose last rank holds every layer but one, on two
         // equal Macs too small for that rank and large enough for a tensor-parallel half (found by planning each mode alone).
         let narrow: (inout [String: Any]) -> Void = { $0["admittedCuts"] = [1] }
-        let reduced = try gemma(features: gemmaFeatures, description: base, adjust: narrow)
-        let gained = try gemma(features: with(gemmaFeatures, tensorParallelPrefixes: true), description: base, adjust: narrow)
+        let reduced = try gemma(features: gemmaFeaturesWithoutPrefixes, description: base, adjust: narrow)
+        let gained = try gemma(features: gemmaFeatures, description: base, adjust: narrow)
         func macs(_ giB: Int) throws -> [ClusterPlacementDevice] {
             try ["mac-one", "mac-two"].map { try device($0, physicalGiB: giB, freeGiB: giB - 4, prefill: 7_000, decode: 90) }
         }
@@ -1164,7 +1169,7 @@ import Foundation
         require("parity refusal: where only tensor parallel fits (two \(giB) GB Macs, cut 1 only), the plan refuses, says why and saves no setup",
             refused.result.chosen == nil && refused.setup == nil && refused.lines.contains("  " + refusal)
                 && refused.result.modesReason == refusal && refused.result.tensorParallel?.verdict == .dropsFeatures)
-        require("parity refusal: the same Macs place tensor parallel once its record declares prefix reuse",
+        require("parity refusal: the same Macs place tensor parallel with the record this build declares (prefix reuse kept)",
             placed.result.chosen?.mode == .tensorParallel && placed.setup != nil && !placed.lines.contains { $0.contains("would drop") })
     }
 

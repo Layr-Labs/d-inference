@@ -4247,8 +4247,8 @@ ranks anything:
    evidence hold, a kept mode, a better hardware group) brings it back. The
    assessment's verdict is `dropsFeatures` (`ClusterPlacementPolicy.tensorParallelHeldForFeatures`),
    the plan's line says, for example, "Pipeline: tensor parallel would drop
-   prompt-prefix reuse and the SSD prefix tier that the pipeline keeps; held back
-   until it keeps them.", and the model list says `tensor parallel: drops a feature`.
+   speculative (MTP) rounds that the speculative pipeline keeps; held back until
+   it keeps them.", and the model list says `tensor parallel: drops a feature`.
 4. Where tensor parallel is the only mode that places, the plan refuses rather
    than save a reduced setup: "Only tensor parallel fits these Macs, and it would
    drop ... No reduced-feature setup was saved." The result's `modesReason`
@@ -4258,9 +4258,11 @@ ranks anything:
 6. A `fastest` family whose record declares no features keeps tensor parallel
    back: nothing shows it keeps them.
 
-Today the rule holds Gemma's tensor parallel back everywhere, whatever its
-evidence, and MiMo's wherever the speculative pipeline is the mode it would
-replace; the evidence rule below decides once a worker declares parity. The
+Gemma's tensor parallel keeps every feature of its pipeline, prompt prefixes
+included, resident and on the SSD tier (`Gemma4TensorParallelPrefix`), so the
+evidence rule below decides for it. The rule holds MiMo's tensor parallel back
+wherever the speculative pipeline is the mode it would replace, because it has
+no speculative rounds. The
 tensor-parallel-first families (Qwen, GLM) declare no features and are not
 gated. Applied to them, the rule would leave GLM unchanged (its tensor parallel
 keeps prompt-prefix and SSD reuse and adds rounds, eight lanes, images, video

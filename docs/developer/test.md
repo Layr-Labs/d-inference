@@ -1411,14 +1411,16 @@ registered artifact for them.
    fastest-plan and logprob lines. Through the guided step it also checks feature
    parity (`ClusterModeParity`) before the evidence rule:
    - as this build declares them, MiMo's tensor parallel has no rounds, so the
-     speculative pipeline is kept even with this build's served records; Gemma's
-     keeps no prompt prefixes, so the pipeline is kept even with both Macs' share
-     probes, after an update that served tensor parallel, and with nothing
-     measured; each plan says what tensor parallel would drop;
-   - with rounds (MiMo) or prefix reuse (Gemma) declared, the evidence rule
-     decides: MiMo on two 256 GB Macs keeps the speculative pipeline with no
-     served record or another build's and follows this build's served records,
-     and Gemma follows both Macs' share probes;
+     speculative pipeline is kept even with this build's served records; a Gemma
+     record whose tensor parallel keeps no prompt prefixes (as builds before
+     0.10.7 declared it) keeps the pipeline even with both Macs' share probes,
+     after an update that served tensor parallel, and with nothing measured; each
+     plan says what tensor parallel would drop;
+   - with rounds declared (MiMo) and with Gemma's record as this build declares
+     it (prefix reuse kept), the evidence rule decides: MiMo on two 256 GB Macs
+     keeps the speculative pipeline with no served record or another build's and
+     follows this build's served records, and Gemma follows both Macs' share
+     probes;
    - where only tensor parallel fits, the plan refuses and saves no setup; the
      forced mode places it and says what it drops; a record without features
      holds it back, and the forced mode then says what it drops is not known;

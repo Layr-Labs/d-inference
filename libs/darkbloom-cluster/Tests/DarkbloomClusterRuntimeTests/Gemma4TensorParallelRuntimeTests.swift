@@ -670,21 +670,22 @@ struct Gemma4TensorParallelRuntimeTests {
         #expect(Set(others + [fingerprint]).count == 5)
     }
 
-    /// What the capability declares of each mode is what the loads run: tensor parallel binds no prompt-prefix cache
-    /// into its agreement and declares none, both modes take the batch wire's lanes, and only tensor parallel captures
-    /// logprobs. The provider's setup check plans with these values (`PlacementSetupCheck.gemmaFeatures`).
+    /// What the capability declares of each mode is what the loads run: tensor parallel binds the prompt-prefix cache
+    /// into its agreement and declares it resident and on the SSD tier, as the pipeline does; both modes take the batch
+    /// wire's lanes, and only tensor parallel captures logprobs. The provider's setup check plans with these values
+    /// (`PlacementSetupCheck.gemmaFeatures`).
     @Test func capabilityDeclaresWhatEachModeKeeps() throws {
         let features = Gemma4ResidentAdapterDefinition.servingFeatures
         #expect(features == [
             .pipeline: .init(promptPrefixReuse: true, ssdPrefixTier: true, speculativeRounds: false, maximumLanes: 8, logprobs: false),
-            .tensorParallel: .init(promptPrefixReuse: false, ssdPrefixTier: false, speculativeRounds: false, maximumLanes: 8, logprobs: true),
+            .tensorParallel: .init(promptPrefixReuse: true, ssdPrefixTier: true, speculativeRounds: false, maximumLanes: 8, logprobs: true),
         ])
         #expect(Set(features.keys) == Set(Gemma4ResidentAdapterDefinition.supportedGenerationModes))
         #expect(features[.tensorParallel]?.promptPrefixReuse == Gemma4ResidentAdapterDefinition.tensorParallelKeepsPromptPrefixes
             && Gemma4TensorParallelLoadAgreement().prefixCache == Gemma4ResidentAdapterDefinition.tensorParallelKeepsPromptPrefixes
             && features[.pipeline]?.maximumLanes == QwenBatchWire.maximumLanes)
         let pipeline = try #require(features[.pipeline]), tensor = try #require(features[.tensorParallel])
-        #expect(pipeline.dropped(by: tensor) == ["prompt-prefix reuse", "the SSD prefix tier"])
+        #expect(pipeline.dropped(by: tensor) == [])
         #expect(tensor.dropped(by: pipeline) == ["committed-token logprobs"])
     }
 

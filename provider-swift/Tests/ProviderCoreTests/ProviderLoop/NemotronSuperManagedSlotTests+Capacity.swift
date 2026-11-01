@@ -55,14 +55,36 @@ extension NemotronSuperManagedSlotTests {
         #expect(await fixture.budget.outstandingReservedBytes() == 0)
     }
 
-    /// The build is checked against its grant with the planned lane and
-    /// round; publication re-slices it beside the resident models. Beside an
-    /// idle model with a far larger KV share (the fixture owner publishes its
-    /// 1,024-token context against that model's 8,192), Super's grant is a few
-    /// MiB and serves no request: the load fails, the slot is unpublished and
-    /// retired, and the co-resident model keeps its grant and is not evicted.
+    /// Beside an idle model with a far larger KV share (the fixture owner
+    /// publishes its 1,024-token context against that model's 8,192), Super's
+    /// proportional share is a few MiB. Both floors fit the budget, so Super
+    /// is funded to its floor and loads; the co-resident model keeps its own.
     @Test(.timeLimit(.minutes(2)))
-    func publishedGrantThatServesNoRequestFailsTheLoad() async throws {
+    func superBesideALargerKVShareLoadsAtItsFloor() async throws {
+        let fixture = try await Self.coResidentFixture(weightsGiB: 1, availableGiB: 110)
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let loop = fixture.loop
+        await loop.setEngineV2SlotHooksForTesting(ProviderLoop.EngineV2SlotHooks(
+            physicalMemoryBytes: 128 << 30, makeEngine: { _, _ in throw CancellationError() }))
+        try await loop.ensureModelLoaded(modelId: Self.modelID, allowEviction: false,
+                                         revisionDirectory: fixture.directory)
+        let owner = try #require(await loop.nemotronSuperOwnerForTesting(modelId: Self.modelID))
+        let grant = await owner.bridge.resliceAdmissionBytesClaim()
+        #expect(grant >= (await owner.bridge.minimumServiceableGrantBytes()))
+        #expect(await owner.bridge.superGrantRefusal(grantBytes: grant, requests: 1) == nil)
+        let coResidentGrant = try #require(fixture.idle.capacityUpdates.last)
+        #expect(coResidentGrant >= Int(EngineV2KVSizing.minimumServiceableGrantBytes))
+        #expect(await loop.modelLoadingResidentIDs() == [Self.coResidentID, Self.modelID].sorted())
+        #expect(await loop.unloadModel(Self.modelID))
+    }
+
+    /// The newcomer check counts Super's planned lane and round beside its
+    /// grant. A co-resident model whose own floor leaves less than Super's
+    /// base floor of that budget refuses the load before anything is built:
+    /// nothing is published or retained, and the co-resident model keeps its
+    /// grant and is not evicted.
+    @Test(.timeLimit(.minutes(2)))
+    func floorsAboveTheBudgetRefuseTheLoadBeforeTheBuild() async throws {
         let fixture = try await Self.coResidentFixture(weightsGiB: 1, availableGiB: 110)
         defer { try? FileManager.default.removeItem(at: fixture.directory) }
         let loop = fixture.loop
@@ -70,6 +92,11 @@ extension NemotronSuperManagedSlotTests {
             physicalMemoryBytes: 128 << 30, makeEngine: { _, _ in throw CancellationError() }))
         await loop.resliceGrowSurvivorsForTesting()
         let lone = try #require(fixture.idle.capacityUpdates.last)
+        // Its floor leaves 1.75 GiB of the lone budget, less than Super's
+        // planned reservations and base floor need.
+        let coResident = ResliceFloorScenario.makeBridge(modelId: Self.coResidentID,
+            fixedRequestBytes: Int(Double(lone - (7 << 28)) * 0.95) - (1 << 30), grant: lone)
+        await loop.modelLoadingInstallSlot(Self.coResidentID, bridge: coResident, weightsBytes: 1 << 30)
         var refusal: Error?
         do {
             try await loop.ensureModelLoaded(modelId: Self.modelID, allowEviction: false,
@@ -77,15 +104,15 @@ extension NemotronSuperManagedSlotTests {
         } catch { refusal = error }
         let error = try #require(refusal)
         #expect(ProviderLoop.loadErrorStatusCode(for: error) == 503)
-        #expect("\(error)".contains("serves 1 concurrent request(s)"), "\(error)")
-        #expect(await loop.modelLoadingLastLoadError()?.message.contains("serves 1 concurrent request(s)") == true)
+        #expect("\(error)".contains("below its serviceable KV grant"), "\(error)")
+        #expect(await loop.modelLoadingLastLoadError()?.message.contains("below its serviceable KV grant") == true)
         #expect(await loop.nemotronSuperOwnerForTesting(modelId: Self.modelID) == nil)
         #expect(await loop.engineV2Runtime.bridge(forModel: Self.modelID) == nil)
         #expect(await loop.modelLoadingResidentIDs() == [Self.coResidentID])
-        #expect(fixture.idle.shutdownCalls == 0)
-        #expect(fixture.idle.capacityUpdates.last == lone, "the co-resident model's grant is restored")
+        #expect(await coResident.engineKVBytesCapacity() == lone, "the co-resident model keeps its grant")
         #expect(await fixture.budget.outstandingReservedBytes() == 0)
         #expect(await loop.nemotronSuperRetainedWeightBytesForTesting() == 0)
+        await coResident.shutdown()
     }
 
     /// A load whose native work did not retire keeps the installation's size

@@ -1,6 +1,6 @@
 # Build The Provider And Landing
 
-> Last updated: 2026-10-29
+> Last updated: 2026-10-31
 
 Build the provider, its source-matched native resources, and the independent
 landing site from this repository. Backend, sidecar, console and admin builds
@@ -177,23 +177,30 @@ importing its certificate. See [release qualification](test.md#sdk-27-release-qu
 
 ## The `dev` branch
 
-The `dev` branch is master plus one commit. On it, a plain `swift build` is a
-DevNet build: `DARKBLOOM_RELEASE_ENVIRONMENT` defaults to `dev`, so the
-provider talks to `https://api.dev.darkbloom.dev` and nothing else. On master
-the default is `prod`. Set `DARKBLOOM_RELEASE_ENVIRONMENT=prod` to build a
-production binary from the `dev` branch.
+On the `dev` branch a plain `swift build` is a DevNet build:
+`DARKBLOOM_RELEASE_ENVIRONMENT` defaults to `dev`, so the provider talks to
+`https://api.dev.darkbloom.dev` and nothing else. On master the default is
+`prod`. Set `DARKBLOOM_RELEASE_ENVIRONMENT=prod` to build a production binary
+from the `dev` branch.
 
 Use the `dev` branch to run a provider from source against the DevNet
-coordinator. Published dev providers do not come from this branch: a master
-push that changes the provider publishes one through `release-swift.yml`
+coordinator. A push to `dev` that changes the provider publishes the DevNet
+release through `.github/workflows/release-dev-branch.yml`
 (see `docs/operations/provider-release.md`).
 
 Rules for the branch:
 
-- Merge master into `dev` to update it. Never merge `dev` into master.
-- Never tag a commit on `dev`. Tags publish production.
-- Code changes go to master through a pull request, then reach `dev` by
-  merging master. Only the default-environment commit lives on `dev` alone.
+- Changes reach `dev` through pull requests into `dev`, which land as merge
+  commits, and through merges of master into `dev`.
+- `dev`'s changes reach master through pull requests into master.
+  [#1688](https://github.com/Layr-Labs/d-inference/pull/1688) merged a snapshot
+  branch of `dev` with a merge commit, for which an admin briefly allowed merge
+  commits on the squash-only master ruleset; 0.10.6's cluster changes reached
+  master as a squash-merged pull request of `dev` with master merged in.
+- Master keeps one commit of its own, `e9babca4`, which sets plain builds back
+  to `prod`. A merge of master into `dev` reverts that commit on its sync
+  branch, so `dev` keeps its DevNet default.
+- Never tag a commit on `dev`. Tags publish production, from master.
 
 `scripts/provider-release-cache.py` separates optimized and qualification Swift
 caches by compiler/SDK, architecture, absolute checkout/toolchain paths,
@@ -201,6 +208,10 @@ dependency pins and build recipe. `DARKBLOOM_RELEASE_ENVIRONMENT` also separates
 dev and prod products. A source commit identifies an immutable generation;
 compatible restore prefixes never cross these boundaries. The Metal cache
 includes nested MLX source, compiler binary SHA and CMake recipe identity.
+The optimized cache also holds the scratch directory of the native cluster
+worker build (`libs/darkbloom-cluster-worker/build-native-worker.sh`), so
+unchanged MLX and cluster objects are not compiled again. Its Metal library is deleted on
+restore, and the worker's JACCL and macOS 26.2 checks run on every build.
 
 The cache's `snapshot-mtimes` and `restore-mtimes` commands restore timestamps
 only for tracked files whose contents are unchanged. They do not restore source

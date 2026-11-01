@@ -1,3 +1,0 @@
-### Animated Darkbloom cluster setup
-
-`darkbloom cluster` setup now opens with the Darkbloom mark, which blooms in on color UTF-8 terminals at least 40 columns wide. Stage headings show a step meter, and long work (cable check, reading both Macs, planning, loading, first tokens) shows a live line that the next transcript line replaces. `DARKBLOOM_NO_ANIMATION` or `CI` keeps the mark and meter but stops the motion. Narrow or non-UTF-8 terminals keep colored headings only. `NO_COLOR`, `TERM=dumb` and redirected output stay byte-for-byte plain. The model-free onboarding checks cover all four presentations (438 checks).

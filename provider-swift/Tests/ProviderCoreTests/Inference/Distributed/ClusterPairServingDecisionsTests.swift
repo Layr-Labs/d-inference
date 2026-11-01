@@ -154,7 +154,8 @@ import DarkbloomClusterProtocol
         // A phase-split pass qualifies no pipeline for public traffic; the owner is served as a pipeline all the same.
         #expect(publicFamilies(handoff, decisions) == [.handOff])
         #expect(allows([m3, m5u], handoff, decisions, mode: .phaseSplitMTP) && allows([m3, m5u], handoff, decisions, mode: .pipeline))
-        #expect(ClusterPairServingGrants.publicTrafficLine(runtimeModelID: handoff, mode: .pipeline, decisions: decisions)
+        // (Records only: the owner's declaration of the 27B is ClusterOwnerServingTests'.)
+        #expect(ClusterPairServingGrants.publicTrafficLine(runtimeModelID: handoff, mode: .pipeline, decisions: decisions, publicModels: [])
             == ClusterPairOwnerServing.notYetQualified)
         // Without the mode a placement is refused, whatever the records.
         do {

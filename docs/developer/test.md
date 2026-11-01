@@ -1303,10 +1303,14 @@ registered artifact for them.
    The script synthesizes the `kernel`, `tiny` and FP32 `kernel` variants. For
    each, and for a 40-token and a 6-token prompt around the 8-token window, it
    runs `full`, `simulated` and two `tp` ranks over the sealed local ring on
-   ports 58223–58224, then the socket backend once.
+   ports 58223–58224. It then runs the socket backend once, and one sampled
+   run: temperature 0.8, drawn by the product's sampler from the gathered row.
 
 3. Verify. Each `tp` rank must equal `simulated` bit for bit, KV caches
-   included, and agree with `full` under QualificationComparator (exit status 0).
+   included, and greedy ranks must agree with `full` under
+   QualificationComparator (exit status 0). A sampled run's verdict against
+   `full` is informational: rows that differ by rounding can draw a
+   neighbouring token.
 
 ## Focused Tooling Checks
 

@@ -25,8 +25,9 @@ enum QwenRowsCheck {
         }
         if command == "synthesize" {
             guard let output = options["output"], output.hasPrefix("/") else { throw Failure("synthesize needs --output /DIR") }
-            let layers = Int(options["layers"] ?? "4") ?? 4
-            guard (1...8).contains(layers) else { throw Failure("--layers takes 1 to 8") }
+            guard let layers = Int(options["layers"] ?? "4"), (1...8).contains(layers) else {
+                throw Failure("--layers takes 1 to 8")
+            }
             try Device.withDefaultDevice(.gpu) {
                 try QwenTensorParallelRowsCheck.writeCheckpoint(directory: URL(fileURLWithPath: output), layers: layers)
             }

@@ -5116,7 +5116,7 @@ placement to tensor parallel as before. Synthetic CPU and both-chip native
 fixtures are not full-artifact, RDMA, tower, throughput or endpoint evidence.
 
 Each rank logs its decode routes once per loaded model when its native
-executor starts (`qwen-tp-decode-census-v1`,
+executor first starts serving (`darkbloom-qwen-tp-decode-census-v1`,
 `QwenTensorParallelBatchSession.censusLine`): every projection's route (the
 batch-invariant kernel `aqv`, a row-parallel FP32 partial on it `partial`, or
 MLX's own kernels with the reason, `mlx-...`) and each projection shape's
@@ -5124,6 +5124,10 @@ layout per vector count (plain rows of one to eight and their four-column
 windows), the residual-norm form, the paged attention geometry and partition
 size, the selection, and any arithmetic switch the launcher set. A registered
 27B rank reports `mlx=0`. Only host values are read; nothing is evaluated.
+Layouts are listed per checkpoint projection: the SDK multiplies a Gated
+DeltaNet layer's four input projections as one call of their summed rows, and
+fuses gate, up and SwiGLU at `swiglu_fused_vectors` only while its decode
+fusions are on. A routed-expert row's switch projections are not listed.
 
 `QwenTensorParallelRowsCheck` checks the row contract at the registered 27B
 per-rank widths with random weights (affine 4-bit, group 64, BF16 scales,
@@ -5136,9 +5140,14 @@ ranks run it in one process (`QwenTensorParallelRealGeometryRowsTests`,
 `QWEN_TP_REAL_GEOMETRY_GPU=1`) or as two processes over the loopback ring
 (`darkbloom-cluster-tp-check qwen-rows`, native or sealed sums, with the
 worker's arithmetic environment); on an M5 Ultra every comparison is bitwise
-equal. It covers neither the registered weights nor JACCL's streamed sealed
-sums, the driver under live traffic or the HTTP stream; `qwen-rows run` also
-loads a registered checkpoint directory on a Mac with the memory for it.
+equal. It refuses to report when a logit is not finite, when its reference
+logits are not all distinct, when the long rows fit one KV segment, or when its
+comparison misses a planted difference. It covers neither the registered weights nor
+JACCL's streamed sealed sums, the driver under live traffic or the HTTP stream.
+`qwen-rows run` also loads a registered checkpoint directory on a Mac with the
+memory for it, reading the files directly as `tp-check run` does, not through
+the product's verified load (`QwenTensorParallelVerifiedLoad`: no artifact
+hashes, inventory or load memory gate).
 
 Sources: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/TensorParallel/QwenTensorParallelBatchSession.swift`
 (`QwenTensorParallelBatchSession`, `censusLine`),

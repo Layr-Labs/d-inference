@@ -133,11 +133,11 @@ public enum QwenTensorParallelRowsCheck {
         var history: [String: String] = [:]
         static func key(_ row: Int, _ step: Int) -> String { "\(row)/\(step)" }
 
+        /// Every digest of this trace that differs from the reference's, or
+        /// that the reference lacks (so a mislabeled trace is never skipped).
         func mismatches(_ reference: Trace, label: String) -> [String] {
-            logits.keys.sorted().filter { key in reference.logits[key].map { $0 != logits[key] } ?? false }
-                .map { "\(label) logits \($0)" }
-                + history.keys.sorted().filter { key in reference.history[key].map { $0 != history[key] } ?? false }
-                    .map { "\(label) history \($0)" }
+            logits.keys.sorted().filter { reference.logits[$0] != logits[$0] }.map { "\(label) logits \($0)" }
+                + history.keys.sorted().filter { reference.history[$0] != history[$0] }.map { "\(label) history \($0)" }
         }
     }
 
@@ -152,7 +152,13 @@ public enum QwenTensorParallelRowsCheck {
                 maximumChunkTokens: 512)
         }
 
-        static func digest(_ value: MLXArray) -> String { eval(value); return sha256(value.asData(access: .copy).data) }
+        /// A logits row's digest, marked when a value is not finite (serving
+        /// refuses such a row in selection, which this check never runs).
+        /// `run` refuses a marked reference after both ranks' last collective.
+        static func digest(_ value: MLXArray) -> String {
+            (all(isFinite(value)).item(Bool.self) ? "" : nonfinite) + sha256(value.asData(access: .copy).data)
+        }
+        static let nonfinite = "nonfinite:"
 
         func historyDigest(_ row: Int) throws -> String {
             let session = sessions[row]!
@@ -330,9 +336,12 @@ public enum QwenTensorParallelRowsCheck {
         let compared = soloOne.logits.count + soloOne.history.count + longSolo.logits.count + longSolo.history.count
         var tampered = soloOne
         tampered.logits[Trace.key(0, 0)] = ""
-        guard Set(soloOne.logits.values).count == soloOne.logits.count, reserved > CBv2StageKVHost.segmentBytes,
+        // A candidate's non-finite row differs from a finite reference or matches a marked one.
+        let finite = !(soloOne.logits.values.contains { $0.hasPrefix(Rows.nonfinite) }
+            || longSolo.logits.values.contains { $0.hasPrefix(Rows.nonfinite) })
+        guard finite, Set(soloOne.logits.values).count == soloOne.logits.count, reserved > CBv2StageKVHost.segmentBytes,
               soloOne.mismatches(soloOne, label: "").isEmpty, tampered.mismatches(soloOne, label: "").count == 1 else {
-            throw ProbeError("Qwen TP rows check: degenerate logits, rows within one KV segment or a blind comparison")
+            throw ProbeError("Qwen TP rows check: non-finite or degenerate logits, rows within one KV segment or a blind comparison")
         }
         return Report(rank: rank, compared: compared, differing: differing, reservedBytesAcrossSegments: reserved,
             census: QwenTensorParallelBatchSession.censusLine(rank: rank, model: model),

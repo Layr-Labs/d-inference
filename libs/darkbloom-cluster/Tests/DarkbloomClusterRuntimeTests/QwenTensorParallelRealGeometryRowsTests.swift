@@ -58,6 +58,24 @@ struct QwenTensorParallelRealGeometryRowsTests {
         }
     }
 
+    /// The runner's comparison (no weights, CPU): a changed digest and a
+    /// digest the reference lacks both count; a non-finite row is marked.
+    @Test func comparisonCountsChangedAndUnmatchedDigestsAndMarksNonfiniteRows() {
+        typealias Trace = QwenTensorParallelRowsCheck.Trace
+        typealias Rows = QwenTensorParallelRowsCheck.Rows
+        var reference = Trace(), candidate = Trace()
+        reference.logits = ["0/0": "a", "0/1": "b"]; reference.history = ["0/1": "h", "0/2": "i"]
+        candidate.logits = ["0/0": "a", "0/1": "c", "1/0": "d"]; candidate.history = ["0/2": "i"]
+        #expect(candidate.mismatches(reference, label: "x") == ["x logits 0/1", "x logits 1/0"])
+        #expect(reference.mismatches(reference, label: "x").isEmpty)
+        Device.withDefaultDevice(.cpu) {
+            let finite = Rows.digest(MLXArray([Float(1), 2]))
+            #expect(finite.count == 64 && !finite.hasPrefix(Rows.nonfinite))
+            #expect(Rows.digest(MLXArray([Float(1), .nan])).hasPrefix(Rows.nonfinite))
+            #expect(Rows.digest(MLXArray([Float.infinity, 2])).hasPrefix(Rows.nonfinite))
+        }
+    }
+
     @Test(.enabled(if: gpu))
     func rowsEqualTheirSoloStepsAndWindowPositionsAtRealWidths() throws {
         let configuration = try QwenTensorParallelRowsCheck.configuration(layers: 4)

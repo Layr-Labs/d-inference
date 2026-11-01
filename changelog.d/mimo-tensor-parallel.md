@@ -1,0 +1,6 @@
+### MiMo V2.6 Flash tensor parallel on two-Mac clusters
+
+- MiMo V2.6 Flash text can run tensor parallel on a pair: each Mac holds half of every layer's heads and expert channels and half of the output head, both share every token over the encrypted link, and on the synthetic checks the two Macs agree bit for bit with a one-process simulation of both halves. The image candidate stays a pipeline.
+- The planner chooses tensor parallel for MiMo only where it predicts it faster than the pipeline. Two 128 GB Macs, which cannot hold MiMo alone, get tensor parallel for short prompts with long answers; two 256 GB Macs keep the pipeline until a load has measured the link, and then get tensor parallel for decode-heavy requests on a fast link. Qwen and GLM still choose tensor parallel wherever it fits.
+- In tensor parallel, MiMo returns logprobs (`logprobs` / `top_logprobs`), serves one request at a time without speculative decoding, and each Mac reserves memory for its own half: 84.0 GB of weights plus its own KV, work and buffers, with a conservative 5.5 GiB activation reserve until a pair measures one (about 98 GiB per Mac at the longest request).
+- No MiMo tensor-parallel qualification record exists yet, and speed on a real pair is not measured.

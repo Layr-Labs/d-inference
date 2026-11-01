@@ -341,6 +341,7 @@ Models that run tensor parallel, and when:
 | Qwen3.5 9B, Qwen3.8 27B, Qwen3.5/3.6 35B A3B | wherever it fits | Qwen3.8 27B keeps images, video and logprobs only in tensor parallel |
 | GLM-5.3-Flash | wherever it fits | Eight concurrent requests by default |
 | Gemma 4 26B (QAT 4-bit, 8-bit) | only where the plan predicts it faster than a pipeline | Text only; logprobs in tensor parallel only; one request at a time unless you set `DARKBLOOM_CLUSTER_BATCH_LANES` |
+| MiMo V2.6 Flash | only where the plan predicts it faster than a pipeline | Text only; logprobs in tensor parallel only; one request at a time; see [MiMo V2.6 Flash on the pair](#mimo-v26-flash-on-the-pair) |
 
 For Gemma 4, two big Macs normally keep the pipeline: before a load has
 measured the link the plan prices tensor parallel on a slow assumed link, and
@@ -529,6 +530,24 @@ decides; the gate itself is unchanged. Both Macs keep MiMo's prompt prefixes,
 in memory and in the encrypted SSD tier, like the Qwen models. MiMo has no paged
 KV on the pair yet, and the pair decodes slower than the M5 Ultra alone. Its
 phase split (one Mac decodes alone) is kept off like every hand-off mode.
+
+MiMo V2.6 Flash text can also run tensor parallel: each Mac holds half of every
+layer, about 84 GB of weights and about 98 GiB in all with its reserves
+([rank memory](../architecture/hardware-support.md#mimo-v26-tensor-parallel-rank-memory)),
+so two 128 GB Macs that cannot hold MiMo alone can serve it. The plan chooses
+tensor parallel only where it predicts it faster than the pipeline:
+
+- Two 128 GB Macs: tensor parallel for short prompts with long answers, the
+  pipeline for long prompts.
+- Two 256 GB Macs: the pipeline until a load has measured the link; after that,
+  tensor parallel for short prompts with long answers on a fast Thunderbolt 5
+  link.
+
+In tensor parallel MiMo returns logprobs, serves one request at a time and
+runs without speculative decoding; the image candidate stays a pipeline. Speed
+on a real pair is not measured yet. No qualification record covers MiMo tensor
+parallel yet, so its grant names only the modes above and a tensor-parallel
+MiMo pair serves its owner's local endpoint.
 
 ### After a restart
 

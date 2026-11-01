@@ -4216,9 +4216,8 @@ MiMo V2.6 Flash (`mimo-v2.6-flash-mopd`) has a two-rank tensor-parallel plan,
 SDK hooks, a one-lane resident runtime and one-Mac oracles. The registered row
 lists `tensor_parallel_v1` (text only; the private image candidate stays a
 pipeline candidate), and the worker serves it when a launch asks for it. The
-planner never chooses it yet: `MiMoPlacementFamily` states no tensor-parallel
-facts, so a MiMo layout has no tensor-parallel block, and the planner places
-tensor parallel only from one (placement checks: `MiMoTensorParallelChecks`).
+planner chooses it only where it predicts it faster than the pipeline
+([MiMo tensor-parallel placement](#mimo-tensor-parallel-placement)).
 
 `MiMoTensorParallelPlan` (`mimo_v26_heads_and_expert_channels_v1`, CPU metadata)
 disposes of every name in the registered 1,732-tensor inventory. The 1,103 text
@@ -4291,9 +4290,16 @@ tensor parallel's executor contract and one lane:
   the gathered row.
 - Not yet: lanes, prompt-prefix reuse, MTP, 2,048-token prefill frames and
   micro-batches, building decode steps one ahead.
-- Memory. `MiMoTensorParallelRequestBudget` charges each request
-  conservatively (paged KV at half the KV heads, one chunk's activations, the
-  head's rows); nothing has measured a MiMo tensor-parallel rank.
+- Memory. One formula, `MiMoTensorParallelRequestBudget`, gives the LOAD
+  gate, each reservation's charge and the placement's `requestAllowance`
+  ([rank memory](hardware-support.md#mimo-v26-tensor-parallel-rank-memory));
+  nothing has measured a MiMo tensor-parallel rank.
+- Logprobs reach the provider: `ClusterModelFeaturePolicy.capturesLogprobs`
+  is true for MiMo tensor parallel, so a MiMo tensor-parallel pair admits
+  `logprobs` requests and a MiMo pipeline pair refuses them. The installed plan
+  forwards no lane width to a MiMo tensor-parallel rank
+  (`DistributedInstalledPlan.defaultBatchLanes`), and its arithmetic
+  environment is the pipeline's (`MiMoArithmeticEnvironment`, nothing added).
 
 Oracles run on synthetic checkpoints (`kernel`: hidden 1,024, 16 experts top-8,
 512 expert channels per rank, so every per-rank decode shape takes the
@@ -4309,9 +4315,59 @@ whole model. With random synthetic routers that already happens in the
 prompt, well before the first token differs. Real-weight qualification remains
 the gate.
 
+### MiMo tensor-parallel placement
+
+`MiMoPlacementFamily` states the plan's facts for the text row, so a MiMo
+layout carries `tensorParallel`; the image candidate's layout carries none:
+
+| Fact | Value | Source |
+|---|---|---|
+| `plan`, `ranks` | `mimo_v26_heads_and_expert_channels_v1`, `[2]`, equal shares | `MiMoTensorParallelPlan.name` |
+| `reductionsPerLayer`, `reductionsPerStep` | 2 (attention, feed-forward), 1 (vocabulary-split selection): 97 a decode step | `MiMoTensorParallelPlan.reductionsPerLayer` |
+| `partialBytesPerToken` | 16,384 (one FP32 hidden row); no `layerPartialBytesPerToken` | `MiMoTensorParallelPlan.partialBytesPerToken` |
+| `stateDividesByHeads` | true: each rank keeps its own KV heads | `MiMoTensorParallelPlan.kvHeadsPerRank` |
+| `requestAllowance` | the rank's reserve at the profile's longest request (65,536 tokens), where the allocator's bound is known | `MiMoTensorParallelRequestBudget` |
+| `choice` | `fastest_v1` | `ClusterTensorParallelChoice` |
+
+Each stored tensor's cut is the plan's disposition
+(`tensorParallelCut(ofStoredTensor:)`). The split pads nothing, so the family
+needs no `tensorParallelOverlapBytes`: a rank's share is 84,013,770,176 bytes,
+the plan's cut and the verified load's shard bytes. The family states its
+routing, 8 of 256 experts (`expertRouting`, `isRoutedExpert`, the same
+definition as the pipeline's), so the hardware prior reads 10,767,036,288
+weight bytes per token, 99.1 % of them divided.
+
+MiMo opts into the fastest-plan rule
+([Gemma tensor-parallel placement](#gemma-tensor-parallel-placement)): 97 sealed
+sums a step cross the link, and on two big Macs the pipeline keeps its
+speculative rounds (`pipeline_mtp_v1`). On the planner's own figures
+(`PlacementChecks`, `MiMoTensorParallelChecks.swift`; constructed Macs: M5 Ultra
+57 tok/s, the M5 Max 128 GB from its stage probes at 40 tok/s):
+
+| Pair | Link | Request | Chosen |
+|---|---|---|---|
+| 2x M5 Max 128 GB (neither holds MiMo alone) | default (unmeasured) | 128 + 128, 1,024 + 1,024 | tensor parallel (3.17 s vs 3.50 s; 25.4 s vs 27.5 s) |
+| 2x M5 Max 128 GB | default | 1,024 + 128 | pipeline (tensor parallel 4.7 % faster, inside the 5 % margin) |
+| 2x M5 Max 128 GB | default | 8,192 + 128 | pipeline (the prompt's FP32 sums) |
+| 2x M5 Max 128 GB | measured 29 us sums | 1,024 + 128 | tensor parallel |
+| 2x M5 Ultra 256 GB | default | 128 + 128 to 8,192 + 128 | pipeline (52.1 vs 57 tok/s on the assumed link) |
+| 2x M5 Ultra 256 GB | measured 29 us / 109 us sums | 1,024 + 128 | tensor parallel (85.7 tok/s) / pipeline |
+| 2x M5 Ultra 256 GB | measured 29 us sums | 8,192 + 128 | pipeline |
+
+On two M5 Ultra the default link prices 97 sums at about 10.3 ms a step, more
+than the weight streaming a half saves. Once a load has measured the pair's
+29 us link, a decode-heavy request is predicted faster in tensor parallel,
+even against the pipeline credited MiMo's recorded 1.37x for speculative
+rounds. That prediction rests on the hardware prior: the M5 Ultra's device
+index puts the whole 17.5 ms step in weights, which is optimistic
+[INFERENCE]; a share probe or served tensor-parallel records correct it. The
+recorded golden layout gains the facts and routed experts beside its recorded
+bytes; its golden plans keep their placements (pipeline, cut 41 and cut 24).
+
 Code map:
 
 - `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/MiMo/TensorParallel/`
+- `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/MiMo/Metadata/MiMoPlacementFamily.swift`
 - `libs/mlx-swift-lm/Libraries/MLXLLM/Models/MiMo/MiMoV26TensorParallel.swift`
 - `libs/darkbloom-cluster-worker/Sources/TensorParallelCheck/MiMoCheck.swift`
 - `libs/darkbloom-cluster-worker/Sources/DarkbloomClusterWorker/Execution/NativeWorkerRuntime.swift` (routes MiMo `tensor_parallel_v1` loads)

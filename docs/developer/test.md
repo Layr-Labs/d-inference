@@ -1344,9 +1344,19 @@ registered artifact for them.
      stop token included), the request and load agreements, the request budget
      and the text-only launch.
 
-   The placement checks (`libs/darkbloom-cluster/Tests/PlacementChecks/run.sh`)
-   confirm that the planner never places MiMo in tensor parallel while its
-   placement family states no tensor-parallel facts.
+   `libs/darkbloom-cluster/Tests/PlacementChecks/run.sh` also runs
+   `MiMoTensorParallelChecks.swift` (model-free). It builds the layout from the
+   registered configuration and inventory and requires its tensor-parallel
+   facts (97 sums a step, `fastest_v1`), a rank's share of exactly
+   84,013,770,176 bytes, the routing prior (10,767,036,288 bytes a step), no
+   facts for the image candidate, the same facts in the golden layout, and the
+   rank's reserve (`MiMoTensorParallelRequestBudget`) in the quote. Under the
+   provider's tensor-parallel-first policy it checks the fastest-plan rule on
+   constructed pairs: 2x M5 Max 128 GB takes tensor parallel where predicted
+   faster and keeps the pipeline inside the margin or for long prompts; 2x M5
+   Ultra 256 GB keeps the pipeline on default link costs; measured links flip
+   the choice both ways, also against a pipeline credited for speculative
+   rounds.
 
 2. Build `darkbloom-cluster-tp-check` and put a source-matched `mlx.metallib`
    beside it ([build](build.md)). Then run the GPU oracles:

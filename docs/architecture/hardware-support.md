@@ -1187,9 +1187,9 @@ pairs the LOAD gate admits.
 | The window's extra rows at depth 2: each sliding ring once more per extra row, one page per layer, the window's rows twice (`MiMoTensorParallelRequestBudget.speculativeWindowBytes`) | per request | 36,347,904 |
 
 With them a rank still fits a 128 GB Mac: 107,281,620,648 bytes (99.9 GiB) with
-the loading headroom, against a 115.2 GiB ceiling; the placement checks plan two
-idle 128 GB M5 Max in tensor parallel now at 99.9 GiB a rank. See
-[speculative rounds](inference.md#mimo-tensor-parallel-speculative-rounds).
+the loading headroom, against a 115.2 GiB ceiling. See
+[speculative rounds](inference.md#mimo-tensor-parallel-speculative-rounds) and
+[placement](inference.md#mimo-tensor-parallel-placement).
 
 ### Additional TP resident allocations
 

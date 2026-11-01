@@ -4509,7 +4509,9 @@ below).
   (3 × 658,546,816 B), named by the pipeline's head inventory
   (`MiMoMTPHeadInventory`) and read through the verified checkpoint beside their
   shard (`MiMoTensorParallelDraftHead`); both ranks compare the inventory's
-  digest before either is ready. The drafter is the product's
+  digest before either is ready. A round's k-th draft runs the k-th head
+  (`MiMoV26MTP.forwardTrusted`), so at the installed depth 2 the third head is
+  held and charged but never runs. The drafter is the product's
   (`MiMoV26MTPAssistant`); its target is a one-layer shell that lends it this
   rank's embedding and vocabulary rows. A proposal is the whole vocabulary's
   argmax from one small sum (`MiMoV26TextModel.readoutArgMax`), so both ranks
@@ -4602,9 +4604,10 @@ and its quoted reserve gains each request's speculative charge (the product
 layout computes it with the SDK's drafter declaration at the allocator's bound;
 `placementQuotesWhatTheLoadGateChargesWithRounds` pins it to the LOAD gate's
 sum). Metadata-only layouts, such as the recorded golden one, carry neither, as
-they carry no `requestAllowance`. Two 128 GB Macs still fit: a rank's LOAD gate
-is 107,281,620,648 B (99.9 GiB) at exact sizes, and the planner asks 99.9 GiB of
-an idle 128 GB Mac in the placement checks. No speed-up is credited until
+they carry no `requestAllowance`. Two 128 GB Macs still fit: in the placement
+checks the planner asks 99.9 GiB of an idle 128 GB Mac, the rank's LOAD gate
+([rank memory](hardware-support.md#mimo-v26-tensor-parallel-rank-memory)) plus
+its tensors' page padding. No speed-up is credited until
 records measure the rounds: when a pair has served MiMo tensor parallel with and
 without them on the same build, a measured table (as GLM's
 `GLM5NextServingMetadata.measuredTensorParallelDecode`, depth 0 against depth 2)
@@ -4636,14 +4639,14 @@ rows back:
 | either pair | measured 109 us sums | 32,768 + 32,768 | speculative pipeline |
 
 Against the plain pipeline (a capability without `pipeline_mtp_v1`, or no
-passing record of the rounds), tensor parallel would also drop the plain
-pipeline's eight batch lanes (it serves one), so feature parity keeps the
-pipeline there, whatever the evidence. On speed alone, two M5 Max are predicted faster in tensor
-parallel even on default link costs for decode-heavy requests (128 + 128:
-3.17 s against 3.50 s), on the prior alone, so they keep the pipeline too, as
-they do inside the 5 % margin (1,024 + 128) or for long prompts; two M5 Ultra
-keep the pipeline on default link costs, where 97 sums cost about 10.3 ms a
-step, more than the weight streaming a half saves.
+passing record of the rounds), tensor parallel would drop the plain pipeline's
+eight batch lanes (it serves one), so feature parity keeps the pipeline there,
+whatever the evidence. On speed alone, two M5 Max are predicted faster in
+tensor parallel even on default link costs for decode-heavy requests (128 +
+128: 3.17 s against 3.50 s), on the prior alone, so they keep the pipeline too,
+as they do inside the 5 % margin (1,024 + 128) or for long prompts; two M5
+Ultra keep the pipeline on default link costs, where 97 sums cost about 10.3 ms
+a step, more than the weight streaming a half saves.
 
 Every tensor-parallel prediction here without served records rests on the
 hardware prior: the M5 Ultra's device index puts the whole 17.5 ms step in

@@ -1,3 +1,4 @@
+import DarkbloomClusterProtocol
 import Foundation
 import MLX
 @testable import MLXLLM
@@ -206,11 +207,12 @@ struct MiMoTensorParallelFloat32PartialTests {
         #expect(perHalfError > 16 * error, "per-half BF16 rows (v1) err \(perHalfError), FP32 rows \(error)")
     }
 
-    /// A speculative round's verify window (`forwardVerifyWindow`, 4 rows after a prompt that
-    /// wrapped the sliding ring) hands each sum the one-token steps' own partials, row for row and
-    /// bit for bit: `o_proj` (one FP32 product per row; the row-exact BF16 kernel serves no rank),
-    /// the dense feed-forward row by row, and the routed one's per-row combine of FP32 expert rows.
-    /// Every window partial is FP32 and holds values BF16 cannot, and the logits are the steps'.
+    /// A speculative round's verify window (`forwardVerifyWindow`, every width from 2 to 4 rows,
+    /// the installed depth's 3 included, after a prompt that wrapped the sliding ring) hands each
+    /// sum the one-token steps' own partials, row for row and bit for bit: `o_proj` (one FP32
+    /// product per row; the row-exact BF16 kernel serves no rank), the dense feed-forward row by
+    /// row, and the routed one's per-row combine of FP32 expert rows. Every window partial is FP32
+    /// and holds values BF16 cannot, and the logits are the steps'.
     @Test func windowPartialsAreTheOneTokenStepsFloat32Partials() throws {
         let (_, ranks, directory) = try Self.models()
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -219,7 +221,8 @@ struct MiMoTensorParallelFloat32PartialTests {
             Device.withDefaultDevice(.cpu) { value.asType(.float32).asArray(Float.self).map(\.bitPattern) }
         }
         let prompt = MLXArray((0 ..< 12).map { Int32(($0 * 37 + 11) % 512) }).reshaped([1, 12])
-        let tokens: [Int32] = [7, 301, 45, 129]
+        let drafted: [Int32] = [7, 301, 45, 129]
+        #expect(ClusterMiMoTensorParallel.speculativeDepth + 1 <= drafted.count, "the installed depth's window is checked")
         for (rankIndex, rank) in ranks.enumerated() {
             // Each rank alone: the sum hands its partial back, so the window and the steps see one function.
             let recorder = Recorder()
@@ -229,34 +232,37 @@ struct MiMoTensorParallelFloat32PartialTests {
             let installed = layers.map(\.tensorParallel)
             for layer in layers { layer.tensorParallel = context }
             defer { for (layer, value) in zip(layers, installed) { layer.tensorParallel = value } }
-            let windowCaches = try rank.model.makeIndependentHistoryCaches()
-            let stepCaches = try rank.model.makeIndependentHistoryCaches()
-            for caches in [windowCaches, stepCaches] {
-                eval(try rank.model.forwardIndependentHistory(inputIDs: prompt, caches: caches).logits)
-            }
-            recorder.summed = []
-            let window = try rank.model.forwardVerifyWindow(
-                inputIDs: MLXArray(tokens).reshaped([1, tokens.count]), caches: windowCaches)
-            eval([window.logits] + recorder.summed)
-            let windowPartials = recorder.summed
-            #expect(windowPartials.count == 2 * layers.count, "rank \(rankIndex): an attention and a feed-forward sum a layer")
-            for (index, partial) in windowPartials.enumerated() {
-                #expect(partial.dtype == .float32 && partial.shape == [1, tokens.count, Self.hidden])
-                let widenedBF16 = partial.asType(.bfloat16).asType(.float32)
-                #expect(any(partial .!= widenedBF16).item(Bool.self), "rank \(rankIndex): window partial \(index) holds only BF16 values")
-            }
-            for (row, token) in tokens.enumerated() {
-                recorder.summed = []
-                let step = try rank.model.forwardIndependentHistory(
-                    inputIDs: MLXArray([token]).reshaped([1, 1]), caches: stepCaches)
-                eval([step.logits] + recorder.summed)
-                #expect(recorder.summed.count == windowPartials.count)
-                for (index, partial) in zip(windowPartials, recorder.summed).enumerated() {
-                    #expect(bits(partial.0[0..., row ..< (row + 1), 0...]) == bits(partial.1),
-                            "rank \(rankIndex), row \(row): window partial \(index) is not the step's")
+            for rows in 2 ... drafted.count {
+                let tokens = Array(drafted.prefix(rows)), label = "rank \(rankIndex), \(rows)-row window"
+                let windowCaches = try rank.model.makeIndependentHistoryCaches()
+                let stepCaches = try rank.model.makeIndependentHistoryCaches()
+                for caches in [windowCaches, stepCaches] {
+                    eval(try rank.model.forwardIndependentHistory(inputIDs: prompt, caches: caches).logits)
                 }
-                #expect(bits(window.logits[0..., row ..< (row + 1), 0...]) == bits(step.logits),
-                        "rank \(rankIndex), row \(row): window logits are not the step's")
+                recorder.summed = []
+                let window = try rank.model.forwardVerifyWindow(
+                    inputIDs: MLXArray(tokens).reshaped([1, rows]), caches: windowCaches)
+                eval([window.logits] + recorder.summed)
+                let windowPartials = recorder.summed
+                #expect(windowPartials.count == 2 * layers.count, "\(label): an attention and a feed-forward sum a layer")
+                for (index, partial) in windowPartials.enumerated() {
+                    #expect(partial.dtype == .float32 && partial.shape == [1, rows, Self.hidden])
+                    let widenedBF16 = partial.asType(.bfloat16).asType(.float32)
+                    #expect(any(partial .!= widenedBF16).item(Bool.self), "\(label): partial \(index) holds only BF16 values")
+                }
+                for (row, token) in tokens.enumerated() {
+                    recorder.summed = []
+                    let step = try rank.model.forwardIndependentHistory(
+                        inputIDs: MLXArray([token]).reshaped([1, 1]), caches: stepCaches)
+                    eval([step.logits] + recorder.summed)
+                    #expect(recorder.summed.count == windowPartials.count)
+                    for (index, partial) in zip(windowPartials, recorder.summed).enumerated() {
+                        #expect(bits(partial.0[0..., row ..< (row + 1), 0...]) == bits(partial.1),
+                                "\(label), row \(row): partial \(index) is not the step's")
+                    }
+                    #expect(bits(window.logits[0..., row ..< (row + 1), 0...]) == bits(step.logits),
+                            "\(label), row \(row): logits are not the step's")
+                }
             }
         }
     }

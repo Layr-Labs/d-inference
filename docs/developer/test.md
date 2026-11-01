@@ -1353,9 +1353,9 @@ registered artifact for them.
      one Mac rounds once, through the decode-expert kernel and MLX's sorted
      gather; every partial a rank sums is FP32, and no `o_proj` or dense
      partial was rounded to BF16 first; the contract v2 strings are pinned; a
-     speculative round's verify window (4 rows after a prompt that wrapped the
-     sliding ring) hands each sum the one-token steps' own FP32 partials, row
-     for row and bit for bit, with logits to match
+     speculative round's verify window (every width from 2 to 4 rows, after a
+     prompt that wrapped the sliding ring) hands each sum the one-token steps'
+     own FP32 partials, row for row and bit for bit, with logits to match
      (`windowPartialsAreTheOneTokenStepsFloat32Partials`);
    - the vocabulary-split head against the whole head;
    - the resident runtime's verified load: each rank reads exactly its shard's
@@ -1380,7 +1380,8 @@ registered artifact for them.
      draft readouts choose the lowest token ID; the window contract
      (`windows=row-exact-one-token-float32-partials-v2`) is in the agreement; and
      the product layout quotes what the LOAD gate charges with rounds on by
-     default: the heads (42 tensors, 1,975,640,448 bytes) and each request's
+     default: the heads (42 tensors, 1,975,640,448 bytes, equal to the LOAD
+     gate's head inventory over the same headers) and each request's
      speculative charge beside the reserve, no speed-up credited
      (`placementQuotesWhatTheLoadGateChargesWithRounds`);
    - what the text row's capability declares of each mode (`ClusterServingFeatures`):

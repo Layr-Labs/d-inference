@@ -283,10 +283,10 @@ struct MiMoTensorParallelSpeculativeTests {
 
     /// Rounds are on by default (`ClusterMiMoTensorParallel`), so the product layout prices a rank as its LOAD
     /// gate charges it with them: the plan holds the three heads whole beside the share (the layout's speculative
-    /// head, 42 tensors of 1,975,640,448 bytes), and the quoted reserve carries each request's speculative charge
-    /// (the drafter's declaration and the window's rows at the profile's 512-token chunk, at the allocator's
-    /// bound) beside the plain reserve: the LOAD gate's sum. No decode speed-up is credited until records
-    /// measure one.
+    /// head, 42 tensors of 1,975,640,448 bytes, the LOAD gate's own head inventory over the same headers), and the
+    /// quoted reserve carries each request's speculative charge (the drafter's declaration and the window's rows
+    /// at the profile's 512-token chunk, at the allocator's bound) beside the plain reserve: the LOAD gate's sum.
+    /// No decode speed-up is credited until records measure one.
     @Test func placementQuotesWhatTheLoadGateChargesWithRounds() throws {
         let configuration = try MiMoTensorParallelTests.fixture("configuration")
         let tensors = try JSONDecoder().decode([MiMoCanonicalTensor].self, from: MiMoTensorParallelTests.fixture("tensor-inventory"))
@@ -295,6 +295,11 @@ struct MiMoTensorParallelSpeculativeTests {
         let family = try #require(layout.tensorParallel?.family)
         let head = try #require(layout.speculativeHead)
         #expect(head.tensorCount == 42 && head.storedBytes == 1_975_640_448 && head.loadedBytes == 1_975_640_448)
+        // The LOAD gate's heads term: the head inventory over the same headers (`MiMoMTPHead.inventory`).
+        let heads = try MiMoMTPHeadInventory(configuration: configuration, headers: tensors.map {
+            .init(name: $0.name, shape: $0.shape, dtype: $0.dtype, byteCount: $0.byteCount)
+        }).head
+        #expect(heads.count == head.tensorCount && heads.reduce(0) { $0 + $1.byteCount } == head.loadedBytes)
         typealias Runtime = MiMoTensorParallelResidentRuntime
         let plan = try MiMoTensorParallelPlan(configuration: configuration)
         let budget = try Runtime.requestBudget(plan: plan, slidingWindow: 128, contextTokens: 65_536, chunkTokens: 512)

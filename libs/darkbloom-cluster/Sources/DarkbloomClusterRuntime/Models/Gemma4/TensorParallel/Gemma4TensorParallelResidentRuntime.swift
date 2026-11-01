@@ -379,9 +379,12 @@ public final class Gemma4TensorParallelResidentRuntime {
         let session = try Gemma4TensorParallelPagedSession(model: model, host: host,
             promptCount: request.promptTokenIDs.count, outputCount: request.outputCount)
         do {
+            // A step checks native errors only: a cancel or deadline must not
+            // end one rank between two collectives (its peer would wait in the
+            // next one), so it rides in the next step's flags (`localStop`).
             let completion = try MLX.withError { error in
                 try decode(request, session: session, deadline: reserved.deadline, channel: channel,
-                    checked: { try error.check(); try control.check(deadline: reserved.deadline) })
+                    checked: { try error.check() })
             }
             try session.retire()
             return completion

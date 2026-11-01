@@ -25,13 +25,17 @@ enum GPTOSSSlidingRing {
     }
 
     /// The position `metadata` gives a ring of `window` positions holding
-    /// `rows` rows; nil unless that ring writes exactly this metadata.
+    /// `rows` rows; nil unless that ring writes exactly this metadata and
+    /// pages can continue it. Pages cap masks and trims by the offset, so an
+    /// unwrapped ring that has evicted rows must still hold at least
+    /// window - 1 rows; the SDK's trim after eviction can leave fewer.
     static func position(of metadata: [String], window: Int, rows: Int) -> Position? {
         guard metadata.count > wrappedField, let offset = Int(metadata[offsetField]),
               let index = Int(metadata[indexField]), let wrapped = Bool(metadata[wrappedField]) else { return nil }
         let position = Position(offset: offset, index: index, wrapped: wrapped)
         guard metadata == Self.metadata(window: window, at: position), offset >= rows,
-              wrapped ? rows == window && index >= 0 && index <= rows : index == rows else { return nil }
+              wrapped ? rows == window && index >= 0 && index <= rows
+                  : index == rows && (offset == rows || rows >= window - 1) else { return nil }
         return position
     }
 }

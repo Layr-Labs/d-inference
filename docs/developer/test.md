@@ -1826,7 +1826,8 @@ swift test --package-path libs/darkbloom-cluster -c release \
 `GPTOSSPagedKVTests` compares exact rows, masks, offsets, ring metadata and
 learned-sink SDPA results with `StandardKVCache` and `RotatingKVCache`. It also
 checks demand allocation, bounded sliding retention, copy/trim isolation, owner
-release, and that sliding pages restore only the ring's own metadata.
+release, and that sliding pages restore only ring metadata they can continue,
+then continue exactly as that ring.
 `GPTOSSStageChecks` checks each page's allocator overhead and sliding repack
 charge. These are CPU correctness checks, not native transport, MXFP4 model
 parity or performance evidence. Retain the existing two-Mac reference comparator

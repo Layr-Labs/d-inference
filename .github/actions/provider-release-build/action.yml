@@ -12,6 +12,13 @@ inputs:
     description: Resolved environment (dev, staging or prod); only disambiguates retained SDK diagnostics names when dev and staging share one run
     required: false
     default: ''
+  shard:
+    description: >-
+      Qualification only. K/N runs shard K of N of the provider suite
+      (scripts/provider-test-shards.py) and retains its executed counts and
+      the suite list for the audit; empty runs the whole suite in this job
+    required: false
+    default: ''
 outputs:
   bin-dir:
     description: Optimized Swift products (release lane only)
@@ -32,11 +39,36 @@ runs:
   using: composite
   steps:
     - name: Validate lane
+      id: lane
       shell: bash
       env:
         LANE: ${{ inputs.lane }}
+        SHARD: ${{ inputs.shard }}
       run: |
+        set -euo pipefail
         case "$LANE" in release|qualification) ;; *) exit 2 ;; esac
+        # Without a shard this job runs the whole suite: Prompt Parity, the
+        # isolated processes and the audio gate included.
+        if [ -z "$SHARD" ]; then
+          printf 'index=\nlast=true\nparity=true\n' >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+        if [ "$LANE" != qualification ] || [[ ! "$SHARD" =~ ^([1-9][0-9]*)/([1-9][0-9]*)$ ]] ||
+           (( BASH_REMATCH[1] > BASH_REMATCH[2] )); then
+          echo "::error::A shard K/N with 1 <= K <= N applies only to the qualification lane, got '$SHARD'"
+          exit 2
+        fi
+        index=${BASH_REMATCH[1]}
+        total=${BASH_REMATCH[2]}
+        # Prompt Parity runs in shard 2 (PARITY_SHARD in
+        # scripts/provider-test-shards.py, as in ci.yml); the last shard runs
+        # the isolated processes (scripts/run-provider-tests.sh) and the audio gate.
+        parity_shard=$(( total < 2 ? total : 2 ))
+        {
+          echo "index=$index"
+          if [ "$index" = "$total" ]; then echo last=true; else echo last=false; fi
+          if [ "$index" = "$parity_shard" ]; then echo parity=true; else echo parity=false; fi
+        } >> "$GITHUB_OUTPUT"
     - name: Verify checked-out source
       shell: bash
       run: |
@@ -91,6 +123,7 @@ runs:
         path: |
           provider-swift/.build
           libs/mlx-swift-lm/.build
+          libs/darkbloom-cluster-worker/.build-native-worker
         key: ${{ steps.keys.outputs.swift-key }}
         restore-keys: ${{ steps.keys.outputs.swift-prefix }}
     - name: Restore unchanged source timestamps
@@ -98,7 +131,7 @@ runs:
       run: |
         python3 scripts/provider-release-cache.py restore-mtimes
         # A generic Swift cache cannot authorize a runtime Metal library.
-        for root in provider-swift/.build libs/mlx-swift-lm/.build; do
+        for root in provider-swift/.build libs/mlx-swift-lm/.build libs/darkbloom-cluster-worker/.build-native-worker; do
           [ ! -d "$root" ] || find "$root" -type f -name mlx.metallib -delete
         done
     - name: Ensure matching Metal compiler is available
@@ -152,11 +185,6 @@ runs:
       with:
         path: ${{ runner.temp }}/metallib-cache
         key: ${{ steps.mlxkey.outputs.key }}
-    - name: Verify public prompt golden vectors
-      if: inputs.lane == 'qualification'
-      id: parity
-      shell: bash
-      run: ./scripts/verify-prompt-parity.sh
     - name: Build SDK test products and stage Metal library
       if: inputs.lane == 'qualification'
       id: test-build
@@ -172,6 +200,31 @@ runs:
         while IFS= read -r macos; do
           cp "$RELEASE_TEST_METALLIB" "$macos/mlx.metallib"
         done < <(find .build -type d -path '*.xctest/Contents/MacOS' -print)
+    # Prompt Parity runs once per qualification, against the test build above,
+    # and records each run's executed count for the shard audit.
+    - name: Verify public prompt golden vectors
+      if: inputs.lane == 'qualification' && steps.lane.outputs.parity == 'true'
+      id: parity
+      shell: bash
+      env:
+        PROMPT_PARITY_SKIP_BUILD: '1'
+      run: |
+        set -euo pipefail
+        report="$RUNNER_TEMP/provider-sdk-shard"
+        mkdir -p "$report"
+        ./scripts/verify-prompt-parity.sh 2>&1 | tee "$report/parity-prompt.log"
+        python3 scripts/provider-test-shards.py counts parity ProductionPromptParityTests \
+          "$report/parity-prompt.log" "$report/shard-parity-prompt.json"
+    - name: Verify pinned Nemotron prompts
+      if: inputs.lane == 'qualification' && steps.lane.outputs.parity == 'true'
+      shell: bash
+      run: |
+        set -euo pipefail
+        report="$RUNNER_TEMP/provider-sdk-shard"
+        mkdir -p "$report"
+        ./scripts/verify-nemotron-prompt-parity.sh 2>&1 | tee "$report/parity-nemotron.log"
+        python3 scripts/provider-test-shards.py counts parity NemotronTemplateParityLiveTests \
+          "$report/parity-nemotron.log" "$report/shard-parity-nemotron.json"
     - name: Prepare MiMo image HTTP fixtures
       if: inputs.lane == 'qualification'
       shell: bash
@@ -184,6 +237,7 @@ runs:
       working-directory: provider-swift
       env:
         MIMO_V26_PROVIDER_LIFETIME_METADATA_TESTS: '1'
+        QUALIFICATION_SHARD: ${{ inputs.shard }}
       run: |
         python3 ../scripts/prepare-mimo-prompt-fixtures.py \
           --output "$RUNNER_TEMP/mimo-sdk-prompt-fixtures" --github-env "$GITHUB_ENV"
@@ -193,36 +247,65 @@ runs:
         export MIMO_PROMPT_REFERENCE_VECTORS="$GITHUB_WORKSPACE/fixtures/prompt-contract/mimo-v26-additional20.json"
         export MIMO_V26_SERIAL_LOAD_FIXTURES="$RUNNER_TEMP/mimo-sdk-provider-fixtures"
         export MIMO_V26_WIRED_METADATA_FIXTURE="$RUNNER_TEMP/mimo-sdk-provider-fixtures/tiny-bf16"
+        # A shard runs only its selection; the last shard also runs the
+        # isolated processes. Each selection writes its executed counts here.
+        if [ -n "$QUALIFICATION_SHARD" ]; then
+          export PROVIDER_TEST_SHARD="$QUALIFICATION_SHARD"
+          export PROVIDER_TEST_REPORT_DIR="$RUNNER_TEMP/provider-sdk-shard"
+        fi
         python3 ../scripts/run-provider-test-watchdog.py \
           --output-dir "$RUNNER_TEMP/provider-sdk-tests" \
           --diagnostic-after-seconds 900 --timeout-seconds 1800 \
           -- ../scripts/run-provider-tests.sh
     - name: Restore pinned MiMo audio codec
-      if: inputs.lane == 'qualification'
+      if: inputs.lane == 'qualification' && steps.lane.outputs.last == 'true'
       uses: actions/cache/restore@1bd1e32a3bdc45362d1e726936510720a7c30a57
       id: mimo-audio-cache
       with:
         path: ${{ runner.temp }}/mimo-audio-source
         key: mimo-audio-source-v2-077033345d80eef3a315e8d394e0589667e80e4cdaba9bc5a7488410c6657265
     - name: Prepare selected MiMo audio fixture
-      if: inputs.lane == 'qualification'
+      if: inputs.lane == 'qualification' && steps.lane.outputs.last == 'true'
       id: mimo-audio-fixtures
       shell: bash
       run: python3 scripts/prepare-mimo-audio-fixtures.py --cache "$RUNNER_TEMP/mimo-audio-source" --output "$RUNNER_TEMP/mimo-audio-fixtures" --github-env "$GITHUB_ENV"
     - name: Cache verified MiMo audio codec
-      if: inputs.lane == 'qualification' && steps.mimo-audio-fixtures.outcome == 'success' && steps.mimo-audio-cache.outputs.cache-hit != 'true'
+      if: inputs.lane == 'qualification' && steps.lane.outputs.last == 'true' && steps.mimo-audio-fixtures.outcome == 'success' && steps.mimo-audio-cache.outputs.cache-hit != 'true'
       uses: actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57
       with:
         path: ${{ runner.temp }}/mimo-audio-source
         key: mimo-audio-source-v2-077033345d80eef3a315e8d394e0589667e80e4cdaba9bc5a7488410c6657265
     - name: Qualify authenticated native MiMo PCM8 audio inference
-      if: inputs.lane == 'qualification'
+      if: inputs.lane == 'qualification' && steps.lane.outputs.last == 'true'
       shell: bash
       working-directory: provider-swift
       env:
         MIMO_V26_SERIAL_NATIVE_TESTS: '1'
         MIMO_V26_MANAGED_AUDIO_PROVIDER_TESTS: '1'
       run: ../scripts/run-nested-suite.sh testNativeAudioRelease --no-parallel
+    # The audit (job qualify-sdk in release-provider.yml) checks each shard's
+    # executed counts against this list: together the shards ran every test.
+    - name: List the provider suite for the shard audit
+      if: inputs.lane == 'qualification' && inputs.shard != ''
+      shell: bash
+      working-directory: provider-swift
+      run: |
+        set -euo pipefail
+        swift test list --skip-build > "$RUNNER_TEMP/provider-sdk-shard/provider-tests.txt"
+    # One name per shard and run, without the attempt: after "Re-run failed
+    # jobs" the audit finds the rerun shard's counts beside the counts of the
+    # shards that passed before, and a full rerun replaces them.
+    - name: Retain shard counts for the audit
+      if: inputs.lane == 'qualification' && inputs.shard != ''
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: provider-sdk-qualification${{ inputs.environment != '' && format('-{0}', inputs.environment) || '' }}-${{ github.sha }}-shard-${{ steps.lane.outputs.index }}
+        path: |
+          ${{ runner.temp }}/provider-sdk-shard/*.json
+          ${{ runner.temp }}/provider-sdk-shard/provider-tests.txt
+        if-no-files-found: error
+        overwrite: true
+        retention-days: 14
     - name: Resolve provider product and packaged names
       if: inputs.lane == 'release'
       shell: bash
@@ -277,8 +360,8 @@ runs:
         # (resume never references it): a release lane adds -<environment>- (so
         # prod deliberately carries -prod-), and a caller that passes no
         # environment (the warm lane) keeps the historical name with no infix and
-        # no empty double dash.
-        name: provider-sdk-test-diagnostics${{ inputs.environment != '' && format('-{0}', inputs.environment) || '' }}-${{ github.sha }}-${{ github.run_attempt }}
+        # no empty double dash. A qualification shard adds -shard-<K>.
+        name: provider-sdk-test-diagnostics${{ inputs.environment != '' && format('-{0}', inputs.environment) || '' }}-${{ github.sha }}-${{ github.run_attempt }}${{ inputs.shard != '' && format('-shard-{0}', steps.lane.outputs.index) || '' }}
         path: ${{ runner.temp }}/provider-sdk-tests
         if-no-files-found: ignore
         retention-days: 14
@@ -296,6 +379,7 @@ runs:
         path: |
           provider-swift/.build
           libs/mlx-swift-lm/.build
+          libs/darkbloom-cluster-worker/.build-native-worker
         key: ${{ steps.keys.outputs.swift-key }}
     - name: Summarize cache reuse
       if: always()

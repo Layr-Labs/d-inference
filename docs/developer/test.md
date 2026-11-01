@@ -997,9 +997,15 @@ are not successful physical runs.
 
 ## SDK 27 Release Qualification
 
-The release `qualify-sdk` job uses SDK 27 / Swift 6.4 and runs independently of
-optimized compilation. Signing requires both successes. GPU suites retain serial
-execution and exclusive-process isolation. A cache hit never skips a test.
+Release SDK qualification uses SDK 27 / Swift 6.4 and runs independently of
+optimized compilation. The `qualify-sdk-shard` jobs run the provider suite in
+five shards on separate Macs, with the shard plan of CI
+(`scripts/provider-test-shards.py`). Shard 2 also runs Prompt Parity, and the
+last shard runs the isolated processes and the audio gate. The `qualify-sdk`
+job runs after every shard passes. It audits the executed counts of each shard
+against the full suite list. Signing requires `qualify-sdk` and optimized
+compilation. GPU suites retain serial execution and exclusive-process isolation.
+A cache hit never skips a test.
 
 `Qwen4StandaloneAdmissionTests` uses scripted memory through the real standalone
 server to cover low-headroom refusal before loading, pending-load cleanup and
@@ -1290,6 +1296,7 @@ make changelog-check
 python3 scripts/test-provider-release-resolution.py
 python3 scripts/test-provider-release-resume.py
 python3 scripts/test-provider-release-publication.py
+python3 scripts/test-provider-cluster-runtime-models.py
 python3 scripts/test-release-dev-branch.py
 python3 scripts/test-provider-release-pipeline.py
 python3 scripts/test-provider-release-artifact.py
@@ -1325,7 +1332,22 @@ prove Apple runtime behavior.
 with verbatim annotations, including multiline opening paragraphs, extra blank
 lines, CRLFs and synthetic SSH/PGP signature armor. It checks exact retained note
 text and payload/provenance digest guards without invoking signing or live
-publication.
+publication. Its cluster runtime rows pin the prod and dev payload bytes without
+`cluster_runtime` to their digests from before the block existed, carry a valid
+block through `stage` in dev and prod, refuse each malformed block (grants and
+parity qualifications included) and a block whose derived approval, grant or
+parity qualification IDs exceed 128 bytes, refuse a registration body over the
+coordinator's 64 KiB limit before staging (65,536 bytes accepted, 65,537
+refused), accept the GLM-5.3-Flash block pinned from the 0.10.5-dev.branch.17
+app, and check that registration sends the block in its canonical form.
+`scripts/test-provider-cluster-runtime-models.py` runs the release's
+model-metadata fetch against a local HTTP registry: the environment's catalog and
+CDN, candidate selection, the manifest and `config.json` checks, each candidate's
+catalog entry (`id`, `input_modalities`), a listed model the catalog lacks (left out
+and named), retries and refusals. It reads no weights
+and uses no network. `scripts/provider-cluster-runtime-facts.sh` has no
+fake-driven test; the release lane runs it on every final signed app and shows
+its result in the job summary.
 
 `scripts/test-provider-release-pipeline.py` and
 `scripts/test-provider-release-resolution.py` pin the routing of
@@ -1338,7 +1360,10 @@ from master and a master push routed to dev. A push to `dev` resolves to
 refused. `scripts/test-provider-release-resume.py` pins the source gate: a dev
 push needs environment `dev` and a verified commit on `dev` ancestry, and the
 tag, master push and dispatch rows keep the master checks. The pipeline test
-pins the final-app check against the self-updater's designated requirement.
+pins the final-app check against the self-updater's designated requirement, and
+the cluster runtime facts step: after the final hashes, no secret, the keychain
+removed first, its failure fatal only when `CLUSTER_RUNTIME_SEND` is true, and
+`prepare` byte for byte today's command when it is not.
 
 `scripts/test-darkbloom-route.py` runs the actual
 [CI runner routing](build.md#ci-runner-routing) shell step against a loopback

@@ -70,6 +70,12 @@ public enum ClusterServiceAgent {
         serviceDirectory.appendingPathComponent("service-health.json")
     }
 
+    /// The heartbeat of the service's coordinator-paired part: a file of its own, never the service's
+    /// (`ClusterService.partEnvironment`).
+    public static func partHealthPath(serviceDirectory: URL) -> URL {
+        serviceDirectory.appendingPathComponent("part-health.json")
+    }
+
     // MARK: - Install
 
     public enum Outcome: String, Sendable, Equatable {

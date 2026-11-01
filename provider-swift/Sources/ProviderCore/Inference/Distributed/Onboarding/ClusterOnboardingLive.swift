@@ -269,11 +269,11 @@ final class OnboardingLive: @unchecked Sendable {
             case .failure(let failure): return .init(lines: failure.lines, failed: true, leaderID: leaderID)
             }
         case .planModels:
-            switch localPlanModels() {
+            switch localPlanModels(scope: request.scope) {
             case .success(let choices): return .init(lines: [], failed: false, leaderID: leaderID, choices: choices)
             case .failure(let failure): return .init(lines: failure.lines, failed: true, leaderID: leaderID)
             }
-        case .adopt: return lines(localAdopt(request.index ?? -1, model: request.model))
+        case .adopt: return lines(localAdopt(request.index ?? -1, model: request.model, scope: request.scope))
         case .serve: return lines(localServe())
         case .stop: return lines(localStop())
         case .readiness:
@@ -597,14 +597,23 @@ final class OnboardingLive: @unchecked Sendable {
     }
 
     func planModels() -> Result<[ClusterOnboardingModelChoice], ClusterOnboardingFailure> {
-        let result = routed(.init(op: .planModels), seconds: 240, acting: false, local: { localPlanModels() }) { $0.choices ?? [] }
+        let request = ClusterControlRequest(op: .planModels, scope: context.settings.servingScope)
+        let result = routed(request, seconds: 240, acting: false, local: { localPlanModels() }) { $0.choices ?? [] }
         if case .success(let listed) = result { lock.withLock { listedChoices = listed } }
         return result
     }
 
+    /// How the cluster will serve the setup being planned: the way a forwarded command names, else the one this run
+    /// was asked for (`darkbloom cluster local`), else the one saved on this Mac. A cluster served through Darkbloom
+    /// is planned for its coordinator (`ClusterPlacementTensorAssistantSelection.discoveryMode`).
+    func planningScope(_ named: ClusterServingScope? = nil) -> ClusterServingScope {
+        named ?? context.settings.servingScope ?? leadership?.scope ?? .publicServing
+    }
+
     /// `keeping`: the mode each model id keeps (`LiveContext.plan`); the service's re-plan after an update passes the
-    /// mode the pair served the model in.
-    func localPlanModels(keeping: [String: ClusterGenerationMode] = [:]) -> Result<[ClusterOnboardingModelChoice], ClusterOnboardingFailure> {
+    /// mode the pair served the model in. `scope`: the way of serving a forwarded command names (`planningScope`).
+    func localPlanModels(keeping: [String: ClusterGenerationMode] = [:],
+                         scope: ClusterServingScope? = nil) -> Result<[ClusterOnboardingModelChoice], ClusterOnboardingFailure> {
         // The plan judges each Mac by the memory its report sampled. A report taken before this Mac stopped the
         // cluster's parts still counts the other Mac's old part (the re-plan after an update stops them first):
         // ask again, so both Macs are priced with that memory given back. 2026-10-22: the other Mac's report was
@@ -621,7 +630,7 @@ final class OnboardingLive: @unchecked Sendable {
         // Folders copied over the cable (no receipt on this Mac) are repaired before the plan describes them.
         ClusterProductModelStore.updateClusterStore(store, providerConfiguration: settings.service.wizard.providerConfiguration,
                                                     accepts: context.workerAcceptsManifest)
-        switch context.plan(peer: peer, keeping: keeping) {
+        switch context.plan(peer: peer, keeping: keeping, coordinator: !planningScope(scope).isLocalOnly) {
         case .failed(let reason): return .failure(.init("Planning failed: \(reason)"))
         case .ready(let options):
             let localName = ClusterPairingProvider.displayName(chipName: context.snapshot().local.mac.chip)
@@ -1036,16 +1045,18 @@ final class OnboardingLive: @unchecked Sendable {
         let model = lock.withLock { listedChoices.indices.contains(index) ? (listedChoices[index].modelID ?? listedChoices[index].title) : nil }
         // The leader may stop both parts (up to 5 minutes to drain), wait for their memory (`releaseWaitSeconds`), plan
         // again and retry the device lease: the reply can take that long.
-        return routed(.init(op: .adopt, index: index, model: model), seconds: 600, acting: true, local: { localAdopt(index) }) { $0.lines }
+        let request = ClusterControlRequest(op: .adopt, index: index, model: model, scope: context.settings.servingScope)
+        return routed(request, seconds: 600, acting: true, local: { localAdopt(index) }) { $0.lines }
     }
 
     /// `model`: the id of the model the list showed at `index` (a choice forwarded from another Mac). When this Mac's
     /// list is gone (its service restarted) or no longer shows that model there, it plans again and adopts it by id.
-    func localAdopt(_ index: Int, model: String? = nil) -> Result<[String], ClusterOnboardingFailure> {
+    /// `scope`: the way of serving the forwarded choice was listed for; every plan made here follows it.
+    func localAdopt(_ index: Int, model: String? = nil, scope: ClusterServingScope? = nil) -> Result<[String], ClusterOnboardingFailure> {
         var index = index
         if let model, lock.withLock({ !choices.indices.contains(index) || choices[index].title != model }) {
             if case .failure(let failure) = localReachMembers({ _ in }) { return .failure(failure) }
-            if case .failure(let failure) = localPlanModels() { return .failure(failure) }
+            if case .failure(let failure) = localPlanModels(scope: scope) { return .failure(failure) }
             guard let found = lock.withLock({ choices.firstIndex { $0.title == model } }) else {
                 return .failure(.init("\(model) is not offered on these Macs any more; run `darkbloom cluster` again to choose."))
             }
@@ -1070,7 +1081,7 @@ final class OnboardingLive: @unchecked Sendable {
             // plan stands (a failed plan replaces neither `choices` nor the decisions `context.adopt` reads): it was
             // priced with less memory than there is now.
             awaitReleased()
-            if case .success(let replanned) = localPlanModels() {
+            if case .success(let replanned) = localPlanModels(scope: scope) {
                 // `localPlanModels` set `choices` in the order of the list it returned. Both are read under one lock,
                 // and the entry must still name the chosen model: a plan forwarded from the other Mac may replace
                 // `choices` meanwhile.

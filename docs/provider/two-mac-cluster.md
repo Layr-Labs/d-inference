@@ -344,11 +344,13 @@ Models that run tensor parallel, and when:
 | MiMo V2.6 Flash | only where the plan predicts it faster than a pipeline | Text only; logprobs in tensor parallel only; one request at a time; see [MiMo V2.6 Flash on the pair](#mimo-v26-flash-on-the-pair) |
 
 For Gemma 4, two big Macs normally keep the pipeline: before a load has
-measured the link the plan prices tensor parallel on a slow assumed link, and
-on a measured Thunderbolt 5 link it is still predicted slower for most
-requests. Two smaller Macs whose decode is limited by memory bandwidth (for
-example 24 or 32 GB M4 Pro) get tensor parallel for short prompts with longer
-answers. The plan's "Tensor parallel or pipeline" lines say which and why
+measured the link the plan prices tensor parallel on a slow assumed link. Once
+the link is measured, short prompts with longer answers can be predicted faster
+in tensor parallel, an estimate from each Mac's device index that a
+tensor-parallel load's own measurement then corrects. Two smaller Macs whose
+decode is limited by memory bandwidth (for example 24 or 32 GB M4 Pro) get
+tensor parallel for short prompts with longer answers. The plan's "Tensor
+parallel or pipeline" lines say which and why
 ([Gemma tensor-parallel placement](../architecture/inference.md#gemma-tensor-parallel-placement)).
 See the [placement planner](../../libs/darkbloom-cluster/Sources/DarkbloomClusterPlacement/ClusterPlacementPlanner.swift)
 and [mode explanation](../../libs/darkbloom-cluster/Sources/DarkbloomClusterPlacement/ClusterRequestMix.swift).

@@ -145,7 +145,7 @@ struct Gemma4TensorParallelRuntimeTests {
                 return (session, last!)
             }
             func token(_ logits: MLXArray) -> Int {
-                let chosen = selection.greedyRows(logits)
+                let chosen = selection.greedyRows(logits).tokens
                 eval(chosen)
                 return Int(chosen.item(Int32.self))
             }
@@ -183,7 +183,7 @@ struct Gemma4TensorParallelRuntimeTests {
                 guard !decoding.isEmpty else { continue }
                 let batched = try Gemma4TensorParallelPagedSession.decode(decoding.map { sessions[$0]! },
                     tokens: decoding.map { tokens[$0].last! }, check: {})
-                let chosen = selection.greedyRows(batched)
+                let chosen = selection.greedyRows(batched).tokens
                 eval(chosen)
                 let rowTokens = chosen.asArray(Int32.self).map(Int.init)
                 for (row, lane) in decoding.enumerated() {
@@ -502,20 +502,21 @@ struct Gemma4TensorParallelRuntimeTests {
     }
 
     /// Greedy: the split argmax carries each rank's stop flag in its one
-    /// collective, so every rank reads the whole row's argmax and both flags.
-    /// Sampled: rank 0 draws from the gathered row with the product's sampler
-    /// (bit for bit the draw one Mac makes from the whole row) and rank 1
-    /// reads it. Greedy logprobs: the split top-k gather's.
+    /// collective, so every rank reads the whole row's argmax, its logit and
+    /// both flags. Sampled: rank 0 draws from the gathered row with the
+    /// product's sampler (bit for bit the draw one Mac makes from the whole
+    /// row) and rank 1 reads it. Greedy logprobs: the split top-k gather's.
     @Test func eachStepsTokenAndStopFlagsAreAgreedInOneCollective() throws {
         let row = Self.logits(seed: 31)
         let argmax = Device.withDefaultDevice(.cpu) { Int(argMax(row, axis: -1).item(Int32.self)) }
+        let maximum = Device.withDefaultDevice(.cpu) { row.max().item(Float.self) }
         let greedy = try Self.splitHead(row) { rank, selection, local -> [Float] in
             let choice = Gemma4TensorParallelChoice(selection: selection, sampler: nil, rank: rank)
             let built = choice.build(local, stop: rank == 1 ? 3 : 0)
             eval(built)
             return built.asArray(Float.self)
         }
-        #expect(greedy == [[Float(argmax), 0, 3], [Float(argmax), 0, 3]])
+        #expect(greedy == [[Float(argmax), 0, 3, maximum], [Float(argmax), 0, 3, maximum]])
         for temperature in [Float(0.7), 1.0, 1.4] {
             let reference = try Device.withDefaultDevice(.cpu) {
                 Int(try Self.sampler(temperature: temperature).sample(row).item(Int32.self))
@@ -534,7 +535,7 @@ struct Gemma4TensorParallelRuntimeTests {
         }
         let logprobs = try Self.splitHead(row) { rank, selection, local in
             try Gemma4TensorParallelChoice(selection: selection, sampler: try Self.sampler(temperature: 0, topLogprobs: 5), rank: rank)
-                .logprobs(local, token: argmax, count: 5)
+                .logprobs(local, token: argmax, maximum: maximum, count: 5)
         }
         for value in logprobs {
             #expect(value.top.map(\.tokenID) == whole.tokenIDs && value.top.count == 5)
@@ -542,6 +543,51 @@ struct Gemma4TensorParallelRuntimeTests {
             #expect(value.logprob == value.top[0].logprob)
         }
         #expect(logprobs[0] == logprobs[1])
+    }
+
+    /// A greedy token's logit is the row's maximum, so its logprob is the
+    /// split top-k gather's first even when another, exactly tied ID leads
+    /// the gather (a softcapped BF16 head ties at the top; which tied IDs a
+    /// rank's partition keeps is not the argmax's rule): both ranks publish
+    /// the same logprobs for it, and refuse alike a gather that does not lead
+    /// with the token's logit.
+    @Test func greedyLogprobsSurviveAnExactlyTiedMaximum() throws {
+        // IDs 10 and 20 tie at the row's maximum on rank 0; rank 1's maximum (ID 300) is lower.
+        var values = [Float](repeating: -1, count: 512)
+        values[10] = 4; values[20] = 4; values[300] = 3.5
+        let row = MLXArray(values).reshaped(1, 512)
+        let whole = try Device.withDefaultDevice(.cpu) {
+            try Gemma4TensorParallelSelection(vocabularyRange: 0 ..< 512, vocabularySize: 512, reduction: nil).topK(row, count: 3)
+        }
+        for count in 1 ... 3 {
+            let ranks = try Self.splitHead(row) { rank, selection, local -> [(Int, ClusterWorkerTokenLogprobs)] in
+                let choice = Gemma4TensorParallelChoice(selection: selection,
+                    sampler: try Self.sampler(temperature: 0, topLogprobs: count), rank: rank)
+                let built = choice.build(local, stop: 0)
+                eval(built)
+                let agreed = try choice.read(built)
+                // The agreed token, then the other tied ID, whichever of the two leads the gather.
+                return try [agreed.token, 30 - agreed.token].map { token in
+                    (token, try choice.logprobs(local, token: token, maximum: agreed.maximum, count: count))
+                }
+            }
+            #expect(ranks.allSatisfy { $0.map { $0.0 } == [10, 20] }, "the split argmax takes the lowest tied ID")
+            for (token, published) in ranks[0] + ranks[1] {
+                #expect(published == ranks[0][0].1, "token \(token), \(count) alternatives")
+                #expect(published.top.count == count && published.logprob == published.top[0].logprob)
+                #expect(abs(published.logprob - whole.logprobs[0]) <= 2e-6 && whole.logprobs[0] == whole.logprobs[1])
+                #expect(published.top.prefix(2).allSatisfy { [10, 20].contains($0.tokenID) && $0.logprob == published.logprob })
+            }
+        }
+        // A maximum the gather does not lead with, a token listed below it, or no maximum (a sampled
+        // step): refused on both ranks alike.
+        let refused = try Self.splitHead(row) { rank, selection, local -> [Bool] in
+            let choice = Gemma4TensorParallelChoice(selection: selection, sampler: try Self.sampler(temperature: 0, topLogprobs: 3),
+                                                    rank: rank)
+            let cases: [(token: Int, maximum: Float?)] = [(10, 3.5), (300, 4), (10, nil)]
+            return cases.map { (try? choice.logprobs(local, token: $0.token, maximum: $0.maximum, count: 3)) == nil }
+        }
+        #expect(refused == [[true, true, true], [true, true, true]])
     }
 
     // MARK: - Verified load

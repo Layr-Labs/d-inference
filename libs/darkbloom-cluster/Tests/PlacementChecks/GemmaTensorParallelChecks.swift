@@ -204,6 +204,12 @@ private func checkGemmaFastestPlan(_ layout: ClusterModelLayout, _ checks: Place
     let fast = try plan(ultras, first(1_024, 128), fastLink)
     checks.require("Gemma fastest plan: 2x M5 Ultra, 1,024 + 128, a measured 5 us link: tensor parallel, and the line says the predicted gain",
         tensor(fast) && (ClusterPlacementExplanation.deploymentReason(fast) ?? "").hasPrefix("Tensor parallel: predicted"))
+    // Without a share probe the device index credits about half of the M5 Ultra's 11.1 ms step to weights (a rank
+    // halves it); `mainnet/gemma-tp-plan.md` §3.2 infers 1.4-2.0 ms. So a decode-heavy request on the measured link is
+    // predicted faster in tensor parallel (an owner decision: the planner's prior, pinned here, not a measurement).
+    let ultraShort = try plan(ultras, first(128, 128), measuredLink), short = predicted(ultraShort)
+    checks.require("Gemma fastest plan: 2x M5 Ultra, 128 + 128, the measured 29 us link, no share probe: tensor parallel on the device-index prior (\(short.tensor) s vs \(short.other) s)",
+        tensor(ultraShort) && short.tensor < short.other * 0.95 && short.tensor > short.other * 0.85)
     let small = try pros(32)
     let smallDefault = try plan(small, first(1_024, 128), .unmeasured)
     let smallMeasured = try plan(small, first(1_024, 128), measuredLink), smallSlow = try plan(small, first(1_024, 128), slowLink)

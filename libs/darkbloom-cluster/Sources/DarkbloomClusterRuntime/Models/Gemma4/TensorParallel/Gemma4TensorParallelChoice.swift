@@ -3,8 +3,8 @@ import MLX
 
 /// How each step's token is chosen on every rank, built into the step's own
 /// evaluation (the `select` of `Gemma4TensorParallelPagedSession.prefill`
-/// and `decode`). The result is `[1 + ranks]` FP32: the agreed token, then
-/// each rank's stop flag.
+/// and `decode`). The result is FP32: the agreed token, then each rank's stop
+/// flag, then (greedy only) the token's logit, the row's maximum.
 ///
 /// - Greedy (no sampler, or one that neither draws nor depends on history:
 ///   a greedy request asking for logprobs): the vocabulary-split argmax, with
@@ -34,7 +34,7 @@ struct Gemma4TensorParallelChoice {
         let flag = MLXArray([stop])
         guard gathersRow, let sampler else {
             let chosen = selection.greedy(logits, carrying: flag)
-            return concatenated([chosen.token.asType(.float32), chosen.flags], axis: 0)
+            return concatenated([chosen.token.asType(.float32), chosen.flags, chosen.maximum], axis: 0)
         }
         let row = selection.gather(logits)
         let local = rank == 0 ? sampler.sample(row) : argMax(row, axis: -1)
@@ -42,23 +42,29 @@ struct Gemma4TensorParallelChoice {
         return concatenated([slots[0 ..< 1]] + (0 ..< ranks).map { slots[(2 * $0 + 1) ..< (2 * $0 + 2)] }, axis: 0)
     }
 
-    /// The agreed token and every rank's flag of an evaluated `build`.
-    func read(_ agreed: MLXArray) throws -> (token: Int, flags: [Float]) {
+    /// The agreed token, every rank's flag and (greedy only) the token's logit
+    /// of an evaluated `build`.
+    func read(_ agreed: MLXArray) throws -> (token: Int, flags: [Float], maximum: Float?) {
         let values = agreed.asArray(Float.self)
-        guard values.count == 1 + ranks, let token = values.first, token >= 0, token == token.rounded(),
-              Int(token) < selection.vocabularySize else {
+        guard values.count == 1 + ranks + (gathersRow ? 0 : 1), let token = values.first, token >= 0,
+              token == token.rounded(), Int(token) < selection.vocabularySize else {
             throw ProbeError("Gemma tensor-parallel selection has a wrong shape or token")
         }
-        return (Int(token), Array(values.dropFirst()))
+        return (Int(token), Array(values[1 ... ranks]), gathersRow ? nil : values[ranks + 1])
     }
 
     /// A greedy step's logprobs (`count` alternatives) from the vocabulary-
     /// split top-k gather: one collective on every rank, evaluated now. The
-    /// chosen token is the top candidate (both break ties by the lowest ID).
-    func logprobs(_ logits: MLXArray, token: Int, count: Int) throws -> ClusterWorkerTokenLogprobs {
+    /// greedy `token`'s logit is the row's `maximum` (agreed with it), so its
+    /// logprob is the gather's first even when an exactly tied token leads
+    /// the gather: which of a rank's tied IDs `topK` keeps is the partition's
+    /// order, not the argmax's. Every rank holds the same gather, token and
+    /// maximum, so a refusal ends both ranks alike.
+    func logprobs(_ logits: MLXArray, token: Int, maximum: Float?, count: Int) throws -> ClusterWorkerTokenLogprobs {
         let top = try selection.topK(logits, count: count)
-        guard top.tokenIDs.first == token else {
-            throw ProbeError("Gemma tensor-parallel greedy token is not its row's top candidate")
+        guard let maximum, top.logits.first == maximum,
+              top.tokenIDs.firstIndex(of: token).map({ top.logits[$0] == maximum }) ?? true else {
+            throw ProbeError("Gemma tensor-parallel logprobs do not lead with the greedy token's logit")
         }
         return .init(logprob: top.logprobs[0],
             top: zip(top.tokenIDs, top.logprobs).map { ClusterWorkerTokenLogprobs.Alternative(tokenID: $0, logprob: $1) })

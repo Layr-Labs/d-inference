@@ -31,19 +31,21 @@ public struct Gemma4TensorParallelSelection {
     }
 
     /// `greedy`, with every rank's `flags` (`[n]` FP32, the same `n` on every
-    /// rank) carried in the same collective: the token and all ranks' flags in
-    /// rank order (`[size n]`). Not evaluated.
-    public func greedy(_ logits: MLXArray, carrying flags: MLXArray) -> (token: MLXArray, flags: MLXArray) {
+    /// rank) carried in the same collective: the token, its logit (the row's
+    /// maximum, `[1]` FP32) and all ranks' flags in rank order (`[size n]`).
+    /// Not evaluated.
+    public func greedy(_ logits: MLXArray, carrying flags: MLXArray) -> (token: MLXArray, maximum: MLXArray, flags: MLXArray) {
         let chosen = argmaxAcrossRanks(logits.asType(.float32), carrying: flags.asType(.float32).reshaped(-1))
-        return (chosen.token, chosen.carried!)
+        return (chosen.token, chosen.maximum, chosen.carried!)
     }
 
     /// `greedy` of every row of `logits` (`[B, rows]`, one row a batch lane):
-    /// `[B]` int32 tokens from one collective of two values a row and rank,
-    /// with `greedy`'s tie rule. Not evaluated.
-    public func greedyRows(_ logits: MLXArray) -> MLXArray {
+    /// `[B]` int32 tokens and their `[B]` FP32 logits (each row's maximum)
+    /// from one collective of two values a row and rank, with `greedy`'s tie
+    /// rule. Not evaluated.
+    public func greedyRows(_ logits: MLXArray) -> (tokens: MLXArray, maxima: MLXArray) {
         let values = logits.asType(.float32)
-        guard let reduction else { return argMax(values, axis: -1).asType(.int32) }
+        guard let reduction else { return (argMax(values, axis: -1).asType(.int32), values.max(axis: -1)) }
         let width = values.dim(0)
         let local = stacked([values.max(axis: -1),
             argMax(values, axis: -1).asType(.float32) + MLXArray(Float(vocabularyRange.lowerBound))], axis: 1)
@@ -55,7 +57,7 @@ public struct Gemma4TensorParallelSelection {
             best = which(better, all[0..., 2 * other], best)
             token = which(better, all[0..., 2 * other + 1], token)
         }
-        return token.asType(.int32)
+        return (token.asType(.int32), best)
     }
 
     /// Every rank's `slots` (`[n]` FP32) in rank order (`[size n]`), each rank
@@ -140,8 +142,11 @@ public struct Gemma4TensorParallelSelection {
     /// Each rank's local maximum, its token ID and `extra` in slots of a
     /// `(2 + extra) size` collective; the strictly greater value wins, so ties
     /// go to the lower rank, which holds the lower IDs.
-    private func argmaxAcrossRanks(_ values: MLXArray, carrying extra: MLXArray?) -> (token: MLXArray, carried: MLXArray?) {
-        guard let reduction else { return (argMax(values, axis: -1).asType(.int32), extra) }
+    private func argmaxAcrossRanks(_ values: MLXArray, carrying extra: MLXArray?)
+        -> (token: MLXArray, maximum: MLXArray, carried: MLXArray?) {
+        guard let reduction else {
+            return (argMax(values, axis: -1).asType(.int32), values.max(axis: -1).reshaped(1), extra)
+        }
         let width = 2 + (extra?.dim(0) ?? 0)
         let localIndex = argMax(values, axis: -1).asType(.float32) + MLXArray(Float(vocabularyRange.lowerBound))
         let mine = concatenated([values.max(axis: -1), localIndex] + (extra.map { [$0] } ?? []), axis: 0)
@@ -156,6 +161,6 @@ public struct Gemma4TensorParallelSelection {
         let carried = extra.map { _ in
             concatenated((0 ..< reduction.size).map { all[(width * $0 + 2) ..< (width * ($0 + 1))] }, axis: 0)
         }
-        return (token.asType(.int32).reshaped(1), carried)
+        return (token.asType(.int32).reshaped(1), best.reshaped(1), carried)
     }
 }

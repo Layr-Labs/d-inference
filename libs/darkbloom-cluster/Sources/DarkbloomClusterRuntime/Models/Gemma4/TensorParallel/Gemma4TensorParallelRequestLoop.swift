@@ -99,7 +99,8 @@ struct Gemma4TensorParallelRequestLoop {
                             logprobs = drawn
                         }
                     } else {
-                        let gathered = try choice.logprobs(step.logits, token: agreed.token, count: count)
+                        let gathered = try choice.logprobs(step.logits, token: agreed.token, maximum: agreed.maximum,
+                                                           count: count)
                         logprobs = rank == 0 ? gathered : nil
                     }
                 }

@@ -136,11 +136,14 @@ final class Gemma4TensorParallelBatchExecutor<Reservation: QwenTensorParallelBat
         let sampled = choices.indices.filter { choices[$0].gathersRow }
         let greedy = choices.indices.filter { !choices[$0].gathersRow }
         var tokens = [Int](repeating: 0, count: width)
+        var maxima = [Float?](repeating: nil, count: width)
         if !greedy.isEmpty {
             let rows = greedy.count == width ? logits : logits[MLXArray(greedy.map(Int32.init))]
             let agreed = selection.greedyRows(rows)
-            eval(agreed); try check()
-            for (row, token) in zip(greedy, agreed.asArray(Int32.self)) { tokens[row] = Int(token) }
+            eval(agreed.tokens, agreed.maxima); try check()
+            for (row, (token, maximum)) in zip(greedy, zip(agreed.tokens.asArray(Int32.self), agreed.maxima.asArray(Float.self))) {
+                tokens[row] = Int(token); maxima[row] = maximum
+            }
         }
         if !sampled.isEmpty {
             let rows = selection.gather(sampled.count == width ? logits : logits[MLXArray(sampled.map(Int32.init))])
@@ -165,7 +168,8 @@ final class Gemma4TensorParallelBatchExecutor<Reservation: QwenTensorParallelBat
                 if choices[index].gathersRow {
                     lane.pendingLogprobs = rank == 0 ? sampler.takePendingLogprobs() : nil
                 } else {
-                    let captured = try choices[index].logprobs(logits[index ..< index + 1], token: tokens[index], count: count)
+                    let captured = try choices[index].logprobs(logits[index ..< index + 1], token: tokens[index],
+                                                               maximum: maxima[index], count: count)
                     lane.pendingLogprobs = rank == 0 ? captured : nil
                 }
             }

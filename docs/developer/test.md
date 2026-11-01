@@ -1260,7 +1260,7 @@ neither real-weight numerics, a pair qualification nor speed.
    - the share probe, timed on one rank with every sum local;
    - each step's choice: greedy with both stop flags, sampled from the gathered
      row exactly as the product's sampler draws, and greedy logprobs from the
-     split top-k;
+     split top-k, also at an exactly tied maximum whose other ID leads the gather;
    - the verified load's cut of every text tensor, and its refusals;
    - the load agreement's fields;
    - the product's Gemma layout with its tensor-parallel facts: big Macs keep
@@ -1276,7 +1276,9 @@ neither real-weight numerics, a pair qualification nor speed.
    must be quoted. Under the provider's tensor-parallel-first policy it checks the
    fastest-plan rule on constructed pairs: 2x M5 Ultra 256 GB keeps the pipeline on
    default link costs; 2x M4 Pro 24 or 32 GB takes tensor parallel where predicted
-   faster; measured links flip the choice both ways.
+   faster; measured links flip the choice both ways. It also pins the device-index
+   prior's choice for 2x M5 Ultra on the measured link: tensor parallel for a
+   128 + 128 request.
 
    The `Gemma4TensorParallelTests` suite covers:
 

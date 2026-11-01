@@ -2,46 +2,218 @@ import DarkbloomClusterPlacement
 import DarkbloomClusterProtocol
 import Foundation
 
-/// MiMo V2.6 Flash's row lists `tensor_parallel_v1` (its resident runtime
-/// serves it) while its placement family states no tensor-parallel facts, so
-/// the layout built from the registered row's own metadata (configuration and
-/// 1,732-tensor inventory) carries no tensor-parallel block, and no policy
-/// places MiMo in tensor parallel: not tensor parallel first on a fast keyed
-/// link nor on an unmeasured one, not the comparison, and the developer's
-/// forced mode is refused. The facts arrive with the fastest-plan rule.
-/// Registered metadata and constructed Macs only.
-func checkMiMoTensorParallelUnplaced(_ checks: PlacementChecks) throws {
+/// MiMo V2.6 Flash's tensor-parallel facts and the fastest-plan rule
+/// (`ClusterTensorParallelChoice.fastest`, owner policy 2026-11-01): the
+/// layout built from the registered row's own metadata (configuration and
+/// 1,732-tensor inventory) carries the plan, its exact per-rank bytes and the
+/// routing prior; under the provider's tensor-parallel-first policy a MiMo
+/// pair is placed in tensor parallel only where the planner predicts it faster
+/// than the pipeline. Constructed Macs, registered metadata and constructed
+/// links: no model, no GPU, no network.
+func checkMiMoTensorParallel(golden: URL, _ checks: PlacementChecks) throws {
     let libraries = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
         .deletingLastPathComponent().deletingLastPathComponent()
     let fixtures = libraries.appendingPathComponent("darkbloom-cluster-worker/Tests/CapabilityChecks/Fixtures")
     struct Tensor: Decodable { let name: String; let shape: [Int]; let sourceDType: String; let byteCount: Int }
     let configuration = try Data(contentsOf: fixtures.appendingPathComponent("registered-mimo-v26-flash-mopd.configuration.json"))
-    let inventory = try JSONDecoder().decode([Tensor].self,
-        from: Data(contentsOf: fixtures.appendingPathComponent("registered-mimo-v26-flash-mopd.tensor-inventory.json")))
-    let layout = try ClusterPlacementLayouts.layout(configuration: configuration, tensors: inventory.map {
-        ClusterPlacementStoredTensor(name: $0.name, byteCount: $0.byteCount, dtype: $0.sourceDType, shape: $0.shape)
-    })
-    checks.require("mimo tp: the registered row lists tensor_parallel_v1, and its layout states no tensor-parallel facts",
+    let tensors = try JSONDecoder().decode([Tensor].self,
+        from: Data(contentsOf: fixtures.appendingPathComponent("registered-mimo-v26-flash-mopd.tensor-inventory.json"))).map {
+            ClusterPlacementStoredTensor(name: $0.name, byteCount: $0.byteCount, dtype: $0.sourceDType, shape: $0.shape)
+        }
+    let layout = try ClusterPlacementLayouts.layout(configuration: configuration, tensors: tensors)
+    try checkMiMoLayout(layout, configuration: configuration, tensors: tensors, golden: golden, checks)
+    let priced = try ClusterPlacementLayouts.layout(configuration: configuration, tensors: tensors,
+        tensorParallelAllocationBound: { $0 + 16_384 })
+    try checkMiMoRequestAllowance(priced, configuration: configuration, checks)
+    try checkMiMoFastestPlan(priced, checks)
+}
+
+/// What one rank holds of a layout's tensor-parallel facts: every part's
+/// replicated bytes and half its divided bytes.
+private func mimoRankBytes(_ layout: ClusterModelLayout) -> Int {
+    guard let tp = layout.tensorParallel else { return 0 }
+    let parts = Array(zip(tp.layerDividedBytes, tp.layerReplicatedBytes))
+        + [(tp.ingressDividedBytes, tp.ingressReplicatedBytes), (tp.egressDividedBytes, tp.egressReplicatedBytes)]
+    return parts.reduce(0) { $0 + $1.1 + ($1.0 + 1) / 2 }
+}
+
+private func checkMiMoLayout(_ layout: ClusterModelLayout, configuration: Data, tensors: [ClusterPlacementStoredTensor],
+                             golden: URL, _ checks: PlacementChecks) throws {
+    let family = layout.tensorParallel?.family
+    checks.require("mimo tp: the registered row lists tensor_parallel_v1, planned as mimo_v26_heads_and_expert_channels_v1 on two ranks, chosen only where faster",
         layout.runtimeModelID == "registered_mimo_v26_flash_mopd" && layout.generationModes.contains(.tensorParallel)
-            && layout.tensorParallel == nil)
-    let speed = modelled(floorMs: 2, bandwidthGBs: 800, weightBytes: layout.wholeModelLoadedBytes, prefill: 300)
-    let devices = try [SyntheticMac.idle(256).device("first", speed: speed), SyntheticMac.idle(256).device("second", speed: speed)]
-    var compare = ClusterPlacementPolicy()
-    compare.promptTokens = 1024; compare.outputTokens = 128
-    var first = compare
-    first.tensorParallelFirst = true; first.tensorParallelAssumesUnmeasuredLink = true
-    let fast = linkCosts(reductionMicroseconds: 10)
-    for (label, policy, link) in [("tensor parallel first on a fast keyed link", first, fast),
-                                  ("tensor parallel first on an unmeasured link", first, ClusterLinkCosts.unmeasured),
-                                  ("the comparison on a fast keyed link", compare, fast)] {
-        let result = try ClusterPlacementPlanner.plan(devices: devices, layout: layout, policy: policy, link: link)
-        checks.require("mimo tp: \(label): a pipeline mode, never tensor parallel (\(result.chosen?.mode.rawValue ?? "-"))",
-            result.chosen.map { !$0.mode.usesTensorParallelDecode } == true && result.tensorParallel == nil)
+            && family?.plan == "mimo_v26_heads_and_expert_channels_v1" && family?.ranks == [2] && family?.choice == .fastest)
+    checks.require("mimo tp: two sums a layer and one a step (97 a decode step), one FP32 hidden row of 16,384 bytes a token each; own KV heads; no padding",
+        family?.reductionsPerLayer == 2 && family?.reductionsPerStep == 1 && family?.partialBytesPerToken == 16_384
+            && family?.layerPartialBytesPerToken == nil && family?.stateDividesByHeads == true
+            && family?.requestAllowance == nil && family?.speculativeHead == nil
+            && layout.tensorParallel?.reductionsPerStep(layerCount: layout.layerCount) == 97)
+    // The plan's own cut (`MiMoTensorParallelTests`, the verified load's shard bytes): 84,013,770,176 bytes a rank.
+    let plan = try MiMoTensorParallelPlan(configuration: configuration)
+    let planned = try tensors.reduce(0) { total, tensor in
+        switch try plan.disposition(of: tensor.name) {
+        case .excluded: return total
+        case .replicated: return total + tensor.byteCount
+        case .divided: return total + tensor.byteCount / plan.size
+        }
     }
-    var forced = compare
-    forced.forcedMode = .tensorParallel
-    checks.refuses("mimo tp: the developer's forced tensor parallel is refused without the facts",
-                   because: "no tensor parallel mode") {
-        _ = try ClusterPlacementPlanner.plan(devices: devices, layout: layout, policy: forced, link: fast)
+    checks.require("mimo tp: a rank's share is exactly the plan's cut, 84,013,770,176 bytes (the embedding whole, half the head's vocabulary rows)",
+        mimoRankBytes(layout) == 84_013_770_176 && planned == 84_013_770_176)
+    let routed = layout.routedExperts
+    checks.require("mimo tp: 8 of 256 experts over 160,859,947,008 bytes, every byte divided; a decode step reads 10,767,036,288 bytes, \(ClusterHardwarePrior.dividedDecodeFraction(layout)) of it divided",
+        routed?.routing == ClusterExpertRouting(selected: 8, experts: 256) && routed?.loadedBytes == 160_859_947_008
+            && routed?.tensorParallelDividedBytes == 160_859_947_008
+            && ClusterHardwarePrior.decodeBytesPerToken(layout) == 10_767_036_288
+            && ClusterHardwarePrior.dividedDecodeFraction(layout) > 0.99)
+    // The private image candidate holds the vision tower on rank 0 and stays a pipeline candidate.
+    let candidate = try ClusterPlacementLayouts.layout(configuration: configuration, tensors: tensors,
+        runtimeProfile: ClusterMiMoImageCandidate.profileID)
+    checks.require("mimo tp: the image candidate's layout states no tensor-parallel facts and lists no tensor parallel",
+        candidate.tensorParallel == nil && !candidate.generationModes.contains(.tensorParallel))
+    // The golden layout (read from the real headers on both Macs) carries the same facts beside its recorded bytes.
+    let recorded = try ClusterModelLayout.decode(Data(contentsOf: golden.appendingPathComponent("layouts/mimo-v2.6-flash-mopd-2026-09-28-r1.json")))
+    checks.require("mimo tp: the golden layout carries the family's tensor-parallel facts and routed experts beside the bytes the real headers recorded",
+        recorded.tensorParallel == layout.tensorParallel && recorded.routedExperts == layout.routedExperts
+            && recorded.layers.map(\.weights) == layout.layers.map(\.weights) && recorded.ingress == layout.ingress
+            && recorded.egress == layout.egress && recorded.excluded == layout.excluded)
+}
+
+/// A product layout carries the rank's native reserve (`MiMoTensorParallelRequestBudget`):
+/// its own paged history and work, the activation floor, the freed-buffer cache and eight sealed frames.
+private func checkMiMoRequestAllowance(_ priced: ClusterModelLayout, configuration: Data, _ checks: PlacementChecks) throws {
+    let plan = try MiMoTensorParallelPlan(configuration: configuration)
+    let allowance = priced.tensorParallel?.family.requestAllowance
+    let budget = try MiMoTensorParallelRequestBudget.derive(plan: plan, slidingWindow: 128, contextTokens: 65_536,
+        chunkTokens: 512, allocationBound: { $0 + 16_384 })
+    checks.require("mimo tp allowance: the layout quotes the rank's budget at the profile's longest request (65,536 tokens, 512-token chunks): request \(budget.requestBytes), rank \(budget.rankBytes), reserved \(budget.allowance.reservedBytes)",
+        allowance == budget.allowance && allowance?.maximumContextTokens == 65_536 && allowance?.maximumChunkTokens == 512)
+    checks.require("mimo tp allowance: the conservative 5.5 GiB activation floor and the 4 GiB freed-buffer cache are charged once beside the request",
+        budget.rankBytes == 5_905_580_032 + 4_294_967_296 + budget.allowance.collectiveScratchBytes
+            && budget.allowance.reservedBytes == budget.requestBytes + budget.rankBytes)
+    checks.require("mimo tp allowance: eight sealed frames of a chunk's partial (512 x 16,384 bytes and the seal)",
+        budget.allowance.maximumCollectivePayloadBytes == 512 * 16_384
+            && budget.allowance.collectiveScratchBytes == 8 * (budget.allowance.maximumCollectiveFrameBytes + 16_384))
+    // The planner quotes a rank at its exact shard plus that reserve.
+    let devices = try [SyntheticMac.idle(256).device("a"), SyntheticMac.idle(256).device("b")]
+    var forced = ClusterPlacementPolicy(); forced.forcedMode = .tensorParallel
+    let rank = try ClusterPlacementPlanner.plan(devices: devices, layout: priced, policy: forced).chosen?.ranks.first
+    let pages = (priced.layers.reduce(0) { $0 + $1.weights.tensorCount } + priced.ingress.tensorCount + priced.egress.tensorCount) * SyntheticMac.page
+    checks.require("mimo tp quote: a rank's weights are its exact 84,013,770,176-byte shard in whole pages, and its request need covers the reserve (need \(rank?.needBytes ?? 0))",
+        rank?.weightsBytes == 84_013_770_176 + pages && (rank?.requestNeedBytes ?? 0) >= budget.allowance.reservedBytes)
+}
+
+/// The fastest-plan rule on constructed pairs, under the provider's own
+/// first-placement policy (`ClusterPlacementFlow.decide`: tensor parallel
+/// first, an unmeasured link assumed).
+private func checkMiMoFastestPlan(_ layout: ClusterModelLayout, _ checks: PlacementChecks) throws {
+    // Each Mac's whole-model rates and device index (`qmm_h4096_b4_g64_x16_v1`). M5 Ultra 256 GB: MiMo alone on the
+    // cluster path, 57 tok/s (MTP off, 2026-10-13); 1,000 prefill tok/s (none is recorded on an M5 Ultra; the plan
+    // estimates 1,000-2,000). M5 Max 128 GB, which cannot hold MiMo alone: the stage probes' 0.50 ms a layer and
+    // 1.19 ms over 48 layers (40 tok/s), and the M3 Ultra + M5 Max pair's 380 prefill tok/s rounded to 400.
+    // Indices: the M5 Ultra's measured one; the recorded M4 Max index stands in for the M5 Max. Inputs only.
+    func mac(_ label: String, _ gib: Double, chip: String, decode: Double, prefill: Double, index: (Double, Double)) throws -> ClusterPlacementDevice {
+        var profile = try SyntheticMac.idle(gib).profile(chip: chip)
+        profile.speedIndex = .init(chip: chip, osBuild: profile.osBuild, benchmark: "qmm_h4096_b4_g64_x16_v1",
+            prefillIndex: index.1, decodeIndex: index.0)
+        return .init(label: label, profile: profile, speed: measured(prefill: prefill, decode: decode))
     }
+    let ultras = try ["a", "b"].map { try mac($0, 256, chip: "Apple M5 Ultra", decode: 57, prefill: 1_000, index: (46_409, 2_337_768)) }
+    let maxes = try ["a", "b"].map { try mac($0, 128, chip: "Apple M5 Max", decode: 40, prefill: 400, index: (21_100, 520_000)) }
+    // The pair's own probe (two M5 Ultra, keyed JACCL, 2026-10-31): sealed all-sum 29 us at 16 KB, 3,919 us at 32 MiB.
+    func probe(allSum: Int, large: Int) -> ClusterLinkCosts {
+        ClusterLinkCosts(probe: ClusterWorkerLinkProbe(transport: "jaccl", keyed: true, pointToPointSmallBytes: 64,
+            pointToPointSmallMicroseconds: 180, pointToPointLargeBytes: 4 << 20, pointToPointLargeMicroseconds: 2_502,
+            allSumSmallBytes: 16_384, allSumSmallMicroseconds: allSum, allSumLargeBytes: 32 << 20, allSumLargeMicroseconds: large),
+            measuredUTC: "2026-10-31T00:00:00Z")!
+    }
+    let measuredLink = probe(allSum: 29, large: 3_919), slowLink = probe(allSum: 109, large: 9_000)
+    func first(_ prompt: Int, _ outputs: Int) -> ClusterPlacementPolicy {
+        var p = ClusterPlacementPolicy(); p.promptTokens = prompt; p.outputTokens = outputs
+        p.tensorParallelFirst = true; p.tensorParallelAssumesUnmeasuredLink = true
+        return p
+    }
+    func plan(_ devices: [ClusterPlacementDevice], _ policy: ClusterPlacementPolicy, _ link: ClusterLinkCosts) throws -> ClusterPlacementResult {
+        try ClusterPlacementPlanner.plan(devices: devices, layout: layout, policy: policy, link: link)
+    }
+    func tensor(_ r: ClusterPlacementResult) -> Bool { r.chosen?.mode == .tensorParallel && r.tensorParallel?.verdict == .chosen }
+    func pipeline(_ r: ClusterPlacementResult) -> Bool {
+        r.chosen.map { !$0.mode.usesTensorParallelDecode } == true && r.tensorParallel?.verdict == .predictedSlower
+    }
+    func predicted(_ r: ClusterPlacementResult) -> (tensor: Double, other: Double) {
+        (r.tensorParallel?.tensorParallel?.prediction(.rested).requestSeconds ?? .infinity, r.tensorParallel?.bestOtherSeconds ?? .infinity)
+    }
+    func times(_ r: ClusterPlacementResult) -> String {
+        String(format: "%.2f s vs %.2f s", predicted(r).tensor, predicted(r).other)
+    }
+
+    // 1. Two M5 Max 128 GB, which cannot hold MiMo alone, default link costs: tensor parallel where it is predicted
+    // faster by the margin (decode-heavy requests), a pipeline where not (within the margin, or the prompt's FP32 sums).
+    let alone = try plan(maxes, first(128, 128), .unmeasured).alone
+    checks.require("mimo fastest plan: neither M5 Max 128 GB can hold MiMo alone",
+        alone.count == 2 && alone.allSatisfy { if case .never = $0.fit { return true } else { return false } })
+    for (prompt, outputs) in [(128, 128), (1_024, 1_024)] {
+        let result = try plan(maxes, first(prompt, outputs), .unmeasured), t = predicted(result)
+        checks.require("mimo fastest plan: 2x M5 Max 128 GB, default link costs, \(prompt) + \(outputs): tensor parallel, predicted faster by the margin (\(times(result)))",
+            tensor(result) && t.tensor < t.other * 0.95 && result.chosen?.ranks.allSatisfy({ $0.fit == .now }) == true)
+    }
+    let maxNearTie = try plan(maxes, first(1_024, 128), .unmeasured), nearTie = predicted(maxNearTie)
+    checks.require("mimo fastest plan: 2x M5 Max 128 GB, default link costs, 1,024 + 128: a pipeline, tensor parallel faster but within the margin (\(times(maxNearTie)))",
+        pipeline(maxNearTie) && nearTie.tensor < nearTie.other && nearTie.tensor > nearTie.other * 0.95)
+    checks.require("mimo fastest plan: 2x M5 Max 128 GB, default link costs, 8,192 + 128: a pipeline (the prompt's sums dominate)",
+        pipeline(try plan(maxes, first(8_192, 128), .unmeasured)))
+
+    // 2. Two M5 Ultra 256 GB, default link costs: a pipeline for every request. On the assumed link 97 sums cost
+    // about 10.3 ms a step, more than the weight streaming a half saves.
+    for (prompt, outputs) in [(128, 128), (1_024, 128), (8_192, 128), (1_024, 1_024)] {
+        let result = try plan(ultras, first(prompt, outputs), .unmeasured)
+        checks.require("mimo fastest plan: 2x M5 Ultra 256 GB, default link costs, \(prompt) + \(outputs): a pipeline, tensor parallel predicted slower on the assumed link (\(times(result)))",
+            pipeline(result) && result.tensorParallel?.reductionKeyed == true && !result.basis.linkCostsMeasured
+                && (ClusterPlacementExplanation.deploymentReason(result) ?? "").hasPrefix("Pipeline: tensor parallel is predicted slower"))
+    }
+    // The choice alone holds it back: the same layout without it (a TP-first family) is placed in tensor parallel.
+    let ruled = try ClusterPlacementPlanner.plan(devices: ultras, layout: try mimoTensorParallelFirst(layout),
+        policy: first(8_192, 128), link: .unmeasured)
+    checks.require("mimo fastest plan: without its choice the same layout, Macs and policy put tensor parallel first",
+        ruled.chosen?.mode == .tensorParallel)
+
+    // 3. A measured link flips the choice as predicted, both ways.
+    let ultraDefault = try plan(ultras, first(1_024, 128), .unmeasured)
+    let ultraMeasured = try plan(ultras, first(1_024, 128), measuredLink), ultraSlow = try plan(ultras, first(1_024, 128), slowLink)
+    checks.require("mimo fastest plan: 2x M5 Ultra, 1,024 + 128: a pipeline on default costs, tensor parallel on the pair's measured 29 us link (\(times(ultraMeasured))), a pipeline on a measured 109 us one",
+        pipeline(ultraDefault) && tensor(ultraMeasured) && pipeline(ultraSlow)
+            && (ClusterPlacementExplanation.deploymentReason(ultraMeasured) ?? "").hasPrefix("Tensor parallel: predicted"))
+    checks.require("mimo fastest plan: 2x M5 Ultra, 8,192 + 128, the measured 29 us link: a pipeline (the prompt's sums)",
+        pipeline(try plan(ultras, first(8_192, 128), measuredLink)))
+    let maxMeasured = try plan(maxes, first(1_024, 128), measuredLink)
+    checks.require("mimo fastest plan: 2x M5 Max 128 GB, 1,024 + 128: a pipeline on default costs, tensor parallel on the measured 29 us link (\(times(maxMeasured)))",
+        pipeline(maxNearTie) && tensor(maxMeasured))
+    // The pipeline's speculative rounds are in the comparison: credited MiMo's recorded 1.37x (pipeline_mtp_v1,
+    // M5 Ultra + M3 Ultra, 2026-10-14), the speculative pipeline is what tensor parallel must beat.
+    var credited = first(128, 128); credited.recordedPipelineSpeculativeFactor = 1.37
+    let plain = try plan(ultras, first(128, 128), measuredLink), rounds = try plan(ultras, credited, measuredLink)
+    checks.require("mimo fastest plan: 2x M5 Ultra, 128 + 128, 29 us: the pipeline credited 1.37x for its rounds is the one compared (\(times(rounds)), plain \(times(plain))), and tensor parallel still wins on the prior",
+        tensor(plain) && tensor(rounds) && predicted(rounds).other < predicted(plain).other * 0.8
+            && rounds.alternatives.contains { $0.mode == .pipelineMTP })
+    // An automatic replacement invents no link: without a measured one, the pipeline it runs.
+    var replacement = first(128, 128); replacement.tensorParallelAssumesUnmeasuredLink = false
+    let kept = try plan(maxes, replacement, .unmeasured)
+    checks.require("mimo fastest plan: an automatic replacement before any measured link keeps a pipeline (tensor parallel not predicted)",
+        kept.chosen.map { !$0.mode.usesTensorParallelDecode } == true && kept.tensorParallel?.verdict == .reductionNotMeasured)
+    // A pipeline the pair keeps holds a tensor-parallel win back under the margin it must beat, as for any mode.
+    var keep = first(128, 128); keep.keptMode = .pipeline; keep.keptModeMargin = .infinity; keep.keptModeReason = "kept after the update"
+    checks.require("mimo fastest plan: a kept pipeline holds tensor parallel back (unlike a TP-first family)",
+        try plan(maxes, keep, measuredLink).chosen?.mode == .pipeline)
+    // The developer setting still places it.
+    var forced = ClusterPlacementPolicy(); forced.forcedMode = .tensorParallel
+    checks.require("mimo fastest plan: the developer's forced mode still places tensor parallel",
+        try plan(ultras, forced, .unmeasured).chosen?.mode == .tensorParallel)
+}
+
+/// The same layout with its plan's choice removed: a family that keeps the tensor-parallel-first rule.
+private func mimoTensorParallelFirst(_ layout: ClusterModelLayout) throws -> ClusterModelLayout {
+    var object = try JSONSerialization.jsonObject(with: layout.encoded()) as? [String: Any] ?? [:]
+    var tp = object["tensorParallel"] as? [String: Any] ?? [:]
+    var family = tp["family"] as? [String: Any] ?? [:]
+    family["choice"] = nil; tp["family"] = family; object["tensorParallel"] = tp
+    return try ClusterModelLayout.decode(JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]))
 }

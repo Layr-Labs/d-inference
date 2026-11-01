@@ -10,14 +10,22 @@ import Foundation
 /// candidate alone adds the vision tower to rank 0 (the last rank of
 /// `pipeline_mtp_v1` holds the heads beside its stage). Under the phase split
 /// (a hand-off mode: kept, off by default) the decoding rank holds the whole
-/// text model (the planner prices that with the layout's own sizes). Pure
-/// metadata: no checkpoint payload and no GPU.
+/// text model (the planner prices that with the layout's own sizes). The text
+/// row may also run tensor parallel on two ranks (`MiMoTensorParallelPlan`).
+/// Pure metadata: no checkpoint payload and no GPU.
 struct MiMoPlacementFamily: ClusterPlacementFamily {
     let imageCandidate: Bool
     let specification: MiMoRegisteredSpecification
     let profile: QwenLayerStageGenerationProfile
     let plans: [Int: MiMoLayerStagePlan]
     let layers: [MiMoLayerStagePlan.Layer]
+    /// The tensor-parallel plan when the text row lists the mode; nil for the
+    /// image candidate, which stays a pipeline candidate.
+    let tensorParallel: MiMoTensorParallelPlan?
+    /// The native request reservation of a tensor-parallel rank
+    /// (`MiMoTensorParallelRequestBudget`), set where the allocator's bound is
+    /// known (`ClusterPlacementLayouts.layout`); nil in metadata-only layouts.
+    var tensorParallelRequestAllowance: ClusterTensorParallelRequestAllowance?
 
     static func handles(configuration: Data) -> Bool {
         (try? MiMoRegisteredSpecification.specification(configuration: configuration)) != nil
@@ -27,6 +35,8 @@ struct MiMoPlacementFamily: ClusterPlacementFamily {
         self.imageCandidate = imageCandidate
         specification = try MiMoRegisteredSpecification.specification(configuration: configuration)
         profile = try specification.profile(imageCandidate:imageCandidate)
+        tensorParallel = !imageCandidate && specification.supportedGenerationModes.contains(.tensorParallel)
+            ? try MiMoTensorParallelPlan(configuration: configuration) : nil
         var plans: [Int: MiMoLayerStagePlan] = [:]
         for cut in 1..<specification.layers { plans[cut] = try MiMoLayerStagePlan(configuration: configuration, cut: cut,visionEnabled:imageCandidate) }
         guard let any = plans[1] else { throw ProbeError("MiMo has no cut") }
@@ -105,6 +115,17 @@ struct MiMoPlacementFamily: ClusterPlacementFamily {
         name.hasPrefix(MiMoLayerStagePlan.sourceNamespace + "model.mtp.")
     }
 
+    /// Each routed layer sends a token to `expertsPerToken` of its `experts`.
+    var expertRouting: ClusterExpertRouting? {
+        ClusterExpertRouting(selected: specification.expertsPerToken, experts: specification.experts)
+    }
+
+    /// A routed layer's packed expert banks and their block scales; its router
+    /// and score correction are read on every step.
+    func isRoutedExpert(storedTensor name: String) -> Bool {
+        layer(ofStoredTensor: name) != nil && name.contains(".mlp.switch_mlp.")
+    }
+
     /// The text tensors (every indexed tensor no stage excludes) are the
     /// registered inventory.
     func requireRegisteredInventory(_ tensors: [ClusterPlacementStoredTensor]) throws {
@@ -123,6 +144,39 @@ struct MiMoPlacementFamily: ClusterPlacementFamily {
         guard text.count == specification.tensorCount,
               ClusterPlacementInventory.fingerprint(text) == specification.inventorySHA256 else {
             throw ProbeError("The artifact's tensor headers are not the registered MiMo inventory")
+        }
+    }
+
+    // MARK: - Tensor parallel
+
+    /// `MiMoTensorParallelResidentRuntime`'s plan: each layer sums its
+    /// attention partial and its feed-forward partial (layer 0's dense row, or
+    /// a routed layer's 8 experts combined locally in FP32), one FP32 hidden
+    /// row a token each, and each step agrees once on the vocabulary-split
+    /// selection. Each rank keeps its own KV heads. Equal shares with no
+    /// padding: every cut lands on whole heads, quantization groups and packed
+    /// words. Chosen only where predicted faster than the pipeline
+    /// (`ClusterTensorParallelChoice.fastest`): 97 sums a step cross the link,
+    /// and the pipeline keeps its speculative rounds (`docs/architecture/inference.md`).
+    var tensorParallelPlan: ClusterTensorParallelFamilyPlan? {
+        tensorParallel.map { plan in
+            ClusterTensorParallelFamilyPlan(plan: MiMoTensorParallelPlan.name, ranks: [plan.size],
+                reductionsPerLayer: plan.reductionsPerLayer, reductionsPerStep: plan.reductionsPerStep,
+                partialBytesPerToken: plan.partialBytesPerToken, stateDividesByHeads: true,
+                requestAllowance: tensorParallelRequestAllowance, choice: .fastest)
+        }
+    }
+
+    /// The plan's disposition, the same on both ranks: replicated (norms,
+    /// routers, the embedding), or divided by heads, channels, expert channels
+    /// or the head's vocabulary rows. Nil for a tensor the plan excludes, which
+    /// no range loads.
+    func tensorParallelCut(ofStoredTensor name: String) -> ClusterTensorParallelTensorCut? {
+        guard let plan = tensorParallel, let disposition = try? plan.disposition(of: name) else { return nil }
+        switch disposition {
+        case .replicated: return .replicated
+        case .divided: return .divided
+        case .excluded: return nil
         }
     }
 }

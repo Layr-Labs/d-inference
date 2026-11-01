@@ -367,21 +367,38 @@ struct MiMoTensorParallelResidentTests {
         #expect(fields != Runtime.loadAgreementFields(plan: registered, chunkTokens: 256))
     }
 
-    /// The registered plan's per-rank paged history: full layers grow by
-    /// 9 x 2 KV heads x (192 + 128) x 2 B = 11,520 B a token, a page at a
-    /// time; sliding layers stop at the window plus a chunk.
-    @Test func requestBudgetChargesThisRanksPagedHistory() throws {
+    /// The registered plan's per-rank reserve: paged history (full layers grow
+    /// by 9 x 2 KV heads x (192 + 128) x 2 B = 11,520 B a token, a page at a
+    /// time; sliding layers stop at the window plus a chunk, twice), every
+    /// layer's gathered view and the widest again, the chunk's partials and
+    /// scores; the floor, the freed-buffer cache and eight frames once a rank.
+    @Test func requestBudgetChargesThisRanksPagedHistoryAndReserve() throws {
         let plan = try MiMoTensorParallelPlan(configuration: MiMoTensorParallelTests.fixture("configuration"))
-        let budget = try MiMoTensorParallelRequestBudget(plan: plan, slidingWindow: 128)
         let exact: (Int) throws -> Int = { $0 }
-        let at4096 = try budget.historyBytes(contextTokens: 4096, chunk: 512, allocationBound: exact)
+        func budget(_ context: Int, chunk: Int = 512) throws -> MiMoTensorParallelRequestBudget {
+            try .derive(plan: plan, slidingWindow: 128, contextTokens: context, chunkTokens: chunk, allocationBound: exact)
+        }
+        let at4096 = try budget(4096)
         // 39 sliding layers x 10 pages x 64 x 2,560 B, twice; 9 full layers x 64 pages x 64 x 1,280 B;
-        // the widest gathered layer (a full one), twice.
-        #expect(at4096 == 39 * 10 * 64 * 2560 * 2 + 9 * 64 * 64 * 1280 + 4096 * 1280 * 2)
-        let at4160 = try budget.historyBytes(contextTokens: 4160, chunk: 512, allocationBound: exact)
-        #expect(at4160 - at4096 == 64 * 11_520 + 64 * 1280 * 2)
-        #expect(try budget.bytes(contextTokens: 8320, chunk: 512) > (try budget.bytes(contextTokens: 4096, chunk: 512)))
-        #expect(throws: (any Error).self) { try MiMoTensorParallelRequestBudget(plan: plan, slidingWindow: 0) }
+        // every layer's view (9 x 4,096 x 1,280 and 39 x 639 x 2,560) and the widest (a full one) again.
+        #expect(at4096.historyBytes == 39 * 10 * 64 * 2560 * 2 + 9 * 64 * 64 * 1280
+            + 9 * 4096 * 1280 + 39 * 639 * 2560 + 4096 * 1280)
+        let at4160 = try budget(4160)
+        #expect(at4160.historyBytes - at4096.historyBytes == 64 * 11_520 * 2 + 64 * 1280)
+        // One chunk's scores at this rank's 32 query heads, FP32; a tiny request still every full layer's decode row.
+        let tiny = try budget(4, chunk: 4)
+        #expect(at4096.scoreBytes == 512 * 4096 * 32 * 4 && tiny.scoreBytes == 9 * 4 * 32 * 4)
+        // The attention and feed-forward partials and the sum's output, and the 8 selected experts' rows.
+        #expect(at4096.partialBytes == 512 * 4096 * 4 * (3 + 8))
+        #expect(at4096.rankBytes == 5_905_580_032 + 4_294_967_296
+            + 8 * (512 * 16_384 + QwenTensorParallelSealCodec.frameOverhead))
+        #expect(at4096.allowance.reservedBytes == at4096.requestBytes + at4096.rankBytes)
+        #expect(at4096.allowance.maximumContextTokens == 4096 && at4096.allowance.maximumChunkTokens == 512)
+        #expect(try budget(8320).requestBytes > at4096.requestBytes)
+        #expect(throws: (any Error).self) {
+            try MiMoTensorParallelRequestBudget.derive(plan: plan, slidingWindow: 0, contextTokens: 4096, chunkTokens: 512,
+                allocationBound: exact)
+        }
     }
 
     @Test func textLaunchRefusesTheImageCandidateLanesAndLookahead() throws {

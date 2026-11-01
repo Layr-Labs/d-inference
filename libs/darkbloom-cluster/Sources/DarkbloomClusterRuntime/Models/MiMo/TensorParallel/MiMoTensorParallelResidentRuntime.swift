@@ -1,3 +1,4 @@
+import DarkbloomClusterPlacement
 import DarkbloomClusterProtocol
 import DarkbloomClusterSecurity
 import Foundation
@@ -34,11 +35,6 @@ import MLXLLM
 /// positions), logprobs from the split top-k gather (greedy rows) or the
 /// product's own gather (sampled rows). No prompt-prefix reuse yet.
 public final class MiMoTensorParallelResidentRuntime {
-    /// The freed-buffer cache a ready rank keeps under the
-    /// `disableFreedBufferCache` policy, as GLM tensor parallel keeps it
-    /// (serving at zero halved GLM's throughput); charged to the load gate.
-    static let freedBufferCacheBytes = 4 << 30
-
     /// Everything about serving both ranks must have been told the same,
     /// beside the plan: one lane, paged KV, the chunk grid, the selection
     /// rules and the decode command buffers.
@@ -64,7 +60,11 @@ public final class MiMoTensorParallelResidentRuntime {
     let codec: QwenTensorParallelSealCodec?
     let lifecycle = QwenLayerStageResidentLifecycle()
     let loadAgreement: String
-    let budget: MiMoTensorParallelRequestBudget
+    let plan: MiMoTensorParallelPlan
+    let slidingWindow: Int
+    /// What the live gate asks for beside every held request: the rank's
+    /// activation floor, freed-buffer cache and sealed frames.
+    let rankReserveBytes: Int
     private let operation = NSLock()
     private let keepWarm = ClusterKeepWarm()
     private var model: MiMoTensorParallelModel?
@@ -101,8 +101,10 @@ public final class MiMoTensorParallelResidentRuntime {
         guard let window = decoded.slidingAttention.slidingWindow else {
             throw ProbeError("MiMo tensor parallel needs the sliding layers' window")
         }
-        let budget = try MiMoTensorParallelRequestBudget(plan: plan, slidingWindow: window)
         let profile = admission.profile
+        // The rank's reserve at the profile's longest request: the planner's quote beside the shard.
+        let budget = try requestBudget(plan: plan, slidingWindow: window, contextTokens: profile.maximumContextTokens,
+                                       chunkTokens: profile.maximumChunkTokens)
         let control = QwenResidentControl(deadline: configuration.deadlineUptimeNanoseconds, lease: configuration.lease)
         try QwenResidentProcessLease.shared.acquire()
         var loaded: MiMoTensorParallelModel?
@@ -129,12 +131,12 @@ public final class MiMoTensorParallelResidentRuntime {
             group.sealed = codec
             var probe: ClusterWorkerLinkProbe?
             let started = DispatchTime.now().uptimeNanoseconds
-            let requestReserve = try budget.bytes(contextTokens: profile.maximumContextTokens,
-                                                  chunk: profile.maximumChunkTokens)
+            let requestReserve = budget.requestBytes
             let capacity = try MLX.withError { nativeError -> Int in
                 func checked() throws { try nativeError.check(); try control.check(); try nativeError.check() }
                 try configuration.allocatorPolicy.configure(setCacheLimit: { Memory.cacheLimit = $0 }, check: checked)
-                let bufferCacheBytes = configuration.allocatorPolicy == .disableFreedBufferCache ? freedBufferCacheBytes : 0
+                let bufferCacheBytes = configuration.allocatorPolicy == .disableFreedBufferCache
+                    ? MiMoTensorParallelRequestBudget.freedBufferCacheBytes : 0
                 _ = try requireQwenLongPrefillReadinessDigest(collective: collective,
                     material: { .residentLoadIntent(agreementFingerprint: loadAgreement) },
                     disagreementMessage: "MiMo tensor-parallel load membership/source/plan/contract differ",
@@ -148,9 +150,11 @@ public final class MiMoTensorParallelResidentRuntime {
                 let source = try prepareMiMoResidentSource(directory: directory, configuration: admission.configBytes,
                     manifest: admission.manifestBytes, specification: admission.specification, plan: admission.plan,
                     check: checked)
+                // The shard with the profile's longest request and the rank's own reserve (activation floor,
+                // freed-buffer cache, sealed frames) beside it: the planner's quote. The read's largest slice
+                // (half an expert bank) lives only while loading, inside the reserve no request holds yet.
                 let shardBytes = try Self.shardBytes(plan: plan, descriptors: source.descriptors)
-                try requireLiveMemory(bytes: try QwenLongPrefillCheckedBytes.sum([shardBytes, requestReserve,
-                    bufferCacheBytes]))
+                try requireLiveMemory(bytes: try QwenLongPrefillCheckedBytes.sum([shardBytes, budget.allowance.reservedBytes]))
                 let value = try autoreleasepool {
                     try MiMoTensorParallelVerifiedLoad.load(checkpoint: source.checkpoint,
                         configurationData: admission.configBytes, role: .shard(rank: collective.rank), reduction: group,
@@ -187,8 +191,8 @@ public final class MiMoTensorParallelResidentRuntime {
             guard let model = loaded else { throw ProbeError("MiMo tensor-parallel load returned no shard") }
             try control.loaded()
             return try MiMoTensorParallelResidentRuntime(admission: admission, control: control, collective: collective,
-                group: group, codec: codec, model: model, residency: residency, budget: budget,
-                capacity: capacity, loadAgreement: loadAgreement, linkProbe: probe)
+                group: group, codec: codec, model: model, residency: residency, plan: plan, slidingWindow: window,
+                rankReserveBytes: budget.rankBytes, capacity: capacity, loadAgreement: loadAgreement, linkProbe: probe)
         } catch {
             let primary = error; control.fail(); loaded = nil
             do {
@@ -233,6 +237,14 @@ public final class MiMoTensorParallelResidentRuntime {
         }
     }
 
+    /// This rank's reserve for requests of `contextTokens` (`MiMoTensorParallelRequestBudget`)
+    /// at the allocator's own bound.
+    static func requestBudget(plan: MiMoTensorParallelPlan, slidingWindow: Int, contextTokens: Int,
+                              chunkTokens: Int) throws -> MiMoTensorParallelRequestBudget {
+        try MiMoTensorParallelRequestBudget.derive(plan: plan, slidingWindow: slidingWindow, contextTokens: contextTokens,
+            chunkTokens: chunkTokens, allocationBound: QwenResidentResourceEnvironment.allocationBound)
+    }
+
     /// The host memory gate's decision for `bytes` more, as the resident families take it.
     static func requireLiveMemory(bytes: Int) throws {
         try QwenResidentResourceEnvironment.require()
@@ -247,10 +259,11 @@ public final class MiMoTensorParallelResidentRuntime {
 
     private init(admission: MiMoResidentAdmission, control: QwenResidentControl, collective: Collective,
                  group: QwenTensorParallelGroup, codec: QwenTensorParallelSealCodec?, model: MiMoTensorParallelModel,
-                 residency: ClusterStageResidency?, budget: MiMoTensorParallelRequestBudget, capacity: Int,
-                 loadAgreement: String, linkProbe: ClusterWorkerLinkProbe?) throws {
+                 residency: ClusterStageResidency?, plan: MiMoTensorParallelPlan, slidingWindow: Int,
+                 rankReserveBytes: Int, capacity: Int, loadAgreement: String, linkProbe: ClusterWorkerLinkProbe?) throws {
         self.admission = admission; self.control = control; self.collective = collective; self.group = group
-        self.codec = codec; self.model = model; self.residency = residency; self.budget = budget
+        self.codec = codec; self.model = model; self.residency = residency
+        self.plan = plan; self.slidingWindow = slidingWindow; self.rankReserveBytes = rankReserveBytes
         self.loadAgreement = loadAgreement; self.linkProbe = linkProbe
         baseReady = .init(identity: admission.configuration.identity, rank: collective.rank,
             profile: admission.wireProfile, executionPlanSHA256: admission.plan.fingerprint,
@@ -282,7 +295,8 @@ public final class MiMoTensorParallelResidentRuntime {
     }
 
     /// Text only: no route, media or images. Charged at the request's own
-    /// context (`MiMoTensorParallelRequestBudget`), behind the live gate.
+    /// context (`MiMoTensorParallelRequestBudget.requestBytes`); the live gate
+    /// is asked for it and the rank's own reserve once.
     public func reserve(requestID: UUID, request value: ClusterWorkerReservation) throws -> Int {
         guard operation.try() else { throw ProbeError("Resident native operation is already active") }
         defer { operation.unlock() }
@@ -291,14 +305,15 @@ public final class MiMoTensorParallelResidentRuntime {
             throw ProbeError("MiMo tensor parallel serves text requests only")
         }
         let request = try admission.request(value, id: requestID, now: DispatchTime.now().uptimeNanoseconds)
-        let charge = try budget.bytes(contextTokens: request.maximumTokens, chunk: request.chunkSize)
+        let charge = try Self.requestBudget(plan: plan, slidingWindow: slidingWindow, contextTokens: request.maximumTokens,
+                                            chunkTokens: request.chunkSize).requestBytes
         try control.check(); try control.reserve(requestID)
         return try control.reserving(requestID, rank: collective.rank, deadline: value.deadlineUptimeNanoseconds) {
             guard model != nil else { throw ProbeError("Resident model already released") }
             guard charge <= value.capacityLimitBytes, charge <= baseReady.requestCapacityBytes else {
                 throw ProbeError("MiMo tensor-parallel reservation exceeds its owner or readiness capacity")
             }
-            try Self.requireLiveMemory(bytes: charge)
+            try Self.requireLiveMemory(bytes: try QwenLongPrefillCheckedBytes.sum([charge, rankReserveBytes]))
             try control.check(deadline: value.deadlineUptimeNanoseconds)
             reservation = .init(request: request, deadline: value.deadlineUptimeNanoseconds)
             return charge

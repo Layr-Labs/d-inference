@@ -63,9 +63,9 @@ struct MiMoRegisteredSpecification {
     /// prefilled its share and handed its state over, or serves a request alone.
     /// Whether a Mac can hold every layer is the planner's and the load gate's
     /// question on the Macs at hand, not this row's. Tensor parallel
-    /// (`MiMoTensorParallelResidentRuntime`, text only) is served when a
-    /// launch asks for it; the planner places it only once the placement
-    /// family states tensor-parallel facts, which it does not yet.
+    /// (`MiMoTensorParallelResidentRuntime`, text only) is placed only where
+    /// the planner predicts it faster than the pipeline
+    /// (`MiMoPlacementFamily.tensorParallelPlan`, `ClusterTensorParallelChoice.fastest`).
     let supportedGenerationModes: [ClusterGenerationMode]
 
     // The earlier fixed reservation every profile started with; the row's

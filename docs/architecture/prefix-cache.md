@@ -1130,9 +1130,10 @@ keep it ([tenant partitions](#cluster-prefix-tenant-partitions)). Source:
 `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Media/QwenMediaRequestState.swift`.
 
 The exact27 multi-lane TP owner keeps a completed plain request's state at
-original chunk boundaries to the request's context, strictly before the final
-token and after what it restored (`QwenTensorParallelBatchPrefixBudget.frontiers`,
-policy `qwen-tp-batch-prefix-depth-v2`):
+original chunk boundaries to the request's own context (past LOAD's memory
+plan too), strictly before the final token and after what it restored
+(`QwenTensorParallelBatchPrefixBudget.frontiers`, policy
+`qwen-tp-batch-prefix-depth-v2`):
 
 | Boundary | Serves | One Mac's counterpart |
 |---|---|---|
@@ -1159,8 +1160,10 @@ byte budget is set at LOAD from the room measured beside the quote
 (`QwenStagePrefixCache.budget(roomBytes:)`). Under that budget it gives up other
 captures' shallower boundaries first, then the newest capture's, then whole
 captures, least recently used first, so an exact repeat's boundary outlives the
-rest. Its entries also give way, after the SSD writer's queue drains, before a
-reservation or the running batch is refused for memory
+rest. A capture whose deepest boundary does not fit the budget is not kept
+resident at all (on a 256 GB Mac, an 8 GiB budget holds the 27B's capture to
+about 235,000 tokens). Its entries also give way, after the SSD writer's queue
+drains, before a reservation or the running batch is refused for memory
 (`QwenTensorParallelSnapshotCache.yieldingMemory`). The vote carries every
 chunk boundary of the prompt, at most 512, and selects the longest one both
 ranks hold; a one-sided miss computes cold on both ranks. Restoration writes
@@ -1190,7 +1193,7 @@ warm-prefix correctness, media parity, RDMA or useful speed.
 
 ### Qwen27 TP assistant prefix ownership
 
-The TP assistant prefix donor binds a compact target attention/recurrent snapshot and the same assistant's trusted prompt history at one confirmed original prompt frontier, at most 4,096 tokens deep (`QwenTensorParallelMTPPrefixBudget.maximumTokens`, policy `qwen-tp-mtp-grid-prefix-4096-v1`). That bound is the assistant's history ledger as well: prefill holds the trusted history unflushed up to the checkpoint frontier, so a deeper frontier would keep a lane's whole prompt history resident, not only a larger capture. Restore creates request-owned mutable state and both ranks negotiate the common usable frontier. The bounded cache publishes donors only after checked retirement and a final cancellation/deadline vote; a failed decoder cannot donate. Captured speculative target windows, pending assistant drafts and queued accepted tokens are not prefix donors. Both resident donor banks and the temporary capture bank remain in the complete quote.
+The TP assistant prefix donor binds a compact target attention/recurrent snapshot and the same assistant's trusted prompt history at one confirmed original prompt frontier, at most 4,096 tokens deep (`QwenTensorParallelMTPPrefixBudget.maximumTokens`, policy `qwen-tp-mtp-grid-prefix-4096-v1`). That bound is the assistant's history ledger as well: prefill holds the trusted history unflushed up to the checkpoint frontier, so a deeper frontier would keep a lane's whole prompt history resident, not only a larger capture. A request an assistant lane serves therefore reuses at most 4,096 prompt tokens, less than one Mac reuses for a long prompt: a known gap, not covered by the plain lanes' parity. Restore creates request-owned mutable state and both ranks negotiate the common usable frontier. The bounded cache publishes donors only after checked retirement and a final cancellation/deadline vote; a failed decoder cannot donate. Captured speculative target windows, pending assistant drafts and queued accepted tokens are not prefix donors. Both resident donor banks and the temporary capture bank remain in the complete quote.
 
 Code: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/TensorParallel/QwenTensorParallelMTPPrefix.swift` (`QwenTensorParallelMTPPrefixState`), `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/TensorParallel/QwenTensorParallelMTPPrefixBudget.swift`, and `libs/mlx-swift-lm/Libraries/MLXLLM/Models/Qwen35MTP+PrefixCheckpoint.swift` (`Qwen35InlineMTPAssistant`). Full-artifact warm-prefix numerical and cancellation checks remain separate from tiny ownership fixtures.
 

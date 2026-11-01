@@ -1225,10 +1225,14 @@ Its budget is half the room LOAD measures beside its whole quote
 (`ClusterStagePrefixBudget.roomBytes`, `QwenStagePrefixCache.budget(roomBytes:)`):
 at most a thirty-second of the Mac's memory, in 256 MiB steps, and 0 when the
 room is under 512 MiB. The reservation and running-batch gates do not credit
-its entries as the owner's own allocations, and its entries give way before
-either gate refuses (`QwenTensorParallelSnapshotCache.yieldingMemory`). A
-capture always keeps what its request's charge covers. With no tier budget it
-keeps nothing resident and still writes its SSD record. The assistant's lanes
+its entries as the owner's own allocations, nor, while the SSD writer is busy,
+up to its queue's byte bound for the retired captures it still holds; the
+writer drains and then the entries give way before either gate refuses
+(`QwenTensorParallelSnapshotCache.yieldingMemory`). A capture always keeps what
+its request's charge covers. With no tier budget it keeps nothing resident and
+still writes its SSD record. A request whose prompt exceeds the memory plan's
+is charged at its own prompt, outside LOAD's per-lane quote
+([native context](inference.md#qwen27-tensor-parallel-native-context)). The assistant's lanes
 keep their single 4,096-token frontier and its two charged resident banks
 (`QwenTensorParallelMTPPrefixBudget`). See [prefix ownership](prefix-cache.md#cluster-sliding-prefix-adoption).
 

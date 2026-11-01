@@ -444,10 +444,13 @@ final class OnboardingLive: @unchecked Sendable {
         process.arguments = ["isactive"]
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
-        do { try process.run() } catch { return nil }
-        let deadline = Date().addingTimeInterval(5)
-        while process.isRunning && Date() < deadline { usleep(20_000) }
-        guard !process.isRunning else { process.terminate(); process.waitUntilExit(); return nil }
+        let childExit = ProcessExitObserver()
+        do { try childExit.run(process) } catch { return nil }
+        guard childExit.wait(timeout: 5) || !process.isRunning else {
+            process.terminate()
+            childExit.wait()
+            return nil
+        }
         switch process.terminationStatus {
         case 0: return true
         case 1: return false

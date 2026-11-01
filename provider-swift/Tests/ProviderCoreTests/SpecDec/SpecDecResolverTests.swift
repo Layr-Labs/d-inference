@@ -1,152 +1,12 @@
 /// SpecDecResolverTests -- live-isolated tests for the spec-dec drafter
-/// fetcher (plan D2). A real Hummingbird HTTP server on 127.0.0.1:0 (the
-/// MockCoordinator pattern) plays the model CDN, serving a tiny fake drafter
-/// manifest + files; the resolver runs against a throwaway store root.
+/// fetcher (plan D2). `LocalCDNFileServer` plays the model CDN, serving a tiny
+/// fake drafter manifest + files; the resolver runs against a throwaway store root.
 
 import Crypto
 import Foundation
-import HTTPTypes
-import Hummingbird
-import HummingbirdCore
-import Logging
-import NIOCore
 import Testing
 @testable import ProviderCore
 import ProviderCoreFoundation
-
-// MARK: - Local CDN fixture
-
-/// Minimal file-serving HTTP server: path -> bytes, with a request log so
-/// tests can prove which paths were (not) fetched. Honors `Range: bytes=N-`
-/// the way the real CDN does, since the downloader byte-resumes.
-private final class SpecDecFileServer: @unchecked Sendable {
-    private let lock = NSLock()
-    private var files: [String: Data] = [:]
-    private var requested: [String] = []
-    private var serverTask: Task<Void, Never>?
-    private var responseDelayNanoseconds: UInt64 = 0
-
-    func setFiles(_ files: [String: Data]) {
-        lock.lock(); self.files = files; lock.unlock()
-    }
-
-    func requestedPaths() -> [String] {
-        lock.lock(); defer { lock.unlock() }; return requested
-    }
-
-    func clearRequested() {
-        lock.lock(); requested = []; lock.unlock()
-    }
-
-    func setResponseDelay(milliseconds: UInt64) {
-        lock.withLock { responseDelayNanoseconds = milliseconds * 1_000_000 }
-    }
-
-    private func record(_ path: String) {
-        lock.lock(); requested.append(path); lock.unlock()
-    }
-
-    private func body(for path: String) -> Data? {
-        lock.lock(); defer { lock.unlock() }; return files[path]
-    }
-
-    private func responseDelay() -> UInt64 {
-        lock.withLock { responseDelayNanoseconds }
-    }
-
-    /// Bind 127.0.0.1 on a system-assigned port and return the base URL.
-    func start() async throws -> URL {
-        var logger = Logger(label: "SpecDecFileServer")
-        logger.logLevel = .critical
-
-        let router = Router(context: BasicRequestContext.self)
-        router.get("**") { [weak self] request, _ -> Response in
-            guard let self else { return Response(status: .internalServerError) }
-            let path = request.uri.path
-            self.record(path)
-            let delay = self.responseDelay()
-            if delay > 0 { try? await Task.sleep(nanoseconds: delay) }
-            guard let full = self.body(for: path) else {
-                return Response(status: .notFound)
-            }
-            var data = full
-            var status = HTTPResponse.Status.ok
-            var headers = HTTPFields()
-            if let range = request.headers[.range],
-               range.hasPrefix("bytes="), range.hasSuffix("-"),
-               let start = Int(range.dropFirst("bytes=".count).dropLast()), start <= full.count
-            {
-                data = Data(full.dropFirst(start))
-                status = .partialContent
-                headers[.contentRange] = "bytes \(start)-\(full.count - 1)/\(full.count)"
-            }
-            return Response(status: status, headers: headers, body: .init(byteBuffer: ByteBuffer(bytes: data)))
-        }
-
-        let portBox = OneShotPortBox()
-        let app = Application(
-            router: router,
-            configuration: .init(address: .hostname("127.0.0.1", port: 0), serverName: "SpecDecFileServer"),
-            onServerRunning: { @Sendable channel in
-                portBox.complete(channel.localAddress?.port ?? 0)
-            },
-            logger: logger
-        )
-        let task = Task<Void, Never> {
-            do {
-                try await app.runService(gracefulShutdownSignals: [])
-            } catch {
-                logger.warning("SpecDecFileServer crashed: \(error)")
-            }
-        }
-
-        let port = await portBox.value
-        guard port > 0 else {
-            task.cancel()
-            throw URLError(.cannotConnectToHost)
-        }
-        lock.withLock { serverTask = task }
-        return URL(string: "http://127.0.0.1:\(port)")!
-    }
-
-    func shutdown() async {
-        let task: Task<Void, Never>? = lock.withLock {
-            let t = serverTask
-            serverTask = nil
-            return t
-        }
-        task?.cancel()
-        _ = await task?.value
-    }
-}
-
-/// One-shot async box for the bound port (MockCoordinator's PortBox pattern).
-private final class OneShotPortBox: @unchecked Sendable {
-    private let lock = NSLock()
-    private var port: Int?
-    private var continuation: CheckedContinuation<Int, Never>?
-
-    var value: Int {
-        get async {
-            await withCheckedContinuation { (cont: CheckedContinuation<Int, Never>) in
-                lock.withLock {
-                    if let p = port { cont.resume(returning: p) } else { continuation = cont }
-                }
-            }
-        }
-    }
-
-    func complete(_ port: Int) {
-        let cont: CheckedContinuation<Int, Never>? = lock.withLock {
-            if self.port != nil { return nil }
-            self.port = port
-            let cont = continuation
-            continuation = nil
-            return cont
-        }
-        cont?.resume(returning: port)
-    }
-}
 
 // MARK: - Fixture helpers
 
@@ -292,7 +152,7 @@ struct SpecDecResolverTests {
 
     @Test("happy path: downloads via manifest, verifies per-file SHA, publishes atomically")
     func happyPathDownloadsAndPublishes() async throws {
-        let server = SpecDecFileServer()
+        let server = LocalCDNFileServer()
         let baseURL = try await server.start()
         defer { Task { await server.shutdown() } }
 
@@ -328,7 +188,7 @@ struct SpecDecResolverTests {
 
     @Test("corrupt file (SHA mismatch after retries) fails open: nil, nothing published")
     func corruptFileReturnsNil() async throws {
-        let server = SpecDecFileServer()
+        let server = LocalCDNFileServer()
         let baseURL = try await server.start()
         defer { Task { await server.shutdown() } }
 
@@ -351,7 +211,7 @@ struct SpecDecResolverTests {
 
     @Test("missing/malformed spec_dec metadata fails open: nil, zero network traffic")
     func missingMetadataReturnsNil() async throws {
-        let server = SpecDecFileServer()
+        let server = LocalCDNFileServer()
         let baseURL = try await server.start()
         defer { Task { await server.shutdown() } }
 
@@ -391,7 +251,7 @@ struct SpecDecResolverTests {
 
     @Test("manifest 404 fails open: nil, nothing published")
     func manifestHTTPErrorReturnsNil() async throws {
-        let server = SpecDecFileServer()
+        let server = LocalCDNFileServer()
         let baseURL = try await server.start()
         defer { Task { await server.shutdown() } }
         // Serve nothing: manifest.json fetch gets a 404.
@@ -414,7 +274,7 @@ struct SpecDecResolverTests {
     @Test("default Bonsai auto returns the verified cached catalog head without a local override",
           arguments: [Bonsai9BModelPolicy.modelID, Bonsai9BModelPolicy.eigenModelID])
     func automaticBonsaiCachedCatalogCandidate(modelID: String) async throws {
-        let server = SpecDecFileServer()
+        let server = LocalCDNFileServer()
         let baseURL = try await server.start()
         defer { Task { await server.shutdown() } }
         let prefix = "v2-specdec/bonsai9b-catalog/v1"
@@ -447,7 +307,7 @@ struct SpecDecResolverTests {
 
     @Test("warm re-resolve returns the stored copy with zero network traffic")
     func warmReResolveSkipsDownload() async throws {
-        let server = SpecDecFileServer()
+        let server = LocalCDNFileServer()
         let baseURL = try await server.start()
         defer { Task { await server.shutdown() } }
 
@@ -476,7 +336,7 @@ struct SpecDecResolverTests {
 
     @Test("allowDownload: false with no stored copy fails open without touching the CDN")
     func allowDownloadFalseWithoutCopyReturnsNil() async throws {
-        let server = SpecDecFileServer()
+        let server = LocalCDNFileServer()
         let baseURL = try await server.start()
         defer { Task { await server.shutdown() } }
 
@@ -495,7 +355,7 @@ struct SpecDecResolverTests {
 
     @Test("two builds sharing one spec_dec prefix share one download")
     func sharedPrefixReusesOneDownload() async throws {
-        let server = SpecDecFileServer()
+        let server = LocalCDNFileServer()
         let baseURL = try await server.start()
         defer { Task { await server.shutdown() } }
 
@@ -521,7 +381,7 @@ struct SpecDecResolverTests {
 
     @Test("production metadata pins manifest, total bytes, file count, roles, config, and revision")
     func productionMetadataPinsArtifact() async throws {
-        let server = SpecDecFileServer()
+        let server = LocalCDNFileServer()
         let baseURL = try await server.start()
         defer { Task { await server.shutdown() } }
         let fixture = DrafterFixture(prefix: "v2-specdec/gemma4-pinned/v1")
@@ -543,7 +403,7 @@ struct SpecDecResolverTests {
 
     @Test("catalog manifest digest mismatch is rejected before any file download")
     func manifestDigestMismatch() async throws {
-        let server = SpecDecFileServer()
+        let server = LocalCDNFileServer()
         let baseURL = try await server.start()
         defer { Task { await server.shutdown() } }
         let fixture = DrafterFixture(prefix: "v2-specdec/gemma4-manifest-digest/v1")
@@ -567,7 +427,7 @@ struct SpecDecResolverTests {
 
     @Test("path traversal in manifest is rejected")
     func pathTraversalRejected() async throws {
-        let server = SpecDecFileServer()
+        let server = LocalCDNFileServer()
         let baseURL = try await server.start()
         defer { Task { await server.shutdown() } }
         let prefix = "v2-specdec/gemma4-traversal/v1"
@@ -597,7 +457,7 @@ struct SpecDecResolverTests {
 
     @Test("artifact total and file count bounds reject hostile manifests")
     func sizeAndCountBounds() async throws {
-        let server = SpecDecFileServer()
+        let server = LocalCDNFileServer()
         let baseURL = try await server.start()
         defer { Task { await server.shutdown() } }
         let encoder = JSONEncoder(); encoder.dateEncodingStrategy = .iso8601
@@ -648,7 +508,7 @@ struct SpecDecResolverTests {
 
     @Test("concurrent same-prefix resolution publishes and downloads once")
     func concurrentReuse() async throws {
-        let server = SpecDecFileServer()
+        let server = LocalCDNFileServer()
         let baseURL = try await server.start()
         defer { Task { await server.shutdown() } }
         let fixture = DrafterFixture(prefix: "v2-specdec/gemma4-concurrent/v1")
@@ -671,7 +531,7 @@ struct SpecDecResolverTests {
 
     @Test("cancelling one of two coalesced waiters preserves the shared transfer")
     func oneCancelledWaiterDoesNotCancelPeer() async throws {
-        let server = SpecDecFileServer()
+        let server = LocalCDNFileServer()
         let baseURL = try await server.start()
         defer { Task { await server.shutdown() } }
         server.setResponseDelay(milliseconds: 100)
@@ -702,7 +562,7 @@ struct SpecDecResolverTests {
 
     @Test("cancelled final waiter cannot cancel a same-key successor")
     func delayedCancellationCannotCancelSuccessor() async throws {
-        let server = SpecDecFileServer()
+        let server = LocalCDNFileServer()
         let baseURL = try await server.start()
         defer { Task { await server.shutdown() } }
         server.setResponseDelay(milliseconds: 150)
@@ -732,7 +592,7 @@ struct SpecDecResolverTests {
 
     @Test("warm same-size corruption is hash-detected and never size-trusted")
     func warmCorruptionDetected() async throws {
-        let server = SpecDecFileServer()
+        let server = LocalCDNFileServer()
         let baseURL = try await server.start()
         defer { Task { await server.shutdown() } }
         let fixture = DrafterFixture(prefix: "v2-specdec/gemma4-warm-corrupt/v1")
@@ -755,7 +615,7 @@ struct SpecDecResolverTests {
 
     @Test("catalog metadata requires every immutable trust anchor before network")
     func requiredTrustAnchors() async throws {
-        let server = SpecDecFileServer()
+        let server = LocalCDNFileServer()
         let baseURL = try await server.start()
         defer { Task { await server.shutdown() } }
         let fixture = DrafterFixture(prefix: "v2-specdec/gemma4-required-anchors/v1")
@@ -791,7 +651,7 @@ struct SpecDecResolverTests {
 
     @Test("cold catalog artifact returns immediately while owned prefetch continues")
     func coldResolutionIsNonblocking() async throws {
-        let server = SpecDecFileServer()
+        let server = LocalCDNFileServer()
         let baseURL = try await server.start()
         defer { Task { await server.shutdown() } }
         server.setResponseDelay(milliseconds: 200)
@@ -814,7 +674,7 @@ struct SpecDecResolverTests {
 
     @Test("conflicting trust references never share an in-flight verdict")
     func conflictingReferencesAreIsolated() async throws {
-        let server = SpecDecFileServer()
+        let server = LocalCDNFileServer()
         let baseURL = try await server.start()
         defer { Task { await server.shutdown() } }
         let fixture = DrafterFixture(prefix: "v2-specdec/gemma4-conflicting/v1")
@@ -842,7 +702,7 @@ struct SpecDecResolverTests {
 
     @Test("no-download policy never waits on an in-flight downloading policy")
     func conflictingPoliciesAreIsolated() async throws {
-        let server = SpecDecFileServer()
+        let server = LocalCDNFileServer()
         let baseURL = try await server.start()
         defer { Task { await server.shutdown() } }
         server.setResponseDelay(milliseconds: 200)
@@ -865,7 +725,7 @@ struct SpecDecResolverTests {
 
     @Test("prefetch deadline cancels the transfer and removes staging")
     func prefetchDeadlineOwnsCancellation() async throws {
-        let server = SpecDecFileServer()
+        let server = LocalCDNFileServer()
         let baseURL = try await server.start()
         defer { Task { await server.shutdown() } }
         server.setResponseDelay(milliseconds: 500)

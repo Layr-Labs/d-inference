@@ -8,6 +8,9 @@ public enum ModelAutopilotBusyReason: String, CaseIterable, Sendable {
     /// the operation policy's busy check.
     case autopilotOperation = "autopilot_operation"
     case shuttingDown = "shutting_down"
+    /// A local add-on holds the Mac: admission is closed and models unload.
+    /// Reported instead of `draining` for the drain the hold owns.
+    case addonHold = "addon_hold"
     /// Update, lifecycle, model-switch or reconnect drain.
     case draining
     case reconnectAfterRetirement = "reconnect_after_retirement"

@@ -1,4 +1,5 @@
 import Foundation
+import MLXLMCommon
 
 extension EngineV2Bridge {
     func matchedStopSequence(
@@ -10,13 +11,25 @@ extension EngineV2Bridge {
             tokenIds: generatedTokens,
             skipSpecialTokens: false
         )
-        return Self.matchedStopSequence(candidates: candidates, generatedText: generatedText)
+        return Self.matchedStopSequence(
+            candidates: candidates, generatedText: generatedText, scope: stopStringScope)
     }
 
+    /// The candidate that ended generation. A scoped model matched stops only
+    /// inside its scope, so a candidate seen elsewhere (Harmony analysis) did
+    /// not stop it.
     static func matchedStopSequence(
         candidates: [String],
-        generatedText: String
+        generatedText: String,
+        scope: CBv2StopStringScope? = nil
     ) -> String? {
+        if let scope {
+            let holdback = StopHoldback(stopStrings: candidates, scope: scope)
+            let scan = holdback.ingest(generatedText)
+            guard scan.stopped else { return nil }
+            let tail = generatedText.unicodeScalars.dropFirst(scan.text.unicodeScalars.count)
+            return candidates.first { !$0.isEmpty && tail.starts(with: $0.unicodeScalars) }
+        }
         let generatedScalars = Array(generatedText.unicodeScalars)
         var best: (position: Int, candidateIndex: Int, value: String)?
         for (candidateIndex, candidate) in candidates.enumerated() where !candidate.isEmpty {

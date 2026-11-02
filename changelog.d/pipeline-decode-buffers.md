@@ -8,8 +8,8 @@
   byte-identical on synthetic stages. The speed effect on registered models has
   not been measured yet, and each family keeps the change only if a pair A/B
   shows a gain.
-- A request's memory charge on those pairs now prices every attending layer's
-  decode rows at once, which the larger command buffers can keep alive
-  together. The LOAD quotes are unchanged. Only requests whose prompt frames are
-  shorter than their decode rows (at most 80) are charged more, and only on a
-  rank that decodes.
+- A request's memory charge on those pairs, other than GLM's, now prices every
+  attending layer's decode rows at once, which the larger command buffers can
+  keep alive together. The LOAD quotes are unchanged. Only requests whose prompt
+  frames are shorter than their decode rows (at most 80) are charged more, and
+  only on a rank that decodes.

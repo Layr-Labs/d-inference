@@ -628,9 +628,9 @@ and they must match.
   ([updating Darkbloom on the pair](#updating-darkbloom-on-the-pair)).
 - The login agent and macOS's one Local Network approval need the signed
   Darkbloom.app ([always on](cluster-always-on.md)).
-- A setup with unequal tensor-parallel shares cannot register with the
-  coordinator yet, so a pair served through Darkbloom is planned with equal
-  shares.
+- A pair served through Darkbloom cannot use unequal tensor-parallel shares
+  yet: on two different Macs it is planned 1:1, so the slower Mac sets the pace
+  ([how the split is chosen](#how-the-split-is-chosen)).
 - A member cannot yet download a catalog model itself (the leader downloads and
   copies), and a model change typed on a Mac that does not lead cannot copy a
   model (run it on the leader).

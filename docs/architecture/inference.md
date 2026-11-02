@@ -6124,7 +6124,9 @@ and both ride the selection's own sealed sum: after a greedy cohort's six words
 a row, or after a sampled cohort's choices (its gathered rows keep their own
 sum). Such a step pays one sealed sum and one host read instead of an exchange
 and a selection. A step after a prompt, idle or assisted step exchanges its
-plan as before. The plan is made before the step's tokens are known, so:
+plan as before, and so does every step of an executor whose selection sum
+carries no control words (`carriesSelectionControl` false, the protocol's
+default; the Qwen native executor's is true). The plan is made before the step's tokens are known, so:
 
 - A row that decodes on the token being selected names
   `QwenTensorParallelBatchWire.carriedToken`. Both ranks take the token from the

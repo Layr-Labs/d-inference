@@ -317,6 +317,12 @@ final class QwenTensorParallelNativeBatchExecutor<Reservation: QwenTensorParalle
         return token
     }
 
+    var carriesSelectionControl: Bool { true }
+
+    func decode(_ lanes: [Lane], tokens: [Int], check: () throws -> Void) throws -> [Int] {
+        try decode(lanes, tokens: tokens, control: { nil }, check: check).tokens
+    }
+
     func decode(_ lanes: [Lane], tokens: [Int], control: () throws -> [Float]?,
                 check: () throws -> Void) throws -> (tokens: [Int], control: [Float]?) {
         try GPU.withCommandBufferLimits(QwenTensorParallelBatchSession.decodeCommandBuffers) {

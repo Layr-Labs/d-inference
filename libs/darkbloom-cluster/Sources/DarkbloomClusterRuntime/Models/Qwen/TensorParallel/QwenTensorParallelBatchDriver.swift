@@ -42,6 +42,11 @@ protocol QwenTensorParallelBatchExecutor: AnyObject {
     func discard(_ reservation: Reservation) throws
     func open(_ reservation: Reservation, check: () throws -> Void) throws -> Lane
     func prefill(_ lane: Lane, frame: QwenLayerStageFrame, check: () throws -> Void) throws -> Int?
+    /// Whether this executor's selection sum can carry control words; the
+    /// driver folds only for one that can.
+    var carriesSelectionControl: Bool { get }
+    /// One decode rectangle whose selection sum carries no control words.
+    func decode(_ lanes: [Lane], tokens: [Int], check: () throws -> Void) throws -> [Int]
     /// One decode rectangle. `control` runs once the forward committed and
     /// before selection; words it returns (plain lanes only) ride the
     /// selection's sealed sum, and both ranks' summed words come back.
@@ -53,7 +58,17 @@ protocol QwenTensorParallelBatchExecutor: AnyObject {
 }
 
 extension QwenTensorParallelBatchExecutor {
+    var carriesSelectionControl: Bool { false }
     func confirmedRetirement(_ lane: Lane, clean: Bool) throws {}
+
+    /// An executor whose selection sum carries no control words: the driver
+    /// never folds for it, so `control` is always empty.
+    func decode(_ lanes: [Lane], tokens: [Int], control: () throws -> [Float]?,
+                check: () throws -> Void) throws -> (tokens: [Int], control: [Float]?) {
+        let selected = try decode(lanes, tokens: tokens, check: check)
+        guard try control() == nil else { throw ProbeError("This TP executor's selection sum carries no control words") }
+        return (selected, nil)
+    }
 }
 
 /// One prompt step (consecutive frames on the original grid) and one real decode rectangle per
@@ -169,7 +184,8 @@ final class QwenTensorParallelBatchDriver<Executor: QwenTensorParallelBatchExecu
                         }
                         // A plain rectangle with no prompt after it carries the next step's
                         // plan and report, made once its forward committed (agreed state only).
-                        let folds = foldsControl && prompts.isEmpty && lanes.allSatisfy { $0.native!.plainSelection }
+                        let folds = foldsControl && executor.carriesSelectionControl && prompts.isEmpty
+                            && lanes.allSatisfy { $0.native!.plainSelection }
                         let carrying = Set(decode)
                         var nextPlan: QwenBatchWire.Header?, nextReport: QwenBatchWire.Reply?
                         let result = try executor.decode(lanes.map { $0.native! }, tokens: lanes.map { $0.tokens.last! },

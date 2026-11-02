@@ -46,6 +46,10 @@ public enum ClusterRuntimeCapabilityCodec {
         }
         if value.media != nil { object["media"] = ClusterMiMoImageCandidate.fields }
         if value.glmImages != nil { object["glmImages"] = ClusterGLMImageCandidate.fields }
+        // Written only by an adapter that declares its modes' features, so every other record keeps its bytes.
+        if let features = value.modeFeatures {
+            object["modeFeatures"] = Dictionary(uniqueKeysWithValues: features.map { ($0.key.rawValue, $0.value.wireObject) })
+        }
         var data = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys, .withoutEscapingSlashes])
         try workerRequire(data.count < maximumBytes, "Runtime capability exceeds its byte bound")
         data.append(10); return data
@@ -106,13 +110,20 @@ public enum ClusterRuntimeCapabilityCodec {
         } else { modes = [.pipeline] }
         let media = r.values["media"] == nil ? nil : try ClusterMiMoImageCandidate.decode(r.object("media"))
         let glmImages = r.values["glmImages"] == nil ? nil : try ClusterGLMImageCandidate.decode(r.object("glmImages"))
+        let modeFeatures = r.values["modeFeatures"] == nil ? nil : try Dictionary(uniqueKeysWithValues:
+            r.object("modeFeatures").map { name, entry -> (ClusterGenerationMode, ClusterServingFeatures) in
+                guard let mode = ClusterGenerationMode(rawValue: name), let object = entry as? [String: Any] else {
+                    throw ClusterWorkerProtocolError.invalid("Unknown generation mode or malformed serving features")
+                }
+                return (mode, try ClusterServingFeatures.decode(wire: object))
+            })
         let value = try ClusterRuntimeCapability(runtimeBinarySHA256: r.string("runtimeBinarySHA256"),
             adapterID: r.string("adapterID"), adapterVersion: r.int("adapterVersion"), runtimeModelID: r.string("runtimeModelID"),
             artifactSHA256: r.string("artifactSHA256"), configurationSHA256: r.string("configurationSHA256"),
             manifestSHA256: r.string("manifestSHA256"), profile: profile, profileFingerprint: r.string("profileFingerprint"),
             partitions: partitions, arithmeticPolicyID: r.string("arithmeticPolicyID"),
             arithmeticPolicySHA256: r.string("arithmeticPolicySHA256"), supportedPrefillSchedules: schedules,
-            supportedGenerationModes: modes,media:media,glmImages:glmImages)
+            supportedGenerationModes: modes,media:media,glmImages:glmImages, modeFeatures: modeFeatures)
         try workerRequire(try r.string("stateSemantics") == value.stateSemantics
             && r.int("rankCount") == value.rankCount && r.int("batchSize") == value.batchSize
             && r.int("maxActiveRequests") == value.maxActiveRequests

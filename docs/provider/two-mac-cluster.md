@@ -108,7 +108,7 @@ format instruction only, as on one Mac
 | 1 | the first Mac | Run `darkbloom cluster`. It checks the Thunderbolt cable ("Cable found.", "Cable ready."). Nobody waits on the cable yet, so it says **"On your other Mac, run `darkbloom cluster`."** and waits (q cancels). With two cables it asks which one to use. | one macOS administrator approval when the selected port needs configuration ("Darkbloom needs network access for the cluster cable") |
 | 2 | the other Mac | Run `darkbloom cluster`. The same checks; then it finds the waiting Mac on the cable by itself (no address, no host name). Both screens show the same six-digit code. | its own approval if needed; `y` on each Mac when the codes match |
 | 3 | — | The other Mac says **"Paired with the other Mac (<its hardware>). Continue on the other Mac."** Its cluster service now runs; nothing else is ever asked there, also when it was started with `darkbloom cluster local` (it then says to run that on the Mac that leads). macOS may ask once to allow Darkbloom on the local network: allow it. | the Local Network prompt, once |
-| 4 | the leader | It shows both Macs' hardware, tagged "(this Mac)" and "(the other Mac)", and every model the pair can serve (held by both Macs, by one of them, or in Darkbloom's catalog), one line each: size, how it is split, each Mac's share ("this Mac 50% / the other Mac 50%") and the expected speed. A model a Mac holds twice (a catalog download beside the cluster's own copy) is listed once. A model that has tensor parallel but is split otherwise says why on a short second line (for example "tensor parallel: slower here" or "tensor parallel: link unmeasured"). Models that fit in the Macs' free memory now come first. Choose the model (enter takes the first). A model the other Mac lacks says how it gets there ("copy ... over the Thunderbolt cable (6.1 GB)"). | enter to copy (a copy predicted under 30 s at the speed measured on these Macs starts by itself, `n` within 3 s stops it) |
+| 4 | the leader | It shows both Macs' hardware, tagged "(this Mac)" and "(the other Mac)", and every model the pair can serve (held by both Macs, by one of them, or in Darkbloom's catalog), one line each: size, how it is split, each Mac's share ("this Mac 50% / the other Mac 50%") and the expected speed. A model a Mac holds twice (a catalog download beside the cluster's own copy) is listed once. A model that has tensor parallel but is split otherwise says why on a short second line (for example "tensor parallel: slower here", "tensor parallel: not measured yet" or "tensor parallel: link unmeasured"). Models that fit in the Macs' free memory now come first. Choose the model (enter takes the first). A model the other Mac lacks says how it gets there ("copy ... over the Thunderbolt cable (6.1 GB)"). | enter to copy (a copy predicted under 30 s at the speed measured on these Macs starts by itself, `n` within 3 s stops it) |
 | 5 | — | Choosing is starting: "Starting <model> on both Macs in 3 s; press n to stop here." The leader saves the setup, sends it to the other Mac over the cable, starts both Macs, waits until both are loaded and answers one test request. | nothing |
 
 When it serves, the screen says how in one line, for example:
@@ -343,18 +343,55 @@ Models that run tensor parallel, and when:
 |---|---|---|
 | Qwen3.5 9B, Qwen3.8 27B, Qwen3.5/3.6 35B A3B | wherever it fits | Qwen3.8 27B keeps images, video and logprobs only in tensor parallel |
 | GLM-5.3-Flash | wherever it fits | Eight concurrent requests by default |
-| Gemma 4 26B (QAT 4-bit, 8-bit) | only where the plan predicts it faster than a pipeline | Text only; logprobs in tensor parallel only; one request at a time unless you set `DARKBLOOM_CLUSTER_BATCH_LANES` |
-| MiMo V2.6 Flash | only where the plan predicts it faster than a pipeline | Text only; logprobs in tensor parallel only; one request at a time; see [MiMo V2.6 Flash on the pair](#mimo-v26-flash-on-the-pair) |
+| Gemma 4 26B (QAT 4-bit, 8-bit) | only where the plan predicts it faster from its own measured speed on both Macs (it keeps every feature of the pipeline, prompt-prefix and SSD reuse included) | Text only; logprobs in tensor parallel only; one request at a time unless you set `DARKBLOOM_CLUSTER_BATCH_LANES` |
+| MiMo V2.6 Flash | only where it keeps every feature of the mode it would replace (not yet: no speculative rounds) and the plan predicts it faster from its own measured speed on both Macs | Text only; logprobs in tensor parallel only; one request at a time; see [MiMo V2.6 Flash on the pair](#mimo-v26-flash-on-the-pair) |
 
-For Gemma 4, two big Macs normally keep the pipeline: before a load has
-measured the link the plan prices tensor parallel on a slow assumed link. Once
-the link is measured, short prompts with longer answers can be predicted faster
-in tensor parallel, an estimate from each Mac's device index that a
-tensor-parallel load's own measurement then corrects. Two smaller Macs whose
-decode is limited by memory bandwidth (for example 24 or 32 GB M4 Pro) get
-tensor parallel for short prompts with longer answers. The plan's "Tensor
-parallel or pipeline" lines say which and why
-([Gemma tensor-parallel placement](../architecture/inference.md#gemma-tensor-parallel-placement)).
+For Gemma 4 and MiMo V2.6 Flash, tensor parallel must first keep every feature
+and caching behavior of the mode it would replace, as the installed cluster
+worker declares them: prompt-prefix and SSD cache reuse, speculative rounds,
+batch lanes, media, penalties and logit bias, stop handling and logprobs. What it
+adds, such as logprobs where the pipeline has none, never counts against it.
+Gemma 4's tensor parallel keeps every feature of its pipeline, prompt-prefix
+and SSD reuse included. MiMo's has no speculative rounds yet, so MiMo pairs
+serve the speculative pipeline wherever it is the mode tensor parallel would
+replace:
+
+- The plan's "Tensor parallel or pipeline" line says what tensor parallel would
+  drop ("Pipeline: tensor parallel would drop speculative (MTP) rounds that the
+  speculative pipeline keeps; held back until it keeps them."), and the model
+  list says "tensor parallel: drops a feature".
+- Where only tensor parallel fits the two Macs, the plan refuses and saves no
+  setup ("Only tensor parallel fits these Macs, and it would drop ... No
+  reduced-feature setup was saved.").
+- The developer's forced mode (`DARKBLOOM_CLUSTER_FORCE_MODE`, debug builds only)
+  still places tensor parallel, and the plan says exactly what it drops.
+
+See [feature parity before tensor parallel](../architecture/inference.md#gemma-tensor-parallel-placement).
+
+Where tensor parallel keeps every feature, the plan also uses it only when
+tensor parallel's own speed has been measured on both Macs. That measurement
+is a timing a tensor-parallel load takes of each Mac's half (Gemma), or requests
+this Darkbloom build served in tensor parallel. An estimate from each Mac's
+device index alone never chooses it: the index overstates how much a half saves
+on big Macs. Until then the pair serves the pipeline, as follows:
+
+- Before a load has measured the link, the plan prices tensor parallel on a
+  slow assumed link, so two big Macs keep the pipeline.
+- Where the estimate says tensor parallel would be faster, the plan's "Tensor
+  parallel or pipeline" line says so and keeps the pipeline ("Pipeline: tensor
+  parallel is predicted 6% faster ..., but from the device index, not its own
+  measured step; it can be chosen once its step is measured on both Macs ..."). The
+  model list then says "tensor parallel: not measured yet". This holds for short
+  prompts with longer answers on two M5 Ultra once the link is measured, and on
+  smaller Macs whose decode is limited by memory bandwidth (for example two 24
+  or 32 GB M4 Pro).
+- Once both Macs' speeds in tensor parallel are measured, the plan compares
+  those, and a tensor-parallel choice ends with "on its own step as measured on
+  both Macs".
+
+A normal setup does not load tensor parallel just to measure it, so pairs keep
+the pipeline for these models today
+([evidence before tensor parallel](../architecture/inference.md#gemma-tensor-parallel-placement)).
 See the [placement planner](../../libs/darkbloom-cluster/Sources/DarkbloomClusterPlacement/ClusterPlacementPlanner.swift)
 and [mode explanation](../../libs/darkbloom-cluster/Sources/DarkbloomClusterPlacement/ClusterRequestMix.swift).
 
@@ -547,15 +584,21 @@ MiMo V2.6 Flash text can also run tensor parallel: each Mac holds half of every
 layer, about 84 GB of weights and about 98 GiB in all with its reserves
 ([rank memory](../architecture/hardware-support.md#mimo-v26-tensor-parallel-rank-memory)),
 so two 128 GB Macs that cannot hold MiMo alone can serve it. The plan chooses
-tensor parallel only where it predicts it faster than the pipeline with
-speculative decoding, which MiMo's qualification records credit 1.37x:
+tensor parallel only where it keeps the speculative rounds of the pipeline it
+would replace, which it does not yet, so MiMo pairs keep the pipeline with
+speculative decoding (above). Speed decides only after that: tensor parallel must
+be predicted faster than that pipeline, which MiMo's qualification records
+credit 1.37x, from tensor parallel's own speed measured on both Macs:
 
 - Before a load has measured the link, two 128 GB Macs and two 256 GB Macs
   alike keep the pipeline.
-- After that, on a fast Thunderbolt 5 link, both get tensor parallel unless the
-  prompt is long and the answer short (for example 8,192 + 128 tokens); a new
-  pair plans for the longest prompt and answer, which gets tensor parallel. A
-  slow link keeps the pipeline.
+- After that, on a fast Thunderbolt 5 link, tensor parallel is predicted faster
+  for most requests, including a new pair's longest prompt and answer, but only
+  from the Macs' device index, so the pipeline is kept. A long prompt with a
+  short answer (for example 8,192 + 128 tokens) or a slow link keeps it anyway.
+- MiMo does not yet time its halves when it loads tensor parallel. Only
+  requests this Darkbloom build served in tensor parallel measure it, so MiMo
+  pairs keep the pipeline today.
 
 In tensor parallel MiMo returns logprobs, serves one request at a time and
 runs without speculative decoding; the image candidate stays a pipeline. Speed

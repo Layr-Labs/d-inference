@@ -150,8 +150,10 @@ private func checkGemmaRequestAllowance(_ priced: ClusterModelLayout, _ checks: 
 /// The fastest-plan rule on constructed pairs, under the provider's own
 /// first-placement policy (`ClusterPlacementFlow.decide`: tensor parallel
 /// first, an unmeasured link assumed): the M5 Ultra pair keeps the pipeline
-/// with default link costs; a pair of small Macs takes tensor parallel where
-/// the plan predicts it faster; a measured link moves the choice either way.
+/// with default link costs; where tensor parallel is predicted faster on the
+/// device-index prior alone (small Macs, measured links) the pipeline is kept
+/// until each Mac's share step is measured; a share probe or requests served
+/// in tensor parallel then decide.
 private func checkGemmaFastestPlan(_ layout: ClusterModelLayout, _ checks: PlacementChecks) throws {
     // Each Mac's measured whole-model rates and device index (`qmm_h4096_b4_g64_x16_v1`). M5 Ultra: Gemma QAT 4-bit's
     // production median (90 tok/s) and about 7,000 prefill tok/s at 8K; M4 Pro: the solo pair rows of 2026-09-20
@@ -187,6 +189,13 @@ private func checkGemmaFastestPlan(_ layout: ClusterModelLayout, _ checks: Place
     func predicted(_ r: ClusterPlacementResult) -> (tensor: Double, other: Double) {
         (r.tensorParallel?.tensorParallel?.prediction(.rested).requestSeconds ?? .infinity, r.tensorParallel?.bestOtherSeconds ?? .infinity)
     }
+    // Predicted faster by the margin on the device-index prior alone: the pipeline is kept (the evidence rule).
+    func held(_ r: ClusterPlacementResult) -> Bool {
+        r.chosen?.mode == .pipeline && r.tensorParallel?.verdict == .predictedFasterOnPriorOnly && r.tensorParallel?.evidence == .priorOnly
+            && predicted(r).tensor < predicted(r).other * 0.95
+    }
+    func times(_ r: ClusterPlacementResult) -> String { String(format: "%.3f s vs %.3f s", predicted(r).tensor, predicted(r).other) }
+    func reason(_ r: ClusterPlacementResult) -> String { ClusterPlacementExplanation.deploymentReason(r) ?? "" }
 
     // 1. Two M5 Ultra 256 GB, default link costs: a pipeline for every request, prompt-heavy to decode-heavy.
     for (prompt, outputs) in [(8_192, 128), (1_024, 128), (128, 128)] {
@@ -206,46 +215,94 @@ private func checkGemmaFastestPlan(_ layout: ClusterModelLayout, _ checks: Place
     checks.require("Gemma fastest plan: without its choice the same layout, Macs and policy put tensor parallel first",
         ruled.chosen?.mode == .tensorParallel)
 
-    // 2. Two small Macs (24 and 32 GB M4 Pro), default link costs: tensor parallel where the plan predicts it faster.
+    // 2. Two small Macs (24 and 32 GB M4 Pro), default link costs: tensor parallel is predicted faster for a
+    // decode-heavy request, but on the device-index prior alone, so the pipeline is kept until it is measured.
     for gib in [24.0, 32.0] {
         let small = try pros(gib)
-        let decodeHeavy = try plan(small, first(128, 128), .unmeasured), times = predicted(decodeHeavy)
-        checks.require("Gemma fastest plan: 2x M4 Pro \(Int(gib)) GB, default link costs, 128 + 128: tensor parallel, predicted faster by the margin (\(times.tensor) s vs \(times.other) s)",
-            tensor(decodeHeavy) && times.tensor < times.other * 0.95 && decodeHeavy.chosen?.ranks.allSatisfy({ $0.fit == .now }) == true)
+        let decodeHeavy = try plan(small, first(128, 128), .unmeasured)
+        checks.require("Gemma fastest plan: 2x M4 Pro \(Int(gib)) GB, default link costs, 128 + 128: tensor parallel predicted faster by the margin on the prior only (\(times(decodeHeavy))), so the pipeline is kept",
+            held(decodeHeavy) && decodeHeavy.tensorParallel?.tensorParallel?.ranks.allSatisfy({ $0.fit == .now }) == true)
         checks.require("Gemma fastest plan: 2x M4 Pro \(Int(gib)) GB, default link costs, 8,192 + 128: a pipeline (the prompt's sums dominate)",
             pipeline(try plan(small, first(8_192, 128), .unmeasured)))
     }
+    // Measured half steps of 12 ms (`gemma-tp-plan.md` §3.7 infers 1.5-1.7x for such Macs): tensor parallel.
+    let smallProbed = try plan(withShareProbes(try pros(32), layout: layout, halfStepMicroseconds: 12_000), first(128, 128), .unmeasured)
+    checks.require("Gemma evidence rule: 2x M4 Pro 32 GB, default link costs, 128 + 128, both Macs' share probes at 12 ms a half step: tensor parallel on the measured split (\(times(smallProbed)))",
+        tensor(smallProbed) && smallProbed.tensorParallel?.evidence == .measured)
 
-    // 3. A measured link flips the choice as predicted, both ways.
+    // 3. A measured link moves the prediction both ways; on the prior alone it never chooses tensor parallel.
     let ultraDefault = try plan(ultras, first(1_024, 128), .unmeasured), ultraMeasured = try plan(ultras, first(1_024, 128), measuredLink)
     checks.require("Gemma fastest plan: 2x M5 Ultra, 1,024 + 128: a pipeline on default costs and on the pair's measured 29 us link",
         pipeline(ultraDefault) && pipeline(ultraMeasured))
     let fast = try plan(ultras, first(1_024, 128), fastLink)
-    checks.require("Gemma fastest plan: 2x M5 Ultra, 1,024 + 128, a measured 5 us link: tensor parallel, and the line says the predicted gain",
-        tensor(fast) && (ClusterPlacementExplanation.deploymentReason(fast) ?? "").hasPrefix("Tensor parallel: predicted"))
+    checks.require("Gemma fastest plan: 2x M5 Ultra, 1,024 + 128, a measured 5 us link, no share probe: tensor parallel predicted faster on the prior only (\(times(fast))), so the pipeline is kept, and the line says the predicted gain",
+        held(fast) && reason(fast).hasPrefix("Pipeline: tensor parallel is predicted"))
     // Without a share probe the device index credits about half of the M5 Ultra's 11.1 ms step to weights (a rank
     // halves it); `mainnet/gemma-tp-plan.md` §3.2 infers 1.4-2.0 ms. So a decode-heavy request on the measured link is
-    // predicted faster in tensor parallel (an owner decision: the planner's prior, pinned here, not a measurement).
+    // predicted about 6% faster in tensor parallel on the prior, and the pipeline is kept until a measurement says so.
     let ultraShort = try plan(ultras, first(128, 128), measuredLink), short = predicted(ultraShort)
-    checks.require("Gemma fastest plan: 2x M5 Ultra, 128 + 128, the measured 29 us link, no share probe: tensor parallel on the device-index prior (\(short.tensor) s vs \(short.other) s)",
-        tensor(ultraShort) && short.tensor < short.other * 0.95 && short.tensor > short.other * 0.85)
+    checks.require("Gemma evidence rule: 2x M5 Ultra 256 GB, the measured 29 us link, 128 + 128, no share probe or served record: tensor parallel predicted faster on the device-index prior only (\(times(ultraShort))), so the pipeline is kept",
+        held(ultraShort) && short.tensor > short.other * 0.85)
+    checks.require("Gemma evidence rule: its plan line says the predicted gain, that it comes from the device index, and what measures it (\(reason(ultraShort)))",
+        reason(ultraShort).hasPrefix("Pipeline: tensor parallel is predicted 6% faster for requests of 128 prompt and 128 answer tokens (")
+            && reason(ultraShort).contains(", but from the device index, not its own measured step; it can be chosen once its step is measured on both Macs")
+            && ClusterPlacementExplanation.tensorParallelNote(ultraShort) == .notMeasuredYet
+            && ultraShort.shards?.options.first { $0.kind == .tensorParallel }?.verdict == .predictedFasterOnPriorOnly)
+    // A share probe of this model on both Macs (a tensor-parallel load records one): the measured split decides. 10.3 ms
+    // is the plan's half step (11.1 ms less the 0.7-1.0 ms a rank's weights save, plus its own kernels); 7.0 ms a fast one.
+    let planHalf = try plan(withShareProbes(ultras, layout: layout, halfStepMicroseconds: 10_300), first(128, 128), measuredLink)
+    let fastHalf = withShareProbes(ultras, layout: layout, halfStepMicroseconds: 7_000)
+    let probedFast = try plan(fastHalf, first(128, 128), measuredLink)
+    checks.require("Gemma evidence rule: 2x M5 Ultra, 29 us, 128 + 128, both Macs' share probes at 10.3 ms a half step: a pipeline, tensor parallel predicted slower on the measured split (\(times(planHalf)))",
+        pipeline(planHalf) && planHalf.tensorParallel?.evidence == .measured)
+    checks.require("Gemma evidence rule: the same with share probes at 7.0 ms a half step: tensor parallel on the measured split (\(times(probedFast))), and its line says so (\(reason(probedFast)))",
+        tensor(probedFast) && probedFast.tensorParallel?.evidence == .measured
+            && reason(probedFast).hasPrefix("Tensor parallel: predicted") && reason(probedFast).hasSuffix(", on its own step as measured on both Macs."))
+    let oneMac = try plan(withShareProbes(ultras, layout: layout, halfStepMicroseconds: 7_000, members: ["a"]), first(128, 128), measuredLink)
+    let otherModel = try plan(withShareProbes(ultras, layout: layout, halfStepMicroseconds: 7_000, artifact: String(repeating: "f", count: 64)),
+        first(128, 128), measuredLink)
+    checks.require("Gemma evidence rule: a share probe on one Mac only, or another model's on both, is no evidence: the pipeline is kept",
+        held(oneMac) && held(otherModel))
+    // Requests this build served in tensor parallel: the shard rates they corrected decide (the pipeline predicts 87 tok/s).
+    let servedSlow = try plan(try afterServedTensorParallel(ultras, layout: layout, link: measuredLink, decode: 80, prompt: 128, outputs: 128),
+        first(128, 128), measuredLink)
+    let servedFast = try plan(try afterServedTensorParallel(ultras, layout: layout, link: measuredLink, decode: 110, prompt: 128, outputs: 128),
+        first(128, 128), measuredLink)
+    checks.require("Gemma evidence rule: 2x M5 Ultra, 29 us, 128 + 128, served in tensor parallel at 80 tok/s: a pipeline on the served split (\(times(servedSlow)))",
+        pipeline(servedSlow) && servedSlow.tensorParallel?.evidence == .measured)
+    checks.require("Gemma evidence rule: the same served at 110 tok/s: tensor parallel on the served split (\(times(servedFast)))",
+        tensor(servedFast) && servedFast.tensorParallel?.evidence == .measured)
+    // The rule is the fastest-plan family's alone: without its choice, the plain comparison takes the prior's gain.
+    var comparison = ClusterPlacementPolicy(); comparison.promptTokens = 128; comparison.outputTokens = 128
+    let unruled = try ClusterPlacementPlanner.plan(devices: ultras, layout: try gemmaTensorParallelFirst(layout), policy: comparison,
+        link: measuredLink)
+    checks.require("Gemma evidence rule: the same layout without its choice, compared plainly on the same Macs and link, still takes tensor parallel on the prior, and states no evidence",
+        unruled.chosen?.mode == .tensorParallel && unruled.tensorParallel?.verdict == .chosen && unruled.tensorParallel?.evidence == nil)
     let small = try pros(32)
     let smallDefault = try plan(small, first(1_024, 128), .unmeasured)
     let smallMeasured = try plan(small, first(1_024, 128), measuredLink), smallSlow = try plan(small, first(1_024, 128), slowLink)
-    checks.require("Gemma fastest plan: 2x M4 Pro 32 GB, 1,024 + 128: a pipeline on default costs, tensor parallel on the measured 29 us link, a pipeline on a measured 109 us one",
-        pipeline(smallDefault) && tensor(smallMeasured) && pipeline(smallSlow))
+    checks.require("Gemma fastest plan: 2x M4 Pro 32 GB, 1,024 + 128: a pipeline on default costs, tensor parallel predicted faster on the measured 29 us link but on the prior only (\(times(smallMeasured))), a pipeline on a measured 109 us one",
+        pipeline(smallDefault) && held(smallMeasured) && pipeline(smallSlow))
     // An automatic replacement invents no link: without a measured one, the pipeline it runs.
     var replacement = first(128, 128); replacement.tensorParallelAssumesUnmeasuredLink = false
     let kept = try plan(small, replacement, .unmeasured)
     checks.require("Gemma fastest plan: an automatic replacement before any measured link keeps a pipeline (tensor parallel not predicted)",
         kept.chosen?.mode == .pipeline && kept.tensorParallel?.verdict == .reductionNotMeasured)
-    // A pipeline the pair keeps holds a tensor-parallel win back under the margin it must beat, as for any mode.
+    // A pipeline the pair keeps holds a measured tensor-parallel win back under the margin it must beat, as for any mode;
+    // and the mode a pair served before an update is kept over the rule, as it is kept over any prediction.
     var keep = first(128, 128); keep.keptMode = .pipeline; keep.keptModeMargin = .infinity; keep.keptModeReason = "kept after the update"
-    checks.require("Gemma fastest plan: a kept pipeline holds tensor parallel back (unlike a TP-first family)",
-        try plan(small, keep, measuredLink).chosen?.mode == .pipeline)
-    // The developer setting still places it, and the router prices a chosen setup as it was planned.
+    let keptPipeline = try plan(fastHalf, keep, measuredLink)
+    checks.require("Gemma fastest plan: a kept pipeline holds tensor parallel back even on measured share steps (unlike a TP-first family)",
+        keptPipeline.chosen?.mode == .pipeline && keptPipeline.keptModeReason == "kept after the update")
+    keep.keptMode = .tensorParallel
+    let keptTensor = try plan(ultras, keep, measuredLink)
+    checks.require("Gemma evidence rule: tensor parallel served before an update is kept on the prior alone, and the line says why",
+        keptTensor.chosen?.mode == .tensorParallel && keptTensor.tensorParallel?.evidence == .priorOnly
+            && reason(keptTensor) == "Tensor parallel: kept after the update.")
+    // The developer setting still places it with no share probe (that load records the first one), and the router
+    // prices a chosen setup as it was planned.
     var forced = ClusterPlacementPolicy(); forced.forcedMode = .tensorParallel
-    checks.require("Gemma fastest plan: the developer's forced mode still places tensor parallel",
+    checks.require("Gemma fastest plan: the developer's forced mode still places tensor parallel, with no share probe",
         try plan(ultras, forced, .unmeasured).chosen?.mode == .tensorParallel)
     let priced = try ClusterPlacementPlanner.evaluate(devices: small, cuts: [], mode: .tensorParallel, prefillSchedule: .serial,
         layout: layout, policy: first(128, 128), link: .unmeasured)

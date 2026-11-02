@@ -3699,8 +3699,9 @@ loads now still goes ahead of tensor parallel that would not. The reason line
 then gives the rule ("Tensor parallel: the model fits, so both Macs share every
 layer of every token.") unless tensor parallel is also predicted faster, when it
 says the gain. Predictions are still made and reported. A family whose plan
-states `ClusterTensorParallelChoice.fastest` (Gemma 4) is exempt: it is placed in
-tensor parallel only where predicted faster ([Gemma tensor-parallel
+states `ClusterTensorParallelChoice.fastest` (Gemma 4, MiMo V2.6) is exempt: it is
+placed in tensor parallel only where predicted faster, on every rank's measured
+share step ([Gemma tensor-parallel
 placement](#gemma-tensor-parallel-placement)). A first placement, before
 any load measured the link, plans tensor parallel on the keyed reduction a forced
 plan assumes (`tensorParallelAssumesUnmeasuredLink`, labelled as assumed), so a new
@@ -3723,8 +3724,9 @@ running setup. The planner's own default, and the plan tool without
 The setup's model list (`ClusterOnboardingModelChoice.listLine`) ends a model's
 one line with a short note when its layout has a tensor-parallel plan and the
 planner splits it otherwise, for example `tensor parallel: slower here`, `about as fast`
-(inside the margin), `does not fit now`, `link unmeasured`, or `no tensor parallel
-for this model`. The note comes from the planner's own assessment
+(inside the margin), `not measured yet` (predicted faster on the device index
+alone, for a family chosen only where faster), `does not fit now`, `link unmeasured`,
+or `no tensor parallel for this model`. The note comes from the planner's own assessment
 (`ClusterPlacementExplanation.tensorParallelNote`, carried in
 `ClusterSetupPlanSummary.tensorParallelNote`). It has at most 33 characters, and
 the list keeps one line per model. A model without tensor-parallel facts gets no
@@ -3778,7 +3780,10 @@ target positions over its step, since its rounds run windows; any other load
 by one over its plain step) before served requests calibrate them; a point
 already there, such as one served requests corrected, stays, and a speed known
 only as a ratio takes none. A probe times decode only, so prefill predictions
-are what they were without it.
+are what they were without it. For a family chosen only where faster, these
+points, or the shard rates requests served in tensor parallel corrected, are
+what lets a plan choose tensor parallel at all ([Gemma tensor-parallel
+placement](#gemma-tensor-parallel-placement)).
 
 Measured with the same local timing on c38 kernels (27B, 2026-10-24), the M3
 Ultra stepped 32.1 ms at 2/3, 24.9 at 1/2 and 22.5 at 2/5; the M5 Max 17.4 at
@@ -4266,26 +4271,146 @@ free; an automatic replacement assumes no link and keeps the pipeline. Qwen and
 GLM state no choice and keep tensor parallel first. Gemma states it because one
 decode step is mostly a per-token floor that two ranks do not halve, while 61
 sums cross the link: about 0.67-0.93x one M5 Ultra's decode, unmeasured
-[INFERENCE]. On the planner's own figures (`PlacementChecks`,
-`GemmaTensorParallelChecks.swift`):
+[INFERENCE].
+
+**Feature parity before tensor parallel.** The guided step plans a `fastest`
+family's tensor parallel only where it keeps every feature and caching behavior
+of the mode it would replace (owner, 2026-11-01). Each mode's features come from
+the worker's capability record (`ClusterRuntimeCapability.modeFeatures`, one
+`ClusterServingFeatures` a mode), which the adapter declares beside its modes
+from the facts its loads bind; the provider keeps no table of them:
+
+| Feature (`ClusterServingFeatures`) | Gemma 4 pipeline / tensor parallel | MiMo V2.6 plain pipeline / `pipeline_mtp_v1` / tensor parallel |
+|---|---|---|
+| `promptPrefixReuse`, resident | yes / no | no / no / no |
+| `ssdPrefixTier` | yes / no | no / no / no |
+| `speculativeRounds` (MTP) | no / no | no / yes / no |
+| `maximumLanes` | 8 / 8 | 8 / 1 / 1 |
+| `requestMedia` | none / none | none |
+| `penaltiesAndLogitBias`, `stopHandling` | yes / yes | yes |
+| `logprobs` (committed tokens) | no / yes | no / no / yes |
+
+Gemma's come from `Gemma4ResidentAdapterDefinition.servingFeatures`, whose
+`tensorParallelKeepsPromptPrefixes` its tensor-parallel load agreement binds
+(`Gemma4TensorParallelLoadAgreement`). MiMo's come from
+`MiMoResidentCapabilityMetadata.servingFeatures`: the widest lanes and paged
+histories `MiMoBatchSettings` gives each mode, and
+`MiMoTensorParallelResidentRuntime.servingFeatures`, whose lanes and prefix
+setting its serving agreement binds. A record without features
+(`ClusterRuntimeCapabilityCodec` writes no `modeFeatures`) keeps its bytes.
+
+`ClusterModeParity`, in `ClusterPlacementFlow.decide` beside
+`ClusterModelFeaturePolicy.admissibleModes`, applies the rule before the planner
+ranks anything:
+
+1. The mode tensor parallel would replace is the one the plan chooses without
+   it: the same policy with its tensor-parallel modes left out. Where no other
+   mode places, every other mode is compared.
+2. Tensor parallel must keep every feature of that mode
+   (`ClusterServingFeatures.dropped(by:)`). What it adds (logprobs, wider lanes)
+   never counts against it.
+3. Otherwise its modes leave the policy, so no ordering (the margin, the
+   evidence hold, a kept mode, a better hardware group) brings it back. The
+   assessment's verdict is `dropsFeatures` (`ClusterPlacementPolicy.tensorParallelHeldForFeatures`),
+   the plan's line says, for example, "Pipeline: tensor parallel would drop
+   speculative (MTP) rounds that the speculative pipeline keeps; held back until
+   it keeps them.", and the model list says `tensor parallel: drops a feature`.
+4. Where tensor parallel is the only mode that places, the plan refuses rather
+   than save a reduced setup: "Only tensor parallel fits these Macs, and it would
+   drop ... No reduced-feature setup was saved." The result's `modesReason`
+   carries it to the setup screen.
+5. The developer's forced mode (`DARKBLOOM_CLUSTER_FORCE_MODE`, debug builds)
+   still places tensor parallel, and the plan says exactly what it drops.
+6. A `fastest` family whose record declares no features keeps tensor parallel
+   back: nothing shows it keeps them.
+
+Gemma's tensor parallel keeps every feature of its pipeline, prompt prefixes
+included, resident and on the SSD tier (`Gemma4TensorParallelPrefix`), so the
+evidence rule below decides for it. The rule holds MiMo's tensor parallel back
+wherever the speculative pipeline is the mode it would replace, because it has
+no speculative rounds. The
+tensor-parallel-first families (Qwen, GLM) declare no features and are not
+gated. Applied to them, the rule would leave GLM unchanged (its tensor parallel
+keeps prompt-prefix and SSD reuse and adds rounds, eight lanes, images, video
+and logprobs) but would move Qwen3.5 9B from tensor parallel to its
+speculative pipeline, which its records credit 1.74x: Qwen tensor parallel
+decodes in rounds only with the explicitly quoted assistant
+(`QwenTensorParallelMTPPolicy`, `ClusterQwenTensorAssistantPolicy`). Whether
+they adopt it is the owner's decision.
+
+**Evidence before tensor parallel.** A `fastest` family takes tensor parallel
+only when every rank of the placement has a measured share step
+(`ClusterDecodeSplit.measured`): a share probe of this model on that Mac
+(`ClusterShareProbeHistory`; a speed record of this model's shard rates counts
+for every Mac of its chip and OS build), or the shard rates that requests this
+worker build served in tensor parallel corrected
+(`ClusterServedCalibration.tensorParallelMeasurements`). Before that, a Mac's
+share step comes from its device index (`ClusterHardwarePrior.weightSeconds`).
+The index times each operation with its launch latency inside, so it overstates
+the weight time a rank halves: for Gemma about 5.3 ms of an M5 Ultra's 11.1 ms
+QAT 4-bit step, where the plan behind the rule infers 1.4-2.0 ms [INFERENCE]. A
+tensor-parallel placement predicted faster by the margin on that prior alone
+goes behind the best placement in another mode of its hardware group
+(`holdingTensorParallelWithoutEvidence`). The assessment reports it as
+`predictedFasterOnPriorOnly`, with the prediction, and its `evidence` says
+`measured` or `priorOnly`; it is omitted for every other family. The plan's
+"Tensor parallel or pipeline" line says, for example, "Pipeline: tensor parallel
+is predicted 6% faster for requests of 128 prompt and 128 answer tokens (...),
+but from the device index, not its own measured step; it can be chosen once its
+step is measured on both Macs (a share probe at a tensor-parallel load, or requests
+this build served in tensor parallel)." A plan that chooses tensor parallel on
+measured steps adds ", on its own step as measured on both Macs". The setup's
+model list says `tensor parallel: not measured yet`.
+
+The rule changes nothing else:
+
+1. A tensor-parallel placement in a better hardware group (it loads now, no
+   other mode does) still goes first, and a policy that leaves only tensor
+   parallel places it.
+2. The developer's forced mode (`ClusterForcedMode`) places it with nothing
+   measured.
+3. A kept mode is applied after the rule (`ClusterPlacementPolicy.keptMode`):
+   tensor parallel that the pair served before a Darkbloom update is kept on
+   the prior, as it is kept over any prediction, and a kept pipeline holds back
+   measured tensor parallel.
+4. Families without a choice (Qwen, GLM) ask for no evidence, under the
+   provider's tensor-parallel-first rule or the plain comparison alike.
+5. `rankQuoted`, which no `fastest` family uses, is unchanged.
+
+Only a tensor-parallel load records share probes, so a pair first gets evidence
+from such a load:
+
+- the developer's forced mode (`DARKBLOOM_CLUSTER_FORCE_MODE=tensor_parallel_v1`,
+  debug builds only);
+- the morning real-pair A/B, when its tensor-parallel loads run through the
+  installed session, whose leader records both ranks' probes
+  (`DistributedInstalledSession`);
+- a qualification run that loads tensor parallel through the installed
+  session. Nothing else records probes: a `darkbloom-cluster-pair-check` run
+  writes no history.
+
+The probes are kept per model and member for 30 days, whichever worker build
+recorded them, so a later plan of the same pair uses them. Gemma's
+tensor-parallel load times a rank's share (`Gemma4TensorParallelShareProbe`)
+before its ready record, which carries it to the leader. Served records count
+only for the build that served them (`ClusterServedSpeedRecords.servedBy`).
+
+On the planner's own figures (`PlacementChecks`, `GemmaTensorParallelChecks.swift`),
+the comparison and the evidence rule choose as follows; the guided step's feature
+parity then keeps the pipeline in every row until Gemma's tensor parallel keeps
+prompt prefixes:
 
 | Pair | Link | Request | Chosen |
 |---|---|---|---|
 | 2x M5 Ultra 256 GB | default (unmeasured) | 8,192 + 128, 1,024 + 128, 128 + 128 | pipeline |
 | 2x M5 Ultra 256 GB | measured 29 us sums | 1,024 + 128 | pipeline |
-| 2x M5 Ultra 256 GB | measured 29 us sums, no share probe | 128 + 128 | tensor parallel (device-index prior) |
-| 2x M5 Ultra 256 GB | measured 5 us sums | 1,024 + 128 | tensor parallel |
-| 2x M4 Pro 24 or 32 GB | default | 128 + 128 | tensor parallel |
+| 2x M5 Ultra 256 GB | measured 29 us sums, no share probe | 128 + 128 | pipeline: tensor parallel predicted 1.40 s against 1.48 s on the prior alone |
+| 2x M5 Ultra 256 GB | measured 29 us sums, share probes at 10.3 / 7.0 ms a half step | 128 + 128 | pipeline (1.63 s against 1.48 s) / tensor parallel (1.21 s) |
+| 2x M5 Ultra 256 GB | measured 29 us sums, served in tensor parallel at 80 / 110 tok/s | 128 + 128 | pipeline / tensor parallel |
+| 2x M5 Ultra 256 GB | measured 5 us sums, no share probe | 1,024 + 128 | pipeline: tensor parallel predicted faster on the prior alone |
+| 2x M4 Pro 24 or 32 GB | default | 128 + 128 | pipeline: tensor parallel predicted 2.71 s against 3.05 s on the prior alone; on the 32 GB pair with share probes at 12 ms a half step, tensor parallel (2.82 s) |
 | 2x M4 Pro 24 or 32 GB | default | 8,192 + 128 | pipeline |
-| 2x M4 Pro 32 GB | measured 29 us / 109 us sums | 1,024 + 128 | tensor parallel / pipeline |
-
-Before a share probe, the comparison takes a Mac's weight time from its device
-index (`ClusterHardwarePrior.weightSeconds`): about 5.5 ms of an M5 Ultra's
-11.1 ms QAT 4-bit step, of which a rank halves 96%. The plan behind the rule
-infers 1.4-2.0 ms [INFERENCE], so the prior favours tensor parallel on big
-Macs: on the pair's measured link it predicts a 128 + 128 request about 5%
-faster than the pipeline. A tensor-parallel load's share probe
-(`Gemma4TensorParallelShareProbe`) replaces the prior in later plans.
+| 2x M4 Pro 32 GB | measured 29 us / 109 us sums | 1,024 + 128 | pipeline (tensor parallel predicted faster on the prior alone) / pipeline |
 
 A family opts in by passing `choice: .fastest` where it builds its
 `ClusterTensorParallelFamilyPlan`; its layouts then encode `"choice":"fastest_v1"`
@@ -4459,27 +4584,40 @@ qualification records measured, 1.37x (59.18 against 43.05 tok/s;
 plans for the layout's longest request, 32,768 + 32,768 tokens. On the
 planner's own figures (`PlacementChecks`, `MiMoTensorParallelChecks.swift`;
 constructed Macs: M5 Ultra 57 tok/s, the M5 Max 128 GB from its stage probes at
-40 tok/s), the provider plans MiMo as follows:
+40 tok/s), the comparison and the evidence rule place MiMo as follows; the
+guided step's feature parity then keeps the speculative pipeline in the rows
+that end in tensor parallel, until MiMo's tensor parallel decodes in rounds:
 
 | Pair | Link | Request | Chosen |
 |---|---|---|---|
 | 2x M5 Max 128 GB (neither holds MiMo alone) or 2x M5 Ultra 256 GB | default (unmeasured) | every request, 128 + 128 and 32,768 + 32,768 included | speculative pipeline (tensor parallel 43.6 against 55.0 tok/s on 2x M5 Max, 52.1 against 78.3 on 2x M5 Ultra) |
-| either pair | measured 29 us sums | decode-heavy, 32,768 + 32,768 included | tensor parallel (32,768 + 32,768: 553 s against 646 s on 2x M5 Max, 405 s against 444 s on 2x M5 Ultra) |
+| either pair | measured 29 us sums, nothing served in tensor parallel | decode-heavy, 32,768 + 32,768 included | speculative pipeline: tensor parallel predicted faster on the prior alone (32,768 + 32,768: 553 s against 646 s on 2x M5 Max, 405 s against 444 s on 2x M5 Ultra) |
+| 2x M5 Ultra / 2x M5 Max | measured 29 us sums, served in tensor parallel at 70 or 95 / 45 or 70 tok/s | 128 + 128 | speculative pipeline / tensor parallel |
 | either pair | measured 29 us sums | 8,192 + 128 | speculative pipeline (the prompt's FP32 sums) |
 | either pair | measured 109 us sums | 32,768 + 32,768 | speculative pipeline |
 
 Against the plain pipeline (a capability without `pipeline_mtp_v1`, or no
-passing record of the rounds), two M5 Max take tensor parallel even on default
-link costs for decode-heavy requests (128 + 128: 3.17 s against 3.50 s) and keep
-the pipeline inside the 5 % margin (1,024 + 128) or for long prompts; two M5
-Ultra keep the pipeline on default link costs, where 97 sums cost about 10.3 ms
-a step, more than the weight streaming a half saves.
+passing record of the rounds), tensor parallel would also drop the plain
+pipeline's eight batch lanes (it serves one), so feature parity keeps the
+pipeline there too. On speed alone, two M5 Max are predicted faster in tensor
+parallel even on default link costs for decode-heavy requests (128 + 128:
+3.17 s against 3.50 s), on the prior alone, so they keep the pipeline too, as
+they do inside the 5 % margin (1,024 + 128) or for long prompts; two M5 Ultra
+keep the pipeline on default link costs, where 97 sums cost about 10.3 ms a
+step, more than the weight streaming a half saves.
 
-Every tensor-parallel prediction here rests on the hardware prior: the M5
-Ultra's device index puts the whole 17.5 ms step in weights, so a rank is
-predicted to save half of it, although it still pays the step's dispatch floor
-[INFERENCE]. MiMo has no share probe, so only served tensor-parallel records
-correct the prior (`ClusterServedCalibration`). The recorded golden layout
+Every tensor-parallel prediction here without served records rests on the
+hardware prior: the M5 Ultra's device index puts the whole 17.5 ms step in
+weights, so a rank is predicted to save half of it, although it still pays the
+step's dispatch floor [INFERENCE]. The evidence rule therefore keeps the
+pipeline ([Gemma tensor-parallel placement](#gemma-tensor-parallel-placement)).
+MiMo's runtime takes no share probe, so only requests a pair served in tensor
+parallel with the same worker build give it evidence
+(`ClusterServedCalibration`). Only the developer's forced mode, in a debug
+build, serves MiMo tensor parallel before that; a release build cannot force it,
+so release builds keep MiMo on the pipeline until MiMo gets a share probe, and
+feature parity keeps it there until MiMo's tensor parallel decodes in rounds. The
+recorded golden layout
 gains the facts and routed experts beside its recorded bytes; its golden plans
 keep their placements (pipeline, cut 41 and cut 24), and their tensor-parallel
 verdict reads `notExecutedByRuntime` because the recorded mode list predates

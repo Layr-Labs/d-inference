@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 import MLXLMCommon
+import DarkbloomClusterProtocol
 @testable import ProviderCore
 
 // The cluster pair as an ordinary provider slot (S09), on a member loop. The
@@ -63,6 +64,8 @@ final class ScriptedPairOwner: DistributedResidentExecutionOwner, @unchecked Sen
     var leasesAcceptCleanStop = true
     /// The first this many reservations fail (the warmup canary is the first).
     var failFirstReservations = 0
+    /// The resident assistant both "ranks" report loaded (nil: none).
+    var tensorAssistant: ClusterQwenTensorAssistantReady?
 
     init(model: String = clusterPairFixtureModel) {
         identity = .init(membershipEpoch: UUID(), modelID: model,
@@ -76,7 +79,9 @@ final class ScriptedPairOwner: DistributedResidentExecutionOwner, @unchecked Sen
     var lastLease: ScriptedPairLease? { lock.withLock { leases.last } }
 
     func readiness() -> DistributedResidentReadiness? {
-        lock.withLock { available ? .init(identity: identity, profileID: profileID, requestCapacityBytes: 1 << 20) : nil }
+        lock.withLock {
+            available ? .init(identity: identity, profileID: profileID, requestCapacityBytes: 1 << 20, tensorAssistant: tensorAssistant) : nil
+        }
     }
     func setReadinessInvalidationHandler(_ handler: @escaping @Sendable () -> Void) {
         lock.withLock { invalidation = handler }
@@ -172,6 +177,24 @@ struct ClusterPairSlotTests {
         #expect(await loop.clusterPairSlotServes(clusterPairFixtureModel))
         #expect(!(await loop.clusterPairSlotServes("other/model")))
         #expect(await loop.retireClusterPairSlot(reason: "test"))
+    }
+
+    /// The slot's MTP posture follows the pair's readiness: ranks that loaded the resident assistant report it
+    /// configured, with the pair runtime's own counts (none yet); any other pair keeps the disabled posture.
+    @Test func aPairWithTheResidentAssistantReportsItsMTPPosture() async throws {
+        for assisted in [false, true] {
+            let loop = try await clusterPairMemberLoop()
+            let owner = ScriptedPairOwner()
+            if assisted {
+                owner.tensorAssistant = try ClusterQwenTensorAssistantReady(policy: try ClusterQwenTensorAssistantPolicy(depth: 3,
+                    inventorySHA256: String(repeating: "8", count: 64)), capacity: 1)
+            }
+            _ = try await loop.publishClusterPairSlot(clusterPairSpecification(owner), owner: owner)
+            let bridge = try #require(await loop.slotBridgeForTesting(modelId: clusterPairFixtureModel))
+            let snapshot = await bridge.mtpStatusSnapshot()
+            #expect(snapshot.configured == assisted && !snapshot.active && snapshot.rounds == 0, "assisted \(assisted)")
+            #expect(await loop.retireClusterPairSlot(reason: "test"))
+        }
     }
 
     /// S18 warmup canary: one throwaway generation through the pair before

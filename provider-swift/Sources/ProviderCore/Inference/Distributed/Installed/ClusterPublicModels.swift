@@ -18,6 +18,10 @@ public struct ClusterPublicModel: Sendable, Equatable {
     public let schedules: [UInt8]
     /// The ranks of the evidence placement.
     public let ranks: Ranks
+    /// The resident assistant the owner declared public for this artifact's
+    /// tensor-parallel placement; nil (every model today) keeps a setup saved
+    /// for coordinator pairing without one.
+    public var tensorAssistant: ClusterPublicTensorAssistant? = nil
 
     /// The evidence placement's ranks: how many, each on one GPU architecture
     /// and macOS version.
@@ -27,6 +31,35 @@ public struct ClusterPublicModel: Sendable, Equatable {
         public let gpuArchitecture: String
         public let macOSMajor: Int
         public let macOSMinor: Int
+    }
+}
+
+/// A resident assistant the owner declared public for one model's tensor
+/// parallel placement: the exact policy a coordinator-paired setup must save
+/// (depth, the inline head's inventory, singleton verification) and the
+/// evidence document it rests on, whose SHA-256 is `evidenceSHA256` (a test
+/// holds them equal).
+public struct ClusterPublicTensorAssistant: Sendable, Equatable {
+    public let policy: ClusterQwenTensorAssistantPolicy
+    public let evidenceDocument: String
+    public let evidenceSHA256: String
+
+    public init(policy: ClusterQwenTensorAssistantPolicy, evidenceDocument: String, evidenceSHA256: String) throws {
+        try policy.validate()
+        guard policy.verification == .singleton, ClusterConfigurationSyntax.hash(evidenceSHA256),
+              evidenceDocument.hasPrefix("docs/reports/"), evidenceDocument.hasSuffix(".md") else {
+            throw ClusterConfigurationError.invalid("A public tensor assistant declares singleton verification and its evidence report")
+        }
+        self.policy = policy; self.evidenceDocument = evidenceDocument; self.evidenceSHA256 = evidenceSHA256
+    }
+
+    /// What the declaration adds to the resource policy a native start and a
+    /// release's facts carry (`DistributedInstalledNativeStart.resourcePolicySHA256`):
+    /// the arguments both workers are launched with.
+    var resourcePolicyFields: [String] {
+        [ClusterQwenTensorAssistantPolicy.schemaName, "depth=\(policy.depth)",
+         "\(ClusterQwenTensorAssistantPolicy.inventoryArgument)=\(policy.inventorySHA256)",
+         "verification=\(policy.verification.rawValue)", "evidence=\(evidenceSHA256)"]
     }
 }
 
@@ -102,6 +135,31 @@ public enum ClusterPublicModels {
               artifactSHA256.map({ ClusterPairServingGrants.qualifyingArtifact(for: $0, runtimeModelID: runtimeModelID)
                   == model.artifactSHA256 }) ?? true else { return [] }
         return model.families
+    }
+
+    /// A test's own declaration (nil: `declared`). Never set by a product
+    /// path: a build's public models and assistants change only with
+    /// `declared` and their evidence reports.
+    @TaskLocal static var declarationOverride: [ClusterPublicModel]?
+    /// `declared`, or a test's own declaration.
+    public static var current: [ClusterPublicModel] { declarationOverride ?? declared }
+
+    /// The resident assistant `models` declare public for a runtime model's
+    /// installed artifact (mapped as grants map it), with tensor parallel
+    /// among its declared families; nil for any other model, artifact or a
+    /// model declared without one.
+    static func tensorAssistant(runtimeModelID: String, artifactSHA256: String,
+                                in models: [ClusterPublicModel] = current) -> ClusterPublicTensorAssistant? {
+        guard let model = models.first(where: { $0.runtimeModelID == runtimeModelID }),
+              model.families.contains(.tensorParallel),
+              ClusterPairServingGrants.qualifyingArtifact(for: artifactSHA256, runtimeModelID: runtimeModelID)
+                == model.artifactSHA256 else { return nil }
+        return model.tensorAssistant
+    }
+
+    /// `tensorAssistant` of a capability record's model and artifact.
+    static func tensorAssistant(for capability: ClusterRuntimeCapability) -> ClusterPublicTensorAssistant? {
+        tensorAssistant(runtimeModelID: capability.runtimeModelID, artifactSHA256: capability.artifactSHA256)
     }
 }
 

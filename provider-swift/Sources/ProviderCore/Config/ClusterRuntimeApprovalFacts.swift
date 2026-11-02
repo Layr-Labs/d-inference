@@ -257,9 +257,10 @@ public struct ClusterRuntimeApprovalFacts: Equatable, Sendable {
     /// The facts of `installation` for exactly `models`: a model `publicModels`
     /// declare (this build's declaration by default) has the declared grant and
     /// parity qualifications, any other the grant of `decisions` (this build's
-    /// bundled records by default).
+    /// bundled records by default). A resident assistant `publicModels` declare
+    /// for a model's artifact is part of its resource policy.
     public static func compute(installation: Installation, models: [ModelFiles],
-                               publicModels: [ClusterPublicModel] = ClusterPublicModels.declared,
+                               publicModels: [ClusterPublicModel] = ClusterPublicModels.current,
                                decisions: ClusterPairServingDecisions = ClusterPairServingGrants.decisions) throws -> Self {
         let installed = try HashedInstallation(installation)
         return try installed.facts(models.map { try installed.describe($0, publicModels: publicModels, decisions: decisions).entry })
@@ -292,9 +293,13 @@ public struct ClusterRuntimeApprovalFacts: Equatable, Sendable {
             grant = try (try? ClusterPairServingGrants.grant(runtimeModelID: capability.runtimeModelID, publicModelID: artifact.modelID,
                 artifactSHA256: capability.artifactSHA256, decisions: decisions)).map(PairServingGrant.init)
         }
+        // The member's own start computes the same digest from the same declaration (`DistributedInstalledNativeStart`).
+        let assistant = ClusterPublicModels.tensorAssistant(runtimeModelID: capability.runtimeModelID,
+            artifactSHA256: capability.artifactSHA256, in: publicModels)
         return Described(entry: Model(model: artifact.modelID, artifactSHA256: capability.artifactSHA256,
             capabilitySHA256: ClusterConfigurationCodec.sha256(bytes), profileSHA256: capability.profileFingerprint,
-            resourcePolicySHA256: NativePairMemberPolicy.hex(DistributedInstalledNativeStart.resourcePolicySHA256(capability)),
+            resourcePolicySHA256: NativePairMemberPolicy.hex(DistributedInstalledNativeStart.resourcePolicySHA256(capability,
+                assistant: assistant)),
             pairServingGrant: grant,
             parityQualifications: declared.map { parityQualifications($0, metallibSHA256: metallibSHA256, inputModalities: inputModalities,
                 layers: layerCount(configuration),

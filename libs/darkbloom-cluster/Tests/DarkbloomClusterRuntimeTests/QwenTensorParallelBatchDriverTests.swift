@@ -101,6 +101,7 @@ struct QwenTensorParallelBatchDriverTests {
         var assisted = Set<UUID>(), folded: [[UUID]] = []
         var afterDecode: ([UUID]) throws -> Void = { _ in }
         var preparing: (UUID) throws -> Void = { _ in }
+        var carriesSelectionControl = true
         init(pair: Pair, rank: Int) { self.pair = pair; self.rank = rank }
         func exchange(_ words: [Float], check: () throws -> Void) throws -> [Float] { try check(); return try pair.link.sum(words, rank: rank) }
         func discard(_ reservation: Reservation) throws {
@@ -119,6 +120,9 @@ struct QwenTensorParallelBatchDriverTests {
             try lane.advance(Array(lane.request.promptTokenIDs[frame.tokenOffset..<(frame.tokenOffset + frame.tokenCount)]))
             return frame.finalPromptChunk ? HistoryBatchTestSession.next(lane.history) : nil
         }
+        func decode(_ lanes: [HistoryBatchTestSession], tokens: [Int], check: () throws -> Void) throws -> [Int] {
+            try decode(lanes, tokens: tokens, control: { nil }, check: check).tokens
+        }
         func decode(_ lanes: [HistoryBatchTestSession], tokens: [Int], control: () throws -> [Float]?,
                     check: () throws -> Void) throws -> (tokens: [Int], control: [Float]?) {
             for (lane, token) in zip(lanes, tokens) { try lane.advance([token]) }
@@ -126,6 +130,7 @@ struct QwenTensorParallelBatchDriverTests {
             try afterDecode(lanes.map { $0.request.requestID })
             let selected = lanes.map { HistoryBatchTestSession.next($0.history) }
             guard let words = try control() else { return (selected, nil) }
+            guard carriesSelectionControl else { throw ProbeError("Control words reached an executor that cannot carry them") }
             folded.append(lanes.map { $0.request.requestID })
             // The selection's own sum: rank 0's tokens, rank 1's zeros, then both ranks' control words.
             let sum = try pair.link.sum(selected.map { rank == 0 ? Float($0) : 0 } + words, rank: rank)
@@ -432,6 +437,21 @@ struct QwenTensorParallelBatchDriverTests {
         #expect(lengths.filter { $0 == folded }.count == request.outputCount - 1)
         #expect(lengths[first...last].allSatisfy { $0 == folded })
         #expect(!lengths[first...last].contains(QwenTensorParallelBatchWire.words))
+    }
+
+    /// An executor whose selection sum cannot carry control words keeps the
+    /// exchange every step, with today's tokens.
+    @Test func anExecutorWithoutSelectionControlKeepsTheExchange() throws {
+        let pair = Pair(1), request = try pair.request(output: 24)
+        for rank in 0...1 { pair.native[rank].carriesSelectionControl = false }
+        try pair.reserve(request)
+        try pair.run()
+        #expect(pair.hosts[0].tokens[request.requestID] == HistoryBatchTestSession.oracle(request))
+        for rank in 0...1 {
+            #expect(pair.hosts[rank].finished[request.requestID] == .length)
+            #expect(pair.native[rank].folded.isEmpty)
+        }
+        #expect(!pair.link.lengths.contains(1 + QwenTensorParallelBatchWire.words))
     }
 
     /// Both ranks end a row at its stop token or output count from the tokens

@@ -578,6 +578,14 @@ Automatic updates for a pair are a follow-up. Until then, update by hand:
   run `darkbloom cluster` and press `f` when offered; macOS asks for administrator
   approval to configure that port. Recovery RDMA enablement and Local Network
   privacy permission remain separate steps.
+- **The Macs were paired again** while their cluster services ran
+  (`darkbloom cluster` or `darkbloom cluster pair`): each service answers with
+  the new pairing within seconds, and its log,
+  `~/.darkbloom/cluster-setup/service.log`, says `this Mac's pairing changed`
+  ([listeners](../architecture/inference.md#cluster-service-listeners-follow-the-cable-and-the-pairing)).
+  If the other Mac still refuses the connection (`refused (handshakeRejected)`),
+  restart its service, since one an earlier release started keeps the earlier
+  pairing: on that Mac, run `darkbloom cluster stop`, then `darkbloom cluster`.
 - **A part keeps ending the same way**: after three identical ends the screen
   says it and offers `d`; both Macs keep trying by themselves.
 - **The leader cannot reach the other Mac**: make sure the other Mac is on and

@@ -951,11 +951,15 @@ final class DistributedAutomaticBatchPlannerTests {
                 residentBytes: gib, loadBytes: 2 * gib, largestAllocationBytes: gib))
         let target = try ClusterPlacementTensorBatchQuote(request: scope.request, lanes: 1, chunkTokens: 128,
             perLaneStateBytes: gib, sharedBytesExcludingCollectives: gib, allowance: try allowance(2 * gib))
+        // The planner's stack under `assistantOrTarget` outgrows a test task's thread in a debug build.
         func decide(_ quote: ClusterPlacementTensorBatchQuote?) throws -> ClusterSetupPlanning.PlacementDecision {
-            try ClusterPlacementFlow.decide(description: pair, capability: cap, localMemberID: "a",
-                localProfile: profile(), peerProfile: profile(), layout: layout, tensorAssistantQuote: quote,
-                leader: "a", link: ClusterLinkProbeHistory.costs(homeDirectory: home, members: ["a", "b"])!,
-                environment: [:], benchDebugBuild: false)
+            let local = try profile(), peer = try profile()
+            let link = ClusterLinkProbeHistory.costs(homeDirectory: home, members: ["a", "b"])!
+            return try onLargeStack {
+                Result { try ClusterPlacementFlow.decide(description: pair, capability: cap, localMemberID: "a",
+                    localProfile: local, peerProfile: peer, layout: layout, tensorAssistantQuote: quote,
+                    leader: "a", link: link, environment: [:], benchDebugBuild: false) }
+            }.get()
         }
         #expect(try decide(assistant).result.chosen == nil)
         let discovered = try ClusterSetupPlanning.assistantOrTarget(assistant, fallback: target, decide)

@@ -4300,6 +4300,201 @@ Code map:
 
 See [focused Gemma 4 tensor-parallel checks](../developer/test.md#focused-gemma-4-tensor-parallel-checks).
 
+## MiMo V2.6 tensor parallel
+
+MiMo V2.6 Flash (`mimo-v2.6-flash-mopd`) has a two-rank tensor-parallel plan,
+SDK hooks, a one-lane resident runtime and one-Mac oracles. The registered row
+lists `tensor_parallel_v1` (text only; the private image candidate stays a
+pipeline candidate), and the worker serves it when a launch asks for it. The
+planner chooses it only where it predicts it faster than the pipeline
+([MiMo tensor-parallel placement](#mimo-tensor-parallel-placement)).
+
+`MiMoTensorParallelPlan` (`mimo_v26_heads_and_expert_channels_v1`, CPU metadata)
+disposes of every name in the registered 1,732-tensor inventory. The 1,103 text
+tensors are divided or replicated; the 629 MTP, vision, audio and speech tensors
+are excluded by name and refused as text, as is any unknown or misaligned name:
+
+| Part | Cut per rank | Collective |
+|---|---|---|
+| `q_proj`, `k_proj`, `v_proj`, sliding sink bias | Rows of 32 query heads and the KV heads they read (2 full, 4 sliding); head dims 192/128 as stored | — |
+| `o_proj` | Input columns of those heads (4,096) | FP32 partial (its BF16 input widened exactly), summed in FP32, rounded once, before `post_attention_layernorm` |
+| Dense layer 0 (16,384) | Gate/up rows, down input columns (8,192) | Same contract as `o_proj` |
+| Routed experts (`[256, out, in]` banks) | Gate/up axis 1, down axis 2: 1,024 channels, 32 MXFP4 groups | Each rank's 8 expert rows from the stock banks and decode kernels, stored as FP32, combined locally in FP32 with the router's weights; one FP32 row summed, rounded once |
+| Router, norms, embedding | Replicated | — |
+| Untied `lm_head` | This rank's 76,288 vocabulary rows | One per selection |
+
+Every equal half lands on whole quantization groups and packed words, so no
+rank stores padding: 84,013,770,176 B of text weights per rank. A layer issues
+two collectives of one 16,384 B row per token, and a decode step 97. MTP stays
+off.
+
+The routed experts' partial is not the Qwen and Gemma one, which sums every
+selected expert's FP32 row across ranks (`TensorParallelSwitchLinear`). A
+MiMo rank keeps the stock half bank, so decode stays on the MXFP4 expert
+kernel (`MiMoV26DecodeExperts` takes only a plain `QuantizedSwitchLinear`),
+and one FP32 row crosses per token instead of eight: 16,384 B instead of
+131,072 B per routed layer at the registered width.
+
+Every row-parallel product takes an exact FP32 widening of its BF16 input, so
+its partial is stored as FP32 and the only rounding is the one after the
+cross-rank sum. This is arithmetic contract v2
+(`MiMoTensorParallelPlan.arithmeticAgreementFields`, in the load agreement and
+the plan fingerprint); v1 stored each partial as BF16 first, and ranks on
+different contracts refuse each other.
+
+- Expert rows: `SwitchGLU.float32ExpertRows`, through the decode-expert
+  kernel's FP32-output twin (`MiMoV26DecodeExperts`, `float32Rows`) or MLX's
+  FP32 gather.
+- `o_proj` and the dense `down_proj`: MLX's FP32 qmv and qmm
+  (`MiMoV26DecoderLayer.attentionOutput`, `MiMoV26DenseMLP.tensorParallelPartial`).
+  `MiMoV26TensorParallelContext.sum` takes nothing but an FP32 partial.
+
+FP32 holds every BF16 value exactly, and MLX's FP32 MXFP4 and affine kernels
+accumulate in FP32 as the BF16 ones do. On M5 the NAX path runs FP32 inputs at
+TF32 (`MLX_ENABLE_TF32=1`, which `MiMoArithmeticEnvironment` requires). Its 10
+mantissa bits keep a BF16-sourced activation and an MXFP4 weight exactly, and an
+affine 8-bit weight at least as precisely as the BF16 kernel's BF16 weight tile.
+So no rank rounds more than one Mac. A rank never rounds its expert rows: their
+combined row is rounded once, after the sum, where one Mac also rounds each
+expert's whole projection to BF16 before its combine. Ranks are still not
+bit-exact with one Mac, because the halves reassociate the FP32 sums and a near
+tie can flip a route. Comparisons against one Mac read `tokensEqualLogitsDiffer`
+or `divergedAtNearTie`. `MiMoTensorParallelFloat32PartialTests` checks on the
+GPU that two ranks' rows add up bit for bit to the exact full-width row that one
+Mac rounds once, and that no `o_proj` or dense partial was rounded to BF16
+before its sum.
+
+`MiMoV26TensorShard` derives each rank's configuration (half the heads of both
+layer kinds and both channel widths, no MTP heads or towers) and cuts stored
+tensors, including the 3-D expert banks, by slice or by byte runs.
+`MiMoV26TextModel.installTensorParallel(reduce:vocabularyRows:)` adds the two
+sums and makes `lm_head` this rank's rows before the weights load. A model
+without it runs the unchanged single-Mac path. The CBv2 and MTP owners still
+require the whole vocabulary's readout and refuse a rank; the independent-history
+pages serve a rank one row at a time. Selection reuses the model-neutral
+vocabulary-split head (`Gemma4TensorParallelSelection`): greedy argmax, top-k log
+probabilities and the bit-exact whole-row gather for the product's sampler.
+
+`MiMoTensorParallelResidentRuntime` is the worker's owner for the mode, with GLM
+tensor parallel's executor contract and one lane:
+
+- Load. The load agreement (the admission's fingerprint, the plan's fingerprint
+  and arithmetic contract, the serving contract, the mode, the link probe and the
+  data plane) is bound into the keyed exchange and compared before any read. The
+  link is measured as the mode uses it (`QwenTensorParallelLinkProbe`). Every
+  artifact file is hashed against the registered manifest, and then only this
+  rank's byte runs are read (`MiMoTensorParallelVerifiedLoad`: the plan disposes
+  of each indexed name; the runs equal the SDK shard's `byteRuns`; any difference
+  refuses). Both ranks compare what they loaded before either is ready.
+- Requests (`MiMoTensorParallelDecoding`). Request-owned 64-token paged
+  histories at the rank's geometry (full layers: 2 KV heads at widths 192/128;
+  sliding layers: window 128 and the rank's 32 sink biases). Decode runs under
+  100-operation command buffers, with sealed sums only. Each step takes one small
+  agreement sum per rank of `[value, token, stop, position]`: the
+  vocabulary-split argmax, or rank 0's draw from the gathered row with the
+  product's sampler. A stop on either rank ends both after the same step, and
+  positions that differ end the request. Both ranks read a step's stop flags
+  before either commits its token, and rank 0 hears each owner answer before
+  the next step is built, so neither rank commits a token its peer skipped.
+- Logprobs. A greedy row that asks for them takes the split top-k gather,
+  whose first logprob is the greedy token's even when an exactly tied token
+  leads it; a sampled row publishes the product sampler's own logprobs from
+  the gathered row.
+- Not yet: lanes, prompt-prefix reuse, MTP, 2,048-token prefill frames and
+  micro-batches, building decode steps one ahead.
+- Memory. One formula, `MiMoTensorParallelRequestBudget`, gives the LOAD
+  gate, each reservation's charge and the placement's `requestAllowance`
+  ([rank memory](hardware-support.md#mimo-v26-tensor-parallel-rank-memory));
+  nothing has measured a MiMo tensor-parallel rank.
+- Logprobs reach the provider: `ClusterModelFeaturePolicy.capturesLogprobs`
+  is true for MiMo tensor parallel, so a MiMo tensor-parallel pair admits
+  `logprobs` requests and a MiMo pipeline pair refuses them. The installed plan
+  forwards no lane width to a MiMo tensor-parallel rank
+  (`DistributedInstalledPlan.defaultBatchLanes`), and its arithmetic
+  environment is the pipeline's (`MiMoArithmeticEnvironment`, nothing added).
+
+Oracles run on synthetic checkpoints (`kernel`: hidden 1,024, 16 experts top-8,
+512 expert channels per rank, so every per-rank decode shape takes the
+production MXFP4 expert, router and norm kernels; `tiny`: below those gates).
+`simulated` runs both real shards in one process, and two ranks over the sealed
+loopback ring or socket equal it bit for bit, caches included, on the
+foundation's ordinary caches and on the resident runtime's paged path
+(`--path paged`). There each rank reads exactly its shard's bytes, and paged runs
+equal ordinary ones bit for bit. A route-set diagnostic (`--record-routes yes`,
+through the SDK's observation-only `MiMoV26TextModel.observeRoutes`) reports
+where a tensor-parallel run first routes a token to other experts than the
+whole model. With random synthetic routers that already happens in the
+prompt, well before the first token differs. Real-weight qualification remains
+the gate.
+
+### MiMo tensor-parallel placement
+
+`MiMoPlacementFamily` states the plan's facts for the text row, so a MiMo
+layout carries `tensorParallel`; the image candidate's layout carries none:
+
+| Fact | Value | Source |
+|---|---|---|
+| `plan`, `ranks` | `mimo_v26_heads_and_expert_channels_v1`, `[2]`, equal shares | `MiMoTensorParallelPlan.name` |
+| `reductionsPerLayer`, `reductionsPerStep` | 2 (attention, feed-forward), 1 (vocabulary-split selection): 97 a decode step | `MiMoTensorParallelPlan.reductionsPerLayer` |
+| `partialBytesPerToken` | 16,384 (one FP32 hidden row); no `layerPartialBytesPerToken` | `MiMoTensorParallelPlan.partialBytesPerToken` |
+| `stateDividesByHeads` | true: each rank keeps its own KV heads | `MiMoTensorParallelPlan.kvHeadsPerRank` |
+| `requestAllowance` | the rank's reserve at the profile's longest request (65,536 tokens), where the allocator's bound is known | `MiMoTensorParallelRequestBudget` |
+| `choice` | `fastest_v1` | `ClusterTensorParallelChoice` |
+
+Each stored tensor's cut is the plan's disposition
+(`tensorParallelCut(ofStoredTensor:)`). The split pads nothing, so the family
+needs no `tensorParallelOverlapBytes`: a rank's share is 84,013,770,176 bytes,
+the plan's cut and the verified load's shard bytes. The family states its
+routing, 8 of 256 experts (`expertRouting`, `isRoutedExpert`, the same
+definition as the pipeline's), so the hardware prior reads 10,767,036,288
+weight bytes per token, 99.1 % of them divided.
+
+MiMo opts into the fastest-plan rule
+([Gemma tensor-parallel placement](#gemma-tensor-parallel-placement)): 97 sealed
+sums a step cross the link, and the pipeline it competes with decodes in
+speculative rounds (`pipeline_mtp_v1`), which tensor parallel does not yet. The
+guided step credits those rounds the decode speed-up MiMo's passing
+qualification records measured, 1.37x (59.18 against 43.05 tok/s;
+`ClusterPairServingGrants.recordedPipelineSpeculativeFactor`), and a fresh pair
+plans for the layout's longest request, 32,768 + 32,768 tokens. On the
+planner's own figures (`PlacementChecks`, `MiMoTensorParallelChecks.swift`;
+constructed Macs: M5 Ultra 57 tok/s, the M5 Max 128 GB from its stage probes at
+40 tok/s), the provider plans MiMo as follows:
+
+| Pair | Link | Request | Chosen |
+|---|---|---|---|
+| 2x M5 Max 128 GB (neither holds MiMo alone) or 2x M5 Ultra 256 GB | default (unmeasured) | every request, 128 + 128 and 32,768 + 32,768 included | speculative pipeline (tensor parallel 43.6 against 55.0 tok/s on 2x M5 Max, 52.1 against 78.3 on 2x M5 Ultra) |
+| either pair | measured 29 us sums | decode-heavy, 32,768 + 32,768 included | tensor parallel (32,768 + 32,768: 553 s against 646 s on 2x M5 Max, 405 s against 444 s on 2x M5 Ultra) |
+| either pair | measured 29 us sums | 8,192 + 128 | speculative pipeline (the prompt's FP32 sums) |
+| either pair | measured 109 us sums | 32,768 + 32,768 | speculative pipeline |
+
+Against the plain pipeline (a capability without `pipeline_mtp_v1`, or no
+passing record of the rounds), two M5 Max take tensor parallel even on default
+link costs for decode-heavy requests (128 + 128: 3.17 s against 3.50 s) and keep
+the pipeline inside the 5 % margin (1,024 + 128) or for long prompts; two M5
+Ultra keep the pipeline on default link costs, where 97 sums cost about 10.3 ms
+a step, more than the weight streaming a half saves.
+
+Every tensor-parallel prediction here rests on the hardware prior: the M5
+Ultra's device index puts the whole 17.5 ms step in weights, so a rank is
+predicted to save half of it, although it still pays the step's dispatch floor
+[INFERENCE]. MiMo has no share probe, so only served tensor-parallel records
+correct the prior (`ClusterServedCalibration`). The recorded golden layout
+gains the facts and routed experts beside its recorded bytes; its golden plans
+keep their placements (pipeline, cut 41 and cut 24), and their tensor-parallel
+verdict reads `notExecutedByRuntime` because the recorded mode list predates
+`tensor_parallel_v1`.
+
+Code map:
+
+- `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/MiMo/TensorParallel/`
+- `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/MiMo/Metadata/MiMoPlacementFamily.swift`
+- `libs/mlx-swift-lm/Libraries/MLXLLM/Models/MiMo/MiMoV26TensorParallel.swift`
+- `libs/darkbloom-cluster-worker/Sources/TensorParallelCheck/MiMoCheck.swift`
+- `libs/darkbloom-cluster-worker/Sources/DarkbloomClusterWorker/Execution/NativeWorkerRuntime.swift` (routes MiMo `tensor_parallel_v1` loads)
+
+See [focused MiMo V2.6 tensor-parallel checks](../developer/test.md#focused-mimo-v26-tensor-parallel-checks).
+
 ## Exact-quote placement
 
 `ClusterPlacementPlanner.rankQuoted` is the model-independent decision seam for adapters that provide exact simultaneous native/host peaks and current bounds. It filters infeasible shapes and unsupported modes, then uses the same hardware-only ordering as `plan`: candidates whose every range fits its Mac's hardware (`ClusterDeviceProfile.hardwareFits`: buffer and allocator limits, need within the GPU working set and the at-rest admissible memory `atRestAdmissibleBytes`), then predicted request time, ties and the tensor-parallel margin. Live free memory and file cache never order candidates; each rank's live fit is reported and the load gate still decides each load. A supported TP adapter must supply TP layout facts and keyed reduction measurements. Neither resource balance nor chip-name rules replace request-time scoring; balance only breaks ties. Candidates whose predicted times differ only by rounding (relative 1e-9, as every serial pipeline cut does on identical Macs) are ordered by `capacityBalance`, the smallest share of a rank's hardware capacity (`min(residentCapacityBytes, atRestAdmissibleBytes)`) left beyond its need, before the lower cut, so identical Macs split evenly and live free memory cannot pick the cut. Every structural boundary, including one layer on a slower member, remains available when its adapter quotes fit.

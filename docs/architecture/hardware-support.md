@@ -1217,6 +1217,31 @@ whose prefix cache is off charges no capture.
 Nothing here is measured on a pair; see
 [inference](inference.md#gemma-tensor-parallel-placement).
 
+### MiMo V2.6 tensor-parallel rank memory
+
+A MiMo V2.6 tensor-parallel rank is charged its own share
+(`MiMoTensorParallelRequestBudget`, every array at the allocator's bound). One
+derivation gives the worker's LOAD gate, each reservation's charge and the
+layout's `requestAllowance`:
+
+| Charge | Held | Bytes (65,536-token request, exact bounds) |
+|---|---|---|
+| Weights: the plan's exact cut (no padding) | per rank | 84,013,770,176 |
+| Paged KV at its own KV heads (2 full, 4 sliding), sliding pages twice | per request | 882,769,920 |
+| Every layer's gathered history and the widest again (a decode step's command buffers keep it in flight) | per request | 902,658,560 |
+| One chunk's full-attention scores at its 32 query heads, FP32, as if materialized | per request | 4,294,967,296 |
+| One chunk's activations, its FP32 partials (attention, feed-forward, the sum, 8 expert rows) and 4 vocabulary rows | per request | about 174 MB |
+| Activation floor: `UnifiedMemoryCap`'s conservative default, 5.5 GiB, until a pair measures one | per rank | 5,905,580,032 |
+| Freed-buffer cache (GLM's) | per rank | 4,294,967,296 |
+| Eight sealed frames of a chunk's partial (512 x 16,384 bytes and the seal) | per rank | 67,117,056 |
+
+The LOAD gate admits the shard with one request at the profile's longest
+context (65,536 tokens) and the per-rank charges, the planner's quote: about
+100.5 GB, or about 104.8 GB (97.6 GiB) per rank with the 4 GiB loading
+headroom. That fits a 128 GB Mac. A reservation asks the live gate for its own request and the
+per-rank charges. Nothing here is measured on a pair; see
+[inference](inference.md#mimo-tensor-parallel-placement).
+
 ### Additional TP resident allocations
 
 TP layouts may carry allocator-bounded resident allocations outside their text

@@ -66,6 +66,7 @@ import Foundation
             try checkGLMMaxPair(golden: URL(fileURLWithPath: CommandLine.arguments[2], isDirectory: true), checks)
             try checkGemmaRoutedExperts(golden: URL(fileURLWithPath: CommandLine.arguments[2], isDirectory: true), checks)
             try checkGemmaTensorParallel(golden: URL(fileURLWithPath: CommandLine.arguments[2], isDirectory: true), checks)
+            try checkMiMoTensorParallel(golden: URL(fileURLWithPath: CommandLine.arguments[2], isDirectory: true), checks)
             try checkServedModes(golden: URL(fileURLWithPath: CommandLine.arguments[2], isDirectory: true), checks)
             try checkPipelineSpeculativeHolding(URL(fileURLWithPath: CommandLine.arguments[2], isDirectory: true), checks)
             try checkMiMoRoutedExperts(golden: URL(fileURLWithPath: CommandLine.arguments[2], isDirectory: true), checks)

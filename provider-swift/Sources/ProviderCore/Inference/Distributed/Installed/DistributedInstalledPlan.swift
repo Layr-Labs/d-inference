@@ -39,7 +39,8 @@ struct DistributedInstalledPlan: Sendable {
         .qwen35PrismHadamard: ["DARKBLOOM_BONSAI_PREFILL_CARRY_ASYNC": "1", "DARKBLOOM_BONSAI_F16_CONSTANT_CACHE": "1"],
         .nemotronH: [:],
         // MiMo's contract is the product's defaults with no `DARKBLOOM_MIMO_*`
-        // switch (`MiMoArithmeticEnvironment`): nothing beyond the three values.
+        // switch (`MiMoArithmeticEnvironment`): nothing beyond the three values,
+        // in tensor parallel too (its admission binds the same receipt).
         .mimoV26LayerStage: [:],
         .mimoV26ImageCandidate: [:],
         // GPT-OSS and Gemma 4: the pair driver's own values for the same
@@ -332,6 +333,9 @@ struct DistributedInstalledPlan: Sendable {
     ///   lane carrying images or video runs the same tensor-parallel media
     ///   path as a request alone (`GLM5NextTensorParallelMedia`), so the
     ///   capability's image candidate does not change the lanes.
+    /// - MiMo V2.6 tensor parallel: none. Its owner serves one request at a
+    ///   time and refuses a lane count above one at load, so no saved width or
+    ///   switch reaches its ranks.
     static func defaultBatchLanes(adapter: ClusterRuntimeAdapter, mode: ClusterGenerationMode,
                                   hasPrivateImages: Bool, runtimeModelID: String? = nil,
                                   prefillSchedule: ClusterPrefillSchedule? = nil) -> Int? {

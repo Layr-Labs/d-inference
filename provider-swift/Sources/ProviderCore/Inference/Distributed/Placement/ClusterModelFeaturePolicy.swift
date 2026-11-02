@@ -32,19 +32,19 @@ enum ClusterModelFeaturePolicy {
     static let unavailable = "No tensor-parallel placement can preserve those features under the current link, shape and memory checks. No reduced-feature setup was saved."
 
     /// Whether a pair serving `mode` captures committed-token logprobs, as its
-    /// resident runtime does (`NativeWorkerRuntime.capturesLogprobs`): GLM and
-    /// Gemma 4 tensor parallel, and every Qwen tensor-parallel row's lanes.
-    /// No pipeline mode captures them.
+    /// resident runtime does (`NativeWorkerRuntime.capturesLogprobs`): GLM,
+    /// Gemma 4 and MiMo V2.6 text tensor parallel, and every Qwen
+    /// tensor-parallel row's lanes. No pipeline mode captures them.
     static func capturesLogprobs(_ capability: ClusterRuntimeCapability, mode: ClusterGenerationMode) -> Bool {
         guard mode == .tensorParallel, let adapter = ClusterRuntimeAdapter(rawValue: capability.adapterID) else { return false }
-        return adapter == .glm5NextLayerStage || adapter == .gemma4LayerStage
+        return adapter == .glm5NextLayerStage || adapter == .gemma4LayerStage || adapter == .mimoV26LayerStage
             || adapter.servesQwenTensorLanes(runtimeModelID: capability.runtimeModelID)
     }
 
     /// What the plan says when its two sharded families keep different
-    /// endpoint features and neither is required (Gemma 4: committed-token
-    /// logprobs in tensor parallel only); nil when they keep the same, or when
-    /// a model contract already rules a family out (`modesReason`).
+    /// endpoint features and neither is required (Gemma 4 and MiMo V2.6:
+    /// committed-token logprobs in tensor parallel only); nil when they keep
+    /// the same, or when a model contract already rules a family out (`modesReason`).
     static func modeFeatureNote(_ capability: ClusterRuntimeCapability) -> String? {
         let modes = admissibleModes(capability)
         guard modesReason(capability) == nil, modes.contains(.tensorParallel), modes.contains(.pipeline),

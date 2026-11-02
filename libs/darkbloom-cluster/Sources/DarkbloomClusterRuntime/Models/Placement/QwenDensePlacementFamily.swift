@@ -354,8 +354,19 @@ public enum ClusterPlacementLayouts {
         guard runtimeProfile != ClusterGLMImageCandidate.profileID else { throw ProbeError("GLM runtime is unavailable") }
         #endif
         if MiMoPlacementFamily.handles(configuration: configuration) {
-            let family = try MiMoPlacementFamily(configuration: configuration, imageCandidate: runtimeProfile != nil)
+            var family = try MiMoPlacementFamily(configuration: configuration, imageCandidate: runtimeProfile != nil)
             try family.requireRegisteredInventory(tensors)
+            #if canImport(MLX)
+            let bound: ((Int) throws -> Int)? = allocationBound
+            #else
+            let bound = allocationBound
+            #endif
+            if let plan = family.tensorParallel, let bound {
+                // What a rank's LOAD gate reserves beside its shard: one request at the profile's longest context.
+                family.tensorParallelRequestAllowance = try MiMoTensorParallelRequestBudget.derive(plan: plan,
+                    slidingWindow: family.specification.slidingWindow, contextTokens: family.profile.maximumContextTokens,
+                    chunkTokens: family.profile.maximumChunkTokens, allocationBound: bound).allowance
+            }
             return try ClusterModelLayoutBuilder.build(family: family, tensors: tensors,
                 artifactSHA256: family.specification.artifactSHA256,
                 configurationSHA256: family.specification.configurationSHA256)

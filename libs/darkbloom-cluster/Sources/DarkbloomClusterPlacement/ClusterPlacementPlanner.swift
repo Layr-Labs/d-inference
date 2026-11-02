@@ -46,6 +46,10 @@ public struct ClusterPlacementPolicy: Sendable {
     /// A capacity-only replacement preserves the current TP arithmetic partition.
     /// This restricts candidates; all current LOAD/request memory gates still apply.
     public var requiredTensorShares: [Int]?
+    /// Equal tensor-parallel shares only: the plan of a pair that registers with a coordinator, whose registration
+    /// names no `tensor_parallel_shares` (a plan without them is an equal split there). False, the default, also
+    /// places the family's unequal splits.
+    public var equalTensorShares = false
     /// A request longer than the layout's planned one (its maximum prompt
     /// plus output), up to this context: the family's own largest, which
     /// its ranks admit at load when memory allows. Nil plans within the
@@ -367,7 +371,8 @@ public enum ClusterPlacementPlanner {
         if let shares = policy.requiredTensorShares {
             guard devices.count == 2, shares.count == 2, shares.allSatisfy({ (1...64).contains($0) }),
                   policy.modes == [.tensorParallel], policy.leader != nil,
-                  Set(shares).count == 1 || (layout.tensorParallel?.family.shareOptions ?? []).contains(shares) else {
+                  Set(shares).count == 1 || (!policy.equalTensorShares
+                      && (layout.tensorParallel?.family.shareOptions ?? []).contains(shares)) else {
                 throw ClusterPlacementError("A retained tensor partition needs its exact ordered, supported two-rank shares")
             }
         }
@@ -751,9 +756,8 @@ public enum ClusterPlacementPlanner {
                 guard tensor || pipeline else { continue }
                 let sets = pipeline ? cutSets(available, ranges - 1) : []
                 let permutations = orders(ranges)
-                let shares = tensor && policy.requiredTensorShares == nil ? (layout.tensorParallel?.family.shareOptions ?? []).filter {
-                    $0.count == ranges && Set($0).count > 1
-                } : []
+                let shares = tensor && policy.requiredTensorShares == nil && !policy.equalTensorShares
+                    ? (layout.tensorParallel?.family.shareOptions ?? []).filter { $0.count == ranges && Set($0).count > 1 } : []
                 let perOrder = sets.count * layerModes.count + (tensor ? 1 + shares.count : 0)
                 guard perOrder * permutations.count + result.count <= policy.maximumCandidates else {
                     throw ClusterPlacementError("Placing \(ranges) ranges over \(available.count) cuts on \(devices.count) devices "
@@ -938,12 +942,13 @@ public enum ClusterPlacementPlanner {
             return widenable.isEmpty ? splits : widenable
         }
 
-        /// The tensor-parallel candidate of this order at its best shares: equal,
-        /// or, when the family's plan hands out `shareUnits` groups and two ranks
-        /// run it, every split in whole groups, the best by the planner's own order.
+        /// The tensor-parallel candidate of this order at its best shares: equal
+        /// (always under `equalTensorShares`), or, when the family's plan hands out
+        /// `shareUnits` groups and two ranks run it, every split in whole groups,
+        /// the best by the planner's own order.
         func bestTensorShares(order: [Int], schedule: ClusterPrefillSchedule) -> ClusterPlacementCandidate {
             let equal = evaluate(order: order, cuts: [], mode: .tensorParallel, schedule: schedule)
-            guard order.count == 2, let units = layout.tensorParallel?.family.shareUnits else { return equal }
+            guard !policy.equalTensorShares, order.count == 2, let units = layout.tensorParallel?.family.shareUnits else { return equal }
             let splits = (1..<units).map { k -> ClusterPlacementCandidate in
                 let first = Double(k) / Double(units)
                 return evaluate(order: order, cuts: [], mode: .tensorParallel, schedule: schedule, shares: [first, 1 - first])

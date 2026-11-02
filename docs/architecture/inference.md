@@ -2905,7 +2905,15 @@ a share of every layer, and one fewer than the members otherwise, as the
 coordinator requires. A setup with unequal tensor-parallel shares is refused at
 registration, because the provider does not encode the plan's
 `tensor_parallel_shares` yet: a plan without them is an equal split to the
-coordinator. Under a model approval, which names no build, the plan also carries
+coordinator. So a cluster served through Darkbloom is planned with equal shares
+only (`ClusterPlacementPolicy.equalTensorShares`, which
+`ClusterPlacementFlow.decide` sets for the coordinator scope: the guided setup,
+the plans it forwards and the service's re-plans after an update or a memory
+refusal), and a local cluster keeps the faster unequal split. Each Mac's check
+of a cluster approval refuses one beside unequal shares
+(`ClusterApprovalAttachment.attachment`;
+[coordinator-paired member](../reference/configuration.md#coordinator-paired-member)).
+Under a model approval, which names no build, the plan also carries
 the member's own runtime block (`ClusterPlan.runtime`: worker, capability,
 resource policy and profile from its saved setup,
 `DistributedInstalledNativeStart.runtimeBlock`), so both members must run the

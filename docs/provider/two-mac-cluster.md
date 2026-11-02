@@ -459,7 +459,11 @@ for 30 days) and the next plan balances the shares by them, with no step from
 you. For example, with the timings an M3 Ultra and an M5 Max measured for
 Qwen3.8 27B, a pair first split 2:1 toward the M3 Ultra is planned 1:1 after
 one load. A split that gives a Mac more is still chosen only when that Mac's
-memory holds its share.
+memory holds its share. Unequal shares are for a pair that serves you alone
+(`darkbloom cluster local`): a pair served through Darkbloom is always planned
+with equal shares, because its registration with the coordinator cannot name
+unequal ones yet. A pair saved with unequal shares is not offered for pairing,
+and its status says why; press `m` in `darkbloom cluster` to plan it again.
 
 ## Prompt prefixes on the pair
 
@@ -662,8 +666,9 @@ and they must match.
   ([updating Darkbloom on the pair](#updating-darkbloom-on-the-pair)).
 - The login agent and macOS's one Local Network approval need the signed
   Darkbloom.app ([always on](cluster-always-on.md)).
-- A setup with unequal tensor-parallel shares cannot register with the
-  coordinator yet.
+- A pair served through Darkbloom cannot use unequal tensor-parallel shares
+  yet: on two different Macs it is planned 1:1, so the slower Mac sets the pace
+  ([how the split is chosen](#how-the-split-is-chosen)).
 - A member cannot yet download a catalog model itself (the leader downloads and
   copies), and a model change typed on a Mac that does not lead cannot copy a
   model (run it on the leader).

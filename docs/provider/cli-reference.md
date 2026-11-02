@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-10-31
+> Last updated: 2026-11-02
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -1032,7 +1032,7 @@ darkbloom sandbox uninstall [--yes]
 | `setup` | — | Check, explain, confirm, install and summarize; see [Setup](#setup) |
 | `setup --yes`, `-y` | `false` | Skip the confirmation |
 | `setup --no-browser` | `false` | The installer does not open the approval page; open the printed link |
-| `setup --linux-slots <n>`, `--macos-slots <n>` | what fits the Mac | Jobs at a time: Linux `0`–`16`, macOS `0`–`2`; both `0` is refused. Counts above the estimate are flagged, not refused |
+| `setup --linux-slots <n>`, `--macos-slots <n>` | what fits the Mac | Jobs at a time: Linux `0`–`16`, macOS `0`–`2`; both `0` is refused. The plan and the install take a chosen count as it is; setup shows it as `(your choice)` |
 | `setup --wait-ready` | `false` | The installer waits until the images are downloaded and the Mac takes jobs |
 | `setup --server <url>` | `https://api-sandbox.darkbloom.dev` | Where `install.sh` comes from: an `https` URL without credentials, query or fragment |
 | `pause` | — | `darkbloom-sandbox pause`: running jobs finish, no new jobs; then prints how many still run |

@@ -87,8 +87,12 @@ struct QwenTensorParallelBatchBudget {
             bound(product([plan.expertsPerToken, plan.hiddenSize, 4]), count: lanes),
             bound(product([plan.hiddenSize, 4]), count: lanes),
         ]) : 0)
+        // A merged prompt step's further frames in flight (one prompt step at a time, shared).
+        let wavefront = try QwenTensorParallelPromptWavefront.inFlightBytes(plan: plan, chunkTokens: chunkSize,
+            allocationBound: allocationBound)
         let shared = try sum([scalar.fusionBytes, transient, logits,
-            scalar.projectionConstantBytes, batchConstants, poolSlack, prefix.residentBytes, packing, promptGather])
+            scalar.projectionConstantBytes, batchConstants, poolSlack, prefix.residentBytes, packing, promptGather,
+            wavefront])
         // A one-token batch can gather more bytes than a short prompt frame.
         // Control limbs and retirement votes also travel in the sealed codec.
         let payload = max(scalar.allowance.maximumCollectivePayloadBytes,

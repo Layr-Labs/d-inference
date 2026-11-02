@@ -47,6 +47,8 @@ public enum QwenTensorParallelPrefillBench {
         public var operations = [0]
         /// Prefill layer-submission strides (`QwenTensorParallelBatchSession.prefillStride`; 0: one evaluation a frame).
         public var strides = [0]
+        /// Frames a prompt step merges at most (`QwenTensorParallelPromptWavefront`; 1: one frame a step).
+        public var wavefronts = [1]
         public var modes: [Mode] = [.local]
         /// Prefills of each configuration (the first is reported apart when more than one).
         public var repeats = 1
@@ -117,8 +119,8 @@ public enum QwenTensorParallelPrefillBench {
             + " load_s=\(format(model.loadSeconds)) active_gb=\(String(format: "%.2f", Double(Memory.activeMemory) / 1e9))")
         let tokens = prompt(options.promptTokens, vocabulary: model.plan.vocabularySize)
 
-        /// One whole prompt prefilled on a fresh request: per frame timings and the final logits' digest.
-        func prefill(chunk: Int, observeLayers: ((Int) -> Bool)? = nil)
+        /// One whole prompt prefilled on a fresh request: per step timings and the final logits' digest.
+        func prefill(chunk: Int, wavefront: Int = 1, observeLayers: ((Int) -> Bool)? = nil)
             throws -> (frames: [FrameTiming], digest: String, layerRows: [(frame: Int, offset: Int, times: [(Int, Double)])]) {
             let budget = options.promptTokens + 8
             let host = try CBv2StageKVHost(model: model.model, kind: .paged, lanes: 1,
@@ -154,7 +156,11 @@ public enum QwenTensorParallelPrefillBench {
                             layerRecorder.last = now
                         }) { try session.prefill(check: {}) }
                     }
-                    return try session.prefill(check: {})
+                    guard wavefront > 1,
+                          let step = QwenTensorParallelPromptWavefront.step(session.promptFrames(limit: wavefront)) else {
+                        return try session.prefill(check: {})
+                    }
+                    return try session.prefill(step: step, check: {})
                 }
                 let ended = phases.now()
                 let build = phases.span("graphConstruction.begin", "graphConstruction.end")
@@ -189,13 +195,15 @@ public enum QwenTensorParallelPrefillBench {
         var digests: [Int: Set<String>] = [:]
         for chunk in options.chunks {
             for operations in options.operations {
-                for stride in options.strides {
+                for (stride, wavefront) in options.strides.flatMap({ s in options.wavefronts.map { (s, $0) } }) {
                     for mode in options.modes {
                         reduction.mode = mode
                         for repeatIndex in 0 ..< max(1, options.repeats) {
                             reduction.reset()
                             let run = {
-                                try QwenTensorParallelBatchSession.$prefillStride.withValue(stride) { try prefill(chunk: chunk) }
+                                try QwenTensorParallelBatchSession.$prefillStride.withValue(stride) {
+                                    try prefill(chunk: chunk, wavefront: wavefront)
+                                }
                             }
                             let result = try (operations > 0
                                 ? GPU.withCommandBufferLimits(.init(operations: operations, megabytes: 1 << 20), run)
@@ -205,7 +213,7 @@ public enum QwenTensorParallelPrefillBench {
                             digests[chunk, default: []].insert(result.digest)
                             let middle = frames.count > 2 ? Array(frames.dropFirst().dropLast()) : frames
                             log("\(label) path=prefill chunk=\(chunk) ops=\(operations == 0 ? "process" : String(operations))"
-                                + " stride=\(stride) mode=\(mode.rawValue) repeat=\(repeatIndex)"
+                                + " stride=\(stride) wavefront=\(wavefront) mode=\(mode.rawValue) repeat=\(repeatIndex)"
                                 + " total_ms=\(format(total)) tok_s=\(format(Double(options.promptTokens) / total * 1000))"
                                 + " frames=\(frames.count)"
                                 + " first_ms=\(format(frames.first?.wall ?? .nan)) last_ms=\(format(frames.last?.wall ?? .nan))"
@@ -217,7 +225,7 @@ public enum QwenTensorParallelPrefillBench {
                                 + " digest=\(result.digest)")
                             let curve = frames.enumerated().filter { $0.offset % max(1, frames.count / 8) == 0 || $0.offset == frames.count - 1 }
                                 .map { "\($0.offset * chunk):\(format($0.element.wall))" }.joined(separator: ",")
-                            log("\(label) path=prefill-curve chunk=\(chunk) ops=\(operations == 0 ? "process" : String(operations)) stride=\(stride) mode=\(mode.rawValue) offset_ms=\(curve)")
+                            log("\(label) path=prefill-curve chunk=\(chunk) ops=\(operations == 0 ? "process" : String(operations)) stride=\(stride) wavefront=\(wavefront) mode=\(mode.rawValue) offset_ms=\(curve)")
                         }
                         Memory.clearCache()
                     }
@@ -339,6 +347,66 @@ public enum QwenTensorParallelPrefillBench {
                 .joined(separator: " ")
         }
         var best: Double { ms.values.min() ?? .nan }
+    }
+
+    /// A real pair's rank (`model`'s reduction is its group, for example the
+    /// loopback ring with sealed sums): the same prompt prefilled one frame a
+    /// step and in merged steps of up to each of `wavefronts` frames
+    /// (`QwenTensorParallelPromptWavefront`). Logs each run's step times and
+    /// the digests of its final logits, attention rows and recurrent states;
+    /// returns whether every run left this rank the same digests.
+    public static func pair(model: QwenTensorParallelModel, configuration: Data, promptTokens: Int, chunk: Int,
+                            wavefronts: [Int], repeats: Int, log: (String) -> Void) throws -> Bool {
+        guard case .shard(let rank, _) = model.role else { throw ProbeError("The wavefront pair runs a rank shard") }
+        let tokens = prompt(promptTokens, vocabulary: model.plan.vocabularySize)
+        let budget = promptTokens + 8
+        let profile = try QwenLayerStageGenerationProfile(identifier: "qwen-tp-wavefront-pair",
+            vocabularySize: model.plan.vocabularySize, hiddenSize: model.plan.hiddenSize, activationDType: "bfloat16",
+            maximumPromptTokens: promptTokens, maximumChunkTokens: chunk, maximumOutputTokens: budget - promptTokens,
+            maximumContextTokens: budget)
+        func digest(_ arrays: [MLXArray]) -> String {
+            var hash = SHA256()
+            for array in arrays { eval(array); hash.update(data: array.asData(access: .copy).data) }
+            return hash.finalize().prefix(8).map { String(format: "%02x", $0) }.joined()
+        }
+        var seen: (logits: String, rows: String, recurrent: String)?
+        var same = true
+        try prefillWarmup(model: model, configuration: configuration, chunk: min(chunk, promptTokens))
+        for limit in wavefronts {
+            for repeatIndex in 0 ..< max(1, repeats) {
+                Memory.clearCache()
+                let host = try CBv2StageKVHost(model: model.model, kind: .paged, lanes: 1,
+                    maximumTokensPerRequest: budget, maximumChunkTokens: chunk)
+                let request = try QwenLayerStageGenerationRequest(profile: profile, requestID: UUID(),
+                    promptTokenIDs: tokens, chunkSize: chunk, outputCount: budget - promptTokens, stopTokenIDs: [])
+                let session = try QwenTensorParallelBatchSession(model: model, configuration: configuration,
+                    host: host, request: request)
+                defer { try? session.retire() }
+                var steps: [(tokens: Int, ms: Double)] = []
+                var logits: MLXArray?
+                while session.schedule.committedPromptTokens < promptTokens {
+                    let frames = session.promptFrames(limit: limit)
+                    guard let step = QwenTensorParallelPromptWavefront.step(frames) else { throw ProbeError("No prompt step") }
+                    let started = DispatchTime.now().uptimeNanoseconds
+                    logits = try session.prefill(step: step, check: {}) ?? logits
+                    if let logits { eval(logits) }
+                    steps.append((step.tokenCount, ms(DispatchTime.now().uptimeNanoseconds - started)))
+                }
+                let total = steps.reduce(0) { $0 + $1.ms }
+                let rows = session.state.rows.compactMap { $0?.snapshot() }.flatMap { [$0.keys, $0.values] }
+                let committed = session.state.recurrent.confirmedStateSnapshot() ?? [:]
+                let recurrent = committed.keys.sorted().flatMap { [committed[$0]!.conv!, committed[$0]!.ssm!] }
+                let value = (digest([logits ?? MLXArray(0)]), digest(rows), digest(recurrent))
+                if let seen { same = same && seen == value } else { seen = value }
+                let perFrame = steps.map { $0.ms * Double(chunk) / Double($0.tokens) }
+                log("qwen-tp-wavefront-v1 rank=\(rank) limit=\(limit) repeat=\(repeatIndex) tokens=\(promptTokens)"
+                    + " steps=\(steps.count) total_ms=\(format(total)) tok_s=\(format(Double(promptTokens) / total * 1000))"
+                    + " per_\(chunk)_median_ms=\(format(median(perFrame))) first_step_ms=\(format(steps.first?.ms ?? .nan))"
+                    + " logits=\(value.0) rows=\(value.1) recurrent=\(value.2)")
+            }
+        }
+        log("qwen-tp-wavefront-v1 rank=\(rank) digest-check \(same ? "same-bytes" : "DIFFERENT")")
+        return same
     }
 
     static func isFullAttention(model: QwenTensorParallelModel, layer: Int) -> Bool {

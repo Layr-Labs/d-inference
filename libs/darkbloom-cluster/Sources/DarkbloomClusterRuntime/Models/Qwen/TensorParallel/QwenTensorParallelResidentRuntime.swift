@@ -193,6 +193,7 @@ public final class QwenTensorParallelResidentRuntime {
                 + QwenTensorParallelTargetWindow.agreementFields
                 + QwenTensorParallelPlan.arithmeticAgreementFields(routedExperts: admission.specification.routedExperts != nil)
                 + QwenTensorParallelBatchSession.decodeAgreementFields
+                + QwenTensorParallelPromptWavefront.agreementFields
                 + ["qwen-tensor-parallel-prefix-v2", prefixEnabled ? "on" : "off"]
                 + (prefixEnabled ? prefixRecords.loadAgreementFields : [])
                 + (mediaEnabled ? [ClusterQwenMedia.contract, Qwen3VLMediaProcessor.policyID] : [])

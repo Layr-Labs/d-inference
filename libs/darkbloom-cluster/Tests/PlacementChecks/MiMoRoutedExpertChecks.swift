@@ -25,8 +25,8 @@ func checkMiMoRoutedExperts(golden: URL, _ checks: PlacementChecks) throws {
         artifactSHA256: family.specification.artifactSHA256, configurationSHA256: family.specification.configurationSHA256)
     let routed = built.routedExperts
     let banks = headers.filter { family.isRoutedExpert(storedTensor: $0.name) }
-    checks.require("MiMo routed experts: 8 of 256 in 47 layers, each layer's three packed banks and their scales",
-        routed?.routing == ClusterExpertRouting(selected: 8, experts: 256) && routed?.tensorParallelDividedBytes == nil
+    checks.require("MiMo routed experts: 8 of 256 in 47 layers, each layer's three packed banks and their scales, all divided by tensor parallel",
+        routed?.routing == ClusterExpertRouting(selected: 8, experts: 256) && routed?.tensorParallelDividedBytes == 160_859_947_008
             && banks.count == 47 * 6 && routed?.loadedBytes == 160_859_947_008
             && Set(banks.compactMap { family.layer(ofStoredTensor: $0.name) }) == Set(1..<48)
             && !banks.contains { $0.name.contains(".mlp.gate.") })
@@ -40,11 +40,19 @@ func checkMiMoRoutedExperts(golden: URL, _ checks: PlacementChecks) throws {
         recorded.routedExperts == routed && recorded.layers.map(\.weights) == built.layers.map(\.weights)
             && recorded.ingress == built.ingress && recorded.egress == built.egress && recorded.excluded == built.excluded)
 
+    // The golden layout without its tensor-parallel data: the prior prices only tensor parallel, so the routing must
+    // leave these pipeline plans as they were recorded before the layout named its routed experts.
     var object = try JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any] ?? [:]
-    object["routedExperts"] = nil
+    object["tensorParallel"] = nil
+    var experts = object["routedExperts"] as? [String: Any] ?? [:]
+    experts["tensorParallelDividedBytes"] = nil
+    object["routedExperts"] = experts
     let scratch = FileManager.default.temporaryDirectory.appendingPathComponent("mimo-routing-\(getpid())", isDirectory: true)
     try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: scratch) }
+    let pipeline = scratch.appendingPathComponent("mimo-routed.json")
+    try ClusterModelLayout.decode(JSONSerialization.data(withJSONObject: object)).encoded().write(to: pipeline)
+    object["routedExperts"] = nil
     let unrouted = scratch.appendingPathComponent("mimo.json")
     try ClusterModelLayout.decode(JSONSerialization.data(withJSONObject: object)).encoded().write(to: unrouted)
     // The golden plans of this layout as both Macs printed them, before it named its routed experts.
@@ -61,7 +69,7 @@ func checkMiMoRoutedExperts(golden: URL, _ checks: PlacementChecks) throws {
                 try ClusterPlacementTool.run(["plan", "--layout", layout.path] + peers + ["--leader", "mac-a", "--json"] + extra,
                     sampleDevice: { throw ProbeError("recorded profiles only") })
             }
-            let routedPlan = try plan(file), unroutedPlan = try plan(unrouted)
+            let routedPlan = try plan(pipeline), unroutedPlan = try plan(unrouted)
             var echoed = try JSONSerialization.jsonObject(with: Data(routedPlan.utf8)) as? [String: Any] ?? [:]
             var layout = echoed["layout"] as? [String: Any] ?? [:]
             let echoedRouting = layout.removeValue(forKey: "routedExperts") != nil

@@ -34,9 +34,9 @@ func checkGemmaRoutedExperts(golden: URL, _ checks: PlacementChecks) throws {
     checks.require("Gemma QAT 4-bit: the layout from the retained real headers equals its golden layout, routed experts included",
         headers.count == 3 && layout == expected)
     let experts = layout.routedExperts
-    checks.require("Gemma QAT 4-bit routes 8 of 128 experts; its expert banks hold 12,846,366,720 bytes, no tensor-parallel share",
+    checks.require("Gemma QAT 4-bit routes 8 of 128 experts; its expert banks hold 12,846,366,720 bytes, 11,678,515,200 of them divided by tensor parallel",
         experts?.routing == ClusterExpertRouting(selected: 8, experts: 128) && experts?.loadedBytes == 12_846_366_720
-            && experts?.tensorParallelDividedBytes == nil)
+            && experts?.tensorParallelDividedBytes == 11_678_515_200)
     checks.require("Gemma QAT 4-bit decode reads 2,424,219,708 weight bytes per token (8/128 of the expert banks)",
         ClusterHardwarePrior.decodeBytesPerToken(layout) == 2_424_219_708)
     // The 8-bit artifact's golden layout carries the same routing over its 8-bit banks.

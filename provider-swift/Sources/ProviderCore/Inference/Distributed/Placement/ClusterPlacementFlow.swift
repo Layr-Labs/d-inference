@@ -62,6 +62,7 @@ public enum ClusterPlacementFlow {
                               batchScope: ClusterPlacementBatchScope? = nil,
                               tensorAssistantQuote: ClusterPlacementTensorBatchQuote? = nil,
                               tensorWideningQuote: ClusterPlacementTensorBatchQuote? = nil,
+                              tensorWidthQuotes: [ClusterPlacementTensorBatchQuote] = [],
                               regime: ClusterPlacementPolicy.Regime = .rested, leader: String? = nil,
                               served: [ClusterServedSpeedRecords.Entry] = [],
                               link: ClusterLinkCosts = .unmeasured,
@@ -284,7 +285,11 @@ public enum ClusterPlacementFlow {
         // ranked. A developer's forced mode is placed anyway, and the plan says what it drops.
         let (parity, parityRefusal) = ClusterModeParity.apply(to: &policy, capability: capability, layout: layout,
             forced: forced != nil) { try ClusterPlacementPlanner.plan(devices: devices, layout: layout, policy: $0, link: link) }
-        let result = try ClusterPlacementPlanner.plan(devices: devices, layout: layout, policy: policy, link: link)
+        // A singleton tensor placement saves the widest width its owner's quotes admit on both Macs now. One call
+        // initializes a constant `result`, so the sizing's plans stay off this frame, which a deep planner stack shares.
+        var batchLanes = batchScope?.lanes
+        let result = try ClusterPlacementTensorWidth.plan(devices: devices, layout: layout, policy: policy, link: link,
+            quotes: tensorWidthQuotes, lanes: &batchLanes)
         var lines = (forced.map(ClusterForcedModeSetting.lines) ?? [])
             + (benchCap.map(ClusterPlannerBenchCap.lines(capBytes:)) ?? []) + (benchChip.map(ClusterBenchChip.lines(chipName:)) ?? [])
             + servedLines
@@ -321,8 +326,8 @@ public enum ClusterPlacementFlow {
         }
         if let note = granted.note { lines.append("Pair serving"); lines.append("  " + note) }
         lines += gpuLimitLines(result, profiles: [local.id: localProfile, peer.id: peerProfile])
-        if let batchScope {
-            lines += ["Concurrent request memory", "  \(batchScope.lanes) independent histories, charged at the quoted request bound on both Macs. Stage-rate predictions remain single-request estimates; no batch speed is inferred from the lane count."]
+        if let batchLanes {
+            lines += ["Concurrent request memory", "  \(batchLanes) independent histories, charged at the quoted request bound on both Macs. Stage-rate predictions remain single-request estimates; no batch speed is inferred from the lane count."]
         }
         if records.restrictsShapes {
             lines.append("Diverged placements")
@@ -352,7 +357,7 @@ public enum ClusterPlacementFlow {
                 lines.append("  Request deadline " + deadline.basis + ".")
             }
             let value = try ClusterPlacementSetup.synthesize(description: described, capability: capability,
-                chosen: chosen, batchLanes: batchScope?.lanes, tensorAssistant: assistant?.policy)
+                chosen: chosen, batchLanes: batchLanes, tensorAssistant: assistant?.policy)
             lines.append("What happens next")
             lines += value.narration(localMemberID: localMemberID).map { "  " + $0 }
             setup = value

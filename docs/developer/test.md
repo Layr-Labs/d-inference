@@ -1,6 +1,6 @@
 # Test Provider And Native Contracts
 
-> Last updated: 2026-10-31
+> Last updated: 2026-11-01
 
 Run isolated Swift, native-resource, public-fixture and landing tests here.
 Backend integration and cross-implementation qualification are platform-owned.
@@ -2504,6 +2504,17 @@ holds. Golden plans must stay byte-identical. Run
 `shareProbe` round trip, bounds and earlier records, and
 `provider-swift/Tests/ClusterInstalledSessionChecks/run.sh` for the owner-only
 history file.
+
+A pair that registers with a coordinator is planned with equal shares only
+(`ClusterPlacementPolicy.equalTensorShares`): the same `run.sh` places the
+weighted check's unequal Macs under that policy (no candidate carries unequal
+shares, and a retained unequal partition is refused). From `provider-swift`,
+`swift test --filter 'DistributedAutomaticBatchPlannerTests|ClusterApprovalTensorSharesTests'`
+checks the guided setup's plan for Qwen3.8 27B on two unequal Macs (unequal for
+a local cluster, equal for one served through Darkbloom) and that both Macs'
+approval checks refuse a cluster approval beside unequal shares before any part
+stops, because a member's registration names no shares
+(`NativePairMemberRoster`).
 
 From `libs/darkbloom-cluster`, `swift test --filter QwenTensorParallelShareProbeTests`
 checks the per-mille share and the probe request's shape on the CPU. With

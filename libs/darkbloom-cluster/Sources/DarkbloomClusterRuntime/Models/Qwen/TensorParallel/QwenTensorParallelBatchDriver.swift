@@ -48,7 +48,7 @@ extension QwenTensorParallelBatchExecutor {
     func confirmedRetirement(_ lane: Lane, clean: Bool) throws {}
 }
 
-/// One prefill frame on its original grid and one real decode rectangle per
+/// One prompt step (consecutive frames on the original grid) and one real decode rectangle per
 /// step. Every active request owns its native history. A slow client holds
 /// only its own token credit. Successful retirement is published only after
 /// both ranks have drained, including cancellation and deadline departures.

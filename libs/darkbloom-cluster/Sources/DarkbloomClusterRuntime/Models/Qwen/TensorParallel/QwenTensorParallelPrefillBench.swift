@@ -354,14 +354,16 @@ public enum QwenTensorParallelPrefillBench {
     /// A real pair's rank (`model`'s reduction is its group, for example the
     /// loopback ring with sealed sums): the same prompt prefilled one frame a
     /// step and in merged steps of up to each of `wavefronts` frames
-    /// (`QwenTensorParallelPromptWavefront`). Logs each run's step times and
-    /// the digests of its final logits, attention rows and recurrent states;
-    /// returns whether every run left this rank the same digests.
+    /// (`QwenTensorParallelPromptWavefront`). Logs each run's step times, its
+    /// peak allocation above the memory in use before the prompt (`peak_mb`)
+    /// and the digests of its final logits, attention rows and recurrent
+    /// states; returns whether every run left this rank the same digests.
     public static func pair(model: QwenTensorParallelModel, configuration: Data, promptTokens: Int, chunk: Int,
-                            wavefronts: [Int], repeats: Int, log: (String) -> Void) throws -> Bool {
+                            outputTokens: Int = 8, wavefronts: [Int], repeats: Int,
+                            log: (String) -> Void) throws -> Bool {
         guard case .shard(let rank, _) = model.role else { throw ProbeError("The wavefront pair runs a rank shard") }
         let tokens = prompt(promptTokens, vocabulary: model.plan.vocabularySize)
-        let budget = promptTokens + 8
+        let budget = promptTokens + outputTokens
         let profile = try QwenLayerStageGenerationProfile(identifier: "qwen-tp-wavefront-pair",
             vocabularySize: model.plan.vocabularySize, hiddenSize: model.plan.hiddenSize, activationDType: "bfloat16",
             maximumPromptTokens: promptTokens, maximumChunkTokens: chunk, maximumOutputTokens: budget - promptTokens,
@@ -386,6 +388,9 @@ public enum QwenTensorParallelPrefillBench {
                 defer { try? session.retire() }
                 var steps: [(tokens: Int, ms: Double)] = []
                 var logits: MLXArray?
+                Stream.gpu.synchronize()
+                let before = Memory.activeMemory
+                Memory.peakMemory = 0
                 while session.schedule.committedPromptTokens < promptTokens {
                     let frames = session.promptFrames(limit: limit)
                     guard let step = QwenTensorParallelPromptWavefront.step(frames) else { throw ProbeError("No prompt step") }
@@ -394,6 +399,7 @@ public enum QwenTensorParallelPrefillBench {
                     if let logits { eval(logits) }
                     steps.append((step.tokenCount, ms(DispatchTime.now().uptimeNanoseconds - started)))
                 }
+                let peak = max(0, Memory.peakMemory - before)
                 let total = steps.reduce(0) { $0 + $1.ms }
                 let rows = session.state.rows.compactMap { $0?.snapshot() }.flatMap { [$0.keys, $0.values] }
                 let committed = session.state.recurrent.confirmedStateSnapshot() ?? [:]
@@ -404,7 +410,7 @@ public enum QwenTensorParallelPrefillBench {
                 log("qwen-tp-wavefront-v1 rank=\(rank) limit=\(limit) repeat=\(repeatIndex) tokens=\(promptTokens)"
                     + " steps=\(steps.count) total_ms=\(format(total)) tok_s=\(format(Double(promptTokens) / total * 1000))"
                     + " per_\(chunk)_median_ms=\(format(median(perFrame))) first_step_ms=\(format(steps.first?.ms ?? .nan))"
-                    + " logits=\(value.0) rows=\(value.1) recurrent=\(value.2)")
+                    + " peak_mb=\(format(Double(peak) / 1e6)) logits=\(value.0) rows=\(value.1) recurrent=\(value.2)")
             }
         }
         log("qwen-tp-wavefront-v1 rank=\(rank) digest-check \(same ? "same-bytes" : "DIFFERENT")")

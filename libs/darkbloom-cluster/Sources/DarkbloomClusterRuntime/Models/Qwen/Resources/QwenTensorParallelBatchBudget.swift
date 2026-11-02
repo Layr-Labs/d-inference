@@ -15,7 +15,7 @@ struct QwenTensorParallelBatchBudget {
     let sharedBytesExcludingCollectives: Int
     let batchProjectionConstantBytes: Int
     let pagedPoolSlackBytes: Int
-    /// Paged: one full-history gather bank, shared (one prompt frame per step).
+    /// Paged: one full-history gather bank, shared (one prompt step at a time).
     let promptGatherBytes: Int
     let prefix: QwenTensorParallelBatchPrefixBudget
     let allowance: ClusterTensorParallelRequestAllowance
@@ -43,7 +43,7 @@ struct QwenTensorParallelBatchBudget {
             // The full-history gather bank is a prompt frame's transient: decode
             // and verify windows attend the pages in place (the fused paged
             // decode kernel, one query column at a time), and the batch driver
-            // runs at most one prompt frame per step, so one bank serves every
+            // runs one lane's prompt step at a time, so one bank serves every
             // lane (`QwenTensorParallelBatchSessionTests.fullHistoryGatherIsOne
             // PromptFramesTransient` measures both). The scalar floor's F32 KV
             // term (two BF16 banks) is replaced by the lane's own BF16 page

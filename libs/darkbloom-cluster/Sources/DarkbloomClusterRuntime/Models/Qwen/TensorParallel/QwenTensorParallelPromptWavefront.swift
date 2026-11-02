@@ -24,6 +24,11 @@ enum QwenTensorParallelPromptWavefront {
     /// Frames one prompt step runs while another lane decodes, so a decoding
     /// lane waits for one merged step about as long as for one frame alone.
     static let framesBesideDecoding = 2
+    /// Unfinished sums a step keeps submitted: building waits for the oldest
+    /// beyond them. Unbounded, MLX encodes (and allocates) up to
+    /// `MLX_MAX_ACTIVE_TASKS` tasks of independent frames ahead, beyond
+    /// `inFlightBytes`. Evaluation order only: the sums and their order are unchanged.
+    static let sumsInFlight = 4
     /// Diagnostic only: `DARKBLOOM_QWEN_TP_PROMPT_WAVEFRONT=0` runs one frame a
     /// step, as before. Bound into the load agreement (`agreementFields`).
     static let enabled = ProcessInfo.processInfo.environment["DARKBLOOM_QWEN_TP_PROMPT_WAVEFRONT"] != "0"
@@ -82,10 +87,10 @@ enum QwenTensorParallelPromptWavefront {
     }
 
     /// `frames`' forward inside one `CBv2OwnedRequestState.run`: the
-    /// wavefront, each phase's sums submitted as soon as it is built; returns
-    /// what the last frame's own forward returns (its evaluation handle, or
-    /// the final prompt row's logits from the whole frame's head, as
-    /// `QwenTensorParallelBatchSession.prompt` keeps them).
+    /// wavefront, each phase's sums submitted as soon as it is built (at most
+    /// `sumsInFlight` unfinished); returns what the last frame's own forward
+    /// returns (its evaluation handle, or the final prompt row's logits from
+    /// the whole frame's head, as `QwenTensorParallelBatchSession.prompt` keeps them).
     static func forward(model: QwenTensorParallelModel, request: QwenLayerStageGenerationRequest,
                         frames: [QwenLayerStageFrame], caches: [any CBv2AttendingLayerCache],
                         evaluation: CBv2RecurrentStateEvaluation) -> MLXArray {
@@ -95,12 +100,15 @@ enum QwenTensorParallelPromptWavefront {
         }
         let final = frames.last?.finalPromptChunk ?? false
         let issued = QwenTensorParallelIssuedSums()
+        var submitted: [MLXArray] = []
         let outputs = QwenTensorParallelRowLinear.$issuedSums.withValue(issued) {
             Qwen35PromptWavefront.prefill(model.model, chunks: chunks, finalChunk: final,
-                caches: caches.map { $0 as! any KVCache }, recurrentState: evaluation) { _, _, _ in
+                caches: caches.map { $0 as! any KVCache }, recurrentState: evaluation) {
                     guard !issued.sums.isEmpty else { return }
                     asyncEval(issued.sums)
+                    submitted += issued.sums
                     issued.sums.removeAll()
+                    while submitted.count > sumsInFlight { eval(submitted.removeFirst()) }
                 }
         }
         // Earlier frames' last rows run too, as each frame's own output did; nothing reads them.

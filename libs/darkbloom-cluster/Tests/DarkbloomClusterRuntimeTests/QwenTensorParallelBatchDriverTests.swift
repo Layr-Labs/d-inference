@@ -488,6 +488,36 @@ struct QwenTensorParallelBatchDriverTests {
         }
     }
 
+    /// A token selected before the owner answered the one before it is held
+    /// on rank 0. A stop answer drops it: it is never published, and both
+    /// ranks retire the tokens the owner saw.
+    @Test func aStopAnswerDropsAHeldTokenThatWasNeverPublished() throws {
+        // The owner answers each token at the second poll after it, so the row
+        // selects its 3rd, 5th, ... token before the answer to the one before.
+        for stopAfter in [2, 4] {
+            let pair = Pair(1), stopped = try pair.request(output: 24)
+            try pair.reserve(stopped)
+            var polls = 0
+            pair.hosts[0].onToken = { _, _ in polls = 0 }
+            pair.hosts[0].answer = { id in
+                polls += 1
+                return polls < 2 ? nil : pair.hosts[0].tokens[id]?.count != stopAfter
+            }
+            let retired = try runRetiring(pair)
+            let seen = Array(HistoryBatchTestSession.oracle(stopped).prefix(stopAfter))
+            #expect(pair.hosts[0].tokens[stopped.requestID] == seen)
+            for rank in 0...1 {
+                #expect(retired[rank][stopped.requestID]?.0 == seen)
+                #expect(retired[rank][stopped.requestID]?.1 == .clientStop)
+                #expect(pair.hosts[rank].finished[stopped.requestID] == .clientStop)
+                #expect(pair.flag("prefix-true-\(rank)-\(stopped.requestID)"))
+                // The held token's forward ran on both ranks; only the seen tokens retire.
+                let session = try #require(pair.native[rank].sessions[stopped.requestID])
+                #expect(session.frames.count == stopped.prefillFrameCount + stopAfter)
+            }
+        }
+    }
+
     /// Joins, a prompt beside decoding rows and a cancellation interleave
     /// folded steps with exchanged ones; every row keeps its own tokens, and
     /// a cancelled row publishes nothing after the cancellation was seen.

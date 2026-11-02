@@ -54,9 +54,6 @@ protocol QwenTensorParallelBatchExecutor: AnyObject {
 
 extension QwenTensorParallelBatchExecutor {
     func confirmedRetirement(_ lane: Lane, clean: Bool) throws {}
-    func decode(_ lanes: [Lane], tokens: [Int], check: () throws -> Void) throws -> [Int] {
-        try decode(lanes, tokens: tokens, control: { nil }, check: check).tokens
-    }
 }
 
 /// One prompt step (consecutive frames on the original grid) and one real decode rectangle per
@@ -239,10 +236,10 @@ final class QwenTensorParallelBatchDriver<Executor: QwenTensorParallelBatchExecu
                           coalescing: inout QwenBatchDecodeCoalescing, carrying: Set<Int> = []) throws -> QwenBatchWire.Header {
         var slots = [QwenBatchWire.Slot](repeating: .init(), count: capacity)
         for (slot, record) in records {
-            let carried = carrying.contains(slot)
+            let selecting = carrying.contains(slot)
             var value = QwenBatchWire.Slot(state: .active, requestID: record.id)
             value.committedTokens = record.native?.committedTokens ?? 0
-            value.selectedTokens = record.tokens.count + (carried ? 1 : 0); value.fingerprintWords = record.fingerprint
+            value.selectedTokens = record.tokens.count + (selecting ? 1 : 0); value.fingerprintWords = record.fingerprint
             // An answer is to the last published token.
             let reason = answers[record.id].flatMap { record.finish($0, count: record.published) }
             if cancelled(record) || peerCancelled.contains(slot) || reason != nil {
@@ -257,7 +254,7 @@ final class QwenTensorParallelBatchDriver<Executor: QwenTensorParallelBatchExecu
                 if record.native?.canSelectNext == true, record.published == record.tokens.count,
                    decisions.canForward(record.id) {
                     value.role = .decode
-                    value.inputToken = carried ? QwenTensorParallelBatchWire.carriedToken : record.tokens.last ?? -1
+                    value.inputToken = selecting ? QwenTensorParallelBatchWire.carriedToken : record.tokens.last ?? -1
                 }
             }
             slots[slot] = value

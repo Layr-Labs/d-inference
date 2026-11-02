@@ -46,15 +46,17 @@ public enum QwenTensorParallelDecodeBench {
     public static func pair(model: QwenTensorParallelModel, configuration: Data, group: any QwenTensorParallelReduction,
                             width: Int, promptTokens: Int, outputTokens: Int, sampled: Bool, folds: [Bool],
                             repeats: Int, answerDelayMicroseconds: Int, log: (String) -> Void) throws -> Bool {
-        guard case .shard(let rank, _) = model.role, (1...8).contains(width), promptTokens > 0, outputTokens > 1 else {
-            throw ProbeError("The decode bench runs a rank shard with 1 to 8 requests of at least two tokens")
+        // Request IDs carry the run's index in one byte.
+        guard case .shard(let rank, _) = model.role, (1...8).contains(width), promptTokens > 0, outputTokens > 1,
+              (1...255).contains(repeats), (1...255).contains(folds.count * repeats) else {
+            throw ProbeError("The decode bench runs a rank shard with 1 to 8 requests of at least two tokens, 255 runs at most")
         }
         let vocabulary = model.plan.vocabularySize, chunk = min(512, promptTokens), budget = promptTokens + outputTokens
         let profile = try QwenLayerStageGenerationProfile(identifier: "qwen-tp-decode-bench", vocabularySize: vocabulary,
             hiddenSize: model.plan.hiddenSize, activationDType: "bfloat16", maximumPromptTokens: promptTokens,
             maximumChunkTokens: chunk, maximumOutputTokens: outputTokens, maximumContextTokens: budget)
         var seen: String?, same = true
-        for (index, fold) in ([folds.first ?? true] + folds.flatMap { Array(repeating: $0, count: max(1, repeats)) }).enumerated() {
+        for (index, fold) in ([folds[0]] + folds.flatMap { Array(repeating: $0, count: repeats) }).enumerated() {
             Memory.clearCache()
             let host = try CBv2StageKVHost(model: model.model, kind: .paged, lanes: width,
                 maximumTokensPerRequest: budget, maximumChunkTokens: chunk)

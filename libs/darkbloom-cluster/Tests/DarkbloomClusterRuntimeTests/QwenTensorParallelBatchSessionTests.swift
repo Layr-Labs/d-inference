@@ -6,6 +6,13 @@ import MLXLMCommon
 import Testing
 @testable import DarkbloomClusterRuntime
 
+extension QwenTensorParallelBatchExecutor {
+    /// A decode rectangle whose selection sum carries no control words.
+    func decode(_ lanes: [Lane], tokens: [Int], check: () throws -> Void) throws -> [Int] {
+        try decode(lanes, tokens: tokens, control: { nil }, check: check).tokens
+    }
+}
+
 @Suite(.serialized)
 struct QwenTensorParallelBatchSessionTests {
     private final class Rendezvous: @unchecked Sendable {

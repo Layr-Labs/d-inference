@@ -341,7 +341,7 @@ final class QwenTensorParallelNativeBatchExecutor<Reservation: QwenTensorParalle
               Set(lanes.map { ObjectIdentifier($0) }).count == lanes.count else {
             throw ProbeError("Qwen TP accepted selections require distinct scheduled lanes")
         }
-        var carried: [Float]?
+        var summedControl: [Float]?
         if let context = assistant, let quote = context.cohortBudget {
             let frontiers = cohortFrontiers(lanes, tokens: tokens, depth: context.depth)
             let eligible = frontiers.keys.sorted()
@@ -407,7 +407,7 @@ final class QwenTensorParallelNativeBatchExecutor<Reservation: QwenTensorParalle
             }
             let selection = try select(result.logits, lanes: active, control: words, check: check)
             let selected = selection.tokens
-            carried = selection.control
+            summedControl = selection.control
             for (row, index) in ordinary.enumerated() {
                 if let decoder = active[row].assistant, let hidden = result.hidden {
                     try decoder.observeOrdinary(inputToken: inputs[row], hidden: hidden[row..<row + 1],
@@ -424,7 +424,7 @@ final class QwenTensorParallelNativeBatchExecutor<Reservation: QwenTensorParalle
             }
             lane.selectedCount += 1
         }
-        return (selections.map { $0! }, carried)
+        return (selections.map { $0! }, summedControl)
     }
 
     /// `control`: this rank's words for the selection's own sealed sum (after
@@ -439,13 +439,13 @@ final class QwenTensorParallelNativeBatchExecutor<Reservation: QwenTensorParalle
         }
         let values = logits.asType(.float32)
         let selected: MLXArray
-        var nonfinite: MLXArray?, carried: MLXArray?
+        var nonfinite: MLXArray?, summedControl: MLXArray?
         /// `own` words, then the control words, in one sealed sum.
         func sum(_ own: MLXArray) -> MLXArray {
             guard let control else { return group.allSum(own) }
             let count = own.size
             let summed = group.allSum(concatenated([own.reshaped([count]), MLXArray(control)], axis: 0))
-            carried = summed[count ..< (count + control.count)]
+            summedControl = summed[count ..< (count + control.count)]
             return summed[0 ..< count].reshaped(own.shape)
         }
         let sampled = lanes.contains { $0.session.request.sampling != nil }
@@ -486,7 +486,7 @@ final class QwenTensorParallelNativeBatchExecutor<Reservation: QwenTensorParalle
             selected = which(both[0..., 3] .> both[0..., 0], both[0..., 4], both[0..., 1]).asType(.int32)
             nonfinite = both[0..., 2] + both[0..., 5]
         }
-        eval([selected] + (nonfinite.map { [$0] } ?? []) + (carried.map { [$0] } ?? [])); try check()
+        eval([selected] + (nonfinite.map { [$0] } ?? []) + (summedControl.map { [$0] } ?? [])); try check()
         guard nonfinite?.asArray(Float.self).allSatisfy({ $0 == 0 }) ?? true else {
             throw ProbeError("Qwen TP selection rows have a non-finite logit")
         }
@@ -494,7 +494,7 @@ final class QwenTensorParallelNativeBatchExecutor<Reservation: QwenTensorParalle
         guard tokens.count == width, tokens.allSatisfy({ (0..<model.plan.vocabularySize).contains($0) }) else {
             throw ProbeError("Qwen TP selection produced an invalid token")
         }
-        let words = carried?.asArray(Float.self)
+        let words = summedControl?.asArray(Float.self)
         guard words.map({ $0.count == control?.count && $0.allSatisfy(\.isFinite) }) ?? (control == nil) else {
             throw ProbeError("Qwen TP folded control words changed length or are not finite")
         }

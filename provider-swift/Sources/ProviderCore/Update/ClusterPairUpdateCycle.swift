@@ -346,7 +346,7 @@ public final class ClusterPairUpdateCycle: @unchecked Sendable {
             publish(.idle, detail: "up to date")
             environment.log("cluster update: up to date" + (current.map { " (v\($0))" } ?? ""))
         case .quarantined(let version):
-            publish(.failed, detail: "v\(version) is quarantined on this Mac after failed starts")
+            publish(.failed, detail: "v\(version) is quarantined on this Mac")
         case .checkFailed(let failure):
             publish(.failed, detail: failure)
             environment.log("cluster update: the check failed (\(failure))" + retry)

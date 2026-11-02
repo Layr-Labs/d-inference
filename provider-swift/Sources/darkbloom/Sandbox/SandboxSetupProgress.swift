@@ -223,7 +223,7 @@ final class SandboxSetupRenderer: @unchecked Sendable {
     private var frame = 0
     private var approvalShown = false
     private var waitlistShown = false
-    private var backgroundWait = false
+    private var waitingInBackground = false
     private var reportedTenths = -1
     private var failure: String?
     private var summaryEvent: SandboxInstallerEvent?
@@ -242,7 +242,7 @@ final class SandboxSetupRenderer: @unchecked Sendable {
     /// This Mac waits for approval in the background, also across restarts:
     /// the run's approval or waitlist event said `background` (add-on 1.1.2
     /// and later), and no `enrolled` stage has been `done` since.
-    var waitsInBackground: Bool { lock.withLock { backgroundWait } }
+    var waitsInBackground: Bool { lock.withLock { waitingInBackground } }
 
     func handle(_ output: SandboxInstallerOutput) {
         render { out in
@@ -321,7 +321,7 @@ final class SandboxSetupRenderer: @unchecked Sendable {
             let isFailure = event.status == .failed
             if isFailure { failure = event.message }
             // Enrolled: nothing waits for approval any more.
-            if !isFailure, event.stage == "enrolled" { backgroundWait = false }
+            if !isFailure, event.stage == "enrolled" { waitingInBackground = false }
             if var stage = active {
                 if let message = event.message { stage.details.append(message) }
                 complete(stage, marker: isFailure ? failed : done, into: &out)
@@ -346,7 +346,7 @@ final class SandboxSetupRenderer: @unchecked Sendable {
     private func progress(_ event: SandboxInstallerEvent, into out: inout String) {
         let approval = event.userCode != nil || event.verificationURI != nil
         // Only these two events say whether the wait goes on in the background.
-        if approval || event.waitlisted, event.background { backgroundWait = true }
+        if approval || event.waitlisted, event.background { waitingInBackground = true }
         if approval {
             showApproval(event, into: &out)
         } else if event.waitlisted {
@@ -394,7 +394,7 @@ final class SandboxSetupRenderer: @unchecked Sendable {
         emit("", into: &out)
         emit("    Your account is on the waitlist: Darkbloom reviews new Mac owners before their first Mac joins.",
              into: &out)
-        if backgroundWait {
+        if waitingInBackground {
             emit("    You can close this window: this Mac keeps waiting, also across restarts, and enrolls by itself "
                  + "once your account is approved. `\(cli) sandbox status` shows where it is.", into: &out)
         } else {

@@ -106,6 +106,79 @@ struct OperatorModelFilterTests {
         #expect(await loop.desiredSwapDrop[Self.deselected] == Self.selected)
         await coordinator.shutdown(timeout: .seconds(3))
     }
+
+    /// The reported machine, end to end through `ProviderLoop.run()` and the
+    /// mock coordinator: the production alias entry (the retired
+    /// `gemma-4-26b-8bit` only decides who receives it, so it is not on the
+    /// wire), then the warm pool's `prefetch_model` and `load_model`. The
+    /// coordinator re-sends the entry after every `register` and every switch.
+    @Test func theReportedRolloutNeverReachesTheProviderAfterReconnectOrSwitch() async throws {
+        let enabled = [Self.selected, "nvidia-nemotron-3.5-lightning", Self.other]
+        let fixture = try await ServeLoopFixture.make(models: enabled.map(Self.model),
+            backend: BackendSettings(enabledModels: enabled, idleTimeoutMins: 0, startupPreload: false))
+        let task = fixture.start()
+        _ = try await fixture.awaitRegistration()
+        try await replayRollout(fixture, round: 1)
+
+        await fixture.mock.dropActiveWebSocket()
+        let reconnected = try #require(try await fixture.mock.waitForSnapshot(timeout: .seconds(20)) {
+            $0.registers.count == 2
+        })
+        #expect(reconnected.registers.allSatisfy { Set($0.models.map(\.id)) == Set(enabled) })
+        try await replayRollout(fixture, round: 2)
+
+        await fixture.loop.resolveSwitchSnapshots(to: try Self.switchSnapshot(in: fixture.directory))
+        let switched = await fixture.loop.switchModels(request: .init(
+            target: try #require(ProcessIdentity.current()), models: enabled, timeoutSeconds: 10))
+        #expect(switched.outcome == .switched, "\(switched.message ?? "")")
+        #expect(Set(fixture.mock.snapshot().modelsReplacements.last?.models.map(\.id) ?? []) == Set(enabled))
+        try await replayRollout(fixture, round: 3)
+
+        #expect(await fixture.stop(task))
+    }
+
+    private func replayRollout(_ fixture: ServeLoopFixture, round: Int) async throws {
+        let rollout = CoordinatorMessage.DesiredModelEntry(modelName: Self.selected, desiredBuild: Self.deselected,
+            previousBuild: Self.selected, revision: "qat", aggregateSHA256: String(repeating: "c", count: 64))
+        try await fixture.mock.pushDesiredModels([rollout])
+        try await fixture.mock.pushPrefetchModel(modelId: Self.deselected, priority: 1)
+        try await fixture.mock.pushLoadModel(modelId: Self.deselected)
+        _ = try #require(try await fixture.mock.waitForSnapshot(timeout: .seconds(10)) { captured in
+            captured.loadModelStatuses.filter { $0.modelId == Self.deselected && $0.status != .started }.count >= round
+                && captured.prefetchModelStatuses.contains { $0.modelId == Self.deselected }
+        }, "round \(round): no load_model reply")
+        try await settle()
+        let captured = fixture.mock.snapshot()
+        let loads = captured.loadModelStatuses.filter { $0.modelId == Self.deselected }
+        let prefetches = captured.prefetchModelStatuses.filter { $0.modelId == Self.deselected }
+        #expect(loads.count == round && loads.allSatisfy { $0.status == .failed && $0.error == "model_not_selected" },
+            "round \(round): \(loads)")
+        #expect(prefetches.count == round
+            && prefetches.allSatisfy { $0.status == .failed && $0.error == "model_not_selected" },
+            "round \(round): \(prefetches)")
+        #expect(!captured.modelsUpdates.contains { $0.models.contains { $0.id == Self.deselected } })
+        let loop = fixture.loop
+        #expect(await loop.isModelAdvertised(Self.selected))
+        #expect(await !loop.isModelAdvertised(Self.deselected))
+        #expect(await !loop.ordinaryServingModelIDs.contains(Self.deselected))
+        #expect(await loop.desiredPrefetchTargets.isEmpty)
+        #expect(await loop.desiredModelRevisions.isEmpty)
+        #expect(await loop.desiredSwapDrop.isEmpty)
+        #expect(await loop.preloadTasks.isEmpty)
+        #expect(!FileManager.default.fileExists(atPath: ModelDownloader.cacheModelDirectory(for: Self.deselected).path))
+    }
+
+    private static func switchSnapshot(in directory: URL) throws -> URL {
+        let snapshot = directory.appendingPathComponent("switch-snapshot")
+        try FileManager.default.createDirectory(at: snapshot, withIntermediateDirectories: true)
+        try Data(#"{"model_type":"gpt_oss"}"#.utf8).write(to: snapshot.appendingPathComponent("config.json"))
+        try Data(repeating: 0x61, count: 1024).write(to: snapshot.appendingPathComponent("model.safetensors"))
+        return snapshot
+    }
+}
+
+private extension ProviderLoop {
+    func resolveSwitchSnapshots(to snapshot: URL) { modelSwitchSnapshotResolver = { _ in snapshot } }
 }
 
 /// Records each build whose download started, then blocks until cancelled.

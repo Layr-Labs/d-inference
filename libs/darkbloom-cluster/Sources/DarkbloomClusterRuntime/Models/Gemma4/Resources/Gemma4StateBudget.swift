@@ -101,18 +101,24 @@ enum Gemma4PrefillTransient {
     }
 
     /// The same over layers of these kinds with `queryHeads` query heads each
-    /// (a tensor-parallel rank's own half of them).
-    static func bytes(fullAttention: [Bool], queryHeads: Int, chunkTokens: Int, contextTokens: Int) throws -> Int {
+    /// (a tensor-parallel rank's own half of them). A decode step can keep
+    /// every layer's temporaries alive at once: `decodeRows` a layer over each
+    /// of `decodeFullAttention`'s layers, added up, priced the same way, and
+    /// the larger of the two is charged.
+    static func bytes(fullAttention: [Bool], queryHeads: Int, chunkTokens: Int, contextTokens: Int,
+                      decodeRows: Int = 0, decodeFullAttention: [Bool] = []) throws -> Int {
         typealias G = Gemma4StageGeometry
         let product = QwenLongPrefillCheckedBytes.product, sum = QwenLongPrefillCheckedBytes.sum
+        func transient(full: Bool, queries: Int) throws -> Int {
+            let width = full ? G.fullHeadDimension : G.slidingHeadDimension
+            let keys = full ? contextTokens : min(contextTokens, G.slidingWindow - 1 + queries)
+            return try sum([product([queryHeads, queries, keys, 4]), product([queryHeads, queries, width, 4])])
+        }
         let queries = min(chunkTokens, contextTokens)
         var largest = 0
-        for full in fullAttention {
-            let width = full ? G.fullHeadDimension : G.slidingHeadDimension
-            let keys = full ? contextTokens : min(contextTokens, G.slidingWindow - 1 + chunkTokens)
-            let value = try sum([product([queryHeads, queries, keys, 4]), product([queryHeads, queries, width, 4])])
-            largest = max(largest, value)
-        }
-        return largest
+        for full in fullAttention { largest = max(largest, try transient(full: full, queries: queries)) }
+        guard decodeRows > 0 else { return largest }
+        let decode = try sum(decodeFullAttention.map { try transient(full: $0, queries: decodeRows) })
+        return max(largest, decode)
     }
 }

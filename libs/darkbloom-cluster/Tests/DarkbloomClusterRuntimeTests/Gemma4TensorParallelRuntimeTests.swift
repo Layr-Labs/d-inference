@@ -689,6 +689,52 @@ struct Gemma4TensorParallelRuntimeTests {
         #expect(tensor.dropped(by: pipeline) == ["committed-token logprobs"])
     }
 
+    // MARK: - Request memory
+
+    /// A decode step is submitted layer by layer in 100-operation buffers, so
+    /// several layers' temporaries are alive at once: a request is charged one
+    /// decode row on every layer (each layer's scores and output row over its
+    /// own 8 query heads, and its FP32 partials) wherever that exceeds its
+    /// prompt chunk's, and the profile's LOAD quote is unchanged.
+    @Test func aDecodeStepsRowOnEveryLayerIsCharged() throws {
+        typealias G = Gemma4StageGeometry
+        let bound: (Int) throws -> Int = { $0 + 16_384 }
+        let heads = G.queryHeads / 2
+        let kinds = (0 ..< G.layerCount).map(G.isFullAttention(globalLayerIndex:))
+        func derive(_ context: Int, chunk: Int = 512, prompt: Int = 1) throws -> Gemma4TensorParallelRequestBudget {
+            try Gemma4TensorParallelRequestBudget.derive(contextTokens: context, chunkTokens: chunk, promptTokens: prompt,
+                keepsPrefixes: false, allocationBound: bound)
+        }
+        func partials(rows: Int) throws -> Int {
+            let row = rows * G.hiddenSize * 4
+            return try bound(row) * 2 + bound(row * G.expertsPerToken)
+                + bound(rows * Gemma4TensorParallelRequestBudget.maximumPartialBytesPerToken)
+        }
+        for context in [2, 3, 8, 17, 18, 29, 30, 31, 64, 600] {
+            let budget = try derive(context)
+            let decode = kinds.reduce(0) { total, full in
+                let keys = full ? context : min(context, G.slidingWindow)
+                let width = full ? G.fullHeadDimension : G.slidingHeadDimension
+                return total + heads * keys * 4 + heads * width * 4
+            }
+            let chunk = min(context, 512)
+            let frame = try Gemma4PrefillTransient.bytes(fullAttention: kinds, queryHeads: heads, chunkTokens: chunk,
+                                                         contextTokens: context)
+            #expect(budget.transientBytes == (try bound(max(frame, decode))), "context \(context): transient")
+            #expect(budget.partialBytes == (try partials(rows: max(chunk, G.layerCount))), "context \(context): partials")
+        }
+        // A one-token prompt with one output token: 30 decode rows, not its two-row frame.
+        let shortest = try derive(2)
+        #expect(shortest.transientBytes > (try bound(Gemma4PrefillTransient.bytes(fullAttention: kinds, queryHeads: heads,
+            chunkTokens: 2, contextTokens: 2))))
+        #expect(shortest.partialBytes > (try partials(rows: 2)))
+        // The LOAD quote (65,536 tokens, 512-token chunks): a chunk covers a step, so nothing changes.
+        let profile = try derive(65_536, prompt: 32_768)
+        #expect(profile.transientBytes == (try bound(Gemma4PrefillTransient.bytes(fullAttention: kinds, queryHeads: heads,
+            chunkTokens: 512, contextTokens: 65_536))))
+        #expect(profile.partialBytes == (try partials(rows: 512)))
+    }
+
     // MARK: - Modes and planning
 
     /// Gemma advertises tensor parallel, its worker routes it to this runtime,

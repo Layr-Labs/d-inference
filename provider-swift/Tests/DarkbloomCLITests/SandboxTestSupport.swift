@@ -156,16 +156,45 @@ enum FakeSandboxInstaller {
         #"{"accepting":false,"console_url":"https://api-sandbox.darkbloom.dev/macs/0b7d4e2a-91c3-4f6e-8a25-7c1d3e9f4b60","event":"summary","host_id":"0b7d4e2a-91c3-4f6e-8a25-7c1d3e9f4b60","ok":true,"schema":1,"slots":{"linux":{"automatic":true,"count":1,"limit":"cores"},"macos":{"automatic":true,"count":1,"limit":"cores"}},"state":"downloading_images","status_command":"/Users/ada/DarkbloomSandbox/darkbloom-sandbox status --json"}"#,
     ]
 
-    static func script(events: [String] = events, addonStatus: String = SandboxFixtures.downloading,
-                       standardError: String? = nil, exitStatus: Int32 = 0, jsonProgress: Bool = true) -> String {
+    /// The `plan` event as add-on 1.1.1 writes it for `--plan --json-progress`;
+    /// by default for a 16-core, 128 GB Mac running inference with 157 GiB
+    /// free on a 1858 GiB volume.
+    static func plan(message: String = "1 Linux slot", linux: Int = 1, macOS: Int = 0, linuxAutomatic: Bool = true,
+                     freeGiB: Int64 = 157, extra: String = "") -> String {
+        func gib(_ count: Int64) -> Int64 { count << 30 }
+        return #"{"schema":1,"event":"plan","message":"\#(message)","root":"/Users/ada/DarkbloomSandbox","#
+            + #""linux_slots":\#(linux),"macos_slots":\#(macOS),"linux_automatic":\#(linuxAutomatic),"#
+            + #""macos_automatic":true,"linux_limit":"free disk space","macos_limit":"free disk space","#
+            + #""free_bytes":\#(gib(freeGiB)),"volume_bytes":\#(gib(1_858)),"floor_bytes":\#(gib(100)),"#
+            + #""linux_images_bytes":\#(gib(4)),"macos_images_bytes":\#(gib(46)),"linux_slot_bytes":\#(gib(30)),"#
+            + #""macos_slot_bytes":\#(gib(40)),"cores":16,"cores_kept":4,"memory_bytes":\#(gib(128)),"#
+            + #""memory_kept_bytes":\#(gib(32)),"provider_memory_bytes":\#(gib(32))\#(extra)}"#
+    }
+
+    /// `plan` lines make it an installer with plan mode (add-on 1.1.1): with
+    /// `--plan` it records its arguments, prints them, installs nothing and
+    /// exits with `planExitStatus`. Without, the script never names `--plan`.
+    static func script(events: [String] = events, plan: [String]? = nil, planExitStatus: Int32 = 0,
+                       addonStatus: String = SandboxFixtures.downloading, standardError: String? = nil,
+                       exitStatus: Int32 = 0, jsonProgress: Bool = true) -> String {
         let header = jsonProgress ? "# Understands --json-progress." : "# An installer from before progress events."
         let plain = jsonProgress ? "" : "echo '==> Darkbloom Sandbox 1.0.0 downloaded and checked'"
+        let planMode = plan.map { lines in
+            """
+            if [ "${1:-}" = \(SandboxInstaller.planOption) ]; then
+            printf '%s\\n' "$@" > "$root/plan-arguments"
+            \(lines.map { "printf '%s\\n' \(quoted($0))" }.joined(separator: "\n"))
+            exit \(planExitStatus)
+            fi
+            """
+        } ?? ""
         return """
         #!/bin/sh
         \(header)
         set -eu
         root="$DARKBLOOM_SANDBOX_ROOT"
         mkdir -p "$root"
+        \(planMode)
         printf '%s\\n' "$@" > "$root/installer-arguments"
         cat > "$root/darkbloom-sandbox" <<'ADDON'
         \(FakeSandboxAddon.script(.current(status: addonStatus)))
@@ -187,6 +216,31 @@ enum FakeSandboxInstaller {
     static func stage(_ id: String, _ status: String, _ message: String, _ fields: String = "") -> String {
         let extra = fields.isEmpty ? "" : "," + fields
         return #"{"event":"stage","message":"\#(message)","schema":1,"stage":"\#(id)","status":"\#(status)"\#(extra)}"#
+    }
+
+    /// Stage 4's approval event (the page and code) as add-on 1.1.2 writes it:
+    /// `background` true when the wait goes on without the installer. Nil
+    /// leaves the member out, as add-on 1.1.1 and earlier do.
+    static func approval(background: Bool? = nil) -> String {
+        stage("waiting_for_approval", "progress",
+              #"Open https://api-sandbox.darkbloom.dev/device?code=WDJB-MJHT in a browser\n(or go to "#
+                + #"https://api-sandbox.darkbloom.dev/device and enter the code WDJB-MJHT)"#,
+              #""browser_opened":false,"step":4,"steps":8,"user_code":"WDJB-MJHT","#
+                + #""verification_uri":"https://api-sandbox.darkbloom.dev/device","#
+                + #""verification_uri_complete":"https://api-sandbox.darkbloom.dev/device?code=WDJB-MJHT""#
+                + backgroundMember(background))
+    }
+
+    /// Stage 4's waitlist event, `background` as for `approval`.
+    static func waitlist(background: Bool? = nil) -> String {
+        stage("waiting_for_approval", "progress",
+              #"Your account is on the waitlist: Darkbloom reviews new Mac owners before their first Mac\njoins; "#
+                + "this Mac waits up to 7 days.",
+              #""step":4,"steps":8,"waitlisted":true"# + backgroundMember(background))
+    }
+
+    private static func backgroundMember(_ background: Bool?) -> String {
+        background.map { #","background":\#($0)"# } ?? ""
     }
 }
 

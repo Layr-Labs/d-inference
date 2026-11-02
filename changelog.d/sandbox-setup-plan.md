@@ -5,3 +5,4 @@
 - When no job fits, setup prints the plan's message and how much disk to free for one Linux job and for one macOS job. It then stops without installing.
 - The installer is now downloaded before the question, so the plan is shown before you confirm. Nothing is installed before you answer `y`.
 - With an older installer that cannot report a plan, setup prints `[INFO] Sizing` and estimates with the same rules.
+- With add-on 1.1.2 and later, a Mac waiting for approval keeps waiting in the background, also across restarts, and enrolls by itself, and setup now says so. On the waitlist it says you can close the window, and after Ctrl-C it says that the Mac keeps waiting; both point at `darkbloom sandbox status`. With an earlier add-on, setup words both as before.

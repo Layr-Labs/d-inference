@@ -217,6 +217,31 @@ enum FakeSandboxInstaller {
         let extra = fields.isEmpty ? "" : "," + fields
         return #"{"event":"stage","message":"\#(message)","schema":1,"stage":"\#(id)","status":"\#(status)"\#(extra)}"#
     }
+
+    /// Stage 4's approval event (the page and code) as add-on 1.1.2 writes it:
+    /// `background` true when the wait goes on without the installer. Nil
+    /// leaves the member out, as add-on 1.1.1 and earlier do.
+    static func approval(background: Bool? = nil) -> String {
+        stage("waiting_for_approval", "progress",
+              #"Open https://api-sandbox.darkbloom.dev/device?code=WDJB-MJHT in a browser\n(or go to "#
+                + #"https://api-sandbox.darkbloom.dev/device and enter the code WDJB-MJHT)"#,
+              #""browser_opened":false,"step":4,"steps":8,"user_code":"WDJB-MJHT","#
+                + #""verification_uri":"https://api-sandbox.darkbloom.dev/device","#
+                + #""verification_uri_complete":"https://api-sandbox.darkbloom.dev/device?code=WDJB-MJHT""#
+                + backgroundMember(background))
+    }
+
+    /// Stage 4's waitlist event, `background` as for `approval`.
+    static func waitlist(background: Bool? = nil) -> String {
+        stage("waiting_for_approval", "progress",
+              #"Your account is on the waitlist: Darkbloom reviews new Mac owners before their first Mac\njoins; "#
+                + "this Mac waits up to 7 days.",
+              #""step":4,"steps":8,"waitlisted":true"# + backgroundMember(background))
+    }
+
+    private static func backgroundMember(_ background: Bool?) -> String {
+        background.map { #","background":\#($0)"# } ?? ""
+    }
 }
 
 extension SandboxHostFacts {

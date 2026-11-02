@@ -1103,7 +1103,12 @@ darkbloom sandbox uninstall [--yes]
    the next commands.
 
 While the installer runs, Ctrl-C reaches the installer, not the CLI, and setup
-exits `130`; an enrollment waiting for approval goes on and a rerun follows it.
+exits `130`; an enrollment waiting for approval goes on. With add-on 1.1.2 and
+later, whose approval and waitlist events say `background: true`, the wait
+also survives a restart and the Mac enrolls by itself, so the window can close:
+setup says so and points at `darkbloom sandbox status`. With an earlier add-on,
+a rerun follows the waiting enrollment, and a restart ends the wait, so setup
+must run again.
 A failed installer's exit status becomes the CLI's, after the stage marked ✗,
 its `failed` message and the last lines of its stderr that do not repeat it.
 
@@ -1150,12 +1155,21 @@ line with another schema or without one of the numbers is not a plan.
 | `checking_mac` | Checking this Mac | — |
 | `verifying_release` | Verifying release | — |
 | `installing` | Installing | — |
-| `waiting_for_approval` | Waiting for approval, or waiting for Darkbloom to approve the account | `progress` with `user_code`, `verification_uri`, `verification_uri_complete` (or `null`) and `browser_opened`; `progress` with `waitlisted: true` |
+| `waiting_for_approval` | Waiting for approval, or waiting for Darkbloom to approve the account | `progress` with `user_code`, `verification_uri`, `verification_uri_complete` (or `null`) and `browser_opened`; `progress` with `waitlisted: true`; on both, `background` (add-on 1.1.2 and later; absent or not a boolean reads as `false`) |
 | `enrolled` | Enrolled | — |
 | `starting` | Starting | — |
 | `downloading_images` | Downloading images N% | `progress` (0 to 1) with `--wait-ready` |
 | `ready` | Ready | — |
 | another | its `started` message | — |
+
+`background: true` on the approval or waitlist event says that the wait goes on
+without the installer, also across restarts, and that the Mac enrolls by itself
+once approved (`SandboxSetupRenderer.waitsInBackground`). The waitlist text
+under the approval link then says that the window can close, that this Mac
+keeps waiting and enrolls by itself once the account is approved, and that
+`darkbloom sandbox status` shows where it is. Without it, the text says to leave
+setup running, or to press Ctrl-C and run `darkbloom sandbox setup` again later.
+The wait counts as over once the `enrolled` stage is `done`.
 
 The summary's `slots` (`linux`, `macos`: `count`, `automatic`, `limit`) and
 `console_url` feed the setup summary. On a terminal the running stage is the
@@ -1169,7 +1183,7 @@ every tenth.
 | `2` | This Mac cannot host Darkbloom Sandbox as it is (the failed stage says why) |
 | `3` | Not enrolled: the code was denied or expired, or the waitlist request ended; run `setup` to start again |
 | `4` | Jobs are running; run `setup` again once they finish, `pause` meanwhile |
-| `130` | Stopped; an enrollment waiting for approval goes on, and a rerun follows it |
+| `130` | Stopped; an enrollment waiting for approval goes on, and a rerun follows it. While the Mac waits in the background (`background: true`, not yet enrolled): it keeps waiting, also across restarts, and enrolls by itself; `sandbox status` shows where it is |
 | other | Setup did not finish; it is safe to rerun |
 
 ### Add-on commands

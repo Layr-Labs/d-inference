@@ -172,6 +172,20 @@ struct SandboxSetupTests {
         #expect(SandboxInstallerEvent.title(stage: "vm_check", message: nil) == "Vm Check")
     }
 
+    @Test("the approval and waitlist events say whether the wait goes on in the background; absent reads as no")
+    func backgroundEvents() throws {
+        for (background, parsed) in [(true, true), (false, false), (nil, false)] as [(Bool?, Bool)] {
+            let approval = try #require(SandboxInstallerEvent(json: FakeSandboxInstaller.approval(background: background)))
+            #expect(approval.userCode == "WDJB-MJHT" && approval.background == parsed, "\(String(describing: background))")
+            let waitlist = try #require(SandboxInstallerEvent(json: FakeSandboxInstaller.waitlist(background: background)))
+            #expect(waitlist.waitlisted && waitlist.background == parsed, "\(String(describing: background))")
+        }
+        // Add-on 1.0.1's approval event has no such member; a value that is not a boolean is no.
+        #expect(try #require(SandboxInstallerEvent(json: FakeSandboxInstaller.events[8])).background == false)
+        #expect(SandboxInstallerEvent(json: FakeSandboxInstaller.stage(
+            "waiting_for_approval", "progress", "…", #""waitlisted":true,"background":"yes""#))?.background == false)
+    }
+
     @Test("the plan event decodes as add-on 1.1.1 writes it; unknown members are ignored, schema 1 only")
     func planEvent() throws {
         let gib: Int64 = 1 << 30
@@ -309,6 +323,66 @@ struct SandboxSetupTests {
         #expect(live.hasSuffix("\r\u{1B}[2K  ✗ Waiting for approval (stopped)\n"))
     }
 
+    @Test("the waitlist says the window may close when the add-on waits in the background, else to leave it running")
+    func backgroundWaitlist() {
+        let started = FakeSandboxInstaller.stage("waiting_for_approval", "started", "Waiting for approval")
+        /// What follows the approval block, `background` as each event says.
+        func afterApproval(approval: Bool?, waitlist: Bool?) -> String {
+            Self.render([started, FakeSandboxInstaller.approval(background: approval),
+                         FakeSandboxInstaller.waitlist(background: waitlist)], finish: .interrupted)
+                .components(separatedBy: "approves it.\n\n").last ?? ""
+        }
+        let closeWindow = """
+
+                Your account is on the waitlist: Darkbloom reviews new Mac owners before their first Mac joins.
+                You can close this window: this Mac keeps waiting, also across restarts, and enrolls by itself \
+            once your account is approved. `darkbloom sandbox status` shows where it is.
+
+              ✗ Waiting for approval (stopped)
+
+            """
+        // `background` on the approval or on the waitlist event is enough.
+        #expect(afterApproval(approval: true, waitlist: true) == closeWindow)
+        #expect(afterApproval(approval: true, waitlist: nil) == closeWindow)
+        #expect(afterApproval(approval: nil, waitlist: true) == closeWindow)
+        let leaveRunning = """
+
+                Your account is on the waitlist: Darkbloom reviews new Mac owners before their first Mac joins.
+                Leave this running, or press Ctrl-C and run `darkbloom sandbox setup` again later; this Mac enrolls \
+            once your account is approved.
+
+              ✗ Waiting for approval (stopped)
+
+            """
+        #expect(afterApproval(approval: false, waitlist: false) == leaveRunning)
+        #expect(afterApproval(approval: nil, waitlist: nil) == leaveRunning)
+    }
+
+    @Test("a background approval or waitlist event means this Mac waits in the background until it enrolls")
+    func waitsInBackground() {
+        func waits(_ lines: [String]) -> Bool {
+            let renderer = SandboxSetupRenderer(interactive: false, color: false, width: { 80 }, write: { _ in })
+            lines.compactMap(SandboxInstallerOutput.init(line:)).forEach(renderer.handle)
+            return renderer.waitsInBackground
+        }
+        let stage = FakeSandboxInstaller.stage
+        let started = stage("waiting_for_approval", "started", "Waiting for approval", "")
+        #expect(waits([started, FakeSandboxInstaller.approval(background: true)]))
+        #expect(waits([started, FakeSandboxInstaller.approval(), FakeSandboxInstaller.waitlist(background: true)]))
+        #expect(!waits([started, FakeSandboxInstaller.approval(background: false),
+                        FakeSandboxInstaller.waitlist(background: false)]))
+        #expect(!waits(FakeSandboxInstaller.events))
+        // Another event's `background` says nothing about the approval.
+        #expect(!waits([stage("starting", "progress", "Still connecting", #""background":true"#)]))
+        // App Attest after the approval still waits in the background; once enrolled, nothing does.
+        let approved = [started, FakeSandboxInstaller.approval(background: true),
+                        stage("waiting_for_approval", "done", "Approved after 0:42", ""),
+                        stage("enrolled", "started", "Enrolled", "")]
+        #expect(waits(approved))
+        #expect(waits(approved + [stage("enrolled", "failed", "App Attest did not complete yet", #""exit_code":1"#)]))
+        #expect(!waits(approved + [stage("enrolled", "done", "Host 0b7d4e2a; App Attest verified this app", "")]))
+    }
+
     @Test("on a terminal the running stage is a spinner line that turns into a check mark")
     func interactive() {
         let transcript = Self.render(Array(FakeSandboxInstaller.events[0..<3]), interactive: true)
@@ -341,10 +415,10 @@ struct SandboxSetupTests {
             == "  ✗ Installing (stopped)\n")
     }
 
-    @Test("each installer exit status gets its own next step")
+    @Test("each installer exit status gets its own next step; a stop says whether this Mac waits in the background")
     func advice() {
-        func advice(_ status: Int32, signal: Int32? = nil) -> String {
-            SandboxSetupFlow.advice(.init(status: status, signal: signal))
+        func advice(_ status: Int32, signal: Int32? = nil, waitsInBackground: Bool = false) -> String {
+            SandboxSetupFlow.advice(.init(status: status, signal: signal), waitsInBackground: waitsInBackground)
         }
         #expect(advice(2) == "This Mac cannot host Darkbloom Sandbox as it is; see why above.")
         #expect(advice(3).hasPrefix("This Mac was not enrolled: the code was denied or expired"))
@@ -355,6 +429,15 @@ struct SandboxSetupTests {
         #expect(advice(2, signal: SIGINT) == advice(130))
         #expect(advice(1).hasPrefix("Setup did not finish."))
         #expect(advice(9, signal: SIGKILL).hasPrefix("Setup did not finish."))
+        #expect(advice(130, waitsInBackground: true) == "Setup stopped. This Mac keeps waiting for approval in the "
+            + "background, also across restarts, and enrolls by itself once approved; `darkbloom sandbox status` shows "
+            + "where it is.")
+        #expect(advice(2, signal: SIGINT, waitsInBackground: true) == advice(130, waitsInBackground: true))
+        // Only a stop reads it: add-on 1.1.2 exits 1 while App Attest is retried after the approval.
+        for status: Int32 in [1, 2, 3, 4] {
+            #expect(advice(status, waitsInBackground: true) == advice(status), "\(status)")
+        }
+        #expect(advice(9, signal: SIGKILL, waitsInBackground: true) == advice(9, signal: SIGKILL))
     }
 
     // MARK: - Plan
@@ -600,6 +683,69 @@ struct SandboxSetupTests {
                 \(message)
 
             This Mac cannot host Darkbloom Sandbox as it is; see why above.
+
+            """))
+    }
+
+    @Test("stopped while waiting: an add-on that waits in the background gets its own texts; an older one the old ones")
+    func stoppedWhileWaiting() async throws {
+        let result = try await #require(processExitsWith: .success, observing: [\.standardOutputContent]) {
+            let sandbox = try CLICommandSandbox.enter(autoRestart: false)
+            defer { sandbox.remove() }
+            // Add-on 1.1.2 says `background: true`; add-on 1.1.1 leaves the member out.
+            for background in [true, nil] as [Bool?] {
+                try? FileManager.default.removeItem(at: sandbox.sandboxAddonRoot)
+                CoordinatorStub.install(["/install.sh": .init(status: 200, body: Data(FakeSandboxInstaller.script(
+                    events: Array(FakeSandboxInstaller.events[0..<8])
+                        + [FakeSandboxInstaller.approval(background: background),
+                           FakeSandboxInstaller.waitlist(background: background)],
+                    exitStatus: 130).utf8))])
+                print("== RUN")
+                do {
+                    try await SandboxSetupFlow(options: SandboxSetupOptions(server: "https://sandbox.invalid"),
+                                               confirmed: true, addon: .live(), interactiveInput: false,
+                                               terminal: false, color: false,
+                                               probe: { _ in .mac(cores: 16, memoryGiB: 128) }).run()
+                } catch let code as ExitCode {
+                    print("exit \(code.rawValue)")
+                }
+            }
+        }
+        let runs = Array(decodedText(result.standardOutputContent).components(separatedBy: "== RUN\n").dropFirst())
+        try #require(runs.count == 2)
+        let approval = """
+              ✓ Installing
+                ~/DarkbloomSandbox: 1 Linux slot and 1 macOS slot
+
+                Approve this Mac in your browser, signed in to the Darkbloom account that should own it:
+                  https://api-sandbox.darkbloom.dev/device?code=WDJB-MJHT
+                Code: WDJB-MJHT. Check the Mac shown, then press Approve; the CLI cannot approve for you.
+                Open the link in a browser on any device.
+                Earnings for jobs on this Mac go to the account that approves it.
+
+
+                Your account is on the waitlist: Darkbloom reviews new Mac owners before their first Mac joins.
+
+            """
+        #expect(runs[0].hasSuffix(approval + """
+                You can close this window: this Mac keeps waiting, also across restarts, and enrolls by itself \
+            once your account is approved. `darkbloom sandbox status` shows where it is.
+
+              ✗ Waiting for approval (stopped)
+
+            Setup stopped. This Mac keeps waiting for approval in the background, also across restarts, and enrolls \
+            by itself once approved; `darkbloom sandbox status` shows where it is.
+            exit 130
+
+            """))
+        #expect(runs[1].hasSuffix(approval + """
+                Leave this running, or press Ctrl-C and run `darkbloom sandbox setup` again later; this Mac enrolls \
+            once your account is approved.
+
+              ✗ Waiting for approval (stopped)
+
+            Setup stopped. An enrollment waiting for approval goes on; run `darkbloom sandbox setup` again to follow it.
+            exit 130
 
             """))
     }

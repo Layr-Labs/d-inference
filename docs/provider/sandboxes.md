@@ -1,6 +1,6 @@
 # Host Darkbloom Sandbox CI jobs
 
-> Last updated: 2026-10-30
+> Last updated: 2026-11-02
 
 How to let this Mac run Darkbloom Sandbox jobs, approved GitHub Actions jobs in
 Linux and macOS virtual machines, beside the inference provider: set it up,
@@ -87,9 +87,13 @@ state, continues an unfinished setup or repairs the add-on.
 - **`Free up N GiB of disk for one Linux job`.** No job fits in the free disk.
   The disk rules are under [Prerequisites](#prerequisites). Free the space it
   names, then run setup again.
-- **`On the waitlist`.** Darkbloom has not approved your account yet. Press
-  Ctrl-C if you like; the Mac enrolls once it is approved, and `setup` follows
-  the waiting enrollment when you run it again.
+- **`On the waitlist`.** Darkbloom has not approved your account yet. With
+  add-on 1.1.2 and later you can close the window: the Mac keeps waiting, also
+  across restarts, and enrolls by itself once your account is approved;
+  `darkbloom sandbox status` shows where it is. With an earlier add-on, press
+  Ctrl-C if you like: the Mac enrolls once it is approved, and `setup` follows
+  the waiting enrollment when you run it again. A restart ends that wait; run
+  setup again after one.
 - **`[WARN] Network`, `Power` or `Sleep`.** These do not block setup, but a
   sleeping, unplugged or dropped Mac loses its running jobs, and lost jobs are
   not paid. Follow the `↳ fix:` line.

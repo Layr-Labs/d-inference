@@ -275,8 +275,9 @@ struct SandboxSetupFlow {
         print("")
         let exit: SandboxChildProcess.Exit
         var summary: SandboxInstallerEvent?
+        var waitsInBackground = false
         if jsonProgress {
-            (exit, summary) = try await runWithProgress(arguments, directory: directory)
+            (exit, summary, waitsInBackground) = try await runWithProgress(arguments, directory: directory)
         } else {
             print("This version of the installer does not report its steps to the CLI; its own output follows.")
             if options.noBrowser || options.waitReady { print("It does not support --no-browser or --wait-ready.") }
@@ -285,7 +286,7 @@ struct SandboxSetupFlow {
         }
         guard exit.succeeded else {
             print("")
-            print(Self.advice(exit))
+            print(Self.advice(exit, waitsInBackground: waitsInBackground))
             throw ExitCode(exit.interrupted ? 130 : exit.signal == nil && exit.status != 0 ? exit.status : 1)
         }
         printSummary(installer: summary)
@@ -293,11 +294,17 @@ struct SandboxSetupFlow {
 
     static let shell = URL(fileURLWithPath: "/bin/sh")
 
-    /// What a failed or stopped installer means for the owner, by its exit status.
-    static func advice(_ exit: SandboxChildProcess.Exit) -> String {
+    /// What a failed or stopped installer means for the owner, by its exit
+    /// status. A stop while this Mac waits for approval in the background
+    /// (`SandboxSetupRenderer.waitsInBackground`) says that the wait goes on.
+    static func advice(_ exit: SandboxChildProcess.Exit, waitsInBackground: Bool) -> String {
         let rerun = "`\(Sandbox.cli) sandbox setup`"
         if exit.interrupted {
-            return "Setup stopped. An enrollment waiting for approval goes on; run \(rerun) again to follow it."
+            guard waitsInBackground else {
+                return "Setup stopped. An enrollment waiting for approval goes on; run \(rerun) again to follow it."
+            }
+            return "Setup stopped. This Mac keeps waiting for approval in the background, also across restarts, "
+                + "and enrolls by itself once approved; `\(Sandbox.cli) sandbox status` shows where it is."
         }
         switch exit.signal == nil ? exit.status : 1 {
         case 2: return "This Mac cannot host Darkbloom Sandbox as it is; see why above."
@@ -309,8 +316,11 @@ struct SandboxSetupFlow {
         }
     }
 
+    /// Runs a `--json-progress` installer and renders its events. Returns its
+    /// exit, its `summary` event and whether this Mac waits for approval in
+    /// the background.
     private func runWithProgress(_ arguments: [String], directory: URL) async throws
-        -> (SandboxChildProcess.Exit, SandboxInstallerEvent?)
+        -> (exit: SandboxChildProcess.Exit, summary: SandboxInstallerEvent?, waitsInBackground: Bool)
     {
         let renderer = SandboxSetupRenderer(interactive: terminal, color: color)
         let errors = SandboxOutputTail()
@@ -338,7 +348,7 @@ struct SandboxSetupFlow {
             // The installer writes its error to stderr as `error: …` too; the renderer drops repeats.
             renderer.finish(.failed(status: exit.status, errors: errors.lastLines(5)))
         }
-        return (exit, renderer.summary)
+        return (exit, renderer.summary, renderer.waitsInBackground)
     }
 
     // MARK: - Summary

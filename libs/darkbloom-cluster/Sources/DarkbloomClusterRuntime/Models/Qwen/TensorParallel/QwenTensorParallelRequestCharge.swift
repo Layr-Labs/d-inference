@@ -14,13 +14,14 @@ import MLX
 /// assistant `QwenTensorParallelBatchMTPBudget`), at the request's context
 /// instead of the memory plan's:
 /// - the lane's own state: its KV pages (this rank's heads, BF16), the
-///   replacement pages, recurrent state, prefix capture and, with the
-///   assistant, its history and gathers;
+///   replacement pages, recurrent state, its own prompt's prefix capture
+///   (`QwenTensorParallelBatchPrefixBudget`) and, with the assistant, its
+///   history and gathers;
 /// - the workspaces every lane shares, at the longest context any held
 ///   request has and never below LOAD's: the full-history gather bank of one
 ///   prompt frame (the batch driver runs at most one a step), the frame's
 ///   attention scores and the decode and verify transients grow with the
-///   context; the pool slack, logits, casts and prefix banks do not.
+///   context; the pool slack, logits and casts do not.
 ///
 /// The pages themselves grow with the request (`CBv2OwnedRequestState.growReservation`);
 /// the charge is the whole request's, admitted once at reservation and held
@@ -57,10 +58,18 @@ struct QwenTensorParallelRequestCharge {
         } else {
             let quote = try QwenTensorParallelBatchBudget.derive(geometry: geometry, plan: plan, tensors: tensors,
                 maximumTokens: maximumTokens, chunkSize: chunkSize, lanes: lanes, paged: paged, rank: rank,
-                allocationBound: allocationBound)
+                promptTokens: promptTokens, allocationBound: allocationBound)
             lane = quote.perLaneStateBytes; shared = quote.sharedBytesExcludingCollectives
         }
         return .init(laneBytes: lane, sharedBytes: max(loadSharedBytes, shared))
+    }
+
+    /// Whether a request lies within the memory plan LOAD quoted every lane
+    /// at, whose per-lane quote its lane must then fit: its context and its
+    /// prompt, since its prefix capture grows with its prompt. Any other
+    /// request is charged at its own context and prompt alone.
+    static func withinMemoryPlan(maximumTokens: Int, promptTokens: Int, memory: QwenLayerStageGenerationProfile) -> Bool {
+        maximumTokens <= memory.maximumContextTokens && promptTokens <= memory.maximumPromptTokens
     }
 
     /// The longest request of `contextTokens` within `profile`: its longest

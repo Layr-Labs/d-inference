@@ -6106,17 +6106,21 @@ and verify transients. The shared charge is never below LOAD's. Each rank's live
 gate (`reserveLane`, with the same OS and allocator checks) admits the whole
 charge or refuses that request alone. The endpoint then answers 503 with the
 context the pair serves now, and the pair keeps serving. A request within the
-memory plan is charged as before and must still fit LOAD's per-lane quote.
+memory plan, at most its context and its prompt, must still fit LOAD's per-lane
+quote. A longer prompt within that context is charged at its own prompt, as a
+longer context is, because each request's prefix capture grows with its prompt
+(`QwenTensorParallelRequestCharge.withinMemoryPlan`).
 
 READY's request capacity is the larger of LOAD's quote and one request at
 262,144 tokens. READY, and every keep-warm answer while no lane is held, carry
 the longest context the reservation gate admits now (`servingContextTokens`,
 computed with the gate's own arithmetic). The pair refuses a longer request
 before either rank is asked. With the registered inventory on an M5 Ultra
-(256 GB), eight lanes with the depth-3 assistant reserve 48.4 GB a rank at LOAD
-(4.6 GB a lane). A 262,144-token request beside seven standard ones is charged
-69.4 GB a rank (a 13.9 GB lane and 22.8 GB of shared workspaces), beside at most
-16.3 GB of weights (`QwenTensorParallelNativeContextTests`).
+(256 GB), eight lanes with the depth-3 assistant reserve 60.4 GB a rank at LOAD
+(6.2 GB a lane). A 262,144-token request beside seven standard ones is charged
+89.0 GB a rank (a 23.1 GB lane, including its own prompt's prefix capture, and
+22.4 GB of shared workspaces), beside at most 16.3 GB of weights
+(`QwenTensorParallelNativeContextTests`).
 
 The pipeline and hand-off modes stay at the memory plan. Their LOAD gates size
 it, and they refuse a longer reservation (`requireWithinMemoryProfile`). Provider
@@ -6155,6 +6159,25 @@ Sources: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Ten
 (`requireWithinMemoryProfile`) and
 `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/State/CBv2OwnedRequestState.swift`
 (`growReservation`).
+
+### Qwen27 tensor-parallel prompt-prefix depth
+
+A plain Qwen tensor-parallel lane keeps prompt-prefix boundaries to its request's
+context on its own 512-token chunk grid, not to a fixed 4,096 tokens: the
+deepest whole chunk before the final token, a boundary 64 tokens before the
+prompt end for the next turn, and one Mac's 4,096-token stripe boundaries for
+a shared system prompt (`QwenTensorParallelBatchPrefixBudget`, policy
+`qwen-tp-batch-prefix-depth-v2`, which the load agreement binds). A repeated
+33K-token prompt restores 32,768 tokens on both ranks, as one Mac reuses. A
+request restored from memory or a native SSD record computes exactly what a
+cold one computes on the same grid; the SSD tier's default `balanced` records
+keep their older rows approximate.
+The mechanism, the parity cases and the SSD records are in
+[the Qwen27 TP prefixes](prefix-cache.md#qwen27-tp-prefix-ssd-tier) and the
+section before it; the memory each request and LOAD charge is in
+[Qwen27 TP batch prefix ownership](hardware-support.md#qwen27-tp-batch-prefix-ownership).
+The assistant's lanes keep one boundary of at most 4,096 tokens
+([assistant prefix ownership](prefix-cache.md#qwen27-tp-assistant-prefix-ownership)).
 
 ### Qwen27 cluster media ingress ownership
 

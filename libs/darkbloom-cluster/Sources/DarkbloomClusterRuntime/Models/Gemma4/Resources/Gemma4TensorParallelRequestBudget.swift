@@ -8,25 +8,28 @@ import Foundation
 ///
 /// Per request (`requestBytes`, what each reservation or lane charges at its
 /// own context): this rank's own KV heads of every layer (`Gemma4StateBudget`
-/// at two ranks), one prompt chunk's attention transient over its own 8 query
-/// heads (`Gemma4PrefillTransient`), the chunk's FP32 partials (the attention
-/// row; the dense row and the 8 selected experts' rows, and the packed copy
-/// of them the collective carries), three float32 rows of the whole
-/// vocabulary (the row a sampled step gathers, the split head's half, the
-/// top-k) and its prompt-prefix capture at its deepest boundary
-/// (`prefixCaptureBytes`: its own heads' full rows for its prompt, the
-/// profile's longest in the LOAD quote, and one sliding window of every
-/// sliding layer).
+/// at two ranks), the attention transient over its own 8 query heads
+/// (`Gemma4PrefillTransient`), the FP32 partials (the attention row; the
+/// dense row and the 8 selected experts' rows, and the packed copy of them
+/// the collective carries), three float32 rows of the whole vocabulary (the
+/// row a sampled step gathers, the split head's half, the top-k) and its
+/// prompt-prefix capture at its deepest boundary (`prefixCaptureBytes`: its
+/// own heads' full rows for its prompt, the profile's longest in the LOAD
+/// quote, and one sliding window of every sliding layer).
+///
+/// The transient and the partials are priced at one prompt chunk, or at one
+/// decode row on every layer where that is more: a decode step is submitted
+/// layer by layer (`Gemma4TensorParallelModel.decodeLayerStride`) in
+/// 100-operation command buffers (`Gemma4TensorParallelModel.decodeCommandBuffers`),
+/// so several layers' temporaries are alive at once. Only requests shorter
+/// than a step's layers pay more; the LOAD quote's 512-token chunk covers a step.
 ///
 /// Once per rank (`rankBytes`): the conservative activation floor until
 /// hardware measures one for a Gemma tensor-parallel rank (5.5 GiB, the
 /// provider's default reserve, as `GLM5NextServingResources` charges GLM's),
 /// the freed-buffer cache the ready rank keeps and eight sealed frames of the
-/// largest collective (`ClusterTensorParallelRequestAllowance`). The decode
-/// steps' 100-operation command buffers
-/// (`Gemma4TensorParallelModel.decodeCommandBuffers`) bound only how a step
-/// is submitted, and no prefill is micro-batched: neither adds a buffer
-/// beyond these.
+/// largest collective (`ClusterTensorParallelRequestAllowance`). No prefill is
+/// micro-batched, so prefill adds no buffer beyond these.
 ///
 /// The prompt-prefix memory tier is not charged: as the pipeline's, its
 /// budget is half the room the load measures beside this charge
@@ -102,13 +105,15 @@ struct Gemma4TensorParallelRequestBudget: Equatable {
         let state = try sum([bound(b.fullKVBytes, count: 2 * b.fullLayers), bound(b.ringKVBytes, count: 2 * b.slidingLayers),
             bound(b.slidingViewKVBytes, count: 2 * b.slidingLayers), bound(4, count: layers),
             bound(b.largestSingleHostStateComponentBytes), bound(b.boundaryBytes, count: 2)])
-        let transientLogical = try Gemma4PrefillTransient.bytes(
-            fullAttention: (0..<G.layerCount).map(G.isFullAttention(globalLayerIndex:)),
-            queryHeads: G.queryHeads / ranks, chunkTokens: chunk, contextTokens: contextTokens)
-        let row = try product([chunk, G.hiddenSize, 4])
+        let kinds = (0..<G.layerCount).map(G.isFullAttention(globalLayerIndex:))
+        let transientLogical = try Gemma4PrefillTransient.bytes(fullAttention: kinds, queryHeads: G.queryHeads / ranks,
+            chunkTokens: chunk, contextTokens: contextTokens, decodeRows: 1, decodeFullAttention: kinds)
+        // A chunk's rows, or a decode step's one row on every layer.
+        let rows = max(chunk, G.layerCount)
+        let row = try product([rows, G.hiddenSize, 4])
         // The attention partial, the dense partial, the selected experts' rows and their packed copy.
         let partials = try sum([bound(row, count: 2), bound(product([row, G.expertsPerToken])),
-                                bound(product([chunk, maximumPartialBytesPerToken]))])
+                                bound(product([rows, maximumPartialBytesPerToken]))])
         let logits = try bound(product([G.vocabularySize, 4]), count: 3)
         let payload = try product([chunk, maximumPartialBytesPerToken])
         let frame = try sum([payload, QwenTensorParallelSealCodec.frameOverhead])

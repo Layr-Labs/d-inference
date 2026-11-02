@@ -820,7 +820,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                         mediaKind: visionPrepared.mediaKind,
                         stopStringScope: ReasoningStopScope.scope(
                             reasoningParser: visionRequest.reasoningParser,
-                            reasoningPrefix: reasoningPrefix),
+                            reasoningPrefix: reasoningPrefix,
+                            parsesToolCalls: toolHandler != nil),
                         donationDemand: donationDemand,
                         firstContentDeadline: firstContentDeadline,
                         profile: profile,
@@ -1041,7 +1042,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     usageSignal: requestUsage,
                     tokenConstraint: tokenConstraint,
                     stopStringScope: ReasoningStopScope.scope(
-                        reasoningParser: request.reasoningParser, reasoningPrefix: reasoningPrefix),
+                        reasoningParser: request.reasoningParser, reasoningPrefix: reasoningPrefix,
+                        parsesToolCalls: toolHandler != nil),
                     donationDemand: donationDemand,
                     firstContentDeadline: firstContentDeadline,
                     profile: profile,
@@ -1424,7 +1426,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 logitBias:engineV2Sampling?.logitBias,seed:engineV2Sampling?.seed),
             requestId:id,cacheScope:cacheScope,cacheEnabled:false,usageSignal:requestUsage,
             multimodal:native.request.multimodal,
-            stopStringScope:ReasoningStopScope.scope(reasoningParser:request.reasoningParser,reasoningPrefix:nil),
+            stopStringScope:ReasoningStopScope.scope(reasoningParser:request.reasoningParser,reasoningPrefix:nil,parsesToolCalls:toolHandler != nil),
             firstContentDeadline:firstContentDeadline,profile:profile,
             measurementPurpose:measurementPurpose)
         // Install the ONE existing router/forwarder before any post-submit

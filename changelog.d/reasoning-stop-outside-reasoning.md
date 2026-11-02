@@ -7,6 +7,12 @@
   appeared while the model reasoned (for example `"."` or `"\n\n"`) ended the
   request before any answer: `finish_reason` `stop`, reasoning only, empty
   content.
-- Tool-call frames are never cut either, and whitespace before the answer's
-  first character (the blank line after `</think>`) cannot complete a stop
-  sequence on its own.
+- With tools declared, tool-call frames are not cut either, except a frame
+  whose arguments quote its own closing tag, or a bare `<function=…>` frame
+  written without its wrapper. When a request has no tool handler (no declared
+  tools, or a media request on a family without native media tools), a literal
+  tool tag in an answer is text the client receives, and stops still apply to it.
+  Whitespace before the answer's first character (the blank line after
+  `</think>`) cannot complete a stop sequence on its own.
+- A stop sequence that names a marker no longer fires on it: `</think>`, or
+  `<tool_call>` with tools declared.

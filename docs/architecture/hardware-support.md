@@ -1,6 +1,6 @@
 # Hardware support and the provider memory model
 
-> Last updated: 2026-10-31
+> Last updated: 2026-11-02
 
 What hardware the provider runs on and how it decides, in bytes, whether a
 model may load and how much KV cache each resident model may use. Read this to
@@ -1151,7 +1151,12 @@ BF16 page bank and partial-page replacement, and one full-history gather bank
 once for the owner: decode steps and verify windows attend pages in place, and
 the driver runs at most one prompt frame per step, so only a prompt frame
 gathers a history (`QwenTensorParallelBatchMemoryTests.fullHistoryGatherIsOnePromptFramesTransient`
-measures both). Segment slack and allocator overhead stay charged. Collective scratch prices complete
+measures both). A prompt step that merges frames
+([prompt wavefront](inference.md#qwen-tensor-parallel-prompt-wavefront)) adds
+its further frames in flight once to the shared maximum
+(`QwenTensorParallelPromptWavefront.inFlightBytes`: 367,001,600 bytes on a 27B
+rank at 512-token frames; `QwenTensorParallelPromptWavefrontTests.mergedStepTemporariesStayWithinTheirCharge`
+measures a merged step against it). Segment slack and allocator overhead stay charged. Collective scratch prices complete
 sealed frames, including authentication overhead, through the existing request
 allowance. Media and assistant charges are not hidden in this text quote.
 

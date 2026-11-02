@@ -63,8 +63,9 @@ never less than one prompt frame's attention transient
 (`QwenResidentPrefillTransient`, `Gemma4PrefillTransient`,
 `GPTOSSRequestStateBudget`). The LOAD quotes and activation floors are
 unchanged; only requests whose prompt frames are shorter than their decode rows
-are charged more. GLM's request charge is already its
-profile's whole envelope. Attention-kernel partials beyond the priced rows are
+are charged more. GLM's request charge already prices three copies of twice its
+context on every DSA layer of a stage, well above what a decode step keeps and
+reads on every layer at once. Attention-kernel partials beyond the priced rows are
 not charged separately; see
 [pipeline decode command buffers](inference.md#pipeline-decode-command-buffers).
 

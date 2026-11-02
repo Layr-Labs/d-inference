@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-11-01
+> Last updated: 2026-11-02
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -4098,7 +4098,7 @@ prompt frame's:
 | Qwen catalog, Nemotron | `QwenResidentPrefillTransient.bytes` (`decodeRows`), from `QwenResidentRequestAllowance.derive` | One a layer, or the verify window's `depth + 1` (`LayerStageDecodeShape`), on the rank's stage; on every layer on a phase split's decoding rank; none on its other rank, which hands its prompt state over |
 | Gemma 4 | `Gemma4PrefillTransient.bytes` (`decodeRows`, `decodeLayers`) | One on each layer of the stage, sliding layers over their window |
 | GPT-OSS | `GPTOSSRequestStateBudget` workspace | One a full-attention layer |
-| GLM | Unchanged: every request is charged the profile's whole envelope at its largest chunk (`GLM5NextResidentResourceEnvelope.budget`) | None added |
+| GLM | Unchanged (`GLM5NextRequestStateBudget.estimate`): every DSA layer of the stage is charged three float32 copies of twice the context the request is charged for, and every request the conservative 5.5 GiB workspace | None added: a step's pages and reads on every layer at once stay well inside that charge (below) |
 
 The LOAD quotes are unchanged: they are computed at the largest prompt chunk,
 512 rows, and a decode step prices at most 80 rows (5 on each of 16 attending
@@ -4118,12 +4118,24 @@ and Ultra GPUs at 1,024 keys or more keeps float32 partials that exceed a score
 row by at most about 4 MiB a layer (`sdpa_vector_2pass` in
 `libs/mlx-swift/Source/Cmlx/mlx/mlx/backend/metal/scaled_dot_product_attention.cpp`).
 The excess over the priced rows is not charged; [INFERENCE] it is at most tens
-of MiB a request, times the lanes. GLM's graph workspace is
-authenticated evidence (`GLM5NextRequestStateBudget.WorkspaceEvidence`); a
-decode step on all of a stage's layers holds fewer rows than the envelope's
-prompt frame on one layer, but the evidence does not say how it was measured.
-The decode speed effect and peak memory on registered models are not measured
-yet.
+of MiB a request, times the lanes.
+
+GLM needs no decode term. Each DSA layer of a GLM stage is already charged
+three float32 copies of twice its context
+(`GLM5NextRequestStateBudget.HistoryBound.geometric`: 18,438 bytes a token at
+the registered widths). A decode step keeps that layer's history in bfloat16
+pages (1,537 bytes a token) and reads at most one gathered copy of it, only the
+index planes (513 bytes a token) once the history passes 4,102 tokens, so every
+layer's reads alive at once stay well inside the term at any context. The rest
+of a step, mostly each linear-attention layer's next 4.4 MB state, is inside the
+conservative 5.5 GiB workspace every request is charged
+(`GLM5NextServingResources.workspaceNativeBytes`). On a synthetic stage at the
+registered widths (three DSA and three linear-attention layers, bfloat16
+pages), a decode step held 16 MB above its baseline at a 20-token context and
+136 MB at 65,520 tokens of history, the same under these limits as with the
+whole step in one buffer (131 MB under the rank's guard), against 6.0 and
+11.1 GB charged at those contexts. The decode speed effect and peak memory on
+registered models are not measured yet.
 
 ## GLM cluster prefill bounds
 

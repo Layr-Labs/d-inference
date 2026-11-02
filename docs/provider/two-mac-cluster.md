@@ -533,33 +533,54 @@ happens by itself; `darkbloom cluster` says which applies to each Mac.
 
 ## Updating Darkbloom on the pair
 
-The Macs of a pair do not update by themselves. The cluster service runs with
-automatic updates off, its parts run no updater, and the single-Mac provider,
-whose updater keeps one Mac current, does not run beside the cluster.
-Automatic updates for a pair are a follow-up. Until then, update by hand:
+The Macs of a pair update themselves together, as a single Mac does, while
+`auto_update` is on (the default) and `DARKBLOOM_NO_UPDATE_CHECK` is not set on
+either Mac. Nothing needs to be run. Every 30 minutes, at the pair's update slot
+(a time fixed by the pairing's cluster ID, the same on both Macs), each Mac's
+cluster service asks the coordinator for its latest release:
 
-1. On each Mac, run:
+1. Each Mac downloads, verifies and stages the release while the pair serves.
+2. Once both Macs have it, the pair stops taking new requests. The Mac that
+   serves the pair finishes the requests it accepted, within 120 seconds, and
+   never cancels one.
+3. Both Macs install the release and restart their cluster services from it.
+4. The leader plans the same model again for the new release once both Macs
+   answer with it, and the pair registers again under that release's cluster
+   approval. The log says `Darkbloom changed on both Macs: setting the cluster
+   up again for <model>`.
 
-   ```bash
-   darkbloom update
-   ```
+A pair still running a request after 120 seconds takes requests again and tries
+at the next slot. A release that one Mac cannot download or verify is installed
+on neither Mac; both try again at the next slot. Until a new
+release's cluster service has stayed healthy for 10 minutes, three of its starts
+that end by themselves bring back the previous release and quarantine the new
+one, as the watchdog does for a single Mac. A Mac never restarts into a new
+release that does not start at all (it checks before the restart): it brings
+back the previous release at once and quarantines the new one. How the cluster
+service does this is in
+[the pair's coordinated update](cluster-always-on.md#the-pairs-coordinated-update).
 
-   It installs the release. Its last line, "Restart the provider for the new
-   version to take effect.", does not apply here: no single-Mac provider runs on
-   a pair Mac.
-2. Wait. The leader compares each Mac's installed cluster worker with the saved
-   setup every minute while the cluster serves. When one changed, it stops both
-   parts, plans the same model again and serves it from the new release
-   ("Updating the cluster setup after a Darkbloom update."). Its log,
-   `~/.darkbloom/cluster-setup/service.log`, says
-   `Darkbloom changed on the other Mac: setting the cluster up again for <model>`
-   (or this Mac, or both Macs). An update of the second Mac sets it up once more.
-   While a Mac serves, these checks and any plan made then use the speed it
-   measured while idle and never run a GPU benchmark beside the model
-   ([device profile](../architecture/inference.md#automatic-local-cluster-batching)).
-3. Log out and back in on each Mac, or restart it. The cluster service itself
-   keeps running the release it started with until it starts again, as it does
-   at login.
+To update at once, run on each Mac:
+
+```bash
+darkbloom update
+```
+
+It installs the release, then asks this Mac's cluster service to restart into it
+together with the other Mac, after the pair drained, and prints its progress
+(`drained for v<version>; waiting for the other Mac`). Both Macs restart once both
+have the release. The Mac where it ran first waits up to 15 minutes, while it
+serves, for the other Mac: for its `darkbloom update`, or for its next slot when
+its automatic updates are on.
+No log-out is needed. A cluster service started by an earlier release cannot do
+this: log out and back in on both Macs once both have the release.
+
+While a Mac serves, the re-plan uses the speed it measured while idle and never
+runs a GPU benchmark beside the model
+([device profile](../architecture/inference.md#automatic-local-cluster-batching)).
+A pair that serves on the leader's local API, or a Mac that serves alone, is not
+drained for an update yet: its update waits while it serves (the log says
+`this Mac's part does not drain for an update`).
 
 ## When something is in the way
 
@@ -628,7 +649,8 @@ and they must match.
 
 ## Not yet in this build
 
-- A pair does not update itself: run `darkbloom update` on both Macs
+- A pair that serves on the leader's local API, or a Mac that serves alone,
+  does not update while it serves
   ([updating Darkbloom on the pair](#updating-darkbloom-on-the-pair)).
 - The login agent and macOS's one Local Network approval need the signed
   Darkbloom.app ([always on](cluster-always-on.md)).

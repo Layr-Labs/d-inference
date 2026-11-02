@@ -11,5 +11,5 @@
   than a stage's full-attention layers times the decode rows (32 tokens at most)
   are charged slightly more.
 - The planner's hardware prior now counts MiMo's routed experts at the 8 of 256
-  a token uses: 10.77 GB read per decode step instead of 166.6 GB. MiMo has no
-  tensor-parallel plan yet, so MiMo placements are unchanged.
+  a token uses: 10.77 GB read per decode step instead of 166.6 GB. The prior
+  prices only tensor parallel, so MiMo's pipeline plans are unchanged.

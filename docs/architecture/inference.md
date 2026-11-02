@@ -5747,8 +5747,7 @@ The router and its score correction are read on every step. The layout then
 carries `routedExperts`, and the hardware prior
 (`ClusterHardwarePrior.decodeBytesPerToken`) counts 10,767,036,288 bytes for one
 decode step instead of every expert's 166,600,109,952. The prior prices tensor
-parallel only. MiMo has no tensor-parallel plan, so its pipeline plans are
-unchanged.
+parallel only, so MiMo's pipeline plans are unchanged.
 
 ### Gemma paged prefix restoration
 

@@ -1884,6 +1884,13 @@ threats:
           against the pinned designated requirement before any restore.
         status: implemented
       - description: >
+          The operator rollback (`darkbloom update --rollback`) is the same
+          journaled rollback under the same update lease, with the same
+          predecessor verification and the same single-slot exact-version
+          quarantine; it also refuses an installed bundle that differs from
+          the recorded release and never rolls back one Mac of a cluster pair.
+        status: implemented
+      - description: >
           Bounded watchdog network I/O (URLSession request/resource timeouts)
           plus a safe-point per-tick budget so a stalled download or wedged
           tick cannot hold the cross-process update lock forever; the budget

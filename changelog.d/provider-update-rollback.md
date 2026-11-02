@@ -1,0 +1,7 @@
+### Roll a Mac back to its previous release
+
+- `darkbloom update --rollback` restores the release a Mac ran before its last update. When the updater installs a release, it keeps the signed release it replaces; the rollback puts that release back, also after the new one has served for 10 minutes and was promoted.
+- It shows the installed and restored versions and asks `Roll back to vX? [y/N]` before changing anything (`--yes` skips the question). The running provider finishes its accepted requests (`--timeout`, `--force` as for `darkbloom update`), the kept release replaces the installed one in the watchdog's journaled swap under the update lease, and the provider restarts on it. It contacts no coordinator.
+- The rolled-back release is quarantined on that Mac: the provider's 30-minute update check, the startup check and the watchdog do not reinstall it, and the next newer release installs normally, so automatic updates can stay on. `darkbloom update --override-quarantine` installs it again on request.
+- It refuses and changes nothing on a Mac that serves in a `darkbloom cluster` pair, while another update or recovery runs, when no earlier release is kept or the kept one is already installed, when the installed bundle is not the release the updater recorded, and when the kept release fails its hash or signature check.
+- Only one earlier release is kept. A Mac rolls back to the release it ran before its last update, not further.

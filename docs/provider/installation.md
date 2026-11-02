@@ -1,6 +1,6 @@
 # Install, update, and uninstall the provider
 
-> Last updated: 2026-10-23
+> Last updated: 2026-11-02
 
 How to put the `darkbloom` CLI on an Apple Silicon Mac with `scripts/install.sh`,
 what the script verifies before it touches an existing install, how the binary
@@ -215,6 +215,44 @@ in [runtime constants](./cli-reference.md#runtime-constants)). Only
 that exact version is blocked; a newer release installs normally.
 `darkbloom update --override-quarantine` reinstalls it anyway, and
 `darkbloom doctor` reports the quarantine under `up to date`.
+
+### Roll back to the previous release
+
+When the updater installs a release, it keeps the signed release it replaced
+in `~/.darkbloom/recovery/predecessor/` (`provider-swift/Sources/ProviderCore/Update/UpdateInstallLayout.swift`,
+`snapshotLiveAsPredecessor`). A release that runs but regresses can be rolled
+back to it on one Mac, with automatic updates left on:
+
+1. On a Mac that serves in a `darkbloom cluster` pair, first stop the pair:
+   `darkbloom cluster stop` (or `darkbloom stop` for a cluster-member provider
+   service). Roll back both Macs, then start the pair again with
+   `darkbloom cluster`. The command refuses while the pair serves.
+2. Run the rollback and answer `y`:
+
+   ```bash
+   darkbloom update --rollback
+   ```
+
+   It prints the installed and restored versions first and changes nothing
+   until you confirm (`--yes` skips the question). The running provider
+   finishes its accepted requests (`--timeout`, as for `darkbloom update`),
+   the kept release replaces the installed one in one journaled swap, and the
+   provider restarts on it. The installed release is quarantined: the
+   provider's own checks, the startup check and the watchdog skip it, and the
+   next newer release installs normally.
+
+Only one earlier release is kept, so a second rollback is refused. To install
+the rolled-back release again, run `darkbloom update --override-quarantine`.
+
+Verify:
+
+```bash
+darkbloom --version                 # the restored version
+darkbloom update --check-only       # "Latest release vX is quarantined on this machine."
+```
+
+Refusals and flags are listed in the
+[`darkbloom update` reference](./cli-reference.md#darkbloom-update).
 
 If the watchdog exits after starting a candidate but before recording the
 launch receipt, its next health observations reconcile the saved intent with

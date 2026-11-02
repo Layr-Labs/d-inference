@@ -37,9 +37,24 @@ struct Update: AsyncParsableCommand {
 
     @Flag(
         name: .long,
-        help: "Explicitly reinstall a locally quarantined failed version."
+        help: "Explicitly reinstall a locally quarantined version (failed starts or --rollback)."
     )
     var overrideQuarantine = false
+
+    @Flag(help: "Restore the release this Mac ran before its last update and quarantine the installed one.")
+    var rollback = false
+
+    @Flag(name: .shortAndLong, help: "With --rollback: don't ask for confirmation.")
+    var yes = false
+
+    func validate() throws {
+        if rollback, checkOnly || overrideQuarantine || coordinator != nil {
+            throw ValidationError("--rollback cannot be combined with --check-only, --override-quarantine or --coordinator.")
+        }
+        if yes, !rollback {
+            throw ValidationError("--yes applies only to --rollback.")
+        }
+    }
 
     mutating func run() async throws {
         let config = try loadUpdateConfig(configPath: configOptions.config)
@@ -50,6 +65,15 @@ struct Update: AsyncParsableCommand {
 
         let coordinatorURL = coordinator ?? config.coordinator.url
         let updater = SelfUpdater(coordinatorBaseURL: coordinatorURL)
+
+        if rollback {
+            try await UpdateRollback(
+                updater: updater,
+                host: .live(drain: drain, configPath: configOptions.config),
+                say: { print($0) }
+            ).run(skipConfirmation: yes)
+            return
+        }
 
         if checkOnly {
             let result = await updater.checkForUpdate(
@@ -117,7 +141,7 @@ struct Update: AsyncParsableCommand {
             }
 
         case .quarantined(let version, let reason):
-            printError("v\(version) is quarantined after failed starts: \(reason)")
+            printError("v\(version) is quarantined on this Mac: \(reason)")
             printError("A strictly newer release will install automatically.")
             printError("Use --override-quarantine for an explicit operator retry.")
             throw ExitCode.failure

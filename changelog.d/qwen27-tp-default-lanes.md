@@ -1,19 +1,20 @@
-### Qwen tensor-parallel pairs serve concurrent requests from their first load
+### Qwen tensor-parallel pairs serve up to 8 requests at once, sized to memory
 
-- The guided cluster setup now saves a width for a Qwen tensor-parallel pair:
-  the widest of 8, 6, 4 and 2 concurrent requests that both Macs admit now under
-  that width's complete load quote. The pair serves that many requests at once
-  from its first load. Before, it served one: a local pair widened only after a
-  burst, through a drained reload that the burst waited for, and a pair served
-  through Darkbloom never widened.
-- On two idle Macs, Qwen3.8-27B without the speculative assistant saves 8 from
-  48 GB a Mac (4 at 32 or 36 GB). With the assistant, which serves local
-  clusters only, it saves 8 from 96 GB a Mac and less on smaller Macs. When no
-  width fits, the setup serves one request at a time as before.
-- Memory safety is unchanged: both Macs still reserve the saved width's whole
-  quote at load and admit each request alone. A local pair planned narrower
-  still widens under queued demand; a pair saved at 8 is never reloaded for it.
-- A pair served through Darkbloom keeps its saved width beside its approval. No
-  approval, registration or committed-start digest changes. Existing setups keep
-  their saved bytes and their one-request width until they are planned again,
-  as after an update.
+- `darkbloom cluster` now sets how many requests a Qwen tensor-parallel pair
+  serves at once: 8, 6, 4 or 2, the most that both Macs' memory holds now with
+  the full load reservation for that many. The pair serves them from its first
+  load. Before, it served one at a time: a local pair widened only after a
+  burst, through a reload the burst waited for, and a pair serving Darkbloom
+  traffic never widened.
+- On two idle Macs, Qwen3.8-27B serves 8 at once from 48 GB a Mac without the
+  speculative assistant (4 at 32 or 36 GB), and 8 from 96 GB a Mac with it
+  (local clusters only); smaller Macs serve fewer. Two M5 Ultras serve 8 either
+  way. When not even 2 fit, the pair serves one request at a time, as before.
+- Memory safety is unchanged: both Macs reserve that many requests' full memory
+  when the model loads and admit each request alone. A local pair set up
+  narrower still widens when requests queue; a pair set up for 8 is never
+  reloaded for it.
+- Existing setups keep serving one request at a time until they are planned
+  again, as after an update. A pair serving Darkbloom traffic keeps its width
+  beside its approval; no approval, registration or committed-start digest
+  changes.

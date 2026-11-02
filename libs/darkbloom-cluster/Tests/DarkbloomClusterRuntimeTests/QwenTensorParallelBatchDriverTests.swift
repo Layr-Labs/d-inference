@@ -97,6 +97,8 @@ struct QwenTensorParallelBatchDriverTests {
         let rank: Int
         var sessions: [UUID: HistoryBatchTestSession] = [:]
         var maximumWidth = 0, failCleanup = Set<UUID>()
+        /// Requests opened as assisted rows, and each rectangle whose selection sum carried control words.
+        var assisted = Set<UUID>(), folded: [[UUID]] = []
         var afterDecode: ([UUID]) throws -> Void = { _ in }
         var preparing: (UUID) throws -> Void = { _ in }
         init(pair: Pair, rank: Int) { self.pair = pair; self.rank = rank }
@@ -110,6 +112,7 @@ struct QwenTensorParallelBatchDriverTests {
             try preparing(reservation.request.requestID)
             let session = HistoryBatchTestSession(reservation.request)
             session.failCleanup = failCleanup.contains(reservation.request.requestID)
+            session.plainSelection = !assisted.contains(reservation.request.requestID)
             sessions[reservation.request.requestID] = session; return session
         }
         func prefill(_ lane: HistoryBatchTestSession, frame: QwenLayerStageFrame, check: () throws -> Void) throws -> Int? {
@@ -123,6 +126,7 @@ struct QwenTensorParallelBatchDriverTests {
             try afterDecode(lanes.map { $0.request.requestID })
             let selected = lanes.map { HistoryBatchTestSession.next($0.history) }
             guard let words = try control() else { return (selected, nil) }
+            folded.append(lanes.map { $0.request.requestID })
             // The selection's own sum: rank 0's tokens, rank 1's zeros, then both ranks' control words.
             let sum = try pair.link.sum(selected.map { rank == 0 ? Float($0) : 0 } + words, rank: rank)
             return (sum.prefix(lanes.count).map { Int($0) }, Array(sum.dropFirst(lanes.count)))
@@ -547,6 +551,33 @@ struct QwenTensorParallelBatchDriverTests {
         let lengths = pair.link.lengths
         #expect(lengths.contains { $0 > QwenTensorParallelBatchWire.words })
         #expect(lengths.contains(QwenTensorParallelBatchWire.words))
+    }
+
+    /// An assisted row keeps today's exchange and gate beside plain rows: no
+    /// rectangle that holds it carries control words, and it decodes only once
+    /// the owner answered its last published token. Plain rows fold again
+    /// once it has left.
+    @Test func assistedRowsKeepTheirExchangeAndGate() throws {
+        let pair = Pair(2), plain = try pair.request(output: 20), assisted = try pair.request(length: 5, output: 6)
+        for rank in 0...1 { pair.native[rank].assisted = [assisted.requestID] }
+        try pair.reserve(plain); try pair.reserve(assisted)
+        var answered: [UUID: Int] = [:], aheadOfAnswer = 0, besidePlain = 0
+        pair.hosts[0].answer = { id in answered[id] = pair.hosts[0].tokens[id]?.count; return true }
+        pair.native[0].afterDecode = { ids in
+            guard ids.contains(assisted.requestID) else { return }
+            if ids.count > 1 { besidePlain += 1 }
+            if answered[assisted.requestID] != pair.hosts[0].tokens[assisted.requestID]?.count { aheadOfAnswer += 1 }
+        }
+        try pair.run()
+        for request in [plain, assisted] {
+            #expect(pair.hosts[0].tokens[request.requestID] == HistoryBatchTestSession.oracle(request))
+            for rank in 0...1 { #expect(pair.hosts[rank].finished[request.requestID] == .length) }
+        }
+        #expect(besidePlain > 0 && aheadOfAnswer == 0)
+        for rank in 0...1 {
+            #expect(!pair.native[rank].folded.isEmpty)
+            #expect(pair.native[rank].folded.allSatisfy { !$0.contains(assisted.requestID) })
+        }
     }
 
     @Test func controlWordsPreserveEveryInt32BitAndRejectMalformedAndStaleFrames() throws {

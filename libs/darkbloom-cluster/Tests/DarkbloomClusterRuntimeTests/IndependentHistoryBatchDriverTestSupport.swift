@@ -102,6 +102,8 @@ final class HistoryBatchTestSession: IndependentHistoryBatchSession {
     var frames: [QwenLayerStageFrame] = [], history: [Int] = []
     var committedTokens: Int { history.count }
     var isClosed = false, isFailed = false, failCleanup = false
+    /// Qwen TP driver tests: false stands for an assisted row, which never folds control.
+    var plainSelection = true
     var nextFrame: QwenLayerStageFrame? { try? request.frame(sequence: frames.count) }
     init(_ request: QwenLayerStageGenerationRequest) { self.request = request }
     static func next(_ history: [Int]) -> Int { (history.reduce(0, +) + history.count * 7) % 64 }

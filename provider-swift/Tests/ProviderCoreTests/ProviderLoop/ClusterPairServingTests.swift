@@ -38,13 +38,17 @@ final class InertWorkerEndpoint: ClusterWorkerEndpoint, @unchecked Sendable {
 final class ScriptedPairBuilder: @unchecked Sendable {
     private let lock = NSLock()
     private var owners: [ScriptedPairOwner] = []
+    private var makes = 0
     var hold: DispatchSemaphore?
     /// Set on each built owner: its requests wait for one signal each.
     var ownerHold: DispatchSemaphore?
     var failure: Error?
     var built: [ScriptedPairOwner] { lock.withLock { owners } }
+    /// Builds begun, including one still held.
+    var begun: Int { lock.withLock { makes } }
 
     func make(_ start: NativePairMemberServingStart) throws -> any DistributedResidentExecutionOwner {
+        let hold = lock.withLock { () -> DispatchSemaphore? in makes += 1; return self.hold }
         hold?.wait()
         if let failure { throw failure }
         let wire = start.identity
@@ -213,6 +217,77 @@ struct ClusterPairServingTests {
 
         // The next committed start publishes a fresh slot.
         fixture.builder.ownerHold = nil
+        let next = try fixture.start(epoch: UUID())
+        try await fixture.loop.serveCommittedStart(next)
+        #expect(await fixture.loop.clusterPairServingSnapshot.slotEpoch == next.membershipEpoch)
+        await fixture.loop.stopServingCommittedStart(epoch: next.membershipEpoch)
+    }
+
+    /// Production, 2026-11-01: after a peer loss the session's stop did not
+    /// complete within the session's own bounded wait; the session sent its
+    /// receipt anyway, and every later committed start was refused with "a
+    /// committed start is already served" until a restart. The session's stop
+    /// releases the start at once; the stale serve stands down by itself.
+    @Test func aStartWhoseServeCannotFinishDoesNotOutliveItsSession() async throws {
+        let fixture = try await ServingFixture.make()
+        try await fixture.loop.installClusterPairServing(fixture.context())
+        let hold = DispatchSemaphore(value: 0)
+        defer { hold.signal() }
+        fixture.builder.hold = hold
+        let first = try fixture.start()
+        let stale = Task { try await fixture.loop.serveCommittedStart(first) }
+        #expect(await clusterPairWait { fixture.builder.begun == 1 })
+        await fixture.loop.stopServingCommittedStart(epoch: first.membershipEpoch)
+        #expect(await fixture.loop.clusterPairServingSnapshot.epoch == nil)
+
+        // The coordinator's next committed start is served while the stale serve is still out.
+        fixture.builder.hold = nil
+        let next = try fixture.start(epoch: UUID())
+        try await fixture.loop.serveCommittedStart(next)
+        #expect(await fixture.loop.clusterPairServingSnapshot.slotEpoch == next.membershipEpoch)
+
+        // The stale serve comes back: it shuts its pair down and touches nothing of the next start.
+        hold.signal()
+        await #expect(throws: ClusterPairSlotError.self) { try await stale.value }
+        let snapshot = await fixture.loop.clusterPairServingSnapshot
+        #expect(snapshot.epoch == next.membershipEpoch && snapshot.slotEpoch == next.membershipEpoch && !snapshot.refusing)
+        let staleOwner = fixture.builder.built.first { $0.identity.membershipEpoch == first.membershipEpoch }
+        #expect(staleOwner?.shutdownCount == 1)
+        await fixture.loop.stopServingCommittedStart(epoch: next.membershipEpoch)
+        #expect(await fixture.loop.clusterPairServingSnapshot.epoch == nil)
+    }
+
+    /// The slot's drain (a request in flight) outlasts the session's wait: the
+    /// start is already released while the stop still waits for the drain.
+    @Test func theStartIsReleasedBeforeTheSlotsDrainEnds() async throws {
+        let fixture = try await ServingFixture.make()
+        try await fixture.loop.installClusterPairServing(fixture.context())
+        await fixture.loop.setClusterPairWarmupForTesting(timeoutSeconds: 30)
+        let hold = DispatchSemaphore(value: 0)
+        defer { hold.signal() }
+        fixture.builder.ownerHold = hold
+        let start = try fixture.start()
+        let serve = Task { try await fixture.loop.serveCommittedStart(start) }
+        #expect(await clusterPairWait { fixture.builder.built.first?.reserveCount == 1 })
+        let stop = Task { await fixture.loop.stopServingCommittedStart(epoch: start.membershipEpoch) }
+        #expect(await clusterPairWait { await fixture.loop.clusterPairServingSnapshot.epoch == nil })
+        #expect(fixture.builder.built.first?.shutdownCount == 0) // still draining
+        hold.signal()
+        await stop.value
+        try await serve.value
+        #expect(await fixture.loop.clusterPairSlotSnapshot.slots.isEmpty)
+        #expect(fixture.builder.built.first?.shutdownCount == 1)
+    }
+
+    /// The session's stop reached the host before its serve did: that start is never served.
+    @Test func aStartWhoseSessionAlreadyStoppedIsNeverServed() async throws {
+        let fixture = try await ServingFixture.make()
+        try await fixture.loop.installClusterPairServing(fixture.context())
+        let start = try fixture.start()
+        await fixture.loop.stopServingCommittedStart(epoch: start.membershipEpoch)
+        await #expect(throws: ClusterPairSlotError.self) { try await fixture.loop.serveCommittedStart(start) }
+        let snapshot = await fixture.loop.clusterPairServingSnapshot
+        #expect(snapshot.epoch == nil && snapshot.slotEpoch == nil && fixture.builder.built.isEmpty)
         let next = try fixture.start(epoch: UUID())
         try await fixture.loop.serveCommittedStart(next)
         #expect(await fixture.loop.clusterPairServingSnapshot.slotEpoch == next.membershipEpoch)

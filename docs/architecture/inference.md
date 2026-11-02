@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-10-31
+> Last updated: 2026-11-01
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -56,6 +56,20 @@ Sources: `provider-swift/Sources/ProviderCore/Inference/Distributed/DistributedR
 (`DistributedResidentExecutionProfile.refusal`),
 `provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledSession.swift`,
 and `provider-swift/Sources/ProviderCore/Inference/Distributed/Membership/ClusterMemberPreparation+PairServing.swift`.
+
+The cluster request engine owns one serial queue. Every stream `yield` and its
+retirement latch resume their tasks from it, and resuming a task needs that
+task's status lock. Task cancellation holds the same lock while its handlers
+run. So the engine never waits for its queue from a cancellation path: a
+request stream's `onTermination` and the admission cancellation hop onto the
+queue without waiting, or run in place when already on it. The retirement task
+never blocks a cooperative thread. Waiting there deadlocked a pair slot's
+retirement: `EngineV2Bridge.shutdown` cancelled a pump while the queue
+published that request's peer loss. Lease events, the owner's invalidation and
+the public calls keep their synchronous queue order. Source:
+`provider-swift/Sources/ProviderCore/Inference/Distributed/Engine/DistributedCBv2Engine.swift`
+(`onQueueWithoutWaiting`) and
+`provider-swift/Sources/ProviderCore/Inference/Distributed/Engine/DistributedCBv2Engine+Admission.swift`.
 
 The cluster setup liveness probe uses the same request validation as ordinary
 chat completions. `ClusterSetupProbeRequest` sends no family-specific thinking

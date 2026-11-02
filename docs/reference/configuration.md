@@ -788,7 +788,7 @@ solo serving is unchanged and the whole surface stays default-off.
 
 | Field | Meaning and bounds | Source |
 |---|---|---|
-| `batchLanes` | Optional integer 2, 4 or 8, or 6 for a Qwen TP row in `tensor_parallel_v1`; omitted in existing setups. Only registered text batch adapters in plain pipeline with serial prefill accept it. It is a requested width, never a capacity grant. The guided setup saves it on both Macs for a Qwen TP placement: the widest of 8, 6, 4 and 2 both Macs admit now under that width's complete LOAD quote, omitted when none does. A setup saved for coordinator pairing keeps it unchanged beside its approval. | `provider-swift/Sources/ProviderCore/Config/ClusterConfiguration.swift` (`validate`), `provider-swift/Sources/ProviderCore/Inference/Distributed/Placement/ClusterPlacementTensorWidth.swift` (`widest`) |
+| `batchLanes` | Optional integer 2, 4 or 8, or 6 for a Qwen TP row in `tensor_parallel_v1`; omitted in existing setups. Only registered text batch adapters in plain pipeline with serial prefill accept it. It is a requested width, never a capacity grant. The guided setup writes it into both Macs' setups for a Qwen TP placement ([saved width](../architecture/inference.md#qwen-tensor-parallel-saved-width)), and a setup saved for coordinator pairing keeps it beside its approval. | `provider-swift/Sources/ProviderCore/Config/ClusterConfiguration.swift` (`validate`), `provider-swift/Sources/ProviderCore/Inference/Distributed/Placement/ClusterPlacementTensorWidth.swift` (`widest`) |
 | `DARKBLOOM_CLUSTER_BATCH_LANES` | An explicit diagnostic setting retains precedence; absent settings use the persisted width, then the existing family default. Malformed explicit values fail closed to one lane. | `provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledPlan.swift` (`batchLanes`) |
 
 The normal cluster API can persist a wider setup after queued demand, conservative
@@ -1620,8 +1620,9 @@ other models (`ClusterRuntimeAdapter.qwenTensorParallelRuntimeModelIDs` names th
 and inconsistent ledger totals. It reads
 registered headers and requires the native allocator metadata bound. Saved
 `batchLanes` may select 2, 4, 6 or 8 in a Qwen TP row's `tensor_parallel_v1`; omission
-keeps one. The guided setup asks for the quote at each of these widths and saves
-the widest both Macs admit now. GLM defaults remain unchanged.
+keeps one. The guided setup reads the quote at each of these widths
+([saved width](../architecture/inference.md#qwen-tensor-parallel-saved-width)).
+GLM defaults remain unchanged.
 Source: `libs/darkbloom-cluster/Sources/DarkbloomClusterPlacement/ClusterPlacementTensorBatchQuote.swift`.
 
 ### Qwen27 saved mode compatibility

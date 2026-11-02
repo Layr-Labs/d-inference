@@ -276,13 +276,11 @@ public enum ClusterPlacementFlow {
             policy.modesReason = policy.modesReason ?? "a capacity change keeps the running tensor-parallel shares"
             policy.requiredTensorShares = incumbentTensorShares
         }
-        var result = try ClusterPlacementPlanner.plan(devices: devices, layout: layout, policy: policy, link: link)
-        // A singleton tensor placement saves the widest width its owner's quotes admit on both Macs now.
+        // A singleton tensor placement saves the widest width its owner's quotes admit on both Macs now. One call
+        // initializes a constant `result`, so the sizing's plans stay off this frame, which a deep planner stack shares.
         var batchLanes = batchScope?.lanes
-        if batchScope == nil, tensorAssistantQuote != nil, !tensorWidthQuotes.isEmpty {
-            try ClusterPlacementTensorWidth.size(&result, lanes: &batchLanes, quotes: tensorWidthQuotes,
-                devices: devices, layout: layout, policy: policy, link: link)
-        }
+        let result = try ClusterPlacementTensorWidth.plan(devices: devices, layout: layout, policy: policy, link: link,
+            quotes: tensorWidthQuotes, lanes: &batchLanes)
         var lines = (forced.map(ClusterForcedModeSetting.lines) ?? [])
             + (benchCap.map(ClusterPlannerBenchCap.lines(capBytes:)) ?? []) + (benchChip.map(ClusterBenchChip.lines(chipName:)) ?? [])
             + servedLines

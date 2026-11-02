@@ -44,9 +44,17 @@ final class ClusterPlacementTensorWidthTests {
         return p
     }
 
-    /// The registered 27B's identity on a constructed two-layer layout whose tensor parallel splits 1:1, 1:2 or 2:1.
-    private func fixture() throws -> (ClusterPairDescription, ClusterRuntimeCapability, ClusterModelLayout, ClusterPlacementRequestScope) {
-        let model = "registered_qwen38_27b"
+    /// A registered Qwen TP row's identity: the 27B, whose features keep its plans to tensor parallel
+    /// (`ClusterModelFeaturePolicy`), or the 9B, whose plans keep the pipeline a candidate, as the 35B A3B rows' do.
+    private typealias Row = (model: String, profile: String)
+    private static let twentySevenB: Row = ("registered_qwen38_27b", "registered_qwen38_27b_greedy_generation_v1")
+    private static let nineB: Row = ("registered_qwen35_9b", "registered_qwen35_9b_greedy_generation_v1")
+
+    /// A registered row's identity (the 27B's by default) on a constructed two-layer layout whose tensor parallel
+    /// splits 1:1, 1:2 or 2:1.
+    private func fixture(_ row: Row = twentySevenB)
+        throws -> (ClusterPairDescription, ClusterRuntimeCapability, ClusterModelLayout, ClusterPlacementRequestScope) {
+        let model = row.model
         let part = ClusterModelLayout.Part(storedBytes: 2 * gib, loadedBytes: 2 * gib, largestTensorBytes: gib / 4, tensorCount: 16)
         let end = ClusterModelLayout.Part(storedBytes: gib / 2, loadedBytes: gib / 2, largestTensorBytes: gib / 2, tensorCount: 1)
         let raw = ClusterModelLayout(runtimeModelID: model, artifactSHA256: hash("b"), configurationSHA256: hash("c"),
@@ -64,7 +72,7 @@ final class ClusterPlacementTensorWidthTests {
         let layout = try ClusterModelLayout.decode(JSONSerialization.data(withJSONObject: object))
         let cap = try ClusterRuntimeCapability(runtimeBinarySHA256: hash("a"), adapterID: "qwen35-dense-layer-stage", adapterVersion: 1,
             runtimeModelID: model, artifactSHA256: hash("b"), configurationSHA256: hash("c"), manifestSHA256: hash("d"),
-            profile: .init(id: "registered_qwen38_27b_greedy_generation_v1", vocabularySize: 248320,
+            profile: .init(id: row.profile, vocabularySize: 248320,
                 maximumPromptTokens: 32768, maximumOutputTokens: 32768, maximumChunkTokens: 512, maximumContextTokens: 65536),
             profileFingerprint: hash("e"), partitions: [.init(planSHA256: hash("f"), stages: [
                 .init(rank: 0, sourceLayerStart: 0, sourceLayerEnd: 1, stagePlanSHA256: hash("1"), constructionConfigurationSHA256: hash("2")),
@@ -100,8 +108,9 @@ final class ClusterPlacementTensorWidthTests {
     }
 
     private func decide(_ home: URL, free: Int, peerFree: Int? = nil, widths: [Int] = ClusterPlacementBatchScope.tensorParallelWidths,
-                        assistant: ClusterPlacementTensorAssistantQuote? = nil) throws -> ClusterSetupPlanning.PlacementDecision {
-        let (pair, cap, layout, request) = try fixture()
+                        assistant: ClusterPlacementTensorAssistantQuote? = nil,
+                        row: Row = twentySevenB) throws -> ClusterSetupPlanning.PlacementDecision {
+        let (pair, cap, layout, request) = try fixture(row)
         return try ClusterPlacementFlow.decide(description: pair, capability: cap, localMemberID: "a",
             localProfile: profile(free: free), peerProfile: profile(free: peerFree ?? free), layout: layout,
             tensorAssistantQuote: try quote(request, lanes: 1, assistant: assistant),
@@ -111,8 +120,8 @@ final class ClusterPlacementTensorWidthTests {
     }
 
     /// Both Macs' saved widths: equal, or the test fails.
-    private func savedLanes(_ decision: ClusterSetupPlanning.PlacementDecision) throws -> Int? {
-        let (pair, cap, _, _) = try fixture()
+    private func savedLanes(_ decision: ClusterSetupPlanning.PlacementDecision, row: Row = twentySevenB) throws -> Int? {
+        let (pair, cap, _, _) = try fixture(row)
         let setup = try #require(decision.setup)
         let lanes = try ["a", "b"].map { member in
             try ClusterConfigurationCodec.decode(try #require(setup.configurations[member]), capability: cap,
@@ -172,6 +181,21 @@ final class ClusterPlacementTensorWidthTests {
         try quote(request, lanes: 1, assistant: assistant).applySingleton(to: &policy, layout: layout)
         #expect(throws: (any Error).self) { try self.quote(request, lanes: 8).applyWidth(to: &policy, layout: layout) }
         #expect(throws: (any Error).self) { try self.quote(request, lanes: 1, assistant: assistant).applyWidth(to: &policy, layout: layout) }
+    }
+
+    /// A row whose pipeline stays a candidate is sized the same way, and its plan keeps the reason its mode was chosen
+    /// for one request (its comparison with the pipeline); only the chosen placement's memory is the width's.
+    @Test func aRowWhosePipelineStaysACandidateKeepsItsModeReason() throws {
+        let home = try home(), row = Self.nineB
+        let alone = try decide(home, free: 200 * gib, widths: [], row: row)
+        let sized = try decide(home, free: 200 * gib, row: row)
+        #expect(alone.result.chosen?.mode == .tensorParallel && alone.result.modesReason == nil)
+        #expect(try savedLanes(sized, row: row) == 8)
+        let reason = try #require(ClusterPlacementExplanation.deploymentReason(sized.result))
+        #expect(reason == ClusterPlacementExplanation.deploymentReason(alone.result) && !reason.contains("left out"), "\(reason)")
+        #expect(sized.lines.contains("  " + reason))
+        let need = { (decision: ClusterSetupPlanning.PlacementDecision) in decision.result.chosen?.ranks.map(\.needBytes).max() ?? 0 }
+        #expect(need(sized) > need(alone))
     }
 
     /// GLM tensor parallel keeps its own default; a pipeline, and a Qwen TP setup saved without a width, keep theirs.

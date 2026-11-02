@@ -5211,8 +5211,10 @@ coordinator pairing never widened.
    first that both Macs admit now. The predicate is the one an automatic
    replacement is held to (`ClusterPlacementCandidate.admitted`): possible,
    inside the GPU working set, and every rank within what its Mac admits now.
-   The plan then reports that width's memory. When no width fits, the setup
-   saves none and serves one request at a time, as before.
+   The plan then reports that width's memory and keeps the reasons its mode was
+   chosen for one request, including a row's comparison with the pipeline
+   where the pipeline stays a candidate. When no width fits, the setup saves
+   none and serves one request at a time, as before.
 4. LOAD quotes, measured floors and live admission are unchanged. Both ranks
    reserve the saved width's complete quote at LOAD and admit each request
    alone.

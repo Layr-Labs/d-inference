@@ -23,7 +23,7 @@ func loadUpdateConfig(configPath: String?) throws -> ProviderConfig {
 struct Update: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "update",
-        abstract: "Check for updates and self-update the provider binary."
+        abstract: "Check for updates and self-update the provider binary, or roll back to the previous release."
     )
 
     @OptionGroup var configOptions: ConfigOptions
@@ -114,8 +114,8 @@ struct Update: AsyncParsableCommand {
         }
 
         if overrideQuarantine {
-            printError("WARNING: overriding local failed-version quarantine by explicit request.")
-            printError("The failed release may crash this provider again.")
+            printError("WARNING: overriding the local release quarantine by explicit request.")
+            printError("The quarantined release failed its starts or was rolled back; it may fail or regress again.")
         }
         print("Checking for updates...")
         let result = await updater.update(manualOverride: overrideQuarantine)

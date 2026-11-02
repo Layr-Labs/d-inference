@@ -121,11 +121,31 @@ struct UpdateRollbackCommandTests {
 
         #expect(error?.description.contains("Rollback did not complete") == true)
         #expect(error?.description.contains("restarted on the installed release") == true)
+        #expect(error?.description.contains("..") == false)
         #expect(host.events == ["drain", "restart"])
         #expect(try install.liveBinary() == "2.0.0-darkbloom")
         #expect(try install.store.loadState().quarantine == nil)
         // The lease is free again for the watchdog and the restarted provider.
         try install.updater.beginUpdateSession(operation: "lease-check").release()
+    }
+
+    @Test("a provider started during the prompt is not swapped under, and one stopped during it is not restarted")
+    func providerChangesDuringThePrompt() async throws {
+        let install = try RollbackInstall()
+        defer { install.remove() }
+        let started = RecordingHost(install: install, loaded: false, answer: "y", providerOnceAnswered: .service)
+        let error = await #expect(throws: UpdateRollback.Failure.self) { try await install.rollback(host: started, yes: false) }
+        #expect(error?.description == UpdateRollback.startedRefusal)
+        #expect(started.events.isEmpty)
+        #expect(try install.liveBinary() == "2.0.0-darkbloom")
+        #expect(try install.store.loadState().quarantine == nil)
+
+        let stopped = RecordingHost(install: install, loaded: true, answer: "y", providerOnceAnswered: .stopped)
+        try await install.rollback(host: stopped, yes: false)
+        #expect(stopped.events == ["drain"])
+        #expect(try install.liveBinary() == "1.0.0-darkbloom")
+        #expect(try install.store.loadState().quarantine?.version == "2.0.0")
+        #expect(stopped.said.last == "The provider is not running; `darkbloom start` starts v1.0.0.")
     }
 }
 
@@ -209,6 +229,7 @@ private final class RecordingHost: @unchecked Sendable {
         let lock = NSLock()
         var events: [String] = []
         var lines: [String] = []
+        var provider: UpdateRollback.Provider = .stopped
     }
 
     private let log: Log
@@ -216,16 +237,22 @@ private final class RecordingHost: @unchecked Sendable {
     var events: [String] { log.lock.withLock { log.events } }
     var said: [String] { log.lock.withLock { log.lines } }
 
+    /// `providerOnceAnswered` is the provider's state from the prompt's answer on.
     init(install: RollbackInstall, loaded: Bool, foreground: Bool = false, inCluster: Bool = false, canAsk: Bool = true,
-         answer: String? = nil, beforeDrain: @escaping () throws -> Void = {}) {
+         answer: String? = nil, providerOnceAnswered: UpdateRollback.Provider? = nil,
+         beforeDrain: @escaping () throws -> Void = {}) {
         let log = Log()
+        log.provider = loaded ? .service : foreground ? .foreground : .stopped
         self.log = log
         let record = { (event: String) in log.lock.withLock { log.events.append(event) } }
         host = UpdateRollback.Host(
             servesInCluster: { inCluster },
-            provider: { loaded ? .service : foreground ? .foreground : .stopped },
+            provider: { log.lock.withLock { log.provider } },
             canAsk: { canAsk },
-            readAnswer: { answer },
+            readAnswer: {
+                if let providerOnceAnswered { log.lock.withLock { log.provider = providerOnceAnswered } }
+                return answer
+            },
             drain: {
                 record("drain")
                 try beforeDrain()

@@ -755,13 +755,14 @@ version, restored version, the install generation it records) and asks
 `Roll back to vX? [y/N]`. A loaded provider is drained, the layout is swapped
 through the watchdog's journaled rollback under the update lease, and the
 provider is restarted and the watchdog rearmed, as for an installed update; a
-stopped provider is only swapped
+stopped provider, or one stopped while the prompt was open, is only swapped
 (`provider-swift/Sources/darkbloom/UpdateRollback.swift`, `UpdateRollback`;
 `provider-swift/Sources/ProviderCore/Update/SelfUpdater+Rollback.swift`,
 `rollbackPlan`, `rollBackToPredecessor`). It exits 1 and changes nothing when
 this Mac serves in a `darkbloom cluster` pair (a running cluster service or a
 loaded cluster-member provider job), a provider runs outside launchd
-(`darkbloom start --foreground`), another update or recovery holds the lease,
+(`darkbloom start --foreground`) or started after the plan was shown, another
+update or recovery holds the lease,
 no release is kept for rollback, the installed release is already that
 release, the installed `Darkbloom.app` is not the recorded release, or the kept
 release fails its hash or signature check (`RollbackRefusal`). Steps are in

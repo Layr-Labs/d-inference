@@ -53,6 +53,11 @@ struct UpdateRollback {
         and restart it. Stop it (Ctrl-C), then run `\(cli) update --rollback` again. Nothing was changed.
         """
 
+    static let startedRefusal = """
+        A provider started after the rollback was planned. Nothing was changed; run \
+        `\(cli) update --rollback` again to drain and restart it.
+        """
+
     private static var cli: String { BuildEnvironment.current.cliName }
 
     func run(skipConfirmation: Bool) async throws {
@@ -79,11 +84,16 @@ struct UpdateRollback {
             return try updater.beginUpdateSession(operation: "operator-rollback", timeout: 0)
         }
         defer { session.release() }
+        // The plan and prompt ran without the lease: a provider started since
+        // is not swapped under, and one stopped since is not restarted.
+        let providerNow = host.provider()
+        guard loaded || providerNow == .stopped else { throw Failure(description: Self.startedRefusal) }
+        let restarts = loaded && providerNow == .service
         let outcome = Result { try updater.rollBackToPredecessor(session: session, plan: plan) }
         // A drained provider restarts whether or not the rollback completed:
         // the layout is always one complete release (the journal guarantees it).
         var restartFailure: Error?
-        if loaded {
+        if restarts {
             do { try await host.restart() } catch { restartFailure = error }
         }
         session.release()
@@ -96,8 +106,9 @@ struct UpdateRollback {
         case .success(let version):
             restored = version
         case .failure(let error):
-            throw Failure(description: "Rollback did not complete: \(error)."
-                + (loaded && restartFailure == nil ? " The provider restarted on the installed release." : notRestarted))
+            let reason = "\(error)"
+            throw Failure(description: "Rollback did not complete: \(reason)\(reason.hasSuffix(".") ? "" : ".")"
+                + (restarts && restartFailure == nil ? " The provider restarted on the installed release." : notRestarted))
         }
         say("Rolled back: v\(plan.from) -> v\(restored).")
         say("v\(plan.from) is quarantined on this Mac: automatic updates skip it, and the next newer release installs "
@@ -105,7 +116,7 @@ struct UpdateRollback {
         if restartFailure != nil {
             throw Failure(description: "Rolled back to v\(restored)." + notRestarted)
         }
-        if loaded {
+        if restarts {
             say("Provider relaunched on v\(restored); waiting for fresh authorization...")
             try await host.waitForRestart()
         } else {

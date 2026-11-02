@@ -248,7 +248,7 @@ Verify:
 
 ```bash
 darkbloom --version                 # the restored version
-darkbloom update --check-only       # "Latest release vX is quarantined on this machine."
+darkbloom update --check-only       # while vX is the latest: "Latest release vX is quarantined on this machine."
 ```
 
 Refusals and flags are listed in the

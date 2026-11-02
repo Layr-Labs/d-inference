@@ -5040,9 +5040,10 @@ A decode step is submitted while it is built. `QwenTensorParallelBatchSession`
 decodes under `Qwen35LayerSubmission` with a stride of one layer
 (`decodeLayerStride`): after each decoder layer the forward submits what it has
 built (`asyncEval`), so that layer's kernels and collectives run while the host
-builds the next. The driver plans a step only after the previous step's tokens
-are known, so the request-owned path cannot build one step ahead as the retired
-single-lane loop did; submitting by layer hides the graph build instead.
+builds the next. The driver builds a step only after the previous step's tokens
+are read (a plain step's plan is made before them, below), so the request-owned
+path does not build one step ahead as the retired single-lane loop did;
+submitting by layer hides the graph build instead.
 Speculative verify windows are evaluated whole instead
 (`QwenTensorParallelTargetWindow.submitsByLayer` off): with the main-merged MLX
 core, an `asyncEval` after every layer of a window cost a solo 27B request on two
@@ -5123,6 +5124,41 @@ another length. The decode step pays no separate finiteness read
 (`QwenTensorParallelBatchSession.validateLogits` checks shape and dtype), and
 every selected token is unchanged.
 
+A plain decode step carries the next step's control in its selection sum
+(`QwenTensorParallelBatchDriver.serve`). When every row of the rectangle selects
+plainly (`QwenTensorParallelBatchLane.plainSelection`: no assistant) and no
+prompt step follows it in the step, rank 0 makes the next plan and rank 1 its
+report once the forward committed (the executor's `decode` `control` closure),
+and both ride the selection's own sealed sum: after a greedy cohort's six words
+a row, or after a sampled cohort's choices (its gathered rows keep their own
+sum). Such a step pays one sealed sum and one host read instead of an exchange
+and a selection. A step after a prompt, idle or assisted step exchanges its
+plan as before. The plan is made before the step's tokens are known, so:
+
+- A row that decodes on the token being selected names
+  `QwenTensorParallelBatchWire.carriedToken`. Both ranks take the token from the
+  same sum, and both drop that decode when the token ended its request (a stop
+  token or the output count).
+- Host events (owner answers, credits, cancellations, joins) apply one step
+  later. A row may decode on its newest token once the owner answered "go on"
+  to the token before it, and rank 0 publishes a token only after that answer.
+- A stop answer that arrives after the row selected one more token keeps the
+  tokens the owner saw. Rank 0 never publishes that token, both ranks drop it
+  (the leaving slot carries the kept count), and the native finish counts one
+  discarded forward (`QwenTensorParallelNativeBatchExecutor.retire`). Usage and
+  logprobs cover the kept tokens only; prefix captures and SSD records hold
+  prompt states, which no decode forward changes.
+
+The load agreement binds the wire version
+(`qwen-tp-independent-history-batch-v2-folded-control`), so a rank of an
+earlier build refuses to load. Tokens, logits and native state are unchanged:
+the control limbs are exact in FP32, each element of the sum is added alone,
+and the collective payload quote covers the longer frame
+(`QwenTensorParallelBatchBudget`). `darkbloom-cluster-tp-check qwen-decode`
+(`QwenTensorParallelDecodeBench`) times the driver's decode on two ranks over
+the loopback ring with the control exchanged or folded and checks that both
+retire the same tokens.
+
 The batch path can restore mutually held original-grid prefix snapshots into
 fresh request-owned state. TP speculative rounds remain a separate integration. Installed owners propagate a priced
 saved width or explicit diagnostic width for every Qwen TP row; automatic placement
@@ -5182,7 +5218,15 @@ Sources: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Ten
 `libs/darkbloom-cluster-worker/Sources/TensorParallelCheck/QwenRowsCheck.swift`
 (`QwenRowsCheck`),
 `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/TensorParallel/QwenTensorParallelBatchDriver.swift`
-(`serve`, `makePlan`, `join`, `leave`),
+(`serve`, `makePlan`, `resolve`, `publishHeld`, `join`, `leave`),
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/TensorParallel/QwenTensorParallelBatchWire.swift`
+(`QwenTensorParallelBatchWire`),
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/TensorParallel/QwenTensorParallelNativeBatchExecutor.swift`
+(`decode`, `select`, `retire`),
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/TensorParallel/QwenTensorParallelDecodeBench.swift`
+(`QwenTensorParallelDecodeBench`),
+`libs/darkbloom-cluster-worker/Sources/TensorParallelCheck/QwenDecodeCheck.swift`
+(`QwenDecodeCheck`),
 `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Batch/QwenBatchDecodeCoalescing.swift`
 (`shouldDefer`), and
 `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/TensorParallel/QwenTensorParallelResidentRuntime+Batch.swift`

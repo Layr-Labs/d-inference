@@ -61,10 +61,13 @@ struct DistributedInstalledLanesTests {
         #expect(Plan.defaultBatchLanes(adapter: .gemma4LayerStage, mode: .pipeline, hasPrivateImages: false) == Plan.defaultBatchLanes)
         #expect(Plan.defaultBatchLanes(adapter: .gemma4LayerStage, mode: .pipeline, hasPrivateImages: true,
                                        prefillSchedule: .serial) == nil)
-        for mode in ClusterGenerationMode.allCases where mode != .pipeline {
+        // Gemma 4 tensor parallel's own lanes are its batch driver's (checked above).
+        for mode in ClusterGenerationMode.allCases where mode != .pipeline && mode != .tensorParallel {
             #expect(Plan.defaultBatchLanes(adapter: .gemma4LayerStage, mode: mode, hasPrivateImages: false,
                                            prefillSchedule: .serial) == nil)
         }
+        #expect(Plan.defaultBatchLanes(adapter: .gemma4LayerStage, mode: .tensorParallel, hasPrivateImages: false,
+                                       prefillSchedule: .serial) == Plan.defaultBatchLanes)
         // Every other lane adapter keeps its singleton default under either schedule.
         for adapter in Plan.laneAdapters where adapter != .gemma4LayerStage {
             for schedule in ClusterPrefillSchedule.allCases {

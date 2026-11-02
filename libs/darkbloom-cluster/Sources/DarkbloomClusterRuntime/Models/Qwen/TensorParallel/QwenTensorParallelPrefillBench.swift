@@ -103,6 +103,8 @@ public enum QwenTensorParallelPrefillBench {
         var build: Double
         var evaluation: Double
         var other: Double
+        /// The step's first token.
+        var offset = 0
     }
 
     public static func run(_ options: Options, log: @escaping (String) -> Void) throws {
@@ -167,7 +169,7 @@ public enum QwenTensorParallelPrefillBench {
                 let evaluation = phases.span("evaluation.begin", "evaluation.end")
                 let wall = ms(ended - started)
                 frames.append(.init(wall: wall, build: build, evaluation: evaluation,
-                    other: wall - (build.isNaN ? 0 : build) - (evaluation.isNaN ? 0 : evaluation)))
+                    other: wall - (build.isNaN ? 0 : build) - (evaluation.isNaN ? 0 : evaluation), offset: offset))
                 if observing { layerRows.append((index, offset, layerRecorder.layerTimes)) }
                 if let logits {
                     eval(logits)
@@ -224,7 +226,7 @@ public enum QwenTensorParallelPrefillBench {
                                 + " collectives=\(reduction.collectives) collective_mb=\(format(Double(reduction.collectiveBytes) / 1e6))"
                                 + " digest=\(result.digest)")
                             let curve = frames.enumerated().filter { $0.offset % max(1, frames.count / 8) == 0 || $0.offset == frames.count - 1 }
-                                .map { "\($0.offset * chunk):\(format($0.element.wall))" }.joined(separator: ",")
+                                .map { "\($0.element.offset):\(format($0.element.wall))" }.joined(separator: ",")
                             log("\(label) path=prefill-curve chunk=\(chunk) ops=\(operations == 0 ? "process" : String(operations)) stride=\(stride) wavefront=\(wavefront) mode=\(mode.rawValue) offset_ms=\(curve)")
                         }
                         Memory.clearCache()

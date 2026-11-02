@@ -103,7 +103,7 @@ enum QwenTensorParallelPromptWavefront {
                     issued.sums.removeAll()
                 }
         }
-        // Every earlier frame's last rows join the evaluation the run waits on.
+        // Earlier frames' last rows run too, as each frame's own output did; nothing reads them.
         asyncEval(Array(outputs.dropLast()))
         return final ? outputs[outputs.count - 1][0..., -1, 0...] : outputs[outputs.count - 1]
     }

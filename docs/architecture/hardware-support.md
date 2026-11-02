@@ -1119,6 +1119,16 @@ full-artifact memory fit, numerical parity or throughput; those require
 paired hardware qualification. The restore mechanism is described in
 [inference](inference.md#gemma-paged-prefix-restoration).
 
+A serial-prefill Gemma 4 pipeline's default width
+(`DistributedInstalledPlan.gemma4PipelineBatchLanes`,
+[Gemma pipeline lanes](inference.md#gemma-pipeline-lanes)) adds no load-time
+allocation: the paged pool's capacity is a ceiling, and pages are reserved per
+request (`CBv2StageKVHost`). Each lane is charged its whole request state on
+every rank and admitted against live memory (`QwenResidentRuntime.reserveLane`);
+a lane the host cannot hold is refused alone, retryably. The measured
+activation floor still applies: prompt frames run one per step and decode rows
+add only M=1 work.
+
 ## Bonsai packed projection arithmetic
 
 Bonsai 27B uses the [packed FP32 row path](inference.md#bonsai-27b-packed-fp32-rows)

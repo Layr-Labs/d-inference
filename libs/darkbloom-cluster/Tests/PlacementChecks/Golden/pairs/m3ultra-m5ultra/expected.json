@@ -43,9 +43,9 @@
  },
  "gemma-4-26b": {
   "cut": 15,
-  "handOffPlanSHA256": "2420b14ee7687f033f5a58b7fa9c325ae6121af03b4cd4be0f5f41a016e2c436",
+  "handOffPlanSHA256": "6dbd01083d074d1aa44f08f1d25603e93145492395501e6f9a1f6c1766247a00",
   "mode": "pipeline_v1",
-  "planSHA256": "ad764d50791a75f5c9c1a9f407276e1c717fb6f5e6847e8ea82380f5b0cdbf79",
+  "planSHA256": "dbc808e3abc53b12d32170bdbb964cbc478e129050f06b0d843a8880a164d5d5",
   "ranks": [
    {
     "device": "mac-a",
@@ -64,9 +64,9 @@
  },
  "gemma-4-26b-8bit": {
   "cut": 15,
-  "handOffPlanSHA256": "cbaef9455f5c272fe17a847a206a173ce94c84f9c5ebadde7a9b0f43f1ebc6e5",
+  "handOffPlanSHA256": "9608c7ee6e2b22cb943a557b68cf734c22c6ecc4f93a07f8a0b26104cc191cb3",
   "mode": "pipeline_v1",
-  "planSHA256": "042a04d32603765619f97b7044c24c9d846a4bde9e741830d39648504c73ad27",
+  "planSHA256": "4edd4f8c73fb0e0eadb07f432ffc2644c42212b7c53aa29a041482e6fad7a625",
   "ranks": [
    {
     "device": "mac-a",
@@ -85,9 +85,9 @@
  },
  "gemma-4-26b-qat-4bit": {
   "cut": 15,
-  "handOffPlanSHA256": "ea678c6cf760925bd0ac3ec68359692b856dee2e6f67a0ee51d25fb3fe52abdb",
+  "handOffPlanSHA256": "db53aeb719616838b61b304b734aaaa284fac2ba3b18ccbc6b9063604f2cf1b4",
   "mode": "pipeline_v1",
-  "planSHA256": "b4c956fee4903ca1e6c6a81b54d0409d531ec446b12dd644ff0690734455ff6c",
+  "planSHA256": "c5b174e249c69c9f7eacef02029a1c80125dc7fa9e7832e60fa96c2d44571ccb",
   "ranks": [
    {
     "device": "mac-a",

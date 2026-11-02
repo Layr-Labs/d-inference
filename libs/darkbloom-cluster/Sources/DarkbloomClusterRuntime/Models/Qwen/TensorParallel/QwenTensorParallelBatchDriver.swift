@@ -14,12 +14,18 @@ protocol QwenTensorParallelBatchLane: AnyObject {
     var reusedPrefixTokens: Int { get }
     var storedPrefixFrontiers: [Int] { get }
     var canSelectNext: Bool { get }
+    func promptStep(frames: Int) -> QwenLayerStageFrame?
+    func promptStep(tokens: Int) -> QwenLayerStageFrame?
 }
 
 extension QwenTensorParallelBatchLane {
     var reusedPrefixTokens: Int { 0 }
     var storedPrefixFrontiers: [Int] { [] }
     var canSelectNext: Bool { nextFrame?.phase == .decode }
+    /// The prompt step of up to `frames` consecutive frames (`QwenTensorParallelPromptWavefront`).
+    func promptStep(frames: Int) -> QwenLayerStageFrame? { nextFrame }
+    /// The planned prompt step of `tokens`, if it is one this lane may run.
+    func promptStep(tokens: Int) -> QwenLayerStageFrame? { nextFrame.flatMap { $0.tokenCount == tokens ? $0 : nil } }
 }
 
 /// Both ranks run every forward. Selection returns the same token to both;
@@ -42,7 +48,7 @@ extension QwenTensorParallelBatchExecutor {
     func confirmedRetirement(_ lane: Lane, clean: Bool) throws {}
 }
 
-/// One prefill frame on its original grid and one real decode rectangle per
+/// One prompt step (consecutive frames on the original grid) and one real decode rectangle per
 /// step. Every active request owns its native history. A slow client holds
 /// only its own token credit. Successful retirement is published only after
 /// both ranks have drained, including cancellation and deadline departures.
@@ -133,7 +139,7 @@ final class QwenTensorParallelBatchDriver<Executor: QwenTensorParallelBatchExecu
                     guard prompts.count <= 1 else { throw ProbeError("Qwen TP plan has multiple prefill frames") }
                     if let slot = prompts.first {
                         let value = plan.slots[slot]
-                        guard let lane = records[slot], let native = lane.native, let frame = native.nextFrame,
+                        guard let lane = records[slot], let native = lane.native, let frame = native.promptStep(tokens: value.frameCount),
                               frame.phase == .prefill, frame.tokenOffset == value.frameOffset,
                               frame.tokenCount == value.frameCount, frame.finalPromptChunk == value.finalChunk else {
                             throw ProbeError("Qwen TP prefill differs from its original chunk grid")
@@ -182,7 +188,9 @@ final class QwenTensorParallelBatchDriver<Executor: QwenTensorParallelBatchExecu
         }
         if let prompt = records.values.filter({
             slots[$0.slot].state == .active && $0.native?.nextFrame?.phase == .prefill
-        }).min(by: { $0.order < $1.order }), let frame = prompt.native?.nextFrame {
+        }).min(by: { $0.order < $1.order }), let frame = prompt.native?.promptStep(frames:
+            records.values.contains { $0 !== prompt && $0.native?.canSelectNext == true }
+                ? QwenTensorParallelPromptWavefront.framesBesideDecoding : QwenTensorParallelPromptWavefront.maximumFrames) {
             slots[prompt.slot].role = .prefill; slots[prompt.slot].frameOffset = frame.tokenOffset
             slots[prompt.slot].frameCount = frame.tokenCount; slots[prompt.slot].finalChunk = frame.finalPromptChunk
         }

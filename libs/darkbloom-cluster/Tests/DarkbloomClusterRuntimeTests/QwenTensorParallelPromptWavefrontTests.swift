@@ -206,6 +206,26 @@ struct QwenTensorParallelPromptWavefrontTests {
         var failure: Error?
     }
 
+    /// Hybrid shards of one synthetic checkpoint (six recurrent, two attention
+    /// layers) on two in-process ranks that sum by meeting each other.
+    private static func pair() throws -> (configuration: Data, ranks: [Rank], models: [QwenTensorParallelModel]) {
+        let fixture = QwenTensorParallelFixtures.checkpoint(hidden: 2048, layers: 8, heads: 8, kvHeads: 2,
+            vocabulary: 256)
+        var root = try JSONSerialization.jsonObject(with: fixture.configuration) as! [String: Any]
+        var text = root["text_config"] as! [String: Any]
+        text["max_position_embeddings"] = 8192; root["text_config"] = text
+        let configuration = try JSONSerialization.data(withJSONObject: root, options: [.sortedKeys])
+        let wire = Rendezvous()
+        let ranks = (0..<2).map { Rank($0, wire) }
+        let models = try (0..<2).map { rank in
+            try QwenTensorParallelModel.assemble(configurationData: configuration,
+                role: .shard(rank: rank, size: 2), reduction: ranks[rank]) { _, keep in
+                for (name, value) in fixture.tensors { try keep(name, value) }
+            }
+        }
+        return (configuration, ranks, models)
+    }
+
     /// Both ranks' temporaries per prompt step of `limit` frames (the largest
     /// step's peak above the settled allocation before and after it).
     private static func promptTransient(_ models: [QwenTensorParallelModel], configuration: Data, prompt: Int,
@@ -253,19 +273,7 @@ struct QwenTensorParallelPromptWavefrontTests {
     @Test(.enabled(if: ProcessInfo.processInfo.environment["QWEN_TP_BATCH_GPU"] == "1"))
     func mergedStepTemporariesStayWithinTheirCharge() throws {
         try Device.withDefaultDevice(.gpu) {
-            let fixture = QwenTensorParallelFixtures.checkpoint(hidden: 2048, layers: 8, heads: 8, kvHeads: 2,
-                vocabulary: 256)
-            var root = try JSONSerialization.jsonObject(with: fixture.configuration) as! [String: Any]
-            var text = root["text_config"] as! [String: Any]
-            text["max_position_embeddings"] = 8192; root["text_config"] = text
-            let configuration = try JSONSerialization.data(withJSONObject: root, options: [.sortedKeys])
-            let wire = Rendezvous()
-            let models = try (0..<2).map { rank in
-                try QwenTensorParallelModel.assemble(configurationData: configuration,
-                    role: .shard(rank: rank, size: 2), reduction: Rank(rank, wire)) { _, keep in
-                    for (name, value) in fixture.tensors { try keep(name, value) }
-                }
-            }
+            let (configuration, _, models) = try Self.pair()
             let single = try Self.promptTransient(models, configuration: configuration, prompt: 4096, limit: 1)
             let merged = try Self.promptTransient(models, configuration: configuration, prompt: 4096,
                 limit: QwenTensorParallelPromptWavefront.maximumFrames)
@@ -290,20 +298,7 @@ struct QwenTensorParallelPromptWavefrontTests {
     @Test(.enabled(if: ProcessInfo.processInfo.environment["QWEN_TP_BATCH_GPU"] == "1"))
     func mergedFramesKeepEveryBit() throws {
         try Device.withDefaultDevice(.gpu) {
-            let fixture = QwenTensorParallelFixtures.checkpoint(hidden: 2048, layers: 8, heads: 8, kvHeads: 2,
-                vocabulary: 256)
-            var root = try JSONSerialization.jsonObject(with: fixture.configuration) as! [String: Any]
-            var text = root["text_config"] as! [String: Any]
-            text["max_position_embeddings"] = 8192; root["text_config"] = text
-            let configuration = try JSONSerialization.data(withJSONObject: root, options: [.sortedKeys])
-            let wire = Rendezvous()
-            let ranks = (0..<2).map { Rank($0, wire) }
-            let models = try (0..<2).map { rank in
-                try QwenTensorParallelModel.assemble(configurationData: configuration,
-                    role: .shard(rank: rank, size: 2), reduction: ranks[rank]) { _, keep in
-                    for (name, value) in fixture.tensors { try keep(name, value) }
-                }
-            }
+            let (configuration, ranks, models) = try Self.pair()
             #expect(Qwen35PromptWavefront.supports(models[0].model))
             let cases: [(name: String, kind: ClusterStageKVBackendKind, prompt: Int, limit: Int, capture: Int, beside: Bool,
                          restore: Int)] = [
@@ -337,5 +332,73 @@ struct QwenTensorParallelPromptWavefrontTests {
                 #expect(before[0].logits != before[1].logits, "\(item.name): ranks hold distinct vocabulary halves")
             }
         }
+    }
+
+    struct Reservation: QwenTensorParallelBatchReservation {
+        let request: QwenLayerStageGenerationRequest
+        let deadline: UInt64 = .max
+        var laneStateBytes: Int { 1 }
+        var joinable: Bool { true }
+    }
+
+    /// The native executor runs the leader's planned step: a 1,100-token
+    /// prompt in one merged step selects the token one frame a step selects,
+    /// on both ranks, and a lane takes a planned token count only where it
+    /// ends one of its own steps (`promptStep(tokens:)`).
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["QWEN_TP_BATCH_GPU"] == "1"))
+    func executorRunsThePlannedMergedStep() throws {
+        try Device.withDefaultDevice(.gpu) {
+            let (configuration, ranks, models) = try Self.pair()
+            let shape = try Self.request(prompt: 1_100)
+            let request = try QwenLayerStageGenerationRequest(profile: shape.profile, requestID: UUID(),
+                promptTokenIDs: shape.promptTokenIDs, chunkSize: 512, outputCount: 16, stopTokenIDs: [])
+            func selected(limit: Int) throws -> [(token: Int, steps: Int)] {
+                let results = (0..<2).map { _ in ExecutorResult() }
+                let lanes = try (0..<2).map { rank -> QwenTensorParallelNativeBatchLane in
+                    let host = try CBv2StageKVHost(model: models[rank].model, kind: .paged, lanes: 1,
+                        maximumTokensPerRequest: 1_116, maximumChunkTokens: 512)
+                    let executor = try QwenTensorParallelNativeBatchExecutor<Reservation>(model: models[rank],
+                        configuration: configuration, host: host, group: ranks[rank], prepare: { _, _ in nil },
+                        completedDecode: { _ in }, completedPrefill: {}, releaseResources: { _ in })
+                    let lane = try executor.open(.init(request: request), check: {})
+                    if rank == 0 {
+                        #expect(lane.promptStep(tokens: 1_100) == QwenTensorParallelPromptWavefront.step(
+                            lane.session.promptFrames(limit: 3)))
+                        #expect(lane.promptStep(tokens: 1_024)?.finalPromptChunk == false)
+                        #expect(lane.promptStep(tokens: 700) == nil && lane.promptStep(tokens: 2_048) == nil)
+                    }
+                    results[rank].executor = executor
+                    return lane
+                }
+                defer { for lane in lanes { try? lane.session.retire() } }
+                let threads = TensorParallelRankThreads()
+                threads.run { rank in
+                    Device.withDefaultDevice(.gpu) {
+                        do {
+                            let lane = lanes[rank], executor = try #require(results[rank].executor)
+                            var steps = 0, token: Int?
+                            while lane.nextFrame?.phase == .prefill {
+                                let step = try #require(lane.promptStep(frames: limit))
+                                token = try executor.prefill(lane, frame: step, check: {}); steps += 1
+                            }
+                            results[rank].selection = (try #require(token), steps)
+                        } catch { results[rank].failure = error }
+                    }
+                }
+                for result in results { if let failure = result.failure { throw failure } }
+                return try results.map { try #require($0.selection) }
+            }
+            let one = try selected(limit: 1)
+            let merged = try selected(limit: QwenTensorParallelPromptWavefront.maximumFrames)
+            #expect(one.map(\.steps) == [3, 3] && merged.map(\.steps) == [1, 1])
+            #expect(one.map(\.token) == merged.map(\.token) && one[0].token == one[1].token)
+        }
+    }
+
+    /// One rank thread's executor and selection.
+    final class ExecutorResult: @unchecked Sendable {
+        var executor: QwenTensorParallelNativeBatchExecutor<Reservation>?
+        var selection: (token: Int, steps: Int)?
+        var failure: Error?
     }
 }

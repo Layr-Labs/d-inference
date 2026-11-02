@@ -5229,7 +5229,10 @@ flowchart LR
   into the run's evaluation. The prompt's last frame takes `cbv2Forward`'s fused
   residual norms and whole-frame head, as alone. After each phase the raw sums
   the row-parallel projections issued (`QwenTensorParallelRowLinear.issuedSums`)
-  are submitted (`asyncEval`).
+  are submitted (`asyncEval`), and building waits while more than
+  `QwenTensorParallelPromptWavefront.sumsInFlight` (4) are unfinished. Without
+  that bound MLX encodes, and allocates, the independent frames' phases up to
+  `MLX_MAX_ACTIVE_TASKS` tasks ahead of the link.
 - **Commit.** The run validates the step's frontier and commits once; the
   session then commits each frame on its schedule and takes a prefix capture
   when the step reaches the frontier, as after a lone frame.
@@ -5253,10 +5256,9 @@ Invariants:
    frames' FP32 collective payload: two partials, two sums and the BF16
    residual rows) joins the shared prompt workspace of
    `QwenTensorParallelBatchBudget`, so LOAD, the placement quote and every
-   request's charge (`QwenTensorParallelRequestCharge`) include it: 367,001,600
-   bytes a 27B rank at 512-row frames.
-   `mergedStepTemporariesStayWithinTheirCharge` measures a merged step against
-   it.
+   request's charge (`QwenTensorParallelRequestCharge`) include it. Its value
+   and measurements are in the
+   [TP batch admission boundary](hardware-support.md#qwen27-tp-batch-admission-boundary).
 5. The load agreement binds `qwen-tensor-parallel-prompt-wavefront-v1` and the
    frame limits; `DARKBLOOM_QWEN_TP_PROMPT_WAVEFRONT=0` (diagnosis only, both
    ranks) restores one frame a step.
@@ -5268,12 +5270,13 @@ two-frame step instead of one frame.
 
 `darkbloom-cluster-tp-check qwen-prefill --wavefronts 1,8` times one rank's
 steps with no peer; `darkbloom-cluster-tp-check qwen-wavefront` runs a prompt on
-two ranks over the loopback ring at each frame limit and checks that every run
-leaves both ranks the same bytes. Loopback timings show the overlap, never a
-pair's rate: on one M5 Ultra, 4-layer shards at the 27B's per-rank widths
-(`qwen-rows synthesize`) prefilled 11,264 tokens over the sealed ring in
-934-1,003 ms in steps of two or eight frames, against 1,514-1,522 ms one frame
-a step, every run with the same bytes on both ranks.
+two ranks over the loopback ring at each frame limit, logs each run's peak
+memory (`peak_mb`) and checks that every run leaves both ranks the same bytes.
+Loopback timings show the overlap, never a pair's rate: on one M5 Ultra, 4-layer
+shards at the 27B's per-rank widths (`qwen-rows synthesize`) prefilled 11,264
+tokens over the sealed ring in 848-961 ms in steps of two or eight frames,
+against 1,517-1,522 ms one frame a step, every run with the same bytes on both
+ranks.
 
 Sources: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/TensorParallel/QwenTensorParallelPromptWavefront.swift`
 (`QwenTensorParallelPromptWavefront`),

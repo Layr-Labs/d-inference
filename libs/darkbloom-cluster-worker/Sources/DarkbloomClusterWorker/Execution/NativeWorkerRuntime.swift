@@ -133,7 +133,9 @@ final class NativeWorkerRuntime: WorkerRuntime, @unchecked Sendable {
         case .glm5NextTensorParallel(let runtime): runtime.refreshServingContext()
         // Nil for a row whose profile is its memory plan.
         case .qwenTensorParallel(let runtime): runtime.refreshServingContext()
-        case .mimoV26, .glm5Next: nil
+        // A GLM pipeline rank admits each request on arrival: its context fits live memory.
+        case .glm5Next(let runtime): runtime.refreshServingContext()
+        case .mimoV26: nil
         }
     }
     /// Qwen tensor parallel's lanes re-derive their serving context on a

@@ -4112,6 +4112,50 @@ The GLM finite-calibration adapter samples each Mac locally and reuses `GLM5Next
 
 The installed run command recomputes the decision from both snapshots, binds it to the unchanged local template, and then invokes the existing signed quotation/owner path with the chosen cut. Local and peer quotes must still agree, and current-device/load/reserve/start checks retain authority. Public endpoint activation, automated calibration scheduling and a MiMo adapter for this exact-quote seam are separate integrations.
 
+## GLM pair admission
+
+A serving GLM pipeline rank reserves no request at LOAD
+(`GLM5NextResidentResourceEnvelope.admitsRequestsOnArrival`, which only
+`GLM5NextResidentRuntime.serving` asks `GLM5NextServingResources.envelope` for).
+
+1. **LOAD** holds, and is gated on, the stage's weights at their allocator
+   bounds plus what only loading holds: construction copies, host read buffers
+   and metadata (`GLM5NextResidentResourceEnvelope.quote`). That sum must fit the
+   rank's load capacity, the GPU's recommended working set, and the live host
+   gate with its floor and loading headroom. The stage gate reserves no request
+   state or workspace (`GLM5NextStageLoadGate`, `reservesRequest: false`).
+2. **Each request** is charged at its own context: the memory plan's scope cut
+   to it (`GLM5NextResidentResourceEnvelope.budget(descriptor:contextTokens:)`).
+   The existing reservation gate admits it (`GLM5NextResidentRuntime.reserve`):
+   - the host memory gate with its floor and loading headroom;
+   - the allocator limit;
+   - the GPU's working set beside the loaded stage (`requireMemory`).
+
+   The activation floor is part of every charge. Kept prompt prefixes give way
+   first. A request that still does not fit is refused cleanly, and the running
+   request is rechecked as it runs.
+3. **READY and every keep-warm answer** report the longest context that fits
+   now (`GLM5NextResidentRuntime.servingContext`, `refreshServingContext`). The
+   pair refuses a longer request before asking either rank. The value is 1 when
+   nothing fits, until memory frees.
+
+The planner places such a rank on what loading needs. It requires the GPU to
+hold the weights with the memory plan's whole request, and reports each rank's
+serving context (`ClusterModelLayout.requestsOnArrival`,
+`ClusterPlacementRank.servingContextTokens`). Its estimate of one Mac holding
+the whole model alone keeps the full quote, as that Mac's own engine loads it. When a GPU limit binds, the plan
+names it, and the command that raises it on the Macs that command runs on
+(`ClusterPlacementRank.gpuWorkingSetShortBytes`, `ClusterPlacementFlow.gpuLimitLines`,
+`GLM5NextGPULimitEligibility`).
+
+A quote above a capacity refuses with the rank, the cut, and each term against
+that capacity (`GLM5NextResidentResourceEnvelope.capacityRefusal`).
+
+Tensor parallel's quotes of the two stages, the staged reference and
+calibration envelopes still reserve the whole request at LOAD.
+[GLM-5.3-Flash pairs on 128 GB Macs](hardware-support.md#glm-53-flash-pairs-on-128-gb-macs)
+has the figures for two M5 Max.
+
 ## GLM cluster prefill bounds
 
 The registered NVFP4 GLM cluster candidate admits a maximum prefill chunk of

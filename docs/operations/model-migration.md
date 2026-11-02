@@ -74,14 +74,19 @@ coordinator logs `provider now advertises build (models_update)` and
 against the desired build — capacity never black-holes. There are no weights,
 ramps, or migration controllers.
 
-**The operator's filter wins.** A provider whose operator set `enabled_models`
-(or switched models with `darkbloom switch`) converges only when the desired
-build is in that filter. Otherwise it keeps serving the previous build, which
-routing still accepts as the alias fallback, and logs `desired_models: <alias> →
-<build> is outside the enabled model filter; not converging`. Such an operator
-moves by adding the new build with `darkbloom switch`. Providers with an empty
-`enabled_models` converge as before. Count the providers still advertising the
-previous build before you retire it.
+**The operator's filter wins.** A provider converges only when the desired
+build is in its [operator filter](../reference/configuration.md#provider-model-selection).
+A background `darkbloom start` and every `darkbloom switch` save that filter, so
+almost every provider has one and almost none lists a newly published build: a
+flip converges providers with an empty `enabled_models` and nobody else until
+operators pick the new build. The others keep serving the previous build and log
+`desired_models: <alias> → <build> is outside the enabled model filter; not
+converging`. `ResolveModel` sends alias traffic to the desired build whenever a
+provider can take it, so previous-build providers then serve only overflow, and
+providers on a retired build serve none of it. After the flip, ask operators to
+run `darkbloom switch` and pick the public model's name, which the picker then
+maps to the desired build; before retiring the previous build, count the
+providers still advertising it.
 
 ## Steps
 

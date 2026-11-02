@@ -244,11 +244,11 @@ stops the driver at its next candidate, and the current step finishes normally.
 9. Without saved consent, or with downloads turned off, there is no download, no
    `inventory_downloads` capability and no `download_storage`
    (`autopilotDownloadsEnabled`, `handlePrefetchModelRequest`).
-10. Ordinary coordinator commands reach only the operator's filter: a nonempty
-    `enabled_models` with the start selection, then each live switch.
-    `load_model`, `prefetch_model`, a desired build and a selected build's alias
-    successor outside it are refused or skipped (`autopilotAllowsModel`,
-    `operatorFilterAllows`); an empty `enabled_models` filters nothing. Consented
+10. Without Autopilot, coordinator `load_model`, `prefetch_model` and desired
+    builds stay inside the
+    [operator filter](../reference/configuration.md#provider-model-selection), and
+    a selected build's alias successor becomes ordinary only inside it, with or
+    without consent (`autopilotAllowsModel`, `operatorFilterAllows`). Consented
     downloads and operations keep their own gates.
 
 ## Failure modes

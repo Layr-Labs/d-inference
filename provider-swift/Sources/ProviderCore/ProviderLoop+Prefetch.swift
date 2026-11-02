@@ -379,8 +379,9 @@ extension ProviderLoop {
 
         for entry in entries {
             let desired = entry.desiredBuild
-            guard !desired.isEmpty, autopilotAllowsModel(desired) else {
-                if !desired.isEmpty, !operatorFilterAllows(desired) {
+            guard !desired.isEmpty else { continue }
+            guard autopilotAllowsModel(desired) else {
+                if !operatorFilterAllows(desired) {
                     logger.info("desired_models: \(entry.modelName) → \(desired) is outside the enabled model filter; not converging")
                 }
                 continue

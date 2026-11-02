@@ -61,11 +61,11 @@ struct DistributedAutomaticBatchPlanner {
 
     /// An automatic replacement cannot promise that unrelated memory will
     /// disappear. A present-fit preview uses the same bilateral predicate as
-    /// the mandatory post-release recheck; hardware possibility alone is not
+    /// the mandatory post-release recheck and a saved width at placement
+    /// (`ClusterPlacementTensorWidth`); hardware possibility alone is not
     /// current admission.
     static func accepts(_ candidate: ClusterPlacementCandidate, requireNow: Bool) -> Bool {
-        candidate.possible && candidate.withinGPUWorkingSet
-            && (!requireNow || candidate.ranks.allSatisfy { $0.fit == .now })
+        candidate.admitted(requireNow: requireNow)
     }
 
     /// Preview only, for a request-owned TP owner whose replacement keeps its

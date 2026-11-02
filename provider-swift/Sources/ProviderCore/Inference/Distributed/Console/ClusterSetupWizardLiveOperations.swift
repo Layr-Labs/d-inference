@@ -595,7 +595,7 @@ final class LiveContext: @unchecked Sendable {
             let manifest = ClusterSetupModelFolders.readManifest(directory.appendingPathComponent("manifest.json")) ?? Data()
             let assistantQuote: Result<ClusterPlacementTensorBatchQuote, ClusterSetupFailure>?
             var targetFallback: Result<ClusterPlacementTensorBatchQuote, ClusterSetupFailure>? = nil
-            var discoveredWidening: ClusterPlacementTensorBatchQuote?, fallbackWidening: ClusterPlacementTensorBatchQuote?
+            var discoveredWidths: [ClusterPlacementTensorBatchQuote] = [], fallbackWidths: [ClusterPlacementTensorBatchQuote] = []
             if !settings.privateImageQualification,
                case .success(let admittedValue) = capability,
                ClusterPlacementTensorBatchQuote.runtimeModelIDs.contains(admittedValue.record.runtimeModelID) {
@@ -605,6 +605,17 @@ final class LiveContext: @unchecked Sendable {
                         ? ClusterPlacementRequestLimits.chunkTokens(runtimeModelID: admitted.runtimeModelID,
                             artifactSHA256: admitted.artifactSHA256, layoutMaximum: measured.maximumChunkTokens,
                             capabilityMaximum: admitted.profile.maximumChunkTokens).tokens : description.chunkTokens
+                    // The same owner's complete quote at every wider width, each of the singleton's own request and
+                    // assistant: the plan saves the widest both Macs admit now, and the two-lane one also steers the
+                    // retained split (capacity changes keep the shares). A width the helper does not quote is not offered.
+                    func widths(of singleton: ClusterPlacementTensorBatchQuote?, mode: MTPMode) -> [ClusterPlacementTensorBatchQuote] {
+                        guard let singleton else { return [] }
+                        return ClusterPlacementBatchScope.tensorParallelWidths.compactMap { lanes in
+                            try? ClusterPlacementTensorAssistantSelection.readAutomatic(tool: tool, modelDirectory: directory,
+                                publicModelID: model.modelID, capability: admitted, mode: mode, chunkTokens: chunk,
+                                deadline: deadline(), lanes: lanes)
+                        }.filter { $0.request == singleton.request && $0.assistant?.policy == singleton.assistant?.policy }
+                    }
                     if mtpMode != .off, SpecDecArtifactFunnel.killSwitchEnabled(environment: ProcessInfo.processInfo.environment),
                        let policy = settings.tensorAssistants[model.modelID] {
                         assistantQuote = .success(try ClusterPlacementTensorAssistantSelection.read(tool: tool,
@@ -617,31 +628,26 @@ final class LiveContext: @unchecked Sendable {
                             modelDirectory: directory, publicModelID: model.modelID, capability: admitted,
                             mode: discovery, chunkTokens: chunk, deadline: deadline())
                         assistantQuote = discovered.map { .success($0) }
-                        // Capacity changes keep the shares, so the first widening's complete
-                        // quote steers the initial split; without it the choice is speed-only.
-                        if discovered != nil {
-                            discoveredWidening = try? ClusterPlacementTensorAssistantSelection.readAutomatic(tool: tool,
-                                modelDirectory: directory, publicModelID: model.modelID, capability: admitted,
-                                mode: discovery, chunkTokens: chunk, deadline: deadline(), lanes: 2)
-                        }
+                        discoveredWidths = widths(of: discovered, mode: discovery)
                         // Only a discovered assistant may give way to the ordinary target (`assistantOrTarget`).
                         if discovered?.assistant != nil {
+                            var target: ClusterPlacementTensorBatchQuote?
                             do {
-                                targetFallback = try ClusterPlacementTensorAssistantSelection.readAutomatic(tool: tool,
+                                target = try ClusterPlacementTensorAssistantSelection.readAutomatic(tool: tool,
                                     modelDirectory: directory, publicModelID: model.modelID, capability: admitted,
-                                    mode: .off, chunkTokens: chunk, deadline: deadline()).map { .success($0) }
+                                    mode: .off, chunkTokens: chunk, deadline: deadline())
+                                targetFallback = target.map { .success($0) }
                             } catch { targetFallback = .failure(ClusterSetupFailure(error)) }
-                            fallbackWidening = try? ClusterPlacementTensorAssistantSelection.readAutomatic(tool: tool,
-                                modelDirectory: directory, publicModelID: model.modelID, capability: admitted,
-                                mode: .off, chunkTokens: chunk, deadline: deadline(), lanes: 2)
+                            fallbackWidths = widths(of: target, mode: .off)
                         }
                     }
                 } catch { assistantQuote = .failure(ClusterSetupFailure(error)) }
             } else { assistantQuote = nil }
             return .init(model: model, layout: layout, capability: capability,
                 tokenizerFiles: ClusterSetupPlanning.tokenizerFiles(manifest: manifest), tensorAssistantQuote: assistantQuote,
-                targetFallbackQuote: targetFallback, tensorWideningQuote: discoveredWidening,
-                targetFallbackWideningQuote: fallbackWidening)
+                targetFallbackQuote: targetFallback, tensorWideningQuote: discoveredWidths.first { $0.lanes == 2 },
+                targetFallbackWideningQuote: fallbackWidths.first { $0.lanes == 2 },
+                tensorWidthQuotes: discoveredWidths, targetFallbackWidthQuotes: fallbackWidths)
         }
         // The profiles are kept for the serving leader's per-request route; the speed
         // records of requests this pair served join the measurements (the next plan).

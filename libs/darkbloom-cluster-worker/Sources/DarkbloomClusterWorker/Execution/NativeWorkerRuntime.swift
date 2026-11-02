@@ -53,11 +53,14 @@ final class NativeWorkerRuntime: WorkerRuntime, @unchecked Sendable {
                 speculativeTerms: speculativeTerms, qualification: qualification, dataPlane: dataPlane,
                 prefixSSDKey: prefixSSDKey))
         case .mimoV26 where generationMode == .tensorParallel:
-            // Every layer on both ranks, half of each split weight, sealed sums; text only, MTP off.
-            guard speculativeTerms == nil, tensorShares == [1, 1], let dataPlane else {
-                throw WorkerFailure.invalid("MiMo tensor parallel runs equal shares over a keyed data plane without speculation")
+            // Every layer on both ranks, half of each split weight, sealed sums; text only. `--mtp-depth`
+            // (1...3, MiMo's own terms) adds speculative rounds on heads replicated whole; the installed owner
+            // passes `ClusterMiMoTensorParallel.speculativeDepth`, and a hand launch without it runs none.
+            guard tensorAssistantPolicy == nil, tensorShares == [1, 1], let dataPlane else {
+                throw WorkerFailure.invalid("MiMo tensor parallel runs equal shares over a keyed data plane")
             }
-            owner = .mimoV26TensorParallel(try .load(configuration, qualification: qualification, dataPlane: dataPlane))
+            owner = .mimoV26TensorParallel(try .load(configuration, speculativeDepth: speculativeTerms?.depth,
+                qualification: qualification, dataPlane: dataPlane))
         case .mimoV26:
             // `--mtp-depth` is parsed once for every family; MiMo's own terms bound it (1...3).
             owner = .mimoV26(try .load(configuration, generationMode: generationMode,

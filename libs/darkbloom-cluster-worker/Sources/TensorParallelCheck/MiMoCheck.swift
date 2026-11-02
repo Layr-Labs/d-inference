@@ -7,7 +7,7 @@ import MLX
 // MiMo V2.6 tensor-parallel oracles (MiMoTensorParallelModel), greedy, MTP off:
 //
 //   darkbloom-cluster-tp-check mimo synthesize --output /NEW/DIR [--variant kernel|tiny] [--seed N]
-//       [--dtype bfloat16|float32] [--experts N --top-k K]
+//       [--dtype bfloat16|float32] [--experts N --top-k K] [--mtp yes]
 //       a random MiMo checkpoint (never a model pass), request.json (40-token prompt, longer than the window
 //       and the 16-token chunk), request-short.json (6 tokens, shorter than both) and request-long.json
 //       (192 tokens: three 64-token pages before decode), 64 outputs each
@@ -22,6 +22,9 @@ import MLX
 //       with the product's QwenStageTokenSampler over the gathered row. `--agreement-tamper yes` changes this
 //       rank's agreement (a tp rank must then refuse before loading). `--record-routes yes` (paged) records
 //       every position's routed expert sets; `compare` then reports where they first differ.
+//       `--mtp-depth D` (paged; a `--mtp yes` checkpoint) decodes in speculative rounds: D proposals a round
+//       from the replicated trained heads, or with `--mtp-script REPORT` the tokens of an earlier report
+//       (forced acceptance), every `--mtp-misses K`-th moved off so the target rejects it.
 //   darkbloom-cluster-tp-check mimo compare --reference FILE --candidate FILE [--bitwise yes|no] [--near-tie-ulps U]
 //   darkbloom-cluster-tp-check mimo allsum [--backend ring|socket|jaccl] [--count N]
 //
@@ -86,6 +89,14 @@ enum MiMoCheck {
         var textBytes: Int?
         /// Per position (prompt, then each fed output token), each routed layer's experts.
         var routeSets: [[[Int]]]?
+        /// Speculative rounds (`--mtp-depth`): proposals, how many were kept, kept per position.
+        var speculativeDepth: Int?
+        var speculativeProposals: String?
+        var speculativeRounds: Int?
+        var draftedTokens: Int?
+        var acceptedDrafts: Int?
+        var acceptedByPosition: [Int]?
+        var draftHeadBytes: Int?
     }
 
     static func run(_ arguments: [String]) throws {
@@ -114,13 +125,15 @@ enum MiMoCheck {
               let seed = UInt64(fields["--seed"] ?? "7"),
               let dtypeName = Optional(fields["--dtype"] ?? "bfloat16"), ["bfloat16", "float32"].contains(dtypeName),
               (fields["--experts"] == nil) == (fields["--top-k"] == nil),
-              fields["--experts"].map({ Int($0) != nil }) ?? true, fields["--top-k"].map({ Int($0) != nil }) ?? true else {
-            throw Failure("mimo synthesize needs --output /NEW/DIR [--variant kernel|tiny] [--seed N] [--dtype bfloat16|float32] [--experts N --top-k K]")
+              fields["--experts"].map({ Int($0) != nil }) ?? true, fields["--top-k"].map({ Int($0) != nil }) ?? true,
+              ["yes", "no"].contains(fields["--mtp"] ?? "no") else {
+            throw Failure("mimo synthesize needs --output /NEW/DIR [--variant kernel|tiny] [--seed N] [--dtype bfloat16|float32] [--experts N --top-k K] [--mtp yes]")
         }
         let directory = URL(fileURLWithPath: output, isDirectory: true)
         try MiMoTensorParallelModel.writeSyntheticCheckpoint(directory: directory, variant: variant, seed: seed,
             dtype: dtypeName == "float32" ? .float32 : .bfloat16,
-            experts: fields["--experts"].flatMap { Int($0) }, topK: fields["--top-k"].flatMap { Int($0) })
+            experts: fields["--experts"].flatMap { Int($0) }, topK: fields["--top-k"].flatMap { Int($0) },
+            mtp: fields["--mtp"] == "yes")
         let vocabulary = MiMoTensorParallelModel.syntheticConfiguration(variant)["vocab_size"] as! Int
         for (name, count) in [("request.json", 40), ("request-short.json", 6), ("request-long.json", 192)] {
             let prompt = (0 ..< count).map { ($0 * 37 + 11) % vocabulary }
@@ -145,8 +158,22 @@ enum MiMoCheck {
               fields["--sample-seed"].map({ UInt64($0) != nil }) ?? true,
               ["contiguous", "paged"].contains(fields["--path"] ?? "contiguous"),
               (fields["--agreement-tamper"] ?? "no") == "no" || (fields["--agreement-tamper"] == "yes" && fields["--mode"] == "tp"),
-              (fields["--record-routes"] ?? "no") == "no" || (fields["--record-routes"] == "yes" && fields["--path"] == "paged") else {
+              (fields["--record-routes"] ?? "no") == "no" || (fields["--record-routes"] == "yes" && fields["--path"] == "paged"),
+              fields["--mtp-depth"].map({ Int($0).map { (1 ... 3).contains($0) } ?? false }) ?? true,
+              fields["--mtp-depth"] == nil || fields["--path"] == "paged",
+              (fields["--mtp-script"] == nil && fields["--mtp-misses"] == nil) || fields["--mtp-depth"] != nil,
+              fields["--mtp-misses"].map({ Int($0).map { $0 >= 0 } ?? false }) ?? true else {
             throw Failure("mimo run needs --mode full|simulated|shard|tp, --model-dir, --request, a new --report and bounded options")
+        }
+        var speculative: MiMoTensorParallelModel.SpeculativeOptions?
+        if let depth = fields["--mtp-depth"].flatMap({ Int($0) }) {
+            if let scriptPath = fields["--mtp-script"] {
+                let script = try JSONDecoder().decode(Report.self, from: Data(contentsOf: URL(fileURLWithPath: scriptPath)))
+                speculative = .init(depth: depth, proposals: .scripted(tokens: script.tokenIDs,
+                    missEvery: Int(fields["--mtp-misses"] ?? "0")!))
+            } else {
+                speculative = .init(depth: depth, proposals: .heads)
+            }
         }
         let sampling = fields["--temperature"].map {
             MiMoTensorParallelModel.Sampling(temperature: Float($0)!, seed: UInt64(fields["--sample-seed"] ?? "1")!)
@@ -201,6 +228,13 @@ enum MiMoCheck {
                 workload += "|" + (MiMoTensorParallelPlan.arithmeticAgreementFields
                     + MiMoTensorParallelResidentRuntime.servingAgreementFields(chunkTokens: request.chunkSize)).joined(separator: "|")
             }
+            if let speculative {
+                var proposals = "heads"
+                if case .scripted(let tokens, let missEvery) = speculative.proposals {
+                    proposals = "script-\(tokenDigest(tokens))-\(missEvery)"
+                }
+                workload += "|mtp-depth=\(speculative.depth)|\(proposals)"
+            }
             if fields["--agreement-tamper"] == "yes" { workload += "|tampered-on-rank-\(g.rank)" }
             guard try g.digestsEqual(fnv(workload)) else {
                 throw Failure("the ranks disagree on the workload, the model configuration or the arithmetic contract")
@@ -222,20 +256,30 @@ enum MiMoCheck {
             if verified == nil { verified = (value.aggregateSHA256, value.readBytes, value.textBytes) }
             return value.model
         }
+        var draftHeadBytes: Int?
+        func loadHeads(_ model: MiMoTensorParallelModel) throws {
+            guard let speculative, case .heads = speculative.proposals else { return }
+            draftHeadBytes = try model.loadDraftHeads(modelDirectory: modelDirectory)
+        }
         let model = try load(role, reduction)
-        note("loaded in \(String(format: "%.2f", model.loadSeconds)) s, \(model.loadedParameterBytes) parameter bytes")
+        try loadHeads(model)
+        note("loaded in \(String(format: "%.2f", model.loadSeconds)) s, \(model.loadedParameterBytes) parameter bytes"
+            + (draftHeadBytes.map { ", draft heads \($0) bytes (replicated)" } ?? ""))
         if let group { guard try group.agree([7]) else { throw Failure("load barrier failed") } }
         let generation: MiMoTensorParallelModel.Generation
         var caches: [String?]
         var pairAgrees: Bool?
         if let pair {
             final class Ranks: @unchecked Sendable { let models: [MiMoTensorParallelModel]; init(_ m: [MiMoTensorParallelModel]) { models = m } }
-            let ranks = Ranks([model, try load(.shard(rank: 1), pair.reduction(rank: 1))])
+            let peer = try load(.shard(rank: 1), pair.reduction(rank: 1))
+            try loadHeads(peer)
+            let ranks = Ranks([model, peer])
             let prompt = request.promptTokenIDs, count = request.outputCount, chunk = request.chunkSize
+            let speculative = speculative
             let both = try Gemma4TensorParallelLocalPair.run(device: Device.defaultDevice()) { rank in
                 paged ? try ranks.models[rank].generatePaged(prompt: prompt, outputCount: count, chunk: chunk,
                                                              recordTop: recordTop, sampling: sampling,
-                                                             recordRoutes: recordRoutes)
+                                                             recordRoutes: recordRoutes, speculative: speculative)
                     : try ranks.models[rank].generate(prompt: prompt, outputCount: count, chunk: chunk,
                                                       recordTop: recordTop, sampling: sampling)
             }
@@ -249,7 +293,7 @@ enum MiMoCheck {
             generation = paged
                 ? try model.generatePaged(prompt: request.promptTokenIDs, outputCount: request.outputCount,
                                           chunk: request.chunkSize, recordTop: recordTop, sampling: sampling,
-                                          recordRoutes: recordRoutes)
+                                          recordRoutes: recordRoutes, speculative: speculative)
                 : try model.generate(prompt: request.promptTokenIDs, outputCount: request.outputCount,
                                      chunk: request.chunkSize, recordTop: recordTop, sampling: sampling)
             switch role {
@@ -276,7 +320,11 @@ enum MiMoCheck {
             cacheSHA256: caches, firstTokenSeconds: generation.firstTokenSeconds, decodeSeconds: generation.decodeSeconds,
             ranksAgree: pairAgrees, passed: pairAgrees ?? true, path: paged ? "paged" : nil,
             verifiedAggregateSHA256: verified?.aggregate, readBytes: verified?.readBytes, textBytes: verified?.textBytes,
-            routeSets: generation.routeSets)
+            routeSets: generation.routeSets, speculativeDepth: speculative?.depth,
+            speculativeProposals: speculative.map { if case .heads = $0.proposals { return "heads" } else { return "script" } },
+            speculativeRounds: generation.speculativeRounds, draftedTokens: generation.draftedTokens,
+            acceptedDrafts: generation.acceptedDrafts, acceptedByPosition: generation.acceptedByPosition,
+            draftHeadBytes: draftHeadBytes)
         if let group {
             // Ranks hold different caches; they must agree on everything else.
             let evidence = report.tokenIDsSHA256 + "|" + (generation.stepRowSHA256.last ?? "")
@@ -285,6 +333,10 @@ enum MiMoCheck {
         }
         note("tokens \(String(report.tokenIDsSHA256.prefix(16))): \(generation.tokenIDs.prefix(12).map(String.init).joined(separator: " "))…"
             + (report.ranksAgree.map { " ranks agree: \($0)" } ?? ""))
+        if let rounds = generation.speculativeRounds {
+            note("speculative rounds \(rounds): drafted \(generation.draftedTokens ?? 0), kept \(generation.acceptedDrafts ?? 0)"
+                + " (by position \((generation.acceptedByPosition ?? []).map(String.init).joined(separator: "-")))")
+        }
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys, .prettyPrinted]
         guard FileManager.default.createFile(atPath: reportPath, contents: try encoder.encode(report)) else {

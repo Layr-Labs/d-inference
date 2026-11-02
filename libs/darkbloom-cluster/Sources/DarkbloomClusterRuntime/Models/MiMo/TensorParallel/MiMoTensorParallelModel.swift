@@ -35,6 +35,33 @@ public final class MiMoTensorParallelModel {
     public let loadedParameterBytes: Int
     let model: MiMoV26TextModel
     let reduction: QwenTensorParallelReduction?
+    /// The replicated next-N heads, when loaded (`loadDraftHeads`).
+    private(set) var draftHead: MiMoTensorParallelDraftHead?
+
+    /// Speculative rounds for `generatePaged`: `depth` proposals a round from
+    /// the trained heads, or (oracles) from a script of tokens.
+    public struct SpeculativeOptions: Sendable {
+        public enum Proposals: Sendable {
+            case heads
+            /// Proposal for output index i is `tokens[i]`, except every
+            /// `missEvery`-th (0: none), moved to the next token ID.
+            case scripted(tokens: [Int], missEvery: Int)
+        }
+        public let depth: Int
+        public let proposals: Proposals
+        public init(depth: Int, proposals: Proposals) { self.depth = depth; self.proposals = proposals }
+    }
+
+    /// Reads the three trained heads whole (replicated on every rank) from a
+    /// checkpoint directory with its own manifest; returns their bytes.
+    @discardableResult
+    public func loadDraftHeads(modelDirectory: URL) throws -> Int {
+        let head = try MiMoTensorParallelDraftHead.load(modelDirectory: modelDirectory, target: self)
+        draftHead = head
+        return head.headBytes
+    }
+
+    func adopt(draftHead: MiMoTensorParallelDraftHead) { self.draftHead = draftHead }
 
     /// Reads a checkpoint directory (`config.json`, `model.safetensors.index.json`
     /// and the files it names) directly: tools and oracles. Excluded
@@ -219,6 +246,11 @@ public final class MiMoTensorParallelModel {
         /// Per position (prompt, then each fed output token), each routed
         /// layer's selected experts, ascending; when recorded.
         public var routeSets: [[[Int]]]?
+        /// Speculative rounds: rounds with proposals, proposals drafted and kept, kept per position.
+        public var speculativeRounds: Int?
+        public var draftedTokens: Int?
+        public var acceptedDrafts: Int?
+        public var acceptedByPosition: [Int]?
         public var firstTokenSeconds = 0.0
         public var decodeSeconds = 0.0
         public var peakActiveBytes = 0

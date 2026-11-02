@@ -72,6 +72,42 @@ struct ContextAdmissionTests {
         }
     }
 
+    /// A decode step's command buffers can keep every attending layer's
+    /// temporaries alive at once (`QwenLayerStageSession.decodeCommandBuffers`):
+    /// the transient prices those rows whenever they outnumber the prompt frame's.
+    @Test func theDecodeStepPricesEveryAttendingLayersRowsAtOnce() throws {
+        let g = try Self.geometry()
+        func bytes(chunk: Int, decodeRows: Int, attention: Bool = true) throws -> Int {
+            try QwenResidentPrefillTransient.bytes(geometry: g, stageHasAttention: attention, chunkTokens: chunk,
+                contextTokens: 30_848, decodeRows: decodeRows)
+        }
+        let row = 24 * 30_848 * 4 + 24 * 256 * 4
+        // A one-token prompt on a stage of eight attending layers decodes eight rows at once.
+        #expect(try bytes(chunk: 1, decodeRows: 8) == 8 * row)
+        // A verify window of four rows on each of them: 32.
+        #expect(try bytes(chunk: 2, decodeRows: 32) == 32 * row)
+        // A 512-row frame already covers them, so the LOAD quote's charge is unchanged.
+        #expect(try bytes(chunk: 512, decodeRows: 32) == (try bytes(chunk: 512, decodeRows: 0)))
+        // The decoding rank of a phase split prices the producer stage's layers too.
+        #expect(try bytes(chunk: 1, decodeRows: 8, attention: false) == 8 * row)
+        #expect(try bytes(chunk: 1, decodeRows: 0, attention: false) == 0)
+        #expect(throws: (any Error).self) { _ = try bytes(chunk: 1, decodeRows: -1) }
+    }
+
+    @Test func eachModeNamesTheRowsAndLayersItsDecodeRuns() {
+        let terms = QwenMTPTerms.standard
+        #expect(LayerStageDecodeShape(mode: .pipeline, rank: 1, speculativeTerms: nil) == .plain)
+        #expect(LayerStageDecodeShape(mode: .pipelineCompactDecode, rank: 0, speculativeTerms: nil) == .plain)
+        #expect(LayerStageDecodeShape(mode: .pipelineMTP, rank: 0, speculativeTerms: terms)
+            == .init(rows: terms.depth + 1))
+        // A phase split's producer rank hands its prompt state over and runs no decode forward.
+        #expect(LayerStageDecodeShape(mode: .phaseSplit, rank: 0, speculativeTerms: nil) == .init(rows: 0))
+        #expect(LayerStageDecodeShape(mode: .phaseSplitMTP, rank: 0, speculativeTerms: terms) == .init(rows: 0))
+        #expect(LayerStageDecodeShape(mode: .phaseSplit, rank: 1, speculativeTerms: nil) == .init(wholeModel: true))
+        #expect(LayerStageDecodeShape(mode: .phaseSplitMTP, rank: 1, speculativeTerms: terms)
+            == .init(rows: terms.depth + 1, wholeModel: true))
+    }
+
     @Test func theLargestAdmissibleContextIsFoundByBinarySearch() throws {
         var calls = 0
         func below(_ limit: Int) -> (Int) throws -> Bool { { calls += 1; return $0 <= limit } }

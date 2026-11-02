@@ -1897,6 +1897,36 @@ preserving conservative memory charges. These tests do not load the registered
 weight payload or establish hardware numerical qualification. See the
 [native dtype contract](../architecture/inference.md#gpt-oss-native-residual-dtype).
 
+## Pipeline decode command buffer checks
+
+`PipelineDecodeCommandBufferTests` drives random synthetic stages of each
+layer-stage family as its stage session does: the prompt under the rank's
+16-operation guard, then decode once under a guard and once under
+`QwenLayerStageSession.decodeCommandBuffers`. Every output row, verify window
+and cache or state array must be byte-equal. The cases are a dense and a
+routed-expert Qwen 3.5 on a paged stage KV host (decode steps, a captured verify
+window kept to two rows, and two lanes), two Nemotron stages, a Gemma 4 decoder
+(one request and two lanes), two GPT-OSS stages (decode and lanes) and the
+verified GLM fixture's two stages. The reference run keeps the rank's guard,
+except routed Qwen and Gemma, which use `bankGuard`: their expert banks of 2 Mi
+elements each commit a buffer, as registered banks do. The Nemotron and GLM
+fixtures are too small for any size bound, so every family also runs with a
+buffer every second dispatch (`everyOperation`), a finer partition than one
+buffer per bank. Build and stage the runtime tests as described for the cluster
+runtime tests above, then, with the same build flags:
+
+```bash
+swift test --package-path libs/darkbloom-cluster -c release --skip-build --no-parallel \
+  --filter 'PipelineDecodeCommandBufferTests|ContextAdmissionTests|ResidentAdmissionNemotronTests|GPTOSSResidentAdmissionTests|ResidentAdmissionGemma4Tests'
+```
+
+The admission suites check each family's decode-row charge. These are synthetic
+GPU checks: not registered weights, pair runs, speed or peak memory. Served
+Qwen, Nemotron and Gemma 4 stages all attend through the paged stage KV, but
+only the Qwen cases use it here; the Nemotron and Gemma 4 cases keep
+request-owned KV. See
+[pipeline decode command buffers](../architecture/inference.md#pipeline-decode-command-buffers).
+
 ## Qwen batch projection arithmetic
 
 `libs/mlx-swift-lm/Tests/MLXLMTests/Integration/Qwen/Qwen35BatchDecodeProjectionTests.swift`

@@ -232,9 +232,30 @@ enum MiMoMTPGeneration {
     }
 
     /// Rank 0: run each window rank 1 asks for, check what it keeps, publish.
+    /// Every round encodes as a decode step does (`MiMoLayerStageSession.decodeCommandBuffers`).
     static func runProducer(session: MiMoLayerStageSession, control: QwenLayerStageGenerationControl,
                             terms: MiMoMTPTerms, collective: Collective,
                             onCommittedToken: (Int) throws -> Bool, check: () throws -> Void) throws -> Outcome {
+        try GPU.withCommandBufferLimits(MiMoLayerStageSession.decodeCommandBuffers) {
+            try producerRounds(session: session, control: control, terms: terms, collective: collective,
+                               onCommittedToken: onCommittedToken, check: check)
+        }
+    }
+
+    /// Rank 1: draft, verify each window rank 0 runs, keep, and follow rank
+    /// 0's publication. Every round, drafts included, encodes as a decode
+    /// step does (`MiMoLayerStageSession.decodeCommandBuffers`).
+    static func runConsumer(session: MiMoLayerStageSession, decoder: MiMoMTPDecoder,
+                            control: QwenLayerStageGenerationControl, collective: Collective,
+                            check: () throws -> Void) throws -> Outcome {
+        try GPU.withCommandBufferLimits(MiMoLayerStageSession.decodeCommandBuffers) {
+            try consumerRounds(session: session, decoder: decoder, control: control, collective: collective, check: check)
+        }
+    }
+
+    private static func producerRounds(session: MiMoLayerStageSession, control: QwenLayerStageGenerationControl,
+                                       terms: MiMoMTPTerms, collective: Collective,
+                                       onCommittedToken: (Int) throws -> Bool, check: () throws -> Void) throws -> Outcome {
         let agreement = control.agreement
         guard collective.rank == 0 else { throw ProbeError("Only rank 0 runs the producer side of a speculative round") }
         var selected: [Int] = [], discarded = 0
@@ -295,11 +316,9 @@ enum MiMoMTPGeneration {
         return .init(selected: selected, finalDecision: finalDecision, discardedDecodeForwards: discarded, statistics: nil)
     }
 
-    /// Rank 1: draft, verify each window rank 0 runs, keep, and follow rank
-    /// 0's publication.
-    static func runConsumer(session: MiMoLayerStageSession, decoder: MiMoMTPDecoder,
-                            control: QwenLayerStageGenerationControl, collective: Collective,
-                            check: () throws -> Void) throws -> Outcome {
+    private static func consumerRounds(session: MiMoLayerStageSession, decoder: MiMoMTPDecoder,
+                                       control: QwenLayerStageGenerationControl, collective: Collective,
+                                       check: () throws -> Void) throws -> Outcome {
         let agreement = control.agreement, request = agreement.request
         guard collective.rank == 1 else { throw ProbeError("Only rank 1 runs the consumer side of a speculative round") }
         let stopTokens = Set(request.stopTokenIDs)

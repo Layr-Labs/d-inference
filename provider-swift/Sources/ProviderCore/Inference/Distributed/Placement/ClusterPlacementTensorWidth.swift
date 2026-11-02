@@ -28,7 +28,8 @@ enum ClusterPlacementTensorWidth {
             var widened = policy
             try quote.applyWidth(to: &widened, layout: layout)
             widened.modes = [.tensorParallel]; widened.schedules = [chosen.prefillSchedule]
-            widened.modesReason = widened.modesReason ?? "its concurrent requests are sized on the chosen tensor-parallel placement"
+            widened.modesReason = widened.modesReason
+                ?? "its tensor-parallel placement, chosen for one request, is sized for \(quote.lanes) at once"
             widened.leader = leader; widened.requiredTensorShares = chosen.tensorShares ?? [1, 1]
             let result = try ClusterPlacementPlanner.plan(devices: devices, layout: layout, policy: widened, link: link)
             guard let wide = result.chosen, wide.mode == .tensorParallel, wide.ranks.map(\.device) == chosen.ranks.map(\.device),

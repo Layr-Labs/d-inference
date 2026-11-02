@@ -28,19 +28,12 @@ struct SandboxHostFacts: Equatable, Sendable {
     var userName = NSUserName()
 }
 
-/// Whether this Mac can host sandboxes and how many jobs it can run at once.
-///
-/// The slot rules are the add-on installer's own (its `SlotSizing`), so this
-/// estimate matches the slots the installer then chooses: the owner keeps a
-/// quarter of the cores (at least 2) and of the memory (at least 8 GiB), a
-/// running inference provider keeps another quarter of the memory, a Linux
-/// slot takes 4 cores and 16 GiB and a macOS slot 8 cores and 16 GiB, handed
-/// out Linux, macOS, Linux, macOS, then Linux only. Disk: a free-space floor
-/// of a tenth of the volume (50 to 100 GiB) stays free, the images need
-/// 50 GiB above it and each Linux slot a 30 GiB scratch disk.
+/// Whether this Mac can host sandboxes, from the checks setup makes itself:
+/// chip, macOS, desktop session, network, power and sleep. How many jobs it
+/// can run at a time is the add-on's own plan (`SandboxSizingPlan`), which
+/// setup asks the installer for; `estimatedPlan` is the fallback for an
+/// installer without one.
 struct SandboxEligibility: Equatable, Sendable {
-    enum Limit: Equatable, Sendable { case cores, memory, disk, maximum }
-
     struct Check: Equatable, Sendable {
         let level: DiagnosticLevel
         let name: String
@@ -50,73 +43,14 @@ struct SandboxEligibility: Equatable, Sendable {
 
     static let gib: Int64 = 1 << 30
     static let minimumMacOSMajor = 27
-    static let linuxCores = 4
-    static let macOSCores = 8
-    static let slotMemory: Int64 = 16 << 30
-    /// The most requested macOS runner size.
-    static let largeMacOSCores = 12
-    static let largeMacOSMemory: Int64 = 32 << 30
-    static let imageBytes: Int64 = 50 << 30
-    static let linuxScratchBytes: Int64 = 30 << 30
     static let maximumLinuxSlots = 16
     /// macOS runs at most two macOS VMs at once, the owner's own included.
     static let maximumMacOSSlots = 2
 
-    static func freeSpaceFloor(volumeBytes: Int64) -> Int64 {
-        max(50 << 30, min(volumeBytes / 10, 100 << 30))
-    }
-
     let facts: SandboxHostFacts
-    let keptCores: Int
-    let keptMemory: Int64
-    let providerMemory: Int64
-    /// Cores and memory left for jobs.
-    let jobCores: Int
-    let jobMemory: Int64
-    let diskFloor: Int64
-    let imageSpace: Int64
-    /// Free space above the floor once the images are in; negative when short.
-    let diskForJobs: Int64
-    let linuxSlots: Int
-    let macOSSlots: Int
-    let linuxLimit: Limit
-    let macOSLimit: Limit
-    /// A 12-core, 32 GB macOS job fits in what is left for jobs.
-    let largeMacOSFits: Bool
 
     init(_ facts: SandboxHostFacts) {
         self.facts = facts
-        keptCores = max(2, facts.cores / 4)
-        keptMemory = max(8 * Self.gib, facts.memoryBytes / 4)
-        providerMemory = facts.providerRunning ? facts.memoryBytes / 4 : 0
-        jobCores = max(0, facts.cores - keptCores)
-        jobMemory = max(0, facts.memoryBytes - keptMemory - providerMemory)
-        diskFloor = Self.freeSpaceFloor(volumeBytes: facts.volumeBytes)
-        imageSpace = facts.imagesInstalled ? 0 : Self.imageBytes
-        diskForJobs = facts.freeBytes - diskFloor - imageSpace
-        let linuxByDisk = diskForJobs < 0 ? 0 : min(Self.maximumLinuxSlots, Int(diskForJobs / Self.linuxScratchBytes))
-        let macOSByDisk = diskForJobs >= 0 ? Self.maximumMacOSSlots : 0
-        var (cores, memory, linux, macOS) = (jobCores, jobMemory, 0, 0)
-        var added = true
-        while added {
-            added = false
-            if linux < linuxByDisk, cores >= Self.linuxCores, memory >= Self.slotMemory {
-                (linux, cores, memory, added) = (linux + 1, cores - Self.linuxCores, memory - Self.slotMemory, true)
-            }
-            if macOS < macOSByDisk, cores >= Self.macOSCores, memory >= Self.slotMemory {
-                (macOS, cores, memory, added) = (macOS + 1, cores - Self.macOSCores, memory - Self.slotMemory, true)
-            }
-        }
-        func limit(_ count: Int, byDisk: Int, maximum: Int, needs: Int) -> Limit {
-            if count == maximum { return .maximum }
-            if count == byDisk { return .disk }
-            return cores < needs ? .cores : .memory
-        }
-        linuxSlots = linux
-        macOSSlots = macOS
-        linuxLimit = limit(linux, byDisk: linuxByDisk, maximum: Self.maximumLinuxSlots, needs: Self.linuxCores)
-        macOSLimit = limit(macOS, byDisk: macOSByDisk, maximum: Self.maximumMacOSSlots, needs: Self.macOSCores)
-        largeMacOSFits = macOSByDisk > 0 && jobCores >= Self.largeMacOSCores && jobMemory >= Self.largeMacOSMemory
     }
 
     /// A reason this Mac can never host sandboxes as it is, whatever its size.
@@ -138,38 +72,8 @@ struct SandboxEligibility: Equatable, Sendable {
         return nil
     }
 
-    var eligible: Bool { refusal == nil && linuxSlots + macOSSlots > 0 }
-
-    /// Why no job fits, when none does.
-    var shortfall: String? {
-        guard refusal == nil, linuxSlots + macOSSlots == 0 else { return nil }
-        let kept = "the \(gb(keptMemory)) GB kept for you"
-            + (providerMemory > 0 ? " and the \(gb(providerMemory)) GB kept for inference" : "")
-        if jobCores < Self.linuxCores {
-            return "each job needs \(Self.linuxCores) cores besides the \(keptCores) kept for you; "
-                + "this Mac has \(jobCores) left"
-        }
-        if jobMemory < Self.slotMemory {
-            return "each job needs \(gb(Self.slotMemory)) GB of memory besides \(kept); this Mac has \(gb(jobMemory)) GB left"
-        }
-        // Only disk is short: say how much to free for what cores and memory allow.
-        var unlimited = facts
-        unlimited.freeBytes = Int64.max / 4
-        let potential = SandboxEligibility(unlimited)
-        let needed = diskFloor + imageSpace + Int64(potential.linuxSlots) * Self.linuxScratchBytes - facts.freeBytes
-        return "free up \(gibUp(needed)) GiB of disk, then this Mac can run "
-            + Self.jobsSummary(linux: potential.linuxSlots, macOS: potential.macOSSlots) + " at a time. "
-            + "\(gibDown(diskFloor)) GiB stays free for you, the VM images need \(gibDown(imageSpace)) GiB "
-            + "and each Linux job \(gibDown(Self.linuxScratchBytes)) GiB"
-    }
-
-    /// `1 Linux job and 2 macOS jobs`.
-    static func jobsSummary(linux: Int, macOS: Int) -> String {
-        [(linux, "Linux"), (macOS, "macOS")].filter { $0.0 > 0 }
-            .map { "\($0.0) \($0.1) job\($0.0 == 1 ? "" : "s")" }.joined(separator: " and ")
-    }
-
-    /// One line per measured fact, in the `doctor` style.
+    /// One line per fact setup checks itself, in the `doctor` style; the
+    /// sizing lines come from the plan.
     var checks: [Check] {
         var checks: [Check] = []
         checks.append(facts.appleSilicon
@@ -180,16 +84,6 @@ struct SandboxEligibility: Equatable, Sendable {
             : Check(level: .fail, name: "macOS",
                     detail: "\(facts.macOSVersion): macOS \(Self.minimumMacOSMajor) or later is required",
                     fix: "update in System Settings → General → Software Update"))
-        checks.append(Check(level: jobCores >= Self.linuxCores ? .pass : .fail, name: "CPU",
-                            detail: "\(facts.cores) cores; you keep \(keptCores)"))
-        let inference = providerMemory > 0 ? ", inference keeps \(gb(providerMemory)) GB" : ""
-        checks.append(Check(level: jobMemory >= Self.slotMemory ? .pass : .fail, name: "Memory",
-                            detail: "\(gb(facts.memoryBytes)) GB; you keep \(gb(keptMemory)) GB\(inference)"))
-        let images = facts.imagesInstalled
-            ? "the VM images are installed" : "the VM images take \(gibDown(imageSpace)) GiB"
-        checks.append(Check(level: diskForJobs >= 0 ? .pass : .fail, name: "Disk",
-                            detail: "\(gibDown(facts.freeBytes)) GiB free; \(gibDown(diskFloor)) GiB stays free "
-                                + "for you, \(images), each Linux job \(gibDown(Self.linuxScratchBytes)) GiB"))
         checks.append(facts.desktopSession
             ? Check(level: .pass, name: "Session", detail: "logged in at this Mac's desktop")
             : Check(level: .fail, name: "Session", detail: "not logged in at this Mac's desktop",
@@ -234,60 +128,173 @@ struct SandboxEligibility: Equatable, Sendable {
                      fix: "sudo pmset -c sleep 0")
     }
 
-    /// The verdict and what this Mac can run at a time. `requested` slot
-    /// counts replace the estimate for that platform.
-    func verdict(linuxRequested: Int? = nil, macOSRequested: Int? = nil) -> [String] {
-        if let refusal { return ["Not eligible: \(refusal)"] }
-        if let shortfall { return ["Not eligible: \(shortfall)."] }
-        let (linux, macOS) = slots(linuxRequested: linuxRequested, macOSRequested: macOSRequested)
-        var lines = ["Eligible. At a time, this Mac can run:"]
-        lines.append("  " + slotLine("Linux", estimate: linuxSlots, requested: linuxRequested, limit: linuxLimit))
-        lines.append("  " + slotLine("macOS", estimate: macOSSlots, requested: macOSRequested, limit: macOSLimit))
-        if !fits(linux: linux, macOS: macOS) {
-            lines.append("  Those counts need more cores, memory or disk than this Mac has left for jobs; "
-                + "jobs may run slowly.")
+}
+
+// MARK: - Fallback sizing
+
+extension SandboxEligibility {
+    static let linuxCores = 4
+    static let macOSCores = 8
+    static let slotMemory: Int64 = 16 << 30
+    static let linuxImagesBytes: Int64 = 4 << 30
+    static let macOSImagesBytes: Int64 = 46 << 30
+    static let linuxSlotBytes: Int64 = 30 << 30
+    static let macOSSlotBytes: Int64 = 40 << 30
+
+    static func freeSpaceFloor(volumeBytes: Int64) -> Int64 {
+        max(50 << 30, min(volumeBytes / 10, 100 << 30))
+    }
+
+    /// The fallback when the installer reports no plan (before add-on 1.1.1):
+    /// the add-on's slot rules as of 1.1.1, computed here. The owner keeps a
+    /// quarter of the cores (at least 2) and of the memory (at least 8 GiB), a
+    /// running inference provider another quarter of the memory. A Linux slot
+    /// takes 4 cores and 16 GiB, a macOS slot 8 cores and 16 GiB, handed out
+    /// Linux, macOS, Linux, macOS, then Linux only while cores, memory and the
+    /// disk above the floor last. Counts the owner chose replace the estimate.
+    func estimatedPlan(linuxRequested: Int? = nil, macOSRequested: Int? = nil) -> SandboxSizingPlan {
+        let images = { (bytes: Int64) in facts.imagesInstalled ? 0 : bytes }
+        let floor = Self.freeSpaceFloor(volumeBytes: facts.volumeBytes)
+        var plan = SandboxSizingPlan(
+            linux: .init(slots: 0, imagesBytes: images(Self.linuxImagesBytes), slotBytes: Self.linuxSlotBytes),
+            macOS: .init(slots: 0, imagesBytes: images(Self.macOSImagesBytes), slotBytes: Self.macOSSlotBytes),
+            freeBytes: facts.freeBytes, floorBytes: floor, cores: facts.cores, coresKept: max(2, facts.cores / 4),
+            memoryBytes: facts.memoryBytes, memoryKeptBytes: max(8 * Self.gib, facts.memoryBytes / 4),
+            providerMemoryBytes: facts.providerRunning ? facts.memoryBytes / 4 : 0)
+        var (cores, memory, disk) = (plan.jobCores, plan.jobMemory, facts.freeBytes - floor)
+        func add(_ platform: inout SandboxSizingPlan.Platform, cores needed: Int, maximum: Int) -> Bool {
+            let diskNeeded = platform.nextSlotBytes
+            guard platform.slots < maximum, cores >= needed, memory >= Self.slotMemory, disk >= diskNeeded else {
+                return false
+            }
+            (cores, memory, disk) = (cores - needed, memory - Self.slotMemory, disk - diskNeeded)
+            platform.slots += 1
+            return true
         }
-        if macOS > 0 {
-            lines.append(largeMacOSFits
+        func limit(_ platform: SandboxSizingPlan.Platform, cores needed: Int, maximum: Int) -> String {
+            if platform.slots == maximum { return "the maximum" }
+            if disk < platform.nextSlotBytes { return "free disk space" }
+            return cores < needed ? "cores" : "memory"
+        }
+        var added = true
+        while added {
+            let linux = add(&plan.linux, cores: Self.linuxCores, maximum: Self.maximumLinuxSlots)
+            let macOS = add(&plan.macOS, cores: Self.macOSCores, maximum: Self.maximumMacOSSlots)
+            added = linux || macOS
+        }
+        plan.linux.limit = limit(plan.linux, cores: Self.linuxCores, maximum: Self.maximumLinuxSlots)
+        plan.macOS.limit = limit(plan.macOS, cores: Self.macOSCores, maximum: Self.maximumMacOSSlots)
+        if let linuxRequested { (plan.linux.slots, plan.linux.automatic, plan.linux.limit) = (linuxRequested, false, nil) }
+        if let macOSRequested { (plan.macOS.slots, plan.macOS.automatic, plan.macOS.limit) = (macOSRequested, false, nil) }
+        if !plan.canRunJobs { plan.message = Self.noJobReason(plan) }
+        return plan
+    }
+
+    /// Why the estimate fits no job: the core or memory shortfall, else a
+    /// generic reason; the report's `shortfall` adds the disk to free and
+    /// whether the owner's counts are why.
+    private static func noJobReason(_ plan: SandboxSizingPlan) -> String {
+        if plan.jobCores < linuxCores {
+            return "each job needs \(linuxCores) cores besides the \(plan.coresKept) kept for you; "
+                + "this Mac has \(plan.jobCores) left"
+        }
+        guard plan.jobMemory >= slotMemory else {
+            let inference = plan.providerMemoryBytes > 0
+                ? " and the \(gb(plan.providerMemoryBytes)) GB kept for inference" : ""
+            return "each job needs \(gb(slotMemory)) GB of memory besides the \(gb(plan.memoryKeptBytes)) GB kept "
+                + "for you\(inference); this Mac has \(gb(plan.jobMemory)) GB left"
+        }
+        return "no job fits on this Mac"
+    }
+}
+
+// MARK: - The plan in the report
+
+extension SandboxSizingPlan {
+    /// The most requested macOS runner size.
+    private static let largeMacOSCores = 12
+    private static let largeMacOSMemory: Int64 = 32 << 30
+
+    /// Cores and memory left for jobs.
+    var jobCores: Int { max(0, cores - coresKept) }
+    var jobMemory: Int64 { max(0, memoryBytes - memoryKeptBytes - providerMemoryBytes) }
+    var canRunJobs: Bool { linux.slots + macOS.slots > 0 }
+
+    /// Free disk one job of `platform` needs beyond what is free now, its
+    /// images included; 0 when it fits.
+    func diskShortfall(_ platform: Platform) -> Int64 {
+        max(0, floorBytes + platform.firstSlotBytes - freeBytes)
+    }
+
+    /// The CPU, memory and disk lines, in the `doctor` style. When no job
+    /// fits, the lines a limit names fail.
+    var checks: [SandboxEligibility.Check] {
+        func level(_ resource: String) -> DiagnosticLevel {
+            !canRunJobs && [linux.limit, macOS.limit].contains(where: { $0?.contains(resource) == true }) ? .fail : .pass
+        }
+        func disk(_ name: String, _ platform: Platform) -> String {
+            let images = platform.imagesBytes > 0 ? "\(gibDown(platform.imagesBytes)) GiB" : "installed"
+            return "\(name) images \(images) + \(gibDown(platform.slotBytes)) GiB per \(name) job"
+        }
+        let inference = providerMemoryBytes > 0 ? ", inference keeps \(gb(providerMemoryBytes)) GB" : ""
+        return [
+            .init(level: level("core"), name: "CPU", detail: "\(cores) cores; you keep \(coresKept)"),
+            .init(level: level("memory"), name: "Memory",
+                  detail: "\(gb(memoryBytes)) GB; you keep \(gb(memoryKeptBytes)) GB\(inference)"),
+            .init(level: level("disk"), name: "Disk",
+                  detail: "\(gibDown(freeBytes)) GiB free; \(gibDown(floorBytes)) GiB stays free for you; "
+                      + disk("Linux", linux) + "; " + disk("macOS", macOS)),
+        ]
+    }
+
+    /// The verdict, then what this Mac can run at a time or what it lacks.
+    var verdict: [String] {
+        guard canRunJobs else { return shortfall }
+        var lines = ["Eligible. At a time, this Mac can run:",
+                     "  " + Self.slotLine("Linux", linux), "  " + Self.slotLine("macOS", macOS)]
+        if macOS.slots > 0 {
+            lines.append(jobCores >= Self.largeMacOSCores && jobMemory >= Self.largeMacOSMemory
                 ? "  The most requested macOS size, 12 cores and 32 GB, fits."
                 : "  The most requested macOS size, 12 cores and 32 GB, does not fit: it needs a Mac with at "
                     + "least 16 cores and about 64 GB.")
         }
-        if macOS == Self.maximumMacOSSlots {
+        if macOS.slots == SandboxEligibility.maximumMacOSSlots {
             lines.append("  macOS runs at most 2 macOS VMs at once, yours included; "
                 + "`--macos-slots 1` keeps one for you.")
         }
         return lines
     }
 
-    private func slotLine(_ name: String, estimate: Int, requested: Int?, limit: Limit) -> String {
-        let jobs = { (count: Int) in
-            count == 0 ? "no \(name) jobs" : count == 1 ? "1 \(name) job" : "\(count) \(name) jobs"
+    /// The plan's message, how much disk to free for one job of each
+    /// platform, and whether the owner's counts are why.
+    private var shortfall: [String] {
+        let reason = message ?? "no job fits on this Mac"
+        var lines = ["Not eligible: \(reason)" + (reason.hasSuffix(".") ? "" : ".")]
+        let disk = [("Linux", linux), ("macOS", macOS)].compactMap { name, platform -> String? in
+            let short = diskShortfall(platform)
+            return short > 0 ? "\(gibUp(short)) GiB of disk for one \(name) job" : nil
         }
-        if let requested, requested != estimate { return jobs(requested) + " (your choice)" }
-        let reason: String
-        switch limit {
-        case .cores: reason = "limited by cores"
-        case .memory: reason = "limited by memory"
-        case .disk: reason = "limited by free disk"
-        case .maximum: reason = name == "macOS" ? "the most macOS allows" : "the add-on's maximum"
+        if !disk.isEmpty { lines.append("  Free up " + disk.joined(separator: ", or ") + ".") }
+        if !linux.automatic || !macOS.automatic {
+            lines.append("  That is with the slot counts you chose; change --linux-slots or --macos-slots.")
         }
-        return "\(jobs(estimate)) (\(reason))"
+        return lines
     }
 
-    private func gb(_ bytes: Int64) -> Int64 { bytes / Self.gib }
-    private func gibDown(_ bytes: Int64) -> Int64 { max(0, bytes) / Self.gib }
-    private func gibUp(_ bytes: Int64) -> Int64 { (max(0, bytes) + Self.gib - 1) / Self.gib }
-
-    /// The effective slot counts after the owner's choices.
-    func slots(linuxRequested: Int?, macOSRequested: Int?) -> (linux: Int, macOS: Int) {
-        (linuxRequested ?? linuxSlots, macOSRequested ?? macOSSlots)
-    }
-
-    /// These counts fit in the cores, memory and disk left for jobs.
-    func fits(linux: Int, macOS: Int) -> Bool {
-        linux * Self.linuxCores + macOS * Self.macOSCores <= jobCores
-            && Int64(linux + macOS) * Self.slotMemory <= jobMemory
-            && Int64(linux) * Self.linuxScratchBytes <= diskForJobs
+    private static func slotLine(_ name: String, _ platform: Platform) -> String {
+        let jobs = platform.slots == 0 ? "no \(name) jobs"
+            : "\(platform.slots) \(name) job" + (platform.slots == 1 ? "" : "s")
+        guard platform.automatic else { return "\(jobs) (your choice)" }
+        return platform.limit.map { "\(jobs) (limited by \($0))" } ?? jobs
     }
 }
+
+extension SandboxSizingPlan.Platform {
+    /// The first slot brings the platform's images.
+    var firstSlotBytes: Int64 { imagesBytes + slotBytes }
+    var nextSlotBytes: Int64 { slots == 0 ? firstSlotBytes : slotBytes }
+}
+
+private func gb(_ bytes: Int64) -> Int64 { bytes / SandboxEligibility.gib }
+private func gibDown(_ bytes: Int64) -> Int64 { max(0, bytes) / SandboxEligibility.gib }
+private func gibUp(_ bytes: Int64) -> Int64 { (max(0, bytes) + SandboxEligibility.gib - 1) / SandboxEligibility.gib }

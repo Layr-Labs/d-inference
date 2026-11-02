@@ -423,6 +423,12 @@ public protocol ClusterPlacementFamily {
     /// How that plan treats a tensor some range loads; nil when the plan does
     /// not cover it (the layout is then refused: a plan covers every tensor).
     func tensorParallelCut(ofStoredTensor name: String) -> ClusterTensorParallelTensorCut?
+    /// Of a divided tensor's loaded bytes, those every rank of an equal split
+    /// holds beside its share (a quantization group both ranks store, rows of
+    /// zeros that pad a share to whole groups): the layout counts them
+    /// replicated and the rest divided, so a rank's share is its exact bytes.
+    /// 0, the default, divides every byte.
+    func tensorParallelOverlapBytes(of tensor: ClusterPlacementStoredTensor, loadedBytes: Int) -> Int
     /// Relative compute cost of a layer. 1 for every layer unless the family
     /// has measured its kinds apart.
     func layerCost(_ layer: Int) -> Double
@@ -445,6 +451,7 @@ extension ClusterPlacementFamily {
     public var speculativeDecodeFactor: Double? { nil }
     public var tensorParallelPlan: ClusterTensorParallelFamilyPlan? { nil }
     public func tensorParallelCut(ofStoredTensor name: String) -> ClusterTensorParallelTensorCut? { nil }
+    public func tensorParallelOverlapBytes(of tensor: ClusterPlacementStoredTensor, loadedBytes: Int) -> Int { 0 }
     public var expertRouting: ClusterExpertRouting? { nil }
     public func isRoutedExpert(storedTensor name: String) -> Bool { false }
     public func layerCost(_ layer: Int) -> Double { 1 }
@@ -486,12 +493,22 @@ public enum ClusterModelLayoutBuilder {
             }
             return cut
         }
-        func add(_ cut: ClusterTensorParallelTensorCut?, _ loaded: Int, to part: inout (divided: Int, replicated: Int)) {
+        func add(_ cut: ClusterTensorParallelTensorCut?, _ loaded: Int, overlap: Int = 0,
+                 to part: inout (divided: Int, replicated: Int)) {
             switch cut {
-            case .divided: part.divided += loaded
+            case .divided: part.divided += loaded - overlap; part.replicated += overlap
             case .replicated: part.replicated += loaded
             case nil: break
             }
+        }
+        // What every rank holds of a divided tensor beside its equal share (`tensorParallelOverlapBytes`).
+        func overlap(_ cut: ClusterTensorParallelTensorCut?, _ tensor: ClusterPlacementStoredTensor, _ loaded: Int) throws -> Int {
+            guard cut == .divided else { return 0 }
+            let bytes = family.tensorParallelOverlapBytes(of: tensor, loadedBytes: loaded)
+            guard (0...loaded).contains(bytes) else {
+                throw ClusterPlacementError("The family's tensor-parallel overlap of tensor \(tensor.name) is not within its bytes")
+            }
+            return bytes
         }
         for tensor in tensors {
             guard tensor.byteCount > 0 else { throw ClusterPlacementError("Tensor \(tensor.name) has no bytes") }
@@ -514,8 +531,8 @@ public enum ClusterModelLayoutBuilder {
                 }
                 ingress.add(stored: tensor.byteCount, loaded: loaded, work: work)
                 egress.add(stored: 0, loaded: loaded, work: work)
-                let cut = try tensorParallelCut(tensor.name)
-                add(cut, loaded, to: &tpIngress); add(cut, loaded, to: &tpEgress)
+                let cut = try tensorParallelCut(tensor.name), shared = try overlap(cut, tensor, loaded)
+                add(cut, loaded, overlap: shared, to: &tpIngress); add(cut, loaded, overlap: shared, to: &tpEgress)
                 continue
             }
             if stages.allSatisfy({ $0 == nil }) {
@@ -540,18 +557,20 @@ public enum ClusterModelLayoutBuilder {
                         + "the stage plan is not a contiguous layer pipeline")
                 }
                 layers[layer].add(stored: tensor.byteCount, loaded: loaded, work: work)
-                let cut = try tensorParallelCut(tensor.name)
-                add(cut, loaded, to: &tpLayers[layer])
+                let cut = try tensorParallelCut(tensor.name), shared = try overlap(cut, tensor, loaded)
+                add(cut, loaded, overlap: shared, to: &tpLayers[layer])
                 if routing != nil, family.isRoutedExpert(storedTensor: tensor.name) {
                     routed.loaded += loaded
-                    if cut == .divided { routed.divided += loaded }
+                    if cut == .divided { routed.divided += loaded - shared }
                 }
             } else if stages.allSatisfy({ $0 == 0 }) {
                 ingress.add(stored: tensor.byteCount, loaded: loaded, work: work)
-                add(try tensorParallelCut(tensor.name), loaded, to: &tpIngress)
+                let cut = try tensorParallelCut(tensor.name)
+                add(cut, loaded, overlap: try overlap(cut, tensor, loaded), to: &tpIngress)
             } else if stages.allSatisfy({ $0 == 1 }) {
                 egress.add(stored: tensor.byteCount, loaded: loaded, work: work)
-                add(try tensorParallelCut(tensor.name), loaded, to: &tpEgress)
+                let cut = try tensorParallelCut(tensor.name)
+                add(cut, loaded, overlap: try overlap(cut, tensor, loaded), to: &tpEgress)
             } else {
                 throw ClusterPlacementError("Tensor \(tensor.name) changes stage with the cut but names no layer")
             }

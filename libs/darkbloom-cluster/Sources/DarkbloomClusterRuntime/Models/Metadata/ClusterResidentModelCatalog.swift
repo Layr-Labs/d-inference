@@ -20,7 +20,9 @@ public enum ClusterResidentModelCatalog {
         /// hyper-connection sites, and the Qwen 3.5 residual step
         /// (`ResidualRMSNorm`, which reads the FP32 all-sum of every
         /// row-parallel projection). Families whose sums only MLX's own kernels
-        /// read gain nothing from it. Only where the GPU waits changes.
+        /// read gain nothing from it. Only where the GPU waits changes. Gemma 4
+        /// (`qwenDense`) reads its two sums a layer with MLX's own norm kernels:
+        /// the variable is set for its ranks too and changes nothing there.
         public var tensorParallelSumsAreFencedInputs: Bool {
             switch self {
             case .glm5Next, .qwenDense: return true

@@ -3698,7 +3698,10 @@ and neither `tensorParallelMargin` nor a kept mode holds it back; a group that
 loads now still goes ahead of tensor parallel that would not. The reason line
 then gives the rule ("Tensor parallel: the model fits, so both Macs share every
 layer of every token.") unless tensor parallel is also predicted faster, when it
-says the gain. Predictions are still made and reported. A first placement, before
+says the gain. Predictions are still made and reported. A family whose plan
+states `ClusterTensorParallelChoice.fastest` (Gemma 4) is exempt: it is placed in
+tensor parallel only where predicted faster ([Gemma tensor-parallel
+placement](#gemma-tensor-parallel-placement)). A first placement, before
 any load measured the link, plans tensor parallel on the keyed reduction a forced
 plan assumes (`tensorParallelAssumesUnmeasuredLink`, labelled as assumed), so a new
 pair's first setup is tensor parallel too: every plan made by `ClusterPlacementFlow.decide`
@@ -4093,9 +4096,209 @@ Code: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Reside
 `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/TensorParallel/QwenTensorParallelPlan.swift`,
 `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/TensorParallel/QwenTensorParallelLinear.swift`,
 `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/TensorParallel/QwenTensorParallelResidentRuntime.swift`,
-`libs/mlx-swift-lm/Libraries/MLXLMCommon/Qwen35TensorParallelSwitchLinear.swift`,
+`libs/mlx-swift-lm/Libraries/MLXLMCommon/TensorParallelSwitchLinear.swift`
+(`TensorParallelSwitchLinear`, still also named `Qwen35TensorParallelSwitchLinear`),
 `libs/mlx-swift-lm/Libraries/MLXLLM/Models/Qwen35.swift` (`Qwen35SparseMoeBlock`).
 See [focused cluster tests](../developer/test.md#focused-qwen35-moe-tensor-parallel-checks).
+
+## Gemma 4 tensor-parallel foundation
+
+Gemma 4 26B A4B (`gemma-4-26b-qat-4bit`, `gemma-4-26b-8bit`) has a two-rank
+tensor-parallel plan, SDK hooks, a resident runtime and one-Mac oracles.
+`Gemma4ResidentAdapterDefinition` advertises `tensor_parallel_v1` beside the
+pipeline, and the worker loads it into `Gemma4TensorParallelResidentRuntime`.
+The planner places a Gemma pair in tensor parallel only where it predicts it
+faster than the pipeline ([Gemma tensor-parallel placement](#gemma-tensor-parallel-placement)).
+
+`Gemma4TensorParallelPlan` (`gemma4_heads_and_expert_channels_v1`) gives every
+stored text tensor of both registered artifacts one cut and refuses unknown,
+misaligned, untied-head and vision tensors:
+
+| Part | Cut per rank | Collective |
+|---|---|---|
+| `q_proj`, `k_proj`, sliding `v_proj` | Rows of 8 query heads and their KV heads (4 sliding, 1 full); full layers keep K=V | — |
+| `o_proj` | Input columns of those heads | FP32 partial summed before `post_attention_layernorm` |
+| Dense MLP (2,112 = 33 groups) and every expert (704 = 11 groups) | Gate/up rows of half the channels; down input columns widened to whole groups | One packed collective per layer: every selected expert's FP32 row and the dense row, each summed before rounding, router weighting and its branch's post-norm |
+| Router, norms, `layer_scalar`, embedding | Replicated | — |
+| Tied head | This rank's half of the vocabulary rows (views of the embedding) | One per selection |
+
+An odd group count cannot split evenly, so both ranks store the middle group.
+Each rank's gate and up projections carry zero rows (zero words, scales and
+offsets) for the other rank's half of that group. Those channels are exactly
+zero, the shared down columns add nothing on the rank that does not own them,
+and both ranks hold 1,088 dense and 384 expert channels: equal shares.
+A layer issues two collectives and a decode step 61.
+
+`Gemma4TensorShard` builds each rank from the SDK's own modules with half the
+heads and the local widths. `Gemma4TextModel.installTensorParallel` then sets
+three things: the `o_proj` sum, the packed feed-forward
+(`TensorParallelSwitchLinear.carrying`, generalized from Qwen's), and the
+vocabulary-split head. A model without it runs the unchanged single-Mac path.
+`Gemma4TensorParallelSelection` chooses across ranks:
+
+- greedy: a two-value argmax collective;
+- top-k logits and log probabilities: one gather of each rank's top-k and log-sum-exp;
+- the whole row: `-0` padding, every bit kept, so the product's sampler draws the single-Mac token on every rank.
+
+Oracles run on synthetic checkpoints with the 26B's structure scaled down:
+
+- `simulated`: both real shards in one process, summing FP32 partials. Two
+  ranks over the sealed loopback ring equal it bit for bit.
+- `split-sum`: the whole model with each row-parallel projection replaced by
+  two FP32 partials. It is the decomposition's oracle, bitwise equal to the
+  ranks on the CPU. On an M5 Ultra GPU, a 1,024-row full-attention `k_proj` at
+  prefill width rounds some rows unlike its 512-row half.
+
+`tp-check gemma run --path paged` runs `full`, `simulated` and `tp` through the
+resident runtime's own request path instead of the SDK's legacy caches.
+`tp-check gemma lanes` serves several requests together through the batch
+driver and checks each against itself alone.
+
+### Resident runtime
+
+`Gemma4TensorParallelResidentRuntime` serves over a keyed, authenticated data
+plane, and every collective is the sealed all-sum. By default it serves one
+request at a time. With batch lanes (`DARKBLOOM_CLUSTER_BATCH_LANES`, bound
+into the load agreement) it serves several through the shared batch driver
+(`QwenTensorParallelBatchDriver`, with a Gemma executor), which carries joins,
+stops, cancellations and retirements.
+
+- Load. `Gemma4TensorParallelVerifiedLoad` first verifies the whole artifact,
+  as a pipeline load does (`prepareGemma4ResidentSource`). It then checks both
+  pipeline stages' storage commitment and requires every text tensor to have
+  the plan's shape, refusing anything else before a byte is read. Each tensor
+  is one verified read, asked of the host memory gate first, cut to this
+  rank's part and materialized at once.
+- Agreement. `Gemma4TensorParallelLoadAgreement` binds the registered row's
+  fingerprint, the mode's and the plan's terms, the prompt policy, the
+  selection, the lanes, the KV storage and the prefix cache (on in this build,
+  `Gemma4ResidentAdapterDefinition.tensorParallelKeepsPromptPrefixes`; off only
+  by the diagnosis switch `DARKBLOOM_CLUSTER_PREFIX_CACHE=off`). A rank started
+  with any other value refuses its peer before reading weights.
+- Probes. The load measures the link (`QwenTensorParallelLinkProbe`) and this
+  rank's own decode step with every sum local
+  (`Gemma4TensorParallelShareProbe`). The ready record carries both.
+- Request state. Each rank keeps its own KV heads of every layer (4 sliding,
+  1 full on the 26B) on a paged host
+  (`CBv2RequestGeometry(gemma4TensorParallelKinds:)`); pages grow with the
+  request.
+- Prompt. Each chunk runs through the product's CBv2 entry
+  (`Gemma4TextModel.cbv2Prefill`, whose last layer keeps only the row it
+  projects) under the registered prompt policy (`Gemma4PrefillProjectionScope`),
+  on the request's chunk grid.
+- Decode. One evaluation per step, with 100-operation command buffers. The
+  step is submitted layer by layer as the host builds it
+  (`Gemma4LayerSubmission`; evaluation order only). Lanes decode in one
+  forward under the explicit batch decode scope (`Gemma4BatchDecodeScope`), so
+  each row equals its request's own step bit for bit.
+- Choice. Each step's token is agreed inside the step's own evaluation
+  (`Gemma4TensorParallelChoice`):
+  - greedy: the vocabulary-split argmax, carrying both ranks' stop flags in
+    its one collective;
+  - sampled: the whole row gathered to every rank, rank 0's draw with the
+    product's sampler, and one small collective for the token and flags;
+  - logprobs: a greedy request's from the vocabulary-split top-k gather, a
+    sampled request's from the product's sampler on rank 0. The greedy
+    token's logit is the row's maximum, agreed with the token, so its logprob
+    is the gather's first even when an exactly tied ID leads the gather (which
+    of a rank's tied IDs the partition keeps is not the argmax's rule). A
+    gather that does not lead with that logit is refused on both ranks.
+
+  A stop on either rank (cancel, deadline, memory, the owner's stop, pages
+  that could not grow) ends both after the same step
+  (`Gemma4TensorParallelRequestLoop`). A rank that stopped commits nothing
+  more, but still ends at a stop token its peer commits.
+- Prompt prefixes. Each rank keeps its own heads' state at a prompt's chunk
+  boundaries as the Gemma pipeline keeps a stage's, in the pipeline's memory
+  tier and the owner's encrypted SSD tier (`Gemma4TensorParallelPrefix`). A
+  request restores the deepest boundary both ranks hold after one sealed vote
+  and one sealed confirmation, or neither restores it, and then runs the rest
+  of the prompt on the same chunk grid: a restore equals the cold prefill bit
+  for bit. Solo requests and lanes alike
+  ([Gemma TP prompt prefixes](prefix-cache.md#gemma-tp-prompt-prefixes)).
+
+Memory is charged per rank (`Gemma4TensorParallelRequestBudget`; see
+[hardware support](hardware-support.md#gemma-4-tensor-parallel-rank-memory)):
+each request its own KV heads, prompt transient, FP32 partials, vocabulary
+rows and its own prompt's prefix capture; each rank once the conservative
+activation floor, the freed-buffer cache and eight sealed frames. The prefix
+memory tier lives in measured free room and is not charged. A lane is gated
+with every held lane's charge, the new one and the rank's reserve. Speculative
+decoding, media and a measured activation floor are not built yet.
+
+### Gemma tensor-parallel placement
+
+`Gemma4PlacementFamily` states the plan's facts, so Gemma layouts list
+`tensor_parallel_v1` and carry `tensorParallel`:
+
+| Fact | Value | Source |
+|---|---|---|
+| `plan`, `ranks` | `gemma4_heads_and_expert_channels_v1`, `[2]`, equal shares | `Gemma4TensorParallelPlan.name` |
+| `reductionsPerLayer`, `reductionsPerStep` | 2 (attention, packed feed-forward), 1 (vocabulary-split selection): 61 a decode step | `Gemma4TensorParallelPlan.reductionsPerLayer` |
+| `partialBytesPerToken`, `layerPartialBytesPerToken` | 101,376 (the dense and 8 expert FP32 rows), 112,640 (with the attention row) | `feedForwardPartialBytesPerToken`, `layerPartialBytesPerToken` |
+| `stateDividesByHeads` | true: each rank keeps its own KV heads | `Gemma4TensorParallelPlan.kvHeadsPerRank` |
+| `requestAllowance` | the rank's reserve at the profile's longest request, where the allocator's bound is known | `Gemma4TensorParallelRequestBudget` |
+| `choice` | `fastest_v1` | `ClusterTensorParallelChoice` |
+
+Each stored tensor's cut is the plan's (`tensorParallelCut(ofStoredTensor:)`).
+Both ranks store the down projections' middle quantization group and pad gate
+and up with zero rows (`tensorParallelOverlapBytes`), so the layout counts those
+bytes replicated and a rank's share is its exact cut: 8,040,450,108 bytes at
+QAT 4-bit, 14,915,635,260 at 8-bit, the bytes the worker's load gate admits
+(`Gemma4TensorParallelVerifiedLoad.shardEntries`). The tied embedding is listed
+at both ends of a layout; a rank holds it once and its head reads half of its
+vocabulary rows, so each end counts as divided. The family also states its
+routing, 8 of 128 experts (`expertRouting`, `isRoutedExpert`), so the hardware
+prior reads 2,424,219,708 weight bytes per QAT 4-bit token.
+
+**The fastest-plan rule.** `ClusterTensorParallelChoice.fastest` exempts a
+family from `ClusterPlacementPolicy.tensorParallelFirst`: its tensor-parallel
+candidate is ranked by the planner's own comparison, which chooses it only when
+it is predicted at least `tensorParallelMargin` faster than the best other
+placement, and a kept mode holds it back as it holds any other mode. The
+comparison reads the pair's measured link (`ClusterLinkProbeHistory`, the median
+of its recent probes) and each Mac's share probes
+(`ClusterShareProbeHistory`), else the hardware prior. Before any load measured
+the link, a first placement prices tensor parallel on
+`ClusterTensorParallelChoice.assumedReduction` (0.1 ms per sealed all-sum and
+2.5 GB/s, the slow end of what pairs measured) and the pipeline's transfers as
+free; an automatic replacement assumes no link and keeps the pipeline. Qwen and
+GLM state no choice and keep tensor parallel first. Gemma states it because one
+decode step is mostly a per-token floor that two ranks do not halve, while 61
+sums cross the link: about 0.67-0.93x one M5 Ultra's decode, unmeasured
+[INFERENCE]. On the planner's own figures (`PlacementChecks`,
+`GemmaTensorParallelChecks.swift`):
+
+| Pair | Link | Request | Chosen |
+|---|---|---|---|
+| 2x M5 Ultra 256 GB | default (unmeasured) | 8,192 + 128, 1,024 + 128, 128 + 128 | pipeline |
+| 2x M5 Ultra 256 GB | measured 29 us sums | 1,024 + 128 | pipeline |
+| 2x M5 Ultra 256 GB | measured 29 us sums, no share probe | 128 + 128 | tensor parallel (device-index prior) |
+| 2x M5 Ultra 256 GB | measured 5 us sums | 1,024 + 128 | tensor parallel |
+| 2x M4 Pro 24 or 32 GB | default | 128 + 128 | tensor parallel |
+| 2x M4 Pro 24 or 32 GB | default | 8,192 + 128 | pipeline |
+| 2x M4 Pro 32 GB | measured 29 us / 109 us sums | 1,024 + 128 | tensor parallel / pipeline |
+
+Before a share probe, the comparison takes a Mac's weight time from its device
+index (`ClusterHardwarePrior.weightSeconds`): about 5.5 ms of an M5 Ultra's
+11.1 ms QAT 4-bit step, of which a rank halves 96%. The plan behind the rule
+infers 1.4-2.0 ms [INFERENCE], so the prior favours tensor parallel on big
+Macs: on the pair's measured link it predicts a 128 + 128 request about 5%
+faster than the pipeline. A tensor-parallel load's share probe
+(`Gemma4TensorParallelShareProbe`) replaces the prior in later plans.
+
+A family opts in by passing `choice: .fastest` where it builds its
+`ClusterTensorParallelFamilyPlan`; its layouts then encode `"choice":"fastest_v1"`
+and its golden layouts must be regenerated. Nothing in the planner names a family.
+
+Code map:
+
+- `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Gemma4/TensorParallel/`
+- `libs/mlx-swift-lm/Libraries/MLXLLM/Models/Gemma4TensorParallel.swift`
+- `libs/darkbloom-cluster-worker/Sources/TensorParallelCheck/GemmaCheck.swift`
+- `libs/darkbloom-cluster-worker/Sources/DarkbloomClusterWorker/Execution/NativeWorkerRuntime.swift` (routes Gemma `tensor_parallel_v1` loads)
+
+See [focused Gemma 4 tensor-parallel checks](../developer/test.md#focused-gemma-4-tensor-parallel-checks).
 
 ## Exact-quote placement
 

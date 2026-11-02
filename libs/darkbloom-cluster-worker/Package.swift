@@ -76,9 +76,11 @@ let package = Package(
             "DarkbloomClusterQualification", "PairCheckFakeWorker",
             .product(name: "DarkbloomClusterProtocol", package: "darkbloom-cluster"),
         ]),
-        // Tensor parallel for the dense Qwen models: the unsharded reference, the
-        // single-process oracle and one rank of a two-rank run, plus the comparator.
+        // Tensor parallel for the Qwen, GLM and Gemma 4 models: the unsharded
+        // reference, the single-process oracle and one rank of a two-rank run,
+        // plus the comparators (Gemma's through QualificationComparator).
         .executableTarget(name: "TensorParallelCheck", dependencies: [
+            "DarkbloomClusterQualification",
             .product(name: "DarkbloomClusterRuntime", package: "darkbloom-cluster"),
             .product(name: "MLX", package: "mlx-swift"),
         ]),

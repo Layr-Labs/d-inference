@@ -2,11 +2,15 @@ import DarkbloomClusterProtocol
 import Foundation
 
 /// The named storage of one request on the registered Gemma 4 26B geometry, in
-/// logical bytes. Either rank is charged the whole model's state, as the
-/// registered Qwen allowance charges it: a conservative ledger of named arrays,
-/// not a whole-process peak.
+/// logical bytes. Either pipeline rank is charged the whole model's state, as
+/// the registered Qwen allowance charges it: a conservative ledger of named
+/// arrays, not a whole-process peak. A tensor-parallel rank (`ranks` 2) keeps
+/// only its own KV heads of every layer (4 sliding, 1 full), and the residual
+/// rows and logits whole.
 struct Gemma4StateBudget: Equatable {
     let maximumTokens: Int, chunkSize: Int
+    /// The ranks the KV heads are divided among: 1 for a pipeline stage.
+    let ranks: Int
     let fullLayers: Int, slidingLayers: Int
     /// Keys or values of one full-attention layer at the request's capacity.
     let fullKVBytes: Int
@@ -22,17 +26,19 @@ struct Gemma4StateBudget: Equatable {
     let largestSingleHostStateComponentBytes: Int
     let stateAndBoundaryBytes: Int
 
-    static func estimate(maximumTokens: Int, chunkSize: Int) throws -> Self {
-        guard (1...ClusterWorkerLimits.contextTokens).contains(maximumTokens), (1...512).contains(chunkSize) else {
-            throw ProbeError("Gemma state budget requires bounded tokens and chunk")
+    static func estimate(maximumTokens: Int, chunkSize: Int, ranks: Int = 1) throws -> Self {
+        guard (1...ClusterWorkerLimits.contextTokens).contains(maximumTokens), (1...512).contains(chunkSize),
+              [1, 2].contains(ranks), Gemma4StageGeometry.fullKVHeads % ranks == 0,
+              Gemma4StageGeometry.slidingKVHeads % ranks == 0 else {
+            throw ProbeError("Gemma state budget requires bounded tokens, chunk and ranks")
         }
         let product = QwenLongPrefillCheckedBytes.product, sum = QwenLongPrefillCheckedBytes.sum
         let layers = Gemma4StageGeometry.layerCount
         let full = layers / Gemma4StageGeometry.fullAttentionInterval, sliding = layers - full
         let elementBytes = 2
-        let fullKV = try product([maximumTokens, Gemma4StageGeometry.fullKVHeads,
+        let fullKV = try product([maximumTokens, Gemma4StageGeometry.fullKVHeads / ranks,
                                   Gemma4StageGeometry.fullHeadDimension, elementBytes])
-        let slidingRow = try product([Gemma4StageGeometry.slidingKVHeads,
+        let slidingRow = try product([Gemma4StageGeometry.slidingKVHeads / ranks,
                                       Gemma4StageGeometry.slidingHeadDimension, elementBytes])
         let ring = try product([Gemma4StageGeometry.slidingWindow, slidingRow])
         let view = try product([Gemma4StageGeometry.slidingWindow - 1 + chunkSize, slidingRow])
@@ -41,7 +47,7 @@ struct Gemma4StateBudget: Equatable {
         let total = try sum([product([2, full, fullKV]), product([2, sliding, ring]),
             product([2, sliding, view]), product([4, layers]), max(fullKV, ring),
             product([2, boundary]), product([2, logits])])
-        return .init(maximumTokens: maximumTokens, chunkSize: chunkSize, fullLayers: full, slidingLayers: sliding,
+        return .init(maximumTokens: maximumTokens, chunkSize: chunkSize, ranks: ranks, fullLayers: full, slidingLayers: sliding,
             fullKVBytes: fullKV, ringKVBytes: ring, slidingViewKVBytes: view, boundaryBytes: boundary,
             logitsBytes: logits, largestSingleHostStateComponentBytes: max(fullKV, ring),
             stateAndBoundaryBytes: total)
@@ -95,19 +101,27 @@ struct Gemma4ResidentResourceCeilings: Equatable {
 enum Gemma4PrefillTransient {
     static func bytes(layers: [QwenLayerStagePlan.Layer], chunkTokens: Int, contextTokens: Int,
                       decodeRows: Int = 0, decodeLayers: [QwenLayerStagePlan.Layer] = []) throws -> Int {
+        try bytes(fullAttention: layers.map { $0.kind == Gemma4StageGeometry.fullKind },
+            queryHeads: Gemma4StageGeometry.queryHeads, chunkTokens: chunkTokens, contextTokens: contextTokens,
+            decodeRows: decodeRows, decodeFullAttention: decodeLayers.map { $0.kind == Gemma4StageGeometry.fullKind })
+    }
+
+    /// The same over layers of these kinds with `queryHeads` query heads each
+    /// (a tensor-parallel rank's own half of them).
+    static func bytes(fullAttention: [Bool], queryHeads: Int, chunkTokens: Int, contextTokens: Int,
+                      decodeRows: Int = 0, decodeFullAttention: [Bool] = []) throws -> Int {
         typealias G = Gemma4StageGeometry
         let product = QwenLongPrefillCheckedBytes.product, sum = QwenLongPrefillCheckedBytes.sum
-        func transient(_ layer: QwenLayerStagePlan.Layer, queries: Int) throws -> Int {
-            let full = layer.kind == G.fullKind
+        func transient(full: Bool, queries: Int) throws -> Int {
             let width = full ? G.fullHeadDimension : G.slidingHeadDimension
             let keys = full ? contextTokens : min(contextTokens, G.slidingWindow - 1 + queries)
-            return try sum([product([G.queryHeads, queries, keys, 4]), product([G.queryHeads, queries, width, 4])])
+            return try sum([product([queryHeads, queries, keys, 4]), product([queryHeads, queries, width, 4])])
         }
         let queries = min(chunkTokens, contextTokens)
         var largest = 0
-        for layer in layers { largest = max(largest, try transient(layer, queries: queries)) }
+        for full in fullAttention { largest = max(largest, try transient(full: full, queries: queries)) }
         guard decodeRows > 0 else { return largest }
-        let decode = try sum(decodeLayers.map { try transient($0, queries: decodeRows) })
+        let decode = try sum(decodeFullAttention.map { try transient(full: $0, queries: decodeRows) })
         return max(largest, decode)
     }
 }

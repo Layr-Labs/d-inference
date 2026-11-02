@@ -44,7 +44,9 @@ struct DistributedInstalledPlan: Sendable {
         .mimoV26ImageCandidate: [:],
         // GPT-OSS and Gemma 4: the pair driver's own values for the same
         // adapters (`QualificationRequest.registeredModels`), which their
-        // cross-cable checks ran under.
+        // cross-cable checks ran under. Gemma's arithmetic receipt binds the
+        // same values in tensor parallel (`Gemma4ResidentAdmission`); at a
+        // rank's expert width the fused unsort does not engage.
         .gptossLayerStage: [:],
         .gemma4LayerStage: ["MLX_GATHER_QMM_EXPERT_SLICES": "trust", "MLX_GEMMA4_FUSED_WEIGHTED_UNSORT": "1"],
         // GLM-5.3-Flash: the pair driver's own (empty) values its cross-cable check ran under.
@@ -305,7 +307,7 @@ struct DistributedInstalledPlan: Sendable {
         guard (2...8).contains(lanes) else { return false }
         switch mode {
         case .tensorParallel:
-            return tensorParallelLaneAdapters.contains(adapter)
+            return tensorParallelLaneAdapters[adapter] != nil
                 || (servesQwenTensorLanes(adapter: adapter, runtimeModelID: runtimeModelID) && !hasPrivateImages)
         case .pipeline: return !hasPrivateImages && laneAdapters.contains(adapter)
         default: return false
@@ -322,8 +324,10 @@ struct DistributedInstalledPlan: Sendable {
     /// - Qwen tensor parallel (every registered TP row, dense or routed
     ///   experts): one by default; a priced saved width or explicit local
     ///   diagnostic may select its native 2...8 lane owner.
-    /// - Other tensor parallel: GLM (`GLM5NextTensorParallelResidentRuntime`'s lane
-    ///   loop), at `tensorParallelBatchLanes`. Each lane keeps its request's
+    /// - Other tensor parallel (`tensorParallelLaneAdapters`): GLM
+    ///   (`GLM5NextTensorParallelResidentRuntime`'s lane loop) at
+    ///   `tensorParallelBatchLanes`, Gemma 4 (`Gemma4TensorParallelResidentRuntime`'s
+    ///   batch driver) at `defaultBatchLanes`. Each lane keeps its request's
     ///   own arithmetic, so a request's tokens are those it gets alone. A
     ///   lane carrying images or video runs the same tensor-parallel media
     ///   path as a request alone (`GLM5NextTensorParallelMedia`), so the
@@ -335,7 +339,7 @@ struct DistributedInstalledPlan: Sendable {
         case .pipeline where !hasPrivateImages && adapter == .gemma4LayerStage && prefillSchedule == .serial:
             gemma4PipelineBatchLanes
         case .pipeline where !hasPrivateImages && laneAdapters.contains(adapter): defaultBatchLanes
-        case .tensorParallel where tensorParallelLaneAdapters.contains(adapter): tensorParallelBatchLanes
+        case .tensorParallel where tensorParallelLaneAdapters[adapter] != nil: tensorParallelLaneAdapters[adapter]
         case .tensorParallel where servesQwenTensorLanes(adapter: adapter, runtimeModelID: runtimeModelID) && !hasPrivateImages:
             defaultBatchLanes
         default: nil
@@ -374,8 +378,14 @@ struct DistributedInstalledPlan: Sendable {
     /// more lanes cost no request its own tokens; the host's memory gate
     /// admits each lane (a lane it cannot hold is refused alone, retryably).
     static let tensorParallelBatchLanes = 8
-    /// The adapters whose tensor-parallel workers serve batch lanes.
-    static let tensorParallelLaneAdapters: Set<ClusterRuntimeAdapter> = [.glm5NextLayerStage]
+    /// The adapters whose tensor-parallel workers serve batch lanes, and how
+    /// many by default. Gemma 4's lanes are each bitwise their request alone
+    /// (synthetic checks) but unqualified on a pair, so it serves one request
+    /// at a time unless a saved width or the owner's switch names 2...8.
+    static let tensorParallelLaneAdapters: [ClusterRuntimeAdapter: Int] = [
+        .glm5NextLayerStage: tensorParallelBatchLanes,
+        .gemma4LayerStage: defaultBatchLanes,
+    ]
 
     /// The adapters whose workers serve batch lanes (Qwen CBv2 or GPT-OSS independent histories).
     static let laneAdapters: Set<ClusterRuntimeAdapter> = [.qwen35Dense, .qwen35RoutedExperts, .qwen35PrismHadamard,

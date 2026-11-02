@@ -25,8 +25,9 @@ import MLX
 //   darkbloom-cluster-tp-check glm ...       (GLM-5.3-Flash, GLMBench.swift)
 //   darkbloom-cluster-tp-check gemma ...     (Gemma 4 MoE oracles, GemmaCheck.swift)
 //   darkbloom-cluster-tp-check mimo ...      (MiMo V2.6 oracles, MiMoCheck.swift)
-//   darkbloom-cluster-tp-check qwen-rows synthesize|run ...   (27B batch rows at the registered per-rank widths:
-//       each row against itself alone and in verify windows over the loopback ring; `QwenRowsCheck`)
+//   darkbloom-cluster-tp-check qwen-rows synthesize|run|layers ...   (27B batch rows at the registered per-rank
+//       widths: each row against itself alone and in verify windows over the loopback ring, or the first layer
+//       that differs; `QwenRowsCheck`)
 //
 // `full` is the unsharded model on one Mac (this code path's single-Mac
 // reference); `simulated` is the single-process tensor-parallel oracle (the

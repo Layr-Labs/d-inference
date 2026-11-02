@@ -3864,7 +3864,24 @@ forwards fuse, on the families measured byte-equal to the unfused operations
 the Gated DeltaNet convolution step (concatenation, depthwise convolution and
 SiLU) and its q/k normalization, the attention output gate, the SwiGLU product,
 and a single vector's gate, up and SwiGLU in one launch (a window keeps the two
-projections: the fused kernel measured slower there). A residual stream
+projections: the fused kernel measured slower there). That one-launch SwiGLU
+(`AffineQuantizedVectors.projectSwiGLU`) computes its sigmoid as MLX's
+`Sigmoid` does, with `metal::precise::exp`; Metal's default fast `exp` rounds
+the bf16 gate -6.84375 to another SwiGLU value. Only a tensor-parallel batch
+session's one-row decode step takes that kernel (it needs
+`Qwen35BatchDecodeScope.exactVectors`; single-Mac serving and
+`darkbloom-cluster-tp-check run` never do), so with the fast `exp` a registered
+27B row alone left the bits of its cohort and window steps. Tensor-parallel
+serving output recorded with an earlier build differs only where such a step
+met that gate, and is regenerated once.
+`AffineQuantizedVectorsTests.swigluEqualsTheCompiledSwiGLUAtEveryGateValue`
+compares the kernel with the two projections and the compiled SwiGLU at every
+normal bf16 and f16 gate value. The convolution step's SiLU
+(`GatedDeltaConvolution`) still uses the default `exp`, so it can round
+differently from the unfused SiLU that prompt chunks of more than eight tokens
+take (`Qwen35DecodeFusionParityTests` finds f16 and f32 differences); every
+decode row count and window of up to eight columns takes that kernel, so rows
+still agree. A residual stream
 narrower than its norms (the Prism/Bonsai packs: FP16 packed embedding rows
 under FP32 norms and projections) keeps the unfused sum that promotes it to
 FP32 on every family (`Qwen35DecoderLayer.residualNorm`); the fused step
@@ -6101,24 +6118,32 @@ fuses gate, up and SwiGLU at `swiglu_fused_vectors` only while its decode
 fusions are on. A routed-expert row's switch projections are not listed.
 
 `QwenTensorParallelRowsCheck` checks the row contract at the registered 27B
-per-rank widths with random weights (affine 4-bit, group 64, BF16 scales,
-biases and norms; three Gated DeltaNet layers and one attention layer; the
-whole 248,320-row vocabulary): a row's logits and history equal its run alone,
-on a one- or an eight-lane host, beside rows of 100 to 4,600 tokens that join
-and leave, across two KV segments, while an assistant observes the cohort, and
-at every position of a four-column verify window alone and in a cohort. Both
-ranks run it in one process (`QwenTensorParallelRealGeometryRowsTests`,
-`QWEN_TP_REAL_GEOMETRY_GPU=1`) or as two processes over the loopback ring
-(`darkbloom-cluster-tp-check qwen-rows`, native or sealed sums, with the
-worker's arithmetic environment); on an M5 Ultra every comparison is bitwise
-equal. It refuses to report when a logit is not finite, when its reference
-logits are not all distinct, when the long rows fit one KV segment, or when its
-comparison misses a planted difference. It covers neither the registered weights nor
-JACCL's streamed sealed sums, the driver under live traffic or the HTTP stream.
-`qwen-rows run` also loads a registered checkpoint directory on a Mac with the
-memory for it, reading the files directly as `tp-check run` does, not through
-the product's verified load (`QwenTensorParallelVerifiedLoad`: no artifact
-hashes, inventory or load memory gate).
+per-rank widths (three Gated DeltaNet layers and one attention layer; the
+whole 248,320-row vocabulary) with random weights that follow the registered
+artifact's value statistics: MLX's affine 4-bit quantization of near-normal
+weights (group 64, signed BF16 scales of 0.001 to 0.005, biases -8 times the
+scale, codes about 8), its norm, convolution, `A_log` and `dt_bias` ranges,
+and gate rows whose SwiGLU inputs reach its range (about ±30). A row's logits
+and history equal its run alone, on a one- or an eight-lane host, beside rows
+of 100 to 4,600 tokens that join and leave, across two KV segments, while an
+assistant observes the cohort, and at every position of a four-column verify
+window alone and in a cohort. Both ranks run it in one process
+(`QwenTensorParallelRealGeometryRowsTests`, `QWEN_TP_REAL_GEOMETRY_GPU=1`) or
+as two processes over the loopback ring (`darkbloom-cluster-tp-check
+qwen-rows`, native or sealed sums, with the worker's arithmetic environment).
+It refuses to report when a logit is not finite, when its reference logits are
+not all distinct, when the long rows fit one KV segment, or when its comparison
+misses a planted difference. `qwen-rows run` also loads a registered
+checkpoint directory on a Mac with the memory for it, reading the files
+directly as `tp-check run` does, not through the product's verified load
+(`QwenTensorParallelVerifiedLoad`: no artifact hashes, inventory or load memory
+gate). `qwen-rows layers` names the first decoder layer where a row's step
+beside another leaves its solo bits
+(`QwenTensorParallelRowsCheck.firstDifferingLayers`, through
+`Qwen35LayerSubmission.observer`). On an M5 Ultra every comparison is bitwise
+equal, with the fixture and with the registered checkpoint. It covers neither
+JACCL's streamed sealed sums, the driver under live traffic nor the HTTP
+stream.
 
 Sources: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/TensorParallel/QwenTensorParallelBatchSession.swift`
 (`QwenTensorParallelBatchSession`, `censusLine`),

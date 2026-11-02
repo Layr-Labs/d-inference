@@ -9,9 +9,9 @@ import MLXLMCommon
 /// context lengths that join and leave (PB), while an assistant observes the
 /// cohort, and at every position of a four-column verify window alone or in
 /// a cohort (W). Both ranks run `run` in lock step (their reductions pair
-/// them); each compares only its own digests. Random weights only (affine
-/// 4-bit, group 64, BF16 scales, biases and norms, as the registered
-/// artifact is quantized), never a model pass: the test suite runs it in one
+/// them); each compares only its own digests. Random weights with the
+/// registered artifact's statistics (`tensors`), or a registered checkpoint's
+/// files through the tool, never a model pass: the test suite runs it in one
 /// process, `darkbloom-cluster-tp-check qwen-rows` over the loopback ring.
 public enum QwenTensorParallelRowsCheck {
     public struct Report: Codable, Sendable {
@@ -45,47 +45,62 @@ public enum QwenTensorParallelRowsCheck {
 
     /// Every checkpoint tensor of `layers` layers, each drawn from its own
     /// name's seed, so both ranks cut the same values without holding the
-    /// whole checkpoint at once.
+    /// whole checkpoint at once. The values follow the registered artifact's
+    /// statistics: MLX's affine quantization of near-normal weights (signed
+    /// scales of 0.001-0.005, biases -8 x scale, codes about 8), its norm,
+    /// convolution, `A_log` and `dt_bias` ranges, and gate rows whose SwiGLU
+    /// inputs reach its range (its gates reach |33| in later layers).
     static func tensors(layers: Int, _ keep: (String, MLXArray) throws -> Void) throws {
         let h = 5120, inter = 17408, vocabulary = 248_320, hq = 24, hkv = 4, hd = 256, nk = 16, nv = 48
         let lk = nk * 128, lv = nv * 128
         func key(_ name: String) -> MLXArray {
             MLXRandom.key(name.utf8.reduce(UInt64(0xCBF2_9CE4_8422_2325)) { ($0 ^ UInt64($1)) &* 0x100_0000_01B3 })
         }
-        func q(_ name: String, _ out: Int, _ input: Int) throws {
-            let keys = MLXRandom.split(key: key(name), into: 2)
-            let scales = MLXRandom.uniform(low: Float(0.002), high: Float(0.02), [out, input / 64], key: keys[0])
-                .asType(.bfloat16)
-            try keep(name + ".weight", MLXRandom.randInt(low: 0, high: Int32.max, [out, input / 8], key: keys[1])
-                .asType(.uint32))
-            try keep(name + ".scales", scales)
-            try keep(name + ".biases", (scales * -7.5).asType(.bfloat16))
+        // `rowGains`: each row's scales times 1 to 8 (log-uniform), as the gate's.
+        func q(_ name: String, _ out: Int, _ input: Int, rowGains: Bool = false) throws {
+            let keys = MLXRandom.split(key: key(name), into: 5)
+            let groups = [out, input / 64]
+            var scales = MLXRandom.uniform(low: Float(0.001), high: Float(0.005), groups, key: keys[0])
+                * which(MLXRandom.bernoulli(groups, key: keys[1]), Float(1), Float(-1))
+            if rowGains {
+                scales = scales * MLX.pow(Float(2), MLXRandom.uniform(low: Float(0), high: Float(3), [out, 1], key: keys[2]))
+            }
+            let rounded = scales.asType(.bfloat16)
+            // Codes 1-15 about 8: two 3-bit draws a code, eight codes a word.
+            func draws(_ key: MLXArray) -> MLXArray {
+                MLXRandom.randInt(low: 0, high: Int32.max, [out, input / 8], key: key).asType(.uint32)
+                    & MLXArray(UInt32(0x7777_7777))
+            }
+            try keep(name + ".weight", draws(keys[3]) + draws(keys[4]) + MLXArray(UInt32(0x1111_1111)))
+            try keep(name + ".scales", rounded)
+            try keep(name + ".biases", (rounded * -8).asType(.bfloat16))
         }
-        func norm(_ name: String, _ n: Int) throws {
-            try keep(name, MLXRandom.uniform(low: Float(0.9), high: Float(1.1), [n], key: key(name)).asType(.bfloat16))
+        func uniform(_ name: String, _ n: Int, _ low: Float, _ high: Float) throws {
+            try keep(name, MLXRandom.uniform(low: low, high: high, [n], key: key(name)).asType(.bfloat16))
         }
         try q("language_model.model.embed_tokens", vocabulary, h)
         try q("language_model.lm_head", vocabulary, h)
-        try norm("language_model.model.norm.weight", h)
+        try uniform("language_model.model.norm.weight", h, 0.7, 2.7)
         for layer in 0..<layers {
             let p = "language_model.model.layers.\(layer)."
-            try norm(p + "input_layernorm.weight", h); try norm(p + "post_attention_layernorm.weight", h)
-            try q(p + "mlp.gate_proj", inter, h); try q(p + "mlp.up_proj", inter, h); try q(p + "mlp.down_proj", h, inter)
+            try uniform(p + "input_layernorm.weight", h, 0.5, 2)
+            try uniform(p + "post_attention_layernorm.weight", h, 0.5, 1.5)
+            try q(p + "mlp.gate_proj", inter, h, rowGains: true); try q(p + "mlp.up_proj", inter, h)
+            try q(p + "mlp.down_proj", h, inter)
             if (layer + 1) % 4 != 0 {
                 try q(p + "linear_attn.in_proj_qkv", 2 * lk + lv, h); try q(p + "linear_attn.in_proj_z", lv, h)
                 try q(p + "linear_attn.in_proj_b", nv, h); try q(p + "linear_attn.in_proj_a", nv, h)
                 try q(p + "linear_attn.out_proj", h, lv)
                 try keep(p + "linear_attn.conv1d.weight",
-                         (MLXRandom.normal([2 * lk + lv, 4, 1], key: key(p + "conv")) * 0.2).asType(.bfloat16))
-                try keep(p + "linear_attn.A_log",
-                         MLXRandom.uniform(low: Float(-1), high: Float(0), [nv], key: key(p + "A_log")).asType(.bfloat16))
-                try keep(p + "linear_attn.dt_bias",
-                         MLXRandom.uniform(low: Float(-0.5), high: Float(0.5), [nv], key: key(p + "dt")).asType(.bfloat16))
-                try norm(p + "linear_attn.norm.weight", 128)
+                         (MLXRandom.normal([2 * lk + lv, 4, 1], key: key(p + "conv")) * 0.045).asType(.bfloat16))
+                try uniform(p + "linear_attn.A_log", nv, -5.5, 2.5)
+                try uniform(p + "linear_attn.dt_bias", nv, -7.5, 19)
+                try uniform(p + "linear_attn.norm.weight", 128, 0.7, 1.15)
             } else {
                 try q(p + "self_attn.q_proj", 2 * hq * hd, h); try q(p + "self_attn.k_proj", hkv * hd, h)
                 try q(p + "self_attn.v_proj", hkv * hd, h); try q(p + "self_attn.o_proj", h, hq * hd)
-                try norm(p + "self_attn.q_norm.weight", hd); try norm(p + "self_attn.k_norm.weight", hd)
+                try uniform(p + "self_attn.q_norm.weight", hd, 0.4, 2.2)
+                try uniform(p + "self_attn.k_norm.weight", hd, 0.4, 2.2)
             }
         }
     }
@@ -260,6 +275,57 @@ public enum QwenTensorParallelRowsCheck {
         func retireAll() throws {
             for row in sessions.keys.sorted() { try sessions.removeValue(forKey: row)?.retire() }
             guard host.isDrained else { throw ProbeError("Qwen TP rows check: a host kept pages after retirement") }
+        }
+    }
+
+    /// The first decoder layer whose output for `target` differs between its
+    /// step alone (P1) and beside `other` (PB2), at each of `steps` decode
+    /// steps: a diagnostic for a row that leaves its solo bits, evaluating
+    /// each layer as it is built (`Qwen35LayerSubmission.observer`). Both
+    /// ranks call it in lock step; each reports its own rows.
+    public static func firstDifferingLayers(model: QwenTensorParallelModel, configuration: Data, target: Int = 7,
+                                            other: Int = 6, steps: Int = 3) throws -> [String] {
+        guard let targetLength = lengths[target], let otherLength = lengths[other], target != other, steps > 0 else {
+            throw ProbeError("Qwen TP rows check: layers needs two different rows of 0 to 7")
+        }
+        final class Outputs: @unchecked Sendable { var layers: [MLXArray] = [] }
+        func observed(_ rows: Rows, members: [Int], position: Int) throws -> [(layers: [MLXArray], logits: MLXArray)] {
+            try (0..<steps).map { step in
+                let outputs = Outputs()
+                let logits = try Qwen35LayerSubmission.$observer.withValue({ _, hidden in
+                    let row = hidden[position ..< position + 1]
+                    eval(row)
+                    outputs.layers.append(row)
+                }) {
+                    try GPU.withCommandBufferLimits(QwenTensorParallelBatchSession.decodeCommandBuffers) {
+                        try QwenTensorParallelBatchSession.decode(members.map { rows.sessions[$0]! },
+                            tokens: members.map { token($0, step) }, check: {})
+                    }
+                }
+                return (outputs.layers, logits[position ..< position + 1])
+            }
+        }
+        let alone = try Rows(model, configuration: configuration, lanes: 1)
+        try alone.open(target, length: targetLength)
+        let solo = try observed(alone, members: [target], position: 0)
+        try alone.retireAll()
+        let pair = try Rows(model, configuration: configuration, lanes: 2)
+        try pair.open(other, length: otherLength)
+        try pair.open(target, length: targetLength)
+        let beside = try observed(pair, members: [other, target], position: 1)
+        try pair.retireAll()
+        // After both ranks' last collective: an observer that never ran would report every layer equal.
+        guard zip(solo, beside).allSatisfy({ !$0.0.layers.isEmpty && $0.0.layers.count == $0.1.layers.count }) else {
+            throw ProbeError("Qwen TP rows check: the layer observer saw no layers, or other counts beside a row")
+        }
+        return zip(solo, beside).enumerated().map { step, compared in
+            let logits = Rows.digest(compared.0.logits) == Rows.digest(compared.1.logits) ? "equal" : "differ"
+            guard let layer = compared.0.layers.indices.first(where: {
+                compared.0.layers[$0].asData(access: .copy).data != compared.1.layers[$0].asData(access: .copy).data
+            }) else { return "step \(step): all \(compared.0.layers.count) layer outputs equal, logits \(logits)" }
+            let a = compared.0.layers[layer].asType(.float32), b = compared.1.layers[layer].asType(.float32)
+            let count = (a .!= b).sum().item(Int.self), gap = abs(a - b).max().item(Float.self)
+            return "step \(step): first differing layer \(layer): \(count)/\(a.size) values, max |d| \(gap); logits \(logits)"
         }
     }
 

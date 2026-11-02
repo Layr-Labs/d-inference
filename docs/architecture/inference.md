@@ -6062,6 +6062,20 @@ acknowledgement. Failed release retains the reservation for cleanup or the
 worker's process fence. Every row's singleton and batch owners publish raw
 selection logprobs through the committed-token channel.
 
+Selection checks finiteness inside its own sealed sum, as the assistant's greedy
+choice does (`QwenTensorParallelNativeBatchExecutor.select`): each rank adds its
+rows' non-finite logit counts beside their maximum and first global index (a
+sampled cohort counts the gathered rows), and both ranks read them from the
+same evaluation that yields the tokens. A non-finite logit on either rank fails
+both ranks before any token is chosen, a sampler advances or anything is
+published, so neither rank waits in a collective its peer never enters. The
+load agreement binds this selection sum
+(`qwen-tensor-parallel-selection-nonfinite-in-sum-v1`): a rank whose selection
+sums other words refuses to load beside it rather than meet it in a sum of
+another length. The decode step pays no separate finiteness read
+(`QwenTensorParallelBatchSession.validateLogits` checks shape and dtype), and
+every selected token is unchanged.
+
 The batch path can restore mutually held original-grid prefix snapshots into
 fresh request-owned state. TP speculative rounds remain a separate integration. Installed owners propagate a priced
 saved width or explicit diagnostic width for every Qwen TP row; automatic placement
@@ -6072,8 +6086,46 @@ the 27B, whose features keep it in tensor parallel, and an assistant quote bind 
 placement to tensor parallel as before. Synthetic CPU and both-chip native
 fixtures are not full-artifact, RDMA, tower, throughput or endpoint evidence.
 
+Each rank logs its decode routes once per loaded model when its native
+executor first starts serving (`darkbloom-qwen-tp-decode-census-v1`,
+`QwenTensorParallelBatchSession.censusLine`): every projection's route (the
+batch-invariant kernel `aqv`, a row-parallel FP32 partial on it `partial`, or
+MLX's own kernels with the reason, `mlx-...`) and each projection shape's
+layout per vector count (plain rows of one to eight and their four-column
+windows), the residual-norm form, the paged attention geometry and partition
+size, the selection, and any arithmetic switch the launcher set. A registered
+27B rank reports `mlx=0`. Only host values are read; nothing is evaluated.
+Layouts are listed per checkpoint projection: the SDK multiplies a Gated
+DeltaNet layer's four input projections as one call of their summed rows, and
+fuses gate, up and SwiGLU at `swiglu_fused_vectors` only while its decode
+fusions are on. A routed-expert row's switch projections are not listed.
+
+`QwenTensorParallelRowsCheck` checks the row contract at the registered 27B
+per-rank widths with random weights (affine 4-bit, group 64, BF16 scales,
+biases and norms; three Gated DeltaNet layers and one attention layer; the
+whole 248,320-row vocabulary): a row's logits and history equal its run alone,
+on a one- or an eight-lane host, beside rows of 100 to 4,600 tokens that join
+and leave, across two KV segments, while an assistant observes the cohort, and
+at every position of a four-column verify window alone and in a cohort. Both
+ranks run it in one process (`QwenTensorParallelRealGeometryRowsTests`,
+`QWEN_TP_REAL_GEOMETRY_GPU=1`) or as two processes over the loopback ring
+(`darkbloom-cluster-tp-check qwen-rows`, native or sealed sums, with the
+worker's arithmetic environment); on an M5 Ultra every comparison is bitwise
+equal. It refuses to report when a logit is not finite, when its reference
+logits are not all distinct, when the long rows fit one KV segment, or when its
+comparison misses a planted difference. It covers neither the registered weights nor
+JACCL's streamed sealed sums, the driver under live traffic or the HTTP stream.
+`qwen-rows run` also loads a registered checkpoint directory on a Mac with the
+memory for it, reading the files directly as `tp-check run` does, not through
+the product's verified load (`QwenTensorParallelVerifiedLoad`: no artifact
+hashes, inventory or load memory gate).
+
 Sources: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/TensorParallel/QwenTensorParallelBatchSession.swift`
-(`QwenTensorParallelBatchSession`),
+(`QwenTensorParallelBatchSession`, `censusLine`),
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/TensorParallel/QwenTensorParallelRowsCheck.swift`
+(`QwenTensorParallelRowsCheck`),
+`libs/darkbloom-cluster-worker/Sources/TensorParallelCheck/QwenRowsCheck.swift`
+(`QwenRowsCheck`),
 `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/TensorParallel/QwenTensorParallelBatchDriver.swift`
 (`serve`, `makePlan`, `join`, `leave`),
 `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Batch/QwenBatchDecodeCoalescing.swift`

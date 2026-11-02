@@ -5140,14 +5140,20 @@ plan as before. The plan is made before the step's tokens are known, so:
   same sum, and both drop that decode when the token ended its request (a stop
   token or the output count).
 - Host events (owner answers, credits, cancellations, joins) apply one step
-  later. A row may decode on its newest token once the owner answered "go on"
-  to the token before it, and rank 0 publishes a token only after that answer.
+  later: rank 0 polls them while it makes the next plan, after the forward and
+  before the tokens are read. A row may decode on its newest token once the
+  owner answered "go on" to the token before it, and rank 0 publishes a token
+  only after that answer: at its selection, or at the poll that brings the
+  answer (a row holds at most one unpublished token).
 - A stop answer that arrives after the row selected one more token keeps the
   tokens the owner saw. Rank 0 never publishes that token, both ranks drop it
   (the leaving slot carries the kept count), and the native finish counts one
-  discarded forward (`QwenTensorParallelNativeBatchExecutor.retire`). Usage and
-  logprobs cover the kept tokens only; prefix captures and SSD records hold
-  prompt states, which no decode forward changes.
+  discarded forward (`QwenTensorParallelNativeBatchExecutor.retire`). The
+  one-lane wire answers each token as it is published, after the next forward
+  was planned, so there a client stop to any token a plain decode step selected
+  runs one discarded forward, and the request's finish follows that forward.
+  Usage and logprobs cover the kept tokens only; prefix captures and SSD
+  records hold prompt states, which no decode forward changes.
 
 The load agreement binds the wire version
 (`qwen-tp-independent-history-batch-v2-folded-control`), so a rank of an

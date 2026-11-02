@@ -125,7 +125,16 @@ final class HistoryBatchTestSession: IndependentHistoryBatchSession {
         history += tokens; frames.append(frame)
     }
     func finishGeneration(_ reason: QwenLayerStageGenerationFinishReason, selectedTokenCount: Int, lastTokenID: Int) throws {
-        guard lastTokenID == Self.next(history), selectedTokenCount == frames.count - request.prefillFrameCount + 1 else {
+        try finishGeneration(reason, selectedTokenCount: selectedTokenCount, lastTokenID: lastTokenID, discarded: 0)
+    }
+    /// `discarded`: decode forwards whose selection a client stop dropped
+    /// (the last selected token kept is then the input of the forward after it).
+    func finishGeneration(_ reason: QwenLayerStageGenerationFinishReason, selectedTokenCount: Int, lastTokenID: Int,
+                          discarded: Int) throws {
+        let decoded = frames.count - request.prefillFrameCount
+        guard discarded == 0 || (reason == .clientStop && discarded == 1),
+              lastTokenID == (discarded == 0 ? Self.next(history) : history[history.count - discarded]),
+              selectedTokenCount == decoded + 1 - discarded else {
             throw ProbeError("Test finish differs from committed history")
         }
         guard !failCleanup else { throw ProbeError("Injected native retirement failure") }

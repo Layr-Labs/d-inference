@@ -18,6 +18,8 @@ struct QwenTensorParallelBatchDriverTests {
         let condition = NSCondition()
         var values: [Int: [Float]] = [:], result: [Float] = []
         var leaving = 0, failure: Error?
+        /// Every completed collective's word count, in order.
+        var lengths: [Int] = []
         func fail(_ error: Error) { condition.withLock { failure = error; condition.broadcast() } }
         func sum(_ words: [Float], rank: Int) throws -> [Float] {
             condition.lock(); defer { condition.unlock() }
@@ -30,7 +32,7 @@ struct QwenTensorParallelBatchDriverTests {
             values[rank] = words
             if values.count == 2 {
                 guard values[0]!.count == values[1]!.count else { throw ProbeError("TP test collective shapes differ") }
-                result = zip(values[0]!, values[1]!).map(+); leaving = 2; condition.broadcast()
+                result = zip(values[0]!, values[1]!).map(+); leaving = 2; lengths.append(result.count); condition.broadcast()
             } else {
                 while leaving == 0 && failure == nil {
                     guard condition.wait(until: deadline) else { throw ProbeError("TP test peer exchange timed out") }
@@ -114,15 +116,22 @@ struct QwenTensorParallelBatchDriverTests {
             try lane.advance(Array(lane.request.promptTokenIDs[frame.tokenOffset..<(frame.tokenOffset + frame.tokenCount)]))
             return frame.finalPromptChunk ? HistoryBatchTestSession.next(lane.history) : nil
         }
-        func decode(_ lanes: [HistoryBatchTestSession], tokens: [Int], check: () throws -> Void) throws -> [Int] {
+        func decode(_ lanes: [HistoryBatchTestSession], tokens: [Int], control: () throws -> [Float]?,
+                    check: () throws -> Void) throws -> (tokens: [Int], control: [Float]?) {
             for (lane, token) in zip(lanes, tokens) { try lane.advance([token]) }
             maximumWidth = max(maximumWidth, lanes.count)
             try afterDecode(lanes.map { $0.request.requestID })
-            return lanes.map { HistoryBatchTestSession.next($0.history) }
+            let selected = lanes.map { HistoryBatchTestSession.next($0.history) }
+            guard let words = try control() else { return (selected, nil) }
+            // The selection's own sum: rank 0's tokens, rank 1's zeros, then both ranks' control words.
+            let sum = try pair.link.sum(selected.map { rank == 0 ? Float($0) : 0 } + words, rank: rank)
+            return (sum.prefix(lanes.count).map { Int($0) }, Array(sum.dropFirst(lanes.count)))
         }
         func retire(_ lane: HistoryBatchTestSession, reason: QwenLayerStageGenerationFinishReason?, selected: Int, last: Int?) throws {
-            if let reason, let last { try lane.finishGeneration(reason, selectedTokenCount: selected, lastTokenID: last) }
-            else { try lane.cancel() }
+            if let reason, let last {
+                let decoded = lane.frames.count - lane.request.prefillFrameCount
+                try lane.finishGeneration(reason, selectedTokenCount: selected, lastTokenID: last, discarded: decoded + 1 - selected)
+            } else { try lane.cancel() }
             pair.set("closed-\(rank)-\(lane.request.requestID)")
         }
         func confirmedRetirement(_ lane: HistoryBatchTestSession, clean: Bool) throws {
@@ -375,6 +384,139 @@ struct QwenTensorParallelBatchDriverTests {
         #expect(throws: ProbeError.self) { try pair.run() }
         #expect(pair.books[1].reservation(request.requestID) != nil)
         #expect(pair.hosts.allSatisfy { $0.finished.isEmpty && $0.left.isEmpty })
+    }
+
+    final class Retired: @unchecked Sendable {
+        let lock = NSLock()
+        var byRank: [[UUID: ([Int], QwenLayerStageGenerationFinishReason)]] = [[:], [:]]
+    }
+    /// Each rank's retired selections (`retiredSelection`), per request.
+    private func runRetiring(_ pair: Pair) throws -> [[UUID: ([Int], QwenLayerStageGenerationFinishReason)]] {
+        let group = DispatchGroup(), retired = Retired()
+        for rank in 0...1 {
+            group.enter()
+            DispatchQueue.global().async {
+                defer { group.leave() }
+                do {
+                    let driver = try QwenTensorParallelBatchDriver(executor: pair.native[rank], book: pair.books[rank],
+                        capacity: pair.capacity, vocabulary: 64, now: pair.now)
+                    try driver.serve(host: pair.hosts[rank], retiredSelection: { id, tokens, reason in
+                        retired.lock.withLock { retired.byRank[rank][id] = (tokens, reason) }
+                    }, check: {})
+                } catch {
+                    pair.lock.withLock { pair.errors.append(String(describing: error)) }; pair.link.fail(error)
+                }
+            }
+        }
+        guard group.wait(timeout: .now() + 15) == .success else { throw ProbeError("TP test driver timed out") }
+        if !pair.errors.isEmpty { throw ProbeError(pair.errors.joined(separator: "; ")) }
+        return retired.lock.withLock { retired.byRank }
+    }
+
+    /// A steady decode step's plan and report ride its own selection sum:
+    /// between the first and the last decode, one collective a step, of the
+    /// rectangle's words and the control words, and no separate exchange.
+    @Test func controlWordsRideTheSelectionSumOfEverySteadyDecodeStep() throws {
+        let pair = Pair(1), request = try pair.request(output: 24)
+        try pair.reserve(request)
+        try pair.run()
+        #expect(pair.hosts[0].tokens[request.requestID] == HistoryBatchTestSession.oracle(request))
+        for rank in 0...1 { #expect(pair.hosts[rank].finished[request.requestID] == .length) }
+        let folded = 1 + QwenTensorParallelBatchWire.words, lengths = pair.link.lengths
+        let first = try #require(lengths.firstIndex(of: folded)), last = try #require(lengths.lastIndex(of: folded))
+        // The prompt's step selects the first token; every other token is one folded step.
+        #expect(lengths.filter { $0 == folded }.count == request.outputCount - 1)
+        #expect(lengths[first...last].allSatisfy { $0 == folded })
+        #expect(!lengths[first...last].contains(QwenTensorParallelBatchWire.words))
+    }
+
+    /// Both ranks end a row at its stop token or output count from the tokens
+    /// in the sum: the same kept tokens and reason, and no forward after it.
+    @Test func eosAndLengthAreDerivedIdenticallyOnBothRanks() throws {
+        // The stop token comes after every prompt step, so the step selecting it
+        // carries the next plan: alone, and beside rows that end at their length.
+        for width in [1, 4] {
+            let pair = Pair(width)
+            let oracle = HistoryBatchTestSession.oracle(try pair.request(length: 3, output: 24))
+            let at = try #require(oracle.indices.last { !oracle.prefix($0).contains(oracle[$0]) })
+            let stopping = try pair.request(length: 3, output: 24, stops: [oracle[at]])
+            var expected: [(QwenLayerStageGenerationRequest, QwenLayerStageGenerationFinishReason)] = [(stopping, .eos)]
+            if width > 1 {
+                expected += [(try pair.request(length: 2, output: 9), .length), (try pair.request(length: 4, output: 16), .length)]
+            }
+            for (request, _) in expected { try pair.reserve(request) }
+            let retired = try runRetiring(pair)
+            for (request, reason) in expected {
+                let tokens = HistoryBatchTestSession.oracle(request)
+                #expect(pair.hosts[0].tokens[request.requestID] == tokens)
+                for rank in 0...1 {
+                    #expect(retired[rank][request.requestID]?.0 == tokens)
+                    #expect(retired[rank][request.requestID]?.1 == reason)
+                    #expect(pair.hosts[rank].finished[request.requestID] == .init(rawValue: reason.rawValue))
+                    // Prompt frames, then one decode forward per token after the first: none after the end.
+                    let session = try #require(pair.native[rank].sessions[request.requestID])
+                    #expect(session.frames.count == request.prefillFrameCount + tokens.count - 1)
+                }
+            }
+            #expect(at >= 4 && HistoryBatchTestSession.oracle(stopping).count == at + 1)
+            #expect(pair.link.lengths.contains { $0 > QwenTensorParallelBatchWire.words })
+        }
+    }
+
+    /// The owner's stop answer reaches the plan one step late: the row has
+    /// already selected one more token, which is never published, and both
+    /// ranks retire the tokens the owner saw as a clean client stop.
+    @Test func aHostStopAppliesOneStepLateAndItsExtraTokenIsNeverPublished() throws {
+        // Every decode after the first is a folded step; a stop answer to
+        // a later token reaches the plan one step after the forward on it.
+        for stopAfter in [2, 6] {
+            let pair = Pair(1), stopped = try pair.request(output: 24)
+            try pair.reserve(stopped)
+            pair.hosts[0].answer = { id in pair.hosts[0].tokens[id]?.count == stopAfter ? false : true }
+            let retired = try runRetiring(pair)
+            let seen = Array(HistoryBatchTestSession.oracle(stopped).prefix(stopAfter))
+            #expect(pair.hosts[0].tokens[stopped.requestID] == seen)
+            for rank in 0...1 {
+                #expect(retired[rank][stopped.requestID]?.0 == seen)
+                #expect(retired[rank][stopped.requestID]?.1 == .clientStop)
+                #expect(pair.hosts[rank].finished[stopped.requestID] == .clientStop)
+                #expect(pair.flag("prefix-true-\(rank)-\(stopped.requestID)"))
+                // The extra step ran (a decode forward on the last seen token) and was dropped.
+                let session = try #require(pair.native[rank].sessions[stopped.requestID])
+                #expect(session.frames.count == stopped.prefillFrameCount + stopAfter)
+            }
+        }
+    }
+
+    /// Joins, a prompt beside decoding rows and a cancellation interleave
+    /// folded steps with exchanged ones; every row keeps its own tokens, and
+    /// a cancelled row publishes nothing after the cancellation was seen.
+    @Test func joinsPromptsAndCancellationInterleaveWithFoldedSteps() throws {
+        let pair = Pair(4), first = try pair.request(output: 20), cancelled = try pair.request(length: 4, output: 20)
+        let late = try pair.request(length: 40, output: 8)
+        try pair.reserve(first); try pair.reserve(cancelled)
+        pair.hosts[0].onToken = { id, ordinal in
+            if id == first.requestID && ordinal == 3 && !pair.flag("late") {
+                pair.set("late"); try pair.reserve(late, rank: 0)
+            }
+            if id == cancelled.requestID && ordinal == 5 { pair.books[0].cancel(cancelled.requestID) }
+        }
+        pair.hosts[1].onControl = {
+            if pair.flag("late") && !pair.flag("late-1") { pair.set("late-1"); try pair.reserve(late, rank: 1) }
+        }
+        try pair.run()
+        for request in [first, late] {
+            #expect(pair.hosts[0].tokens[request.requestID] == HistoryBatchTestSession.oracle(request))
+            for rank in 0...1 { #expect(pair.hosts[rank].finished[request.requestID] == .length) }
+        }
+        #expect(pair.hosts[0].tokens[cancelled.requestID] == Array(HistoryBatchTestSession.oracle(cancelled).prefix(6)))
+        for rank in 0...1 {
+            #expect(pair.hosts[rank].left.contains(cancelled.requestID))
+            #expect(pair.books[rank].isEmpty)
+        }
+        let lengths = pair.link.lengths
+        #expect(lengths.contains { $0 > QwenTensorParallelBatchWire.words })
+        #expect(lengths.contains(QwenTensorParallelBatchWire.words))
     }
 
     @Test func controlWordsPreserveEveryInt32BitAndRejectMalformedAndStaleFrames() throws {

@@ -52,6 +52,7 @@ struct QwenTensorParallelBatchSessionTests {
         var executor: QwenTensorParallelNativeBatchExecutor<SelectionReservation>?
         var nativeLanes: [QwenTensorParallelNativeBatchLane] = []
         var selected: [Int] = []
+        var control: [Float]?
         var failure: Error?
         var releaseAttempts = 0, rejectRelease = false
         init(_ model: QwenTensorParallelModel, lanes: Int, maximumTokens: Int = 256) throws {
@@ -569,6 +570,22 @@ struct QwenTensorParallelBatchSessionTests {
             tensors: tensors, hiddenSize: 256)
     }
 
+    /// The next step's plan and report ride a plain rectangle's selection sum
+    /// (after greedy rows' words, or sampled rows' choices): every token and
+    /// logprob equals the same cohort's without them, at widths 1 to 8, and
+    /// both ranks read back both ranks' exact control words.
+    @Test func controlWordsInTheSelectionSumKeepTokensAndLogprobs() throws {
+        let fixture = QwenTensorParallelFixtures.checkpoint(hidden: 256, layers: 4, heads: 4, kvHeads: 2, vocabulary: 256)
+        var root = try JSONSerialization.jsonObject(with: fixture.configuration) as! [String: Any]
+        var text = root["text_config"] as! [String: Any]
+        text["full_attention_interval"] = 1; root["text_config"] = text
+        var tensors = fixture.tensors.filter { !$0.0.contains(".linear_attn.") }
+        let attention = fixture.tensors.filter { $0.0.contains(".layers.3.self_attn.") }
+        for layer in 0..<3 { tensors += attention.map { ($0.0.replacingOccurrences(of: ".layers.3.", with: ".layers.\(layer)."), $0.1) } }
+        try verifyMixedSampling(configuration: try JSONSerialization.data(withJSONObject: root, options: [.sortedKeys]),
+            tensors: tensors, hiddenSize: 256, foldedControl: true)
+    }
+
     /// Routed experts on the native executor: greedy, sampled and
     /// logprob rows of one cohort select what each selects alone, on the GPU
     /// (the product backend), as the hybrid fixtures run.
@@ -578,7 +595,10 @@ struct QwenTensorParallelBatchSessionTests {
         try verifyMixedSampling(configuration: fixture.configuration, tensors: fixture.tensors, hiddenSize: 128)
     }
 
-    private func verifyMixedSampling(configuration fixture: Data, tensors: [(String, MLXArray)], hiddenSize: Int) throws {
+    /// `foldedControl`: the candidate cohort's selection sums also carry a
+    /// plan and report (as a folded driver step does).
+    private func verifyMixedSampling(configuration fixture: Data, tensors: [(String, MLXArray)], hiddenSize: Int,
+                                     foldedControl: Bool = false) throws {
         try Device.withDefaultDevice(device) {
             var root = try JSONSerialization.jsonObject(with: fixture) as! [String: Any]
             var text = root["text_config"] as! [String: Any]
@@ -587,7 +607,7 @@ struct QwenTensorParallelBatchSessionTests {
             let profile = try QwenLayerStageGenerationProfile(identifier: "qwen-tp-selection-tiny", vocabularySize: 256,
                 hiddenSize: hiddenSize, activationDType: "bfloat16", maximumPromptTokens: 128,
                 maximumChunkTokens: 64, maximumOutputTokens: 16, maximumContextTokens: 256)
-            for width in [2, 4, 8] {
+            for width in foldedControl ? [1, 2, 4, 8] : [2, 4, 8] {
                 func pair(_ wire: Rendezvous) throws -> [Owned] {
                     try (0..<2).map { rank in
                         let reduction = Rank(rank, wire)
@@ -642,12 +662,28 @@ struct QwenTensorParallelBatchSessionTests {
                         #expect(reference[1].selected[row] == expected[row])
                     }
                     let order = (0..<width).map { (step + width - 1 - $0) % width }
+                    var carried = QwenBatchWire.Slot(state: .active, requestID: UUID(), role: .decode)
+                    carried.inputToken = QwenTensorParallelBatchWire.carriedToken; carried.selectedTokens = step + 2
+                    carried.committedTokens = 70_000 + step; carried.fingerprintWords = [Int32.min, Int32.max, -1, 0]
+                    let plan = QwenBatchWire.Header(step: step, stop: false,
+                        slots: [carried] + Array(repeating: QwenBatchWire.Slot(), count: width - 1))
+                    let report = QwenBatchWire.Reply(step: step, tokens: (0..<width).map { $0 == 0 ? step + 2 : -1 },
+                        cancelledMask: width > 1 ? 2 : 0)
                     try parallel(candidate) { owner in
+                        let rank = owner.executor!.rank
+                        let words = foldedControl ? try QwenTensorParallelBatchWire.contribution(rank: rank,
+                            plan: rank == 0 ? plan : nil, report: rank == 1 ? report : nil) : nil
                         let output = try owner.executor!.decode(order.map { owner.nativeLanes[$0] },
-                            tokens: order.map { owner.selected[$0] }, check: {})
-                        for (slot, row) in order.enumerated() { owner.selected[row] = output[slot] }
+                            tokens: order.map { owner.selected[$0] }, control: { words }, check: {})
+                        owner.control = output.control
+                        for (slot, row) in order.enumerated() { owner.selected[row] = output.tokens[slot] }
                     }
                     for rank in 0..<2 { #expect(candidate[rank].selected == expected, "width=\(width) step=\(step) rank=\(rank)") }
+                    for rank in 0..<2 where foldedControl {
+                        let read = try QwenTensorParallelBatchWire.read(try #require(candidate[rank].control),
+                            step: step, lanes: width)
+                        #expect(read.0 == plan && read.1 == report, "width=\(width) step=\(step) rank=\(rank)")
+                    }
                     for row in 0..<width {
                         #expect(try reference[0].executor!.takeLogprobs(reference[0].nativeLanes[row])
                             == candidate[0].executor!.takeLogprobs(candidate[0].nativeLanes[row]))

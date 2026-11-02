@@ -94,11 +94,12 @@ struct QwenTensorParallelBatchBudget {
             scalar.projectionConstantBytes, batchConstants, poolSlack, prefix.residentBytes, packing, promptGather,
             wavefront])
         // A one-token batch can gather more bytes than a short prompt frame.
-        // Control limbs and retirement votes also travel in the sealed codec.
+        // Control limbs and retirement votes also travel in the sealed codec,
+        // the next step's limbs after a greedy selection's six words a row.
         let payload = max(scalar.allowance.maximumCollectivePayloadBytes,
             try product([lanes, plan.maximumPartialBytesPerToken]),
             try product([lanes, plan.vocabularySize, 4]),
-            try product([QwenTensorParallelBatchWire.words, 4]))
+            try product([QwenTensorParallelBatchWire.words + 6 * lanes, 4]))
         let frame = try sum([payload, QwenTensorParallelSealCodec.frameOverhead])
         let allowance = try ClusterTensorParallelRequestAllowance(maximumContextTokens: maximumTokens,
             maximumChunkTokens: chunkSize,

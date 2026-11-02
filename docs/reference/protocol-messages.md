@@ -1,6 +1,6 @@
 # Provider ↔ coordinator protocol messages
 
-> Last updated: 2026-10-30
+> Last updated: 2026-11-02
 
 Every JSON frame on the provider WebSocket (`GET /ws/provider`), with the Go
 type, the Swift type, and the presence rule for each field. Go is the canon in
@@ -1449,7 +1449,14 @@ backend and attested capability guards apply. Alias entries describe aliases
 whose desired, previous, or retired build is in the provider's advertised inventory;
 an empty set revokes old targets. Revision-aware providers stage the exact artifact
 and drain before activation; ID-only providers retain the legacy prefetch path.
-Both announce completed updates through `models_update`. A `cluster_member`
+Both announce completed updates through `models_update`. A provider with an
+operator filter (a non-empty `enabled_models`, or the selection of a live
+switch) converges only to a desired build inside it: an alias successor outside
+the filter is not fetched, not served and does not drop the previous build
+(`operatorFilterAllows`,
+`provider-swift/Sources/ProviderCore/ProviderLoop+ModelSelection.swift`). The
+same filter refuses `load_model` and `prefetch_model` for a model outside it
+with `model_not_selected`, before Autopilot's consented paths apply. A `cluster_member`
 connection is offered no entries and receives only the empty set; a nonempty set
 is refused for a member connection or a pair-held device. Source:
 [coordinator/registry/model_commands.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/registry/model_commands.go) (`DesiredModelsForProvider`, `RefreshDesiredModels`).

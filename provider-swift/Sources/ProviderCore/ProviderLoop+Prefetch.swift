@@ -345,11 +345,12 @@ extension ProviderLoop {
             return
         }
         // A declared successor of a selected build remains that model's
-        // existing update workflow. Unrelated observation-only inventory never
-        // inherits permission merely by appearing in desired state.
+        // existing update workflow, inside the operator's filter only.
+        // Unrelated observation-only inventory never inherits permission
+        // merely by appearing in desired state.
         for entry in entries {
             if let previous = entry.previousBuild, ordinaryServingModelIDs.contains(previous),
-                !entry.desiredBuild.isEmpty {
+                !entry.desiredBuild.isEmpty, operatorFilterAllows(entry.desiredBuild) {
                 ordinaryServingModelIDs.insert(entry.desiredBuild)
                 if autopilotConsented && !autopilotSetAllows(entry.desiredBuild) {
                     autopilotSuccessorNeedsInventoryRefresh = true
@@ -378,7 +379,12 @@ extension ProviderLoop {
 
         for entry in entries {
             let desired = entry.desiredBuild
-            guard !desired.isEmpty, autopilotAllowsModel(desired) else { continue }
+            guard !desired.isEmpty, autopilotAllowsModel(desired) else {
+                if !desired.isEmpty, !operatorFilterAllows(desired) {
+                    logger.info("desired_models: \(entry.modelName) → \(desired) is outside the enabled model filter; not converging")
+                }
+                continue
+            }
             guard ModelRuntimeRequirements.isEligible(
                 modelID: desired, available: loopConfig.runtimeCapabilities)
             else {

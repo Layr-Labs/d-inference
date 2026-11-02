@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-11-01
+> Last updated: 2026-11-02
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -4153,12 +4153,17 @@ stops, cancellations and retirements.
 
 Memory is charged per rank (`Gemma4TensorParallelRequestBudget`; see
 [hardware support](hardware-support.md#gemma-4-tensor-parallel-rank-memory)):
-each request its own KV heads, prompt transient, FP32 partials, vocabulary
+each request its own KV heads, attention transient, FP32 partials, vocabulary
 rows and its own prompt's prefix capture; each rank once the conservative
-activation floor, the freed-buffer cache and eight sealed frames. The prefix
-memory tier lives in measured free room and is not charged. A lane is gated
-with every held lane's charge, the new one and the rank's reserve. Speculative
-decoding, media and a measured activation floor are not built yet.
+activation floor, the freed-buffer cache and eight sealed frames. The transient
+and the partials are a prompt chunk's, or a decode step's one row on every
+layer where that is more: a step is submitted layer by layer in 100-operation
+buffers, so several layers' temporaries are alive at once. Only requests
+shorter than 30 tokens, prompt and output together, pay more (at most about
+6.2 MB a rank); the LOAD quote is unchanged. The prefix memory tier lives in
+measured free room and is not charged. A lane is gated with every held lane's
+charge, the new one and the rank's reserve. Speculative decoding, media and a
+measured activation floor are not built yet.
 
 ### Gemma tensor-parallel placement
 

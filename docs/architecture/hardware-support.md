@@ -1,6 +1,6 @@
 # Hardware support and the provider memory model
 
-> Last updated: 2026-11-01
+> Last updated: 2026-11-02
 
 What hardware the provider runs on and how it decides, in bytes, whether a
 model may load and how much KV cache each resident model may use. Read this to
@@ -1131,8 +1131,8 @@ A Gemma 4 tensor-parallel rank is charged its own share, not the whole model
 |---|---|---|
 | Weights: the plan's exact cut, overlap groups and zero rows included | per rank | 8,040,450,108 (8-bit: 14,915,635,260) |
 | Its own KV heads of every layer (4 sliding, 1 full), residual rows | per request | about 364 MB (the whole model's: 719,380,600) |
-| One prompt chunk's attention transient over its 8 query heads | per request | about 145 MB |
-| FP32 partials (attention row, dense row, 8 expert rows and their packed copy) and 3 vocabulary rows | per request | about 113 MB |
+| One prompt chunk's attention transient over its 8 query heads, or a decode step's one row on every layer where that is more (requests of 17 tokens or fewer) | per request | about 145 MB |
+| FP32 partials (attention row, dense row, 8 expert rows and their packed copy) of a chunk, or of a decode step's row on all 30 layers where that is more, and 3 vocabulary rows | per request | about 113 MB |
 | Prompt-prefix capture at its deepest boundary: its own full-attention rows for its prompt and one window of every sliding layer (`prefixCaptureBytes`); none when its cache is off | per request | 191,027,200 for an 8,319-token prompt (the LOAD quote's, for the profile's 32,768-token prompt: 441,384,960) |
 | Activation floor: `UnifiedMemoryCap`'s conservative default, 5.5 GiB, until a pair measures one | per rank | 5,905,580,032 |
 | Freed-buffer cache (half the allocator headroom) | per rank | 1,073,741,824 |

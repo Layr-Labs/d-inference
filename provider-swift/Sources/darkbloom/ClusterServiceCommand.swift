@@ -113,7 +113,13 @@ extension Cluster {
                     recovery: ClusterCandidateRecovery(updater: SelfUpdater(coordinatorBaseURL: coordinatorURL)),
                     partServes: {
                         ClusterService.publishedLive().map { $0.serving && $0.child.running && $0.session?.ready != false } ?? false
-                    }))
+                    },
+                    follow: { log, restart in
+                        let environment = ClusterPairUpdateCycle.Environment.live(
+                            serviceDirectory: serviceDirectory, coordinatorURL: coordinatorURL, log: log)
+                        return await ClusterPairUpdateCycle(environment: environment).followRollback(restart: restart)
+                    },
+                    quarantined: { SelfUpdater(coordinatorBaseURL: coordinatorURL).quarantinedVersion() }))
         }
     }
 

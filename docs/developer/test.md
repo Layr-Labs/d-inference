@@ -1075,8 +1075,13 @@ automatic updates off downloads nothing at the slot, while `darkbloom update` on
 both Macs updates them; that a part that cannot drain downloads nothing; that a
 Mac whose partner cannot be asked goes on alone only while no pair runs on it;
 the candidate's promotion (kept under another update's lease) and rollback;
-the start check's verdicts on script binaries; and the rollback at once of a
-candidate that failed its start check.
+the start check's verdicts on script binaries; the rollback at once of a
+candidate that failed its start check; and the other Mac following a rollback
+(`followRollback`): after it promoted the release, while its own cycle still
+holds the update lease (it waits, then follows), with the other Mac no longer
+answering (bounded wait, then a deferral with nothing changed), and the
+quarantine on both Macs, with no follow back and no follow to a release the Mac
+does not keep.
 `ClusterServiceUpdateTests`
 (`provider-swift/Tests/DarkbloomCLITests/ClusterServiceUpdateTests.swift`) drives
 the real supervisor with a shell standing in for the cluster service: the
@@ -1088,7 +1093,10 @@ rollback and promotion. The start check runs the temporary install's
 1 s bound or reports another version is rolled back and quarantined without the
 re-exec, and the supervisor serves again from the restored binary; a release
 that answers is re-executed into as before; a restored predecessor that cannot
-start is not re-executed into. The re-exec is observed, never performed.
+start is not re-executed into. A supervisor with automatic updates off still
+checks for a rollback of the other Mac to follow, reports its own quarantine in
+its progress, and restarts into the restored release. The re-exec is observed,
+never performed.
 `Tests/ClusterSupervisionChecks/run.sh` checks the progress rules
 (`ClusterPairUpdate.partnerState`) with plain `swiftc`.
 

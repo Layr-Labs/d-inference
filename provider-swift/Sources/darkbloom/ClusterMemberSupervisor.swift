@@ -38,6 +38,13 @@ final class ClusterMemberSupervisor: @unchecked Sendable {
         var recovery: ClusterCandidateRecovery?
         /// Whether the service's published status says this Mac's part serves again (logged once after an update).
         var partServes: @Sendable () -> Bool = { false }
+        /// One check whether the other Mac rolled back the release this Mac runs, and if so the same rollback here
+        /// (`ClusterPairUpdateCycle.followRollback`), run every `ClusterPairUpdate.followCheckSeconds` while no cycle runs.
+        var follow: @Sendable (_ log: @escaping @Sendable (String) -> Void,
+                               _ restart: @escaping @Sendable (String) async throws -> Void) async
+            -> ClusterPairUpdateCycle.FollowOutcome = { _, _ in .nothingToFollow }
+        /// The release quarantined on this Mac, which its progress reports to the other Mac.
+        var quarantined: @Sendable () -> String? = { nil }
     }
 
     struct Configuration {
@@ -83,6 +90,10 @@ final class ClusterMemberSupervisor: @unchecked Sendable {
     private var pairCycle: Task<Void, Never>?
     private var pairCycleRunning = false
     private var requestedRestart: String?
+    // When the next check for a rollback of the other Mac to follow is due (main loop only), and the last reason it
+    // could not be followed (under `lock`), said once.
+    private var nextFollowCheck: Double = 0
+    private var cannotFollow: String?
     // The candidate this run's service is (main loop only), until it is promoted.
     private var candidate: String?
     private var updatedServiceServes = false
@@ -473,9 +484,10 @@ final class ClusterMemberSupervisor: @unchecked Sendable {
         if let request {
             log("cluster update: `darkbloom update` asked for a restart into the installed release together with the other Mac (\(request.id.prefix(8)))")
         } else if !configuration.autoUpdate {
-            return restAsDisabled(pair, now: now)
+            restAsDisabled(pair, now: now)
+            return startFollowCheckIfDue(pair, pid: pid, now: now)
         } else if !slotDue {
-            return
+            return startFollowCheckIfDue(pair, pid: pid, now: now)
         }
         // A cycle at or after the slot is that slot's.
         if slotDue { pairSlot = pair.clusterID().map { ClusterMemberUpdateSlot.nextSlot(after: now, clusterID: $0) } }
@@ -491,9 +503,34 @@ final class ClusterMemberSupervisor: @unchecked Sendable {
         }
     }
 
+    /// While no cycle runs, every `ClusterPairUpdate.followCheckSeconds` (and at once after a start): whether the other
+    /// Mac rolled back the release this Mac runs, which this Mac then follows, as a cycle of its own. Automatic updates
+    /// off do not stop it: it restores a release this Mac ran before, as a rollback after failed starts does.
+    private func startFollowCheckIfDue(_ pair: PairUpdate, pid: Int32, now: Double) {
+        guard now >= nextFollowCheck else { return }
+        nextFollowCheck = now + ClusterPairUpdate.followCheckSeconds
+        lock.withLock { pairCycleRunning = true }
+        let log: @Sendable (String) -> Void = { [weak self] in self?.log($0) }
+        let restart: @Sendable (String) async throws -> Void = { [weak self] version in
+            try self?.restartForUpdate(into: version, pid: pid)
+        }
+        pairCycle = Task.detached { [weak self] in
+            let outcome = await pair.follow(log, restart)
+            guard let self else { return }
+            let say: String? = self.lock.withLock {
+                defer { self.pairCycleRunning = false }
+                guard case .cannotFollow(let reason) = outcome else { self.cannotFollow = nil; return nil }
+                defer { self.cannotFollow = reason }
+                return self.cannotFollow == reason ? nil : reason
+            }
+            if let say { self.log("cluster update: not following the other Mac's rollback: \(say)") }
+        }
+    }
+
     /// This Mac outside a cycle: idle, or disabled while its automatic updates are off.
     private func restingProgress(now: Double) -> ClusterPairUpdateProgress {
-        .init(phase: configuration.autoUpdate ? .idle : .disabled, running: ProviderCore.version, writtenAt: now)
+        .init(phase: configuration.autoUpdate ? .idle : .disabled, running: ProviderCore.version, writtenAt: now,
+              quarantined: configuration.pairUpdate?.quarantined())
     }
 
     /// With automatic updates off, the end of a cycle `darkbloom update` asked for stays the other Mac's (and the

@@ -117,10 +117,12 @@ extension SelfUpdater {
 
     /// Carries out a confirmed `plan` while the caller holds `session` (for a
     /// running provider, the lease its drain took). Returns the restored version.
+    /// `reason` is the quarantine's; the operator's by default.
     @discardableResult
-    public func rollBackToPredecessor(session: UpdateSession, plan: RollbackPlan) throws -> String {
+    public func rollBackToPredecessor(session: UpdateSession, plan: RollbackPlan, reason: String? = nil) throws -> String {
         try confirmRollbackPlan(plan, session: session)
-        let reason = "rolled back by the operator to v\(plan.to) (\(BuildEnvironment.current.cliName) update --rollback)"
+        let reason = reason
+            ?? "rolled back by the operator to v\(plan.to) (\(BuildEnvironment.current.cliName) update --rollback)"
         do {
             return try session.rollback(now: now(), reason: reason)
         } catch {

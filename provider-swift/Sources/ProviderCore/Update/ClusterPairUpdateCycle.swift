@@ -10,6 +10,10 @@ import DarkbloomClusterRemote
 /// cancelling, when accepted work does not finish), commit, restart. Two steps differ. The drain is the pair's: it
 /// begins once the other Mac has the release too, and it is complete once both Macs drained. The restart is the
 /// supervisor's: it stops the cluster service and starts again from the installed binary.
+///
+/// The same cycle follows the other Mac's rollback (`followRollback`): when the other Mac rolled back and quarantined
+/// the release this Mac runs, this Mac restores the same earlier release through the same pair drain, under the same
+/// update lease, and quarantines it too, so the pair serves the earlier release together.
 public final class ClusterPairUpdateCycle: @unchecked Sendable {
     public struct Timing: Sendable {
         public var partnerStageWait = ClusterPairUpdate.partnerStageWaitSeconds
@@ -75,6 +79,8 @@ public final class ClusterPairUpdateCycle: @unchecked Sendable {
     private var partDrain: PartDrain?
     /// Why the pair cannot drain this cycle (said once, published with the deferral).
     private var gaveUp: String?
+    /// The cycle follows the other Mac's rollback to `target` instead of installing a release.
+    private var following = false
 
     public init(environment: Environment) {
         self.environment = environment
@@ -85,12 +91,7 @@ public final class ClusterPairUpdateCycle: @unchecked Sendable {
     public func run(request: String? = nil,
                     restart: @escaping @Sendable (String) async throws -> Void) async -> AutoUpdateController.Outcome {
         lock.withLock { startedAt = Self.now(); self.request = request }
-        let heartbeat = Task { [weak self, environment] in
-            while !Task.isCancelled {
-                await ClusterPairUpdateCycle.sleep(environment.timing.poll)
-                self?.rewriteProgress()
-            }
-        }
+        let heartbeat = startHeartbeat()
         let updater = environment.updater, log = environment.log
         let deps = AutoUpdateController.Dependencies(
             claimStart: { self.claim() },
@@ -113,6 +114,114 @@ public final class ClusterPairUpdateCycle: @unchecked Sendable {
         await heartbeat.value
         finish(outcome)
         return outcome
+    }
+
+    /// Keeps the working phase fresh for the other Mac until cancelled.
+    private func startHeartbeat() -> Task<Void, Never> {
+        Task { [weak self, environment] in
+            while !Task.isCancelled {
+                await ClusterPairUpdateCycle.sleep(environment.timing.poll)
+                self?.rewriteProgress()
+            }
+        }
+    }
+
+    // MARK: - Following the other Mac's rollback
+
+    public enum FollowOutcome: Equatable, Sendable {
+        /// The other Mac quarantined no release this Mac runs (or cannot be asked): nothing was done or published.
+        case nothingToFollow
+        /// The other Mac rolled back the release this Mac runs, but this Mac cannot restore the same release (it keeps
+        /// another one, or none, for rollback). Nothing was changed; the pair serves again once a newer release
+        /// updates both Macs.
+        case cannotFollow(String)
+        /// Another update or recovery holds the update lease; the next check tries again.
+        case busy
+        /// The cycle that followed it ended as an update cycle ends: `.restarted` once the earlier release is restored
+        /// and the restart asked for.
+        case followed(AutoUpdateController.Outcome)
+    }
+
+    /// The other Mac rolled back and quarantined the release this Mac runs (`ClusterPairUpdateProgress.quarantined`),
+    /// and runs the release this Mac keeps for rollback (`plan.to`).
+    public static func follows(_ partner: ClusterPairUpdate.Partner, plan: SelfUpdater.RollbackPlan) -> Bool {
+        guard case .reported(let progress) = partner else { return false }
+        return progress.quarantined == plan.from && progress.running == plan.to
+    }
+
+    /// One check, and when the other Mac rolled back the release this Mac runs, the same rollback here (owner ruling
+    /// 2026-11-03: the peer follows the rollback). It is decided under the update lease, the one the pair's update
+    /// cycle holds, and runs as that cycle does: this Mac's part drains once the other Mac is confirmed on the earlier
+    /// release (it runs it already: `ClusterPairUpdate.partnerState` is ready at once), the verified predecessor is
+    /// restored and the release quarantined (`SelfUpdater.rollBackToPredecessor`), and `restart` restarts the cluster
+    /// service into the restored release. An other Mac that stops answering is waited for at most
+    /// `Timing.partnerStageWait`, then the follow is deferred with that reason and the next check tries again.
+    public func followRollback(restart: @escaping @Sendable (String) async throws -> Void) async -> FollowOutcome {
+        let updater = environment.updater
+        // Read before the lease: most checks find nothing, and the lease belongs to the pair's cycles.
+        let partner = environment.partner()
+        guard case .reported(let progress) = partner, let quarantined = progress.quarantined else { return .nothingToFollow }
+        let session: SelfUpdater.UpdateSession
+        do {
+            session = try updater.beginUpdateSession(operation: "cluster-follow-rollback", timeout: 0)
+            try session.recover()
+        } catch {
+            return .busy
+        }
+        let plan: SelfUpdater.RollbackPlan
+        do {
+            plan = try updater.rollbackPlan(session: session)
+        } catch {
+            let state = try? session.readState()
+            session.release()
+            guard (state?.candidate?.release ?? state?.current)?.version == quarantined else { return .nothingToFollow }
+            return .cannotFollow("the other Mac rolled v\(quarantined) back to v\(progress.running); this Mac cannot: \(error)")
+        }
+        guard plan.from == quarantined else { session.release(); return .nothingToFollow }
+        guard Self.follows(partner, plan: plan) else {
+            session.release()
+            return .cannotFollow("the other Mac rolled v\(quarantined) back to v\(progress.running), but this Mac keeps "
+                + "v\(plan.to) for rollback; it stays on v\(quarantined) until a newer release updates both Macs")
+        }
+        lock.withLock {
+            startedAt = Self.now(); request = nil; self.session = session
+            installed = plan.from; target = plan.to; following = true
+        }
+        let heartbeat = startHeartbeat()
+        defer { heartbeat.cancel() }
+        environment.log("cluster update: the other Mac rolled v\(plan.from) back to v\(plan.to) and quarantined it; "
+            + "this Mac follows to v\(plan.to)")
+        await beginPairDrain()
+        let drained = await waitForPairDrain(.milliseconds(Int64(environment.timing.drainTimeout * 1000)))
+        if Task.isCancelled || !drained {
+            resume()
+            let outcome: AutoUpdateController.Outcome = Task.isCancelled ? .cancelled : .drainTimedOut
+            finish(outcome)
+            return .followed(outcome)
+        }
+        let reason = "the other Mac of the pair rolled v\(plan.from) back to v\(plan.to); this Mac followed"
+        do {
+            try updater.rollBackToPredecessor(session: session, plan: plan, reason: reason)
+        } catch {
+            resume()
+            let outcome = AutoUpdateController.Outcome.commitFailed("restoring v\(plan.to) failed: \(error)")
+            finish(outcome)
+            return .followed(outcome)
+        }
+        environment.log("cluster update: restored v\(plan.to) and quarantined v\(plan.from), as on the other Mac")
+        session.release()
+        lock.withLock { self.session = nil }
+        publish(.restarting)
+        do {
+            try await restart(plan.to)
+        } catch {
+            let outcome = AutoUpdateController.Outcome.restartFailed("\(error)")
+            finish(outcome)
+            return .followed(outcome)
+        }
+        let outcome = AutoUpdateController.Outcome.restarted(from: plan.from, to: plan.to, drained: true)
+        finish(outcome)
+        return .followed(outcome)
     }
 
     // MARK: - Steps
@@ -173,6 +282,8 @@ public final class ClusterPairUpdateCycle: @unchecked Sendable {
     private func beginPairDrain() async {
         guard let target = lock.withLock({ target }) else { return giveUp("no release to install") }
         let (started, timing) = (lock.withLock { startedAt }, environment.timing)
+        // Following a rollback, the other Mac runs the target already: what is waited for is that it still says so.
+        let following = lock.withLock { self.following }
         publish(.staged)
         let deadline = started + timing.partnerStageWait
         var said = false
@@ -189,12 +300,12 @@ public final class ClusterPairUpdateCycle: @unchecked Sendable {
             case .cannotCoordinate, .waiting:
                 if !said {
                     said = true
-                    environment.log("cluster update: waiting for the other Mac to have v\(target) (at most \(Int(max(0, deadline - Self.now()))) s)")
+                    environment.log("cluster update: waiting for the other Mac to \(following ? "confirm it runs" : "have") v\(target) (at most \(Int(max(0, deadline - Self.now()))) s)")
                 }
             }
             if Task.isCancelled { return giveUp("the cycle was stopped") }
             guard Self.now() < deadline else {
-                return giveUp("the other Mac did not have v\(target) within \(Int(timing.partnerStageWait)) s")
+                return giveUp("the other Mac did not \(following ? "confirm it runs" : "have") v\(target) within \(Int(timing.partnerStageWait)) s")
             }
             await Self.sleep(timing.poll)
         }
@@ -398,7 +509,7 @@ public final class ClusterPairUpdateCycle: @unchecked Sendable {
         lock.withLock {
             let value = ClusterPairUpdateProgress(phase: phase, target: phase == .idle ? nil : target,
                 running: environment.updater.currentVersion, cycleStartedAt: phase == .idle ? nil : startedAt,
-                request: request, writtenAt: Self.now(), detail: detail)
+                request: request, writtenAt: Self.now(), detail: detail, quarantined: environment.updater.quarantinedVersion())
             progress = value
             ClusterPairUpdate.writeProgress(value, to: environment.progressPath)
         }

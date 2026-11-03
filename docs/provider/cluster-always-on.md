@@ -172,13 +172,68 @@ loader and the frameworks it links, its code signature and the argument parser.
 A binary that fails is not restarted into. The supervisor counts one failed
 start, restores the verified predecessor and quarantines the release at once
 (`ClusterCandidateRecovery.recordFailedStartCheck`), and starts the cluster
-service again from the restored binary. The other Mac is not rolled back with
-it: if the release started there, the two Macs run different releases, and the
-pair serves again once a newer release updates both. A rollback after three
+service again from the restored binary. The other Mac follows that rollback
+([a rollback on one Mac](#a-rollback-on-one-mac)). A rollback after three
 failed starts checks the restored predecessor the same way; if that check fails
 too, the supervisor starts the cluster service itself instead of restarting
 into it. A binary that passes the check but whose supervisor fails before it
 starts the cluster service is still not rolled back.
+
+### A rollback on one Mac
+
+When one Mac of a pair rolls a release back, the other Mac rolls back to the
+same earlier release, and the pair serves that release together. This answers
+the question the coordinated update left open: before, the pair stayed split
+(each Mac on another release, so the leader never planned it again) until a
+newer release updated both Macs.
+
+A rollback is any of: three failed starts of the release's cluster service, a
+failed start check, or `darkbloom update --rollback` run while the Mac's
+cluster service was stopped. Each restores the verified predecessor and
+quarantines the release on that Mac. The Mac's progress then reports the
+quarantined release beside the version it runs
+(`ClusterPairUpdateProgress.quarantined`), and the other Mac reads it over the
+link with the rest of the progress.
+
+The other Mac's supervisor checks for a rollback to follow at its start and
+then every `ClusterPairUpdate.followCheckSeconds` (60 s) while no update cycle
+runs, also with automatic updates off: the release it restores is one the Mac
+ran before. It follows (`ClusterPairUpdateCycle.followRollback`) when the other
+Mac quarantined the release this Mac runs (installed or promoted) and runs the
+release this Mac keeps for rollback. The follow is the update cycle's sequence
+with a rollback in place of the install:
+
+1. It takes the update lease, the one every update cycle, candidate recovery
+   and `darkbloom update --rollback` take, and decides under it. Another
+   holder (this Mac's own cycle, still installing or restarting) makes it wait
+   for the next check, with nothing changed.
+2. It waits until the other Mac reports the earlier release (it does already,
+   so this is at once), then drains this Mac's part as for an update. An other
+   Mac that stops answering is waited for at most
+   `ClusterPairUpdate.partnerStageWaitSeconds` (900 s) while a pair runs on
+   this Mac. The follow is then deferred with the reason `the other Mac did not
+   confirm it runs v<version> within 900 s`, nothing is changed, and the next
+   check tries again.
+3. It restores the verified predecessor and quarantines the release
+   (`SelfUpdater.rollBackToPredecessor`), with the reason `the other Mac of the
+   pair rolled v<release> back to v<previous>; this Mac followed`. Both Macs
+   now keep the release quarantined: neither's update slot installs it again,
+   and the next newer release updates both.
+4. The supervisor restarts the cluster service from the restored binary, after
+   the same start check as for an update. Once both Macs answer with the same
+   build, the leader plans the model again.
+
+A Mac that keeps another release for rollback, or none, cannot restore the same
+release. It changes nothing and says once `cluster update: not following the
+other Mac's rollback: <reason>`; the pair serves again once a newer release
+updates both Macs. Other lines: `cluster update: the other Mac rolled
+v<release> back to v<previous> and quarantined it; this Mac follows to
+v<previous>` and `cluster update: restored v<previous> and quarantined
+v<release>, as on the other Mac`.
+
+A cluster-member provider service (`darkbloom start --cluster-member
+--always-on`) does not run this coordinated update and does not follow a
+rollback: roll back both Macs.
 
 After both Macs restarted, the leader's cluster service plans the same model
 again once both answer with the same worker build

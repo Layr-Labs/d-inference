@@ -42,9 +42,13 @@ public struct ClusterPairUpdateProgress: Codable, Equatable, Sendable {
     public var request: String?
     public var writtenAt: Double
     public var detail: String?
+    /// The release quarantined on this Mac: one it rolled back (after failed starts, a failed start check, or
+    /// `darkbloom update --rollback`). The other Mac follows a rollback of the release it runs
+    /// (`ClusterPairUpdateCycle.followRollback`). Absent from earlier builds.
+    public var quarantined: String?
 
     public init(phase: Phase, target: String? = nil, running: String, cycleStartedAt: Double? = nil,
-                request: String? = nil, writtenAt: Double, detail: String? = nil) {
+                request: String? = nil, writtenAt: Double, detail: String? = nil, quarantined: String? = nil) {
         self.phase = phase
         self.target = target
         self.running = running
@@ -52,6 +56,7 @@ public struct ClusterPairUpdateProgress: Codable, Equatable, Sendable {
         self.request = request
         self.writtenAt = writtenAt
         self.detail = detail
+        self.quarantined = quarantined
     }
 
     public var isEnd: Bool { phase == .deferred || phase == .failed }

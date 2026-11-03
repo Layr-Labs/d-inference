@@ -1,0 +1,6 @@
+### Both Macs of a pair roll back together
+
+- When one Mac of a `darkbloom cluster` pair rolls a release back (three failed starts of its cluster service, a failed start check, or `darkbloom update --rollback` while its cluster service was stopped), the other Mac now rolls back to the same earlier release, and the pair serves it together. Before, the pair stayed split until a newer release updated both Macs.
+- The other Mac checks at its start and every minute while no update runs, also with automatic updates off. It finishes the accepted requests of its part first, as for an update, restores the release it kept from before its last update, quarantines the rolled-back release and restarts. Both Macs then skip that release, and the next newer release updates both.
+- A Mac that keeps another earlier release, or none, does not follow and says so once in `~/.darkbloom/cluster-setup/service.log`. A Mac whose partner stops answering during the follow waits at most 15 minutes, then changes nothing and tries again at the next check.
+- To roll back a pair by hand, stop one Mac's cluster service with `darkbloom cluster stop`, run `darkbloom update --rollback` there, and start it again with `darkbloom cluster`; the other Mac follows.

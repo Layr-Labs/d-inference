@@ -779,7 +779,10 @@ release, the installed `Darkbloom.app` is not the recorded release, or the kept
 release fails its hash or signature check (`RollbackRefusal`). A refusal at
 the swap, after the drain, restarts the drained provider on the installed
 release; when another provider took the instance lock during the drain, it is
-not signalled and the service stays drained. Steps are in
+not signalled and the service stays drained. On a `darkbloom cluster` Mac,
+stop its cluster service first; once it runs again, the other Mac follows the
+rollback to the same release
+([a rollback on one Mac](./cluster-always-on.md#a-rollback-on-one-mac)). Steps are in
 [installation → Roll back to the previous release](./installation.md#roll-back-to-the-previous-release).
 See [installation → Update](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/provider/installation.md).
 

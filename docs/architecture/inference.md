@@ -1558,6 +1558,15 @@ submits the frame. `SendHandle` and `ChunkSender` persist across reconnects,
 so an old request's frame processed after a replacement sink binds still
 passes this check; it does not enforce request-to-session identity.
 
+Decoded text keeps a character the tokenizer writes as `<0xHH>` tokens wherever it
+falls. swift-transformers' `ByteFallbackDecoder` releases those tokens only when a
+later token arrives, so a decode ending in them drops them and shows nothing pending.
+Gemma 4 writes characters outside its vocabulary this way, so `LocalTokenizerBridge.decode`
+(`provider-swift/Sources/ProviderCore/Inference/Prompting/LocalTokenizerLoader.swift`)
+releases a trailing run itself. A partial run reads as U+FFFD, which `DetokenizerV2`
+holds back, so its segment restart cannot land inside a character. A decoder that
+spells or releases these tokens turns this off.
+
 The chat template is rendered on every request. When caching is enabled for
 the request, `LocalTokenizerBridge` encodes the rendered prompt through
 `PromptTokenCache` (`provider-swift/Sources/ProviderCore/Inference/Prompting/PromptTokenCache.swift`):

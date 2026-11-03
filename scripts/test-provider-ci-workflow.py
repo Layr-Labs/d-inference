@@ -152,6 +152,31 @@ def run_command(step):
     return textwrap.dedent("\n".join(lines[:end])).strip()
 
 
+CHECKOUT = "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2"
+CACHE_RESTORE = "actions/cache/restore@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0"
+CACHE_SAVE = "actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0"
+MASTER_PUSH = "github.event_name == 'push' && github.ref == 'refs/heads/master'"
+GIT_CACHE_STEPS = ("Select this week's .git cache", "Restore .git saved by master",
+                   "Check out over the cached .git", "Discard the cached .git",
+                   "Check out without the cache", "Save .git for later runs")
+
+
+def checkout_options(step):
+    lines = step.split("        with:\n", 1)[1].splitlines()
+    return [line.split(" #", 1)[0].strip() for line in lines if line.startswith("          ")]
+
+
+def without_cached_checkout(job):
+    """Drop the one step allowed to fail; the cold checkout after it is not."""
+    step = next(step for step in step_blocks(job) if field(step, "id") == "checkout")
+    return job.replace(step, "", 1)
+
+
+def work_steps(job):
+    """The steps after the shared .git cache and checkout steps."""
+    return [step for step in step_blocks(job) if field(step, "name", indent=6) not in GIT_CACHE_STEPS]
+
+
 class ProviderCIWorkflowTests(unittest.TestCase):
     def setUp(self):
         self.workflow = WORKFLOW.read_text()
@@ -220,7 +245,7 @@ class ProviderCIWorkflowTests(unittest.TestCase):
                 self.assertIn("    timeout-minutes: 60\n", job)
                 self.assertIn("    needs: [changes, route]\n", job)
                 self.assertIn("    if: ${{ %s }}\n" % condition, job)
-                self.assertNotIn("continue-on-error:", job)
+                self.assertNotIn("continue-on-error:", without_cached_checkout(job))
                 self.assertNotIn("DARKBLOOM_EXCLUSIVE_NATIVE_GPU_TEST:", job)
         self.assertIn("    name: Provider Unit Tests (shard ${{ matrix.shard }})\n", self.jobs["test-provider"])
 
@@ -257,16 +282,19 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         for job_id, lane in LANES.items():
             with self.subTest(lane=lane):
                 steps = step_blocks(self.jobs[job_id])
-                self.assertIn("actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683", steps[0])
-                self.assertEqual(field(steps[0], "submodules", indent=10), "recursive")
+                checkout = next(step for step in steps if field(step, "id") == "checkout")
+                self.assertEqual(field(checkout, "uses"), CHECKOUT)
+                self.assertEqual(field(checkout, "submodules", indent=10), "recursive")
                 builds = [step for step in steps if field(step, "uses") == BUILD_ACTION]
                 self.assertEqual(len(builds), 1)
+                self.assertGreater(steps.index(builds[0]), steps.index(checkout))
                 self.assertEqual(field(builds[0], "lane", indent=10), lane)
                 self.assertEqual(field(builds[0], "id"), "provider-ci-build")
                 self.assertIsNone(field(builds[0], "if"))
                 if lane == "sdk":
                     self.assertEqual(field(builds[0], "timeout-minutes"), "35")
-                restores = [step for step in steps if "actions/cache/restore@" in step]
+                restores = [step for step in steps
+                            if "actions/cache/restore@" in step and field(step, "id") != "git-cache"]
                 if lane == "provider":
                     self.assertEqual(len(restores), 1)
                     self.assertEqual(field(restores[0], "id"), "mimo-audio-cache")
@@ -309,7 +337,7 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         self.assertIn("    needs: [changes, route, test-provider]\n", summary)
         self.assertIn("    if: ${{ !cancelled() && needs.changes.outputs.provider == 'true' }}\n", summary)
         self.assertIn("    runs-on: ${{ fromJSON(needs.route.outputs.routes)['test-provider-summary'] }}\n", summary)
-        self.assertNotIn("continue-on-error:", summary)
+        self.assertNotIn("continue-on-error:", without_cached_checkout(summary))
         summary_steps = step_blocks(summary)
         summary_names = [field(step, "name", indent=6) for step in summary_steps]
         summary_build = next(index for index, step in enumerate(summary_steps)
@@ -341,7 +369,7 @@ class ProviderCIWorkflowTests(unittest.TestCase):
                          "swift build --product darkbloom-fan-helper --enable-code-coverage")
 
     def test_provider_entrypoint_and_resource_installer_checks_are_retained(self):
-        steps = step_blocks(self.jobs["test-provider"])
+        steps = work_steps(self.jobs["test-provider"])
         expected = (
             "python3 scripts/test-qwen4-packaged-resources.py",
             "python3 scripts/test-stage-swiftpm-resource-bundles.py",
@@ -407,7 +435,7 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         self.assertEqual(field(upload, "uses"), "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1")
         self.assertEqual(field(upload, "path", indent=10), "${{ runner.temp }}/provider-test-diagnostics")
         self.assertEqual(field(upload, "retention-days", indent=10), "7")
-        self.assertNotIn("continue-on-error:", self.jobs["test-provider"])
+        self.assertNotIn("continue-on-error:", without_cached_checkout(self.jobs["test-provider"]))
 
     def test_coverage_summary_preserves_weighted_rows_and_failure_checks(self):
         report = next(step for step in step_blocks(self.jobs["test-provider-summary"])
@@ -461,7 +489,7 @@ class ProviderCIWorkflowTests(unittest.TestCase):
                     self.assertIn("These targets are only in the total: `darkbloom-fan-helper`.", result.stdout)
 
     def test_sdk_retains_every_original_gate_command(self):
-        steps = step_blocks(self.jobs["test-provider-sdk"])
+        steps = work_steps(self.jobs["test-provider-sdk"])
         gates = {field(step, "name", indent=6): step for step in steps if field(step, "run")}
         self.assertEqual(len(gates), sum(bool(field(step, "run")) for step in steps))
         self.assertEqual(set(gates), set(SDK_COMMANDS) | {"Run Nemotron production SDK gates"})
@@ -479,7 +507,7 @@ class ProviderCIWorkflowTests(unittest.TestCase):
             SDK_RETENTION_GATE_NAME: SDK_RETENTION_READY,
         }
         preparation_steps = {SDK_MIMO_PREPARE_NAME, SDK_RETENTION_PREPARE_NAME}
-        for step in step_blocks(self.jobs["test-provider-sdk"]):
+        for step in work_steps(self.jobs["test-provider-sdk"]):
             if field(step, "run"):
                 with self.subTest(gate=field(step, "name", indent=6)):
                     name = field(step, "name", indent=6)
@@ -662,10 +690,11 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         self.assertIn("        test-cluster-checks macos_arm64 blacksmith-12vcpu-macos-27 "
                       "${{ needs.changes.outputs.provider == 'true' && 1 || 0 }}\n", self.jobs["route"])
         for forbidden in ("continue-on-error:", "secrets.", "DARKBLOOM_EXCLUSIVE_NATIVE_GPU_TEST:"):
-            self.assertNotIn(forbidden, job)
+            self.assertNotIn(forbidden, without_cached_checkout(job))
         steps = step_blocks(job)
-        self.assertIn("actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683", steps[0])
-        self.assertEqual(field(steps[0], "submodules", indent=10), "recursive")
+        checkout = next(step for step in steps if field(step, "id") == "checkout")
+        self.assertEqual(field(checkout, "uses"), CHECKOUT)
+        self.assertEqual(field(checkout, "submodules", indent=10), "recursive")
         toolchain = next(step for step in steps if field(step, "id") == "toolchain")
         self.assertEqual(run_command(toolchain), "./scripts/prepare-provider-release-toolchain.sh")
         runners = {
@@ -712,11 +741,12 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         self.assertIn('--jobs "$task_jobs"', support)
 
     def test_parity_has_no_backend_caches_or_credentials(self):
-        # Prompt Parity now runs in the provider shards; the only cache that
-        # job saves directly is the verified MiMo audio codec.
+        # Prompt Parity now runs in the provider shards; besides .git, the only
+        # cache that job saves directly is the verified MiMo audio codec.
         steps = step_blocks(self.jobs["test-provider"])
         saves = [step for step in steps if "actions/cache/save@" in step]
-        self.assertEqual([field(step, "name", indent=6) for step in saves], ["Cache verified MiMo audio codec"])
+        self.assertEqual([field(step, "name", indent=6) for step in saves],
+                         ["Save .git for later runs", "Cache verified MiMo audio codec"])
         self.assertNotIn("test-provider-parity", WORKFLOW.read_text())
         for forbidden in ("coordinator/", "cargo ", "rust-key", "secrets.", "darkbloom-platform"):
             self.assertNotIn(forbidden, self.jobs["test-provider"])
@@ -737,6 +767,42 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         self.assertIn("python3 scripts/test-provider-ci-workflow.py", self.jobs["release-integrity"])
         self.assertIn("python3 scripts/test-provider-test-shards.py", self.jobs["release-integrity"])
         self.assertIn("python3 scripts/test-native-gpu-ci.py", self.jobs["release-integrity"])
+
+    def test_every_checkout_reuses_master_git_and_falls_back_to_a_cold_checkout(self):
+        checkouts = {job_id: job for job_id, job in self.jobs.items() if "actions/checkout@" in job}
+        self.assertEqual(set(checkouts), {"release-integrity", "docs", *LANES, "test-provider-summary",
+                                          "test-cluster-checks", "cache-swift"})
+        for job_id, job in checkouts.items():
+            with self.subTest(job=job_id):
+                steps = step_blocks(job)
+                self.assertEqual([field(step, "name", indent=6) for step in steps[:6]], list(GIT_CACHE_STEPS))
+                week, restore, cached, discard, cold, save = steps[:6]
+                self.assertEqual(run_command(week).splitlines()[0], 'echo "week=$(date -u +%G-W%V)" >> "$GITHUB_OUTPUT"')
+                self.assertIn("command -v zstd >/dev/null && echo zstd || echo gzip", week)
+                # Full history never seeds, or is restored by, a shallow job.
+                family = ("git-full-v1" if job_id == "docs" else "git-v1") + "-${{ runner.os }}-"
+                weekly = family + "${{ steps.git-week.outputs.week }}-"
+                self.assertEqual(field(restore, "uses"), CACHE_RESTORE)
+                self.assertEqual(field(restore, "path", indent=10), ".git")
+                self.assertEqual(field(restore, "key", indent=10), weekly + "${{ github.sha }}")
+                self.assertIn(f"restore-keys: |\n            {weekly}\n            {family}\n", restore)
+                # Only the cached attempt may fail: the cold one repeats its
+                # options after discarding the workspace, and fails the job.
+                self.assertEqual(job.count("continue-on-error:"), 1)
+                self.assertEqual(field(cached, "continue-on-error"), "true")
+                for step in (discard, cold):
+                    self.assertEqual(field(step, "if"), "steps.checkout.outcome == 'failure'")
+                self.assertEqual(run_command(discard), "find . -mindepth 1 -delete")
+                self.assertEqual([field(cached, "uses"), field(cold, "uses")], [CHECKOUT, CHECKOUT])
+                # Each job keeps its checkout options; a persisted token would
+                # be saved with .git/config.
+                options = {"release-integrity": [], "docs": ["fetch-depth: 0"]}.get(job_id, ["submodules: recursive"])
+                for step in (cached, cold):
+                    self.assertEqual(checkout_options(step), options + ["persist-credentials: false"])
+                self.assertEqual(field(save, "if"), MASTER_PUSH + " && steps.git-cache.outputs.cache-hit != 'true'")
+                self.assertEqual(field(save, "uses"), CACHE_SAVE)
+                self.assertEqual(field(save, "path", indent=10), ".git")
+                self.assertEqual(field(save, "key", indent=10), "${{ steps.git-cache.outputs.cache-primary-key }}")
 
     def test_composite_action_cannot_bypass_build_and_metallib_on_cache_hits(self):
         action = ACTION.read_text()

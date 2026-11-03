@@ -55,7 +55,45 @@ jobs:
     runs-on: ${{ fromJSON(needs.route.outputs.routes)['release-integrity'] }}
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      # Every checkout in this workflow uses the same six steps: check out over
+      # the newest .git saved by master, discard it and check out cold if that
+      # fails, and save .git only on master pushes (docs/developer/build.md#ci-caching).
+      - name: Select this week's .git cache
+        id: git-week
+        run: |
+          echo "week=$(date -u +%G-W%V)" >> "$GITHUB_OUTPUT"
+          echo "actions/cache compressor: $(command -v zstd >/dev/null && echo zstd || echo gzip)"
+      - name: Restore .git saved by master
+        id: git-cache
+        uses: actions/cache/restore@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: .git
+          key: git-v1-${{ runner.os }}-${{ steps.git-week.outputs.week }}-${{ github.sha }}
+          restore-keys: |
+            git-v1-${{ runner.os }}-${{ steps.git-week.outputs.week }}-
+            git-v1-${{ runner.os }}-
+      - name: Check out over the cached .git
+        id: checkout
+        # A damaged cache must not fail the job: the next two steps discard it
+        # and check out cold, and a failure there fails the job.
+        continue-on-error: true
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false # Keeps the job token out of the saved .git/config.
+      - name: Discard the cached .git
+        if: steps.checkout.outcome == 'failure'
+        run: find . -mindepth 1 -delete
+      - name: Check out without the cache
+        if: steps.checkout.outcome == 'failure'
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Save .git for later runs
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master' && steps.git-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: .git
+          key: ${{ steps.git-cache.outputs.cache-primary-key }}
       - name: Validate changelog fragments
         run: |
           python3 scripts/test-changelog.py
@@ -116,9 +154,43 @@ jobs:
     # Full-history checkouts of this repository have taken up to 21 minutes.
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Select this week's .git cache
+        id: git-week
+        run: |
+          echo "week=$(date -u +%G-W%V)" >> "$GITHUB_OUTPUT"
+          echo "actions/cache compressor: $(command -v zstd >/dev/null && echo zstd || echo gzip)"
+      # Full history: a separate key family, so shallow jobs never restore it.
+      - name: Restore .git saved by master
+        id: git-cache
+        uses: actions/cache/restore@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: .git
+          key: git-full-v1-${{ runner.os }}-${{ steps.git-week.outputs.week }}-${{ github.sha }}
+          restore-keys: |
+            git-full-v1-${{ runner.os }}-${{ steps.git-week.outputs.week }}-
+            git-full-v1-${{ runner.os }}-
+      - name: Check out over the cached .git
+        id: checkout
+        continue-on-error: true
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           fetch-depth: 0 # Frozen source links require committed document provenance.
+          persist-credentials: false
+      - name: Discard the cached .git
+        if: steps.checkout.outcome == 'failure'
+        run: find . -mindepth 1 -delete
+      - name: Check out without the cache
+        if: steps.checkout.outcome == 'failure'
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Save .git for later runs
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master' && steps.git-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: .git
+          key: ${{ steps.git-cache.outputs.cache-primary-key }}
       - name: Initialize pinned SDK documentation
         run: git submodule update --init --depth 1 libs/mlx-swift-lm
       - name: Test historical source-link validation
@@ -148,9 +220,42 @@ jobs:
       matrix:
         shard: [1, 2, 3, 4, 5]
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Select this week's .git cache
+        id: git-week
+        run: |
+          echo "week=$(date -u +%G-W%V)" >> "$GITHUB_OUTPUT"
+          echo "actions/cache compressor: $(command -v zstd >/dev/null && echo zstd || echo gzip)"
+      - name: Restore .git saved by master
+        id: git-cache
+        uses: actions/cache/restore@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: .git
+          key: git-v1-${{ runner.os }}-${{ steps.git-week.outputs.week }}-${{ github.sha }}
+          restore-keys: |
+            git-v1-${{ runner.os }}-${{ steps.git-week.outputs.week }}-
+            git-v1-${{ runner.os }}-
+      - name: Check out over the cached .git
+        id: checkout
+        continue-on-error: true
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           submodules: recursive
+          persist-credentials: false
+      - name: Discard the cached .git
+        if: steps.checkout.outcome == 'failure'
+        run: find . -mindepth 1 -delete
+      - name: Check out without the cache
+        if: steps.checkout.outcome == 'failure'
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          submodules: recursive
+          persist-credentials: false
+      - name: Save .git for later runs
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master' && steps.git-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: .git
+          key: ${{ steps.git-cache.outputs.cache-primary-key }}
       - name: Build provider CI prerequisites
         id: provider-ci-build
         uses: ./.github/actions/provider-ci-build
@@ -353,9 +458,42 @@ jobs:
     runs-on: ${{ fromJSON(needs.route.outputs.routes)['test-provider-summary'] }}
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Select this week's .git cache
+        id: git-week
+        run: |
+          echo "week=$(date -u +%G-W%V)" >> "$GITHUB_OUTPUT"
+          echo "actions/cache compressor: $(command -v zstd >/dev/null && echo zstd || echo gzip)"
+      - name: Restore .git saved by master
+        id: git-cache
+        uses: actions/cache/restore@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: .git
+          key: git-v1-${{ runner.os }}-${{ steps.git-week.outputs.week }}-${{ github.sha }}
+          restore-keys: |
+            git-v1-${{ runner.os }}-${{ steps.git-week.outputs.week }}-
+            git-v1-${{ runner.os }}-
+      - name: Check out over the cached .git
+        id: checkout
+        continue-on-error: true
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           submodules: recursive
+          persist-credentials: false
+      - name: Discard the cached .git
+        if: steps.checkout.outcome == 'failure'
+        run: find . -mindepth 1 -delete
+      - name: Check out without the cache
+        if: steps.checkout.outcome == 'failure'
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          submodules: recursive
+          persist-credentials: false
+      - name: Save .git for later runs
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master' && steps.git-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: .git
+          key: ${{ steps.git-cache.outputs.cache-primary-key }}
       # The shards saved this build; restoring it gives the binaries that
       # `swift test list` and llvm-cov read.
       - name: Build provider CI prerequisites
@@ -517,9 +655,42 @@ jobs:
     runs-on: ${{ fromJSON(needs.route.outputs.routes)['test-provider-sdk'] }}
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Select this week's .git cache
+        id: git-week
+        run: |
+          echo "week=$(date -u +%G-W%V)" >> "$GITHUB_OUTPUT"
+          echo "actions/cache compressor: $(command -v zstd >/dev/null && echo zstd || echo gzip)"
+      - name: Restore .git saved by master
+        id: git-cache
+        uses: actions/cache/restore@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: .git
+          key: git-v1-${{ runner.os }}-${{ steps.git-week.outputs.week }}-${{ github.sha }}
+          restore-keys: |
+            git-v1-${{ runner.os }}-${{ steps.git-week.outputs.week }}-
+            git-v1-${{ runner.os }}-
+      - name: Check out over the cached .git
+        id: checkout
+        continue-on-error: true
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           submodules: recursive
+          persist-credentials: false
+      - name: Discard the cached .git
+        if: steps.checkout.outcome == 'failure'
+        run: find . -mindepth 1 -delete
+      - name: Check out without the cache
+        if: steps.checkout.outcome == 'failure'
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          submodules: recursive
+          persist-credentials: false
+      - name: Save .git for later runs
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master' && steps.git-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: .git
+          key: ${{ steps.git-cache.outputs.cache-primary-key }}
       - name: Build SDK CI prerequisites
         id: provider-ci-build
         timeout-minutes: 35
@@ -687,9 +858,42 @@ jobs:
     runs-on: ${{ fromJSON(needs.route.outputs.routes)['test-cluster-checks'] }}
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Select this week's .git cache
+        id: git-week
+        run: |
+          echo "week=$(date -u +%G-W%V)" >> "$GITHUB_OUTPUT"
+          echo "actions/cache compressor: $(command -v zstd >/dev/null && echo zstd || echo gzip)"
+      - name: Restore .git saved by master
+        id: git-cache
+        uses: actions/cache/restore@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: .git
+          key: git-v1-${{ runner.os }}-${{ steps.git-week.outputs.week }}-${{ github.sha }}
+          restore-keys: |
+            git-v1-${{ runner.os }}-${{ steps.git-week.outputs.week }}-
+            git-v1-${{ runner.os }}-
+      - name: Check out over the cached .git
+        id: checkout
+        continue-on-error: true
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           submodules: recursive
+          persist-credentials: false
+      - name: Discard the cached .git
+        if: steps.checkout.outcome == 'failure'
+        run: find . -mindepth 1 -delete
+      - name: Check out without the cache
+        if: steps.checkout.outcome == 'failure'
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          submodules: recursive
+          persist-credentials: false
+      - name: Save .git for later runs
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master' && steps.git-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: .git
+          key: ${{ steps.git-cache.outputs.cache-primary-key }}
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.12.10'
@@ -794,9 +998,42 @@ jobs:
     runs-on: blacksmith-12vcpu-macos-27
     if: github.event_name == 'push'
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Select this week's .git cache
+        id: git-week
+        run: |
+          echo "week=$(date -u +%G-W%V)" >> "$GITHUB_OUTPUT"
+          echo "actions/cache compressor: $(command -v zstd >/dev/null && echo zstd || echo gzip)"
+      - name: Restore .git saved by master
+        id: git-cache
+        uses: actions/cache/restore@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: .git
+          key: git-v1-${{ runner.os }}-${{ steps.git-week.outputs.week }}-${{ github.sha }}
+          restore-keys: |
+            git-v1-${{ runner.os }}-${{ steps.git-week.outputs.week }}-
+            git-v1-${{ runner.os }}-
+      - name: Check out over the cached .git
+        id: checkout
+        continue-on-error: true
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           submodules: recursive
+          persist-credentials: false
+      - name: Discard the cached .git
+        if: steps.checkout.outcome == 'failure'
+        run: find . -mindepth 1 -delete
+      - name: Check out without the cache
+        if: steps.checkout.outcome == 'failure'
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          submodules: recursive
+          persist-credentials: false
+      - name: Save .git for later runs
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master' && steps.git-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: .git
+          key: ${{ steps.git-cache.outputs.cache-primary-key }}
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.12.10'

@@ -62,7 +62,7 @@ public struct SelfUpdater: Sendable {
     /// `checkForUpdate` uses, from the same injected seam.
     internal let currentVersion: String
     private let urlSession: URLSession
-    private let now: @Sendable () -> Double
+    let now: @Sendable () -> Double
     /// Test seam threaded into every `UpdateRecoveryStore` this updater
     /// constructs; production always uses the no-op default.
     private let recoveryFaultInjector:
@@ -658,6 +658,18 @@ public struct SelfUpdater: Sendable {
         }
         guard let executablePath = Bundle.main.executablePath else { return nil }
         return Self.installRoot(forExecutablePath: executablePath)
+    }
+
+    /// The release quarantined on this Mac, read without the lease as
+    /// `checkForUpdate` reads it (the state file is replaced atomically); nil
+    /// when none is, or the state cannot be read.
+    public func quarantinedVersion() -> String? {
+        recordedRecoveryState()?.quarantine?.version
+    }
+
+    /// The recovery state, read without the lease as `quarantinedVersion` reads it; nil when it cannot be read.
+    public func recordedRecoveryState() -> UpdateRecoveryState? {
+        try? recoveryStore()?.loadState()
     }
 
     private func recoveryStore() -> UpdateRecoveryStore? {

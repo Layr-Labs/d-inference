@@ -155,6 +155,25 @@ struct GPTOSSResidentAdmissionTests {
         }
     }
 
+    /// A decode step's command buffers can keep the whole step in flight
+    /// (`QwenLayerStageSession.decodeCommandBuffers`), so the workspace prices
+    /// every full-attention layer's decode row at once.
+    @Test func workspacePricesEveryFullAttentionLayersDecodeRow() throws {
+        let admission = try Self.admit(identity: try Self.identity())
+        for rank in 0...1 {
+            func workspace(chunk: Int) throws -> (bytes: Int, layers: Int) {
+                let budget = try GPTOSSRequestStateBudget.estimate(specification: admission.specification,
+                    layers: admission.plan.stages[rank].layers, rank: rank, maximumTokens: 8320, chunkSize: chunk,
+                    bound: { $0 })
+                return (budget.workspaceBytes, budget.fullAttentionLayers)
+            }
+            let capacity = 8448 + 256, heads = admission.specification.queryHeads
+            let one = try workspace(chunk: 1)
+            #expect(one.layers > 1 && one.bytes == heads * one.layers * capacity * 4)
+            #expect(try workspace(chunk: 512).bytes == heads * 512 * (8448 + 512) * 4)
+        }
+    }
+
     @Test func theCapabilityRecordIsThisAdaptersOwn() throws {
         let spec = try Self.specification()
         let capability = try GPTOSSResidentCapabilityMetadata.describe(configuration: try Self.fixture("configuration"),

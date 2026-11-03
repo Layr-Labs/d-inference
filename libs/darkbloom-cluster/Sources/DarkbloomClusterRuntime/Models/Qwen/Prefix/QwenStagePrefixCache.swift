@@ -170,12 +170,13 @@ public final class QwenStagePrefixCache: @unchecked Sendable {
     var captureCost: QwenStagePrefixCaptureCost? { lock.withLock { measured } }
 
     /// The budget for `roomBytes` of admissible memory left beside the
-    /// serving context's charge: half of it, at most `maximumBudgetBytes`,
-    /// rounded down to 256 MiB so the idle refresh does not move it with
-    /// every small drift. The serving context is never reduced for the
-    /// cache; the other half stays for the desktop's own drift.
-    public static func budget(roomBytes: Int) -> Int {
-        max(0, min(maximumBudgetBytes, roomBytes / 2) / budgetGranuleBytes * budgetGranuleBytes)
+    /// serving context's charge: half of it, at most `maximumBytes` (this
+    /// Mac's `maximumBudgetBytes`), rounded down to 256 MiB so the idle
+    /// refresh does not move it with every small drift. The serving context
+    /// is never reduced for the cache; the other half stays for the desktop's
+    /// own drift.
+    public static func budget(roomBytes: Int, maximumBytes: Int = QwenStagePrefixCache.maximumBudgetBytes) -> Int {
+        max(0, min(maximumBytes, roomBytes / 2) / budgetGranuleBytes * budgetGranuleBytes)
     }
     static let budgetGranuleBytes = 256 << 20
     /// The room a memory-bound serving context leaves for the cache: one granule of budget (half the room).
@@ -260,8 +261,8 @@ public final class QwenStagePrefixCache: @unchecked Sendable {
     /// directions, so a load during a memory dip does not keep it small for as
     /// long as the model stays loaded. Entries beyond a lower budget go now.
     /// True when the budget changed.
-    @discardableResult func refreshBudget(roomBytes: Int) -> Bool {
-        let target = Self.budget(roomBytes: roomBytes)
+    @discardableResult func refreshBudget(roomBytes: Int, maximumBytes: Int = QwenStagePrefixCache.maximumBudgetBytes) -> Bool {
+        let target = Self.budget(roomBytes: roomBytes, maximumBytes: maximumBytes)
         return lock.withLock {
             guard target != budget else { return false }
             budget = target; evictLocked(reserving: 0); return true

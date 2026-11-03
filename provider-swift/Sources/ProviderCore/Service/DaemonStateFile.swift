@@ -51,6 +51,19 @@ public struct DaemonState: Codable, Sendable, Equatable {
     /// `enabled_models` applies to it only at a (re)start. Nil for older
     /// daemons.
     public var servingSelection: [String]?
+    /// What the live coordinator registration carries (`ProviderState.registeredModels`).
+    /// Nil while no registration is live, and for older daemons.
+    public var registeredModels: RegisteredModels?
+
+    /// Only `models` get requests. `autopilotInventory` is what Autopilot may load.
+    public struct RegisteredModels: Codable, Sendable, Equatable {
+        public var models: [String]
+        public var autopilotInventory: [String]
+        public init(models: [String], autopilotInventory: [String]) {
+            self.models = models
+            self.autopilotInventory = autopilotInventory
+        }
+    }
     /// Resident models no load can evict now, each with every reason
     /// (`ProviderLoop.evictionExclusions`). Nil for older daemons.
     public var evictionExclusions: [EvictionExclusion]?
@@ -360,6 +373,7 @@ public struct DaemonState: Codable, Sendable, Equatable {
         warmModels: [String] = [],
         advertisedModels: [String]? = nil,
         servingSelection: [String]? = nil,
+        registeredModels: RegisteredModels? = nil,
         evictionExclusions: [EvictionExclusion]? = nil,
         startupPreloadPendingModels: [String]? = nil,
         inferenceActive: Bool = false,
@@ -396,6 +410,7 @@ public struct DaemonState: Codable, Sendable, Equatable {
         self.warmModels = warmModels
         self.advertisedModels = advertisedModels
         self.servingSelection = servingSelection
+        self.registeredModels = registeredModels
         self.evictionExclusions = evictionExclusions
         self.startupPreloadPendingModels = startupPreloadPendingModels
         self.lifecycle = lifecycle

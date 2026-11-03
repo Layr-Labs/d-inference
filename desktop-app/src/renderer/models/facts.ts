@@ -22,6 +22,22 @@ export function modelFacts(model: NativeModel, network = false) {
     .join(' · ');
 }
 
+// Whether the network knows this Mac has the model. Selected or downloaded is not enough: only a
+// model the live registration carries gets requests. `expected` is true for a model this Mac
+// should register, so its absence is a warning; otherwise absence is not shown.
+export function registrationLine(model: NativeModel, expected: boolean) {
+  switch (model.registration) {
+    case 'routable':
+      return { text: 'Registered with the network', warning: false };
+    case 'autopilot':
+      return { text: 'Registered for Autopilot', warning: false };
+    case 'none':
+      return expected ? { text: 'Not registered with the network yet', warning: true } : undefined;
+    default:
+      return undefined;
+  }
+}
+
 export function pinnedMemoryLine(snapshot: Snapshot, pinned: string[], noun: string) {
   const { needed, measured, exceeds, limit } = pinnedMemory(snapshot, pinned);
   const count = `${pinned.length} ${noun}`;

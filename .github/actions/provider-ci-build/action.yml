@@ -2,7 +2,7 @@ name: Provider CI Build
 description: Build full debug test products with lane-specific caches and source-matched Metal
 inputs:
   lane:
-    description: provider or sdk; each owns independent build outputs
+    description: provider, sdk or cluster; each owns independent build outputs
     required: true
 runs:
   using: composite
@@ -13,7 +13,7 @@ runs:
         LANE: ${{ inputs.lane }}
       run: |
         case "$LANE" in
-          provider|sdk) ;;
+          provider|sdk|cluster) ;;
           *) echo "Unknown provider CI lane: $LANE" >&2; exit 2 ;;
         esac
     - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -41,13 +41,14 @@ runs:
         path: |
           provider-swift/.build
           libs/mlx-swift-lm/.build
+          libs/darkbloom-cluster/.build
         key: ${{ steps.keys.outputs.swift-key }}
         restore-keys: ${{ steps.keys.outputs.swift-prefix }}
     - name: Revalidate source timestamps and discard cached runtime resources
       shell: bash
       run: |
         python3 scripts/provider-release-cache.py restore-mtimes
-        for root in provider-swift/.build libs/mlx-swift-lm/.build; do
+        for root in provider-swift/.build libs/mlx-swift-lm/.build libs/darkbloom-cluster/.build; do
           [ -d "$root" ] || continue
           find "$root" -type f -name mlx.metallib -delete
           find "$root" -mindepth 3 -maxdepth 3 -type d \
@@ -72,18 +73,28 @@ runs:
         swift package unedit --force mlx-swift >/dev/null 2>&1 || true
         swift package edit --path ../mlx-swift mlx-swift
         swift build --build-tests
+    - name: Build all cluster test products
+      if: inputs.lane == 'cluster'
+      id: cluster-build
+      shell: bash
+      working-directory: libs/darkbloom-cluster
+      run: swift build --build-tests
     - name: Record timestamps for successfully built sources
-      if: ${{ !cancelled() && (steps.provider-build.outcome == 'success' || steps.sdk-build.outcome == 'success') }}
+      if: ${{ !cancelled() && (steps.provider-build.outcome == 'success' || steps.sdk-build.outcome == 'success' || steps.cluster-build.outcome == 'success') }}
       id: timestamps
       shell: bash
       run: python3 scripts/provider-release-cache.py snapshot-mtimes
+    # Pushes save their build. A pull request saves only when it restored
+    # nothing, so its later pushes do not each add an entry that evicts the
+    # base branch's entry from the repository cache.
     - name: Save lane-specific Swift test build
-      if: ${{ !cancelled() && steps.timestamps.outcome == 'success' && steps.swift-cache.outputs.cache-hit != 'true' }}
+      if: ${{ !cancelled() && steps.timestamps.outcome == 'success' && steps.swift-cache.outputs.cache-hit != 'true' && (github.event_name != 'pull_request' || steps.swift-cache.outputs.cache-matched-key == '') }}
       uses: actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
       with:
         path: |
           provider-swift/.build
           libs/mlx-swift-lm/.build
+          libs/darkbloom-cluster/.build
         key: ${{ steps.keys.outputs.swift-key }}
     - name: Restore source-matched Metal cache
       id: metallib-cache
@@ -99,11 +110,12 @@ runs:
         METALLIB_CACHE_DIR: ${{ runner.temp }}/metallib-cache
       run: |
         cmake --version
-        if [ "$LANE" = sdk ]; then
-          bin=$(swift build --package-path libs/mlx-swift-lm --show-bin-path)
-        else
-          bin=$(swift build --package-path provider-swift --show-bin-path)
-        fi
+        case "$LANE" in
+          sdk) package=libs/mlx-swift-lm ;;
+          cluster) package=libs/darkbloom-cluster ;;
+          *) package=provider-swift ;;
+        esac
+        bin=$(swift build --package-path "$package" --show-bin-path)
         ./scripts/stage-test-metallib.sh "$bin"
     - name: Save validated source-matched Metal cache
       if: ${{ !cancelled() && steps.metallib.outcome == 'success' && steps.metallib-cache.outputs.cache-hit != 'true' }}

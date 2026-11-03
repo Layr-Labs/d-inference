@@ -354,8 +354,29 @@ public enum ClusterPlacementLayouts {
         guard runtimeProfile != ClusterGLMImageCandidate.profileID else { throw ProbeError("GLM runtime is unavailable") }
         #endif
         if MiMoPlacementFamily.handles(configuration: configuration) {
-            let family = try MiMoPlacementFamily(configuration: configuration, imageCandidate: runtimeProfile != nil)
+            var family = try MiMoPlacementFamily(configuration: configuration, imageCandidate: runtimeProfile != nil)
             try family.requireRegisteredInventory(tensors)
+            #if canImport(MLX)
+            let bound: ((Int) throws -> Int)? = allocationBound
+            #else
+            let bound = allocationBound
+            #endif
+            if let plan = family.tensorParallel, let bound {
+                // What a rank's LOAD gate reserves beside its shard: one request at the profile's longest context.
+                let budget = try MiMoTensorParallelRequestBudget.derive(plan: plan,
+                    slidingWindow: family.specification.slidingWindow, contextTokens: family.profile.maximumContextTokens,
+                    chunkTokens: family.profile.maximumChunkTokens, allocationBound: bound)
+                family.tensorParallelRequestAllowance = budget.allowance
+                #if canImport(MLXLLM)
+                // Its speculative rounds (`ClusterMiMoTensorParallel`): the heads whole, and each request's drafter
+                // state (the SDK's own declaration) and window rows beside the reserve, as the LOAD gate adds them.
+                if let rounds = try MiMoTensorParallelResidentRuntime.placementRounds(configuration: configuration,
+                    plan: plan, chunkTokens: family.profile.maximumChunkTokens, budget: budget, allocationBound: bound) {
+                    family.tensorParallelSpeculativeHead = rounds.head
+                    family.tensorParallelRequestAllowance = rounds.allowance
+                }
+                #endif
+            }
             return try ClusterModelLayoutBuilder.build(family: family, tensors: tensors,
                 artifactSHA256: family.specification.artifactSHA256,
                 configurationSHA256: family.specification.configurationSHA256)
@@ -379,8 +400,22 @@ public enum ClusterPlacementLayouts {
                 configurationSHA256: family.specification.configurationSHA256)
         }
         if Gemma4RegisteredSpecification.isRegistered(configuration: configuration) {
-            let family = try Gemma4PlacementFamily(configuration: configuration, manifest: manifest)
+            var family = try Gemma4PlacementFamily(configuration: configuration, manifest: manifest)
             try family.requireRegisteredInventory(tensors)
+            #if canImport(MLX)
+            let bound: ((Int) throws -> Int)? = allocationBound
+            #else
+            let bound = allocationBound
+            #endif
+            if family.tensorParallel != nil, let bound {
+                // What a rank's LOAD gate reserves beside its shard: one request at the profile's longest
+                // context, with its prompt-prefix capture.
+                family.tensorParallelRequestAllowance = try Gemma4TensorParallelRequestBudget.derive(
+                    contextTokens: family.profile.maximumContextTokens, chunkTokens: family.profile.maximumChunkTokens,
+                    promptTokens: family.profile.maximumPromptTokens,
+                    keepsPrefixes: Gemma4ResidentAdapterDefinition.tensorParallelKeepsPromptPrefixes,
+                    allocationBound: bound).allowance
+            }
             return try ClusterModelLayoutBuilder.build(family: family, tensors: tensors,
                 artifactSHA256: family.specification.artifactSHA256,
                 configurationSHA256: family.specification.configurationSHA256)

@@ -7,7 +7,9 @@ import DarkbloomClusterProtocol
 /// mode is passed to both ranks, and only when the pinned capability record
 /// covers each member's worker and advertises the mode; the two ranks then
 /// bind it into their load agreement themselves. The owner never passes a
-/// qualification switch.
+/// qualification switch. MiMo's tensor parallel decodes in speculative rounds
+/// on its trained heads wherever the pinned record declares them
+/// (`ClusterMiMoTensorParallel`), so both ranks get the same depth.
 enum DistributedInstalledGenerationSelection {
     static func workerArguments(configuration: ClusterConfiguration,
                                 capability: ClusterRuntimeCapability) throws -> [String] {
@@ -15,6 +17,9 @@ enum DistributedInstalledGenerationSelection {
         try ClusterGenerationSelection.requireSupport(for: mode, peers: configuration.peers, capability: capability)
         let shares = configuration.tensorShares.map { ["--tensor-shares", $0.map(String.init).joined(separator: ":")] } ?? []
         var arguments = mode == .pipeline ? [] : ["--generation-mode", mode.rawValue] + (mode == .tensorParallel ? shares : [])
+        if mimoTensorParallelRounds(mode: mode, capability: capability) {
+            arguments += ClusterMiMoTensorParallel.workerArguments(runtimeModelID: capability.runtimeModelID, mode: mode)
+        }
         if let assistant = configuration.tensorAssistant {
             try assistant.validate()
             guard mode == .tensorParallel, ClusterQwenTensorAssistantPolicy.runtimeModelIDs.contains(capability.runtimeModelID) else {
@@ -24,6 +29,12 @@ enum DistributedInstalledGenerationSelection {
                 ClusterQwenTensorAssistantPolicy.inventoryArgument, assistant.inventorySHA256] + assistant.verificationArguments
         }
         return arguments
+    }
+
+    /// MiMo tensor parallel's rounds, launched only where the worker's record declares them for the mode.
+    static func mimoTensorParallelRounds(mode: ClusterGenerationMode, capability: ClusterRuntimeCapability) -> Bool {
+        ClusterMiMoTensorParallel.decodesWithHead(runtimeModelID: capability.runtimeModelID, mode: mode)
+            && capability.modeFeatures?[mode]?.speculativeRounds == true
     }
 }
 
@@ -60,7 +71,14 @@ struct DistributedInstalledSpeculation: Equatable, Sendable {
         }
     }
 
+    /// MiMo's tensor parallel also decodes with heads no mode names, launched with them where its record declares
+    /// them (`DistributedInstalledGenerationSelection.mimoTensorParallelRounds`).
     init(configuration: ClusterConfiguration, capability: ClusterRuntimeCapability) {
+        if DistributedInstalledGenerationSelection.mimoTensorParallelRounds(mode: configuration.selectedGenerationMode,
+                                                                           capability: capability) {
+            self.init(enabled: true, offReason: Self.enabledReason)
+            return
+        }
         self.init(mode: configuration.selectedGenerationMode, runtimeModelID: capability.runtimeModelID,
             tensorAssistant: configuration.tensorAssistant != nil,
             everyMemberAdvertisesHead: configuration.peers.allSatisfy {

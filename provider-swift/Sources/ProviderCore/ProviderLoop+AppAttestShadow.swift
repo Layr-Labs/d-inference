@@ -63,6 +63,8 @@ extension ProviderLoop {
             appAttestLocalStatus = published
             writeDaemonState()
         }
+        // Only `ready` carries the availability answer.
+        if prepared { noteAppAttestAvailability(localStatus) }
         // Only these results can leave an unanswered Apple call holding admission.
         if !usesAppAttestWorker && (response.result == "busy" || response.result == "operation_timeout") { startAppAttestStallMonitorIfNeeded() }
         appAttestShadowTask = nil

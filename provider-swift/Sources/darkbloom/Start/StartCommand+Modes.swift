@@ -184,7 +184,7 @@ extension Start {
     ) async throws {
         warnBootSecurity(snapshot: bootSecuritySnapshot, coordinatorEnforced: true)
 
-        let launchManaged = ProcessIdentity.current().map { LaunchAgent.launchSnapshot()?.process == $0 } ?? false
+        let launchManaged = LaunchAgent.isCurrentProcessJob()
         let usePinnedSelection = Self.usesPinnedModelSelection(configPath: snapshot.configPath, launchManaged: launchManaged)
         let selectedModels = advertisedModels(
             from: snapshot.models,
@@ -205,6 +205,7 @@ extension Start {
         // Only the lock holder is the serving process: record its start
         // (previous_exit / start_reason) before any in-place update exec.
         ProviderProcessRun.begin()
+        ProviderProcessRun.logAppAttestEntitlementEvidence(context: "startup")
 
         let selectedIDs = Set(selectedModels.map(\.id))
         let autopilot = config.backend.modelAutopilot
@@ -376,6 +377,8 @@ extension Start {
         await TelemetryClient.shared.shutdown()
     }
 
+    /// A provider that launchd runs relaunches through launchd, as the
+    /// background update does; a foreground provider keeps the in-place exec.
     private func runStartupAutoUpdate(coordinatorURL: String) async throws {
         if ProcessInfo.processInfo.environment["DARKBLOOM_NO_UPDATE_CHECK"] != nil {
             return
@@ -391,7 +394,7 @@ extension Start {
                 try updater.prepareCandidateLaunch(
                     operation: "startup-update-exec"
                 )
-                try ProcessLifecycle.execCurrentProcess()
+                try ProcessLifecycle.restartAfterUpdate()
             } catch {
                 try? updater.cancelPendingCandidateAttempt(
                     operation: "startup-exec-failure")
@@ -403,7 +406,7 @@ extension Start {
                 try updater.prepareCandidateLaunch(
                     operation: "startup-candidate-exec"
                 )
-                try ProcessLifecycle.execCurrentProcess()
+                try ProcessLifecycle.restartAfterUpdate()
             } catch {
                 try? updater.cancelPendingCandidateAttempt(
                     operation: "startup-exec-failure")

@@ -40,6 +40,10 @@ export interface NativeModel {
   // Listed by the Darkbloom catalog. Only these can be served to the network or enrolled in
   // Autopilot; a model found only on disk runs in Local only. Absent from older runtimes.
   network?: boolean;
+  // What this Mac's live coordinator registration carries for the model: `routable` in its
+  // models (the network sends it requests), `autopilot` in its Autopilot inventory only, `none`
+  // in neither. Null or absent when not connected or on an older runtime.
+  registration?: 'routable' | 'autopilot' | 'none' | null;
   description?: string | null;
   context_length?: number | null;
   family?: string | null;

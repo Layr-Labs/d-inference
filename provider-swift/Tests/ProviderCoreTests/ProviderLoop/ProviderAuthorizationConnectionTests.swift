@@ -16,8 +16,10 @@ import Testing
                 provider: ProviderSettings(name: "authorization-test"),
                 backend: BackendSettings(), coordinator: CoordinatorSettings()))
         let loop = try ProviderLoop(config: config, attestationSigner: nil)
-        let stateURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        defer { try? FileManager.default.removeItem(at: stateURL) }
+        // Its own directory: an App Attest grant also writes a marker beside the state file.
+        let stateDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let stateURL = stateDirectory.appendingPathComponent("state.json")
+        defer { try? FileManager.default.removeItem(at: stateDirectory) }
         await loop.installAuthorizationStateFileForTesting(stateURL)
         let authorization = ProviderAuthorizationStatus(
             appAttestAvailable: true, path: "app_attest",
@@ -87,8 +89,9 @@ import Testing
     /// threshold passes, and clears the clock when the coordinator authorizes
     /// the connection.
     @Test func unauthorizedConnectionIsReportedAndReregisteredAfterTheThreshold() async throws {
-        let stateURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        defer { try? FileManager.default.removeItem(at: stateURL) }
+        let stateDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let stateURL = stateDirectory.appendingPathComponent("state.json")
+        defer { try? FileManager.default.removeItem(at: stateDirectory) }
         let loop = try await Self.makeLoop(stateURL: stateURL)
 
         let t0 = Date().timeIntervalSince1970
@@ -138,8 +141,9 @@ import Testing
     /// log that the coordinator is not routing it, or tell `status` it is
     /// excluded or needs macOS 27.
     @Test func aRegistrationRefusalAloneNeverReregisters() async throws {
-        let stateURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        defer { try? FileManager.default.removeItem(at: stateURL) }
+        let stateDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let stateURL = stateDirectory.appendingPathComponent("state.json")
+        defer { try? FileManager.default.removeItem(at: stateDirectory) }
         let logs = PublicLogLines()
         let loop = try await Self.makeLoop(stateURL: stateURL, logs: logs)
 
@@ -173,8 +177,9 @@ import Testing
     /// An App Attest lease names its own expiry. Once it passes without a
     /// renewal the connection is refused, however old that status is.
     @Test func anExpiredLeaseIsJudgedWithoutAFreshStatus() async throws {
-        let stateURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        defer { try? FileManager.default.removeItem(at: stateURL) }
+        let stateDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let stateURL = stateDirectory.appendingPathComponent("state.json")
+        defer { try? FileManager.default.removeItem(at: stateDirectory) }
         let loop = try await Self.makeLoop(stateURL: stateURL)
 
         let t0 = Date().timeIntervalSince1970
@@ -199,8 +204,9 @@ import Testing
     /// routes the connection: the clock stops and the backoff resets. A
     /// refusal sent after that request counts again.
     @Test func aRoutedRequestOutweighsAnEarlierRefusal() async throws {
-        let stateURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        defer { try? FileManager.default.removeItem(at: stateURL) }
+        let stateDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let stateURL = stateDirectory.appendingPathComponent("state.json")
+        defer { try? FileManager.default.removeItem(at: stateDirectory) }
         let logs = PublicLogLines()
         let loop = try await Self.makeLoop(stateURL: stateURL, logs: logs)
 
@@ -230,8 +236,9 @@ import Testing
     /// When the coordinator stops repeating a refusal, the provider stops
     /// counting it, and the log says routing is unconfirmed, not resumed.
     @Test func aRefusalTheCoordinatorStopsRepeatingIsLoggedAsUnconfirmed() async throws {
-        let stateURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        defer { try? FileManager.default.removeItem(at: stateURL) }
+        let stateDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let stateURL = stateDirectory.appendingPathComponent("state.json")
+        defer { try? FileManager.default.removeItem(at: stateDirectory) }
         let logs = PublicLogLines()
         let loop = try await Self.makeLoop(stateURL: stateURL, logs: logs)
 
@@ -252,8 +259,9 @@ import Testing
     /// up to every 30 s. `status` must still say how long the connection has
     /// been down, not how long ago the last attempt failed.
     @Test func aFailingReconnectKeepsTheTimeTheConnectionWentDown() async throws {
-        let stateURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        defer { try? FileManager.default.removeItem(at: stateURL) }
+        let stateDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let stateURL = stateDirectory.appendingPathComponent("state.json")
+        defer { try? FileManager.default.removeItem(at: stateDirectory) }
         let loop = try await Self.makeLoop(stateURL: stateURL)
 
         let t0 = 1_000_000.0
@@ -284,8 +292,9 @@ import Testing
     /// Re-registering drains admission, which fails an accepted Autopilot
     /// command partway (after its victims unloaded, before its target loads).
     @Test func reregistrationWaitsForAnAcceptedAutopilotCommand() async throws {
-        let stateURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        defer { try? FileManager.default.removeItem(at: stateURL) }
+        let stateDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let stateURL = stateDirectory.appendingPathComponent("state.json")
+        defer { try? FileManager.default.removeItem(at: stateDirectory) }
         let loop = try await Self.makeLoop(stateURL: stateURL)
 
         let t0 = Date().timeIntervalSince1970

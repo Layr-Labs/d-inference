@@ -209,7 +209,7 @@ class ProviderCIWorkflowTests(unittest.TestCase):
                 if job_id == "test-provider":
                     # Shards are independent: a failed shard never cancels another.
                     self.assertIn("    strategy:\n      # A failed shard does not cancel the other shards.\n"
-                                  "      fail-fast: false\n      matrix:\n        shard: [1, 2, 3, 4, 5]\n", job)
+                                  "      fail-fast: false\n      matrix:\n        shard: [1, 2, 3, 4, 5, 6, 7, 8]\n", job)
                 else:
                     self.assertNotRegex(job, re.compile(r"^    strategy:", re.MULTILINE), msg=job)
                 self.assertNotIn("continue-on-error:", job)
@@ -691,6 +691,10 @@ class ProviderCIWorkflowTests(unittest.TestCase):
             self.assertIn(component, key)
         for step in (steps[record], steps[upload]):
             self.assertIn("steps.capability-checks.outcome == 'success'", field(step, "if"))
+            # A pull request saves only when it restored nothing; pushes save.
+            self.assertIn("steps.cluster-build-cache.outputs.cache-hit != 'true' && (github.event_name != "
+                          "'pull_request' || steps.cluster-build-cache.outputs.cache-matched-key == '')",
+                          field(step, "if"))
         support = (ROOT / "libs/darkbloom-cluster/Tests/Support/native-metadata.sh").read_text()
         self.assertIn('task_jobs="${DARKBLOOM_CLUSTER_METADATA_BUILD_JOBS:-4}"', support)
         self.assertIn('--jobs "$task_jobs"', support)
@@ -705,15 +709,10 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         for forbidden in ("coordinator/", "cargo ", "rust-key", "secrets.", "darkbloom-platform"):
             self.assertNotIn(forbidden, self.jobs["test-provider"])
 
-    def test_push_only_release_build_no_longer_warms_sdk_debug_tests(self):
-        job = self.jobs["cache-swift"]
-        self.assertIn("    if: github.event_name == 'push'", job)
-        runs = [run_command(step) for step in step_blocks(job) if field(step, "run")]
-        self.assertIn("swift build -c release --product darkbloom\n"
-                      "swift build -c release --product darkbloom-fan-helper", runs)
-        self.assertNotIn("swift build --build-tests", job)
-        self.assertNotIn("working-directory: libs/mlx-swift-lm", job)
-        self.assertIn("actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57", job)
+    def test_obsolete_self_consuming_cache_warmer_is_absent(self):
+        # cache-swift saved a release build that only its own next run restored.
+        self.assertNotIn("cache-swift", self.jobs)
+        self.assertNotIn("spm-v4-blacksmith-macos27-native-", WORKFLOW.read_text())
 
     def test_offline_workflow_test_runs_in_release_integrity(self):
         self.assertIn("python3 provider-swift/Tests/test_protocol_fixture_resources.py", self.jobs["release-integrity"])
@@ -763,6 +762,13 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         self.assertNotIn("rust-key:", action)
         self.assertNotIn("rust-cache-hit:", action)
         self.assertEqual(sum("actions/cache/save@" in step for step in steps), 2)
+        # Pushes save the Swift build. A pull request saves it only when it
+        # restored nothing, so its later pushes do not evict the base entry.
+        swift_save = next(step for step in steps if field(step, "name", indent=4) == "Save lane-specific Swift test build")
+        self.assertEqual(field(swift_save, "if", indent=6),
+                         "${{ !cancelled() && steps.timestamps.outcome == 'success' && "
+                         "steps.swift-cache.outputs.cache-hit != 'true' && (github.event_name != 'pull_request' "
+                         "|| steps.swift-cache.outputs.cache-matched-key == '') }}")
 
 
 if __name__ == "__main__":

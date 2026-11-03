@@ -551,7 +551,6 @@ class RouteWorkflowTests(unittest.TestCase):
                     with self.subTest(workflow=filename, job=name):
                         self.assertRegex(job_field(job, "runs-on"), r"^(blacksmith-[a-z0-9-]+|ubuntu-24\.04)$")
         ci = jobs(self.texts["ci.yml"])
-        self.assertEqual(job_field(ci["cache-swift"], "runs-on"), MACOS_FALLBACK)
         for name in CI_MACOS_JOBS:
             with self.subTest(workflow="ci.yml", job=name):
                 self.assertEqual(job_field(ci[name], "runs-on"), MACOS_FALLBACK)

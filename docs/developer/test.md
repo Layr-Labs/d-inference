@@ -95,7 +95,7 @@ snapshots. Preserve its watchdog, cleanup and state isolation when using a focus
 selector. Use `scripts/run-nested-suite.sh` for documented nested Swift Testing
 cases and `scripts/run-exclusive-native-gpu-test.sh` for exclusive native work.
 
-CI runs the provider suite in five shards (`Provider Unit Tests (shard K)`), one
+CI runs the provider suite in eight shards (`Provider Unit Tests (shard K)`), one
 Mac each. `PROVIDER_TEST_SHARD=K/N` selects a shard in `scripts/run-provider-tests.sh`,
 and `scripts/provider-test-shards.py` chooses its suites:
 
@@ -116,6 +116,13 @@ profiles and uploads measured seconds per suite (`provider-test-shard-weights`).
 When the shards drift apart, replace the weights file with that artifact. A
 suite moves from the parallel class to the serial class when it fails or flakes
 in parallel; when in doubt, a suite stays serial.
+
+The provider lanes and Cluster Metadata Checks restore their build cache by the
+exact key first, then by the key prefix. A push to `dev` or `master` saves its
+build. A pull request saves its build only when it restored nothing. Its later
+pushes then restore the base branch's build again, and the repository cache
+(10 GB) keeps the base branch's entries. CI has no separate push-only Swift
+cache job.
 
 The SDK has independent test products under `libs/mlx-swift-lm`. CI validates
 native memory ownership, cancellation, media decoding, paged KV and resource

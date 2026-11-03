@@ -246,10 +246,9 @@ fallback and the plane is not contacted. When it is on, the route job sends one
 most once after a transient failure. It uses a grant only when the grant
 repeats the exact Darkbloom labels for the job's profile. Errors, timeouts and
 malformed replies keep the fallback; the plane never fails the route job.
-Release, signing, publication, model registration, review automation,
-`cache-swift` and `master` or dispatched cache warming keep literal Blacksmith
-labels. The component classifier and the `Provider Tests` gate run on
-`ubuntu-24.04`.
+Release, signing, publication, model registration, review automation and
+`master` or dispatched cache warming keep literal Blacksmith labels. The
+component classifier and the `Provider Tests` gate run on `ubuntu-24.04`.
 
 The macOS jobs of `ci.yml` (`test-provider`, `test-provider-summary`,
 `test-provider-sdk` and `test-cluster-checks`) are not routed. They always run

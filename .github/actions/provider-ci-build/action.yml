@@ -77,8 +77,11 @@ runs:
       id: timestamps
       shell: bash
       run: python3 scripts/provider-release-cache.py snapshot-mtimes
+    # Pushes save their build. A pull request saves only when it restored
+    # nothing, so its later pushes do not each add a 1.7 GB entry that evicts
+    # the base branch's entry from the repository cache.
     - name: Save lane-specific Swift test build
-      if: ${{ !cancelled() && steps.timestamps.outcome == 'success' && steps.swift-cache.outputs.cache-hit != 'true' }}
+      if: ${{ !cancelled() && steps.timestamps.outcome == 'success' && steps.swift-cache.outputs.cache-hit != 'true' && (github.event_name != 'pull_request' || steps.swift-cache.outputs.cache-matched-key == '') }}
       uses: actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
       with:
         path: |

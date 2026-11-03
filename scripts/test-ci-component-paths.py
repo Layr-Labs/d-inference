@@ -256,7 +256,7 @@ class WorkflowRoutingTests(unittest.TestCase):
         for policy in ("release-integrity", "docs"):
             self.assertNotIn("    if:", ci[policy])
         self.assertIn("python3 scripts/test-ci-component-paths.py", ci["release-integrity"])
-        self.assertIn("if: github.event_name == 'push'", ci["cache-swift"])
+        self.assertNotIn("cache-swift", ci)
 
     def test_detector_has_full_history_no_credentials_or_api_truncation(self):
         text = (ROOT / ".github/workflows/component-changes.yml").read_text()

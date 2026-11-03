@@ -49,8 +49,8 @@ line starts with (`y` for "Yes"). q or Esc cancels any list, so q never
 picks a line such as "Qwen3.8-27B-4bit-mtp · 16.3 GB · pipeline". While the setup waits (for the other Mac,
 for Allow), q or Esc stops it and an arrow key does nothing; no prompt asks for
 a key to do something. The model list shows only models
-approved for clusters (`ClusterPublicModels.declared`: GLM-5.3-Flash and
-Qwen3.8 27B) that these two Macs can serve; any other model is left out, and a
+approved for clusters (`ClusterPublicModels.declared`: GLM-5.3-Flash,
+Qwen3.8 27B, MiMo-V2.6-Flash and Gemma 4 26B QAT) that these two Macs can serve; any other model is left out, and a
 model named on the command line that is not approved is refused.
 
 Each Mac asks for up to two macOS approvals, at stated moments while you are at

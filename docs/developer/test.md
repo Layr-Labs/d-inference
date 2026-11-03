@@ -112,10 +112,8 @@ snapshots. Preserve its watchdog, cleanup and state isolation when using a focus
 selector. Use `scripts/run-nested-suite.sh` for documented nested Swift Testing
 cases and `scripts/run-exclusive-native-gpu-test.sh` for exclusive native work.
 
-CI runs the provider suite in five shards (`Provider Unit Tests (shard K)`), one
-Mac each, each routed through its own lane `test-provider-K`
-([CI runner routing](build.md#ci-runner-routing)).
-`PROVIDER_TEST_SHARD=K/N` selects a shard in `scripts/run-provider-tests.sh`,
+CI runs the provider suite in eight shards (`Provider Unit Tests (shard K)`), one
+Mac each. `PROVIDER_TEST_SHARD=K/N` selects a shard in `scripts/run-provider-tests.sh`,
 and `scripts/provider-test-shards.py` chooses its suites:
 
 | Class | Process | Suites |
@@ -135,6 +133,13 @@ profiles and uploads measured seconds per suite (`provider-test-shard-weights`).
 When the shards drift apart, replace the weights file with that artifact. A
 suite moves from the parallel class to the serial class when it fails or flakes
 in parallel; when in doubt, a suite stays serial.
+
+The jobs that use the `provider-ci-build` action and Cluster Metadata Checks
+restore their build cache by the exact key first, then by the key prefix. A
+push to `dev`, `main` or `master` saves its build. A pull request saves its build only when it restored nothing.
+Its later pushes then restore that entry or the base branch's entry and add no
+new entry, so they do not evict the base branch's entries. CI has no separate
+push-only Swift cache job.
 
 The SDK has independent test products under `libs/mlx-swift-lm`. CI validates
 native memory ownership, cancellation, media decoding, paged KV and resource
@@ -1464,10 +1469,9 @@ removed first, its failure fatal only when `CLUSTER_RUNTIME_SEND` is true, and
 HTTPS plane with a throwaway certificate; the host needs Bash, Python, jq, curl
 and openssl. It covers the default-off switch, fork pull requests, exact label
 grants, HTTP errors, the single retry, timeouts, untrusted or plain-HTTP planes
-and hostile reply text. It also pins each routed job's lanes (one per provider
-shard, matching the job's matrix), fallback, timeout and read-only permissions,
-and keeps release workflows on literal Blacksmith runners. No check contacts the
-real plane.
+and hostile reply text. It also pins each routed job's fallback, timeout and
+read-only permissions, and keeps release workflows and the macOS jobs of
+`ci.yml` on literal Blacksmith runners. No check contacts the real plane.
 
 Docs-impact tests retain provider, protocol, privacy, native capacity, cache,
 release/model publication and fixture mappings. Historical links need exact

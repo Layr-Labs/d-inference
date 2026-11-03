@@ -12,10 +12,10 @@ does not name.
 The blocking and focused lanes are split into shards by measured seconds
 (`cluster-test-weights.json`, longest first onto the least loaded shard, as
 scripts/provider-test-shards.py does). A shard runs one process per selection
-it holds. The base selection's units are top-level suites, and single tests of
-the suites in SPLIT_SUITES. The last blocking shard runs the base catch-all:
-every base test that shards 1 to N-1 do not select, so a new or unweighed
-suite always runs. `audit` checks the plan against the sources; `audit-runs`
+it holds. The base selection's units are model families (every suite with a
+FAMILIES prefix, in one process) and single tests of the suites in
+SPLIT_SUITES. The last blocking shard runs the base catch-all: every base test
+that shards 1 to N-1 do not select, so a new or unweighed suite always runs. `audit` checks the plan against the sources; `audit-runs`
 checks, from each process's report, that every blocking test ran exactly once.
 
 Lanes: `blocking` (Cluster Runtime Tests), `nonblocking` (Cluster GPU Tests,
@@ -58,12 +58,14 @@ SHARD_COUNTS = {"blocking": 12, "focused": 3}
 # Base suites whose tests are weighed and placed one by one: each is longer
 # than one shard. Every other base unit is a whole top-level suite.
 SPLIT_SUITES = ("QwenTensorParallelBatchSessionTests",)
-# Base suites placed together, in one process, by name prefix. Some of their
-# tests give a peer 1 s to answer and pass only after another suite of the
-# family has run the family's native code in the process: as the first GLM
-# suite of a process, GLM5NextStageFrameTransportTests timed out (run
-# 41700931534); on dev every GLM suite runs in one process.
-BASE_GROUPS = ("GLM5Next",)
+# Model families: every base suite whose name starts with a family prefix
+# runs in that family's one process, a new suite included. Some tests give a
+# peer a short budget and pass only after another suite of the family has run
+# its native code in the process (the share probe in run 41692814231,
+# GLM5NextStageFrameTransportTests in run 41700931534); on dev each family ran
+# in one process. SPLIT_SUITES are not part of their family. Base suites with
+# no family prefix run in the last shard's catch-all, with the unweighed tests.
+FAMILIES = ("Bonsai", "GLM", "GPTOSS", "Gemma", "MiMo", "Nemotron", "Qwen")
 # Measured start-up of one `swift test` process, and the seconds assumed for a
 # unit the weights do not list yet.
 PROCESS_SECONDS = 8.0
@@ -287,15 +289,25 @@ def switched_regex():
     return f"{functions_regex(gated)}|{suites_regex(REQUIRES_MODEL_SUITES)}"
 
 
+def family_of(suite):
+    return next((family for family in FAMILIES if suite.startswith(family)), None)
+
+
+def family_regex(families):
+    """Every top-level suite that starts with a family prefix, except SPLIT_SUITES."""
+    split = "|".join(sorted(SPLIT_SUITES))
+    return f"^{MODULE}[./](?!(?:{split})(?:[./]|$))(?:{'|'.join(sorted(families))})\\w*(?:[./]|$)"
+
+
 def units_regex(units):
-    """Base units: whole top-level suites (`Suite`) and single tests (`Suite/test`)."""
-    suites = [unit for unit in units if "/" not in unit]
+    """Base units: families (`Family*`) and single tests of SPLIT_SUITES (`Suite/test`)."""
+    families = [unit[:-1] for unit in units if unit.endswith("*")]
     tests = defaultdict(list)
     for unit in units:
         if "/" in unit:
             suite, test = unit.split("/", 1)
             tests[suite].append(test)
-    parts = [suites_regex(suites)] if suites else []
+    parts = [family_regex(families)] if families else []
     parts += [f"^{MODULE}[./]{suite}[./](?:{'|'.join(sorted(names))})\\(" for suite, names in sorted(tests.items())]
     return "|".join(parts)
 
@@ -330,12 +342,25 @@ def unit_key(selection, unit=None):
 
 
 def base_units(weights):
-    """The weighed base units: `Suite`, or `Suite/test` for SPLIT_SUITES."""
+    """The base selection and {unit: seconds}: `Family*` (the sum of its suites)
+    and `Suite/test` for SPLIT_SUITES, plus the catch-all's seconds: the
+    suites with no family and the unweighed tests."""
     base = next(selection for selection in SELECTIONS if selection.base and selection.lane == "blocking")
     prefix = unit_key(base) + "/"
-    units = [key[len(prefix):] for key in weights if key.startswith(prefix)]
-    return base, [unit for unit in units if unit != CATCH_ALL_KEY
-                  and ("/" in unit) == (unit.split("/", 1)[0] in SPLIT_SUITES)]
+    units, catch_all = defaultdict(float), 0.0
+    for key, seconds in weights.items():
+        if not key.startswith(prefix):
+            continue
+        unit = key[len(prefix):]
+        suite = unit.split("/", 1)[0]
+        if suite in SPLIT_SUITES:
+            if "/" in unit:
+                units[unit] += seconds
+        elif unit == CATCH_ALL_KEY or "/" in unit or not family_of(suite):
+            catch_all += seconds
+        else:
+            units[family_of(suite) + "*"] += seconds
+    return base, dict(units), catch_all
 
 
 def assign(shards, items, fixed=()):
@@ -354,10 +379,7 @@ def assign(shards, items, fixed=()):
         cost = lambda index: seconds + (0 if selection.name in placed[index] else PROCESS_SECONDS)
         index = min(range(shards), key=lambda index: (loads[index] + cost(index), index))
         loads[index] += cost(index)
-        if isinstance(unit, tuple):
-            placed[index][selection.name].extend(unit)
-        else:
-            placed[index][selection.name].append(unit)
+        placed[index][selection.name].append(unit)
     return placed, loads
 
 
@@ -374,15 +396,10 @@ def processes(lane, weights=None):
         placed, _ = assign(shards, items)
         named = {selection.name: selection for selection in selections}
         return [Process(named[name], index + 1) for index in range(shards) for name in placed[index]]
-    base, units = base_units(weights)
+    base, units, catch_all_seconds = base_units(weights)
     items = [(weights.get(unit_key(selection, test), UNWEIGHED_SECONDS), selection, test)
              for selection in selections if selection.tests and not selection.after for test in selection.tests]
-    grouped = {prefix: tuple(sorted(unit for unit in units if unit.startswith(prefix))) for prefix in BASE_GROUPS}
-    items += [(sum(weights[unit_key(base, unit)] for unit in group), base, group)
-              for group in grouped.values() if group]
-    items += [(weights[unit_key(base, unit)], base, unit) for unit in units
-              if not unit.startswith(BASE_GROUPS)]
-    catch_all_seconds = weights.get(unit_key(base, CATCH_ALL_KEY), 0.0)
+    items += [(seconds, base, unit) for unit, seconds in units.items()]
     placed, _ = assign(shards, items, fixed=[(shards - 1, base, catch_all_seconds)])
     # A selection with `after` joins the first shard that runs that selection,
     # as its last process there.

@@ -38,9 +38,9 @@ class ClusterTestPlanTests(unittest.TestCase):
         module = plan.MODULE
         swift = swift_processes()
         cases = {f"{module}.AnySuite/{name}(sharded:)": name for selection in plan.SELECTIONS for name in selection.tests}
-        _, units = plan.base_units(plan.load_weights())
+        _, units, _ = plan.base_units(plan.load_weights())
         split = next(unit for unit in units if "/" in unit)
-        whole = next(unit for unit in units if "/" not in unit)
+        whole = next(unit for unit in units if unit.endswith("*"))[:-1] + "AnySuiteTests"
         cases.update({
             # A weighed test of a split suite, and one the weights do not name yet.
             f"{module}.{split}()": "base",
@@ -53,6 +53,8 @@ class ClusterTestPlanTests(unittest.TestCase):
             f"{module}.QwenTensorParallelBatchSessionTestsMore/plainCase()": "base",
             f"{module}.BrandNewSuite/plainCase()": "base",
             f"{module}.freeFunction()": "base",
+            f"{module}.QwenBrandNewTests/plainCase()": "base",
+            f"{module}.GLM5NextStageFrameTransportTests/bothNativeStagesCommitOnlyTheirAcknowledgedFrames()": "base",
         })
         for test_id, owner in cases.items():
             with self.subTest(test_id=test_id):
@@ -73,7 +75,7 @@ class ClusterTestPlanTests(unittest.TestCase):
 
     def test_weighed_lanes_place_every_unit_once_and_the_catch_all_last(self):
         weights = plan.load_weights()
-        base, units = plan.base_units(weights)
+        base, units, _ = plan.base_units(weights)
         blocking = plan.processes("blocking", weights)
         shards = plan.SHARD_COUNTS["blocking"]
         self.assertEqual(sorted({process.shard for process in blocking}), list(range(1, shards + 1)))
@@ -99,14 +101,21 @@ class ClusterTestPlanTests(unittest.TestCase):
                     follower = next(key for key in keys if key[1] == selection.name)
                     self.assertEqual(follower[0], leader[0])
                     self.assertGreater(keys.index(follower), keys.index(leader))
-        # Each BASE_GROUPS family runs in one process.
-        for prefix in plan.BASE_GROUPS:
-            with self.subTest(group=prefix):
-                holders = [process for process in blocking if process.selection is base
-                           and any(unit.startswith(prefix) for unit in process.units)]
-                self.assertEqual(len(holders), 1)
-                self.assertEqual(sorted(unit for unit in holders[0].units if unit.startswith(prefix)),
-                                 sorted(unit for unit in units if unit.startswith(prefix)))
+        # Each family runs in one process, a new suite of the family included;
+        # a split suite is not part of its family.
+        family_units = sorted(unit for unit in units if unit.endswith("*"))
+        self.assertEqual(family_units, sorted(f"{family}*" for family in plan.FAMILIES))
+        module = plan.MODULE
+        for family in plan.FAMILIES:
+            with self.subTest(family=family):
+                holder = next(process for process in blocking
+                              if f"{family}*" in process.units or (process.catch_all and f"{family}*" not in process.others))
+                for suite in (f"{family}AlphaTests", f"{family}ZetaTests"):
+                    runs = [process for process in blocking if selected(process, f"{module}.{suite}/case()")]
+                    self.assertEqual(runs, [holder])
+        for suite in plan.SPLIT_SUITES:
+            runs = [process for process in blocking if selected(process, f"{module}.{suite}/brandNewCase()")]
+            self.assertEqual([process.catch_all for process in runs], [True])
         share_probe = next(s for s in plan.SELECTIONS if s.name == "qwen-tp-share-probe-gpu")
         self.assertEqual(share_probe.after, "qwen-tp-batch-gpu")
         focused = plan.processes("focused", weights)
@@ -126,8 +135,8 @@ class ClusterTestPlanTests(unittest.TestCase):
         nonblocking = next(s for s in plan.SELECTIONS if s.lane == "nonblocking" and s.tests).tests[0]
         test_ids = [f"{module}.Opt/{name}()" for selection in plan.SELECTIONS
                     if selection.lane == "blocking" for name in selection.tests]
-        test_ids += [f"{module}.{unit}()" if "/" in unit else f"{module}.{unit}/case()"
-                     for unit in plan.base_units(weights)[1]]
+        test_ids += [f"{module}.{unit}()" for unit in plan.base_units(weights)[1] if "/" in unit]
+        test_ids += [f"{module}.{family}AnyTests/case()" for family in plan.FAMILIES]
         test_ids += [f"{module}.BrandNewSuite/plainCase()", f"{module}.Legacy/testOld",
                      f"{module}.Opt/{nonblocking}()", f"{module}.Opt/{plan.REQUIRES_MODEL[0]}()"]
 

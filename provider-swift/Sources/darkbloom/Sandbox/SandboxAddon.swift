@@ -151,6 +151,9 @@ struct SandboxAddonStatus: Equatable, Sendable {
     var accepting: Bool?
     var lastUpdateCheck: Date?
     var consoleURL: String?
+    /// The add-on reports its work disks (`disks`), so it takes
+    /// `install --disk`.
+    var supportsWorkDisks = false
 }
 
 extension SandboxAddonStatus {
@@ -188,7 +191,8 @@ extension SandboxAddonStatus {
             },
             accepting: object["accepting"] as? Bool,
             lastUpdateCheck: Self.timestamp(object["last_update_check"]),
-            consoleURL: text("console_url"))
+            consoleURL: text("console_url"),
+            supportsWorkDisks: object["disks"] is [Any])
     }
 
     /// Unix seconds (or milliseconds) or an ISO 8601 string.

@@ -244,7 +244,21 @@ extension SandboxSizingPlan {
             .init(level: level("disk"), name: "Disk",
                   detail: "\(gibDown(freeBytes)) GiB free; \(gibDown(floorBytes)) GiB stays free for you; "
                       + disk("Linux", linux) + "; " + disk("macOS", macOS)),
-        ]
+        ] + diskChecks
+    }
+
+    /// One line per disk when the plan uses a work disk (an external drive,
+    /// or more than one disk): its room and the jobs placed on it.
+    private var diskChecks: [SandboxEligibility.Check] {
+        guard disks.count > 1 || disks.contains(where: { !$0.rootVolume }) else { return [] }
+        return disks.map { disk in
+            let jobs = [("Linux", disk.linuxSlots), ("macOS", disk.macOSSlots)].filter { $0.1 > 0 }
+                .map { name, count in "\(count) \(name) job" + (count == 1 ? "" : "s") }
+            return .init(level: .info, name: "Work disk",
+                         detail: "\(disk.path)\(disk.rootVolume ? " (internal)" : ""): "
+                             + "\(gibDown(disk.freeBytes)) GiB free; \(gibDown(disk.floorBytes)) GiB stays free; "
+                             + (jobs.isEmpty ? "no jobs" : jobs.joined(separator: ", ")))
+        }
     }
 
     /// The verdict, then what this Mac can run at a time or what it lacks.

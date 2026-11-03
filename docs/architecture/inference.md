@@ -246,14 +246,17 @@ serving intent or change model eligibility and placement. See the
 [guided two-Mac setup](../provider/two-mac-cluster.md) for operator steps.
 
 Lines name the two Macs for the screen that shows them
-(`ClusterOnboardingMacName`): "this Mac" and "the other Mac (<hardware name>)",
-because two Macs of one kind share the hardware name. The leader words an
+(`ClusterOnboardingMacName`): "this Mac" and "the other Mac", with the hardware
+name ("the other Mac (<hardware name>)") where a line must tell them apart,
+because two Macs of one kind share it; only this Mac's own screen adds the name
+System Settings gives it ("This Mac (Studio A) leads",
+`ClusterOnboardingDriver.thisMac`). The leader words an
 answer to a command the other Mac forwarded for that Mac's screen
 (`OnboardingLive.answeringForwarded`, `here`, `there`), and the cluster
 service names members the same way in its control lines and refusals
-(`ClusterOnboardingMacName.names`). A deployment line recorded for both Macs
-keeps hardware names; lines shown now carry the screen's words
-(`ClusterOnboardingDeployment.Share.label`). The Mac that joins ends its
+(`ClusterOnboardingMacName.names`). The deployment line, recorded for both Macs
+with hardware names, is no longer on the screens, which say one serving line
+(`ClusterOnboardingReady.summary`, `ClusterOnboardingDriver.servesWords`). The Mac that joins ends its
 onboarding once paired, also for `darkbloom cluster local`
 (`ClusterOnboardingDriver.joinedLocalContinueLine`). The model list keeps one line per
 artifact and name (`OnboardingLive.presentedChoices`): a choice that cannot be
@@ -275,14 +278,16 @@ such field and are listed as they come. A member's `darkbloom cluster` shows
 the status and where to manage the cluster, with a list only to set up a cable
 port that is not set up yet (`ClusterOnboardingDriver.member`, `fixPortItem`);
 the leader's is a list of the control operations (`ClusterOnboardingDriver.menu`).
-Every copy of a missing model is a list as well, a short one with its
-predicted time (`ClusterOnboardingDriver.provision`). Served through Darkbloom,
-the chosen model's public-traffic line follows the choice
-(`ClusterOnboardingModelChoice.publicTraffic`), and the start ends with
-`ClusterOnboardingDriver.earnsLine`, except for a private image candidate and
-where the pair serves locally, which a notice under the API line already says
-(`servesLine`). When the other Mac does not answer over the
-cable, the leader asks **Try again** or **Stop here** (`chooseAndServe`).
+A model's list line is its name and size, then "copy" or "download" when it
+must reach a Mac first (`ClusterOnboardingModelChoice.listLine`); its split,
+speed and tensor-parallel note are planned and carried but not said. Every copy
+of a missing model is a list as well, a short one with its predicted time
+(`ClusterOnboardingDriver.provision`). The public-traffic line
+(`ClusterOnboardingModelChoice.publicTraffic`) is said only for a private image
+candidate; the serving line ends "(earning through Darkbloom)" or "(local
+only)" (`ClusterOnboardingDriver.servesWords`). When the other Mac does not
+answer over the cable, the leader asks **Try again** or **Cancel**
+(`chooseAndServe`).
 
 The Mac the cluster was set up on leads. `LiveContext.plan` makes that Mac every
 plan's rank 0, whichever Mac plans (`ClusterControlDerivation.planLeader`, from
@@ -297,8 +302,9 @@ prefers it among the members present (`ClusterControlDerivation.derive`,
 pin). A Mac that is away never leads, so failover is unchanged.
 
 macOS's permissions are asked at stated moments
-(`ClusterOnboardingDriver.allowLocalNetwork`), and Connect's first line names
-them (`ClusterOnboardingDriver.approvalsLine`). The command probes Local Network
+(`ClusterOnboardingDriver.allowLocalNetwork`), and Connect's first line asks for
+both ("Allow macOS's password and Local Network prompts.",
+`ClusterOnboardingDriver.approvalsLine`). The command probes Local Network
 access in the Connect step (`ClusterLocalNetworkAccess.probe`: one datagram to
 the cable's subnet broadcast, refused with `EHOSTUNREACH` until allowed). macOS
 lets a command run from a terminal or over SSH through by itself (TN3179), so
@@ -3775,8 +3781,8 @@ pair's own fresh, keyed, owner-only link record, and without one it keeps the
 running setup. The planner's own default, and the plan tool without
 `--tensor-parallel-first`, keep the speed comparison.
 
-The setup's model list (`ClusterOnboardingModelChoice.listLine`) ends a model's
-one line with a short note when its layout has a tensor-parallel plan and the
+The planner records a short note, which the setup's model list no longer says
+(`ClusterOnboardingModelChoice.listLine`), when a model's layout has a tensor-parallel plan and the
 planner splits it otherwise, for example `tensor parallel: slower here`, `about as fast`
 (inside the margin), `does not fit now`, `link unmeasured`, or `no tensor parallel
 for this model`. The note comes from the planner's own assessment

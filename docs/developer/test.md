@@ -1192,8 +1192,8 @@ with isolated fixture runners: each `provider-swift/Tests/Cluster*Checks/run.sh`
 `libs/darkbloom-cluster/Tests/*Checks/run.sh` and
 `libs/darkbloom-cluster-worker/Tests/*Checks/run.sh` prints its pass count and
 exits non-zero on a failure. The CI job `test-cluster-checks` (Cluster Metadata
-Checks, `.github/workflows/ci.yml`) runs these runners on every pull request that
-changes provider code: `libs/darkbloom-cluster-worker/Tests/CapabilityChecks/run.sh`,
+Checks, `.github/workflows/ci.yml`) runs these runners when the classifier
+selects `cluster` (see below): `libs/darkbloom-cluster-worker/Tests/CapabilityChecks/run.sh`,
 `libs/darkbloom-cluster/Tests/PrefillScheduleChecks/run.sh`,
 `libs/darkbloom-cluster/Tests/StageMetadataChecks/run.py`,
 `libs/darkbloom-cluster/Tests/GPTOSSStageChecks/run.sh`,
@@ -1216,14 +1216,14 @@ two-Mac hardware pass.
 The cluster jobs (Cluster Metadata Checks, Cluster Runtime Tests, Cluster GPU
 Tests and Cluster Focused Checks) run when the classifier selects `cluster`
 (`CLUSTER` in `scripts/ci-component-paths.py`): the cluster packages, the MLX
-pins, the provider's Cluster, Distributed and NativePair sources and tests, the
+pins, the provider's Cluster, Distributed and NativePair sources, the
+provider-side cluster runners (`provider-swift/Tests/Cluster*Checks`), the
 other provider files the cluster runners compile, the cluster plan and the
 shared build recipe. A push that runs the provider lanes also runs them. The
 `Provider Tests` gate accepts a skipped cluster job only when `cluster` was not
-selected. A provider-only pull request runs 5 Macs (3 provider shards, the
-summary and the SDK lane when its inputs change; 4 without it); a cluster pull
-request adds 7 (metadata checks, 3 runtime shards, 2 GPU shards, focused
-checks).
+selected. A provider-only pull request runs 4 Macs (3 provider shards and the
+summary), or 5 when an SDK-lane input changes. A cluster pull request adds 7
+Macs (metadata checks, 3 runtime shards, 2 GPU shards and focused checks).
 
 CI runs the runtime test target (`DarkbloomClusterRuntimeTests`) on the
 provider's Blacksmith macOS runners, in selections that

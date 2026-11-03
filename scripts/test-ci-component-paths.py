@@ -46,7 +46,7 @@ class ComponentPathsTests(unittest.TestCase):
             "provider-swift/Sources/ProviderCore/Protocol/NativePairMessages.swift": {"provider", "cluster"},
             "provider-swift/Sources/ProviderCoreFoundation/Manifest.swift": {"provider", "cluster"},
             "provider-swift/Tests/ClusterOnboardingChecks/run.sh": {"provider", "cluster"},
-            "provider-swift/Tests/ProviderCoreTests/Inference/DistributedServeLoopTests.swift": {"provider", "cluster"},
+            "provider-swift/Tests/ProviderCoreTests/Inference/DistributedServeLoopTests.swift": {"provider"},
             "provider-swift/Package.swift": {"provider", "cluster"},
             "libs/mlx-swift-lm": {"provider", "sdk", "cluster"},
             "libs/mlx-swift-lm/Libraries/MLXLMCommon/Generate.swift": {"provider", "sdk", "cluster"},
@@ -77,6 +77,8 @@ class ComponentPathsTests(unittest.TestCase):
         # Every SDK-lane and cluster input is also a provider input.
         for pattern in (*routing.SDK, *routing.CLUSTER):
             path = pattern.replace("**", "x").replace("*", "Cluster")
+            self.assertTrue(routing.classify([path])[
+                "sdk" if pattern in routing.SDK else "cluster"], path)
             self.assertTrue(routing.classify([path])["provider"], path)
 
     def test_swift_prompt_corpora_select_provider(self):
@@ -256,7 +258,7 @@ class WorkflowRoutingTests(unittest.TestCase):
     def test_expensive_jobs_depend_on_successful_classifier(self):
         expected = {
             "ci.yml": {"test-provider": "provider", "test-cluster-checks": "cluster", "test-cluster": "cluster",
-                       "test-cluster-gpu": "cluster", "test-cluster-focused": "cluster"},
+                       "test-cluster-focused": "cluster"},
         }
         for name, lanes in expected.items():
             jobs = workflow.job_blocks((ROOT / ".github/workflows" / name).read_text())
@@ -269,6 +271,9 @@ class WorkflowRoutingTests(unittest.TestCase):
                 self.assertIn("    if: ${{ needs.changes.outputs." + component + " == 'true' }}\n", jobs[lane])
                 self.assertNotIn("continue-on-error:", jobs[lane])
         ci = workflow.job_blocks((ROOT / ".github/workflows/ci.yml").read_text())
+        # The GPU job's test step continues on error (scripts/test-cluster-test-plan.py).
+        self.assertIn("    needs: changes\n", ci["test-cluster-gpu"])
+        self.assertIn("    if: ${{ needs.changes.outputs.cluster == 'true' }}\n", ci["test-cluster-gpu"])
         # The SDK lane runs on every push and on pull requests that change its inputs.
         self.assertIn("    needs: changes\n", ci["test-provider-sdk"])
         self.assertIn("    if: ${{ github.event_name == 'push' || needs.changes.outputs.sdk == 'true' }}\n",

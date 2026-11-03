@@ -28,7 +28,7 @@ PROVIDER = (
     "scripts/run-paged-kernel-tests.sh", "scripts/run-provider-test-watchdog.py",
     "scripts/run-exclusive-native-gpu-test.sh", "scripts/provider-test-shards.py",
     "scripts/provider-test-shard-weights.json",
-    "scripts/cluster-test-plan.py",
+    "scripts/cluster-test-plan.py", "scripts/cluster-stage-content-inventory.py",
     "scripts/prepare-mimo-*-fixtures.py", "scripts/verify-*-prompt-parity.sh",
     "scripts/prepare-prompt-fixtures.py", "scripts/test-prepare-prompt-fixtures.py",
     "scripts/verify-prompt-parity.sh", "scripts/test-qwen4-packaged-resources.py",
@@ -68,15 +68,17 @@ CLUSTER = (
     "provider-swift/Sources/ProviderCore/Config/ProviderConfigFile.swift",
     "provider-swift/Sources/ProviderCore/Models/StreamingFileDownloadDelegate.swift",
     "provider-swift/Sources/ProviderCoreFoundation/Manifest.swift",
-    "provider-swift/Tests/*Cluster*", "provider-swift/Tests/*cluster*", "provider-swift/Tests/*Distributed*",
+    # The provider-side cluster runners and the fixture one of them reads; the
+    # provider unit tests of cluster code run in the provider lane.
+    "provider-swift/Tests/Cluster*Checks/**",
+    "provider-swift/Tests/ProviderCoreTests/Fixtures/coordinator-wire/cluster_registration_vector.json",
     ".github/workflows/ci.yml", ".github/actions/provider-ci-build/**",
     "scripts/provider-ci-cache.py", "scripts/provider_ci_cache/**",
     "scripts/provider-release-cache.py", "scripts/provider_release_cache/**",
     "scripts/provider-release-swift.sh", "scripts/prepare-provider-release-toolchain.sh",
     "scripts/install-release-cmake.sh", "scripts/prepare-metal-toolchain.py",
     "scripts/fetch-metallib.sh", "scripts/stage-test-metallib.sh", "scripts/run-nested-suite.sh",
-    "scripts/cluster-test-plan.py", "scripts/cluster-test-weights.json",
-    "scripts/cluster-stage-content-inventory.py",
+    "scripts/cluster-test-plan.py", "scripts/cluster-stage-content-inventory.py",
 )
 
 

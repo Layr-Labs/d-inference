@@ -49,6 +49,15 @@ if [[ -n "${BISECT_FILTER:-}" ]]; then
   echo "Bisect selection ${BISECT_NAME:-}: $BISECT_FILTER"
   swift test --skip-build --no-parallel --filter "$BISECT_FILTER"
   status=$?
+  if [ "$status" -ne 0 ]; then
+    helper="$(dirname "${PROVIDER_SWIFT:-$(xcrun -f swift)}")/../libexec/swift/pm/swiftpm-testing-helper"
+    bundle=$(find .build -path '*debug/DarkbloomProviderPackageTests.xctest/Contents/MacOS/DarkbloomProviderPackageTests' -type f | head -1)
+    echo "BISECT_LLDB helper=$helper bundle=$bundle"
+    xcrun lldb --batch -o "process handle SIGBUS -s true -p false" -o run \
+      -k "thread backtrace all -c 60" -k "register read far" -k "image lookup -a \$pc" -k "quit 1" \
+      -- "$helper" --test-bundle-path "$bundle" --skip-build --no-parallel --filter "$BISECT_FILTER" \
+      "$bundle" --testing-library swift-testing 2>&1 | tail -n 1500
+  fi
   echo "BISECT_RESULT name=${BISECT_NAME:-} status=$status"
   exit "$status"
 fi

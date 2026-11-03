@@ -173,8 +173,9 @@ public enum ClusterLocalNetworkAccess {
         process.standardInput = FileHandle.standardInput
         process.standardOutput = FileHandle.standardOutput
         process.standardError = FileHandle.standardError
-        do { try process.run() } catch { return false }
-        process.waitUntilExit()
+        let childExit = ProcessExitObserver()
+        do { try childExit.run(process) } catch { return false }
+        childExit.wait()
         return process.terminationStatus == 0
     }
 }

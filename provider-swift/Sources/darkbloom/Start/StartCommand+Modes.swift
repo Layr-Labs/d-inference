@@ -410,7 +410,7 @@ extension Start {
                 throw error
             }
         case .quarantined(let version, let reason):
-            printError("auto-update skipped: v\(version) is quarantined after failed starts (\(reason))")
+            printError("auto-update skipped: v\(version) is quarantined on this Mac (\(reason))")
         case .busy(let reason):
             printError("auto-update skipped: another update/recovery operation is active (\(reason))")
         case .cancelled(let reason):

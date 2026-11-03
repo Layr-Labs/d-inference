@@ -114,8 +114,39 @@ struct SandboxAddonTests {
         #expect(try await SandboxChildProcess.run(URL(fileURLWithPath: "/bin/sh"), ["-c", "exit 130"]).interrupted)
         let killed = try await SandboxChildProcess.run(URL(fileURLWithPath: "/bin/sh"), ["-c", "kill -INT $$"])
         #expect(killed == .init(status: SIGINT, signal: SIGINT) && killed.interrupted)
+        // The SIGKILL of a second Ctrl-C reads as interrupted too; another SIGKILL does not.
+        #expect(SandboxChildProcess.Exit(status: SIGKILL, signal: SIGKILL, killedBySecondInterrupt: true).interrupted)
+        #expect(!SandboxChildProcess.Exit(status: SIGKILL, signal: SIGKILL).interrupted)
         await #expect(throws: (any Error).self) {
             try await SandboxChildProcess.run(URL(fileURLWithPath: "/nonexistent/tool"), [])
+        }
+    }
+
+    @Test("a second Ctrl-C ends a child whose own child holds its captured output")
+    func secondInterruptEndsCapturedChild() async {
+        await #expect(processExitsWith: .success) {
+            // A run that never returns ends this process with SIGALRM instead.
+            alarm(20)
+            let started = FileManager.default.temporaryDirectory.appendingPathComponent("sandbox-child-\(UUID().uuidString)")
+            defer { try? FileManager.default.removeItem(at: started) }
+            // Ctrl-C reaches only this process, as the child leads a process
+            // group of its own. The CLI's main thread takes it; this test's
+            // other threads block signals, so this thread takes them.
+            Thread.detachNewThread {
+                var interrupt = sigset_t()
+                sigemptyset(&interrupt)
+                sigaddset(&interrupt, SIGINT)
+                pthread_sigmask(SIG_UNBLOCK, &interrupt, nil)
+                while !FileManager.default.fileExists(atPath: started.path) { usleep(10_000) }
+                kill(getpid(), SIGINT)
+                usleep(300_000)
+                kill(getpid(), SIGINT)
+            }
+            // The shell and its `sleep`, which keeps the output open, ignore the first Ctrl-C.
+            let exit = try await SandboxChildProcess.run(
+                URL(fileURLWithPath: "/bin/sh"), ["-c", #"trap '' INT; sleep 30 & : > "$1"; wait"#, "sh", started.path],
+                closeStandardInput: true, standardOutput: .tail(SandboxOutputTail()), standardError: .tail(SandboxOutputTail()))
+            #expect(exit == .init(status: SIGKILL, signal: SIGKILL, killedBySecondInterrupt: true) && exit.interrupted)
         }
     }
 

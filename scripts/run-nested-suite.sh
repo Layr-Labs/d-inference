@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
-# Run ONE swift-testing suite inside libs/mlx-swift-lm and fail if it executed
-# zero tests.
+# Run one `swift test` selection (a filter plus extra arguments) and fail if
+# it executed zero tests or skipped one.
 #
 # THE TRIPWIRE IS THE POINT. `swift test` exits 0 even when the swift-testing
 # pass executes NOTHING — that is how the four paged suites sat dark for a
@@ -64,9 +64,9 @@ fi
 #
 # A suite whose every case self-skips (XCTSkip on a missing fixture, a
 # .disabled/.enabled(if:) trait nobody meant to trip) asserts nothing — the
-# same dark-gate failure mode, one layer up. Fail on ANY skip: these nested
-# suites are hermetic by design (tiny models, no weights, no env gates), so a
-# skip here means a precondition broke, not that skipping was intended.
+# same dark-gate failure mode, one layer up. Fail on ANY skip: these
+# selections are hermetic by design (every test they select is meant to run),
+# so a skip here means a precondition broke, not that skipping was intended.
 if grep -qE '^[^A-Za-z0-9]*(Test|Suite) .+ skipped[.:]|with [1-9][0-9]* tests? skipped|skipped [1-9][0-9]* test' "$log"; then
     echo "::error::${filter} skipped one or more tests — a skipped gate gates" \
          "nothing. If the skip is a broken precondition (missing metallib," \

@@ -1,6 +1,6 @@
 # Test Provider And Native Contracts
 
-> Last updated: 2026-11-01
+> Last updated: 2026-11-03
 
 Run isolated Swift, native-resource, public-fixture and landing tests here.
 Backend integration and cross-implementation qualification are platform-owned.
@@ -1187,13 +1187,16 @@ with isolated fixture runners: each `provider-swift/Tests/Cluster*Checks/run.sh`
 `libs/darkbloom-cluster/Tests/*Checks/run.sh` and
 `libs/darkbloom-cluster-worker/Tests/*Checks/run.sh` prints its pass count and
 exits non-zero on a failure. The CI job `test-cluster-checks` (Cluster Metadata
-Checks, `.github/workflows/ci.yml`) runs five of them on every pull request that
+Checks, `.github/workflows/ci.yml`) runs these runners on every pull request that
 changes provider code: `libs/darkbloom-cluster-worker/Tests/CapabilityChecks/run.sh`,
+`libs/darkbloom-cluster/Tests/PrefillScheduleChecks/run.sh`,
 `libs/darkbloom-cluster/Tests/StageMetadataChecks/run.py`,
 `libs/darkbloom-cluster/Tests/GPTOSSStageChecks/run.sh`,
 `libs/darkbloom-cluster/Tests/NemotronStageChecks/run.sh` and
 `provider-swift/Tests/ClusterModelProvisioningChecks/run.sh provisioning`. The
-last one runs the provisioning checks only. Its download cache-policy check
+job `test-cluster-focused` (Cluster Focused Checks) runs every other runner
+under `libs/darkbloom-cluster/Tests`. The provisioning runner runs the
+provisioning checks only. Its download cache-policy check
 reads how many written pages stay in the file cache, which the host's kernel
 and disk decide: on the hosted CI VM 0.75 of the pages written with
 `F_NOCACHE` stayed resident. Run `run.sh` with no argument on a Mac for that
@@ -1201,10 +1204,28 @@ check. The capability runner compiles with
 `DARKBLOOM_CLUSTER_METADATA_BUILD_JOBS` jobs (4 by default; CI uses 12). CI
 keeps its build in `DARKBLOOM_CLUSTER_METADATA_BUILD_ROOT` between runs and
 restores source timestamps only for unchanged files, so SwiftPM rebuilds only
-what changed. The library's XCTest targets
-(`swift test --package-path libs/darkbloom-cluster`) and the worker package's
-tests (built for macOS 26.2) need the GPU and exclusive device access. A
-loopback or fixture pass never counts as a two-Mac hardware pass.
+what changed. The worker package's tests (built for macOS 26.2) need the GPU
+and exclusive device access. A loopback or fixture pass never counts as a
+two-Mac hardware pass.
+
+CI runs the runtime test target (`DarkbloomClusterRuntimeTests`) on the
+provider's Blacksmith macOS runners, in selections that
+`scripts/cluster-test-plan.py` defines. Each selection runs in a process of its
+own through `scripts/run-nested-suite.sh`, which fails when the selection runs
+no test or skips a test. Every process starts with `MLX_QMV_BATCH_INVARIANT=1`,
+as every cluster process does.
+
+| Selection | Job | Tests |
+|---|---|---|
+| Base | Cluster Runtime Tests (blocking) | Every test that needs no environment switch. The base selections pass `--skip` for the switched tests and the tests that need a model, so a test that skips there has a gate that the plan does not name |
+| Opt-in | Cluster Runtime Tests (blocking) | The tests that one switch (for example `QWEN_TP_MTP_GPU=1`) enables and that pass on the CI runners |
+| Opt-in | Cluster GPU Tests (non-blocking) | The switched tests that fail on the CI runners' GPU, the long-running tests and the benchmarks. The job reports their results and does not fail the workflow |
+| Needs a model | None | The tests that need a model directory, an artifact or its metadata (`REQUIRES_MODEL`). CI has no model |
+
+`python3 scripts/test-cluster-test-plan.py` (Release Integrity) checks that the
+plan names each gated test in the sources once, and each runner under
+`libs/darkbloom-cluster/Tests` once. When you add an environment gate to a
+runtime test, add the test to a selection or to `REQUIRES_MODEL`.
 
 Build the runtime tests once (`swift build --package-path libs/darkbloom-cluster
 -c release --build-tests --triple arm64-apple-macosx26.2 -Xcc -target -Xcc

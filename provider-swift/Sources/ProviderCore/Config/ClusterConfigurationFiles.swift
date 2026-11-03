@@ -156,7 +156,8 @@ enum ClusterConfigurationFiles {
         }
         let limit = DispatchTime.now().uptimeNanoseconds + UInt64(max(0, waitSeconds) * 1_000_000_000)
         while flock(fd, LOCK_EX | LOCK_NB) != 0 {
-            guard DispatchTime.now().uptimeNanoseconds < limit else { throw ClusterConfigurationError.busy }
+            guard errno == EWOULDBLOCK || errno == EINTR,
+                  DispatchTime.now().uptimeNanoseconds < limit else { throw ClusterConfigurationError.busy }
             usleep(5_000)
         }
         defer { _ = flock(fd, LOCK_UN) }

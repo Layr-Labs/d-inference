@@ -359,17 +359,19 @@ struct ClusterServiceRecoveryTests {
         // Another open file description: flock excludes it in this process too.
         let holder = open(lockPath, O_RDWR | O_CLOEXEC)
         try #require(holder >= 0 && flock(holder, LOCK_EX | LOCK_NB) == 0)
-        defer { close(holder) }
         let released = DispatchSemaphore(value: 0), start = DispatchTime.now()
+        // The scheduled unlock uses this descriptor; it is closed only after that unlock ran.
+        defer { _ = released.wait(timeout: .now() + 5); close(holder) }
         DispatchQueue.global().asyncAfter(deadline: start + 0.2) { _ = flock(holder, LOCK_UN); released.signal() }
         let stopID = UUID()
         let saved = try store.updateRecord { $0.stopDrain = .init(id: stopID, keepPeerRunning: false) }
         let waited = Double(DispatchTime.now().uptimeNanoseconds - start.uptimeNanoseconds) / 1e9
         #expect(waited >= 0.2, "the write ran only after the other writer let go (\(waited) s)")
-        try #require(released.wait(timeout: .now() + 5) == .success)
         let reread = try store.readRecord()
         #expect(saved.stopDrain?.id == stopID && reread.stopDrain?.id == stopID)
 
+        try #require(released.wait(timeout: .now() + 5) == .success)
+        released.signal() // For the defer.
         try #require(flock(holder, LOCK_EX | LOCK_NB) == 0)
         let parent = try ClusterConfigurationFiles.directory(store.paths.directory, privateMode: true)
         defer { close(parent.descriptor) }

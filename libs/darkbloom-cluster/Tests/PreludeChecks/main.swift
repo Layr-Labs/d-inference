@@ -31,12 +31,15 @@ func unhex(_ string: String) -> Data {
 
     static func main() {
         do {
-            if CommandLine.arguments.count > 1 { try child(); return }
+            if CommandLine.arguments.count > 1 {
+                do { try child() } catch { fputs("FAIL child \(CommandLine.arguments[1]) rank \(CommandLine.arguments[4]): \(error)\n", stderr); exit(1) }
+                return
+            }
             try codecVectors()
             try fullTwoRankExchange()
             try refusalGroups()
             try preludeThenMesh()
-            print(#"{"passed":true,"groups":4,"actualChildren":10,"modelExecution":false,"networkUsed":false,"rdma":false}"#)
+            print(#"{"passed":true,"groups":4,"actualChildren":11,"modelExecution":false,"networkUsed":false,"rdma":false}"#)
         } catch { fputs("FAIL: \(error)\n", stderr); exit(1) }
     }
 

@@ -289,7 +289,7 @@ struct SandboxSetupFlow {
         printChecks(checks)
         guard checks.contains(where: { $0.level == .fail }) else { return }
         print("")
-        print(DoctorTerminalStyle.verdict("A work disk is not ready: run the fix above, then run setup again. "
+        print(DoctorTerminalStyle.verdict("A work disk is not ready: follow the fix above, then run setup again. "
             + "Nothing changed.", level: .fail, color: color))
         throw ExitCode.failure
     }
@@ -362,7 +362,7 @@ struct SandboxSetupFlow {
             guard options.disks.isEmpty else {
                 print("")
                 errors.lastLines(5).forEach { print("  \($0)") }
-                print(DoctorTerminalStyle.verdict("The installer could not plan for these work disks; fix what it "
+                print(DoctorTerminalStyle.verdict("The installer's plan failed with these work disks; fix what it "
                     + "says above, then run setup again. Nothing changed.", level: .fail, color: color))
                 throw ExitCode(exit.status > 0 ? exit.status : 1)
             }

@@ -100,16 +100,14 @@ enum SandboxInstaller {
         return data
     }
 
-    static func supportsJSONProgress(_ script: Data) -> Bool {
-        String(decoding: script, as: UTF8.self).contains(jsonProgressOption)
-    }
+    static func supportsJSONProgress(_ script: Data) -> Bool { names(script, jsonProgressOption) }
 
-    static func supportsPlan(_ script: Data) -> Bool {
-        String(decoding: script, as: UTF8.self).contains(planOption)
-    }
+    static func supportsPlan(_ script: Data) -> Bool { names(script, planOption) }
 
-    static func supportsDisks(_ script: Data) -> Bool {
-        String(decoding: script, as: UTF8.self).contains(diskOption)
+    static func supportsDisks(_ script: Data) -> Bool { names(script, diskOption) }
+
+    private static func names(_ script: Data, _ option: String) -> Bool {
+        String(decoding: script, as: UTF8.self).contains(option)
     }
 
     /// The installer's arguments. An installer without `--json-progress`

@@ -252,8 +252,9 @@ extension SandboxSizingPlan {
     private var diskChecks: [SandboxEligibility.Check] {
         guard disks.count > 1 || disks.contains(where: { !$0.rootVolume }) else { return [] }
         return disks.map { disk in
-            let jobs = [("Linux", disk.linuxSlots), ("macOS", disk.macOSSlots)].filter { $0.1 > 0 }
-                .map { name, count in "\(count) \(name) job" + (count == 1 ? "" : "s") }
+            let jobs = [("Linux", disk.linuxSlots), ("macOS", disk.macOSSlots)].compactMap { name, count -> String? in
+                count > 0 ? Self.jobCount(count, name) : nil
+            }
             return .init(level: .info, name: "Work disk",
                          detail: "\(disk.path)\(disk.rootVolume ? " (internal)" : ""): "
                              + "\(gibDown(disk.freeBytes)) GiB free; \(gibDown(disk.floorBytes)) GiB stays free; "
@@ -308,10 +309,14 @@ extension SandboxSizingPlan {
     }
 
     private static func slotLine(_ name: String, _ platform: Platform) -> String {
-        let jobs = platform.slots == 0 ? "no \(name) jobs"
-            : "\(platform.slots) \(name) job" + (platform.slots == 1 ? "" : "s")
+        let jobs = platform.slots == 0 ? "no \(name) jobs" : jobCount(platform.slots, name)
         guard platform.automatic else { return "\(jobs) (your choice)" }
         return platform.limit.map { "\(jobs) (limited by \($0))" } ?? jobs
+    }
+
+    /// `1 Linux job`, `2 macOS jobs`.
+    private static func jobCount(_ count: Int, _ name: String) -> String {
+        "\(count) \(name) job" + (count == 1 ? "" : "s")
     }
 }
 

@@ -7,9 +7,9 @@ import Testing
 @Suite("darkbloom sandbox setup --disk")
 struct SandboxWorkDiskTests {
     static let ready = SandboxWorkDisk.Volume(mountPoint: "/Volumes/FastSSD", fileSystem: "apfs",
-                                                      ignoresOwnership: false)
+                                              ignoresOwnership: false)
     static let ownershipOff = SandboxWorkDisk.Volume(mountPoint: "/Volumes/FastSSD", fileSystem: "apfs",
-                                                             ignoresOwnership: true)
+                                                     ignoresOwnership: true)
     static let enableOwnership = "sudo diskutil enableOwnership /Volumes/FastSSD"
 
     /// A plan for `/Volumes/FastSSD` alone: 2 Linux and 1 macOS slots on it.
@@ -137,7 +137,7 @@ struct SandboxWorkDiskTests {
             run this yourself, then run setup again
                      ↳ fix: \(Self.enableOwnership)
 
-            A work disk is not ready: run the fix above, then run setup again. Nothing changed.
+            A work disk is not ready: follow the fix above, then run setup again. Nothing changed.
             requests 0
 
             """))
@@ -216,7 +216,7 @@ struct SandboxWorkDiskTests {
               [PASS] Work disk: /Volumes/FastSSD: APFS, ownership on
 
               \(refusal)
-            The installer could not plan for these work disks; fix what it says above, then run setup again. \
+            The installer's plan failed with these work disks; fix what it says above, then run setup again. \
             Nothing changed.
             installed false
 

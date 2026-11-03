@@ -30,7 +30,9 @@ enum SandboxWorkDisk {
     /// `statfs` fails.
     static func volume(at path: String) -> Volume? {
         var probe = path
-        while probe != "/", access(probe, F_OK) != 0 { probe = (probe as NSString).deletingLastPathComponent }
+        while probe != "/", !probe.isEmpty, access(probe, F_OK) != 0 {
+            probe = (probe as NSString).deletingLastPathComponent
+        }
         var info = statfs()
         guard statfs(probe, &info) == 0 else { return nil }
         func text<T>(_ field: inout T) -> String {

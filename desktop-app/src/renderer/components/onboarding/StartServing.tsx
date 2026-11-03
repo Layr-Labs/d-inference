@@ -9,7 +9,12 @@ import { pinnedMemory, startingModel } from '../../models/selection';
 import { methodFor, startAction, startModels, usablePins, type StartMethod } from './startPlan';
 import { useStartServing } from './useStartServing';
 import styles from './startServing.module.css';
-import { networkEarnings, recommendedModels } from '../../features/models/recommendations';
+import {
+  chipEarnings,
+  chipRanking,
+  networkEarnings,
+  recommendedModels,
+} from '../../features/models/recommendations';
 import { RecommendedModels } from '../../features/models/RecommendedModels';
 
 const copy: Record<StartMethod, { lead: string; start: string; empty: string }> = {
@@ -57,8 +62,14 @@ export function StartServing({
   const text = copy[method];
   const pins = usablePins(snapshot, pinned);
   const network = networkEarnings(backend.network);
+  const perChip = chipRanking(
+    snapshot.models,
+    chipEarnings(backend.network, snapshot.machine.chip),
+  );
   const recommended =
-    method === 'autopilot' && !pins.length ? recommendedModels(snapshot.models, network) : [];
+    method === 'autopilot' && !pins.length
+      ? recommendedModels(snapshot.models, network, perChip)
+      : [];
   const showRecommendations = recommended.length > 0;
   const empty = !startModels(snapshot, method, pinned).length;
   const tooLarge = pinnedMemory(snapshot, pins).exceeds;
@@ -91,6 +102,7 @@ export function StartServing({
           snapshot={snapshot}
           models={recommended}
           earnings={network}
+          perChip={perChip}
           setup
           busy={backend.busy || serving.phase !== 'idle'}
           onStart={(action) => serve({ ...action, endpoint: true })}

@@ -1,6 +1,6 @@
 # Desktop control API
 
-> Last updated: 2026-10-18
+> Last updated: 2026-10-26
 
 The Electron app controls the Swift CLI/backend through its authenticated local
 API. The backend owns provider operations, configuration, model state, credentials,
@@ -67,7 +67,7 @@ credential (`desktop-app/src/main/backend.ts`, `Backend`; `DesktopHTTP.authorize
 | `GET /control/v1/request-history` | Exact metadata from the current native usage journal, with settled money joined only by job ID; verified ledger fallback on older runtimes | `DesktopBackend.requestHistory`, `localRequestHistory` |
 | `GET /control/v1/cloud` | Account and owned fleet projection through the coordinator; separates This Mac using native identity | `DesktopBackend.resource` |
 | `GET /control/v1/insights-week`, `GET /control/v1/insights-month` | Settled earnings, lifetime output tokens, and 7/30-calendar-day analytics through the account-session-authenticated ledger API | `DesktopBackend.resource` |
-| `GET /control/v1/network` | Public totals, approximate `provider_regions`, and optional seven-day `model_earnings` from `/v1/stats` | `DesktopBackend.resource` |
+| `GET /control/v1/network` | Public totals, approximate `provider_regions`, and optional seven-day `model_earnings` from `/v1/stats`, relayed unchanged including any per-chip `by_chip` rows and `by_chip_window` | `DesktopBackend.resource` |
 | `GET /control/v1/release-history` | Latest release notes from `/v1/releases/latest`; no separate desktop release request | `DesktopBackend.resource` |
 | `GET /control/v1/leaderboard` | Public earnings ranking over 24 hours (`metric=earnings&window=24h`); response includes `metric`, `window`, and `entries`; money and token counts remain decimal strings | `DesktopBackend.resource` |
 | `GET /control/v1/release` | Latest registered runtime version and changelog | `DesktopBackend.resource` |

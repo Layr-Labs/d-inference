@@ -968,20 +968,23 @@ runtime digest, and the provider computes no facts for it
 | `models[].profile_sha256` | the capability's `profileFingerprint` |
 | `models[].resource_policy_sha256` | `DistributedInstalledNativeStart.resourcePolicySHA256` of the capability, the value a native start carries |
 | `models[].pair_serving_grant` | `null`, or exactly `evidence_sha256` and `mode_families` (1 to 4 of `hand_off`, `pipeline`, `pipeline_speculative`, `tensor_parallel`, in byte order). A model the build's public declaration (`ClusterPublicModels`) names by runtime model, catalog ID and artifact: its declared families, with the evidence document's SHA-256. Any other model: the families the build's bundled records grant its artifact (`ClusterPairServingGrants.grant`), with the SHA-256 of the records that grant is computed from (the artifact's passing records, without a pass that a divergence of the same shape contradicts) as canonical JSON Lines (`ClusterPairServingGrant.evidenceSHA256`: each record's `encodedLine` in bundle order, joined by `\n`, no trailing newline); `null` when they grant none |
-| `models[].parity_qualifications` | `[]` unless the model is declared; then one object per declared mode family (in byte order: `pipeline`, then `tensor_parallel`) and schedule (ascending), with the fields below. At most 8 |
+| `models[].parity_qualifications` | `[]` unless the model is declared; then one object per declared mode family (in byte order: `pipeline`, `pipeline_speculative`, then `tensor_parallel`) and schedule (ascending), with the fields below. At most 8 |
 | `…schedule` | `1` or `2`: the derived approval it qualifies |
 | `…numerics_classes` | each rank's `ClusterMemberDeviceProfile.numericsClass` of the evidence placement with this block's `metallib_sha256`, for example `g17d-nax1-mlx-98bab9d7-macos27.0` (Apple M5 Ultra, NAX on, macOS 27.0); two, the members of a derived approval |
-| `…mode`, `…cuts` | `pipeline`: `pipeline_v1` cut at `[num_hidden_layers / 2]` (integer division) of the model's `config.json`, read at the top level or else in `text_config` (`[22]` for GLM-5.3-Flash, `[32]` for Qwen3.8-27B); without a layer count the pipeline's qualifications are left out and the command names the family on standard error. `tensor_parallel`: `tensor_parallel_v1`, `[]` (`ClusterPublicModels.placement`) |
+| `…mode`, `…cuts` | `pipeline`: `pipeline_v1` cut at `[num_hidden_layers / 2]` (integer division) of the model's `config.json`, read at the top level or else in `text_config` (`[22]` for GLM-5.3-Flash, `[32]` for Qwen3.8-27B, `[24]` for MiMo-V2.6-Flash, `[15]` for Gemma 4 26B QAT); without a layer count the pipeline's qualifications are left out and the command names the family on standard error. `pipeline_speculative` (MiMo-V2.6-Flash): `pipeline_mtp_v1`, cut as the pipeline is. `tensor_parallel`: `tensor_parallel_v1`, `[]` (`ClusterPublicModels.placement`) |
 | `…tensor_parallel_shares` | `null`: equal shares |
 | `…promotable`, `…diverged` | `true`, `false` |
 | `…evidence_sha256` | SHA-256 of the evidence document, [`docs/reports/2026-10-31-public-cluster-models.md`](../reports/2026-10-31-public-cluster-models.md) |
-| `…qualified_at` | `2026-10-31T00:00:00Z` |
-| `…request_envelope` | `sampling` and `tools` `true`; `max_prompt_tokens` and `max_output_tokens` 1,048,576 (the coordinator's maximum: only the model's own limits apply); where the placement serves media (`ClusterModelFeaturePolicy.mediaContract`: both declared models in tensor parallel; a pipeline is text only), `vision` when the model's catalog entry in the release's environment lists `image` in `input_modalities`, `video` when it also lists `video` (`ClusterPublicModels.requestEnvelope`). A model given by hand has no catalog entry, so its envelope admits text only |
+| `…qualified_at` | `2026-11-03T00:00:00Z`, the date of the latest declaration |
+| `…request_envelope` | `sampling` and `tools` `true`; `max_prompt_tokens` and `max_output_tokens` 1,048,576 (the coordinator's maximum: only the model's own limits apply); where the placement serves media (`ClusterModelFeaturePolicy.mediaContract`: GLM-5.3-Flash and Qwen3.8-27B in tensor parallel; a pipeline is text only), `vision` when the model's catalog entry in the release's environment lists `image` in `input_modalities`, `video` when it also lists `video` (`ClusterPublicModels.requestEnvelope`). A model given by hand has no catalog entry, so its envelope admits text only |
 
 The public declaration names GLM-5.3-Flash (`registered_glm53_flash`,
 `glm-5.3-flash`) and Qwen3.8-27B (`registered_qwen38_27b`,
-`EigenLabs/Qwen3.8-27B-4bit-mtp`), each in `pipeline` and `tensor_parallel` on
-schedules 1 and 2, on the owner's decisions of 2026-10-31
+`EigenLabs/Qwen3.8-27B-4bit-mtp`) on the owner's decisions of 2026-10-31, and
+MiMo-V2.6-Flash (`registered_mimo_v26_flash_mopd`, `mimo-v2.6-flash-mopd`) and
+Gemma 4 26B QAT (`registered_gemma4_26b_qat_4bit`, `gemma-4-26b-qat-4bit`) on
+those of 2026-11-03, each in `pipeline` and `tensor_parallel` on schedules 1
+and 2, and MiMo-V2.6-Flash also in `pipeline_speculative`, its default split
 ([evidence](../reports/2026-10-31-public-cluster-models.md)). Every other
 model's clusters serve their owner only.
 
@@ -992,11 +995,14 @@ family's promotable records, merged under the request envelope they all allow,
 on any numerics classes, cuts and shares, unless a diverged record of the same
 numerics-class combination withholds it
 ([`parityQualification`](https://github.com/Layr-Labs/darkbloom-platform/blob/df61dd6f93714b4458d0eef3125c377087c08b52/coordinator/registry/cluster_parity_qualification.go)).
-Under a derived approval, public traffic for GLM-5.3-Flash and Qwen3.8-27B is
+Under a derived approval, public traffic for every declared model is
 therefore admitted in pipeline and tensor parallel on any Apple silicon pair,
-within the envelope. No pipeline of either model ran on two Apple M5 Ultras,
-and GLM-5.3-Flash has no tensor-parallel cross-cable record: both rest on the
-owner's decision of 2026-10-31 and the DevNet serving results. GLM-5.3-Flash's
+within the envelope. No pipeline of GLM-5.3-Flash or Qwen3.8-27B ran on two
+Apple M5 Ultras, and GLM-5.3-Flash has no tensor-parallel cross-cable record:
+both rest on the owner's decision of 2026-10-31 and the DevNet serving results.
+MiMo-V2.6-Flash's and Gemma 4 26B QAT's pipelines rest on their bundled records
+and the owner's decision of 2026-11-03; their tensor parallel rests on that
+decision alone, and serves once its code (#1706, #1707) is in the build. GLM-5.3-Flash's
 runtime serves only the serial prefill schedule (`supportedPrefillSchedules`
 of its registered specification), so its schedule 2 approval, grant and
 qualifications are inert. The setup's public-traffic line says a

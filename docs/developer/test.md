@@ -1451,7 +1451,10 @@ parity qualifications included) and a block whose derived approval, grant or
 parity qualification IDs exceed 128 bytes, refuse a registration body over the
 coordinator's 64 KiB limit before staging (65,536 bytes accepted, 65,537
 refused), accept the GLM-5.3-Flash block pinned from the 0.10.5-dev.branch.17
-app, and check that registration sends the block in its canonical form.
+app (its digests are that app's; its grant and parity qualifications are this
+build's declaration, so its evidence digest and `qualified_at` follow
+`ClusterPublicModels`), and check that registration sends the block in its
+canonical form.
 `scripts/test-provider-cluster-runtime-models.py` runs the release's
 model-metadata fetch against a local HTTP registry: the environment's catalog and
 CDN, candidate selection, the manifest and `config.json` checks, each candidate's

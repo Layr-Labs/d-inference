@@ -5,12 +5,11 @@ import Testing
 
 @Suite("Build environment defaults")
 struct BuildEnvironmentTests {
-    /// A plain build of master is a prod build (on the dev branch it is a dev build). DARKBLOOM_RELEASE_ENVIRONMENT,
-    /// read by Package.swift when the tests are built, selects another: CI builds prod, the identity the provider
-    /// suites pin.
-    @Test func plainBuildsTakeTheBranchDefault() throws {
+    /// A plain build of the dev branch is a dev build. DARKBLOOM_RELEASE_ENVIRONMENT, read by Package.swift when
+    /// the tests are built, selects another: CI builds prod, the identity the provider suites pin.
+    @Test func devBranchBuildsDefaultToDevNet() throws {
         let requested = ProcessInfo.processInfo.environment["DARKBLOOM_RELEASE_ENVIRONMENT"]
-            .flatMap { $0.isEmpty ? nil : $0 } ?? "prod"
+            .flatMap { $0.isEmpty ? nil : $0 } ?? "dev"
         let built = try #require(BuildEnvironment(rawValue: requested))
         let coordinator = built.coordinatorWebSocketURL
         let hardware = HardwareInfo(

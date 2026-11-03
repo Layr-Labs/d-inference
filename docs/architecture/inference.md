@@ -3572,6 +3572,14 @@ part the same key with a different file (`ClusterServiceAgent.partHealthPath`,
 service's heartbeat and still waits for its registration as a supervised member.
 An empty or absent key is passed on unchanged.
 
+One cluster service runs per home: it holds an exclusive `flock` on
+`~/.darkbloom/cluster-setup/service.lock` while it runs, and `ClusterService.running`
+reports whether one holds it. `darkbloom update --rollback` takes the same lock
+(`ClusterService.holdStopped`) while it swaps the installed release, so no cluster
+service starts on a release that is being replaced; a service that starts then
+exits as already running, and its login agent starts it again
+([`darkbloom update`](../provider/cli-reference.md#darkbloom-update)).
+
 ## Cluster service listeners follow the cable and the pairing
 
 Each Mac's cluster service answers the other Mac on two listeners: the setup

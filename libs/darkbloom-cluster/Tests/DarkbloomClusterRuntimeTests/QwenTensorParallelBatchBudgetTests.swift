@@ -40,11 +40,12 @@ struct QwenTensorParallelBatchBudgetTests {
                     * family.geometry.kvHeads * family.geometry.headDimension * 2)
             #expect(candidate.promptGatherBytes == bank)
             #expect(candidate.perLaneStateBytes + candidate.promptGatherBytes >= scalar.stateBytes)
-            #expect(candidate.perLaneStateBytes < scalar.stateBytes)
+            // Beside its own prompt-prefix capture (`QwenTensorParallelBatchPrefixBudget`).
+            #expect(candidate.perLaneStateBytes - candidate.prefix.captureBytes < scalar.stateBytes)
             #expect(candidate.allowance.requestBytesExcludingCollectives == lanes * candidate.perLaneStateBytes + candidate.sharedBytesExcludingCollectives)
             let logits = 3 * bound(lanes * plan.vocabularySize * 4)
             #expect(candidate.sharedBytesExcludingCollectives == scalar.fusionBytes + scalar.transientBytes + logits
-                + 2 * scalar.projectionConstantBytes + candidate.pagedPoolSlackBytes + candidate.prefix.residentBytes
+                + 2 * scalar.projectionConstantBytes + candidate.pagedPoolSlackBytes
                 + candidate.promptGatherBytes)
             #expect(candidate.pagedPoolSlackBytes >= 2 * CBv2StageKVHost.segmentBytes)
             // The underlying host's entire admitted page capacity, its gather

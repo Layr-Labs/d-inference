@@ -123,7 +123,9 @@ struct MiMoPagedModelHandoffTests {
     private func equalCaches(_ a: [[any KVCache]], _ b: [[any KVCache]]) {
         for (left, right) in zip(a, b) {
             for (x, y) in zip(left, right) {
-                #expect(x.offset == y.offset && x.metaState == y.metaState)
+                // Pages write a ring's first five values (keep, window, step,
+                // offset, write index); the ring adds its origin and wrapped flag.
+                #expect(x.offset == y.offset && x.metaState.prefix(5) == y.metaState.prefix(5))
                 equal(x.state, y.state)
             }
         }

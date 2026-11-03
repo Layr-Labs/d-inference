@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-10-31
+> Last updated: 2026-11-02
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -784,6 +784,8 @@ grants serving authorization or removes an existing profile.
 
 Without flags: `log stream --predicate 'subsystem == "dev.darkbloom.provider"' --level info`.
 
+Where `logs` and [`report`](#darkbloom-report) wait for a `log` child to finish, they take its exit from `ProcessExitObserver` (its termination handler), which does not run the calling thread's run loop.
+
 | Flag | Description |
 |------|-------------|
 | `--coordinator-url <url>` | Override the coordinator WebSocket URL |
@@ -1032,7 +1034,7 @@ darkbloom sandbox uninstall [--yes]
 | `setup` | — | Check, explain, confirm, install and summarize; see [Setup](#setup) |
 | `setup --yes`, `-y` | `false` | Skip the confirmation |
 | `setup --no-browser` | `false` | The installer does not open the approval page; open the printed link |
-| `setup --linux-slots <n>`, `--macos-slots <n>` | what fits the Mac | Jobs at a time: Linux `0`–`16`, macOS `0`–`2`; both `0` is refused. Counts above the estimate are flagged, not refused |
+| `setup --linux-slots <n>`, `--macos-slots <n>` | what fits the Mac | Jobs at a time: Linux `0`–`16`, macOS `0`–`2`; both `0` is refused. The plan and the install take a chosen count as it is; setup shows it as `(your choice)` |
 | `setup --wait-ready` | `false` | The installer waits until the images are downloaded and the Mac takes jobs |
 | `setup --server <url>` | `https://api-sandbox.darkbloom.dev` | Where `install.sh` comes from: an `https` URL without credentials, query or fragment |
 | `pause` | — | `darkbloom-sandbox pause`: running jobs finish, no new jobs; then prints how many still run |
@@ -1042,52 +1044,73 @@ darkbloom sandbox uninstall [--yes]
 
 ### Setup
 
-1. **Check.** Refuses `sudo`, then prints chip, macOS, cores, memory, free disk,
-   desktop session, network, power and sleep in the `doctor` style (`[PASS]`, `[WARN]` with a `↳ fix:` line,
-   `[FAIL]`), then a verdict and the jobs this Mac can run at a time. The
-   rules are the add-on installer's own slot sizing, so the estimate matches
-   the slots the installer then chooses
+1. **Check.** Refuses `sudo`, then prints chip, macOS, desktop session,
+   network, power and sleep in the `doctor` style (`[PASS]`, `[WARN]` with a
+   `↳ fix:` line, `[FAIL]`). A refusal (table below) prints `Not eligible` and
+   stops before anything is downloaded
    (`provider-swift/Sources/darkbloom/Sandbox/SandboxEligibility.swift`,
-   `SandboxEligibility`; measurements in `SandboxHostProbe`):
+   `SandboxEligibility`; measurements in `SandboxHostProbe`).
+2. **Download.** Downloads `<server>/install.sh` over HTTPS: a redirect is
+   followed only to another `https` URL, and the response must be HTTP 200 over
+   `https`, at most 1 MiB, with a `#!` first line naming a shell. The script is
+   written as a `0600` file in a new `0700` directory, run with `/bin/sh` for
+   the plan and the install, and removed afterwards. The installer verifies the
+   add-on release before it installs it; the CLI does not verify the script
+   beyond TLS (`provider-swift/Sources/darkbloom/Sandbox/SandboxInstaller.swift`,
+   `SandboxInstaller`).
+3. **Plan.** A script that names `--plan` (add-on 1.1.1 and later) runs with
+   `--plan --json-progress` and the owner's slot options, without `--yes` and
+   with stdin closed. It verifies the release, runs the add-on's own checks and
+   sizing, installs nothing and prints one
+   [`plan` event](#installer-progress-events). The CLI prints the plan's CPU,
+   memory and disk lines, such as `Disk: 157 GiB free; 100 GiB stays free for
+   you; Linux images 4 GiB + 30 GiB per Linux job; macOS images 46 GiB + 40 GiB
+   per macOS job`, then a verdict and the jobs this Mac can run at a time
+   (`SandboxSizingPlan`). Ctrl-C or a signal during the plan stops setup. An
+   installer without plan mode, a failed plan or a run without a `plan` event
+   gets the CLI's fallback estimate instead, after an `[INFO] Sizing` line
+   (`SandboxEligibility.estimatedPlan`). The add-on's rules as of 1.1.1, which
+   the fallback repeats:
 
    | Rule | Value |
    |---|---|
    | Kept for the owner | A quarter of the cores (at least 2) and of the memory (at least 8 GiB) |
    | Kept for inference | Another quarter of the memory, when the provider runs or its add-on socket exists |
    | Linux job | 4 cores, 16 GiB and a 30 GiB scratch disk; at most 16 |
-   | macOS job | 8 cores and 16 GiB; at most 2, macOS's limit, which counts the owner's own macOS VMs |
+   | macOS job | 8 cores, 16 GiB and a 40 GiB disk budget; at most 2, macOS's limit, which counts the owner's own macOS VMs |
    | Order | Linux, macOS, Linux, macOS, then Linux only, while cores, memory and disk last |
    | Free-space floor | A tenth of the home folder's volume, between 50 and 100 GiB, stays free |
-   | VM images | 50 GiB above the floor, unless already installed |
+   | VM images | Charged with a platform's first job: Linux 4 GiB, macOS 46 GiB; nothing once installed |
    | Most requested macOS size | 12 cores and 32 GB: reported as fitting when 12 cores and 32 GiB are left for jobs, which takes 16 cores and about 64 GB beside inference |
    | Refused | Not Apple silicon, macOS before 27, no network, or this user not logged in at the Mac's desktop (`/dev/console` owner), where the add-on runs |
    | Warned, not refused | Wi-Fi, a laptop on battery, system sleep on the power adapter (`pmset -g custom`; `SleepDisabled 1` counts as off) |
 
    Examples: 16 cores and 128 GB run 1 Linux and 1 macOS job; 12 cores and
-   32 GB run 1 Linux job; 8 cores and 16 GB are not eligible. When only disk
-   is short, the verdict says how many GiB to free and what the Mac then runs.
-2. **Confirm.** Explains that inference pauses while a job runs, that each job
-   pays its price minus a 10% fee into the Darkbloom balance, the 50 GiB of
-   images and the one browser approval, then asks `[y/N]`. `--yes` skips it;
-   without a terminal and without `--yes`, setup stops before downloading.
-3. **Install.** Downloads `<server>/install.sh` over HTTPS: a redirect is
-   followed only to another `https` URL, and the response must be HTTP 200 over
-   `https`, at most 1 MiB, with a `#!` first line naming a shell. The script is
-   written as a `0600` file in a new `0700` directory, run with `/bin/sh` and
-   removed afterwards. The installer verifies the add-on release before it
-   installs it; the CLI does not verify the script beyond TLS
-   (`provider-swift/Sources/darkbloom/Sandbox/SandboxInstaller.swift`,
-   `SandboxInstaller`). A script that names `--json-progress` runs with
+   32 GB run 1 Linux job; 8 cores and 16 GB are not eligible. With 157 GiB free
+   on a 1858 GiB volume, 100 GiB stays free and the other 57 GiB hold the Linux
+   images and one Linux job: 1 Linux job, no macOS job. When no job fits, the
+   verdict gives the plan's message and the GiB to free for one Linux job and
+   for one macOS job, and setup stops before installing.
+4. **Confirm.** Explains that inference pauses while a job runs, that each job
+   pays its price minus a 10% fee into the Darkbloom balance, the VM images and
+   the one browser approval, then asks `[y/N]`. `--yes` skips it; without a
+   terminal and without `--yes`, setup stops before installing.
+5. **Install.** A script that names `--json-progress` runs with
    `--json-progress --yes` and the owner's `--no-browser`, `--wait-ready` and
    slot options, with stdin closed, and its stages render as
    [progress events](#installer-progress-events). Any other script is an older
    installer: it runs with the terminal and only the slot options, and the CLI
    says so.
-4. **Summarize.** Reads `status --json` again: the state, the jobs at a time and
+6. **Summarize.** Reads `status --json` again: the state, the jobs at a time and
    the next commands.
 
 While the installer runs, Ctrl-C reaches the installer, not the CLI, and setup
-exits `130`; an enrollment waiting for approval goes on and a rerun follows it.
+exits `130`; an enrollment waiting for approval goes on. With add-on 1.1.2 and
+later, whose approval and waitlist events say `background: true`, the wait
+also survives a restart and the Mac enrolls by itself, so the window can close:
+setup says so and points at `darkbloom sandbox status`. With an earlier add-on,
+a rerun follows the waiting enrollment, and a restart ends the wait, so setup
+must run again.
 A failed installer's exit status becomes the CLI's, after the stage marked ✗,
 its `failed` message and the last lines of its stderr that do not repeat it.
 
@@ -1097,7 +1120,7 @@ Rerunning `setup` decides from the add-on's answer
 
 | Add-on answer | `setup` |
 |---|---|
-| No add-on, or `not_installed` | A first setup: check, explain, confirm, install |
+| No add-on, or `not_installed` | A first setup: check, plan, explain, confirm, install |
 | `waiting_for_approval`, `waitlisted`, `enrolling` | Runs the installer again to continue, without the check or the question |
 | `stopped`, `error`, no answer within 10 s, a failed status, an add-on older than `status --json` | Runs the installer again to repair or update the add-on |
 | `ready`, `running`, `paused`, `downloading_images`, `updating`, an unknown state | Reports the state and changes nothing; with `--linux-slots` or `--macos-slots` it runs the installer to apply them |
@@ -1113,6 +1136,15 @@ installer writes one object per line: `{"schema":1,"event":"stage","stage":…,
 "step":n,"steps":8,"status":…,"message":…}` with the stage's own fields beside
 them, and a successful run ends with one `{"event":"summary",…}`.
 
+With `--plan --json-progress` (add-on 1.1.1) the installer exits 0 after one
+`{"schema":1,"event":"plan",…}` line. The CLI reads `message`, `linux_slots`,
+`macos_slots`, `linux_automatic`, `macos_automatic`, `linux_limit`,
+`macos_limit`, `free_bytes`, `floor_bytes`, `linux_images_bytes`,
+`macos_images_bytes`, `linux_slot_bytes`, `macos_slot_bytes`, `cores`,
+`cores_kept`, `memory_bytes`, `memory_kept_bytes` and `provider_memory_bytes`
+(`SandboxSizingPlan`). It ignores `root`, `volume_bytes` and unknown members. A
+line with another schema or without one of the numbers is not a plan.
+
 | `status` | Meaning | The CLI |
 |---|---|---|
 | `started` | A stage begins; `message` is its title | The stage becomes the running line |
@@ -1125,12 +1157,21 @@ them, and a successful run ends with one `{"event":"summary",…}`.
 | `checking_mac` | Checking this Mac | — |
 | `verifying_release` | Verifying release | — |
 | `installing` | Installing | — |
-| `waiting_for_approval` | Waiting for approval, or waiting for Darkbloom to approve the account | `progress` with `user_code`, `verification_uri`, `verification_uri_complete` (or `null`) and `browser_opened`; `progress` with `waitlisted: true` |
+| `waiting_for_approval` | Waiting for approval, or waiting for Darkbloom to approve the account | `progress` with `user_code`, `verification_uri`, `verification_uri_complete` (or `null`) and `browser_opened`; `progress` with `waitlisted: true`; on both, `background` (add-on 1.1.2 and later; absent or not a boolean reads as `false`) |
 | `enrolled` | Enrolled | — |
 | `starting` | Starting | — |
 | `downloading_images` | Downloading images N% | `progress` (0 to 1) with `--wait-ready` |
 | `ready` | Ready | — |
 | another | its `started` message | — |
+
+`background: true` on the approval or waitlist event says that the wait goes on
+without the installer, also across restarts, and that the Mac enrolls by itself
+once approved (`SandboxSetupRenderer.waitsInBackground`). The waitlist text
+under the approval link then says that the window can close, that this Mac
+keeps waiting and enrolls by itself once the account is approved, and that
+`darkbloom sandbox status` shows where it is. Without it, the text says to leave
+setup running, or to press Ctrl-C and run `darkbloom sandbox setup` again later.
+The wait counts as over once the `enrolled` stage is `done`.
 
 The summary's `slots` (`linux`, `macos`: `count`, `automatic`, `limit`) and
 `console_url` feed the setup summary. On a terminal the running stage is the
@@ -1144,7 +1185,7 @@ every tenth.
 | `2` | This Mac cannot host Darkbloom Sandbox as it is (the failed stage says why) |
 | `3` | Not enrolled: the code was denied or expired, or the waitlist request ended; run `setup` to start again |
 | `4` | Jobs are running; run `setup` again once they finish, `pause` meanwhile |
-| `130` | Stopped; an enrollment waiting for approval goes on, and a rerun follows it |
+| `130` | Stopped; an enrollment waiting for approval goes on, and a rerun follows it. While the Mac waits in the background (`background: true`, not yet enrolled): it keeps waiting, also across restarts, and enrolls by itself; `sandbox status` shows where it is |
 | other | Setup did not finish; it is safe to rerun |
 
 ### Add-on commands
@@ -1271,6 +1312,7 @@ Output includes:
   GLM-5.3-Flash error that reports a Metal command buffer out of memory adds
   the `→ fix:` line from
   [GLM-5.3-Flash GPU wired-memory limit](#glm-53-flash-gpu-wired-memory-limit).
+- App Attest serving authorization can remain visible through its unexpired lease, while MDM removal advice requires a matching fresh coordinator decision. The same distinction applies to both doctor summaries; see [provider authorization](../reference/provider-authorization.md).
 - `Requests served since the daemon started (… ago)`: coordinator requests
   this daemon finished since it started, with output tokens only. The count
   restarts at zero when the daemon restarts or a scheduled availability window
@@ -1801,6 +1843,13 @@ darkbloom update [--check-only] [--coordinator <url>] [--timeout <seconds>] [--f
 The update path verifies bundle, binary, and `mlx.metallib` hashes before
 replacing the running binary (`provider-swift/Sources/ProviderCore/Update/SelfUpdater.swift`).
 
+On a Mac whose `darkbloom cluster` service runs, the command then asks that
+service's supervisor to restart into the installed release together with the
+other Mac, after the pair drained, and prints its progress until the restart
+(at most `--timeout` seconds); a deferral exits 1
+(`provider-swift/Sources/darkbloom/UpdateCommand.swift`, `ClusterServiceUpdateRequest`;
+[updating Darkbloom on the pair](two-mac-cluster.md#updating-darkbloom-on-the-pair)).
+
 ## `darkbloom autoupdate`
 
 Enable or disable automatic update checks at startup.
@@ -2138,10 +2187,10 @@ override `provider.toml` for one process, are in
 | Key | Default | Effect |
 |---|---|---|
 | `[provider] memory_reserve_gb | 4 | GiB withheld from the selected OS-available/MLX load budget; the larger unified-cap reserve still applies. By default OS availability includes inactive pages or, when larger, the reclaimable file page cache, so this is not a free-page floor. Set process-start DARKBLOOM_MEMORY_AVAILABILITY=free-only for shared hosts; see [memory admission](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/architecture/scheduling.md#shared-host-memory-admission). |
-| `[provider] auto_update` | `true` | Startup + periodic self-update |
+| `[provider] auto_update` | `true` | Startup + periodic self-update; on a `darkbloom cluster` Mac, the pair's coordinated update at its update slot ([cluster service](cluster-always-on.md#the-pairs-coordinated-update)) |
 | `[provider] auto_restart` | `true` | Arm the watchdog LaunchAgent |
 | `[provider] update_jitter_seconds` | `300` | Max random delay before an automatic install or a network provider drains a model for a prepared MTP replacement; serving continues during the delay. `0` disables jitter; capped at `3600`. Standalone MTP upgrades skip this delay. Random staggering provides no fleet availability guarantee (`provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift`, `updateJitterSeconds`; `provider-swift/Sources/ProviderCore/Update/UpdateJitter.swift`, `delay`; `provider-swift/Sources/ProviderCore/ProviderLoop+MTPDrain.swift`, `waitBeforeMTPUpgradeDrain`) |
-| `[backend] enabled_models` | `[]` | Advertise only these ids; empty = all serveable |
+| `[backend] enabled_models` | `[]` | Advertise only these ids; empty = all serveable. When set, it also bounds coordinator model commands and rollouts ([operator filter](../reference/configuration.md#provider-model-selection)) |
 | `[backend] model_cache_directory` | unset | Explicit saved hub directory; set or import once with `models location`, clear with `--reset`. Ambient cache variables never override it; hand-written relative paths are anchored to the config file (`provider-swift/Sources/ProviderCore/Config/ModelCacheConfiguration.swift`, `ConfigManager.modelCacheDirectory`) |
 | `[backend] idle_timeout_mins` | `60` | Unload a model idle this long; `0` disables; paused during active or explicitly paused Autopilot |
 | `[backend] max_model_slots` | `3` | Resident models |

@@ -11,7 +11,10 @@ import Foundation
 /// plus the chunk just appended, the same way. A stage also holds one residual
 /// chunk coming or going, and stage 1 one vocabulary row. The workspace term
 /// is the largest transient a forward is known to build: one full-attention
-/// layer's score matrix for a chunk against the whole history, in float32.
+/// layer's score matrix for a chunk against the whole history, in float32,
+/// and never less than every full-attention layer's scores for the decode
+/// rows at once (a decode step's command buffers keep the whole step in
+/// flight, `MiMoLayerStageSession.decodeCommandBuffers`).
 struct MiMoRequestStateBudget: Encodable, Equatable {
     static let activationBytes = 2, growthStep = 256
     let fullAttentionLayers: Int, slidingLayers: Int
@@ -39,12 +42,16 @@ struct MiMoRequestStateBudget: Encodable, Equatable {
             reservedBytes: try QwenLongPrefillCheckedBytes.sum([reservedBytes, extra]))
     }
 
+    /// `decodeRows`: the most rows one decode forward runs (1, or a verify
+    /// window's `depth + 1`).
     static func estimate(specification spec: MiMoRegisteredSpecification, layers: Range<Int>, rank: Int,
-                         maximumTokens: Int, chunkSize: Int, bound: (Int) throws -> Int) throws -> Self {
+                         maximumTokens: Int, chunkSize: Int, decodeRows: Int = 1,
+                         bound: (Int) throws -> Int) throws -> Self {
         let limits = try spec.contextLimits()
         guard (0...1).contains(rank), !layers.isEmpty, layers.lowerBound >= 0, layers.upperBound <= spec.layers,
               (1...limits.maximumContextTokens).contains(maximumTokens),
-              (1...limits.maximumChunkTokens).contains(chunkSize) else {
+              (1...limits.maximumChunkTokens).contains(chunkSize),
+              (1...limits.maximumChunkTokens).contains(decodeRows) else {
             throw MiMoProfileError("MiMo request state is outside the registered request scope")
         }
         let sum = QwenLongPrefillCheckedBytes.sum, product = QwenLongPrefillCheckedBytes.product
@@ -66,7 +73,8 @@ struct MiMoRequestStateBudget: Encodable, Equatable {
         let boundary = try allowance(try product([chunkSize, spec.hidden, activationBytes]), 2)
         let row = rank == 1 ? try allowance(try product([spec.vocabulary, 4]), 2) : 0
         // 64 query heads; the registered attention geometry fixes it.
-        let workspace = full == 0 ? 0 : try allowance(try product([64, chunkSize, capacity, 4]), 1)
+        let scoreRows = max(chunkSize, try product([decodeRows, full]))
+        let workspace = full == 0 ? 0 : try allowance(try product([64, scoreRows, capacity, 4]), 1)
         return .init(fullAttentionLayers: full, slidingLayers: sliding, fullAttentionStateBytes: fullState,
             slidingStateBytes: slidingState, boundaryBytes: boundary, rowBytes: row, workspaceBytes: workspace,
             reservedBytes: try sum([fullState, slidingState, boundary, row, workspace]))

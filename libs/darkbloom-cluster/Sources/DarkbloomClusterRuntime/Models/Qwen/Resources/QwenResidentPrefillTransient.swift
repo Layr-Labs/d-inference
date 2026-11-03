@@ -13,20 +13,25 @@ import Foundation
 /// beside a float32 output. Query blocking (`DARKBLOOM_CBV2_ATTN_QUERY_BLOCK`)
 /// bounds the matrix per block, but blocks of one frame may be evaluated
 /// together, so the whole frame is priced: an upper bound, not a measurement.
-/// Layers run one after another, so one layer's transient is the stage's.
+/// Prefill layers run one after another under the rank's command-buffer
+/// limits, so one layer's transient is the frame's. A decode step's command
+/// buffers (`QwenLayerStageSession.decodeCommandBuffers`) can keep every
+/// attending layer's temporaries alive at once: `decodeRows` is the number of
+/// such rows, each layer's decode rows added up, priced as score rows over
+/// the whole context, and the larger of the two is charged.
 enum QwenResidentPrefillTransient {
     static let fusedHeadDimensions: Set<Int> = [64, 72, 80, 96, 128]
     static let scoreElementBytes = 4
     static let outputElementBytes = 4
 
     static func bytes(geometry g: QwenLongPrefillBudgetGeometry, stageHasAttention: Bool,
-                      chunkTokens: Int, contextTokens: Int) throws -> Int {
-        guard chunkTokens > 0, contextTokens > 0 else {
+                      chunkTokens: Int, contextTokens: Int, decodeRows: Int = 0) throws -> Int {
+        guard chunkTokens > 0, contextTokens > 0, decodeRows >= 0 else {
             throw QwenLongPrefillBudgetError.invalid("Attention transient needs a positive frame and context")
         }
-        guard stageHasAttention else { return 0 }
         let product = QwenLongPrefillCheckedBytes.product
-        let queries = min(chunkTokens, contextTokens)
+        let queries = max(stageHasAttention ? min(chunkTokens, contextTokens) : 0, decodeRows)
+        guard queries > 0 else { return 0 }
         let output = try product([g.queryHeads, queries, g.headDimension, outputElementBytes])
         if fusedHeadDimensions.contains(g.headDimension) { return output }
         let scores = try product([g.queryHeads, queries, contextTokens, scoreElementBytes])

@@ -16,6 +16,19 @@ import MLXLMCommon
 /// sliding-window layer. Positions come from each cache's own offset, which
 /// both stages advance by the same token counts.
 final class MiMoLayerStageSession {
+    /// Command-buffer commit limits of a decode step, a lane step and a
+    /// speculative round on the thread that encodes them, as GLM's and Qwen's
+    /// tensor-parallel decode keep them
+    /// (`GLM5NextTensorParallelResidentRuntime.decodeCommandBuffers`). Under
+    /// the rank's 16-operation guard (`ClusterWorkerEnvironmentGuards`) and
+    /// MLX's per-chip input-size bound, which each routed layer's expert
+    /// launch passes alone (it takes a whole expert bank), a decode step
+    /// commits a buffer every few launches, each a GPU gap. Prefill keeps the
+    /// rank's limits. Synchronization only: results never depend on the
+    /// partitioning. MLX keeps up to ten buffers in flight, so a step's
+    /// in-flight work spans the stage's layers (`MiMoRequestStateBudget`).
+    static let decodeCommandBuffers = GPU.CommandBufferLimits(operations: 100, megabytes: 1 << 20)
+
     let identity: QwenLayerStageSessionIdentity
     let request: QwenLayerStageGenerationRequest
     private let stage: LoadedMiMoLayerStage
@@ -178,7 +191,9 @@ final class MiMoLayerStageSession {
         do {
             try requireOpen()
             let frame = try schedule.admitDecode(offset: offset)
-            return try perform(tokens: [token], frame: frame, incoming: incoming, check: check)
+            return try GPU.withCommandBufferLimits(Self.decodeCommandBuffers) {
+                try perform(tokens: [token], frame: frame, incoming: incoming, check: check)
+            }
         } catch { try fail(error) }
     }
 
@@ -611,7 +626,7 @@ extension MiMoLayerStageSession: IndependentHistoryBatchSession {
                 frames.append(try session.schedule.admitDecode(offset: session.committedTokens))
                 histories.append(pages)
             }
-            return try MLX.withError { error in
+            return try GPU.withCommandBufferLimits(decodeCommandBuffers) { try MLX.withError { error in
                 func checked() throws { try error.check(); try check() }
                 try checked()
                 let last = first.stage.layerCount - 1
@@ -636,7 +651,7 @@ extension MiMoLayerStageSession: IndependentHistoryBatchSession {
                 }
                 if rank == 0 { Stream.gpu.synchronize(); try checked() }
                 return output
-            }
+            } }
         } catch {
             var failure: Error = error
             for session in sessions {

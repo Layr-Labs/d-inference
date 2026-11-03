@@ -54,6 +54,21 @@ not waive LOAD or live-memory checks. See
 `GPTOSSRequestStateBudget.estimate` in
 `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/GPTOSS/Metadata/GPTOSSRequestStateBudget.swift`.
 
+Pipeline decode steps of the Qwen catalog, Nemotron, Gemma 4 and GPT-OSS
+encode under decode command buffers that can keep a whole stage step's
+temporaries alive at once, so each request charge prices every attending
+layer's decode rows together (one a layer, or a verify window's `depth + 1`;
+every layer on a phase split's decoding rank, none on its other rank), and
+never less than one prompt frame's attention transient
+(`QwenResidentPrefillTransient`, `Gemma4PrefillTransient`,
+`GPTOSSRequestStateBudget`). The LOAD quotes and activation floors are
+unchanged; only requests whose prompt frames are shorter than their decode rows
+are charged more. GLM's request charge already prices three copies of twice its
+context on every DSA layer of a stage, well above what a decode step keeps and
+reads on every layer at once. Attention-kernel partials beyond the priced rows are
+not charged separately; see
+[pipeline decode command buffers](inference.md#pipeline-decode-command-buffers).
+
 Optional Qwen plain-pipeline batch cancellation retains a lane's memory charge
 until all its active and tentatively restored native sessions close. It then
 releases only that lane, without changing other lanes' reservations or the
@@ -1050,6 +1065,10 @@ attention views and sliding repack storage. Keys and values are priced with
 their distinct registered widths. Host prompt/selected-token histories and
 shared native decode workspace remain additional. Both MTP target ranks price
 the larger of the prompt chunk and the admitted `depth + 1` verification window.
+Every MiMo rank's workspace charge also prices each of its full-attention
+layers' score rows for the decode rows at once, because decode command buffers
+can keep a whole step in flight (`MiMoRequestStateBudget`, `decodeRows`;
+[MiMo pipeline decode command buffers](inference.md#mimo-pipeline-decode-command-buffers)).
 The trained assistant preserves its whole previous allocation envelope and adds
 separately rounded resident and working pages. Phase rank 1 prices every target
 layer; both ranks retain the moving-state allowance during transfer. Image
@@ -1081,6 +1100,16 @@ Neither lane eligibility nor a successful tiny cache test establishes
 full-artifact memory fit, numerical parity or throughput; those require
 paired hardware qualification. The restore mechanism is described in
 [inference](inference.md#gemma-paged-prefix-restoration).
+
+A serial-prefill Gemma 4 pipeline's default width
+(`DistributedInstalledPlan.gemma4PipelineBatchLanes`,
+[Gemma pipeline lanes](inference.md#gemma-pipeline-lanes)) adds no load-time
+allocation: the paged pool's capacity is a ceiling, and pages are reserved per
+request (`CBv2StageKVHost`). Each lane is charged its whole request state on
+every rank and admitted against live memory (`QwenResidentRuntime.reserveLane`);
+a lane the host cannot hold is refused alone, retryably. The measured
+activation floor still applies: prompt frames run one per step and decode rows
+add only M=1 work.
 
 ## Bonsai packed projection arithmetic
 
@@ -1203,7 +1232,10 @@ a rank reserves it ([native context](inference.md#qwen27-tensor-parallel-native-
 the shard, two whole host tensors, aligned-read scratch and loading headroom.
 The placement and shard assessment add it to the LOAD peak and allocator ask;
 resident and request phases are not substitutes for that simultaneous peak.
-No native gate or headroom threshold is reduced. Both ranks must fit current
+No native gate or headroom threshold is reduced. Initial placement saves the
+widest of these widths at which both ranks fit current observations, with
+nothing credited ([saved width](inference.md#qwen-tensor-parallel-saved-width)).
+Both ranks must fit current
 observations before replacement is proposed (crediting at most the running
 owner's resident weights on that Mac, and only for a replacement with the same
 split) and again after previous ownership releases, with nothing credited. Source-bound metadata and child-launch checks establish budget and

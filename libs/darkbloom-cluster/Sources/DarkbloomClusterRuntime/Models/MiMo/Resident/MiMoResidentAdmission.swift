@@ -150,7 +150,7 @@ struct MiMoResidentRequestAllowance {
         let forwardTokens = max(chunkSize, verificationTokens)
         let layers = phaseSplit && rank == 1 ? 0..<plan.stages[1].sourceRange.upperBound : plan.stages[rank].sourceRange
         let own = try MiMoRequestStateBudget.estimate(specification: specification, layers: layers,
-            rank: rank, maximumTokens: maximumTokens, chunkSize: forwardTokens, bound: bound)
+            rank: rank, maximumTokens: maximumTokens, chunkSize: forwardTokens, decodeRows: verificationTokens, bound: bound)
         let pages = independentHistory ? try MiMoPagedKVAllowance.pages(spec: specification, layers: layers,
             maximumTokens: maximumTokens, chunkSize: forwardTokens, bound: bound) : 0
         _ = try QwenLongPrefillCheckedBytes.sum([own.reservedBytes, speculativeBytes, pages])

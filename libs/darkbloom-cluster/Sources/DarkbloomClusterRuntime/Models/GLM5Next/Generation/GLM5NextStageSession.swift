@@ -107,8 +107,8 @@ final class GLM5NextStageSession {
         }
         inOperation = true
         defer { inOperation = false }
-        do {
-            return try MLX.withError { error in
+        func run() throws -> QwenLayerStageOutput {
+            try MLX.withError { error in
                 func checked() throws {
                     try error.check(); try check()
                     guard !isFailed else { throw ProbeError("GLM stage request was invalidated") }
@@ -210,6 +210,12 @@ final class GLM5NextStageSession {
                 }
                 return result!
             }
+        }
+        do {
+            // A decode frame encodes under the pipeline decode limits
+            // (`QwenLayerStageSession.decodeCommandBuffers`); prefill keeps the rank's.
+            guard frame.phase == .decode else { return try run() }
+            return try GPU.withCommandBufferLimits(QwenLayerStageSession.decodeCommandBuffers, run)
         } catch {
             isFailed = true
             throw error

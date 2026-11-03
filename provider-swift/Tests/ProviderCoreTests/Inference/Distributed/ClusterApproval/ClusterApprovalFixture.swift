@@ -30,11 +30,12 @@ final class ClusterApprovalMacs: @unchecked Sendable {
     static let chip = ClusterChipClass(chipName: "Apple M3 Ultra")
 
     /// What both Macs' setups place: the Qwen3.5 9B pipeline, or Qwen3.8 27B in tensor parallel as the guided setup
-    /// saves it, with or without the model's embedded speculative assistant (`ClusterConfiguration.tensorAssistant`)
-    /// and with equal shares or the unequal ones a plan for two unequal Macs saves (`ClusterConfiguration.tensorShares`).
+    /// saves it, with or without the model's embedded speculative assistant (`ClusterConfiguration.tensorAssistant`),
+    /// with equal shares or the unequal ones a plan for two unequal Macs saves (`ClusterConfiguration.tensorShares`),
+    /// and the width its placement saved (`ClusterConfiguration.batchLanes`).
     enum Shape {
         case pipeline
-        case qwen27TensorParallel(assistant: ClusterQwenTensorAssistantPolicy?, shares: [Int]? = nil)
+        case qwen27TensorParallel(assistant: ClusterQwenTensorAssistantPolicy?, shares: [Int]? = nil, lanes: Int? = nil)
     }
 
     let root: URL
@@ -153,10 +154,11 @@ final class ClusterApprovalMacs: @unchecked Sendable {
                 "linkControl": ["schema": ClusterLinkControlAttachment.schemaName, "port": 47999,
                                 "linkEpoch": record.link.linkEpoch, "edgeID": record.link.edgeID, "secretFile": secret.path],
                 "tokenizerFiles": [["path": "tokenizer.json", "sha256": h("6"), "purpose": "tokenizer"]]]
-            if case .qwen27TensorParallel(let assistant, let shares) = shape {
+            if case .qwen27TensorParallel(let assistant, let shares, let lanes) = shape {
                 configuration["generationMode"] = ClusterGenerationMode.tensorParallel.rawValue
                 if let assistant { configuration["tensorAssistant"] = assistant.object }
                 if let shares { configuration["tensorShares"] = shares }
+                if let lanes { configuration["batchLanes"] = lanes }
             }
             let input = mac.scratch.appendingPathComponent("setup.json"), capabilityInput = mac.scratch.appendingPathComponent("capability.json")
             try JSONSerialization.data(withJSONObject: configuration, options: [.sortedKeys]).write(to: input)

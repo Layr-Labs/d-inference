@@ -601,7 +601,7 @@ struct ClusterPairUpdateTests {
         try other.promote()
         ClusterPairUpdate.writeProgress(.init(phase: .idle, running: "0.9.0", writtenAt: Date().timeIntervalSince1970,
                                               quarantined: "2.0.0"), to: rolledBack.progressPath)
-        guard case .cannotFollow(let reason) = await other.cycle(partner: rolledBack, log: log).followRollback({ _ in }) else {
+        guard case .cannotFollow(let reason) = await other.cycle(partner: rolledBack, log: log).followRollback(restart: { _ in }) else {
             Issue.record("followed a rollback to a release it does not keep"); return
         }
         #expect(reason.contains("keeps v1.0.0 for rollback"))
@@ -621,13 +621,13 @@ struct ClusterPairUpdateTests {
         let log = Lines(), now = Date().timeIntervalSince1970
 
         ClusterPairUpdate.writeProgress(.init(phase: .idle, running: "2.0.0", writtenAt: now), to: peer.progressPath)
-        guard case .otherMacStillRuns(let line) = await rolledBack.cycle(partner: peer, log: log).followRollback({ _ in }) else {
+        guard case .otherMacStillRuns(let line) = await rolledBack.cycle(partner: peer, log: log).followRollback(restart: { _ in }) else {
             Issue.record("the Mac that rolled back did not say the other Mac still runs v2.0.0"); return
         }
         #expect(line.contains("the other Mac still runs v2.0.0"))
 
         guard case .cannotFollow(let reason) = await peer.cycle(partner: rolledBack, log: log, part: .undrainable)
-            .followRollback({ _ in }) else { Issue.record("a part that cannot drain followed"); return }
+            .followRollback(restart: { _ in }) else { Issue.record("a part that cannot drain followed"); return }
         #expect(reason.contains("it follows once its part can drain"))
         #expect(try peer.fixture.liveBinaryContents() == "2.0.0-darkbloom" && peer.store.loadState().quarantine == nil)
         #expect(ClusterPairUpdate.readProgress(from: peer.progressPath)?.phase == .idle, "nothing was published")
@@ -644,7 +644,7 @@ struct ClusterPairUpdateTests {
         defer { peerLease.release() }
         ClusterPairUpdate.writeProgress(.init(phase: .idle, running: "0.9.0", writtenAt: now, quarantined: "2.0.0"),
                                         to: rolledBack.progressPath)
-        guard case .cannotFollow(let keeps) = await peer.cycle(partner: rolledBack, log: log).followRollback({ _ in }) else {
+        guard case .cannotFollow(let keeps) = await peer.cycle(partner: rolledBack, log: log).followRollback(restart: { _ in }) else {
             Issue.record("a Mac keeping another release asked for the lease"); return
         }
         #expect(keeps.contains("keeps v1.0.0 for rollback"))

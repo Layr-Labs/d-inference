@@ -654,6 +654,16 @@ public enum ClusterPlacementPlanner {
             time, fastest.mode.rawValue) + note, restingOn: fastest)
     }
 
+    /// The prefill schedule a placement of `mode` is planned, saved and loaded with, from the `allowed` schedules.
+    /// Tensor parallel: serial, for every family. Each rank prefills its share of every layer, so there is no later
+    /// stage to look ahead to, and every tensor-parallel runtime refuses any other schedule at load. Nil where serial
+    /// is not allowed: no tensor-parallel placement is planned then. A layer-cut mode: one chunk of lookahead where
+    /// allowed, because it is never slower than a serial prefill of the same placement.
+    static func prefillSchedule(for mode: ClusterGenerationMode, allowed: [ClusterPrefillSchedule]) -> ClusterPrefillSchedule? {
+        if mode.usesTensorParallelPrefill { return allowed.contains(.serial) ? .serial : nil }
+        return allowed.contains(.oneChunkLookahead) ? .oneChunkLookahead : allowed.first
+    }
+
     /// One explicit placement, evaluated as the planner evaluates its own
     /// candidates: `devices` in rank order, `cuts` ascending. Nothing is
     /// checked against the layout's cut lists, so a caller can ask about any
@@ -778,10 +788,11 @@ public enum ClusterPlacementPlanner {
             var result: [ClusterPlacementCandidate] = []
             let most = min(policy.maximumRanges, devices.count)
             guard most >= 2 else { return [] }
-            // A lookahead prefill is never slower than a serial one of the same placement.
-            let schedule = schedules.contains(.oneChunkLookahead) ? ClusterPrefillSchedule.oneChunkLookahead : schedules[0]
+            // Each candidate is ranked on the schedule it is saved with (`prefillSchedule(for:allowed:)`).
+            let tensorSchedule = ClusterPlacementPlanner.prefillSchedule(for: .tensorParallel, allowed: schedules)
             for ranges in 2...most {
-                let tensor = scope == .admitted && modes.contains(.tensorParallel) && placeable(.tensorParallel, ranges: ranges)
+                let tensor = scope == .admitted && modes.contains(.tensorParallel) && tensorSchedule != nil
+                    && placeable(.tensorParallel, ranges: ranges)
                 let layerModes = modes.filter { !($0.usesTensorParallelPrefill) && placeable($0, ranges: ranges) }
                 let pipeline = !layerModes.isEmpty && available.count >= ranges - 1
                 guard tensor || pipeline else { continue }
@@ -797,18 +808,19 @@ public enum ClusterPlacementPlanner {
                 for order in permutations {
                     // TP has no layer cuts. Enumerate it independently, including
                     // when this model has no admitted or structural pipeline cut.
-                    if tensor {
+                    if tensor, let tensorSchedule {
                         var splits: [ClusterPlacementCandidate] = []
                         if let weights = policy.requiredTensorShares {
-                            splits.append(evaluate(order: order, cuts: [], mode: .tensorParallel, schedule: schedule, weights: weights))
-                        } else { splits.append(bestTensorShares(order: order, schedule: schedule)) }
+                            splits.append(evaluate(order: order, cuts: [], mode: .tensorParallel, schedule: tensorSchedule, weights: weights))
+                        } else { splits.append(bestTensorShares(order: order, schedule: tensorSchedule)) }
                         for weights in shares {
-                            splits.append(evaluate(order: order, cuts: [], mode: .tensorParallel, schedule: schedule, weights: weights))
+                            splits.append(evaluate(order: order, cuts: [], mode: .tensorParallel, schedule: tensorSchedule, weights: weights))
                         }
                         result += keepingWidenable(splits)
                     }
                     for set in sets {
                         for mode in layerModes {
+                            guard let schedule = ClusterPlacementPlanner.prefillSchedule(for: mode, allowed: schedules) else { continue }
                             result.append(evaluate(order: order, cuts: set, mode: mode, schedule: schedule))
                         }
                     }
@@ -1289,7 +1301,7 @@ public enum ClusterPlacementPlanner {
         /// (`first`) or from its end, whatever is freed on it; 0 for none. A
         /// range's need only grows with its length, so the first failure ends it.
         func extent(_ device: ClusterPlacementDevice, first: Bool) -> Int {
-            let schedule = schedules.contains(.oneChunkLookahead) ? ClusterPrefillSchedule.oneChunkLookahead : schedules[0]
+            let schedule = ClusterPlacementPlanner.prefillSchedule(for: .pipeline, allowed: schedules) ?? .serial
             var most = 0
             for count in 1..<layout.layerCount {
                 let range = first ? layout.range(0..<count) : layout.range((layout.layerCount - count)..<layout.layerCount)

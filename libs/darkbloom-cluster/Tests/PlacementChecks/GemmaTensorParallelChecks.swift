@@ -302,8 +302,16 @@ private func checkGemmaFastestPlan(_ layout: ClusterModelLayout, _ checks: Place
     // The developer setting still places it with no share probe (that load records the first one), and the router
     // prices a chosen setup as it was planned.
     var forced = ClusterPlacementPolicy(); forced.forcedMode = .tensorParallel
+    let forcedPlan = try plan(ultras, forced, .unmeasured)
     checks.require("Gemma fastest plan: the developer's forced mode still places tensor parallel, with no share probe",
-        try plan(ultras, forced, .unmeasured).chosen?.mode == .tensorParallel)
+        forcedPlan.chosen?.mode == .tensorParallel)
+    // The setup saves the chosen candidate's prefill schedule (`ClusterPlacementSetup`). Tensor parallel is planned
+    // serial, the only schedule `Gemma4TensorParallelResidentRuntime` loads; a pipeline keeps one chunk of lookahead.
+    checks.require("Gemma prefill schedule: the layout lists serial and one-chunk lookahead; tensor parallel chosen on served requests, on share probes or by the developer setting is planned serial, as is the assessment's best tensor-parallel candidate; the pipeline chosen on the slower served split keeps lookahead",
+        layout.prefillSchedules == [.serial, .oneChunkLookahead]
+            && [servedFast, probedFast, forcedPlan].allSatisfy { $0.chosen?.mode == .tensorParallel && $0.chosen?.prefillSchedule == .serial }
+            && [servedFast, probedFast, servedSlow].allSatisfy { $0.tensorParallel?.tensorParallel?.prefillSchedule == .serial }
+            && servedSlow.chosen?.mode == .pipeline && servedSlow.chosen?.prefillSchedule == .oneChunkLookahead)
     let priced = try ClusterPlacementPlanner.evaluate(devices: small, cuts: [], mode: .tensorParallel, prefillSchedule: .serial,
         layout: layout, policy: first(128, 128), link: .unmeasured)
     checks.require("Gemma fastest plan: a tensor-parallel setup chosen before the link was measured is priced on the conservative assumed reduction",

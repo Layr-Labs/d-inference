@@ -3708,6 +3708,23 @@ estimate is not a new hardware qualification or a batch-throughput measurement.
 Source:
 `libs/darkbloom-cluster/Sources/DarkbloomClusterPlacement/ClusterTensorParallel.swift`.
 
+## Tensor-parallel prefill schedule
+
+The planner gives each candidate one prefill schedule
+(`ClusterPlacementPlanner.prefillSchedule(for:allowed:)`). The setup saves the
+chosen candidate's schedule, and the worker loads that schedule.
+
+| Candidate | Schedule | Why |
+|---|---|---|
+| `tensor_parallel_v1` | `serial_v1`, for every family | Each rank prefills its share of every layer, so no later stage can look ahead. Every tensor-parallel runtime (Qwen, Gemma 4, MiMo) refuses a different schedule at load. If the policy does not allow `serial_v1`, the planner makes no tensor-parallel candidate. |
+| A layer-cut mode | `one_chunk_lookahead_v1` when the model lists it, otherwise its first schedule | Lookahead is never slower than a serial prefill of the same placement. |
+
+The tensor-parallel prediction and memory need do not use the schedule, so the
+ranking uses the serial costs. Served calibration
+(`ClusterServedCalibration`) uses the same rule for the schedule of a served
+setup. Source:
+`libs/darkbloom-cluster/Sources/DarkbloomClusterPlacement/ClusterPlacementPlanner.swift`.
+
 ## Link probe history and tensor-parallel visibility
 
 Every load over the cable measures the link before it reads a weight

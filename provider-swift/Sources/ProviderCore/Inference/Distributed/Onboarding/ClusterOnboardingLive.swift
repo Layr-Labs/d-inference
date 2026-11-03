@@ -680,7 +680,8 @@ final class OnboardingLive: @unchecked Sendable {
                              blocker: option.blocker, provision: offer, fitRemedy: remedy, modelID: modelID,
                              publicTraffic: context.settings.privateImageQualification
                                 ? "Private unqualified image candidate; public traffic is prohibited." : plan.publicTraffic,
-                             tensorParallelNote: plan.tensorParallelNote, validated: approved(option.model.artifactSHA256))
+                             tensorParallelNote: plan.tensorParallelNote, validated: approved(option.model.artifactSHA256),
+                             split: ClusterOnboardingDeployment.splitMarker(plan.mode))
             }
             // Open choices first (the models this Mac has), then catalog models no Mac has yet, then the blocked ones.
             typealias Listed = (choice: ClusterOnboardingModelChoice, key: ChoiceKey, artifact: ListedArtifact?)
@@ -1421,7 +1422,14 @@ final class OnboardingLive: @unchecked Sendable {
         let notice = now.local ? ClusterService.servingNotice() : now.child?.notice
         let byChoice = notice == ClusterLocalServing.localOnlyNotice
         return .init(servedBy: now.local ? here : there, port: port, deployment: savedDeployment(perspective: true) ?? leadership?.deployment,
-                     notice: notice, network: byChoice ? (leadership?.scope.reachableFromNetwork ?? false) : nil)
+                     notice: notice, network: byChoice ? (leadership?.scope.reachableFromNetwork ?? false) : nil, split: savedSplit())
+    }
+
+    /// How the setup this Mac saved (what runs) splits its model, as the serving line marks it (both Macs save it).
+    func savedSplit() -> String? {
+        guard case .success(let reference?) = context.savedConfiguration().reference,
+              let saved = try? ClusterConfigurationStore(paths: context.paths).load(reference: reference) else { return nil }
+        return ClusterOnboardingDeployment.splitMarker(saved.configuration.selectedGenerationMode.rawValue)
     }
 
     /// One look at the cluster from the control leader: ready (where the serving API listens) or a progress line.
@@ -1482,7 +1490,7 @@ final class OnboardingLive: @unchecked Sendable {
         }
         if registered(own), registered(peer) {
             return (.init(servedBy: here, port: 0, deployment: savedDeployment(perspective: true) ?? leadership?.deployment,
-                          offered: offered), "ready")
+                          offered: offered, split: savedSplit()), "ready")
         }
         var line = "registering both Macs with the coordinator for pairing"
         for (mac, child) in [(hereShort, own), (thereShort, peer)] where child?.running == false {

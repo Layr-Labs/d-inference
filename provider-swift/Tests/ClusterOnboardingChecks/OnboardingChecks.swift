@@ -173,10 +173,10 @@ import Darwin
                 expect(screen.contains { $0.contains(stage) && $0.contains(meter) }, "colour: \(stage) carries its meter")
             }
             // A taken choice folds to its one line: the ▸ and the option, the list and its hint erased.
-            expect(screen.contains("  \u{25B8} Yes") && screen.contains("  \u{25B8} Qwen3.8-27B-4bit-mtp · 16.3 GB"),
+            expect(screen.contains("  \u{25B8} Yes") && screen.contains("  \u{25B8} Qwen3.8-27B-4bit-mtp · 16.3 GB · pipeline"),
                 "colour: each choice folds to the chosen line")
             expect(run.text.contains("\u{1B}[3A\r\u{1B}[J"), "colour: the list is erased in place once chosen")
-            expect(screen.contains("  \u{2713} Serving Qwen3.8-27B-4bit-mtp at http://localhost:8000 (earning through Darkbloom)"),
+            expect(screen.contains("  \u{2713} Serving Qwen3.8-27B-4bit-mtp (pipeline) at http://localhost:8000 (earning through Darkbloom)"),
                 "colour: the serving line reads plainly")
             for live in ["Checking the cable", "Reading both Macs over the cable", "Planning each model for both Macs",
                          "Loading Qwen3.8-27B-4bit-mtp on both Macs", "Sending a test request"] {
@@ -399,9 +399,9 @@ import Darwin
     /// a model these chips may not serve is not listed.
     static let choices = [
         ClusterOnboardingModelChoice(title: "Qwen3.8-27B-4bit-mtp", lines: ["16.3 GB · pipeline · this Mac 32 layers / the other Mac 32 layers"], blocker: nil,
-                                     validated: true),
+                                     validated: true, split: "pipeline"),
         ClusterOnboardingModelChoice(title: "Z.ai: GLM-5.3-Flash", lines: ["181.8 GB · tensor parallel · this Mac 50% / the other Mac 50%"], blocker: nil,
-                                     validated: true),
+                                     validated: true, split: "tensor parallel"),
         ClusterOnboardingModelChoice(title: "gpt-oss-20b", lines: [], blocker: "not granted for this pair of chips")]
 
     /// A copy's live report, logged for a transcript, then the line for the record.
@@ -441,7 +441,8 @@ import Darwin
                            thisMacName: String? = nil,
                            reachFailures: Int = 0,
                            readyResult: Result<ClusterOnboardingReady, ClusterOnboardingFailure> = .success(.init(servedBy: "this Mac", port: 8000,
-                               deployment: "Serving Qwen3.8-27B-4bit-mtp across both Macs: pipeline, this Mac 32 layers / the other Mac 32 layers"))) -> ClusterOnboardingOperations {
+                               deployment: "Serving Qwen3.8-27B-4bit-mtp across both Macs: pipeline, this Mac 32 layers / the other Mac 32 layers",
+                               split: "pipeline"))) -> ClusterOnboardingOperations {
         let answered = DispatchSemaphore(value: 0)
         let chosenPort = Recorder()
         return ClusterOnboardingOperations(
@@ -510,8 +511,8 @@ import Darwin
             testRequest: { recorder.note("testRequest"); return testResult },
             // Rank 0, which serves the API, is the Mac that leads: this Mac on the leader, the other Mac on a member.
             status: { recorder.note("status"); return resume.role == .member
-                ? ["Serving Qwen3.8-27B-4bit-mtp at http://localhost:8000 on the other Mac (earning through Darkbloom)."]
-                : ["Serving Qwen3.8-27B-4bit-mtp at http://localhost:8000 (earning through Darkbloom)."] },
+                ? ["Serving Qwen3.8-27B-4bit-mtp (pipeline) at http://localhost:8000 on the other Mac (earning through Darkbloom)."]
+                : ["Serving Qwen3.8-27B-4bit-mtp (pipeline) at http://localhost:8000 (earning through Darkbloom)."] },
             stop: { recorder.note("stop"); return .success(["Stopping both Macs. Run `darkbloom cluster` to serve again."]) },
             provision: { index, download, progress in
                 recorder.note("provision \(index) \(download ? "download" : "copy")")
@@ -698,7 +699,8 @@ import Darwin
         expect(run.waitFor("  " + prompt(2), count: 2), "leader: the model list")
         let listed = run.text
         expect(!listed.contains("This Mac: Apple"), "leader: no line of both Macs' hardware")
-        expect(listed.contains("  1) Qwen3.8-27B-4bit-mtp · 16.3 GB\n  2) Z.ai: GLM-5.3-Flash · 181.8 GB\n"), "leader: one short line per model: \(listed)")
+        expect(listed.contains("  1) Qwen3.8-27B-4bit-mtp · 16.3 GB · pipeline\n  2) Z.ai: GLM-5.3-Flash · 181.8 GB · tensor parallel\n"),
+               "leader: one short line per model, with how it is split: \(listed)")
         expect(!listed.contains("rank 1 (decodes)"), "leader: the rest of a model's lines is not said")
         expect(!listed.contains("gpt-oss-20b"), "leader: a model these Macs cannot serve is not listed")
         run.type("\r")
@@ -710,7 +712,7 @@ import Darwin
             "  " + ClusterOnboardingPairing.otherMacAnswerLine,
             "  \u{2713} Paired. This Mac leads.",
             "  \(prompt(2))Qwen3.8-27B-4bit-mtp",
-            "  \u{2713} Serving Qwen3.8-27B-4bit-mtp at http://localhost:8000 (earning through Darkbloom)",
+            "  \u{2713} Serving Qwen3.8-27B-4bit-mtp (pipeline) at http://localhost:8000 (earning through Darkbloom)",
             "  \u{2713} Test response in 0.61 s",
         ] {
             expect(text.contains(line + "\n"), "leader: \(line)")
@@ -911,8 +913,8 @@ import Darwin
         let text = run.text
         expect(text.contains("This Mac follows the other Mac\n"), "member again: who leads, in the opening")
         expect(!text.contains("derived") && !text.contains("term ") && !text.contains("rank 0"), "member again: no leadership jargon")
-        expect(text.contains("  Serving Qwen3.8-27B-4bit-mtp at http://localhost:8000 on the other Mac (earning through Darkbloom).\n"),
-               "member again: the status")
+        expect(text.contains("  Serving Qwen3.8-27B-4bit-mtp (pipeline) at http://localhost:8000 on the other Mac (earning through Darkbloom).\n"),
+               "member again: the status, with how it is split")
         expect(text.hasSuffix(ClusterOnboardingDriver.memberNothingLine + "\n"), "member again: where to manage the cluster, last: \(text)")
         expect(!text.contains("Change model") && !text.contains("Choose 1-"), "member again: no menu")
         expect(recorder.all == ["ensureService", "status"], "member again: its service and the status only: \(recorder.all)")
@@ -1203,6 +1205,13 @@ import Darwin
         expect(D.modeWords("something_new_v2") == "split across the Macs", "an unknown mode is never shown raw")
         expect(D.modeWords("phase_split_mtp_v1") == "prompt split, then one Mac decodes", "phase split in words, never claimed as an opt-in")
         expect(D.modeWords("pipeline_mtp_v1") == "pipeline with speculative decoding", "the pipeline's speculative rounds in words")
+        // The marker the owner kept (2026-11-03): tensor parallel or pipeline, whatever the pipeline's framing.
+        for (mode, marker) in [("tensor_parallel_v1", "tensor parallel"), ("pipeline_v1", "pipeline"), ("pipeline_compact_decode_v1", "pipeline"),
+                               ("pipeline_mtp_v1", "pipeline"), ("phase_split_v1", "prompt split, then one Mac decodes"),
+                               ("pipeline_prefill_tensor_decode_v1", "pipeline prefill, tensor parallel decode")] {
+            expect(D.splitMarker(mode) == marker, "split marker: \(mode) -> \(String(describing: D.splitMarker(mode)))")
+        }
+        expect(D.splitMarker("something_new_v2") == nil, "split marker: an unknown mode is not marked")
         expect(D.choiceLine(size: "6.1 GB", mode: "pipeline_v1", shares: pipeline, speed: "about 90 tokens/s")
             == "6.1 GB · pipeline · M3 Ultra 40 layers / M5 Ultra 24 layers · about 90 tokens/s", "choice line: one line, no ranks")
     }
@@ -1734,8 +1743,17 @@ import Darwin
                 .listLine(sameTitleElsewhere: false) == "m · 6.1 GB · download"
             && C(title: "m", lines: ["6.1 GB"], blocker: nil, provision: fromPeer).listLine(sameTitleElsewhere: false) == "m · 6.1 GB · copy",
             "model line: what has to move first")
+        expect(C(title: "m", lines: ["6.1 GB · tensor parallel · this Mac 50% / the other Mac 50%"], blocker: nil, split: "tensor parallel")
+                .listLine(sameTitleElsewhere: false) == "m · 6.1 GB · tensor parallel"
+            && C(title: "m", lines: ["6.1 GB"], blocker: nil, provision: copy, split: "pipeline").listLine(sameTitleElsewhere: false)
+                == "m · 6.1 GB · pipeline · copy", "model line: the split's marker after the size, before what has to move")
+        for unsafe in ["pipeline\u{1B}[2J", "", String(repeating: "x", count: 49)] {
+            expect(C(title: "m", lines: ["6.1 GB"], blocker: nil, split: unsafe).listLine(sameTitleElsewhere: false) == "m · 6.1 GB",
+                   "model line: a marker that is not a few plain words is left out")
+        }
         let older = try? JSONDecoder().decode(C.self, from: Data(#"{"title":"m","lines":["a"]}"#.utf8))
-        expect(older != nil && older?.tensorParallelNote == nil && older?.validated == nil, "model line: an older Mac's choice decodes")
+        expect(older != nil && older?.tensorParallelNote == nil && older?.validated == nil && older?.split == nil,
+               "model line: an older Mac's choice decodes")
         let listed = [
             C(title: "Qwen3.5-9B", lines: ["6.1 GB · pipeline · M3 Ultra 16 layers / M5 Max 16 layers · about 92 tokens/s",
                 "Pipeline: tensor parallel is predicted slower for requests of 1024 prompt and 256 answer tokens."], blocker: nil,
@@ -1788,8 +1806,14 @@ import Darwin
         let there = ClusterOnboardingReady(servedBy: "the other Mac (Apple M4 Max, 128 GB)", port: 8000, network: true)
         expect(there.summary(model: "m") == "Serving m at http://localhost:8000 on the other Mac and on the network", "ready: network, that Mac")
         expect(ClusterOnboardingReady(servedBy: "this Mac", port: 8000).summary(model: "m") == "Serving m at http://localhost:8000", "ready: loopback unchanged")
+        expect(ClusterOnboardingReady(servedBy: "this Mac", port: 8000, split: "tensor parallel").summary(model: "m")
+               == "Serving m (tensor parallel) at http://localhost:8000", "ready: the split's marker after the model")
+        expect(ClusterOnboardingReady(servedBy: "this Mac", port: 0, offered: "offered for pairing", split: "pipeline").summary(model: "m")
+               == "Serving m (pipeline): offered for pairing", "ready: offered, the marker too")
+        expect(ClusterOnboardingReady(servedBy: "this Mac", port: 8000, split: "x\u{7}").summary(model: "m") == "Serving m at http://localhost:8000",
+               "ready: a marker with control characters is left out")
         let older = try? JSONDecoder().decode(ClusterOnboardingReady.self, from: Data(#"{"servedBy":"this Mac","port":8000}"#.utf8))
-        expect(older?.network == nil, "ready: an older Mac's answer decodes without the network field")
+        expect(older?.network == nil && older?.split == nil, "ready: an older Mac's answer decodes without the network and split fields")
     }
 
     /// The four steps, in order.
@@ -1896,7 +1920,7 @@ import Darwin
         expect(run.finish() == 0, "serves: exit 0")
         let text = run.text
         expect(!text.contains("public traffic in pipeline mode"), "serves: no public-traffic line at the choice: \(text)")
-        expect(text.contains("  \u{2713} Serving Qwen3.8-27B-4bit-mtp at http://localhost:8000 (earning through Darkbloom)\n"),
+        expect(text.contains("  \u{2713} Serving Qwen3.8-27B-4bit-mtp (pipeline) at http://localhost:8000 (earning through Darkbloom)\n"),
                "serves: through Darkbloom, on the serving line: \(text)")
         let local = TerminalRun(operations(Recorder(), resume: .init(role: .leader, peerName: "Apple M3 Ultra, 256 GB"), pairEvents: [],
             pairResult: .failed([]), choices: qualified, readyResult: .success(localReady)), request: localRequest)

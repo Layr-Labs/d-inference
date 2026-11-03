@@ -278,9 +278,13 @@ such field and are listed as they come. A member's `darkbloom cluster` shows
 the status and where to manage the cluster, with a list only to set up a cable
 port that is not set up yet (`ClusterOnboardingDriver.member`, `fixPortItem`);
 the leader's is a list of the control operations (`ClusterOnboardingDriver.menu`).
-A model's list line is its name and size, then "copy" or "download" when it
-must reach a Mac first (`ClusterOnboardingModelChoice.listLine`); its split,
-speed and tensor-parallel note are planned and carried but not said. Every copy
+A model's list line is its name, its size and the split's marker ("tensor
+parallel" or "pipeline", `ClusterOnboardingDeployment.splitMarker`), then
+"copy" or "download" when it must reach a Mac first
+(`ClusterOnboardingModelChoice.listLine`); its shares, speed and
+tensor-parallel note are planned and carried but not said. The serving lines
+mark the running plan's split the same way after the model ("Serving … (pipeline)
+at …", `ClusterOnboardingReady.summary`, from the setup each Mac saved). Every copy
 of a missing model is a list as well, a short one with its predicted time
 (`ClusterOnboardingDriver.provision`). The public-traffic line
 (`ClusterOnboardingModelChoice.publicTraffic`) is said only for a private image

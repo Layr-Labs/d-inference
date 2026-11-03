@@ -236,25 +236,30 @@ public struct ClusterOnboardingModelChoice: Codable, Sendable, Equatable {
     /// (2026-11-02 onboarding review: "only allow ones that are allowed to cluster serve and validated"). Nil from
     /// an older leader, which does not say: its list is shown as it came.
     public var validated: Bool?
+    /// How the planner splits it, as the list marks it (`ClusterOnboardingDeployment.splitMarker`: "tensor parallel"
+    /// or "pipeline"). Nil before it is planned (it has to reach a Mac first) and from an older build.
+    public var split: String?
 
     public init(title: String, lines: [String], blocker: String?, provision: ClusterOnboardingProvisionOffer? = nil, fitRemedy: String? = nil,
-                modelID: String? = nil, publicTraffic: String? = nil, tensorParallelNote: String? = nil, validated: Bool? = nil) {
+                modelID: String? = nil, publicTraffic: String? = nil, tensorParallelNote: String? = nil, validated: Bool? = nil,
+                split: String? = nil) {
         self.title = title; self.lines = lines; self.blocker = blocker; self.provision = provision; self.fitRemedy = fitRemedy
         self.modelID = modelID; self.publicTraffic = publicTraffic; self.tensorParallelNote = tensorParallelNote
-        self.validated = validated
+        self.validated = validated; self.split = split
     }
 
     /// Offered on the setup's list: it can be served on these Macs and is not known to be unapproved.
     public var listed: Bool { blocker == nil && validated != false }
 
     /// The list's one line: the title (with the model's id when another choice shows the same title) and its size,
-    /// the first fact of its first line, then "copy" or "download" when it has to reach a Mac first (2026-11-03: the
-    /// list keeps only what the choice needs; how it is split is the planner's business).
+    /// the first fact of its first line, the split's marker, then "copy" or "download" when it has to reach a Mac
+    /// first (2026-11-03: the list keeps only what the choice needs; the owner kept whether it is tensor parallel or
+    /// a pipeline, the rest of the plan is the planner's business).
     public func listLine(sameTitleElsewhere: Bool) -> String {
         let name = sameTitleElsewhere ? "\(title) (\(modelID ?? title))" : title
         let size = lines.first?.components(separatedBy: " · ").first.flatMap { $0.isEmpty ? nil : $0 }
         let move = provision.map { $0.leaderDownloads && !$0.fromOtherMac ? "download" : "copy" }
-        return ([name] + [size, move].compactMap { $0 }).joined(separator: " · ")
+        return ([name] + [size, ClusterOnboardingDeployment.shownMarker(split), move].compactMap { $0 }).joined(separator: " · ")
     }
 }
 
@@ -291,7 +296,24 @@ public enum ClusterOnboardingDeployment {
         if lower.hasPrefix("pipeline_mtp") { return "pipeline with speculative decoding" }
         if lower.hasPrefix("pipeline") { return "pipeline" }
         if lower.hasPrefix("phase_split") { return "prompt split, then one Mac decodes" }
-        return "split across the Macs"
+        return unknownModeWords
+    }
+
+    static let unknownModeWords = "split across the Macs"
+
+    /// The split as the model list and the serving lines mark it (owner, 2026-11-03: "keep a marker or small wording
+    /// showing if the split is tensor parallelism or pipeline"): "tensor parallel" or "pipeline", speculative rounds
+    /// or not; an opt-in hand-off mode in its own words; nil for a mode these words do not know.
+    public static func splitMarker(_ raw: String) -> String? {
+        let words = modeWords(raw)
+        if words.hasPrefix("pipeline with") { return "pipeline" }
+        return words == unknownModeWords ? nil : words
+    }
+
+    /// A split's marker as a screen shows it, whichever Mac's build sent it: a few plain words, else nothing.
+    static func shownMarker(_ split: String?) -> String? {
+        guard let split, !split.isEmpty, split.count <= 48, shownPlainly(split) else { return nil }
+        return split
     }
 
     /// "M3 Ultra 40 layers / M5 Ultra 24 layers" (pipeline) or "M3 Ultra 60% / M5 Ultra 40%" (tensor parallel); on a
@@ -514,18 +536,23 @@ public struct ClusterOnboardingReady: Codable, Sendable, Equatable {
     /// Both Macs' members are registered and the pair is offered to the coordinator for pairing: the one line that
     /// says so (approval and its end). Such a pair has no local API; nil for every other way of serving.
     public var offered: String? = nil
+    /// How the plan that runs splits the model, as the serving line marks it (`ClusterOnboardingDeployment.splitMarker`);
+    /// nil when it is not known here, one Mac serves alone, or from an older build.
+    public var split: String? = nil
     public init(servedBy: String, port: Int, deployment: String? = nil, notice: String? = nil, network: Bool? = nil,
-                offered: String? = nil) {
+                offered: String? = nil, split: String? = nil) {
         self.servedBy = servedBy; self.port = port; self.deployment = deployment; self.notice = notice; self.network = network
-        self.offered = offered
+        self.offered = offered; self.split = split
     }
 
-    /// The screens' one line (2026-11-03: less is better), "Serving Qwen3.8 27B at http://localhost:8000": when rank 0,
-    /// which serves the API, is the other Mac the line says so (this Mac's own loopback serves nothing), and listening
-    /// on the network too, it says that. Offered for pairing, the offered line instead: there is no local API.
+    /// The screens' one line (2026-11-03: less is better), "Serving Qwen3.8 27B (pipeline) at http://localhost:8000",
+    /// with the split's marker the owner kept: when rank 0, which serves the API, is the other Mac the line says so
+    /// (this Mac's own loopback serves nothing), and listening on the network too, it says that. Offered for pairing,
+    /// the offered line instead: there is no local API.
     public func summary(model: String) -> String {
-        if let offered { return "Serving \(model): \(offered)" }
-        return "Serving \(model) at http://localhost:\(port)" + (servesHere ? "" : " on the other Mac")
+        let name = ClusterOnboardingDeployment.shownMarker(split).map { "\(model) (\($0))" } ?? model
+        if let offered { return "Serving \(name): \(offered)" }
+        return "Serving \(name) at http://localhost:\(port)" + (servesHere ? "" : " on the other Mac")
             + (network == true ? " and on the network" : "")
     }
 

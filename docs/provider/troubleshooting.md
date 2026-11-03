@@ -148,7 +148,8 @@ tail -50 ~/.darkbloom/provider.log ~/.darkbloom/watchdog.log
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `Latest release vX is quarantined on this machine.` | vX crashed `rollbackThreshold` times before surviving `defaultStabilizationSeconds` (`provider-swift/Sources/ProviderCore/Update/UpdateRecoveryState.swift`; values in [runtime constants](./cli-reference.md#runtime-constants)) | Wait for the next release (it installs normally), or `darkbloom update --override-quarantine` |
+| `Latest release vX is quarantined on this machine.` | vX crashed `rollbackThreshold` times before surviving `defaultStabilizationSeconds`, or was rolled back with `darkbloom update --rollback` (`provider-swift/Sources/ProviderCore/Update/UpdateRecoveryState.swift`; values in [runtime constants](./cli-reference.md#runtime-constants)) | Wait for the next release (it installs normally), or `darkbloom update --override-quarantine` |
+| A new release runs but regresses | Automatic updates install every newer release | `darkbloom update --rollback` restores the previous release and quarantines this one; leave automatic updates on ([roll back](./installation.md#roll-back-to-the-previous-release)) |
 | `vX is already installed on disk but this process is vY.` | Update landed, daemon not restarted | `darkbloom restart` |
 | `SHA-256 hash mismatch!` | Download ≠ `bundle_hash`/`binary_hash`/`metallib_hash` | Retry; persistent mismatch means the release record and artifact disagree |
 | `another update/recovery operation is active` | Watchdog recovery or a previous update holds the lock | Wait a minute; retry |

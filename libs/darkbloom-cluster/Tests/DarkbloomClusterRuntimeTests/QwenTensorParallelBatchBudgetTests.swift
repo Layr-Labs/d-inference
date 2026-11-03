@@ -69,7 +69,8 @@ struct QwenTensorParallelBatchBudgetTests {
         for context in [1, 17, 512, 65536] {
             let candidate = try QwenTensorParallelBatchBudget.derive(geometry: family.geometry, plan: plan,
                 tensors: tensors, maximumTokens: context, chunkSize: 1, lanes: 8, paged: true, allocationBound: bound)
-            let payload = max(8 * plan.vocabularySize * 4, QwenTensorParallelBatchWire.words * 4, 8 * plan.maximumPartialBytesPerToken)
+            let payload = max(8 * plan.vocabularySize * 4, (QwenTensorParallelBatchWire.words + 6 * 8) * 4,
+                8 * plan.maximumPartialBytesPerToken)
             #expect(candidate.allowance.maximumCollectivePayloadBytes == payload)
             #expect(candidate.allowance.maximumCollectiveFrameBytes == payload + QwenTensorParallelSealCodec.frameOverhead)
             #expect(candidate.allowance.collectiveScratchBytes == 8 * bound(payload + QwenTensorParallelSealCodec.frameOverhead))

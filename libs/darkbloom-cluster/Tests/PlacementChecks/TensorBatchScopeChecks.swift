@@ -191,4 +191,49 @@ func checkTensorBatchScopes(_ inputs: RetainedQwenInputs, _ checks: PlacementChe
         }
     }
 
+    // A width saved at placement (`applyWidth`): the same owner's quote at that width in place of the singleton's,
+    // for a reference request inside its envelope. Memory is priced at the width; the prediction stays a request's.
+    let single = try quote(1)
+    func singleton() throws -> ClusterPlacementPolicy {
+        var p = ClusterPlacementPolicy(); p.leader = "a"; p.promptTokens = 700; p.outputTokens = 90
+        try single.applySingleton(to: &p, layout: layout)
+        return p
+    }
+    let alone = try ClusterPlacementPlanner.evaluate(devices: fast, cuts: [], mode: .tensorParallel,
+        prefillSchedule: .serial, layout: layout, policy: singleton(), link: link)
+    for lanes in [2, 4, 6, 8] {
+        let value = try quote(lanes)
+        var widened = try singleton()
+        widened.tensorParallelWideningQuote = try quote(2)
+        try value.applyWidth(to: &widened, layout: layout)
+        let candidate = try ClusterPlacementPlanner.evaluate(devices: fast, cuts: [], mode: .tensorParallel,
+            prefillSchedule: .serial, layout: layout, policy: widened, link: link)
+        checks.require("TP width \(lanes): each rank is priced at the width's complete quote",
+            zip(candidate.ranks, fast).allSatisfy { $0.requestNeedBytes == value.allowance.reservedBytes + $1.profile.memory.loadingHeadroomBytes })
+        checks.require("TP width \(lanes): the singleton's reference request and prediction are kept",
+            candidate.rested == alone.rested && candidate.sustained == alone.sustained
+                && widened.promptTokens == 700 && widened.outputTokens == 90)
+        checks.require("TP width \(lanes): the singleton's widening steer is cleared", widened.tensorParallelWideningQuote == nil)
+    }
+    checks.refuses("TP width: a singleton quote is no width", because: "same owner's singleton quote") {
+        var p = try singleton(); try single.applyWidth(to: &p, layout: layout)
+    }
+    checks.refuses("TP width: no singleton quote to replace", because: "same owner's singleton quote") {
+        var p = ClusterPlacementPolicy(); p.promptTokens = 700; p.outputTokens = 90
+        try quote(8).applyWidth(to: &p, layout: layout)
+    }
+    checks.refuses("TP width: another request envelope is another owner's", because: "same owner's singleton quote") {
+        let other = try ClusterPlacementRequestScope(runtimeModelID: request.runtimeModelID, artifactSHA256: request.artifactSHA256,
+            configurationSHA256: request.configurationSHA256, promptTokens: 2048, outputTokens: 128, maximumPromptTokens: 32768,
+            maximumOutputTokens: 32768, maximumContextTokens: 65536, requestChargeEveryRankBytes: 4 * gib)
+        let wide = try ClusterPlacementTensorBatchQuote(request: other, lanes: 8, chunkTokens: 128, perLaneStateBytes: 4 * gib,
+            sharedBytesExcludingCollectives: 80 * gib, allowance: try quote(8).allowance)
+        var p = try singleton(); try wide.applyWidth(to: &p, layout: layout)
+    }
+    checks.refuses("TP width: another assistant is another owner's", because: "same owner's singleton quote") {
+        let plain = try quote(8)
+        let assisted = try ClusterPlacementTensorBatchQuote(request: request, lanes: 8, chunkTokens: 128, perLaneStateBytes: 4 * gib,
+            sharedBytesExcludingCollectives: 80 * gib, allowance: plain.allowance, assistant: assistant)
+        var p = try singleton(); try assisted.applyWidth(to: &p, layout: layout)
+    }
 }

@@ -33,6 +33,32 @@ struct DistributedInstalledLanesTests {
         }
     }
 
+    @Test func gemmaSerialPipelineServesFourLanesAndLookaheadKeepsOne() {
+        #expect(Plan.gemma4PipelineBatchLanes == 4)
+        #expect(Plan.defaultBatchLanes(adapter: .gemma4LayerStage, mode: .pipeline, hasPrivateImages: false,
+                                       prefillSchedule: .serial) == 4)
+        // Lanes prefill serially: a saved lookahead keeps its schedule and one lane.
+        #expect(Plan.defaultBatchLanes(adapter: .gemma4LayerStage, mode: .pipeline, hasPrivateImages: false,
+                                       prefillSchedule: .oneChunkLookahead) == Plan.defaultBatchLanes)
+        #expect(Plan.defaultBatchLanes(adapter: .gemma4LayerStage, mode: .pipeline, hasPrivateImages: false) == Plan.defaultBatchLanes)
+        #expect(Plan.defaultBatchLanes(adapter: .gemma4LayerStage, mode: .pipeline, hasPrivateImages: true,
+                                       prefillSchedule: .serial) == nil)
+        for mode in ClusterGenerationMode.allCases where mode != .pipeline {
+            #expect(Plan.defaultBatchLanes(adapter: .gemma4LayerStage, mode: mode, hasPrivateImages: false,
+                                           prefillSchedule: .serial) == nil)
+        }
+        // Every other lane adapter keeps its singleton default under either schedule.
+        for adapter in Plan.laneAdapters where adapter != .gemma4LayerStage {
+            for schedule in ClusterPrefillSchedule.allCases {
+                #expect(Plan.defaultBatchLanes(adapter: adapter, mode: .pipeline, hasPrivateImages: false,
+                                               prefillSchedule: schedule) == Plan.defaultBatchLanes)
+            }
+        }
+        // A cancelled Gemma lane retires alone, as every pipeline lane adapter's does.
+        #expect(Plan.lanesRetireAlone(adapter: .gemma4LayerStage, mode: .pipeline, hasPrivateImages: false,
+                                      lanes: Plan.gemma4PipelineBatchLanes))
+    }
+
     @Test func otherModesAndFamiliesKeepTheirLanes() {
         // GLM's pipeline still serves one request at a time.
         #expect(Plan.defaultBatchLanes(adapter: .glm5NextLayerStage, mode: .pipeline, hasPrivateImages: false) == nil)

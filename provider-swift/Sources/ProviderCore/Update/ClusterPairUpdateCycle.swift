@@ -160,7 +160,9 @@ public final class ClusterPairUpdateCycle: @unchecked Sendable {
         let updater = environment.updater
         // Read before the lease: most checks find nothing, and the lease belongs to the pair's cycles.
         let partner = environment.partner()
-        guard case .reported(let progress) = partner, let quarantined = progress.quarantined else { return .nothingToFollow }
+        // A Mac that runs the release it quarantined (installed again with `--override-quarantine`) rolled nothing back.
+        guard case .reported(let progress) = partner, let quarantined = progress.quarantined,
+              progress.running != quarantined else { return .nothingToFollow }
         let session: SelfUpdater.UpdateSession
         do {
             session = try updater.beginUpdateSession(operation: "cluster-follow-rollback", timeout: 0)

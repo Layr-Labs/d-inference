@@ -583,6 +583,17 @@ struct ClusterPairUpdateTests {
         #expect(first == .nothingToFollow, "the Mac that rolled back first does not follow its peer back")
         #expect(restarts.all == ["peer:1.0.0"])
 
+        // A Mac that installed the quarantined release again (`--override-quarantine`) rolled nothing back.
+        ClusterPairUpdate.writeProgress(.init(phase: .idle, running: "2.0.0", writtenAt: Date().timeIntervalSince1970,
+                                              quarantined: "2.0.0"), to: rolledBack.progressPath)
+        let reinstalled = try await PairMac.make(part: false)
+        defer { Task { await reinstalled.cleanUp() } }
+        try await reinstalled.installCandidate()
+        try reinstalled.promote()
+        let overridden = await reinstalled.cycle(partner: rolledBack, log: log).followRollback { restarts.record("reinstalled", $0) }
+        #expect(overridden == .nothingToFollow)
+        #expect(try reinstalled.fixture.liveBinaryContents() == "2.0.0-darkbloom")
+
         // A rollback to a release this Mac does not keep is not followed.
         let other = try await PairMac.make(part: false)
         defer { Task { await other.cleanUp() } }

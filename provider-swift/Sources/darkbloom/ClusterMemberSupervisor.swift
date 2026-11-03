@@ -509,6 +509,7 @@ final class ClusterMemberSupervisor: @unchecked Sendable {
     private func startFollowCheckIfDue(_ pair: PairUpdate, pid: Int32, now: Double) {
         guard now >= nextFollowCheck else { return }
         nextFollowCheck = now + ClusterPairUpdate.followCheckSeconds
+        publishQuarantine(pair)
         lock.withLock { pairCycleRunning = true }
         let log: @Sendable (String) -> Void = { [weak self] in self?.log($0) }
         let restart: @Sendable (String) async throws -> Void = { [weak self] version in
@@ -525,6 +526,16 @@ final class ClusterMemberSupervisor: @unchecked Sendable {
             }
             if let say { self.log("cluster update: not following the other Mac's rollback: \(say)") }
         }
+    }
+
+    /// A rollback since the progress was written (a candidate's third failed start, while no cycle ran) reaches the
+    /// other Mac with the next follow check: only the quarantine changes, the rest stays as the last cycle left it.
+    private func publishQuarantine(_ pair: PairUpdate) {
+        guard var progress = ClusterPairUpdate.readProgress(from: pair.progressPath) else { return }
+        let quarantined = pair.quarantined()
+        guard progress.quarantined != quarantined else { return }
+        progress.quarantined = quarantined
+        ClusterPairUpdate.writeProgress(progress, to: pair.progressPath)
     }
 
     /// This Mac outside a cycle: idle, or disabled while its automatic updates are off.

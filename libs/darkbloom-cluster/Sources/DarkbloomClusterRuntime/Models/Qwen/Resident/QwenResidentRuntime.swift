@@ -281,7 +281,9 @@ public final class QwenResidentRuntime {
             let prompt = min(admission.memoryProfile.maximumPromptTokens, context - 1)
             let chunk = min(admission.memoryProfile.maximumChunkTokens, prompt)
             let allowance = try stage.requestAllowance(plan: admission.plan, rank: rank,
-                maximumTokens: context, chunkSize: chunk, bound: QwenResidentResourceEnvironment.allocationBound)
+                maximumTokens: context, chunkSize: chunk,
+                decode: .init(mode: mode, rank: rank, speculativeTerms: speculativeTerms),
+                bound: QwenResidentResourceEnvironment.allocationBound)
             let prefill = try QwenResidentPrefillSelection.allowance(policy, rank: rank, promptCount: prompt,
                 chunkSize: chunk, hiddenSize: admission.profile.hiddenSize,
                 elementBytes: qwenStageWireElementBytes(admission.profile.activationDType),
@@ -372,7 +374,9 @@ public final class QwenResidentRuntime {
             guard let stage else { throw ProbeError("Resident model already released") }
             let allowance = try stage.requestAllowance(
                 plan: admission.plan, rank: collective.rank, maximumTokens: request.maximumTokens,
-                chunkSize: min(request.chunkSize, request.promptCount), bound: QwenResidentResourceEnvironment.allocationBound)
+                chunkSize: min(request.chunkSize, request.promptCount),
+                decode: .init(mode: generationMode, rank: collective.rank, speculativeTerms: speculativeTerms),
+                bound: QwenResidentResourceEnvironment.allocationBound)
             let prefill = try prefillAllowance(prefillPolicy, promptCount: request.promptCount, chunkSize: request.chunkSize)
             let split = try Self.phaseSplitAllowance(generationMode, admission: admission, stage: stage,
                 rank: collective.rank, promptCount: request.promptCount, speculativeTerms: speculativeTerms)

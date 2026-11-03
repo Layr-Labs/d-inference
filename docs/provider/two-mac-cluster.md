@@ -224,6 +224,9 @@ pair's model and split; a release's cluster runtime facts carry them for
 GLM-5.3-Flash and Qwen3.8-27B
 ([serving a pair](../reference/cluster-control-protocol.md#serving-a-pair)).
 A tensor-parallel pair registers like a pipeline one; its plan names no cut.
+A Gemma 4 pipeline pair whose plan prefills serially takes several requests at
+once; one planned with the one-chunk lookahead takes one at a time
+([Gemma pipeline lanes](../architecture/inference.md#gemma-pipeline-lanes)).
 
 1. Run `darkbloom cluster` and choose a model, as in [the steps](#the-steps-once).
    After the Test stage passes, the leader reads the approvals the coordinator

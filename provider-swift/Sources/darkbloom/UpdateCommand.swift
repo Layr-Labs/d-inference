@@ -23,7 +23,7 @@ func loadUpdateConfig(configPath: String?) throws -> ProviderConfig {
 struct Update: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "update",
-        abstract: "Check for updates and self-update the provider binary."
+        abstract: "Check for updates and self-update the provider binary, or roll back to the previous release."
     )
 
     @OptionGroup var configOptions: ConfigOptions
@@ -37,9 +37,24 @@ struct Update: AsyncParsableCommand {
 
     @Flag(
         name: .long,
-        help: "Explicitly reinstall a locally quarantined failed version."
+        help: "Explicitly reinstall a locally quarantined version (failed starts or --rollback)."
     )
     var overrideQuarantine = false
+
+    @Flag(help: "Restore the release this Mac ran before its last update and quarantine the installed one.")
+    var rollback = false
+
+    @Flag(name: .shortAndLong, help: "With --rollback: don't ask for confirmation.")
+    var yes = false
+
+    func validate() throws {
+        if rollback, checkOnly || overrideQuarantine || coordinator != nil {
+            throw ValidationError("--rollback cannot be combined with --check-only, --override-quarantine or --coordinator.")
+        }
+        if yes, !rollback {
+            throw ValidationError("--yes applies only to --rollback.")
+        }
+    }
 
     mutating func run() async throws {
         let config = try loadUpdateConfig(configPath: configOptions.config)
@@ -50,6 +65,20 @@ struct Update: AsyncParsableCommand {
 
         let coordinatorURL = coordinator ?? config.coordinator.url
         let updater = SelfUpdater(coordinatorBaseURL: coordinatorURL)
+
+        if rollback {
+            // Run as root, the locks it creates in this home would be root's, and the user's provider and cluster
+            // service could no longer take them.
+            guard geteuid() != 0 else {
+                throw ValidationError("Run `\(BuildEnvironment.current.cliName) update --rollback` as the user the provider runs as, not as root.")
+            }
+            try await UpdateRollback(
+                updater: updater,
+                host: .live(drain: drain, configPath: configOptions.config),
+                say: { print($0) }
+            ).run(skipConfirmation: yes)
+            return
+        }
 
         if checkOnly {
             let result = await updater.checkForUpdate(
@@ -90,8 +119,8 @@ struct Update: AsyncParsableCommand {
         }
 
         if overrideQuarantine {
-            printError("WARNING: overriding local failed-version quarantine by explicit request.")
-            printError("The failed release may crash this provider again.")
+            printError("WARNING: overriding the local release quarantine by explicit request.")
+            printError("The quarantined release failed its starts or was rolled back; it may fail or regress again.")
         }
         print("Checking for updates...")
         let result = await updater.update(manualOverride: overrideQuarantine)
@@ -121,7 +150,7 @@ struct Update: AsyncParsableCommand {
             }
 
         case .quarantined(let version, let reason):
-            printError("v\(version) is quarantined after failed starts: \(reason)")
+            printError("v\(version) is quarantined on this Mac: \(reason)")
             printError("A strictly newer release will install automatically.")
             printError("Use --override-quarantine for an explicit operator retry.")
             throw ExitCode.failure

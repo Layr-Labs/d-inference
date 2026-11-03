@@ -83,6 +83,7 @@ class ComponentPathsTests(unittest.TestCase):
             "scripts/run-nested-suite.sh", "scripts/run-paged-kernel-tests.sh",
             "scripts/run-exclusive-native-gpu-test.sh", "scripts/provider-test-shards.py",
             "scripts/provider-test-shard-weights.json",
+            "scripts/cluster-test-plan.py",
             "scripts/run-provider-test-watchdog.py", "scripts/prepare-mimo-audio-fixtures.py",
             "scripts/prepare-mimo-provider-fixtures.py", "scripts/prepare-mimo-prompt-fixtures.py",
             "scripts/prepare-prompt-fixtures.py", "scripts/test-prepare-prompt-fixtures.py",
@@ -275,7 +276,7 @@ class WorkflowRoutingTests(unittest.TestCase):
     def test_provider_aggregate_exhaustive_truth_table(self):
         jobs = workflow.job_blocks((ROOT / ".github/workflows/ci.yml").read_text())
         gate = jobs["provider-test-gate"]
-        self.assertIn("needs: [changes, test-provider, test-provider-summary]", gate)
+        self.assertIn("needs: [changes, test-provider, test-provider-summary, test-cluster, test-cluster-focused]", gate)
         self.assertNotIn("test-provider-sdk", gate)
         self.assertIn("if: ${{ always() }}", gate)
         self.assertNotIn("continue-on-error:", gate)
@@ -283,18 +284,20 @@ class WorkflowRoutingTests(unittest.TestCase):
         for name, expression in {
             "CHANGES_RESULT": "needs.changes.result", "PROVIDER_CHANGED": "needs.changes.outputs.provider",
             "UNIT_RESULT": "needs.test-provider.result", "SUMMARY_RESULT": "needs.test-provider-summary.result",
+            "CLUSTER_RESULT": "needs.test-cluster.result",
+            "CLUSTER_FOCUSED_RESULT": "needs.test-cluster-focused.result",
         }.items():
             self.assertIn(name + ": ${{ " + expression + " }}", step)
         command = workflow.run_command(step)
         results = ("success", "skipped", "failure", "cancelled")
         # Prompt Parity runs in a provider shard, so UNIT_RESULT carries it.
         self.assertNotIn("PARITY_RESULT", step)
-        for detector, changed, unit, summary in itertools.product(
-                results, ("true", "false", ""), results, results):
+        names = ("UNIT_RESULT", "SUMMARY_RESULT", "CLUSTER_RESULT", "CLUSTER_FOCUSED_RESULT")
+        for detector, changed, *lanes in itertools.product(
+                results, ("true", "false", ""), *[results] * len(names)):
             result = subprocess.run(["bash", "-e", "-c", command], capture_output=True, timeout=5,
                                     env={**os.environ, "CHANGES_RESULT": detector, "PROVIDER_CHANGED": changed,
-                                         "UNIT_RESULT": unit, "SUMMARY_RESULT": summary})
-            lanes = (unit, summary)
+                                         **dict(zip(names, lanes))})
             expected = detector == "success" and ((changed == "true" and set(lanes) == {"success"}) or
                                                   (changed == "false" and set(lanes) == {"skipped"}))
             self.assertEqual(result.returncode == 0, expected, (detector, changed, *lanes))

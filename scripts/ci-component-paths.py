@@ -28,6 +28,7 @@ PROVIDER = (
     "scripts/run-paged-kernel-tests.sh", "scripts/run-provider-test-watchdog.py",
     "scripts/run-exclusive-native-gpu-test.sh", "scripts/provider-test-shards.py",
     "scripts/provider-test-shard-weights.json",
+    "scripts/cluster-test-plan.py",
     "scripts/prepare-mimo-*-fixtures.py", "scripts/verify-*-prompt-parity.sh",
     "scripts/prepare-prompt-fixtures.py", "scripts/test-prepare-prompt-fixtures.py",
     "scripts/verify-prompt-parity.sh", "scripts/test-qwen4-packaged-resources.py",

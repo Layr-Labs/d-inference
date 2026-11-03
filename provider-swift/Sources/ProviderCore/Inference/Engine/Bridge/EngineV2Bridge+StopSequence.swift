@@ -4,7 +4,8 @@ import MLXLMCommon
 extension EngineV2Bridge {
     func matchedStopSequence(
         candidates: [String],
-        generatedTokens: [Int]
+        generatedTokens: [Int],
+        scope: CBv2StopStringScope?
     ) -> String? {
         guard !candidates.isEmpty, !generatedTokens.isEmpty else { return nil }
         let generatedText = tokenizer.inner.decode(
@@ -12,23 +13,26 @@ extension EngineV2Bridge {
             skipSpecialTokens: false
         )
         return Self.matchedStopSequence(
-            candidates: candidates, generatedText: generatedText, scope: stopStringScope)
+            candidates: candidates, generatedText: generatedText, scope: scope)
     }
 
-    /// The candidate that ended generation. A scoped model matched stops only
-    /// inside its scope, so a candidate seen elsewhere (Harmony analysis) did
-    /// not stop it.
+    /// The candidate that ended generation. A scoped request matched stops
+    /// only inside its scope, so a candidate seen elsewhere (Harmony analysis,
+    /// reasoning) did not stop it.
     static func matchedStopSequence(
         candidates: [String],
         generatedText: String,
         scope: CBv2StopStringScope? = nil
     ) -> String? {
         if let scope {
-            let holdback = StopHoldback(stopStrings: candidates, scope: scope)
-            let scan = holdback.ingest(generatedText)
+            let scan = StopHoldback(stopStrings: candidates, scope: scope).ingest(generatedText)
             guard scan.stopped else { return nil }
-            let tail = generatedText.unicodeScalars.dropFirst(scan.text.unicodeScalars.count)
-            return candidates.first { !$0.isEmpty && tail.starts(with: $0.unicodeScalars) }
+            // The first candidate that alone stops at the same place: one that
+            // merely starts there may not count (whitespace before an answer).
+            return candidates.first {
+                !$0.isEmpty
+                    && StopHoldback(stopStrings: [$0], scope: scope).ingest(generatedText) == scan
+            }
         }
         let generatedScalars = Array(generatedText.unicodeScalars)
         var best: (position: Int, candidateIndex: Int, value: String)?

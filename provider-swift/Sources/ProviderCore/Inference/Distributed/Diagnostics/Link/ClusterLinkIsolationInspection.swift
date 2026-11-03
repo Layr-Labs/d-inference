@@ -20,7 +20,10 @@ enum ClusterLinkIsolationInspection {
     /// Nil when one reading timed out, overflowed, or printed text of the
     /// wrong shape. A tool that exits non-zero where that means "none" (no
     /// Internet Sharing file, no bridge key) is an empty answer, not a failure.
-    static func machine(run: ClusterLinkToolRunner) -> Machine? {
+    /// The cluster subnet's routes are read against `interfaceListing`, the
+    /// `ifconfig -a` text of the same inspection; without it, a loopback route
+    /// to an address of this Mac's own counts on the loopback.
+    static func machine(run: ClusterLinkToolRunner, interfaceListing: String = "") -> Machine? {
         /// A reading that must succeed.
         func required(_ command: ClusterLinkToolCommand) -> String? {
             guard case .output(let text) = run(command) else { return nil }
@@ -42,7 +45,7 @@ enum ClusterLinkIsolationInspection {
               let devices = optional(.internetSharingDevices, empty: [], ClusterLinkNetworkFacts.sharingDevices),
               let routes = required(.routeTable),
               let defaults = ClusterLinkNetworkFacts.defaultRouteInterfaces(routes),
-              let subnetRoutes = ClusterLinkNetworkFacts.clusterSubnetRouteInterfaces(routes),
+              let subnetRoutes = ClusterLinkNetworkFacts.clusterSubnetRouteInterfaces(routes, interfaceListing: interfaceListing),
               let resolvers = required(.dnsConfiguration).flatMap(ClusterLinkNetworkFacts.dnsInterfaces) else { return nil }
         return Machine(hardwarePorts: ClusterLinkNetworkFacts.hardwarePorts(ports), services: services,
             preferenceBridges: bridges, sharingEnabled: enabled, sharingDevices: devices,

@@ -142,9 +142,11 @@ enum ClusterLinkNetworkFacts {
     }
 
     /// `netstat -rn -f inet`: the interface of every route whose destination
-    /// matches `destination`, in listed order. Nil when the text is not a
+    /// matches `destination`, in listed order, as `countedOn` names it from
+    /// the destination and the route's interface. Nil when the text is not a
     /// route table.
-    static func routeInterfaces(_ text: String, where destination: (Substring) -> Bool) -> [String]? {
+    static func routeInterfaces(_ text: String, where destination: (Substring) -> Bool,
+                                countedOn: (_ destination: Substring, _ interface: String) -> String = { $1 }) -> [String]? {
         var inTable = false, interfaces = [String]()
         for line in text.split(whereSeparator: \.isNewline) {
             let words = line.split(whereSeparator: \.isWhitespace)
@@ -154,7 +156,7 @@ enum ClusterLinkNetworkFacts {
             }
             guard inTable, words.count >= 4, destination(words[0]) else { continue }
             let interface = String(words[3])
-            if ClusterLinkName.isInterface(interface) { interfaces.append(interface) }
+            if ClusterLinkName.isInterface(interface) { interfaces.append(countedOn(words[0], interface)) }
         }
         return inTable ? interfaces : nil
     }
@@ -164,10 +166,20 @@ enum ClusterLinkNetworkFacts {
         routeInterfaces(text) { $0 == "default" }
     }
 
-    /// The interfaces that carry a route into the cluster subnet.
-    static func clusterSubnetRouteInterfaces(_ text: String) -> [String]? {
-        routeInterfaces(text) { ClusterLinkClusterAddress.inSubnet($0) }
+    /// The interfaces that carry a route into the cluster subnet. Once an
+    /// address of this Mac's own has carried traffic, macOS reaches it through
+    /// the loopback (`10.219.4.7  <MAC>  UHLWIi  lo0`), so a loopback route to
+    /// an address that an interface in `interfaceListing` (`ifconfig -a`)
+    /// carries counts on that interface.
+    static func clusterSubnetRouteInterfaces(_ text: String, interfaceListing: String) -> [String]? {
+        let listed = ClusterNetworkInterfaces.parse(interfaceListing)?.interfaces.map(\.name) ?? []
+        return routeInterfaces(text, where: { ClusterLinkClusterAddress.inSubnet($0) }) { destination, interface in
+            guard interface == loopback else { return interface }
+            return listed.first { lists(String(destination), on: $0, inListing: interfaceListing) } ?? interface
+        }
     }
+
+    private static let loopback = "lo0"
 
     /// `scutil --dns`: the interfaces through which a resolver with at least
     /// one name server is reached, scoped or not. Nil when the text is not a

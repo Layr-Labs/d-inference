@@ -410,10 +410,11 @@ enum IsolationFixtures {
 
     /// An isolated Mac captured read-only on 2026-11-03 after its port paired
     /// and carried traffic. `routes` are the captured `netstat -rn -f inet`
-    /// rows for the default routes, the cluster subnet and the loopback, and
-    /// the port carries its captured cluster address; MAC addresses, the
-    /// Wi-Fi gateway and its address are placeholders. The rest of each Mac
-    /// is what Darkbloom leaves on an isolated port.
+    /// rows for the default routes, the cluster subnet and the loopback, the
+    /// port carries its captured cluster address and the service order is the
+    /// captured one where there is one; MAC addresses, the Wi-Fi gateway and
+    /// its address are placeholders. The rest of each Mac is what Darkbloom
+    /// leaves on an isolated port.
     struct PairedMac {
         let name: String
         let port: String
@@ -428,13 +429,17 @@ enum IsolationFixtures {
 
         var device: String { ClusterLinkName.device(ofInterface: port) }
 
+        var interfaceListing: String {
+            LinkFixtures.loopback + IsolationFixtures.port(wifi, active: true, addresses: [LinkFixtures.wifiIPv4])
+                + otherPorts.map { IsolationFixtures.port($0, active: false, addresses: []) }.joined()
+                + IsolationFixtures.port(port, active: true, addresses: [address])
+                + (bridgeMembers.isEmpty ? "" : LinkFixtures.bridge(members: bridgeMembers))
+        }
+
         func tools(extraRoutes: [String] = [], extraInterfaces: String = "") -> FakeLinkTools {
             var tools = FakeLinkTools(
                 deviceList: .output(devices.map { LinkFixtures.deviceBlock($0, active: $0 == device) }.joined()),
-                interfaces: .output(LinkFixtures.loopback + IsolationFixtures.port(wifi, active: true, addresses: [LinkFixtures.wifiIPv4])
-                    + otherPorts.map { IsolationFixtures.port($0, active: false, addresses: []) }.joined()
-                    + IsolationFixtures.port(port, active: true, addresses: [address])
-                    + (bridgeMembers.isEmpty ? "" : LinkFixtures.bridge(members: bridgeMembers)) + extraInterfaces),
+                interfaces: .output(interfaceListing + extraInterfaces),
                 details: [device: .output(LinkFixtures.detailWithMappedGID(device))])
             let bridges = bridgeMembers.isEmpty ? IsolationFixtures.emptyBridgePreferences
                 : "{\"bridge0\":{\"Interfaces\":[\(bridgeMembers.map { "\"\($0)\"" }.joined(separator: ","))]}}\n"

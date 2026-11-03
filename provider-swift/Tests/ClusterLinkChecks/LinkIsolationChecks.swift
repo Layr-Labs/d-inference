@@ -44,9 +44,23 @@ extension ClusterLinkCheck {
         expectEqual(Facts.defaultRouteInterfaces(IsolationFixtures.macBRoutes), ["en0", "bridge0", "utun2"], "Mac B: none via en6")
         expectEqual(Facts.defaultRouteInterfaces(IsolationFixtures.macAIsolatedRoutes(address: "10.219.1.2")), ["en1", "utun4"],
             "isolated Mac A: no default route via the cable")
-        expectEqual(Facts.clusterSubnetRouteInterfaces(IsolationFixtures.macAIsolatedRoutes(address: "10.219.1.2")), ["en7", "en7"],
-            "the cluster subnet routes through the port")
-        expectEqual(Facts.clusterSubnetRouteInterfaces(IsolationFixtures.macARoutes), [], "no cluster subnet before")
+        expectEqual(Facts.clusterSubnetRouteInterfaces(IsolationFixtures.macAIsolatedRoutes(address: "10.219.1.2"),
+            interfaceListing: IsolationFixtures.macAInterfaces(en7: ["10.219.1.2"])), ["en7", "en7"], "the cluster subnet routes through the port")
+        expectEqual(Facts.clusterSubnetRouteInterfaces(IsolationFixtures.macARoutes,
+            interfaceListing: IsolationFixtures.macAInterfaces(en7: [IsolationFixtures.macALeaseIPv4])), [], "no cluster subnet before")
+        // macOS reaches an address of its own through lo0: the route counts on
+        // the interface that carries the address, and only there.
+        let paired = IsolationFixtures.pairedMacA, pairedRoutes = IsolationFixtures.routeTable(paired.routes)
+        expectEqual(Facts.clusterSubnetRouteInterfaces(pairedRoutes, interfaceListing: paired.interfaceListing),
+            ["en3", "en3", "en3", "en3", "en3"], "paired Mac A: its own address through lo0 counts on en3")
+        expectEqual(Facts.clusterSubnetRouteInterfaces(pairedRoutes, interfaceListing: ""), ["en3", "en3", "lo0", "en3", "en3"],
+            "without a listing it counts on the loopback")
+        let tunnelRoute = "10.219.77.1        2:0:5e:0:53:99     UHLWIi                lo0       "
+        expectEqual(Facts.clusterSubnetRouteInterfaces(IsolationFixtures.routeTable(paired.routes + [tunnelRoute]),
+            interfaceListing: paired.interfaceListing + IsolationFixtures.tunnel("utun4", address: "10.219.77.1"))?.last, "utun4",
+            "another interface's own address counts on that interface")
+        expectEqual(Facts.clusterSubnetRouteInterfaces(IsolationFixtures.routeTable(paired.routes + [tunnelRoute]),
+            interfaceListing: paired.interfaceListing)?.last, "lo0", "an address no interface carries stays on the loopback")
         expectEqual(Facts.defaultRouteInterfaces("default 192.0.2.1 UGScg en1\n"), nil, "rows without the header are not a table")
 
         expectEqual(Facts.dnsInterfaces(IsolationFixtures.macADNS()), ["en1", "en7", "utun4"], "Mac A: a resolver through en7")

@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-11-02
+> Last updated: 2026-11-03
 
 Provider CLI and native-runtime environment variables, compiled defaults and reading symbols. Secrets are named, never valued. Unless specified otherwise, values are read at process start.
 
@@ -1400,7 +1400,7 @@ the port serving would use when not, `notObserved` for another active port.
 | `portAddressMissing` | no `inet` on `P` | own service with a fixed address |
 | `clusterServiceMissing`, `clusterServiceMisconfigured` | `/usr/sbin/networksetup -listnetworkserviceorder` and `-getinfo` (manual, recorded address, `255.255.0.0`, no router, IPv6 not `Automatic`) | the service is made, or made afresh |
 | `otherServiceOnPort` | another enabled service on `P` | switched off |
-| `clusterSubnetInUse` | another interface's address or route in `10.219/16` | blocks |
+| `clusterSubnetInUse` | another interface's address in `10.219/16` (`ifconfig -a`), or a route into it through another interface (`netstat -rn -f inet`). A loopback (`lo0`) host route to an address an interface carries counts on that interface, so macOS's route to `P`'s own address does not count | blocks |
 | `serviceNameUnsafe` | a service or hardware port name outside letters, digits, spaces and `( ) - . _` | blocks |
 | `hardwarePortUnknown` | `networksetup -listallhardwareports` lists no port for `P` | blocks |
 | `stateUnreadable` | a reading failed | blocks |

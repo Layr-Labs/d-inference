@@ -220,16 +220,10 @@ extension SandboxSizingPlan {
     var jobMemory: Int64 { max(0, memoryBytes - memoryKeptBytes - providerMemoryBytes) }
     var canRunJobs: Bool { linux.slots + macOS.slots > 0 }
 
-    /// Disk the plan's slots take: each platform's images with its first
-    /// slot, and one job's disk per slot.
-    var slotsBytes: Int64 {
-        [linux, macOS].reduce(0) { $0 + ($1.slots == 0 ? 0 : $1.imagesBytes + Int64($1.slots) * $1.slotBytes) }
-    }
-
     /// Free disk one more job of `platform` needs, beside the plan's slots,
     /// beyond what is free now; 0 when it fits.
     func diskShortfall(_ platform: Platform) -> Int64 {
-        max(0, floorBytes + slotsBytes + platform.nextSlotBytes - freeBytes)
+        max(0, floorBytes + linux.plannedBytes + macOS.plannedBytes + platform.nextSlotBytes - freeBytes)
     }
 
     /// The CPU, memory and disk lines, in the `doctor` style. When no job
@@ -311,6 +305,8 @@ extension SandboxSizingPlan.Platform {
     /// The first slot brings the platform's images.
     var firstSlotBytes: Int64 { imagesBytes + slotBytes }
     var nextSlotBytes: Int64 { slots == 0 ? firstSlotBytes : slotBytes }
+    /// Disk its planned slots take: the images with the first, one job's disk each.
+    var plannedBytes: Int64 { slots == 0 ? 0 : imagesBytes + Int64(slots) * slotBytes }
 }
 
 private func gb(_ bytes: Int64) -> Int64 { bytes / SandboxEligibility.gib }

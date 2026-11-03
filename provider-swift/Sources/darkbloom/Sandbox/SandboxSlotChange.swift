@@ -8,7 +8,9 @@ struct SandboxSlotChange: Equatable, Sendable {
     var installedMacOS: Int
     var plannedLinux: Int
     var plannedMacOS: Int
+}
 
+extension SandboxSlotChange {
     /// Nil when the status names no slots to compare, the plan fits no job,
     /// or it matches the installed counts.
     init?(installed status: SandboxAddonStatus, plan: SandboxSizingPlan) {
@@ -16,13 +18,6 @@ struct SandboxSlotChange: Equatable, Sendable {
         self.init(installedLinux: status.linux?.total ?? 0, installedMacOS: status.macOS?.total ?? 0,
                   plannedLinux: plan.linux.slots, plannedMacOS: plan.macOS.slots)
         guard installedLinux != plannedLinux || installedMacOS != plannedMacOS else { return nil }
-    }
-
-    init(installedLinux: Int, installedMacOS: Int, plannedLinux: Int, plannedMacOS: Int) {
-        self.installedLinux = installedLinux
-        self.installedMacOS = installedMacOS
-        self.plannedLinux = plannedLinux
-        self.plannedMacOS = plannedMacOS
     }
 
     /// Adds slots and removes none: what setup applies without a prompt.

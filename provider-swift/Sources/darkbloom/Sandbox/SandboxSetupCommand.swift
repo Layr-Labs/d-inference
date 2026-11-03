@@ -79,7 +79,8 @@ extension Sandbox {
 
 /// What `setup` does, given the add-on's current answer.
 enum SandboxSetupPlan: Equatable, Sendable {
-    /// Set up already; report it and change nothing.
+    /// Set up already; report it, then offer the add-on's plan when its slot
+    /// counts differ.
     case alreadySetUp(SandboxAddonStatus)
     /// Run the installer over the existing install, for this reason.
     case rerun(String)
@@ -139,7 +140,7 @@ struct SandboxSetupFlow {
         let changingSlots = options.linuxSlots != nil || options.macOSSlots != nil
         switch SandboxSetupPlan.decide(existing, changingSlots: changingSlots) {
         case .alreadySetUp(let status):
-            try await recheckSizing(status)
+            try await reportAndRecheckSizing(status)
         case .rerun(let reason):
             print(reason)
             try await withInstaller { try await install($0, script: $1, options: options) }
@@ -162,7 +163,7 @@ struct SandboxSetupFlow {
     /// owner agrees, or, without a prompt, the plan only adds slots. Skipped
     /// while jobs run: the installer changes slots only while none does, and
     /// their disk would shrink the plan.
-    private func recheckSizing(_ status: SandboxAddonStatus) async throws {
+    private func reportAndRecheckSizing(_ status: SandboxAddonStatus) async throws {
         print("Darkbloom Sandbox is already set up on this Mac.")
         print("")
         SandboxStatusView.lines(status, color: color).forEach { print($0) }
@@ -249,12 +250,10 @@ struct SandboxSetupFlow {
     /// trade-off, then asks. False when the owner declines; throws when no job
     /// fits.
     private func sizeAndConfirm(_ eligibility: SandboxEligibility, installer: URL, script: Data) async throws -> Bool {
+        let reportedPlan = try await requestAddonPlan(installer, script: script)
         let plan: SandboxSizingPlan
-        // The add-on's plan only: the fallback estimate's report stays as it was.
-        var freeSpaceNote: String?
-        if let reportedPlan = try await requestAddonPlan(installer, script: script) {
+        if let reportedPlan {
             plan = reportedPlan
-            freeSpaceNote = reportedPlan.freeSpaceNote
         } else {
             printChecks([SandboxEligibility.Check(
                 level: .info, name: "Sizing",
@@ -266,7 +265,8 @@ struct SandboxSetupFlow {
         let verdict = plan.verdict
         print(DoctorTerminalStyle.verdict(verdict[0], level: plan.canRunJobs ? .pass : .fail, color: color))
         verdict.dropFirst().forEach { print($0) }
-        if let freeSpaceNote { print("  " + freeSpaceNote) }
+        // The add-on's plan only: the fallback estimate's report stays as it was.
+        if let note = reportedPlan?.freeSpaceNote { print("  " + note) }
         guard plan.canRunJobs else { throw ExitCode.failure }
         print("")
         Self.tradeOff.forEach { print($0) }

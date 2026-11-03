@@ -234,7 +234,7 @@ struct SandboxSetupTests {
     }
 
     /// The free-space note, with what one macOS job needs beside the plan's Linux slots.
-    static func freeSpaceNote(macOSNeeds more: Int?) -> String {
+    private static func freeSpaceNote(macOSNeeds more: Int?) -> String {
         "Free space here is what `df -h ~` shows as Avail; Finder also counts purgeable space, which macOS frees "
             + "only when it needs to (restarting, or removing Time Machine local snapshots: "
             + "`tmutil listlocalsnapshots /`, frees it now)."
@@ -752,7 +752,7 @@ struct SandboxSetupTests {
     }
 
     /// Setup's words for the installer's exit status 4.
-    static let jobRunningAdvice = "A job is running on this Mac, so the installer changed nothing. Run "
+    private static let jobRunningAdvice = "A job is running on this Mac, so the installer changed nothing. Run "
         + "`darkbloom sandbox setup` again when it finishes; `darkbloom sandbox pause` keeps new jobs from starting. "
         + "Setup never passes the installer's --force: it would stop running jobs, and stopped jobs aren't paid."
 

@@ -1,7 +1,0 @@
-### The enabled-model filter wins over coordinator model changes
-
-- A model you deselect with `darkbloom switch` or delete with `darkbloom models remove` no longer comes back on its own. Before, when the coordinator moved a public model to a newer build, every Mac serving that model downloaded the newer build, served it in place of the build its operator chose and loaded it, even when `enabled_models` left it out. For example, with `gemma-4-26b` selected and `gemma-4-26b-qat-4bit` deselected, `gemma-4-26b-qat-4bit` returned within minutes and `darkbloom status` showed `Serving outside the enabled model filter: gemma-4-26b-qat-4bit`.
-- With `enabled_models` set, the provider now refuses a coordinator `load_model` or `prefetch_model` for a model outside it (`model_not_selected`), and keeps serving the build you selected when its public model moves to a build you did not list. The log then says `desired_models: <model> → <build> is outside the enabled model filter; not converging`.
-- **Your provider no longer moves to a new build of a model by itself.** To take one, run `darkbloom switch` and pick the model's public name; the picker shows its newest build under that name. Until you do, the newer build gets that model's requests first.
-- `darkbloom switch` applies its selection as the filter at once, without a restart.
-- Nothing changes with an empty `enabled_models` (serve every downloaded model), or for Autopilot's consented downloads and placements.

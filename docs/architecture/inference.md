@@ -2985,7 +2985,11 @@ Its restart line reads FileVault with `fdesetup isactive`
 answer reads as unknown. The exit comes from `ProcessExitObserver`, which does not run the calling thread's run loop.
 After a Darkbloom update changes a Mac's worker digest, the control leader's
 cluster service re-plans and re-adopts the same model by itself
-(`ClusterService.checkForUpdate`, `ClusterOnboardingUpdate`). A model change of
+(`ClusterService.checkForUpdate`, `ClusterOnboardingUpdate`), once both Macs
+answer with the same worker build (`ClusterOnboardingUpdate.oneBuild`): the
+[pair's coordinated update](../provider/cluster-always-on.md#the-pairs-coordinated-update)
+restarts the two Macs seconds apart, and a plan made while one still runs the
+other build would fail and wait 600 s. A model change of
 a serving cluster (`m`, or `darkbloom cluster local <model>`) plans the same way:
 its list was priced while the running parts held their memory, where tensor
 parallel may not fit now, so once both parts stopped and both Macs gave the

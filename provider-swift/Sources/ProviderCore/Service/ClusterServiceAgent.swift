@@ -76,6 +76,17 @@ public enum ClusterServiceAgent {
         serviceDirectory.appendingPathComponent("part-health.json")
     }
 
+    /// The supervisor's progress in the pair's coordinated update, which the service reports to the other Mac
+    /// (`ClusterPairUpdateProgress`).
+    public static func updateProgressPath(serviceDirectory: URL) -> URL {
+        serviceDirectory.appendingPathComponent("service-update.json")
+    }
+
+    /// `darkbloom update`'s request to restart into the release it installed (`ClusterPairUpdate.Request`).
+    public static func updateRequestPath(serviceDirectory: URL) -> URL {
+        serviceDirectory.appendingPathComponent("service-update-request.json")
+    }
+
     // MARK: - Install
 
     public enum Outcome: String, Sendable, Equatable {

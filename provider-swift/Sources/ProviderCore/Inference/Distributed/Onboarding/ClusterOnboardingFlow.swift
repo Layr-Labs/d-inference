@@ -446,6 +446,15 @@ public enum ClusterOnboardingUpdate {
             return now != pinned[member]
         }
     }
+
+    /// Whether every pinned member answered and all run the same worker: only then can the model be planned again on
+    /// both Macs. The two Macs restart into an update seconds apart; a plan made while one still runs the other build
+    /// (or has not answered yet) fails and waits `retryAfterFailureSeconds`.
+    public static func oneBuild(pinned: [String: String], current: [String: String?]) -> Bool {
+        let digests = pinned.keys.map { current[$0] ?? nil }
+        guard !digests.isEmpty, !digests.contains(nil) else { return false }
+        return Set(digests).count == 1
+    }
 }
 
 /// What the pairing reports while it runs.

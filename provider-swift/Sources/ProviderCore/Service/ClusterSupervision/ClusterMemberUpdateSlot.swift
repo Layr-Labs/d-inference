@@ -14,7 +14,10 @@ import Foundation
 /// install it, and start again; the coordinator re-forms the pair when both
 /// have registered and its approval covers the new runtime. If one Mac fails
 /// to update, the next slot retries, and until then the approval's pins keep a
-/// mixed pair from forming.
+/// mixed pair from forming. The cluster service of `darkbloom cluster` uses the
+/// same slot for the pair's coordinated update (`ClusterPairUpdate`), which
+/// stages while serving and drains a busy pair instead of skipping it (`decide`
+/// serves the developer route).
 public enum ClusterMemberUpdateSlot {
     /// Same cadence as the solo provider's update check.
     public static let periodSeconds: Double = 1800

@@ -1,41 +1,9 @@
 import Foundation
 
-/// A feature that Darkbloom opens to accounts from a waitlist: an account
-/// joins the feature's waitlist, and Darkbloom approves it. The coordinator
-/// keeps one waitlist per feature (`/v1/waitlists/{feature}`).
-enum FeatureWaitlistFeature: String, CaseIterable, Sendable {
-    /// Serving one model with two to four Macs (`darkbloom cluster`).
-    case cluster
-    /// Hosting Darkbloom Sandbox CI jobs (`darkbloom sandbox`).
-    case sandbox
-
-    /// The feature as the sentences of the CLI name it.
-    var title: String {
-        switch self {
-        case .cluster: "clusters"
-        case .sandbox: "Darkbloom Sandbox"
-        }
-    }
-
-    /// The feature's command under `darkbloom waitlist`.
-    var commandName: String {
-        switch self {
-        case .cluster: "clusters"
-        case .sandbox: "sandbox"
-        }
-    }
-
-    /// The waitlist as the sentences of the CLI name it: "the cluster
-    /// waitlist".
-    var waitlistName: String {
-        switch self {
-        case .cluster: "cluster waitlist"
-        case .sandbox: "Darkbloom Sandbox waitlist"
-        }
-    }
-}
-
-/// The account's place on a waitlist, as the coordinator answers it.
+/// A waitlist of the coordinator's catalog and the account's place on it, as
+/// `GET /v1/waitlists/{feature}` answers it. Darkbloom opens a feature to the
+/// accounts it approves from the feature's waitlist, and the coordinator's
+/// catalog is the only list of waitlists: the CLI knows none by itself.
 struct FeatureWaitlistPlace: Codable, Equatable, Sendable {
     enum Status: String, Codable, Sendable {
         /// The account has not joined, and no admin decided on it.
@@ -45,7 +13,22 @@ struct FeatureWaitlistPlace: Codable, Equatable, Sendable {
         case revoked
     }
 
+    /// How many Macs a join may name.
+    struct MacCount: Codable, Equatable, Sendable {
+        let min: Int
+        let max: Int
+    }
+
+    /// The waitlist's id in the coordinator's URLs, such as `cluster`.
     let feature: String
+    /// The waitlist as sentences name it, such as `Clusters`.
+    let title: String
+    let summary: String?
+    /// What an approved account runs, such as `darkbloom cluster`; absent
+    /// when the waitlist has none.
+    let startCommand: String?
+    /// Absent when the waitlist asks for no Mac: a join then names none.
+    let macCount: MacCount?
     let status: Status
     /// The account's place in line while it is waitlisted.
     let position: Int?
@@ -53,18 +36,64 @@ struct FeatureWaitlistPlace: Codable, Equatable, Sendable {
     let decidedAt: Date?
 
     enum CodingKeys: String, CodingKey {
-        case feature, status, position
+        case feature, title, summary, status, position
+        case startCommand = "start_command"
+        case macCount = "mac_count"
         case requestedAt = "requested_at"
         case decidedAt = "decided_at"
     }
+
+    /// The Mac count a join of this waitlist names: `macs`, by default the
+    /// fewest the waitlist takes, or nil for a waitlist that asks for no Mac.
+    func joinMacCount(_ macs: Int?) throws -> Int? {
+        guard let range = macCount else {
+            guard macs == nil else {
+                throw FeatureWaitlistMacsRefusal("--macs does not apply to the \(title) waitlist: it asks for no Mac.")
+            }
+            return nil
+        }
+        let count = macs ?? range.min
+        // Compared, not made a ClosedRange: a range the coordinator got wrong
+        // must not trap.
+        guard count >= range.min, count <= range.max else {
+            throw FeatureWaitlistMacsRefusal(range.min == range.max
+                ? "--macs must be \(range.min) for the \(title) waitlist."
+                : "--macs must be between \(range.min) and \(range.max) for the \(title) waitlist.")
+        }
+        return count
+    }
 }
 
-/// What an account tells the coordinator when it joins: the Mac it joins
-/// from and how many Macs it plans to use.
+/// `--macs` outside what a waitlist takes.
+struct FeatureWaitlistMacsRefusal: Error, Equatable, CustomStringConvertible {
+    let description: String
+
+    init(_ description: String) { self.description = description }
+}
+
+/// Every waitlist of the coordinator's catalog, in its order, with the
+/// account's place on each: `GET /v1/waitlists`.
+struct FeatureWaitlists: Codable, Equatable, Sendable {
+    let data: [FeatureWaitlistPlace]
+
+    /// The waitlist `name` names: its id ignoring case, or that id with a
+    /// plural `s` or `es` (`clusters`, `sandboxes`). An exact id wins, and a
+    /// plural that two ids share (`boxes` of `box` and `boxe`) names neither.
+    func named(_ name: String) -> FeatureWaitlistPlace? {
+        let name = name.lowercased()
+        if let exact = data.first(where: { $0.feature.lowercased() == name }) { return exact }
+        let plurals = data.filter { [$0.feature.lowercased() + "s", $0.feature.lowercased() + "es"].contains(name) }
+        return plurals.count == 1 ? plurals[0] : nil
+    }
+}
+
+/// What an account tells the coordinator when it joins. A waitlist that asks
+/// for Macs gets the Mac the account joins from and how many Macs it plans to
+/// use; another gets nothing (`{}`).
 struct FeatureWaitlistRequest: Codable, Equatable, Sendable {
-    let chip: String
-    let memoryGB: Int
-    let macCount: Int
+    var chip: String? = nil
+    var memoryGB: Int? = nil
+    var macCount: Int? = nil
 
     enum CodingKeys: String, CodingKey {
         case chip
@@ -73,12 +102,10 @@ struct FeatureWaitlistRequest: Codable, Equatable, Sendable {
     }
 }
 
-/// The answer to a waitlist call.
-enum FeatureWaitlistLookup: Equatable, Sendable {
-    /// The account's place.
-    case place(FeatureWaitlistPlace)
-    /// The coordinator has no waitlists: one released before them answers
-    /// 404 for the route.
+/// Why a waitlist call has no answer to show.
+enum FeatureWaitlistProblem: Error, Equatable, Sendable {
+    /// The coordinator answered 404: it has no such waitlist. One released
+    /// before waitlists answers 404 for every waitlist route.
     case notOffered
     /// The coordinator answered 401: there is no login token, or it does not
     /// take this one.
@@ -86,6 +113,9 @@ enum FeatureWaitlistLookup: Equatable, Sendable {
     /// The coordinator could not be asked, or answered something else.
     case unavailable(String)
 }
+
+/// The answer to a call about one waitlist.
+typealias FeatureWaitlistLookup = Result<FeatureWaitlistPlace, FeatureWaitlistProblem>
 
 /// Calls the waitlist routes of the coordinator with this Mac's login token.
 struct FeatureWaitlistClient: Sendable {
@@ -114,20 +144,25 @@ struct FeatureWaitlistClient: Sendable {
         return components.url
     }
 
-    /// The account's place on the feature's waitlist.
-    func place(_ feature: FeatureWaitlistFeature) async -> FeatureWaitlistLookup {
-        await call(feature, method: "GET", body: nil)
+    /// Every waitlist of the catalog with the account's place on it.
+    func waitlists() async -> Result<FeatureWaitlists, FeatureWaitlistProblem> {
+        await call("v1/waitlists", method: "GET", body: nil)
     }
 
-    /// Joins the feature's waitlist. An account already on it keeps its
+    /// The account's place on the waitlist `feature`.
+    func place(_ feature: String) async -> FeatureWaitlistLookup {
+        await call("v1/waitlists/\(feature)", method: "GET", body: nil)
+    }
+
+    /// Joins the waitlist `feature`. An account already on it keeps its
     /// place; an approved or revoked account is answered as it is.
-    func join(_ feature: FeatureWaitlistFeature, _ request: FeatureWaitlistRequest) async -> FeatureWaitlistLookup {
-        guard let body = try? JSONEncoder().encode(request) else { return .unavailable("could not encode the request") }
-        return await call(feature, method: "POST", body: body)
+    func join(_ feature: String, _ request: FeatureWaitlistRequest) async -> FeatureWaitlistLookup {
+        guard let body = try? JSONEncoder().encode(request) else { return .failure(.unavailable("could not encode the request")) }
+        return await call("v1/waitlists/\(feature)", method: "POST", body: body)
     }
 
-    private func call(_ feature: FeatureWaitlistFeature, method: String, body: Data?) async -> FeatureWaitlistLookup {
-        var request = URLRequest(url: base.appendingPathComponent("v1/waitlists/\(feature.rawValue)"),
+    private func call<Answer: Decodable>(_ path: String, method: String, body: Data?) async -> Result<Answer, FeatureWaitlistProblem> {
+        var request = URLRequest(url: base.appendingPathComponent(path),
                                  cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: Self.timeout)
         request.httpMethod = method
         request.httpShouldHandleCookies = false
@@ -144,28 +179,30 @@ struct FeatureWaitlistClient: Sendable {
         do {
             (data, response) = try await transport(request)
         } catch let error as URLError where error.code == .timedOut {
-            return .unavailable("no answer within \(Int(Self.timeout)) seconds")
+            return .failure(.unavailable("no answer within \(Int(Self.timeout)) seconds"))
         } catch {
-            return .unavailable(error.localizedDescription)
+            return .failure(.unavailable(error.localizedDescription))
         }
         return Self.answer(status: response.statusCode, body: data)
     }
 
-    /// The lookup for one answer of the coordinator.
-    static func answer(status: Int, body: Data) -> FeatureWaitlistLookup {
+    /// The answer, or the problem, of one response of the coordinator.
+    static func answer<Answer: Decodable>(status: Int, body: Data, as _: Answer.Type = Answer.self)
+        -> Result<Answer, FeatureWaitlistProblem>
+    {
         switch status {
         case 200:
-            guard let place = try? decoder.decode(FeatureWaitlistPlace.self, from: body) else {
-                return .unavailable("the coordinator's answer could not be read")
+            guard let answer = try? decoder.decode(Answer.self, from: body) else {
+                return .failure(.unavailable("the coordinator's answer could not be read"))
             }
-            return .place(place)
+            return .success(answer)
         case 404:
-            return .notOffered
+            return .failure(.notOffered)
         case 401:
-            return .needsLogin
+            return .failure(.needsLogin)
         default:
             let message = refusal(body)?.message ?? HTTPURLResponse.localizedString(forStatusCode: status)
-            return .unavailable("HTTP \(status): \(message)")
+            return .failure(.unavailable("HTTP \(status): \(message)"))
         }
     }
 

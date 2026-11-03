@@ -162,7 +162,7 @@ Subcommands declared by `Darkbloom.configuration.subcommands`:
 | `models` | `list`, `catalog`, `download`, `remove` | ✓ | `ModelsCommand.swift` (`Models`) |
 | `local` | Print the direct-mode endpoint and API key | | `LocalCommand.swift` (`Local`) |
 | `cluster` | Set up two Macs to serve one model together ([guided setup](./two-mac-cluster.md)); `cluster local` serves without a coordinator | ✓ | `ClusterCommand.swift` (`Cluster`) |
-| `waitlist` | Join the waitlists Darkbloom approves accounts from, or show where the account stands: `waitlist clusters`, `waitlist sandbox` (each with `join` and `status`) | ✓ | `Waitlist/WaitlistCommand.swift` (`Waitlist`) |
+| `waitlist` | List the waitlists the coordinator offers and where the account stands (bare), show the place on one (`waitlist <name>`) or join it (`waitlist <name> join`) | ✓ | `Waitlist/WaitlistCommand.swift` (`Waitlist`) |
 | `login` | Link the machine to an account (RFC 8628 device code) | ✓ | `LoginCommand.swift` (`Login`) |
 | `logout` | Stop the provider, revoke its current saved token, then remove the local credential | ✓ | `LogoutCommand.swift` (`Logout`) |
 | `benchmark` | Inference benchmarks and harnesses | ✓ | `BenchmarkCommand.swift` (`Benchmark`) |
@@ -1081,17 +1081,21 @@ darkbloom sandbox uninstall [--yes]
 ### Setup
 
 1. **Waitlist.** Setup refuses `sudo`. A first setup then asks the coordinator of `provider.toml`
-   whether Darkbloom approved this account for Darkbloom Sandbox
+   whether Darkbloom approved this account from the `sandbox` waitlist
    (`GET /v1/waitlists/sandbox` with the `darkbloom login` token) before it
-   checks or installs anything. Approved, or a coordinator that has no
-   waitlists (it answers `404`): setup goes on. Not on the waitlist: setup
-   offers to join it (`--yes` joins without asking) and then treats the join's
+   checks or installs anything. Approved, or a coordinator without that
+   waitlist (it answers `404`, as one without waitlists does): setup goes on.
+   Not on the waitlist: setup offers to join it (`--yes` joins without asking)
+   as [`darkbloom waitlist sandbox join`](#darkbloom-waitlist) does, with the
+   fewest Macs the waitlist's `mac_count` takes, and then treats the join's
    answer the same way; declined, or without a terminal and without `--yes`,
    it prints the join command and stops. Waitlisted or revoked: setup shows
    the status and stops. Not logged in (`401`): setup says to run
    `darkbloom login` and stops. No usable answer (unreachable, or any other
-   answer): setup says why and stops. Each stop exits `1`; a setup that
-   continues, repairs or updates an installed add-on does not ask
+   answer): setup says why and stops. Its lines name the waitlist by the
+   coordinator's `title`, and `Darkbloom Sandbox` when there is no answer.
+   Each stop exits `1`; a setup that continues, repairs or updates an
+   installed add-on does not ask
    (`provider-swift/Sources/darkbloom/Sandbox/SandboxSetupCommand.swift`,
    `SandboxSetupFlow.requireApproval`).
 2. **Check.** Prints chip, macOS, desktop session, network, power and sleep
@@ -1278,47 +1282,70 @@ it is installed.
 
 ## `darkbloom waitlist`
 
-Darkbloom opens clusters and Darkbloom Sandbox to the accounts it approves from
-a waitlist per feature. `darkbloom waitlist clusters` and
-`darkbloom waitlist sandbox` join a waitlist with this Mac and show where the
-account stands; admins approve accounts on the coordinator. Bare
-`darkbloom waitlist` shows the group's help. Code:
+Darkbloom opens some features, such as clusters and Darkbloom Sandbox, to the
+accounts it approves from a waitlist per feature. The coordinator's catalog is
+the only list of waitlists: the CLI asks it which waitlists exist and takes each
+one's title, start command and Mac range from its answer. Bare
+`darkbloom waitlist` lists every waitlist and where the account stands;
+`darkbloom waitlist <name>` shows the place on one, and `join` joins it. Admins
+approve accounts on the coordinator. Code:
 `provider-swift/Sources/darkbloom/Waitlist/WaitlistCommand.swift`
-(`Waitlist`, `Waitlist.Clusters`, `Waitlist.Sandboxes`, `FeatureWaitlistCommand`),
-`provider-swift/Sources/darkbloom/Waitlist/FeatureWaitlist.swift` (`FeatureWaitlistClient`) and
+(`Waitlist`, `FeatureWaitlistCommand`, `FeatureWaitlistAccess`),
+`provider-swift/Sources/darkbloom/Waitlist/FeatureWaitlist.swift`
+(`FeatureWaitlistClient`, `FeatureWaitlists`, `FeatureWaitlistPlace`) and
 `provider-swift/Sources/darkbloom/Waitlist/FeatureWaitlistView.swift` (`FeatureWaitlistView`).
 
 ```bash
-darkbloom waitlist clusters [status [--json] [--config <path>]]
-darkbloom waitlist clusters join [--macs <2-4>] [--json] [--config <path>]
-darkbloom waitlist sandbox [status [--json] [--config <path>]]
-darkbloom waitlist sandbox join [--json] [--config <path>]
+darkbloom waitlist [--json] [--config <path>]
+darkbloom waitlist <name> [status] [--json] [--config <path>]
+darkbloom waitlist <name> join [--macs <n>] [--json] [--config <path>]
 ```
 
-| Subcommand / flag | Default | Effect |
+| Argument / flag | Default | Effect |
 |---|---|---|
-| `clusters` or `sandbox` alone, `status` | — | The account's status and, while it waits, its place in line. The bare feature takes no options (`--json` and `--config` follow `status` or `join`); `--help` on it shows its help |
-| `join` | — | Joins with this Mac's chip and memory (as `darkbloom doctor` reads them). Joining again keeps the place and updates the Mac; an approved or revoked account stays as it is, and a revoked account's `join` exits `1` |
-| `join --macs <n>` (`clusters` only) | `2` | How many Macs the account plans to cluster, `2`–`4`. `waitlist sandbox join` sends `1` |
-| `--json` | `false` | The coordinator's answer `{feature, status, position?, requested_at?, decided_at?}` as JSON, times in ISO 8601 |
+| no `<name>` | — | Every waitlist in the coordinator's order: its title and id, its summary and where the account stands (`not joined`, `#<n> in line`, `approved since <day>` with the start command, `not approved`), then `Join one: darkbloom waitlist <name> join` while one is not joined |
+| `<name>` | — | A waitlist's id ignoring case, or that id with a plural `s` or `es`: `cluster` or `clusters`, `sandbox` or `sandboxes`. An exact id wins over another id's plural, and a plural that two ids share names neither. An unknown name prints the waitlists there are and exits `1` |
+| `status` | the action without one | The account's status and, while it waits, its place in line |
+| `join` | — | Joins the waitlist. For a waitlist with a `mac_count` range it sends this Mac's chip and memory (as `darkbloom doctor` reads them) and the Mac count; for another it sends `{}`. Joining again keeps the place and updates the Mac; an approved or revoked account stays as it is, and a revoked account's `join` exits `1` |
+| `join --macs <n>` | the range's `min` | How many Macs the account plans to use. Outside the waitlist's `mac_count` range, or on a waitlist without one, the command says so and exits `64` before joining. `--macs` without `join`, or below `1`, is a usage error |
+| `--json` | `false` | The coordinator's answer as JSON, times in ISO 8601: `{"data": [...]}` without a name, else the waitlist's entry |
 | `--config`, `-c` | the default `provider.toml` | Which coordinator to ask (`[coordinator] url`) |
+
+```text
+Clusters (cluster): not joined
+  Serve one model with two to four of your Macs.
+
+Darkbloom Sandbox (sandbox): #3 in line (joined Oct 29, 2026)
+  Run Darkbloom Sandbox CI jobs on your Mac.
+
+Join one: darkbloom waitlist <name> join
+```
 
 | Status | Shown |
 |---|---|
 | `none` | Not on the waitlist, and the command that joins it |
 | `waitlisted` | `#<n> in line` and the day it joined; Darkbloom reviews accounts in the order they joined |
-| `approved` | Approved since the day of the decision, and the command that starts the feature (`darkbloom cluster`, `darkbloom sandbox setup`) |
+| `approved` | Approved since the day of the decision, and the waitlist's `start_command` when it has one; a leading `darkbloom` becomes the installed command, such as `darkbloom-dev` |
 | `revoked` | Revoked on the day of the decision; joining again does not restore it |
 
-The request goes to the coordinator of `provider.toml` with the token of
-`darkbloom login` as a Bearer credential: `GET` or `POST /v1/waitlists/cluster`
-or `/v1/waitlists/sandbox`. Only an `https` coordinator, or plain `http` to this
-Mac's loopback, is asked; no redirect is followed, a call ends after 10 seconds
-and an answer over 64 KiB is refused. When the
-coordinator answers `401` (no token, or one it does not take), the command says
-to run `darkbloom login` and exits `1`. A coordinator without waitlists answers
-`404`, with or without a token: the command says there is nothing to join there
-and exits `1`. Another status exits `1` with that status and its message; an
+A waitlist's entry is
+`{feature, title, summary?, start_command?, mac_count?: {min, max}, status, position?, requested_at?, decided_at?}`.
+Every sentence names the waitlist by its `title`; an entry without one is
+unreadable. A control, format or line-separator character in the
+coordinator's text (a title, summary, start command or refusal message, such
+as an escape sequence or a bidirectional override) prints as `�`, and
+`--json` writes it as a `\u` escape, so that text cannot drive the terminal.
+The list and a status make one `GET /v1/waitlists` call; a join
+reads the list, then sends `POST /v1/waitlists/{feature}` with
+`{chip?, memory_gb?, mac_count?}`.
+The requests go to the coordinator of `provider.toml` with the token of
+`darkbloom login` as a Bearer credential. Only an `https` coordinator, or plain
+`http` to this Mac's loopback, is asked; no redirect is followed, a call ends
+after 10 seconds and an answer over 64 KiB is refused. When the coordinator
+answers `401` (no token, or one it does not take), the command says to run
+`darkbloom login` and exits `1`. A coordinator without waitlists answers `404`,
+with or without a token: the command says there is nothing to join there and
+exits `1`. Another status exits `1` with that status and its message; an
 unreadable answer, or none at all, exits `1` with the reason.
 [Darkbloom Sandbox setup](#setup) requires an approved `sandbox` entry;
 `darkbloom cluster` itself does not check the cluster waitlist.

@@ -36,9 +36,11 @@ darkbloom waitlist clusters
 ```
 
 `join` sends this Mac's chip and memory and how many Macs you plan to cluster
-(2 to 4), and prints your place in line; Darkbloom reviews accounts in the
-order they joined and approves them by hand. Once approved,
-`darkbloom waitlist clusters` says so. The approval is recorded for your
+(`--macs`: the cluster waitlist takes 2 to 4, and 2 without the option), and
+prints your place in line; Darkbloom reviews accounts in the order they joined
+and approves them by hand. Once approved, `darkbloom waitlist clusters` says so
+and names the command that starts a cluster. `darkbloom waitlist` alone lists
+every waitlist and where you stand on each. The approval is recorded for your
 account; `darkbloom cluster` itself works as before. Details:
 [CLI reference: waitlists](./cli-reference.md#darkbloom-waitlist).
 

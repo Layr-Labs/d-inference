@@ -85,6 +85,16 @@ struct Gemma4PlacementFamily: ClusterPlacementFamily {
 
     func layerKind(_ layer: Int) -> String { Gemma4StageGeometry.kind(globalLayerIndex: layer) }
 
+    /// A decode step reads 8 of every layer's 128 expert banks; the router and
+    /// the dense MLP beside them are read whole.
+    var expertRouting: ClusterExpertRouting? {
+        ClusterExpertRouting(selected: Gemma4StageGeometry.expertsPerToken, experts: Gemma4StageGeometry.routedExperts)
+    }
+
+    func isRoutedExpert(storedTensor name: String) -> Bool {
+        layer(ofStoredTensor: name) != nil && name.contains(".experts.switch_glu.")
+    }
+
     /// Keys and values in bfloat16: per token on a full-attention layer; on a
     /// sliding layer a ring of the window, allocated whole, and the view one
     /// frame attends over (`Gemma4StateBudget`).

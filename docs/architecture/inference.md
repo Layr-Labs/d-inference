@@ -57,6 +57,20 @@ Sources: `provider-swift/Sources/ProviderCore/Inference/Distributed/DistributedR
 `provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledSession.swift`,
 and `provider-swift/Sources/ProviderCore/Inference/Distributed/Membership/ClusterMemberPreparation+PairServing.swift`.
 
+The cluster request engine owns one serial queue. Every stream `yield` and its
+retirement latch resume their tasks from it, and resuming a task needs that
+task's status lock. Task cancellation holds the same lock while its handlers
+run. So the engine never waits for its queue from a cancellation path: a
+request stream's `onTermination` and the admission cancellation hop onto the
+queue without waiting, or run in place when already on it. The retirement task
+never blocks a cooperative thread. Waiting there deadlocked a pair slot's
+retirement: `EngineV2Bridge.shutdown` cancelled a pump while the queue
+published that request's peer loss. Lease events, the owner's invalidation and
+the public calls keep their synchronous queue order. Source:
+`provider-swift/Sources/ProviderCore/Inference/Distributed/Engine/DistributedCBv2Engine.swift`
+(`onQueueWithoutWaiting`) and
+`provider-swift/Sources/ProviderCore/Inference/Distributed/Engine/DistributedCBv2Engine+Admission.swift`.
+
 The cluster setup liveness probe uses the same request validation as ordinary
 chat completions. `ClusterSetupProbeRequest` sends no family-specific thinking
 override, so each model’s prompt policy remains authoritative.
@@ -126,7 +140,10 @@ never negative), `rankN_weights_bytes`, `rankN_fit` and `rankN_device`.
 Existing per-request
 admission and LOAD safeguards remain authoritative. GLM, private-image and
 coordinator-installed native-member sessions do not use this
-automatic policy. Explicit diagnostic mode or lane settings retain their choice.
+automatic policy. A serial-prefill Gemma 4 pipeline, coordinator-installed or
+local, starts at its installed default width
+([Gemma pipeline lanes](#gemma-pipeline-lanes)); on a local pair this policy
+can still widen it. Explicit diagnostic mode or lane settings retain their choice.
 
 Automatic replacement reads the installed plan helper's device profile and the
 current pair's recorded keyed-link costs and served-request history. It uses
@@ -1089,7 +1106,7 @@ threadgroup per page, with no zero fill, and a selection read copies each row
 with one SIMD-group (`GLM5NextPagedTransfers`). Plain decode steps (every row
 one token) and MTP rounds whose rows are all decode or verification rows (at
 most 8 tokens) commit a Metal command buffer every 100 operations with no
-input-size bound, as Nemotron Super and Flint do for plain decode
+input-size bound, as Nemotron Super, Flint and Gemma 4 do for plain decode
 (`GLM5NextDecodeCommandBuffers`); prefill chunks keep MLX's defaults. A longer
 row whose selection rows would read at least
 its history instead reads its whole latent plane once per layer through
@@ -1560,6 +1577,15 @@ The sink check occurs when the enqueue closure runs, not when its caller
 submits the frame. `SendHandle` and `ChunkSender` persist across reconnects,
 so an old request's frame processed after a replacement sink binds still
 passes this check; it does not enforce request-to-session identity.
+
+Decoded text keeps a character the tokenizer writes as `<0xHH>` tokens wherever it
+falls. swift-transformers' `ByteFallbackDecoder` releases those tokens only when a
+later token arrives, so a decode ending in them drops them and shows nothing pending.
+Gemma 4 writes characters outside its vocabulary this way, so `LocalTokenizerBridge.decode`
+(`provider-swift/Sources/ProviderCore/Inference/Prompting/LocalTokenizerLoader.swift`)
+releases a trailing run itself. A partial run reads as U+FFFD, which `DetokenizerV2`
+holds back, so its segment restart cannot land inside a character. A decoder that
+spells or releases these tokens turns this off.
 
 The chat template is rendered on every request. When caching is enabled for
 the request, `LocalTokenizerBridge` encodes the rendered prompt through
@@ -2145,7 +2171,7 @@ disabled for this hybrid model.
 | `logit_bias` | `logitBias` — string keys parsed to non-negative `Int`; invalid keys dropped and counted | `[:]` |
 | `logprobs` + `top_logprobs` | `topLogprobs = logprobs ? min(20, max(1, top_logprobs ?? 0)) : 0` | `0` |
 | `max_tokens` | `maxTokens = max_tokens ?? 4096` | 4096 |
-| `stop` | `stopStrings`, matched on held-back detokenised text (`StopHoldback`). GPT-OSS sets `stopStringScope` to the Harmony `final` message (`ModelEOSPolicy.stopStringScope`), so analysis and tool-call frames never match; the reported sequence replays the same scope (`EngineV2Bridge+StopSequence.swift`) | `[]` |
+| `stop` | `stopStrings`, matched on held-back detokenised text (`StopHoldback`). GPT-OSS sets `stopStringScope` to the Harmony `final` message (`ModelEOSPolicy.stopStringScope`), so analysis and tool-call frames never match. Gemma 4 and `<think>` parsers exclude their reasoning spans per request instead, starting inside reasoning when the prompt opened a think block, and their tool-call spans when the request parses tool calls (`ReasoningStopScope`). Otherwise a literal tool tag in an answer is text the client receives, so stops still apply to it. The native block engine (diffusion Gemma) matches the whole output, so its requests carry no scope. The reported sequence replays the request's scope (`EngineV2Bridge+StopSequence.swift`) | `[]` |
 | `min_p` | `minP`, forwarded by `EngineV2Bridge.submitTokenized` after translation | `0` |
 | `priority` | **Ignored**: always `0` | — |
 | `n`, `best_of` | **Not represented**: one alternative | — |
@@ -3079,7 +3105,8 @@ step boundaries; a lane without its answer cannot run another forward. The
 leader still exchanges headers and replies when no lane can advance, with
 `role.none` and no model work. This lets the follower admit a joining request
 while the provider's synchronous reservation is holding the queue needed to
-answer an older token. The installed lane default stays one; multi-lane
+answer an older token. The installed lane default stays one, except for a
+serial-prefill Gemma 4 pipeline ([Gemma pipeline lanes](#gemma-pipeline-lanes)); multi-lane
 sampling, joining and native output equivalence require separate qualification
 (`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Batch/QwenBatchDecisionProgress.swift`,
 `QwenResidentRuntime.leadBatch`).
@@ -3130,7 +3157,8 @@ the worker's pending acknowledgment
 
 Native, installed-owner and qualification gates enable independent retirement
 only for the existing Qwen-family lane adapters in plain pipeline with 2...8
-lanes (installed image candidates are excluded). The default stays one. Other
+lanes (installed image candidates are excluded). The default stays one, except
+for a serial-prefill Gemma 4 pipeline ([Gemma pipeline lanes](#gemma-pipeline-lanes)). Other
 modes retain their existing failure policy, and GLM tensor-parallel retirement
 and its eight-lane default are unchanged. A cancellation racing an already
 finishing lane retains the existing clean-finish linearization: native state
@@ -4148,6 +4176,84 @@ The GLM finite-calibration adapter samples each Mac locally and reuses `GLM5Next
 
 The installed run command recomputes the decision from both snapshots, binds it to the unchanged local template, and then invokes the existing signed quotation/owner path with the chosen cut. Local and peer quotes must still agree, and current-device/load/reserve/start checks retain authority. Public endpoint activation, automated calibration scheduling and a MiMo adapter for this exact-quote seam are separate integrations.
 
+## Pipeline decode command buffers
+
+The pipeline stages of the Qwen catalog (dense, routed-expert and Prism rows),
+Nemotron, Gemma 4, GPT-OSS and GLM encode decode work as GLM's and Qwen's
+tensor-parallel decode do: up to 100 operations a Metal command buffer with no
+input-size bound (`QwenLayerStageSession.decodeCommandBuffers`), on the thread
+that encodes it. The rank's own limits are the worker's 16-operation guard
+(`ClusterWorkerEnvironmentGuards`) and MLX's per-chip size bound, which counts
+the distinct input elements of a buffer: a routed-expert launch takes a whole
+expert bank as input, and banks above the bound (the 35B A3B rows, Nemotron,
+Gemma 4 and GLM) commit a buffer at every launch. Prefill frames keep the
+rank's limits. MiMo's pipeline is not covered here.
+
+| Work | Where the limits apply |
+|---|---|
+| Plain and compact decode frames, phase-split and alone-route decode (Qwen catalog, Nemotron, Gemma 4) | `QwenLayerStageSession.decode` |
+| Lane steps | `QwenLayerStageSession.decodeBatch` |
+| `pipeline_mtp_v1` rounds: drafts, verify windows on both ranks, settlement | `QwenPipelineMTPGeneration.runProducer`, `QwenPipelineMTPGeneration.runConsumer` |
+| `phase_split_mtp_v1` rounds on the decoding rank | `QwenMTPDecoder.step` |
+| GPT-OSS decode frames and lane steps | `GPTOSSLayerStageSession.decode`, `GPTOSSLayerStageSession.decodeBatch` |
+| GLM decode frames | `GLM5NextStageSession.forward`, decode phase only |
+
+Only the commit points move: every kernel, input and rounded value is the same,
+so load agreements and arithmetic contracts are unchanged.
+`PipelineDecodeCommandBufferTests` compares every output row, verify window and
+cache or state array byte for byte under each family's guard and under the
+decode limits, on synthetic stages.
+
+MLX keeps up to ten command buffers in flight (`MLX_MAX_ACTIVE_TASKS`) and frees
+a buffer's temporaries when it completes, so under the decode limits a whole
+stage step's temporaries can be alive at once. Each request charge therefore
+prices every attending layer's decode rows together, and never less than one
+prompt frame's:
+
+| Family | Charge | Decode rows priced together |
+|---|---|---|
+| Qwen catalog, Nemotron | `QwenResidentPrefillTransient.bytes` (`decodeRows`), from `QwenResidentRequestAllowance.derive` | One a layer, or the verify window's `depth + 1` (`LayerStageDecodeShape`), on the rank's stage; on every layer on a phase split's decoding rank; none on its other rank, which hands its prompt state over |
+| Gemma 4 | `Gemma4PrefillTransient.bytes` (`decodeRows`, `decodeLayers`) | One on each layer of the stage, sliding layers over their window |
+| GPT-OSS | `GPTOSSRequestStateBudget` workspace | One a full-attention layer |
+| GLM | Unchanged (`GLM5NextRequestStateBudget.estimate`): every DSA layer of the stage is charged three float32 copies of twice the context the request is charged for, and every request the conservative 5.5 GiB workspace | None added: a step's pages and reads on every layer at once stay well inside that charge (below) |
+
+The LOAD quotes are unchanged: they are computed at the largest prompt chunk,
+512 rows, and a decode step prices at most 80 rows (5 on each of 16 attending
+layers; one on each of Gemma's 30). Only requests whose prompt frames are
+shorter than their decode rows are charged more, and only on a rank that
+decodes. The rows are priced as float32 score rows over the whole context.
+The Qwen, Nemotron and Gemma 4 stages keep their keys and values in the paged
+stage KV (`CBv2StageKVHost`). There, decode steps, lane steps and verify
+windows (one decode row a window column, `CBv2OwnedRequestState.buildingWindow`)
+attend through the paged decode kernel (`PagedAttentionKernel.decode` in
+`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedAttentionKernel.swift`).
+Its float32 partials take `heads × ceil(keys / 256) × (head width + 2) × 4`
+bytes a row: about one score row at head width 256, two on Gemma's full layers
+(width 512) and half on Nemotron's (width 128, whose charge prices only the
+output). GPT-OSS attends through MLX's attention, whose vector kernel on Max
+and Ultra GPUs at 1,024 keys or more keeps float32 partials that exceed a score
+row by at most about 4 MiB a layer (`sdpa_vector_2pass` in
+`libs/mlx-swift/Source/Cmlx/mlx/mlx/backend/metal/scaled_dot_product_attention.cpp`).
+The excess over the priced rows is not charged; [INFERENCE] it is at most tens
+of MiB a request, times the lanes.
+
+GLM needs no decode term. Each DSA layer of a GLM stage is already charged
+three float32 copies of twice its context
+(`GLM5NextRequestStateBudget.HistoryBound.geometric`: 18,438 bytes a token at
+the registered widths). A decode step keeps that layer's history in bfloat16
+pages (1,537 bytes a token) and reads at most one gathered copy of it, only the
+index planes (513 bytes a token) once the history passes 4,102 tokens, so every
+layer's reads alive at once stay well inside the term at any context. The rest
+of a step, mostly each linear-attention layer's next 4.4 MB state, is inside the
+conservative 5.5 GiB workspace every request is charged
+(`GLM5NextServingResources.workspaceNativeBytes`). On a synthetic stage at the
+registered widths (three DSA and three linear-attention layers, bfloat16
+pages), a decode step held 16 MB above its baseline at a 20-token context and
+136 MB at 65,520 tokens of history, the same under these limits as with the
+whole step in one buffer (131 MB under the rank's guard), against 6.0 and
+11.1 GB charged at those contexts. The decode speed effect and peak memory on
+registered models are not measured yet.
+
 ## GLM cluster prefill bounds
 
 The registered NVFP4 GLM cluster candidate admits a maximum prefill chunk of
@@ -4578,7 +4684,9 @@ Code: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/GPTOSS/Meta
 one-token requests. Ordinary affine 4/8-bit group-64 projections retain native
 matmul `M=1` through leading weight views; custom and floating modules retain
 their original per-request forward method. The unscaled value RMS reduction
-and each routed expert operation retain singleton request shapes as well.
+retains singleton request shapes. The rows' routed experts share one call
+that keeps each row's singleton bytes
+([Gemma prompt projection reductions](#gemma-prompt-projection-reductions)).
 The scope owns no cache, changes no shared MLX dispatcher, and is disabled for
 singletons, prefill and speculative rectangles.
 
@@ -4598,6 +4706,40 @@ ring/full caches, mixed quantization, differing histories, reordered membership
 and leaving/rejoining rows. Their CPU checks require identical native logits
 and all live KV values. This is not full-artifact GPU, pair or throughput
 qualification; those checks remain required.
+
+### Gemma pipeline lanes
+
+A Gemma 4 pipeline whose saved setup prefills serially serves
+`DistributedInstalledPlan.gemma4PipelineBatchLanes` (4) requests at once,
+coordinator-registered pairs included. Every other pipeline lane adapter keeps
+the default of one (`DistributedInstalledPlan.defaultBatchLanes`). A saved
+width or the owner's `DARKBLOOM_CLUSTER_BATCH_LANES` still overrides the
+default.
+
+| Property | Basis |
+|---|---|
+| A lane costs no request its own tokens | Decode rows keep their one-request arithmetic ([batch decode](#gemma-ordinary-batch-decode-arithmetic)); each prompt frame runs alone on its request's own chunk grid (`QwenBatchSettings`) |
+| Memory | No load-time allocation; each lane is admitted against live memory and the activation floor is unchanged ([Gemma paged cluster lanes](hardware-support.md#gemma-paged-cluster-lanes)) |
+| Cancellation | A cancelled lane retires alone (`DistributedInstalledPlan.lanesRetireAlone`) |
+| One-chunk lookahead | Lanes prefill serially, so a setup that saved `one_chunk_lookahead_v1` keeps its schedule and one lane, as a planned batch width requires serial prefill (`ClusterConfiguration`) |
+
+Both owners derive the width from the same saved setup and bind it into the
+load agreement (`Gemma4BatchArithmeticAgreement`). The width is not qualified
+on hardware: multi-lane joining, cancellation and output agreement on the
+real pair remain separate checks, as for every pipeline lane adapter.
+
+### Gemma routed-expert prior
+
+`Gemma4PlacementFamily` states that every layer routes a token to 8 of its 128
+experts (`expertRouting`, from `Gemma4StageGeometry`) and names the
+`experts.switch_glu` banks as routed experts (`isRoutedExpert`). Gemma layouts
+therefore carry `routedExperts`: 12,846,366,720 bytes for the QAT 4-bit
+artifact and 24,265,359,360 bytes for the 8-bit one. The hardware prior
+(`ClusterHardwarePrior.decodeBytesPerToken`) counts 2,424,219,708 weight bytes
+per QAT 4-bit token instead of every layer byte. The golden pipeline plans
+keep their cuts and modes; the prior feeds the device-index and
+tensor-parallel share estimates (`ClusterHardwarePrior.absolute`,
+`ClusterDecodeSplit`).
 
 ### Qualification records for identical catalog files
 
@@ -4904,6 +5046,53 @@ a rewind reserve or another layout. Code: `libs/darkbloom-cluster/Sources/Darkbl
 `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/MiMo/Prefix/MiMoStagePrefixSnapshot.swift`
 and `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/MiMo/MTP/MiMoWindowRollback.swift`.
 
+### MiMo pipeline decode command buffers
+
+MiMo stage decode encodes its Metal command buffers as GLM's and Qwen's
+tensor-parallel decode do: up to 100 operations a buffer with no input-size
+bound (`MiMoLayerStageSession.decodeCommandBuffers`), on the thread that encodes
+the step. The rank's own limits are the worker's 16-operation guard
+(`ClusterWorkerEnvironmentGuards`) and MLX's per-chip size bound, and each
+routed layer's expert launch takes a whole 1 GiB expert bank as input, so under
+those limits a decode step commits a buffer every few launches. Prefill frames
+keep the rank's limits.
+
+| Work | Where the limits apply |
+|---|---|
+| Plain and compact decode frames, phase-split and alone-route decode | `MiMoLayerStageSession.decode` |
+| Lane steps of independent histories | `MiMoLayerStageSession.decodeBatch` |
+| Speculative rounds of `pipeline_mtp_v1`: drafts, verify windows, settlement | `MiMoMTPGeneration.runProducer`, `MiMoMTPGeneration.runConsumer` |
+
+Only the commit points move: every kernel, input and rounded value is the
+same. `MiMoDecodeCommandBufferTests` compares residuals, logits rows and every
+cache and page array byte for byte under both limits on synthetic stages.
+
+MLX keeps up to ten command buffers in flight (`MLX_MAX_ACTIVE_TASKS`) and frees
+a buffer's temporaries when it completes, so under the decode limits a whole
+stage step's temporaries can be alive at once. A request's workspace charge
+therefore prices every full-attention layer's float32 score rows for its decode
+rows together (`MiMoRequestStateBudget.estimate`, `decodeRows`: one row, or the
+verify window's `depth + 1`), and never less than one prompt frame's scores on
+one layer. Gathered page views are already charged for every layer
+(`MiMoPagedKVAllowance.pages`). A verify window of three or four rows takes
+MLX's unfused path, which builds those scores in bfloat16. One or two rows take
+its fused vector attention instead, whose
+float32 partials on Max and Ultra GPUs (`sdpa_vector_2pass` in
+`libs/mlx-swift/Source/Cmlx/mlx/mlx/backend/metal/scaled_dot_product_attention.cpp`)
+can exceed a score row and are not priced separately. The decode speed effect
+and peak memory on the registered model are not measured yet.
+
+### MiMo routed experts in placement
+
+`MiMoPlacementFamily` states MiMo's routing: each of the 47 routed layers sends
+a token to 8 of its 256 experts (`expertRouting`). Its routed-expert tensors are
+each layer's `mlp.switch_mlp` banks and their block scales (`isRoutedExpert`).
+The router and its score correction are read on every step. The layout then
+carries `routedExperts`, and the hardware prior
+(`ClusterHardwarePrior.decodeBytesPerToken`) counts 10,767,036,288 bytes for one
+decode step instead of every expert's 166,600,109,952. The prior prices tensor
+parallel only, so MiMo's pipeline plans are unchanged.
+
 ### Gemma paged prefix restoration
 
 Installed plain Gemma pipelines retain the paged KV default at every supported
@@ -4997,17 +5186,33 @@ packed weights; it adds no persistent weight copy. Query/key/value, output,
 shared MLP and router projections use their existing model call sites. Norms,
 the vocabulary head, independent decode lanes and singleton frames retain
 their existing operations.
-The same explicit prompt scope invokes each BF16 token's complete expert block
-with its unchanged selected indices and weights. This preserves singleton
-GeGLU and weighted reduction rather than entering a wide sorted expert graph;
-ordinary SDK prompts and speculative verification keep their existing paths. Custom modules, other dtypes/packing, and ordinary
-SDK callers retain the original forward method.
+The same explicit prompt scope keeps each BF16 token's complete expert block
+at one token: its unchanged selected indices and weights, an M=1 gathered
+product per selected expert, singleton GeGLU and its own top-K weighted
+reduction, rather than a wide sorted expert graph. All tokens of a frame share
+one call (`SwitchGLU.callAndWeightedReduceRows`). It groups their assignments
+by expert for weight locality but does not give the gathers the sorted hint, so
+every pair keeps the unsorted M=1 route. MLX picks `gather_qmv` and its variant
+from the quantization, dtype and the N and K widths, never from the row count.
+The rows return to token order before
+the top-8 reduction, whose `col_reduce_small` thread layout depends only on the
+hidden width. Each token's bytes therefore equal those of its own one-token
+call. The tokens share one dispatch per operation instead of about six per
+token per layer. Independent decode rows use the same call
+([Gemma ordinary batch decode arithmetic](#gemma-ordinary-batch-decode-arithmetic)).
+Ordinary SDK prompts and speculative verification keep their existing paths.
+Custom modules, other dtypes/packing, and ordinary SDK callers retain the
+original forward method.
 
 The exact Gemma arithmetic receipt binds both prompt projection and expert
 reduction policies before LOAD, separating prior rectangular-projection cache and plan identities. The
 stable family policy identifier and required environment flags remain the same.
+The shared expert dispatch changes no byte, so the receipt and the cache
+identities it separates are unchanged.
 Component byte equality is separate from full-model two-chip numerical
-qualification, and the M=1 prompt graph requires its own throughput measurement.
+qualification. The M=1 prompt graph still needs a pair throughput measurement;
+the synthetic component timings are in
+[Gemma pipeline prompt experts](../reports/2026-11-01-gemma-pipeline-prompt-experts.md).
 The SDK helper is
 `libs/mlx-swift-lm/Libraries/MLXLLM/Models/Gemma4PrefillProjection.swift`;
 stage activation and receipt binding are in
@@ -5514,6 +5719,19 @@ Sources: `provider-swift/Sources/ProviderCore/Inference/Distributed/Requests/Dis
 `provider-swift/Sources/ProviderCore/Inference/Distributed/Requests/DistributedQwenMediaIngress+Preparation.swift`,
 `provider-swift/Sources/ProviderCore/Inference/Distributed/Requests/DistributedQwenMediaLifetime.swift`, and
 `provider-swift/Sources/ProviderCore/Inference/Distributed/Engine/DistributedEngineFactory.swift`.
+
+## Gemma decode command buffers
+
+Gemma 4's plain decode steps (every row one token) commit a Metal command buffer
+every 100 operations with no input-size bound (`Gemma4DecodeCommandBuffers`,
+through `CBv2DecodeCommandBufferLimitsProviding`), as Nemotron Super, Flint and
+GLM do. MLX's defaults commit every 40 to 50 operations or 40 to 50 M distinct
+input elements. A step's inputs include the weights and each 64 MiB KV segment
+its history reads, so decode committed many times per step, reached MLX's limit
+of ten command buffers in flight, and waited inside evaluation instead of
+encoding ahead of the GPU. Results do not depend on the partitioning. Prefill
+chunks and assistant rounds keep MLX's defaults, so a row served with the
+assistant does not gain from this.
 
 ## Qwen27 feature-preserving mode selection
 

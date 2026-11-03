@@ -99,7 +99,7 @@ extension ClusterPlacementArtifact {
             try QwenTensorParallelBatchBudget.derive(geometry: family.geometry, plan: split,
                 tensors: canonical, maximumTokens: family.profile.maximumContextTokens,
                 chunkSize: family.profile.maximumChunkTokens, lanes: lanes, paged: true, rank: rank,
-                allocationBound: allocationBound)
+                promptTokens: family.profile.maximumPromptTokens, allocationBound: allocationBound)
         }
         let whole = try plain(plan, rank: nil)
         return try .init(request: request, lanes: lanes, chunkTokens: chunkTokens,

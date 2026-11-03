@@ -90,6 +90,52 @@ struct MiMoPagedPhaseStateTests {
         }
     }
 
+    @Test func ordinaryRingsHandOverTheirWholeMetadataAndOnlyTheModelsOwn() throws {
+        try Device.withDefaultDevice(.cpu) {
+            let configuration = try configuration()
+            func written(_ ring: RotatingKVCache, _ frames: [Int]) throws -> [any KVCache] {
+                let caches: [any KVCache] = [KVCacheSimple(), ring]
+                for count in frames { try append(count, to: caches, configuration: configuration) }
+                return caches
+            }
+            func handOver(_ source: [any KVCache], into destination: [any KVCache], frames: [Int]) throws {
+                let shapes = try MiMoPhaseSplitState.expectedShapes(stage: configuration, firstGlobalLayer: 0,
+                    frames: frames, activationDType: "bfloat16")
+                let arrays = try MiMoPhaseSplitState.exportArrays(caches: source, configuration: configuration,
+                    frames: frames, shapes: shapes)
+                try MiMoPhaseSplitState.install(transferred(arrays, shapes: shapes, committed: frames.reduce(0, +)),
+                    into: destination, shapes: shapes, frames: frames, configuration: configuration)
+            }
+            // Rotated by the last frame, and rotated back to the end of the buffer.
+            let ones = Array(repeating: 1, count: 130)
+            for frames in [[67, 1], ones] {
+                let source = try written(RotatingKVCache(maxSize: 65), frames)
+                let adopted: [any KVCache] = [KVCacheSimple(), RotatingKVCache(maxSize: 65)]
+                try handOver(source, into: adopted, frames: frames)
+                #expect(zip(source, adopted).allSatisfy { $0.offset == $1.offset && $0.metaState == $1.metaState })
+                equal(source.flatMap(\.state), adopted.flatMap(\.state))
+            }
+            // The same arrays under metadata the frame grid or the model's ring never gives are refused.
+            let rotatedBack = RotatingKVCache(maxSize: 65), source = try written(rotatedBack, ones)
+            var unwrapped = rotatedBack.metaState
+            unwrapped[6] = "false"
+            rotatedBack.metaState = unwrapped
+            #expect(throws: (any Error).self) {
+                try handOver(source, into: [KVCacheSimple(), RotatingKVCache(maxSize: 65)], frames: ones)
+            }
+            for foreign in [{ RotatingKVCache(maxSize: 65, step: 64) }, { RotatingKVCache(maxSize: 65, rewindCapacity: 2) }] {
+                #expect(throws: (any Error).self) {
+                    try handOver(try written(foreign(), [4]), into: [KVCacheSimple(), RotatingKVCache(maxSize: 65)], frames: [4])
+                }
+                let destination: [any KVCache] = [KVCacheSimple(), foreign()]
+                #expect(throws: (any Error).self) {
+                    try handOver(try written(RotatingKVCache(maxSize: 65), [4]), into: destination, frames: [4])
+                }
+                #expect(destination.allSatisfy { $0.offset == 0 && $0.innerState().isEmpty })
+            }
+        }
+    }
+
     func configuration() throws -> MiMoV26Configuration {
         let data = Data("""
         {"model_type":"mimo_v2","architectures":["MiMoV2ForCausalLM"],"hidden_size":64,"intermediate_size":128,

@@ -52,7 +52,7 @@ extension ProviderLoop {
     func autopilotAllowsModel(_ id: String) -> Bool {
         if ordinaryServingModelIDs.contains(id) { return true }
         if !autopilotSettings.enabled {
-            return autopilotInventoryModels[id] == nil
+            return autopilotInventoryModels[id] == nil && operatorFilterAllows(id)
         }
         // Inventory is observational until a valid live lease. Never let
         // waiting, shadow, paused, expired or disconnected control widen it.

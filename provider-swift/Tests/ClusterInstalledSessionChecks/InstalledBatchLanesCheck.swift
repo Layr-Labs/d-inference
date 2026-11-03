@@ -232,6 +232,30 @@ extension InstalledSessionCheck {
                 try require(owner[sync] == nil && native[sync] == nil, "Pipeline gained a TP synchronization override")
             }
         }
+        // Gemma tensor parallel: one lane by default (unqualified on a pair), 2...8 when named; a started lane retires
+        // alone; the adapter's arithmetic values reach the rank; committed-token logprobs are captured.
+        let gemmaTensor = try InstalledFixture.make(root: f.root.appendingPathComponent("lane-gemma-tp"),
+            probe: f.probe, owner: probe, worker: f.worker, generationMode: ClusterGenerationMode.tensorParallel.rawValue,
+            advertisedModes: [.pipeline, .tensorParallel],
+            registered: ("registered_gemma4_26b_qat_4bit", "registered_gemma4_26b_qat_4bit_greedy_generation_v1", "fixture/gemma"),
+            adapter: .gemma4LayerStage)
+        let gemmaTensorPrepared = try gemmaTensor.prepare(), gemmaTensorPlan = gemmaTensorPrepared.plan
+        try require(gemmaTensorPlan.batchLanes([:]) == 1 && !gemmaTensorPlan.lanesRetireAlone([:]),
+            "Gemma tensor parallel enabled unqualified concurrency by default")
+        for lanes in [2, 4, 8] {
+            let caller = [key: String(lanes)]
+            let child = try observed(gemmaTensorPlan.localOwnerConfiguration(ownerEnvironment: caller))
+            let native = gemmaTensorPlan.nativeEnvironment(matrix: gemmaTensorPrepared.matrixURL, ownerEnvironment: child)
+            try require(gemmaTensorPlan.batchLanes(caller) == lanes && Int(native[key] ?? "1") == lanes
+                && gemmaTensorPlan.lanesRetireAlone(caller), "Gemma tensor-parallel lane width or cancellation isolation differs")
+            try require(native["MLX_GATHER_QMM_EXPERT_SLICES"] == "trust" && native["MLX_GEMMA4_FUSED_WEIGHTED_UNSORT"] == "1",
+                "Gemma tensor parallel lost its arithmetic environment")
+        }
+        try malformedOverrideKeepsOneLane(gemmaTensorPlan, matrix: gemmaTensorPrepared.matrixURL)
+        try require(try DistributedResidentExecutionProfile(capability: gemmaTensorPlan.capability, generationMode: .tensorParallel,
+            requestTimeout: .seconds(10)).supportsLogprobs, "Gemma tensor parallel lost committed-token logprob capture")
+        try require(!(try DistributedResidentExecutionProfile(capability: gemmaPrepared.plan.capability, generationMode: .pipeline,
+            requestTimeout: .seconds(10)).supportsLogprobs), "Gemma pipeline claimed logprob capture")
         // Stage KV is paged only: the removed contiguous switch never reaches a rank.
         let diagnostic = gemmaPrepared.plan.nativeEnvironment(matrix: gemmaPrepared.matrixURL,
             ownerEnvironment: [key: "8", removedKVBackendSwitch: "contiguous"])
@@ -305,10 +329,11 @@ extension InstalledSessionCheck {
         }
         // MiMo uses the same real owner launcher and per-request memory
         // gates as Qwen; only explicit plain-pipeline widths are added here.
-        for mode in [ClusterGenerationMode.pipeline, .pipelineMTP, .pipelineCompactDecode, .phaseSplit, .phaseSplitMTP] {
+        // Its tensor-parallel owner serves one request at a time: no width reaches its ranks.
+        for mode in [ClusterGenerationMode.pipeline, .pipelineMTP, .pipelineCompactDecode, .phaseSplit, .phaseSplitMTP, .tensorParallel] {
             let mimo = try InstalledFixture.make(root: f.root.appendingPathComponent("lane-mimo-" + mode.rawValue),
                 probe: f.probe, owner: probe, worker: f.worker, generationMode: mode.rawValue,
-                advertisedModes: ClusterGenerationMode.allCases.filter { [.pipeline, .pipelineMTP, .pipelineCompactDecode, .phaseSplit, .phaseSplitMTP].contains($0) },
+                advertisedModes: ClusterGenerationMode.allCases.filter { [.pipeline, .pipelineMTP, .pipelineCompactDecode, .phaseSplit, .phaseSplitMTP, .tensorParallel].contains($0) },
                 registered: ("registered_mimo_v26_flash_mopd", "registered_mimo_v26_flash_mopd_greedy_generation_v1", "fixture/mimo"),
                 adapter: .mimoV26LayerStage)
             let prepared = try mimo.prepare(), plan = prepared.plan
@@ -323,11 +348,19 @@ extension InstalledSessionCheck {
                         "MiMo provider/owner/native lane widths disagree")
                     try require(plan.lanesRetireAlone(child) == (lanes > 1), "MiMo cancellation width differs")
                 } else {
-                    try require(plan.batchLanes(caller) == nil && child == fixed && native[key] == nil,
-                        "MiMo speculative/compact/phase mode gained lanes")
+                    try require(plan.batchLanes(caller) == nil && child == fixed && native[key] == nil
+                        && !plan.lanesRetireAlone(caller), "MiMo speculative/compact/phase/tensor-parallel mode gained lanes")
                 }
             }
             if mode == .pipeline { try malformedOverrideKeepsOneLane(plan, matrix: prepared.matrixURL) }
+            // Committed-token logprobs in tensor parallel only; the product's arithmetic defaults reach a TP rank.
+            try require(try DistributedResidentExecutionProfile(capability: plan.capability, generationMode: mode,
+                requestTimeout: .seconds(10)).supportsLogprobs == (mode == .tensorParallel), "MiMo logprob capture does not follow tensor parallel")
+            if mode == .tensorParallel {
+                let native = plan.nativeEnvironment(matrix: prepared.matrixURL, ownerEnvironment: [:])
+                try require(native["MLX_ENABLE_TF32"] == "1" && !native.keys.contains { $0.hasPrefix("DARKBLOOM_MIMO_") },
+                    "MiMo tensor parallel left the product's arithmetic defaults")
+            }
         }
         try require(DistributedInstalledPlan.defaultBatchLanes(adapter: .glm5NextLayerStage, mode: .tensorParallel,
             hasPrivateImages: false) == 8, "GLM tensor-parallel default changed")

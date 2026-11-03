@@ -26,11 +26,9 @@ jobs:
     permissions:
       contents: read
 
-  # Chooses a Darkbloom Sandbox or the Blacksmith fallback for each read-only
-  # job below. It follows the classifier so only jobs that will run are
-  # requested, and still routes the unconditional jobs if the classifier fails.
-  # A lane is granted whole or falls back whole, so each provider shard has a
-  # lane of its own and gets a free Mac even when there is not one per shard.
+  # Chooses a Darkbloom Sandbox or the Blacksmith fallback for the read-only
+  # Linux jobs below. It waits for the classifier but still runs if it fails.
+  # The macOS jobs are not routed (docs/developer/build.md).
   route:
     needs: changes
     if: ${{ !cancelled() }}
@@ -40,20 +38,6 @@ jobs:
       lanes: |
         release-integrity linux_arm64 blacksmith-4vcpu-ubuntu-2404
         docs linux_arm64 blacksmith-4vcpu-ubuntu-2404
-        test-provider-1 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.changes.outputs.provider == 'true' && 1 || 0 }}
-        test-provider-2 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.changes.outputs.provider == 'true' && 1 || 0 }}
-        test-provider-3 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.changes.outputs.provider == 'true' && 1 || 0 }}
-        test-provider-4 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.changes.outputs.provider == 'true' && 1 || 0 }}
-        test-provider-5 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.changes.outputs.provider == 'true' && 1 || 0 }}
-        test-provider-summary macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.changes.outputs.provider == 'true' && 1 || 0 }}
-        test-provider-sdk macos_arm64 blacksmith-12vcpu-macos-27 ${{ (github.event_name == 'push' || needs.changes.outputs.sdk == 'true') && 1 || 0 }}
-        test-cluster-checks macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.changes.outputs.provider == 'true' && 1 || 0 }}
-        test-cluster-1 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.changes.outputs.provider == 'true' && 1 || 0 }}
-        test-cluster-2 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.changes.outputs.provider == 'true' && 1 || 0 }}
-        test-cluster-3 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.changes.outputs.provider == 'true' && 1 || 0 }}
-        test-cluster-gpu-1 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.changes.outputs.provider == 'true' && 1 || 0 }}
-        test-cluster-gpu-2 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.changes.outputs.provider == 'true' && 1 || 0 }}
-        test-cluster-focused macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.changes.outputs.provider == 'true' && 1 || 0 }}
 
   release-integrity:
     name: Release Integrity
@@ -145,23 +129,22 @@ jobs:
 
   test-provider:
     # The provider suite runs in shards on separate Macs
-    # (scripts/provider-test-shards.py), each routed through its own
-    # test-provider-K lane above. Each shard runs its suites serially in
+    # (scripts/provider-test-shards.py). Each shard runs its suites serially in
     # one process. Shard 1 also runs the MLX-free test targets in one parallel
     # process; shard 2 also runs Prompt Parity. The last shard runs every suite
     # that no other shard selects, the isolated processes and the native gates
     # below. Provider Unit Tests Summary
     # checks that the shards together executed the full suite and reports coverage.
     name: Provider Unit Tests (shard ${{ matrix.shard }})
-    needs: [changes, route]
+    needs: changes
     if: ${{ needs.changes.outputs.provider == 'true' }}
-    runs-on: ${{ fromJSON(needs.route.outputs.routes)[format('test-provider-{0}', matrix.shard)] }}
+    runs-on: blacksmith-12vcpu-macos-27
     timeout-minutes: 60
     strategy:
       # A failed shard does not cancel the other shards.
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4, 5]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8]
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
@@ -363,16 +346,17 @@ jobs:
   test-provider-summary:
     # Checks the shards against the full suite list and reports coverage.
     name: Provider Unit Tests Summary
-    needs: [changes, route, test-provider]
+    needs: [changes, test-provider]
     if: ${{ !cancelled() && needs.changes.outputs.provider == 'true' }}
-    runs-on: ${{ fromJSON(needs.route.outputs.routes)['test-provider-summary'] }}
+    runs-on: blacksmith-12vcpu-macos-27
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           submodules: recursive
-      # The shards saved this build; restoring it gives the binaries that
-      # `swift test list` and llvm-cov read.
+      # This restores the shards' build, or on a pull request the base
+      # branch's build, and rebuilds it from the same sources and flags.
+      # `swift test list` and llvm-cov read its binaries.
       - name: Build provider CI prerequisites
         id: provider-ci-build
         uses: ./.github/actions/provider-ci-build
@@ -527,9 +511,9 @@ jobs:
     # SDK-lane input changes (scripts/ci-component-paths.py SDK); every push to
     # dev or master runs it, and a failure there notifies without blocking.
     name: Provider SDK Tests
-    needs: [changes, route]
+    needs: changes
     if: ${{ github.event_name == 'push' || needs.changes.outputs.sdk == 'true' }}
-    runs-on: ${{ fromJSON(needs.route.outputs.routes)['test-provider-sdk'] }}
+    runs-on: blacksmith-12vcpu-macos-27
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -697,9 +681,9 @@ jobs:
     # metadata and argument checks) and runs it on the retained fixtures: no GPU,
     # no model load, no weights. Every runner runs even after another fails.
     name: Cluster Metadata Checks
-    needs: [changes, route]
+    needs: changes
     if: ${{ needs.changes.outputs.provider == 'true' }}
-    runs-on: ${{ fromJSON(needs.route.outputs.routes)['test-cluster-checks'] }}
+    runs-on: blacksmith-12vcpu-macos-27
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -760,13 +744,15 @@ jobs:
           DARKBLOOM_CLUSTER_METADATA_BUILD_JOBS: '12'
           DARKBLOOM_CLUSTER_METADATA_BUILD_ROOT: ${{ runner.temp }}/cluster-native-metadata
         run: bash libs/darkbloom-cluster/Tests/PrefillScheduleChecks/run.sh
+      # Pushes save the cluster build; a pull request saves it only when it
+      # restored nothing (as the provider lane's Swift build).
       - name: Record source timestamps for the cluster build
-        if: ${{ !cancelled() && steps.capability-checks.outcome == 'success' && steps.cluster-build-cache.outputs.cache-hit != 'true' }}
+        if: ${{ !cancelled() && steps.capability-checks.outcome == 'success' && steps.cluster-build-cache.outputs.cache-hit != 'true' && (github.event_name != 'pull_request' || steps.cluster-build-cache.outputs.cache-matched-key == '') }}
         run: |
           python3 scripts/provider-release-cache.py snapshot-mtimes
           cp provider-swift/.build/provider-release-source-mtimes.json "$RUNNER_TEMP/cluster-native-metadata/"
       - name: Upload cluster metadata build cache
-        if: ${{ !cancelled() && steps.capability-checks.outcome == 'success' && steps.cluster-build-cache.outputs.cache-hit != 'true' }}
+        if: ${{ !cancelled() && steps.capability-checks.outcome == 'success' && steps.cluster-build-cache.outputs.cache-hit != 'true' && (github.event_name != 'pull_request' || steps.cluster-build-cache.outputs.cache-matched-key == '') }}
         uses: actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
         with:
           path: ${{ runner.temp }}/cluster-native-metadata
@@ -795,9 +781,9 @@ jobs:
     # separate Macs (scripts/cluster-test-plan.py): every test without a
     # switch, and the switched tests that pass on these runners.
     name: Cluster Runtime Tests (shard ${{ matrix.shard }})
-    needs: [changes, route]
+    needs: changes
     if: ${{ needs.changes.outputs.provider == 'true' }}
-    runs-on: ${{ fromJSON(needs.route.outputs.routes)[format('test-cluster-{0}', matrix.shard)] }}
+    runs-on: blacksmith-12vcpu-macos-27
     timeout-minutes: 60
     strategy:
       fail-fast: false
@@ -824,9 +810,9 @@ jobs:
     # ones and the benchmarks (scripts/cluster-test-plan.py). They run and
     # report on every pull request; a failure does not fail the workflow.
     name: Cluster GPU Tests (non-blocking, shard ${{ matrix.shard }})
-    needs: [changes, route]
+    needs: changes
     if: ${{ needs.changes.outputs.provider == 'true' }}
-    runs-on: ${{ fromJSON(needs.route.outputs.routes)[format('test-cluster-gpu-{0}', matrix.shard)] }}
+    runs-on: blacksmith-12vcpu-macos-27
     timeout-minutes: 60
     strategy:
       fail-fast: false
@@ -853,9 +839,9 @@ jobs:
     # The model-free runner scripts under libs/darkbloom-cluster/Tests that
     # Cluster Metadata Checks does not run (scripts/cluster-test-plan.py).
     name: Cluster Focused Checks
-    needs: [changes, route]
+    needs: changes
     if: ${{ needs.changes.outputs.provider == 'true' }}
-    runs-on: ${{ fromJSON(needs.route.outputs.routes)['test-cluster-focused'] }}
+    runs-on: blacksmith-12vcpu-macos-27
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -897,47 +883,3 @@ jobs:
           test "$SUMMARY_RESULT" = "$expected"
           test "$CLUSTER_RESULT" = "$expected"
           test "$CLUSTER_FOCUSED_RESULT" = "$expected"
-
-  cache-swift:
-    name: Swift Build + Cache
-    runs-on: blacksmith-12vcpu-macos-27
-    if: github.event_name == 'push'
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          submodules: recursive
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: '3.12.10'
-      - name: Select SDK 27 provider toolchain
-        run: ./scripts/prepare-provider-release-toolchain.sh
-      - name: Restore SwiftPM cache
-        uses: actions/cache/restore@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
-        with:
-          path: |
-            ~/Library/Caches/org.swift.swiftpm
-            ~/Library/org.swift.swiftpm
-            provider-swift/.build
-            libs/mlx-swift-lm/.build
-          key: spm-v4-blacksmith-macos27-native-${{ runner.os }}-${{ github.sha }}-${{ hashFiles('provider-swift/Package.resolved', 'libs/mlx-swift/Package.swift', 'libs/mlx-swift-lm/Package.swift') }}
-          restore-keys: |
-            spm-v4-blacksmith-macos27-native-${{ runner.os }}-
-      - name: Discard metallibs restored by the generic SwiftPM cache
-        run: |
-          for root in provider-swift/.build libs/mlx-swift-lm/.build; do
-            [ ! -d "$root" ] || find "$root" -type f -name mlx.metallib -delete
-          done
-      - name: Build provider-swift
-        working-directory: provider-swift
-        run: |
-          swift build -c release --product darkbloom
-          swift build -c release --product darkbloom-fan-helper
-      - name: Save SwiftPM cache
-        uses: actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
-        with:
-          path: |
-            ~/Library/Caches/org.swift.swiftpm
-            ~/Library/org.swift.swiftpm
-            provider-swift/.build
-            libs/mlx-swift-lm/.build
-          key: spm-v4-blacksmith-macos27-native-${{ runner.os }}-${{ github.sha }}-${{ hashFiles('provider-swift/Package.resolved', 'libs/mlx-swift/Package.swift', 'libs/mlx-swift-lm/Package.swift') }}

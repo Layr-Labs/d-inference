@@ -24,6 +24,9 @@ public enum ClusterPairUpdate {
     public static let progressStaleSeconds: Double = 60
     /// How often a supervisor in a cycle rewrites its progress and reads the other Mac's.
     public static let pollSeconds: Double = 5
+    /// How often a supervisor with no cycle running asks whether the other Mac rolled back the release this Mac runs
+    /// (`ClusterPairUpdateCycle.followRollback`).
+    public static let followCheckSeconds: Double = 60
 
     /// The other Mac as this Mac reads it.
     public enum Partner: Equatable, Sendable {
@@ -56,6 +59,11 @@ public enum ClusterPairUpdate {
                                     now: Double, requested: Bool = false) -> PartnerState {
         guard case .reported(let progress) = partner else { return .cannotCoordinate }
         if progress.running == target { return .ready }
+        // The other Mac rolled this release back: it will not install it, so neither does this Mac. A cycle
+        // `darkbloom update` asked for waits instead, while serving, for the other Mac's (`--override-quarantine`).
+        if progress.quarantined == target {
+            return requested && step == .staged ? .waiting : .gaveUp("the other Mac quarantined v\(target)")
+        }
         switch progress.phase {
         case .disabled:
             // Its slot never comes, but its own `darkbloom update` may: a requested cycle waits for it while serving.

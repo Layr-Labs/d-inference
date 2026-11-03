@@ -42,10 +42,13 @@ public enum ClusterForcedMode: String, Codable, Sendable, CaseIterable {
 
 extension ClusterLinkCosts {
     /// These costs with the forced plan's assumed reduction in place of a missing or unkeyed one.
-    func assumingForcedReduction() -> ClusterLinkCosts {
+    func assumingForcedReduction() -> ClusterLinkCosts { assuming(ClusterForcedMode.assumedReduction) }
+
+    /// These costs with `assumed` in place of a missing or unkeyed reduction.
+    func assuming(_ assumed: ClusterReductionCost) -> ClusterLinkCosts {
         guard reduction?.keyed != true else { return self }
         return .init(measured: measured, perChunkSeconds: perChunkSeconds, perDecodeStepSeconds: perDecodeStepSeconds,
-            handoffSecondsPerByte: handoffSecondsPerByte, provenance: provenance, reduction: ClusterForcedMode.assumedReduction,
+            handoffSecondsPerByte: handoffSecondsPerByte, provenance: provenance, reduction: assumed,
             recordFixedSeconds: recordFixedSeconds)
     }
 }

@@ -112,10 +112,8 @@ snapshots. Preserve its watchdog, cleanup and state isolation when using a focus
 selector. Use `scripts/run-nested-suite.sh` for documented nested Swift Testing
 cases and `scripts/run-exclusive-native-gpu-test.sh` for exclusive native work.
 
-CI runs the provider suite in five shards (`Provider Unit Tests (shard K)`), one
-Mac each, each routed through its own lane `test-provider-K`
-([CI runner routing](build.md#ci-runner-routing)).
-`PROVIDER_TEST_SHARD=K/N` selects a shard in `scripts/run-provider-tests.sh`,
+CI runs the provider suite in eight shards (`Provider Unit Tests (shard K)`), one
+Mac each. `PROVIDER_TEST_SHARD=K/N` selects a shard in `scripts/run-provider-tests.sh`,
 and `scripts/provider-test-shards.py` chooses its suites:
 
 | Class | Process | Suites |
@@ -135,6 +133,13 @@ profiles and uploads measured seconds per suite (`provider-test-shard-weights`).
 When the shards drift apart, replace the weights file with that artifact. A
 suite moves from the parallel class to the serial class when it fails or flakes
 in parallel; when in doubt, a suite stays serial.
+
+The jobs that use the `provider-ci-build` action and Cluster Metadata Checks
+restore their build cache by the exact key first, then by the key prefix. A
+push to `dev`, `main` or `master` saves its build. A pull request saves its build only when it restored nothing.
+Its later pushes then restore that entry or the base branch's entry and add no
+new entry, so they do not evict the base branch's entries. CI has no separate
+push-only Swift cache job.
 
 The SDK has independent test products under `libs/mlx-swift-lm`. CI validates
 native memory ownership, cancellation, media decoding, paged KV and resource
@@ -535,7 +540,10 @@ platform parity.
 Ordinary fixtures use symmetric 128-context geometry; the separate complete-prefix
 process uses `--asymmetric` for K64/V128 and 1,024-context geometry.
 `scripts/prepare-mimo-audio-fixtures.py` prepares hash-pinned public inputs
-including the genuine audio codec. Keep these output directories isolated from
+including the genuine audio codec. The script downloads only the files that its
+cache directory lacks. It retries a failed download up to 5 times and ends an
+attempt that stays below 100 KB/s for 60 s. It keeps a file only when the size
+and SHA-256 match. Keep these output directories isolated from
 the ordinary regression inputs. Audio gates exercise PCM8 and AAC-video with a
 small target, not full-model quality or peak memory. Release-only builds do not
 provision test fixtures or opt into native qualification.
@@ -1091,8 +1099,18 @@ automatic updates off downloads nothing at the slot, while `darkbloom update` on
 both Macs updates them; that a part that cannot drain downloads nothing; that a
 Mac whose partner cannot be asked goes on alone only while no pair runs on it;
 the candidate's promotion (kept under another update's lease) and rollback;
-the start check's verdicts on script binaries; and the rollback at once of a
-candidate that failed its start check.
+the start check's verdicts on script binaries; the rollback at once of a
+candidate that failed its start check; and the other Mac following a rollback
+(`followRollback`): after it promoted the release, while its own cycle still
+holds the update lease (it waits, then follows), with the other Mac no longer
+answering (bounded wait, then a deferral with nothing changed), and the
+quarantine on both Macs, with no follow back and no follow to a release the Mac
+does not keep; and what is decided before the lease (the Mac that rolled back
+names the release the other Mac still runs, a part that cannot drain does not
+follow yet, a Mac on another release does not ask for the lease).
+`Tests/ClusterSupervisionChecks/run.sh` also checks that a release the other Mac
+quarantined is given up, and that an older build's progress decodes without a
+quarantine.
 `ClusterServiceUpdateTests`
 (`provider-swift/Tests/DarkbloomCLITests/ClusterServiceUpdateTests.swift`) drives
 the real supervisor with a shell standing in for the cluster service: the
@@ -1104,7 +1122,10 @@ rollback and promotion. The start check runs the temporary install's
 1 s bound or reports another version is rolled back and quarantined without the
 re-exec, and the supervisor serves again from the restored binary; a release
 that answers is re-executed into as before; a restored predecessor that cannot
-start is not re-executed into. The re-exec is observed, never performed.
+start is not re-executed into. A supervisor with automatic updates off still
+checks for a rollback of the other Mac to follow, reports its own quarantine in
+its progress, and restarts into the restored release. The re-exec is observed,
+never performed.
 `Tests/ClusterSupervisionChecks/run.sh` checks the progress rules
 (`ClusterPairUpdate.partnerState`) with plain `swiftc`.
 
@@ -1325,6 +1346,250 @@ not load a model or qualify its output. Sources:
 The [routed-expert TP architecture](../architecture/inference.md#qwen35-routed-expert-tensor-parallel)
 states the arithmetic descriptor and supported scope.
 
+## Focused Gemma 4 tensor-parallel checks
+
+These checks use synthetic weights on one Mac, over loopback only. They prove
+neither real-weight numerics, a pair qualification nor speed.
+
+1. Run the model-free plan check (no MLX; it compiles in seconds) and the CPU
+   unit tests:
+
+   ```bash
+   bash libs/darkbloom-cluster/Tests/TensorParallelPlanChecks/gemma-run.sh
+   swift test --package-path libs/darkbloom-cluster --filter Gemma4TensorParallelTests
+   swift test --package-path libs/darkbloom-cluster --filter Gemma4TensorParallelRuntimeTests
+   ```
+
+   The plan check covers both registered artifacts' text tensors once per rank
+   and matches their registered text bytes. The `Gemma4TensorParallelRuntimeTests`
+   suite needs the GPU: put a source-matched `mlx.metallib` in the package's
+   debug products directory (the one `swift build --package-path libs/darkbloom-cluster --show-bin-path`
+   prints), not in the `.xctest` bundle. It covers the resident runtime's pieces:
+
+   - each rank's paged request state: its own KV heads of every layer;
+   - two in-process ranks on the paged request path, bit for bit equal, with
+     the whole model's tokens and exactly two collectives a layer and one a step;
+   - layer submission, which keeps every bit;
+   - batch lanes (one joining late): every row equals its request's solo row,
+     bit for bit, and the shared batch driver with the Gemma executor
+     publishes each request's solo tokens;
+   - the request loop on two ranks: a stop token, the owner's stop (also one
+     just before a stop token) and one rank's own stop end both ranks after
+     the same step, with logprobs;
+   - the share probe, timed on one rank with every sum local;
+   - each step's choice: greedy with both stop flags, sampled from the gathered
+     row exactly as the product's sampler draws, and greedy logprobs from the
+     split top-k, also at an exactly tied maximum whose other ID leads the gather;
+   - the verified load's cut of every text tensor, and its refusals;
+   - the load agreement's fields;
+   - what the capability declares of each mode (`ClusterServingFeatures`):
+     tensor parallel's prompt-prefix setting is the one its load agreement binds;
+   - the product's Gemma layout with its tensor-parallel facts: big Macs keep
+     the pipeline on default link costs; on a measured fast link tensor
+     parallel is predicted faster on the device index alone and the pipeline is
+     kept, until each rank's share probe lets it be chosen; the forced mode
+     places it; and each rank is charged its own heads.
+
+   `swift test --package-path libs/darkbloom-cluster --filter Gemma4TensorParallelPrefixTests`
+   (GPU, as above) covers the prompt-prefix tiers on two in-process ranks:
+
+   - a repeated prompt, and a longer one sharing it, restores the deepest
+     boundary both ranks hold and equals the cold request bit for bit;
+   - the restored rows, windows and position offsets equal the cold request's
+     at the boundary and after the next chunk;
+   - a boundary only one rank holds, or one rank cannot restore, another chunk
+     grid and a request whose cache is off all prefill from zero on both ranks;
+   - the request loop (greedy and sampled) and batch lanes through the driver
+     continue a restored prefix with the cold tokens;
+   - the memory tier's budget and eviction, and a capture within its limit;
+   - a request's own capture charged in its budget and the LOAD quote, no
+     charge for the memory tier, whose budget stays within the measured room;
+     with no tier budget a request still captures within its charge and a
+     repeat restores from the SSD tier;
+   - the SSD tier: records restore bit for bit after both tiers reopen,
+     encrypted and owner-only; stale, corrupted and other-key records are
+     refused on both ranks; no directory or key is no tier, and the daily write
+     cap, the free-space floor and the bounded close hold.
+
+   `libs/darkbloom-cluster/Tests/PlacementChecks/run.sh` also runs
+   `GemmaTensorParallelChecks.swift` (model-free). It builds the QAT 4-bit
+   layout from the retained real headers and the 8-bit layouts from their
+   derived shapes, and requires each to equal its golden layout, tensor-parallel
+   facts included. A rank's share must be the plan's exact cut (8,040,450,108 and
+   14,915,635,260 bytes), and the rank's reserve (`Gemma4TensorParallelRequestBudget`)
+   must be quoted. Under the provider's tensor-parallel-first policy it checks the
+   fastest-plan rule on constructed pairs: 2x M5 Ultra 256 GB keeps the pipeline on
+   default link costs. Where tensor parallel is predicted faster on the device
+   index alone (2x M4 Pro 24 or 32 GB, each rank quoted with its request's
+   prompt-prefix capture, and 2x M5 Ultra for a 128 + 128 request on the
+   measured 29 us link), the pipeline is kept with the verdict
+   `predictedFasterOnPriorOnly`, its plan line and model-list note. Share probes
+   of the model on both Macs (through `ClusterShareProbeHistory`) and requests
+   served in tensor parallel (through `ClusterServedCalibration`) then decide
+   both ways. A probe on one Mac or of another model is no evidence. A kept mode
+   still applies, the forced mode still places tensor parallel, and the same
+   layout without its choice still takes tensor parallel on the prior.
+
+   The `Gemma4TensorParallelTests` suite covers:
+
+   - the plan against the registered QAT 4-bit artifact's 1,697 header shapes
+     (`Tests/StageMetadataChecks/Inputs`), and the 8-bit artifact's derived shapes
+     and registered text bytes;
+   - refusals of unknown, misaligned and vision tensors;
+   - shard parameters against independent slices;
+   - two in-process ranks against the split-sum oracle, bit for bit;
+   - the packed feed-forward collective against separate collectives, also
+     under the registered prompt policy and the scoped batch decode;
+   - the vocabulary-split head against the whole head.
+
+2. Build `darkbloom-cluster-tp-check` and put a source-matched `mlx.metallib`
+   beside it ([build](build.md)). Then run the GPU oracles:
+
+   ```bash
+   bash libs/darkbloom-cluster-worker/Tests/GemmaTensorParallelOracles/run.sh \
+     /path/to/darkbloom-cluster-tp-check /new/scratch/dir 58123
+   bash libs/darkbloom-cluster-worker/Tests/GemmaTensorParallelOracles/run.sh \
+     /path/to/darkbloom-cluster-tp-check /another/new/dir 58125 paged
+   ```
+
+   The script synthesizes five variants: 4- and 8-bit, routed and all-expert,
+   and FP32. For each, it runs `full`, `split-sum`, `simulated` and two `tp`
+   ranks over the sealed local ring on the given port and the next one. With
+   `paged` as the fourth argument, every mode but `split-sum` runs the
+   resident runtime's own request path: paged KV, the product's CBv2 prompt
+   entry, and each step's choice in its own evaluation. The paged path also
+   runs `gemma lanes`: three requests served together through the batch
+   driver, in one process and over the ring, each of which must take its solo
+   tokens. And it runs `gemma run --prefix repeat` in `simulated` and on both
+   `tp` ranks: the request served twice through each rank's prompt-prefix tier,
+   the repeat restoring the deepest boundary both ranks hold.
+
+3. Verify. Each `tp` rank must equal `simulated` bit for bit (exit status 0).
+   Each repeated-prefix run must have restored a prefix and equal its cold run
+   bit for bit, and each `tp` rank's repeat must equal `simulated`'s.
+   The script also prints QualificationComparator's verdict for each rank
+   against `full`.
+
+## Focused MiMo V2.6 tensor-parallel checks
+
+These checks use synthetic weights on one Mac, over loopback only. They prove
+neither real-weight numerics, a pair qualification nor speed. Never load the
+registered artifact for them.
+
+1. Run the unit tests. The FP32-partial suite runs on the GPU, so stage the
+   source-matched `mlx.metallib` in the test bundle first
+   (`scripts/stage-test-metallib.sh`):
+
+   ```bash
+   swift test --package-path libs/darkbloom-cluster --filter MiMoTensorParallel
+   ```
+
+   They cover:
+
+   - the plan against the registered 1,732-tensor inventory and configuration
+     (`darkbloom-cluster-worker/Tests/CapabilityChecks/Fixtures`), per-rank
+     bytes and the SDK shard's agreement on every cut axis;
+   - refusals of renamed, foreign, excluded and odd-shaped tensors;
+   - the shard configuration and per-rank KV geometry;
+   - shard cuts and byte runs against independent slices;
+   - two in-process ranks against each other and the whole model;
+   - FP32 partials (`MiMoTensorParallelFloat32PartialTests`, on the GPU): two
+     ranks' expert rows add up bit for bit to the exact full-width row that
+     one Mac rounds once, through the decode-expert kernel and MLX's sorted
+     gather; every partial a rank sums is FP32, and no `o_proj` or dense
+     partial was rounded to BF16 first; the contract v2 strings are pinned;
+   - the vocabulary-split head against the whole head;
+   - the resident runtime's verified load: each rank reads exactly its shard's
+     bytes, and a tampered or foreign checkpoint is refused;
+   - its paged requests: ranks agree bit for bit and equal the ordinary caches,
+     with per-rank paged geometry, the selection rules, logprobs (an exactly
+     tied maximum included), every stop kind (the owner's stop just before a
+     stop token included), the request and load agreements, the request budget
+     and the text-only launch;
+   - what the text row's capability declares of each mode (`ClusterServingFeatures`).
+
+   `libs/darkbloom-cluster/Tests/PlacementChecks/run.sh` also runs
+   `MiMoTensorParallelChecks.swift` (model-free). It builds the layout from the
+   registered configuration and inventory and requires its tensor-parallel
+   facts (97 sums a step, `fastest_v1`), a rank's share of exactly
+   84,013,770,176 bytes, the routing prior (10,767,036,288 bytes a step), no
+   facts for the image candidate, the same facts in the golden layout, and the
+   rank's reserve (`MiMoTensorParallelRequestBudget`) in the quote. Under the
+   provider's tensor-parallel-first policy it checks the fastest-plan rule on
+   constructed pairs against the plain pipeline: 2x M5 Max 128 GB keeps the
+   pipeline where tensor parallel is predicted faster on the device index alone,
+   inside the margin and for long prompts; 2x M5 Ultra 256 GB keeps the pipeline
+   on default link costs. As the provider plans MiMo (the speculative pipeline
+   credited the 1.37x its records measured, a fresh pair's 32,768 + 32,768
+   request), both pairs keep the speculative pipeline before a load measures the
+   link and on the measured 29 us link, where tensor parallel is predicted faster
+   on the prior alone (`predictedFasterOnPriorOnly`), and for 8,192 + 128 or on a
+   109 us link. Requests served in tensor parallel decide both ways on both
+   pairs. `provider-swift/Tests/ClusterPlacementChecks/run.sh` checks that the
+   guided step credits MiMo's rounds from its shipped records and prints the
+   fastest-plan and logprob lines. Through the guided step it also checks feature
+   parity (`ClusterModeParity`) before the evidence rule:
+   - as this build declares them, MiMo's tensor parallel has no rounds, so the
+     speculative pipeline is kept even with this build's served records; a Gemma
+     record whose tensor parallel keeps no prompt prefixes (as builds before
+     0.10.7 declared it) keeps the pipeline even with both Macs' share probes,
+     after an update that served tensor parallel, and with nothing measured; each
+     plan says what tensor parallel would drop;
+   - with rounds declared (MiMo) and with Gemma's record as this build declares
+     it (prefix reuse kept), the evidence rule decides: MiMo on two 256 GB Macs
+     keeps the speculative pipeline with no served record or another build's and
+     follows this build's served records, and Gemma follows both Macs' share
+     probes;
+   - where only tensor parallel fits, the plan refuses and saves no setup; the
+     forced mode places it and says what it drops; a record without features
+     holds it back, and the forced mode then says what it drops is not known;
+     per-mode features cross the capability codec canonically; a GLM record
+     declaring a gap plans exactly as without it.
+
+2. Build `darkbloom-cluster-tp-check` and put a source-matched `mlx.metallib`
+   beside it ([build](build.md)). Then run the GPU oracles:
+
+   ```bash
+   bash libs/darkbloom-cluster-worker/Tests/MiMoTensorParallelOracles/run.sh \
+     /path/to/darkbloom-cluster-tp-check /new/scratch/dir 58223
+   ```
+
+   The script synthesizes four variants: `kernel`, `tiny`, `kernel` with every
+   token taking all 8 experts (no route can flip), and FP32 `kernel`. For
+   each, and for a 40-token and a 6-token prompt around the 8-token window, it
+   runs `full`, `simulated` and two `tp` ranks over the sealed local ring on
+   the given port and the next one. It then runs the socket backend once, and
+   one sampled run: temperature 0.8, drawn from the gathered row (by the
+   product's sampler on the paged path). It runs this matrix twice:
+
+   - `contiguous`: the foundation's path (tensors read whole and cut, ordinary
+     caches);
+   - `paged`: the resident runtime's path (`--path paged`: verified load, paged
+     KV, the per-step agreement sum, 100-op decode buffers). Paged histories
+     are BF16 only, so this matrix skips the FP32 variant.
+
+   The paged matrix also checks that:
+
+   - each rank read only its byte runs;
+   - paged `full` and `simulated` equal contiguous ones bit for bit;
+   - ranks given different agreements refuse;
+   - a checkpoint changed after its manifest is refused;
+   - a 192-token prompt (three 64-token pages before decode) gives the same
+     results on both paths and over the ring;
+   - recording route sets (`--record-routes yes`) changes nothing.
+
+   It also reports, without requiring anything of it, where `simulated` first
+   routes a token to other experts than `full`, over the positions whose inputs
+   are still equal (`mimo compare` prints a `route sets:` line).
+
+   `MIMO_ORACLE_PATHS=paged` runs one matrix.
+
+3. Verify. Each `tp` rank must equal `simulated` bit for bit, KV caches
+   included, and greedy ranks must agree with `full` under
+   QualificationComparator (exit status 0). A sampled run's verdict against
+   `full` is informational: rows that differ by rounding can draw a
+   neighbouring token.
+
 ## Focused Tooling Checks
 
 For the PR reviewer, run the seven offline suites listed in
@@ -1433,7 +1698,10 @@ parity qualifications included) and a block whose derived approval, grant or
 parity qualification IDs exceed 128 bytes, refuse a registration body over the
 coordinator's 64 KiB limit before staging (65,536 bytes accepted, 65,537
 refused), accept the GLM-5.3-Flash block pinned from the 0.10.5-dev.branch.17
-app, and check that registration sends the block in its canonical form.
+app (its digests are that app's; its grant and parity qualifications are this
+build's declaration, so its evidence digest and `qualified_at` follow
+`ClusterPublicModels`), and check that registration sends the block in its
+canonical form.
 `scripts/test-provider-cluster-runtime-models.py` runs the release's
 model-metadata fetch against a local HTTP registry: the environment's catalog and
 CDN, candidate selection, the manifest and `config.json` checks, each candidate's
@@ -1464,10 +1732,9 @@ removed first, its failure fatal only when `CLUSTER_RUNTIME_SEND` is true, and
 HTTPS plane with a throwaway certificate; the host needs Bash, Python, jq, curl
 and openssl. It covers the default-off switch, fork pull requests, exact label
 grants, HTTP errors, the single retry, timeouts, untrusted or plain-HTTP planes
-and hostile reply text. It also pins each routed job's lanes (one per provider
-shard, matching the job's matrix), fallback, timeout and read-only permissions,
-and keeps release workflows on literal Blacksmith runners. No check contacts the
-real plane.
+and hostile reply text. It also pins each routed job's fallback, timeout and
+read-only permissions, and keeps release workflows and the macOS jobs of
+`ci.yml` on literal Blacksmith runners. No check contacts the real plane.
 
 Docs-impact tests retain provider, protocol, privacy, native capacity, cache,
 release/model publication and fixture mappings. Historical links need exact

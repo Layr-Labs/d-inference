@@ -38,6 +38,22 @@ public enum MiMoResidentCapabilityMetadata {
             arithmeticPolicySHA256: sha256(try canonicalJSONData(arithmetic)),
             supportedPrefillSchedules: spec.supportedPrefillSchedules,
             supportedGenerationModes: imageCandidate ? spec.supportedGenerationModes.filter { [.pipeline,.pipelineCompactDecode,.pipelineMTP].contains($0) } : spec.supportedGenerationModes,
-            media:imageCandidate ? .init() : nil)
+            media:imageCandidate ? .init() : nil,
+            modeFeatures: imageCandidate ? nil : try servingFeatures(spec.supportedGenerationModes))
+    }
+
+    /// What each text mode keeps (`ClusterServingFeatures`), asked of the loads' own settings: the widest lanes a
+    /// load accepts (`MiMoBatchSettings`, only the plain pipeline batches), no prompt prefix where histories are
+    /// paged or handed off (as `MiMoResidentRuntime` builds its cache), rounds in the speculative modes, and
+    /// tensor parallel's own (`MiMoTensorParallelResidentRuntime.servingFeatures`).
+    static func servingFeatures(_ modes: [ClusterGenerationMode]) throws -> [ClusterGenerationMode: ClusterServingFeatures] {
+        let widest = [QwenBatchSettings.lanesEnvironmentName: String(QwenBatchWire.maximumLanes)]
+        return try Dictionary(uniqueKeysWithValues: modes.map { mode in
+            if mode == .tensorParallel { return (mode, MiMoTensorParallelResidentRuntime.servingFeatures) }
+            let batch = try MiMoBatchSettings.fromEnvironment(widest, mode: mode)
+            let prefixes = !(mode.isPhaseSplit || batch.usesPagedHistory)
+            return (mode, ClusterServingFeatures(promptPrefixReuse: prefixes, ssdPrefixTier: prefixes,
+                speculativeRounds: mode.usesSpeculativeHead, maximumLanes: batch.lanes, logprobs: false))
+        })
     }
 }

@@ -56,12 +56,16 @@ public struct ClusterTensorParallelFamilyPlan: Codable, Equatable, Sendable {
     /// `tensor_parallel_v1` with it on every rank. Nil: one token per step and
     /// no head (omitted then, so a layout of any other family reads as before).
     public let speculativeHead: ClusterTensorParallelSpeculativeHead?
+    /// How the plan is weighed against the pipeline under the provider's
+    /// tensor-parallel-first rule (`ClusterTensorParallelChoice`). Nil keeps
+    /// that rule (omitted then, so a layout of any other family reads as before).
+    public let choice: ClusterTensorParallelChoice?
 
     public init(plan: String, ranks: [Int], reductionsPerLayer: Int, reductionsPerStep: Int,
                 partialBytesPerToken: Int, layerPartialBytesPerToken: Int? = nil, stateDividesByHeads: Bool,
                 shareOptions: [[Int]]? = nil, shareUnits: Int? = nil,
                 requestAllowance: ClusterTensorParallelRequestAllowance? = nil, additionalResidentBytes: Int? = nil,
-                speculativeHead: ClusterTensorParallelSpeculativeHead? = nil) {
+                speculativeHead: ClusterTensorParallelSpeculativeHead? = nil, choice: ClusterTensorParallelChoice? = nil) {
         self.plan = plan; self.ranks = ranks; self.reductionsPerLayer = reductionsPerLayer
         self.reductionsPerStep = reductionsPerStep; self.partialBytesPerToken = partialBytesPerToken
         self.layerPartialBytesPerToken = layerPartialBytesPerToken
@@ -71,7 +75,12 @@ public struct ClusterTensorParallelFamilyPlan: Codable, Equatable, Sendable {
         self.requestAllowance = requestAllowance
         self.additionalResidentBytes = additionalResidentBytes
         self.speculativeHead = speculativeHead
+        self.choice = choice
     }
+
+    /// True when the provider's tensor-parallel-first rule does not apply to
+    /// this plan: it is chosen only where predicted faster.
+    public var choosesFastest: Bool { choice == .fastest }
 
     /// Bytes a selection reduction carries (the head's best value and token
     /// per rank, a few floats), as the prefill prediction has always charged it.
@@ -374,10 +383,18 @@ public struct ClusterTensorParallelAssessment: Codable, Equatable, Sendable {
         case chosen
         /// Predicted slower than the chosen placement (or within the margin).
         case predictedSlower
+        /// Predicted faster than the chosen placement by the margin, but a
+        /// rank's share step comes from the hardware prior, not a measurement:
+        /// a family chosen only where faster (`ClusterTensorParallelChoice.fastest`)
+        /// waits for every rank's measured share step (`Evidence.measured`).
+        case predictedFasterOnPriorOnly
         /// This runtime does not execute the mode for this model and rank count.
         case notExecutedByRuntime
         /// The policy excludes this mode or every executable shape on these chips.
         case notQualified
+        /// Left out before ranking because it would drop a feature of the mode
+        /// it would replace (`ClusterPlacementPolicy.tensorParallelHeldForFeatures`).
+        case dropsFeatures
         /// No placement in this mode fits.
         case doesNotFit
         /// The reduction over the link was not measured on the keyed data
@@ -388,6 +405,17 @@ public struct ClusterTensorParallelAssessment: Codable, Equatable, Sendable {
     public struct Device: Codable, Equatable, Sendable {
         public let device: String
         public let split: ClusterDecodeSplit
+    }
+
+    /// What a tensor-parallel prediction rests on, for a family chosen only
+    /// where faster (`ClusterTensorParallelChoice.fastest`).
+    public enum Evidence: String, Codable, Sendable {
+        /// Every rank's share step is measured (`ClusterDecodeSplit.measured`):
+        /// a share probe of this model, or requests served in tensor parallel.
+        case measured
+        /// A rank's share step comes from the hardware prior (or is not
+        /// predicted to shrink): the family does not choose tensor parallel on it.
+        case priorOnly
     }
 
     public let verdict: Verdict
@@ -403,4 +431,8 @@ public struct ClusterTensorParallelAssessment: Codable, Equatable, Sendable {
     public let reductionsPerStep: Int
     public let reductionSecondsPerStep: Double?
     public let reductionKeyed: Bool?
+    /// For a family chosen only where faster, whose tensor-parallel placement
+    /// was predicted: what that placement's (or the chosen one's) ranks rest
+    /// on. Nil otherwise (omitted then, so a plan of any other family reads as before).
+    public var evidence: Evidence? = nil
 }

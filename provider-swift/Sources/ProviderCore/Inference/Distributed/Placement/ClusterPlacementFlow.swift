@@ -280,6 +280,11 @@ public enum ClusterPlacementFlow {
             policy.modesReason = policy.modesReason ?? "a capacity change keeps the running tensor-parallel shares"
             policy.requiredTensorShares = incumbentTensorShares
         }
+        // Feature parity (`ClusterModeParity`): tensor parallel is planned only where it keeps every feature of the
+        // mode it would replace, as the worker's capability record declares them, and is left out before anything is
+        // ranked. A developer's forced mode is placed anyway, and the plan says what it drops.
+        let (parity, parityRefusal) = ClusterModeParity.apply(to: &policy, capability: capability, layout: layout,
+            forced: forced != nil) { try ClusterPlacementPlanner.plan(devices: devices, layout: layout, policy: $0, link: link) }
         // A singleton tensor placement saves the widest width its owner's quotes admit on both Macs now. One call
         // initializes a constant `result`, so the sizing's plans stay off this frame, which a deep planner stack shares.
         var batchLanes = batchScope?.lanes
@@ -295,7 +300,19 @@ public enum ClusterPlacementFlow {
         }
         if let why = ClusterPlacementExplanation.deploymentReason(result) {
             lines += ["Tensor parallel or pipeline", "  " + why]
+            // A plan chosen only where faster (`ClusterTensorParallelChoice.fastest`) says so, and what each mode keeps.
+            if layout.tensorParallel?.family.choosesFastest == true, admissibleModes.contains(.tensorParallel) {
+                lines.append("  This model runs tensor parallel only where it is predicted faster than a pipeline on its own step "
+                    + "as measured on both Macs, never on the device index alone; until a load measures the link, tensor parallel "
+                    + "is priced on a slow assumed link.")
+                lines.append("  " + ClusterModeParity.ruleLine)
+                if let note = ClusterModelFeaturePolicy.modeFeatureNote(capability) { lines.append("  " + note) }
+            }
         }
+        if let parity, forced != nil, let chosen = result.chosen, parity.modes.contains(chosen.mode) {
+            lines += ["Feature parity", "  " + parity.forcedLine]
+        }
+        if let parityRefusal { lines += ["Feature parity", "  " + parityRefusal] }
         if handOff {
             lines += ClusterHandOffModes.lines(enabled: true)
         } else if let note = lines.firstIndex(where: { $0.hasPrefix("  Phase split, phase split + MTP") }) {

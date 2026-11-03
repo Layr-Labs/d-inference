@@ -589,11 +589,12 @@ darkbloom cluster local [<model>] [--bind <address>]
 
 Runs the onboarding asking for local-only serving (`ClusterOnboardingRequest`),
 saved in the leader's setup record (`ClusterOnboardingLeadership.localOnly`,
-`localBind`) until `p` in `darkbloom cluster` serves through Darkbloom again.
+`localBind`) until **Serve through Darkbloom** in `darkbloom cluster` serves
+through Darkbloom again.
 The leader part then starts with `--no-coordinator`. Needs a terminal; exit 1
-otherwise. On the Mac that joins a waiting leader it pairs, says to run it on
-the leader and ends (exit 0) like `darkbloom cluster`
-(`ClusterOnboardingDriver.joinedLocalLine`). Steps: [Serving locally only](./two-mac-cluster.md#serving-locally-only)
+otherwise. On the Mac that joins a waiting leader it pairs, says to continue on
+the leader with `darkbloom cluster local` and ends (exit 0) like `darkbloom cluster`
+(`ClusterOnboardingDriver.joinedLocalContinueLine`). Steps: [Serving locally only](./two-mac-cluster.md#serving-locally-only)
 (`provider-swift/Sources/darkbloom/ClusterLocalCommand.swift`).
 
 `darkbloom cluster status` prints `MTP: on (decode verifies drafts of the
@@ -781,7 +782,10 @@ release, the installed `Darkbloom.app` is not the recorded release, or the kept
 release fails its hash or signature check (`RollbackRefusal`). A refusal at
 the swap, after the drain, restarts the drained provider on the installed
 release; when another provider took the instance lock during the drain, it is
-not signalled and the service stays drained. Steps are in
+not signalled and the service stays drained. On a `darkbloom cluster` Mac,
+stop its cluster service first; once it runs again, the other Mac follows the
+rollback to the same release
+([a rollback on one Mac](./cluster-always-on.md#a-rollback-on-one-mac)). Steps are in
 [installation → Roll back to the previous release](./installation.md#roll-back-to-the-previous-release).
 See [installation → Update](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/provider/installation.md).
 
@@ -1583,6 +1587,16 @@ The report header prints `Build` (`prod` or `dev`, fixed at compile time),
 `darkbloom doctor` is read-only except for the subprocess calls used by public
 ProviderCore checks and the explicit `--clear-backend-guard` action
 (`provider-swift/Sources/darkbloom/DoctorCommand.swift`, `runClearBackendGuard`).
+On a Mac paired for a two-Mac cluster, the detailed checks also list the
+checks `darkbloom cluster doctor` runs (installed metadata, trust files, the
+Thunderbolt RDMA link, the saved setup), each named `cluster <check>`; a failed
+one fails the run and points to `darkbloom cluster doctor` for its details. A
+Mac that is not paired gets none of them, and its link is not inspected
+(`provider-swift/Sources/darkbloom/DoctorClusterChecks.swift`,
+`buildClusterDoctorChecks`). On a Mac that serves its share of a cluster's
+model, **model fits in RAM** says the single-Mac load check does not apply
+and points to `darkbloom cluster doctor`, instead of weighing the whole model
+against this Mac's memory (`ModelFitDiagnostic.clusterMember`).
 The operator report begins with a readiness summary and the first concrete
 action. A failed model-fit check names the live usable memory, the required
 load budget and their shortfall; it tells the operator to free memory, rerun
@@ -2291,7 +2305,7 @@ qualification or performance. Sources:
 | Watchdog state | `~/.darkbloom/watchdog-state.json` (`DARKBLOOM_WATCHDOG_STATE`) | `provider-swift/Sources/ProviderCore/Service/WatchdogState.swift` |
 | KV-backend crash-loop guard | `~/.darkbloom/kv-backend-guard.json` (`DARKBLOOM_KV_BACKEND_GUARD`) | `provider-swift/Sources/ProviderCore/Service/KVBackendGuard.swift` |
 | App Attest stall restart marker | `app-attest-stall-restart.json` beside the daemon state file, `0600`; time of the last automatic App Attest restart, for a stalled DeviceCheck call or for `is_supported_false` ([limits](../reference/app-attest-shadow.md#bounds-and-credential-lifecycle)) | `provider-swift/Sources/ProviderAppAttest/AppAttestStallRestart.swift` (`AppAttestStallRestartMarker`) |
-| App Attest verified marker | `app-attest-verified.json` beside the daemon state file, `0600`; time of the last coordinator App Attest authorization, rewritten at most once per hour. It only allows the `is_supported_false` restart; it never authorizes serving | `provider-swift/Sources/ProviderAppAttest/AppAttestStallRestart.swift` (`AppAttestVerifiedMarker`) |
+| App Attest verified marker | `app-attest-verified.json` beside the daemon state file, `0600`; time of the last coordinator App Attest authorization, rewritten at most once per hour. When it is missing at serve start, it is seeded once from the previous daemon state (the last Apple success of an attested key, or an App Attest grant left by an unclean exit), with evidence from the last 7 days. It only allows the `is_supported_false` restart; it never authorizes serving | `provider-swift/Sources/ProviderAppAttest/AppAttestStallRestart.swift` (`AppAttestVerifiedMarker`) |
 | Provider run marker | `provider-run.json` beside the daemon state file, `0600`. Set to `running` when a serve process starts and to `clean` (with cause) after its drain or before an update/stall relaunch. Explicit update/stall relaunch causes survive later generic termination callbacks; a failed hand-off restores running state and clears the cause. The next process derives `previous_exit` and `start_reason` from it | `provider-swift/Sources/ProviderCore/Service/ProviderRunMarker.swift`, `ProviderProcessRun.swift` |
 | APNs push history | `apns-push-history.json` beside the daemon state file, `0600`. The last 50 code-identity push receipt times and reply times, plus whether a device token was present. No token, nonce or payload | `provider-swift/Sources/ProviderCore/Apns/APNsPushHistory.swift` |
 | Provider LaunchAgent | label `io.darkbloom.provider`; `~/Library/LaunchAgents/io.darkbloom.provider.plist`; `RunAtLoad = true`, `KeepAlive = false`; stdout/stderr → `~/.darkbloom/provider.log` | `provider-swift/Sources/ProviderCore/Service/LaunchAgent.swift` (`label`, `plistPath`, `logPath`) |

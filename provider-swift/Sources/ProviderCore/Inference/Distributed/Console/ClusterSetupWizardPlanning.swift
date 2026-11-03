@@ -103,8 +103,8 @@ enum ClusterSetupPlanning {
                        shareProbes: ClusterShareProbeHistory? = nil, now: Double = Date().timeIntervalSince1970,
                        peerMayReceive: Bool = false, keeping: [String: ClusterGenerationMode] = [:],
                        coordinator: Bool = false) -> [Decision] {
-        // The wizard's own steps lead from this Mac; the onboarding (`nil`) leaves which Mac leads the
-        // session (rank 0) and which decodes to the planner and the model's pair-serving grant.
+        // The wizard's own steps lead from this Mac; the onboarding and the service's re-plans pass the Mac the cluster
+        // was set up on (`ClusterControlDerivation.planLeader`). A `nil` leader leaves rank 0 to the planner.
         let sessionLeader: String? = leader ?? localMemberID
         let peerID = description.members.first { $0.id != localMemberID }?.id ?? "the other Mac"
         // Developer bench only (`ClusterBenchChip`): both Macs are planned and checked as that chip; a release build
@@ -230,6 +230,8 @@ enum ClusterSetupPlanning {
     /// Why a model is not offered, plain action or fact first (the screen cuts long reasons).
     static func refusalWords(_ result: ClusterPlacementResult, localMemberID: String, names: [String: String] = [:]) -> String {
         func name(_ device: String) -> String { names[device] ?? device }
+        // Only tensor parallel fits, and it would drop a feature of the model's other modes (`ClusterModeParity`).
+        if result.tensorParallel?.verdict == .dropsFeatures, let why = result.modesReason { return why }
         if let excluded = result.unqualifiedPossible, excluded > 0 {
             let alone = result.alone.first(where: { $0.fit.possible })
                 .map { " \(name($0.device)) can serve it alone in single-Mac Darkbloom." } ?? ""

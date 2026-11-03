@@ -128,6 +128,39 @@ private struct PairMac {
     }
 }
 
+/// A rollback on one Mac of the pair, which the other Mac follows (`ClusterPairUpdateCycle.followRollback`).
+private enum FollowTestError: Error { case notInstalled }
+
+extension PairMac {
+    var store: UpdateRecoveryStore { UpdateRecoveryStore(installRoot: fixture.installRoot, verifyCodeSignatures: false) }
+
+    /// v2 installed by the updater and restarted into, as the pair's cycle leaves it: a pending candidate over v1.
+    @discardableResult
+    func installCandidate() async throws -> SelfUpdater {
+        let updater = fixture.updater(baseURL: baseURL)
+        guard case .updated(_, "2.0.0") = await updater.update() else { throw FollowTestError.notInstalled }
+        try updater.prepareCandidateLaunch(operation: "cluster-restart", baseline: nil)
+        return updater
+    }
+
+    /// The candidate passed its stabilization window.
+    func promote() throws {
+        var state = try store.loadState()
+        state.promoteCandidate()
+        try store.writeState(state)
+    }
+
+    /// This Mac's supervisor rolled v2 back (it failed its start check), restored v1 and quarantined v2, and, started
+    /// again from v1, publishes its resting progress with the quarantine.
+    func rollBackAfterFailedStartCheck() async throws {
+        let updater = try await installCandidate()
+        #expect(ClusterCandidateRecovery(updater: updater).recordFailedStartCheck(version: "2.0.0", reason: "`--version` exited 1",
+                                                                                  now: 200) == .rolledBack(from: "2.0.0", to: "1.0.0"))
+        ClusterPairUpdate.writeProgress(.init(phase: .idle, running: "1.0.0", writtenAt: Date().timeIntervalSince1970,
+                                              quarantined: updater.quarantinedVersion()), to: progressPath)
+    }
+}
+
 private final class Restarts: @unchecked Sendable {
     private let lock = NSLock()
     private var values: [String] = []
@@ -429,5 +462,191 @@ struct ClusterPairUpdateTests {
         #expect(state.quarantine?.reason.contains("failed its start check before the restart (`--version` exited 1)") == true)
         guard case .quarantined(let version, _) = await updater.checkForUpdate() else { Issue.record("not quarantined"); return }
         #expect(version == "2.0.0", "the next slot does not install it again")
+    }
+
+    // MARK: - The peer follows a rollback (owner ruling 2026-11-03)
+
+    /// The other Mac promoted v2 before this one rolled it back: it drains its part, restores v1 under the update lease,
+    /// quarantines v2 and restarts into v1, so the pair serves v1 together.
+    @Test func peerThatPromotedTheReleaseFollowsTheRollback() async throws {
+        let rolledBack = try await PairMac.make(part: false), peer = try await PairMac.make()
+        defer { Task { await rolledBack.cleanUp(); await peer.cleanUp() } }
+        try await peer.installCandidate()
+        try peer.promote()
+        try await rolledBack.rollBackAfterFailedStartCheck()
+
+        let log = Lines(), restarts = Restarts()
+        let outcome = await peer.cycle(partner: rolledBack, log: log).followRollback { restarts.record("peer", $0) }
+
+        #expect(outcome == .followed(.restarted(from: "2.0.0", to: "1.0.0", drained: true)), "\(log.all)")
+        #expect(restarts.all == ["peer:1.0.0"])
+        #expect(peer.mailbox.readClusterUpdateDrainStatus()?.outcome == .notServing, "its part was asked to drain first")
+        #expect(try peer.fixture.liveBinaryContents() == "1.0.0-darkbloom")
+        let state = try peer.store.loadState()
+        #expect(state.current?.version == "1.0.0" && state.candidate == nil)
+        #expect(state.quarantine?.version == "2.0.0")
+        #expect(state.quarantine?.reason.contains("the other Mac of the pair rolled v2.0.0 back to v1.0.0") == true)
+        let progress = ClusterPairUpdate.readProgress(from: peer.progressPath)
+        #expect(progress?.phase == .restarting && progress?.target == "1.0.0" && progress?.quarantined == "2.0.0")
+        #expect(log.all.contains { $0.contains("this Mac follows to v1.0.0") })
+        try peer.fixture.updater(baseURL: peer.baseURL).beginUpdateSession(operation: "lease-check").release()
+    }
+
+    /// The other Mac is still mid-update: its cycle holds the update lease, so the follow waits for the next check and
+    /// changes nothing; then its unpromoted candidate is rolled back the same way.
+    @Test func peerStillMidUpdateFollowsOnceItsCycleLetsTheLeaseGo() async throws {
+        let rolledBack = try await PairMac.make(part: false), peer = try await PairMac.make(part: false)
+        defer { Task { await rolledBack.cleanUp(); await peer.cleanUp() } }
+        let updater = try await peer.installCandidate()
+        try await rolledBack.rollBackAfterFailedStartCheck()
+
+        let log = Lines(), restarts = Restarts()
+        let cycle = try updater.beginUpdateSession(operation: "cluster-auto-update")
+        let refused = await peer.cycle(partner: rolledBack, log: log).followRollback { restarts.record("peer", $0) }
+        #expect(refused == .busy)
+        #expect(try peer.fixture.liveBinaryContents() == "2.0.0-darkbloom")
+        #expect(try peer.store.loadState().candidate?.release.version == "2.0.0")
+        #expect(ClusterPairUpdate.readProgress(from: peer.progressPath) == nil, "nothing was published")
+        cycle.release()
+
+        let outcome = await peer.cycle(partner: rolledBack, log: log).followRollback { restarts.record("peer", $0) }
+        #expect(outcome == .followed(.restarted(from: "2.0.0", to: "1.0.0", drained: true)), "\(log.all)")
+        #expect(restarts.all == ["peer:1.0.0"])
+        #expect(try peer.fixture.liveBinaryContents() == "1.0.0-darkbloom")
+        let state = try peer.store.loadState()
+        #expect(state.candidate == nil && state.current?.version == "1.0.0" && state.quarantine?.version == "2.0.0")
+    }
+
+    /// The other Mac stops answering once the follow began: it waits at most the bound, then defers with a clear reason,
+    /// changes nothing and frees the lease. One that cannot be asked at all is not followed.
+    @Test func unreachablePeerIsWaitedForThenTheFollowDefers() async throws {
+        let rolledBack = try await PairMac.make(part: false), peer = try await PairMac.make(part: false)
+        defer { Task { await rolledBack.cleanUp(); await peer.cleanUp() } }
+        try await peer.installCandidate()
+        try peer.promote()
+        try await rolledBack.rollBackAfterFailedStartCheck()
+        var timing = pairTiming
+        timing.partnerStageWait = 1
+        func cycle(partner: @escaping @Sendable () -> ClusterPairUpdate.Partner, log: Lines) -> ClusterPairUpdateCycle {
+            var environment = ClusterPairUpdateCycle.Environment(updater: peer.fixture.updater(baseURL: peer.baseURL),
+                progressPath: peer.progressPath, partner: partner, part: { .notRunning }, partStarting: { _ in false },
+                mailboxDirectory: peer.mailboxDirectory, pairRunsHere: { true }, log: { log.append($0) })
+            environment.timing = timing
+            return ClusterPairUpdateCycle(environment: environment)
+        }
+        let log = Lines(), restarts = Restarts()
+        let unasked = await cycle(partner: { .unreachable }, log: log).followRollback { restarts.record("peer", $0) }
+        #expect(unasked == .nothingToFollow)
+        #expect(ClusterPairUpdate.readProgress(from: peer.progressPath) == nil)
+
+        let asked = Lines()
+        let reported = try #require(ClusterPairUpdate.readProgress(from: rolledBack.progressPath))
+        let started = Date()
+        let outcome = await cycle(partner: {
+            asked.append("asked")
+            return asked.all.count == 1 ? .reported(reported) : .unreachable
+        }, log: log).followRollback { restarts.record("peer", $0) }
+
+        #expect(outcome == .followed(.drainTimedOut), "\(log.all)")
+        #expect(Date().timeIntervalSince(started) < 15, "the wait is bounded")
+        #expect(restarts.all.isEmpty)
+        #expect(try peer.fixture.liveBinaryContents() == "2.0.0-darkbloom")
+        #expect(try peer.store.loadState().quarantine == nil)
+        let progress = ClusterPairUpdate.readProgress(from: peer.progressPath)
+        #expect(progress?.phase == .deferred)
+        #expect(progress?.detail == "the other Mac did not confirm it runs v1.0.0 within 1 s")
+        try peer.fixture.updater(baseURL: peer.baseURL).beginUpdateSession(operation: "lease-check").release()
+    }
+
+    /// Both Macs keep v2 quarantined: neither's next check installs it again, each one's progress says so, and the Mac
+    /// that rolled back first finds nothing to follow in its peer's rollback (no loop). A peer that keeps another
+    /// release for rollback cannot follow and changes nothing.
+    @Test func quarantineAppliesOnBothMacs() async throws {
+        let rolledBack = try await PairMac.make(part: false), peer = try await PairMac.make(part: false)
+        defer { Task { await rolledBack.cleanUp(); await peer.cleanUp() } }
+        try await peer.installCandidate()
+        try peer.promote()
+        try await rolledBack.rollBackAfterFailedStartCheck()
+        let log = Lines(), restarts = Restarts()
+        let followed = await peer.cycle(partner: rolledBack, log: log).followRollback { restarts.record("peer", $0) }
+        #expect(followed == .followed(.restarted(from: "2.0.0", to: "1.0.0", drained: true)), "\(log.all)")
+
+        for mac in [rolledBack, peer] {
+            let updater = mac.fixture.updater(baseURL: mac.baseURL)
+            #expect(updater.quarantinedVersion() == "2.0.0")
+            guard case .quarantined(let version, _) = await updater.checkForUpdate() else {
+                Issue.record("v2.0.0 is not quarantined on \(mac.directory.lastPathComponent)"); continue
+            }
+            #expect(version == "2.0.0")
+        }
+        let first = await rolledBack.cycle(partner: peer, log: log).followRollback { restarts.record("rolledBack", $0) }
+        #expect(first == .nothingToFollow, "the Mac that rolled back first does not follow its peer back")
+        #expect(restarts.all == ["peer:1.0.0"])
+
+        // A Mac that installed the quarantined release again (`--override-quarantine`) rolled nothing back.
+        ClusterPairUpdate.writeProgress(.init(phase: .idle, running: "2.0.0", writtenAt: Date().timeIntervalSince1970,
+                                              quarantined: "2.0.0"), to: rolledBack.progressPath)
+        let reinstalled = try await PairMac.make(part: false)
+        defer { Task { await reinstalled.cleanUp() } }
+        try await reinstalled.installCandidate()
+        try reinstalled.promote()
+        let overridden = await reinstalled.cycle(partner: rolledBack, log: log).followRollback { restarts.record("reinstalled", $0) }
+        #expect(overridden == .nothingToFollow)
+        #expect(try reinstalled.fixture.liveBinaryContents() == "2.0.0-darkbloom")
+
+        // A rollback to a release this Mac does not keep is not followed.
+        let other = try await PairMac.make(part: false)
+        defer { Task { await other.cleanUp() } }
+        try await other.installCandidate()
+        try other.promote()
+        ClusterPairUpdate.writeProgress(.init(phase: .idle, running: "0.9.0", writtenAt: Date().timeIntervalSince1970,
+                                              quarantined: "2.0.0"), to: rolledBack.progressPath)
+        guard case .cannotFollow(let reason) = await other.cycle(partner: rolledBack, log: log).followRollback(restart: { _ in }) else {
+            Issue.record("followed a rollback to a release it does not keep"); return
+        }
+        #expect(reason.contains("keeps v1.0.0 for rollback"))
+        #expect(try other.fixture.liveBinaryContents() == "2.0.0-darkbloom")
+        #expect(try other.store.loadState().quarantine == nil)
+    }
+
+    /// What decides the follow before the lease: the Mac that rolled back says the other Mac still runs the release; a
+    /// Mac whose part cannot drain does not follow yet; a Mac on another release finds nothing to follow without the
+    /// lease, even while another update holds it.
+    @Test func followIsDecidedBeforeTheLease() async throws {
+        let rolledBack = try await PairMac.make(part: false), peer = try await PairMac.make(part: false)
+        defer { Task { await rolledBack.cleanUp(); await peer.cleanUp() } }
+        try await peer.installCandidate()
+        try peer.promote()
+        try await rolledBack.rollBackAfterFailedStartCheck()
+        let log = Lines(), now = Date().timeIntervalSince1970
+
+        ClusterPairUpdate.writeProgress(.init(phase: .idle, running: "2.0.0", writtenAt: now), to: peer.progressPath)
+        guard case .otherMacStillRuns(let line) = await rolledBack.cycle(partner: peer, log: log).followRollback(restart: { _ in }) else {
+            Issue.record("the Mac that rolled back did not say the other Mac still runs v2.0.0"); return
+        }
+        #expect(line.contains("the other Mac still runs v2.0.0"))
+
+        guard case .cannotFollow(let reason) = await peer.cycle(partner: rolledBack, log: log, part: .undrainable)
+            .followRollback(restart: { _ in }) else { Issue.record("a part that cannot drain followed"); return }
+        #expect(reason.contains("it follows once its part can drain"))
+        #expect(try peer.fixture.liveBinaryContents() == "2.0.0-darkbloom" && peer.store.loadState().quarantine == nil)
+        #expect(ClusterPairUpdate.readProgress(from: peer.progressPath)?.phase == .idle, "nothing was published")
+
+        let held = try rolledBack.fixture.updater(baseURL: rolledBack.baseURL).beginUpdateSession(operation: "cluster-auto-update")
+        defer { held.release() }
+        ClusterPairUpdate.writeProgress(.init(phase: .idle, running: "1.0.0", writtenAt: now, quarantined: "2.0.0"),
+                                        to: peer.progressPath)
+        let other = await rolledBack.cycle(partner: peer, log: log).followRollback { _ in }
+        #expect(other == .nothingToFollow, "not .busy: the lease is not asked for")
+
+        // A Mac that runs the quarantined release but keeps another one cannot follow, decided without the lease.
+        let peerLease = try peer.fixture.updater(baseURL: peer.baseURL).beginUpdateSession(operation: "cluster-auto-update")
+        defer { peerLease.release() }
+        ClusterPairUpdate.writeProgress(.init(phase: .idle, running: "0.9.0", writtenAt: now, quarantined: "2.0.0"),
+                                        to: rolledBack.progressPath)
+        guard case .cannotFollow(let keeps) = await peer.cycle(partner: rolledBack, log: log).followRollback(restart: { _ in }) else {
+            Issue.record("a Mac keeping another release asked for the lease"); return
+        }
+        #expect(keeps.contains("keeps v1.0.0 for rollback"))
     }
 }

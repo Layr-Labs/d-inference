@@ -1267,7 +1267,8 @@ public final class ClusterService: @unchecked Sendable {
                     do {
                         var record = try store.readRecord()
                         if let drain = record.stopDrain, drain.id == supervisedStopDrainID {
-                            record = try store.updateRecord {
+                            // Under the service lock: one try; a busy record waits for the next tick.
+                            record = try store.updateRecord(lockWaitSeconds: 0) {
                                 if $0.stopDrain?.id == drain.id, $0.leadership?.serving != true { $0.stopDrain = nil }
                             }
                         }

@@ -100,6 +100,10 @@ Provider `auto_update`, `idle_timeout_mins`, schedule windows, and startup
 preloading retain their existing native configuration. The app writes them
 through the [versioned desktop API](desktop-control.md), using expected revisions.
 
+The Models page reads which models the network registered from the daemon state
+file (`registered_models`), not from configuration. It has no setting. See
+[model registration](desktop-control.md) in the desktop API.
+
 ## Runtime metallib snapshots
 
 The provider creates an anonymous snapshot before binding the runtime metallib.
@@ -407,7 +411,7 @@ provider or model command is running. Code:
 
 | Variable | Values / type | Default | Read in | Effect |
 |---|---|---|---|---|
-| `DARKBLOOM_NO_UPDATE_CHECK` | any value | unset | `provider-swift/Sources/darkbloom/Darkbloom.swift`; `provider-swift/Sources/darkbloom/Start/StartCommand+Modes.swift`; `provider-swift/Sources/darkbloom/WatchdogCommand.swift`; `provider-swift/Sources/ProviderCore/ProviderLoop+AutoUpdate.swift`; `provider-swift/Sources/darkbloom/ClusterServiceCommand.swift` (`supervisorConfiguration`); forwarded by `provider-swift/Sources/ProviderCore/Service/WatchdogAgent.swift` | Skips the startup version banner, the in-daemon auto-update loop, the start-mode check, the watchdog's update check and the `darkbloom cluster` pair's update at its slot; `scripts/install.sh` sets it for the runtime smoke test. |
+| `DARKBLOOM_NO_UPDATE_CHECK` | any value | unset | `provider-swift/Sources/darkbloom/Darkbloom.swift`; `provider-swift/Sources/darkbloom/Start/StartCommand+Modes.swift`; `provider-swift/Sources/darkbloom/WatchdogCommand.swift`; `provider-swift/Sources/ProviderCore/ProviderLoop+AutoUpdate.swift`; `provider-swift/Sources/darkbloom/ClusterServiceCommand.swift` (`supervisorConfiguration`); forwarded by `provider-swift/Sources/ProviderCore/Service/WatchdogAgent.swift` | Skips the startup version banner, the in-daemon auto-update loop, the start-mode check, the watchdog's update check and the `darkbloom cluster` pair's update at its slot; `scripts/install.sh` sets it for the runtime smoke test. It does not stop a pair Mac from following the other Mac's rollback to the release it ran before ([a rollback on one Mac](../provider/cluster-always-on.md#a-rollback-on-one-mac)). |
 | `DARKBLOOM_AUTH_TOKEN_PATH` | file path | `~/.darkbloom/auth_token` | `provider-swift/Sources/ProviderCore/Auth/DeviceAuth.swift` | A nonempty explicit path replaces the token path. Without it, the token is read only from `~/.darkbloom/auth_token` (for `sudo darkbloom report`, the invoking user's, read-only through `AuthTokenStore.loadReadOnly`); there is no legacy-path fallback. |
 | `DARKBLOOM_LOCAL_DIR` | directory | `~/.darkbloom` | `provider-swift/Sources/ProviderCore/Server/LocalEndpoint.swift` | Directory for `local_token` and `local.json` (direct mode). |
 | `DARKBLOOM_STATE_FILE` | file path | `~/.darkbloom/daemon-state.json` | `provider-swift/Sources/ProviderCore/Service/DaemonStateFile.swift` | Daemon state snapshot read by `status`, `doctor` and the watchdog. |
@@ -1658,3 +1662,5 @@ Sources: `provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/C
 `provider-swift/Sources/darkbloom/ClusterServiceCommand.swift` (`Cluster.Stop`).
 
 The wizard’s optional local stopDrain token is saved with stopped intent and retained after a local timeout. Leases preserve the peer’s prior intent until the local supervisor retires its owned part and outstanding lease. The token is not a wire or user-facing configuration field; older records decode without it. A new serve is refused while it remains, and a model change retries the shared stop first.
+
+Every write of the wizard's record (`~/.darkbloom/cluster-setup/wizard.json`) takes the `wizard.json.lock` flock. When another writer holds that lock, the write waits up to 2 seconds for it (`ClusterSetupStore.recordLockWaitSeconds`). After 2 seconds the write fails with "Configuration or native device lease is currently held". The cluster service writes the record while it holds its own service lock, so it tries once and writes again on its next supervision cycle. Source: `provider-swift/Sources/ProviderCore/Inference/Distributed/Console/ClusterSetupWizardStore.swift` (`ClusterSetupStore.updateRecord`).

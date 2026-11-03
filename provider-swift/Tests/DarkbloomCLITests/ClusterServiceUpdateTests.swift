@@ -54,6 +54,10 @@ struct ClusterServiceUpdateTests {
                                installed: String = "/installed/darkbloom", startCheckSeconds: Double = 5,
                                autoUpdate: Bool, clusterID: String,
                                recovery: ClusterCandidateRecovery? = nil, reexecs: Recorder,
+                               follow: @escaping @Sendable (@escaping @Sendable (String) -> Void,
+                                                            @escaping @Sendable (String) async throws -> Void) async
+                                   -> ClusterPairUpdateCycle.FollowOutcome = { _, _ in .nothingToFollow },
+                               quarantined: @escaping @Sendable () -> String? = { nil },
                                run: @escaping @Sendable (String?, @escaping @Sendable (String) -> Void,
                                                          @escaping @Sendable (String) async throws -> Void) async -> AutoUpdateController.Outcome)
         -> ClusterMemberSupervisor.Configuration {
@@ -71,7 +75,7 @@ struct ClusterServiceUpdateTests {
             pairUpdate: .init(clusterID: { clusterID }, run: run,
                 requestPath: ClusterServiceAgent.updateRequestPath(serviceDirectory: directory),
                 progressPath: ClusterServiceAgent.updateProgressPath(serviceDirectory: directory),
-                recovery: recovery),
+                recovery: recovery, follow: follow, quarantined: quarantined),
             reexec: { reexecs.add($0.joined(separator: " ")) }, startCheckTimeoutSeconds: startCheckSeconds,
             sweepsOrphans: false)
     }
@@ -102,6 +106,42 @@ struct ClusterServiceUpdateTests {
         #expect(pair.progressPath == directory.appendingPathComponent("service-update.json"))
         #expect(pair.recovery != nil, "a release the pair installs is promoted or rolled back by its service's health")
         #expect(configured.childArguments == ["cluster", "service", "--config", path.path])
+    }
+
+    // MARK: - Following the other Mac's rollback
+
+    /// While no cycle runs (here with automatic updates off, which do not stop it), the supervisor checks at once whether
+    /// the other Mac rolled back the release this Mac runs; following it ends in the same restart as an update, into
+    /// the restored release. Its progress reports this Mac's quarantine to the other Mac.
+    @Test func supervisorFollowsTheOtherMacsRollbackAndRestartsIntoTheRestoredRelease() async throws {
+        let directory = try temporaryDirectory("cluster-follow-rollback")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let calls = Recorder(), follows = Recorder(), reexecs = Recorder()
+        let supervisor = ClusterMemberSupervisor(configuration: configuration(directory: directory, script: "exec sleep 60",
+            autoUpdate: false, clusterID: imminentClusterID(), reexecs: reexecs,
+            follow: { log, restart in
+                follows.add("follow")
+                log("cluster update: test follow")
+                try? await restart("1.0.0")
+                return .followed(.restarted(from: "2.0.0", to: "1.0.0", drained: true))
+            },
+            quarantined: { "2.0.0" }) { request, _, _ in
+                calls.add(request ?? "slot")
+                return .upToDate
+            })
+        let run = Task { await supervisor.run() }
+        #expect(await waitUntil(seconds: 2) {
+            ClusterPairUpdate.readProgress(from: ClusterServiceAgent.updateProgressPath(serviceDirectory: directory))?.quarantined == "2.0.0"
+        }, "the other Mac reads this Mac's quarantine")
+        #expect(await waitUntil(seconds: 15) { !reexecs.all.isEmpty }, "the follow restarted the service and the supervisor re-executed")
+        #expect(follows.all == ["follow"])
+        #expect(reexecs.all == ["/installed/darkbloom cluster service --supervise"])
+        #expect(state(directory)?.lastRun?.end == "stopped to restart into v1.0.0")
+        #expect(calls.all.isEmpty, "automatic updates are off: no slot cycle ran")
+        #expect(await waitUntil(seconds: 10) { state(directory)?.runs == 2 && state(directory)?.phase == .running })
+        supervisor.requestStop()
+        #expect(await run.value == 0)
+        #expect(follows.all == ["follow"], "the next check is a minute later")
     }
 
     // MARK: - The slot

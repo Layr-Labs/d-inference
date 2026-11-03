@@ -242,7 +242,7 @@ final class AppAttestStallRestartPolicyTests: XCTestCase {
 
     private func decide(stalledSeconds: Int?, inference: Bool = false, lifecycle: Bool = false, deferred: Bool = false,
                         last: Date? = nil) -> AppAttestStallRestartPolicy.Decision {
-        AppAttestStallRestartPolicy.decide(stalledSeconds: stalledSeconds, inferenceActive: inference,
+        AppAttestStallRestartPolicy.decide(trigger: stalledSeconds.map { .stalled(seconds: $0) }, inferenceActive: inference,
                                            lifecycleBusy: lifecycle, lastRestartAt: last, retryDeferred: deferred, now: now)
     }
 
@@ -290,14 +290,20 @@ final class AppAttestStallRestartPolicyTests: XCTestCase {
         XCTAssertTrue(AppAttestStallRestartPolicy.stillStalled(heldSince: now.addingTimeInterval(-threshold - 120), now: now))
     }
 
+    private func afterDrain(updateOwnsDrain: Bool, heldSince: Date?) -> AppAttestStallRestartPolicy.AfterDrain {
+        AppAttestStallRestartPolicy.afterDrain(
+            updateOwnsDrain: updateOwnsDrain,
+            stillBlocked: AppAttestStallRestartPolicy.stillStalled(heldSince: heldSince, now: now))
+    }
+
     func testLifecycleTakeoverDuringDrainCancelsTheRestart() {
         let stuck = now.addingTimeInterval(-AppleOperationStall.threshold - 120)
-        XCTAssertEqual(AppAttestStallRestartPolicy.afterDrain(updateOwnsDrain: true, heldSince: stuck, now: now), .restart)
-        XCTAssertEqual(AppAttestStallRestartPolicy.afterDrain(updateOwnsDrain: true, heldSince: nil, now: now), .recovered)
+        XCTAssertEqual(afterDrain(updateOwnsDrain: true, heldSince: stuck), .restart)
+        XCTAssertEqual(afterDrain(updateOwnsDrain: true, heldSince: nil), .recovered)
         // A stop or shutdown that took over the drain wins even while the
         // Apple call is still stuck: the provider must not be relaunched.
-        XCTAssertEqual(AppAttestStallRestartPolicy.afterDrain(updateOwnsDrain: false, heldSince: stuck, now: now), .lifecycleTookOver)
-        XCTAssertEqual(AppAttestStallRestartPolicy.afterDrain(updateOwnsDrain: false, heldSince: nil, now: now), .lifecycleTookOver)
+        XCTAssertEqual(afterDrain(updateOwnsDrain: false, heldSince: stuck), .lifecycleTookOver)
+        XCTAssertEqual(afterDrain(updateOwnsDrain: false, heldSince: nil), .lifecycleTookOver)
     }
 
     func testMarkerPersistsAcrossInstancesAndFailsClosedWhenDamaged() throws {
@@ -313,5 +319,91 @@ final class AppAttestStallRestartPolicyTests: XCTestCase {
         try Data("not json".utf8).write(to: marker.url)
         let damaged = try XCTUnwrap(marker.lastRestart())
         XCTAssertLessThan(abs(damaged.timeIntervalSinceNow), 60, "a damaged marker counts as a restart just now")
+    }
+
+    private func decide(_ trigger: AppAttestRestartTrigger?, inference: Bool = false, lifecycle: Bool = false,
+                        deferred: Bool = false, last: Date? = nil) -> AppAttestStallRestartPolicy.Decision {
+        AppAttestStallRestartPolicy.decide(trigger: trigger, inferenceActive: inference, lifecycleBusy: lifecycle,
+                                           lastRestartAt: last, retryDeferred: deferred, now: now)
+    }
+
+    func testUnsupportedRestartsOnlyAfterItsThresholdWhenIdle() {
+        let due = Int(AppAttestStallRestartPolicy.unsupportedThreshold)
+        XCTAssertEqual(decide(.unsupported(seconds: 0)), .skip(.unsupportedBriefly))
+        XCTAssertEqual(decide(.unsupported(seconds: due - 1)), .skip(.unsupportedBriefly))
+        XCTAssertEqual(decide(.unsupported(seconds: due)), .restart)
+        XCTAssertEqual(decide(.unsupported(seconds: due), inference: true), .skip(.inferenceActive))
+        XCTAssertEqual(decide(.unsupported(seconds: due), lifecycle: true), .skip(.lifecycleBusy))
+        XCTAssertEqual(decide(.unsupported(seconds: due), deferred: true), .skip(.retryDeferred))
+        XCTAssertEqual(decide(nil), .skip(.notStalled))
+        XCTAssertEqual(decide(.stalled(seconds: stalled)), .restart)
+        XCTAssertEqual(decide(.stalled(seconds: Int(AppleOperationStall.threshold))), .skip(.notStalled))
+    }
+
+    func testUnsupportedAndStallRestartsShareOneLimit() {
+        let due = Int(AppAttestStallRestartPolicy.unsupportedThreshold)
+        let interval = AppAttestStallRestartPolicy.minimumInterval
+        // A stall restart one hour ago blocks an unsupported restart, and the reverse:
+        // both write and read the same marker.
+        XCTAssertEqual(decide(.unsupported(seconds: due), last: now.addingTimeInterval(-3600)), .skip(.recentlyRestarted))
+        XCTAssertEqual(decide(.stalled(seconds: stalled), last: now.addingTimeInterval(-3600)), .skip(.recentlyRestarted))
+        XCTAssertEqual(decide(.unsupported(seconds: due), last: now.addingTimeInterval(-interval)), .restart)
+        XCTAssertEqual(decide(.unsupported(seconds: due), last: now.addingTimeInterval(3600)), .skip(.recentlyRestarted))
+    }
+
+    func testUnsupportedRecoveryDuringDrainCancelsTheRestart() {
+        XCTAssertEqual(AppAttestStallRestartPolicy.afterDrain(updateOwnsDrain: true, stillBlocked: true), .restart)
+        XCTAssertEqual(AppAttestStallRestartPolicy.afterDrain(updateOwnsDrain: true, stillBlocked: false), .recovered)
+        XCTAssertEqual(AppAttestStallRestartPolicy.afterDrain(updateOwnsDrain: false, stillBlocked: true), .lifecycleTookOver)
+        XCTAssertEqual(AppAttestStallRestartPolicy.afterDrain(updateOwnsDrain: false, stillBlocked: false), .lifecycleTookOver)
+    }
+
+    func testUnsupportedRestartNeedsRecentVerificationLaunchdAndAValidProfile() {
+        func eligible(verified: Date?, restarted: Date? = nil, launchd: Bool = true, expired: Bool? = false) -> Bool {
+            AppAttestStallRestartPolicy.unsupportedRestartEligible(
+                lastVerifiedAt: verified, lastRestartAt: restarted, profileExpired: expired, now: now,
+                relaunchesThroughLaunchd: launchd)
+        }
+        let window = AppAttestStallRestartPolicy.verifiedWithin
+        XCTAssertTrue(eligible(verified: now.addingTimeInterval(-3600)))
+        XCTAssertTrue(eligible(verified: now.addingTimeInterval(-3600), expired: nil), "an unknown profile state does not block")
+        XCTAssertFalse(eligible(verified: nil), "a Mac never verified may not support App Attest at all")
+        XCTAssertFalse(eligible(verified: now.addingTimeInterval(-window)))
+        XCTAssertFalse(eligible(verified: now.addingTimeInterval(-3600), launchd: false),
+                       "an in-place exec is never the remedy")
+        XCTAssertFalse(eligible(verified: now.addingTimeInterval(-3600), expired: true),
+                       "a restart cannot renew an expired profile")
+        // One restart per verified episode: a restart that did not help waits
+        // for a new verification instead of repeating every interval.
+        XCTAssertFalse(eligible(verified: now.addingTimeInterval(-7200), restarted: now.addingTimeInterval(-3600)))
+        XCTAssertFalse(eligible(verified: now.addingTimeInterval(-3600), restarted: now.addingTimeInterval(-3600)))
+        XCTAssertTrue(eligible(verified: now.addingTimeInterval(-60), restarted: now.addingTimeInterval(-3600)))
+    }
+
+    func testUnsupportedEligibilityAsksLaunchdOnlyWhenEverythingElsePasses() {
+        var asked = 0
+        func launchd() -> Bool { asked += 1; return true }
+        _ = AppAttestStallRestartPolicy.unsupportedRestartEligible(
+            lastVerifiedAt: nil, lastRestartAt: nil, profileExpired: false, now: now, relaunchesThroughLaunchd: launchd())
+        _ = AppAttestStallRestartPolicy.unsupportedRestartEligible(
+            lastVerifiedAt: now, lastRestartAt: nil, profileExpired: true, now: now, relaunchesThroughLaunchd: launchd())
+        XCTAssertEqual(asked, 0, "a Mac that cannot restart for this state runs no launchctl")
+        XCTAssertTrue(AppAttestStallRestartPolicy.unsupportedRestartEligible(
+            lastVerifiedAt: now, lastRestartAt: nil, profileExpired: false, now: now, relaunchesThroughLaunchd: launchd()))
+        XCTAssertEqual(asked, 1)
+    }
+
+    func testVerifiedMarkerPersistsAndFailsClosedWhenDamaged() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let marker = AppAttestVerifiedMarker(directory: directory)
+        XCTAssertNil(marker.lastVerified())
+        try marker.record(now)
+        XCTAssertEqual(AppAttestVerifiedMarker(directory: directory).lastVerified(), now)
+        let mode = try FileManager.default.attributesOfItem(atPath: marker.url.path)[.posixPermissions] as? Int
+        XCTAssertEqual(mode, 0o600)
+
+        try Data("not json".utf8).write(to: marker.url)
+        XCTAssertNil(marker.lastVerified(), "a damaged marker is no evidence, so no restart")
     }
 }

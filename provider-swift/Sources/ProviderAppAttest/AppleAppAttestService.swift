@@ -20,6 +20,13 @@ public actor AppleAppAttestService: AppAttestService {
         operations = AppleOperationGate(now: now)
     }
 
+    /// Live `DCAppAttestService.isSupported` alone. The restart for an
+    /// unsupported state reads it again before and after its drain, because
+    /// the state can clear inside the same process.
+    public static func isSupportedNow() -> Bool {
+        DCAppAttestService.shared.isSupported
+    }
+
     public func operationHeldSince() -> Date? {
         operations.heldSince
     }

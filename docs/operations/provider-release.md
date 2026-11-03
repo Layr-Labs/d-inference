@@ -45,8 +45,9 @@ Before tagging `v0.10.7`:
 - Confirm that the tagged commit pins `libs/mlx` and the nested `mlx` to
   `72dffa2d` and `libs/mlx-swift` to `c633d221`, as v0.10.6 did, and
   `libs/mlx-swift-lm` to `32f5c744`, its fork's `main`. Only the SDK pin moves
-  (from `7933a0fa`): SDK #370, #371, #375 to #377 and #379 to #384 change no
-  Metal source.
+  (from `7933a0fa`): SDK #370, #371, #375 to #377 and #379 to #384 change Swift
+  files only, and the one Metal kernel they add compiles at run time
+  (`MLXFast.metalKernel`), not into `mlx.metallib`.
 - The tag build's `metallib_hash` should equal v0.10.6's
   `98bab9d77dc5078ad8dd8f1fd17e8f3581415193506e4791a3c4f1ebaab614be`, because
   the MLX core is unchanged. A different hash needs an explanation, such as a
@@ -75,12 +76,13 @@ Before tagging `v0.10.7`:
 Roll out in this order; each step is a separate approval:
 
 1. Production platform: the coordinator deploys first
-   ([darkbloom-platform#679](https://github.com/Layr-Labs/darkbloom-platform/pull/679)).
+   ([darkbloom-platform#679](https://github.com/Layr-Labs/darkbloom-platform/pull/679),
+   merged as `f9c1b2d6a3`).
    0.10.7's registration needs nothing new from it: the payload has 0.10.6's
    fields, and the block keeps the `darkbloom_cluster_runtime_v2` schema. Its
    new parity qualifications use generation modes the coordinator already
    knows, MiMo-V2.6-Flash's speculative pipeline (`pipeline_mtp_v1`) included.
-   Confirm from production's `/health` `build_commit` which revision serves.
+   Confirm that production's `/health` `build_commit` is `f9c1b2d6a3`.
 2. Merge into `master`, each squash-merged after its approval: first the `dev`
    to `master` release snapshot (#1754), then this preparation, which is
    cherry-picked onto `master` after #1754's squash. Its tree must not bring
@@ -121,7 +123,8 @@ Platform evidence, inspected on 2026-11-03 (recheck before tagging):
 
 | Claim | Source |
 |---|---|
-| The coordinator knows the generation mode `pipeline_mtp_v1` and puts it in the `pipeline_speculative` family, on platform `master` (`482ca9db`) and on #679's head (`c780f024`) | [`cluster_generation_mode.go` at `482ca9db`](https://github.com/Layr-Labs/darkbloom-platform/blob/482ca9db31632a46b17b62d8d3152e3dfc40e6eb/coordinator/protocol/cluster_generation_mode.go) (`ClusterPlanModeFamily`) |
+| The coordinator knows the generation mode `pipeline_mtp_v1` and puts it in the `pipeline_speculative` family, at #679's merge commit (`f9c1b2d6a3`), unchanged from platform `master` before it (`482ca9db`) | [`cluster_generation_mode.go` at `f9c1b2d6a3`](https://github.com/Layr-Labs/darkbloom-platform/blob/f9c1b2d6a3c590bcbf03f11b8ccbdbe383a54449/coordinator/protocol/cluster_generation_mode.go) (`ClusterPlanModeFamily`) |
+| At #679's merge commit (`f9c1b2d6a3`), the platform still pins the provider contracts at d-inference `8effff7f` (v0.10.4) and keeps `LatestProviderVersion` at `0.10.4`; step 6 moves both | [`contracts/provider/manifest.json` at `f9c1b2d6a3`](https://github.com/Layr-Labs/darkbloom-platform/blob/f9c1b2d6a3c590bcbf03f11b8ccbdbe383a54449/contracts/provider/manifest.json) (`source_revision`); [`server.go` at `f9c1b2d6a3`](https://github.com/Layr-Labs/darkbloom-platform/blob/f9c1b2d6a3c590bcbf03f11b8ccbdbe383a54449/coordinator/api/server.go) (`LatestProviderVersion`) |
 | `LatestProviderVersion` must equal the snapshotted `ProviderCore.version` | [`provider_version_sync_test.go` at `5ba280d8`](https://github.com/Layr-Labs/darkbloom-platform/blob/5ba280d89aa5e9bd4fbf05e0dfa848059cd3b585/coordinator/tests/api/provider_version_sync_test.go) (`TestLatestProviderVersionMatchesProviderCore`) |
 
 The production coordinator was not inspected for this preparation; step 1

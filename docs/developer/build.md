@@ -318,7 +318,7 @@ the caches of the runners it ran on.
 | SwiftPM repositories | `~/Library/Caches/org.swift.swiftpm/repositories` | `spm-repos-v1-<os>-<layout>-<lane>-<Package.resolved hash>`; `spm-repos-v1-<os>-<layout>-<lane>-` | each build lane |
 | Swift test build | each lane's `.build` directory | `swift-key`; `swift-prefix` from `scripts/provider-ci-cache.py` | each build lane |
 | Metal library | `$RUNNER_TEMP/metallib-cache` | `metallib-key`, exact only | each build lane |
-| MiMo audio codec | `$RUNNER_TEMP/mimo-audio-source` | `mimo-audio-source-v2-<sha256>`, exact only | the last provider shard |
+| MiMo audio codec | `$RUNNER_TEMP/mimo-audio-source` | `mimo-audio-source-v2-<sha256>`, exact only; fetched only when the audio gate runs ([test guide](test.md)) | the last provider shard |
 | Cluster metadata build | `$RUNNER_TEMP/cluster-native-metadata` | toolchain, submodule pins, manifests and paths, then the commit | `test-cluster-checks` |
 
 Every checkout uses the same five steps. The job computes the UTC day

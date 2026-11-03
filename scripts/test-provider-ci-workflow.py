@@ -680,7 +680,12 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         steps = step_blocks(self.jobs["test-provider"])
         fixture = next(s for s in steps if field(s, "id") == "mimo-audio-fixtures")
         self.assertIn("prepare-mimo-audio-fixtures.py", run_command(fixture))
-        self.assertEqual(field(fixture, "if"), LAST_SHARD_READY)
+        # The 1.87 GB codec is fetched only when the gate's inputs changed;
+        # the gate needs the fixture, so it skips with it.
+        audio_ready = LAST_SHARD_READY.replace(" }}", " && needs.changes.outputs.mimo_audio == 'true' }}")
+        self.assertEqual(field(fixture, "if"), audio_ready)
+        restore = next(s for s in steps if field(s, "id") == "mimo-audio-cache")
+        self.assertEqual(field(restore, "if"), audio_ready)
         gate = next(s for s in steps if field(s, "name", indent=6) == "Run isolated native MiMo audio gate")
         self.assertIn("testNativeAudioRelease", run_command(gate))
         self.assertIn("run-nested-suite.sh", run_command(gate))

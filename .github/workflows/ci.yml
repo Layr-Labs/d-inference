@@ -397,8 +397,10 @@ jobs:
           DARKBLOOM_PREFIX_CACHE: '0'
           DARKBLOOM_PREFIX_CACHE_MEMORY: '0'
         run: ../scripts/run-nested-suite.sh testGracefulDrainAfterServedRequestRetiresNativeOwnerWithinDeadline --no-parallel
+      # The 1.87 GB codec is fetched only when the audio gate's inputs changed
+      # (scripts/ci-component-paths.py MIMO_AUDIO) and on master pushes.
       - name: Restore pinned MiMo audio codec
-        if: ${{ !cancelled() && matrix.shard == strategy.job-total && steps.provider-ci-build.outcome == 'success' }}
+        if: ${{ !cancelled() && matrix.shard == strategy.job-total && steps.provider-ci-build.outcome == 'success' && needs.changes.outputs.mimo_audio == 'true' }}
         uses: actions/cache/restore@1bd1e32a3bdc45362d1e726936510720a7c30a57
         id: mimo-audio-cache
         with:
@@ -406,7 +408,7 @@ jobs:
           key: mimo-audio-source-v2-077033345d80eef3a315e8d394e0589667e80e4cdaba9bc5a7488410c6657265
       - name: Prepare selected MiMo audio fixture
         id: mimo-audio-fixtures
-        if: ${{ !cancelled() && matrix.shard == strategy.job-total && steps.provider-ci-build.outcome == 'success' }}
+        if: ${{ !cancelled() && matrix.shard == strategy.job-total && steps.provider-ci-build.outcome == 'success' && needs.changes.outputs.mimo_audio == 'true' }}
         run: python3 scripts/prepare-mimo-audio-fixtures.py --cache "$RUNNER_TEMP/mimo-audio-source" --output "$RUNNER_TEMP/mimo-audio-fixtures" --github-env "$GITHUB_ENV"
       - name: Cache verified MiMo audio codec
         if: ${{ !cancelled() && env.SAVE_CACHES == 'true' && matrix.shard == strategy.job-total && steps.mimo-audio-fixtures.outcome == 'success' && steps.mimo-audio-cache.outputs.cache-hit != 'true' }}

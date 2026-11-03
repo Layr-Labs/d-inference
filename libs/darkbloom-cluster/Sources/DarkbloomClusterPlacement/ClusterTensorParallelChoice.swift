@@ -22,6 +22,15 @@ public enum ClusterTensorParallelChoice: String, Codable, Sendable {
     /// a first placement prices tensor parallel on `assumedReduction` and the
     /// pipeline's transfers as free, so a pipeline is chosen unless tensor
     /// parallel is faster even then.
+    ///
+    /// The prediction must also rest on every rank's measured share step
+    /// (`ClusterDecodeSplit.measured`: a share probe of this model, or the
+    /// shard rates requests this build served in tensor parallel corrected).
+    /// The hardware prior alone (`ClusterHardwarePrior`) never chooses it: the
+    /// device index times each operation with its launch latency inside, so
+    /// it overstates the weight time a rank halves. A placement predicted
+    /// faster on the prior keeps the best other mode
+    /// (`ClusterTensorParallelAssessment.Verdict.predictedFasterOnPriorOnly`).
     case fastest = "fastest_v1"
 
     /// The reduction a first placement of a `fastest` family assumes before a

@@ -167,6 +167,12 @@ public struct ClusterRuntimeCapability: Equatable, Sendable {
     public let speculation: String
     public static let decodingRankSpeculation = "decodingRankHeadExactGreedy"
     public let prefixReuse = false
+    /// What each supported mode keeps of the model's serving features
+    /// (`ClusterServingFeatures`), one entry per mode, as the adapter declares
+    /// them; the placement step plans a mode only where it keeps every feature
+    /// of the mode it would replace. Nil, written as no field: the adapter
+    /// declares none (its record reads byte for byte as before).
+    public let modeFeatures: [ClusterGenerationMode: ClusterServingFeatures]?
 
     public init(runtimeBinarySHA256: String, adapterID: String, adapterVersion: Int,
                 runtimeModelID: String, artifactSHA256: String, configurationSHA256: String,
@@ -175,8 +181,9 @@ public struct ClusterRuntimeCapability: Equatable, Sendable {
                 arithmeticPolicySHA256: String,
                 supportedPrefillSchedules: [ClusterPrefillSchedule] = [.serial],
                 supportedGenerationModes: [ClusterGenerationMode] = [.pipeline],
-                media: ClusterMiMoImageCandidate? = nil, glmImages: ClusterGLMImageCandidate? = nil) throws {
-        self.media = media; self.glmImages = glmImages
+                media: ClusterMiMoImageCandidate? = nil, glmImages: ClusterGLMImageCandidate? = nil,
+                modeFeatures: [ClusterGenerationMode: ClusterServingFeatures]? = nil) throws {
+        self.media = media; self.glmImages = glmImages; self.modeFeatures = modeFeatures
         self.runtimeBinarySHA256 = runtimeBinarySHA256; self.adapterID = adapterID; self.adapterVersion = adapterVersion
         self.runtimeModelID = runtimeModelID; self.artifactSHA256 = artifactSHA256
         self.configurationSHA256 = configurationSHA256; self.manifestSHA256 = manifestSHA256

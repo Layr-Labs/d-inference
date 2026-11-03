@@ -203,6 +203,45 @@ func measured(prefill: Double, decode: Double, sustainedPrefill: Double? = nil, 
         explanation: note)
 }
 
+/// `devices` with an equal-share probe of a model on each of `members` (every device by default), kept as the
+/// serving leader keeps them (`ClusterShareProbeHistory`, under `artifact`, `layout`'s model by default) and read
+/// back for `layout`'s model as every plan of the pair reads them (`ClusterPlacementFlow.decide`).
+func withShareProbes(_ devices: [ClusterPlacementDevice], layout: ClusterModelLayout, halfStepMicroseconds: Int,
+                     members: [String]? = nil, artifact: String? = nil) -> [ClusterPlacementDevice] {
+    let now = 1_800_000_000.0, build = String(repeating: "e", count: 64)
+    let probes = (members ?? devices.map(\.label)).map {
+        ClusterShareProbeHistory.Recorded(member: $0, buildSHA256: build,
+            probe: .init(sharePerMille: 500, plainStepMicroseconds: halfStepMicroseconds, rounds: 7))
+    }
+    let rates = ClusterShareProbeHistory().recording(probes, artifactSHA256: artifact ?? layout.artifactSHA256, now: now - 60)
+        .shareRates(artifactSHA256: layout.artifactSHA256, members: devices.map(\.label), now: now)
+    return devices.map { $0.addingShareRates(rates) }
+}
+
+/// `devices` after three requests of `prompt` + `outputs` tokens their pair served in tensor parallel (equal shares)
+/// at `decode` tokens a second, read as every plan reads the records its own build served
+/// (`ClusterPlacementFlow.decide`): the served calibration corrects each rank's share step
+/// (`ClusterServedCalibration`) and the speeds are estimated again. The calibration keeps each constructed
+/// whole-model rate, so no measurement record stands behind it here.
+func afterServedTensorParallel(_ devices: [ClusterPlacementDevice], layout: ClusterModelLayout, link: ClusterLinkCosts,
+                               decode: Double, prompt: Int, outputs: Int) throws -> [ClusterPlacementDevice] {
+    var policy = ClusterPlacementPolicy(); policy.promptTokens = prompt; policy.outputTokens = outputs
+    let first = try ClusterPlacementPlanner.evaluate(devices: devices, cuts: [], mode: .tensorParallel, prefillSchedule: .serial,
+        layout: layout, policy: policy, link: link).rested.firstTokenSeconds
+    let setup = ClusterServedSpeedRecords.Setup(modelID: layout.runtimeModelID, mode: ClusterGenerationMode.tensorParallel.rawValue,
+        cut: ClusterServedSpeedRecords.Setup.cut([], layerCount: layout.layerCount, mode: .tensorParallel, ranks: devices.count),
+        ranks: devices.map(\.label), rankBuildSHA256: devices.map { _ in String(repeating: "e", count: 64) })
+    let entries = (0..<3).map { index in
+        ClusterServedSpeedRecords.Entry(setup: setup, sample: .init(route: .pair, member: nil, promptTokens: prompt, outputTokens: outputs,
+            firstTokenSeconds: first, decodeTokensPerSecond: decode, finishedAt: Double(index)))
+    }
+    let derived = try ClusterServedCalibration.measurements(entries: entries, devices: devices, layout: layout, link: link,
+        measuredUTC: "2026-11-01T00:00:00Z").measurements
+    let speeds = ClusterSpeedEstimator.estimate(devices: devices.map { .init(chip: $0.profile.chip, osBuild: $0.profile.osBuild) },
+        artifactSHA256: layout.artifactSHA256, promptTokens: prompt, measurements: derived)
+    return zip(devices, speeds).map { .init(label: $0.label, profile: $0.profile, speed: $1) }
+}
+
 /// Retained registered metadata (names, shapes, dtypes and byte counts only).
 struct RetainedQwenInputs: Decodable {
     struct Tensor: Decodable { let name: String; let shape: [Int]; let sourceDType: String; let byteCount: Int }

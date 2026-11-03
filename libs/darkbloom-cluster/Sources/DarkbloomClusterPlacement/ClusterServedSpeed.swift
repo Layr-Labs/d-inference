@@ -497,7 +497,7 @@ public enum ClusterServedCalibration {
             let ordered = ranks.compactMap { label in devices.first { $0.label == label } }
             guard ordered.count == ranks.count else { lines.append("  \(setup.mode) cut \(setup.cut): skipped (a rank is not a planned device)"); continue }
             let samples = entries.filter { $0.setup == setup }.map(\.sample)
-            // The schedule the planner saved for this mode, so the setup served on it.
+            // The schedule the planner plans for this mode.
             let schedule = ClusterPlacementPlanner.prefillSchedule(for: mode, allowed: layout.prefillSchedules) ?? .serial
             // A pipeline's speculative rounds are measured against what the same placement served plainly
             // with the same builds: their speed-up then rides on the decoding rank's plain measurement (one

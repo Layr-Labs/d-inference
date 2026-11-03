@@ -3721,8 +3721,9 @@ chosen candidate's schedule, and the worker loads that schedule.
 
 The tensor-parallel prediction and memory need do not use the schedule, so the
 ranking uses the serial costs. Served calibration
-(`ClusterServedCalibration`) uses the same rule for the schedule of a served
-setup. Source:
+(`ClusterServedCalibration`) and the plan tool's `route` default use the same
+rule. `rankQuoted` refuses a tensor-parallel shape with a schedule other than
+`serial_v1`. Source:
 `libs/darkbloom-cluster/Sources/DarkbloomClusterPlacement/ClusterPlacementPlanner.swift`.
 
 ## Link probe history and tensor-parallel visibility

@@ -156,7 +156,7 @@ extension ClusterPlacementTool {
         let schedule = try parsed.one("--schedule").map {
             guard let value = ClusterPrefillSchedule(rawValue: $0) else { throw ProbeError("Unknown prefill schedule: \($0)") }
             return value
-        } ?? (layout.prefillSchedules.contains(.oneChunkLookahead) ? .oneChunkLookahead : .serial)
+        } ?? ClusterPlacementPlanner.prefillSchedule(for: mode, allowed: layout.prefillSchedules) ?? .serial
         let decoder = JSONDecoder()
         let link = try parsed.one("--link").map { try decoder.decode(ClusterLinkCosts.self, from: read($0, maximumBytes: 65_536)) } ?? .unmeasured
         let measured = try (parsed.values["--speed"] ?? []).map { file -> ClusterSpeedMeasurement in

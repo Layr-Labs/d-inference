@@ -659,7 +659,7 @@ public enum ClusterPlacementPlanner {
     /// stage to look ahead to, and every tensor-parallel runtime refuses any other schedule at load. Nil where serial
     /// is not allowed: no tensor-parallel placement is planned then. A layer-cut mode: one chunk of lookahead where
     /// allowed, because it is never slower than a serial prefill of the same placement.
-    static func prefillSchedule(for mode: ClusterGenerationMode, allowed: [ClusterPrefillSchedule]) -> ClusterPrefillSchedule? {
+    public static func prefillSchedule(for mode: ClusterGenerationMode, allowed: [ClusterPrefillSchedule]) -> ClusterPrefillSchedule? {
         if mode.usesTensorParallelPrefill { return allowed.contains(.serial) ? .serial : nil }
         return allowed.contains(.oneChunkLookahead) ? .oneChunkLookahead : allowed.first
     }
@@ -790,6 +790,7 @@ public enum ClusterPlacementPlanner {
             guard most >= 2 else { return [] }
             // Each candidate is ranked on the schedule it is saved with (`prefillSchedule(for:allowed:)`).
             let tensorSchedule = ClusterPlacementPlanner.prefillSchedule(for: .tensorParallel, allowed: schedules)
+            let layerSchedule = ClusterPlacementPlanner.prefillSchedule(for: .pipeline, allowed: schedules) ?? schedules[0]
             for ranges in 2...most {
                 let tensor = scope == .admitted && modes.contains(.tensorParallel) && tensorSchedule != nil
                     && placeable(.tensorParallel, ranges: ranges)
@@ -820,8 +821,7 @@ public enum ClusterPlacementPlanner {
                     }
                     for set in sets {
                         for mode in layerModes {
-                            guard let schedule = ClusterPlacementPlanner.prefillSchedule(for: mode, allowed: schedules) else { continue }
-                            result.append(evaluate(order: order, cuts: set, mode: mode, schedule: schedule))
+                            result.append(evaluate(order: order, cuts: set, mode: mode, schedule: layerSchedule))
                         }
                     }
                 }

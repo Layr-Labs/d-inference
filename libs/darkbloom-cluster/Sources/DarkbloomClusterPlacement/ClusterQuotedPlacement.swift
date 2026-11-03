@@ -63,7 +63,9 @@ extension ClusterPlacementPlanner {
         let context = Context(devices: devices, layout: layout, prompt: prompt, outputs: output,
             modes: modes, schedules: schedules, link: link, policy: policy)
         let candidates = try shapes.compactMap { shape -> ClusterPlacementCandidate? in
+            // A tensor-parallel shape prefills serially (`prefillSchedule(for:allowed:)`).
             guard modes.contains(shape.mode), schedules.contains(shape.schedule),
+                  !shape.mode.usesTensorParallelPrefill || shape.schedule == .serial,
                   shape.ranks.count == devices.count, shape.cuts.allSatisfy(layout.structuralCuts.contains),
                   shape.ranks.allSatisfy(\.fits),
                   policy.admitsShape?(devices.map { $0.profile.chip }, shape.cuts, shape.mode) ?? true else { return nil }

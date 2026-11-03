@@ -307,11 +307,17 @@ private func checkGemmaFastestPlan(_ layout: ClusterModelLayout, _ checks: Place
         forcedPlan.chosen?.mode == .tensorParallel)
     // The setup saves the chosen candidate's prefill schedule (`ClusterPlacementSetup`). Tensor parallel is planned
     // serial, the only schedule `Gemma4TensorParallelResidentRuntime` loads; a pipeline keeps one chunk of lookahead.
+    let tensorChosen: [ClusterPlacementResult] = [servedFast, probedFast, forcedPlan]
+    let chosenSerial = tensorChosen.allSatisfy { result in
+        result.chosen?.mode == .tensorParallel && result.chosen?.prefillSchedule == ClusterPrefillSchedule.serial
+    }
+    let assessed: [ClusterPlacementResult] = [servedFast, probedFast, servedSlow]
+    let assessedSerial = assessed.allSatisfy { result in
+        result.tensorParallel?.tensorParallel?.prefillSchedule == ClusterPrefillSchedule.serial
+    }
+    let pipelineLookahead = servedSlow.chosen?.mode == .pipeline && servedSlow.chosen?.prefillSchedule == .oneChunkLookahead
     checks.require("Gemma prefill schedule: the layout lists serial and one-chunk lookahead; tensor parallel chosen on served requests, on share probes or by the developer setting is planned serial, as is the assessment's best tensor-parallel candidate; the pipeline chosen on the slower served split keeps lookahead",
-        layout.prefillSchedules == [.serial, .oneChunkLookahead]
-            && [servedFast, probedFast, forcedPlan].allSatisfy { $0.chosen?.mode == .tensorParallel && $0.chosen?.prefillSchedule == .serial }
-            && [servedFast, probedFast, servedSlow].allSatisfy { $0.tensorParallel?.tensorParallel?.prefillSchedule == .serial }
-            && servedSlow.chosen?.mode == .pipeline && servedSlow.chosen?.prefillSchedule == .oneChunkLookahead)
+        layout.prefillSchedules == [.serial, .oneChunkLookahead] && chosenSerial && assessedSerial && pipelineLookahead)
     let priced = try ClusterPlacementPlanner.evaluate(devices: small, cuts: [], mode: .tensorParallel, prefillSchedule: .serial,
         layout: layout, policy: first(128, 128), link: .unmeasured)
     checks.require("Gemma fastest plan: a tensor-parallel setup chosen before the link was measured is priced on the conservative assumed reduction",

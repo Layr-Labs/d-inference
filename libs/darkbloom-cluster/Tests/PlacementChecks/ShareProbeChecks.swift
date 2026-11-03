@@ -202,7 +202,7 @@ private func checkShareProbePlans(_ layout: ClusterModelLayout, _ checks: Placem
     // A probe that timed decode only leaves the prefill prediction as the prior made it.
     func firstToken(_ probes: [String: [ClusterShareRate]], _ weights: [Int]?) throws -> Double {
         try ClusterPlacementPlanner.evaluate(devices: devices.map { $0.addingShareRates(probes) }, cuts: [], mode: .tensorParallel,
-            prefillSchedule: layout.prefillSchedules.contains(.oneChunkLookahead) ? .oneChunkLookahead : .serial,
+            prefillSchedule: .serial,
             layout: layout, policy: policy, link: link, tensorShares: weights).rested.firstTokenSeconds
     }
     checks.require("share probes: a decode probe changes no first-token prediction",
@@ -284,9 +284,8 @@ private func checkPlanToolShareProbes(_ layout: ClusterModelLayout, link: Cluste
 private func checkShareProbeMemoryFirst(_ layout: ClusterModelLayout, link: ClusterLinkCosts, policy: ClusterPlacementPolicy,
                                         probes: [String: [ClusterShareRate]], _ checks: PlacementChecks) throws {
     let idle = try shareProbePair(layout, link: link)
-    let schedule: ClusterPrefillSchedule = layout.prefillSchedules.contains(.oneChunkLookahead) ? .oneChunkLookahead : .serial
     func need(_ weights: [Int]?) throws -> Int {
-        try ClusterPlacementPlanner.evaluate(devices: idle, cuts: [], mode: .tensorParallel, prefillSchedule: schedule,
+        try ClusterPlacementPlanner.evaluate(devices: idle, cuts: [], mode: .tensorParallel, prefillSchedule: .serial,
             layout: layout, policy: policy, link: link, tensorShares: weights).ranks[1].needBytes
     }
     let small = try need([2, 1]), large = try need(nil)

@@ -249,13 +249,11 @@ see [resource and release tooling checks](test.md#focused-tooling-checks).
 Darkbloom Sandbox when its plane grants one, otherwise the job's Blacksmith
 fallback. It runs on GitHub-hosted `ubuntu-24.04` with no token permissions or
 checkout. Each routed job runs on `fromJSON(needs.route.outputs.routes)['<lane>']`,
-where the lane is the job's name; each provider shard reads its own lane,
-`format('test-provider-{0}', matrix.shard)`.
+where the lane is the job's name.
 
 | Workflow | Routed jobs | Fallback |
 |---|---|---|
 | `ci.yml` | `release-integrity`, `docs` | `blacksmith-4vcpu-ubuntu-2404` |
-| `ci.yml` | `test-provider` (lanes `test-provider-1` to `test-provider-5`, one per shard), `test-provider-summary`, `test-provider-sdk`, `test-cluster-checks` | `blacksmith-12vcpu-macos-27` |
 | `docs-impact.yml` | `commit-signatures`, `docs-impact` | `blacksmith-4vcpu-ubuntu-2404` |
 | `landing.yml`, `desktop.yml`, `nightly-linear-package.yml` | `check`, `frontend`, `test` | `blacksmith-4vcpu-ubuntu-2404` |
 | `provider-release-cache.yml` | `warm`, pull requests only | `blacksmith-12vcpu-macos-27` |
@@ -268,14 +266,20 @@ fallback and the plane is not contacted. When it is on, the route job sends one
 most once after a transient failure. It uses a grant only when the grant
 repeats the exact Darkbloom labels for the job's profile. Errors, timeouts and
 malformed replies keep the fallback; the plane never fails the route job.
-Every job of a lane shares one `runs-on` value, so the plane grants a lane
-whole, for its requested job count, or not at all. Each provider shard is
-therefore a lane of its own and runs on a Darkbloom Mac whenever one is free,
-independently of the other shards.
-Release, signing, publication, model registration, review automation,
-`cache-swift` and `master` or dispatched cache warming keep literal Blacksmith
-labels. The component classifier and the `Provider Tests` gate run on
-`ubuntu-24.04`.
+Release, signing, publication, model registration, review automation and
+`master` or dispatched cache warming keep literal Blacksmith labels. The
+component classifier and the `Provider Tests` gate run on `ubuntu-24.04`.
+
+The macOS jobs of `ci.yml` (`test-provider`, `test-provider-summary`,
+`test-provider-sdk`, `test-cluster-checks`, `test-cluster`, `test-cluster-gpu`
+and `test-cluster-focused`) are not routed. They always run on
+`blacksmith-12vcpu-macos-27`. In 43 provider shard jobs on Darkbloom macOS
+sandboxes (2026-10-31 to 11-02), the median job took 17.3 min against 9.8 min
+on Blacksmith (362 jobs). The depth-1 checkout took 146 s at the median and up
+to 22 min, against 13 s on Blacksmith. The sandboxes found almost no build
+cache. Saving the cache took about 150 s. Five jobs stopped in checkout until
+the 60-minute job timeout. `scripts/test-darkbloom-route.py` checks that these
+jobs keep the literal label.
 
 Jobs on Darkbloom Sandboxes use GitHub's Actions cache, not Blacksmith's
 colocated cache, so their first runs start without cached build products.

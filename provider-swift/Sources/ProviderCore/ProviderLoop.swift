@@ -395,6 +395,9 @@ public actor ProviderLoop {
     /// Builds added to the Autopilot inventory since the last registration;
     /// the coordinator learns inventory metadata only from `register`.
     internal var autopilotInventoryAwaitingRegistration: Set<String> = []
+    /// When the current batch of `autopilotInventoryAwaitingRegistration`
+    /// began to wait; nil while nothing waits.
+    internal var autopilotInventoryAwaitingSince: ContinuousClock.Instant?
     /// Last check that cached Autopilot builds are still on disk.
     internal var autopilotCacheSweepAt: ContinuousClock.Instant?
     /// Background verification of the cached builds the start path left

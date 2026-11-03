@@ -10,6 +10,7 @@ import { RemoveModelDialog } from './RemoveModelDialog';
 import { ModelEarningsAmount } from './ModelEarnings';
 import type { ModelEarnings } from './earnings';
 import { ExpandableModelList } from './ExpandableModelList';
+import { ModelRegistration } from './ModelRegistration';
 
 const filters = [
   { id: 'all', label: 'All' },
@@ -142,6 +143,7 @@ export function ManualModels({
                   </div>
                 </details>
                 {model.reason && <small className="warning-text">{model.reason}</small>}
+                <ModelRegistration model={model} expected={model.serving} />
               </div>
               <ModelEarningsAmount model={model.id} earnings={earnings} />
               <div className="model-actions">

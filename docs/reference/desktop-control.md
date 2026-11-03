@@ -239,7 +239,7 @@ carries for the model (`DesktopBackend.modelRegistration`).
 | `routable` | In the registration's `models`. The network sends it requests. |
 | `autopilot` | In `autopilot_inventory` only. Autopilot can load it. |
 | `none` | In neither. The network does not know this Mac has it. |
-| `null` | Not known: the daemon is stopped, stale, Local only, not connected, or older. |
+| `null` | Not known: the daemon is stopped, stale, Local only, not connected, a cluster member, or older. |
 
 The daemon writes the set to `registered_models` in its state file: the
 `register` sent on the live connection, plus each written `models_update`,

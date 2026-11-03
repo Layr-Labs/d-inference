@@ -1,0 +1,73 @@
+import DarkbloomClusterRuntime
+import Foundation
+import MLX
+
+// Qwen3.8-27B rows at the registered per-rank widths on two ranks of one Mac
+// (`QwenTensorParallelRowsCheck`): random weights, never a model pass.
+//   darkbloom-cluster-tp-check qwen-rows synthesize --output /DIR [--layers 4]
+//   MLX_RANK=0|1 MLX_HOSTFILE=hosts.json darkbloom-cluster-tp-check qwen-rows run --model-dir /DIR \
+//       --report FILE [--backend ring|socket] [--reduction native|sealed-bench]
+// Each rank compares its own digests (a row alone, in cohorts, across KV
+// segments, observed, in verify windows) and both agree on the verdict.
+enum QwenRowsCheck {
+    static func run(_ arguments: [String]) throws {
+        guard let command = arguments.first, ["synthesize", "run"].contains(command) else {
+            throw Failure("usage: darkbloom-cluster-tp-check qwen-rows synthesize|run ...")
+        }
+        var options: [String: String] = [:]
+        var index = 1
+        while index < arguments.count {
+            guard arguments[index].hasPrefix("--"), index + 1 < arguments.count else {
+                throw Failure("qwen-rows: expected --name value pairs")
+            }
+            options[String(arguments[index].dropFirst(2))] = arguments[index + 1]
+            index += 2
+        }
+        if command == "synthesize" {
+            guard let output = options["output"], output.hasPrefix("/") else { throw Failure("synthesize needs --output /DIR") }
+            guard let layers = Int(options["layers"] ?? "4"), (1...8).contains(layers) else {
+                throw Failure("--layers takes 1 to 8")
+            }
+            try Device.withDefaultDevice(.gpu) {
+                try QwenTensorParallelRowsCheck.writeCheckpoint(directory: URL(fileURLWithPath: output), layers: layers)
+            }
+            note("real-geometry checkpoint written (\(layers) layers)")
+            return
+        }
+        guard let directory = options["model-dir"], let reportPath = options["report"] else {
+            throw Failure("run needs --model-dir and --report")
+        }
+        guard let backend = QwenTensorParallelGroup.Backend(rawValue: options["backend"] ?? "ring"), backend != .jaccl else {
+            throw Failure("qwen-rows runs on the loopback ring or socket only")
+        }
+        let reduction = options["reduction"] ?? "native"
+        guard ["native", "sealed-bench"].contains(reduction) else { throw Failure("--reduction takes native or sealed-bench") }
+        let url = URL(fileURLWithPath: directory)
+        let configuration = try Data(contentsOf: url.appendingPathComponent("config.json"))
+        let group = try QwenTensorParallelGroup(backend: backend)
+        guard try group.digestsEqual(fnv(sha256Hex(configuration) + "|" + reduction)) else {
+            throw Failure("the ranks disagree on the checkpoint or the reduction")
+        }
+        if reduction == "sealed-bench" {
+            let codec = try QwenTensorParallelSealCodec.bench(group: group,
+                scope: Data(("darkbloom-tp-qwen-rows-v1|" + sha256Hex(configuration)).utf8))
+            try codec.install()
+            group.sealed = codec
+        }
+        note("rank \(group.rank) of \(group.size) over \(backend.rawValue), \(reduction) sums")
+        let report = try Device.withDefaultDevice(.gpu) { () throws -> QwenTensorParallelRowsCheck.Report in
+            let model = try QwenTensorParallelModel.load(modelDirectory: url, role: .shard(rank: group.rank, size: 2),
+                reduction: group)
+            return try QwenTensorParallelRowsCheck.run(model: model, configuration: configuration, rank: group.rank)
+        }
+        let bothPassed = try group.exchangeIntegers([report.passed ? 1 : 0]) == [2]
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .prettyPrinted]
+        guard FileManager.default.createFile(atPath: reportPath, contents: try encoder.encode(report)) else {
+            throw Failure("could not write the report")
+        }
+        note("compared \(report.compared) digests, \(report.differing.count) differ\(report.differing.isEmpty ? "" : ": \(report.differing.prefix(8))");"
+            + " both ranks passed: \(bothPassed)")
+        guard bothPassed else { throw Failure("a rank found a row that differs from itself alone") }
+    }
+}

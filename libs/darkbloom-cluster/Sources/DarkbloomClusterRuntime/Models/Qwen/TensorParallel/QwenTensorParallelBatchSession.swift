@@ -3,6 +3,7 @@ import Foundation
 import MLX
 import MLXLLM
 import MLXLMCommon
+import MLXNN
 
 /// Input ownership is request-local. A media owner supplies its authenticated
 /// position slices and prompt embeddings; text keeps the cache's own offsets.
@@ -253,12 +254,14 @@ final class QwenTensorParallelBatchSession: QwenTensorParallelMTPTarget {
     static var usesExactVectors: Bool { exactVectorsOverride ?? exactVectors }
 
     /// Bound into the tensor-parallel load agreement: both ranks resolve the
-    /// decode projections alike, or the pair refuses to load (never a mixed
-    /// configuration). Each rank's words per lane is its own arithmetic
-    /// (a rank sums only its own partials) and is not bound.
+    /// decode projections alike and sum the same selection words (each row's
+    /// non-finite counts ride the greedy sum), or the pair refuses to load
+    /// (never a mixed configuration). Each rank's words per lane is its own
+    /// arithmetic (a rank sums only its own partials) and is not bound.
     static var decodeAgreementFields: [String] {
         ["qwen-tensor-parallel-decode-projections-v1", usesExactVectors ? "batch-invariant-affine" : "mlx-kernels",
-         "qwen-tensor-parallel-fenced-sums-v1", sumsAreFencedInputs ? "on" : "off"]
+         "qwen-tensor-parallel-fenced-sums-v1", sumsAreFencedInputs ? "on" : "off",
+         "qwen-tensor-parallel-selection-nonfinite-in-sum-v1"]
     }
 
     /// Whether the residual step's kernel waits for each all-sum itself: MLX
@@ -282,6 +285,93 @@ final class QwenTensorParallelBatchSession: QwenTensorParallelMTPTarget {
             + AffineQuantizedVectors.resolvedDescription(bits: plan.bits, groupSize: plan.groupSize, inputs: plan.hiddenSize)
             + " residual_rms_norm=\(ResidualRMSNorm.isEnabled && ResidualRMSNorm.verifiedFamilies.contains(AffineQuantizedVectors.family()) ? "on" : "off")"
             + " fenced_sums=\(sumsAreFencedInputs ? "on" : "off")"
+    }
+
+    /// Vector counts the census describes: plain rows of one to eight, and
+    /// their four-column verify windows.
+    static let censusCounts = [1, 2, 3, 4, 5, 6, 7, 8, 12, 16, 20, 24, 28, 32]
+
+    /// The decode route of every projection of a loaded shard
+    /// (`darkbloom-qwen-tp-decode-census-v1`), so a pair's log shows what each
+    /// row count runs: the batch-invariant kernel (`aqv`), a row-parallel FP32
+    /// partial on it (`partial`), or MLX's own kernels and why (`mlx-...`),
+    /// with each shape's layout per vector count (layouts never change a
+    /// result), and the attention, residual-norm and selection routes. Host
+    /// only: no array is evaluated. Layouts are per checkpoint projection:
+    /// the SDK multiplies a Gated DeltaNet layer's four input projections as
+    /// one call of their summed rows, and fuses gate, up and SwiGLU at
+    /// `swiglu_fused_vectors` only while its decode fusions are on.
+    static func censusLine(rank: Int, model: QwenTensorParallelModel) -> String {
+        var routes: [String: Int] = [:], layouts: [String: String] = [:], tally: [String: Int] = [:]
+        for (path, module) in model.model.leafModules().flattened() {
+            guard let linear = module as? Linear else { continue }
+            let name = path.split(separator: ".").last.map(String.init) ?? path
+            let (outputs, inputs) = linear.shape
+            let route: String
+            if let packed = linear as? QuantizedLinear {
+                let probe = MLXArray.zeros([1, inputs], dtype: .bfloat16)
+                let reason: String?
+                if !usesExactVectors { reason = "off" }
+                else if Device.defaultDevice().deviceType != .gpu { reason = "cpu" }
+                else if AffineQuantizedVectors.supports(input: probe, weight: packed.weight, scales: packed.scales,
+                    biases: packed.biases, groupSize: packed.groupSize, bits: packed.bits, mode: packed.mode) { reason = nil }
+                else if packed.mode != .affine { reason = "mode" }
+                else if packed.biases == nil { reason = "biases" }
+                else { reason = "bits\(packed.bits)-group\(packed.groupSize)-\(packed.scales.dtype)" }
+                if packed is QwenTensorParallelRowLinear {
+                    route = reason.map { "mlx-partial-\($0)" } ?? (packed.bias == nil ? "partial" : "mlx-partial-bias")
+                } else if type(of: packed) == QuantizedLinear.self {
+                    route = reason.map { "mlx-\($0)" } ?? "aqv"
+                } else {
+                    route = "mlx-subclass-\(type(of: packed))"
+                }
+                if !route.hasPrefix("mlx") {
+                    var runs: [(String, Int, Int)] = []
+                    for count in censusCounts {
+                        let layout = AffineQuantizedVectors.layout(vectors: count, inputs: inputs, outputs: outputs,
+                            bits: packed.bits).description
+                        if let last = runs.last, last.0 == layout { runs[runs.count - 1].2 = count }
+                        else { runs.append((layout, count, count)) }
+                    }
+                    layouts["\(inputs)x\(outputs)"] = runs.map { "\($0.1 == $0.2 ? "\($0.1)" : "\($0.1)-\($0.2)")=\($0.0)" }
+                        .joined(separator: "/")
+                }
+            } else {
+                route = "mlx-unquantized"
+            }
+            routes["\(name):\(inputs)x\(outputs):\(route)", default: 0] += 1
+            tally[route.hasPrefix("mlx") ? "mlx" : route, default: 0] += 1
+        }
+        let attention = Set(model.model.cbv2LayerKinds.map { kind -> String in
+            let gqa = kind.queryHeads / max(1, kind.kvHeads)
+            let hpt = PagedAttentionKernel.headsPerThreadgroup(headDim: kind.headDim, gqa: gqa)
+            return "d\(kind.headDim)-kv\(kind.kvHeads)-gqa\(gqa)-hpt\(hpt)"
+        }).sorted()
+        let environment = ProcessInfo.processInfo.environment
+        let switches = ["MLX_QMV_BATCH_INVARIANT", "MLX_ENABLE_TF32", "DARKBLOOM_QWEN35_FUSE_ELEMENTWISE",
+                        "DARKBLOOM_QWEN35_DECODE_FUSIONS_V2", "DARKBLOOM_GDN_FUSED_CONV", "DARKBLOOM_GDN_FUSED_QK_NORM",
+                        "DARKBLOOM_RESIDUAL_RMS_NORM", "DARKBLOOM_CBV2_PAGED_PTOK_TARGET", "DARKBLOOM_TTFT_GDN_BLOCKED"]
+            .compactMap { key in environment[key].map { "\(key)=\($0)" } }
+        let hidden = model.plan.hiddenSize
+        return "darkbloom-qwen-tp-decode-census-v1 rank=\(rank) exact_vectors=\(usesExactVectors ? "on" : "off")"
+            + " aqv=\(tally["aqv", default: 0]) partial=\(tally["partial", default: 0]) mlx=\(tally["mlx", default: 0])"
+            + " routes=" + routes.sorted { $0.key < $1.key }.map { "\($0.key)*\($0.value)" }.joined(separator: ",")
+            + " layouts=" + layouts.sorted { $0.key < $1.key }.map { "\($0.key):\($0.value)" }.joined(separator: ",")
+            + " swiglu_fused_vectors=" + censusCounts.filter { AffineQuantizedVectors.fusesSwiGLU(vectors: $0) }
+                .map(String.init).joined(separator: "/")
+            + " residual_rms_norm=\(ResidualRMSNorm.isEnabled && ResidualRMSNorm.verifiedFamilies.contains(AffineQuantizedVectors.family()) ? (hidden > 4096 ? "looped" : "single") : "off")"
+            + " attention=paged-\(attention.joined(separator: "/")) ptok=\(PagedAttentionKernel.partitionTokens)"
+            + " ptok_target=\(PagedAttentionKernel.partitionTargetThreadgroups)"
+            + " selection=greedy-rank-argmax/sampled-gather switches=" + (switches.isEmpty ? "none" : switches.joined(separator: ","))
+    }
+
+    private static let censusLock = NSLock()
+    nonisolated(unsafe) private static var censusModels = Set<ObjectIdentifier>()
+
+    /// Logs `censusLine` once per loaded model.
+    static func logCensusOnce(rank: Int, model: QwenTensorParallelModel) {
+        let first = censusLock.withLock { censusModels.insert(ObjectIdentifier(model)).inserted }
+        if first { log(censusLine(rank: rank, model: model)) }
     }
 
     static func decode(_ sessions: [QwenTensorParallelBatchSession], tokens: [Int],
@@ -457,12 +547,14 @@ final class QwenTensorParallelBatchSession: QwenTensorParallelMTPTarget {
             throw ProbeError("Qwen TP positions differ from request-owned three-axis slices")
         }
     }
+    /// Shape and dtype only: selection counts non-finite logits inside its own
+    /// sealed sum (`QwenTensorParallelNativeBatchExecutor.select`), so both
+    /// ranks refuse such a row together and no step pays a separate read.
     private static func validateLogits(_ value: MLXArray, rows: Int, model: QwenTensorParallelModel,
                                        request: QwenLayerStageGenerationRequest) throws {
         guard value.shape == [rows, model.vocabularyRange.count],
-              String(describing: value.dtype) == request.profile.selectedRowDType,
-              all(isFinite(value)).item(Bool.self) else {
-            throw ProbeError("Qwen TP batched logits have an invalid shape, dtype or finite value")
+              String(describing: value.dtype) == request.profile.selectedRowDType else {
+            throw ProbeError("Qwen TP batched logits have an invalid shape or dtype")
         }
     }
 

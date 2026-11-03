@@ -1184,7 +1184,7 @@ arm64-apple-macosx26.2 -Xswiftc -enable-testing`), stage the source-matched
 with the same flags plus `--skip-build --no-parallel`. Without environment
 switches the run evaluates synthetic models on the GPU by default; the GPU-only
 cases (`QWEN_TP_BATCH_GPU=1`, `QWEN_TP_MTP_GPU=1`, `QWEN_TP_MOE_GPU=1`,
-`QWEN_TP_AQV_GPU=1`) run each in a process of their own with their filter. On
+`QWEN_TP_AQV_GPU=1`, `QWEN_TP_REAL_GEOMETRY_GPU=1`) run each in a process of their own with their filter. On
 an M5 GPU MLX computes float32 matrix products in TF32 unless the process
 starts with `MLX_ENABLE_TF32=0` (`libs/mlx-swift-lm/CONTRIBUTING.md`): the
 forward comparison in `GLM5NextStageSessionTests` asserts a float32 tolerance
@@ -2509,7 +2509,7 @@ requests on both Macs after a native pin change.
 
 Run SDK `QwenMTPPagedHistoryTests` for paged assistant append/trim/copy/restore and failed-constructor custody. Native `QwenTensorParallelMTPPolicyTests`, `QwenTensorParallelMTPBudgetTests`, `QwenTensorParallelBatchMTPBudgetTests` and `QwenTensorParallelAssistantQuoteTests` check exact inventory, complete singleton/cohort reservations and metadata/native quote equality. `QwenTensorAssistantStartupTests` exercises real bilateral worker arguments; Process `TensorAssistantReadinessCheck` checks real child READY mismatch rejection. Provider `DistributedAutomaticBatchPlannerTests` covers automatic inline discovery, malformed/off cases, complete initial quote and saved-policy preservation through wider replans.
 
-Set `QWEN_TP_MTP_GPU=1` only in an isolated native test run with the matching Metal resource. Run `QwenTensorParallelBatchMTPWindowTests` and `QwenTensorParallelBatchMTPTransitionTests` with `--no-parallel` so suites do not race global MLX state. Actual tiny targets test unequal histories/keep counts, rejected-suffix settlement, greedy target-column continuation, singleton/wider transitions, independent accepted-token credits, survivor retirement, mixed ordinary rows and poisoned-cohort cleanup. The trained head remains single-row; the decoder creates the target cohort. Tied-head transition fixtures do not establish full-model acceptance behavior or sampled equivalence.
+Set `QWEN_TP_MTP_GPU=1` only in an isolated native test run with the matching Metal resource, and start that process with `MLX_QMV_BATCH_INVARIANT=1` as every cluster process runs (`ClusterQuantizedRowRouting`): MLX reads it once per process, and `QwenTensorParallelBatchMTPWindowTests.sharedWindowCallsKeepEveryRowsQuantizedArithmetic` checks MLX's own grouped quantized calls, which keep each row's bits only with it. Run `QwenTensorParallelBatchMTPWindowTests` and `QwenTensorParallelBatchMTPTransitionTests` with `--no-parallel` so suites do not race global MLX state. Actual tiny targets test unequal histories/keep counts, rejected-suffix settlement, greedy target-column continuation, singleton/wider transitions, independent accepted-token credits, survivor retirement, mixed ordinary rows and poisoned-cohort cleanup. The trained head remains single-row; the decoder creates the target cohort. Tied-head transition fixtures do not establish full-model acceptance behavior or sampled equivalence.
 
 Exact drafts (`QWEN_TP_MTP_GPU=1`): `QwenTensorParallelExactDraftRowsTests` runs a round's later draft steps for two to eight requests through one assistant forward (`Qwen35InlineMTPAssistant.draftHiddens`) and checks every row byte for byte against the same request's one-row step, over unequal histories, for two consecutive steps, at the suites' and the 9B's head ratios. `QwenTensorParallelMTPHeadRowsTests.exactDraftProjectionsKeepEachRowsOwnProductAtQwen27Shapes` checks the head and assistant projections at Qwen27's shapes, and `QwenTensorParallelBatchMTPTransitionTests.exactDraftRowsEqualTheirSoloRunsAndThePlainTargetAtEveryWidth` checks that every row of one to eight concurrent requests equals its solo run (tokens, MTP statistics and native state on both ranks) and emits the plain target's greedy tokens, with exact and with MLX drafts, with every proposal accepted and with proposals rejected. `QWEN_TP_ACCEPT_BENCH_MODEL=<model directory> QWEN_TP_ACCEPT_BENCH_PROMPTS=<JSON {"prompts": [[token id]]}>` runs `QwenTensorParallelMTPAcceptanceRealTests`: the real row's two ranks in one process, each prompt decoded plainly and speculatively with each draft kernel; it requires lossless output and reports rounds, tokens per round, acceptance by position and where the two kernels' proposals differ.
 
@@ -2568,6 +2568,13 @@ interior-axis cut is a row-major copy whose quantized products equal the former 
 batched decode rows on the cached FP32 constants (`QuantizedLinear.independentRowsForward`) equal the call
 that widened them inside the matmul and each row alone. `QwenTensorParallelBatchMTPTransitionTests.nineBRatioAssistantSurvivesCreditJoinsRectanglesAndResumedSpeculation`
 runs the resident assistant's transitions on the 9B ratio (`QWEN_TP_MTP_GPU=1`).
+`QWEN_TP_REAL_GEOMETRY_GPU=1` runs `QwenTensorParallelRealGeometryRowsTests` (about 3 GB of random
+weights): the 27B row contract at its registered per-rank widths (`QwenTensorParallelRowsCheck`), both
+ranks in one process; start it with the worker's arithmetic environment.
+`darkbloom-cluster-tp-check qwen-rows synthesize --output DIR` writes that checkpoint (about 2.1 GB), and
+`darkbloom-cluster-tp-check qwen-rows run --model-dir DIR --report FILE` runs the check as two processes
+(`MLX_RANK`, `MLX_HOSTFILE` with two free `127.0.0.1` ports; `--backend ring` or `socket`,
+`--reduction native` or `sealed-bench`).
 `QWEN_TP_MOE_BATCH_MODEL=<registered A3B directory>` runs `QwenTensorParallelRoutedCohortRealTests`: the
 artifact's real shards, both ranks in one process on the GPU, rows of one cohort against the same rows
 alone, byte for byte. The reference rows in these tests (and the singleton owner of the capacity-parity

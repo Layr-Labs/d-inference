@@ -74,7 +74,7 @@ extension Start {
             )
         }
 
-        // Arm the crash-recovery watchdog (relaunches ~5 min after a crash;
+        // Arm the crash-recovery watchdog (relaunches 1–2 min after a crash;
         // `stop` disarms, `auto_restart = false` opts out — including
         // disarming a watchdog left loaded by a previous opted-in config).
         // Best-effort.
@@ -117,7 +117,7 @@ extension Start {
         }
         print("  Logs:    \(logPath)")
         if autoRestartOn {
-            print("  Recovery: auto-restart on (relaunches ~5 min after a crash)")
+            print("  Recovery: auto-restart on (relaunches 1–2 min after a crash)")
         }
         print()
         print("  \(BuildEnvironment.current.cliName) stop     Stop the provider")

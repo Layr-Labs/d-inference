@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-10-30
+> Last updated: 2026-10-31
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -2453,7 +2453,7 @@ defines the response and supported saved widths. Source:
 
 ### Qwen27 TP assistant setup and native diagnostics
 
-Run the normal `darkbloom cluster` setup for the catalog Qwen3.8 27B model. Its embedded assistant is discovered and fully priced under the existing `backend.mtp_mode` setting; no internal verification or inventory option is required in the normal flow. Verify the saved policy against both workers' actual READY before serving. Explicit `off` retains the ordinary target with its complete width-one quote. See [configuration](../reference/configuration.md#qwen27-tp-assistant-policy) and [native ownership](../architecture/inference.md#qwen27-tensor-parallel-resident-assistant).
+Run `darkbloom cluster local` for the catalog Qwen3.8 27B model to serve it with its embedded assistant. The assistant is discovered and fully priced under the existing `backend.mtp_mode` setting; no internal verification or inventory option is required in the normal flow. Verify the saved policy against both workers' actual READY before serving. Plain `darkbloom cluster` serves through Darkbloom, and under the default `auto` it plans the model without the assistant, because a setup registered with the coordinator carries none (the assistant is not qualified for public traffic). Explicit `on` keeps the assistant there too, and the pair is then not offered to the coordinator. Explicit `off` retains the ordinary target with its complete width-one quote. See [configuration](../reference/configuration.md#qwen27-tp-assistant-policy), [the speed tradeoff](two-mac-cluster.md#the-steps-once) and [native ownership](../architecture/inference.md#qwen27-tensor-parallel-resident-assistant).
 
 The internal worker still accepts diagnostic `--mtp-depth N` in 1...4 for keyed 9B or 27B Qwen TP with paged KV (the A3B rows' heads are not loaded, so an explicit depth is refused for them). Installed launches also carry the pinned inventory and typed verification mode from the saved policy; these are implementation arguments, not user setup choices. Omitted policy preserves the legacy ordinary contract. Unsupported model, memory, backend, startup and conflicting speculative controls are refused before serving.
 

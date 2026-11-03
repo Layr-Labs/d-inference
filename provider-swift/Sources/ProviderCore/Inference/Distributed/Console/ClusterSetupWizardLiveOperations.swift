@@ -42,6 +42,9 @@ extension ClusterSetupOperations {
         /// An explicit test/qualification override. Normal setup discovers the
         /// catalog model's embedded assistant and pins the native quote.
         public var tensorAssistants: [String: ClusterQwenTensorAssistantPolicy] = [:]
+        /// How this run of `darkbloom cluster` was asked to serve (`darkbloom cluster local`); nil keeps the scope
+        /// the setup record saved. The onboarding plans for it (`OnboardingLive.planningScope`).
+        public var servingScope: ClusterServingScope? = nil
         public var privateImageQualification: Bool { privateMiMoImageQualification || privateGLMImageQualification }
 
         public init(providerConfiguration: URL, darkbloomExecutable: URL, sessionArguments: [String],
@@ -517,8 +520,10 @@ final class LiveContext: @unchecked Sendable {
     // MARK: - Planning
 
     /// `keeping`: the mode each model id keeps when it is planned again after a Darkbloom update (the service's
-    /// re-plan), as `ClusterSetupPlanning.decide` takes it; empty for every other plan.
-    func plan(peer: ClusterSetupReport, keeping: [String: ClusterGenerationMode] = [:]) -> ClusterSetupPlansResult {
+    /// re-plan), as `ClusterSetupPlanning.decide` takes it; empty for every other plan. `coordinator`: the setup will
+    /// serve through the coordinator (the onboarding's public scope); the six-step wizard's local sessions leave it off.
+    func plan(peer: ClusterSetupReport, keeping: [String: ClusterGenerationMode] = [:],
+              coordinator: Bool = false) -> ClusterSetupPlansResult {
         let input = pairInput()
         guard let description = input.description, let memberID = input.pair?.memberID,
               let local = description.members.first(where: { $0.id == memberID }) else {
@@ -555,6 +560,9 @@ final class LiveContext: @unchecked Sendable {
         let mtpMode: MTPMode
         do { mtpMode = try ConfigManager.loadOrDefaults(from: settings.providerConfiguration).backend.mtpMode }
         catch { return .failed("The provider configuration could not be read: \(clean(ClusterConsoleText.bounded(error)))") }
+        // A setup that serves through the coordinator carries no speculative assistant: under `auto` its plan quotes
+        // the ordinary target only.
+        let discovery = ClusterPlacementTensorAssistantSelection.discoveryMode(mtpMode, coordinator: coordinator)
         let readings = models.filter {
             settings.privateGLMImageQualification ? ClusterGLMOnboardingSelection.accepts($0)
                 : ClusterMiMoOnboardingSelection.accepts($0, qualifying: settings.privateMiMoImageQualification)
@@ -607,14 +615,14 @@ final class LiveContext: @unchecked Sendable {
                     } else {
                         let discovered = try ClusterPlacementTensorAssistantSelection.readAutomatic(tool: tool,
                             modelDirectory: directory, publicModelID: model.modelID, capability: admitted,
-                            mode: mtpMode, chunkTokens: chunk, deadline: deadline())
+                            mode: discovery, chunkTokens: chunk, deadline: deadline())
                         assistantQuote = discovered.map { .success($0) }
                         // Capacity changes keep the shares, so the first widening's complete
                         // quote steers the initial split; without it the choice is speed-only.
                         if discovered != nil {
                             discoveredWidening = try? ClusterPlacementTensorAssistantSelection.readAutomatic(tool: tool,
                                 modelDirectory: directory, publicModelID: model.modelID, capability: admitted,
-                                mode: mtpMode, chunkTokens: chunk, deadline: deadline(), lanes: 2)
+                                mode: discovery, chunkTokens: chunk, deadline: deadline(), lanes: 2)
                         }
                         // Only a discovered assistant may give way to the ordinary target (`assistantOrTarget`).
                         if discovered?.assistant != nil {

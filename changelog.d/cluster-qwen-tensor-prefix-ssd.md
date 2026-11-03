@@ -1,3 +1,0 @@
-### Qwen27 tensor-parallel prefix SSD tier
-
-Keep the Qwen27 TP batch owner's prompt prefixes in the encrypted SSD tier as well as in memory, so a repeated long prompt restores its prefix after both Macs restart. Each rank writes its own shard (and the assistant's trusted history) behind serving after bilateral clean retirement. The sealed vote now counts SSD records, and a second exchange confirms that both ranks restored, or both prefill from zero. Records are scoped by plan, shares, artifact, storage, both builds and assistant policy, never by membership epoch. The prefix agreement field becomes `qwen-tensor-parallel-prefix-v2`.

@@ -144,7 +144,7 @@ jobs:
       # A failed shard does not cancel the other shards.
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4, 5, 6, 7, 8]
+        shard: [1, 2, 3]
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
@@ -682,7 +682,7 @@ jobs:
     # no model load, no weights. Every runner runs even after another fails.
     name: Cluster Metadata Checks
     needs: changes
-    if: ${{ needs.changes.outputs.provider == 'true' }}
+    if: ${{ needs.changes.outputs.cluster == 'true' }}
     runs-on: blacksmith-12vcpu-macos-27
     timeout-minutes: 60
     steps:
@@ -782,7 +782,7 @@ jobs:
     # switch, and the switched tests that pass on these runners.
     name: Cluster Runtime Tests (shard ${{ matrix.shard }})
     needs: changes
-    if: ${{ needs.changes.outputs.provider == 'true' }}
+    if: ${{ needs.changes.outputs.cluster == 'true' }}
     runs-on: blacksmith-12vcpu-macos-27
     timeout-minutes: 60
     strategy:
@@ -811,7 +811,7 @@ jobs:
     # report on every pull request; a failure does not fail the workflow.
     name: Cluster GPU Tests (non-blocking, shard ${{ matrix.shard }})
     needs: changes
-    if: ${{ needs.changes.outputs.provider == 'true' }}
+    if: ${{ needs.changes.outputs.cluster == 'true' }}
     runs-on: blacksmith-12vcpu-macos-27
     timeout-minutes: 60
     strategy:
@@ -840,7 +840,7 @@ jobs:
     # Cluster Metadata Checks does not run (scripts/cluster-test-plan.py).
     name: Cluster Focused Checks
     needs: changes
-    if: ${{ needs.changes.outputs.provider == 'true' }}
+    if: ${{ needs.changes.outputs.cluster == 'true' }}
     runs-on: blacksmith-12vcpu-macos-27
     timeout-minutes: 60
     steps:
@@ -868,6 +868,7 @@ jobs:
         env:
           CHANGES_RESULT: ${{ needs.changes.result }}
           PROVIDER_CHANGED: ${{ needs.changes.outputs.provider }}
+          CLUSTER_CHANGED: ${{ needs.changes.outputs.cluster }}
           UNIT_RESULT: ${{ needs.test-provider.result }}
           SUMMARY_RESULT: ${{ needs.test-provider-summary.result }}
           CLUSTER_RESULT: ${{ needs.test-cluster.result }}
@@ -881,5 +882,12 @@ jobs:
           esac
           test "$UNIT_RESULT" = "$expected"
           test "$SUMMARY_RESULT" = "$expected"
-          test "$CLUSTER_RESULT" = "$expected"
-          test "$CLUSTER_FOCUSED_RESULT" = "$expected"
+          # The cluster jobs run only when their inputs changed (and on
+          # pushes); a skip passes only when the classifier did not select them.
+          case "$CLUSTER_CHANGED" in
+            true) cluster_expected=success ;;
+            false) cluster_expected=skipped ;;
+            *) exit 1 ;;
+          esac
+          test "$CLUSTER_RESULT" = "$cluster_expected"
+          test "$CLUSTER_FOCUSED_RESULT" = "$cluster_expected"

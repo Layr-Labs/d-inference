@@ -37,16 +37,30 @@ class ComponentPathsTests(unittest.TestCase):
     def test_component_and_shared_dependency_matrix(self):
         cases = {
             "provider-swift/Sources/ProviderCore/ProviderCore.swift": {"provider"},
-            "libs/mlx-swift-lm": {"provider", "sdk"},
-            "libs/mlx-swift-lm/Libraries/MLXLMCommon/Generate.swift": {"provider", "sdk"},
-            "libs/mlx-swift": {"provider", "sdk"},
-            "libs/mlx": {"provider"},
-            "libs/darkbloom-cluster/Package.swift": {"provider"},
+            "provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2.swift": {"provider"},
+            "provider-swift/Tests/ProviderCoreTests/Inference/EngineV2Tests.swift": {"provider"},
+            "provider-swift/Sources/ProviderCore/Inference/Distributed/DistributedPipeExecutionOwner.swift":
+                {"provider", "cluster"},
+            "provider-swift/Sources/ProviderCore/Config/ClusterConfiguration.swift": {"provider", "cluster"},
+            "provider-swift/Sources/darkbloom/ClusterCommand.swift": {"provider", "cluster"},
+            "provider-swift/Sources/ProviderCore/Protocol/NativePairMessages.swift": {"provider", "cluster"},
+            "provider-swift/Sources/ProviderCoreFoundation/Manifest.swift": {"provider", "cluster"},
+            "provider-swift/Tests/ClusterOnboardingChecks/run.sh": {"provider", "cluster"},
+            "provider-swift/Tests/ProviderCoreTests/Inference/DistributedServeLoopTests.swift": {"provider", "cluster"},
+            "provider-swift/Package.swift": {"provider", "cluster"},
+            "libs/mlx-swift-lm": {"provider", "sdk", "cluster"},
+            "libs/mlx-swift-lm/Libraries/MLXLMCommon/Generate.swift": {"provider", "sdk", "cluster"},
+            "libs/mlx-swift": {"provider", "sdk", "cluster"},
+            "libs/mlx": {"provider", "cluster"},
+            "libs/darkbloom-cluster/Package.swift": {"provider", "cluster"},
+            "libs/darkbloom-cluster-worker/Tests/CapabilityChecks/run.sh": {"provider", "cluster"},
             "fixtures/prompt-contract/v1/corpus.json": {"provider"},
-            ".github/actions/provider-ci-build/action.yml": {"provider", "sdk"},
-            ".github/workflows/ci.yml": {"provider", "sdk"},
+            ".github/actions/provider-ci-build/action.yml": {"provider", "sdk", "cluster"},
+            ".github/workflows/ci.yml": {"provider", "sdk", "cluster"},
             "scripts/run-paged-kernel-tests.sh": {"provider", "sdk"},
             "scripts/run-provider-tests.sh": {"provider"},
+            "scripts/provider-test-shards.py": {"provider"},
+            "scripts/cluster-test-plan.py": {"provider", "cluster"},
             "coordinator/store/postgres/users.go": set(),
             "coordinator/protocol/messages.go": set(),
             "console-ui/package-lock.json": set(),
@@ -60,9 +74,9 @@ class ComponentPathsTests(unittest.TestCase):
                 self.assertEqual({name for name, value in routing.classify([path]).items() if value}, expected)
         for path in routing.COMMON:
             self.assertTrue(all(routing.classify([path]).values()), path)
-        # Every SDK-lane input is also a provider input.
-        for pattern in routing.SDK:
-            path = pattern.replace("**", "x")
+        # Every SDK-lane and cluster input is also a provider input.
+        for pattern in (*routing.SDK, *routing.CLUSTER):
+            path = pattern.replace("**", "x").replace("*", "Cluster")
             self.assertTrue(routing.classify([path])["provider"], path)
 
     def test_swift_prompt_corpora_select_provider(self):
@@ -199,6 +213,16 @@ class GitDiffTests(unittest.TestCase):
         head = self.commit()
         event = {"before": self.base, "after": head, "ref": "refs/heads/topic"}
         self.assertFalse(any(self.run_detector("push", event).values()))
+        # A provider-only change: a pull request skips the cluster jobs, a
+        # push that runs the provider lanes runs them too.
+        self.write("provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2.swift")
+        provider_only = self.commit()
+        self.assertEqual(self.pr(head, provider_only), {"provider": True, "sdk": False, "cluster": False})
+        self.assertEqual(self.run_detector("push", {"before": head, "after": provider_only, "ref": "refs/heads/dev"}),
+                         {"provider": True, "sdk": False, "cluster": True})
+        self.write("libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/New.swift")
+        cluster = self.commit()
+        self.assertEqual(self.pr(provider_only, cluster), {"provider": True, "sdk": False, "cluster": True})
         for ref in ("refs/heads/master", "refs/heads/main"):
             self.assertTrue(all(self.run_detector("push", {**event, "ref": ref}).values()))
         self.assertTrue(all(self.run_detector("push", {**event, "before": "0" * 40}).values()))
@@ -231,7 +255,8 @@ class WorkflowRoutingTests(unittest.TestCase):
 
     def test_expensive_jobs_depend_on_successful_classifier(self):
         expected = {
-            "ci.yml": {"test-provider": "provider", "test-cluster-checks": "provider"},
+            "ci.yml": {"test-provider": "provider", "test-cluster-checks": "cluster", "test-cluster": "cluster",
+                       "test-cluster-gpu": "cluster", "test-cluster-focused": "cluster"},
         }
         for name, lanes in expected.items():
             jobs = workflow.job_blocks((ROOT / ".github/workflows" / name).read_text())
@@ -283,6 +308,7 @@ class WorkflowRoutingTests(unittest.TestCase):
         step = workflow.step_blocks(gate)[0]
         for name, expression in {
             "CHANGES_RESULT": "needs.changes.result", "PROVIDER_CHANGED": "needs.changes.outputs.provider",
+            "CLUSTER_CHANGED": "needs.changes.outputs.cluster",
             "UNIT_RESULT": "needs.test-provider.result", "SUMMARY_RESULT": "needs.test-provider-summary.result",
             "CLUSTER_RESULT": "needs.test-cluster.result",
             "CLUSTER_FOCUSED_RESULT": "needs.test-cluster-focused.result",
@@ -293,14 +319,21 @@ class WorkflowRoutingTests(unittest.TestCase):
         # Prompt Parity runs in a provider shard, so UNIT_RESULT carries it.
         self.assertNotIn("PARITY_RESULT", step)
         names = ("UNIT_RESULT", "SUMMARY_RESULT", "CLUSTER_RESULT", "CLUSTER_FOCUSED_RESULT")
-        for detector, changed, *lanes in itertools.product(
-                results, ("true", "false", ""), *[results] * len(names)):
+        selections = ("true", "false", "")
+
+        def passes(selected, lanes):
+            return (selected == "true" and set(lanes) == {"success"}) or \
+                   (selected == "false" and set(lanes) == {"skipped"})
+
+        for detector, changed, cluster, *lanes in itertools.product(
+                results, selections, selections, *[results] * len(names)):
             result = subprocess.run(["bash", "-e", "-c", command], capture_output=True, timeout=5,
                                     env={**os.environ, "CHANGES_RESULT": detector, "PROVIDER_CHANGED": changed,
-                                         **dict(zip(names, lanes))})
-            expected = detector == "success" and ((changed == "true" and set(lanes) == {"success"}) or
-                                                  (changed == "false" and set(lanes) == {"skipped"}))
-            self.assertEqual(result.returncode == 0, expected, (detector, changed, *lanes))
+                                         "CLUSTER_CHANGED": cluster, **dict(zip(names, lanes))})
+            # A skipped cluster job passes only when the classifier did not
+            # select the cluster jobs; a failed or cancelled one never passes.
+            expected = detector == "success" and passes(changed, lanes[:2]) and passes(cluster, lanes[2:])
+            self.assertEqual(result.returncode == 0, expected, (detector, changed, cluster, *lanes))
 
 
 if __name__ == "__main__":

@@ -112,7 +112,7 @@ snapshots. Preserve its watchdog, cleanup and state isolation when using a focus
 selector. Use `scripts/run-nested-suite.sh` for documented nested Swift Testing
 cases and `scripts/run-exclusive-native-gpu-test.sh` for exclusive native work.
 
-CI runs the provider suite in eight shards (`Provider Unit Tests (shard K)`), one
+CI runs the provider suite in three shards (`Provider Unit Tests (shard K)`), one
 Mac each. `PROVIDER_TEST_SHARD=K/N` selects a shard in `scripts/run-provider-tests.sh`,
 and `scripts/provider-test-shards.py` chooses its suites:
 
@@ -1212,6 +1212,18 @@ restores source timestamps only for unchanged files, so SwiftPM rebuilds only
 what changed. The worker package's tests (built for macOS 26.2) need the GPU
 and exclusive device access. A loopback or fixture pass never counts as a
 two-Mac hardware pass.
+
+The cluster jobs (Cluster Metadata Checks, Cluster Runtime Tests, Cluster GPU
+Tests and Cluster Focused Checks) run when the classifier selects `cluster`
+(`CLUSTER` in `scripts/ci-component-paths.py`): the cluster packages, the MLX
+pins, the provider's Cluster, Distributed and NativePair sources and tests, the
+other provider files the cluster runners compile, the cluster plan and the
+shared build recipe. A push that runs the provider lanes also runs them. The
+`Provider Tests` gate accepts a skipped cluster job only when `cluster` was not
+selected. A provider-only pull request runs 5 Macs (3 provider shards, the
+summary and the SDK lane when its inputs change; 4 without it); a cluster pull
+request adds 7 (metadata checks, 3 runtime shards, 2 GPU shards, focused
+checks).
 
 CI runs the runtime test target (`DarkbloomClusterRuntimeTests`) on the
 provider's Blacksmith macOS runners, in selections that

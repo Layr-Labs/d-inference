@@ -256,10 +256,10 @@ The macOS jobs of `ci.yml` (`test-provider`, `test-provider-summary`,
 on `blacksmith-12vcpu-macos-27`. In 43 provider shard jobs on Darkbloom macOS
 sandboxes (2026-10-31 to 11-02), the median job took 17.3 min against 9.8 min
 on Blacksmith (362 jobs). The depth-1 checkout took 146 s at the median and up
-to 22 min, against 13 s. The sandboxes found almost no build cache, and
-uploading it took about 150 s. Five jobs stopped in checkout until the
-60-minute job timeout. `scripts/test-darkbloom-route.py` keeps these jobs on
-the literal label.
+to 22 min, against 13 s on Blacksmith. The sandboxes found almost no build
+cache. Saving the cache took about 150 s. Five jobs stopped in checkout until
+the 60-minute job timeout. `scripts/test-darkbloom-route.py` checks that these
+jobs keep the literal label.
 
 Jobs on Darkbloom Sandboxes use GitHub's Actions cache, not Blacksmith's
 colocated cache, so their first runs start without cached build products.

@@ -59,8 +59,7 @@ ROUTED = {
 UNROUTED = ("release-swift.yml", "release-provider.yml", "release-dev-branch.yml",
             "release-desktop.yml", "provider-signing-validation.yml", "register-model.yml",
             "threat-model-review.yml", "bedrock-smoke.yml", "claude.yml", "codex.yml")
-# The CI macOS jobs never route: on Darkbloom macOS sandboxes their checkout and
-# cold builds made them about twice as slow as on Blacksmith (build.md).
+# The CI macOS jobs keep their literal Blacksmith label (build.md, CI Runner Routing).
 CI_MACOS_JOBS = ("test-provider", "test-provider-summary", "test-provider-sdk", "test-cluster-checks")
 # Master and dispatched warming feed release builds, so only PRs read the route.
 RUNS_ON = {"warm": "${{ github.event_name == 'pull_request' && "

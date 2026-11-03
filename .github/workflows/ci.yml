@@ -27,11 +27,8 @@ jobs:
       contents: read
 
   # Chooses a Darkbloom Sandbox or the Blacksmith fallback for the read-only
-  # Linux jobs below. It follows the classifier so only jobs that will run are
-  # requested, and still routes the unconditional jobs if the classifier fails.
-  # The macOS jobs run on Blacksmith only. On Darkbloom macOS sandboxes the
-  # checkout took up to 22 minutes, most builds were cold, and some jobs hung in
-  # checkout until the 60-minute timeout (docs/developer/build.md).
+  # Linux jobs below. It waits for the classifier but still runs if it fails.
+  # The macOS jobs are not routed (docs/developer/build.md).
   route:
     needs: changes
     if: ${{ !cancelled() }}

@@ -48,6 +48,12 @@ jobs:
         test-provider-summary macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.changes.outputs.provider == 'true' && 1 || 0 }}
         test-provider-sdk macos_arm64 blacksmith-12vcpu-macos-27 ${{ (github.event_name == 'push' || needs.changes.outputs.sdk == 'true') && 1 || 0 }}
         test-cluster-checks macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.changes.outputs.provider == 'true' && 1 || 0 }}
+        test-cluster-1 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.changes.outputs.provider == 'true' && 1 || 0 }}
+        test-cluster-2 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.changes.outputs.provider == 'true' && 1 || 0 }}
+        test-cluster-3 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.changes.outputs.provider == 'true' && 1 || 0 }}
+        test-cluster-gpu-1 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.changes.outputs.provider == 'true' && 1 || 0 }}
+        test-cluster-gpu-2 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.changes.outputs.provider == 'true' && 1 || 0 }}
+        test-cluster-focused macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.changes.outputs.provider == 'true' && 1 || 0 }}
 
   release-integrity:
     name: Release Integrity
@@ -80,6 +86,7 @@ jobs:
           python3 scripts/test-provider-ci-cache.py
           python3 scripts/test-provider-ci-workflow.py
           python3 scripts/test-provider-test-shards.py
+          python3 scripts/test-cluster-test-plan.py
           python3 scripts/test-ci-component-paths.py
           python3 scripts/test-darkbloom-route.py
           python3 scripts/test-prepare-prompt-fixtures.py
@@ -737,6 +744,14 @@ jobs:
           DARKBLOOM_CLUSTER_METADATA_BUILD_JOBS: '12'
           DARKBLOOM_CLUSTER_METADATA_BUILD_ROOT: ${{ runner.temp }}/cluster-native-metadata
         run: bash libs/darkbloom-cluster-worker/Tests/CapabilityChecks/run.sh
+      # Builds the bootstrap product beside the capability runner's, in the same
+      # retained build, before the steps below record and save it.
+      - name: Run prefill schedule checks
+        if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
+        env:
+          DARKBLOOM_CLUSTER_METADATA_BUILD_JOBS: '12'
+          DARKBLOOM_CLUSTER_METADATA_BUILD_ROOT: ${{ runner.temp }}/cluster-native-metadata
+        run: bash libs/darkbloom-cluster/Tests/PrefillScheduleChecks/run.sh
       - name: Record source timestamps for the cluster build
         if: ${{ !cancelled() && steps.capability-checks.outcome == 'success' && steps.cluster-build-cache.outputs.cache-hit != 'true' }}
         run: |
@@ -767,123 +782,92 @@ jobs:
         if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
         run: bash provider-swift/Tests/ClusterOnboardingChecks/run.sh
 
-  cluster-discovery:
-    # TEMPORARY discovery job: learn what the Blacksmith macOS VM can run.
-    name: Cluster discovery (${{ matrix.part }})
-    needs: [changes]
-    runs-on: blacksmith-12vcpu-macos-27
-    timeout-minutes: 170
+  test-cluster:
+    # DarkbloomClusterRuntimeTests in selections, each in its own process, on
+    # separate Macs (scripts/cluster-test-plan.py): every test without a
+    # switch, and the switched tests that pass on these runners.
+    name: Cluster Runtime Tests (shard ${{ matrix.shard }})
+    needs: [changes, route]
+    if: ${{ needs.changes.outputs.provider == 'true' }}
+    runs-on: ${{ fromJSON(needs.route.outputs.routes)[format('test-cluster-{0}', matrix.shard)] }}
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
-        part: ['1/4', '2/4', '3/4', '4/4', runners]
+        shard: [1, 2, 3]
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           submodules: recursive
-      - name: Describe the VM
-        run: |
-          sysctl hw.memsize hw.ncpu machdep.cpu.brand_string || true
-          sw_vers || true
-          system_profiler SPDisplaysDataType || true
       - name: Build cluster test products
         id: provider-ci-build
-        if: ${{ matrix.part != 'runners' }}
         uses: ./.github/actions/provider-ci-build
         with:
           lane: cluster
+      - name: Run cluster runtime tests
+        if: ${{ !cancelled() && steps.provider-ci-build.outcome == 'success' }}
+        timeout-minutes: 40
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: python3 scripts/cluster-test-plan.py run blocking "$SHARD"
+
+  test-cluster-gpu:
+    # The switched cluster runtime tests these runners cannot pass, the long
+    # ones and the benchmarks (scripts/cluster-test-plan.py). They run and
+    # report on every pull request; a failure does not fail the workflow.
+    name: Cluster GPU Tests (non-blocking, shard ${{ matrix.shard }})
+    needs: [changes, route]
+    if: ${{ needs.changes.outputs.provider == 'true' }}
+    runs-on: ${{ fromJSON(needs.route.outputs.routes)[format('test-cluster-gpu-{0}', matrix.shard)] }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          submodules: recursive
+      - name: Build cluster test products
+        id: provider-ci-build
+        uses: ./.github/actions/provider-ci-build
+        with:
+          lane: cluster
+      - name: Run non-blocking cluster GPU tests
+        if: ${{ !cancelled() && steps.provider-ci-build.outcome == 'success' }}
+        continue-on-error: true
+        timeout-minutes: 40
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: python3 scripts/cluster-test-plan.py run nonblocking "$SHARD"
+
+  test-cluster-focused:
+    # The model-free runner scripts under libs/darkbloom-cluster/Tests that
+    # Cluster Metadata Checks does not run (scripts/cluster-test-plan.py).
+    name: Cluster Focused Checks
+    needs: [changes, route]
+    if: ${{ needs.changes.outputs.provider == 'true' }}
+    runs-on: ${{ fromJSON(needs.route.outputs.routes)['test-cluster-focused'] }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          submodules: recursive
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        if: ${{ matrix.part == 'runners' }}
         with:
           python-version: '3.12.10'
       - name: Select SDK 27 provider toolchain
-        if: ${{ matrix.part == 'runners' }}
+        id: toolchain
         run: ./scripts/prepare-provider-release-toolchain.sh
-      - name: Discover
-        if: ${{ !cancelled() }}
-        env:
-          PART: ${{ matrix.part }}
-          DARKBLOOM_CLUSTER_METADATA_BUILD_JOBS: '12'
-        run: |
-          out="$RUNNER_TEMP/discovery"
-          mkdir -p "$out/logs"
-          python3 - "$out" <<'PY'
-          import json, os, re, subprocess, sys, time
-          from pathlib import Path
-          out = Path(sys.argv[1]); part = os.environ["PART"]
-          gates = {name: "1" for name in (
-              "QWEN_TP_MTP_GPU", "QWEN_TP_BATCH_GPU", "QWEN_TP_AQV_GPU", "QWEN_TP_REAL_GEOMETRY_GPU",
-              "QWEN_TP_SHARE_PROBE_GPU", "QWEN_TP_MOE_GPU", "QWEN_TP_MOE_GPU_DIAG", "GLM53_DEPTH_INVARIANCE",
-              "GLM53_PAGED_KV", "GLM53_PREFIX_SSD", "GLM53_WINDOW_CENSUS", "GLM53_ROW_INVARIANCE",
-              "DARKBLOOM_PAGED_BENCH", "QWEN_TP_AQV_BENCH", "QWEN_TP_WIDE_BENCH", "PREFIX_RECORD_ENCODE_BENCH")}
-          def run(name, argv, cwd, env, timeout):
-              log = out / "logs" / (re.sub(r"[^A-Za-z0-9_.-]", "_", name) + ".log")
-              start = time.time(); status = None
-              with open(log, "w") as handle:
-                  try:
-                      status = subprocess.run(argv, cwd=cwd, env=env, stdout=handle, stderr=subprocess.STDOUT,
-                                              timeout=timeout).returncode
-                  except subprocess.TimeoutExpired:
-                      status = "timeout"
-              text = log.read_text(errors="replace")
-              record = {"name": name, "status": status, "seconds": round(time.time() - start, 1)}
-              record["passed"] = sum(int(n) for n in re.findall(r"Test run with (\d+) tests? (?:in \d+ suites? )?passed", text))
-              record["failed_lines"] = [l.strip()[:300] for l in text.splitlines()
-                                        if re.search(r"(✘|error:|failed|Fatal error|signal)", l)][:40]
-              record["skipped"] = len(re.findall(r"(?m)^[^A-Za-z0-9]*(?:Test|Suite) .+ skipped", text))
-              record["xctest"] = re.findall(r"Executed \d+ tests?, with .*", text)[-1:] 
-              record["summary"] = re.findall(r"Test run with .*", text)[-1:]
-              print(json.dumps(record), flush=True)
-              return record
-          results = []
-          base = dict(os.environ)
-          if part == "runners":
-              tests = Path("libs/darkbloom-cluster/Tests")
-              for directory in sorted(tests.iterdir()):
-                  if (directory / "run.sh").is_file():
-                      argv = ["bash", str(directory / "run.sh")]
-                  elif (directory / "run.py").is_file():
-                      argv = ["python3", str(directory / "run.py"), "--output", str(out / ("runner-" + directory.name))]
-                  else:
-                      continue
-                  results.append(run("runner-" + directory.name, argv, None, base, 1500))
-          else:
-              index, total = map(int, part.split("/"))
-              package = "libs/darkbloom-cluster"
-              listed = subprocess.run(["swift", "test", "list", "--skip-build"], cwd=package,
-                                      capture_output=True, text=True)
-              (out / "list.txt").write_text(listed.stdout + listed.stderr)
-              suites = sorted({f"{m.group(1)}.{m.group(2)}" for line in listed.stdout.splitlines()
-                               if (m := re.match(r"^([^./]+)[./]([^./ ]+)", line.strip()))})
-              print(f"{len(suites)} suites", flush=True)
-              mine = suites[index - 1::total]
-              for suite in mine:
-                  module, name = suite.split(".", 1)
-                  selector = f"^{module}[./]{name}([./]|$)"
-                  record = run(suite, ["swift", "test", "--skip-build", "--filter", selector], package, base, 1200)
-                  record["mode"] = "default"; results.append(record)
-                  if record["skipped"]:
-                      gated = run(suite + "-gated", ["swift", "test", "--skip-build", "--filter", selector],
-                                  package, {**base, **gates}, 1800)
-                      gated["mode"] = "gated"; results.append(gated)
-          (out / "results.json").write_text(json.dumps(results, indent=1))
-          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as summary:
-              summary.write("| name | status | seconds | passed | skipped | summary |\n|---|---|---|---|---|---|\n")
-              for r in results:
-                  summary.write(f"| {r['name']} | {r['status']} | {r['seconds']} | {r['passed']} | {r['skipped']} | {(r['summary'] or r['xctest'] or [''])[0][:120]} |\n")
-          PY
-      - name: Upload discovery
-        if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: cluster-discovery-${{ strategy.job-index }}
-          path: ${{ runner.temp }}/discovery
-          retention-days: 7
+      - name: Run cluster focused checks
+        if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
+        timeout-minutes: 40
+        run: python3 scripts/cluster-test-plan.py run focused 1
 
   provider-test-gate:
     name: Provider Tests
     runs-on: ubuntu-24.04
-    needs: [changes, test-provider, test-provider-summary]
+    needs: [changes, test-provider, test-provider-summary, test-cluster, test-cluster-focused]
     if: ${{ always() }}
     steps:
       - name: Require selected provider lanes or verified intentional skips
@@ -892,6 +876,8 @@ jobs:
           PROVIDER_CHANGED: ${{ needs.changes.outputs.provider }}
           UNIT_RESULT: ${{ needs.test-provider.result }}
           SUMMARY_RESULT: ${{ needs.test-provider-summary.result }}
+          CLUSTER_RESULT: ${{ needs.test-cluster.result }}
+          CLUSTER_FOCUSED_RESULT: ${{ needs.test-cluster-focused.result }}
         run: |
           test "$CHANGES_RESULT" = success
           case "$PROVIDER_CHANGED" in
@@ -901,6 +887,8 @@ jobs:
           esac
           test "$UNIT_RESULT" = "$expected"
           test "$SUMMARY_RESULT" = "$expected"
+          test "$CLUSTER_RESULT" = "$expected"
+          test "$CLUSTER_FOCUSED_RESULT" = "$expected"
 
   cache-swift:
     name: Swift Build + Cache

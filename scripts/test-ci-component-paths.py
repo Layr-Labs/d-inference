@@ -83,6 +83,7 @@ class ComponentPathsTests(unittest.TestCase):
             "scripts/run-nested-suite.sh", "scripts/run-paged-kernel-tests.sh",
             "scripts/run-exclusive-native-gpu-test.sh", "scripts/provider-test-shards.py",
             "scripts/provider-test-shard-weights.json",
+            "scripts/cluster-test-plan.py",
             "scripts/run-provider-test-watchdog.py", "scripts/prepare-mimo-audio-fixtures.py",
             "scripts/prepare-mimo-provider-fixtures.py", "scripts/prepare-mimo-prompt-fixtures.py",
             "scripts/prepare-prompt-fixtures.py", "scripts/test-prepare-prompt-fixtures.py",

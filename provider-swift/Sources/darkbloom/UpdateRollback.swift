@@ -76,10 +76,10 @@ struct UpdateRollback {
     let say: (String) -> Void
 
     static let clusterRefusal = """
-        This Mac serves in a two-Mac cluster. Both Macs of a pair run one release, so `\(cli) update --rollback` \
-        does not roll back one Mac of a pair. Stop the pair first (`\(cli) cluster stop`, or `\(cli) stop` for a \
-        cluster member service), run `\(cli) update --rollback` on each Mac, then start the pair again with \
-        `\(cli) cluster`. Nothing was changed.
+        This Mac serves in a two-Mac cluster, and `\(cli) update --rollback` does not change one Mac of a running \
+        pair. Stop this Mac's cluster service (`\(cli) cluster stop`), run `\(cli) update --rollback`, then start \
+        it again with `\(cli) cluster`: the other Mac follows the rollback to the same release. For a cluster \
+        member service, stop it with `\(cli) stop` and roll back both Macs. Nothing was changed.
         """
 
     static let foregroundRefusal = """

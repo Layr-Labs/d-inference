@@ -78,7 +78,7 @@ LANES = {
     "test-provider": "provider",
     "test-provider-sdk": "sdk",
 }
-PROVIDER_SHARDS = [1, 2, 3, 4, 5]
+PROVIDER_SHARDS = [1, 2, 3, 4, 5, 6, 7, 8]
 # Prompt Parity runs in a provider shard (scripts/provider-test-shards.py PARITY_SHARD).
 PARITY_STEPS = {
     "Verify public prompt golden vectors": ("./scripts/verify-prompt-parity.sh", "ProductionPromptParityTests", "prompt"),
@@ -196,41 +196,38 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         for job_id, lane in LANES.items():
             with self.subTest(lane=lane):
                 job = self.jobs[job_id]
-                if job_id == "test-provider":
-                    # Shards are independent: a failed shard never cancels
-                    # another, and each shard reads a route lane of its own.
-                    self.assertIn("    strategy:\n      # A failed shard does not cancel the other shards.\n"
-                                  "      fail-fast: false\n      matrix:\n        shard: %s\n" % PROVIDER_SHARDS, job)
-                    route_lanes = [f"test-provider-{shard}" for shard in PROVIDER_SHARDS]
-                    lane_key = "format('test-provider-{0}', matrix.shard)"
-                else:
-                    self.assertNotRegex(job, re.compile(r"^    strategy:", re.MULTILINE), msg=job)
-                    route_lanes = [job_id]
-                    lane_key = f"'{job_id}'"
-                # A Darkbloom macOS sandbox when granted, otherwise the same
-                # dedicated Blacksmith runner; requested only when the job runs.
-                self.assertIn("    runs-on: ${{ fromJSON(needs.route.outputs.routes)[%s] }}\n" % lane_key, job)
-                # The SDK lane runs on every push and on pull requests that change its inputs.
+                # A dedicated Blacksmith Mac per job (per shard); the Darkbloom
+                # route never chooses a macOS runner for these lanes.
+                self.assertIn("    runs-on: blacksmith-12vcpu-macos-27\n", job)
+                self.assertNotIn(f"        {job_id} ", self.jobs["route"])
+                # The SDK lane runs on every push and on pull requests that
+                # change its inputs.
                 condition = (SDK_CONDITION if job_id == "test-provider-sdk"
                              else "needs.changes.outputs.provider == 'true'")
-                requested = f"({condition})" if "||" in condition else condition
-                for route_lane in route_lanes:
-                    self.assertIn("        %s macos_arm64 blacksmith-12vcpu-macos-27 "
-                                  "${{ %s && 1 || 0 }}\n" % (route_lane, requested), self.jobs["route"])
                 self.assertIn("    timeout-minutes: 60\n", job)
-                self.assertIn("    needs: [changes, route]\n", job)
+                self.assertIn("    needs: changes\n", job)
                 self.assertIn("    if: ${{ %s }}\n" % condition, job)
+                if job_id == "test-provider":
+                    # Shards are independent: a failed shard never cancels another.
+                    self.assertIn("    strategy:\n      # A failed shard does not cancel the other shards.\n"
+                                  "      fail-fast: false\n      matrix:\n        shard: %s\n" % PROVIDER_SHARDS, job)
+                else:
+                    self.assertNotRegex(job, re.compile(r"^    strategy:", re.MULTILINE), msg=job)
                 self.assertNotIn("continue-on-error:", job)
                 self.assertNotIn("DARKBLOOM_EXCLUSIVE_NATIVE_GPU_TEST:", job)
         self.assertIn("    name: Provider Unit Tests (shard ${{ matrix.shard }})\n", self.jobs["test-provider"])
 
-    def test_route_requests_exactly_one_lane_per_provider_shard(self):
-        # The plane grants a lane whole: one lane for all shards would need a
-        # free Mac for every shard at once and otherwise fall back entirely.
-        # test_lanes_are_independent_on_dedicated_supported_mac_runners pins
-        # the matrix to PROVIDER_SHARDS.
-        self.assertEqual(re.findall(r"(?m)^        (test-provider(?:-[0-9]+)?) ", self.jobs["route"]),
-                         [f"test-provider-{shard}" for shard in PROVIDER_SHARDS])
+    def test_route_requests_no_macos_lane(self):
+        # The provider and cluster Mac jobs use the literal Blacksmith label,
+        # so the route asks the plane for Linux lanes only.
+        self.assertEqual(re.findall(r"(?m)^        ([a-z0-9-]+) ([a-z0-9_]+) ", self.jobs["route"]),
+                         [("release-integrity", "linux_arm64"), ("docs", "linux_arm64")])
+        for job_id in ("test-provider", "test-provider-summary", "test-provider-sdk", "test-cluster-checks",
+                       "test-cluster", "test-cluster-gpu", "test-cluster-focused"):
+            with self.subTest(job=job_id):
+                self.assertIn("    runs-on: blacksmith-12vcpu-macos-27\n", self.jobs[job_id])
+                needs = re.search(r"(?m)^    needs: (.+)$", self.jobs[job_id]).group(1)
+                self.assertNotIn("route", needs)
 
     def test_existing_required_check_requires_every_lane_even_after_failures(self):
         job = self.jobs["provider-test-gate"]
@@ -307,9 +304,10 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         # build and writes the report; the gate requires it.
         summary = self.jobs["test-provider-summary"]
         self.assertIn("    name: Provider Unit Tests Summary\n", summary)
-        self.assertIn("    needs: [changes, route, test-provider]\n", summary)
+        self.assertIn("    needs: [changes, test-provider]\n", summary)
         self.assertIn("    if: ${{ !cancelled() && needs.changes.outputs.provider == 'true' }}\n", summary)
-        self.assertIn("    runs-on: ${{ fromJSON(needs.route.outputs.routes)['test-provider-summary'] }}\n", summary)
+        self.assertIn("    runs-on: blacksmith-12vcpu-macos-27\n", summary)
+        self.assertNotIn("        test-provider-summary ", self.jobs["route"])
         self.assertNotIn("continue-on-error:", summary)
         summary_steps = step_blocks(summary)
         summary_names = [field(step, "name", indent=6) for step in summary_steps]
@@ -657,11 +655,10 @@ class ProviderCIWorkflowTests(unittest.TestCase):
     def test_cluster_metadata_runners_run_every_runner_and_fail_on_any(self):
         job = self.jobs["test-cluster-checks"]
         self.assertIn("    name: Cluster Metadata Checks\n", job)
-        self.assertIn("    needs: [changes, route]\n", job)
+        self.assertIn("    needs: changes\n", job)
         self.assertIn("    if: ${{ needs.changes.outputs.provider == 'true' }}\n", job)
-        self.assertIn("    runs-on: ${{ fromJSON(needs.route.outputs.routes)['test-cluster-checks'] }}\n", job)
-        self.assertIn("        test-cluster-checks macos_arm64 blacksmith-12vcpu-macos-27 "
-                      "${{ needs.changes.outputs.provider == 'true' && 1 || 0 }}\n", self.jobs["route"])
+        self.assertIn("    runs-on: blacksmith-12vcpu-macos-27\n", job)
+        self.assertNotIn("        test-cluster-checks ", self.jobs["route"])
         for forbidden in ("continue-on-error:", "secrets.", "DARKBLOOM_EXCLUSIVE_NATIVE_GPU_TEST:"):
             self.assertNotIn(forbidden, job)
         steps = step_blocks(job)
@@ -714,6 +711,10 @@ class ProviderCIWorkflowTests(unittest.TestCase):
             self.assertIn(component, key)
         for step in (steps[record], steps[upload]):
             self.assertIn("steps.capability-checks.outcome == 'success'", field(step, "if"))
+            # A pull request saves only when it restored nothing; pushes save.
+            self.assertIn("steps.cluster-build-cache.outputs.cache-hit != 'true' && (github.event_name != "
+                          "'pull_request' || steps.cluster-build-cache.outputs.cache-matched-key == '')",
+                          field(step, "if"))
         support = (ROOT / "libs/darkbloom-cluster/Tests/Support/native-metadata.sh").read_text()
         self.assertIn('task_jobs="${DARKBLOOM_CLUSTER_METADATA_BUILD_JOBS:-4}"', support)
         self.assertIn('--jobs "$task_jobs"', support)
@@ -728,15 +729,10 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         for forbidden in ("coordinator/", "cargo ", "rust-key", "secrets.", "darkbloom-platform"):
             self.assertNotIn(forbidden, self.jobs["test-provider"])
 
-    def test_push_only_release_build_no_longer_warms_sdk_debug_tests(self):
-        job = self.jobs["cache-swift"]
-        self.assertIn("    if: github.event_name == 'push'", job)
-        runs = [run_command(step) for step in step_blocks(job) if field(step, "run")]
-        self.assertIn("swift build -c release --product darkbloom\n"
-                      "swift build -c release --product darkbloom-fan-helper", runs)
-        self.assertNotIn("swift build --build-tests", job)
-        self.assertNotIn("working-directory: libs/mlx-swift-lm", job)
-        self.assertIn("actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57", job)
+    def test_obsolete_self_consuming_cache_warmer_is_absent(self):
+        # cache-swift saved a release build that only its own next run restored.
+        self.assertNotIn("cache-swift", self.jobs)
+        self.assertNotIn("spm-v4-blacksmith-macos27-native-", WORKFLOW.read_text())
 
     def test_offline_workflow_test_runs_in_release_integrity(self):
         self.assertIn("python3 provider-swift/Tests/test_protocol_fixture_resources.py", self.jobs["release-integrity"])
@@ -790,6 +786,13 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         self.assertNotIn("rust-key:", action)
         self.assertNotIn("rust-cache-hit:", action)
         self.assertEqual(sum("actions/cache/save@" in step for step in steps), 2)
+        # Pushes save the Swift build. A pull request saves it only when it
+        # restored nothing, so its later pushes do not evict the base entry.
+        swift_save = next(step for step in steps if field(step, "name", indent=4) == "Save lane-specific Swift test build")
+        self.assertEqual(field(swift_save, "if", indent=6),
+                         "${{ !cancelled() && steps.timestamps.outcome == 'success' && "
+                         "steps.swift-cache.outputs.cache-hit != 'true' && (github.event_name != 'pull_request' "
+                         "|| steps.swift-cache.outputs.cache-matched-key == '') }}")
 
 
 if __name__ == "__main__":

@@ -30,6 +30,8 @@ extension DesktopBackend {
       fresh
       ? (daemon?.lifecycle?.outcome == .draining ? "draining" : "running")
       : (current ? "stale" : (localEndpoint == nil ? "stopped" : "running"))
+    // Unknown (nil) for a stale or Local-only daemon, as for an older one.
+    let registered = fresh && !localOnly ? daemon?.registeredModels : nil
     let supported = Set(EngineV2SupportedModels.partition(localModels).supported.map(\.id))
     let capabilities = Set(
       (daemon?.runtimeCapabilities ?? []).map { ProviderRuntimeCapability(rawValue: $0) })
@@ -60,6 +62,7 @@ extension DesktopBackend {
         "size_gb": .number(entry?.sizeGb ?? local.map { Double($0.sizeBytes) / 1_073_741_824 }),
         "memory_gb": .number(local?.estimatedMemoryGb), "downloaded": .bool(local != nil),
         "serving": .bool(selected.contains(id)), "loaded": .bool(resident.contains(id)),
+        "registration": Self.modelRegistration(id, registered: registered),
         "eligible": .bool(reason == nil), "reason": reason.map(DV.string) ?? .null,
         // Only catalog models can be advertised or enrolled in Autopilot; a
         // model found only on disk is eligible for local-only serving.
@@ -156,4 +159,12 @@ extension DesktopBackend {
     ])
   }
 
+  /// What the live coordinator registration carries for a model: `routable`
+  /// in its models (the network sends it requests), `autopilot` in its
+  /// Autopilot inventory only, `none` in neither. Null when not known.
+  static func modelRegistration(_ id: String, registered: DaemonState.RegisteredModels?) -> JSONValue {
+    guard let registered else { return .null }
+    if registered.models.contains(id) { return .string("routable") }
+    return .string(registered.autopilotInventory.contains(id) ? "autopilot" : "none")
+  }
 }

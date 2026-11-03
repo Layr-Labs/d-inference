@@ -3097,7 +3097,9 @@ cluster service re-plans and re-adopts the same model by itself
 answer with the same worker build (`ClusterOnboardingUpdate.oneBuild`): the
 [pair's coordinated update](../provider/cluster-always-on.md#the-pairs-coordinated-update)
 restarts the two Macs seconds apart, and a plan made while one still runs the
-other build would fail and wait 600 s. A model change of
+other build would fail and wait 600 s. A Mac that rolls a release back is followed by the other
+Mac to the same release ([a rollback on one Mac](../provider/cluster-always-on.md#a-rollback-on-one-mac)),
+which the leader then plans the same way. A model change of
 a serving cluster (`m`, or `darkbloom cluster local <model>`) plans the same way:
 its list was priced while the running parts held their memory, where tensor
 parallel may not fit now, so once both parts stopped and both Macs gave the
@@ -6160,6 +6162,8 @@ Sources: `provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/C
 A live service acknowledges planned local stop only through a fresh private supervision-cycle publication (`service-supervision.json`) with its current PID and idle state. Ordinary status writes cannot acknowledge an in-flight child start; the stop waits boundedly for the actual supervisor to finish that start and retire it before peer stop.
 
 A local-only optional `ClusterSetupRecord.stopDrain` token is written atomically with serving=false. During that token’s lifetime, controlTick and final sendLease derive both remote running and serving from the same record, preserving the prior peer intent while the local supervisor drains. A matching stop-token supervision cycle may clear it only after no local child/leftover and no outbound lease remains in flight. New leases then reread stopped intent. Handover and background serve/stop synchronization wait; background mutation also holds command custody and rereads current intent. Normal wire fields and lease deadlines are unchanged.
+
+The supervision cycle that clears the token also publishes `service-status.json` with `child.running = false`, and it writes that file first. A `darkbloom cluster stop` that starts at that moment (for example, a retry after a local timeout) can meet the service's record write. The stop's record write waits up to 2 seconds for the record lock, so it does not fail with "could not save the stop request". The service makes its write while it holds the service lock, so it tries the record lock once and tries again on its next cycle.
 
 ### Qwen27 capacity changes preserve request arithmetic
 

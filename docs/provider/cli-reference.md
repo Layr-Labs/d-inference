@@ -434,8 +434,9 @@ drains it instead of ending the process at once. `SIGHUP` is not a stop signal
 in two cases: the provider's launchd job does not take it, so it has whatever
 action launchd started the job with, and a start that arrived with `SIGHUP`
 ignored, for example under `nohup`, keeps ignoring it. A provider that
-re-executes itself in place for a self-update carries the same choice into the
-new process (`ProviderStopSignals` in
+re-executes itself in place for a self-update (one that is not the provider
+LaunchAgent's own job; launchd relaunches that job) carries the same choice
+into the new process (`ProviderStopSignals` in
 `provider-swift/Sources/ProviderCore/Service/ProviderStopSignals.swift`). The signal
 deadline is configurable with
 [`DARKBLOOM_DRAIN_TIMEOUT_SECONDS`](../reference/configuration.md#provider-drain-deadline).
@@ -780,7 +781,10 @@ release, the installed `Darkbloom.app` is not the recorded release, or the kept
 release fails its hash or signature check (`RollbackRefusal`). A refusal at
 the swap, after the drain, restarts the drained provider on the installed
 release; when another provider took the instance lock during the drain, it is
-not signalled and the service stays drained. Steps are in
+not signalled and the service stays drained. On a `darkbloom cluster` Mac,
+stop its cluster service first; once it runs again, the other Mac follows the
+rollback to the same release
+([a rollback on one Mac](./cluster-always-on.md#a-rollback-on-one-mac)). Steps are in
 [installation → Roll back to the previous release](./installation.md#roll-back-to-the-previous-release).
 See [installation → Update](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/provider/installation.md).
 
@@ -2212,7 +2216,8 @@ qualification or performance. Sources:
 | Verified weight hashes | `~/.darkbloom/verified-weights.json` (`DARKBLOOM_VERIFIED_WEIGHTS_FILE`), `0600`; managed GLM load hashes bound to file identities, reused for startup registration | `provider-swift/Sources/ProviderCore/Service/VerifiedWeightHashStore.swift` |
 | Watchdog state | `~/.darkbloom/watchdog-state.json` (`DARKBLOOM_WATCHDOG_STATE`) | `provider-swift/Sources/ProviderCore/Service/WatchdogState.swift` |
 | KV-backend crash-loop guard | `~/.darkbloom/kv-backend-guard.json` (`DARKBLOOM_KV_BACKEND_GUARD`) | `provider-swift/Sources/ProviderCore/Service/KVBackendGuard.swift` |
-| App Attest stall restart marker | `app-attest-stall-restart.json` beside the daemon state file, `0600`; time of the last automatic restart for a stalled DeviceCheck call ([limits](../reference/app-attest-shadow.md#bounds-and-credential-lifecycle)) | `provider-swift/Sources/ProviderAppAttest/AppAttestStallRestart.swift` (`AppAttestStallRestartMarker`) |
+| App Attest stall restart marker | `app-attest-stall-restart.json` beside the daemon state file, `0600`; time of the last automatic App Attest restart, for a stalled DeviceCheck call or for `is_supported_false` ([limits](../reference/app-attest-shadow.md#bounds-and-credential-lifecycle)) | `provider-swift/Sources/ProviderAppAttest/AppAttestStallRestart.swift` (`AppAttestStallRestartMarker`) |
+| App Attest verified marker | `app-attest-verified.json` beside the daemon state file, `0600`; time of the last coordinator App Attest authorization, rewritten at most once per hour. When it is missing at serve start, it is seeded once from the previous daemon state (the last Apple success of an attested key, or an App Attest grant left by an unclean exit), with evidence from the last 7 days. It only allows the `is_supported_false` restart; it never authorizes serving | `provider-swift/Sources/ProviderAppAttest/AppAttestStallRestart.swift` (`AppAttestVerifiedMarker`) |
 | Provider run marker | `provider-run.json` beside the daemon state file, `0600`. Set to `running` when a serve process starts and to `clean` (with cause) after its drain or before an update/stall relaunch. Explicit update/stall relaunch causes survive later generic termination callbacks; a failed hand-off restores running state and clears the cause. The next process derives `previous_exit` and `start_reason` from it | `provider-swift/Sources/ProviderCore/Service/ProviderRunMarker.swift`, `ProviderProcessRun.swift` |
 | APNs push history | `apns-push-history.json` beside the daemon state file, `0600`. The last 50 code-identity push receipt times and reply times, plus whether a device token was present. No token, nonce or payload | `provider-swift/Sources/ProviderCore/Apns/APNsPushHistory.swift` |
 | Provider LaunchAgent | label `io.darkbloom.provider`; `~/Library/LaunchAgents/io.darkbloom.provider.plist`; `RunAtLoad = true`, `KeepAlive = false`; stdout/stderr → `~/.darkbloom/provider.log` | `provider-swift/Sources/ProviderCore/Service/LaunchAgent.swift` (`label`, `plistPath`, `logPath`) |

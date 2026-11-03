@@ -147,6 +147,8 @@ extension CoordinatorClient {
             self.detachNativePairMember()
             self.failDrainBarriers()
             self.failModelReplacements()
+            // Nothing is registered once the connection is gone.
+            self.state.registeredModelIDs = nil
             self.state.resetCapacitySession()
             // Detach the inference-chunk fast path from this connection (drops any
             // queued chunks; their requests are cancelled on disconnect). Guarded
@@ -288,7 +290,8 @@ extension CoordinatorClient {
                 for await msg in outboundStream {
                     if self.shutdownRequested { break }
                     let json = self.encodeOutbound(msg)
-                    self.sendTextFrame(json, on: connection, identifier: "chunk", onWritten: msg.onWritten)
+                    self.sendTextFrame(json, on: connection, identifier: "chunk",
+                                       onWritten: msg.onWritten ?? self.registeredSetUpdate(msg))
                 }
             }
 

@@ -2,7 +2,7 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import '@testing-library/jest-dom/vitest';
-import type { Action } from '../src/shared/contracts';
+import type { Action, NativeModel } from '../src/shared/contracts';
 import { Models } from '../src/renderer/features/models/Models';
 import { backendWith } from './onboardingFixtures';
 import { poolSnapshot, succeeded } from './modelsFixtures';
@@ -139,4 +139,25 @@ it('locks the manual selection while Autopilot is turning on', async () => {
     expect(download).toBeDisabled();
   fireEvent.click(screen.getByRole('button', { name: /Apply selection/ }));
   expect(backend.act).not.toHaveBeenCalled();
+});
+
+it('says which selected models the network has registered', () => {
+  const state = poolSnapshot({ enabled: false, phase: 'off' });
+  const registration: Record<string, NativeModel['registration']> = {
+    'gpt-oss-20b': 'routable',
+    'gemma-4-26b': 'none',
+    'qwen-3.5-9b': 'none',
+  };
+  renderModels({
+    ...state,
+    models: state.models.map((model) => ({ ...model, registration: registration[model.id] })),
+  });
+  fireEvent.click(screen.getByRole('button', { name: /Show \d+ more models/ }));
+  const row = (name: string) =>
+    screen.getByRole('heading', { name }).closest('article') as HTMLElement;
+  expect(row('GPT-OSS 20B')).toHaveTextContent('Registered with the network');
+  const warning = within(row('Gemma 4 26B')).getByText('Not registered with the network yet');
+  expect(warning).toHaveClass('warning-text');
+  // Downloaded but not selected: not registering it is expected.
+  expect(row('Qwen 3.5 9B')).not.toHaveTextContent(/registered/i);
 });

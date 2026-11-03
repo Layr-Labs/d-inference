@@ -239,17 +239,17 @@ class WorkflowRoutingTests(unittest.TestCase):
             # Runner routing follows the classifier, so only selected lanes are requested.
             self.assertIn("    needs: changes\n", jobs["route"])
             for lane, component in lanes.items():
-                self.assertIn("    needs: [changes, route]\n", jobs[lane])
+                self.assertIn("    needs: changes\n", jobs[lane])
                 self.assertIn("    if: ${{ needs.changes.outputs." + component + " == 'true' }}\n", jobs[lane])
                 self.assertNotIn("continue-on-error:", jobs[lane])
         ci = workflow.job_blocks((ROOT / ".github/workflows/ci.yml").read_text())
         # The SDK lane runs on every push and on pull requests that change its inputs.
-        self.assertIn("    needs: [changes, route]\n", ci["test-provider-sdk"])
+        self.assertIn("    needs: changes\n", ci["test-provider-sdk"])
         self.assertIn("    if: ${{ github.event_name == 'push' || needs.changes.outputs.sdk == 'true' }}\n",
                       ci["test-provider-sdk"])
         self.assertNotIn("continue-on-error:", ci["test-provider-sdk"])
         # The summary runs after failed shards too, but only when the shards were selected.
-        self.assertIn("    needs: [changes, route, test-provider]\n", ci["test-provider-summary"])
+        self.assertIn("    needs: [changes, test-provider]\n", ci["test-provider-summary"])
         self.assertIn("    if: ${{ !cancelled() && needs.changes.outputs.provider == 'true' }}\n",
                       ci["test-provider-summary"])
         self.assertNotIn("continue-on-error:", ci["test-provider-summary"])

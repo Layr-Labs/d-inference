@@ -195,20 +195,16 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         for job_id, lane in LANES.items():
             with self.subTest(lane=lane):
                 job = self.jobs[job_id]
-                # A Darkbloom macOS sandbox when granted, otherwise the same
-                # dedicated Blacksmith runner; requested only when the lane runs.
-                self.assertIn("    runs-on: ${{ fromJSON(needs.route.outputs.routes)['%s'] }}\n" % job_id, job)
-                # The provider lane asks for one runner per shard. The SDK lane
-                # runs on every push and on pull requests that change its inputs.
-                count = 5 if job_id == "test-provider" else 1
+                # A dedicated Blacksmith Mac per job (per shard); the Darkbloom
+                # route never chooses a macOS runner for these lanes.
+                self.assertIn("    runs-on: blacksmith-12vcpu-macos-27\n", job)
+                self.assertNotIn(f"        {job_id} ", self.jobs["route"])
+                # The SDK lane runs on every push and on pull requests that
+                # change its inputs.
                 condition = (SDK_CONDITION if job_id == "test-provider-sdk"
                              else "needs.changes.outputs.provider == 'true'")
-                requested = f"({condition})" if "||" in condition else condition
-                self.assertIn("        %s macos_arm64 blacksmith-12vcpu-macos-27 "
-                              "${{ %s && %d || 0 }}\n" % (job_id, requested, count),
-                              self.jobs["route"])
                 self.assertIn("    timeout-minutes: 60\n", job)
-                self.assertIn("    needs: [changes, route]\n", job)
+                self.assertIn("    needs: changes\n", job)
                 self.assertIn("    if: ${{ %s }}\n" % condition, job)
                 if job_id == "test-provider":
                     # Shards are independent: a failed shard never cancels another.
@@ -294,9 +290,10 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         # build and writes the report; the gate requires it.
         summary = self.jobs["test-provider-summary"]
         self.assertIn("    name: Provider Unit Tests Summary\n", summary)
-        self.assertIn("    needs: [changes, route, test-provider]\n", summary)
+        self.assertIn("    needs: [changes, test-provider]\n", summary)
         self.assertIn("    if: ${{ !cancelled() && needs.changes.outputs.provider == 'true' }}\n", summary)
-        self.assertIn("    runs-on: ${{ fromJSON(needs.route.outputs.routes)['test-provider-summary'] }}\n", summary)
+        self.assertIn("    runs-on: blacksmith-12vcpu-macos-27\n", summary)
+        self.assertNotIn("        test-provider-summary ", self.jobs["route"])
         self.assertNotIn("continue-on-error:", summary)
         summary_steps = step_blocks(summary)
         summary_names = [field(step, "name", indent=6) for step in summary_steps]
@@ -644,11 +641,10 @@ class ProviderCIWorkflowTests(unittest.TestCase):
     def test_cluster_metadata_runners_run_every_runner_and_fail_on_any(self):
         job = self.jobs["test-cluster-checks"]
         self.assertIn("    name: Cluster Metadata Checks\n", job)
-        self.assertIn("    needs: [changes, route]\n", job)
+        self.assertIn("    needs: changes\n", job)
         self.assertIn("    if: ${{ needs.changes.outputs.provider == 'true' }}\n", job)
-        self.assertIn("    runs-on: ${{ fromJSON(needs.route.outputs.routes)['test-cluster-checks'] }}\n", job)
-        self.assertIn("        test-cluster-checks macos_arm64 blacksmith-12vcpu-macos-27 "
-                      "${{ needs.changes.outputs.provider == 'true' && 1 || 0 }}\n", self.jobs["route"])
+        self.assertIn("    runs-on: blacksmith-12vcpu-macos-27\n", job)
+        self.assertNotIn("        test-cluster-checks ", self.jobs["route"])
         for forbidden in ("continue-on-error:", "secrets.", "DARKBLOOM_EXCLUSIVE_NATIVE_GPU_TEST:"):
             self.assertNotIn(forbidden, job)
         steps = step_blocks(job)

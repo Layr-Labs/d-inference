@@ -1,6 +1,6 @@
 # Test Provider And Native Contracts
 
-> Last updated: 2026-10-31
+> Last updated: 2026-11-03
 
 Run isolated Swift, native-resource, public-fixture and landing tests here.
 Backend integration and cross-implementation qualification are platform-owned.
@@ -1367,8 +1367,8 @@ HTTPS plane with a throwaway certificate; the host needs Bash, Python, jq, curl
 and openssl. It covers the default-off switch, fork pull requests, exact label
 grants, HTTP errors, the single retry, timeouts, untrusted or plain-HTTP planes
 and hostile reply text. It also pins each routed job's fallback, timeout and
-read-only permissions, and keeps release workflows on literal Blacksmith
-runners. No check contacts the real plane.
+read-only permissions, and keeps release workflows and the macOS jobs of
+`ci.yml` on literal Blacksmith runners. No check contacts the real plane.
 
 Docs-impact tests retain provider, protocol, privacy, native capacity, cache,
 release/model publication and fixture mappings. Historical links need exact

@@ -39,19 +39,12 @@ FALLBACKS = {"release-integrity": LINUX_FALLBACK, "test-provider": MACOS_FALLBAC
              "warm": MACOS_FALLBACK, "docs": LINUX_FALLBACK}
 GRANTED = {"release-integrity": LINUX, "test-provider": MACOS,
            "warm": MACOS, "docs": LINUX_FALLBACK}
-PROVIDER = "${{ needs.changes.outputs.provider == 'true' && 1 || 0 }}"
-PROVIDER_SHARDS = "${{ needs.changes.outputs.provider == 'true' && 5 || 0 }}"
-SDK = "${{ (github.event_name == 'push' || needs.changes.outputs.sdk == 'true') && 1 || 0 }}"
 PULL_REQUEST_WARM = "${{ github.event_name == 'pull_request' && 2 || 0 }}"
 # Every routed job: (profile, fallback label, count expression or None for 1).
 ROUTED = {
     "ci.yml": {
         "release-integrity": ("linux_arm64", LINUX_FALLBACK, None),
         "docs": ("linux_arm64", LINUX_FALLBACK, None),
-        "test-provider": ("macos_arm64", MACOS_FALLBACK, PROVIDER_SHARDS),
-        "test-provider-summary": ("macos_arm64", MACOS_FALLBACK, PROVIDER),
-        "test-provider-sdk": ("macos_arm64", MACOS_FALLBACK, SDK),
-        "test-cluster-checks": ("macos_arm64", MACOS_FALLBACK, PROVIDER),
     },
     "docs-impact.yml": {
         "commit-signatures": ("linux_arm64", LINUX_FALLBACK, None),
@@ -66,6 +59,9 @@ ROUTED = {
 UNROUTED = ("release-swift.yml", "release-provider.yml", "release-dev-branch.yml",
             "release-desktop.yml", "provider-signing-validation.yml", "register-model.yml",
             "threat-model-review.yml", "bedrock-smoke.yml", "claude.yml", "codex.yml")
+# The CI macOS jobs never route: on Darkbloom macOS sandboxes their checkout and
+# cold builds made them about twice as slow as on Blacksmith (build.md).
+CI_MACOS_JOBS = ("test-provider", "test-provider-summary", "test-provider-sdk", "test-cluster-checks")
 # Master and dispatched warming feed release builds, so only PRs read the route.
 RUNS_ON = {"warm": "${{ github.event_name == 'pull_request' && "
                    "fromJSON(needs.route.outputs.routes)['warm'] || 'blacksmith-12vcpu-macos-27' }}"}
@@ -557,6 +553,10 @@ class RouteWorkflowTests(unittest.TestCase):
                         self.assertRegex(job_field(job, "runs-on"), r"^(blacksmith-[a-z0-9-]+|ubuntu-24\.04)$")
         ci = jobs(self.texts["ci.yml"])
         self.assertEqual(job_field(ci["cache-swift"], "runs-on"), MACOS_FALLBACK)
+        for name in CI_MACOS_JOBS:
+            with self.subTest(workflow="ci.yml", job=name):
+                self.assertEqual(job_field(ci[name], "runs-on"), MACOS_FALLBACK)
+                self.assertNotIn("route", needs(ci[name]))
 
     def test_classifier_gate_and_route_need_no_routed_runner(self):
         ci = jobs(self.texts["ci.yml"])

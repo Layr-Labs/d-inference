@@ -1,6 +1,6 @@
 # Build The Provider And Landing
 
-> Last updated: 2026-10-31
+> Last updated: 2026-11-03
 
 Build the provider, its source-matched native resources, and the independent
 landing site from this repository. Backend, sidecar, console and admin builds
@@ -271,6 +271,75 @@ Darkbloom Linux sandboxes are ARM64; the Blacksmith Linux fallback is x64. The
 decision is fixed for the run: **Re-run failed jobs** reuses it, so turn routing
 off and use **Re-run all jobs** to move a run back to Blacksmith. See the
 [routing checks](test.md#focused-tooling-checks).
+
+## CI Caching
+
+`.github/workflows/ci.yml` and `.github/actions/provider-ci-build/action.yml`
+restore caches in every run and save them only on pushes to `master`
+(`github.event_name == 'push' && github.ref == 'refs/heads/master'`), when the
+exact key missed. An entry saved by a pull request is scoped to its merge ref,
+so only that pull request could restore it, and it evicted `master`'s entries
+from the repository's 10 GB quota. A pull request restores `master`'s newest
+compatible entry. Blacksmith runners keep their own colocated cache, so an
+entry saved there never reaches a Darkbloom Sandbox, and the reverse.
+
+| Cache | Path | Key; restore prefixes | Saved by, on `master` pushes |
+|---|---|---|---|
+| Git objects | `.git` | `git-v1-<os>-<ISO week>-<sha>`; `git-v1-<os>-<ISO week>-`, then `git-v1-<os>-` | every job that checks out |
+| Full-history Git objects | `.git` | the same under `git-full-v1-`, so shallow jobs never restore it | `docs` |
+| SwiftPM repositories | `~/Library/Caches/org.swift.swiftpm/repositories` | `spm-repos-v1-<os>-<layout>-<lane>-<Package.resolved hash>`; `spm-repos-v1-<os>-<layout>-<lane>-` | the provider and SDK build lanes |
+| Swift test build | the provider and SDK `.build` directories | `swift-key`; `swift-prefix` from `scripts/provider-ci-cache.py` | the provider and SDK build lanes |
+| Metal library | `$RUNNER_TEMP/metallib-cache` | `metallib-key`, exact only | the provider and SDK build lanes |
+| MiMo audio codec | `$RUNNER_TEMP/mimo-audio-source` | `mimo-audio-source-v2-<sha256>`, exact only | the last provider shard |
+| Cluster metadata build | `$RUNNER_TEMP/cluster-native-metadata` | toolchain, submodule pins, manifests and paths, then the commit | `test-cluster-checks` |
+
+`cache-swift` runs only on pushes, on Blacksmith, and keeps saving its own
+SwiftPM cache on `master`, `main` and `dev` pushes.
+
+Every checkout uses the same six steps. The job computes the ISO week
+(`date -u +%G-W%V`), restores `.git`, and runs `actions/checkout` over it
+with `continue-on-error`. The checkout then fetches only the objects the
+restored `.git` lacks and reuses submodule repositories under `.git/modules`.
+If it fails for any reason, the job deletes the workspace and runs
+`actions/checkout` again without the cache; a failure there fails the job.
+Checkouts set `persist-credentials: false`, so the saved `.git/config` holds no
+job token.
+
+```mermaid
+flowchart LR
+  W[ISO week] --> R["Restore .git<br/>(newest master entry)"]
+  R --> C{"checkout over<br/>cached .git"}
+  C -- fails --> D[Delete workspace] --> K[Cold checkout]
+  C -- succeeds --> G
+  K --> G{"master push and<br/>no exact hit?"}
+  G -- yes --> S[Save .git]
+  G -- no --> B
+  S --> B["Restore SwiftPM, build<br/>and Metal caches; build; test"]
+  B --> M{"master push and<br/>no exact hit?"}
+  M -- yes --> T[Save each cache]
+  classDef save fill:#d4f7dc,stroke:#1a7f37,color:#0b2e13
+  classDef fail fill:#ffe1e1,stroke:#cf222e,color:#3d0a0a
+  class S,T save
+  class D,K fail
+```
+
+- Swift build prefixes contain no pull-request data; the commit is only the
+  key's suffix. A pull request that changes a CI recipe file, a manifest, a
+  lockfile or a submodule pin has a new prefix and builds cold. The provider
+  summary job restores `master`'s build like the shards and rebuilds what the
+  commit changed; on a `master` push it restores the shards' own build.
+- `actions/cache` stores a path outside the workspace relative to the
+  workspace, so the SwiftPM key includes `<layout>`, a hash of `$HOME` and the
+  workspace path. The cluster key reads only each submodule's state, pin and
+  path from `git submodule status`, because its `git describe` text depends on
+  the refs a restored `.git` holds.
+- `actions/cache` compresses with zstd when `zstd` is on `PATH` and with gzip
+  otherwise, and the method is part of each entry's version: a runner without
+  zstd never restores an entry saved with it. Each job logs
+  `actions/cache compressor: zstd` or `gzip` before its first cache step.
+- Concurrent `master` jobs save the same key; one wins, and the others log a
+  `409 Conflict` warning. To start a cache over, change its version, such as
+  `git-v1`.
 
 ## Dev Build Identity
 

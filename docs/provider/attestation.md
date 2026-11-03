@@ -1,6 +1,6 @@
 # Reaching and keeping `hardware` trust
 
-> Last updated: 2026-10-13
+> Last updated: 2026-11-02
 
 How to check provider verification and retain legacy `hardware` trust where
 eligible. New providers require macOS 27 or later and current qualified App
@@ -99,6 +99,24 @@ The log line starts with `App Attest: Apple operation stalled`. An explicit
 `darkbloom restart` uses the same graceful lifecycle; it is not instant or proof
 that Apple will accept the next call.
 
+After a self-update, some macOS 27 Macs report App Attest as unsupported
+(`is_supported_false`) although it worked before. If the coordinator granted
+this Mac App Attest in the last 7 days and launchd runs the provider, the
+provider restarts once through launchd when the state lasts 5 minutes and the
+provider is idle. It restarts once per verified episode: if the new process
+still reports unsupported, it waits until the coordinator verifies the Mac
+again. This restart shares the stall restart's limit of one per 6 hours.
+
+For root-cause analysis, the provider log (`~/.darkbloom/provider.log`) gets a
+line that starts with `App Attest entitlement evidence` once at startup and at
+each `is_supported_false` answer. It shows the start reason, the App Attest
+entitlements the kernel gave the running process next to the ones in the code
+on disk, and the executable's modification time minus the process start time.
+The line stays on the Mac; it is not sent to the coordinator
+(`provider-swift/Sources/ProviderAppAttest/AppAttestPreflightProbe.swift`,
+`AppAttestEntitlementEvidence`). The log line starts with `App Attest: isSupported is false`. See the
+[thresholds and limits](../reference/app-attest-shadow.md#bounds-and-credential-lifecycle).
+
 The separate [supervised worker candidate](../architecture/security/identity-binding.md#supervised-app-attest-worker-candidate)
 is internal, defaults off and is **not ready for production**. It retires the
 worker rather than restarting the inference process; do not enable its
@@ -138,6 +156,8 @@ cannot supply missing evidence or repair a mismatch. Do not delete a working
 credential to bypass that check.
 
 New setup on macOS 27 or later skips MDM profile download in both the installer and `darkbloom enroll`. Darkbloom MDM will be deactivated soon; upgrade to macOS 27 to avoid legacy enrollment. A qualified macOS 27 provider can use [App Attest authorization](https://github.com/Layr-Labs/darkbloom-platform/blob/master/docs/reference/provider-authorization.md) when the coordinator explicitly enables it. Start the signed provider and check `darkbloom status` / `darkbloom doctor` for current App Attest authorization. Company-managed Macs keep their employer profile; they do not enroll into Darkbloom MDM for this path.
+
+When `darkbloom status` or `darkbloom doctor` says App Attest authorizes the connection but MDM removal needs fresh coordinator readiness, keep existing profiles installed and wait for a fresh decision. The displayed serving lease can remain valid after removal readiness becomes stale. Both doctor summaries and status use the separate decisions in `provider-swift/Sources/ProviderCore/Diagnostics/ProviderAuthorizationReadiness.swift` (`summary`); see the [authorization reference](../reference/provider-authorization.md).
 
 After the coordinator enables removal and reports readiness, run `darkbloom unenroll` and choose the App Attest option. Removal guidance requires a coordinator decision received within the last 10 seconds, as well as a current daemon snapshot and unexpired authorization; a local state-file rewrite cannot extend readiness. It requires macOS 27 or later; `--keep-serving` remains a direct shortcut. The command preserves credentials/account data, validates the exact Darkbloom enrollment and guides removal in System Settings. If the read-only administrator inventory is needed, run the command in the foreground of an interactive terminal: `sudo` reads the password with terminal echo disabled. Refusing authentication, running without a terminal, or running as a background job withholds guidance; no profile is removed by the CLI. The full-exit option stops the provider and offers identity cleanup, so choose App Attest to retain provider identity.
 

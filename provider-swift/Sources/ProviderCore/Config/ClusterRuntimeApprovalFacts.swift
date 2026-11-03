@@ -312,9 +312,9 @@ public struct ClusterRuntimeApprovalFacts: Equatable, Sendable {
     }
 
     /// The parity qualifications of a declared model: one per declared family
-    /// (byte order: `pipeline`, then `tensor_parallel`) and schedule
-    /// (ascending), so each approval's first is the pipeline and its second
-    /// tensor parallel. Each is placed as `ClusterPublicModels.placement` says
+    /// (byte order: `pipeline`, `pipeline_speculative`, then `tensor_parallel`)
+    /// and schedule (ascending), so each approval's first is the pipeline and
+    /// its last tensor parallel. Each is placed as `ClusterPublicModels.placement` says
     /// (a pipeline needs the model's `layers`: without them its records are
     /// left out), its ranks in this build's numerics class, its envelope
     /// admitting media only when its mode `servesMedia` for this model

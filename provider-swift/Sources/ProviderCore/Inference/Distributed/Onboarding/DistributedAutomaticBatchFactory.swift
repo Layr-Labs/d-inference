@@ -4,9 +4,11 @@ import DarkbloomClusterPlacement
 import DarkbloomClusterProtocol
 import DarkbloomClusterProcess
 
-/// The local API's same-model scaling policy. Initial singleton placement is
-/// unchanged. Only queued demand can propose a separately priced native batch;
-/// every side effect remains inside the host's deferred post-release factory.
+/// The local API's same-model scaling policy. Only queued demand can propose a
+/// separately priced native batch wider than the running one; every side effect
+/// remains inside the host's deferred post-release factory. A Qwen TP setup is
+/// planned at the widest width both Macs admit now (`ClusterPlacementTensorWidth`),
+/// so this is the fallback for a pair planned narrower.
 public actor DistributedAutomaticBatchFactory {
     private let providerConfiguration: URL
     private let paths: ClusterUserPaths
@@ -25,19 +27,15 @@ public actor DistributedAutomaticBatchFactory {
     public func replacement(for demand: DistributedLocalBatchDemand) async throws -> DistributedLocalBatchReplacement? {
         // An explicit diagnostic choice keeps its meaning. This path never
         // changes an installed coordinator-approved native member contract.
+        let widths = Self.replacementWidths(for: demand)
         guard environment[DistributedInstalledPlan.batchLanesSwitch] == nil,
               environment[ClusterForcedModeSetting.environmentName] == nil,
               environment[ClusterHandOffModes.environmentName] == nil,
-              demand.waitingRequests > 0, demand.currentCapacity < 8,
+              !widths.isEmpty,
               let adapter = ClusterRuntimeAdapter.registering(runtimeModelID: demand.runtimeModelID),
               [.qwen35Dense, .qwen35RoutedExperts, .qwen35PrismHadamard, .nemotronH, .gemma4LayerStage, .gptossLayerStage, .mimoV26LayerStage].contains(adapter),
               let child = ClusterService.publishedLive()?.child,
-              child.running, child.pid == getpid(), child.configurationSHA256 != nil else { return nil }
-        let total = min(8, max(0, demand.activeRequests)) + min(8, demand.waitingRequests)
-        let widths = ClusterPlacementBatchScope.candidateWidths(waitingRequests: total,
-            tensorParallel: ClusterPlacementTensorBatchQuote.runtimeModelIDs.contains(demand.runtimeModelID))
-            .filter { $0 > demand.currentCapacity }
-        guard !widths.isEmpty, attempts.begin() else { return nil }
+              child.running, child.pid == getpid(), child.configurationSHA256 != nil, attempts.begin() else { return nil }
         let planner = DistributedAutomaticBatchPlanner(providerConfiguration: providerConfiguration, paths: paths)
         let reference = try ClusterConfigurationStore.installedReference(providerConfiguration: providerConfiguration)
         guard child.configurationSHA256 == reference.sha256 else { return nil }
@@ -64,6 +62,16 @@ public actor DistributedAutomaticBatchFactory {
         return .init(requestedCapacity: preview.lanes,
             makeSession: { try await transition.prepareReplacement() },
             restorePreviousSession: { try await transition.restorePrevious() })
+    }
+
+    /// The widths queued demand may propose, widest first: only wider than the running capacity, so a pair whose
+    /// placement saved its widest admitted width is never drained for a width it already serves.
+    static func replacementWidths(for demand: DistributedLocalBatchDemand) -> [Int] {
+        guard demand.waitingRequests > 0, demand.currentCapacity < 8 else { return [] }
+        let total = min(8, max(0, demand.activeRequests)) + min(8, demand.waitingRequests)
+        return ClusterPlacementBatchScope.candidateWidths(waitingRequests: total,
+            tensorParallel: ClusterPlacementTensorBatchQuote.runtimeModelIDs.contains(demand.runtimeModelID))
+            .filter { $0 > demand.currentCapacity }
     }
 }
 

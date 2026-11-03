@@ -32,6 +32,13 @@ public struct LifecycleMailbox: Sendable {
         claim(AddonHoldControlRequest.self, suffix: "addon-request", claimPrefix: "addon-claim", afterClaim: {})
     }
 
+    public func writeClusterUpdateDrainRequest(_ request: ClusterUpdateDrainRequest) throws { try write(request, suffix: "cluster-update-request") }
+    public func writeClusterUpdateDrainStatus(_ status: ClusterUpdateDrainStatus) throws { try write(status, suffix: "cluster-update-status") }
+    public func readClusterUpdateDrainStatus() -> ClusterUpdateDrainStatus? { read(ClusterUpdateDrainStatus.self, suffix: "cluster-update-status") }
+    public func claimClusterUpdateDrainRequest() -> ClusterUpdateDrainRequest? {
+        claim(ClusterUpdateDrainRequest.self, suffix: "cluster-update-request", claimPrefix: "cluster-update-claim", afterClaim: {})
+    }
+
     /// Rename is the acceptance boundary. Each loop/monitor can consume a
     /// publication once, and cleanup can never unlink a newer publication.
     public func claimSwitchRequest() -> ProviderModelSwitchRequest? {

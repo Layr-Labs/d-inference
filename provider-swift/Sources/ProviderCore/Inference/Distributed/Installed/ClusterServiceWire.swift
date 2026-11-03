@@ -72,6 +72,9 @@ public struct ClusterServiceStatus: Codable, Sendable, Equatable {
     /// not report it, which the control leader never reads as "none" (`ClusterApprovalCheck.peerApprovalID`). The
     /// leader compares it with its own on each check and gives this Mac its own, or none, when they differ.
     public var approvalID: String? = nil
+    /// This Mac's part in the pair's coordinated update, as its cluster service supervisor writes it. Nil from an
+    /// older build, which cannot coordinate one.
+    public var pairUpdate: ClusterPairUpdateProgress? = nil
     public struct Control: Codable, Sendable, Equatable {
         public var leaderID: String
         public var leaderName: String

@@ -74,6 +74,9 @@ extension CoordinatorClient {
         }
         if case .register(let sent) = registration {
             state.registeredAutopilotInventoryIDs = Set((sent.autopilotInventory ?? []).map(\.id))
+            // A cluster member's `models` is empty by design; its routing is the
+            // pair's, so the set stays unknown rather than empty.
+            state.registeredModelIDs = config.executionRole == .solo ? Set(sent.models.map(\.id)) : nil
         }
     }
 

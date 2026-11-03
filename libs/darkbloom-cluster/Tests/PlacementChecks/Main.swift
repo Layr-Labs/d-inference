@@ -63,8 +63,12 @@ import Foundation
             try checkForcedMode(inputs, checks)
             try checkAutoChoice(inputs, golden: URL(fileURLWithPath: CommandLine.arguments[2], isDirectory: true), checks)
             try checkGLMTensorParallel(golden: URL(fileURLWithPath: CommandLine.arguments[2], isDirectory: true), checks)
+            try checkGemmaRoutedExperts(golden: URL(fileURLWithPath: CommandLine.arguments[2], isDirectory: true), checks)
+            try checkGemmaTensorParallel(golden: URL(fileURLWithPath: CommandLine.arguments[2], isDirectory: true), checks)
+            try checkMiMoTensorParallel(golden: URL(fileURLWithPath: CommandLine.arguments[2], isDirectory: true), checks)
             try checkServedModes(golden: URL(fileURLWithPath: CommandLine.arguments[2], isDirectory: true), checks)
             try checkPipelineSpeculativeHolding(URL(fileURLWithPath: CommandLine.arguments[2], isDirectory: true), checks)
+            try checkMiMoRoutedExperts(golden: URL(fileURLWithPath: CommandLine.arguments[2], isDirectory: true), checks)
             try checkQwenPipelineSpeculative(URL(fileURLWithPath: CommandLine.arguments[2], isDirectory: true), checks)
             guard checks.failures.isEmpty else {
                 for failure in checks.failures { fputs("FAIL: \(failure)\n", stderr) }

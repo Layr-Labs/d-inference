@@ -2,17 +2,20 @@ import Foundation
 import Darwin
 
 /// The onboarding's console on a terminal: plain lines (it scrolls like any
-/// command, so what was said stays readable), single keys without enter for
-/// y, n and q, and one typed line for the model number. Keys are read with
-/// line editing and echo off; ^C still ends the command, and the terminal's
-/// mode is put back on every way out, a signal included.
+/// command, so what was said stays readable), choices from a list, and single
+/// keys (q cancels). Keys are read with line editing and echo off; ^C still
+/// ends the command, and the terminal's mode is put back on every way out, a
+/// signal included.
 ///
-/// With colour on a UTF-8 terminal at least 40 columns wide, headings carry a
-/// step meter and long work shows a one-row live line that the next said line
-/// replaces; where the mark and its text fit on one row each, the setup opens
-/// with the Darkbloom mark. The mark blooms and the live
-/// line turns unless DARKBLOOM_NO_ANIMATION or CI is set. Without colour
-/// (NO_COLOR, TERM=dumb, a pipe) every byte is the plain transcript.
+/// With colour on a terminal, a choice is a list the person moves through with
+/// ↑ and ↓ and takes with enter, as `darkbloom start` picks models; once taken
+/// it folds to the one chosen line. With colour on a UTF-8 terminal at least
+/// 40 columns wide, headings carry a step meter and long work shows a one-row
+/// live line that the next said line replaces; where the mark and its text fit
+/// on one row each, the setup opens with the Darkbloom mark. The mark blooms
+/// and the live line turns unless DARKBLOOM_NO_ANIMATION or CI is set. Without
+/// colour (NO_COLOR, TERM=dumb, a pipe) every byte is the plain transcript: a
+/// choice is its numbered lines and one key (a number, enter, or a letter).
 public final class ClusterOnboardingTerminal: ClusterOnboardingConsole {
     private let input: Int32
     private let output: Int32
@@ -29,12 +32,16 @@ public final class ClusterOnboardingTerminal: ClusterOnboardingConsole {
     private var drawnFrame = -1
     private let echoesInput: Bool
     private var saved = termios()
+    /// The mode keys are read in (no line editing, no echo), put back after `suspended`.
+    private var reading = termios()
     private var configured = false
     public private(set) var closed = false
 
     /// The mode to put back from a signal handler (one terminal per process).
     nonisolated(unsafe) private static var restoreInput: Int32 = -1
     nonisolated(unsafe) private static var restoreMode = termios()
+    /// A list is up with the cursor hidden: a signal shows it again before the command ends.
+    nonisolated(unsafe) private static var cursorHidden = false
 
     public init(input: Int32, output: Int32, environment: [String: String] = ProcessInfo.processInfo.environment) {
         self.input = input; self.output = output
@@ -55,6 +62,7 @@ public final class ClusterOnboardingTerminal: ClusterOnboardingConsole {
             $0.withMemoryRebound(to: cc_t.self, capacity: Int(NCCS)) { $0[Int(VMIN)] = 1; $0[Int(VTIME)] = 0 }
         }
         guard tcsetattr(input, TCSANOW, &mode) == 0 else { return }
+        reading = mode
         configured = true
         Self.restoreInput = input
         Self.restoreMode = saved
@@ -62,6 +70,10 @@ public final class ClusterOnboardingTerminal: ClusterOnboardingConsole {
             signal(number) { received in
                 var mode = ClusterOnboardingTerminal.restoreMode
                 if ClusterOnboardingTerminal.restoreInput >= 0 { _ = tcsetattr(ClusterOnboardingTerminal.restoreInput, TCSANOW, &mode) }
+                if ClusterOnboardingTerminal.cursorHidden {
+                    let show = Array("\u{1B}[?25h".utf8)
+                    _ = show.withUnsafeBytes { Darwin.write(STDOUT_FILENO, $0.baseAddress, $0.count) }
+                }
                 let text = Array("\r\nStopped. Run `darkbloom cluster` again to continue where it was.\r\n".utf8)
                 _ = text.withUnsafeBytes { Darwin.write(STDOUT_FILENO, $0.baseAddress, $0.count) }
                 Darwin._exit(128 + received)
@@ -94,7 +106,7 @@ public final class ClusterOnboardingTerminal: ClusterOnboardingConsole {
         // wraps, and the bloom's climb of `height` rows would leave the top
         // behind: such a window keeps the heading lines (and the meter).
         let widest = 2 + ClusterOnboardingBrand.width + 3 + (texts.map(\.count).max() ?? 0)
-        guard decorates, widest < columns else { heading(title); say(subtitle); return }
+        guard decorates, widest < columns else { heading(title); if !subtitle.isEmpty { say(subtitle) }; return }
         let beside = ["\u{1B}[1m\(texts[0])\u{1B}[0m", "\u{1B}[2m\(texts[1])\u{1B}[0m",
                       "\u{1B}[2m\(texts[2])\u{1B}[0m", ""]
         func draw(_ revealed: Int) {
@@ -127,8 +139,16 @@ public final class ClusterOnboardingTerminal: ClusterOnboardingConsole {
     /// A copy's or download's report: the live line, laid out for its room, where
     /// one shows; in a transcript only the logged reports, as plain lines.
     public func progress(_ text: (_ width: Int?) -> String, logged: Bool) {
-        if decorates { working(text(liveRoom)) } else if logged { say("  " + text(nil)) }
+        guard decorates else { if logged { say("  " + text(nil)) }; return }
+        // Redrawn at most eight times a second: a copy or download reports more often than a person reads.
+        let now = DispatchTime.now().uptimeNanoseconds
+        let due = now &- progressDrawn >= 125_000_000
+        if due { progressDrawn = now }
+        drawWorking(text(liveRoom), force: due)
     }
+
+    /// When the progress line was last redrawn (uptime, nanoseconds).
+    private var progressDrawn: UInt64 = 0
 
     /// One row only: the return and erase that replace the live line reach just
     /// the cursor's row, so a wrapped line would leave its start behind.
@@ -173,19 +193,27 @@ public final class ClusterOnboardingTerminal: ClusterOnboardingConsole {
     }
 
     public func key(milliseconds: Int) -> Character? {
+        guard let byte = rawByte(milliseconds: milliseconds) else { return nil }
+        guard byte == 0x1B else { return Character(UnicodeScalar(byte)) }
+        // A lone escape is a key (it cancels a wait); a key that sends a sequence (an arrow) is none, so an arrow
+        // pressed during a wait never stops it.
+        guard rawByte(milliseconds: 30) != nil else { return "\u{1B}" }
+        drainSequence()
+        return nil
+    }
+
+    /// One byte of input, or nil when `milliseconds` passed with none or the input closed.
+    private func rawByte(milliseconds: Int) -> UInt8? {
         guard !closed else { return nil }
         var descriptor = pollfd(fd: input, events: Int16(POLLIN), revents: 0)
-        let ready = Darwin.poll(&descriptor, 1, Int32(clamping: milliseconds))
-        guard ready > 0 else { return nil }
+        guard Darwin.poll(&descriptor, 1, Int32(clamping: milliseconds)) > 0 else { return nil }
         var byte: UInt8 = 0
         let count = Darwin.read(input, &byte, 1)
         if count <= 0 {
             if count == 0 || (errno != EINTR && errno != EAGAIN) { closed = true }
             return nil
         }
-        // A key that sends a sequence (an arrow) is one escape; the rest is dropped.
-        if byte == 0x1B { drainSequence(); return "\u{1B}" }
-        return Character(UnicodeScalar(byte))
+        return byte
     }
 
     private func drainSequence() {
@@ -194,31 +222,154 @@ public final class ClusterOnboardingTerminal: ClusterOnboardingConsole {
         while Darwin.poll(&descriptor, 1, 20) > 0, Darwin.read(input, &byte, 1) == 1 {}
     }
 
-    public func line(prompt: String) -> String? {
+    // MARK: - Choices
+
+    /// One of `options`: a list moved with ↑↓ (the ▸ marks the line) and taken with enter where the terminal shows
+    /// colour, as `darkbloom start` picks models; elsewhere the numbered lines and one key.
+    public func choose(_ options: [String], selected: Int, abandon: () -> Bool) -> Int? {
+        guard !options.isEmpty else { return nil }
         settle()
-        write(prompt)
-        var typed = ""
+        let start = min(max(0, selected), options.count - 1)
+        return usesColor ? pick(options, start, abandon) : typedChoice(options, start, abandon)
+    }
+
+    /// The list, redrawn in place on each key; once taken it folds to the chosen line (cancelled: to nothing), so
+    /// what scrolls up is what was chosen. q cancels; a number takes its line, and so does a letter only one option
+    /// starts with. Every row, the hint's too, fits the window: a wrapped row would stay behind when the list folds.
+    private func pick(_ options: [String], _ start: Int, _ abandon: () -> Bool) -> Int? {
+        var cursor = start
+        let marker = decorates ? "\u{25B8}" : ">"
+        let room = columns > 10 ? columns - 6 : Int.max
+        let rows = options.count + 1
+        func fit(_ text: String) -> String { text.count > room ? String(text.prefix(room - 1)) + "\u{2026}" : text }
+        let hints = decorates ? ["\u{2191}\u{2193} move \u{00B7} enter select \u{00B7} q cancel", "\u{2191}\u{2193} \u{00B7} enter \u{00B7} q"]
+            : ["up/down move, enter select, q cancel", "up/down, enter, q"]
+        let hint = fit(hints.first { $0.count <= room } ?? hints[hints.count - 1])
+        func draw(again: Bool) {
+            var frame = again ? "\u{1B}[\(rows)A" : ""
+            frame += "\r\u{1B}[J  \u{1B}[2m\(hint)\u{1B}[0m\n"
+            for (index, option) in options.enumerated() {
+                frame += index == cursor ? "  \u{1B}[\(brand)m\(marker)\u{1B}[0m \u{1B}[1m\(fit(option))\u{1B}[0m\n" : "    \(fit(option))\n"
+            }
+            write(frame)
+        }
+        // The cursor is hidden while the list is up and shown again as it folds, before the chosen line, so no line
+        // after a choice starts with a terminal code.
+        func fold(_ chosen: Int?) -> Int? {
+            write("\u{1B}[\(rows)A\r\u{1B}[J\u{1B}[?25h")
+            Self.cursorHidden = false
+            if let chosen { write("  \u{1B}[\(brand)m\(marker)\u{1B}[0m \(fit(options[chosen]))\n") }
+            return chosen
+        }
+        Self.cursorHidden = true
+        write("\u{1B}[?25l")
+        draw(again: false)
         while true {
-            guard let key = key(milliseconds: 60_000) else {
-                if closed { write("\n"); return nil }
+            if abandon() { return fold(nil) }
+            guard let key = readKey(milliseconds: 100) else {
+                if closed { return fold(nil) }
+                continue
+            }
+            switch key {
+            case .up: cursor = (cursor + options.count - 1) % options.count
+            case .down: cursor = (cursor + 1) % options.count
+            case .enter: return fold(cursor)
+            case .cancel: return fold(nil)
+            case .character(let character):
+                // q is cancel before it is a letter ("Qwen3.8 27B" is taken with the arrows, its number or another letter).
+                if character == "q" || character == "Q" { return fold(nil) }
+                if let number = character.wholeNumberValue, options.count <= 9 {
+                    if options.indices.contains(number - 1) { return fold(number - 1) }
+                } else if character.isLetter, let index = ClusterOnboardingChoice.match(String(character), options: options, selected: cursor) {
+                    return fold(index)
+                }
+                continue
+            }
+            draw(again: true)
+        }
+    }
+
+    /// The plain transcript's choice: the numbered lines once, then one key where it can only mean one line (a number
+    /// of a short list, a letter one option starts with), enter for the default, or a number and enter. The prompt's
+    /// line ends with the option taken, written the same on a terminal and a pipe (no echo), so every plain
+    /// presentation keeps one transcript.
+    private func typedChoice(_ options: [String], _ start: Int, _ abandon: () -> Bool) -> Int? {
+        for (index, option) in options.enumerated() { say("  \(index + 1)) \(option)") }
+        // Enter takes the first line unless another is the default, which the prompt then names.
+        let prompt = "  Choose 1-\(options.count)" + (start == 0 ? "" : " (enter = \(start + 1))") + ": "
+        // The option taken, by its name: what the list said after its first " · " (a size, how it moves) is above.
+        func finish(_ index: Int?) -> Int? {
+            write((index.map { options[$0].components(separatedBy: " \u{00B7} ")[0] } ?? "") + "\n")
+            return index
+        }
+        write(prompt)
+        var text = ""
+        while true {
+            if abandon() { return finish(nil) }
+            guard let key = key(milliseconds: 100) else {
+                if closed { return finish(nil) }
                 continue
             }
             switch key {
             case "\r", "\n":
-                write("\n")
-                return typed
+                if let index = ClusterOnboardingChoice.match(text, options: options, selected: start) {
+                    // Typed digits are on screen already; enter alone shows the default it took.
+                    if text.isEmpty { return finish(index) }
+                    write("\n")
+                    return index
+                }
+                text = ""
+                write("\n" + prompt)
             case "\u{7F}", "\u{08}":
-                if !typed.isEmpty {
-                    typed.removeLast()
+                if !text.isEmpty {
+                    text.removeLast()
                     if echoesInput && configured { write("\u{08} \u{08}") }
                 }
             case "\u{1B}":
-                continue
+                return finish(nil)
             default:
-                guard key.isASCII, !key.isNewline, let value = key.asciiValue, value >= 0x20, typed.count < 16 else { continue }
-                typed.append(key)
+                guard key.isASCII, let value = key.asciiValue, value >= 0x20, text.count < 8 else { continue }
+                if text.isEmpty {
+                    if key == "q" || key == "Q" { return finish(nil) }
+                    if let number = key.wholeNumberValue, options.count <= 9 {
+                        if options.indices.contains(number - 1) { return finish(number - 1) }
+                        continue
+                    }
+                    if key.isLetter, let index = ClusterOnboardingChoice.match(String(key), options: options, selected: start) {
+                        return finish(index)
+                    }
+                }
+                text.append(key)
                 if echoesInput && configured { write(String(key)) }
             }
         }
+    }
+
+    private enum Key: Equatable { case up, down, enter, cancel, character(Character) }
+
+    /// One key with the arrows decoded (ESC [ A, ESC O B); a lone escape cancels; other sequences are dropped.
+    private func readKey(milliseconds: Int) -> Key? {
+        guard let first = rawByte(milliseconds: milliseconds) else { return nil }
+        switch first {
+        case 0x1B:
+            guard let second = rawByte(milliseconds: 30) else { return .cancel }
+            guard second == 0x5B || second == 0x4F, let third = rawByte(milliseconds: 30) else { drainSequence(); return nil }
+            switch third {
+            case 0x41: return .up
+            case 0x42: return .down
+            default: drainSequence(); return nil
+            }
+        case 0x0D, 0x0A: return .enter
+        default: return .character(Character(UnicodeScalar(first)))
+        }
+    }
+
+    /// The terminal in its ordinary mode while `body` runs (sudo reads a password there), the live line cleared.
+    public func suspended<T>(_ body: () -> T) -> T {
+        settle()
+        guard configured else { return body() }
+        _ = tcsetattr(input, TCSANOW, &saved)
+        defer { _ = tcsetattr(input, TCSANOW, &reading) }
+        return body()
     }
 }

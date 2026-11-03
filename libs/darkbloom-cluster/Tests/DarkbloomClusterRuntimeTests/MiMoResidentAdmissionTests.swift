@@ -86,9 +86,10 @@ struct MiMoResidentAdmissionTests {
         #expect(spec.supportedCuts == Array(1...47))
         #expect(spec.supportedPrefillSchedules == [.serial, .oneChunkLookahead])
         // The phase split (a hand-off mode, planned only under the explicit opt-in) has the decoding
-        // rank hold every layer; the last rank may hold the artifact's next-N heads beside its stage
-        // (`pipeline_mtp_v1`).
-        #expect(spec.supportedGenerationModes == [.pipeline, .pipelineCompactDecode, .phaseSplit, .pipelineMTP])
+        // rank hold every layer; tensor parallel (text only) has both ranks hold half of every layer;
+        // the last rank may hold the artifact's next-N heads beside its stage (`pipeline_mtp_v1`).
+        #expect(spec.supportedGenerationModes == [.pipeline, .pipelineCompactDecode, .phaseSplit, .tensorParallel,
+            .pipelineMTP])
         #expect(spec.maximumManifestPayloadBytes == 172_863_462_401 && spec.maximumStageTensorBytes == 167_264_120_704)
         #expect(try MiMoRegisteredSpecification.specification(runtimeModelID: "registered_mimo_v26_flash_mopd").model == .v26FlashMOPD)
         #expect(try MiMoRegisteredSpecification.specification(configuration: Self.fixture("configuration")).model == .v26FlashMOPD)
@@ -236,6 +237,27 @@ struct MiMoResidentAdmissionTests {
         #expect(throws: (any Error).self) { _ = try budget(0..<32, rank: 2) }
     }
 
+    /// A decode step's command buffers keep the whole step in flight
+    /// (`MiMoLayerStageSession.decodeCommandBuffers`), so the workspace holds
+    /// every full-attention layer's scores for the decode rows at once.
+    @Test func workspaceHoldsEveryFullAttentionLayersDecodeScores() throws {
+        let spec = try Self.specification()
+        func workspace(_ layers: Range<Int>, chunk: Int, rows: Int = 1) throws -> Int {
+            try MiMoRequestStateBudget.estimate(specification: spec, layers: layers, rank: 0, maximumTokens: 8320,
+                chunkSize: chunk, decodeRows: rows, bound: { $0 }).workspaceBytes
+        }
+        // Layers 0..<32 hold six full-attention layers: a one-token prompt still decodes over all six.
+        #expect(try workspace(0..<32, chunk: 1) == 64 * 6 * 8448 * 4)
+        #expect(try workspace(0..<32, chunk: 2, rows: 4) == 64 * 24 * 8448 * 4)
+        // A 512-token prompt frame already covers a four-row window on each of them.
+        #expect(try workspace(0..<32, chunk: 512, rows: 4) == 64 * 512 * 8448 * 4)
+        // Layers without full attention score only their window.
+        #expect(try workspace(1..<5, chunk: 1, rows: 4) == 0)
+        for rows in [0, 513] {
+            #expect(throws: (any Error).self) { _ = try workspace(0..<32, chunk: 1, rows: rows) }
+        }
+    }
+
     @Test func admissionTakesTheClosedIdentityOnBothRanksAtEveryCut() throws {
         let spec = try Self.specification()
         for cut in spec.supportedCuts {
@@ -333,7 +355,8 @@ struct MiMoResidentAdmissionTests {
         #expect(value.partitions.map { $0.stages[0].sourceLayerEnd } == spec.supportedCuts)
         #expect(value.partitions.allSatisfy { $0.stages[1].sourceLayerEnd == 48 })
         #expect(value.supportedPrefillSchedules == [.serial, .oneChunkLookahead])
-        #expect(value.supportedGenerationModes == [.pipeline, .pipelineCompactDecode, .phaseSplit, .pipelineMTP])
+        #expect(value.supportedGenerationModes == [.pipeline, .pipelineCompactDecode, .phaseSplit, .tensorParallel,
+            .pipelineMTP])
         #expect(value.arithmeticPolicyID == "mimo_v26_text_ordinary_cache_bf16_defaults_v1")
         let plan = try MiMoLayerStagePlan(configuration: Self.fixture("configuration"), cut: 32)
         #expect(try value.selection(planSHA256: plan.fingerprint).stages.map(\.stagePlanSHA256) == plan.stages.map(\.fingerprint))
@@ -400,7 +423,8 @@ struct MiMoResidentAdmissionTests {
             .tensorParallel, .pipelineMTP])
         let mimo = try ClusterResidentModelCatalog.entry(configuration: Self.fixture("configuration"))
         #expect(mimo.family == .mimoV26 && mimo.layerCount == 48 && mimo.supportedCuts == Array(1...47))
-        #expect(mimo.supportedGenerationModes == [.pipeline, .pipelineCompactDecode, .phaseSplit, .pipelineMTP])
+        #expect(mimo.supportedGenerationModes == [.pipeline, .pipelineCompactDecode, .phaseSplit, .tensorParallel,
+            .pipelineMTP])
         #expect(ClusterResidentModelCatalog.entry(runtimeModelID: "mimo-v2.6-flash-mopd") == nil)
         #expect(throws: (any Error).self) { _ = try ClusterResidentModelCatalog.entry(configuration: Data("{}".utf8)) }
         let described = try ClusterResidentModelCatalog.describe(configuration: Self.fixture("configuration"),

@@ -16,7 +16,7 @@ extension Cluster {
                 key: `darkbloom local` on that Mac shows the address and the key.
 
                 The choice is kept: both Macs serve this way after restarts, until `darkbloom cluster` is used to \
-                serve through Darkbloom again (press p there). Run it on a cluster that already serves to switch it.
+                serve through Darkbloom again (choose Serve through Darkbloom there). Run it on a cluster that already serves to switch it.
                 """)
         @OptionGroup var configOptions: ConfigOptions
         @Argument(help: "The model to serve, by its id or name as `darkbloom cluster` lists it; without one, the list is shown.")

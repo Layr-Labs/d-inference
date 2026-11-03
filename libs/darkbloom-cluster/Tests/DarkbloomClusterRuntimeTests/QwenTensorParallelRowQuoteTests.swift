@@ -56,7 +56,8 @@ struct QwenTensorParallelRowQuoteTests {
                     stored: stored, request: request, chunkTokens: 16, lanes: lanes, allocationBound: bound)
                 let native = try QwenTensorParallelBatchBudget.derive(geometry: family.geometry, plan: plan,
                     tensors: canonical, maximumTokens: family.profile.maximumContextTokens,
-                    chunkSize: family.profile.maximumChunkTokens, lanes: lanes, paged: true, allocationBound: bound)
+                    chunkSize: family.profile.maximumChunkTokens, lanes: lanes, paged: true,
+                    promptTokens: family.profile.maximumPromptTokens, allocationBound: bound)
                 #expect(quote.allowance == native.allowance, "\(name) lanes=\(lanes)")
                 #expect(quote.perLaneStateBytes == native.perLaneStateBytes)
                 #expect(quote.allowance.maximumCollectivePayloadBytes >= lanes * plan.maximumPartialBytesPerToken)

@@ -66,6 +66,20 @@ func checkTensorParallelNotes(_ inputs: RetainedQwenInputs, golden: URL, _ check
                 == "Pipeline: the placement policy excludes the model's tensor-parallel modes (concurrent requests are quoted for the pipeline only); using pipeline candidates.")
     let doubled = ClusterPlacementExplanation.deploymentReason(excludedWhy) ?? ""
     checks.require("TP note: the policy's reason is said once", doubled.components(separatedBy: "concurrent requests").count == 2)
+    // Feature parity (`ClusterPlacementPolicy.tensorParallelHeldForFeatures`): left out because it would drop a feature
+    // of the mode it would replace, said in the caller's words in the reason line, the note and the shard table.
+    var held = policy
+    held.modes = [.pipeline]
+    held.tensorParallelHeldForFeatures = "tensor parallel would drop prompt-prefix reuse that the pipeline keeps; held back until it keeps them"
+    let dropped = try plan(linkCosts(reductionMicroseconds: 10), policy: held)
+    checks.require("TP note: tensor parallel held back for a feature it would drop is said as such (\(ClusterPlacementExplanation.deploymentReason(dropped) ?? "-"))",
+        dropped.chosen?.mode == .pipeline && dropped.tensorParallel?.verdict == .dropsFeatures && note(dropped) == .dropsFeature
+            && dropped.shards?.options.first { $0.kind == .tensorParallel }?.verdict == .dropsFeatures && dropped.modesReason == nil
+            && ClusterPlacementExplanation.deploymentReason(dropped)
+                == "Pipeline: tensor parallel would drop prompt-prefix reuse that the pipeline keeps; held back until it keeps them.")
+    held.modes = nil
+    checks.require("TP note: the parity reason alone leaves nothing out (the caller removes the modes)",
+        try plan(linkCosts(reductionMicroseconds: 10), policy: held) == chosen)
     // A model whose layout has no tensor-parallel plan: no row at all.
     let nemotron = try ClusterModelLayout.decode(Data(contentsOf: golden.appendingPathComponent("layouts/nvidia-nemotron-3.5-lightning-2026-09-30-r1.json")))
     let profiles = try ["mac-a", "mac-b"].map { try ClusterDeviceProfile.decode(Data(contentsOf: golden.appendingPathComponent("profile-\($0).json"))) }

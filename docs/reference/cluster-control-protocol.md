@@ -1,6 +1,6 @@
 # Experimental cluster control protocol
 
-> Last updated: 2026-10-29
+> Last updated: 2026-11-01
 
 Exact member-role and native-pair public-control shapes on the provider
 WebSocket, as staged in draft pull requests: the provider side in this
@@ -204,6 +204,7 @@ policy bytes the control requires in a prepare frame
 | Prepare | The payload's policy must equal the installed policy byte for byte, the start must name this rank, and the frame must leave at most 30 seconds to prepare by this Mac's clock. The member then verifies its installed owner, native executable, metallib and resource library under the device gate and answers `native_pair_prepared` | `provider-swift/Sources/ProviderCore/Coordinator/NativePairMemberSession.swift`, `init` / `runOwned` |
 | Committed start | `native_pair_owner_start` launches this Mac's installed owner; the owner's native child drives `native_pair_hello` and `native_pair_confirmation`, and `native_pair_owner_released` is sent only after native cleanup, the owner's lease release and the owner's exit were all observed | `runOwned` / `exchange` |
 | Cancel or expiry | Requests native cleanup at once, independently of signing or the socket. An uncommitted session is dropped and the member can prepare again; a committed one that cannot deliver its release stays quarantined in the control, which then refuses every later attachment | `cancel`; `NativePairMemberControl.finished` |
+| Serving on the leader | The leader serves one committed start at a time, from its serve until its session's stop. The stop releases the start at once, then waits for the pair slot to retire before the receipt. So after a lost rank or a fence, the next committed start is accepted even if a serve or the old slot's drain outlasts the session's bounded wait, and its slot cannot publish until the old slot has retired. A start whose session already stopped is never served. The slot's engine cannot deadlock that retirement ([provider inference engine](../architecture/inference.md)) | `provider-swift/Sources/ProviderCore/ProviderLoop+ClusterPairServing.swift`, `serveCommittedStart` / `stopServingCommittedStart`; `provider-swift/Sources/ProviderCore/Inference/Distributed/Engine/DistributedCBv2Engine.swift`, `onQueueWithoutWaiting` |
 
 **What a real member does in this build.** The installed owner
 (`darkbloom cluster worker-owner --stdio`) admits a start the coordinator

@@ -15,12 +15,12 @@ struct AutopilotInventoryTests {
         .init(sessionId: "session", revision: "inventory", enabled: true,
             expiresAtMs: expiry ?? Int64(Date().timeIntervalSince1970 * 1000) + 120_000, observeOnly: shadow)
     }
-    private func loop() throws -> ProviderLoop {
+    private func loop(enabledModels: [String]? = nil) throws -> ProviderLoop {
         let settings = ModelAutopilotSettings(enabled: true, consentRecorded: true,
             selectedModels: [selected.id, cached.id], revision: "inventory")
         return try ProviderLoop(config: .init(coordinatorURL: "ws://127.0.0.1:0/unused", hardware: hardware,
             models: [selected], config: .init(provider: .init(name: "inventory-test"),
-                backend: .init(enabledModels: [selected.id], modelAutopilot: settings)),
+                backend: .init(enabledModels: enabledModels ?? [selected.id], modelAutopilot: settings)),
             autopilotInventory: [selected, cached]), attestationSigner: nil)
     }
 
@@ -52,10 +52,11 @@ struct AutopilotInventoryTests {
     }
 
     @Test func selectedModelSuccessorDoesNotRequireAutopilotInventoryConsent() async throws {
-        let loop = try loop()
-        await loop.handleAutopilotControl(control(shadow: true))
         let successor = "selected-model-next-build"
         let unrelated = "unrelated-next-build"
+        // The successor is converged to only inside the operator's filter.
+        let loop = try loop(enabledModels: [selected.id, successor])
+        await loop.handleAutopilotControl(control(shadow: true))
         #expect(await loop.autopilotSettings.selectedModels.contains(successor) == false)
         await loop.reconcileDesiredModels([
             .init(modelName: "selected-alias", desiredBuild: successor, previousBuild: selected.id),

@@ -55,11 +55,11 @@ def prepare(cache, output):
         if temporary.is_symlink():
             raise ValueError("unexpected download symlink")
         # Retry every transfer error too (a reset connection, error 56, or a
-        # cut transfer is not a transient error to plain `--retry`), and
-        # end a stalled attempt so the next one starts. The digest check
-        # below still decides.
+        # cut transfer is not a transient error to plain `--retry`), end a
+        # stalled attempt so the next one starts, and start no retry after
+        # 30 min. The digest check below still decides.
         subprocess.run(["curl", "--fail", "--silent", "--show-error", "--location",
-                        "--retry", "5", "--retry-all-errors", "--retry-delay", "5",
+                        "--retry", "5", "--retry-all-errors", "--retry-delay", "5", "--retry-max-time", "1800",
                         "--speed-limit", "102400", "--speed-time", "60", "--max-time", "900",
                         (VIDEO_URL if relative == "openrouter-aac.mp4" else BASE_URL + "/" + relative), "--output", str(temporary)], check=True)
         if not verify(temporary, size, digest):

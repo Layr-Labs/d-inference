@@ -567,6 +567,10 @@ public actor ProviderLoop {
     /// processes; released on every non-restart exit and immediately after a
     /// durable commit.
     internal var updateSession: SelfUpdater.UpdateSession?
+    /// Cluster member only: the supervisor's drain for the pair's coordinated update that owns admission (its request
+    /// id), and the task that waits for the accepted requests and then holds the drain (`ProviderLoop+ClusterUpdateDrain`).
+    internal var clusterUpdateDrainID: String?
+    internal var clusterUpdateDrainTask: Task<Void, Never>?
 
     /// Latest desired_models push received while admission is closed. A switch
     /// clears obsolete state before committing, then replays the fresh snapshot

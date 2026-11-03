@@ -22,6 +22,9 @@ import MLX
 //       tensor parallel against one rank without a registered model; never a model pass)
 //   darkbloom-cluster-tp-check record --rank0 FILE --rank1 FILE --reference FILE [--reference FILE] --model-dir DIR
 //       --output FILE [--partials float32|bfloat16] [--near-tie-ulps U]   (appends one qualification record line)
+//   darkbloom-cluster-tp-check qwen-rows synthesize|run|layers ...   (27B batch rows at the registered per-rank
+//       widths: each row against itself alone and in verify windows over the loopback ring, or the first layer
+//       that differs; `QwenRowsCheck`)
 //
 // `full` is the unsharded model on one Mac (this code path's single-Mac
 // reference); `simulated` is the single-process tensor-parallel oracle (the
@@ -519,6 +522,10 @@ enum CompareCommand {
             }
             if CommandLine.arguments.count > 1, CommandLine.arguments[1] == "qwen-prefill" {
                 try QwenPrefillBench.run(Array(CommandLine.arguments.dropFirst(2)))
+                return
+            }
+            if CommandLine.arguments.count > 1, CommandLine.arguments[1] == "qwen-rows" {
+                try QwenRowsCheck.run(Array(CommandLine.arguments.dropFirst(2)))
                 return
             }
             let options = try Options(Array(CommandLine.arguments.dropFirst()))

@@ -784,6 +784,8 @@ grants serving authorization or removes an existing profile.
 
 Without flags: `log stream --predicate 'subsystem == "dev.darkbloom.provider"' --level info`.
 
+Where `logs` and [`report`](#darkbloom-report) wait for a `log` child to finish, they take its exit from `ProcessExitObserver` (its termination handler), which does not run the calling thread's run loop.
+
 | Flag | Description |
 |------|-------------|
 | `--coordinator-url <url>` | Override the coordinator WebSocket URL |
@@ -1310,6 +1312,7 @@ Output includes:
   GLM-5.3-Flash error that reports a Metal command buffer out of memory adds
   the `→ fix:` line from
   [GLM-5.3-Flash GPU wired-memory limit](#glm-53-flash-gpu-wired-memory-limit).
+- App Attest serving authorization can remain visible through its unexpired lease, while MDM removal advice requires a matching fresh coordinator decision. The same distinction applies to both doctor summaries; see [provider authorization](../reference/provider-authorization.md).
 - `Requests served since the daemon started (… ago)`: coordinator requests
   this daemon finished since it started, with output tokens only. The count
   restarts at zero when the daemon restarts or a scheduled availability window
@@ -1840,6 +1843,13 @@ darkbloom update [--check-only] [--coordinator <url>] [--timeout <seconds>] [--f
 The update path verifies bundle, binary, and `mlx.metallib` hashes before
 replacing the running binary (`provider-swift/Sources/ProviderCore/Update/SelfUpdater.swift`).
 
+On a Mac whose `darkbloom cluster` service runs, the command then asks that
+service's supervisor to restart into the installed release together with the
+other Mac, after the pair drained, and prints its progress until the restart
+(at most `--timeout` seconds); a deferral exits 1
+(`provider-swift/Sources/darkbloom/UpdateCommand.swift`, `ClusterServiceUpdateRequest`;
+[updating Darkbloom on the pair](two-mac-cluster.md#updating-darkbloom-on-the-pair)).
+
 ## `darkbloom autoupdate`
 
 Enable or disable automatic update checks at startup.
@@ -2177,7 +2187,7 @@ override `provider.toml` for one process, are in
 | Key | Default | Effect |
 |---|---|---|
 | `[provider] memory_reserve_gb | 4 | GiB withheld from the selected OS-available/MLX load budget; the larger unified-cap reserve still applies. By default OS availability includes inactive pages or, when larger, the reclaimable file page cache, so this is not a free-page floor. Set process-start DARKBLOOM_MEMORY_AVAILABILITY=free-only for shared hosts; see [memory admission](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/architecture/scheduling.md#shared-host-memory-admission). |
-| `[provider] auto_update` | `true` | Startup + periodic self-update |
+| `[provider] auto_update` | `true` | Startup + periodic self-update; on a `darkbloom cluster` Mac, the pair's coordinated update at its update slot ([cluster service](cluster-always-on.md#the-pairs-coordinated-update)) |
 | `[provider] auto_restart` | `true` | Arm the watchdog LaunchAgent |
 | `[provider] update_jitter_seconds` | `300` | Max random delay before an automatic install or a network provider drains a model for a prepared MTP replacement; serving continues during the delay. `0` disables jitter; capped at `3600`. Standalone MTP upgrades skip this delay. Random staggering provides no fleet availability guarantee (`provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift`, `updateJitterSeconds`; `provider-swift/Sources/ProviderCore/Update/UpdateJitter.swift`, `delay`; `provider-swift/Sources/ProviderCore/ProviderLoop+MTPDrain.swift`, `waitBeforeMTPUpgradeDrain`) |
 | `[backend] enabled_models` | `[]` | Advertise only these ids; empty = all serveable. When set, it also bounds coordinator model commands and rollouts ([operator filter](../reference/configuration.md#provider-model-selection)) |

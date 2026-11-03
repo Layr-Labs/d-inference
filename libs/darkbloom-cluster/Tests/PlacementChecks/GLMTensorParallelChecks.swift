@@ -166,6 +166,11 @@ private func checkGLMTensorParallelFirst(_ priced: ClusterModelLayout, golden: U
             chosen?.mode == .tensorParallel && chosen?.tensorShares == nil && chosen?.shares == nil && chosen?.ranks.count == 2
                 && chosen?.ranks.allSatisfy({ $0.fit == .now }) == true)
     }
+    // GLM offers no unequal shares, so a pair that registers with a coordinator (`equalTensorShares`) is planned as before.
+    var registers = first; registers.equalTensorShares = true
+    let registered = try ClusterPlacementPlanner.plan(devices: devices, layout: priced, policy: registers, link: measured)
+    let unregistered = try ClusterPlacementPlanner.plan(devices: devices, layout: priced, policy: first, link: measured)
+    checks.require("glm tp first: a pair that registers with a coordinator is planned byte for byte as before", registered == unregistered)
     // The plan's hardware bound: a Mac at rest (`atRestAdmissibleBytes`), not its live free memory. What is left of it
     // is what the NextN layer's real request bytes (2 GiB stands in here) and any load term the plan does not price
     // yet may take before the pair stops planning tensor parallel.

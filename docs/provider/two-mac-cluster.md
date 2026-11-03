@@ -30,7 +30,10 @@ Run `darkbloom cluster` on each Mac, pick a model, done. The Mac you start on
 leads the cluster and keeps leading: it chooses the model, sends the other Mac
 its setup over the cable and starts it, and it holds rank 0, where requests
 enter and which the coordinator registers (and pays) for the pair. Every plan
-puts rank 0 on it (`LiveContext.plan`), and before a plan exists the cluster's
+puts rank 0 on it, whichever Mac makes the plan, including the plans the
+cluster service makes by itself after an update or after a Mac's memory
+refused its share (`LiveContext.plan`, `ClusterControlDerivation.planLeader`).
+Before a plan exists the cluster's
 leader is derived as that Mac (`ClusterControlDerivation.derive`, `preferred`).
 The other Mac follows; you never go back to it (see
 [If a Mac goes away](#if-a-mac-goes-away)).
@@ -42,32 +45,51 @@ models: the answer to the pairing code, the model, how a missing model gets
 onto the Macs and, later, what to do with a running cluster. Where the screen
 has no color (`NO_COLOR`, `TERM=dumb`, a pipe), the same list is numbered and
 one key answers it: a number, enter for the first line, or a letter only one
-line starts with (`y` for "Yes, pair"). The model list shows only models
+line starts with (`y` for "Yes, pair"). q or Esc cancels any list, so q never
+picks a line such as "Qwen3.8 27B". While the setup waits (for the other Mac,
+for Allow), q or Esc stops it and an arrow key does nothing; no prompt asks for
+a key to do something. The model list shows only models
 approved for clusters (`ClusterPublicModels.declared`: GLM-5.3-Flash and
 Qwen3.8 27B) that these two Macs can serve; any other model is left out, and a
 model named on the command line that is not approved is refused.
 
-macOS asks for its permissions at two stated moments on each Mac, while you are
-at that Mac, and the screen says what each prompt is and what to click:
+Each Mac asks for up to two macOS approvals, at stated moments while you are at
+that Mac, and Connect's first line names them ("Up to two macOS approvals on
+this Mac: the cable's port (now) and Local Network for Darkbloom (once
+paired)."). Each prompt's line says what to click:
 
-- **Connect:** the cable's port, once (your password), and Local Network access
-  for the program macOS attributes this command to: the terminal app, or sshd
-  in an SSH session. A probe that sends one datagram on the cable is what makes
-  macOS ask (`ClusterLocalNetworkAccess.probe`), and the setup waits for Allow.
-- **Right after the code is confirmed:** Local Network access for Darkbloom,
-  which this Mac's cluster service asks for as it starts
-  (`ClusterLocalNetworkAccess.startServiceProbe`); the setup waits for Allow.
+- **Connect:** the cable's port, once per Mac (your password). macOS lets a
+  command run from a terminal or over SSH onto the local network by itself
+  (Apple's TN3179), so this command's own probe, one datagram on the cable
+  (`ClusterLocalNetworkAccess.probe`), asks nothing unless macOS blocks it
+  anyway; macOS then names the terminal app (Terminal, iTerm, …), or
+  `sshd-keygen-wrapper` over SSH, and the setup waits for Allow.
+- **Right after pairing:** Local Network access for Darkbloom, which this Mac's
+  cluster service (a launchd agent, which macOS does ask about) asks for as it
+  starts (`ClusterLocalNetworkAccess.startServiceProbe`). Pairing ends on both
+  Macs at once, so both ask at the same moment: "macOS asks to let Darkbloom
+  find devices on your local network: click Allow. The other Mac may ask too:
+  click Allow there as well." The setup waits until Allow, however long you
+  take at the other Mac, or until q; after 15 s it also names the switch in
+  System Settings → Privacy & Security → Local Network. A cluster service that
+  reports no probe within 10 s (an older build) gets the line as an "if", and
+  the setup goes on.
 
 When macOS cannot show its password window (an SSH session with no desktop),
 the setup runs the same commands with `sudo` in that terminal: you type this
 Mac's password into sudo, not into Darkbloom, and the setup goes on. Only when
-sudo fails does it name the script to run yourself.
+sudo fails does it name the script to run yourself. Over SSH, Darkbloom's Local
+Network prompt still appears on the Mac's own screen, and its line says so
+("use Screen Sharing if it has no display").
 
 The Mac that joins ends once paired: it says it follows the other Mac, whether
-its window can close (a signed Darkbloom.app keeps serving; a development build
-serves only while the window stays open), and, last, to continue on the other
-Mac. The leader ends the same way: what serves, whether the windows can close,
-and, last, the command to manage it.
+its window can close (a signed Darkbloom.app's login agent keeps serving;
+without one, as for a development build, the Mac serves only while the window
+stays open), and, last, to continue on the other
+Mac (with `darkbloom cluster local` when it was started that way). The leader
+ends the same way: what serves (served through Darkbloom, "Serving through
+Darkbloom: the pair earns for the public requests it serves."), whether the
+windows can close, and, last, the command to manage it.
 
 On a color terminal with a UTF-8 locale and at least 40 columns, setup opens
 with the Darkbloom mark, which blooms in pixel by pixel. Each step's heading
@@ -90,9 +112,11 @@ check its status, and choose **Test a response** to try again.
 `darkbloom cluster` run again shows the cluster's status and, on the leader, a
 list: **Test a response**, **Change model** (**Choose a model and serve** when
 stopped), **Serve locally only** or **Serve through Darkbloom**, **Stop
-serving**, **Check both Macs released their memory** and **Quit**. On the
-other Mac it shows the status and where to manage the cluster, with nothing to
-choose: its part runs by itself.
+serving**, **Check both Macs released their memory** and **Quit**, with **Set
+up the cable's port** first when the cable moved to a port not set up yet. On
+the other Mac it shows the status and where to manage the cluster: its part
+runs by itself, and setting up such a port is the only choice it offers
+([below](#when-something-is-in-the-way)).
 
 The planner picks tensor parallel or pipeline for your Macs by itself. Phase
 split is off. A model whose artifact ships a speculative (MTP) head can also
@@ -145,17 +169,17 @@ format instruction only, as on one Mac
 
 | # | Where | What you do | What it asks |
 |---|---|---|---|
-| 1 | the first Mac | Run `darkbloom cluster`. It checks the Thunderbolt cable ("Cable found.", "Cable ready.") and Local Network access. Nobody waits on the cable yet, so this Mac leads; its last line is **"Now run `darkbloom cluster` on the other Mac."**, and it waits (q cancels). With two cables it asks which one to use. | the cable's port, once (your password; sudo in this terminal where macOS shows no window), and Local Network access for the terminal app |
-| 2 | the other Mac | Run `darkbloom cluster`. The same checks; then it finds the waiting Mac on the cable by itself (no address, no host name). Both screens show the same six-digit code. | the same two permissions; **Yes, pair** on each Mac when the codes match |
-| 3 | — | The other Mac says **"Paired with the other Mac (<its hardware>). It leads; this Mac follows it."** Its cluster service now runs, and macOS asks once to let Darkbloom find devices on your local network (Allow). Nothing else is ever asked there, also when it was started with `darkbloom cluster local` (it then says to run that on the Mac that leads); its last line says to continue on the other Mac. | Local Network access for Darkbloom, once |
-| 4 | the leader | It shows both Macs in one line ("This Mac: … · the other Mac: …") and every model approved for clusters that the pair can serve (held by both Macs, by one of them, or in Darkbloom's catalog), one line each: size, how it is split, each Mac's share ("this Mac 50% / the other Mac 50%") and the expected speed. A model a Mac holds twice (a catalog download beside the cluster's own copy) is listed once. A model that has tensor parallel but is split otherwise says why at the end of its line (for example "tensor parallel: slower here", "tensor parallel: not measured yet" or "tensor parallel: link unmeasured"). Models that fit in the Macs' free memory now come first; one that does not ends with "does not fit now". Choose the model with ↑↓ and enter (enter takes the first). A model the other Mac lacks says how it gets there ("copy ... over the Thunderbolt cable (6.1 GB)"). | the copy first in a list (a copy predicted under 30 s at the speed measured on these Macs starts by itself, `n` within 3 s stops it) |
-| 5 | — | Choosing is starting: the leader saves the setup, sends it to the other Mac over the cable, starts both Macs, waits until both are loaded and answers one test request, each said in one line. | nothing |
+| 1 | the first Mac | Run `darkbloom cluster`. Its first line names the approvals this Mac may ask for. It checks the Thunderbolt cable ("Cable found.", "Cable ready.") and Local Network access. Nobody waits on the cable yet, so this Mac leads; its last line is **"Now run `darkbloom cluster` on the other Mac."**, and it waits (q cancels). With two cables it asks which one to use. | the cable's port, once (your password; sudo in this terminal where macOS shows no window); Local Network access for the terminal app only where macOS blocks it |
+| 2 | the other Mac | Run `darkbloom cluster`. The same checks; then it finds the waiting Mac on the cable by itself (no address, no host name). Both screens show the same six-digit code and "Does the other Mac show the same code? Answer on both Macs."; a Mac that answered first says "Now choose “Yes, pair” on the other Mac too." | the same as the first Mac; **Yes, pair** on each Mac when the codes match |
+| 3 | both Macs | Each says it is paired; the other Mac: **"Paired with the other Mac (<its hardware>). It leads; this Mac follows it."** Both cluster services now run, and macOS asks on both Macs at the same moment to let Darkbloom find devices on your local network: click Allow on each; each screen waits for its own. Nothing else is ever asked on the other Mac; its last line says to continue on the other Mac (with `darkbloom cluster local` when it was started that way). | Local Network access for Darkbloom, once on each Mac |
+| 4 | the leader | It shows both Macs in one line ("This Mac: … · the other Mac: …") and every model approved for clusters that the pair can serve (held by both Macs, by one of them, or in Darkbloom's catalog), one line each: size, how it is split, each Mac's share ("this Mac 50% / the other Mac 50%") and the expected speed. A model a Mac holds twice (a catalog download beside the cluster's own copy) is listed once. A model that has tensor parallel but is split otherwise says why at the end of its line (for example "tensor parallel: slower here", "tensor parallel: not measured yet" or "tensor parallel: link unmeasured"). Models that fit in the Macs' free memory now come first; one that does not ends with "does not fit now". Choose the model with ↑↓ and enter (enter takes the first). Served through Darkbloom, a line under the choice says whether public traffic may reach the model ("Not yet qualified for public traffic."). A model the other Mac lacks says how it gets there ("copy ... over the Thunderbolt cable (6.1 GB)"). If the other Mac does not answer over the cable (its Darkbloom prompt may still wait for Allow), it offers **Try again** or **Stop here**. | the copy first in a list; a short one says its time ("Copy it over the Thunderbolt cable (about 7 s)") |
+| 5 | — | Choosing is starting: the leader saves the setup, sends it to the other Mac over the cable, starts both Macs, waits until both are loaded and answers one test request, each said in one line. Served through Darkbloom, it ends with "Serving through Darkbloom: the pair earns for the public requests it serves." | nothing |
 
 When it serves, the screen says how in one line, for example:
 
 ```
-Serving Qwen3.8-27B across both Macs: pipeline, the other Mac 40 layers / this Mac 24 layers.
-API at http://localhost:8000 on the other Mac (Apple M3 Ultra, 256 GB).
+Serving Qwen3.8-27B-4bit-mtp across both Macs: pipeline, this Mac 32 layers / the other Mac 32 layers.
+API at http://localhost:8000 on this Mac.
 ```
 
 Every screen names the Macs from where it is shown: "this Mac" is the Mac the
@@ -259,7 +283,9 @@ model on the leader (three keys), plus the macOS prompts [above](#the-steps-once
 
 Running `darkbloom cluster` again on either Mac opens with the same Darkbloom
 mark, beside "Darkbloom cluster" and the part this Mac plays ("This Mac leads
-the cluster", or "This Mac follows the other Mac (…)"), then shows the
+the cluster", or "This Mac follows the other Mac (…)"; with the name System
+Settings gives this Mac, "This Mac (Studio A) leads the cluster", so two
+identical Macs each say which they are), then shows the
 cluster's state (the deployment line first) and, on the leader, the list
 [above](#the-steps-once). The other Mac ends with where to manage the cluster
 ("To test, change the model or stop: run `darkbloom cluster` on the other Mac
@@ -286,11 +312,11 @@ decodes with its speculative assistant under the default `mtp_mode`
    ```
 
    Not paired yet, it pairs first as in [the steps](#the-steps-once). Name a
-   model to skip the list: `darkbloom cluster local Qwen3.5-9B` (its id or the
+   model to skip the list: `darkbloom cluster local glm-5.3-flash` (its id or the
    name the list shows). On a cluster that already serves, it switches the
    cluster to local only and waits until it serves again. On the Mac that joins
-   a waiting leader, it pairs and stops there like `darkbloom cluster`, and says
-   to run it on the leader.
+   a waiting leader, it pairs and stops there like `darkbloom cluster`; its last
+   line says to continue on the leader with `darkbloom cluster local`.
 2. Read the API's place from the ready screen:
 
    ```
@@ -400,7 +426,8 @@ under the near-tie rule) do two things only:
   public placement.
 
 A model or mode with no passing record is served for you, and the plan says in
-one line: "not yet qualified for public traffic".
+one line, as the setup does under the chosen model when the pair serves
+through Darkbloom: "not yet qualified for public traffic".
 
 Time budgets (startup, first token, stop) are derived from the setup and the
 installed artifact, not from a per-model table:
@@ -474,7 +501,10 @@ cable out), the other keeps its part ready for 10 minutes; if the Mac comes back
 in that time, the cluster re-forms with nothing to do. After that, a Mac that
 can hold the model alone serves it alone until the other Mac is back, and
 `darkbloom cluster` on it says so. When the Mac you set up on is back, it leads
-again (it holds rank 0). Manage the cluster on the Mac that leads; on the other
+again (it holds rank 0). A pair set up with Darkbloom 0.10.6, on which the Mac
+that joined took over leading, moves back to the Mac you set up on at its next
+plan: normally the re-plan after its update, which restarts both parts anyway.
+Manage the cluster on the Mac that leads; on the other
 Mac, `darkbloom cluster` shows the status and names the Mac to use.
 
 ## How the split is chosen
@@ -658,7 +688,9 @@ drained for an update yet: its update waits while it serves (the log says
   says it and offers **Save a diagnostics file to send to Darkbloom**; both Macs
   keep trying by themselves.
 - **The leader cannot reach the other Mac**: make sure the other Mac is on and
-  logged in; it rejoins by itself. If you denied the Local Network prompt there,
+  logged in; it rejoins by itself. During setup the leader offers **Try again**
+  and **Stop here**, since the other Mac's Darkbloom prompt may still be waiting
+  for Allow. If you denied the Local Network prompt there,
   allow Darkbloom in System Settings → Privacy & Security → Local Network, then
   run `darkbloom cluster` again.
 - **A model is not offered**: the list leaves out every model that is not
@@ -669,10 +701,10 @@ drained for an update yet: its update waits while it serves (the log says
   the models it holds back, for example "supported on a cluster, but this Mac's
   cluster worker does not take this copy of it"; a model is listed once when
   another copy of it can be served.
-- **A model does not fit now**: it is listed after the ones that fit, its line
-  ending "does not fit now". The fit is checked again right before the start; a
-  model that still does not fit is not started, and the screen says what frees
-  the memory ("Quit apps on the other Mac (…) first.").
+- **A model does not fit now**: it is listed after the ones that fit, ending
+  "does not fit now". What frees the memory ("Quit apps on the other Mac (…)
+  first.") is said, and nothing starts, if it still does not fit when checked
+  again right before the start.
 - **The start does not finish**: the screen shows each Mac's last error and
   offers **Save a diagnostics file to send to Darkbloom**, which writes one to
   your home folder (no keys, addresses or names in it; nothing is written if any

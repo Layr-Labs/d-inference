@@ -1,5 +1,6 @@
 import Foundation
 import Darwin
+import SystemConfiguration
 
 /// Local Network privacy (macOS 15 and later) for the cluster: macOS asks once per program before the program may
 /// reach other devices on the local network, the Thunderbolt cable included, and refuses the program's packets
@@ -85,6 +86,12 @@ public enum ClusterLocalNetworkAccess {
         }
     }
 
+    /// This Mac's name as System Settings shows it (General → About), for its own screen only: two identical Macs
+    /// read the same hardware, so each says which it is. Nil when macOS gives none.
+    public static func computerName() -> String? {
+        SCDynamicStoreCopyComputerName(nil, nil) as String?
+    }
+
     // MARK: - The cluster service's own probe
 
     /// What the service last saw, for the onboarding to read.
@@ -94,36 +101,46 @@ public enum ClusterLocalNetworkAccess {
         var pid: Int32
     }
 
-    /// How long the service keeps probing while refused, and how often.
-    static let serviceProbeSeconds: Double = 900
+    /// How often the service probes while refused: every 2 s for the first minutes, then every 10 s for as long as it
+    /// runs (the onboarding waits for the answer without a deadline, so an Allow clicked later is still seen).
+    static let serviceProbeFastSeconds: Double = 300
     static let serviceProbeInterval: useconds_t = 2_000_000
+    static let serviceProbeSlowInterval: useconds_t = 10_000_000
+
+    /// The report in a service's own directory (the one its pid file is in).
+    static func reportFile(in directory: URL) -> URL { directory.appendingPathComponent("local-network.json") }
 
     static func reportFile() -> URL? {
-        (try? ClusterService.paths())?.pid.deletingLastPathComponent().appendingPathComponent("local-network.json")
+        (try? ClusterService.paths()).map { reportFile(in: $0.pid.deletingLastPathComponent()) }
     }
 
-    /// The service's side, from its start: probes at once (the probe that makes macOS ask about Darkbloom), then every
-    /// 2 s while refused, for up to 15 minutes, keeping each outcome for the onboarding; stops once allowed. Off the
+    /// The service's side, from its start: probes at once (the probe that makes macOS ask about Darkbloom), then while
+    /// refused, keeping each outcome in `directory` (the service's own) for the onboarding; stops once allowed. Off the
     /// service's thread; says each change in the service log.
-    public static func startServiceProbe(say: @escaping @Sendable (String) -> Void) {
+    static func startServiceProbe(directory: URL,
+                                         probe: @escaping @Sendable () -> ClusterOnboardingLocalNetwork = { probe() },
+                                         fastSeconds: Double = serviceProbeFastSeconds,
+                                         intervals: (fast: useconds_t, slow: useconds_t) = (serviceProbeInterval, serviceProbeSlowInterval),
+                                         say: @escaping @Sendable (String) -> Void) {
+        let file = reportFile(in: directory)
         Thread.detachNewThread {
             let started = Date()
             var last: ClusterOnboardingLocalNetwork?
-            while Date().timeIntervalSince(started) < serviceProbeSeconds {
+            while true {
                 let state = probe()
                 if state != last {
-                    write(Report(state: state, pid: getpid()))
+                    write(Report(state: state, pid: getpid()), to: file)
                     if state != .unknown { say("local network access for this service: \(state.rawValue)") }
                     last = state
                 }
                 if state == .allowed { return }
-                usleep(serviceProbeInterval)
+                usleep(Date().timeIntervalSince(started) < fastSeconds ? intervals.fast : intervals.slow)
             }
         }
     }
 
-    static func write(_ report: Report) {
-        guard let file = reportFile(), let data = try? JSONEncoder().encode(report) else { return }
+    static func write(_ report: Report, to file: URL) {
+        guard let data = try? JSONEncoder().encode(report) else { return }
         try? data.write(to: file, options: [.atomic])
         chmod(file.path, 0o600)
     }

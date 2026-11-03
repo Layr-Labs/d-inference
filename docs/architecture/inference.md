@@ -255,7 +255,7 @@ service names members the same way in its control lines and refusals
 keeps hardware names; lines shown now carry the screen's words
 (`ClusterOnboardingDeployment.Share.label`). The Mac that joins ends its
 onboarding once paired, also for `darkbloom cluster local`
-(`ClusterOnboardingDriver.joinedLocalLine`). The model list keeps one line per
+(`ClusterOnboardingDriver.joinedLocalContinueLine`). The model list keeps one line per
 artifact and name (`OnboardingLive.presentedChoices`): a choice that cannot be
 served is left out when another offers the same digests under the same name,
 and an artifact this build serves is never called unsupported for a copy the
@@ -265,29 +265,52 @@ Every choice goes through one console call (`ClusterOnboardingConsole.choose`):
 on a color terminal a list moved with ↑↓ and taken with enter that folds to the
 chosen line (`ClusterOnboardingTerminal.pick`), elsewhere numbered lines and one
 key read the same way on every console (`ClusterOnboardingChoice.match`), so the
-plain transcript stays byte for byte the same on a terminal and a pipe. The
+plain transcript stays byte for byte the same on a terminal and a pipe. q or a
+lone escape cancels any list, and a key that sends a sequence (an arrow) reads
+as no key, so it never stops a wait (`ClusterOnboardingTerminal.key`). The
 setup's list holds only models the owner approved for clusters
 (`ClusterOnboardingModelChoice.validated`, `listed`; `OnboardingLive.approved`
 against `ClusterPublicModels.declared`); an older leader's choices carry no
 such field and are listed as they come. A member's `darkbloom cluster` shows
-the status and where to manage the cluster, with no list
-(`ClusterOnboardingDriver.member`); the leader's is a list of the control
-operations (`ClusterOnboardingDriver.menu`).
+the status and where to manage the cluster, with a list only to set up a cable
+port that is not set up yet (`ClusterOnboardingDriver.member`, `fixPortItem`);
+the leader's is a list of the control operations (`ClusterOnboardingDriver.menu`).
+Every copy of a missing model is a list as well, a short one with its
+predicted time (`ClusterOnboardingDriver.provision`). Served through Darkbloom,
+the chosen model's public-traffic line follows the choice
+(`ClusterOnboardingModelChoice.publicTraffic`), and the start ends with
+`ClusterOnboardingDriver.earnsLine`, except for a private image candidate and
+where the pair serves locally, which a notice under the API line already says
+(`servesLine`). When the other Mac does not answer over the
+cable, the leader asks **Try again** or **Stop here** (`chooseAndServe`).
 
-The Mac the cluster was set up on leads. `LiveContext.plan` makes the Mac that
-plans (the control leader) every plan's rank 0, so the derived leadership
-(rank 0 of the adopted plan) stays there, and before a plan exists derivation
+The Mac the cluster was set up on leads. `LiveContext.plan` makes that Mac every
+plan's rank 0, whichever Mac plans (`ClusterControlDerivation.planLeader`, from
+the pairing's leader pin), the cluster service's re-plans on the control leader
+included (after an update or a memory refusal), so a pair the joined Mac led
+moves back at its next plan and the derived leadership (rank 0 of the adopted
+plan) stays on the set-up Mac; when that Mac is not one of the plan's members
+(no record, or one of an earlier pairing), the Mac planning takes rank 0, as
+before. Before a plan exists derivation
 prefers it among the members present (`ClusterControlDerivation.derive`,
 `preferred`; `ClusterControlNode.preferredLeader`, from the pairing's leader
 pin). A Mac that is away never leads, so failover is unchanged.
 
 macOS's permissions are asked at stated moments
-(`ClusterOnboardingDriver.allowLocalNetwork`): the command probes Local Network
+(`ClusterOnboardingDriver.allowLocalNetwork`), and Connect's first line names
+them (`ClusterOnboardingDriver.approvalsLine`). The command probes Local Network
 access in the Connect step (`ClusterLocalNetworkAccess.probe`: one datagram to
-the cable's subnet broadcast, refused with `EHOSTUNREACH` until allowed), and
-the cluster service probes as it starts, right after pairing, keeping each
+the cable's subnet broadcast, refused with `EHOSTUNREACH` until allowed). macOS
+lets a command run from a terminal or over SSH through by itself (TN3179), so
+macOS asks only where the probe finds the cable blocked, naming the terminal app
+or `sshd-keygen-wrapper` (`ClusterLocalNetworkAccess.commandApp`). The cluster
+service, a launchd agent, probes as it starts, right after pairing, keeping each
 outcome for the onboarding (`ClusterLocalNetworkAccess.startServiceProbe`,
-`serviceState`). Where macOS shows no approval window for the cable's port, the
+`serviceState`). The onboarding waits for Allow until it comes or q, with no
+time limit, and a service that reports nothing within `serviceReportSeconds`
+(10 s) gets the prompt's line as an "if" (`localNetworkMaybeLine`); over SSH
+(`ClusterLocalNetworkAccess.overSSH`) the lines put the prompt on the Mac's own
+screen. Where macOS shows no approval window for the cable's port, the
 link setup's owner-only script runs with sudo in the same terminal
 (`ClusterOnboardingLinkResult.manualScript`,
 `ClusterLocalNetworkAccess.runLinkScriptWithSudo`), with the terminal in its
@@ -2956,8 +2979,11 @@ resource policy and profile from its saved setup,
 `DistributedInstalledNativeStart.runtimeBlock`), so both members must run the
 same runtime to register the same plan; the start must carry that block
 ([model approvals](../reference/configuration.md#model-approvals)). For a
-cluster that serves through Darkbloom, the coordinator decides each public
-placement ([serving a pair](../reference/cluster-control-protocol.md#serving-a-pair)).
+cluster that serves through Darkbloom, the onboarding's start
+line says it serves its owner's requests, and public requests where Darkbloom
+has qualified the model and split
+(`provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/ClusterOnboardingFlow.swift`);
+the coordinator decides each public placement.
 
 ### Two-Mac cluster stages (experimental)
 
@@ -3027,8 +3053,7 @@ answer with the same worker build (`ClusterOnboardingUpdate.oneBuild`): the
 [pair's coordinated update](../provider/cluster-always-on.md#the-pairs-coordinated-update)
 restarts the two Macs seconds apart, and a plan made while one still runs the
 other build would fail and wait 600 s. A model change of
-a serving cluster (**Change model** in the leader's menu, `ClusterOnboardingDriver.menu`,
-or `darkbloom cluster local <model>`) plans the same way:
+a serving cluster (`m`, or `darkbloom cluster local <model>`) plans the same way:
 its list was priced while the running parts held their memory, where tensor
 parallel may not fit now, so once both parts stopped and both Macs gave the
 memory back (`OnboardingLive.awaitReleased`) it plans again and adopts the

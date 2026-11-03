@@ -56,7 +56,8 @@ extension ClusterOnboardingOperations {
             commandApp: { ClusterLocalNetworkAccess.commandApp() },
             runAsAdministrator: { ClusterLocalNetworkAccess.runLinkScriptWithSudo($0, paths: paths) },
             serviceOutlivesWindow: { live.serviceOutlivesWindow() },
-            remote: { ClusterLocalNetworkAccess.overSSH() })
+            remote: { ClusterLocalNetworkAccess.overSSH() },
+            thisMacName: { ClusterLocalNetworkAccess.computerName() })
     }
 }
 
@@ -706,7 +707,7 @@ final class OnboardingLive: @unchecked Sendable {
                 ordered.append((.init(title: ClusterOnboardingDeployment.title(modelID: model.modelID, displayNames: names),
                     lines: ["\(ClusterModelProvisioning.gigabytes(model.totalBytes)) · only on \(thereShort): copied over the cable first"], blocker: nil,
                     provision: .init(lines: ClusterModelProvisioning.lines(plan), downloadAlternative: false, leaderDownloads: true, blocker: plan.blocker,
-                        quickSeconds: ClusterModelProvisioning.quickCopySeconds(plan)), modelID: model.modelID,
+                        quickSeconds: ClusterModelProvisioning.quickCopySeconds(plan), fromOtherMac: true), modelID: model.modelID,
                     validated: approved(model.artifactSHA256)),
                     (model.folder, "", model.modelID, [], nil, nil), ListedArtifact(model)))
             }
@@ -1537,6 +1538,14 @@ final class OnboardingLive: @unchecked Sendable {
         return lines
     }
 
+    /// A model id as the screens name it: its catalog name, when the last catalog this Mac read has one.
+    func modelTitle(_ modelID: String) -> String {
+        let catalog = (ClusterModelStore.readSmall(store.paths.directory.appendingPathComponent("catalog.json"))
+            .flatMap { try? JSONDecoder().decode([CatalogModel].self, from: $0) }) ?? []
+        return ClusterOnboardingDeployment.title(modelID: modelID,
+            displayNames: Dictionary(catalog.map { ($0.id, $0.displayName) }, uniquingKeysWith: { first, _ in first }))
+    }
+
     func localStatus() -> [String] {
         var lines = [String]()
         // After a Darkbloom update this Mac's service sets the cluster up again by itself; said first while it runs.
@@ -1547,10 +1556,10 @@ final class OnboardingLive: @unchecked Sendable {
             lines.append("Commands typed here are handled by \(here).")
             return lines
         }
-        let model = leadership?.modelName ?? "the chosen model"
+        let model = (leadership?.modelName).map(modelTitle) ?? "the chosen model"
         let now = session()
         if leadership?.serving != true {
-            lines.append("Not serving (stopped)\(leadership?.modelName.map { "; the last model was " + $0 } ?? "").")
+            lines.append("Not serving (stopped)\(leadership?.modelName.map { "; the last model was " + modelTitle($0) } ?? "").")
             if let scope = leadership?.scope, scope.isLocalOnly { lines.append("When it starts: " + scope.line + ".") }
         } else if let offered = offeredLine() {
             let ready = offeredReadiness(offered, own: ClusterService.published()?.child)
@@ -1575,10 +1584,6 @@ final class OnboardingLive: @unchecked Sendable {
             lines.append("\(model) is starting (both Macs keep trying by themselves).")
         }
         lines.append(answering ? "Leader: \(here). This Mac is a member." : "Member: \(there). This Mac leads.")
-        // On the leader's own screen only: a member that forwarded this already says where its commands go.
-        if let control = ClusterService.published()?.control, control.leads, !answering {
-            lines.append("Commands typed here are handled by this Mac.")
-        }
         return lines
     }
 

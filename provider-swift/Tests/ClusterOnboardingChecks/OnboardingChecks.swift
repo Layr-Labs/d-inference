@@ -97,6 +97,11 @@ import Darwin
         serviceThatCannotTellStillGetsTheAsk()
         otherMacThatDidNotAnswerOffersTryAgain()
         startSaysHowThePairServes()
+        // The two-Mac test on two M5 Ultras and the final review: which physical Mac plays which part, a model copied
+        // from the other Mac, a model that does not fit now, and the window's line.
+        eachMacNamesItselfBesideItsPart()
+        modelOnTheOtherMacIsCopiedNotDownloaded()
+        modelThatDoesNotFitSaysSoOnce()
         print("onboarding checks: \(passed) passed, \(failures.count) failed")
         for failure in failures { print("FAIL " + failure) }
         exit(failures.isEmpty ? 0 : 1)
@@ -432,6 +437,7 @@ import Darwin
                            outlivesWindow: Bool = true,
                            remote: Bool = false,
                            commandApp: String = "Terminal",
+                           thisMacName: String? = nil,
                            reachFailures: Int = 0,
                            readyResult: Result<ClusterOnboardingReady, ClusterOnboardingFailure> = .success(.init(servedBy: "this Mac", port: 8000,
                                deployment: "Serving Qwen3.8-27B-4bit-mtp across both Macs: pipeline, this Mac 32 layers / the other Mac 32 layers"))) -> ClusterOnboardingOperations {
@@ -533,7 +539,8 @@ import Darwin
             commandApp: { commandApp },
             runAsAdministrator: { script in recorder.note("runAsAdministrator"); return sudoSucceeds && script == linkScript },
             serviceOutlivesWindow: { outlivesWindow },
-            remote: { remote })
+            remote: { remote },
+            thisMacName: { thisMacName })
     }
 
     static func privateMiMoSelectionRefusesBeforeAnyActionOnMemberOrUnpairedMac() {
@@ -1753,8 +1760,8 @@ import Darwin
             + " · tensor parallel: slower here\n  2) Qwen3.8-27B — "), "TP note: at the end of the line it is about: \(text)")
         expect(text.contains("about 41 tokens/s\n  3) Bonsai 27B — 7.2 GB · pipeline · M3 Ultra 4 layers / M5 Max 60 layers · does not fit now\n  4) Qwen3.6-35B-A3B — "),
             "TP note: none for tensor parallel chosen or a model without it: \(text)")
-        expect(text.contains("M5 Max 36 layers · tensor parallel: does not fit now · does not fit now\n"),
-            "TP note: on the line, before the fit mark: \(text)")
+        expect(text.contains("M5 Max 36 layers · does not fit now\n"),
+            "TP note: a note that only says the model does not fit now is left to the fit mark, said once: \(text)")
         expect(!text.contains("Tensor parallel: pipeline is left out") && !text.contains("Pipeline: tensor parallel is predicted slower"),
             "TP note: the planner's full reasons are not said")
         run.type("\r")
@@ -1806,16 +1813,21 @@ import Darwin
 
     static let codeQuestion = ClusterOnboardingPairing.codeQuestion
 
-    /// The list's keys on a colour UTF-8 terminal.
+    /// Local Network access while macOS's prompt is up: refused for each of `subjects` until it was probed `refusals`
+    /// times, then allowed (the person clicked Allow); any other subject is allowed at once.
+    static func refusedThenAllowed(_ refusals: Int, _ subjects: [ClusterOnboardingLocalNetworkSubject] = [.thisCommand])
+        -> @Sendable (ClusterOnboardingLocalNetworkSubject) -> ClusterOnboardingLocalNetwork {
+        let probes = Recorder()
+        return { subject in
+            guard subjects.contains(subject) else { return .allowed }
+            probes.note("\(subject)")
+            return probes.all.filter { $0 == "\(subject)" }.count > refusals ? .allowed : .blocked
+        }
+    }
+
     /// An arrow pressed while the setup waits (here for Allow) is no key: only q or a lone escape stops a wait.
     static func arrowKeysDoNotStopAWait() {
-        let states = Recorder()
-        let network: @Sendable (ClusterOnboardingLocalNetworkSubject) -> ClusterOnboardingLocalNetwork = { subject in
-            guard subject == .thisCommand else { return .allowed }
-            states.note("command")
-            return states.all.count > 3 ? .allowed : .blocked
-        }
-        let run = TerminalRun(operations(Recorder(), pairEvents: [], pairResult: .failed([]), localNetwork: network))
+        let run = TerminalRun(operations(Recorder(), pairEvents: [], pairResult: .failed([]), localNetwork: refusedThenAllowed(3)))
         expect(run.waitFor("click Allow."), "arrow in a wait: the prompt line")
         run.type("\u{1B}[A")
         run.type("\u{1B}[B")
@@ -1842,13 +1854,7 @@ import Darwin
 
     /// Over SSH the prompts are on the Mac's own screen: the lines say so, and name the program macOS shows.
     static func sshSessionsAreToldWhereThePromptIs() {
-        let states = Recorder()
-        let network: @Sendable (ClusterOnboardingLocalNetworkSubject) -> ClusterOnboardingLocalNetwork = { subject in
-            guard subject == .thisCommand else { return .allowed }
-            states.note("command")
-            return states.all.count > 2 ? .allowed : .blocked
-        }
-        let run = TerminalRun(operations(Recorder(), pairEvents: [], pairResult: .failed([]), localNetwork: network, remote: true,
+        let run = TerminalRun(operations(Recorder(), pairEvents: [], pairResult: .failed([]), localNetwork: refusedThenAllowed(2), remote: true,
             commandApp: "sshd-keygen-wrapper"))
         expect(run.waitFor("  " + ClusterOnboardingDriver.approvalsLine(remote: true) + "\n"), "SSH: the approvals, where each is answered")
         expect(run.waitFor("  macOS asks on this Mac's own screen (use Screen Sharing if it has no display) to let sshd-keygen-wrapper find devices on your local network: click Allow.\n"),
@@ -1905,10 +1911,11 @@ import Darwin
                "serves locally: neither line; the notice says how it serves: \(local.text)")
     }
 
+    /// The list's keys on a colour UTF-8 terminal.
     static let arrowHint = "\u{2191}\u{2193} move \u{00B7} enter select \u{00B7} q cancel"
 
-    /// A plain transcript's choice prompt.
-    static func prompt(_ count: Int, enter: Int = 1) -> String { "Choose 1-\(count) (enter = \(enter)): " }
+    /// A plain transcript's choice prompt (enter takes the first option).
+    static func prompt(_ count: Int) -> String { "Choose 1-\(count) (enter = 1): " }
 
     /// The leader's pairing: nobody waits on the cable, the other Mac joins, both confirm the code.
     static let leaderEvents: [ClusterOnboardingPairEvent] = [.searching, .waitingAsLeader, .connected,
@@ -1930,7 +1937,7 @@ import Darwin
             pairResult: .failed([]), outlivesWindow: false))
         expect(led.waitFor(prompt(2)), "dev leader: the list"); led.type("\r")
         expect(led.finish() == 0, "dev leader: exit 0")
-        expect(led.text.contains("Done. Keep this window and the other Mac's open: this development build serves only while they stay open.\n"),
+        expect(led.text.contains("Done. Keep this window and the other Mac's open: these Macs serve only while they stay open.\n"),
                "dev leader: keep both windows open")
     }
 
@@ -1972,16 +1979,9 @@ import Darwin
     /// 2026-11-02: macOS's Local Network prompts came out of sync, on the other Mac's turn. This command's is asked in
     /// Connect and Darkbloom's right after pairing, each with what to click, and the setup waits for the answer.
     static func localNetworkAskedAtStatedMoments() {
-        let states = Recorder()
-        // Each subject is refused twice (macOS's prompt is up), then allowed.
-        let network: @Sendable (ClusterOnboardingLocalNetworkSubject) -> ClusterOnboardingLocalNetwork = { subject in
-            let name = subject == .service ? "service" : "command"
-            states.note(name)
-            return states.all.filter { $0 == name }.count > 2 ? .allowed : .blocked
-        }
         let recorder = Recorder()
         let run = TerminalRun(operations(recorder, pairEvents: memberEvents,
-            pairResult: .paired(role: .member, peerName: "Apple M5 Ultra, 256 GB"), localNetwork: network))
+            pairResult: .paired(role: .member, peerName: "Apple M5 Ultra, 256 GB"), localNetwork: refusedThenAllowed(2, [.thisCommand, .service])))
         expect(run.waitFor("  macOS asks to let Terminal find devices on your local network: click Allow.\n"), "local network: this command's prompt, in Connect")
         expect(run.waitFor("  \u{2713} Local network allowed for Terminal.\n"), "local network: allowed, then pairing")
         expect(run.waitFor(codeQuestion), "local network: the code"); run.type("y")
@@ -2065,5 +2065,94 @@ import Darwin
         expect(none.finish() == 1, "approved: none approved stops")
         expect(none.text.contains("No model approved for clusters can run on these two Macs now.\n"), "approved: said")
         expect(!none.text.contains("Qwen 3.5 9B"), "approved: an unapproved model is not named among the reasons")
+    }
+
+    /// Two identical Macs read the same hardware ("Apple M5 Ultra, 256 GB"), so each says which physical Mac it is,
+    /// by the name System Settings gives it, beside the part it plays: on its own screen only, and only a name that
+    /// can be said plainly.
+    static func eachMacNamesItselfBesideItsPart() {
+        let D = ClusterOnboardingDriver.self
+        expect(D.shownName("  Studio A ") == "Studio A", "names: trimmed")
+        expect(D.shownName(nil) == nil && D.shownName(" ") == nil, "names: none given")
+        expect(D.shownName("Studio\u{1B}[2J") == nil, "names: a control character is never said")
+        expect(D.shownName(String(repeating: "x", count: 41)) == nil, "names: at most 40 characters")
+        expect(D.leaderSubtitle(named: "Studio A") == "This Mac (Studio A) leads the cluster", "names: the leader's opening")
+        expect(D.leaderSubtitle(named: nil) == D.leaderSubtitle, "names: unknown, unchanged")
+        expect(D.followerSubtitle(memberResume(), named: "Studio B") == "This Mac (Studio B) follows the other Mac (Apple M3 Ultra, 256 GB)",
+               "names: the member's opening")
+        var leads = ClusterOnboardingPairing()
+        expect(leads.finished(.paired(role: .leader, peerName: "Apple M5 Ultra, 256 GB"), named: "Studio A").last
+            == "\u{2713} Paired with the other Mac (Apple M5 Ultra, 256 GB). This Mac (Studio A) leads.", "names: the leader's paired line")
+        var follows = ClusterOnboardingPairing()
+        expect(follows.finished(.paired(role: .member, peerName: "Apple M5 Ultra, 256 GB"), named: "Studio B").last
+            == "\u{2713} Paired with the other Mac (Apple M5 Ultra, 256 GB). It leads; this Mac (Studio B) follows it.", "names: the member's paired line")
+
+        let mac = "Apple M5 Ultra, 256 GB"
+        let paired = TerminalRun(operations(Recorder(), pairEvents: [.searching, .waitingAsLeader, .connected, .code("123456", peer: [mac]),
+            .peerDecided(true)], pairResult: .paired(role: .leader, peerName: mac), machines: [
+                ClusterOnboardingMachine(name: mac, memoryGB: 256, gpuCores: 80, leads: true, models: 2),
+                ClusterOnboardingMachine(name: mac, memoryGB: 256, gpuCores: 80, leads: false, models: 2)], thisMacName: "Studio A"))
+        expect(paired.waitFor(codeQuestion), "names: the code question"); paired.type("y")
+        expect(paired.waitFor(prompt(2), count: 2), "names: the model list"); paired.type("\r")
+        expect(paired.finish() == 0, "names: served")
+        expect(paired.text.contains("  \u{2713} Paired with the other Mac (Apple M5 Ultra, 256 GB). This Mac (Studio A) leads.\n"),
+               "names: identical Macs, this one named where it says it leads")
+        for (label, resume, name, opening) in [
+            ("leader", ClusterOnboardingResume(role: .leader, peerName: "Apple M3 Ultra, 256 GB", serving: true, modelName: "Qwen3.8-27B-4bit-mtp"),
+             "Studio A", "This Mac (Studio A) leads the cluster"),
+            ("member", memberResume(), "Studio B", "This Mac (Studio B) follows the other Mac (Apple M3 Ultra, 256 GB)"),
+            ("unsayable", ClusterOnboardingResume(role: .leader, peerName: "Apple M3 Ultra, 256 GB", serving: true, modelName: "Qwen3.8-27B-4bit-mtp"),
+             "Studio\u{07}", D.leaderSubtitle)] {
+            let run = TerminalRun(operations(Recorder(), resume: resume, pairEvents: [], pairResult: .failed([]), thisMacName: name))
+            if resume.role == .leader { expect(run.waitFor(prompt(6)), "names (\(label) again): the menu"); run.type("q") }
+            expect(run.finish() == 0, "names (\(label) again): leaves")
+            expect(visible(run.text).contains { $0.contains(opening) }, "names (\(label) again): opens with \(opening): \(visible(run.text).prefix(4))")
+            expect(!run.text.contains("\u{07}"), "names (\(label) again): nothing unsayable on screen")
+        }
+    }
+
+    /// A model only the other Mac has is copied to this Mac over the cable, then planned here: its list item says a
+    /// copy, never a download, and how long a short one takes; a catalog model still says it is downloaded first
+    /// (`leaderDownloadsAModelNoMacHas`).
+    static func modelOnTheOtherMacIsCopiedNotDownloaded() {
+        let recorder = Recorder()
+        let offer = ClusterOnboardingProvisionOffer(lines: ["This Mac: copy from the other Mac (Apple M3 Ultra, 256 GB) over the Thunderbolt cable (16.3 GB, about 7 s)"],
+            downloadAlternative: false, leaderDownloads: true, quickSeconds: 6.9, fromOtherMac: true)
+        let before = [ClusterOnboardingModelChoice(title: "Qwen3.8 27B", lines: ["16.3 GB · only on the other Mac: copied over the cable first"], blocker: nil,
+                                                   provision: offer, validated: true)]
+        let after = [ClusterOnboardingModelChoice(title: "Qwen3.8 27B", lines: ["16.3 GB · tensor parallel · this Mac 50% / the other Mac 50%"], blocker: nil,
+                                                  validated: true)]
+        let run = TerminalRun(operations(recorder, resume: .init(role: .leader, peerName: "Apple M3 Ultra, 256 GB"), pairEvents: [], pairResult: .failed([]),
+            choices: before, replanned: after))
+        expect(run.waitFor(prompt(1)), "from the other Mac: offered"); run.type("\r")
+        expect(run.waitFor("  Qwen3.8 27B is not on this Mac yet:\n"), "from the other Mac: said")
+        expect(run.waitFor("  1) Copy it from the other Mac over the Thunderbolt cable (about 7 s)\n  2) Stop here\n"),
+               "from the other Mac: a copy, with its time: \(run.text)")
+        expect(!run.text.contains("download"), "from the other Mac: no download is mentioned")
+        run.type("\r")
+        expect(run.finish() == 0, "from the other Mac: served")
+        expect(recorder.all.contains("provision 0 copy") && recorder.all.filter { $0 == "planModels" }.count == 2,
+               "from the other Mac: copied, then planned here: \(recorder.all)")
+    }
+
+    /// A model that does not fit now says so once at the end of its line: a tensor-parallel note that only says the
+    /// same is left out, any other note stays.
+    static func modelThatDoesNotFitSaysSoOnce() {
+        typealias C = ClusterOnboardingModelChoice
+        let choices = [
+            C(title: "Qwen3.8 27B", lines: ["16.3 GB · tensor parallel"], blocker: nil, validated: true),
+            C(title: "Z.ai: GLM-5.3-Flash", lines: ["181.8 GB · pipeline"], blocker: nil, fitRemedy: "quit the apps holding 20 GB first",
+              tensorParallelNote: "tensor parallel: does not fit now", validated: true),
+            C(title: "Gemma 4 31B", lines: ["58.2 GB · pipeline"], blocker: nil, fitRemedy: "quit the apps holding 4 GB first",
+              tensorParallelNote: "tensor parallel: slower here", validated: true)]
+        let run = TerminalRun(operations(Recorder(), resume: .init(role: .leader, peerName: "Apple M5 Ultra, 256 GB"), pairEvents: [], pairResult: .failed([]),
+            choices: choices))
+        expect(run.waitFor(prompt(3)), "fit: the list")
+        let text = run.text
+        expect(text.contains("  2) Z.ai: GLM-5.3-Flash — 181.8 GB · pipeline · does not fit now\n"), "fit: said once: \(text)")
+        expect(!text.contains("does not fit now · does not fit now") && !text.contains("tensor parallel: does not fit now"), "fit: never twice")
+        expect(text.contains("  3) Gemma 4 31B — 58.2 GB · pipeline · tensor parallel: slower here · does not fit now\n"), "fit: another note stays")
+        run.type("1")
+        expect(run.finish() == 0, "fit: the model that fits is served")
     }
 }

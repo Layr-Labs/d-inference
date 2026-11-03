@@ -265,7 +265,11 @@ public final class ClusterService: @unchecked Sendable {
         say("started (pid \(getpid()))")
         // Makes macOS ask once about Darkbloom's Local Network access now: the onboarding starts this service right
         // after pairing, while the person is at this Mac, and waits for the answer (`ClusterLocalNetworkAccess`).
-        ClusterLocalNetworkAccess.startServiceProbe(say: say)
+        // Only the service of this Mac's own home probes: one run on other paths (a test's) neither sends on the cable
+        // nor writes the report the onboarding reads.
+        if (try? Self.paths())?.pid == files.pid {
+            ClusterLocalNetworkAccess.startServiceProbe(directory: store.paths.directory, say: say)
+        }
         refreshPowerAssertions(power)
         // A part a previous run of this service started and left running (that run ended without stopping it, e.g.
         // killed): stopped before anything starts, or it would hold the model's memory and the serving port forever.

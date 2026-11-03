@@ -4965,6 +4965,53 @@ a rewind reserve or another layout. Code: `libs/darkbloom-cluster/Sources/Darkbl
 `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/MiMo/Prefix/MiMoStagePrefixSnapshot.swift`
 and `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/MiMo/MTP/MiMoWindowRollback.swift`.
 
+### MiMo pipeline decode command buffers
+
+MiMo stage decode encodes its Metal command buffers as GLM's and Qwen's
+tensor-parallel decode do: up to 100 operations a buffer with no input-size
+bound (`MiMoLayerStageSession.decodeCommandBuffers`), on the thread that encodes
+the step. The rank's own limits are the worker's 16-operation guard
+(`ClusterWorkerEnvironmentGuards`) and MLX's per-chip size bound, and each
+routed layer's expert launch takes a whole 1 GiB expert bank as input, so under
+those limits a decode step commits a buffer every few launches. Prefill frames
+keep the rank's limits.
+
+| Work | Where the limits apply |
+|---|---|
+| Plain and compact decode frames, phase-split and alone-route decode | `MiMoLayerStageSession.decode` |
+| Lane steps of independent histories | `MiMoLayerStageSession.decodeBatch` |
+| Speculative rounds of `pipeline_mtp_v1`: drafts, verify windows, settlement | `MiMoMTPGeneration.runProducer`, `MiMoMTPGeneration.runConsumer` |
+
+Only the commit points move: every kernel, input and rounded value is the
+same. `MiMoDecodeCommandBufferTests` compares residuals, logits rows and every
+cache and page array byte for byte under both limits on synthetic stages.
+
+MLX keeps up to ten command buffers in flight (`MLX_MAX_ACTIVE_TASKS`) and frees
+a buffer's temporaries when it completes, so under the decode limits a whole
+stage step's temporaries can be alive at once. A request's workspace charge
+therefore prices every full-attention layer's float32 score rows for its decode
+rows together (`MiMoRequestStateBudget.estimate`, `decodeRows`: one row, or the
+verify window's `depth + 1`), and never less than one prompt frame's scores on
+one layer. Gathered page views are already charged for every layer
+(`MiMoPagedKVAllowance.pages`). A verify window of three or four rows takes
+MLX's unfused path, which builds those scores in bfloat16. One or two rows take
+its fused vector attention instead, whose
+float32 partials on Max and Ultra GPUs (`sdpa_vector_2pass` in
+`libs/mlx-swift/Source/Cmlx/mlx/mlx/backend/metal/scaled_dot_product_attention.cpp`)
+can exceed a score row and are not priced separately. The decode speed effect
+and peak memory on the registered model are not measured yet.
+
+### MiMo routed experts in placement
+
+`MiMoPlacementFamily` states MiMo's routing: each of the 47 routed layers sends
+a token to 8 of its 256 experts (`expertRouting`). Its routed-expert tensors are
+each layer's `mlp.switch_mlp` banks and their block scales (`isRoutedExpert`).
+The router and its score correction are read on every step. The layout then
+carries `routedExperts`, and the hardware prior
+(`ClusterHardwarePrior.decodeBytesPerToken`) counts 10,767,036,288 bytes for one
+decode step instead of every expert's 166,600,109,952. The prior prices tensor
+parallel only, so MiMo's pipeline plans are unchanged.
+
 ### Gemma paged prefix restoration
 
 Installed plain Gemma pipelines retain the paged KV default at every supported

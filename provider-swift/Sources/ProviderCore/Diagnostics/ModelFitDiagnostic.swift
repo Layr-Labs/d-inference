@@ -81,6 +81,19 @@ public enum ModelFitDiagnostic {
         }
     }
 
+    /// The fit row of a Mac set up for a two-Mac cluster. The pair holds this
+    /// Mac's share of its model and the single-Mac provider cannot run beside it,
+    /// so no single-Mac cold-load verdict applies: weighing the pair's whole
+    /// model against memory that already holds this Mac's share would fail every
+    /// serving pair. `cluster doctor` checks the pair.
+    public static func clusterMember() -> Diagnostic {
+        Diagnostic(
+            section: .traffic, name: "model fits in RAM", level: .info,
+            message: "this Mac serves its share of a two-Mac cluster's model, so the single-Mac load check "
+                + "does not apply; `\(BuildEnvironment.current.cliName) cluster doctor` checks the pair.",
+            fix: nil)
+    }
+
     /// Builds the traffic-readiness diagnostic for a single target model.
     /// `weightGb` is the model's overhead-included estimated size; `alternatives`
     /// are locally-available models, used to suggest a fit. `servingSetIDs` is

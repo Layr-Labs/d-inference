@@ -195,7 +195,8 @@ extension ClusterService {
         members.append(local)
         let claim = start.claim
         let node = ClusterControlNode(localID: local.memberID, members: members, claim: claim, rankOrder: rankOrder(),
-                                      now: Self.monotonicSeconds(), ttl: Self.leaseTTLSeconds, soloGrace: Self.soloGraceSeconds)
+                                      now: Self.monotonicSeconds(), ttl: Self.leaseTTLSeconds, soloGrace: Self.soloGraceSeconds,
+                                      preferredLeader: ClusterSetupMemberFacts.memberID(pin: leadership.leaderPin))
         lock.withLock { if control == nil { control = node } }
     }
 

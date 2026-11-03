@@ -276,6 +276,13 @@ public final class ClusterService: @unchecked Sendable {
         try? Data("\(getpid())\n".utf8).write(to: files.pid, options: .atomic)
         defer { unlink(files.pid.path) }
         say("started (pid \(getpid()))")
+        // Makes macOS ask once about Darkbloom's Local Network access now: the onboarding starts this service right
+        // after pairing, while the person is at this Mac, and waits for the answer (`ClusterLocalNetworkAccess`).
+        // Only the service of this Mac's own home probes: one run on other paths (a test's) neither sends on the cable
+        // nor writes the report the onboarding reads.
+        if (try? Self.paths())?.pid == files.pid {
+            ClusterLocalNetworkAccess.startServiceProbe(directory: store.paths.directory, say: say)
+        }
         refreshPowerAssertions(power)
         // A part a previous run of this service started and left running (that run ended without stopping it, e.g.
         // killed): stopped before anything starts, or it would hold the model's memory and the serving port forever.
@@ -408,7 +415,7 @@ public final class ClusterService: @unchecked Sendable {
                 say("the cable is on \(moved.interface) now: answering the paired Mac there")
                 // A port that was never set up has no fixed address: the other Mac cannot find this one there.
                 if let port = OnboardingLive.unsetCablePort(ClusterLinkReadinessProbe.inspectLocalLink()) {
-                    say("\(port) is not set up for the cluster: run `darkbloom cluster` on this Mac and press f (macOS asks for your password once)")
+                    say("\(port) is not set up for the cluster: run `darkbloom cluster` on this Mac and choose \(ClusterOnboardingDriver.fixPortItem) (macOS asks for your password once)")
                 }
             case .pairingChanged(let current):
                 say("this Mac's pairing changed (\(current.clusterID)): answering the paired Mac with the new one")
@@ -1267,7 +1274,8 @@ public final class ClusterService: @unchecked Sendable {
                     do {
                         var record = try store.readRecord()
                         if let drain = record.stopDrain, drain.id == supervisedStopDrainID {
-                            record = try store.updateRecord {
+                            // Under the service lock: one try; a busy record waits for the next tick.
+                            record = try store.updateRecord(lockWaitSeconds: 0) {
                                 if $0.stopDrain?.id == drain.id, $0.leadership?.serving != true { $0.stopDrain = nil }
                             }
                         }

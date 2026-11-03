@@ -1203,7 +1203,7 @@ two-Mac hardware pass.
 CI runs the runtime test target (`DarkbloomClusterRuntimeTests`) on the
 provider's Blacksmith macOS runners, in selections that
 `scripts/cluster-test-plan.py` defines. Each selection runs in a process of its
-own through `scripts/run-nested-suite.sh`, which fails when the selection runs
+own through `scripts/run-nested-suite.sh`, which fails when the process runs
 no test or skips a test. Every process starts with `MLX_QMV_BATCH_INVARIANT=1`,
 as every cluster process does.
 
@@ -1213,6 +1213,22 @@ as every cluster process does.
 | Opt-in | Cluster Runtime Tests (blocking) | The tests that one switch (for example `QWEN_TP_MTP_GPU=1`) enables and that pass on the CI runners |
 | Opt-in | Cluster GPU Tests (non-blocking) | The switched tests that fail on the CI runners' GPU, the long-running tests and the benchmarks. The job reports their results and does not fail the workflow |
 | Needs a model | None | The tests that need a model directory, an artifact or its metadata (`REQUIRES_MODEL`). CI has no model |
+
+The blocking selections run in 12 shards (`Cluster Runtime Tests (shard K)`)
+and the focused runners in 3 (`Cluster Focused Checks (shard K)`), one Mac
+each. `scripts/cluster-test-plan.py` places the work by the measured seconds in
+`scripts/cluster-test-weights.json`, longest first onto the least loaded shard.
+A shard runs one process for each selection it holds. The base selection's
+units are top-level suites, and single tests of the suites in `SPLIT_SUITES`
+(each longer than one shard). The last blocking shard runs the base catch-all:
+every base test that no other shard selects, so a new suite always runs.
+`Cluster Runtime Tests Summary` lists the tests with `swift test list` and fails
+unless each process executed exactly its selection and the blocking processes
+together ran every listed test once, except the tests that need a model and the
+non-blocking selections. It also uploads measured seconds per unit
+(`cluster-test-weights`); when the shards drift apart, replace the weights file
+with that artifact. The focused runners' seconds are in each shard's step
+summary.
 
 `python3 scripts/test-cluster-test-plan.py` (Release Integrity) checks that the
 plan names each gated test in the sources once, and each runner under

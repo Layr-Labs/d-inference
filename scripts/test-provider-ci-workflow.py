@@ -232,7 +232,8 @@ class ProviderCIWorkflowTests(unittest.TestCase):
     def test_existing_required_check_requires_every_lane_even_after_failures(self):
         job = self.jobs["provider-test-gate"]
         self.assertIn("    name: Provider Tests\n", job)
-        self.assertIn("    needs: [changes, test-provider, test-provider-summary, test-cluster, test-cluster-focused]\n", job)
+        self.assertIn("    needs: [changes, test-provider, test-provider-summary, test-cluster, test-cluster-summary, "
+                      "test-cluster-focused]\n", job)
         # Provider SDK Tests notifies after merge and never blocks this gate.
         self.assertNotIn("test-provider-sdk", job)
         self.assertIn("    if: ${{ always() }}\n", job)
@@ -241,7 +242,7 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         command = run_command(step)
         # Prompt Parity is a step of a provider shard: its failure is UNIT_RESULT's.
         self.assertNotIn("test-provider-parity", job)
-        lanes = ("UNIT_RESULT", "SUMMARY_RESULT", "CLUSTER_RESULT", "CLUSTER_FOCUSED_RESULT")
+        lanes = ("UNIT_RESULT", "SUMMARY_RESULT", "CLUSTER_RESULT", "CLUSTER_SUMMARY_RESULT", "CLUSTER_FOCUSED_RESULT")
         for failed in (None, *lanes):
             for outcome in ("failure", "skipped", "cancelled"):
                 results = {lane: outcome if lane == failed else "success" for lane in lanes}

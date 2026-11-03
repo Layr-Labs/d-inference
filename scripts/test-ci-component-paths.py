@@ -83,7 +83,7 @@ class ComponentPathsTests(unittest.TestCase):
             "scripts/run-nested-suite.sh", "scripts/run-paged-kernel-tests.sh",
             "scripts/run-exclusive-native-gpu-test.sh", "scripts/provider-test-shards.py",
             "scripts/provider-test-shard-weights.json",
-            "scripts/cluster-test-plan.py",
+            "scripts/cluster-test-plan.py", "scripts/cluster-test-weights.json",
             "scripts/run-provider-test-watchdog.py", "scripts/prepare-mimo-audio-fixtures.py",
             "scripts/prepare-mimo-provider-fixtures.py", "scripts/prepare-mimo-prompt-fixtures.py",
             "scripts/prepare-prompt-fixtures.py", "scripts/test-prepare-prompt-fixtures.py",
@@ -276,7 +276,8 @@ class WorkflowRoutingTests(unittest.TestCase):
     def test_provider_aggregate_exhaustive_truth_table(self):
         jobs = workflow.job_blocks((ROOT / ".github/workflows/ci.yml").read_text())
         gate = jobs["provider-test-gate"]
-        self.assertIn("needs: [changes, test-provider, test-provider-summary, test-cluster, test-cluster-focused]", gate)
+        self.assertIn("needs: [changes, test-provider, test-provider-summary, test-cluster, test-cluster-summary, "
+                      "test-cluster-focused]", gate)
         self.assertNotIn("test-provider-sdk", gate)
         self.assertIn("if: ${{ always() }}", gate)
         self.assertNotIn("continue-on-error:", gate)
@@ -285,6 +286,7 @@ class WorkflowRoutingTests(unittest.TestCase):
             "CHANGES_RESULT": "needs.changes.result", "PROVIDER_CHANGED": "needs.changes.outputs.provider",
             "UNIT_RESULT": "needs.test-provider.result", "SUMMARY_RESULT": "needs.test-provider-summary.result",
             "CLUSTER_RESULT": "needs.test-cluster.result",
+            "CLUSTER_SUMMARY_RESULT": "needs.test-cluster-summary.result",
             "CLUSTER_FOCUSED_RESULT": "needs.test-cluster-focused.result",
         }.items():
             self.assertIn(name + ": ${{ " + expression + " }}", step)
@@ -292,7 +294,7 @@ class WorkflowRoutingTests(unittest.TestCase):
         results = ("success", "skipped", "failure", "cancelled")
         # Prompt Parity runs in a provider shard, so UNIT_RESULT carries it.
         self.assertNotIn("PARITY_RESULT", step)
-        names = ("UNIT_RESULT", "SUMMARY_RESULT", "CLUSTER_RESULT", "CLUSTER_FOCUSED_RESULT")
+        names = ("UNIT_RESULT", "SUMMARY_RESULT", "CLUSTER_RESULT", "CLUSTER_SUMMARY_RESULT", "CLUSTER_FOCUSED_RESULT")
         for detector, changed, *lanes in itertools.product(
                 results, ("true", "false", ""), *[results] * len(names)):
             result = subprocess.run(["bash", "-e", "-c", command], capture_output=True, timeout=5,

@@ -6,9 +6,9 @@
   load. Before, it served one at a time: a local pair widened only after a
   burst, through a reload the burst waited for, and a pair serving Darkbloom
   traffic never widened.
-- On two idle Macs, Qwen3.8-27B serves 8 at once from 48 GB a Mac without the
-  speculative assistant (4 at 32 or 36 GB), and 8 from 96 GB a Mac with it
-  (local clusters only); smaller Macs serve fewer. Two M5 Ultras serve 8 either
+- On two idle Macs, Qwen3.8-27B serves 8 at once from 64 GB a Mac without the
+  speculative assistant (4 at 48 GB, 2 at 32 or 36 GB), and 8 from 96 GB a Mac
+  with it (local clusters only); smaller Macs serve fewer. Two M5 Ultras serve 8 either
   way. When not even 2 fit, the pair serves one request at a time, as before.
 - Memory safety is unchanged: both Macs reserve that many requests' full memory
   when the model loads and admit each request alone. A local pair set up

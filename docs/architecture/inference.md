@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-11-01
+> Last updated: 2026-11-03
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -5361,15 +5361,17 @@ the served layout; `ClusterPlacementTensorWidthRegisteredTests`):
 
 | Each Mac | Without the assistant (served through Darkbloom) | With the depth-3 assistant (local) |
 |---|---|---|
-| 32 GiB | 4 | 1 |
-| 36 GiB | 4 | 2 |
-| 48 GiB | 8 | 4 |
-| 64 GiB | 8 | 6 |
+| 32 GiB | 2 | 1 |
+| 36 GiB | 2 | 1 |
+| 48 GiB | 4 | 2 |
+| 64 GiB | 8 | 4 |
 | 96 GiB and larger | 8 | 8 |
 
-At eight lanes, each rank of an equal split reserves 28,555,198,464 bytes at
-LOAD without the assistant and 48,378,347,520 bytes with it; with its weights
-and loading headroom it needs 42,084,887,040 and 65,642,146,304 bytes. Every
+At eight lanes, each rank of an equal split reserves 40,544,616,448 bytes at
+LOAD without the assistant and 60,367,765,504 bytes with it, each lane's
+prompt-prefix capture included ([prefix ownership](hardware-support.md#qwen27-tp-batch-prefix-ownership));
+with its weights and loading headroom it needs 54,074,305,024 and
+77,631,564,288 bytes. Every
 registered Qwen TP row is sized the same way from its own quotes. GLM keeps its
 eight lanes and other families keep their defaults.
 

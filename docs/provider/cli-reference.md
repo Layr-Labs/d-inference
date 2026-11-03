@@ -161,7 +161,7 @@ Subcommands declared by `Darkbloom.configuration.subcommands`:
 | `doctor` | Diagnostics (see [troubleshooting](./troubleshooting.md#doctor-checks)) | ✓ | `DoctorCommand.swift` (`Doctor`) |
 | `models` | `list`, `catalog`, `download`, `remove` | ✓ | `ModelsCommand.swift` (`Models`) |
 | `local` | Print the direct-mode endpoint and API key | | `LocalCommand.swift` (`Local`) |
-| `cluster` | Set up two Macs to serve one model together ([guided setup](./two-mac-cluster.md)); `cluster local` serves without a coordinator | ✓ | `ClusterCommand.swift` (`Cluster`) |
+| `cluster` | Set up two Macs to serve one model together ([guided setup](./two-mac-cluster.md)); `cluster local` serves without a coordinator. Run again on a paired Mac, it offers **Pair again** when the saved pairing was made with another Secure Enclave key or the other Mac does not answer over the cable, taking the steps of `cluster pair --forget` (`ClusterUnpairing`), then pairing ([pairing again](./two-mac-cluster.md#pairing-again)) | ✓ | `ClusterCommand.swift` (`Cluster`) |
 | `login` | Link the machine to an account (RFC 8628 device code) | ✓ | `LoginCommand.swift` (`Login`) |
 | `logout` | Stop the provider, revoke its current saved token, then remove the local credential | ✓ | `LogoutCommand.swift` (`Logout`) |
 | `benchmark` | Inference benchmarks and harnesses | ✓ | `BenchmarkCommand.swift` (`Benchmark`) |

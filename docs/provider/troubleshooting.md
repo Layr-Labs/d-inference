@@ -1,6 +1,6 @@
 # Provider troubleshooting
 
-> Last updated: 2026-11-02
+> Last updated: 2026-11-03
 
 Symptom → check → fix for the `darkbloom` provider: installer exits, `doctor`
 check names, service lifecycle, coordinator connection, updates, models and the
@@ -160,6 +160,13 @@ The check cadence (`autoUpdateInitialDelay`, `autoUpdateInterval`), the
 `update_jitter_seconds` install delay and the `updateDrainTimeout` before the
 restart (`provider-swift/Sources/ProviderCore/ProviderLoop+AutoUpdate.swift`)
 are tabulated in [`cli-reference.md`](./cli-reference.md#runtime-constants).
+
+## Two-Mac pairs
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| The part log (`~/.darkbloom/cluster-setup/rank.log`) repeats `This Mac cannot register the saved roster: This Mac's Secure Enclave key is not the one it paired with; pair again.` | The pairing was made with another Secure Enclave key: the Mac moved between the Darkbloom and DevNet apps, or the official installer made a new key | Run `darkbloom cluster` on each Mac and choose **Pair again** ([pairing again](./two-mac-cluster.md#pairing-again)) |
+| One Mac waits at "2/4 Pair"; the other shows its status and ends, or says "The other Mac doesn't answer over the cable" | The second Mac still holds an earlier pairing, so it never joins the waiting Mac | On the second Mac run `darkbloom cluster` and choose **Pair again** |
 
 ## Models and memory
 

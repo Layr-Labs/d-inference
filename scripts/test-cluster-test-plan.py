@@ -88,8 +88,10 @@ class ClusterTestPlanTests(unittest.TestCase):
         for selection in plan.SELECTIONS:
             if selection.lane == "blocking" and selection.tests:
                 with self.subTest(selection=selection.name):
-                    tests = [test for process in blocking if process.selection is selection for test in process.units]
-                    self.assertEqual(sorted(tests), sorted(selection.tests))
+                    holders = [process for process in blocking if process.selection is selection]
+                    # One process, as on dev.
+                    self.assertEqual(len(holders), 1)
+                    self.assertEqual(sorted(holders[0].units), sorted(selection.tests))
         # Each (shard, selection) is one process.
         keys = [(process.shard, process.name) for process in blocking]
         self.assertEqual(len(keys), len(set(keys)))
@@ -234,6 +236,9 @@ class ClusterTestPlanTests(unittest.TestCase):
 
     def test_only_the_gpu_job_continues_after_a_failure_and_the_gate_requires_the_others(self):
         self.assertIn("continue-on-error: true", workflow.step_blocks(self.jobs["test-cluster-gpu"])[-1])
+        # The non-blocking lane runs on dev pushes only, not on pull requests.
+        self.assertIn("    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/dev' && "
+                      "needs.changes.outputs.provider == 'true' }}\n", self.jobs["test-cluster-gpu"])
         gate = workflow.field(self.jobs["provider-test-gate"], "needs", indent=4)
         needs = [name.strip() for name in gate.strip("[]").split(",")]
         for job_id in ("test-cluster", "test-cluster-focused"):

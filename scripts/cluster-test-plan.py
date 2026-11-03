@@ -54,7 +54,7 @@ MODULE = "DarkbloomClusterRuntimeTests"
 LANES = ("blocking", "nonblocking", "focused")
 WEIGHTS = ROOT / "scripts/cluster-test-weights.json"
 # Shards of the lanes split by measured seconds; ci.yml's matrices match.
-SHARD_COUNTS = {"blocking": 12, "focused": 3}
+SHARD_COUNTS = {"blocking": 8, "focused": 3}
 # Base suites whose tests are weighed and placed one by one: each is longer
 # than one shard. Every other base unit is a whole top-level suite.
 SPLIT_SUITES = ("QwenTensorParallelBatchSessionTests",)
@@ -379,7 +379,10 @@ def assign(shards, items, fixed=()):
         cost = lambda index: seconds + (0 if selection.name in placed[index] else PROCESS_SECONDS)
         index = min(range(shards), key=lambda index: (loads[index] + cost(index), index))
         loads[index] += cost(index)
-        placed[index][selection.name].append(unit)
+        if isinstance(unit, tuple):
+            placed[index][selection.name].extend(unit)
+        else:
+            placed[index][selection.name].append(unit)
     return placed, loads
 
 
@@ -397,8 +400,11 @@ def processes(lane, weights=None):
         named = {selection.name: selection for selection in selections}
         return [Process(named[name], index + 1) for index in range(shards) for name in placed[index]]
     base, units, catch_all_seconds = base_units(weights)
-    items = [(weights.get(unit_key(selection, test), UNWEIGHED_SECONDS), selection, test)
-             for selection in selections if selection.tests and not selection.after for test in selection.tests]
+    # An opt-in selection is one unit, in one process, as on dev: its GPU
+    # tests may assume what its earlier tests left warm.
+    items = [(sum(weights.get(unit_key(selection, test), UNWEIGHED_SECONDS) for test in selection.tests),
+              selection, tuple(selection.tests))
+             for selection in selections if selection.tests and not selection.after]
     items += [(seconds, base, unit) for unit, seconds in units.items()]
     placed, _ = assign(shards, items, fixed=[(shards - 1, base, catch_all_seconds)])
     # A selection with `after` joins the first shard that runs that selection,

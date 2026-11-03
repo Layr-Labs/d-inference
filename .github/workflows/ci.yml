@@ -790,7 +790,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8]
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
@@ -865,10 +865,11 @@ jobs:
   test-cluster-gpu:
     # The switched cluster runtime tests these runners cannot pass, the long
     # ones and the benchmarks (scripts/cluster-test-plan.py). They run and
-    # report on every pull request; a failure does not fail the workflow.
+    # report on dev pushes only, to keep two Macs out of every pull request
+    # run; a failure does not fail the workflow.
     name: Cluster GPU Tests (non-blocking, shard ${{ matrix.shard }})
     needs: changes
-    if: ${{ needs.changes.outputs.provider == 'true' }}
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/dev' && needs.changes.outputs.provider == 'true' }}
     runs-on: blacksmith-12vcpu-macos-27
     timeout-minutes: 60
     strategy:

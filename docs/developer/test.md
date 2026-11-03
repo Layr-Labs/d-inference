@@ -1224,10 +1224,10 @@ as every cluster process does.
 |---|---|---|
 | Base | Cluster Runtime Tests (blocking) | Every test that needs no environment switch. The base processes pass `--skip` for the switched tests and the tests that need a model, so a test that skips there has a gate that the plan does not name |
 | Opt-in | Cluster Runtime Tests (blocking) | The tests that one switch (for example `QWEN_TP_MTP_GPU=1`) enables and that pass on the CI runners |
-| Opt-in | Cluster GPU Tests (non-blocking) | The switched tests that fail on the CI runners' GPU, the long-running tests and the benchmarks. The job reports their results and does not fail the workflow |
+| Opt-in | Cluster GPU Tests (non-blocking, `dev` pushes only) | The switched tests that fail on the CI runners' GPU, the long-running tests and the benchmarks. The job runs on pushes to `dev`, reports their results and does not fail the workflow |
 | Needs a model | None | The tests that need a model directory, an artifact or its metadata (`REQUIRES_MODEL`). CI has no model |
 
-The blocking selections run in 12 shards (`Cluster Runtime Tests (shard K)`)
+The blocking selections run in 8 shards (`Cluster Runtime Tests (shard K)`)
 and the focused runners in 3 (`Cluster Focused Checks (shard K)`), one Mac
 each. `scripts/cluster-test-plan.py` places the work by the measured seconds in
 `scripts/cluster-test-weights.json`, longest first onto the least loaded shard.
@@ -1236,7 +1236,10 @@ units are model families (`FAMILIES`): every suite whose name starts with the
 family prefix runs in that family's one process, a new suite included, because
 some tests pass only after another suite of the family has run its native code
 in the process. The single tests of the suites in `SPLIT_SUITES` (each longer
-than one shard) are units of their own. A selection that names `after` runs in
+than one shard) are units of their own. Each opt-in selection is one unit, in
+one process, as each ran before the shards: its GPU tests may assume what its
+earlier tests left warm. The longest, `qwen-tp-batch-gpu` (about 314 s), sets
+the slowest shard. A selection that names `after` runs in
 that selection's shard, after it. The last blocking shard runs the base catch-all:
 every base test that no other shard selects, so a new suite always runs.
 `Cluster Runtime Tests Summary` lists the tests with `swift test list` and fails

@@ -62,6 +62,14 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      # A plain build of master must be prod and a plain build of dev must be
+      # dev. The target is the pull request's base branch, or the pushed branch.
+      - name: Check the provider's plain-build default for the target branch
+        env:
+          TARGET_BRANCH: ${{ github.base_ref || github.ref_name }}
+        run: |
+          python3 scripts/test-provider-build-default.py
+          python3 scripts/provider-build-default.py --branch "$TARGET_BRANCH"
       - name: Validate changelog fragments
         run: |
           python3 scripts/test-changelog.py

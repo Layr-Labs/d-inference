@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-11-01
+> Last updated: 2026-11-02
 
 Provider CLI and native-runtime environment variables, compiled defaults and reading symbols. Secrets are named, never valued. Unless specified otherwise, values are read at process start.
 
@@ -198,7 +198,7 @@ mode or update configuration changes are part of this addition.
 
 | Setting | Default / precedence | Consumer |
 |---|---|---|
-| `backend.enabled_models` | `[]` means all eligible local models; a successful `switch` pins its complete nonempty selection | `provider-swift/Sources/ProviderCore/Service/ProviderModelSelection.swift` (`save`) |
+| `backend.enabled_models` | `[]` means all eligible local models; a background `start` and a successful `switch` save their complete nonempty selection. A nonempty list, with the models the daemon started with, is the running daemon's operator filter: without Autopilot, coordinator `load_model`, `prefetch_model` and `desired_models` (including a selected build's alias successor) never load, download or advertise a model outside it. A live `switch` replaces the filter at once; a hand edit applies at the next start. `[]` filters nothing | `provider-swift/Sources/ProviderCore/Service/ProviderModelSelection.swift` (`save`); `provider-swift/Sources/ProviderCore/ProviderLoop+ModelSelection.swift` (`operatorFilterAllows`) |
 | launchd-managed `start --foreground --model` | Explicitly pinned `enabled_models` overrides stale baked arguments, including restart and watchdog recovery | `provider-swift/Sources/darkbloom/Start/StartCommand.swift` (`usesPinnedModelSelection`); `provider-swift/Sources/darkbloom/Start/StartCommand+Modes.swift` (`runForeground`) |
 | direct manual `start --foreground --model` | Explicit command-line IDs still override the saved selection | `provider-swift/Sources/darkbloom/Start/StartCommand+Modes.swift` (`runForeground`) |
 | later scheduled serving windows | Read full current Autopilot settings/consent plus saved selection. Disabling between windows restores ordinary `enabled_models` even if unchanged; otherwise keep the initial foreground selection until a live switch or saved selection change. Resolve an empty ordinary list to eligible local models, validate/hash before reopening and retain the original window end. With consent, cached Autopilot builds verified at start or by the previous window's provider (downloads and background checks) stay while their bytes hash unchanged. All other inputs remain frozen | `provider-swift/Sources/darkbloom/ScheduledWindowSelection.swift` (`ScheduledWindowSelection`); `provider-swift/Sources/darkbloom/Start/StartCommand+Modes.swift` (`runScheduled`) |

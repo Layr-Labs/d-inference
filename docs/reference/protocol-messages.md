@@ -1,6 +1,6 @@
 # Provider ↔ coordinator protocol messages
 
-> Last updated: 2026-10-30
+> Last updated: 2026-11-02
 
 Every JSON frame on the provider WebSocket (`GET /ws/provider`), with the Go
 type, the Swift type, and the presence rule for each field. Go is the canon in
@@ -1409,7 +1409,9 @@ Go `LoadModelMessage` · Swift `LoadModel`. `model_id` (req). Sent only to
 Active or explicitly paused Autopilot providers block this legacy residency path and use explicit
 `model_autopilot` commands instead. Never sent to a `cluster_member` connection
 or to a device held by a verified pair (`beginVerifiedPairAwareModelCommand`,
-`darkbloom-platform:coordinator/registry/verified_pair_commands.go`).
+`darkbloom-platform:coordinator/registry/verified_pair_commands.go`). Without
+Autopilot, a model outside the [operator filter](configuration.md#provider-model-selection)
+is refused `model_not_selected` (`autopilotAllowsModel`).
 
 ### `prefetch_model`
 
@@ -1417,7 +1419,9 @@ Go `PrefetchModelMessage` · Swift `PrefetchModel`. `model_id` (req); `priority`
 (`int`, opt, advisory). Download + verify only, no GPU load; for a build in
 ordinary serving the provider replies with `prefetch_model_status` and then
 `models_update`. Refused for a `cluster_member` connection or a pair-held
-device, like `load_model`.
+device, like `load_model`. Without saved Autopilot consent, a model outside the
+[operator filter](configuration.md#provider-model-selection) is refused
+`model_not_selected` before any download.
 
 With saved Autopilot consent and downloads not turned off by the operator
 (capability `inventory_downloads`; on by default), a build outside ordinary
@@ -1449,7 +1453,15 @@ backend and attested capability guards apply. Alias entries describe aliases
 whose desired, previous, or retired build is in the provider's advertised inventory;
 an empty set revokes old targets. Revision-aware providers stage the exact artifact
 and drain before activation; ID-only providers retain the legacy prefetch path.
-Both announce completed updates through `models_update`. A `cluster_member`
+Both announce completed updates through `models_update`. A provider with an
+[operator filter](configuration.md#provider-model-selection) converges only to a
+desired build inside it: an alias successor outside the filter is not fetched,
+not staged, not served and does not drop the previous build
+(`operatorFilterAllows`,
+`provider-swift/Sources/ProviderCore/ProviderLoop+ModelSelection.swift`); the
+provider logs `desired_models: <model> → <build> is outside the enabled model
+filter; not converging`. With Autopilot enabled, only its lease and set gates can
+admit such a build. A `cluster_member`
 connection is offered no entries and receives only the empty set; a nonempty set
 is refused for a member connection or a pair-held device. Source:
 [coordinator/registry/model_commands.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/registry/model_commands.go) (`DesiredModelsForProvider`, `RefreshDesiredModels`).

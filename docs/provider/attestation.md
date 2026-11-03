@@ -1,6 +1,6 @@
 # Reaching and keeping `hardware` trust
 
-> Last updated: 2026-10-13
+> Last updated: 2026-11-02
 
 How to check provider verification and retain legacy `hardware` trust where
 eligible. New providers require macOS 27 or later and current qualified App
@@ -98,6 +98,14 @@ when idle; see the [thresholds and limits](../reference/app-attest-shadow.md#bou
 The log line starts with `App Attest: Apple operation stalled`. An explicit
 `darkbloom restart` uses the same graceful lifecycle; it is not instant or proof
 that Apple will accept the next call.
+
+After a self-update, some macOS 27 Macs report App Attest as unsupported
+(`is_supported_false`) although it worked before. If the coordinator granted
+this Mac App Attest in the last 7 days and launchd runs the provider, the
+provider restarts once through launchd when the state lasts 5 minutes and the
+provider is idle. This restart shares the stall restart's limit of one per 6
+hours. The log line starts with `App Attest: isSupported is false`. See the
+[thresholds and limits](../reference/app-attest-shadow.md#bounds-and-credential-lifecycle).
 
 The separate [supervised worker candidate](../architecture/security/identity-binding.md#supervised-app-attest-worker-candidate)
 is internal, defaults off and is **not ready for production**. It retires the

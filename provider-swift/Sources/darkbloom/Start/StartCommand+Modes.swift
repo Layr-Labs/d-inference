@@ -376,6 +376,8 @@ extension Start {
         await TelemetryClient.shared.shutdown()
     }
 
+    /// A provider that launchd runs relaunches through launchd, as the
+    /// background update does; a foreground provider keeps the in-place exec.
     private func runStartupAutoUpdate(coordinatorURL: String) async throws {
         if ProcessInfo.processInfo.environment["DARKBLOOM_NO_UPDATE_CHECK"] != nil {
             return
@@ -391,7 +393,7 @@ extension Start {
                 try updater.prepareCandidateLaunch(
                     operation: "startup-update-exec"
                 )
-                try ProcessLifecycle.execCurrentProcess()
+                try ProcessLifecycle.restartAfterUpdate()
             } catch {
                 try? updater.cancelPendingCandidateAttempt(
                     operation: "startup-exec-failure")
@@ -403,7 +405,7 @@ extension Start {
                 try updater.prepareCandidateLaunch(
                     operation: "startup-candidate-exec"
                 )
-                try ProcessLifecycle.execCurrentProcess()
+                try ProcessLifecycle.restartAfterUpdate()
             } catch {
                 try? updater.cancelPendingCandidateAttempt(
                     operation: "startup-exec-failure")

@@ -27,6 +27,11 @@ private func lifecycleClient(url: String, state: ProviderState) -> CoordinatorCl
 
 private extension ProviderLoop {
     func installAppAttestWorker(_ worker: any AppAttestWorkerExchangeClient) { appAttestWorkerClient = worker }
+    /// Fakes only the launchd boundary and Apple's live `isSupported`.
+    func setAppAttestRestartSeams(route: ProcessLifecycle.RelaunchRoute, supported: Bool) {
+        appAttestRelaunchRoute = { route }
+        appAttestSupportProbe = { supported }
+    }
     func holdLifecycleRequests(_ ids: Set<String>) { acceptedLifecycleRequests.formUnion(ids) }
     func completeLifecycleRequest(_ id: String) { acceptedLifecycleRequests.remove(id) }
     func installCancellableLifecycleRequest(_ id: String) {
@@ -284,5 +289,113 @@ struct ProviderLifecycleTests {
         #expect(!result.coordinatorAcknowledged)
         let barrier = try await mock.waitForSnapshot(timeout: .seconds(5)) { !$0.drainBarriers.isEmpty }
         #expect(barrier != nil)
+    }
+}
+
+private func unsupportedReady(profileExpired: Bool? = false) -> AppAttestLocalStatus {
+    AppAttestLocalStatus(observedAt: 0, launchSession: .gui, availabilityReason: .isSupportedFalse,
+                         process: AppAttestProcessDiagnostics(preflight: AppAttestPreflight(profileExpired: profileExpired)))
+}
+
+private func appAttestGrant(expiresAt: Double, path: String = "app_attest") -> ProviderAuthorizationStatus {
+    ProviderAuthorizationStatus(appAttestAvailable: true, path: path, expiresAt: expiresAt,
+                                sessionID: "connection", machineID: "machine")
+}
+
+/// Whole seconds, so dates survive the JSON marker unchanged.
+private func wholeSecondsNow() -> Date { Date(timeIntervalSince1970: Date().timeIntervalSince1970.rounded(.down)) }
+
+@Suite("App Attest unsupported restart")
+struct AppAttestUnsupportedRestartTests {
+    @Test func unsupportedOnAVerifiedLaunchdMacBecomesATriggerUntilAppleAnswersSupported() async throws {
+        let (loop, root) = try await lifecycleLoop()
+        defer { try? FileManager.default.removeItem(at: root) }
+        await loop.setAppAttestRestartSeams(route: .launchd, supported: false)
+        let start = wholeSecondsNow()
+        // An earlier coordinator grant on this Mac is the evidence of verification.
+        await loop.handleTrustStatus(trustLevel: "self_signed", status: "online", reason: "",
+                                     authorization: appAttestGrant(expiresAt: start.timeIntervalSince1970 + 900),
+                                     receivedAt: start.timeIntervalSince1970)
+        #expect(AppAttestVerifiedMarker(directory: root).lastVerified() == start)
+
+        await loop.noteAppAttestAvailability(unsupportedReady(), now: start)
+        #expect(await loop.appAttestUnsupportedSince == start)
+        // A later unsupported `ready` keeps the first observation.
+        await loop.noteAppAttestAvailability(unsupportedReady(), now: start.addingTimeInterval(60))
+        #expect(await loop.appAttestUnsupportedSince == start)
+
+        let due = AppAttestStallRestartPolicy.unsupportedThreshold
+        let trigger = await loop.appAttestRestartTrigger(heldSince: nil, now: start.addingTimeInterval(due))
+        #expect(trigger == .unsupported(seconds: Int(due)))
+        #expect(AppAttestStallRestartPolicy.decide(trigger: trigger, inferenceActive: false, lifecycleBusy: false,
+            lastRestartAt: nil, retryDeferred: false, now: start.addingTimeInterval(due)) == .restart)
+        // An unanswered Apple call outranks it: that is the stall restart.
+        #expect(await loop.appAttestRestartTrigger(heldSince: start, now: start.addingTimeInterval(due))
+                == .stalled(seconds: Int(due)))
+
+        // Apple answers supported again inside the same process: no restart.
+        await loop.setAppAttestRestartSeams(route: .launchd, supported: true)
+        #expect(await loop.appAttestRestartTrigger(heldSince: nil, now: start.addingTimeInterval(due)) == nil)
+        #expect(await loop.appAttestUnsupportedSince == nil)
+        await loop.cancelAppAttestStallMonitor()
+    }
+
+    @Test func unsupportedNeverArmsWithoutVerificationLaunchdOrAValidProfile() async throws {
+        let (loop, root) = try await lifecycleLoop()
+        defer { try? FileManager.default.removeItem(at: root) }
+        await loop.setAppAttestRestartSeams(route: .launchd, supported: false)
+        let start = wholeSecondsNow()
+
+        // Never verified: this Mac may not support App Attest at all.
+        await loop.noteAppAttestAvailability(unsupportedReady(), now: start)
+        #expect(await loop.appAttestUnsupportedSince == nil)
+        #expect(await loop.appAttestRestartTrigger(heldSince: nil, now: start.addingTimeInterval(3600)) == nil)
+
+        // A legacy path or an expired lease is not verification.
+        await loop.handleTrustStatus(trustLevel: "self_signed", status: "online", reason: "",
+            authorization: appAttestGrant(expiresAt: start.timeIntervalSince1970 + 900, path: "legacy"),
+            receivedAt: start.timeIntervalSince1970)
+        await loop.handleTrustStatus(trustLevel: "self_signed", status: "online", reason: "",
+            authorization: appAttestGrant(expiresAt: start.timeIntervalSince1970 - 1),
+            receivedAt: start.timeIntervalSince1970)
+        #expect(AppAttestVerifiedMarker(directory: root).lastVerified() == nil)
+
+        try AppAttestVerifiedMarker(directory: root).record(start)
+        // A provider that launchd does not run would restart by exec: never for this state.
+        await loop.setAppAttestRestartSeams(route: .exec, supported: false)
+        await loop.noteAppAttestAvailability(unsupportedReady(), now: start)
+        #expect(await loop.appAttestUnsupportedSince == nil)
+
+        // A restart cannot renew an expired provisioning profile.
+        await loop.setAppAttestRestartSeams(route: .launchd, supported: false)
+        await loop.noteAppAttestAvailability(unsupportedReady(profileExpired: true), now: start)
+        #expect(await loop.appAttestUnsupportedSince == nil)
+
+        // Eligible, then a `ready` with any other answer clears it.
+        await loop.noteAppAttestAvailability(unsupportedReady(), now: start)
+        #expect(await loop.appAttestUnsupportedSince == start)
+        await loop.noteAppAttestAvailability(AppAttestLocalStatus(observedAt: 0, launchSession: .gui), now: start)
+        #expect(await loop.appAttestUnsupportedSince == nil)
+        await loop.cancelAppAttestStallMonitor()
+    }
+
+    @Test func verifiedMarkerIsRewrittenAtMostOncePerInterval() async throws {
+        let (loop, root) = try await lifecycleLoop()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let start = wholeSecondsNow()
+        func grant(at date: Date) async {
+            await loop.handleTrustStatus(trustLevel: "self_signed", status: "online", reason: "",
+                authorization: appAttestGrant(expiresAt: date.timeIntervalSince1970 + 900),
+                receivedAt: date.timeIntervalSince1970)
+        }
+        let marker = AppAttestVerifiedMarker(directory: root)
+        await grant(at: start)
+        #expect(marker.lastVerified() == start)
+        // Leases renew every few seconds; the marker does not.
+        await grant(at: start.addingTimeInterval(60))
+        #expect(marker.lastVerified() == start)
+        let later = start.addingTimeInterval(AppAttestVerifiedMarker.refreshInterval)
+        await grant(at: later)
+        #expect(marker.lastVerified() == later)
     }
 }

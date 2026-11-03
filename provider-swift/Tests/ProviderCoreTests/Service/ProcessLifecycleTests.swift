@@ -173,3 +173,14 @@ struct ProcessLifecycleTests {
         output: "disabled services = { \"provider\" => enabled \"watchdog\" => disabled }")
     #expect(modern == ["provider": true, "watchdog": false])
 }
+
+/// A self-update or App Attest restart of a provider that launchd runs goes
+/// through launchd; any other provider keeps the in-place exec.
+@Test func relaunchRouteUsesLaunchdOnlyForTheLaunchdJobItself() {
+    #expect(ProcessLifecycle.RelaunchRoute.decide(agentLoaded: true, launchedByLaunchd: true) == .launchd)
+    // A foreground `start` beside a loaded agent must not hand its work to the agent.
+    #expect(ProcessLifecycle.RelaunchRoute.decide(agentLoaded: true, launchedByLaunchd: false) == .exec)
+    // launchd started this process, but its job was unloaded since: kickstart has no job.
+    #expect(ProcessLifecycle.RelaunchRoute.decide(agentLoaded: false, launchedByLaunchd: true) == .exec)
+    #expect(ProcessLifecycle.RelaunchRoute.decide(agentLoaded: false, launchedByLaunchd: false) == .exec)
+}

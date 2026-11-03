@@ -194,13 +194,15 @@ struct SandboxWorkDiskTests {
             + "== INSTALL\n--json-progress\n--yes\n--disk\n/Volumes/FastSSD\n"))
     }
 
+    /// The installer's refusal of a disk in its plan, on stderr.
+    static let planRefusal = "error: /Volumes/FastSSD is a disk image; use a drive"
+
     @Test("a work disk the installer refuses in its plan: setup shows the installer's fix and keeps its exit status")
     func planRefusesDisk() async throws {
-        let refusal = "error: /Volumes/FastSSD is a disk image; use a drive"
         let result = try await #require(processExitsWith: .exitCode(2), observing: [\.standardOutputContent]) {
             let sandbox = try CLICommandSandbox.enter(autoRestart: false)
             CoordinatorStub.install(["/install.sh": .init(status: 200, body: Data(FakeSandboxInstaller.script(
-                plan: [], planExitStatus: 2, planStandardError: refusal, workDisks: true).utf8))])
+                plan: [], planExitStatus: 2, planStandardError: Self.planRefusal, workDisks: true).utf8))])
             await exitWithCommandStatus {
                 defer {
                     let installed = sandbox.sandboxAddonRoot.appendingPathComponent("installer-arguments")
@@ -215,7 +217,7 @@ struct SandboxWorkDiskTests {
         #expect(decodedText(result.standardOutputContent).hasSuffix("""
               [PASS] Work disk: /Volumes/FastSSD: APFS, ownership on
 
-              \(refusal)
+              \(Self.planRefusal)
             The installer's plan failed with these work disks; fix what it says above, then run setup again. \
             Nothing changed.
             installed false

@@ -29,26 +29,26 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: before13
-            filter: '^(ProviderCoreTests[./](NemotronSuperManagedSlotTests|PagedFootprintTelemetryTests|PrefixCacheEvidenceSequencerTests|ProcessLifecycleTests|PromptTokenCacheTests|ProviderLoopCalibrationTests|ProviderRunMarkerTests|ProviderRuntimeCapabilityTests|Qwen35CBv2FixedRequestAccountingTests|Qwen35TemplateFixesTests|Qwen4PagingPrefixIntegrationTests|RuntimeMetallibTemporaryDirectoryTests|UnitTests|WatchdogLaunchAdapterTests))([./]|$)'
           - name: nemotron-slot
-            filter: '^(ProviderCoreTests[./](NemotronSuperManagedSlotTests|Qwen4PagingPrefixIntegrationTests))([./]|$)'
-          - name: metallib-tmpdir
-            filter: '^(ProviderCoreTests[./](Qwen4PagingPrefixIntegrationTests|RuntimeMetallibTemporaryDirectoryTests))([./]|$)'
-          - name: unit-tests
-            filter: '^(ProviderCoreTests[./](Qwen4PagingPrefixIntegrationTests|UnitTests))([./]|$)'
-          - name: watchdog-adapter
-            filter: '^(ProviderCoreTests[./](Qwen4PagingPrefixIntegrationTests|WatchdogLaunchAdapterTests))([./]|$)'
-          - name: qwen35-fixed
-            filter: '^(ProviderCoreTests[./](Qwen35CBv2FixedRequestAccountingTests|Qwen4PagingPrefixIntegrationTests))([./]|$)'
-          - name: rest-a
-            filter: '^(ProviderCoreTests[./](PagedFootprintTelemetryTests|PrefixCacheEvidenceSequencerTests|ProcessLifecycleTests|ProviderRuntimeCapabilityTests|Qwen4PagingPrefixIntegrationTests))([./]|$)'
-          - name: rest-b
-            filter: '^(ProviderCoreTests[./](PromptTokenCacheTests|ProviderLoopCalibrationTests|ProviderRunMarkerTests|Qwen35TemplateFixesTests|Qwen4PagingPrefixIntegrationTests))([./]|$)'
+            filter: '^(ProviderCoreTests[./]NemotronSuperManagedSlotTests|ProviderCoreTests[./]Qwen4PagingPrefixIntegrationTests)([./]|$)'
+            skip: ''
+          - name: wedge-both
+            filter: '^(ProviderCoreTests[./]NemotronSuperManagedSlotTests/(confirmedWedgeRetiresTheSlotOffTheCapacityTick|wedgedRetirementPastItsBoundIsARetainedFault)|ProviderCoreTests[./]Qwen4PagingPrefixIntegrationTests)([./(]|$)'
+            skip: ''
+          - name: wedge-confirmed
+            filter: '^(ProviderCoreTests[./]NemotronSuperManagedSlotTests/confirmedWedgeRetiresTheSlotOffTheCapacityTick|ProviderCoreTests[./]Qwen4PagingPrefixIntegrationTests)([./(]|$)'
+            skip: ''
+          - name: wedge-retained
+            filter: '^(ProviderCoreTests[./]NemotronSuperManagedSlotTests/wedgedRetirementPastItsBoundIsARetainedFault|ProviderCoreTests[./]Qwen4PagingPrefixIntegrationTests)([./(]|$)'
+            skip: ''
+          - name: nemotron-no-wedge
+            filter: '^(ProviderCoreTests[./]NemotronSuperManagedSlotTests|ProviderCoreTests[./]Qwen4PagingPrefixIntegrationTests)([./]|$)'
+            skip: 'confirmedWedgeRetiresTheSlotOffTheCapacityTick|wedgedRetirementPastItsBoundIsARetainedFault'
     env:
       DARKBLOOM_RELEASE_ENVIRONMENT: prod
       BISECT_NAME: ${{ matrix.name }}
       BISECT_FILTER: ${{ matrix.filter }}
+      BISECT_SKIP: ${{ matrix.skip }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:

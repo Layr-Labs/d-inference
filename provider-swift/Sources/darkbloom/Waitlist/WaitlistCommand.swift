@@ -2,9 +2,9 @@ import ArgumentParser
 import Foundation
 import ProviderCore
 
-/// `darkbloom waitlist [<name> [status|join]]`: the waitlists of the
-/// coordinator's catalog. Without a name it lists them; with one it shows the
-/// account's place on that waitlist, or joins it.
+/// `darkbloom waitlist [<name>]`: the waitlists of the coordinator's catalog,
+/// which an account joins, not a Mac. Without a name it lists them; with one
+/// it puts the account on that waitlist and shows where it stands.
 
 /// The calls to the coordinator's waitlists. `live` asks the coordinator of
 /// this Mac's provider configuration with its login token; tests replace the
@@ -16,9 +16,8 @@ struct FeatureWaitlistAccess: Sendable {
     var waitlists: @Sendable () async -> Result<FeatureWaitlists, FeatureWaitlistProblem>
     /// The account's place on the waitlist `feature`.
     var place: @Sendable (_ feature: String) async -> FeatureWaitlistLookup
-    /// Joins the waitlist `feature`: with this Mac's chip and memory and
-    /// `macCount` when it is set, else naming no Mac.
-    var join: @Sendable (_ feature: String, _ macCount: Int?) async -> FeatureWaitlistLookup
+    /// Puts the account on the waitlist `feature`.
+    var join: @Sendable (_ feature: String) async -> FeatureWaitlistLookup
 
     /// The waitlists of the coordinator of the provider configuration at
     /// `configPath`, or of the default one.
@@ -39,22 +38,13 @@ struct FeatureWaitlistAccess: Sendable {
             coordinator: httpBase,
             waitlists: { await client.waitlists() },
             place: { feature in await client.place(feature) },
-            join: { feature, macCount in
-                await client.join(feature, macCount.map { thisMac(macCount: $0) } ?? FeatureWaitlistRequest())
-            })
+            join: { feature in await client.join(feature) })
     }
 
     private static func failing(_ coordinator: String, _ reason: String) -> FeatureWaitlistAccess {
         let problem = FeatureWaitlistProblem.unavailable(reason)
         return FeatureWaitlistAccess(coordinator: coordinator, waitlists: { .failure(problem) },
-                                     place: { _ in .failure(problem) }, join: { _, _ in .failure(problem) })
-    }
-
-    /// The Mac a join names: its chip and memory, as `darkbloom doctor` reads
-    /// them, and the Mac count. A Mac that cannot be read sends the count.
-    private static func thisMac(macCount: Int) -> FeatureWaitlistRequest {
-        let hardware = try? HardwareDetector.detect()
-        return FeatureWaitlistRequest(chip: hardware?.chipName, memoryGB: hardware.map { Int($0.memoryGb) }, macCount: macCount)
+                                     place: { _ in .failure(problem) }, join: { _ in .failure(problem) })
     }
 }
 
@@ -75,27 +65,18 @@ struct FeatureWaitlistCommand {
         try printDocument(waitlists)
     }
 
-    /// The account's place on the waitlist `name` names, as the list
-    /// answers it.
-    func status(_ name: String) async throws {
-        try show(try await waitlist(named: name), name: name)
-    }
-
-    /// Joins the waitlist `name` names, naming this Mac when it asks for
-    /// Macs. A revoked account is shown its state but did not join, so the
-    /// command fails.
-    func join(_ name: String, macs: Int?) async throws {
+    /// Puts the account on the waitlist `name` names and shows where it
+    /// stands. The coordinator keeps a place the account already has and
+    /// leaves an approved or revoked account as it is; a revoked account is
+    /// shown its state but is not on the waitlist, so the command fails.
+    func join(_ name: String) async throws {
         let waitlist = try await waitlist(named: name)
-        let macCount: Int?
-        do {
-            macCount = try waitlist.joinMacCount(macs)
-        } catch {
-            // The refusal names the waitlist by the coordinator's title.
-            printError(FeatureWaitlistView.printable("\(error)"))
-            throw ExitCode.validationFailure
+        let place = try answer(await access.join(waitlist.feature), title: waitlist.title)
+        if json {
+            try printDocument(place)
+        } else {
+            view.lines(place, name: name.lowercased()).forEach { print($0) }
         }
-        let place = try answer(await access.join(waitlist.feature, macCount), title: waitlist.title)
-        try show(place, name: name)
         if place.status == .revoked { throw ExitCode.failure }
     }
 
@@ -122,14 +103,6 @@ struct FeatureWaitlistCommand {
         }
     }
 
-    private func show(_ place: FeatureWaitlistPlace, name: String) throws {
-        guard json else {
-            view.lines(place, name: name.lowercased()).forEach { print($0) }
-            return
-        }
-        try printDocument(place)
-    }
-
     /// The coordinator's answer as JSON, times in ISO 8601, with no control
     /// or format character written raw.
     private func printDocument(_ document: some Encodable) throws {
@@ -154,53 +127,31 @@ extension FeatureWaitlistCommand {
 /// coordinator lists them, so the names are arguments, not subcommands.
 struct Waitlist: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
-        abstract: "List the waitlists Darkbloom approves accounts from, join one, or see where you stand.",
+        abstract: "List the waitlists Darkbloom approves accounts from, or join one.",
         discussion: """
         Darkbloom opens some features, such as clusters and Darkbloom Sandbox, to the accounts it approves \
-        from a waitlist; the coordinator lists the waitlists. Without a name, this command shows each one and \
-        where your account stands. With a name, it shows your place on that waitlist, or joins it with \
-        `join`. Use a Mac linked to your account (`\(BuildEnvironment.current.cliName) login`); \
+        from a waitlist; the coordinator lists the waitlists. A waitlist is for your account, not for a Mac: \
+        joining sends nothing about this Mac. Without a name, this command shows each waitlist and where your \
+        account stands. With a name, it puts your account on that waitlist and shows where it stands; running \
+        it again keeps your place. Use a Mac linked to your account (`\(BuildEnvironment.current.cliName) login`); \
         `\(BuildEnvironment.current.cliName) sandbox setup` installs nothing until Darkbloom approves the account.
 
         Examples:
           \(BuildEnvironment.current.cliName) waitlist
-          \(BuildEnvironment.current.cliName) waitlist clusters join --macs 3
+          \(BuildEnvironment.current.cliName) waitlist cluster
           \(BuildEnvironment.current.cliName) waitlist sandbox
         """)
 
-    enum Action: String, CaseIterable, ExpressibleByArgument, Sendable {
-        case status
-        case join
-    }
-
     @Argument(help: ArgumentHelp(
-        "The waitlist's id, as the list shows it in parentheses, or its plural (such as clusters or sandbox). "
+        "The waitlist to join, by its id as the list shows it in parentheses, such as cluster or sandbox. "
             + "Without one, lists every waitlist.",
         valueName: "name"))
     var name: String?
-
-    @Argument(help: ArgumentHelp("status shows where you stand; join joins the waitlist.", valueName: "action"))
-    var action: Action = .status
-
-    @Option(help: ArgumentHelp(
-        "How many Macs you plan to use, for a waitlist that asks. Default: the fewest it takes.", valueName: "n"))
-    var macs: Int?
 
     @Flag(help: "Print the coordinator's answer as JSON.")
     var json = false
 
     @OptionGroup var configOptions: ConfigOptions
-
-    /// The range of `--macs` comes from the coordinator, so `join` checks it
-    /// once the list has answered.
-    func validate() throws {
-        guard let macs else { return }
-        // `waitlist join --macs 3` reads `join` as the name: show the order.
-        guard action == .join else {
-            throw ValidationError("--macs applies only to join: \(BuildEnvironment.current.cliName) waitlist <name> join --macs <n>")
-        }
-        guard macs >= 1 else { throw ValidationError("--macs must be at least 1") }
-    }
 
     mutating func run() async throws {
         Darkbloom.ensureLogging()
@@ -209,9 +160,6 @@ struct Waitlist: AsyncParsableCommand {
             try await command.list()
             return
         }
-        switch action {
-        case .status: try await command.status(name)
-        case .join: try await command.join(name, macs: macs)
-        }
+        try await command.join(name)
     }
 }

@@ -23,14 +23,14 @@ struct FeatureWaitlistView: Sendable {
             if waitlist.status == .approved, let start = start(waitlist) { lines.append("  Start: \(start)") }
         }
         if waitlists.contains(where: { $0.status == .none }) {
-            lines += ["", "Join one: \(cli) waitlist <name> join"]
+            lines += ["", "Join one: \(cli) waitlist <name>"]
         }
         return lines
     }
 
-    /// The account's place, after `darkbloom waitlist <name>`, its `status`
-    /// or its `join`. `name` is the waitlist as the command named it, for the
-    /// commands these lines suggest.
+    /// The account's place, after `darkbloom waitlist <name>` or the
+    /// `sandbox setup` gate. `name` is the waitlist as the command named it,
+    /// for the command these lines suggest.
     func lines(_ place: FeatureWaitlistPlace, name: String) -> [String] {
         let title = Self.printable(place.title)
         switch place.status {
@@ -58,7 +58,7 @@ struct FeatureWaitlistView: Sendable {
     }
 
     /// How to join the waitlist `name`; `sandbox setup` prints it too.
-    func joinLine(_ name: String) -> String { "  Join it: \(cli) waitlist \(name) join" }
+    func joinLine(_ name: String) -> String { "  Join it: \(cli) waitlist \(name)" }
 
     /// Why a waitlist call has no answer to show. `title` names the waitlist
     /// the call was about, and is nil for the list of waitlists.

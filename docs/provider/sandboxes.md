@@ -31,14 +31,14 @@ into your Darkbloom balance.
    account:
 
    ```bash
-   darkbloom waitlist sandbox join
    darkbloom waitlist sandbox
    ```
 
-   The first command joins with this Mac's chip and memory and prints your place
-   in line; the second shows where you stand. Darkbloom reviews accounts in the
-   order they joined. `darkbloom sandbox setup` also offers to join when your
-   account is not on the waitlist, and stops until it is approved.
+   The waitlist is for your account, not for this Mac: the command puts your
+   account on it, sending nothing about this Mac, and prints your place in line.
+   Run it again to see where you stand; it keeps your place. Darkbloom reviews
+   accounts in the order they joined. `darkbloom sandbox setup` also offers to
+   join when your account is not on the waitlist, and stops until it is approved.
 
 2. Check this Mac and set it up:
 

@@ -26,22 +26,20 @@ Remote Login, no IP address and no network setting is typed anywhere.
 
 ## The cluster waitlist
 
-Darkbloom approves accounts for clusters from a waitlist. From either Mac,
-linked to your account with `darkbloom login`, join it and check where you
-stand:
+Darkbloom approves accounts for clusters from a waitlist. The waitlist is for
+your account, not for each Mac: join it once, from either Mac linked to your
+account with `darkbloom login`:
 
 ```bash
-darkbloom waitlist clusters join --macs 2
-darkbloom waitlist clusters
+darkbloom waitlist cluster
 ```
 
-`join` sends this Mac's chip and memory and how many Macs you plan to cluster
-(`--macs`: the cluster waitlist takes 2 to 4, and 2 without the option), and
+It puts your account on the waitlist, sending nothing about your Macs, and
 prints your place in line; Darkbloom reviews accounts in the order they joined
-and approves them by hand. Once approved, `darkbloom waitlist clusters` says so
-and names the command that starts a cluster. `darkbloom waitlist` alone lists
-every waitlist and where you stand on each. The approval is recorded for your
-account; `darkbloom cluster` itself works as before. Details:
+and approves them by hand. Run it again to see where you stand: it keeps your
+place, and once you are approved it says so and names the command that starts
+a cluster. `darkbloom waitlist` alone lists every waitlist and where you stand
+on each. `darkbloom cluster` itself works as before. Details:
 [CLI reference: waitlists](./cli-reference.md#darkbloom-waitlist).
 
 ## The steps, once

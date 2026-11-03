@@ -3,7 +3,8 @@ import Foundation
 /// A waitlist of the coordinator's catalog and the account's place on it, as
 /// `GET /v1/waitlists/{feature}` answers it. Darkbloom opens a feature to the
 /// accounts it approves from the feature's waitlist, and the coordinator's
-/// catalog is the only list of waitlists: the CLI knows none by itself.
+/// catalog is the only list of waitlists: the CLI knows none by itself. The
+/// place is the account's, not a Mac's.
 struct FeatureWaitlistPlace: Codable, Equatable, Sendable {
     enum Status: String, Codable, Sendable {
         /// The account has not joined, and no admin decided on it.
@@ -11,12 +12,6 @@ struct FeatureWaitlistPlace: Codable, Equatable, Sendable {
         case waitlisted
         case approved
         case revoked
-    }
-
-    /// How many Macs a join may name.
-    struct MacCount: Codable, Equatable, Sendable {
-        let min: Int
-        let max: Int
     }
 
     /// The waitlist's id in the coordinator's URLs, such as `cluster`.
@@ -27,48 +22,19 @@ struct FeatureWaitlistPlace: Codable, Equatable, Sendable {
     /// What an approved account runs, such as `darkbloom cluster`; absent
     /// when the waitlist has none.
     let startCommand: String?
-    /// Absent when the waitlist asks for no Mac: a join then names none.
-    let macCount: MacCount?
     let status: Status
     /// The account's place in line while it is waitlisted.
     let position: Int?
     let requestedAt: Date?
     let decidedAt: Date?
 
+    /// The answer's other fields are skipped, so `--json` leaves them out.
     enum CodingKeys: String, CodingKey {
         case feature, title, summary, status, position
         case startCommand = "start_command"
-        case macCount = "mac_count"
         case requestedAt = "requested_at"
         case decidedAt = "decided_at"
     }
-
-    /// The Mac count a join of this waitlist names: `macs`, by default the
-    /// fewest the waitlist takes, or nil for a waitlist that asks for no Mac.
-    func joinMacCount(_ macs: Int?) throws -> Int? {
-        guard let range = macCount else {
-            guard macs == nil else {
-                throw FeatureWaitlistMacsRefusal("--macs does not apply to the \(title) waitlist: it asks for no Mac.")
-            }
-            return nil
-        }
-        let count = macs ?? range.min
-        // Compared, not made a ClosedRange: a range the coordinator got wrong
-        // must not trap.
-        guard count >= range.min, count <= range.max else {
-            throw FeatureWaitlistMacsRefusal(range.min == range.max
-                ? "--macs must be \(range.min) for the \(title) waitlist."
-                : "--macs must be between \(range.min) and \(range.max) for the \(title) waitlist.")
-        }
-        return count
-    }
-}
-
-/// `--macs` outside what a waitlist takes.
-struct FeatureWaitlistMacsRefusal: Error, Equatable, CustomStringConvertible {
-    let description: String
-
-    init(_ description: String) { self.description = description }
 }
 
 /// Every waitlist of the coordinator's catalog, in its order, with the
@@ -84,21 +50,6 @@ struct FeatureWaitlists: Codable, Equatable, Sendable {
         if let exact = data.first(where: { $0.feature.lowercased() == name }) { return exact }
         let plurals = data.filter { [$0.feature.lowercased() + "s", $0.feature.lowercased() + "es"].contains(name) }
         return plurals.count == 1 ? plurals[0] : nil
-    }
-}
-
-/// What an account tells the coordinator when it joins. A waitlist that asks
-/// for Macs gets the Mac the account joins from and how many Macs it plans to
-/// use; another gets nothing (`{}`).
-struct FeatureWaitlistRequest: Codable, Equatable, Sendable {
-    var chip: String? = nil
-    var memoryGB: Int? = nil
-    var macCount: Int? = nil
-
-    enum CodingKeys: String, CodingKey {
-        case chip
-        case memoryGB = "memory_gb"
-        case macCount = "mac_count"
     }
 }
 
@@ -154,11 +105,12 @@ struct FeatureWaitlistClient: Sendable {
         await call("v1/waitlists/\(feature)", method: "GET", body: nil)
     }
 
-    /// Joins the waitlist `feature`. An account already on it keeps its
-    /// place; an approved or revoked account is answered as it is.
-    func join(_ feature: String, _ request: FeatureWaitlistRequest) async -> FeatureWaitlistLookup {
-        guard let body = try? JSONEncoder().encode(request) else { return .failure(.unavailable("could not encode the request")) }
-        return await call("v1/waitlists/\(feature)", method: "POST", body: body)
+    /// Puts the account on the waitlist `feature`. The body is `{}`: a join
+    /// names the account by its token and tells nothing about this Mac. An
+    /// account already on it keeps its place; an approved or revoked account
+    /// is answered as it is.
+    func join(_ feature: String) async -> FeatureWaitlistLookup {
+        await call("v1/waitlists/\(feature)", method: "POST", body: Data("{}".utf8))
     }
 
     private func call<Answer: Decodable>(_ path: String, method: String, body: Data?) async -> Result<Answer, FeatureWaitlistProblem> {

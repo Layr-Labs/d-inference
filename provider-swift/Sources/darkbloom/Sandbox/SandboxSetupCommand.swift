@@ -170,9 +170,9 @@ struct SandboxSetupFlow {
     /// Darkbloom Sandbox is open to the accounts Darkbloom approves from its
     /// waitlist, so a first setup goes on only for an approved account, or
     /// when the coordinator has no such waitlist (404, as before waitlists).
-    /// An account that is not on the waitlist may join it here, naming the
-    /// Macs the waitlist asks for; nothing is installed until Darkbloom
-    /// approves it.
+    /// An account that is not on the waitlist may join it here, as
+    /// `darkbloom waitlist sandbox` does; nothing is installed until
+    /// Darkbloom approves it.
     private func requireApproval() async throws {
         let view = FeatureWaitlistView(cli: cli, coordinator: waitlist.coordinator)
         let feature = Self.waitlistFeature
@@ -186,7 +186,7 @@ struct SandboxSetupFlow {
                 print(view.joinLine(feature))
                 throw ExitCode.failure
             }
-            lookup = await waitlist.join(feature, place.macCount?.min)
+            lookup = await waitlist.join(feature)
         }
         switch lookup {
         case .failure(.notOffered):

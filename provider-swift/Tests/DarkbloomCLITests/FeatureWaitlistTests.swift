@@ -8,15 +8,14 @@ import Testing
 extension FeatureWaitlistAccess {
     /// Answers the place of every waitlist with `place`, the list with that
     /// one place, and a join with `joined` (or `place`), asking no
-    /// coordinator. A join prints `joined <feature> <mac count>`, with `none`
-    /// for a join that names no Mac.
+    /// coordinator. A join prints `joined <feature>`.
     static func answering(_ place: FeatureWaitlistLookup, joined: FeatureWaitlistLookup? = nil) -> FeatureWaitlistAccess {
         FeatureWaitlistAccess(
             coordinator: CLICommandSandbox.coordinatorURL,
             waitlists: { place.map { FeatureWaitlists(data: [$0]) } },
             place: { _ in place },
-            join: { feature, macCount in
-                print("joined \(feature) \(macCount.map { "\($0)" } ?? "none")")
+            join: { feature in
+                print("joined \(feature)")
                 return joined ?? place
             })
     }
@@ -59,19 +58,19 @@ private func waitlistRequests() -> String {
 @Suite("darkbloom waitlist")
 struct FeatureWaitlistTests {
     /// `GET /v1/waitlists` with the coordinator's catalog, plus a third
-    /// waitlist that asks for no Mac and has no start command.
+    /// waitlist without a start command.
     static let catalog = #"""
-    {"data":[{"feature":"cluster","title":"Clusters","summary":"Serve one model with two to four of your Macs.","start_command":"darkbloom cluster","mac_count":{"min":2,"max":4},"status":"none"},{"feature":"sandbox","title":"Darkbloom Sandbox","summary":"Run Darkbloom Sandbox CI jobs on your Mac.","start_command":"darkbloom sandbox setup","mac_count":{"min":1,"max":1},"status":"waitlisted","position":3,"requested_at":"2026-10-30T03:10:00.123456Z"},{"feature":"research","title":"Research previews","summary":"Try models before they ship.","status":"none"}]}
+    {"data":[{"feature":"cluster","title":"Clusters","summary":"Serve one model with two to four of your Macs.","start_command":"darkbloom cluster","status":"none"},{"feature":"sandbox","title":"Darkbloom Sandbox","summary":"Run Darkbloom Sandbox CI jobs on your Mac.","start_command":"darkbloom sandbox setup","status":"waitlisted","position":3,"requested_at":"2026-10-30T03:10:00.123456Z"},{"feature":"research","title":"Research previews","summary":"Try models before they ship.","status":"none"}]}
     """#
 
     static func place(_ feature: String, _ title: String, _ status: FeatureWaitlistPlace.Status = .none,
                       position: Int? = nil, requested: Date? = nil, decided: Date? = nil, start: String? = nil,
-                      macs: FeatureWaitlistPlace.MacCount? = nil, summary: String? = nil) -> FeatureWaitlistPlace {
-        FeatureWaitlistPlace(feature: feature, title: title, summary: summary, startCommand: start, macCount: macs,
-                             status: status, position: position, requestedAt: requested, decidedAt: decided)
+                      summary: String? = nil) -> FeatureWaitlistPlace {
+        FeatureWaitlistPlace(feature: feature, title: title, summary: summary, startCommand: start, status: status,
+                             position: position, requestedAt: requested, decidedAt: decided)
     }
 
-    static let cluster = place("cluster", "Clusters", start: "darkbloom cluster", macs: .init(min: 2, max: 4),
+    static let cluster = place("cluster", "Clusters", start: "darkbloom cluster",
                                summary: "Serve one model with two to four of your Macs.")
     static let research = place("research", "Research previews", summary: "Try models before they ship.")
 
@@ -79,7 +78,7 @@ struct FeatureWaitlistTests {
     /// coordinator's catalog describes that waitlist.
     static func sandbox(_ status: FeatureWaitlistPlace.Status, position: Int? = nil) -> FeatureWaitlistLookup {
         .success(place("sandbox", "Darkbloom Sandbox", status, position: position, start: "darkbloom sandbox setup",
-                       macs: .init(min: 1, max: 1), summary: "Run Darkbloom Sandbox CI jobs on your Mac."))
+                       summary: "Run Darkbloom Sandbox CI jobs on your Mac."))
     }
 
     static let day: @Sendable (Date) -> String = { _ in "Oct 29, 2026" }
@@ -97,19 +96,15 @@ struct FeatureWaitlistTests {
 
     // MARK: - Arguments
 
-    @Test("darkbloom waitlist takes an optional name and action, and --macs only with join")
+    @Test("darkbloom waitlist takes an optional name, --json and --config, and no action or Mac count")
     func parsing() throws {
         let list = try #require(try Darkbloom.parseAsRoot(["waitlist"]) as? Waitlist)
-        #expect(list.name == nil && list.action == .status && list.macs == nil && !list.json)
+        #expect(list.name == nil && !list.json)
         #expect(try #require(try Darkbloom.parseAsRoot(["waitlist", "--json"]) as? Waitlist).json)
-        let join = try #require(try Darkbloom.parseAsRoot(["waitlist", "clusters", "join", "--macs", "3", "--json"]) as? Waitlist)
-        #expect(join.name == "clusters" && join.action == .join && join.macs == 3 && join.json)
-        let status = try #require(try Darkbloom.parseAsRoot(["waitlist", "sandbox", "status", "--config", "/tmp/provider.toml"])
+        let join = try #require(try Darkbloom.parseAsRoot(["waitlist", "cluster", "--json", "--config", "/tmp/provider.toml"])
             as? Waitlist)
-        #expect(status.name == "sandbox" && status.action == .status && status.configOptions.config == "/tmp/provider.toml")
-        #expect(try #require(try Darkbloom.parseAsRoot(["waitlist", "research", "join"]) as? Waitlist).macs == nil)
-        for invalid in [["clusters", "leave"], ["clusters", "--macs", "3"], ["--macs", "2"], ["clusters", "join", "--macs", "0"],
-                        ["clusters", "join", "extra"]] {
+        #expect(join.name == "cluster" && join.json && join.configOptions.config == "/tmp/provider.toml")
+        for invalid in [["cluster", "join"], ["sandbox", "status"], ["cluster", "--macs", "2"], ["--macs", "2"]] {
             #expect(throws: (any Error).self, "\(invalid)") { try Waitlist.parse(invalid) }
         }
         // The cluster and sandbox groups keep their own commands.
@@ -117,15 +112,17 @@ struct FeatureWaitlistTests {
         #expect(try Darkbloom.parseAsRoot(["sandbox", "status"]) is Sandbox.Status)
     }
 
-    @Test("darkbloom waitlist's help names the arguments; the cluster and sandbox groups list no waitlist")
+    @Test("darkbloom waitlist's help names the arguments and joins by id; the sandbox group says how to join")
     func help() {
         let waitlist = Darkbloom.helpMessage(for: Waitlist.self, columns: 1_000)
-        #expect(waitlist.contains("waitlist [<name>] [<action>] [--macs <n>] [--json] [--config <config>]"))
-        #expect(waitlist.contains("(values: status, join; default: status)"))
+        #expect(waitlist.contains("waitlist [<name>] [--json] [--config <config>]"))
+        #expect(waitlist.contains("\n  \(Sandbox.cli) waitlist cluster\n  \(Sandbox.cli) waitlist sandbox\n"))
+        #expect(!waitlist.contains("<action>") && !waitlist.contains("--macs"))
         #expect(!Darkbloom.helpMessage(for: Cluster.self, columns: 1_000).contains("\n  waitlist "))
         let sandbox = Darkbloom.helpMessage(for: Sandbox.self, columns: 1_000)
         #expect(!sandbox.contains("\n  waitlist "))
-        #expect(sandbox.contains("Darkbloom Sandbox is open to the accounts Darkbloom approves from its waitlist"))
+        #expect(sandbox.contains("Darkbloom Sandbox is open to the accounts Darkbloom approves from its waitlist: "
+            + "join it with `\(Sandbox.cli) waitlist sandbox`."))
     }
 
     // MARK: - Catalog
@@ -147,43 +144,24 @@ struct FeatureWaitlistTests {
         #expect(shared.named("boxes") == nil && shared.named("box")?.title == "Boxes" && shared.named("boxe")?.title == "Boxe")
     }
 
-    @Test("--macs defaults to the fewest a waitlist takes and stays in its range; a waitlist without one takes none")
-    func macs() throws {
-        #expect(try Self.cluster.joinMacCount(nil) == 2)
-        #expect(try Self.cluster.joinMacCount(4) == 4)
-        for outside in [1, 5] {
-            #expect(throws: FeatureWaitlistMacsRefusal("--macs must be between 2 and 4 for the Clusters waitlist.")) {
-                try Self.cluster.joinMacCount(outside)
-            }
-        }
-        let sandbox = try Self.sandbox(.none).get()
-        #expect(try sandbox.joinMacCount(nil) == 1)
-        #expect(throws: FeatureWaitlistMacsRefusal("--macs must be 1 for the Darkbloom Sandbox waitlist.")) { try sandbox.joinMacCount(2) }
-        #expect(try Self.research.joinMacCount(nil) == nil)
-        #expect(throws: FeatureWaitlistMacsRefusal("--macs does not apply to the Research previews waitlist: it asks for no Mac.")) {
-            try Self.research.joinMacCount(2)
-        }
-        // A range the coordinator got backwards refuses every count instead of trapping.
-        #expect(throws: FeatureWaitlistMacsRefusal.self) { try Self.place("odd", "Odd", macs: .init(min: 3, max: 2)).joinMacCount(nil) }
-    }
-
     // MARK: - Client
 
     @Test("each answer of the coordinator becomes a place, the list or a problem")
     func answers() throws {
         let waitlisted = try FeatureWaitlistClient.answer(status: 200, body: Data(
-            #"{"feature":"cluster","title":"Clusters","summary":"Serve one model with two to four of your Macs.","start_command":"darkbloom cluster","mac_count":{"min":2,"max":4},"status":"waitlisted","position":3,"requested_at":"2026-10-30T03:10:00.123456Z"}"#.utf8),
+            #"{"feature":"cluster","title":"Clusters","summary":"Serve one model with two to four of your Macs.","start_command":"darkbloom cluster","status":"waitlisted","position":3,"requested_at":"2026-10-30T03:10:00.123456Z"}"#.utf8),
             as: FeatureWaitlistPlace.self).get()
-        #expect(waitlisted.title == "Clusters" && waitlisted.startCommand == "darkbloom cluster" && waitlisted.macCount == .init(min: 2, max: 4))
+        #expect(waitlisted.title == "Clusters" && waitlisted.startCommand == "darkbloom cluster")
         #expect(waitlisted.status == .waitlisted && waitlisted.position == 3 && waitlisted.requestedAt != nil && waitlisted.decidedAt == nil)
         let approved = try FeatureWaitlistClient.answer(status: 200, body: Data(
             #"{"feature":"research","title":"Research previews","status":"approved","decided_at":"2026-10-30T03:10:00Z"}"#.utf8),
             as: FeatureWaitlistPlace.self).get()
         #expect(approved.status == .approved && approved.decidedAt != nil && approved.position == nil)
-        #expect(approved.summary == nil && approved.startCommand == nil && approved.macCount == nil)
-        // Fields the CLI does not know are left out, and null reads as absent.
+        #expect(approved.summary == nil && approved.startCommand == nil)
+        // Fields the CLI does not know, such as a Mac count or a Mac a
+        // coordinator still sends, are left out, and null reads as absent.
         let extended = try FeatureWaitlistClient.answer(status: 200, body: Data(
-            #"{"feature":"gpu","title":"GPUs","summary":null,"start_command":null,"mac_count":null,"status":"none","counts":{"waitlisted":3},"docs":"gpus"}"#.utf8),
+            #"{"feature":"gpu","title":"GPUs","summary":null,"start_command":null,"mac_count":{"min":2,"max":4},"chip":"Apple M3 Ultra","memory_gb":512,"status":"none","counts":{"waitlisted":3},"docs":"gpus"}"#.utf8),
             as: FeatureWaitlistPlace.self).get()
         #expect(extended == Self.place("gpu", "GPUs"))
         let catalog = try FeatureWaitlistClient.answer(status: 200, body: Data(Self.catalog.utf8), as: FeatureWaitlists.self).get()
@@ -194,8 +172,8 @@ struct FeatureWaitlistTests {
             as: FeatureWaitlistPlace.self) == .failure(.notOffered))
         #expect(FeatureWaitlistClient.answer(status: 401, body: Data(), as: FeatureWaitlistPlace.self) == .failure(.needsLogin))
         #expect(FeatureWaitlistClient.answer(status: 400, body: Data(
-            #"{"error":{"type":"invalid_request_error","message":"mac_count must be from 2 to 4"}}"#.utf8),
-            as: FeatureWaitlistPlace.self) == .failure(.unavailable("HTTP 400: mac_count must be from 2 to 4")))
+            #"{"error":{"type":"invalid_request_error","message":"body must be empty or {}"}}"#.utf8),
+            as: FeatureWaitlistPlace.self) == .failure(.unavailable("HTTP 400: body must be empty or {}")))
         // A place without the catalog's title is not the coordinator's answer.
         for unreadable in ["not json", #"{"feature":"cluster","status":"none"}"#] {
             #expect(FeatureWaitlistClient.answer(status: 200, body: Data(unreadable.utf8), as: FeatureWaitlistPlace.self)
@@ -214,7 +192,7 @@ struct FeatureWaitlistTests {
         }
     }
 
-    @Test("reads send no body; a join posts what the waitlist asks for, with the login token")
+    @Test("reads send no body; a join posts {} with the login token")
     func requests() async throws {
         let recorded = RecordedRequests()
         let client = FeatureWaitlistClient(base: try #require(URL(string: "https://coordinator.invalid")), token: "eigeninference-pt-1",
@@ -226,18 +204,14 @@ struct FeatureWaitlistTests {
             })
         _ = await client.waitlists()
         _ = await client.place("sandbox")
-        _ = await client.join("cluster", FeatureWaitlistRequest(chip: "Apple M3 Ultra", memoryGB: 512, macCount: 2))
-        _ = await client.join("research", FeatureWaitlistRequest())
-        try #require(recorded.all.count == 4)
-        let (list, read, join, bare) = (recorded.all[0], recorded.all[1], recorded.all[2], recorded.all[3])
+        _ = await client.join("cluster")
+        try #require(recorded.all.count == 3)
+        let (list, read, join) = (recorded.all[0], recorded.all[1], recorded.all[2])
         #expect(list.httpMethod == "GET" && list.url?.absoluteString == "https://coordinator.invalid/v1/waitlists" && list.httpBody == nil)
         #expect(read.httpMethod == "GET" && read.url?.path == "/v1/waitlists/sandbox" && read.httpBody == nil)
         #expect(join.httpMethod == "POST" && join.url?.absoluteString == "https://coordinator.invalid/v1/waitlists/cluster")
-        #expect([list, read, join, bare].allSatisfy { $0.value(forHTTPHeaderField: "Authorization") == "Bearer eigeninference-pt-1" })
-        let joinBody = try #require(join.httpBody)
-        let body = try #require(try JSONSerialization.jsonObject(with: joinBody) as? [String: Any])
-        #expect(body["chip"] as? String == "Apple M3 Ultra" && body["memory_gb"] as? Int == 512 && body["mac_count"] as? Int == 2)
-        #expect(bare.httpMethod == "POST" && bare.url?.path == "/v1/waitlists/research" && bodyText(bare) == "{}")
+        #expect(join.value(forHTTPHeaderField: "Content-Type") == "application/json" && bodyText(join) == "{}")
+        #expect([list, read, join].allSatisfy { $0.value(forHTTPHeaderField: "Authorization") == "Bearer eigeninference-pt-1" })
         let offline = FeatureWaitlistClient(base: try #require(URL(string: "https://coordinator.invalid")), token: nil,
                                             transport: { _ in throw URLError(.cannotFindHost) })
         guard case .failure(.unavailable) = await offline.waitlists() else { Issue.record("an unreachable coordinator"); return }
@@ -251,16 +225,15 @@ struct FeatureWaitlistTests {
         let view = FeatureWaitlistView(cli: "darkbloom", coordinator: "https://api.darkbloom.dev", day: Self.day)
         func cluster(_ status: FeatureWaitlistPlace.Status, _ position: Int? = nil, requested: Date? = nil, decided: Date? = nil,
                      start: String? = "darkbloom cluster") -> FeatureWaitlistPlace {
-            Self.place("cluster", "Mac clusters", status, position: position, requested: requested, decided: decided, start: start,
-                       macs: .init(min: 2, max: 4))
+            Self.place("cluster", "Mac clusters", status, position: position, requested: requested, decided: decided, start: start)
         }
-        #expect(view.lines(cluster(.none), name: "clusters") == [
-            "You're not on the Mac clusters waitlist.", "  Join it: darkbloom waitlist clusters join",
+        #expect(view.lines(cluster(.none), name: "cluster") == [
+            "You're not on the Mac clusters waitlist.", "  Join it: darkbloom waitlist cluster",
         ])
-        #expect(view.lines(cluster(.waitlisted, 3, requested: date), name: "clusters") == [
+        #expect(view.lines(cluster(.waitlisted, 3, requested: date), name: "cluster") == [
             "You're on the Mac clusters waitlist: #3 in line (joined Oct 29, 2026).",
             "  Darkbloom reviews accounts in the order they joined and approves them by hand.",
-            "  Check again: darkbloom waitlist clusters",
+            "  Check again: darkbloom waitlist cluster",
         ])
         #expect(view.lines(cluster(.approved, decided: date), name: "cluster") == [
             "Your account is approved for Mac clusters since Oct 29, 2026.", "  Start: darkbloom cluster",
@@ -307,7 +280,7 @@ struct FeatureWaitlistTests {
             "",
             "Labs (labs): not approved (access revoked on Oct 29, 2026)",
             "",
-            "Join one: darkbloom waitlist <name> join",
+            "Join one: darkbloom waitlist <name>",
         ])
         // Nothing left to join: no join line.
         #expect(view.list([Self.place("research", "Research previews", .waitlisted)]) == ["Research previews (research): on the waitlist"])
@@ -362,7 +335,7 @@ struct FeatureWaitlistTests {
         #expect(output.hasPrefix("Clusters (cluster): not joined\n  Serve one model with two to four of your Macs.\n\n"
             + "Darkbloom Sandbox (sandbox): #3 in line (joined "))
         #expect(output.contains("\n\nResearch previews (research): not joined\n  Try models before they ship.\n\n"
-            + "Join one: \(Sandbox.cli) waitlist <name> join\n== JSON\n{\n  \"data\" : [\n"))
+            + "Join one: \(Sandbox.cli) waitlist <name>\n== JSON\n{\n  \"data\" : [\n"))
         #expect(output.contains("\"start_command\" : \"darkbloom sandbox setup\"") && output.contains("\"position\" : 3"))
         #expect(output.hasSuffix("requests GET /v1/waitlists, GET /v1/waitlists\n"))
     }
@@ -387,22 +360,73 @@ struct FeatureWaitlistTests {
         #expect(output.unicodeScalars.allSatisfy { $0 == "\n" || !Self.unprintable.contains($0) })
     }
 
-    @Test("waitlist <name> shows the place the list answers, names unknown waitlists, and asks for a login without a token")
-    func statusCommand() async throws {
-        let plural = try await #require(processExitsWith: .success, observing: [\.standardOutputContent]) {
+    @Test("waitlist <name> posts {} with the login token to the configured coordinator and shows the place")
+    func joinCommand() async throws {
+        let result = try await #require(processExitsWith: .success, observing: [\.standardOutputContent]) {
             let sandbox = try CLICommandSandbox.enter(autoRestart: false)
             defer { sandbox.remove() }
             try sandbox.writeToken("eigeninference-pt-waitlist")
-            CoordinatorStub.install(["/v1/waitlists": .json(200, FeatureWaitlistTests.catalog)])
-            try await runCLICommand(Waitlist.self, ["waitlist", "Sandboxes", "--config", sandbox.config.path])
-            try await runCLICommand(Waitlist.self, ["waitlist", "sandbox", "status", "--json", "--config", sandbox.config.path])
+            CoordinatorStub.install([
+                "/v1/waitlists": .json(200, FeatureWaitlistTests.catalog),
+                "/v1/waitlists/cluster": .json(200,
+                    #"{"feature":"cluster","title":"Clusters","start_command":"darkbloom cluster","status":"waitlisted","position":4,"requested_at":"2026-10-30T03:10:00.123456Z"}"#),
+            ])
+            try await runCLICommand(Waitlist.self, ["waitlist", "cluster", "--config", sandbox.config.path])
+            let request = try #require(CoordinatorStub.requests.last)
+            print("request \(request.httpMethod ?? "") \(request.url?.absoluteString ?? "") "
+                + "\(request.value(forHTTPHeaderField: "Authorization") ?? "")")
+            print("body \(bodyText(request))")
             print("requests \(waitlistRequests())")
         }
-        let output = decodedText(plural.standardOutputContent)
+        let output = decodedText(result.standardOutputContent)
+        #expect(output.hasPrefix("You're on the Clusters waitlist: #4 in line (joined "))
+        #expect(output.contains("  Check again: \(Sandbox.cli) waitlist cluster\n"))
+        #expect(output.contains("request POST https://coordinator.invalid/v1/waitlists/cluster Bearer eigeninference-pt-waitlist\n"))
+        #expect(output.contains("\nbody {}\n"))
+        #expect(output.hasSuffix("requests GET /v1/waitlists, POST /v1/waitlists/cluster\n"))
+    }
+
+    @Test("joining again shows the kept place or the approval with its start command; --json prints the answer")
+    func joinAgainCommand() async throws {
+        let result = try await #require(processExitsWith: .success, observing: [\.standardOutputContent]) {
+            let sandbox = try CLICommandSandbox.enter(autoRestart: false)
+            defer { sandbox.remove() }
+            try sandbox.writeToken("eigeninference-pt-waitlist")
+            // The account already waits: the coordinator answers the place it keeps.
+            CoordinatorStub.install([
+                "/v1/waitlists": .json(200, FeatureWaitlistTests.catalog),
+                "/v1/waitlists/sandbox": .json(200,
+                    #"{"feature":"sandbox","title":"Darkbloom Sandbox","start_command":"darkbloom sandbox setup","status":"waitlisted","position":3,"requested_at":"2026-10-30T03:10:00.123456Z"}"#),
+            ])
+            try await runCLICommand(Waitlist.self, ["waitlist", "Sandboxes", "--config", sandbox.config.path])
+            print("requests \(waitlistRequests())")
+            // An approved account stays approved.
+            CoordinatorStub.install([
+                "/v1/waitlists": .json(200, FeatureWaitlistTests.catalog),
+                "/v1/waitlists/cluster": .json(200,
+                    #"{"feature":"cluster","title":"Clusters","start_command":"darkbloom cluster","status":"approved","decided_at":"2026-10-31T09:00:00Z"}"#),
+            ])
+            try await runCLICommand(Waitlist.self, ["waitlist", "cluster", "--config", sandbox.config.path])
+            print("== JSON")
+            // A coordinator that still sends a Mac count: the JSON leaves it out.
+            CoordinatorStub.install([
+                "/v1/waitlists": .json(200, FeatureWaitlistTests.catalog),
+                "/v1/waitlists/cluster": .json(200,
+                    #"{"feature":"cluster","title":"Clusters","start_command":"darkbloom cluster","mac_count":{"min":2,"max":4},"status":"waitlisted","position":4,"requested_at":"2026-10-30T03:10:00.123456Z"}"#),
+            ])
+            try await runCLICommand(Waitlist.self, ["waitlist", "cluster", "--json", "--config", sandbox.config.path])
+        }
+        let output = decodedText(result.standardOutputContent)
         #expect(output.hasPrefix("You're on the Darkbloom Sandbox waitlist: #3 in line (joined "))
-        #expect(output.contains("  Check again: \(Sandbox.cli) waitlist sandboxes\n{\n"))
-        #expect(output.contains("\"title\" : \"Darkbloom Sandbox\"") && output.contains("\"requested_at\" : \"2026-10-30T03:10:00Z\""))
-        #expect(output.hasSuffix("requests GET /v1/waitlists, GET /v1/waitlists\n"))
+        #expect(output.contains("  Check again: \(Sandbox.cli) waitlist sandboxes\nrequests GET /v1/waitlists, POST /v1/waitlists/sandbox\n"
+            + "Your account is approved for Clusters since "))
+        #expect(output.contains(".\n  Start: \(Sandbox.cli) cluster\n== JSON\n{\n"))
+        #expect(output.contains("\"title\" : \"Clusters\"") && output.contains("\"requested_at\" : \"2026-10-30T03:10:00Z\""))
+        #expect(!output.contains("mac_count"))
+    }
+
+    @Test("an unknown name joins nothing and names the waitlists; without a token the command asks for a login")
+    func unknownAndAnonymous() async throws {
         let unknown = try await #require(processExitsWith: .failure, observing: [\.standardErrorContent, \.standardOutputContent]) {
             let sandbox = try CLICommandSandbox.enter(autoRestart: false)
             defer { sandbox.remove() }
@@ -410,7 +434,7 @@ struct FeatureWaitlistTests {
             CoordinatorStub.install(["/v1/waitlists": .json(200, FeatureWaitlistTests.catalog)])
             await exitWithCommandStatus {
                 defer { print("requests \(waitlistRequests())") }
-                try await runCLICommand(Waitlist.self, ["waitlist", "gpu", "join", "--config", sandbox.config.path])
+                try await runCLICommand(Waitlist.self, ["waitlist", "gpu", "--config", sandbox.config.path])
             }
         }
         #expect(decodedText(unknown.standardErrorContent) == "Unknown waitlist 'gpu'. The waitlists are cluster (Clusters), "
@@ -437,87 +461,47 @@ struct FeatureWaitlistTests {
             defer { sandbox.remove() }
             try sandbox.writeToken("eigeninference-pt-waitlist")
             await exitWithCommandStatus {
-                try await runCLICommand(Waitlist.self, ["waitlist", "clusters", "join", "--config", sandbox.config.path])
+                try await runCLICommand(Waitlist.self, ["waitlist", "cluster", "--config", sandbox.config.path])
             }
         }
         #expect(decodedText(result.standardErrorContent)
             == "\(CLICommandSandbox.coordinatorURL) has no waitlists yet, so there is nothing to join there.\n")
     }
 
-    @Test("waitlist clusters join sends this Mac, the Mac count and the login token to the configured coordinator")
-    func clusterJoin() async throws {
-        let result = try await #require(processExitsWith: .success, observing: [\.standardOutputContent]) {
-            let sandbox = try CLICommandSandbox.enter(autoRestart: false)
-            defer { sandbox.remove() }
-            try sandbox.writeToken("eigeninference-pt-waitlist")
-            CoordinatorStub.install([
-                "/v1/waitlists": .json(200, FeatureWaitlistTests.catalog),
-                "/v1/waitlists/cluster": .json(200,
-                    #"{"feature":"cluster","title":"Clusters","start_command":"darkbloom cluster","mac_count":{"min":2,"max":4},"status":"waitlisted","position":4,"requested_at":"2026-10-30T03:10:00.123456Z"}"#),
-            ])
-            try await runCLICommand(Waitlist.self, ["waitlist", "clusters", "join", "--macs", "3", "--config", sandbox.config.path])
-            let request = try #require(CoordinatorStub.requests.last)
-            print("request \(request.httpMethod ?? "") \(request.url?.absoluteString ?? "") "
-                + "\(request.value(forHTTPHeaderField: "Authorization") ?? "")")
-            print("body \(bodyText(request))")
-            print("requests \(waitlistRequests())")
-        }
-        let output = decodedText(result.standardOutputContent)
-        #expect(output.contains("You're on the Clusters waitlist: #4 in line (joined "))
-        #expect(output.contains("  Check again: \(Sandbox.cli) waitlist clusters\n"))
-        #expect(output.contains("request POST https://coordinator.invalid/v1/waitlists/cluster Bearer eigeninference-pt-waitlist\n"))
-        #expect(output.contains("\"mac_count\":3") && output.contains("\"chip\":") && output.contains("\"memory_gb\":"))
-        #expect(output.hasSuffix("requests GET /v1/waitlists, POST /v1/waitlists/cluster\n"))
-    }
-
-    @Test("a waitlist without a Mac range is joined without this Mac, and refuses --macs before asking")
-    func joinWithoutMacs() async throws {
-        let joined = try await #require(processExitsWith: .success, observing: [\.standardOutputContent]) {
-            let sandbox = try CLICommandSandbox.enter(autoRestart: false)
-            defer { sandbox.remove() }
-            try sandbox.writeToken("eigeninference-pt-waitlist")
-            CoordinatorStub.install([
-                "/v1/waitlists": .json(200, FeatureWaitlistTests.catalog),
-                "/v1/waitlists/research": .json(200,
-                    #"{"feature":"research","title":"Research previews","summary":"Try models before they ship.","status":"waitlisted","position":1}"#),
-            ])
-            try await runCLICommand(Waitlist.self, ["waitlist", "research", "join", "--config", sandbox.config.path])
-            let request = try #require(CoordinatorStub.requests.last)
-            print("body \(bodyText(request))")
-        }
-        let output = decodedText(joined.standardOutputContent)
-        #expect(output.hasPrefix("You're on the Research previews waitlist: #1 in line.\n"))
-        #expect(output.hasSuffix("body {}\n"))
-        let unasked = try await #require(processExitsWith: .exitCode(ExitCode.validationFailure.rawValue),
-                                         observing: [\.standardErrorContent, \.standardOutputContent]) {
+    @Test("a join answered 404 or 503 names the waitlist by its title and fails; --json prints nothing")
+    func refusedJoin() async throws {
+        // The list names the waitlist, but the join is answered 404.
+        let missing = try await #require(processExitsWith: .failure, observing: [\.standardErrorContent, \.standardOutputContent]) {
             let sandbox = try CLICommandSandbox.enter(autoRestart: false)
             defer { sandbox.remove() }
             try sandbox.writeToken("eigeninference-pt-waitlist")
             CoordinatorStub.install(["/v1/waitlists": .json(200, FeatureWaitlistTests.catalog)])
             await exitWithCommandStatus {
                 defer { print("requests \(waitlistRequests())") }
-                try await runCLICommand(Waitlist.self, ["waitlist", "research", "join", "--macs", "2", "--config", sandbox.config.path])
+                try await runCLICommand(Waitlist.self, ["waitlist", "clusters", "--config", sandbox.config.path])
             }
         }
-        #expect(decodedText(unasked.standardErrorContent)
-            == "--macs does not apply to the Research previews waitlist: it asks for no Mac.\n")
-        #expect(decodedText(unasked.standardOutputContent) == "requests GET /v1/waitlists\n")
-        let outside = try await #require(processExitsWith: .exitCode(ExitCode.validationFailure.rawValue),
-                                         observing: [\.standardErrorContent, \.standardOutputContent]) {
+        #expect(decodedText(missing.standardErrorContent) == "\(CLICommandSandbox.coordinatorURL) has no Clusters waitlist.\n")
+        #expect(decodedText(missing.standardOutputContent) == "requests GET /v1/waitlists, POST /v1/waitlists/cluster\n")
+        let unavailable = try await #require(processExitsWith: .failure, observing: [\.standardErrorContent, \.standardOutputContent]) {
             let sandbox = try CLICommandSandbox.enter(autoRestart: false)
             defer { sandbox.remove() }
             try sandbox.writeToken("eigeninference-pt-waitlist")
-            CoordinatorStub.install(["/v1/waitlists": .json(200, FeatureWaitlistTests.catalog)])
+            CoordinatorStub.install([
+                "/v1/waitlists": .json(200, FeatureWaitlistTests.catalog),
+                "/v1/waitlists/sandbox": .json(503,
+                    #"{"error":{"type":"waitlists_unavailable","message":"waitlists are not available on this coordinator"}}"#),
+            ])
             await exitWithCommandStatus {
-                defer { print("requests \(waitlistRequests())") }
-                try await runCLICommand(Waitlist.self, ["waitlist", "clusters", "join", "--macs", "5", "--config", sandbox.config.path])
+                try await runCLICommand(Waitlist.self, ["waitlist", "sandbox", "--json", "--config", sandbox.config.path])
             }
         }
-        #expect(decodedText(outside.standardErrorContent) == "--macs must be between 2 and 4 for the Clusters waitlist.\n")
-        #expect(decodedText(outside.standardOutputContent) == "requests GET /v1/waitlists\n")
+        #expect(decodedText(unavailable.standardErrorContent) == "Could not reach the Darkbloom Sandbox waitlist at "
+            + "\(CLICommandSandbox.coordinatorURL): HTTP 503: waitlists are not available on this coordinator\n")
+        #expect(decodedText(unavailable.standardOutputContent).isEmpty)
     }
 
-    @Test("a revoked account's join shows the revocation and fails")
+    @Test("a revoked account's join shows the revocation and fails; with --json it prints the entry and fails")
     func revokedJoin() async throws {
         let result = try await #require(processExitsWith: .failure, observing: [\.standardOutputContent]) {
             let sandbox = try CLICommandSandbox.enter(autoRestart: false)
@@ -528,10 +512,24 @@ struct FeatureWaitlistTests {
                 "/v1/waitlists/cluster": .json(200, #"{"feature":"cluster","title":"Clusters","status":"revoked"}"#),
             ])
             await exitWithCommandStatus {
-                try await runCLICommand(Waitlist.self, ["waitlist", "clusters", "join", "--config", sandbox.config.path])
+                try await runCLICommand(Waitlist.self, ["waitlist", "cluster", "--config", sandbox.config.path])
             }
         }
         #expect(decodedText(result.standardOutputContent).hasPrefix("Darkbloom revoked your account's access to Clusters.\n"))
+        let json = try await #require(processExitsWith: .failure, observing: [\.standardOutputContent]) {
+            let sandbox = try CLICommandSandbox.enter(autoRestart: false)
+            defer { sandbox.remove() }
+            try sandbox.writeToken("eigeninference-pt-waitlist")
+            CoordinatorStub.install([
+                "/v1/waitlists": .json(200, FeatureWaitlistTests.catalog),
+                "/v1/waitlists/cluster": .json(200, #"{"feature":"cluster","title":"Clusters","status":"revoked"}"#),
+            ])
+            await exitWithCommandStatus {
+                try await runCLICommand(Waitlist.self, ["waitlist", "cluster", "--json", "--config", sandbox.config.path])
+            }
+        }
+        let document = decodedText(json.standardOutputContent)
+        #expect(document.hasPrefix("{\n") && document.contains("\"status\" : \"revoked\"") && !document.contains("Darkbloom revoked"))
     }
 
     // MARK: - The sandbox setup gate
@@ -601,7 +599,7 @@ struct FeatureWaitlistTests {
         #expect(decodedText(revoked.standardOutputContent).hasPrefix("Darkbloom revoked your account's access to Darkbloom Sandbox.\n"))
     }
 
-    @Test("an account not on the waitlist joins it with --yes, naming the Macs it asks for, or is told how without a terminal")
+    @Test("an account not on the waitlist joins it with --yes, or is told how without a terminal")
     func gateJoins() async throws {
         let joined = try await #require(processExitsWith: .failure, observing: [\.standardOutputContent]) {
             _ = try CLICommandSandbox.enter(autoRestart: false)
@@ -614,11 +612,10 @@ struct FeatureWaitlistTests {
             }
         }
         let output = decodedText(joined.standardOutputContent)
-        #expect(output.hasPrefix("Darkbloom Sandbox is open to the accounts Darkbloom approves from its waitlist.\njoined sandbox 1\n"
+        #expect(output.hasPrefix("Darkbloom Sandbox is open to the accounts Darkbloom approves from its waitlist.\njoined sandbox\n"
             + "You're on the Darkbloom Sandbox waitlist: #7 in line.\n"))
         #expect(!output.contains("Checking this Mac"))
-        // The coordinator's title names the waitlist, and a waitlist without
-        // a Mac range is joined without this Mac.
+        // The coordinator's title names the waitlist.
         let renamed = try await #require(processExitsWith: .failure, observing: [\.standardOutputContent]) {
             _ = try CLICommandSandbox.enter(autoRestart: false)
             await exitWithCommandStatus {
@@ -631,7 +628,7 @@ struct FeatureWaitlistTests {
             }
         }
         #expect(decodedText(renamed.standardOutputContent).hasPrefix(
-            "Sandbox CI is open to the accounts Darkbloom approves from its waitlist.\njoined sandbox none\n"
+            "Sandbox CI is open to the accounts Darkbloom approves from its waitlist.\njoined sandbox\n"
             + "You're on the Sandbox CI waitlist.\n"))
         let unattended = try await #require(processExitsWith: .failure, observing: [\.standardOutputContent]) {
             _ = try CLICommandSandbox.enter(autoRestart: false)
@@ -643,7 +640,7 @@ struct FeatureWaitlistTests {
             }
         }
         #expect(decodedText(unattended.standardOutputContent) == "Darkbloom Sandbox is open to the accounts Darkbloom approves "
-            + "from its waitlist.\n  Join it: \(Sandbox.cli) waitlist sandbox join\n")
+            + "from its waitlist.\n  Join it: \(Sandbox.cli) waitlist sandbox\n")
         let approvedOnJoin = try await #require(processExitsWith: .failure, observing: [\.standardOutputContent]) {
             _ = try CLICommandSandbox.enter(autoRestart: false)
             try replaceStandardInput(with: "y\n")
@@ -658,7 +655,7 @@ struct FeatureWaitlistTests {
         }
         // An account an admin already approved goes straight on to the checks.
         #expect(decodedText(approvedOnJoin.standardOutputContent).contains(
-            "Join the Darkbloom Sandbox waitlist now? [y/N]: joined sandbox 1\nDarkbloom Sandbox setup\n\nChecking this Mac\n"))
+            "Join the Darkbloom Sandbox waitlist now? [y/N]: joined sandbox\nDarkbloom Sandbox setup\n\nChecking this Mac\n"))
     }
 
     @Test("without a login or an answer the gate says why, naming Darkbloom Sandbox")
@@ -698,7 +695,7 @@ struct FeatureWaitlistTests {
             }
         }
         #expect(decodedText(result.standardOutputContent)
-            == "Sandbox\u{FFFD}[2J CI is open to the accounts Darkbloom approves from its waitlist.\njoined sandbox none\n")
+            == "Sandbox\u{FFFD}[2J CI is open to the accounts Darkbloom approves from its waitlist.\njoined sandbox\n")
         #expect(decodedText(result.standardErrorContent)
             == "Could not reach the Sandbox\u{FFFD}[2J CI waitlist at \(CLICommandSandbox.coordinatorURL): HTTP 500: boom\n")
     }

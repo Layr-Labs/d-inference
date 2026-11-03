@@ -103,8 +103,9 @@ After a self-update, some macOS 27 Macs report App Attest as unsupported
 (`is_supported_false`) although it worked before. If the coordinator granted
 this Mac App Attest in the last 7 days and launchd runs the provider, the
 provider restarts once through launchd when the state lasts 5 minutes and the
-provider is idle. This restart shares the stall restart's limit of one per 6
-hours. The log line starts with `App Attest: isSupported is false`. See the
+provider is idle. It restarts once per verified episode: if the new process
+still reports unsupported, it waits until the coordinator verifies the Mac
+again. This restart shares the stall restart's limit of one per 6 hours. The log line starts with `App Attest: isSupported is false`. See the
 [thresholds and limits](../reference/app-attest-shadow.md#bounds-and-credential-lifecycle).
 
 The separate [supervised worker candidate](../architecture/security/identity-binding.md#supervised-app-attest-worker-candidate)

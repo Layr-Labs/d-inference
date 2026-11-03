@@ -434,9 +434,9 @@ drains it instead of ending the process at once. `SIGHUP` is not a stop signal
 in two cases: the provider's launchd job does not take it, so it has whatever
 action launchd started the job with, and a start that arrived with `SIGHUP`
 ignored, for example under `nohup`, keeps ignoring it. A provider that
-re-executes itself in place for a self-update (one that launchd does not run;
-launchd relaunches its own provider) carries the same choice into the
-new process (`ProviderStopSignals` in
+re-executes itself in place for a self-update (one that is not the provider
+LaunchAgent's own job; launchd relaunches that job) carries the same choice
+into the new process (`ProviderStopSignals` in
 `provider-swift/Sources/ProviderCore/Service/ProviderStopSignals.swift`). The signal
 deadline is configurable with
 [`DARKBLOOM_DRAIN_TIMEOUT_SECONDS`](../reference/configuration.md#provider-drain-deadline).

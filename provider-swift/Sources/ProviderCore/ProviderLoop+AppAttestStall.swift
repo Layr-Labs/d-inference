@@ -19,7 +19,8 @@ extension ProviderLoop {
     /// when an unanswered Apple call can be holding admission. One monitor per
     /// process; it ends as soon as Apple's callback releases the gate.
     internal func startAppAttestStallMonitorIfNeeded() {
-        guard serveUsesHostServices, !usesAppAttestWorker,
+        // A cluster member never relaunches its binary unattended.
+        guard serveUsesHostServices, !isClusterMember, !usesAppAttestWorker,
               appAttestStallMonitorTask == nil, !isShuttingDown else { return }
         appAttestStallMonitorTask = Task { [weak self] in
             while !Task.isCancelled {
@@ -37,7 +38,7 @@ extension ProviderLoop {
     /// Called with each `ready` this process answers. Starts the monitor when
     /// `isSupported` is false on a Mac that may restart for it.
     internal func noteAppAttestAvailability(_ status: AppAttestLocalStatus?, now: Date = Date()) {
-        guard serveUsesHostServices, !usesAppAttestWorker, status?.availabilityReason == .isSupportedFalse,
+        guard serveUsesHostServices, !isClusterMember, !usesAppAttestWorker, status?.availabilityReason == .isSupportedFalse,
               appAttestUnsupportedRestartEligible(status, now: now) else {
             appAttestUnsupportedSince = nil
             return
@@ -52,8 +53,9 @@ extension ProviderLoop {
     private func appAttestUnsupportedRestartEligible(_ status: AppAttestLocalStatus?, now: Date) -> Bool {
         AppAttestStallRestartPolicy.unsupportedRestartEligible(
             lastVerifiedAt: appAttestVerifiedMarker().lastVerified(),
-            relaunchesThroughLaunchd: appAttestRelaunchRoute() == .launchd,
-            profileExpired: status?.process?.preflight?.profileExpired, now: now)
+            lastRestartAt: appAttestStallRestartMarker().lastRestart(),
+            profileExpired: status?.process?.preflight?.profileExpired, now: now,
+            relaunchesThroughLaunchd: appAttestRelaunchRoute() == .launchd)
     }
 
     /// The restart trigger now, or nil when nothing justifies a restart (the
@@ -121,8 +123,7 @@ extension ProviderLoop {
             let heldSince = await appAttestShadowClient?.appleOperationHeldSince()
             return AppAttestStallRestartPolicy.stillStalled(heldSince: heldSince, now: now)
         case .unsupported:
-            // Never fall back to an in-place exec for this trigger.
-            return !appAttestSupportProbe() && appAttestRelaunchRoute() == .launchd
+            return !appAttestSupportProbe()
         }
     }
 
@@ -135,7 +136,7 @@ extension ProviderLoop {
     }
 
     private func restartForAppAttest(_ trigger: AppAttestRestartTrigger, marker: AppAttestStallRestartMarker) async -> Bool {
-        let updater = SelfUpdater(coordinatorBaseURL: loopConfig.coordinatorURL)
+        let updater = appAttestRestartUpdater ?? SelfUpdater(coordinatorBaseURL: loopConfig.coordinatorURL)
         // The cross-process update lease excludes CLI stop/restart and updates.
         guard claimUpdateStart(updater: updater) else {
             appAttestStallLastSkip = .lifecycleBusy
@@ -159,6 +160,15 @@ extension ProviderLoop {
         // the drain, while we awaited. Nothing after the ownership read below
         // suspends, so this is the last point to re-check both.
         let stillHolds = await appAttestTriggerStillHolds(trigger, now: Date())
+        let route = appAttestRelaunchRoute()
+        // The unsupported restart never falls back to an in-place exec.
+        if case .unsupported = trigger, stillHolds, route != .launchd {
+            logger.warning("App Attest: restart abandoned; launchd no longer runs this provider")
+            appAttestUnsupportedSince = nil
+            appAttestStallMonitorTask = nil
+            await resumeServingAfterUpdate()
+            return false
+        }
         let ownsDrain = appAttestStallRestartOwnsDrain && !Task.isCancelled
         switch AppAttestStallRestartPolicy.afterDrain(updateOwnsDrain: ownsDrain, stillBlocked: stillHolds) {
         case .lifecycleTookOver:
@@ -195,16 +205,16 @@ extension ProviderLoop {
             return true
         }
         do {
-            switch trigger {
-            case .stalled: try ProcessLifecycle.restartAfterUpdate(cause: .stallRestart)
-            case .unsupported: try ProcessLifecycle.restartAfterUpdate(cause: .stallRestart, route: .launchd)
-            }
+            try appAttestRestart(.stallRestart, route)
         } catch {
             logger.warning("App Attest: restart failed: \(error)")
             try? updater.cancelPendingCandidateAttempt(operation: "app-attest-stall-restart-failure")
             await resumeServingAfterUpdate()
             return true
         }
+        // Reached only when a test seam returns instead of relaunching.
+        appAttestStallMonitorTask = nil
+        return false
     }
 
     /// An attempt that closed admission but will not restart: reopen serving

@@ -175,12 +175,17 @@ struct ProcessLifecycleTests {
 }
 
 /// A self-update or App Attest restart of a provider that launchd runs goes
-/// through launchd; any other provider keeps the in-place exec.
+/// through launchd; any other provider keeps the in-place exec. The route
+/// follows launchd's record of the job, which names one exact process.
 @Test func relaunchRouteUsesLaunchdOnlyForTheLaunchdJobItself() {
-    #expect(ProcessLifecycle.RelaunchRoute.decide(agentLoaded: true, launchedByLaunchd: true) == .launchd)
-    // A foreground `start` beside a loaded agent must not hand its work to the agent.
-    #expect(ProcessLifecycle.RelaunchRoute.decide(agentLoaded: true, launchedByLaunchd: false) == .exec)
-    // launchd started this process, but its job was unloaded since: kickstart has no job.
-    #expect(ProcessLifecycle.RelaunchRoute.decide(agentLoaded: false, launchedByLaunchd: true) == .exec)
-    #expect(ProcessLifecycle.RelaunchRoute.decide(agentLoaded: false, launchedByLaunchd: false) == .exec)
+    let current = ProcessIdentity(pid: 4242, startTimeMicros: 1_000_000)
+    #expect(LaunchAgent.isJob(current, current: current))
+    // A foreground `start` beside a loaded agent, or a child of the job (a
+    // cluster member inherits XPC_SERVICE_NAME), must not hand its work to the agent.
+    #expect(!LaunchAgent.isJob(ProcessIdentity(pid: 4243, startTimeMicros: 1_000_000), current: current))
+    // Same PID, another process: PID reuse never counts.
+    #expect(!LaunchAgent.isJob(ProcessIdentity(pid: 4242, startTimeMicros: 2_000_000), current: current))
+    // No loaded job (launchctl print fails) or no readable identity.
+    #expect(!LaunchAgent.isJob(nil, current: current))
+    #expect(!LaunchAgent.isJob(current, current: nil))
 }

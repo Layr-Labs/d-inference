@@ -225,6 +225,12 @@ public actor ProviderLoop {
     internal var appAttestRelaunchRoute: @Sendable () -> ProcessLifecycle.RelaunchRoute = { .current() }
     /// Seam for Apple's live `DCAppAttestService.isSupported`.
     internal var appAttestSupportProbe: @Sendable () -> Bool = { AppleAppAttestService.isSupportedNow() }
+    /// Seam for the App Attest restart itself (launchd kickstart or exec).
+    /// Production relaunches for real; tests replace only this boundary.
+    internal typealias AppAttestRestart = @Sendable (ProviderRunMarker.ExitCause, ProcessLifecycle.RelaunchRoute) throws -> Void
+    internal var appAttestRestart: AppAttestRestart = { try ProcessLifecycle.restartAfterUpdate(cause: $0, route: $1) }
+    /// Seam for the install the App Attest restart leases; nil is the running install.
+    internal var appAttestRestartUpdater: SelfUpdater?
     internal let loopConfig: ProviderLoopConfig
     internal var ordinaryServingModelIDs: Set<String>
     internal var autopilotSuccessorNeedsInventoryRefresh = false

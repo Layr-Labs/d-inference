@@ -184,7 +184,7 @@ extension Start {
     ) async throws {
         warnBootSecurity(snapshot: bootSecuritySnapshot, coordinatorEnforced: true)
 
-        let launchManaged = ProcessIdentity.current().map { LaunchAgent.launchSnapshot()?.process == $0 } ?? false
+        let launchManaged = LaunchAgent.isCurrentProcessJob()
         let usePinnedSelection = Self.usesPinnedModelSelection(configPath: snapshot.configPath, launchManaged: launchManaged)
         let selectedModels = advertisedModels(
             from: snapshot.models,

@@ -195,21 +195,11 @@ public enum ProcessLifecycle {
         /// `execv` in place: the same kernel process runs the new image.
         case exec
 
-        /// launchd only when its agent is loaded AND this process is that
-        /// agent's job. A foreground `start` beside a loaded agent keeps exec,
-        /// so it never hands its work to a different process.
-        public static func decide(agentLoaded: Bool, launchedByLaunchd: Bool) -> RelaunchRoute {
-            agentLoaded && launchedByLaunchd ? .launchd : .exec
-        }
-
-        /// This process is the agent's job when `XPC_SERVICE_NAME` is its label
-        /// (an earlier in-place exec keeps it), or when launchd's own record of
-        /// the job names this exact process.
+        /// launchd only when this process is the provider agent's job. A
+        /// foreground `start` beside a loaded agent, or a cluster member, keeps
+        /// exec, so it never hands its work to a different process.
         public static func current() -> RelaunchRoute {
-            let loaded = LaunchAgent.isLoaded()
-            let ownJob = loaded && (ProviderStartReason.launchedByLaunchd()
-                || ProcessIdentity.current().map { LaunchAgent.launchSnapshot()?.process == $0 } == true)
-            return decide(agentLoaded: loaded, launchedByLaunchd: ownJob)
+            LaunchAgent.isCurrentProcessJob() ? .launchd : .exec
         }
     }
 

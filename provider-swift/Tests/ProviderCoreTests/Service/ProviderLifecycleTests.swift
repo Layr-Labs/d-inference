@@ -9,11 +9,12 @@ private func lifecycleHardware() -> HardwareInfo {
         cpuCores: CpuCores(total: 16, performance: 12, efficiency: 4), gpuCores: 40, memoryBandwidthGbs: 546)
 }
 
-private func lifecycleLoop() async throws -> (ProviderLoop, URL) {
+private func lifecycleLoop(role: ProviderExecutionRole = .solo) async throws -> (ProviderLoop, URL) {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     let loop = try ProviderLoop(config: ProviderLoopConfig(coordinatorURL: "ws://127.0.0.1:0/unused",
-        hardware: lifecycleHardware(), models: [], config: ProviderConfig(provider: ProviderSettings(name: "lifecycle-test"))), attestationSigner: nil)
+        hardware: lifecycleHardware(), models: [], config: ProviderConfig(provider: ProviderSettings(name: "lifecycle-test")),
+        executionRole: role), attestationSigner: nil)
     await loop.setDaemonStateFileForTesting(root.appendingPathComponent("state.json"))
     return (loop, root)
 }
@@ -27,10 +28,21 @@ private func lifecycleClient(url: String, state: ProviderState) -> CoordinatorCl
 
 private extension ProviderLoop {
     func installAppAttestWorker(_ worker: any AppAttestWorkerExchangeClient) { appAttestWorkerClient = worker }
-    /// Fakes only the launchd boundary and Apple's live `isSupported`.
-    func setAppAttestRestartSeams(route: ProcessLifecycle.RelaunchRoute, supported: Bool) {
+    /// Fakes only the launchd/exec boundary and Apple's live `isSupported`.
+    /// A restart that reaches the boundary is recorded, never issued.
+    func setAppAttestRestartSeams(route: ProcessLifecycle.RelaunchRoute, supported: @escaping @Sendable () -> Bool,
+                                  restarts: AppAttestRestartLog = AppAttestRestartLog(), updater: SelfUpdater? = nil) {
         appAttestRelaunchRoute = { route }
-        appAttestSupportProbe = { supported }
+        appAttestSupportProbe = supported
+        appAttestRestart = { restarts.append($0, $1) }
+        appAttestRestartUpdater = updater
+    }
+    func setAppAttestRestartSeams(route: ProcessLifecycle.RelaunchRoute, supported: Bool) {
+        setAppAttestRestartSeams(route: route, supported: { supported })
+    }
+    func installIdleAppAttestClient() {
+        appAttestShadowClient = AppAttestShadowClient(scope: loopConfig.coordinatorURL, service: IdleAppAttestService(),
+                                                      storage: EmptyShadowKeys())
     }
     func holdLifecycleRequests(_ ids: Set<String>) { acceptedLifecycleRequests.formUnion(ids) }
     func completeLifecycleRequest(_ id: String) { acceptedLifecycleRequests.remove(id) }
@@ -292,6 +304,38 @@ struct ProviderLifecycleTests {
     }
 }
 
+private final class AppAttestRestartLog: @unchecked Sendable {
+    private let lock = NSLock()
+    private var entries: [(ProviderRunMarker.ExitCause, ProcessLifecycle.RelaunchRoute)] = []
+    func append(_ cause: ProviderRunMarker.ExitCause, _ route: ProcessLifecycle.RelaunchRoute) {
+        lock.withLock { entries.append((cause, route)) }
+    }
+    var routes: [ProcessLifecycle.RelaunchRoute] { lock.withLock { entries.map(\.1) } }
+    var causes: [ProviderRunMarker.ExitCause] { lock.withLock { entries.map(\.0) } }
+}
+
+/// Apple boundary with no outstanding call; availability comes from the probe seam.
+private actor IdleAppAttestService: AppAttestService {
+    func checkAvailability(environment: String) {}
+    func generateKey() -> String { "" }
+    func attestKey(_ id: String, hash: Data) -> Data { Data() }
+    func generateAssertion(_ id: String, hash: Data) -> Data { Data() }
+    func operationHeldSince() -> Date? { nil }
+}
+
+private struct EmptyShadowKeys: ShadowKeyStorage {
+    func load(scope: String) -> ShadowKeyRecord? { nil }
+    func save(_ record: ShadowKeyRecord, scope: String) {}
+}
+
+private func waitFor(_ condition: () async -> Bool) async -> Bool {
+    for _ in 0..<500 {
+        if await condition() { return true }
+        try? await Task.sleep(nanoseconds: 10_000_000)
+    }
+    return false
+}
+
 private func unsupportedReady(profileExpired: Bool? = false) -> AppAttestLocalStatus {
     AppAttestLocalStatus(observedAt: 0, launchSession: .gui, availabilityReason: .isSupportedFalse,
                          process: AppAttestProcessDiagnostics(preflight: AppAttestPreflight(profileExpired: profileExpired)))
@@ -397,5 +441,75 @@ struct AppAttestUnsupportedRestartTests {
         let later = start.addingTimeInterval(AppAttestVerifiedMarker.refreshInterval)
         await grant(at: later)
         #expect(marker.lastVerified() == later)
+    }
+
+    /// The real monitor, policy, lease, drain and marker run; only the
+    /// launchd/exec boundary and Apple's `isSupported` are fakes.
+    @Test func unsupportedRestartDrainsSpendsTheSharedMarkerAndUsesLaunchdOnce() async throws {
+        let (loop, root) = try await lifecycleLoop()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let install = try UpdateRecoveryFixture()
+        defer { install.cleanup() }
+        let restarts = AppAttestRestartLog()
+        await loop.setAppAttestRestartSeams(route: .launchd, supported: { false }, restarts: restarts,
+                                            updater: install.updater(baseURL: URL(string: "http://127.0.0.1:9")!))
+        await loop.installIdleAppAttestClient()
+        let now = Date()
+        try AppAttestVerifiedMarker(directory: root).record(now.addingTimeInterval(-3600))
+        let marker = AppAttestStallRestartMarker(directory: root)
+        #expect(marker.lastRestart() == nil)
+
+        // First seen longer ago than the threshold: the monitor's first tick is due.
+        await loop.noteAppAttestAvailability(
+            unsupportedReady(), now: now.addingTimeInterval(-AppAttestStallRestartPolicy.unsupportedThreshold - 60))
+        #expect(await waitFor { restarts.routes.count == 1 })
+        #expect(restarts.routes == [.launchd])
+        #expect(restarts.causes == [.stallRestart])
+        let spent = try #require(marker.lastRestart(), "the shared marker is written before the restart")
+
+        // One restart per verified episode: the same state does not arm again
+        // until the coordinator verifies this Mac after the restart.
+        await loop.noteAppAttestAvailability(unsupportedReady(), now: spent)
+        #expect(await loop.appAttestUnsupportedSince == nil)
+        await loop.cancelAppAttestStallMonitor()
+    }
+
+    @Test func unsupportedThatClearsDuringTheDrainResumesWithoutARestart() async throws {
+        let (loop, root) = try await lifecycleLoop()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let install = try UpdateRecoveryFixture()
+        defer { install.cleanup() }
+        let restarts = AppAttestRestartLog()
+        // Unsupported when the monitor decides; supported again after the drain.
+        let probes = RecoveryRestartCounter()
+        await loop.setAppAttestRestartSeams(route: .launchd, supported: { probes.increment() > 1 }, restarts: restarts,
+                                            updater: install.updater(baseURL: URL(string: "http://127.0.0.1:9")!))
+        await loop.installIdleAppAttestClient()
+        let now = Date()
+        try AppAttestVerifiedMarker(directory: root).record(now.addingTimeInterval(-3600))
+
+        await loop.noteAppAttestAvailability(
+            unsupportedReady(), now: now.addingTimeInterval(-AppAttestStallRestartPolicy.unsupportedThreshold - 60))
+        #expect(await waitFor { await loop.appAttestUnsupportedSince == nil })
+        #expect(await waitFor {
+            let phase = await loop.updatePhase
+            let refusing = await loop.servingDrain.refusing
+            return phase == .idle && !refusing
+        })
+        #expect(probes.value == 2)
+        #expect(restarts.routes.isEmpty)
+        #expect(AppAttestStallRestartMarker(directory: root).lastRestart() == nil,
+                "a state that cleared on its own does not spend the limit")
+        await loop.cancelAppAttestStallMonitor()
+    }
+
+    @Test func clusterMemberNeverArmsTheUnsupportedRestart() async throws {
+        let (loop, root) = try await lifecycleLoop(role: .clusterMember)
+        defer { try? FileManager.default.removeItem(at: root) }
+        await loop.setAppAttestRestartSeams(route: .launchd, supported: false)
+        try AppAttestVerifiedMarker(directory: root).record(Date().addingTimeInterval(-3600))
+        await loop.noteAppAttestAvailability(unsupportedReady(), now: Date())
+        #expect(await loop.appAttestUnsupportedSince == nil)
+        #expect(await loop.appAttestStallMonitorTask == nil)
     }
 }

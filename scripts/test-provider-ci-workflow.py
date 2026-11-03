@@ -155,8 +155,12 @@ def run_command(step):
 CHECKOUT = "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2"
 CACHE_RESTORE = "actions/cache/restore@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0"
 CACHE_SAVE = "actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0"
-MASTER_PUSH = "github.event_name == 'push' && github.ref == 'refs/heads/master'"
-GIT_CACHE_STEPS = ("Select this week's .git cache", "Restore .git saved by master",
+# Pushes to master and dev save caches; pull requests never do.
+SAVE_POLICY = ("  SAVE_CACHES: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/master' "
+               "|| github.ref == 'refs/heads/dev') }}\n")
+SAVE_CACHES = "env.SAVE_CACHES == 'true'"
+SAVE_INPUT = "inputs.save-caches == 'true'"
+GIT_CACHE_STEPS = ("Select today's .git cache", "Restore the newest saved .git",
                    "Check out over the cached .git", "Discard the cached .git",
                    "Check out without the cache", "Save .git for later runs")
 
@@ -748,7 +752,7 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         for step in (steps[record], steps[upload]):
             self.assertIn("steps.capability-checks.outcome == 'success'", field(step, "if"))
             # Only pushes to a saving branch save; a pull request never does.
-            self.assertIn(MASTER_PUSH + " && ", field(step, "if"))
+            self.assertIn(SAVE_CACHES + " && ", field(step, "if"))
             self.assertIn("steps.cluster-build-cache.outputs.cache-hit != 'true'", field(step, "if"))
         support = (ROOT / "libs/darkbloom-cluster/Tests/Support/native-metadata.sh").read_text()
         self.assertIn('task_jobs="${DARKBLOOM_CLUSTER_METADATA_BUILD_JOBS:-4}"', support)
@@ -777,19 +781,32 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         self.assertIn("python3 scripts/test-provider-test-shards.py", self.jobs["release-integrity"])
         self.assertIn("python3 scripts/test-native-gpu-ci.py", self.jobs["release-integrity"])
 
-    def test_only_master_pushes_save_caches(self):
+    def test_only_pushes_to_master_and_dev_save_caches(self):
         # A pull request's entry is scoped to its merge ref, where nothing else
-        # restores it, and it evicts master's entries from the shared quota.
+        # restores it, and evicts its base branch's entries from the quota.
+        self.assertIn("\nenv:\n  DARKBLOOM_RELEASE_ENVIRONMENT: prod\n", self.workflow)
+        self.assertIn(SAVE_POLICY, self.workflow.split("\njobs:\n", 1)[0])
         saves = [(job_id, field(step, "name", indent=6), field(step, "if"))
                  for job_id, job in self.jobs.items() for step in step_blocks(job) if "actions/cache/save@" in step]
-        composite = [(field(step, "name", indent=4), field(step, "if", indent=6))
-                     for step in step_blocks(ACTION.read_text(), indent=4) if "actions/cache/save@" in step]
-        self.assertEqual({name for name, _ in composite}, {"Save lane-specific Swift test build",
-                                                           "Save SwiftPM repositories",
-                                                           "Save validated source-matched Metal cache"})
-        for job_id, name, condition in saves + [("provider-ci-build", *save) for save in composite]:
+        self.assertTrue(saves)
+        for job_id, name, condition in saves:
             with self.subTest(job=job_id, step=name):
-                self.assertIn(MASTER_PUSH + " && ", condition)
+                self.assertIn(SAVE_CACHES + " && ", condition)
+        # The composite saves only when its caller passes the same switch.
+        action = ACTION.read_text()
+        self.assertIn("  save-caches:\n", action.split("\nruns:\n", 1)[0])
+        self.assertIn("\n    default: 'false'\nruns:\n", action)
+        composite = {field(step, "name", indent=4): field(step, "if", indent=6)
+                     for step in step_blocks(action, indent=4) if "actions/cache/save@" in step}
+        self.assertEqual(set(composite), {"Save lane-specific Swift test build", "Save SwiftPM repositories",
+                                          "Save validated source-matched Metal cache"})
+        for name, condition in composite.items():
+            with self.subTest(step=name):
+                self.assertIn(SAVE_INPUT + " && ", condition)
+        calls = [step for job in self.jobs.values() for step in step_blocks(job) if field(step, "uses") == BUILD_ACTION]
+        self.assertEqual(len(calls), 5)
+        for call in calls:
+            self.assertEqual(field(call, "save-caches", indent=10), "${{ env.SAVE_CACHES }}")
 
     def test_every_checkout_reuses_master_git_and_falls_back_to_a_cold_checkout(self):
         checkouts = {job_id: job for job_id, job in self.jobs.items() if "actions/checkout@" in job}
@@ -801,15 +818,17 @@ class ProviderCIWorkflowTests(unittest.TestCase):
                 steps = step_blocks(job)
                 self.assertEqual([field(step, "name", indent=6) for step in steps[:6]], list(GIT_CACHE_STEPS))
                 week, restore, cached, discard, cold, save = steps[:6]
-                self.assertEqual(run_command(week).splitlines()[0], 'echo "week=$(date -u +%G-W%V)" >> "$GITHUB_OUTPUT"')
+                self.assertEqual(run_command(week).splitlines()[:3], ['day=$(date -u +%F)', 'echo "day=$day" >> "$GITHUB_OUTPUT"',
+                                                                  'echo "month=${day%-*}" >> "$GITHUB_OUTPUT"'])
                 self.assertIn("command -v zstd >/dev/null && echo zstd || echo gzip", week)
                 # Full history never seeds, or is restored by, a shallow job.
                 family = ("git-full-v1" if job_id == "docs" else "git-v1") + "-${{ runner.os }}-"
-                weekly = family + "${{ steps.git-week.outputs.week }}-"
+                # One entry per day and branch; restore the newest earlier day.
+                monthly = family + "${{ steps.git-day.outputs.month }}-"
                 self.assertEqual(field(restore, "uses"), CACHE_RESTORE)
                 self.assertEqual(field(restore, "path", indent=10), ".git")
-                self.assertEqual(field(restore, "key", indent=10), weekly + "${{ github.sha }}")
-                self.assertIn(f"restore-keys: |\n            {weekly}\n            {family}\n", restore)
+                self.assertEqual(field(restore, "key", indent=10), family + "${{ steps.git-day.outputs.day }}")
+                self.assertIn(f"restore-keys: |\n            {monthly}\n            {family}\n", restore)
                 # Only the cached attempt may fail: the cold one repeats its
                 # options after discarding the workspace, and fails the job.
                 self.assertEqual(sum("continue-on-error:" in step for step in steps[:6]), 1)
@@ -823,7 +842,7 @@ class ProviderCIWorkflowTests(unittest.TestCase):
                 options = {"release-integrity": [], "docs": ["fetch-depth: 0"]}.get(job_id, ["submodules: recursive"])
                 for step in (cached, cold):
                     self.assertEqual(checkout_options(step), options + ["persist-credentials: false"])
-                self.assertEqual(field(save, "if"), MASTER_PUSH + " && steps.git-cache.outputs.cache-hit != 'true'")
+                self.assertEqual(field(save, "if"), SAVE_CACHES + " && steps.git-cache.outputs.cache-hit != 'true'")
                 self.assertEqual(field(save, "uses"), CACHE_SAVE)
                 self.assertEqual(field(save, "path", indent=10), ".git")
                 self.assertEqual(field(save, "key", indent=10), "${{ steps.git-cache.outputs.cache-primary-key }}")
@@ -898,7 +917,7 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         self.assertEqual(field(save, "uses", indent=6), CACHE_SAVE)
         self.assertEqual(field(save, "key", indent=8), "${{ steps.spm-repos.outputs.cache-primary-key }}")
         self.assertEqual(field(save, "if", indent=6),
-                         "${{ !cancelled() && " + MASTER_PUSH + " && steps.timestamps.outcome == 'success' "
+                         "${{ !cancelled() && " + SAVE_INPUT + " && steps.timestamps.outcome == 'success' "
                          "&& steps.spm-repos.outputs.cache-hit != 'true' }}")
         self.assertGreater(names.index("Save SwiftPM repositories"), names.index("Record timestamps for successfully built sources"))
 

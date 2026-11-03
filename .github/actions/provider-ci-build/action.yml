@@ -4,6 +4,9 @@ inputs:
   lane:
     description: provider, sdk or cluster; each owns independent build outputs
     required: true
+  save-caches:
+    description: "'true' to save this lane's caches; ci.yml passes true only for pushes to master and dev"
+    default: 'false'
 runs:
   using: composite
   steps:
@@ -98,10 +101,10 @@ runs:
       id: timestamps
       shell: bash
       run: python3 scripts/provider-release-cache.py snapshot-mtimes
-    # Only master pushes save (docs/developer/build.md#ci-caching): a pull
-    # request's entry is scoped to its merge ref, where nothing restores it.
+    # Only callers' trusted pushes save (save-caches): a pull request's entry
+    # is scoped to its merge ref, where nothing else restores it.
     - name: Save lane-specific Swift test build
-      if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/master' && steps.timestamps.outcome == 'success' && steps.swift-cache.outputs.cache-hit != 'true' }}
+      if: ${{ !cancelled() && inputs.save-caches == 'true' && steps.timestamps.outcome == 'success' && steps.swift-cache.outputs.cache-hit != 'true' }}
       uses: actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
       with:
         path: |
@@ -110,7 +113,7 @@ runs:
           libs/darkbloom-cluster/.build
         key: ${{ steps.keys.outputs.swift-key }}
     - name: Save SwiftPM repositories
-      if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/master' && steps.timestamps.outcome == 'success' && steps.spm-repos.outputs.cache-hit != 'true' }}
+      if: ${{ !cancelled() && inputs.save-caches == 'true' && steps.timestamps.outcome == 'success' && steps.spm-repos.outputs.cache-hit != 'true' }}
       uses: actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
       with:
         path: ~/Library/Caches/org.swift.swiftpm/repositories
@@ -137,7 +140,7 @@ runs:
         bin=$(swift build --package-path "$package" --show-bin-path)
         ./scripts/stage-test-metallib.sh "$bin"
     - name: Save validated source-matched Metal cache
-      if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/master' && steps.metallib.outcome == 'success' && steps.metallib-cache.outputs.cache-hit != 'true' }}
+      if: ${{ !cancelled() && inputs.save-caches == 'true' && steps.metallib.outcome == 'success' && steps.metallib-cache.outputs.cache-hit != 'true' }}
       uses: actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
       with:
         path: ${{ runner.temp }}/metallib-cache

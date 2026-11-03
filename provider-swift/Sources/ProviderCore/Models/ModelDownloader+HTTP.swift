@@ -97,7 +97,7 @@ extension ModelDownloader {
                 if (error as? URLError)?.code == .cancelled { throw error }
                 lastError = error
                 if attempt < attempts {
-                    try await Task.sleep(nanoseconds: UInt64(attempt) * 1_000_000_000)
+                    try await taskSleep(retryBackoff * attempt)
                     continue
                 }
             }

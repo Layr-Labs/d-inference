@@ -63,7 +63,7 @@ extension CoordinatorClient {
             // Its terms: the handshake gets one negotiation window from its
             // start; a ready transport then gets its own (connectAndRun).
             memberFinalAttemptUntil = now.advanced(by: .seconds(planned.seconds))
-                .advanced(by: ClusterMemberNegotiation.window)
+                .advanced(by: config.memberNegotiationWindow)
         }
         return planned.seconds
     }
@@ -80,7 +80,7 @@ extension CoordinatorClient {
             memberAttemptUntil = nil
             return
         }
-        memberAttemptUntil = now.advanced(by: ClusterMemberNegotiation.window)
+        memberAttemptUntil = now.advanced(by: config.memberNegotiationWindow)
     }
 
     /// The handshake of this attempt failed: the coordinator was not reached.

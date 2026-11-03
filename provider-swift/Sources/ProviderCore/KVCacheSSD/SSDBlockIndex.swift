@@ -10,7 +10,10 @@
 //
 // TTL is SLIDING on hit (30-minute max, `SSDPrefixCachePolicy`): a hit
 // bumps `lastAccess` AND touches the file's mtime, so recency survives a
-// process restart (the scan seeds `lastAccess` from mtime).
+// process restart (the scan seeds `lastAccess` from mtime). A complete
+// checkpoint's touch needs a reader holding the file alone and an mtime at
+// least `ttlSeconds / 30` old, so that mtime can trail `lastAccess`. Whole-root
+// TTL expiry of a loaded store's file checks `lastAccess` first and persists it.
 //
 // Eviction is `unlink` + index removal, oldest-by-last-hit first (LRU),
 // coordinated across models by `SSDDiskBudget` under one box-wide budget.
@@ -131,6 +134,11 @@ final class SSDBlockIndex: @unchecked Sendable {
         }
     }
 
+    /// The entry's last hit or write, nil when it is not indexed.
+    func lastAccess(tag16: Data) -> Int64? {
+        lock.withLock { entries[tag16]?.lastAccess }
+    }
+
     /// Sliding-TTL bump for a hit run.
     func touch(tags16: some Sequence<Data>, now: Int64) {
         lock.withLock {
@@ -152,8 +160,8 @@ final class SSDBlockIndex: @unchecked Sendable {
 
     /// Globally-oldest entry (LRU eviction candidate).
     func oldest() -> (tag16: Data, lastAccess: Int64, fileBytes: Int)? {
-        // Budget selection needs one candidate, not a sorted copy of every
-        // model's index. Keep the same tag tie-break as oldestEntries().
+        // Budget selection needs one candidate, not an ordered copy of every
+        // model's index. Keep the order of `OldestFirstSnapshot.precedes`.
         lock.withLock {
             entries.min {
                 if $0.value.lastAccess != $1.value.lastAccess {
@@ -164,18 +172,63 @@ final class SSDBlockIndex: @unchecked Sendable {
         }
     }
 
-    /// Stable oldest-first snapshot. Eviction walks this bounded list so one
-    /// stale or temporarily undeletable index entry cannot pin every newer
-    /// victim behind it.
-    func oldestEntries() -> [(tag16: Data, lastAccess: Int64, fileBytes: Int)] {
-        lock.withLock {
+    /// Every entry in eviction order (oldest last hit first, then
+    /// lexicographic tag), produced on demand: O(n) to copy and heapify, then
+    /// O(log n) per entry taken, so a walk that stops early never sorts the
+    /// whole index. Only the copy holds the index lock; iteration never
+    /// observes later index changes.
+    func oldestFirstSnapshot() -> OldestFirstSnapshot {
+        OldestFirstSnapshot(lock.withLock {
             entries.map { (tag16: $0.key, lastAccess: $0.value.lastAccess, fileBytes: $0.value.fileBytes) }
-                .sorted {
-                    if $0.lastAccess != $1.lastAccess {
-                        return $0.lastAccess < $1.lastAccess
-                    }
-                    return $0.tag16.lexicographicallyPrecedes($1.tag16)
-                }
+        })
+    }
+
+    /// Binary min-heap over a copied snapshot; see `oldestFirstSnapshot()`.
+    struct OldestFirstSnapshot: Sequence, IteratorProtocol {
+        typealias Element = (tag16: Data, lastAccess: Int64, fileBytes: Int)
+
+        private var heap: [Element]
+
+        fileprivate init(_ entries: [Element]) {
+            heap = entries
+            for parent in stride(from: heap.count / 2 - 1, through: 0, by: -1) {
+                siftDown(from: parent)
+            }
+        }
+
+        mutating func next() -> Element? {
+            guard let last = heap.popLast() else { return nil }
+            guard !heap.isEmpty else { return last }
+            let oldest = heap[0]
+            heap[0] = last
+            siftDown(from: 0)
+            return oldest
+        }
+
+        private mutating func siftDown(from start: Int) {
+            var parent = start
+            while true {
+                let left = 2 * parent + 1
+                guard left < heap.count else { return }
+                let right = left + 1
+                let child = right < heap.count && Self.precedes(heap[right], heap[left]) ? right : left
+                guard Self.precedes(heap[child], heap[parent]) else { return }
+                heap.swapAt(parent, child)
+                parent = child
+            }
+        }
+
+        /// Eviction order, the same as `oldest()`. Tags are unique keys, so the
+        /// order is total and the heap yields exactly the sorted sequence.
+        /// Raw-byte comparison equals `Data.lexicographicallyPrecedes` without
+        /// copying each tag into a `Data.Iterator`.
+        private static func precedes(_ a: Element, _ b: Element) -> Bool {
+            if a.lastAccess != b.lastAccess {
+                return a.lastAccess < b.lastAccess
+            }
+            return a.tag16.withUnsafeBytes { lhs in
+                b.tag16.withUnsafeBytes { rhs in lhs.lexicographicallyPrecedes(rhs) }
+            }
         }
     }
 
@@ -218,8 +271,9 @@ protocol SSDEvictableStore: AnyObject, Sendable {
     func performExternalDestructiveChange(_ body: () -> Void) -> Bool
     /// Retire only the named owned files, preserving the generation of survivors.
     /// Return paths actually unlinked; arbitrary external destruction uses the
-    /// separate index-reconciliation method above.
-    func retireOwnedEntries(_ urls: [URL]) -> Set<String>
+    /// separate index-reconciliation method above. With `unusedSince`, a file
+    /// the index saw hit after that time stays, and that hit becomes its mtime.
+    func retireOwnedEntries(_ urls: [URL], unusedSince: Int64?) -> Set<String>
 }
 
 /// Process-wide disk budget across all models, resolved by `PrefixCachePolicy`.
@@ -276,14 +330,14 @@ final class SSDDiskBudget: @unchecked Sendable {
     }
 
     /// nil means no active owner; an empty set means the owner removed nothing.
-    func retireActiveEntries(root: URL, urls: [URL]) -> Set<String>? {
+    func retireActiveEntries(root: URL, urls: [URL], unusedSince: Int64? = nil) -> Set<String>? {
         let key = root.standardizedFileURL.resolvingSymlinksInPath().path
         return lock.withLock {
             guard let store = stores.values.first(where: {
                 $0.evictionRoot.standardizedFileURL.resolvingSymlinksInPath().path == key
                     && $0.ownsEvictionRoot
             }) else { return nil }
-            return store.retireOwnedEntries(urls)
+            return store.retireOwnedEntries(urls, unusedSince: unusedSince)
         }
     }
 

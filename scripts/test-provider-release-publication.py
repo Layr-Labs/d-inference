@@ -305,6 +305,358 @@ class PublicationTests(PublicationFixture):
         self.assertEqual(PUB.release_changelog(dict(env, GITHUB_REF_TYPE='branch')), 'Release v0.9.8')
 
 
+GLM_BLOCK = (Path(__file__).resolve().parent.parent
+             / 'provider-swift/Tests/ProviderCoreTests/Fixtures/ClusterRuntime/glm-5.3-flash-dev-branch17.json')
+ALL_FAMILIES = ['hand_off', 'pipeline', 'pipeline_speculative', 'tensor_parallel']
+
+
+def qualification(schedule, mode='tensor_parallel_v1', cuts=(), media=True):
+    return {'schedule': schedule, 'numerics_classes': ['g17d-nax1-mlx-22222222-macos27.0'] * 2, 'cuts': list(cuts),
+            'mode': mode, 'tensor_parallel_shares': None, 'promotable': True, 'diverged': False,
+            'evidence_sha256': 'f' * 64, 'qualified_at': '2026-10-31T00:00:00Z',
+            'request_envelope': {'sampling': True, 'tools': True, 'vision': media, 'video': media,
+                                 'max_prompt_tokens': 1048576, 'max_output_tokens': 1048576}}
+
+
+def cluster_runtime_block():
+    """The 27B declared (a grant of its two families; the pipeline's qualifications, text only, then tensor
+    parallel's), the 9B with a grant from records only, GLM with neither."""
+    def model(name, seed, grant=None, qualifications=()):
+        return {'model': name, 'artifact_sha256': seed * 64, 'capability_sha256': 'c' * 64, 'pair_serving_grant': grant,
+                'parity_qualifications': list(qualifications), 'profile_sha256': 'd' * 64, 'resource_policy_sha256': 'e' * 64}
+    declared = [qualification(1, 'pipeline_v1', [32], media=False), qualification(2, 'pipeline_v1', [32], media=False),
+                qualification(1), qualification(2)]
+    return {'schema': 'darkbloom_cluster_runtime_v2', 'native_runtime_sha256': '1' * 64,
+            'metallib_sha256': '2' * 64, 'resource_library_sha256': '3' * 64,
+            'placement_policy_sha256': '4' * 64,
+            'models': [model('EigenLabs/Qwen3.8-27B-4bit-mtp', '5',
+                             {'evidence_sha256': 'f' * 64, 'mode_families': ['pipeline', 'tensor_parallel']}, declared),
+                       model('Qwen3.5-9B', '6', {'evidence_sha256': 'a' * 64, 'mode_families': list(ALL_FAMILIES)}),
+                       model('glm-5.3-flash', '7')]}
+
+
+class ClusterRuntimeTests(PublicationFixture):
+    # The payloads of PublicationFixture (prod) and of its dev twin, byte for
+    # byte as the release lane wrote them before cluster_runtime existed: a
+    # release without the block is unchanged in every environment.
+    PROD_PAYLOAD_SHA256 = 'f864c569d555a574a8499160cb2a815d5d54ce2ac73294e690e16a44cf999758'
+    DEV_PAYLOAD_SHA256 = 'f8d464b44d74957419bb800386735647891775bb1cfc5bc70db794033bd07e50'
+
+    def dev_env(self):
+        return dict(self.env, ENV_PREFIX='dev', VERSION='0.9.8-dev.branch.7')
+
+    def write_block(self, block, name='cluster-runtime.json'):
+        path = self.base / name
+        path.write_text(block if isinstance(block, str) else json.dumps(block, sort_keys=True, separators=(',', ':')))
+        return path
+
+    def test_payload_bytes_are_unchanged_without_the_block(self):
+        self.assertNotIn('cluster_runtime', self.payload)
+        self.assertEqual(PUB.sha256(self.root / 'release-payload.json'), self.PROD_PAYLOAD_SHA256)
+        root = self.base / 'dev'
+        payload = PUB.prepare(root, self.root / PUB.BUNDLE, self.dev_env())
+        self.assertNotIn('cluster_runtime', payload)
+        self.assertEqual(PUB.sha256(root / 'release-payload.json'), self.DEV_PAYLOAD_SHA256)
+
+    def test_every_environment_carries_a_valid_block_through_stage(self):
+        # Staging is refused before and after this block ("Unknown publication environment").
+        for env in (self.dev_env(), dict(self.env, VERSION='0.9.9')):
+            with self.subTest(environment=env['ENV_PREFIX']):
+                block, root = cluster_runtime_block(), self.base / env['ENV_PREFIX']
+                payload = PUB.prepare(root, self.root / PUB.BUNDLE, env, self.write_block(block))
+                self.assertEqual(payload['cluster_runtime'], block)
+                self.assertEqual(list(payload)[-1], 'cluster_runtime')
+                written = json.loads((root / 'release-payload.json').read_text())
+                self.assertEqual(written['cluster_runtime'], block)
+                # Every other field is the payload without the block.
+                without = PUB.prepare(self.base / (env['ENV_PREFIX'] + '-without'), self.root / PUB.BUNDLE, env)
+                self.assertEqual({key: value for key, value in written.items() if key != 'cluster_runtime'}, without)
+                env.update(RELEASE_PAYLOAD_SHA256=PUB.sha256(root / 'release-payload.json'),
+                           RELEASE_PROVENANCE_SHA256=PUB.sha256(root / 'release-provenance.json'))
+                with patch.object(PUB, 'upload') as upload:
+                    PUB.stage(root, env)
+                upload.assert_called_once()
+        with self.assertRaisesRegex(ValueError, 'Unknown publication environment'):
+            PUB.prepare(self.base / 'staging', self.root / PUB.BUNDLE, dict(self.env, ENV_PREFIX='staging'),
+                        self.write_block(cluster_runtime_block()))
+
+    def test_registration_sends_the_block_in_its_canonical_form(self):
+        def sent(env, payload):
+            with patch.object(PUB.urllib.request, 'build_opener') as opener:
+                opener.return_value.open.return_value.__enter__.return_value.read.return_value = b'{}'
+                PUB.coordinator(env, '/v1/releases', payload)
+                return opener.return_value.open.call_args.args[0].data
+        # Read back from the retained payload, as publish does.
+        root = self.base / 'dev'
+        PUB.prepare(root, self.root / PUB.BUNDLE, self.dev_env(), self.write_block(cluster_runtime_block()))
+        env = dict(self.dev_env(), RELEASE_PAYLOAD_SHA256=PUB.sha256(root / 'release-payload.json'),
+                   RELEASE_PROVENANCE_SHA256=PUB.sha256(root / 'release-provenance.json'))
+        body = sent(env, PUB.checked_payload(root, env))
+        self.assertEqual(json.loads(body)['cluster_runtime'], cluster_runtime_block())
+        canonical = json.dumps(cluster_runtime_block(), sort_keys=True, separators=(',', ':')).encode()
+        self.assertIn(b'"cluster_runtime":' + canonical + b'}', body)
+        # Without the block, the body is the one sent before cluster_runtime existed.
+        self.assertEqual(sent(self.env, self.payload), json.dumps(self.payload).encode())
+
+    def test_a_block_that_is_not_canonical_is_refused(self):
+        block = cluster_runtime_block()
+        for label, text in {'whitespace': json.dumps(block, sort_keys=True),
+                            'trailing newline': json.dumps(block, sort_keys=True, separators=(',', ':')) + '\n',
+                            'unsorted keys': json.dumps(dict(reversed(list(block.items()))), separators=(',', ':'))}.items():
+            with self.subTest(row=label), self.assertRaisesRegex(ValueError, 'not canonical'):
+                PUB.prepare(self.base / label, self.root / PUB.BUNDLE, self.dev_env(), self.write_block(text))
+            self.assertFalse((self.base / label).exists())
+
+    def test_malformed_block_is_refused(self):
+        def edited(change):
+            block = cluster_runtime_block()
+            change(block)
+            return block
+        many = [dict(cluster_runtime_block()['models'][1], model=f'model-{index:02d}') for index in range(65)]
+        def edited_q(change, index=0):
+            return edited(lambda b: change(b['models'][0]['parity_qualifications'][index]))
+
+        def edited_envelope(change):
+            return edited_q(lambda q: change(q['request_envelope']))
+
+        def edited_grant(change):
+            return edited(lambda b: change(b['models'][0]['pair_serving_grant']))
+        rows = {
+            'unknown field': edited(lambda b: b.update(extra='x')),
+            'missing field': edited(lambda b: b.pop('metallib_sha256')),
+            'schema v1': edited(lambda b: b.update(schema='darkbloom_cluster_runtime_v1')),
+            'unknown model field': edited(lambda b: b['models'][0].update(extra='x')),
+            'missing model field': edited(lambda b: b['models'][0].pop('profile_sha256')),
+            'no pair_serving_grant': edited(lambda b: b['models'][2].pop('pair_serving_grant')),
+            'grant a string': edited(lambda b: b['models'][2].update(pair_serving_grant='pipeline')),
+            'grant a list': edited(lambda b: b['models'][2].update(pair_serving_grant=['pipeline'])),
+            'grant empty': edited(lambda b: b['models'][2].update(pair_serving_grant={})),
+            'unknown grant field': edited_grant(lambda g: g.update(granted_at='2026-10-31T00:00:00Z')),
+            'missing grant field': edited_grant(lambda g: g.pop('mode_families')),
+            'families not a list': edited_grant(lambda g: g.update(mode_families='pipeline')),
+            'no mode family': edited_grant(lambda g: g.update(mode_families=[])),
+            'unknown mode family': edited_grant(lambda g: g.update(mode_families=['pipeline_mtp'])),
+            'mode families unsorted': edited_grant(lambda g: g.update(mode_families=['tensor_parallel', 'pipeline'])),
+            'mode family repeated': edited_grant(lambda g: g.update(mode_families=['pipeline', 'pipeline'])),
+            'family not a string': edited_grant(lambda g: g.update(mode_families=[1])),
+            'zero grant evidence': edited_grant(lambda g: g.update(evidence_sha256='0' * 64)),
+            'uppercase grant evidence': edited_grant(lambda g: g.update(evidence_sha256='F' * 64)),
+            'grant evidence not a string': edited_grant(lambda g: g.update(evidence_sha256=7)),
+            'no parity_qualifications': edited(lambda b: b['models'][1].pop('parity_qualifications')),
+            'qualifications null': edited(lambda b: b['models'][1].update(parity_qualifications=None)),
+            'qualification a string': edited(lambda b: b['models'][1].update(parity_qualifications=['tensor_parallel'])),
+            'nine qualifications': edited(lambda b: b['models'][1].update(parity_qualifications=[
+                dict(qualification(1), numerics_classes=[f'c{index}'] * 2) for index in range(9)])),
+            'unknown qualification field': edited_q(lambda q: q.update(id='q1')),
+            'missing qualification field': edited_q(lambda q: q.pop('qualified_at')),
+            'shares absent': edited_q(lambda q: q.pop('tensor_parallel_shares')),
+            'shares not null': edited_q(lambda q: q.update(tensor_parallel_shares={'version': 1, 'per_mille': [500, 500]})),
+            'schedule 3': edited_q(lambda q: q.update(schedule=3)),
+            'schedule true': edited_q(lambda q: q.update(schedule=True)),
+            'schedule a string': edited_q(lambda q: q.update(schedule='1')),
+            'unknown mode': edited_q(lambda q: q.update(mode='tensor_parallel_v9')),
+            'one numerics class': edited_q(lambda q: q.update(numerics_classes=['g17d'])),
+            'three numerics classes': edited_q(lambda q: q.update(numerics_classes=['a', 'b', 'c'])),
+            'empty numerics class': edited_q(lambda q: q.update(numerics_classes=['', 'b'])),
+            'numerics class not a string': edited_q(lambda q: q.update(numerics_classes=[1, 2])),
+            'tensor parallel with a cut': edited_q(lambda q: q.update(mode='tensor_parallel_v1', cuts=[8])),
+            'pipeline without a cut': edited_q(lambda q: q.update(mode='pipeline_v1', cuts=[])),
+            'zero cut': edited_q(lambda q: q.update(mode='pipeline_v1', cuts=[0])),
+            'cut not an integer': edited_q(lambda q: q.update(mode='pipeline_v1', cuts=[8.0])),
+            'promotable a number': edited_q(lambda q: q.update(promotable=1)),
+            'diverged and promotable': edited_q(lambda q: q.update(diverged=True)),
+            'zero evidence': edited_q(lambda q: q.update(evidence_sha256='0' * 64)),
+            'uppercase evidence': edited_q(lambda q: q.update(evidence_sha256='F' * 64)),
+            'not an instant': edited_q(lambda q: q.update(qualified_at='2026-10-31')),
+            'unknown envelope field': edited_envelope(lambda e: e.update(logprobs=True)),
+            'missing envelope field': edited_envelope(lambda e: e.pop('video')),
+            'video without vision': edited_envelope(lambda e: e.update(vision=False, video=True)),
+            'no prompt tokens': edited_envelope(lambda e: e.update(max_prompt_tokens=0)),
+            'too many output tokens': edited_envelope(lambda e: e.update(max_output_tokens=1048577)),
+            'sampling a number': edited_envelope(lambda e: e.update(sampling=1)),
+            'a placement twice': edited(lambda b: b['models'][0]['parity_qualifications'].append(qualification(1))),
+            'uppercase digest': edited(lambda b: b.update(native_runtime_sha256='A' * 64)),
+            'short digest': edited(lambda b: b['models'][1].update(capability_sha256='c' * 63)),
+            'zero digest': edited(lambda b: b['models'][1].update(resource_policy_sha256='0' * 64)),
+            'digest not a string': edited(lambda b: b.update(placement_policy_sha256=1)),
+            'no models': edited(lambda b: b.update(models=[])),
+            'models not a list': edited(lambda b: b.update(models={})),
+            'model not an object': edited(lambda b: b['models'].append('glm')),
+            'too many models': edited(lambda b: b.update(models=many)),
+            'unsorted models': edited(lambda b: b['models'].reverse()),
+            'repeated model': edited(lambda b: b['models'].append(dict(b['models'][-1]))),
+            'empty model ID': edited(lambda b: b['models'][0].update(model='')),
+            'long model ID': edited(lambda b: b['models'][0].update(model='A' * 129)),
+            'non-ASCII model ID': edited(lambda b: b['models'][0].update(model='Qwené')),
+            'control byte in model ID': edited(lambda b: b['models'][0].update(model='A\n')),
+            'model ID not a string': edited(lambda b: b['models'][0].update(model=7)),
+            'block not an object': [],
+        }
+        for label, block in rows.items():
+            with self.subTest(row=label):
+                for env in (self.dev_env(), self.env):
+                    with self.assertRaisesRegex(ValueError, 'Invalid cluster_runtime'):
+                        PUB.prepare(self.base / (label + env['ENV_PREFIX']), self.root / PUB.BUNDLE, env,
+                                    self.write_block(block))
+                    self.assertFalse((self.base / (label + env['ENV_PREFIX'])).exists())
+                with self.assertRaisesRegex(ValueError, 'Invalid cluster_runtime'):
+                    PUB.check_cluster_runtime(block)
+                with self.assertRaisesRegex(ValueError, 'Invalid cluster_runtime'):
+                    PUB.validate(dict(self.payload, cluster_runtime=block), self.env)
+        text = json.dumps(cluster_runtime_block())
+        for label, data in {'repeated field': text[:-1] + ', "schema": "darkbloom_cluster_runtime_v2"}',
+                            'repeated grant field': text.replace('"evidence_sha256"', '"mode_families": [], "evidence_sha256"', 1),
+                            'repeated qualification field': text.replace('"cuts"', '"schedule": 1, "cuts"', 1),
+                            'over its bound': text + ' ' * (64 * 1024), 'not JSON': text[:-1]}.items():
+            with self.subTest(row=label), self.assertRaisesRegex(ValueError, 'Invalid cluster_runtime'):
+                PUB.prepare(self.base / label, self.root / PUB.BUNDLE, self.dev_env(), self.write_block(data))
+
+    def test_a_block_whose_derived_ids_exceed_128_bytes_is_refused_before_staging(self):
+        # release/<version>/<model>/s2 with version 0.9.8-dev.branch.7: 30 bytes plus the model ID; a grant's ID
+        # adds 6 more (/grant), a parity qualification's 3 (/q1, /q2).
+        env = self.dev_env()
+        self.assertEqual(len(f"release/{env['VERSION']}/{'m' * 98}/s2".encode()), 128)
+        template = cluster_runtime_block()['models']
+        refused = 'derived cluster approval, grant or parity qualification ID exceeds 128 bytes'
+        for label, base, fits in (('neither', template[2], 98), ('qualifications', dict(template[0], pair_serving_grant=None), 95),
+                                  ('a grant', template[1], 92), ('a grant and qualifications', template[0], 92)):
+            with self.subTest(row=label):
+                block, over = cluster_runtime_block(), cluster_runtime_block()
+                block['models'] = [dict(base, model='m' * fits)]
+                over['models'] = [dict(base, model='m' * (fits + 1))]
+                payload = PUB.prepare(self.base / ('fits ' + label), self.root / PUB.BUNDLE, env,
+                                      self.write_block(block, 'fits.json'))
+                self.assertEqual(payload['cluster_runtime'], block)
+                with self.assertRaisesRegex(ValueError, refused), patch.object(PUB, 'upload') as upload:
+                    PUB.prepare(self.base / ('over ' + label), self.root / PUB.BUNDLE, env, self.write_block(over, 'over.json'))
+                upload.assert_not_called()
+                self.assertFalse((self.base / ('over ' + label) / 'release-payload.json').exists())
+                with self.assertRaisesRegex(ValueError, refused):
+                    PUB.validate(dict(payload, cluster_runtime=over), env)
+        # One grant per approval; n counts each schedule's qualifications from 1 in block order: q1 the pipeline,
+        # q2 tensor parallel.
+        self.assertEqual(PUB.derived_ids(template[0], 'V'), [
+            'release/V/EigenLabs/Qwen3.8-27B-4bit-mtp/' + suffix
+            for suffix in ('s1', 's2', 's1/grant', 's2/grant', 's1/q1', 's2/q1', 's1/q2', 's2/q2')])
+        self.assertEqual(PUB.derived_ids(template[2], 'V'), ['release/V/glm-5.3-flash/s1', 'release/V/glm-5.3-flash/s2'])
+
+    def test_a_registration_body_over_the_coordinators_limit_is_refused_before_staging(self):
+        # The coordinator reads POST /v1/releases under 64 KiB, the block's own bound: a block within its bound can
+        # still take the body over the limit. Grow a valid block by whole qualifications, then lengthen numerics
+        # classes byte by byte to a body of exactly the limit, and one byte over it.
+        env, limit = self.dev_env(), PUB.COORDINATOR_REGISTRATION_MAXIMUM_BYTES
+        self.assertEqual(limit, 65536)
+        sized = PUB.prepare(self.base / 'sized', self.root / PUB.BUNDLE, env)
+        template = cluster_runtime_block()['models'][0]
+
+        def block(models):
+            return dict(cluster_runtime_block(), models=models)
+
+        def body(models):
+            return PUB.registration_body(dict(sized, cluster_runtime=block(models)))
+
+        def grown(models):
+            count = len(models[-1]['parity_qualifications']) if models else 8
+            index = len(models) - (count < 8)
+            return models[:index] + [dict(template, model=f'm{index:02d}', parity_qualifications=[
+                dict(qualification(1 + n % 2), numerics_classes=[f'c{n}'] * 2) for n in range(count % 8 + 1)])]
+
+        def padded(models, extra):
+            out = []
+            for model in models:
+                qualifications = []
+                for q in model['parity_qualifications']:
+                    classes = []
+                    for name in q['numerics_classes']:
+                        add = min(extra, 64 - len(name))
+                        classes.append(name + 'x' * add)
+                        extra -= add
+                    qualifications.append(dict(q, numerics_classes=classes))
+                out.append(dict(model, parity_qualifications=qualifications))
+            self.assertEqual(extra, 0)
+            return out
+        models = grown([])
+        while len(body(grown(models))) <= limit:
+            models = grown(models)
+        gap = limit - len(body(models))
+        exact, over = padded(models, gap), padded(models, gap + 1)
+        self.assertEqual((len(body(exact)), len(body(over))), (limit, limit + 1))
+        self.assertLess(len(json.dumps(block(over), sort_keys=True, separators=(',', ':'))), PUB.CLUSTER_RUNTIME_MAXIMUM_BYTES)
+
+        payload = PUB.prepare(self.base / 'exact', self.root / PUB.BUNDLE, env, self.write_block(block(exact), 'exact.json'))
+        self.assertEqual(len(PUB.registration_body(payload)), limit)
+        refused = f"registration body is {limit + 1} bytes, over the coordinator's limit of {limit} bytes"
+        with self.assertRaisesRegex(ValueError, refused), patch.object(PUB, 'upload') as upload:
+            PUB.prepare(self.base / 'over', self.root / PUB.BUNDLE, env, self.write_block(block(over), 'over.json'))
+        upload.assert_not_called()
+        self.assertFalse((self.base / 'over' / 'release-payload.json').exists())
+        with self.assertRaisesRegex(ValueError, refused):
+            PUB.validate(dict(payload, cluster_runtime=block(over)), env)
+        # The same limit without a block: release notes the coordinator would refuse.
+        with self.assertRaisesRegex(ValueError, "over the coordinator's limit"):
+            PUB.validate(dict(self.payload, changelog='x' * limit), self.env)
+        # Registration sends exactly the bytes that were sized.
+        with patch.object(PUB.urllib.request, 'build_opener') as opener:
+            opener.return_value.open.return_value.__enter__.return_value.read.return_value = b'{}'
+            PUB.coordinator(dict(env, RELEASE_KEY='k'), '/v1/releases', payload)
+        self.assertEqual(opener.return_value.open.call_args.args[0].data, PUB.registration_body(payload))
+
+    def test_the_glm_block_of_the_branch17_app_is_accepted(self):
+        # The block the release lane computed for GLM-5.3-Flash with the 0.10.5-dev.branch.17 app (pinned by the
+        # Swift suite): canonical and valid, with the declared grant and, per schedule, the pipeline's qualification
+        # (cut at 45 / 2, text only) and tensor parallel's (images and video, as DevNet's catalog lists them).
+        block = PUB.load_cluster_runtime(GLM_BLOCK)
+        PUB.check_cluster_derived_ids(block, '0.10.5-dev.branch.18')
+        [glm] = block['models']
+        self.assertEqual(glm['model'], 'glm-5.3-flash')
+        self.assertEqual(glm['pair_serving_grant']['mode_families'], ['pipeline', 'tensor_parallel'])
+        qualifications = glm['parity_qualifications']
+        self.assertEqual([(q['schedule'], q['mode'], q['cuts']) for q in qualifications],
+                         [(1, 'pipeline_v1', [22]), (2, 'pipeline_v1', [22]), (1, 'tensor_parallel_v1', []),
+                          (2, 'tensor_parallel_v1', [])])
+        for q in qualifications:
+            self.assertEqual(q['numerics_classes'], ['g17d-nax1-mlx-98bab9d7-macos27.0'] * 2)
+            self.assertEqual((q['tensor_parallel_shares'], q['promotable'], q['diverged']), (None, True, False))
+            self.assertEqual(q['evidence_sha256'], glm['pair_serving_grant']['evidence_sha256'])
+            media = q['mode'] == 'tensor_parallel_v1'
+            self.assertEqual((q['request_envelope']['vision'], q['request_envelope']['video']), (media, media))
+
+    def test_boundary_values_are_accepted(self):
+        block = cluster_runtime_block()
+        block['models'] = [dict(block['models'][1], model=f'm{index:02d}') for index in range(64)]
+        PUB.check_cluster_runtime(block)
+        version = '0.9.8-dev.branch.7'
+        PUB.validate(dict(self.payload, version=version, require_app_attest_qualification=False,
+                          url='https://releases.example/' + PUB.object_key(dict(self.payload, version=version)),
+                          cluster_runtime=block), self.dev_env())
+        block['models'] = [dict(block['models'][0], model=' ' + '~' * 127)]
+        PUB.check_cluster_runtime(block)
+        # A grant of every family; none.
+        block['models'][0]['pair_serving_grant'] = {'evidence_sha256': 'f' * 64, 'mode_families': list(ALL_FAMILIES)}
+        PUB.check_cluster_runtime(block)
+        block['models'][0]['pair_serving_grant'] = None
+        PUB.check_cluster_runtime(block)
+        # Eight qualifications; a pipeline cut; a measurement kept for the record; a fraction and an offset;
+        # the smallest envelope.
+        block['models'][0]['parity_qualifications'] = [
+            dict(qualification(1 + index % 2), numerics_classes=[f'c{index}'] * 2) for index in range(8)]
+        PUB.check_cluster_runtime(block)
+        block['models'][0]['parity_qualifications'] = [dict(
+            qualification(1), mode='pipeline_v1', cuts=[8], promotable=False, diverged=True,
+            qualified_at='2026-10-31T00:00:00.5+02:00',
+            request_envelope={'sampling': False, 'tools': False, 'vision': False, 'video': False,
+                              'max_prompt_tokens': 1, 'max_output_tokens': 1})]
+        PUB.check_cluster_runtime(block)
+
+    def test_only_prepare_takes_the_block(self):
+        for operation in ('stage', 'publish', 'download'):
+            with self.subTest(operation=operation), \
+                    patch('sys.argv', ['publication', operation, '--directory', str(self.root),
+                                                   '--cluster-runtime', str(self.write_block(cluster_runtime_block()))]), \
+                    patch('sys.stderr'), self.assertRaises(SystemExit):
+                PUB.main()
+
+
 class GitHubPublicationTests(PublicationFixture):
     def fake_github(self, release=None, fail_at=None, content=None):
         self.release = release

@@ -74,7 +74,11 @@ public final class ClusterService: @unchecked Sendable {
     let store: ClusterSetupStore
     let pairingStore: ClusterPairingStore
     private let recoveryGraceSeconds: Double
+    /// The supervision loop's period: one supervise/publish cycle per interval.
+    private let supervisionIntervalSeconds: Double
     private let beforePartStart: (@Sendable () -> Void)?
+    /// The environment this Mac's parts start from (`partEnvironment`); nil: this process's own at each start.
+    private let environment: [String: String]?
     /// Main supervision thread only; a pending stop cannot be acknowledged by
     /// a cycle that read the preceding serving intent.
     private var supervisedStopDrainID: UUID?
@@ -92,7 +96,7 @@ public final class ClusterService: @unchecked Sendable {
     /// The part whose end (or failed start) set `nextStart`: its restart backoff does not hold back another part.
     private var endedKey: String?
     private var backoff: Double = 3
-    private var responder: ClusterSetupLinkExchange.Responder?
+    var responder: ClusterSetupLinkExchange.Responder?
     var stopping = false
     private var syncing = false
     private var nextSync = Date.distantPast
@@ -100,6 +104,8 @@ public final class ClusterService: @unchecked Sendable {
     private var updateInFlight = false
     private var nextUpdateCheck = Date.distantPast
     private var updatingLine: String?
+    /// Said once while the Macs run different builds after an update.
+    private var updateWaitLine: String?
     // The cluster approval is asked for once per run of this service on the control leader, and again every minute
     // while the pair is offered or serves locally with its approval set aside (`checkApproval`).
     private var approvalChecked = false
@@ -137,9 +143,10 @@ public final class ClusterService: @unchecked Sendable {
     /// Seconds before the next ask: 10 while the other Mac answers, longer (to 120) while it does not, so the link's
     /// one-at-a-time request lock is not held for the other commands.
     private var relayAskInterval: Double = 10
-    /// When each listener last looked for the cable on another port (`cableMove`).
-    private var responderCableCheck = Date.distantPast
-    var controlCableCheck = Date.distantPast
+    /// When each listener last checked its cable port and its pairing (`listenerChange`).
+    var responderCheck = Date.distantPast
+    var controlCheck = Date.distantPast
+    let listening: Listening
     var leaseInFlight = false
     var nextLease: Double = 0
     var lastModeLine: String?
@@ -156,13 +163,18 @@ public final class ClusterService: @unchecked Sendable {
         try self.init(settings: settings, paths: ClusterUserPaths())
     }
 
-    /// Internal composition of the service's existing stores. Public callers keep
-    /// the canonical user namespace and the normal recovery deadline.
+    /// Internal composition of the service's existing stores. Public callers keep the canonical user namespace,
+    /// the normal recovery deadline, the one-second supervision interval and the cable's listeners.
     init(settings: Settings, paths: ClusterUserPaths, recoveryGraceSeconds: Double = 300,
-         beforePartStart: (@Sendable () -> Void)? = nil) {
+         supervisionIntervalSeconds: Double = 1, beforePartStart: (@Sendable () -> Void)? = nil,
+         environment: [String: String]? = nil, listening: Listening = .init()) {
         precondition(recoveryGraceSeconds.isFinite && recoveryGraceSeconds >= 0)
+        precondition(supervisionIntervalSeconds.isFinite && supervisionIntervalSeconds > 0)
         self.recoveryGraceSeconds = recoveryGraceSeconds
+        self.supervisionIntervalSeconds = supervisionIntervalSeconds
         self.beforePartStart = beforePartStart
+        self.environment = environment
+        self.listening = listening
         pairingStore = .default(home: paths.homeDirectory)
         var wizard = settings.wizard
         wizard.derivedPlacement = true
@@ -193,6 +205,19 @@ public final class ClusterService: @unchecked Sendable {
     public static func running() -> Bool {
         guard let directory = try? paths().lock.deletingLastPathComponent() else { return false }
         return running(in: directory) == true
+    }
+
+    /// Holds this home's service lock, so no cluster service starts here until the hold is released (a start fails as
+    /// "already running", and its login agent retries). Nil when a service holds the lock; throws when the lock
+    /// cannot be opened. `darkbloom update --rollback` holds it across its swap, so this Mac cannot join a pair while
+    /// its release changes.
+    public static func holdStopped(operation: String) throws -> UpdateProcessLock? {
+        try holdStopped(operation: operation, lockFile: try paths().lock)
+    }
+
+    static func holdStopped(operation: String, lockFile: URL) throws -> UpdateProcessLock? {
+        try ClusterConfigurationFiles.ensureDirectory(lockFile.deletingLastPathComponent(), create: true, privateMode: true)
+        return try UpdateProcessLock.attempt(at: lockFile, operation: operation).lock
     }
 
     private static func running(in directory: URL) -> Bool? {
@@ -292,7 +317,7 @@ public final class ClusterService: @unchecked Sendable {
                 checkApproval(say: say)
                 publish(afterSupervision: true)
             }
-            if ticker.wait(timeout: .now() + 1) == .success { stopped = true }
+            if ticker.wait(timeout: .now() + supervisionIntervalSeconds) == .success { stopped = true }
         }
         lock.withLock { stopping = true }
         _ = controlDone.wait(timeout: .now() + 5)
@@ -324,37 +349,75 @@ public final class ClusterService: @unchecked Sendable {
         }
     }
 
-    /// How often a listener looks for the cable on another port: a cable moved to another Thunderbolt port (or a port
-    /// whose address changed) leaves the listener on the old one, where the other Mac never reaches it.
-    static let cableCheckSeconds: Double = 5
+    /// Where this service's two listeners answer: the cable's interface, on the exchange's and the control lease's own
+    /// ports. The checks put them on loopback, on ports of their own.
+    struct Listening: Sendable {
+        var exchangePort = ClusterSetupLinkExchange.port
+        var controlPort = ClusterSetupLinkExchange.controlPort
+        var policy = ClusterLinkInterfacePolicy.thunderboltOnly
+        /// Nil: the cable's interface on this Mac, read at each use (`LiveContext.linkSelection`).
+        var selection: ClusterLinkInterfaceSelection?
+    }
 
-    /// The cable's port now when it is not the one `listener` was started on (checked at most every
-    /// `cableCheckSeconds` per listener, `checked`); nil when it has not moved, or there is no listener or cable.
-    func cableMove(of listener: ClusterSetupLinkExchange.Responder?,
-                   checked: ReferenceWritableKeyPath<ClusterService, Date>) -> ClusterLinkInterfaceSelection? {
-        guard let bound = listener?.selection else { return nil }
+    func listenerSelection() throws -> ClusterLinkInterfaceSelection {
+        try listening.selection ?? context.linkSelection()
+    }
+
+    /// How often a listener checks that it still reaches the paired Mac: a cable moved to another Thunderbolt port (or a
+    /// port whose address changed) leaves it on the old one, where the other Mac never reaches it, and a pairing made
+    /// since it started leaves it keyed with the old one, so it refuses the other Mac's every connection (2026-10-31).
+    static let listenerCheckSeconds: Double = 5
+
+    /// What leaves a running listener unable to answer the paired Mac.
+    enum ListenerChange {
+        /// The cable is on another port, or its port has another address, now.
+        case cableMoved(ClusterLinkInterfaceSelection)
+        /// The pairing this Mac uses now is another one (`darkbloom cluster` or `darkbloom cluster pair` paired it
+        /// again).
+        case pairingChanged(ClusterSetupLinkExchange.Pairing.Identity)
+        /// This Mac holds no pairing now.
+        case unpaired
+    }
+
+    /// What changed since `listener` started (checked at most every `listenerCheckSeconds` per listener, `checked`); nil
+    /// when nothing did, or there is no listener. A cable or pairing store that cannot be read now changes nothing.
+    func listenerChange(of listener: ClusterSetupLinkExchange.Responder?,
+                        checked: ReferenceWritableKeyPath<ClusterService, Date>) -> ListenerChange? {
+        guard let listener else { return nil }
         let due = lock.withLock { () -> Bool in
-            guard Date().timeIntervalSince(self[keyPath: checked]) >= Self.cableCheckSeconds else { return false }
+            guard Date().timeIntervalSince(self[keyPath: checked]) >= Self.listenerCheckSeconds else { return false }
             self[keyPath: checked] = Date()
             return true
         }
-        guard due, let current = try? context.linkSelection(),
-              ClusterSetupLinkExchange.cableMoved(bound: bound, current: current) else { return nil }
-        return current
+        guard due else { return nil }
+        if let current = try? listenerSelection(), ClusterSetupLinkExchange.cableMoved(bound: listener.selection, current: current) {
+            return .cableMoved(current)
+        }
+        let pairing: ClusterSetupLinkExchange.Pairing?
+        do { pairing = try ClusterSetupLinkExchange.pairing(store: pairingStore) } catch { return nil }
+        guard let identity = pairing?.identity else { return .unpaired }
+        return identity == listener.pairing ? nil : .pairingChanged(identity)
     }
 
-    private func ensureResponder(say: @escaping @Sendable (String) -> Void) {
-        if let moved = cableMove(of: lock.withLock({ responder }), checked: \.responderCableCheck) {
+    func ensureResponder(say: @escaping @Sendable (String) -> Void) {
+        if let change = listenerChange(of: lock.withLock({ responder }), checked: \.responderCheck) {
             lock.withLock { responder }?.stop()
             lock.withLock { responder = nil }
-            say("the cable is on \(moved.interface) now: answering the paired Mac there")
-            // A port that was never set up has no fixed address: the other Mac cannot find this one there.
-            if let port = OnboardingLive.unsetCablePort(ClusterLinkReadinessProbe.inspectLocalLink()) {
-                say("\(port) is not set up for the cluster: run `darkbloom cluster` on this Mac and press f (macOS asks for your password once)")
+            switch change {
+            case .cableMoved(let moved):
+                say("the cable is on \(moved.interface) now: answering the paired Mac there")
+                // A port that was never set up has no fixed address: the other Mac cannot find this one there.
+                if let port = OnboardingLive.unsetCablePort(ClusterLinkReadinessProbe.inspectLocalLink()) {
+                    say("\(port) is not set up for the cluster: run `darkbloom cluster` on this Mac and press f (macOS asks for your password once)")
+                }
+            case .pairingChanged(let current):
+                say("this Mac's pairing changed (\(current.clusterID)): answering the paired Mac with the new one")
+            case .unpaired:
+                say("this Mac is no longer paired: it stopped answering over the cable")
             }
         }
         guard lock.withLock({ responder == nil }), let pairing = try? ClusterSetupLinkExchange.pairing(store: pairingStore),
-              let selection = try? context.linkSelection() else { return }
+              let selection = try? listenerSelection() else { return }
         let context = self.context, store = self.store
         // A model the leader copies here over the cable lands in this Mac's model store, verified file by file.
         let provisioner = ClusterModelProvisionResponder(store: {
@@ -368,7 +431,8 @@ public final class ClusterService: @unchecked Sendable {
             return ClusterModelWorkerCheck(executable: URL(fileURLWithPath: local.workerExecutable), runtimeBinarySHA256: local.runtimeBinarySHA256)
         }, say: say)
         do {
-            let created = try ClusterSetupLinkExchange.Responder(pairing: pairing, selection: selection, answer: {
+            let created = try ClusterSetupLinkExchange.Responder(pairing: pairing, selection: selection,
+                port: listening.exchangePort, policy: listening.policy, answer: {
                 ClusterSetupLinkAnswer(report: context.report(input: context.pairInput(), saved: context.savedConfiguration(),
                     inbox: ClusterSetupLocalReader.inbox(store)), facts: try context.localFacts(pairing: pairing, selection: selection))
             }, receive: { [weak self] data in
@@ -930,6 +994,7 @@ public final class ClusterService: @unchecked Sendable {
             value.localOnly = record?.leadership.map { $0.scope.isLocalOnly }
             value.memberQuickEnds = memberQuickEnds
             value.approvalID = configuration?.nativeMember?.clusterApproval?.id ?? ""
+            value.pairUpdate = ClusterPairUpdate.readProgress(from: ClusterServiceAgent.updateProgressPath(serviceDirectory: store.paths.directory))
             return value
         }
     }
@@ -960,12 +1025,22 @@ public final class ClusterService: @unchecked Sendable {
             if case .reached = context.reachPeer(), let facts = context.peerFacts { current[facts.memberID] = facts.runtimeBinarySHA256 }
             let changed = ClusterOnboardingUpdate.changed(pinned: pinned, current: current)
             guard !changed.isEmpty else { return }
+            let macs = changed.count == 1 && changed[0] == local.id ? "this Mac" : changed.count == 1 ? "the other Mac" : "both Macs"
+            // The two Macs restart into an update seconds apart, or one was updated alone: plan once both run one build.
+            guard ClusterOnboardingUpdate.oneBuild(pinned: pinned, current: current) else {
+                let line = "Darkbloom changed on \(macs): waiting until both Macs answer with the same build to set the cluster up again for \(model)"
+                if self.lock.withLock({ self.updateWaitLine != line }) {
+                    self.lock.withLock { self.updateWaitLine = line }
+                    say(line)
+                }
+                return
+            }
+            self.lock.withLock { self.updateWaitLine = nil }
             guard let held = ClusterControlCommandLock.acquire(seconds: 5) else { return }
             defer { held.release() }
             self.lock.withLock { self.updatingLine = ClusterOnboardingUpdate.statusLine }
             self.publish()
-            say("Darkbloom changed on \(changed.count == 1 && changed[0] == local.id ? "this Mac" : changed.count == 1 ? "the other Mac" : "both Macs"): "
-                + "setting the cluster up again for \(model)")
+            say("Darkbloom changed on \(macs): setting the cluster up again for \(model)")
             func failed(_ lines: [String]) {
                 say("could not set the cluster up again after the update: " + lines.joined(separator: " "))
                 self.lock.withLock { self.nextUpdateCheck = Date().addingTimeInterval(ClusterOnboardingUpdate.retryAfterFailureSeconds) }
@@ -1000,7 +1075,8 @@ public final class ClusterService: @unchecked Sendable {
             // The plan's own line and its reason for the mode (tensor parallel or a pipeline), so the log says why.
             say("set the cluster up again after the update: \(model) is starting on both Macs ("
                 + choices[index].lines.joined(separator: " ") + ")")
-            // The re-adopted setups carry no cluster approval: the next check looks for the entry of the updated app.
+            // The re-adopted setups carry no cluster approval: the next check finds the same model approval again, or the
+            // build-pinned entry of the updated app.
             self.lock.withLock { self.approvalChecked = false; self.nextApprovalCheck = .distantPast }
         }
     }
@@ -1038,6 +1114,8 @@ public final class ClusterService: @unchecked Sendable {
                 let step: ClusterApprovalCheck.Step
                 let watch: ClusterApprovalCheck.Watch
                 let serving: Bool
+                /// The saved setup's worker digest, recorded with an approval set aside.
+                let worker: String
             }
             func decide(_ answer: () -> ClusterApprovalFetch.Outcome?) -> Decided? {
                 let record = try? self.store.readRecord()
@@ -1067,7 +1145,8 @@ public final class ClusterService: @unchecked Sendable {
                 let step = ClusterApprovalCheck.step(saved: saved, fetched: fetched, setAside: setAside, scope: scope,
                     memberQuickEnds: quickEnds, peerApprovalID: peerApprovalID, watch: &watch, clock: ClusterService.monotonicSeconds(),
                     grace: ClusterService.soloGraceSeconds, now: now)
-                return Decided(step: step, watch: watch, serving: record?.leadership?.serving == true)
+                return Decided(step: step, watch: watch, serving: record?.leadership?.serving == true,
+                               worker: saved.capability.runtimeBinarySHA256)
             }
             var fetched: ClusterApprovalFetch.Outcome?
             func answer() -> ClusterApprovalFetch.Outcome? {
@@ -1116,8 +1195,9 @@ public final class ClusterService: @unchecked Sendable {
             try? self.store.updateRecord { stored in
                 if let note = result.note { stored.approvalNote = note }
                 // The approval set aside is kept while the pair serves locally and dropped once one is saved again.
-                if case .serveLocally(let approval, let reason) = step, result.changed {
-                    stored.approvalSetAside = .init(approval: approval, reason: reason)
+                if result.changed, let setAside = ClusterApprovalCheck.setAside(by: step, worker: decided.worker,
+                                                                                now: Date().timeIntervalSince1970) {
+                    stored.approvalSetAside = setAside
                 }
                 if case .save = step, result.changed { stored.approvalSetAside = nil }
             }
@@ -1285,7 +1365,8 @@ public final class ClusterService: @unchecked Sendable {
                 nextStart = Date().addingTimeInterval(ran >= 120 ? 3 : backoff)
             }
             // A coordinator-paired part that keeps ending right after its start makes the leader serve locally
-            // (`ClusterApprovalCheck.step`); an end because the coordinator was out of reach is not counted.
+            // (`ClusterApprovalCheck.step`); an end the coordinator decided (out of reach, or the member role not
+            // accepted in time) is not counted.
             if lock.withLock({ childIsMember }) {
                 let lastError = Self.lastError(in: serviceFiles.rankLog, from: lock.withLock { childLogOffset })
                 lock.withLock { memberQuickEnds = ClusterApprovalCheck.memberQuickEnds(after: memberQuickEnds, ranSeconds: ran, lastError: lastError) }
@@ -1411,6 +1492,8 @@ public final class ClusterService: @unchecked Sendable {
         let process = Process()
         process.executableURL = settings.wizard.darkbloomExecutable
         process.arguments = arguments
+        process.environment = Self.partEnvironment(environment ?? ProcessInfo.processInfo.environment,
+                                                   serviceDirectory: store.paths.directory)
         process.standardInput = FileHandle.nullDevice
         let log = serviceFiles.rankLog
         if !FileManager.default.fileExists(atPath: log.path) { FileManager.default.createFile(atPath: log.path, contents: nil, attributes: [.posixPermissions: 0o600]) }
@@ -1429,6 +1512,22 @@ public final class ClusterService: @unchecked Sendable {
             if !memberRoute { memberQuickEnds = 0 }
         }
         say("started \(what) (pid \(process.processIdentifier))")
+    }
+
+    /// The environment of this Mac's part: this service's own, except the heartbeat file. Under its supervisor the
+    /// service beats into the file `ClusterSupervisionFiles.healthPathEnvironmentKey` names, and a coordinator-paired
+    /// part (`start --cluster-member`) beats into the file the same key names, with its own pid. Inherited as is, the
+    /// part overwrote the service's heartbeat, and the supervisor's liveness guard reads a beat of another pid as no
+    /// beat: whenever the part's beats landed last at the guard's probes for its down budget, the guard restarted a
+    /// healthy service and the pair dropped. The part beats into a file of its own instead; it keeps the key, so it
+    /// still waits for its registration as a supervised member does.
+    static func partEnvironment(_ environment: [String: String], serviceDirectory: URL) -> [String: String] {
+        var environment = environment
+        let key = ClusterSupervisionFiles.healthPathEnvironmentKey
+        if let path = environment[key], !path.isEmpty {
+            environment[key] = ClusterServiceAgent.partHealthPath(serviceDirectory: serviceDirectory).path
+        }
+        return environment
     }
 
     /// Saves this Mac's setup without its cluster approval (it ended, or the cluster serves locally only). A save

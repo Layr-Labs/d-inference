@@ -2,6 +2,7 @@ import CryptoKit
 import Foundation
 import Testing
 import DarkbloomClusterProtocol
+import DarkbloomClusterSecurity
 @testable import ProviderCore
 
 /// The leader's step that saves a fetched cluster approval on both Macs (`ClusterApprovalSync`), with each Mac's real
@@ -170,6 +171,117 @@ struct ClusterApprovalSyncTests {
                 facts: { _ in throw ClusterConfigurationError.invalid("the worker did not answer") })
         }
         #expect(try macs.bytes(macs.leader) == before)
+    }
+
+    /// A model approval names no build: both Macs save it from a mixed answer without describing their installed
+    /// runtime, and after an update re-adopts the setups for a new worker the next check finds the same entry again,
+    /// while the build-pinned entry of the old build no longer matches.
+    @Test func aModelApprovalIsSavedWithoutBuildFactsAndFoundAgainAfterAnUpdate() async throws {
+        let mock = MockCoordinator()
+        let url = try await mock.start().mockProviderWebSocketURL()
+        let macs = try ClusterApprovalMacs(coordinatorURL: url)
+        let model = macs.modelApproval()
+        // The old build's own entry for the same model and schedule, ending later: it would win while it matched.
+        let pinnedOld = macs.approval(endsIn: 20 * 86_400, id: "devnet/old-build/fixture-qwen/s1")
+        mock.setClusterApprovals(body: try ClusterApprovalMacs.body([macs.approval(schedule: 2), model, macs.modelApproval(schedule: 2)]))
+        let fetched = await ClusterApprovalFetch.fetch(coordinatorURL: url)
+        guard case .approvals(let listed) = fetched else { Issue.record("a mixed answer was refused: \(fetched)"); return }
+        #expect(listed.map(\.isModelApproval) == [false, true, true])
+        let described = ClusterApprovalRecorder<Int>()
+        let describe: (ClusterConfiguration) throws -> ClusterRuntimeApprovalFacts = { _ in
+            described.append(1); throw ClusterConfigurationError.invalid("a model approval needs no build facts")
+        }
+        let result = macs.sync(fetched, describe: describe, followerDescribe: describe)
+        #expect(result == .init(changed: true, line: ClusterApprovalLifetime.offeredLine(model), note: .some(nil)))
+        #expect(described.values.isEmpty)
+        for mac in macs.macs {
+            let saved = try #require(try attachment(macs, mac), "rank \(mac.rank) saved no approval")
+            #expect(saved.schema == ClusterNativeMemberAttachment.rosterSchemaName && saved.clusterApproval == model)
+            #expect(try saved.policyBytes == model.canonicalPolicy())
+            // The saved setup holds the 14 fields and reads back to the same bytes.
+            let setup = try macs.saved(mac), file = try macs.bytes(mac)[1]
+            #expect(try ClusterConfigurationCodec.encode(setup.configuration, capability: setup.capability,
+                capabilitySHA256: setup.configuration.capabilitySHA256) == file)
+            let object = try #require(try JSONSerialization.jsonObject(with: file) as? [String: Any])
+            let entry = try #require((object["nativeMember"] as? [String: Any])?["clusterApproval"] as? [String: Any])
+            #expect(Set(entry.keys) == ClusterRuntimeApproval.modelFields)
+        }
+
+        // The update: both setups re-adopted for the new build's worker, with no approval.
+        let newWorker = ClusterApprovalMacs.hash("9")
+        try macs.readopt(runtime: newWorker)
+        for mac in macs.macs { #expect(try attachment(macs, mac) == nil) }
+        var watch = ClusterApprovalCheck.Watch()
+        let step = ClusterApprovalCheck.step(saved: try macs.saved(macs.leader), fetched: .approvals([pinnedOld, model]),
+            setAside: nil, scope: .publicServing, memberQuickEnds: 0, peerApprovalID: .some(nil), watch: &watch,
+            clock: 0, grace: 600, now: Date().timeIntervalSince1970, facts: { _ in try macs.facts() })
+        #expect(step == .save(model))
+        let updated = try macs.facts()
+        #expect(macs.sync(.approvals([pinnedOld, model]), leaderFacts: updated, followerFacts: updated).changed)
+        for mac in macs.macs {
+            let saved = try macs.saved(mac)
+            #expect(saved.configuration.nativeMember?.clusterApproval == model)
+            #expect(saved.capability.runtimeBinarySHA256 == newWorker)
+        }
+        await mock.shutdown()
+    }
+
+    /// The owner's own admission of a committed start (`DistributedInstalledOwner.memberAuthorizer`) under a saved
+    /// model approval: the start must carry this Mac's own setup's runtime block, the one its member registers.
+    @Test func theOwnerAdmitsAStartUnderAModelApprovalOnlyWithItsSetupsRuntime() throws {
+        let macs = try ClusterApprovalMacs(coordinatorURL: "ws://127.0.0.1:9/ws/provider")
+        let model = macs.modelApproval(), facts = try macs.facts()
+        #expect(macs.sync(.approvals([model]), leaderFacts: facts, followerFacts: facts).changed)
+        let saved = try macs.saved(macs.leader), member = try #require(saved.configuration.nativeMember)
+        let plan = try DistributedInstalledPlan(saved: saved, paths: macs.leader.paths)
+        let admit = try DistributedInstalledOwner.memberAuthorizer(plan: plan, attachment: member)
+        let own = DistributedInstalledNativeStart.runtimeBlock(plan: plan)
+        #expect(own.nativeRuntimeSHA256 == saved.capability.runtimeBinarySHA256)
+        func start(_ runtime: ClusterPlan.Runtime) throws -> ClusterNativeAuthorizationStart {
+            func bytes(_ hex: String) throws -> Data { try #require(NativePairMemberPolicy.digest(hex: hex)) }
+            let common = try ClusterNativeAuthorizationCommon(epoch: UUID(), membershipGeneration: 7, nativePolicyGeneration: model.generation,
+                membershipTranscriptSHA256: memberDigest("model-approval-membership"),
+                approvedNativeBindingSHA256: Data(SHA256.hash(data: try member.policyBytes)),
+                planSHA256: try bytes(plan.partition.planSHA256), artifactSHA256: try bytes(model.artifactSHA256),
+                nativeRuntimeSHA256: try bytes(runtime.nativeRuntimeSHA256), capabilitySHA256: try bytes(runtime.capabilitySHA256),
+                resourcePolicySHA256: try bytes(runtime.resourcePolicySHA256), profileSHA256: try bytes(runtime.profileSHA256),
+                schedule: .serial, maximumTransportFrameBytes: Int(model.maximumTransportFrame),
+                limits: .init(maximumPlaintextBytes: Int(model.maximumPlaintext), maximumRecordsPerDirection: model.maximumRecords,
+                              maximumCumulativePlaintextBytesPerDirection: model.maximumCumulativePlaintext))
+            return try .init(common: common, rank: plan.configuration.localRank, ownerIncarnation: UUID(), leaseID: UUID(),
+                             launchID: UUID())
+        }
+        try admit(try start(own))
+        let other = ClusterApprovalMacs.hash("9")
+        for runtime in [
+            ClusterPlan.Runtime(nativeRuntimeSHA256: other, capabilitySHA256: own.capabilitySHA256,
+                                resourcePolicySHA256: own.resourcePolicySHA256, profileSHA256: own.profileSHA256),
+            ClusterPlan.Runtime(nativeRuntimeSHA256: own.nativeRuntimeSHA256, capabilitySHA256: own.capabilitySHA256,
+                                resourcePolicySHA256: other, profileSHA256: own.profileSHA256),
+        ] {
+            #expect(throws: ClusterConfigurationError.self) { try admit(try start(runtime)) }
+        }
+    }
+
+    @Test func aModelApprovalForAnotherArtifactIsSavedOnNeitherMac() throws {
+        let macs = try ClusterApprovalMacs(coordinatorURL: "ws://127.0.0.1:9/ws/provider")
+        let before = try macs.macs.map(macs.bytes), saved = try macs.saved(macs.leader)
+        let other = macs.modelApproval(artifact: ClusterApprovalMacs.hash("9"))
+        let refusal = "the approval's artifact_sha256 differs from this Mac's setup"
+        let mine = #expect(throws: (any Error).self) {
+            _ = try ClusterApprovalAttachment.attachment(for: other, saved: saved, paths: macs.leader.paths,
+                pairingStore: macs.leader.pairing, edge: nil, now: Date().timeIntervalSince1970, chipClass: ClusterApprovalMacs.chip,
+                facts: { _ in throw ClusterConfigurationError.invalid("a model approval needs no build facts") })
+        }
+        #expect(mine.map(ClusterApprovalSync.refusal) == refusal)
+        // The other Mac refuses it the same way when its leader sends it.
+        var command = ClusterServiceCommand(op: .approval)
+        command.approval = other
+        command.approvalEdge = ClusterEdge(peerPin: macs.leader.pin, transport: "rdma", measuredMbps: 1, measuredRTTMicros: 1)
+        let cable = macs.cable(facts: try macs.facts())
+        let theirs = #expect(throws: (any Error).self) { try cable(command) }
+        #expect(theirs.map(ClusterApprovalSync.refusal)?.hasSuffix(refusal) == true)
+        #expect(try macs.macs.map(macs.bytes) == before)
     }
 
     @Test func aFollowerThatCannotBeReachedLeavesBothMacsWithoutTheApproval() throws {

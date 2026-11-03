@@ -1,6 +1,6 @@
 # Host Darkbloom Sandbox CI jobs
 
-> Last updated: 2026-10-30
+> Last updated: 2026-11-03
 
 How to let this Mac run Darkbloom Sandbox jobs, approved GitHub Actions jobs in
 Linux and macOS virtual machines, beside the inference provider: set it up,
@@ -14,6 +14,10 @@ into your Darkbloom balance.
   after what stays yours and what inference keeps. `darkbloom sandbox setup`
   checks this before it installs anything; the rules are in the
   [CLI reference](./cli-reference.md#setup).
+- Free disk for the jobs. A tenth of the disk, 50 to 100 GiB, stays free for
+  you. The first job of a platform also needs that platform's VM images
+  (Linux 4 GiB, macOS 46 GiB, nothing once installed). Each Linux job needs a
+  30 GiB scratch disk and each macOS job 40 GiB.
 - A Darkbloom account that Darkbloom approved for Darkbloom Sandbox from its
   waitlist, and this Mac linked to it with `darkbloom login`. `darkbloom sandbox
   setup` installs nothing until the account is approved (step 1).
@@ -42,10 +46,16 @@ into your Darkbloom balance.
    darkbloom sandbox setup
    ```
 
-   Setup prints what it measured, whether this Mac is eligible and how many Linux
-   and macOS jobs it can run at a time, then what changes, and asks. Nothing is
-   downloaded before you answer `y`. It then downloads the add-on's installer,
-   which verifies the release and installs the add-on in `~/DarkbloomSandbox`.
+   Setup checks this Mac, then downloads the add-on's installer and asks it for
+   the add-on's own plan. The installer verifies the release and runs the
+   add-on's checks and sizing without installing anything. Setup prints the
+   cores, memory and disk that plan counts and how many Linux and macOS jobs
+   this Mac can run at a time, then what changes, and asks. If no job fits, it
+   says how much disk one Linux job and one macOS job would need, and stops.
+   Nothing is installed before you answer `y`. The installer then installs the
+   add-on in `~/DarkbloomSandbox`. The plan needs add-on 1.1.1 or later. With an
+   older installer, setup prints `[INFO] Sizing` and estimates with the same
+   rules.
    To choose the number of jobs, add `--linux-slots <n>` and `--macos-slots <n>`;
    `--macos-slots 1` keeps one of macOS's two macOS VMs for your own use.
 
@@ -56,8 +66,9 @@ into your Darkbloom balance.
    device, add `--no-browser` to step 2 and open the printed link there.
 
 4. Let the VM images download. After enrollment the add-on starts and downloads
-   about 50 GiB of VM images in the background; the Mac takes jobs once an image
-   is installed. To keep setup open until then, add `--wait-ready` to step 2.
+   its VM images in the background, the sizes setup showed under Disk. The Mac
+   takes jobs once an image is installed. To keep setup open until then, add
+   `--wait-ready` to step 2.
 
 ## Verify
 
@@ -99,12 +110,16 @@ state, continues an unfinished setup or repairs the add-on.
   Setup could not learn whether your account is approved, so it checked and
   installed nothing. Fix the reason it names, such as this Mac's connection,
   then run setup again.
-- **`Not eligible: free up N GiB of disk`.** A tenth of the disk (50 to
-  100 GiB) stays free for you and the images need 50 GiB more. Free the space
-  it names, then run setup again.
-- **`On the waitlist`.** Darkbloom has not approved your account yet. Press
-  Ctrl-C if you like; the Mac enrolls once it is approved, and `setup` follows
-  the waiting enrollment when you run it again.
+- **`Free up N GiB of disk for one Linux job`.** No job fits in the free disk.
+  The disk rules are under [Prerequisites](#prerequisites). Free the space it
+  names, then run setup again.
+- **`On the waitlist`.** Darkbloom has not approved your account yet. With
+  add-on 1.1.2 and later you can close the window: the Mac keeps waiting, also
+  across restarts, and enrolls by itself once your account is approved;
+  `darkbloom sandbox status` shows where it is. With an earlier add-on, press
+  Ctrl-C if you like: the Mac enrolls once it is approved, and `setup` follows
+  the waiting enrollment when you run it again. A restart ends that wait; run
+  setup again after one.
 - **`[WARN] Network`, `Power` or `Sleep`.** These do not block setup, but a
   sleeping, unplugged or dropped Mac loses its running jobs, and lost jobs are
   not paid. Follow the `↳ fix:` line.

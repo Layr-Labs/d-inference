@@ -40,16 +40,21 @@ FALLBACKS = {"release-integrity": LINUX_FALLBACK, "test-provider": MACOS_FALLBAC
 GRANTED = {"release-integrity": LINUX, "test-provider": MACOS,
            "warm": MACOS, "docs": LINUX_FALLBACK}
 PROVIDER = "${{ needs.changes.outputs.provider == 'true' && 1 || 0 }}"
+SDK = "${{ (github.event_name == 'push' || needs.changes.outputs.sdk == 'true') && 1 || 0 }}"
 PULL_REQUEST_WARM = "${{ github.event_name == 'pull_request' && 2 || 0 }}"
-# Every routed job: (profile, fallback label, count expression or None for 1).
+# Every routed job: (profile, fallback label, count expression or None for 1)
+# of each lane it reads.
 ROUTED = {
     "ci.yml": {
         "release-integrity": ("linux_arm64", LINUX_FALLBACK, None),
         "docs": ("linux_arm64", LINUX_FALLBACK, None),
         "test-provider": ("macos_arm64", MACOS_FALLBACK, PROVIDER),
-        "test-provider-sdk": ("macos_arm64", MACOS_FALLBACK, PROVIDER),
-        "test-provider-parity": ("macos_arm64", MACOS_FALLBACK, PROVIDER),
+        "test-provider-summary": ("macos_arm64", MACOS_FALLBACK, PROVIDER),
+        "test-provider-sdk": ("macos_arm64", MACOS_FALLBACK, SDK),
         "test-cluster-checks": ("macos_arm64", MACOS_FALLBACK, PROVIDER),
+        "test-cluster": ("macos_arm64", MACOS_FALLBACK, PROVIDER),
+        "test-cluster-gpu": ("macos_arm64", MACOS_FALLBACK, PROVIDER),
+        "test-cluster-focused": ("macos_arm64", MACOS_FALLBACK, PROVIDER),
     },
     "docs-impact.yml": {
         "commit-signatures": ("linux_arm64", LINUX_FALLBACK, None),
@@ -64,6 +69,9 @@ ROUTED = {
 UNROUTED = ("release-swift.yml", "release-provider.yml", "release-dev-branch.yml",
             "release-desktop.yml", "provider-signing-validation.yml", "register-model.yml",
             "threat-model-review.yml", "bedrock-smoke.yml", "claude.yml", "codex.yml")
+# The plane grants a lane whole, so each shard of these jobs reads a lane of its
+# own, `<job>-<shard>`, and gets a free sandbox even when the others fall back.
+SHARDED = {"test-provider", "test-cluster", "test-cluster-gpu"}
 # Master and dispatched warming feed release builds, so only PRs read the route.
 RUNS_ON = {"warm": "${{ github.event_name == 'pull_request' && "
                    "fromJSON(needs.route.outputs.routes)['warm'] || 'blacksmith-12vcpu-macos-27' }}"}
@@ -119,6 +127,22 @@ def job_field(job, name):
 def needs(job):
     value = job_field(job, "needs") or ""
     return [name.strip() for name in value.strip("[]").split(",") if name.strip()]
+
+
+def matrix_shards(job):
+    """Return the job's `shard` matrix entries, or [] when it has none."""
+    matrix = re.search(r"(?m)^        shard: \[([0-9, ]+)\]$", job)
+    return [shard.strip() for shard in matrix.group(1).split(",")] if matrix else []
+
+
+def job_lanes(name, job):
+    """Return the lanes a routed job reads: one per shard when SHARDED, else its own."""
+    return [f"{name}-{shard}" for shard in matrix_shards(job)] if name in SHARDED else [name]
+
+
+def requested_lanes(workflow, routed):
+    """Return {lane: (profile, fallback, count)} that the caller's route job must request."""
+    return {lane: lane_spec for name, lane_spec in routed.items() for lane in job_lanes(name, workflow[name])}
 
 
 def lane_lines(route_job):
@@ -472,18 +496,33 @@ class RouteWorkflowTests(unittest.TestCase):
                 self.assertIn("    uses: ./.github/workflows/darkbloom-route.yml\n", route)
                 self.assertEqual(job_field(route, "permissions"), "{}")
                 self.assertNotIn("secrets", route)
-                self.assertEqual(route_lanes(route), expected)
+                self.assertEqual(route_lanes(route), requested_lanes(workflow, expected))
             for name, (_, _, count) in expected.items():
                 job = workflow[name]
                 with self.subTest(workflow=filename, job=name):
                     self.assertIn("route", needs(job))
+                    if name in SHARDED:
+                        self.assertTrue(matrix_shards(job))
+                        lane = f"format('{name}-{{0}}', matrix.shard)"
+                    else:
+                        lane = f"'{name}'"
                     self.assertEqual(job_field(job, "runs-on"), RUNS_ON.get(
-                        name, f"${{{{ fromJSON(needs.route.outputs.routes)['{name}'] }}}}"))
+                        name, f"${{{{ fromJSON(needs.route.outputs.routes)[{lane}] }}}}"))
                     condition = job_field(job, "if")
                     if name != "warm":
-                        # A lane is requested exactly when its job runs.
-                        self.assertEqual(count, None if condition is None
-                                         else condition.replace(" }}", " && 1 || 0 }}"))
+                        # A lane is requested exactly when its job runs, once per
+                        # matrix entry that reads it. `!cancelled()` cannot be
+                        # evaluated in the route job and is true there.
+                        jobs_requested = 1 if name in SHARDED else len(matrix_shards(job)) or 1
+                        expected_count = None
+                        if condition is not None:
+                            inner = condition.removeprefix("${{ ").removesuffix(" }}")
+                            inner = inner.replace("!cancelled() && ", "")
+                            # `a || b && N` would evaluate to `a`; group an alternative.
+                            if "||" in inner:
+                                inner = f"({inner})"
+                            expected_count = f"${{{{ {inner} && {jobs_requested} || 0 }}}}"
+                        self.assertEqual(count, expected_count)
         warm = jobs(self.texts["provider-release-cache.yml"])["warm"]
         self.assertIn("lane: [release, qualification]", warm)
         self.assertEqual(job_field(warm, "if"),
@@ -510,7 +549,8 @@ class RouteWorkflowTests(unittest.TestCase):
     def test_router_accepts_every_caller_configuration(self):
         script = route_step()
         for filename in ROUTED:
-            text = "\n".join(lane_lines(jobs(self.texts[filename])["route"])) + "\n"
+            workflow = jobs(self.texts[filename])
+            text = "\n".join(lane_lines(workflow["route"])) + "\n"
             for outcome in ("1", "0"):
                 # Evaluate each `${{ condition && N || 0 }}` count both ways.
                 lanes = re.sub(r"\$\{\{ .+? && (\d+) \|\| 0 \}\}",
@@ -520,8 +560,8 @@ class RouteWorkflowTests(unittest.TestCase):
                         script, Path(work), LANES=lanes, ROUTING="", PLANE_URL="", EVENT_NAME="push",
                         HEAD_REPOSITORY="", REPOSITORY="Layr-Labs/d-inference", RUN_ID="1", RUN_ATTEMPT="1")
                     self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-                    self.assertEqual(routes, [{name: fallback for name, (_, fallback, _)
-                                               in ROUTED[filename].items()}])
+                    self.assertEqual(routes, [{lane: fallback for lane, (_, fallback, _)
+                                               in requested_lanes(workflow, ROUTED[filename]).items()}])
 
     def test_release_and_credentialed_workflows_keep_literal_runners(self):
         for filename in UNROUTED:

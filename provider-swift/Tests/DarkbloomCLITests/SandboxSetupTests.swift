@@ -122,6 +122,12 @@ struct SandboxSetupTests {
         #expect(SandboxInstaller.arguments(SandboxSetupOptions(), jsonProgress: true) == ["--json-progress", "--yes"])
         #expect(SandboxInstaller.supportsJSONProgress(Data(FakeSandboxInstaller.script().utf8)))
         #expect(!SandboxInstaller.supportsJSONProgress(Data(FakeSandboxInstaller.script(jsonProgress: false).utf8)))
+        // The plan gets the owner's slot counts and no --yes.
+        #expect(SandboxInstaller.planArguments(options) == ["--plan", "--json-progress", "--linux-slots", "1",
+                                                            "--macos-slots", "0"])
+        #expect(SandboxInstaller.planArguments(SandboxSetupOptions(noBrowser: true)) == ["--plan", "--json-progress"])
+        #expect(SandboxInstaller.supportsPlan(Data(FakeSandboxInstaller.script(plan: []).utf8)))
+        #expect(!SandboxInstaller.supportsPlan(Data(FakeSandboxInstaller.script().utf8)))
     }
 
     @Test("the staged script is owner-only")
@@ -164,6 +170,67 @@ struct SandboxSetupTests {
         #expect(SandboxInstallerEvent.title(stage: "starting", message: "Starting the agent") == "Starting")
         #expect(SandboxInstallerEvent.title(stage: "vm_check", message: "Checking the VM runtime") == "Checking the VM runtime")
         #expect(SandboxInstallerEvent.title(stage: "vm_check", message: nil) == "Vm Check")
+    }
+
+    @Test("the approval and waitlist events say whether the wait goes on in the background; absent reads as no")
+    func backgroundEvents() throws {
+        for (background, parsed) in [(true, true), (false, false), (nil, false)] as [(Bool?, Bool)] {
+            let approval = try #require(SandboxInstallerEvent(json: FakeSandboxInstaller.approval(background: background)))
+            #expect(approval.userCode == "WDJB-MJHT" && approval.background == parsed, "\(String(describing: background))")
+            let waitlist = try #require(SandboxInstallerEvent(json: FakeSandboxInstaller.waitlist(background: background)))
+            #expect(waitlist.waitlisted && waitlist.background == parsed, "\(String(describing: background))")
+        }
+        // Add-on 1.0.1's approval event has no such member; a value that is not a boolean is no.
+        #expect(try #require(SandboxInstallerEvent(json: FakeSandboxInstaller.events[8])).background == false)
+        #expect(SandboxInstallerEvent(json: FakeSandboxInstaller.stage(
+            "waiting_for_approval", "progress", "…", #""waitlisted":true,"background":"yes""#))?.background == false)
+    }
+
+    @Test("the plan event decodes as add-on 1.1.1 writes it; unknown members are ignored, schema 1 only")
+    func planEvent() throws {
+        let gib: Int64 = 1 << 30
+        let plan = try #require(SandboxSizingPlan(line: FakeSandboxInstaller.plan()))
+        #expect(plan == SandboxSizingPlan(
+            message: "1 Linux slot",
+            linux: .init(slots: 1, automatic: true, limit: "free disk space", imagesBytes: 4 * gib, slotBytes: 30 * gib),
+            macOS: .init(slots: 0, automatic: true, limit: "free disk space", imagesBytes: 46 * gib, slotBytes: 40 * gib),
+            freeBytes: 157 * gib, floorBytes: 100 * gib, cores: 16, coresKept: 4, memoryBytes: 128 * gib,
+            memoryKeptBytes: 32 * gib, providerMemoryBytes: 32 * gib))
+        #expect(SandboxSizingPlan(line: FakeSandboxInstaller.plan(linuxAutomatic: false))?.linux.automatic == false)
+        #expect(SandboxSizingPlan(line: FakeSandboxInstaller.plan(
+            extra: #","gpu_cores":40,"future":{"slots":[1,2]},"note":null"#)) == plan)
+        let schema2 = FakeSandboxInstaller.plan().replacingOccurrences(of: #""schema":1"#, with: #""schema":2"#)
+        #expect(SandboxSizingPlan(line: schema2) == nil)
+        let unversioned = FakeSandboxInstaller.plan().replacingOccurrences(of: #""schema":1,"#, with: "")
+        #expect(SandboxSizingPlan(line: unversioned) == nil)
+        let summary = FakeSandboxInstaller.plan().replacingOccurrences(of: #""event":"plan""#, with: #""event":"summary""#)
+        #expect(SandboxSizingPlan(line: summary) == nil)
+        let missing = FakeSandboxInstaller.plan().replacingOccurrences(of: #""cores_kept":4,"#, with: "")
+        #expect(SandboxSizingPlan(line: missing) == nil)
+        #expect(SandboxSizingPlan(line: "==> 1 Linux slot") == nil)
+    }
+
+    @Test("the plan's lines: 157 GiB free of 1858 GiB runs 1 Linux job and no macOS job; none fits at 120 GiB")
+    func planReport() throws {
+        let plan = try #require(SandboxSizingPlan(line: FakeSandboxInstaller.plan()))
+        #expect(plan.checks == [
+            .init(level: .pass, name: "CPU", detail: "16 cores; you keep 4"),
+            .init(level: .pass, name: "Memory", detail: "128 GB; you keep 32 GB, inference keeps 32 GB"),
+            .init(level: .pass, name: "Disk", detail: "157 GiB free; 100 GiB stays free for you; Linux images 4 GiB "
+                + "+ 30 GiB per Linux job; macOS images 46 GiB + 40 GiB per macOS job"),
+        ])
+        #expect(plan.verdict == [
+            "Eligible. At a time, this Mac can run:",
+            "  1 Linux job (limited by free disk space)",
+            "  no macOS jobs (limited by free disk space)",
+        ])
+        let full = try #require(SandboxSizingPlan(line: FakeSandboxInstaller.plan(
+            message: "No slot fits: 20 GiB free above the 100 GiB floor", linux: 0, freeGiB: 120)))
+        #expect(full.verdict == [
+            "Not eligible: No slot fits: 20 GiB free above the 100 GiB floor.",
+            "  Free up 14 GiB of disk for one Linux job, or 66 GiB of disk for one macOS job.",
+        ])
+        #expect(full.checks.map(\.level) == [.pass, .pass, .fail])
     }
 
     /// Each event as the renderer gets it.
@@ -256,6 +323,66 @@ struct SandboxSetupTests {
         #expect(live.hasSuffix("\r\u{1B}[2K  ✗ Waiting for approval (stopped)\n"))
     }
 
+    @Test("the waitlist says the window may close when the add-on waits in the background, else to leave it running")
+    func backgroundWaitlist() {
+        let started = FakeSandboxInstaller.stage("waiting_for_approval", "started", "Waiting for approval")
+        /// What follows the approval block, `background` as each event says.
+        func afterApproval(approval: Bool?, waitlist: Bool?) -> String {
+            Self.render([started, FakeSandboxInstaller.approval(background: approval),
+                         FakeSandboxInstaller.waitlist(background: waitlist)], finish: .interrupted)
+                .components(separatedBy: "approves it.\n\n").last ?? ""
+        }
+        let closeWindow = """
+
+                Your account is on the waitlist: Darkbloom reviews new Mac owners before their first Mac joins.
+                You can close this window: this Mac keeps waiting, also across restarts, and enrolls by itself \
+            once your account is approved. `darkbloom sandbox status` shows where it is.
+
+              ✗ Waiting for approval (stopped)
+
+            """
+        // `background` on the approval or on the waitlist event is enough.
+        #expect(afterApproval(approval: true, waitlist: true) == closeWindow)
+        #expect(afterApproval(approval: true, waitlist: nil) == closeWindow)
+        #expect(afterApproval(approval: nil, waitlist: true) == closeWindow)
+        let leaveRunning = """
+
+                Your account is on the waitlist: Darkbloom reviews new Mac owners before their first Mac joins.
+                Leave this running, or press Ctrl-C and run `darkbloom sandbox setup` again later; this Mac enrolls \
+            once your account is approved.
+
+              ✗ Waiting for approval (stopped)
+
+            """
+        #expect(afterApproval(approval: false, waitlist: false) == leaveRunning)
+        #expect(afterApproval(approval: nil, waitlist: nil) == leaveRunning)
+    }
+
+    @Test("a background approval or waitlist event means this Mac waits in the background until it enrolls")
+    func waitsInBackground() {
+        func waits(_ lines: [String]) -> Bool {
+            let renderer = SandboxSetupRenderer(interactive: false, color: false, width: { 80 }, write: { _ in })
+            lines.compactMap(SandboxInstallerOutput.init(line:)).forEach(renderer.handle)
+            return renderer.waitsInBackground
+        }
+        let stage = FakeSandboxInstaller.stage
+        let started = stage("waiting_for_approval", "started", "Waiting for approval", "")
+        #expect(waits([started, FakeSandboxInstaller.approval(background: true)]))
+        #expect(waits([started, FakeSandboxInstaller.approval(), FakeSandboxInstaller.waitlist(background: true)]))
+        #expect(!waits([started, FakeSandboxInstaller.approval(background: false),
+                        FakeSandboxInstaller.waitlist(background: false)]))
+        #expect(!waits(FakeSandboxInstaller.events))
+        // Another event's `background` says nothing about the approval.
+        #expect(!waits([stage("starting", "progress", "Still connecting", #""background":true"#)]))
+        // App Attest after the approval still waits in the background; once enrolled, nothing does.
+        let approved = [started, FakeSandboxInstaller.approval(background: true),
+                        stage("waiting_for_approval", "done", "Approved after 0:42", ""),
+                        stage("enrolled", "started", "Enrolled", "")]
+        #expect(waits(approved))
+        #expect(waits(approved + [stage("enrolled", "failed", "App Attest did not complete yet", #""exit_code":1"#)]))
+        #expect(!waits(approved + [stage("enrolled", "done", "Host 0b7d4e2a; App Attest verified this app", "")]))
+    }
+
     @Test("on a terminal the running stage is a spinner line that turns into a check mark")
     func interactive() {
         let transcript = Self.render(Array(FakeSandboxInstaller.events[0..<3]), interactive: true)
@@ -288,10 +415,10 @@ struct SandboxSetupTests {
             == "  ✗ Installing (stopped)\n")
     }
 
-    @Test("each installer exit status gets its own next step")
+    @Test("each installer exit status gets its own next step; a stop says whether this Mac waits in the background")
     func advice() {
-        func advice(_ status: Int32, signal: Int32? = nil) -> String {
-            SandboxSetupFlow.advice(.init(status: status, signal: signal))
+        func advice(_ status: Int32, signal: Int32? = nil, waitsInBackground: Bool = false) -> String {
+            SandboxSetupFlow.advice(.init(status: status, signal: signal), waitsInBackground: waitsInBackground)
         }
         #expect(advice(2) == "This Mac cannot host Darkbloom Sandbox as it is; see why above.")
         #expect(advice(3).hasPrefix("This Mac was not enrolled: the code was denied or expired"))
@@ -302,6 +429,15 @@ struct SandboxSetupTests {
         #expect(advice(2, signal: SIGINT) == advice(130))
         #expect(advice(1).hasPrefix("Setup did not finish."))
         #expect(advice(9, signal: SIGKILL).hasPrefix("Setup did not finish."))
+        #expect(advice(130, waitsInBackground: true) == "Setup stopped. This Mac keeps waiting for approval in the "
+            + "background, also across restarts, and enrolls by itself once approved; `darkbloom sandbox status` shows "
+            + "where it is.")
+        #expect(advice(2, signal: SIGINT, waitsInBackground: true) == advice(130, waitsInBackground: true))
+        // Only a stop reads it: add-on 1.1.2 exits 1 while App Attest is retried after the approval.
+        for status: Int32 in [1, 2, 3, 4] {
+            #expect(advice(status, waitsInBackground: true) == advice(status), "\(status)")
+        }
+        #expect(advice(9, signal: SIGKILL, waitsInBackground: true) == advice(9, signal: SIGKILL))
     }
 
     // MARK: - Plan
@@ -352,12 +488,13 @@ struct SandboxSetupTests {
     /// The whole setup against a stubbed service and a fake installer: the
     /// installer is downloaded, staged, run with the owner's options, rendered
     /// and summarized; a second run only reports the state.
-    @Test("setup checks, installs with progress, summarizes, and a rerun only reports")
+    @Test("setup checks, shows the add-on's plan, installs with progress, summarizes, and a rerun only reports")
     func endToEnd() async throws {
         let result = try await #require(processExitsWith: .success, observing: [\.standardOutputContent]) {
             let sandbox = try CLICommandSandbox.enter(autoRestart: false)
             defer { sandbox.remove() }
-            CoordinatorStub.install(["/install.sh": .init(status: 200, body: Data(FakeSandboxInstaller.script().utf8))])
+            CoordinatorStub.install(["/install.sh": .init(status: 200, body: Data(FakeSandboxInstaller.script(
+                plan: [FakeSandboxInstaller.plan(linuxAutomatic: false)]).utf8))])
             let first = SandboxSetupOptions(server: "https://sandbox.invalid", noBrowser: true, linuxSlots: 1)
             print("== FIRST")
             try await SandboxSetupFlow(options: first, confirmed: true, addon: .live(), interactiveInput: false,
@@ -367,31 +504,35 @@ struct SandboxSetupTests {
             try await SandboxSetupFlow(options: SandboxSetupOptions(server: "https://sandbox.invalid"),
                                        confirmed: false, addon: .live(), interactiveInput: false,
                                        terminal: false, color: false, waitlist: .approved).run()
-            print("== ARGUMENTS")
+            print("== PLAN")
+            print(try String(contentsOf: sandbox.sandboxAddonRoot.appendingPathComponent("plan-arguments"),
+                             encoding: .utf8), terminator: "")
+            print("== INSTALL")
             print(try String(contentsOf: sandbox.sandboxAddonRoot.appendingPathComponent("installer-arguments"),
                              encoding: .utf8), terminator: "")
             print("requests \(CoordinatorStub.requests.map { $0.url?.absoluteString ?? "" })")
         }
         let output = decodedText(result.standardOutputContent)
         let first = try #require(outputSection(output, from: "== FIRST", to: "== SECOND"))
+        // The sizing lines are the plan's (157 GiB free), not this Mac's probe (800 GiB).
         #expect(first.hasPrefix("""
             Darkbloom Sandbox setup
 
             Checking this Mac
               [PASS] Chip: Apple M4 Max
               [PASS] macOS: 27.0.1
-              [PASS] CPU: 16 cores; you keep 4
-              [PASS] Memory: 128 GB; you keep 32 GB, inference keeps 32 GB
-              [PASS] Disk: 800 GiB free; 100 GiB stays free for you, the VM images take 50 GiB, each Linux job 30 GiB
               [PASS] Session: logged in at this Mac's desktop
               [PASS] Network: Ethernet
               [PASS] Power: power adapter
               [PASS] Sleep: off on the power adapter
+              [PASS] CPU: 16 cores; you keep 4
+              [PASS] Memory: 128 GB; you keep 32 GB, inference keeps 32 GB
+              [PASS] Disk: 157 GiB free; 100 GiB stays free for you; Linux images 4 GiB + 30 GiB per Linux job; \
+            macOS images 46 GiB + 40 GiB per macOS job
 
             Eligible. At a time, this Mac can run:
-              1 Linux job (limited by cores)
-              1 macOS job (limited by cores)
-              The most requested macOS size, 12 cores and 32 GB, fits.
+              1 Linux job (your choice)
+              no macOS jobs (limited by free disk space)
 
             What changes
 
@@ -405,14 +546,87 @@ struct SandboxSetupTests {
             Next
 
             """))
-        let second = try #require(outputSection(output, from: "== SECOND", to: "== ARGUMENTS"))
+        let second = try #require(outputSection(output, from: "== SECOND", to: "== PLAN"))
         #expect(second.hasPrefix("Darkbloom Sandbox is already set up on this Mac.\n\n"
             + "Darkbloom Sandbox 1.0.1: downloading images (Linux 42%)\n"))
         #expect(second.hasSuffix(
             "\nTo change how many jobs run at a time: darkbloom sandbox setup --linux-slots <n> --macos-slots <n>\n"))
-        let arguments = try #require(outputSection(output, from: "== ARGUMENTS", to: "requests"))
-        #expect(arguments == "--json-progress\n--yes\n--no-browser\n--linux-slots\n1\n")
+        // The owner's slot counts reach the plan and the install; one download serves both.
+        let plan = try #require(outputSection(output, from: "== PLAN", to: "== INSTALL"))
+        #expect(plan == "--plan\n--json-progress\n--linux-slots\n1\n")
+        let install = try #require(outputSection(output, from: "== INSTALL", to: "requests"))
+        #expect(install == "--json-progress\n--yes\n--no-browser\n--linux-slots\n1\n")
         #expect(output.hasSuffix("requests [\"https://sandbox.invalid/install.sh\"]\n"))
+    }
+
+    @Test("when the plan fits no job, setup prints why and how much disk to free, and installs nothing")
+    func noJobFits() async throws {
+        let result = try await #require(processExitsWith: .failure, observing: [\.standardOutputContent]) {
+            let sandbox = try CLICommandSandbox.enter(autoRestart: false)
+            CoordinatorStub.install(["/install.sh": .init(status: 200, body: Data(FakeSandboxInstaller.script(
+                plan: [FakeSandboxInstaller.plan(message: "No slot fits", linux: 0, freeGiB: 120)]).utf8))])
+            await exitWithCommandStatus {
+                defer {
+                    let root = sandbox.sandboxAddonRoot
+                    print("planned \(FileManager.default.fileExists(atPath: root.appendingPathComponent("plan-arguments").path))")
+                    print("installed \(FileManager.default.fileExists(atPath: root.appendingPathComponent("installer-arguments").path))")
+                }
+                try await SandboxSetupFlow(options: SandboxSetupOptions(server: "https://sandbox.invalid"),
+                                           confirmed: true, addon: .live(), interactiveInput: false,
+                                           terminal: false, color: false,
+                                           probe: { _ in .mac(cores: 16, memoryGiB: 128) }, waitlist: .approved).run()
+            }
+        }
+        let output = decodedText(result.standardOutputContent)
+        #expect(output.hasSuffix("""
+              [FAIL] Disk: 120 GiB free; 100 GiB stays free for you; Linux images 4 GiB + 30 GiB per Linux job; \
+            macOS images 46 GiB + 40 GiB per macOS job
+
+            Not eligible: No slot fits.
+              Free up 14 GiB of disk for one Linux job, or 66 GiB of disk for one macOS job.
+            planned true
+            installed false
+
+            """))
+    }
+
+    @Test("an installer without a plan falls back to the CLI's estimate, by the add-on's 1.1.1 disk rules")
+    func estimateWithoutPlan() async throws {
+        let result = try await #require(processExitsWith: .success, observing: [\.standardOutputContent]) {
+            let sandbox = try CLICommandSandbox.enter(autoRestart: false)
+            defer { sandbox.remove() }
+            // A plan mode that prints no plan event, one that fails, and an installer from before plan mode.
+            for script in [FakeSandboxInstaller.script(plan: []), FakeSandboxInstaller.script(plan: [], planExitStatus: 2),
+                           FakeSandboxInstaller.script()] {
+                try? FileManager.default.removeItem(at: sandbox.sandboxAddonRoot)
+                CoordinatorStub.install(["/install.sh": .init(status: 200, body: Data(script.utf8))])
+                print("== RUN")
+                try await SandboxSetupFlow(
+                    options: SandboxSetupOptions(server: "https://sandbox.invalid"), confirmed: true, addon: .live(),
+                    interactiveInput: false, terminal: false, color: false,
+                    probe: { _ in .mac(cores: 16, memoryGiB: 128, freeGiB: 157, volumeGiB: 1_858) }, waitlist: .approved).run()
+            }
+        }
+        let runs = decodedText(result.standardOutputContent).components(separatedBy: "== RUN\n").dropFirst()
+        #expect(runs.count == 3)
+        for run in runs {
+            #expect(run.contains("""
+                  [PASS] Sleep: off on the power adapter
+                  [INFO] Sizing: this installer reports no plan (add-on 1.1.1 and later do); the CLI estimated the \
+                lines below
+                  [PASS] CPU: 16 cores; you keep 4
+                  [PASS] Memory: 128 GB; you keep 32 GB, inference keeps 32 GB
+                  [PASS] Disk: 157 GiB free; 100 GiB stays free for you; Linux images 4 GiB + 30 GiB per Linux job; \
+                macOS images 46 GiB + 40 GiB per macOS job
+
+                Eligible. At a time, this Mac can run:
+                  1 Linux job (limited by free disk space)
+                  no macOS jobs (limited by free disk space)
+
+                What changes
+                """))
+            #expect(run.contains("Darkbloom Sandbox is set up on this Mac"))
+        }
     }
 
     @Test("an installer without progress events runs as it is, with only the options it knows")
@@ -473,8 +687,71 @@ struct SandboxSetupTests {
             """))
     }
 
-    @Test("an ineligible Mac stops before anything is downloaded")
-    func ineligible() async throws {
+    @Test("stopped while waiting: an add-on that waits in the background gets its own texts; an older one the old ones")
+    func stoppedWhileWaiting() async throws {
+        let result = try await #require(processExitsWith: .success, observing: [\.standardOutputContent]) {
+            let sandbox = try CLICommandSandbox.enter(autoRestart: false)
+            defer { sandbox.remove() }
+            // Add-on 1.1.2 says `background: true`; add-on 1.1.1 leaves the member out.
+            for background in [true, nil] as [Bool?] {
+                try? FileManager.default.removeItem(at: sandbox.sandboxAddonRoot)
+                CoordinatorStub.install(["/install.sh": .init(status: 200, body: Data(FakeSandboxInstaller.script(
+                    events: Array(FakeSandboxInstaller.events[0..<8])
+                        + [FakeSandboxInstaller.approval(background: background),
+                           FakeSandboxInstaller.waitlist(background: background)],
+                    exitStatus: 130).utf8))])
+                print("== RUN")
+                do {
+                    try await SandboxSetupFlow(options: SandboxSetupOptions(server: "https://sandbox.invalid"),
+                                               confirmed: true, addon: .live(), interactiveInput: false,
+                                               terminal: false, color: false,
+                                               probe: { _ in .mac(cores: 16, memoryGiB: 128) }, waitlist: .approved).run()
+                } catch let code as ExitCode {
+                    print("exit \(code.rawValue)")
+                }
+            }
+        }
+        let runs = Array(decodedText(result.standardOutputContent).components(separatedBy: "== RUN\n").dropFirst())
+        try #require(runs.count == 2)
+        let approval = """
+              ✓ Installing
+                ~/DarkbloomSandbox: 1 Linux slot and 1 macOS slot
+
+                Approve this Mac in your browser, signed in to the Darkbloom account that should own it:
+                  https://api-sandbox.darkbloom.dev/device?code=WDJB-MJHT
+                Code: WDJB-MJHT. Check the Mac shown, then press Approve; the CLI cannot approve for you.
+                Open the link in a browser on any device.
+                Earnings for jobs on this Mac go to the account that approves it.
+
+
+                Your account is on the waitlist: Darkbloom reviews new Mac owners before their first Mac joins.
+
+            """
+        #expect(runs[0].hasSuffix(approval + """
+                You can close this window: this Mac keeps waiting, also across restarts, and enrolls by itself \
+            once your account is approved. `darkbloom sandbox status` shows where it is.
+
+              ✗ Waiting for approval (stopped)
+
+            Setup stopped. This Mac keeps waiting for approval in the background, also across restarts, and enrolls \
+            by itself once approved; `darkbloom sandbox status` shows where it is.
+            exit 130
+
+            """))
+        #expect(runs[1].hasSuffix(approval + """
+                Leave this running, or press Ctrl-C and run `darkbloom sandbox setup` again later; this Mac enrolls \
+            once your account is approved.
+
+              ✗ Waiting for approval (stopped)
+
+            Setup stopped. An enrollment waiting for approval goes on; run `darkbloom sandbox setup` again to follow it.
+            exit 130
+
+            """))
+    }
+
+    @Test("a Mac that can never host sandboxes stops before anything is downloaded")
+    func refused() async throws {
         let result = try await #require(processExitsWith: .failure, observing: [\.standardOutputContent]) {
             _ = try CLICommandSandbox.enter(autoRestart: false)
             await exitWithCommandStatus {
@@ -482,31 +759,66 @@ struct SandboxSetupTests {
                 try await SandboxSetupFlow(options: SandboxSetupOptions(server: "https://sandbox.invalid"),
                                            confirmed: true, addon: .live(), interactiveInput: false,
                                            terminal: false, color: false,
+                                           probe: { _ in
+                                               var facts = SandboxHostFacts.mac(cores: 16, memoryGiB: 128)
+                                               facts.macOSMajor = 26
+                                               facts.macOSVersion = "26.4"
+                                               return facts
+                                           }, waitlist: .approved).run()
+            }
+        }
+        let output = decodedText(result.standardOutputContent)
+        #expect(output.hasSuffix("""
+              [PASS] Sleep: off on the power adapter
+
+            Not eligible: Darkbloom Sandbox needs macOS 27 or later; this Mac runs macOS 26.4. Update it in System \
+            Settings → General → Software Update first.
+            requests 0
+
+            """))
+    }
+
+    @Test("a Mac too small for a job stops after the installer's sizing, before installing")
+    func tooSmall() async throws {
+        let result = try await #require(processExitsWith: .failure, observing: [\.standardOutputContent]) {
+            let sandbox = try CLICommandSandbox.enter(autoRestart: false)
+            CoordinatorStub.install(["/install.sh": .init(status: 200, body: Data(FakeSandboxInstaller.script().utf8))])
+            await exitWithCommandStatus {
+                defer {
+                    let installed = sandbox.sandboxAddonRoot.appendingPathComponent("installer-arguments")
+                    print("requests \(CoordinatorStub.requests.count), installed \(FileManager.default.fileExists(atPath: installed.path))")
+                }
+                try await SandboxSetupFlow(options: SandboxSetupOptions(server: "https://sandbox.invalid"),
+                                           confirmed: true, addon: .live(), interactiveInput: false,
+                                           terminal: false, color: false,
                                            probe: { _ in .mac(cores: 8, memoryGiB: 16) }, waitlist: .approved).run()
             }
         }
         let output = decodedText(result.standardOutputContent)
-        #expect(output.contains("\nNot eligible: each job needs 16 GB of memory besides the 8 GB kept for you "
-            + "and the 4 GB kept for inference; this Mac has 4 GB left.\n"))
+        #expect(output.hasSuffix("\nNot eligible: each job needs 16 GB of memory besides the 8 GB kept for you "
+            + "and the 4 GB kept for inference; this Mac has 4 GB left.\nrequests 1, installed false\n"))
         #expect(!output.contains("What changes"))
-        #expect(output.hasSuffix("requests 0\n"))
     }
 
     @Test("setup asks before installing, and stops on no or without a terminal")
     func confirmation() async throws {
         let declined = try await #require(processExitsWith: .success, observing: [\.standardOutputContent]) {
-            _ = try CLICommandSandbox.enter(autoRestart: false)
+            let sandbox = try CLICommandSandbox.enter(autoRestart: false)
+            CoordinatorStub.install(["/install.sh": .init(status: 200, body: Data(FakeSandboxInstaller.script(
+                plan: [FakeSandboxInstaller.plan()]).utf8))])
             try replaceStandardInput(with: "n\n")
             try await SandboxSetupFlow(options: SandboxSetupOptions(server: "https://sandbox.invalid"),
                                        confirmed: false, addon: .live(), interactiveInput: true,
                                        terminal: false, color: false,
                                        probe: { _ in .mac(cores: 16, memoryGiB: 128) }, waitlist: .approved).run()
-            print("requests \(CoordinatorStub.requests.count)")
+            let installed = sandbox.sandboxAddonRoot.appendingPathComponent("installer-arguments")
+            print("installed \(FileManager.default.fileExists(atPath: installed.path))")
         }
         #expect(decodedText(declined.standardOutputContent).hasSuffix(
-            "Set up Darkbloom Sandbox on this Mac? [y/N]: Nothing changed.\nrequests 0\n"))
+            "Set up Darkbloom Sandbox on this Mac? [y/N]: Nothing changed.\ninstalled false\n"))
         let unattended = try await #require(processExitsWith: .failure, observing: [\.standardErrorContent]) {
             _ = try CLICommandSandbox.enter(autoRestart: false)
+            CoordinatorStub.install(["/install.sh": .init(status: 200, body: Data(FakeSandboxInstaller.script().utf8))])
             await exitWithCommandStatus {
                 try await SandboxSetupFlow(options: SandboxSetupOptions(server: "https://sandbox.invalid"),
                                            confirmed: false, addon: .live(), interactiveInput: false,

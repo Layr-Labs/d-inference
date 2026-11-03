@@ -293,7 +293,7 @@ class RecoveryTests(unittest.TestCase):
             actual=eval(expression,{"__builtins__":{}},locals())
             expected=not cancelled and resolve=="success" and ((resume=="true" and build==qualify=="skipped") or (resume=="false" and build==qualify=="success"))
             self.assertEqual(actual,expected)
-        for name in ["build-provider","qualify-sdk"]:
+        for name in ["build-provider","qualify-sdk-shard","qualify-sdk"]:
             body=source.split("  "+name+":\n",1)[1].split("    runs-on:",1)[0]
             self.assertIn("if: needs.resolve-env.outputs.resume != 'true'",body)
 

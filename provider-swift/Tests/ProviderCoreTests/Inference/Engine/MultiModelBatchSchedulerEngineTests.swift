@@ -96,7 +96,9 @@ func multiModelDeadlineAfterReservationReleasesWithoutSubmit() async throws {
     let entry = MultiModelBatchSchedulerEngine.ModelRegistryEntry(
         tokenizer: TokenizerHandle(MultiModelDeadlineTokenizer()),
         engineV2Bridge: bridge)
-    let deadline = FirstContentDeadline(relativeBudgetMilliseconds: 10_000)
+    // The budget only has to outlast the hop to the reservation gate; the
+    // test then sleeps past it, so a shorter budget is a shorter sleep.
+    let deadline = FirstContentDeadline(relativeBudgetMilliseconds: 2_000)
     let engine = MultiModelBatchSchedulerEngine(
         registryProvider: { @Sendable in ["deadline-model": entry] },
         ensureLoaded: { @Sendable _ in },
@@ -620,6 +622,17 @@ func harmonyEOSUsesModelTypeForAliasedModels() {
     }
 
     #expect(ids == [199999, 200002, 200012])
+}
+
+@Test("GPT-OSS client stop strings apply to the Harmony final channel only")
+func gptOssStopStringsAreScopedToTheFinalChannel() {
+    let scope = ModelEOSPolicy.stopStringScope(modelId: "gpt-oss-20b")
+    #expect(scope == CBv2StopStringScope(
+        opener: "<|channel|>final", openerEnd: "<|message|>",
+        closers: ["<|end|>", "<|return|>", "<|call|>", "<|start|>"]))
+    #expect(ModelEOSPolicy.stopStringScope(modelId: "local-alias", modelType: "gpt_oss") == scope)
+    #expect(ModelEOSPolicy.stopStringScope(modelId: "gemma-4-26b-qat-4bit") == nil)
+    #expect(ModelEOSPolicy.stopStringScope(modelId: "qwen3.6-35b-a3b-vl-mtp-mxfp8") == nil)
 }
 
 @Test("non-Harmony EOS set is unchanged")

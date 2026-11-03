@@ -46,6 +46,7 @@ import Darwin
         leaderCopiesAMissingModelOverTheCable()
         leaderChoosesTheCatalogInstead()
         leaderDownloadsAModelNoMacHas()
+        downloadProgressStaysOnOneLine()
         copyDeclined()
         copyBlockedByDisk()
         copyInterrupted()
@@ -341,6 +342,12 @@ import Darwin
         ClusterOnboardingModelChoice(title: "Qwen3.8-27B-4bit-mtp", lines: ["rank 0: Apple M3 Ultra, 256 GB, layers 0-31"], blocker: nil),
         ClusterOnboardingModelChoice(title: "gpt-oss-20b", lines: [], blocker: "not granted for this pair of chips")]
 
+    /// A copy's live report, logged for a transcript, then the line for the record.
+    static let copyReports: [ClusterOnboardingProgress] = [
+        .live({ _ in "Copying Qwen3.5-9B to the other Mac (Apple M3 Ultra, 256 GB) over the Thunderbolt cable: 3.1 of 6.1 GB, 2.40 GB/s, about 1 s left" },
+              logged: true),
+        .line("Copied 6.1 GB in 2.6 s (2.35 GB/s); every file matched its manifest digest.")]
+
     final class Recorder: @unchecked Sendable {
         let lock = NSLock()
         var calls = [String]()
@@ -355,6 +362,8 @@ import Darwin
                            choices: [ClusterOnboardingModelChoice] = choices,
                            replanned: [ClusterOnboardingModelChoice]? = nil,
                            provisionResult: Result<[String], ClusterOnboardingFailure> = .success(["The other Mac (Apple M3 Ultra, 256 GB) has Qwen3.5-9B now: 12 files verified against the catalog manifest."]),
+                           provisionReports: [ClusterOnboardingProgress] = copyReports,
+                           provisionReportPause: useconds_t = 30_000,
                            linkPorts: [String] = [],
                            approvalGate: DispatchSemaphore? = nil,
                            recheck: String? = nil,
@@ -431,9 +440,10 @@ import Darwin
             stop: { recorder.note("stop"); return .success(["Both Macs stopped serving."]) },
             provision: { index, download, progress in
                 recorder.note("provision \(index) \(download ? "download" : "copy")")
-                progress("Copying Qwen3.5-9B to the other Mac (Apple M3 Ultra, 256 GB) over the Thunderbolt cable: 3.1 of 6.1 GB, 2.40 GB/s, about 1 s left")
-                usleep(30_000)
-                progress("Copied 6.1 GB in 2.6 s (2.35 GB/s); every file matched its manifest digest.")
+                for report in provisionReports {
+                    progress(report)
+                    usleep(provisionReportPause)
+                }
                 return provisionResult
             },
             verifyTeardown: { recorder.note("verifyTeardown")
@@ -997,6 +1007,54 @@ import Darwin
         transcript("leader-downloads-model", run.text, keys: run.keys)
     }
 
+    /// A download's reports from 0% to 100%, every 25 points logged, then its line for the record; `widths` notes
+    /// the width each report was laid out for.
+    static func downloadReports(widths: Recorder) -> [ClusterOnboardingProgress] {
+        (0...100).map { percent in
+            .live({ width in
+                widths.note(width.map(String.init) ?? "plain")
+                return "Downloading Qwen3.8-27B-4bit-mtp  \(percent)%  \(String(format: "%.1f", 0.163 * Double(percent)))/16.3 GB"
+            }, logged: percent % 25 == 0)
+        } + [.line("Downloaded 16.3 GB in 130.2 s; every file matched the catalog manifest.")]
+    }
+
+    /// A download reports four times a second for minutes. A live terminal redraws its reports on one row, laid out
+    /// for the live line's room, and the line for the record takes that row; a transcript keeps the logged reports
+    /// only. Neither adds a line per report.
+    static func downloadProgressStaysOnOneLine() {
+        let offer = ClusterOnboardingProvisionOffer(lines: ["This Mac: download from Darkbloom's catalog (16.3 GB)"],
+            downloadAlternative: false, leaderDownloads: true)
+        let before = [ClusterOnboardingModelChoice(title: "Qwen3.8-27B-4bit-mtp", lines: ["not on these Macs yet: planned once it is on this Mac"], blocker: nil, provision: offer)]
+        let after = [ClusterOnboardingModelChoice(title: "Qwen3.8-27B-4bit-mtp", lines: ["rank 0: Apple M3 Ultra, 256 GB, layers 0-31"], blocker: nil)]
+        for colour in [true, false] {
+            let label = colour ? "live download" : "plain download"
+            let widths = Recorder()
+            let environment = colour ? ["TERM": "xterm-256color", "LANG": "en_US.UTF-8", "DARKBLOOM_NO_ANIMATION": "1"] : ["NO_COLOR": "1"]
+            let run = TerminalRun(operations(Recorder(), resume: .init(role: .leader, peerName: "Apple M3 Ultra, 256 GB"), pairEvents: [],
+                pairResult: .failed([]), choices: before, replanned: after, provisionReports: downloadReports(widths: widths),
+                provisionReportPause: 2_000),
+                environment: environment, columns: 100)
+            expect(run.waitFor("Choose a model [1-1, enter = 1]: "), "\(label): the choice"); run.type("\r")
+            expect(run.waitFor("Press enter to get it, n to stop here."), "\(label): one key"); run.type("\r")
+            expect(run.waitFor("Starting Qwen3.8-27B-4bit-mtp on both Macs in 3 s"), "\(label): then the timed start"); run.type("n")
+            expect(run.finish() == 0, "\(label): n stops after the download")
+            let rows = run.text.components(separatedBy: "\n").filter { $0.contains("Downloading Qwen3.8-27B-4bit-mtp") }
+            let screen = visible(run.text)
+            expect(screen.contains("  Downloaded 16.3 GB in 130.2 s; every file matched the catalog manifest."), "\(label): the line for the record")
+            if colour {
+                expect(rows.count == 1, "\(label): every report on one row, got \(rows.count) rows")
+                expect(!screen.contains { $0.contains("Downloading Qwen3.8-27B-4bit-mtp") }, "\(label): the line for the record took the live row")
+                expect(!widths.all.isEmpty && Set(widths.all) == ["94"], "\(label): laid out for the live line's room: \(Set(widths.all))")
+            } else {
+                expect(rows.map { $0.split(separator: " ").first { $0.hasSuffix("%") }.map(String.init) } == ["0%", "25%", "50%", "75%", "100%"],
+                    "\(label): only the logged reports, each on its own line: \(rows)")
+                expect(widths.all == Array(repeating: "plain", count: 5), "\(label): plain lines, no width: \(widths.all)")
+                expect(!run.text.contains("\u{1B}[K"), "\(label): nothing redrawn")
+            }
+            transcript(colour ? "leader-download-live-progress" : "leader-download-plain-progress", run.text, keys: run.keys)
+        }
+    }
+
     static func copyDeclined() {
         let recorder = Recorder()
         let run = TerminalRun(operations(recorder, resume: .init(role: .leader, peerName: "Apple M3 Ultra, 256 GB"), pairEvents: [], pairResult: .failed([]),
@@ -1196,6 +1254,12 @@ import Darwin
         expect(U.changed(pinned: pinned, current: ["mac-a": "a2a2", "mac-b": "b2b2"]) == ["mac-a", "mac-b"], "update: both updated")
         expect(U.changed(pinned: pinned, current: ["mac-a": "aaaa", "mac-b": nil]).isEmpty, "update: a Mac that did not answer is no reason")
         expect(U.changed(pinned: pinned, current: [:]).isEmpty, "update: nothing known, nothing re-planned")
+        // The pair's coordinated update restarts both Macs seconds apart: plan again once both answer with one build.
+        expect(U.oneBuild(pinned: pinned, current: ["mac-a": "a2a2", "mac-b": "a2a2"]), "update: both run the new build: plan again")
+        expect(!U.oneBuild(pinned: pinned, current: ["mac-a": "a2a2", "mac-b": "bbbb"]), "update: the other Mac still runs the old build: wait")
+        expect(!U.oneBuild(pinned: pinned, current: ["mac-a": "a2a2", "mac-b": nil]), "update: the other Mac has not answered yet: wait")
+        expect(!U.oneBuild(pinned: pinned, current: ["mac-a": "a2a2"]), "update: the other Mac not asked: wait")
+        expect(!U.oneBuild(pinned: [:], current: [:]), "update: no setup, nothing to plan")
         expect(U.statusLine == "Updating the cluster setup after a Darkbloom update.", "update: the status line")
         expect(U.checkEverySeconds <= 60 && U.retryAfterFailureSeconds >= 300, "update: noticed within a minute, a failure not retried in a loop")
         // The re-plan waits for both Macs' memory: every Mac's summary, and both of them.
@@ -1233,6 +1297,18 @@ import Darwin
         expect(U.servableIndex(of: "gone", in: replanned) == nil, "re-plan: a model no longer listed")
         let both = replanned + [ClusterOnboardingModelChoice(title: "Qwen 3.5 9B", lines: ["6.1 GB · pipeline"], blocker: nil, modelID: "Qwen3.5-9B")]
         expect(U.servableIndex(of: "Qwen3.5-9B", in: both) == 4, "re-plan: an entry of the model that can start is found past one to copy first")
+        let twoFolders = [
+            ClusterOnboardingModelChoice(title: "GLM-5.3-Flash", lines: ["tensor parallel"], blocker: nil, modelID: "glm-5.3-flash"),
+            ClusterOnboardingModelChoice(title: "GLM-5.3-Flash", lines: ["tensor parallel"], blocker: nil, modelID: "glm-5.3-flash"),
+        ]
+        expect(U.servableIndex(of: "glm-5.3-flash", folder: "/models/b", in: twoFolders, folders: ["/models/a", "/models/b"]) == 1,
+               "re-plan: of two folders with one model id, the chosen folder's entry")
+        expect(U.servableIndex(of: "glm-5.3-flash", folder: "/models/gone", in: twoFolders, folders: ["/models/a", "/models/b"]) == 0,
+               "re-plan: the chosen folder is gone, so the model's first entry that can start")
+        expect(U.servableIndex(of: "Qwen3.5-9B", folder: "/models/q", in: both, folders: ["", "", "", "", "/models/q"]) == 4,
+               "re-plan: the chosen folder's entry, found past one to copy first")
+        expect(U.servableIndex(of: "Qwen3.5-9B", folder: "/models/copy", in: both, folders: ["/models/copy", "", "", "", "/models/q"]) == 4,
+               "re-plan: the chosen folder's entry needs a copy first, so the entry that can start")
     }
 
     /// The exact text and key count of a flow, for the evidence.

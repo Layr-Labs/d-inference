@@ -60,6 +60,9 @@ final class UpdateRecoveryStore: @unchecked Sendable {
         var layout: VerifiedPredecessor.Layout
         var stagingRoot: String
         var createdAt: Double
+        /// The rollback's quarantine reason, for a replay to record. Absent
+        /// in journals of earlier releases, which ignore it.
+        var reason: String?
 
         enum CodingKeys: String, CodingKey {
             case schema
@@ -69,6 +72,7 @@ final class UpdateRecoveryStore: @unchecked Sendable {
             case layout
             case stagingRoot = "staging_root"
             case createdAt = "created_at"
+            case reason
         }
     }
 
@@ -208,7 +212,8 @@ final class UpdateRecoveryStore: @unchecked Sendable {
         } else {
             state.completeRollback(
                 now: now,
-                reason: "recovered an interrupted rollback of \(transaction.target.version)"
+                reason: transaction.reason
+                    ?? "recovered an interrupted rollback of \(transaction.target.version)"
             )
         }
         try writeState(state)
@@ -262,16 +267,19 @@ final class UpdateRecoveryStore: @unchecked Sendable {
         try finish(remove: staged.stagingRoot)
     }
 
+    /// Restore the verified predecessor over the installed release (a pending
+    /// candidate, or a promoted release for an operator rollback) and
+    /// quarantine that release.
     func rollback(now: Double, reason: String) throws -> String {
         try recoverInterruptedTransaction(now: now)
         var state = try loadState()
-        guard let candidate = state.candidate else {
-            throw StoreError.missingPredecessor(
-                "there is no pending release candidate to roll back")
-        }
         guard let predecessor = state.predecessor else {
             throw StoreError.missingPredecessor(
-                "v\(candidate.release.version) has no recorded predecessor")
+                "v\(state.rollbackSource?.version ?? state.current?.version ?? "unknown") has no recorded predecessor")
+        }
+        guard state.rollbackSource != nil else {
+            throw StoreError.missingPredecessor(
+                "v\(predecessor.release.version), the recorded predecessor, is already installed")
         }
         try verifyPredecessor(predecessor)
         let (rollbackGeneration, overflow) =
@@ -294,7 +302,8 @@ final class UpdateRecoveryStore: @unchecked Sendable {
             target: predecessor.release,
             layout: predecessor.layout,
             stagingRoot: stagingRoot.path,
-            createdAt: now
+            createdAt: now,
+            reason: reason
         )
         try persist(transaction)
         try faultInjector(.transactionPersisted)
@@ -405,6 +414,9 @@ final class UpdateRecoveryStore: @unchecked Sendable {
                 )
             }
         case .rollback:
+            // A replay after the state write (death before the journal was
+            // removed) finds the rollback already recorded: count it once.
+            guard state.rollbackSource != nil else { break }
             let (generation, overflow) =
                 state.installGeneration.addingReportingOverflow(1)
             guard !overflow else {
@@ -413,7 +425,8 @@ final class UpdateRecoveryStore: @unchecked Sendable {
             state.installGeneration = generation
             state.completeRollback(
                 now: now,
-                reason: "recovered rollback after \(state.candidate?.failureCount ?? 0) failed starts"
+                reason: transaction.reason
+                    ?? "recovered rollback after \(state.candidate?.failureCount ?? 0) failed starts"
             )
         }
         try writeState(state)

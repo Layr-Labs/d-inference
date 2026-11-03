@@ -457,6 +457,10 @@ public final class MockCoordinator: @unchecked Sendable {
         try await sendCoordinatorMessage(msg)
     }
 
+    public func pushPrefetchModel(modelId: String, priority: Int = 0) async throws {
+        try await sendCoordinatorMessage(.prefetchModel(.init(modelId: modelId, priority: priority)))
+    }
+
     /// Echo a member acceptance exactly as the coordinator sends it; the
     /// client's negotiation refuses any nonce that is not its own.
     public func pushClusterMemberAcceptance(nonce: String, providerID: String = "mock-provider") async throws {
@@ -474,15 +478,18 @@ public final class MockCoordinator: @unchecked Sendable {
     }
 
     /// Force-close the active provider WebSocket so the provider's reconnect
-    /// loop kicks in.
-    public func dropActiveWebSocket() async {
+    /// loop kicks in. The close frame carries `closeCode` and `reason`, so a
+    /// test can inject the close that the edge sends on a Conductor change (1012).
+    public func dropActiveWebSocket(
+        closeCode: UInt16 = 1001, reason: String? = "mock dropping"
+    ) async {
         let outbound: WebSocketOutboundWriter? = lock.withLock {
             let o = self.activeOutbound
             self.activeOutbound = nil
             return o
         }
         if let outbound {
-            try? await outbound.close(.goingAway, reason: "mock dropping")
+            try? await outbound.close(.init(codeNumber: Int(closeCode)), reason: reason)
         }
     }
 

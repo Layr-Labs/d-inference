@@ -2,7 +2,7 @@ name: Provider CI Build
 description: Build full debug test products with lane-specific caches and source-matched Metal
 inputs:
   lane:
-    description: provider, sdk, or parity; each owns independent build outputs
+    description: provider, sdk or cluster; each owns independent build outputs
     required: true
 runs:
   using: composite
@@ -13,7 +13,7 @@ runs:
         LANE: ${{ inputs.lane }}
       run: |
         case "$LANE" in
-          provider|sdk|parity) ;;
+          provider|sdk|cluster) ;;
           *) echo "Unknown provider CI lane: $LANE" >&2; exit 2 ;;
         esac
     - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -41,35 +41,29 @@ runs:
         path: |
           provider-swift/.build
           libs/mlx-swift-lm/.build
+          libs/darkbloom-cluster/.build
         key: ${{ steps.keys.outputs.swift-key }}
         restore-keys: ${{ steps.keys.outputs.swift-prefix }}
     - name: Revalidate source timestamps and discard cached runtime resources
       shell: bash
       run: |
         python3 scripts/provider-release-cache.py restore-mtimes
-        for root in provider-swift/.build libs/mlx-swift-lm/.build; do
+        for root in provider-swift/.build libs/mlx-swift-lm/.build libs/darkbloom-cluster/.build; do
           [ -d "$root" ] || continue
           find "$root" -type f -name mlx.metallib -delete
           find "$root" -mindepth 3 -maxdepth 3 -type d \
             -path "$root/*-apple-macosx/*/*.bundle" -prune -exec rm -rf {} +
         done
     - name: Build all provider test products
-      if: inputs.lane != 'sdk'
+      if: inputs.lane == 'provider'
       id: provider-build
       shell: bash
       working-directory: provider-swift
-      env:
-        LANE: ${{ inputs.lane }}
-      # The provider lane instruments Swift code for the coverage report at the
-      # end of its job. Both builds use the same flags, so neither rebuilds the
-      # other. The parity lane has no coverage report and builds as before.
+      # Instrumented for the coverage report. Both builds use the same flags,
+      # so neither rebuilds the other.
       run: |
-        coverage=()
-        if [ "$LANE" = provider ]; then
-          coverage=(--enable-code-coverage)
-        fi
-        swift build --build-tests ${coverage[@]+"${coverage[@]}"}
-        swift build --product darkbloom-fan-helper ${coverage[@]+"${coverage[@]}"}
+        swift build --build-tests --enable-code-coverage
+        swift build --product darkbloom-fan-helper --enable-code-coverage
     - name: Build all SDK test products against local MLX
       if: inputs.lane == 'sdk'
       id: sdk-build
@@ -79,8 +73,14 @@ runs:
         swift package unedit --force mlx-swift >/dev/null 2>&1 || true
         swift package edit --path ../mlx-swift mlx-swift
         swift build --build-tests
+    - name: Build all cluster test products
+      if: inputs.lane == 'cluster'
+      id: cluster-build
+      shell: bash
+      working-directory: libs/darkbloom-cluster
+      run: swift build --build-tests
     - name: Record timestamps for successfully built sources
-      if: ${{ !cancelled() && (steps.provider-build.outcome == 'success' || steps.sdk-build.outcome == 'success') }}
+      if: ${{ !cancelled() && (steps.provider-build.outcome == 'success' || steps.sdk-build.outcome == 'success' || steps.cluster-build.outcome == 'success') }}
       id: timestamps
       shell: bash
       run: python3 scripts/provider-release-cache.py snapshot-mtimes
@@ -91,6 +91,7 @@ runs:
         path: |
           provider-swift/.build
           libs/mlx-swift-lm/.build
+          libs/darkbloom-cluster/.build
         key: ${{ steps.keys.outputs.swift-key }}
     - name: Restore source-matched Metal cache
       id: metallib-cache
@@ -106,11 +107,12 @@ runs:
         METALLIB_CACHE_DIR: ${{ runner.temp }}/metallib-cache
       run: |
         cmake --version
-        if [ "$LANE" = sdk ]; then
-          bin=$(swift build --package-path libs/mlx-swift-lm --show-bin-path)
-        else
-          bin=$(swift build --package-path provider-swift --show-bin-path)
-        fi
+        case "$LANE" in
+          sdk) package=libs/mlx-swift-lm ;;
+          cluster) package=libs/darkbloom-cluster ;;
+          *) package=provider-swift ;;
+        esac
+        bin=$(swift build --package-path "$package" --show-bin-path)
         ./scripts/stage-test-metallib.sh "$bin"
     - name: Save validated source-matched Metal cache
       if: ${{ !cancelled() && steps.metallib.outcome == 'success' && steps.metallib-cache.outputs.cache-hit != 'true' }}

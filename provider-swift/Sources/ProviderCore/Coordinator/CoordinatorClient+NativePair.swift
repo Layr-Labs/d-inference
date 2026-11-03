@@ -15,13 +15,16 @@ extension CoordinatorClient {
     /// always names the policy the control will require in a prepare frame.
     /// The existing signer and transport remain responsible for member
     /// identity; installing grants no trust or runtime approval.
+    ///
+    /// The model must be one this member registers (`config.models`,
+    /// `CoordinatorClientConfig.admitsModel`): its pair-serving grant admits
+    /// it, as `ProviderLoop.installNativePairMember` requires.
     internal func installNativePairMember(_ control: NativePairMemberControl) throws {
         let installation = control.installation
         guard config.executionRole == .clusterMember, !sessionRegistered, nwConnection == nil,
               nativePairMember == nil, config.hardware.chipName == installation.chip,
               config.models.contains(where: { $0.id == installation.policy.model }),
-              ModelRuntimeRequirements.isEligible(modelID: installation.policy.model,
-                  available: config.runtimeCapabilities),
+              config.admitsModel(installation.policy.model),
               let membership = try? installation.membership,
               config.clusterMembership == membership else { throw NativePairMemberError.unconfigured }
         adoptNativePairMember(control)

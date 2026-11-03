@@ -1,6 +1,6 @@
 # Provider ↔ coordinator protocol messages
 
-> Last updated: 2026-10-29
+> Last updated: 2026-11-02
 
 Every JSON frame on the provider WebSocket (`GET /ws/provider`), with the Go
 type, the Swift type, and the presence rule for each field. Go is the canon in
@@ -207,6 +207,24 @@ routing on the draining status and clears the mark on the release heartbeat.
 Routed requests that arrive during a hold get the typed draining rejection.
 
 
+## Close codes and the reconnect wait
+
+The provider reads the code of a WebSocket close frame from the coordinator side
+to choose the wait before its next connection attempt
+(`provider-swift/Sources/ProviderCore/Coordinator/CoordinatorReconnectPolicy.swift`,
+`CoordinatorReconnectPolicy`). It does not read the close reason. The code is
+part of the WebSocket close frame, not of a JSON frame.
+
+| Close from the coordinator side | Wait before the next attempt |
+|---|---|
+| Code `1012` (service restart) | Drawn from `serviceRestartDelayRange`; the backoff does not grow |
+| Any other code, or no close frame | The next `ExponentialBackoff` range; the backoff grows |
+
+A session that stayed open for `stableSessionDuration` or more, counted from its
+`register` frame, resets the backoff before either wait. The values are in the
+[runtime constants](../provider/cli-reference.md#runtime-constants). Older
+providers handle `1012` like any other close, so the coordinator can send it to
+every provider version. Every reconnect sends a fresh `register`.
 
 ## Envelope and the single-parse rule
 
@@ -296,7 +314,7 @@ connection, first.
 | `execution_role` | `ExecutionRole` | `ProviderExecutionRole` | opt | omitted/`""` keeps ordinary solo; `"cluster_member"` is the control-only member role (empty ordinary `models`, separate `cluster_models`, fresh `member_registration_nonce`) — grants no trust or model capability |
 | `member_registration_nonce` | `string` | `String?` | opt | 64 lowercase hex chars, this connection's member negotiation nonce; invalid without the member role |
 | `cluster_models` | `[]ModelInfo` | `[ModelInfo]?` | opt | separate cluster inventory for the member role; invalid on a solo registration; old coordinators ignore it and see no routable model |
-| `cluster_membership` | `*ClusterMembership` | `ClusterMembership?` | opt | member role only (a solo registration carrying it is refused, and the provider never encodes it for one). `cluster_id`: the saved cluster label, 1–128 of `A–Z a–z 0–9 - . _`, not starting with `-`; `rank`: `0` leader or `1` follower; `policy_sha256`: 64 lowercase hex, SHA-256 of the canonical coordinator runtime policy the member installed. A claim the pair selector matches against a second member of the same account and the operator's approval catalog; it grants nothing. A member that omits it is acknowledged and never paired (`darkbloom-platform:coordinator/protocol/execution_role.go`, `ClusterMembership.Validate`; [pair formation](cluster-control-protocol.md#pair-formation)). The provider sends it only when its saved setup carries a pair approval, and derives it from the installed member control, so `policy_sha256` is the digest of exactly the policy bytes that control requires in a prepare frame (`provider-swift/Sources/ProviderCore/Protocol/ClusterMembership.swift`, `ClusterMembership`; `provider-swift/Sources/ProviderCore/Coordinator/NativePairMemberInstallation.swift`, `membership`). Each plan of a roster registration's `plans[]` names its generation `mode` (omitted is `pipeline_v1`) and that mode's `cuts`: none for `tensor_parallel_v1`, one fewer than `members` for every other mode (`provider-swift/Sources/ProviderCore/Protocol/ClusterRosterRegistration.swift`, `ClusterPlan.cutCount`; `darkbloom-platform:coordinator/protocol/cluster_generation_mode.go`, `ClusterPlanModeCutCount`). The provider does not encode `tensor_parallel_shares` yet, so a setup with unequal tensor-parallel shares is refused at registration (`provider-swift/Sources/ProviderCore/Coordinator/NativePairMemberRoster.swift`, `NativePairMemberRoster`) |
+| `cluster_membership` | `*ClusterMembership` | `ClusterMembership?` | opt | member role only (a solo registration carrying it is refused, and the provider never encodes it for one). `cluster_id`: the saved cluster label, 1–128 of `A–Z a–z 0–9 - . _`, not starting with `-`; `rank`: `0` leader or `1` follower; `policy_sha256`: 64 lowercase hex, SHA-256 of the canonical coordinator runtime policy the member installed. A claim the pair selector matches against a second member of the same account and the operator's approval catalog; it grants nothing. A member that omits it is acknowledged and never paired (`darkbloom-platform:coordinator/protocol/execution_role.go`, `ClusterMembership.Validate`; [pair formation](cluster-control-protocol.md#pair-formation)). The provider sends it only when its saved setup carries a pair approval, and derives it from the installed member control, so `policy_sha256` is the digest of exactly the policy bytes that control requires in a prepare frame (`provider-swift/Sources/ProviderCore/Protocol/ClusterMembership.swift`, `ClusterMembership`; `provider-swift/Sources/ProviderCore/Coordinator/NativePairMemberInstallation.swift`, `membership`). Each plan of a roster registration's `plans[]` names its generation `mode` (omitted is `pipeline_v1`) and that mode's `cuts`: none for `tensor_parallel_v1`, one fewer than `members` for every other mode (`provider-swift/Sources/ProviderCore/Protocol/ClusterRosterRegistration.swift`, `ClusterPlan.cutCount`; `darkbloom-platform:coordinator/protocol/cluster_generation_mode.go`, `ClusterPlanModeCutCount`). The provider does not encode `tensor_parallel_shares` yet, so a setup with unequal tensor-parallel shares is refused at registration (`provider-swift/Sources/ProviderCore/Coordinator/NativePairMemberRoster.swift`, `NativePairMemberRoster`). A plan for a model approval also carries `runtime`, exactly `native_runtime_sha256`, `capability_sha256`, `resource_policy_sha256` and `profile_sha256` (64 lowercase hex, nonzero), from the member's own saved setup; it is left out of a plan for a build-pinned approval and is part of the plan both members must register byte for byte (`ClusterPlan.runtime`, `samePlacement`; [model approvals](configuration.md#model-approvals)) |
 | `busy_reason`, `busy_since_ms`, `busy_addon` | — | `ProviderBusy?` | opt | Present only while an add-on holds the provider; [add-on hold busy fields](#add-on-hold-busy-fields) |
 
 An attested registration is encoded by the raw-attestation encoder, not the
@@ -1391,7 +1409,9 @@ Go `LoadModelMessage` · Swift `LoadModel`. `model_id` (req). Sent only to
 Active or explicitly paused Autopilot providers block this legacy residency path and use explicit
 `model_autopilot` commands instead. Never sent to a `cluster_member` connection
 or to a device held by a verified pair (`beginVerifiedPairAwareModelCommand`,
-`darkbloom-platform:coordinator/registry/verified_pair_commands.go`).
+`darkbloom-platform:coordinator/registry/verified_pair_commands.go`). Without
+Autopilot, a model outside the [operator filter](configuration.md#provider-model-selection)
+is refused `model_not_selected` (`autopilotAllowsModel`).
 
 ### `prefetch_model`
 
@@ -1399,7 +1419,9 @@ Go `PrefetchModelMessage` · Swift `PrefetchModel`. `model_id` (req); `priority`
 (`int`, opt, advisory). Download + verify only, no GPU load; for a build in
 ordinary serving the provider replies with `prefetch_model_status` and then
 `models_update`. Refused for a `cluster_member` connection or a pair-held
-device, like `load_model`.
+device, like `load_model`. Without saved Autopilot consent, a model outside the
+[operator filter](configuration.md#provider-model-selection) is refused
+`model_not_selected` before any download.
 
 With saved Autopilot consent and downloads not turned off by the operator
 (capability `inventory_downloads`; on by default), a build outside ordinary
@@ -1431,7 +1453,15 @@ backend and attested capability guards apply. Alias entries describe aliases
 whose desired, previous, or retired build is in the provider's advertised inventory;
 an empty set revokes old targets. Revision-aware providers stage the exact artifact
 and drain before activation; ID-only providers retain the legacy prefetch path.
-Both announce completed updates through `models_update`. A `cluster_member`
+Both announce completed updates through `models_update`. A provider with an
+[operator filter](configuration.md#provider-model-selection) converges only to a
+desired build inside it: an alias successor outside the filter is not fetched,
+not staged, not served and does not drop the previous build
+(`operatorFilterAllows`,
+`provider-swift/Sources/ProviderCore/ProviderLoop+ModelSelection.swift`); the
+provider logs `desired_models: <model> → <build> is outside the enabled model
+filter; not converging`. With Autopilot enabled, only its lease and set gates can
+admit such a build. A `cluster_member`
 connection is offered no entries and receives only the empty set; a nonempty set
 is refused for a member connection or a pair-held device. Source:
 [coordinator/registry/model_commands.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/registry/model_commands.go) (`DesiredModelsForProvider`, `RefreshDesiredModels`).

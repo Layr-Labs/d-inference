@@ -29,7 +29,8 @@ struct ClusterMemberSupervisorTests {
               setup: nil, coordinatorURL: "wss://example.invalid", autoUpdate: false,
               budgetLimits: .init(maxQuickFailures: 3, quickFailureWindowSeconds: Double(window),
                                   initialBackoffSeconds: 1, maxBackoffSeconds: 4),
-              guardLimits: guardLimits, recycleGraceSeconds: 5, reexecArguments: ["/bin/false"])
+              guardLimits: guardLimits, recycleGraceSeconds: 5, reexecArguments: ["/bin/false"],
+              childPollSeconds: 0.05)
     }
 
     private func state(_ directory: URL) -> ClusterMemberSupervisorState? {
@@ -96,9 +97,9 @@ struct ClusterMemberSupervisorTests {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("s18-guard-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: directory) }
         var limits = ClusterMemberLivenessGuard.Limits()
-        limits.intervalSeconds = 1
-        limits.startGraceSeconds = 2
-        limits.downSeconds = 3
+        limits.intervalSeconds = 0.25
+        limits.startGraceSeconds = 1
+        limits.downSeconds = 2
         // One heartbeat, then silence while the process lives on.
         let script = #"printf '{"pid":%d,"version":"t","phase":"registered","writtenAt":%s}' $$ "$(date +%s)" "#
             + #"> "$DARKBLOOM_CLUSTER_MEMBER_HEALTH_FILE"; exec sleep 60"#
@@ -107,8 +108,9 @@ struct ClusterMemberSupervisorTests {
         let run = Task { await supervisor.run() }
         #expect(await waitUntil(seconds: 10) { state(directory)?.phase == .running })
         let first = try #require(state(directory)?.current?.pid)
-        // The guard needs about 4 s (2 s grace, 3 s down, 1 s probes); the
-        // wider window only absorbs a slow test host.
+        // The guard needs at most about 2 s (1 s grace, 2 s down from a
+        // whole-second heartbeat stamp, 0.25 s probes); the wider window only
+        // absorbs a slow test host.
         let started = Date()
         #expect(await waitUntil(seconds: 60) {
             guard let current = state(directory), current.runs >= 2, current.phase == .running else { return false }

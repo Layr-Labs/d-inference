@@ -94,32 +94,39 @@ final class GPTOSSPagedKVCache: KVCache {
         get { gathered() }
         set {
             precondition(newValue.count == 2 && newValue[0].dim(2) > 0)
-            let previousOffset = offset
-            let previousIndex = layout.index
+            let previous = layout
             let window = maxSize
             pages = []; shape = nil; layout = .init(window: window)
             _ = update(keys: newValue[0], values: newValue[1])
             if window != nil {
                 // Like RotatingKVCache, metadata restoration supplies position
                 // separately. Preserve the old position until it is restored.
-                layout.restore(count: newValue[0].dim(2), offset: max(previousOffset, newValue[0].dim(2)),
-                    index: min(previousIndex, newValue[0].dim(2)))
+                layout.restore(count: newValue[0].dim(2), offset: max(previous.offset, newValue[0].dim(2)),
+                    index: min(previous.index, newValue[0].dim(2)), wrapped: previous.wrapped)
             }
         }
     }
 
+    /// Sliding pages write and restore exactly the metadata the pinned SDK's
+    /// ring writes in the same state (`GPTOSSSlidingRing`).
     var metaState: [String] {
         get {
-            if let window = maxSize { return ["0", String(window), "256", String(offset), String(layout.index)] }
-            return [""]
+            guard let window = maxSize else { return [""] }
+            guard let metadata = GPTOSSSlidingRing.metadata(window: window,
+                at: .init(offset: offset, index: layout.index, wrapped: layout.wrapped)) else {
+                preconditionFailure("The pinned SDK writes another sliding-ring metadata layout")
+            }
+            return metadata
         }
         set {
             guard let window = maxSize else {
                 precondition(newValue == [""]); return
             }
-            precondition(newValue.count == 5 && newValue[0] == "0" && Int(newValue[1]) == window
-                && Int(newValue[2]) == 256)
-            layout.restore(count: layout.count, offset: Int(newValue[3])!, index: Int(newValue[4])!)
+            guard let position = GPTOSSSlidingRing.position(of: newValue, window: window, rows: layout.count) else {
+                preconditionFailure("GPT-OSS sliding pages restore only the SDK ring's metadata for their rows")
+            }
+            layout.restore(count: layout.count, offset: position.offset, index: position.index,
+                wrapped: position.wrapped)
         }
     }
 

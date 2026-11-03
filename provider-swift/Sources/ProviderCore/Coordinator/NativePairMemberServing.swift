@@ -48,7 +48,8 @@ public protocol NativePairMemberServingHost: AnyObject, Sendable {
     func serveCommittedStart(_ start: NativePairMemberServingStart) async throws
     /// The session is ending: retire what `serveCommittedStart` published for
     /// this epoch (or stop a serve still under way) and return once it is
-    /// retired. Idempotent; an unknown epoch does nothing.
+    /// retired. The epoch is released at once, so a later start can begin
+    /// during that retirement, and is never served afterwards. Idempotent.
     func stopServingCommittedStart(epoch: UUID) async
 }
 

@@ -534,7 +534,9 @@ struct ModelCatalogTests {
 
         let config = URLSessionConfiguration.ephemeral
         config.protocolClasses = [RegistryURLProtocol.self]
-        let downloader = ModelDownloader(r2CDNURL: "https://cdn.example.test", urlSession: URLSession(configuration: config))
+        // The corrupt file is fetched three times; the wait between attempts is short.
+        let downloader = ModelDownloader(r2CDNURL: "https://cdn.example.test", urlSession: URLSession(configuration: config),
+                                         retryBackoff: .milliseconds(1))
         let model = CatalogModel(
             id: modelID,
             s3Name: "unused",

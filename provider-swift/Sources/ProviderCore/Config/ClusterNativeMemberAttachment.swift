@@ -19,7 +19,8 @@ public struct ClusterNativeMemberAttachment: Codable, Sendable, Equatable {
     public let resourceLibraryPath: String
     /// v1: the pair approval.
     public let approval: ClusterPairApproval?
-    /// v2: the cluster approval this member derives its plan for.
+    /// v2: the cluster approval this member derives its plan for: build-pinned,
+    /// or a model approval, under which the member's plan carries its own runtime.
     public let clusterApproval: ClusterRuntimeApproval?
     /// v2: every member's pin, Secure Enclave key and signature over the
     /// roster's canonical bytes. The coordinator forms a cluster only from
@@ -71,18 +72,21 @@ public struct ClusterNativeMemberAttachment: Codable, Sendable, Equatable {
             throw ClusterConfigurationError.invalid("Saved native member attachment has unsupported or ambiguous inputs")
         }
         let policy = try NativePairMemberPolicy(policyBytes)
-        let hashes = policy.hashes.map { $0.map { String(format: "%02x", $0) }.joined() }
+        let hex = NativePairMemberPolicy.hex
         // Plan, artifact, native runtime, capability and profile are the saved
         // setup's own pins; the metallib, resource library and resource policy
         // digests exist only in the approval and are checked against the
         // installed files when the member starts. A cluster approval fixes no
         // plan: its first digest is the placement policy, and the plan is the
-        // one this member derives (`selectedPlanSHA256`) and registers.
+        // one this member derives (`selectedPlanSHA256`) and registers. A model
+        // approval pins no runtime: the member takes it from this setup.
+        let runtimeIsTheSetups = policy.runtime.map {
+            hex($0.nativeRuntime) == capability.runtimeBinarySHA256 && hex($0.capability) == configuration.capabilitySHA256
+                && hex($0.profile) == capability.profileFingerprint
+        } ?? true
         guard policy.model == configuration.publicModelID,
-              policy.cluster != nil || hashes[0] == configuration.selectedPlanSHA256,
-              hashes[1] == capability.artifactSHA256,
-              hashes[2] == capability.runtimeBinarySHA256, hashes[5] == configuration.capabilitySHA256,
-              hashes[7] == capability.profileFingerprint,
+              policy.cluster != nil || policy.pinnedPlan.map(hex) == configuration.selectedPlanSHA256,
+              hex(policy.artifact) == capability.artifactSHA256, runtimeIsTheSetups,
               policy.schedule == (configuration.selectedPrefillSchedule == .serial ? 1 : 2) else {
             throw ClusterConfigurationError.invalid("Saved pair approval differs from the model, runtime, Plan, profile or schedule")
         }
@@ -107,7 +111,7 @@ public struct ClusterNativeMemberAttachment: Codable, Sendable, Equatable {
             guard Set(object.keys).isSubset(of: rosterFields),
                   Set(object.keys).isSuperset(of: rosterFields.subtracting(["edges"])),
                   let approval = object["clusterApproval"] as? [String: Any],
-                  Set(approval.keys) == ClusterRuntimeApproval.fields else {
+                  ClusterRuntimeApproval.isEntry(approval.keys) else {
                 throw ClusterConfigurationError.invalid("Unknown or missing native member attachment fields")
             }
             return

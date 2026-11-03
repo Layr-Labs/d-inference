@@ -1,5 +1,6 @@
 // CoordinatorClient shared state: atomic provider stats + provider state, and
-// the small Sendable concurrency primitives (unfair lock, pong tracker, atomic).
+// the small Sendable concurrency primitives (unfair lock, pong tracker,
+// session recorder, atomic).
 
 import Foundation
 import Network
@@ -511,6 +512,35 @@ internal final class PongTracker: @unchecked Sendable {
 
     func elapsed() -> TimeInterval {
         lock.withLock { CFAbsoluteTimeGetCurrent() - lastPong }
+    }
+}
+
+// MARK: - CoordinatorSessionRecorder (how one connection attempt ended)
+
+/// Records how one connection attempt ends, for `CoordinatorReconnectPolicy`.
+/// The actor marks the session open after it sends `register`; the receive
+/// callback records the coordinator's close code on `connectionQueue`. The
+/// actor reads the result after the attempt ends.
+internal final class CoordinatorSessionRecorder: @unchecked Sendable {
+    private let lock = OSAllocatedUnfairLock()
+    private var openedAt: ContinuousClock.Instant?
+    private var closeCode: UInt16?
+
+    func markOpened() {
+        let now = ContinuousClock.now
+        lock.withLock { openedAt = now }
+    }
+
+    /// `receiveLoop` ends at the first close frame, so this runs at most once.
+    func recordCloseCode(_ code: UInt16) {
+        lock.withLock { closeCode = code }
+    }
+
+    func end() -> CoordinatorSessionEnd {
+        let now = ContinuousClock.now
+        return lock.withLock {
+            CoordinatorSessionEnd(openDuration: openedAt.map { now - $0 }, closeCode: closeCode)
+        }
     }
 }
 

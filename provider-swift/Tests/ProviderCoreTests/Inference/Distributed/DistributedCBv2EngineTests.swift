@@ -392,6 +392,7 @@ struct DistributedCBv2EngineTests {
         let consumer = Task { await distributedCollect(stream) }
         consumer.cancel()
         _ = await consumer.value
+        engine.onQueue {} // the stream's termination reaches the queue without waiting for it
         #expect(owner.last.cancelCount == 1)
         #expect(owner.last.releaseCount == 0)
         #expect(engine.capacity().activeRequests == 1)

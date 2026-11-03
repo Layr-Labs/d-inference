@@ -140,8 +140,8 @@ extension ProviderLoop {
     }
 
     /// Rechecked after every hop: consent, a reported set, no operation, no
-    /// transition and the background verification finished. Before the wait
-    /// is overdue, also no live lease and no in-flight work.
+    /// busy reason and the background verification finished. Once the wait
+    /// is overdue, a live lease and in-flight work no longer count.
     private func inventoryRegistrationAllowed(overdue: Bool) -> Bool {
         !autopilotInventoryAwaitingRegistration.isEmpty && autopilotConsented && !autopilotNeedsInventoryRefresh
             && (overdue || !modelAutopilotEnabled) && autopilotCommand == nil

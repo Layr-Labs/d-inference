@@ -969,6 +969,44 @@ final class DistributedAutomaticBatchPlannerTests {
                 "\(publicSection(assisted.explanation) ?? "")")
     }
 
+    /// The guided setup's plan for Qwen3.8 27B on two unequal Macs, whose layout offers unequal tensor-parallel shares:
+    /// a local cluster gives the faster Mac the larger share of every layer, while a cluster served through the
+    /// coordinator is planned with equal shares, the only split its members' registration can name
+    /// (`NativePairMemberRoster` refuses unequal ones, so such a setup never registered and was never routed).
+    @Test func aClusterServedThroughTheCoordinatorIsPlannedWithEqualTensorShares() throws {
+        let home = try home(); record(home)
+        let artifact = try #require(ClusterPublicModels.declared.first {
+            $0.runtimeModelID == ClusterQwenTensorAssistantPolicy.runtimeModelID }).artifactSHA256
+        let (pair, cap, original, _) = try fixture(artifact: artifact)
+        var object = try JSONSerialization.jsonObject(with: original.encoded()) as! [String: Any]
+        var tensor = object["tensorParallel"] as! [String: Any], family = tensor["family"] as! [String: Any]
+        family["shareOptions"] = [[1, 2], [2, 1]]; tensor["family"] = family; object["tensorParallel"] = tensor
+        let layout = try ClusterModelLayout.decode(JSONSerialization.data(withJSONObject: object))
+        let data = try ClusterRuntimeCapabilityCodec.encode(cap), digest = ClusterConfigurationCodec.sha256(data)
+        let model = ClusterSetupLocalModel(folder: "Qwen3.8-27B-4bit-mtp-fixture", modelID: "EigenLabs/Qwen3.8-27B-4bit-mtp",
+            version: "fixture", artifactSHA256: artifact, totalBytes: 16_320_415_757)
+        let link = try #require(ClusterLinkProbeHistory.costs(homeDirectory: home, members: ["a", "b"]))
+        let local = try profile(decodeIndex: 50_000), peer = try profile()
+        let quote = try assistantQuote(1, artifact: artifact, assistant: false)
+        func plan(coordinator: Bool) throws -> ClusterConfiguration {
+            let reading = ClusterSetupPlanning.ModelReading(model: model, layout: .success(layout),
+                capability: .success((cap, data, digest)), tokenizerFiles: pair.tokenizerFiles, tensorAssistantQuote: .success(quote))
+            let decided = try #require(onLargeStack {
+                ClusterSetupPlanning.decide(readings: [reading], description: pair, localMemberID: "a",
+                    localProfile: local, peerProfile: peer, peerModels: [model], measurements: [], link: link,
+                    coordinator: coordinator)
+            }.first)
+            _ = try #require(decided.option.plan, "not offered: \(decided.option.blocker ?? "")")
+            let bytes = try #require(decided.setup?.configurations["a"])
+            return try ClusterConfigurationCodec.decode(bytes, capability: cap, capabilitySHA256: digest)
+        }
+        let localCluster = try plan(coordinator: false)
+        #expect(localCluster.selectedGenerationMode == .tensorParallel && localCluster.tensorShares == [2, 1],
+                "\(localCluster.tensorShares ?? [1, 1])")
+        let served = try plan(coordinator: true)
+        #expect(served.selectedGenerationMode == .tensorParallel && served.tensorShares == nil, "\(served.tensorShares ?? [1, 1])")
+    }
+
     @Test func testAssistantSingletonAndWiderPlansPersistSamePolicyAndBilateralArguments() throws {
         for verification in [ClusterQwenTensorAssistantPolicy.Verification.singleton, .admittedCohort] {
             let home = try home(); record(home)

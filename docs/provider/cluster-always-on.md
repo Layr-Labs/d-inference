@@ -201,8 +201,8 @@ runs, also with automatic updates off: the release it restores is one the Mac
 ran before. It follows (`ClusterPairUpdateCycle.followRollback`) when the other
 Mac quarantined the release this Mac runs (installed or promoted) and runs the
 release this Mac keeps for rollback. The check reads both Macs' recovery state
-without the update lease; only a Mac that runs the quarantined release takes the
-lease and verifies its kept release. The follow is the update cycle's sequence
+without the update lease; only a Mac that runs the quarantined release and keeps
+the other Mac's release for rollback takes the lease and verifies it. The follow is the update cycle's sequence
 with a rollback in place of the install:
 
 1. It takes the update lease, the one every update cycle, candidate recovery
@@ -236,8 +236,15 @@ It does not follow, changes nothing, and says why once in its log
   or alone): it follows once its part can drain.
 
 The Mac that rolled back says once `cluster update: the other Mac still runs
-v<release>, which this Mac rolled back and quarantined` while the other Mac has
-not followed. Other lines: `cluster update: the other Mac rolled v<release>
+v<release>, which is quarantined on this Mac` while the other Mac has not
+followed, or has installed the release again on purpose.
+
+To install a release both Macs quarantined anyway, run `darkbloom update
+--override-quarantine` on both Macs: the cycle the first command starts waits,
+while serving, for the other Mac's, as for `darkbloom update` with automatic
+updates off. An update slot, by contrast, gives up a release the other Mac
+reports quarantined. Right after an override, the other Mac may still read the
+old quarantine for up to a minute and follow it. Other lines: `cluster update: the other Mac rolled v<release>
 back to v<previous> and quarantined it; this Mac follows to v<previous>` and
 `cluster update: restored v<previous> and quarantined v<release>, as on the
 other Mac`.

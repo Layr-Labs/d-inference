@@ -298,6 +298,11 @@ do {
     if case .gaveUp(let reason) = state(quarantinedThere, .staged) {
         check(reason.contains("quarantined v2.0.0"), "the other Mac's quarantine is named: \(reason)")
     } else { check(false, "a release the other Mac quarantined is not installed here") }
+    // `darkbloom update --override-quarantine` is run on both Macs: a requested cycle waits for the other Mac's.
+    check(state(quarantinedThere, .staged, requested: true) == .waiting, "a requested update waits for the other Mac's override")
+    if case .gaveUp = state(quarantinedThere, .drained, requested: true) {} else {
+        check(false, "a drained Mac does not wait for a Mac that keeps the release quarantined")
+    }
     // A progress from a build without the quarantine field still decodes, with none.
     let older = try? JSONDecoder().decode(ClusterPairUpdateProgress.self,
                                           from: Data(#"{"phase":"idle","running":"1.0.0","writtenAt":1}"#.utf8))

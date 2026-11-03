@@ -511,8 +511,6 @@ final class ClusterMemberSupervisor: @unchecked Sendable {
     private func startFollowCheckIfDue(_ pair: PairUpdate, pid: Int32, now: Double) {
         guard now >= nextFollowCheck, now >= lock.withLock({ followDeferredUntil }) else { return }
         nextFollowCheck = now + ClusterPairUpdate.followCheckSeconds
-        let nextSlot = pair.clusterID().map { ClusterMemberUpdateSlot.nextSlot(after: now, clusterID: $0) }
-            ?? now + ClusterMemberUpdateSlot.periodSeconds
         publishQuarantine(pair)
         lock.withLock { pairCycleRunning = true }
         let log: @Sendable (String) -> Void = { [weak self] in self?.log($0) }
@@ -532,7 +530,12 @@ final class ClusterMemberSupervisor: @unchecked Sendable {
             let say: String? = self.lock.withLock {
                 defer { self.pairCycleRunning = false; self.followNotice = notice }
                 if case .followed(let ended) = outcome {
-                    if case .restarted = ended {} else { self.followDeferredUntil = nextSlot }
+                    if case .restarted = ended {} else {
+                        // From the deferral, not the check's start: a follow that ran past a slot waits for the next.
+                        let ended = Date().timeIntervalSince1970
+                        self.followDeferredUntil = pair.clusterID().map { ClusterMemberUpdateSlot.nextSlot(after: ended, clusterID: $0) }
+                            ?? ended + ClusterMemberUpdateSlot.periodSeconds
+                    }
                 }
                 return notice == self.followNotice ? nil : notice
             }

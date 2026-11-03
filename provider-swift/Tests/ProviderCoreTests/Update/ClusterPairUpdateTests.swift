@@ -638,5 +638,15 @@ struct ClusterPairUpdateTests {
                                         to: peer.progressPath)
         let other = await rolledBack.cycle(partner: peer, log: log).followRollback { _ in }
         #expect(other == .nothingToFollow, "not .busy: the lease is not asked for")
+
+        // A Mac that runs the quarantined release but keeps another one cannot follow, decided without the lease.
+        let peerLease = try peer.fixture.updater(baseURL: peer.baseURL).beginUpdateSession(operation: "cluster-auto-update")
+        defer { peerLease.release() }
+        ClusterPairUpdate.writeProgress(.init(phase: .idle, running: "0.9.0", writtenAt: now, quarantined: "2.0.0"),
+                                        to: rolledBack.progressPath)
+        guard case .cannotFollow(let keeps) = await peer.cycle(partner: rolledBack, log: log).followRollback({ _ in }) else {
+            Issue.record("a Mac keeping another release asked for the lease"); return
+        }
+        #expect(keeps.contains("keeps v1.0.0 for rollback"))
     }
 }

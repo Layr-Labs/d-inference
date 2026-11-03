@@ -170,12 +170,17 @@ public final class ClusterPairUpdateCycle: @unchecked Sendable {
         let recorded = updater.recordedRecoveryState()
         if let mine = recorded?.quarantine?.version, progress.running == mine, progress.quarantined != mine,
            Self.installed(recorded) != mine {
-            return .otherMacStillRuns("the other Mac still runs v\(mine), which this Mac rolled back and quarantined; "
-                + "it follows once it runs a build that follows rollbacks and its part can drain")
+            return .otherMacStillRuns("the other Mac still runs v\(mine), which is quarantined on this Mac")
         }
         // A Mac that runs the release it quarantined (installed again with `--override-quarantine`) rolled nothing back.
         guard let quarantined = progress.quarantined, progress.running != quarantined,
               Self.installed(recorded) == quarantined else { return .nothingToFollow }
+        // Only the release this Mac keeps for rollback can be restored; that is read without the lease too.
+        guard recorded?.predecessor?.release.version == progress.running else {
+            let kept = recorded?.predecessor.map { "keeps v\($0.release.version) for rollback" } ?? "keeps no earlier release"
+            return .cannotFollow("the other Mac rolled v\(quarantined) back to v\(progress.running), but this Mac \(kept); "
+                + "it stays on v\(quarantined) until a newer release updates both Macs")
+        }
         if environment.part() == .undrainable {
             return .cannotFollow("the other Mac rolled v\(quarantined) back to v\(progress.running), but "
                 + Self.undrainable + "; it follows once its part can drain")
@@ -403,7 +408,9 @@ public final class ClusterPairUpdateCycle: @unchecked Sendable {
             }
         }
         publish(.drained)
-        let deadline = started + timing.partnerDrainWait
+        let following = lock.withLock { self.following }
+        let drainWait = following ? min(timing.partnerDrainWait, ClusterPairUpdate.progressStaleSeconds) : timing.partnerDrainWait
+        let deadline = started + drainWait
         while true {
             switch partnerState(.drained, target: target) {
             case .ready:
@@ -419,7 +426,7 @@ public final class ClusterPairUpdateCycle: @unchecked Sendable {
             }
             if Task.isCancelled { giveUp("the cycle was stopped"); return false }
             guard Self.now() < deadline else {
-                giveUp("the other Mac did not drain for v\(target) within \(Int(timing.partnerDrainWait)) s"); return false
+                giveUp("the other Mac did not drain for v\(target) within \(Int(drainWait)) s"); return false
             }
             await Self.sleep(timing.poll)
         }

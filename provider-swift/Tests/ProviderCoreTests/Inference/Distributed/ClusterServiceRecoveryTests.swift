@@ -348,6 +348,38 @@ struct ClusterServiceRecoveryTests {
         #expect(!notLeader.running)
     }
 
+    /// The service clears a stop drain in the same supervision tick that publishes child.running=false. A stop
+    /// request that meets that write waits for the record lock; it does not fail with "could not save the stop request".
+    @Test func stopRequestWaitsForAnotherRecordWriterAndALockHeldPastTheBoundStaysBusy() throws {
+        let home = try NativePairMemberFixture.privateRoot()
+        defer { try? FileManager.default.removeItem(at: home) }
+        let store = ClusterSetupStore(paths: .init(paths: try ClusterUserPaths(homeDirectory: home)))
+        _ = try store.updateRecord { _ in }
+        let lockPath = store.paths.record.path + ".lock"
+        // Another open file description: flock excludes it in this process too.
+        let holder = open(lockPath, O_RDWR | O_CLOEXEC)
+        try #require(holder >= 0 && flock(holder, LOCK_EX | LOCK_NB) == 0)
+        defer { close(holder) }
+        let released = DispatchSemaphore(value: 0), start = DispatchTime.now()
+        DispatchQueue.global().asyncAfter(deadline: start + 0.2) { _ = flock(holder, LOCK_UN); released.signal() }
+        let stopID = UUID()
+        let saved = try store.updateRecord { $0.stopDrain = .init(id: stopID, keepPeerRunning: false) }
+        let waited = Double(DispatchTime.now().uptimeNanoseconds - start.uptimeNanoseconds) / 1e9
+        #expect(waited >= 0.2, "the write ran only after the other writer let go (\(waited) s)")
+        try #require(released.wait(timeout: .now() + 5) == .success)
+        let reread = try store.readRecord()
+        #expect(saved.stopDrain?.id == stopID && reread.stopDrain?.id == stopID)
+
+        try #require(flock(holder, LOCK_EX | LOCK_NB) == 0)
+        let parent = try ClusterConfigurationFiles.directory(store.paths.directory, privateMode: true)
+        defer { close(parent.descriptor) }
+        let name = store.paths.record.lastPathComponent + ".lock"
+        #expect(throws: ClusterConfigurationError.busy) {
+            try ClusterConfigurationFiles.withLock(parent, name: name, waitSeconds: 0.05) {}
+        }
+        #expect(throws: ClusterConfigurationError.busy) { try ClusterConfigurationFiles.withLock(parent, name: name) {} }
+    }
+
     @Test func plannedStopRejectsUnknownLiveServiceAndDoesNotSignalRecycledIdentity() throws {
         let home = try NativePairMemberFixture.privateRoot()
         defer { try? FileManager.default.removeItem(at: home) }

@@ -66,7 +66,7 @@ func unhex(_ string: String) -> Data {
         process.arguments = [mode, listener.socketPath, String(getpid()), String(rank), String(until), startHex, extra]
         process.standardInput = FileHandle.nullDevice
         process.standardOutput = FileHandle.nullDevice
-        process.standardError = FileHandle.nullDevice
+        // Inherited, so a child that fails prints its own "FAIL:" line in the log.
         try process.run(); return process
     }
 
@@ -312,6 +312,10 @@ func unhex(_ string: String) -> Data {
             try reject("owner accepted a fabricated transcript") {
                 try prelude0.requireComplete(transcriptSHA256: Data(SHA256.hash(data: Data("forged".utf8))))
             }
+            // Rank 1 writes its completion after it reads the peer confirmation.
+            // Read that completion before the cancel: a cancel that came first
+            // would shut the socket under rank 1's write and fail its path.
+            try prelude1.requireComplete(transcriptSHA256: binding.transcriptSHA256)
             prelude0.cancel(); prelude1.cancel()
             try reap(child0); try reap(child1)
         }

@@ -198,12 +198,18 @@ public struct ClusterSetupStore: Sendable {
         return value
     }
 
+    /// How long a write waits while another writer holds the record's lock. Each holder only reads, changes and
+    /// writes the record, so a held lock is a write in progress (the service's supervision tick, a stop or the
+    /// wizard), not a refusal.
+    static let recordLockWaitSeconds: Double = 2
+
     /// Applies `change` to the record as it is on disk now and writes the result.
     @discardableResult
     public func updateRecord(_ change: (inout ClusterSetupRecord) throws -> Void) throws -> ClusterSetupRecord {
         try ClusterConfigurationFiles.ensureDirectory(paths.directory, create: true, privateMode: true)
         var result = ClusterSetupRecord()
-        try ClusterConfigurationFiles.update(paths.record, maximum: ClusterSetupRecord.maximumBytes) { current in
+        try ClusterConfigurationFiles.update(paths.record, maximum: ClusterSetupRecord.maximumBytes,
+                                             lockWaitSeconds: Self.recordLockWaitSeconds) { current in
             var record = try current.map { try JSONDecoder().decode(ClusterSetupRecord.self, from: $0) } ?? .init()
             guard record.schema == ClusterSetupRecord.schemaName else {
                 throw ClusterConfigurationError.invalid("The setup wizard's record has another schema")

@@ -220,10 +220,16 @@ extension SandboxSizingPlan {
     var jobMemory: Int64 { max(0, memoryBytes - memoryKeptBytes - providerMemoryBytes) }
     var canRunJobs: Bool { linux.slots + macOS.slots > 0 }
 
-    /// Free disk one job of `platform` needs beyond what is free now, its
-    /// images included; 0 when it fits.
+    /// Disk the plan's slots take: each platform's images with its first
+    /// slot, and one job's disk per slot.
+    var slotsBytes: Int64 {
+        [linux, macOS].reduce(0) { $0 + ($1.slots == 0 ? 0 : $1.imagesBytes + Int64($1.slots) * $1.slotBytes) }
+    }
+
+    /// Free disk one more job of `platform` needs, beside the plan's slots,
+    /// beyond what is free now; 0 when it fits.
     func diskShortfall(_ platform: Platform) -> Int64 {
-        max(0, floorBytes + platform.firstSlotBytes - freeBytes)
+        max(0, floorBytes + slotsBytes + platform.nextSlotBytes - freeBytes)
     }
 
     /// The CPU, memory and disk lines, in the `doctor` style. When no job
@@ -262,22 +268,19 @@ extension SandboxSizingPlan {
             lines.append("  macOS runs at most 2 macOS VMs at once, yours included; "
                 + "`--macos-slots 1` keeps one for you.")
         }
-        if let freeSpaceNote { lines.append("  " + freeSpaceNote) }
         return lines
     }
 
-    /// Why Finder shows more free space than this plan, when the plan gives
-    /// macOS no job for want of free disk space (its own `limit`). The
-    /// shortfall is a lower bound: a macOS job alone, images included, above
-    /// the floor; the add-on hands its first Linux job out first, which may
-    /// need more. Left out when no job fits, whose verdict names it already.
+    /// Why Finder shows more free space than the add-on's plan, when it gives
+    /// macOS no job for want of free disk space (its own `limit`), and the
+    /// free space one macOS job needs beside the plan's Linux slots.
     var freeSpaceNote: String? {
         guard macOS.slots == 0, macOS.limit?.contains("disk") == true else { return nil }
-        let short = canRunJobs ? diskShortfall(macOS) : 0
-        return "Free space here, \(gibDown(freeBytes)) GiB, is what `df -h ~` shows as Avail. Finder also counts "
-            + "purgeable space (local snapshots, caches), which macOS frees only when it needs to; restarting or "
-            + "deleting Time Machine local snapshots (`tmutil listlocalsnapshots /` lists them) frees it now."
-            + (short > 0 ? " macOS jobs need at least \(gibUp(short)) GiB more." : "")
+        let short = diskShortfall(macOS)
+        return "Free space here is what `df -h ~` shows as Avail; Finder also counts purgeable space, which macOS "
+            + "frees only when it needs to (restarting, or removing Time Machine local snapshots: "
+            + "`tmutil listlocalsnapshots /`, frees it now)."
+            + (short > 0 ? " A macOS job needs about \(gibUp(short)) GB more." : "")
     }
 
     /// The plan's message, how much disk to free for one job of each
@@ -293,7 +296,6 @@ extension SandboxSizingPlan {
         if !linux.automatic || !macOS.automatic {
             lines.append("  That is with the slot counts you chose; change --linux-slots or --macos-slots.")
         }
-        if let freeSpaceNote { lines.append("  " + freeSpaceNote) }
         return lines
     }
 

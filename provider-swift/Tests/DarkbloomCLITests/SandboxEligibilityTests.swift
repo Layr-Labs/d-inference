@@ -106,7 +106,6 @@ struct SandboxEligibilityTests {
         #expect(short.verdict == [
             "Not eligible: no job fits on this Mac.",
             "  Free up 15 GiB of disk for one Linux job, or 67 GiB of disk for one macOS job.",
-            "  " + SandboxSetupTests.freeSpaceNote(119),
         ])
         #expect(short.checks.map(\.level) == [.pass, .pass, .fail])
         // Both first slots fit; the rest of the disk holds no further job.

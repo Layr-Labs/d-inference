@@ -180,12 +180,12 @@ struct SandboxSetupFlow {
             let plan = try await withTransientNote("Checking how many jobs this Mac fits now…") {
                 try await requestAddonPlan(installer, script: script)
             }
+            // The same counts (or no plan to compare) keep today's report exactly.
             guard let plan, let change = SandboxSlotChange(installed: status, plan: plan) else {
                 print(Self.changeCountsHint)
-                if let note = plan?.freeSpaceNote { print(note) }
                 return
             }
-            guard try offer(change, plan: plan) else { return }
+            guard offer(change, plan: plan) else { return }
             print("")
             try await install(installer, script: script, options: change.applying(to: options))
         }
@@ -194,15 +194,13 @@ struct SandboxSetupFlow {
     /// Shows the add-on's plan against the installed counts; true to apply it.
     /// With a prompt the default is yes. Without one (`--yes`, or no
     /// terminal) it applies only a change that adds slots and removes none.
-    private func offer(_ change: SandboxSlotChange, plan: SandboxSizingPlan) throws -> Bool {
+    private func offer(_ change: SandboxSlotChange, plan: SandboxSizingPlan) -> Bool {
         print("The add-on's plan for this Mac now:")
         printChecks(plan.checks)
+        if let note = plan.freeSpaceNote { print("  " + note) }
         print("")
-        print(change.headline)
-        if let note = plan.freeSpaceNote { print(note) }
-        print("Applying it restarts the add-on's agent. While a job runs the installer changes nothing; "
-            + "run setup again once it finishes.")
         guard !confirmed, interactiveInput else {
+            print(change.headline)
             guard change.onlyAdds else {
                 print("Not applied: it removes slots, and without a prompt setup applies only a plan that adds "
                     + "slots. To apply it: \(change.command)")
@@ -211,8 +209,9 @@ struct SandboxSetupFlow {
             print("Applying it: it only adds slots.")
             return true
         }
-        print("")
-        guard SandboxTerminal.confirm("Apply the add-on's plan?", defaultYes: true) else {
+        // The installer stops the agent only between jobs: it refuses (exit 4), it does not wait.
+        guard SandboxTerminal.confirm(change.headline + " If a job is running, the installer refuses and changes "
+            + "nothing. Apply?", defaultYes: true) else {
             print("Nothing changed. To apply it later: \(change.command)")
             return false
         }
@@ -251,8 +250,11 @@ struct SandboxSetupFlow {
     /// fits.
     private func sizeAndConfirm(_ eligibility: SandboxEligibility, installer: URL, script: Data) async throws -> Bool {
         let plan: SandboxSizingPlan
+        // The add-on's plan only: the fallback estimate's report stays as it was.
+        var freeSpaceNote: String?
         if let reportedPlan = try await requestAddonPlan(installer, script: script) {
             plan = reportedPlan
+            freeSpaceNote = reportedPlan.freeSpaceNote
         } else {
             printChecks([SandboxEligibility.Check(
                 level: .info, name: "Sizing",
@@ -264,6 +266,7 @@ struct SandboxSetupFlow {
         let verdict = plan.verdict
         print(DoctorTerminalStyle.verdict(verdict[0], level: plan.canRunJobs ? .pass : .fail, color: color))
         verdict.dropFirst().forEach { print($0) }
+        if let freeSpaceNote { print("  " + freeSpaceNote) }
         guard plan.canRunJobs else { throw ExitCode.failure }
         print("")
         Self.tradeOff.forEach { print($0) }
@@ -387,8 +390,10 @@ struct SandboxSetupFlow {
         case 2: return "This Mac cannot host Darkbloom Sandbox as it is; see why above."
         case 3: return "This Mac was not enrolled: the code was denied or expired, or the waitlist request ended. "
             + "Run \(rerun) to start again."
-        case 4: return "Jobs are running on this Mac. Run \(rerun) again once they finish; "
-            + "`\(Sandbox.cli) sandbox pause` keeps new ones from starting."
+        // The installer refuses rather than waits; its --force would stop the jobs unpaid.
+        case 4: return "A job is running on this Mac, so the installer changed nothing. Run \(rerun) again when it "
+            + "finishes; `\(Sandbox.cli) sandbox pause` keeps new jobs from starting. Setup never passes the "
+            + "installer's --force: it would stop running jobs, and stopped jobs aren't paid."
         default: return "Setup did not finish. When the problem above is fixed, run \(rerun) again; it is safe to rerun."
         }
     }

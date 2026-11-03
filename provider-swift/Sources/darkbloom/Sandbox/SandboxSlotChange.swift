@@ -41,8 +41,7 @@ struct SandboxSlotChange: Equatable, Sendable {
     }
 
     var headline: String {
-        "This Mac now fits \(plannedLinux) Linux + \(plannedMacOS) macOS jobs at a time "
+        "This Mac now fits \(plannedLinux) Linux + \(plannedMacOS) macOS "
             + "(installed: \(installedLinux) Linux + \(installedMacOS) macOS)."
-            + (plannedMacOS > installedMacOS ? " macOS jobs pay the most." : "")
     }
 }

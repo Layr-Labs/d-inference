@@ -12,6 +12,14 @@ on:
 permissions:
   contents: read
 
+env:
+  DEVELOPER_ID: 'Developer ID Application: Eigen Labs, Inc. (SLDQ2GJ6TL)'
+  APPLE_TEAM_ID: 'SLDQ2GJ6TL'
+  FAN_HELPER_NAME: 'darkbloom-fan-helper'
+  FAN_HELPER_ID: 'io.darkbloom.fan-helper'
+  MIN_MACOS: '14.0'
+  MLX_METALLIB_DEPLOYMENT_TARGET: '26.2'
+
 jobs:
   bisect:
     name: Bisect (${{ matrix.name }})

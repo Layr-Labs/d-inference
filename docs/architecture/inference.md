@@ -5573,11 +5573,13 @@ the served layout; `ClusterPlacementTensorWidthRegisteredTests`):
 | 64 GiB | 8 | 4 |
 | 96 GiB and larger | 8 | 8 |
 
-At eight lanes, each rank of an equal split reserves 40,544,616,448 bytes at
-LOAD without the assistant and 60,367,765,504 bytes with it, each lane's
-prompt-prefix capture included ([prefix ownership](hardware-support.md#qwen27-tp-batch-prefix-ownership));
-with its weights and loading headroom it needs 54,074,305,024 and
-77,631,564,288 bytes. Every
+At eight lanes, each rank of an equal split reserves 40,911,618,048 bytes at
+LOAD without the assistant and 60,734,767,104 bytes with it, each lane's
+prompt-prefix capture ([prefix ownership](hardware-support.md#qwen27-tp-batch-prefix-ownership))
+and the shared 367,001,600-byte prompt wavefront term
+([prompt wavefront](#qwen-tensor-parallel-prompt-wavefront)) included; with its
+weights and loading headroom it needs 54,441,306,624 and 77,998,565,888 bytes.
+Every
 registered Qwen TP row is sized the same way from its own quotes. GLM keeps its
 eight lanes and other families keep their defaults.
 

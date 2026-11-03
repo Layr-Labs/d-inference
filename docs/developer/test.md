@@ -147,8 +147,8 @@ no separate push-only Swift cache job.
 The last provider shard runs the MiMo audio gate (`testNativeAudioRelease`),
 whose fixture needs the 1.87 GB pinned audio codec, only when the gate's
 inputs change (`MIMO_AUDIO` in `scripts/ci-component-paths.py`: the MiMo,
-audio and media provider code, the MiMo tests, the MLX pins, the fixture
-script and the gate's recipe) and on every `master` push, which runs every
+audio and media provider code, the MiMo tests, the MLX pins, the audio and
+provider fixture scripts and the gate's recipe) and on every `master` push, which runs every
 component. A pull request outside those inputs neither downloads the codec
 nor runs the gate.
 

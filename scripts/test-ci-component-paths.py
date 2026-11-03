@@ -52,6 +52,8 @@ class ComponentPathsTests(unittest.TestCase):
                 {"provider", "mimo_audio"},
             "provider-swift/Tests/ProviderCoreTests/MiMo/MiMoV26ManagedAudioProviderTests.swift": {"provider", "mimo_audio"},
             "scripts/prepare-mimo-audio-fixtures.py": {"provider", "mimo_audio"},
+            # The audio fixture script runs this generator with --audio-source.
+            "scripts/prepare-mimo-provider-fixtures.py": {"provider", "sdk", "mimo_audio"},
             "libs/mlx-swift-lm": {"provider", "sdk", "cluster", "mimo_audio"},
             "libs/mlx-swift-lm/Libraries/MLXLMCommon/Generate.swift": {"provider", "sdk", "cluster", "mimo_audio"},
             "libs/mlx-swift": {"provider", "sdk", "cluster", "mimo_audio"},

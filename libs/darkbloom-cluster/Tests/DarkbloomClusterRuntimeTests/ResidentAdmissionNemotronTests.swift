@@ -229,6 +229,29 @@ struct ResidentAdmissionNemotronTests {
         }
     }
 
+    /// A decode step on every attention block it runs at once
+    /// (`QwenLayerStageSession.decodeCommandBuffers`): a one-token prompt pays
+    /// those rows; a prompt frame of 512 already covers them.
+    @Test func theDecodeStepPricesEveryAttentionBlocksRow() throws {
+        let profile = try Self.profile()
+        let plan = try profile.makePlanningPlan(stageCut: 25)
+        let blocks = plan.stages.flatMap(\.layers).filter { $0.kind == "attention" }.count
+        #expect(blocks == 6)
+        for rank in 0...1 {
+            let own = plan.stages[rank].layers.filter { $0.kind == "attention" }.count
+            func transient(_ chunk: Int, _ decode: LayerStageDecodeShape = .plain) throws -> Int {
+                try QwenResidentRequestAllowance.derive(profile: profile, plan: plan, rank: rank, maximumTokens: 8320,
+                    chunkSize: chunk, decode: decode, bound: { $0 }).transientBytes
+            }
+            // 32 query heads of width 128 take MLX's fused kernel: a row prices its float32 output.
+            #expect(try transient(1) == 32 * own * 128 * 4)
+            #expect(try transient(1, .init(wholeModel: true)) == 32 * blocks * 128 * 4)
+            // A phase split's producer rank decodes nothing: its prompt frame alone.
+            #expect(try transient(1, .init(rows: 0)) == (own > 0 ? 32 * 128 * 4 : 0))
+            #expect(try transient(512) == (try transient(512, .init(wholeModel: true))))
+        }
+    }
+
     /// The state rank 0 hands over in a phase split: its Mamba blocks'
     /// convolution history and SSM state and its attention blocks' keys and
     /// values, by the block's index in the complete model; nothing for an

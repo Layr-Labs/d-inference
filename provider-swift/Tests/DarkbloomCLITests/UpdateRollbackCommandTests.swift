@@ -199,15 +199,20 @@ struct UpdateRollbackCommandTests {
         #expect(refused.events.isEmpty)
         cycle.release()
 
-        // The rollback holds the lease from the drain to the swap: a pair update cycle cannot claim it, and no
-        // cluster service can start.
+        // The rollback holds the lease from before the drain through the swap: a pair update cycle cannot claim it.
+        // The cluster service lock is held only at the swap, so `darkbloom cluster` and its status see no service
+        // for the drain's length.
         let probe = Probe()
         let host = RecordingHost(install: install, loaded: true, answer: "y", beforeDrain: {
             probe.cycleRefused = (try? install.updater.beginUpdateSession(operation: "cluster-auto-update")) == nil
-            probe.serviceHeldOut = try !install.isFree(install.clusterServiceLock)
+            probe.serviceFreeDuringDrain = try install.isFree(install.clusterServiceLock)
+        }, atTheSwap: {
+            probe.serviceHeldOut = (try? install.isFree(install.clusterServiceLock)) == false
+            probe.cycleRefusedAtSwap = (try? install.updater.beginUpdateSession(operation: "cluster-auto-update")) == nil
         })
         try await install.rollback(host: host, yes: true)
-        #expect(probe.cycleRefused && probe.serviceHeldOut)
+        #expect(probe.cycleRefused && probe.cycleRefusedAtSwap)
+        #expect(probe.serviceFreeDuringDrain && probe.serviceHeldOut)
         #expect(try install.liveBinary() == "1.0.0-darkbloom")
         #expect(try install.isFree(install.clusterServiceLock))
         try install.updater.beginUpdateSession(operation: "lease-check").release()
@@ -497,7 +502,7 @@ private final class RecordingHost: @unchecked Sendable {
          inClusterOnceAnswered: Bool? = nil, providerHoldsInstanceLock: Bool = false,
          serviceProcess: ProcessIdentity? = nil, scriptedStarts: [UpdateProcessLock.Attempt] = [],
          onceAnswered: @escaping () throws -> Void = {},
-         beforeDrain: @escaping () throws -> Void = {}) {
+         beforeDrain: @escaping () throws -> Void = {}, atTheSwap: @escaping () -> Void = {}) {
         let log = Log()
         log.provider = loaded ? .service : foreground ? .foreground : .stopped
         log.inCluster = inCluster
@@ -514,6 +519,8 @@ private final class RecordingHost: @unchecked Sendable {
             provider: { log.lock.withLock { log.provider } },
             serviceProcess: { serviceProcess },
             holdProviderStartsOut: {
+                // Called at the swap, with the cluster service lock held.
+                atTheSwap()
                 if let next = log.lock.withLock({ log.scriptedStarts.isEmpty ? nil : log.scriptedStarts.removeFirst() }) {
                     return next
                 }
@@ -552,6 +559,8 @@ private final class RecordingHost: @unchecked Sendable {
 private final class Probe: @unchecked Sendable {
     var cycleRefused = false
     var serviceHeldOut = false
+    var serviceFreeDuringDrain = false
+    var cycleRefusedAtSwap = false
     var joinCluster: (() -> Void)?
     var lock: UpdateProcessLock?
 }

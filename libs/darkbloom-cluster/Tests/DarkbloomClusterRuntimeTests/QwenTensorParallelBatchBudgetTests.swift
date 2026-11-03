@@ -44,9 +44,12 @@ struct QwenTensorParallelBatchBudgetTests {
             #expect(candidate.perLaneStateBytes - candidate.prefix.captureBytes < scalar.stateBytes)
             #expect(candidate.allowance.requestBytesExcludingCollectives == lanes * candidate.perLaneStateBytes + candidate.sharedBytesExcludingCollectives)
             let logits = 3 * bound(lanes * plan.vocabularySize * 4)
+            // A merged prompt step's seven further frames: five frames' FP32 payload each.
+            let wavefront = plan.routedExperts ? 0 : 7 * 5 * bound(chunk * plan.maximumPartialBytesPerToken)
+            #expect(wavefront == 367_001_600, "the 27B rank's merged-step charge at 512-row frames")
             #expect(candidate.sharedBytesExcludingCollectives == scalar.fusionBytes + scalar.transientBytes + logits
                 + 2 * scalar.projectionConstantBytes + candidate.pagedPoolSlackBytes
-                + candidate.promptGatherBytes)
+                + candidate.promptGatherBytes + wavefront)
             #expect(candidate.pagedPoolSlackBytes >= 2 * CBv2StageKVHost.segmentBytes)
             // The underlying host's entire admitted page capacity, its gather
             // and replacement pages fit inside the full state charges, at every

@@ -527,16 +527,18 @@ final class ClusterMemberSupervisor: @unchecked Sendable {
             case .otherMacStillRuns(let reason): notice = reason
             default: notice = nil
             }
+            // From the deferral, not the check's start: a follow that ran past a slot waits for the next.
+            var deferredUntil: Double?
+            if case .followed(let ended) = outcome {
+                if case .restarted = ended {} else {
+                    let now = Date().timeIntervalSince1970
+                    deferredUntil = pair.clusterID().map { ClusterMemberUpdateSlot.nextSlot(after: now, clusterID: $0) }
+                        ?? now + ClusterMemberUpdateSlot.periodSeconds
+                }
+            }
             let say: String? = self.lock.withLock {
                 defer { self.pairCycleRunning = false; self.followNotice = notice }
-                if case .followed(let ended) = outcome {
-                    if case .restarted = ended {} else {
-                        // From the deferral, not the check's start: a follow that ran past a slot waits for the next.
-                        let ended = Date().timeIntervalSince1970
-                        self.followDeferredUntil = pair.clusterID().map { ClusterMemberUpdateSlot.nextSlot(after: ended, clusterID: $0) }
-                            ?? ended + ClusterMemberUpdateSlot.periodSeconds
-                    }
-                }
+                if let deferredUntil { self.followDeferredUntil = deferredUntil }
                 return notice == self.followNotice ? nil : notice
             }
             if let say { self.log("cluster update: \(say)") }

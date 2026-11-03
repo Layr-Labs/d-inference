@@ -237,17 +237,17 @@ It does not follow, changes nothing, and says why once in its log
 
 The Mac that rolled back says once `cluster update: the other Mac still runs
 v<release>, which is quarantined on this Mac` while the other Mac has not
-followed, or has installed the release again on purpose.
+followed, or has installed the release again on purpose. Other lines:
+`cluster update: the other Mac rolled v<release> back to v<previous> and
+quarantined it; this Mac follows to v<previous>` and `cluster update: restored
+v<previous> and quarantined v<release>, as on the other Mac`.
 
 To install a release both Macs quarantined anyway, run `darkbloom update
 --override-quarantine` on both Macs: the cycle the first command starts waits,
 while serving, for the other Mac's, as for `darkbloom update` with automatic
 updates off. An update slot, by contrast, gives up a release the other Mac
 reports quarantined. Right after an override, the other Mac may still read the
-old quarantine for up to a minute and follow it. Other lines: `cluster update: the other Mac rolled v<release>
-back to v<previous> and quarantined it; this Mac follows to v<previous>` and
-`cluster update: restored v<previous> and quarantined v<release>, as on the
-other Mac`.
+old quarantine for up to a minute and follow it.
 
 Both Macs need a build that follows rollbacks. The quarantine is reported by
 the Mac that rolled back after the rollback, so by the restored release's

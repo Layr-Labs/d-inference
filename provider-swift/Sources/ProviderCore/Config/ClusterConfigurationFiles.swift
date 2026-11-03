@@ -140,8 +140,9 @@ enum ClusterConfigurationFiles {
         try parent.check()
     }
 
+    /// `waitSeconds` is how long a held lock is polled before `.busy`; 0 tries once.
     static func withLock<T>(_ parent: Directory, name: String, requireEmpty: Bool = false,
-                            privateMode: Bool = false, _ body: () throws -> T) throws -> T {
+                            privateMode: Bool = false, waitSeconds: Double = 0, _ body: () throws -> T) throws -> T {
         try parent.check()
         try requireName(name)
         let fd = openat(parent.descriptor, name, O_RDWR | O_CREAT | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC, 0o600)
@@ -153,7 +154,12 @@ enum ClusterConfigurationFiles {
               value.st_dev == named.st_dev, value.st_ino == named.st_ino else {
             throw ClusterConfigurationError.invalid("Configuration lock is unsafe")
         }
-        guard flock(fd, LOCK_EX | LOCK_NB) == 0 else { throw ClusterConfigurationError.busy }
+        let limit = DispatchTime.now().uptimeNanoseconds + UInt64(max(0, waitSeconds) * 1_000_000_000)
+        while flock(fd, LOCK_EX | LOCK_NB) != 0 {
+            guard errno == EWOULDBLOCK || errno == EINTR,
+                  DispatchTime.now().uptimeNanoseconds < limit else { throw ClusterConfigurationError.busy }
+            usleep(5_000)
+        }
         defer { _ = flock(fd, LOCK_UN) }
         guard fstat(fd, &value) == 0, !requireEmpty || value.st_size == 0 else {
             throw ClusterConfigurationError.invalid("Unresolved native ownership journal; run `darkbloom cluster recover`")
@@ -202,11 +208,11 @@ enum ClusterConfigurationFiles {
     /// stable sidecar lock used by existing CLI writers. A transform failure leaves
     /// the old bytes intact. Published cluster records may remain unreferenced if
     /// this later pointer update fails; they are never treated as enabled setup.
-    static func update(_ url: URL, maximum: Int, transform: (Data?) throws -> Data) throws {
+    static func update(_ url: URL, maximum: Int, lockWaitSeconds: Double = 0, transform: (Data?) throws -> Data) throws {
         try requireAbsolute(url.path)
         let parent = try directory(url.deletingLastPathComponent(), create: true)
         defer { Darwin.close(parent.descriptor) }
-        try withLock(parent, name: url.lastPathComponent + ".lock") {
+        try withLock(parent, name: url.lastPathComponent + ".lock", waitSeconds: lockWaitSeconds) {
             let original = try readAt(parent, name: url.lastPathComponent, maximum: maximum)
             let next = try transform(original)
             guard !next.isEmpty, next.count <= maximum else { throw ClusterConfigurationError.invalid("Provider configuration serialization failed or exceeded its bound") }

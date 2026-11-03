@@ -1843,6 +1843,13 @@ darkbloom update [--check-only] [--coordinator <url>] [--timeout <seconds>] [--f
 The update path verifies bundle, binary, and `mlx.metallib` hashes before
 replacing the running binary (`provider-swift/Sources/ProviderCore/Update/SelfUpdater.swift`).
 
+On a Mac whose `darkbloom cluster` service runs, the command then asks that
+service's supervisor to restart into the installed release together with the
+other Mac, after the pair drained, and prints its progress until the restart
+(at most `--timeout` seconds); a deferral exits 1
+(`provider-swift/Sources/darkbloom/UpdateCommand.swift`, `ClusterServiceUpdateRequest`;
+[updating Darkbloom on the pair](two-mac-cluster.md#updating-darkbloom-on-the-pair)).
+
 ## `darkbloom autoupdate`
 
 Enable or disable automatic update checks at startup.
@@ -2180,7 +2187,7 @@ override `provider.toml` for one process, are in
 | Key | Default | Effect |
 |---|---|---|
 | `[provider] memory_reserve_gb | 4 | GiB withheld from the selected OS-available/MLX load budget; the larger unified-cap reserve still applies. By default OS availability includes inactive pages or, when larger, the reclaimable file page cache, so this is not a free-page floor. Set process-start DARKBLOOM_MEMORY_AVAILABILITY=free-only for shared hosts; see [memory admission](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/architecture/scheduling.md#shared-host-memory-admission). |
-| `[provider] auto_update` | `true` | Startup + periodic self-update |
+| `[provider] auto_update` | `true` | Startup + periodic self-update; on a `darkbloom cluster` Mac, the pair's coordinated update at its update slot ([cluster service](cluster-always-on.md#the-pairs-coordinated-update)) |
 | `[provider] auto_restart` | `true` | Arm the watchdog LaunchAgent |
 | `[provider] update_jitter_seconds` | `300` | Max random delay before an automatic install or a network provider drains a model for a prepared MTP replacement; serving continues during the delay. `0` disables jitter; capped at `3600`. Standalone MTP upgrades skip this delay. Random staggering provides no fleet availability guarantee (`provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift`, `updateJitterSeconds`; `provider-swift/Sources/ProviderCore/Update/UpdateJitter.swift`, `delay`; `provider-swift/Sources/ProviderCore/ProviderLoop+MTPDrain.swift`, `waitBeforeMTPUpgradeDrain`) |
 | `[backend] enabled_models` | `[]` | Advertise only these ids; empty = all serveable |

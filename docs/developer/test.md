@@ -1059,6 +1059,49 @@ timeout, one-time failure accounting and heartbeat promotion. It does not run
 native launchd, the controller cancellation interleaving or a signed release
 installation.
 
+## Cluster Pair Coordinated Update
+
+`ClusterPairUpdateTests`
+(`provider-swift/Tests/ProviderCoreTests/Update/ClusterPairUpdateTests.swift`)
+runs two Macs' `ClusterPairUpdateCycle` in one process: each with the real
+updater on its own temporary install, a loopback `MockCoordinator` serving the
+release, and a real member loop as its part (a scripted pair owner holds rank 0's
+request). It checks that a busy pair stages while serving, closes admission only
+once both Macs staged, finishes the accepted request uncancelled and then
+installs on both; that a request past the drain bound reopens admission and
+defers both Macs, and the next cycle updates; that one Mac's failed download
+stops both and the next cycle updates both; that a Mac whose partner has
+automatic updates off downloads nothing at the slot, while `darkbloom update` on
+both Macs updates them; that a part that cannot drain downloads nothing; that a
+Mac whose partner cannot be asked goes on alone only while no pair runs on it;
+the candidate's promotion (kept under another update's lease) and rollback;
+the start check's verdicts on script binaries; and the rollback at once of a
+candidate that failed its start check.
+`ClusterServiceUpdateTests`
+(`provider-swift/Tests/DarkbloomCLITests/ClusterServiceUpdateTests.swift`) drives
+the real supervisor with a shell standing in for the cluster service: the
+single-Mac gate, a slot fired from a cluster ID whose slot is seconds away, no
+slot cycle with automatic updates off (and `disabled` reported again once a
+cycle's end is a minute old), `darkbloom update`'s request and the candidate's
+rollback and promotion. The start check runs the temporary install's
+`darkbloom`, a script: a release whose `--version` exits non-zero, outlasts a
+1 s bound or reports another version is rolled back and quarantined without the
+re-exec, and the supervisor serves again from the restored binary; a release
+that answers is re-executed into as before; a restored predecessor that cannot
+start is not re-executed into. The re-exec is observed, never performed.
+`Tests/ClusterSupervisionChecks/run.sh` checks the progress rules
+(`ClusterPairUpdate.partnerState`) with plain `swiftc`.
+
+```bash
+CFFIXED_USER_HOME="$(mktemp -d)" swift test --skip-build --no-parallel \
+  --filter 'ClusterPairUpdateTests|ClusterServiceUpdateTests'
+```
+
+Keep `CFFIXED_USER_HOME` (or an isolated user) on a Mac that serves: the member
+loops and supervisors otherwise use the real `~/.darkbloom` for their cluster
+files. These checks use loopback and temporary roots only; they do not run a
+pair, launchd, a signed release or the coordinator's routing of a draining pair.
+
 ## Public Fixtures And Private Qualification
 
 Public protocol JSON and prompt golden vectors contain fixed inputs and expected

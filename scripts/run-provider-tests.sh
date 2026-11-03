@@ -43,6 +43,15 @@ isolated_pattern="ProcessMemoryNativeIntegrationTests|${isolated_pattern}"
 # process; the last shard also runs the isolated processes below. Without a
 # shard, everything runs here as one serial suite.
 provider_test_shard=${PROVIDER_TEST_SHARD:-}
+# TEMPORARY (bisect of the release shard-2 SIGBUS; never merged): run one
+# serial selection and stop.
+if [[ -n "${BISECT_FILTER:-}" ]]; then
+  echo "Bisect selection ${BISECT_NAME:-}: $BISECT_FILTER"
+  swift test --skip-build --no-parallel --filter "$BISECT_FILTER"
+  status=$?
+  echo "BISECT_RESULT name=${BISECT_NAME:-} status=$status"
+  exit "$status"
+fi
 run_provider_test_selection() {
   local selection=$1 name=${1//\//-of-} arguments argument parallel_flag=(--no-parallel) status
   local selected=() report="$PROVIDER_TEST_REPORT_DIR/shard-$name"

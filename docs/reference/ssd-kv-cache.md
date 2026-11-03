@@ -1,6 +1,6 @@
 # SSD KV cache reference
 
-> Last updated: 2026-10-29
+> Last updated: 2026-11-01
 
 Exact on-disk format, paths, identity binding, environment knobs, size and
 eviction rules, and per-family reuse capability of the provider's encrypted SSD
@@ -600,6 +600,9 @@ per family and bindings are in the
 | Restore | Decoded into page-aligned native buffers the arrays own: `[1, heads, frontier, width]` of the captured dtype, as a native record restores; older rows approximate | `QwenStagePrefixDiskRestoreWork.place` |
 | Restored rows written again | An encoded row whose native bytes equal the decode of the same row in the record holding the prompt's deepest kept prefix on this rank is stored as that record's bytes, not encoded again (the codec is not idempotent on its own output); that record is pinned until the new one is written, and if it cannot be read the new record is dropped (`reason=verbatim_source_unreadable`). The `persist` line logs `verbatim_rows` | `QwenStagePrefixDiskVerbatimSource`, `QwenStagePrefixDiskTier.persist` |
 | Switch | `DARKBLOOM_CLUSTER_PREFIX_SSD_QUANTIZATION` on the rank, from the owner ([configuration](configuration.md#cluster-ssd-prefix-record-precision)) | `QwenStagePrefixDiskEncoding.fromEnvironment` |
+| Record frontiers | The deepest captured frontier's attention rows once, and the recurrent state at it and at each captured frontier on the record grid: `strideTokens` (2,048) rounded up to the block and doubled until at most `maximumGridFrontiers = 8` remain | `QwenStagePrefixDiskTier.persist` |
+| Write-behind bound | At most `maximumQueuedJobs = 2` records queued and `QwenStagePrefixDiskPolicy.queuedBytesBound` host bytes (a sixty-fourth of memory, at least 256 MiB); a persist beyond either is dropped (`event=persist-dropped reason=queue_full` or `queue_bytes`) and serving never waits. A Qwen3.8 27B tensor-parallel rank's record holds 32,768 bytes a prompt token and 76,972,032 bytes a recurrent state, so a deepest frontier from about 114,688 tokens (256 GB), 49,664 (128 GB) or 20,992 (64 GB) on is not written | `QwenStagePrefixDiskConfiguration.maximumQueuedBytes`, `QwenStagePrefixDiskPolicy.queuedBytesBound` |
+| Qwen tensor-parallel scope | The plan scope binds the plan and shares, artifact, storage, both builds, the assistant policy and the prefix policy (`QwenTensorParallelBatchPrefixBudget.policy`); records of another policy live in another directory and are never offered | `QwenTensorParallelPrefixDisk.planScope` |
 
 ## GLM cluster image exclusion
 

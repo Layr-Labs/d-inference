@@ -155,7 +155,8 @@ final class QwenMTPDecoder {
             return try plainStep(producer: producer, consumer: consumer, lastToken: lastToken,
                 offset: offset, check: check)
         }
-        return try MLX.withError { error in
+        // A round, drafts included, encodes as a decode step does.
+        return try GPU.withCommandBufferLimits(QwenLayerStageSession.decodeCommandBuffers) { try MLX.withError { error in
             func checked() throws { try error.check(); try check() }
             let started = DispatchTime.now().uptimeNanoseconds
             // Draft: once from the carry, then on the head's own hidden.
@@ -234,7 +235,7 @@ final class QwenMTPDecoder {
             statistics.settleNanoseconds += settled - evaluated
             return Emitted(tokens: tokens, payloadSHA256: digests, logits: logits[0..., 0 ..< emitted, 0...],
                 round: true)
-        }
+        } }
     }
 
     /// One ordinary decode frame through both stages, as the plain phase-split

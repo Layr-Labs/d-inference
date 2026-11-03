@@ -195,7 +195,7 @@ struct LongContextLimitsTests {
             chunkSize: min(512, context - 1)).conservativeStateAndBoundaryBytes
         let transient = try QwenResidentPrefillTransient.bytes(geometry: geometry, stageHasAttention: true,
             chunkTokens: min(512, context - 1), contextTokens: context)
-        let required = state + transient + QwenDenseStageLoadPolicy.loadingHeadroomBytes
+        let required = state + transient + QwenDenseStageLoadPolicy.loadingHeadroomBytes(physicalMemoryBytes: os.physicalMemoryBytes)
         return try QwenDenseStageLoadPolicy.decide(os, requiredBytes: required, purpose: "test context \(context)", now: 1_100).admitted
     }
 

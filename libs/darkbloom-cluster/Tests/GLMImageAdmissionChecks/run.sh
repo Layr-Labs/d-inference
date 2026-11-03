@@ -25,6 +25,7 @@ xcrun swiftc "${task_flags[@]}" -emit-library -emit-module -module-name MLXLMCom
 xcrun swiftc "${task_flags[@]}" -parse-as-library -I "$task_out" -L "$task_out" \
  -lDarkbloomClusterProtocol -lMLXLMCommon -Xlinker -rpath -Xlinker "$task_out" \
  "$task_repo/provider-swift/Sources/ProviderCore/Inference/Distributed/DistributedResidentExecution.swift" \
+ "$task_repo/provider-swift/Sources/ProviderCore/Inference/Distributed/Placement/ClusterModelFeaturePolicy.swift" \
  "$task_repo/provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/ClusterMiMoPrivateImagePolicy.swift" \
  "$task_repo/provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/ClusterGLMOnboardingSelection.swift" \
  "$task_repo/provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/ClusterOnboardingFlow.swift" \

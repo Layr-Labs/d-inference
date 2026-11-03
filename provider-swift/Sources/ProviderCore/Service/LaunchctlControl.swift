@@ -65,10 +65,11 @@ enum LaunchctlControl {
         process.standardError = errPipe ?? FileHandle.nullDevice
         process.standardInput = FileHandle.nullDevice
 
-        try process.run()
+        let childExit = ProcessExitObserver()
+        try childExit.run(process)
         let outData = outPipe?.fileHandleForReading.readDataToEndOfFile() ?? Data()
         let errData = errPipe?.fileHandleForReading.readDataToEndOfFile() ?? Data()
-        process.waitUntilExit()
+        childExit.wait()
         return Output(
             status: process.terminationStatus,
             stdout: String(data: outData, encoding: .utf8) ?? "",

@@ -124,7 +124,7 @@ public struct AutoUpdateController: Sendable {
         case cancelled
         /// Already on the latest version.
         case upToDate
-        /// Latest release is the exact locally quarantined failed version.
+        /// Latest release is the exact locally quarantined version.
         case quarantined(String)
         /// The version check failed.
         case checkFailed(String)

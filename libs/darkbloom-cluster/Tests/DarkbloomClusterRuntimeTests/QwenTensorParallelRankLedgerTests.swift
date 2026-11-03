@@ -127,7 +127,8 @@ struct QwenTensorParallelRankLedgerTests {
                         }
                         return try QwenTensorParallelBatchBudget.derive(geometry: g, plan: plan, tensors: tensors,
                             maximumTokens: p.maximumContextTokens, chunkSize: p.maximumChunkTokens, lanes: lanes,
-                            paged: true, rank: rank, allocationBound: bound).allowance.requestBytesExcludingCollectives
+                            paged: true, rank: rank, promptTokens: p.maximumPromptTokens,
+                            allocationBound: bound).allowance.requestBytesExcludingCollectives
                     }
                     #expect(entry.requestBytesExcludingCollectives == native, "\(entry.shares) lanes \(lanes) depth \(depth as Any)")
                     for rank in 0..<2 {

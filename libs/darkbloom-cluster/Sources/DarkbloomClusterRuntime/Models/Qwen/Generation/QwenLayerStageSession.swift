@@ -28,6 +28,19 @@ struct QwenLayerStageAdoptedState {
 /// One serialized stage; no overlap, network, sampling or hidden token-history
 /// changes. Native methods install an error handler and retire on every error.
 final class QwenLayerStageSession {
+    /// Command-buffer commit limits of a pipeline decode step, a lane step and
+    /// a speculative round on the thread that encodes them, as GLM's and
+    /// Qwen's tensor-parallel decode keep them
+    /// (`GLM5NextTensorParallelResidentRuntime.decodeCommandBuffers`). The
+    /// GPT-OSS and GLM pipeline stages take the same limits. Under the rank's
+    /// 16-operation guard (`ClusterWorkerEnvironmentGuards`) and MLX's per-chip
+    /// input-size bound, which a large expert bank passes alone, a decode step
+    /// commits a buffer every few launches, each a GPU gap. Prefill keeps the
+    /// rank's limits. Synchronization only: results never depend on the
+    /// partitioning. MLX keeps up to ten buffers in flight, so a step's
+    /// temporaries can span the stage's layers (`QwenResidentPrefillTransient`).
+    static let decodeCommandBuffers = GPU.CommandBufferLimits(operations: 100, megabytes: 1 << 20)
+
     let identity: QwenLayerStageSessionIdentity
     let request: QwenLayerStageGenerationRequest
     private let stage: LoadedQwenLayerStage
@@ -203,7 +216,9 @@ final class QwenLayerStageSession {
         do {
             try state.requireOpen()
             let frame = try schedule.admitDecode(offset: offset)
-            return try perform(tokens: [token], frame: frame, incoming: incoming, check: check)
+            return try GPU.withCommandBufferLimits(Self.decodeCommandBuffers) {
+                try perform(tokens: [token], frame: frame, incoming: incoming, check: check)
+            }
         } catch { try fail(error) }
     }
 
@@ -647,7 +662,7 @@ extension QwenLayerStageSession {
             throw ProbeError("A batched decode needs distinct sessions of one hosted loaded stage")
         }
         do {
-            return try MLX.withError { error in
+            return try GPU.withCommandBufferLimits(decodeCommandBuffers) { try MLX.withError { error in
                 func checked() throws { try error.check(); try check() }
                 var frames: [QwenLayerStageFrame] = []
                 for (session, token) in zip(sessions, tokens) {
@@ -711,7 +726,7 @@ extension QwenLayerStageSession {
                     Stream.gpu.synchronize(); try checked()
                 }
                 return output
-            }
+            } }
         } catch {
             for session in sessions { try? session.retire(failed: true) }
             throw error

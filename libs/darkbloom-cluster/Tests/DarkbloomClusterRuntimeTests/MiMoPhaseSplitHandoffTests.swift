@@ -82,7 +82,8 @@ struct MiMoPhaseSplitHandoffTests {
         return fresh
     }
 
-    @Test(arguments: [(11, 4), (1, 4), (2, 4), (3, 4), (4, 4), (9, 2), (13, 4), (17, 5)])
+    // (6, 1): six one-token frames rotate the window-3 rings back to their end.
+    @Test(arguments: [(11, 4), (1, 4), (2, 4), (3, 4), (4, 4), (9, 2), (13, 4), (17, 5), (6, 1)])
     func adoptedProducerDecodesBitForBit(prompt length: Int, chunk: Int) throws {
         let data = Equivalence.configuration(dtype: "bfloat16")
         let whole = try Equivalence.whole(data, dtype: .bfloat16)
@@ -98,6 +99,8 @@ struct MiMoPhaseSplitHandoffTests {
             let split = try Self.prefill(stages, prompt: prompt, chunk: chunk)
             #expect(split.token == kept.token, "cut \(cut): the first token precedes the hand-off")
             let adopted = try Self.handOver(split.caches[0], stage: stages[0], frames: split.frames)
+            #expect(zip(adopted, split.caches[0]).allSatisfy { $0.offset == $1.offset && $0.metaState == $1.metaState },
+                    "prompt \(length) chunk \(chunk) cut \(cut): the adopted caches carry the producer's metadata")
             let rows = try Self.decode(stages, producer: adopted, consumer: split.caches[1], token: split.token, steps: 6)
             for (index, row) in rows.enumerated() {
                 let same = row.asData().data == reference[index].asData().data
@@ -141,9 +144,13 @@ struct MiMoPhaseSplitHandoffTests {
         #expect(try MiMoPhaseSplitState.slidingRetainedTokens(window: 128, frames: [100, 20, 30]) == 150)
         #expect(throws: (any Error).self) { _ = try MiMoPhaseSplitState.slidingRetainedTokens(window: 128, frames: []) }
         // A last frame of one token goes in place: the buffer is cut to the window and rotates.
-        #expect(try MiMoPhaseSplitState.slidingState(window: 128, step: 256, frames: [512, 1]) == (length: 128, index: 1))
-        #expect(try MiMoPhaseSplitState.slidingState(window: 128, step: 256, frames: [1]) == (length: 1, index: 1))
-        #expect(try MiMoPhaseSplitState.slidingState(window: 128, step: 256, frames: [100, 1]) == (length: 101, index: 101))
-        #expect(try MiMoPhaseSplitState.slidingState(window: 3, step: 256, frames: [2, 2, 2, 2, 1]) == (length: 3, index: 1))
+        #expect(try MiMoPhaseSplitState.slidingState(window: 128, step: 256, frames: [512, 1]) == (length: 128, index: 1, wrapped: true))
+        #expect(try MiMoPhaseSplitState.slidingState(window: 128, step: 256, frames: [1]) == (length: 1, index: 1, wrapped: false))
+        #expect(try MiMoPhaseSplitState.slidingState(window: 128, step: 256, frames: [100, 1]) == (length: 101, index: 101, wrapped: false))
+        #expect(try MiMoPhaseSplitState.slidingState(window: 3, step: 256, frames: [2, 2, 2, 2, 1]) == (length: 3, index: 1, wrapped: true))
+        // Same length and index; only the wrapped flag tells a ring that rotated back to its end.
+        #expect(try MiMoPhaseSplitState.slidingState(window: 3, step: 256, frames: [1, 1, 1]) == (length: 3, index: 3, wrapped: false))
+        #expect(try MiMoPhaseSplitState.slidingState(window: 3, step: 256, frames: [1, 1, 1, 1, 1, 1]) == (length: 3, index: 3, wrapped: true))
+        #expect(try MiMoPhaseSplitState.slidingState(window: 3, step: 256, frames: [1, 1, 1, 1, 1, 1, 2]) == (length: 4, index: 4, wrapped: false))
     }
 }

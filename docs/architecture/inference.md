@@ -248,8 +248,8 @@ and `libs/darkbloom-cluster/Sources/DarkbloomClusterPlacement/ClusterPlacementBa
 
 ## Cluster setup presentation
 
-`ClusterOnboardingDriver` presents connection, pairing, model choice, startup
-and a test response as five stages. Completion requires the test response to
+`ClusterOnboardingDriver` presents connection, pairing, model choice and
+startup (with its test response) as four steps. Completion requires the test response to
 succeed; a failed response retains the saved setup for a later retry. After
 the test response succeeds, the control leader registers the pair with the
 coordinator when the coordinator serves a cluster approval for this pair
@@ -272,20 +272,85 @@ serving intent or change model eligibility and placement. See the
 [guided two-Mac setup](../provider/two-mac-cluster.md) for operator steps.
 
 Lines name the two Macs for the screen that shows them
-(`ClusterOnboardingMacName`): "this Mac" and "the other Mac (<hardware name>)",
-because two Macs of one kind share the hardware name. The leader words an
+(`ClusterOnboardingMacName`): "this Mac" and "the other Mac", with the hardware
+name ("the other Mac (<hardware name>)") where a line must tell them apart,
+because two Macs of one kind share it; only this Mac's own screen adds the name
+System Settings gives it ("This Mac (Studio A) leads",
+`ClusterOnboardingDriver.thisMac`). The leader words an
 answer to a command the other Mac forwarded for that Mac's screen
 (`OnboardingLive.answeringForwarded`, `here`, `there`), and the cluster
 service names members the same way in its control lines and refusals
-(`ClusterOnboardingMacName.names`). A deployment line recorded for both Macs
-keeps hardware names; lines shown now carry the screen's words
-(`ClusterOnboardingDeployment.Share.label`). The Mac that joins ends its
+(`ClusterOnboardingMacName.names`). The deployment line, recorded for both Macs
+with hardware names, is no longer on the screens, which say one serving line
+(`ClusterOnboardingReady.summary`, `ClusterOnboardingDriver.servesWords`). The Mac that joins ends its
 onboarding once paired, also for `darkbloom cluster local`
-(`ClusterOnboardingDriver.joinedLocalLine`). The model list keeps one line per
+(`ClusterOnboardingDriver.joinedLocalContinueLine`). The model list keeps one line per
 artifact and name (`OnboardingLive.presentedChoices`): a choice that cannot be
 served is left out when another offers the same digests under the same name,
 and an artifact this build serves is never called unsupported for a copy the
 worker does not take (`ClusterSetupPlanning.copyNotTaken`).
+
+Every choice goes through one console call (`ClusterOnboardingConsole.choose`):
+on a color terminal a list moved with ↑↓ and taken with enter that folds to the
+chosen line (`ClusterOnboardingTerminal.pick`), elsewhere numbered lines and one
+key read the same way on every console (`ClusterOnboardingChoice.match`), so the
+plain transcript stays byte for byte the same on a terminal and a pipe. q or a
+lone escape cancels any list, and a key that sends a sequence (an arrow) reads
+as no key, so it never stops a wait (`ClusterOnboardingTerminal.key`). The
+setup's list holds only models the owner approved for clusters
+(`ClusterOnboardingModelChoice.validated`, `listed`; `OnboardingLive.approved`
+against `ClusterPublicModels.declared`); an older leader's choices carry no
+such field and are listed as they come. A member's `darkbloom cluster` shows
+the status and where to manage the cluster, with a list only to set up a cable
+port that is not set up yet (`ClusterOnboardingDriver.member`, `fixPortItem`);
+the leader's is a list of the control operations (`ClusterOnboardingDriver.menu`).
+A model's list line is its name, its size and the split's marker ("tensor
+parallel" or "pipeline", `ClusterOnboardingDeployment.splitMarker`), then
+"copy" or "download" when it must reach a Mac first
+(`ClusterOnboardingModelChoice.listLine`); its shares, speed and
+tensor-parallel note are planned and carried but not said. The serving lines
+mark the running plan's split the same way after the model ("Serving … (pipeline)
+at …", `ClusterOnboardingReady.summary`, from the setup each Mac saved). Every copy
+of a missing model is a list as well, a short one with its predicted time
+(`ClusterOnboardingDriver.provision`). The public-traffic line
+(`ClusterOnboardingModelChoice.publicTraffic`) is said only for a private image
+candidate; the serving line ends "(earning through Darkbloom)" or "(local
+only)" (`ClusterOnboardingDriver.servesWords`). When the other Mac does not
+answer over the cable, the leader asks **Try again** or **Cancel**
+(`chooseAndServe`).
+
+The Mac the cluster was set up on leads. `LiveContext.plan` makes that Mac every
+plan's rank 0, whichever Mac plans (`ClusterControlDerivation.planLeader`, from
+the pairing's leader pin), the cluster service's re-plans on the control leader
+included (after an update or a memory refusal), so a pair the joined Mac led
+moves back at its next plan and the derived leadership (rank 0 of the adopted
+plan) stays on the set-up Mac; when that Mac is not one of the plan's members
+(no record, or one of an earlier pairing), the Mac planning takes rank 0, as
+before. Before a plan exists derivation
+prefers it among the members present (`ClusterControlDerivation.derive`,
+`preferred`; `ClusterControlNode.preferredLeader`, from the pairing's leader
+pin). A Mac that is away never leads, so failover is unchanged.
+
+macOS's permissions are asked at stated moments
+(`ClusterOnboardingDriver.allowLocalNetwork`), and Connect's first line asks for
+both ("Allow macOS's password and Local Network prompts.",
+`ClusterOnboardingDriver.approvalsLine`). The command probes Local Network
+access in the Connect step (`ClusterLocalNetworkAccess.probe`: one datagram to
+the cable's subnet broadcast, refused with `EHOSTUNREACH` until allowed). macOS
+lets a command run from a terminal or over SSH through by itself (TN3179), so
+macOS asks only where the probe finds the cable blocked, naming the terminal app
+or `sshd-keygen-wrapper` (`ClusterLocalNetworkAccess.commandApp`). The cluster
+service, a launchd agent, probes as it starts, right after pairing, keeping each
+outcome for the onboarding (`ClusterLocalNetworkAccess.startServiceProbe`,
+`serviceState`). The onboarding waits for Allow until it comes or q, with no
+time limit, and a service that reports nothing within `serviceReportSeconds`
+(10 s) gets the prompt's line as an "if" (`localNetworkMaybeLine`); over SSH
+(`ClusterLocalNetworkAccess.overSSH`) the lines put the prompt on the Mac's own
+screen. Where macOS shows no approval window for the cable's port, the
+link setup's owner-only script runs with sudo in the same terminal
+(`ClusterOnboardingLinkResult.manualScript`,
+`ClusterLocalNetworkAccess.runLinkScriptWithSudo`), with the terminal in its
+ordinary mode while sudo reads the password (`ClusterOnboardingConsole.suspended`).
 
 A DevNet build is installed as `Darkbloom Dev.app`, and its CLI is
 `darkbloom-dev`. A saved setup accepts a space in its installed paths
@@ -3756,7 +3821,7 @@ placement](#gemma-tensor-parallel-placement)). A first placement, before
 any load measured the link, plans tensor parallel on the keyed reduction a forced
 plan assumes (`tensorParallelAssumesUnmeasuredLink`, labelled as assumed), so a new
 pair's first setup is tensor parallel too: every plan made by `ClusterPlacementFlow.decide`
-(the onboarding, `m`, the re-plan after a Darkbloom update or after two load
+(the onboarding, **Change model**, the re-plan after a Darkbloom update or after two load
 refusals) is a first placement in this sense. Since tensor parallel's place no
 longer depends on the link's speed, the first load's keyed probe changes no
 choice, and nothing has to re-plan a pair after it. A pair still serves a
@@ -3771,8 +3836,8 @@ pair's own fresh, keyed, owner-only link record, and without one it keeps the
 running setup. The planner's own default, and the plan tool without
 `--tensor-parallel-first`, keep the speed comparison.
 
-The setup's model list (`ClusterOnboardingModelChoice.listLine`) ends a model's
-one line with a short note when its layout has a tensor-parallel plan and the
+The planner records a short note, which the setup's model list no longer says
+(`ClusterOnboardingModelChoice.listLine`), when a model's layout has a tensor-parallel plan and the
 planner splits it otherwise, for example `tensor parallel: slower here`, `about as fast`
 (inside the margin), `not measured yet` (predicted faster on the device index
 alone, for a family chosen only where faster), `does not fit now`, `link unmeasured`,
@@ -6644,6 +6709,8 @@ Sources: `provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/C
 A live service acknowledges planned local stop only through a fresh private supervision-cycle publication (`service-supervision.json`) with its current PID and idle state. Ordinary status writes cannot acknowledge an in-flight child start; the stop waits boundedly for the actual supervisor to finish that start and retire it before peer stop.
 
 A local-only optional `ClusterSetupRecord.stopDrain` token is written atomically with serving=false. During that token’s lifetime, controlTick and final sendLease derive both remote running and serving from the same record, preserving the prior peer intent while the local supervisor drains. A matching stop-token supervision cycle may clear it only after no local child/leftover and no outbound lease remains in flight. New leases then reread stopped intent. Handover and background serve/stop synchronization wait; background mutation also holds command custody and rereads current intent. Normal wire fields and lease deadlines are unchanged.
+
+The supervision cycle that clears the token also publishes `service-status.json` with `child.running = false`, and it writes that file first. A `darkbloom cluster stop` that starts at that moment (for example, a retry after a local timeout) can meet the service's record write. The stop's record write waits up to 2 seconds for the record lock, so it does not fail with "could not save the stop request". The service makes its write while it holds the service lock, so it tries the record lock once and tries again on its next cycle.
 
 ### Qwen27 capacity changes preserve request arithmetic
 

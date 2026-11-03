@@ -390,14 +390,20 @@ struct ClusterRuntimeApprovalFactsTests {
         #expect(throws: ClusterConfigurationError.self) { _ = try ClusterRuntimeApprovalFacts.candidates(in: f.root.appendingPathComponent("none")) }
     }
 
-    @Test func theDeclarationIsTheOwnersTwoModelsWithItsEvidenceDocument() throws {
+    @Test func theDeclarationIsTheOwnersModelsWithItsEvidenceDocument() throws {
         let declared = ClusterPublicModels.declared
-        #expect(declared.map(\.runtimeModelID) == ["registered_glm53_flash", "registered_qwen38_27b"])
-        #expect(declared.map(\.catalogModelID) == ["glm-5.3-flash", "EigenLabs/Qwen3.8-27B-4bit-mtp"])
+        // 2026-10-31: GLM-5.3-Flash and Qwen3.8-27B; 2026-11-03: MiMo-V2.6-Flash and Gemma 4 26B QAT.
+        #expect(declared.map(\.runtimeModelID)
+            == ["registered_glm53_flash", "registered_qwen38_27b", "registered_mimo_v26_flash_mopd", "registered_gemma4_26b_qat_4bit"])
+        #expect(declared.map(\.catalogModelID)
+            == ["glm-5.3-flash", "EigenLabs/Qwen3.8-27B-4bit-mtp", "mimo-v2.6-flash-mopd", "gemma-4-26b-qat-4bit"])
         let ranks = ClusterPublicModel.Ranks(count: 2, gpuArchitecture: "applegpu_g17d", macOSMajor: 27, macOSMinor: 0)
         for model in declared {
-            // Owner ruling, 2026-10-31: pipeline and tensor parallel, for both models.
-            #expect(model.families == [.pipeline, .tensorParallel] && model.schedules == [1, 2] && model.ranks == ranks)
+            // Owner ruling, 2026-10-31: pipeline and tensor parallel, for every declared model; MiMo-V2.6-Flash also keeps
+            // the speculative pipeline its records grant (its default split).
+            let families: [ClusterPairServingModeFamily] = model.runtimeModelID == "registered_mimo_v26_flash_mopd"
+                ? [.pipeline, .pipelineSpeculative, .tensorParallel] : [.pipeline, .tensorParallel]
+            #expect(model.families == families && model.schedules == [1, 2] && model.ranks == ranks, "\(model.runtimeModelID)")
             // The artifact the runtime registers for the model, which its bundled records ran: a release lists it.
             #expect(ClusterPairServingGrants.decisions.artifacts(runtimeModelID: model.runtimeModelID) == [model.artifactSHA256])
             #expect(ClusterRuntimeApprovalFacts.releaseModels.contains(.init(runtimeModelID: model.runtimeModelID,
@@ -408,7 +414,7 @@ struct ClusterRuntimeApprovalFactsTests {
             }
         }
         #expect(declared[0].artifactSHA256 == ClusterGLMImageCandidate.artifactSHA256)
-        #expect(ClusterPublicModels.qualifiedAt == "2026-10-31T00:00:00Z")
+        #expect(ClusterPublicModels.qualifiedAt == "2026-11-03T00:00:00Z")
         // The released CLI names the evidence document by its SHA-256: the checked-in report's.
         let report = try Data(contentsOf: Fixture.repository.appendingPathComponent(ClusterPublicModels.evidenceDocument))
         #expect(ClusterPublicModels.evidenceSHA256 == Self.sha256(report))
@@ -427,7 +433,10 @@ struct ClusterRuntimeApprovalFactsTests {
         #expect(placement(.pipeline, 1) == nil)
         #expect(placement(.pipeline, nil) == nil)
         #expect(placement(.tensorParallel, nil) == "tensor_parallel_v1 []")
-        #expect(placement(.handOff, 64) == nil && placement(.pipelineSpeculative, 64) == nil)
+        // A speculative pipeline is cut as a pipeline is (MiMo-V2.6-Flash, 48 layers); a hand-off is never declared.
+        #expect(placement(.pipelineSpeculative, 48) == "pipeline_mtp_v1 [24]")
+        #expect(placement(.pipelineSpeculative, nil) == nil)
+        #expect(placement(.handOff, 64) == nil)
     }
 
     @Test func theRequestEnvelopeAdmitsTheMediaTheCatalogEntryListsWhereThePlacementServesMedia() {
@@ -465,7 +474,7 @@ struct ClusterRuntimeApprovalFactsTests {
         #expect(byHand.map(\.cuts) == [[32], [32], [], []])
         for q in byHand {
             #expect(q.numericsClasses == [metallibClass, metallibClass])
-            #expect(q.promotable && !q.diverged && q.evidenceSHA256 == ClusterPublicModels.evidenceSHA256 && q.qualifiedAt == "2026-10-31T00:00:00Z")
+            #expect(q.promotable && !q.diverged && q.evidenceSHA256 == ClusterPublicModels.evidenceSHA256 && q.qualifiedAt == "2026-11-03T00:00:00Z")
             #expect(q.requestEnvelope == ClusterPublicModels.requestEnvelope(inputModalities: [], servesMedia: true))
         }
         // As a release candidate, the catalog entry's media where the placement serves media (tensor parallel,

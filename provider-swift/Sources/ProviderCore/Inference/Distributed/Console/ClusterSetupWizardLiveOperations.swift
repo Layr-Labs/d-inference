@@ -656,9 +656,18 @@ final class LiveContext: @unchecked Sendable {
         if let peerID = description.members.first(where: { $0.id != memberID })?.id {
             ClusterMemberProfiles.record([memberID: localProfile, peerID: peerProfile], homeDirectory: home)
         }
+        // The Mac the cluster was set up on leads every plan (rank 0: the API, the coordinator's head and the pair's
+        // earnings), on whichever Mac plans: the onboarding plans there, and the cluster service re-plans on the
+        // control leader, so a pair the joined Mac led moves back at its next plan (2026-11-02 onboarding review: a
+        // plan whose rank 0 was the other Mac handed leadership to the Mac that joined). The wizard's own steps lead
+        // from this Mac.
+        let setUp = (try? store.readRecord())?.leadership.map { ClusterSetupMemberFacts.memberID(pin: $0.leaderPin) }
         let decided = ClusterSetupPlanning.decide(readings: readings, description: description, localMemberID: memberID,
             localProfile: localProfile, peerProfile: peerProfile, peerModels: peer.models, measurements: measurements(),
-            leader: settings.derivedPlacement ? .some(nil) : .none, served: ClusterServedSpeedHistory.entries(homeDirectory: home) + (peer.served ?? []),
+            leader: settings.derivedPlacement
+                ? ClusterControlDerivation.planLeader(setUp: setUp, members: description.members.map(\.id), localID: memberID)
+                : memberID,
+            served: ClusterServedSpeedHistory.entries(homeDirectory: home) + (peer.served ?? []),
             link: description.members.count == 2
                 ? ClusterLinkProbeHistory.costs(homeDirectory: home, members: description.members.map(\.id)) ?? .unmeasured : .unmeasured,
             shareProbes: ClusterShareProbeHistory.read(ClusterShareProbeHistory.defaultFile(homeDirectory: home)),

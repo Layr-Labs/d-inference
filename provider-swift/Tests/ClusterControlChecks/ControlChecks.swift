@@ -76,6 +76,46 @@ import Darwin
         // Same GPU memory, more cores wins.
         let cores = [mac("mac-aaaaaaaaaaaa", "Apple M4 Max, 128 GB", 128, 32), mac("mac-bbbbbbbbbbbb", "Apple M4 Max, 128 GB", 128, 40)]
         expect(ClusterControlDerivation.derive(members: cores, present: Set(cores.map(\.memberID)), rankOrder: nil)?.memberID == "mac-bbbbbbbbbbbb", "cores")
+        // 2026-11-02 (onboarding review): the Mac the cluster was set up on leads whenever no plan's rank 0 decides, on
+        // identical Macs (where the lower identity won) and on a smaller Mac alike; a plan's rank 0 still leads, and a
+        // set-up Mac that is away never does.
+        let setUp = ClusterControlDerivation.derive(members: twins, present: all, rankOrder: nil, preferred: "mac-bbbbbbbbbbbb")
+        expect(setUp?.memberID == "mac-bbbbbbbbbbbb" && setUp!.reason == "the Mac the cluster was set up on",
+               "identical Macs: the set-up Mac leads, not the lower identity: \(String(describing: setUp))")
+        expect(ClusterControlDerivation.derive(members: mixed, present: Set(mixed.map(\.memberID)), rankOrder: nil,
+                                               preferred: "mac-000000000001")?.memberID == "mac-000000000001", "the set-up Mac leads before memory")
+        expect(ClusterControlDerivation.derive(members: mixed, present: Set(mixed.map(\.memberID)),
+                                               rankOrder: ["mac-ffffffffffff", "mac-000000000001"], preferred: "mac-000000000001")?.memberID
+               == "mac-ffffffffffff", "a plan's rank 0 still leads")
+        let away = ClusterControlDerivation.derive(members: twins, present: ["mac-aaaaaaaaaaaa"], rankOrder: nil, preferred: "mac-bbbbbbbbbbbb")
+        expect(away?.memberID == "mac-aaaaaaaaaaaa", "a set-up Mac that is away does not lead")
+        let failover = ClusterControlDerivation.derive(members: three, present: ["mac-111111111111", "mac-333333333333"],
+            rankOrder: ["mac-222222222222", "mac-111111111111", "mac-333333333333"], preferred: "mac-111111111111")
+        expect(failover?.memberID == "mac-111111111111" && failover!.reason.contains("rank 0 is absent"),
+               "rank 0 away: the set-up Mac, when present: \(String(describing: failover))")
+        // Both Macs of a pair derive the same first claim from the same record: the set-up Mac.
+        let a = ClusterControlNode(localID: "mac-aaaaaaaaaaaa", members: twins, claim: nil, rankOrder: nil, now: 0, ttl: 30,
+                                   preferredLeader: "mac-bbbbbbbbbbbb")
+        let b = ClusterControlNode(localID: "mac-bbbbbbbbbbbb", members: twins, claim: nil, rankOrder: nil, now: 0, ttl: 30,
+                                   preferredLeader: "mac-bbbbbbbbbbbb")
+        expect(a.claim == b.claim && a.claim.leaderID == "mac-bbbbbbbbbbbb", "both derive the set-up Mac: \(a.claim) / \(b.claim)")
+        // Every plan names the set-up Mac as rank 0, made on either Mac, the smaller one included: a pair the joined Mac
+        // led (a plan whose rank 0 was the Mac that joined) moves back at its next plan, a re-plan on the joined Mac
+        // included. With no set-up Mac of this pair on record, the Mac planning.
+        let pair = mixed.map(\.memberID)
+        expect(ClusterControlDerivation.planLeader(setUp: "mac-000000000001", members: pair, localID: "mac-000000000001")
+               == "mac-000000000001", "a plan on the set-up Mac: it is rank 0")
+        let replan = ClusterControlDerivation.planLeader(setUp: "mac-000000000001", members: pair, localID: "mac-ffffffffffff")
+        expect(replan == "mac-000000000001", "a re-plan on the joined Mac: the set-up Mac is rank 0, not the Mac planning")
+        let joinedLed = ClusterControlDerivation.derive(members: mixed, present: Set(pair), rankOrder: ["mac-ffffffffffff", "mac-000000000001"],
+                                                        preferred: "mac-000000000001")
+        let movedBack = ClusterControlDerivation.derive(members: mixed, present: Set(pair), rankOrder: [replan] + pair.filter { $0 != replan },
+                                                        preferred: "mac-000000000001")
+        expect(joinedLed?.memberID == "mac-ffffffffffff" && movedBack?.memberID == "mac-000000000001" && movedBack!.reason.contains("rank 0"),
+               "the joined Mac leads until the re-plan, then the set-up Mac does: \(String(describing: movedBack))")
+        expect(ClusterControlDerivation.planLeader(setUp: nil, members: pair, localID: "mac-ffffffffffff") == "mac-ffffffffffff"
+               && ClusterControlDerivation.planLeader(setUp: "mac-999999999999", members: pair, localID: "mac-ffffffffffff") == "mac-ffffffffffff",
+               "no set-up Mac of this pair on record (none, or an earlier pairing's): the Mac planning")
     }
 
     static func restartsReformIdentically() {

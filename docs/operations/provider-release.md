@@ -761,8 +761,9 @@ accepts the block derives from it that build's cluster approvals, their
 pair-serving grants (without one no pair of GLM-5.3-Flash or Qwen3.8-27B forms:
 [why](../architecture/inference.md#cluster-runtime-facts-of-an-installed-app)),
 and the parity qualifications (public traffic) of the models the build declares
-public (`ClusterPublicModels`: GLM-5.3-Flash and Qwen3.8-27B in pipeline and
-tensor parallel, the owner's decisions of 2026-10-31,
+public (`ClusterPublicModels`: GLM-5.3-Flash, Qwen3.8-27B, MiMo-V2.6-Flash and
+Gemma 4 26B QAT in pipeline and tensor parallel, MiMo-V2.6-Flash also in its
+speculative pipeline, the owner's decisions of 2026-10-31 and 2026-11-03,
 [evidence](../reports/2026-10-31-public-cluster-models.md)). No operator posts
 approvals, grants or public qualifications per build. A coordinator applies the
 qualifications to each declared family on any Apple silicon pair: the declared

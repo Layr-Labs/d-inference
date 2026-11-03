@@ -2,6 +2,7 @@
 // optional unified local endpoint), startup auto-update, and scheduled windows.
 import Foundation
 import ArgumentParser
+import ProviderAppAttest
 import ProviderCore
 #if canImport(Darwin)
 import Darwin
@@ -206,6 +207,11 @@ extension Start {
         // (previous_exit / start_reason) before any in-place update exec.
         ProviderProcessRun.begin()
         ProviderProcessRun.logAppAttestEntitlementEvidence(context: "startup")
+        // Before this process writes its own daemon state, including the
+        // writes of a schedule wait.
+        if AppAttestVerifiedMarker.seedFromPreviousRun() != nil {
+            print("App Attest: seeded the verified marker from the previous provider's state")
+        }
 
         let selectedIDs = Set(selectedModels.map(\.id))
         let autopilot = config.backend.modelAutopilot

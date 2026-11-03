@@ -78,7 +78,7 @@ LANES = {
     "test-provider": "provider",
     "test-provider-sdk": "sdk",
 }
-PROVIDER_SHARDS = [1, 2, 3, 4, 5, 6, 7, 8]
+PROVIDER_SHARDS = [1, 2, 3]
 # Prompt Parity runs in a provider shard (scripts/provider-test-shards.py PARITY_SHARD).
 PARITY_STEPS = {
     "Verify public prompt golden vectors": ("./scripts/verify-prompt-parity.sh", "ProductionPromptParityTests", "prompt"),
@@ -246,7 +246,7 @@ class ProviderCIWorkflowTests(unittest.TestCase):
             for outcome in ("failure", "skipped", "cancelled"):
                 results = {lane: outcome if lane == failed else "success" for lane in lanes}
                 result = subprocess.run(["bash", "-e", "-c", command],
-                                        env={**os.environ, "CHANGES_RESULT": "success", "PROVIDER_CHANGED": "true",
+                                        env={**os.environ, "CHANGES_RESULT": "success", "PROVIDER_CHANGED": "true", "CLUSTER_CHANGED": "true",
                                              **results},
                                         capture_output=True, timeout=5)
                 self.assertEqual(result.returncode == 0, failed is None, results)
@@ -656,7 +656,7 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         job = self.jobs["test-cluster-checks"]
         self.assertIn("    name: Cluster Metadata Checks\n", job)
         self.assertIn("    needs: changes\n", job)
-        self.assertIn("    if: ${{ needs.changes.outputs.provider == 'true' }}\n", job)
+        self.assertIn("    if: ${{ needs.changes.outputs.cluster == 'true' }}\n", job)
         self.assertIn("    runs-on: blacksmith-12vcpu-macos-27\n", job)
         self.assertNotIn("        test-cluster-checks ", self.jobs["route"])
         for forbidden in ("continue-on-error:", "secrets.", "DARKBLOOM_EXCLUSIVE_NATIVE_GPU_TEST:"):

@@ -67,6 +67,22 @@ class ClusterTestPlanTests(unittest.TestCase):
                     self.assertEqual(cwd, ROOT)
                     self.assertTrue(Path(argv[1]).is_file(), argv)
 
+    def test_order_dependent_selections_keep_their_process_and_order(self):
+        # Some GPU and peer tests pass only after earlier work in the same
+        # process or on the same Mac (PR 1745 runs 41692814231, 41700931534).
+        # Every base suite but the CPU batch-session suite runs in one process,
+        # so each model family shares a process.
+        base = [selection for selection in plan.SELECTIONS if selection.base]
+        self.assertEqual([(selection.name, selection.suites) for selection in base],
+                         [("base-batch-session", ("QwenTensorParallelBatchSessionTests",)), ("base", None)])
+        # The share probe's 1.5 s budget includes the first use of the Qwen TP
+        # kernels on the Mac: it runs in the shard of qwen-tp-batch-gpu, after it.
+        order = [selection.name for selection in plan.SELECTIONS]
+        probe = next(selection for selection in plan.SELECTIONS if selection.name == "qwen-tp-share-probe-gpu")
+        batch = next(selection for selection in plan.SELECTIONS if selection.name == "qwen-tp-batch-gpu")
+        self.assertEqual((probe.lane, probe.shard), (batch.lane, batch.shard))
+        self.assertGreater(order.index(probe.name), order.index(batch.name))
+
     def test_each_process_has_only_its_own_switches(self):
         switches = {name: "1" for selection in plan.SELECTIONS for name in selection.environment}
         switches.update({"GLM53_WINDOW_CENSUS_LONG": "1", "DARKBLOOM_PAGED_BENCH_CTX": "4096"})

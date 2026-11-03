@@ -112,7 +112,7 @@ snapshots. Preserve its watchdog, cleanup and state isolation when using a focus
 selector. Use `scripts/run-nested-suite.sh` for documented nested Swift Testing
 cases and `scripts/run-exclusive-native-gpu-test.sh` for exclusive native work.
 
-CI runs the provider suite in eight shards (`Provider Unit Tests (shard K)`), one
+CI runs the provider suite in three shards (`Provider Unit Tests (shard K)`), one
 Mac each. `PROVIDER_TEST_SHARD=K/N` selects a shard in `scripts/run-provider-tests.sh`,
 and `scripts/provider-test-shards.py` chooses its suites:
 
@@ -130,7 +130,11 @@ native MiMo, desktop and installer gates. `Provider Unit Tests Summary` lists th
 the shards together executed the full list, checks that each Prompt Parity run
 executed every listed test of its suite, merges the shards' coverage
 profiles and uploads measured seconds per suite (`provider-test-shard-weights`).
-When the shards drift apart, replace the weights file with that artifact. A
+When the shards drift apart, replace the weights file with that artifact.
+The suites in `KEPT_APART` never share a shard: a process that ran
+`NemotronSuperManagedSlotTests` and then `Qwen4PagingPrefixIntegrationTests`
+crashed with SIGBUS, and each passes alone. The pair stays apart until the
+Nemotron fixture cleanup is fixed. A
 suite moves from the parallel class to the serial class when it fails or flakes
 in parallel; when in doubt, a suite stays serial.
 
@@ -1195,8 +1199,8 @@ with isolated fixture runners: each `provider-swift/Tests/Cluster*Checks/run.sh`
 `libs/darkbloom-cluster/Tests/*Checks/run.sh` and
 `libs/darkbloom-cluster-worker/Tests/*Checks/run.sh` prints its pass count and
 exits non-zero on a failure. The CI job `test-cluster-checks` (Cluster Metadata
-Checks, `.github/workflows/ci.yml`) runs these runners on every pull request that
-changes provider code: `libs/darkbloom-cluster-worker/Tests/CapabilityChecks/run.sh`,
+Checks, `.github/workflows/ci.yml`) runs these runners when the classifier
+selects `cluster` (see below): `libs/darkbloom-cluster-worker/Tests/CapabilityChecks/run.sh`,
 `libs/darkbloom-cluster/Tests/PrefillScheduleChecks/run.sh`,
 `libs/darkbloom-cluster/Tests/StageMetadataChecks/run.py`,
 `libs/darkbloom-cluster/Tests/GPTOSSStageChecks/run.sh`,
@@ -1215,6 +1219,18 @@ restores source timestamps only for unchanged files, so SwiftPM rebuilds only
 what changed. The worker package's tests (built for macOS 26.2) need the GPU
 and exclusive device access. A loopback or fixture pass never counts as a
 two-Mac hardware pass.
+
+The cluster jobs (Cluster Metadata Checks, Cluster Runtime Tests, Cluster GPU
+Tests and Cluster Focused Checks) run when the classifier selects `cluster`
+(`CLUSTER` in `scripts/ci-component-paths.py`): the cluster packages, the MLX
+pins, the provider's Cluster, Distributed and NativePair sources, the
+provider-side cluster runners (`provider-swift/Tests/Cluster*Checks`), the
+other provider files the cluster runners compile, the cluster plan and the
+shared build recipe. A push that runs the provider lanes also runs them. The
+`Provider Tests` gate accepts a skipped cluster job only when `cluster` was not
+selected. A provider-only pull request runs 4 Macs (3 provider shards and the
+summary), or 5 when an SDK-lane input changes. A cluster pull request adds 7
+Macs (metadata checks, 3 runtime shards, 2 GPU shards and focused checks).
 
 CI runs the runtime test target (`DarkbloomClusterRuntimeTests`) on the
 provider's Blacksmith macOS runners, in selections that

@@ -107,6 +107,19 @@ class PartitionTests(unittest.TestCase):
                 self.assertEqual(sorted(selected), sorted(expected))
                 self.assertEqual(len(selected), len(set(selected)))
 
+    def test_kept_apart_suites_never_share_a_shard(self):
+        for first, second in shards.KEPT_APART:
+            # Weights that would put both on one shard: two light suites after
+            # two heavy ones fill the two least loaded shards in turn.
+            weights = {"ProviderCoreTests.A": 100.0, "ProviderCoreTests.B": 100.0, first: 1.0, second: 1.0}
+            for total in (2, 3, 5):
+                with self.subTest(pair=(first, second), shards=total):
+                    assigned, _ = shards.assignment(total, weights)
+                    holders = [index for index, keys in enumerate(assigned) if first in keys or second in keys]
+                    self.assertEqual(len(holders), 2, assigned)
+            real, _ = shards.assignment(3, shards.load_weights())
+            self.assertFalse(any(first in keys and second in keys for keys in real))
+
     def test_new_and_unweighted_suites_fall_into_the_last_shard(self):
         plans = self.plans(3)
         for test in ("ProviderCoreTests.BrandNew/g()", "ProviderCoreTests.freeFunction()"):

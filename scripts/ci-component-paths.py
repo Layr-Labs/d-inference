@@ -10,7 +10,7 @@ import re
 import subprocess
 
 
-COMPONENTS = ("provider", "sdk")
+COMPONENTS = ("provider", "sdk", "cluster")
 COMMON = (
     "Makefile", "mise.toml", ".gitmodules", ".github/workflows/component-changes.yml",
     ".github/workflows/darkbloom-route.yml",
@@ -28,7 +28,7 @@ PROVIDER = (
     "scripts/run-paged-kernel-tests.sh", "scripts/run-provider-test-watchdog.py",
     "scripts/run-exclusive-native-gpu-test.sh", "scripts/provider-test-shards.py",
     "scripts/provider-test-shard-weights.json",
-    "scripts/cluster-test-plan.py",
+    "scripts/cluster-test-plan.py", "scripts/cluster-stage-content-inventory.py",
     "scripts/prepare-mimo-*-fixtures.py", "scripts/verify-*-prompt-parity.sh",
     "scripts/prepare-prompt-fixtures.py", "scripts/test-prepare-prompt-fixtures.py",
     "scripts/verify-prompt-parity.sh", "scripts/test-qwen4-packaged-resources.py",
@@ -52,6 +52,36 @@ SDK = (
 )
 
 
+# Inputs of the cluster jobs (Cluster Metadata Checks, Cluster Runtime Tests,
+# Cluster GPU Tests, Cluster Focused Checks): the cluster packages and the MLX
+# pins they build, the provider sources their runner scripts compile (every
+# Cluster, Distributed and NativePair source, and the files the runners name),
+# the cluster plan and the shared build recipe. Every cluster input is also a
+# provider input. A push that selects the provider lanes also selects these.
+CLUSTER = (
+    "libs/darkbloom-cluster/**", "libs/darkbloom-cluster-worker/**",
+    "libs/mlx", "libs/mlx/**", "libs/mlx-swift", "libs/mlx-swift/**", "libs/mlx-swift-lm", "libs/mlx-swift-lm/**",
+    "provider-swift/Package.swift", "provider-swift/Package.resolved",
+    "provider-swift/Sources/*Cluster*", "provider-swift/Sources/*Distributed*",
+    "provider-swift/Sources/*NativePair*",
+    "provider-swift/Sources/ProviderCore/Protocol/ProviderExecutionRole.swift",
+    "provider-swift/Sources/ProviderCore/Config/ProviderConfigFile.swift",
+    "provider-swift/Sources/ProviderCore/Models/StreamingFileDownloadDelegate.swift",
+    "provider-swift/Sources/ProviderCoreFoundation/Manifest.swift",
+    # The provider-side cluster runners and the fixture one of them reads; the
+    # provider unit tests of cluster code run in the provider lane.
+    "provider-swift/Tests/Cluster*Checks/**",
+    "provider-swift/Tests/ProviderCoreTests/Fixtures/coordinator-wire/cluster_registration_vector.json",
+    ".github/workflows/ci.yml", ".github/actions/provider-ci-build/**",
+    "scripts/provider-ci-cache.py", "scripts/provider_ci_cache/**",
+    "scripts/provider-release-cache.py", "scripts/provider_release_cache/**",
+    "scripts/provider-release-swift.sh", "scripts/prepare-provider-release-toolchain.sh",
+    "scripts/install-release-cmake.sh", "scripts/prepare-metal-toolchain.py",
+    "scripts/fetch-metallib.sh", "scripts/stage-test-metallib.sh", "scripts/run-nested-suite.sh",
+    "scripts/cluster-test-plan.py", "scripts/cluster-stage-content-inventory.py",
+)
+
+
 def matches(path, patterns):
     return any(fnmatchcase(path, pattern) for pattern in patterns)
 
@@ -67,6 +97,7 @@ def classify(paths):
             return dict.fromkeys(COMPONENTS, True)
         selected["provider"] |= matches(path, PROVIDER)
         selected["sdk"] |= matches(path, SDK)
+        selected["cluster"] |= matches(path, CLUSTER)
     return selected
 
 
@@ -112,6 +143,9 @@ def main():
     full = paths is None or (args.event_name == "push" and event.get("ref") in
                              ("refs/heads/master", "refs/heads/main"))
     selected = dict.fromkeys(COMPONENTS, True) if full else classify(paths)
+    # Pushes keep the cluster jobs wherever they run the provider lanes.
+    if args.event_name == "push":
+        selected["cluster"] = selected["cluster"] or selected["provider"]
     output = "".join(f"{name}={str(enabled).lower()}\n" for name, enabled in selected.items())
     if args.output:
         with open(args.output, "a") as destination:

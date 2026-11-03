@@ -91,6 +91,16 @@ class ClusterTestPlanTests(unittest.TestCase):
         # Each (shard, selection) is one process.
         keys = [(process.shard, process.name) for process in blocking]
         self.assertEqual(len(keys), len(set(keys)))
+        # A selection with `after` runs in that selection's shard, after it.
+        for selection in plan.SELECTIONS:
+            if selection.after:
+                with self.subTest(after=selection.name):
+                    leader = next(key for key in keys if key[1] == selection.after)
+                    follower = next(key for key in keys if key[1] == selection.name)
+                    self.assertEqual(follower[0], leader[0])
+                    self.assertGreater(keys.index(follower), keys.index(leader))
+        share_probe = next(s for s in plan.SELECTIONS if s.name == "qwen-tp-share-probe-gpu")
+        self.assertEqual(share_probe.after, "qwen-tp-batch-gpu")
         focused = plan.processes("focused", weights)
         self.assertEqual(sorted(process.name for process in focused),
                          sorted(selection.name for selection in plan.SELECTIONS if selection.lane == "focused"))

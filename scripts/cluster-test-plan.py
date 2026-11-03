@@ -83,6 +83,8 @@ class Selection:
     tests: tuple = ()
     # Focused: a runner script under libs/darkbloom-cluster/Tests.
     runner: str | None = None
+    # Blocking opt-in: run in the same shard as this selection, after it.
+    after: str | None = None
 
     @property
     def base(self):
@@ -165,7 +167,11 @@ SELECTIONS = (
         "packedSharedExpertCollectiveIsBitIdenticalOnTwoGPURanks",
         "packedRunsRepeatAndShortPromptsOnTwoGPURanks",
     )),
-    Selection("qwen-tp-share-probe-gpu", "blocking", None, {"QWEN_TP_SHARE_PROBE_GPU": "1"}, tests=(
+    # Its timed rounds stop at a 1.5 s wall-clock budget that includes the
+    # first use of the Qwen TP Metal kernels; on dev it ran after the other
+    # Qwen TP GPU selections on the same Mac, and run 41692814231 showed it
+    # exhausting the budget as the first Qwen TP GPU process of a shard.
+    Selection("qwen-tp-share-probe-gpu", "blocking", None, {"QWEN_TP_SHARE_PROBE_GPU": "1"}, after="qwen-tp-batch-gpu", tests=(
         "eachRankTimesItsShareAloneAndReleasesItsRequest",
         "aRefusalOrAFailureGivesNoProbeAndKeepsNothing",
     )),
@@ -361,10 +367,16 @@ def processes(lane, weights=None):
         return [Process(named[name], index + 1) for index in range(shards) for name in placed[index]]
     base, units = base_units(weights)
     items = [(weights.get(unit_key(selection, test), UNWEIGHED_SECONDS), selection, test)
-             for selection in selections if selection.tests for test in selection.tests]
+             for selection in selections if selection.tests and not selection.after for test in selection.tests]
     items += [(weights[unit_key(base, unit)], base, unit) for unit in units]
     catch_all_seconds = weights.get(unit_key(base, CATCH_ALL_KEY), 0.0)
     placed, _ = assign(shards, items, fixed=[(shards - 1, base, catch_all_seconds)])
+    # A selection with `after` joins the first shard that runs that selection,
+    # as its last process there.
+    for selection in selections:
+        if selection.after:
+            index = next(index for index in range(shards) if selection.after in placed[index])
+            placed[index][selection.name] = list(selection.tests)
     others = tuple(sorted(unit for index in range(shards - 1) for unit in placed[index].get(base.name, ())))
     named = {selection.name: selection for selection in selections}
     result = []
@@ -611,6 +623,12 @@ def audit():
     for selection in SELECTIONS:
         if (selection.shard is None) != (selection.lane in SHARD_COUNTS):
             errors.append(f"{selection.name}: only the {sorted(set(LANES) - set(SHARD_COUNTS))} lane fixes shards")
+    for selection in SELECTIONS:
+        if selection.after and not any(other.name == selection.after and other.lane == "blocking"
+                                       and other.tests and not other.after for other in SELECTIONS):
+            errors.append(f"{selection.name} runs after {selection.after}, which is not a placed blocking opt-in selection")
+        if selection.after and (selection.lane != "blocking" or not selection.tests):
+            errors.append(f"{selection.name}: only a blocking opt-in selection can run after another")
     if [selection.name for selection in SELECTIONS if selection.base] != ["base"]:
         errors.append("The blocking lane must have exactly one base selection, `base`")
     for lane in LANES:

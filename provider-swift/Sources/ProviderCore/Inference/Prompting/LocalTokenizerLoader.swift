@@ -5,8 +5,8 @@
 /// macro expands to, but done by hand because we load tokenizers from a
 /// local on-disk cache rather than the Hugging Face Hub. Keeping the
 /// bridge in pure Swift lets us avoid pulling in MLXHuggingFace
-/// (and its BoringSSL/NIO/Jinja transitive closure) just for the
-/// `from(modelFolder:)` entrypoint we already have.
+/// (and its BoringSSL/NIO/Jinja transitive closure) just for the steps of
+/// `AutoTokenizer.from(modelFolder:)`, which `load(from:)` runs itself.
 ///
 /// Used by ProviderLoop and the engine/model factories.
 
@@ -32,18 +32,19 @@ public struct LocalTokenizerLoader: TokenizerLoader, Sendable {
             upstream = try PreTrainedTokenizer(
                 tokenizerConfig: .init(inputs.configurationDictionary()),
                 tokenizerData: .init(inputs.dataDictionary()))
-        } else if PromptTokenCachePolicy.isEnabled(environment: environment) {
-            // The steps of `AutoTokenizer.from(modelFolder:)`, keeping the
-            // configurations for the prompt token cache.
+        } else {
+            // The steps of `AutoTokenizer.from(modelFolder:)`, with decode cleanup
+            // resolved and the configurations kept for the prompt token cache.
             let hub = LanguageModelConfigurationFromHub(modelFolder: directory)
-            guard let tokenizerConfig = try await hub.tokenizerConfig else {
+            guard let published = try await hub.tokenizerConfig else {
                 throw Tokenizers.TokenizerError.missingConfig
             }
+            let tokenizerConfig = Self.resolvingDecodeCleanup(published)
             let tokenizerData = try await hub.tokenizerData
             upstream = try PreTrainedTokenizer(tokenizerConfig: tokenizerConfig, tokenizerData: tokenizerData)
-            configurations = .init(tokenizerConfig: tokenizerConfig, tokenizerData: tokenizerData)
-        } else {
-            upstream = try await AutoTokenizer.from(modelFolder: directory)
+            if PromptTokenCachePolicy.isEnabled(environment: environment) {
+                configurations = .init(tokenizerConfig: tokenizerConfig, tokenizerData: tokenizerData)
+            }
         }
         let modelType = ModelScanner.parseConfigJSON(
             at: directory.appendingPathComponent("config.json")).modelType
@@ -58,6 +59,18 @@ public struct LocalTokenizerLoader: TokenizerLoader, Sendable {
             upstream, chatTemplate: chatTemplate, modelType: modelType,
             promptCacheConfigurations: configurations, environment: environment)
     }
+
+    /// swift-transformers reads an absent `clean_up_tokenization_spaces` as true; Python
+    /// Transformers reads it as false. Cleanup rewrites decoded text: `git add .` comes back
+    /// as `git add.`, and a streamed `'start'` as `''start'`. Gemma 4's published config omits
+    /// the key. This resolves it in memory, so the verified files stay as they are; cleanup
+    /// runs only on decode, so input IDs do not change. An explicit Boolean is kept.
+    private static func resolvingDecodeCleanup(_ config: Config) -> Config {
+        let key: BinaryDistinctString = "clean_up_tokenization_spaces"
+        guard var fields = config.dictionary(), fields[key]?.boolean() == nil else { return config }
+        fields[key] = Config(false)
+        return Config(fields)
+    }
 }
 
 /// Adapter that satisfies `MLXLMCommon.Tokenizer` by forwarding to the
@@ -70,12 +83,15 @@ private struct LocalTokenizerBridge: @unchecked Sendable, MLXLMCommon.Tokenizer,
     private let chatTemplate: String?
     private let modelType: String?
     let promptTokenCache: PromptTokenCache?
+    /// Byte values by token ID, when the decoder holds `<0xHH>` tokens back.
+    private let heldBackBytes: [Int: UInt8]
 
     init(
         _ upstream: any Tokenizers.Tokenizer, chatTemplate: String?, modelType: String?,
         promptCacheConfigurations: PromptTokenCache.Configurations?, environment: [String: String]
     ) {
         self.upstream = upstream
+        heldBackBytes = Self.byteTokens(heldBackBy: upstream)
         self.chatTemplate = chatTemplate.map {
             NemotronTemplateFilters.bindingFilters(
                 in: normalizeSwiftJinjaTemplate($0), modelType: modelType)
@@ -98,8 +114,41 @@ private struct LocalTokenizerBridge: @unchecked Sendable, MLXLMCommon.Tokenizer,
         upstream.encode(text: text, addSpecialTokens: addSpecialTokens)
     }
 
+    /// swift-transformers' `ByteFallbackDecoder` releases `<0xHH>` tokens only when a later
+    /// token arrives, so a decode ending in them drops them and shows nothing pending: Gemma 4
+    /// lost a reply's last character outside its vocabulary, and `DetokenizerV2` could restart
+    /// its segment inside one. A partial run reads as U+FFFD, which `DetokenizerV2` holds back.
     func decode(tokenIds: [Int], skipSpecialTokens: Bool) -> String {
-        upstream.decode(tokens: tokenIds, skipSpecialTokens: skipSpecialTokens)
+        let text = upstream.decode(tokens: tokenIds, skipSpecialTokens: skipSpecialTokens)
+        guard !heldBackBytes.isEmpty else { return text }
+        var bytes: [UInt8] = []
+        // With `skipSpecialTokens` upstream drops special tokens before its decoder runs, so one
+        // inside or after the run does not end it.
+        for id in tokenIds.reversed() {
+            if let byte = heldBackBytes[id] {
+                bytes.append(byte)
+            } else if !skipSpecialTokens || !upstream.decode(tokens: [id], skipSpecialTokens: true).isEmpty {
+                break
+            }
+        }
+        return bytes.isEmpty ? text : text + String(decoding: bytes.reversed(), as: UTF8.self)
+    }
+
+    /// The `<0xHH>` tokens of a decoder that holds them back: a lone one decodes to nothing.
+    /// Empty for a decoder that spells or releases them, so a fixed upstream turns this off.
+    private static func byteTokens(heldBackBy upstream: any Tokenizers.Tokenizer) -> [Int: UInt8] {
+        var bytes: [Int: UInt8] = [:]
+        for value in UInt8.min...UInt8.max {
+            let token = String(format: "<0x%02X>", value)
+            // A token outside the vocabulary converts to the unknown ID.
+            if let id = upstream.convertTokenToId(token), upstream.convertIdToToken(id) == token {
+                bytes[id] = value
+            }
+        }
+        guard let probe = bytes.keys.first,
+            upstream.decode(tokens: [probe], skipSpecialTokens: false).isEmpty
+        else { return [:] }
+        return bytes
     }
 
     func convertTokenToId(_ token: String) -> Int? {

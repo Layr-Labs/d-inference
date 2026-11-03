@@ -1,6 +1,6 @@
 # Release A Provider Version
 
-> Last updated: 2026-10-31
+> Last updated: 2026-11-03
 
 Build, sign, notarize and publish an explicitly authorized provider artifact.
 The pipeline registers its exact official identity through the external platform
@@ -402,6 +402,10 @@ production defaults on every branch: on `dev`, an unset value compiles the dev
 identity (`provider-swift/Package.swift`). Config, CLI flags and
 `DARKBLOOM_R2_CDN_URL` still override defaults. Dev/prod products have different
 cache keys, and packaged smoke must report the selected build environment.
+
+Every run except a dev push builds master's source. Before the build, job
+`resolve-env` runs `scripts/provider-build-default.py --branch master`. The run
+stops if the plain-build default in `provider-swift/Package.swift` is not `prod`.
 
 A dev release from a dev push has the version `X.Y.Z-dev.branch.N`, and a
 master validation build has `X.Y.Z-dev.N`. `X.Y.Z` is the source
@@ -1029,6 +1033,14 @@ do not replace its bytes or re-register it with a different artifact.
    the aliases still serve legacy clients.
 4. Adjust the GitHub release's public status and record the actual outcome.
    Fix forward with a new reviewed patch version, never overwritten signed bytes.
+
+Deactivation stops new installs only: a Mac already on the bad release stays on
+it, because the updater never installs an older version. A provider who needs
+the previous release on a Mac now runs `darkbloom update --rollback` there
+([roll back](../provider/installation.md#roll-back-to-the-previous-release)). It
+restores the release the updater kept when it installed the bad one and
+quarantines the bad one on that Mac, contacts no coordinator, and leaves
+automatic updates on, so the fixed patch version installs normally.
 
 Permanent binary revocation is distinct from release deactivation. An authorized
 platform administrator can use `POST /v1/admin/app-attest/builds/revoke`; registration

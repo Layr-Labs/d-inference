@@ -1,6 +1,6 @@
 # Native block-generation adapter
 
-> Last updated: 2026-10-09
+> Last updated: 2026-10-31
 
 This page explains the native block engine and its provider bridge boundary.
 DiffusionGemma uses explicit native-container ownership through ordinary slot
@@ -247,12 +247,12 @@ content begins. A successfully parsed call does not guarantee that the model
 copied a requested argument correctly; semantic fidelity remains a separate gate.
 Both native empty-thought spellings, with and without the newline, are recognized.
 
-`LocalTokenizerLoader` resolves the DiffusionGemma processor's absent
-`clean_up_tokenization_spaces` to false through the SDK's
-`DiffusionGemmaTokenizerConfiguration`. Explicit Boolean metadata is retained;
-other processors keep the existing loader path. This avoids altering literal
-punctuation and spaces inside quoted arguments after token generation. The
-metadata files, input IDs and native sampling are unchanged. Exact decoding
+`LocalTokenizerLoader` resolves an absent `clean_up_tokenization_spaces` to
+false: for the DiffusionGemma processor through the SDK's
+`DiffusionGemmaTokenizerConfiguration`, and for every other processor in the
+loader itself. Explicit Boolean metadata is retained. This avoids altering
+literal punctuation and spaces inside quoted arguments after token generation.
+The metadata files, input IDs and native sampling are unchanged. Exact decoding
 does not repair an incorrect value already present in generated tokens.
 
 The released template defaults thinking off unless its binary `enable_thinking`

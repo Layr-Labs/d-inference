@@ -3,6 +3,7 @@ import Foundation
 import MLX
 import MLXLLM
 import MLXLMCommon
+import MLXNN
 
 /// Input ownership is request-local. A media owner supplies its authenticated
 /// position slices and prompt embeddings; text keeps the cache's own offsets.
@@ -23,10 +24,7 @@ final class QwenTensorParallelBatchSession: QwenTensorParallelMTPTarget {
     private var inputs: QwenTensorParallelBatchInputs?
     private var window: QwenTensorParallelTargetWindow?
     private var failed = false
-    private let captureFrontier: Int
-    private let captureLimitBytes: Int
-    private let allocationBound: (Int) throws -> Int
-    private var captured: QwenTensorParallelBatchPrefixState?
+    private let prefixCapture: QwenTensorParallelPrefixCapture?
     /// `frameTiming` only: this prompt's frames so far.
     private var promptClock: QwenTensorParallelPromptClock?
     private(set) var schedule: QwenLayerStageGenerationSchedule
@@ -35,24 +33,20 @@ final class QwenTensorParallelBatchSession: QwenTensorParallelMTPTarget {
 
     init(model: QwenTensorParallelModel, configuration: Data, host: CBv2StageKVHost,
          request: QwenLayerStageGenerationRequest, inputs: QwenTensorParallelBatchInputs? = nil,
-         restored: QwenTensorParallelBatchPrefixState? = nil, captureFrontier: Int = 0,
-         captureLimitBytes: Int = 0, allocationBound: ((Int) throws -> Int)? = nil) throws {
+         restored: QwenTensorParallelBatchPrefixState? = nil, capture: QwenTensorParallelPrefixCapture? = nil) throws {
         guard case .shard(_, let ranks) = model.role, ranks == 2,
               sha256(configuration) == model.configurationSHA256,
               request.profile.hiddenSize == model.plan.hiddenSize,
               request.profile.vocabularySize == model.plan.vocabularySize,
               request.reusedPrefixTokens == (restored?.committedTokens ?? 0),
               request.reusedPrefixTokens % request.chunkSize == 0,
-              captureFrontier == 0 || (captureFrontier > request.reusedPrefixTokens
-                && captureFrontier < request.promptCount && captureFrontier % request.chunkSize == 0),
-              captureLimitBytes >= 0, captureFrontier == 0 || allocationBound != nil else {
+              capture?.fits(request) ?? true else {
             throw ProbeError("Qwen TP batch session requires a matching shard and original-grid state")
         }
         let geometry = try Self.geometry(model: model, configuration: configuration, host: host,
             maximumTokens: request.maximumTokens)
         self.model = model; self.request = request; self.inputs = inputs
-        self.captureFrontier = captureFrontier; self.captureLimitBytes = captureLimitBytes
-        self.allocationBound = allocationBound ?? { _ in throw ProbeError("Unpriced TP prefix capture") }
+        self.prefixCapture = capture
         // Paged pages grow with the request (`reservePages`); the reference
         // contiguous backend keeps its whole-length rows.
         let reserved = host.kind == .paged ? Self.initialReservedTokens(request) : nil
@@ -111,6 +105,26 @@ final class QwenTensorParallelBatchSession: QwenTensorParallelMTPTarget {
         try prompt(capturingHidden: false, check: check).logits
     }
 
+    /// The prompt frames one step runs from the next frame: up to `limit`
+    /// merged into one graph (`QwenTensorParallelPromptWavefront`), ending at
+    /// the capture frontier; the next frame alone where frames do not merge.
+    func promptFrames(limit: Int) -> [QwenLayerStageFrame] {
+        guard !retired else { return [] }
+        let merges = QwenTensorParallelPromptWavefront.merges(model: model, request: request,
+            mediaInputs: inputs != nil, packedStorage: state.packedStorage)
+        return QwenTensorParallelPromptWavefront.frames(request: request, from: schedule.nextSequence,
+            frontiers: prefixCapture?.frontiers ?? [], limit: merges ? limit : 1)
+    }
+
+    /// Runs the planned prompt step `step` (`promptFrames`), its frames as one graph.
+    func prefill(step: QwenLayerStageFrame, check: () throws -> Void) throws -> MLXArray? {
+        let frames = promptFrames(limit: QwenTensorParallelPromptWavefront.maximumFrames)
+        guard let count = (1...max(1, frames.count)).first(where: {
+            QwenTensorParallelPromptWavefront.step(Array(frames.prefix($0))) == step
+        }) else { throw ProbeError("Qwen TP prompt step differs from its frames") }
+        return try prompt(capturingHidden: false, frames: count, check: check).logits
+    }
+
     func prefillForMTP(check: () throws -> Void) throws -> QwenTensorParallelMTPPromptResult {
         guard inputs == nil, request.qwenMedia == nil else { throw ProbeError("Qwen TP media cannot enter assistant history") }
         let result = try prompt(capturingHidden: true, check: check)
@@ -118,13 +132,20 @@ final class QwenTensorParallelBatchSession: QwenTensorParallelMTPTarget {
         return .init(hidden: hidden, logits: result.logits)
     }
 
-    private func prompt(capturingHidden: Bool, check: () throws -> Void) throws -> (hidden: MLXArray?, logits: MLXArray?) {
+    private func prompt(capturingHidden: Bool, frames count: Int = 1,
+                        check: () throws -> Void) throws -> (hidden: MLXArray?, logits: MLXArray?) {
         try MLX.withError { error in
             func checked() throws { try error.check(); try check() }
-            let proposed = try request.frame(sequence: schedule.nextSequence)
-            let frame = try schedule.admitPrefill(count: proposed.tokenCount, offset: proposed.tokenOffset,
-                final: proposed.finalPromptChunk)
-            guard !retired, !failed, window?.isIdle ?? true, frame.phase == .prefill, state.committedTokens == frame.tokenOffset else {
+            // Each frame is admitted on the schedule as the frames before it leave it.
+            var planned = schedule, frames: [QwenLayerStageFrame] = []
+            for _ in 0..<count {
+                let proposed = try request.frame(sequence: planned.nextSequence)
+                let admitted = try planned.admitPrefill(count: proposed.tokenCount, offset: proposed.tokenOffset,
+                    final: proposed.finalPromptChunk)
+                frames.append(admitted); try planned.commit(admitted)
+            }
+            guard let frame = QwenTensorParallelPromptWavefront.step(frames), count == 1 || !capturingHidden,
+                  !retired, !failed, window?.isIdle ?? true, frame.phase == .prefill, state.committedTokens == frame.tokenOffset else {
                 throw ProbeError("Qwen TP batch prefill frontier differs")
             }
             try reservePages(writing: frame.tokenCount)
@@ -155,7 +176,11 @@ final class QwenTensorParallelBatchSession: QwenTensorParallelMTPTarget {
             // before any of it runs), as a packed decode step is.
             let stride = Self.prefillStride ?? (state.packedStorage ? 0 : Self.prefillLayerStride)
             let output = try state.run(tokenCount: frame.tokenCount, observer: phases, check: checked, forward: { caches, evaluation in
-              Qwen35LayerSubmission.$stride.withValue(stride) { () -> MLXArray in
+              if frames.count > 1 {
+                  return QwenTensorParallelPromptWavefront.forward(model: self.model, request: self.request,
+                      frames: frames, caches: caches, evaluation: evaluation)
+              }
+              return Qwen35LayerSubmission.$stride.withValue(stride) { () -> MLXArray in
                 let native = self.model.model
                 if capturingHidden {
                     let result = native.cbv2ForwardWithHidden(input,
@@ -193,8 +218,8 @@ final class QwenTensorParallelBatchSession: QwenTensorParallelMTPTarget {
                 }
                 eval(hidden); try checked()
             }
-            try schedule.commit(frame)
-            if committedTokens == captureFrontier { try capturePrefix(check: checked) }
+            schedule = planned
+            try prefixCapture?.capture(state, at: committedTokens, check: checked)
             if let timing, case .shard(let rank, _) = model.role {
                 let clock = promptClock ?? QwenTensorParallelPromptClock()
                 promptClock = clock
@@ -260,12 +285,14 @@ final class QwenTensorParallelBatchSession: QwenTensorParallelMTPTarget {
     static var usesExactVectors: Bool { exactVectorsOverride ?? exactVectors }
 
     /// Bound into the tensor-parallel load agreement: both ranks resolve the
-    /// decode projections alike, or the pair refuses to load (never a mixed
-    /// configuration). Each rank's words per lane is its own arithmetic
-    /// (a rank sums only its own partials) and is not bound.
+    /// decode projections alike and sum the same selection words (each row's
+    /// non-finite counts ride the greedy sum), or the pair refuses to load
+    /// (never a mixed configuration). Each rank's words per lane is its own
+    /// arithmetic (a rank sums only its own partials) and is not bound.
     static var decodeAgreementFields: [String] {
         ["qwen-tensor-parallel-decode-projections-v1", usesExactVectors ? "batch-invariant-affine" : "mlx-kernels",
-         "qwen-tensor-parallel-fenced-sums-v1", sumsAreFencedInputs ? "on" : "off"]
+         "qwen-tensor-parallel-fenced-sums-v1", sumsAreFencedInputs ? "on" : "off",
+         "qwen-tensor-parallel-selection-nonfinite-in-sum-v1"]
     }
 
     /// Whether the residual step's kernel waits for each all-sum itself: MLX
@@ -289,6 +316,93 @@ final class QwenTensorParallelBatchSession: QwenTensorParallelMTPTarget {
             + AffineQuantizedVectors.resolvedDescription(bits: plan.bits, groupSize: plan.groupSize, inputs: plan.hiddenSize)
             + " residual_rms_norm=\(ResidualRMSNorm.isEnabled && ResidualRMSNorm.verifiedFamilies.contains(AffineQuantizedVectors.family()) ? "on" : "off")"
             + " fenced_sums=\(sumsAreFencedInputs ? "on" : "off")"
+    }
+
+    /// Vector counts the census describes: plain rows of one to eight, and
+    /// their four-column verify windows.
+    static let censusCounts = [1, 2, 3, 4, 5, 6, 7, 8, 12, 16, 20, 24, 28, 32]
+
+    /// The decode route of every projection of a loaded shard
+    /// (`darkbloom-qwen-tp-decode-census-v1`), so a pair's log shows what each
+    /// row count runs: the batch-invariant kernel (`aqv`), a row-parallel FP32
+    /// partial on it (`partial`), or MLX's own kernels and why (`mlx-...`),
+    /// with each shape's layout per vector count (layouts never change a
+    /// result), and the attention, residual-norm and selection routes. Host
+    /// only: no array is evaluated. Layouts are per checkpoint projection:
+    /// the SDK multiplies a Gated DeltaNet layer's four input projections as
+    /// one call of their summed rows, and fuses gate, up and SwiGLU at
+    /// `swiglu_fused_vectors` only while its decode fusions are on.
+    static func censusLine(rank: Int, model: QwenTensorParallelModel) -> String {
+        var routes: [String: Int] = [:], layouts: [String: String] = [:], tally: [String: Int] = [:]
+        for (path, module) in model.model.leafModules().flattened() {
+            guard let linear = module as? Linear else { continue }
+            let name = path.split(separator: ".").last.map(String.init) ?? path
+            let (outputs, inputs) = linear.shape
+            let route: String
+            if let packed = linear as? QuantizedLinear {
+                let probe = MLXArray.zeros([1, inputs], dtype: .bfloat16)
+                let reason: String?
+                if !usesExactVectors { reason = "off" }
+                else if Device.defaultDevice().deviceType != .gpu { reason = "cpu" }
+                else if AffineQuantizedVectors.supports(input: probe, weight: packed.weight, scales: packed.scales,
+                    biases: packed.biases, groupSize: packed.groupSize, bits: packed.bits, mode: packed.mode) { reason = nil }
+                else if packed.mode != .affine { reason = "mode" }
+                else if packed.biases == nil { reason = "biases" }
+                else { reason = "bits\(packed.bits)-group\(packed.groupSize)-\(packed.scales.dtype)" }
+                if packed is QwenTensorParallelRowLinear {
+                    route = reason.map { "mlx-partial-\($0)" } ?? (packed.bias == nil ? "partial" : "mlx-partial-bias")
+                } else if type(of: packed) == QuantizedLinear.self {
+                    route = reason.map { "mlx-\($0)" } ?? "aqv"
+                } else {
+                    route = "mlx-subclass-\(type(of: packed))"
+                }
+                if !route.hasPrefix("mlx") {
+                    var runs: [(String, Int, Int)] = []
+                    for count in censusCounts {
+                        let layout = AffineQuantizedVectors.layout(vectors: count, inputs: inputs, outputs: outputs,
+                            bits: packed.bits).description
+                        if let last = runs.last, last.0 == layout { runs[runs.count - 1].2 = count }
+                        else { runs.append((layout, count, count)) }
+                    }
+                    layouts["\(inputs)x\(outputs)"] = runs.map { "\($0.1 == $0.2 ? "\($0.1)" : "\($0.1)-\($0.2)")=\($0.0)" }
+                        .joined(separator: "/")
+                }
+            } else {
+                route = "mlx-unquantized"
+            }
+            routes["\(name):\(inputs)x\(outputs):\(route)", default: 0] += 1
+            tally[route.hasPrefix("mlx") ? "mlx" : route, default: 0] += 1
+        }
+        let attention = Set(model.model.cbv2LayerKinds.map { kind -> String in
+            let gqa = kind.queryHeads / max(1, kind.kvHeads)
+            let hpt = PagedAttentionKernel.headsPerThreadgroup(headDim: kind.headDim, gqa: gqa)
+            return "d\(kind.headDim)-kv\(kind.kvHeads)-gqa\(gqa)-hpt\(hpt)"
+        }).sorted()
+        let environment = ProcessInfo.processInfo.environment
+        let switches = ["MLX_QMV_BATCH_INVARIANT", "MLX_ENABLE_TF32", "DARKBLOOM_QWEN35_FUSE_ELEMENTWISE",
+                        "DARKBLOOM_QWEN35_DECODE_FUSIONS_V2", "DARKBLOOM_GDN_FUSED_CONV", "DARKBLOOM_GDN_FUSED_QK_NORM",
+                        "DARKBLOOM_RESIDUAL_RMS_NORM", "DARKBLOOM_CBV2_PAGED_PTOK_TARGET", "DARKBLOOM_TTFT_GDN_BLOCKED"]
+            .compactMap { key in environment[key].map { "\(key)=\($0)" } }
+        let hidden = model.plan.hiddenSize
+        return "darkbloom-qwen-tp-decode-census-v1 rank=\(rank) exact_vectors=\(usesExactVectors ? "on" : "off")"
+            + " aqv=\(tally["aqv", default: 0]) partial=\(tally["partial", default: 0]) mlx=\(tally["mlx", default: 0])"
+            + " routes=" + routes.sorted { $0.key < $1.key }.map { "\($0.key)*\($0.value)" }.joined(separator: ",")
+            + " layouts=" + layouts.sorted { $0.key < $1.key }.map { "\($0.key):\($0.value)" }.joined(separator: ",")
+            + " swiglu_fused_vectors=" + censusCounts.filter { AffineQuantizedVectors.fusesSwiGLU(vectors: $0) }
+                .map(String.init).joined(separator: "/")
+            + " residual_rms_norm=\(ResidualRMSNorm.isEnabled && ResidualRMSNorm.verifiedFamilies.contains(AffineQuantizedVectors.family()) ? (hidden > 4096 ? "looped" : "single") : "off")"
+            + " attention=paged-\(attention.joined(separator: "/")) ptok=\(PagedAttentionKernel.partitionTokens)"
+            + " ptok_target=\(PagedAttentionKernel.partitionTargetThreadgroups)"
+            + " selection=greedy-rank-argmax/sampled-gather switches=" + (switches.isEmpty ? "none" : switches.joined(separator: ","))
+    }
+
+    private static let censusLock = NSLock()
+    nonisolated(unsafe) private static var censusModels = Set<ObjectIdentifier>()
+
+    /// Logs `censusLine` once per loaded model.
+    static func logCensusOnce(rank: Int, model: QwenTensorParallelModel) {
+        let first = censusLock.withLock { censusModels.insert(ObjectIdentifier(model)).inserted }
+        if first { log(censusLine(rank: rank, model: model)) }
     }
 
     static func decode(_ sessions: [QwenTensorParallelBatchSession], tokens: [Int],
@@ -464,27 +578,27 @@ final class QwenTensorParallelBatchSession: QwenTensorParallelMTPTarget {
             throw ProbeError("Qwen TP positions differ from request-owned three-axis slices")
         }
     }
+    /// Shape and dtype only: selection counts non-finite logits inside its own
+    /// sealed sum (`QwenTensorParallelNativeBatchExecutor.select`), so both
+    /// ranks refuse such a row together and no step pays a separate read.
     private static func validateLogits(_ value: MLXArray, rows: Int, model: QwenTensorParallelModel,
                                        request: QwenLayerStageGenerationRequest) throws {
         guard value.shape == [rows, model.vocabularyRange.count],
-              String(describing: value.dtype) == request.profile.selectedRowDType,
-              all(isFinite(value)).item(Bool.self) else {
-            throw ProbeError("Qwen TP batched logits have an invalid shape, dtype or finite value")
+              String(describing: value.dtype) == request.profile.selectedRowDType else {
+            throw ProbeError("Qwen TP batched logits have an invalid shape or dtype")
         }
     }
 
-    private func capturePrefix(check: () throws -> Void) throws {
-        guard captured == nil else { throw ProbeError("Qwen TP prefix is already captured") }
-        captured = try .capture(state: state, frontier: captureFrontier, limitBytes: captureLimitBytes,
-            allocationBound: allocationBound, check: check)
-    }
-
-    func takeCapturedPrefix() throws -> QwenTensorParallelBatchPrefixState? {
+    /// The kept boundaries' states and the attention copy they share, once,
+    /// after native retirement.
+    func takeCapturedPrefix() throws -> (states: [QwenTensorParallelBatchPrefixState], sharedBytes: Int)? {
         guard retired && state.isClosed else { throw ProbeError("Qwen TP prefix donation precedes native retirement") }
-        defer { captured = nil }
-        return captured
+        guard let prefixCapture else { return nil }
+        defer { prefixCapture.discard() }
+        let states = prefixCapture.states()
+        return states.isEmpty ? nil : (states, prefixCapture.sharedBytes)
     }
-    func discardCapturedPrefix() { captured = nil }
+    func discardCapturedPrefix() { prefixCapture?.discard() }
 
     func retire() throws {
         guard !retired else { return }

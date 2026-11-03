@@ -3,7 +3,7 @@ import Foundation
 import MLX
 
 // darkbloom-cluster-tp-check qwen-prefill --model-dir /ABS [--rank R] [--shares A:B] [--prompt-tokens N]
-//     [--chunks 512,1024] [--ops 0,16,100] [--strides 0,1] [--modes local,cpu-hop] [--repeats N]
+//     [--chunks 512,1024] [--ops 0,16,100] [--strides 0,1] [--wavefronts 1,8] [--modes local,cpu-hop] [--repeats N]
 //     [--layers yes|no] [--gemm yes|no] [--gemm-rows 512,1024]
 // One Qwen tensor-parallel rank's prompt prefill on this Mac with no peer
 // (QwenTensorParallelPrefillBench): the product's request-owned prefill
@@ -20,7 +20,7 @@ enum QwenPrefillBench {
             fields[arguments[index]] = arguments[index + 1]; index += 2
         }
         guard let directory = fields["--model-dir"], directory.hasPrefix("/") else {
-            throw Failure("usage: qwen-prefill --model-dir /ABS [--rank R] [--shares A:B] [--prompt-tokens N] [--chunks 512,1024] [--ops 0,16,100] [--strides 0,1] [--modes local,cpu-hop] [--repeats N] [--layers yes|no] [--gemm yes|no] [--gemm-rows 512]")
+            throw Failure("usage: qwen-prefill --model-dir /ABS [--rank R] [--shares A:B] [--prompt-tokens N] [--chunks 512,1024] [--ops 0,16,100] [--strides 0,1] [--wavefronts 1,8] [--modes local,cpu-hop] [--repeats N] [--layers yes|no] [--gemm yes|no] [--gemm-rows 512]")
         }
         func list(_ name: String, _ fallback: [Int]) throws -> [Int] {
             guard let text = fields[name] else { return fallback }
@@ -39,6 +39,7 @@ enum QwenPrefillBench {
         options.chunks = try list("--chunks", [512])
         options.operations = try list("--ops", [0])
         options.strides = try list("--strides", [0])
+        options.wavefronts = try list("--wavefronts", [1])
         options.modes = try (fields["--modes"] ?? "local").split(separator: ",").map {
             guard let mode = QwenTensorParallelPrefillBench.Mode(rawValue: String($0)) else { throw Failure("--modes takes local,cpu-hop") }
             return mode

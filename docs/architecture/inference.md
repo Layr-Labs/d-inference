@@ -5423,8 +5423,9 @@ them; an installed worker always uses the defaults), and
 microseconds). `darkbloom-cluster-tp-check qwen-prefill` measures one rank's
 prompt frames, layers and projections with no peer.
 
-The driver coordinates join, one prefill frame and a decode cohort on both
-ranks. A held token credit blocks only its request. When some decode rows are
+The driver coordinates join, one prompt step (one frame, or several merged:
+[Qwen tensor-parallel prompt wavefront](#qwen-tensor-parallel-prompt-wavefront))
+and a decode cohort on both ranks. A held token credit blocks only its request. When some decode rows are
 ready and others await nearby owner acknowledgments, the driver reuses
 `QwenBatchDecodeCoalescing`'s absolute 2,000,000-nanosecond window. It keeps
 exchanging no-work steps and servicing control; new joins, prefills and retirement
@@ -5572,11 +5573,13 @@ the served layout; `ClusterPlacementTensorWidthRegisteredTests`):
 | 64 GiB | 8 | 4 |
 | 96 GiB and larger | 8 | 8 |
 
-At eight lanes, each rank of an equal split reserves 40,544,616,448 bytes at
-LOAD without the assistant and 60,367,765,504 bytes with it, each lane's
-prompt-prefix capture included ([prefix ownership](hardware-support.md#qwen27-tp-batch-prefix-ownership));
-with its weights and loading headroom it needs 54,074,305,024 and
-77,631,564,288 bytes. Every
+At eight lanes, each rank of an equal split reserves 40,911,618,048 bytes at
+LOAD without the assistant and 60,734,767,104 bytes with it, each lane's
+prompt-prefix capture ([prefix ownership](hardware-support.md#qwen27-tp-batch-prefix-ownership))
+and the shared 367,001,600-byte prompt wavefront term
+([prompt wavefront](#qwen-tensor-parallel-prompt-wavefront)) included; with its
+weights and loading headroom it needs 54,441,306,624 and 77,998,565,888 bytes.
+Every
 registered Qwen TP row is sized the same way from its own quotes. GLM keeps its
 eight lanes and other families keep their defaults.
 
@@ -5584,6 +5587,108 @@ Sources: `provider-swift/Sources/ProviderCore/Inference/Distributed/Placement/Cl
 (`ClusterPlacementTensorWidth`),
 `provider-swift/Sources/ProviderCore/Inference/Distributed/Placement/ClusterPlacementFlow.swift` (`decide`) and
 `libs/darkbloom-cluster/Sources/DarkbloomClusterPlacement/ClusterPlacementTensorBatchQuote.swift` (`applyWidth`).
+
+### Qwen tensor-parallel prompt wavefront
+
+A Qwen TP prompt frame of 512 rows used to compute, then wait for its own
+sealed FP32 sums: two per layer, each read by the next residual norm, so the
+GPU and the link took turns. On the pair at 11K tokens a 27B frame computes for
+about 165 ms and its 128 sums take about 186 ms, so prefill ran at 0.75x one Mac
+[INFERENCE: split from `qwen27-tp-speed-plan` measurements, not traced]. A plain
+text lane now prefills up to eight consecutive frames as one graph, built layer
+by layer as GLM's micro-batches are (`GLM5NextTextStage.microBatchedLayer`): a
+frame's mixer through its row-parallel output projection, that sum submitted at
+once, the next frame's mixer while it crosses; then each frame's MLP the same
+way.
+
+```mermaid
+flowchart LR
+  subgraph Layer["layer L of a step of frames f0..f7"]
+    M0["f0 mixer partial"] --> S0(["f0 sealed sum"])
+    M0 --> M1["f1 mixer partial<br/>(reads f0's KV and<br/>conv/SSM state at L)"]
+    M1 --> S1(["f1 sealed sum"])
+    M1 --> Mn["... f7 mixer"]
+    S0 --> F0["f0 residual + MLP partial"] --> T0(["f0 sealed sum"])
+    S1 --> F1["f1 residual + MLP partial"]
+  end
+```
+
+- **Planning.** The leader plans one prompt step a driver step: up to
+  `QwenTensorParallelPromptWavefront.maximumFrames` (8) frames, or
+  `framesBesideDecoding` (2) while another lane decodes, ending at the prompt's
+  end or at the lane's capture frontier (`QwenTensorParallelBatchSession.promptFrames`).
+  The plan carries the step's offset, tokens and final flag; each rank runs it
+  only as a prefix of its own frames (`promptStep(tokens:)`), so both ranks run
+  the same frames.
+- **Graph.** One `CBv2OwnedRequestState.run` covers the step.
+  `Qwen35PromptWavefront.prefill` builds each layer for every frame in two
+  phases (`Qwen35DecoderLayer.promptMixer`, `promptFeedForward`). A frame reads
+  the attention rows the frame before it wrote at that layer (the cache's
+  advanced offsets, the prefill mirror or the page gather) and its recurrent
+  state (`Qwen35GatedDeltaNet.cbv2Recurrent`); the last frame's state is staged
+  into the run's evaluation. The prompt's last frame takes `cbv2Forward`'s fused
+  residual norms and whole-frame head, as alone. After each phase the raw sums
+  the row-parallel projections issued (`QwenTensorParallelRowLinear.issuedSums`)
+  are submitted (`asyncEval`), and building waits while more than
+  `QwenTensorParallelPromptWavefront.sumsInFlight` (4) are unfinished. Without
+  that bound MLX encodes, and allocates, the independent frames' phases up to
+  `MLX_MAX_ACTIVE_TASKS` tasks ahead of the link.
+- **Commit.** The run validates the step's frontier and commits once; the
+  session then commits each frame on its schedule and takes a prefix capture
+  when the step reaches the frontier, as after a lone frame.
+
+Invariants:
+1. Every frame runs the operations it runs alone, at its own 512-row shapes;
+   only submission order changes. Logits, attention rows, conv and SSM states
+   and prefix captures are the per-frame bytes
+   (`QwenTensorParallelPromptWavefrontTests.mergedFramesKeepEveryBit`: both
+   ranks, paged with the mirror and with page gathers, contiguous, a prompt
+   ending mid-frame, a capture frontier inside the prompt, a lane decoding
+   beside it).
+2. Each rank issues the sums frames alone issue, two a layer a frame, in the
+   same order on both ranks. They stay sealed FP32 all-sums: no BF16 partial,
+   no TF32 change.
+3. Only text lanes of dense models on native KV rows merge
+   (`QwenTensorParallelPromptWavefront.merges`). Assisted (MTP) lanes, media
+   lanes, packed KV and routed-expert models run one frame a step.
+4. A step's further frames in flight are charged:
+   `QwenTensorParallelPromptWavefront.inFlightBytes` (per further frame, five
+   frames' FP32 collective payload: two partials, two sums and the BF16
+   residual rows) joins the shared prompt workspace of
+   `QwenTensorParallelBatchBudget`, so LOAD, the placement quote and every
+   request's charge (`QwenTensorParallelRequestCharge`) include it. Its value
+   and measurements are in the
+   [TP batch admission boundary](hardware-support.md#qwen27-tp-batch-admission-boundary).
+5. The load agreement binds `qwen-tensor-parallel-prompt-wavefront-v1` and the
+   frame limits; `DARKBLOOM_QWEN_TP_PROMPT_WAVEFRONT=0` (diagnosis only, both
+   ranks) restores one frame a step.
+
+Failure modes: a planned step a rank cannot run as a prefix of its frames fails
+the driver step on that rank, as a changed frame did; a merged step that fails
+fails the lane as a frame does. A lane decoding beside a long prompt waits for a
+two-frame step instead of one frame.
+
+`darkbloom-cluster-tp-check qwen-prefill --wavefronts 1,8` times one rank's
+steps with no peer; `darkbloom-cluster-tp-check qwen-wavefront` runs a prompt on
+two ranks over the loopback ring at each frame limit, logs each run's peak
+memory (`peak_mb`) and checks that every run leaves both ranks the same bytes.
+Loopback timings show the overlap, never a pair's rate: on one M5 Ultra, 4-layer
+shards at the 27B's per-rank widths (`qwen-rows synthesize`) prefilled 11,264
+tokens over the sealed ring in 848-961 ms in steps of two or eight frames,
+against 1,517-1,522 ms one frame a step, every run with the same bytes on both
+ranks.
+
+Sources: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/TensorParallel/QwenTensorParallelPromptWavefront.swift`
+(`QwenTensorParallelPromptWavefront`),
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/TensorParallel/QwenTensorParallelBatchSession.swift`
+(`promptFrames`, `prefill(step:check:)`),
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/TensorParallel/QwenTensorParallelLinear.swift`
+(`issuedSums`),
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Resources/QwenTensorParallelBatchBudget.swift`
+(`derive`),
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/TensorParallel/QwenTensorParallelPrefillBench.swift`
+(`pair`), and `libs/mlx-swift-lm/Libraries/MLXLLM/Models/Qwen35PromptWavefront.swift`
+(`Qwen35PromptWavefront`).
 
 ### Qwen27 tensor-parallel native context
 

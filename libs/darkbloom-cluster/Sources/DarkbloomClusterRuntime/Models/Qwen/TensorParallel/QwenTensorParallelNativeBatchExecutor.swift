@@ -29,6 +29,15 @@ final class QwenTensorParallelNativeBatchLane: QwenTensorParallelBatchLane {
         guard !session.retired else { return nil }
         return try? session.request.frame(sequence: session.schedule.nextSequence)
     }
+    /// An assisted lane's prompt keeps one frame a step (its history takes each frame's hidden rows).
+    func promptStep(frames: Int) -> QwenLayerStageFrame? {
+        QwenTensorParallelPromptWavefront.step(session.promptFrames(limit: assistant == nil ? frames : 1))
+    }
+    func promptStep(tokens: Int) -> QwenLayerStageFrame? {
+        let frames = session.promptFrames(limit: assistant == nil ? QwenTensorParallelPromptWavefront.maximumFrames : 1)
+        return (1...max(1, frames.count)).lazy.compactMap { QwenTensorParallelPromptWavefront.step(Array(frames.prefix($0))) }
+            .first { $0.tokenCount == tokens }
+    }
     var committedTokens: Int { session.committedTokens }
     var isClosed: Bool { session.retired && session.state.isClosed && resourcesReleased }
 }
@@ -295,10 +304,10 @@ final class QwenTensorParallelNativeBatchExecutor<Reservation: QwenTensorParalle
     }
 
     func prefill(_ lane: Lane, frame: QwenLayerStageFrame, check: () throws -> Void) throws -> Int? {
-        guard lane.nextFrame == frame else { throw ProbeError("Qwen TP native prefill frame changed") }
+        guard lane.promptStep(tokens: frame.tokenCount) == frame else { throw ProbeError("Qwen TP native prefill frame changed") }
         let output: MLXArray?
         if let decoder = lane.assistant { output = try decoder.prefill(check: check) }
-        else { output = try lane.session.prefill(check: check) }
+        else { output = try lane.session.prefill(step: frame, check: check) }
         completedPrefill()
         guard let logits = output else { return nil }
         let token = try select(logits, lanes: [lane], check: check)[0]

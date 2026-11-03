@@ -1178,9 +1178,19 @@ projection constants and the transient batch conversion bank are charged
 separately, including unequal shards. Paged backing charges each lane its own
 BF16 page bank and partial-page replacement, and one full-history gather bank
 once for the owner: decode steps and verify windows attend pages in place, and
-the driver runs at most one prompt frame per step, so only a prompt frame
-gathers a history (`QwenTensorParallelBatchMemoryTests.fullHistoryGatherIsOnePromptFramesTransient`
-measures both). Segment slack and allocator overhead stay charged. Collective scratch prices complete
+the driver runs one lane's prompt step at a time, so only a prompt step's frames
+gather a history (`QwenTensorParallelBatchMemoryTests.fullHistoryGatherIsOnePromptFramesTransient`
+measures both). A prompt step that merges frames
+([prompt wavefront](inference.md#qwen-tensor-parallel-prompt-wavefront)) adds
+its further frames in flight once to the shared maximum
+(`QwenTensorParallelPromptWavefront.inFlightBytes`: 367,001,600 bytes on a 27B
+rank at 512-token frames) and keeps at most
+`QwenTensorParallelPromptWavefront.sumsInFlight` sums unfinished. Over the
+loopback ring (`darkbloom-cluster-tp-check qwen-wavefront`, 4-layer shards at
+the 27B's per-rank widths, 11,264-token prompts and a 65,536-token context) a
+merged step's peak rose at most 314 MB a rank above one frame's; without that
+bound it rose 0.5-1.5 GB. `QwenTensorParallelPromptWavefrontTests.mergedStepTemporariesStayWithinTheirCharge`
+checks the term in one process, whose sums complete as they are built. Segment slack and allocator overhead stay charged. Collective scratch prices complete
 sealed frames, including authentication overhead, through the existing request
 allowance. Media and assistant charges are not hidden in this text quote.
 

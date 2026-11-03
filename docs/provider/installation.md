@@ -223,10 +223,12 @@ in `~/.darkbloom/recovery/predecessor/` (`provider-swift/Sources/ProviderCore/Up
 `snapshotLiveAsPredecessor`). A release that runs but regresses can be rolled
 back to it on one Mac, with automatic updates left on:
 
-1. On a Mac that serves in a `darkbloom cluster` pair, first stop the pair:
-   `darkbloom cluster stop` (or `darkbloom stop` for a cluster-member provider
-   service). Roll back both Macs, then start the pair again with
-   `darkbloom cluster`. The command refuses while the pair serves.
+1. On a Mac that serves in a `darkbloom cluster` pair, first stop its cluster
+   service with `darkbloom cluster stop`, roll it back, then start it again
+   with `darkbloom cluster`. The other Mac follows the rollback to the same
+   release by itself ([the pair's coordinated update](./cluster-always-on.md#a-rollback-on-one-mac)).
+   For a cluster-member provider service, stop it with `darkbloom stop` and
+   roll back both Macs. The command refuses while the pair serves.
 2. Run the rollback and answer `y`:
 
    ```bash

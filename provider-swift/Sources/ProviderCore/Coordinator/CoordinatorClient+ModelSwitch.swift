@@ -121,6 +121,8 @@ extension CoordinatorClient {
             }
             if !validateOnly {
                 if acknowledgedSwitchDrain == drainID { acknowledgedSwitchDrain = nil }
+                // The coordinator committed the complete inventory.
+                state.registeredModelIDs = Set(models.map(\.id))
             }
         case .failure(let error):
             switch error {

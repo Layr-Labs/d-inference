@@ -10,7 +10,7 @@ extension DaemonState {
     enum CodingKeys: String, CodingKey {
         case schema, pid, processIdentity, version, writtenAt
         case startedAt, attestationPublicKey, trust, coordinatorUrl, currentModel
-        case warmModels, advertisedModels, servingSelection, evictionExclusions
+        case warmModels, advertisedModels, servingSelection, registeredModels, evictionExclusions
         case startupPreloadPendingModels, lifecycle, modelSwitch
         case configPath, runtimeCapabilities, inferenceActive, requestWorkPending, loadTransitionActive
         case stats, system, capacity, lastModelLoadError, slots
@@ -33,6 +33,7 @@ extension DaemonState {
         warmModels = try c.decode([String].self, forKey: .warmModels)
         advertisedModels = try c.decodeIfPresent([String].self, forKey: .advertisedModels)
         servingSelection = try c.decodeIfPresent([String].self, forKey: .servingSelection)
+        registeredModels = try c.decodeIfPresent(RegisteredModels.self, forKey: .registeredModels)
         evictionExclusions = try c.decodeIfPresent([EvictionExclusion].self, forKey: .evictionExclusions)
         startupPreloadPendingModels = try c.decodeIfPresent([String].self, forKey: .startupPreloadPendingModels)
         lifecycle = try c.decodeIfPresent(ProviderDrainStatus.self, forKey: .lifecycle)
@@ -72,6 +73,7 @@ extension DaemonState {
         try c.encode(warmModels, forKey: .warmModels)
         try c.encodeIfPresent(advertisedModels, forKey: .advertisedModels)
         try c.encodeIfPresent(servingSelection, forKey: .servingSelection)
+        try c.encodeIfPresent(registeredModels, forKey: .registeredModels)
         try c.encodeIfPresent(evictionExclusions, forKey: .evictionExclusions)
         try c.encodeIfPresent(startupPreloadPendingModels, forKey: .startupPreloadPendingModels)
         try c.encodeIfPresent(lifecycle, forKey: .lifecycle)

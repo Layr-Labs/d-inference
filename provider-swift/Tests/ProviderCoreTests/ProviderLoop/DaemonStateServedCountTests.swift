@@ -46,4 +46,32 @@ struct DaemonStateServedCountTests {
         #expect(written["cancellations_partial_complete"] as? Int == 1)
         #expect(DaemonStateFile.read(from: file)?.stats.cancellationsPartialComplete == 1)
     }
+
+    /// The Models page reads what the live registration carries from here.
+    @Test func theStateFileCarriesTheLiveRegistration() async throws {
+        let loop = try makeLoop()
+        #expect(await loop.currentDaemonState().registeredModels == nil)
+        let state = await loop.state
+        state.registeredModelIDs = ["b", "a"]
+        state.registeredAutopilotInventoryIDs = ["c"]
+        state.noteModelsUpdateWritten(["d"])
+
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("daemon-state-registered-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let file = directory.appendingPathComponent("daemon-state.json")
+        DaemonStateFile.write(await loop.currentDaemonState(), to: file)
+
+        let written = try #require(try JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any])
+        let registered = try #require(written["registered_models"] as? [String: Any])
+        #expect(registered["models"] as? [String] == ["a", "b", "d"])
+        #expect(registered["autopilot_inventory"] as? [String] == ["c"])
+        #expect(DaemonStateFile.read(from: file)?.registeredModels
+            == DaemonState.RegisteredModels(models: ["a", "b", "d"], autopilotInventory: ["c"]))
+
+        // A models_update without a live registration starts nothing.
+        state.registeredModelIDs = nil
+        state.noteModelsUpdateWritten(["d"])
+        #expect(await loop.currentDaemonState().registeredModels == nil)
+    }
 }

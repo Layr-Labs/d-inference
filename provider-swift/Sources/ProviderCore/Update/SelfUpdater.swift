@@ -62,7 +62,7 @@ public struct SelfUpdater: Sendable {
     /// `checkForUpdate` uses, from the same injected seam.
     internal let currentVersion: String
     private let urlSession: URLSession
-    private let now: @Sendable () -> Double
+    let now: @Sendable () -> Double
     /// Test seam threaded into every `UpdateRecoveryStore` this updater
     /// constructs; production always uses the no-op default.
     private let recoveryFaultInjector:

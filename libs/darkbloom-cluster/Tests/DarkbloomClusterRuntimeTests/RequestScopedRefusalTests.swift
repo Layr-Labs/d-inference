@@ -99,7 +99,8 @@ struct RequestScopedRefusalTests {
             fileBackedPages: fileBacked)
         let reserved = 7 * Self.gib + 921 * Self.mib
         let admission = try QwenDenseStageLoadPolicy.decide(observation,
-            requiredBytes: reserved + QwenDenseStageLoadPolicy.loadingHeadroomBytes, purpose: "Resident request", now: Mac.now)
+            requiredBytes: reserved + QwenDenseStageLoadPolicy.loadingHeadroomBytes(physicalMemoryBytes: observation.physicalMemoryBytes),
+            purpose: "Resident request", now: Mac.now)
         let running = try QwenDenseStageLoadPolicy.decide(observation, requiredBytes: reserved, purpose: "Resident request",
             now: Mac.now, floor: QwenDenseStageLoadPolicy.minimumTrulyFreeBytes)
         #expect(!admission.admitted && running.admitted)
@@ -109,8 +110,8 @@ struct RequestScopedRefusalTests {
         let roundTwo = Mac.observation(freeBytes: 6 * Self.gib + 300 * Self.mib, anonymousGiB: 55,
             fileBackedPages: (46 * Self.gib + 819 * Self.mib) / ConstructedMac.page)
         #expect(try QwenDenseStageLoadPolicy.decide(roundTwo,
-            requiredBytes: reserved + QwenDenseStageLoadPolicy.loadingHeadroomBytes, purpose: "Resident request",
-            now: Mac.now).admitted)
+            requiredBytes: reserved + QwenDenseStageLoadPolicy.loadingHeadroomBytes(physicalMemoryBytes: roundTwo.physicalMemoryBytes),
+            purpose: "Resident request", now: Mac.now).admitted)
         // Almost all allocated: a load or reservation floor (6 GiB) would refuse; continuing does not.
         let full = Mac.observation(freeBytes: 512 * Self.mib, fileBackedGiB: 5, anonymousGiB: 85, inactiveFileBackedBytes: 0)
         #expect(!(try QwenDenseStageLoadPolicy.decide(full, requiredBytes: 100 * Self.mib, purpose: "Resident request",

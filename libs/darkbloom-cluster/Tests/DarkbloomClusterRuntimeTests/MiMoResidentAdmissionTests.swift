@@ -236,6 +236,27 @@ struct MiMoResidentAdmissionTests {
         #expect(throws: (any Error).self) { _ = try budget(0..<32, rank: 2) }
     }
 
+    /// A decode step's command buffers keep the whole step in flight
+    /// (`MiMoLayerStageSession.decodeCommandBuffers`), so the workspace holds
+    /// every full-attention layer's scores for the decode rows at once.
+    @Test func workspaceHoldsEveryFullAttentionLayersDecodeScores() throws {
+        let spec = try Self.specification()
+        func workspace(_ layers: Range<Int>, chunk: Int, rows: Int = 1) throws -> Int {
+            try MiMoRequestStateBudget.estimate(specification: spec, layers: layers, rank: 0, maximumTokens: 8320,
+                chunkSize: chunk, decodeRows: rows, bound: { $0 }).workspaceBytes
+        }
+        // Layers 0..<32 hold six full-attention layers: a one-token prompt still decodes over all six.
+        #expect(try workspace(0..<32, chunk: 1) == 64 * 6 * 8448 * 4)
+        #expect(try workspace(0..<32, chunk: 2, rows: 4) == 64 * 24 * 8448 * 4)
+        // A 512-token prompt frame already covers a four-row window on each of them.
+        #expect(try workspace(0..<32, chunk: 512, rows: 4) == 64 * 512 * 8448 * 4)
+        // Layers without full attention score only their window.
+        #expect(try workspace(1..<5, chunk: 1, rows: 4) == 0)
+        for rows in [0, 513] {
+            #expect(throws: (any Error).self) { _ = try workspace(0..<32, chunk: 1, rows: rows) }
+        }
+    }
+
     @Test func admissionTakesTheClosedIdentityOnBothRanksAtEveryCut() throws {
         let spec = try Self.specification()
         for cut in spec.supportedCuts {

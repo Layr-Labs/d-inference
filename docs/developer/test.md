@@ -1,6 +1,6 @@
 # Test Provider And Native Contracts
 
-> Last updated: 2026-11-01
+> Last updated: 2026-11-03
 
 Run isolated Swift, native-resource, public-fixture and landing tests here.
 Backend integration and cross-implementation qualification are platform-owned.
@@ -25,7 +25,12 @@ not native model capabilities, numerical parity or hardware qualification.
 
 The placement checks also cover exact family request scopes, completion-heavy
 and long-prompt helper plans, overflow refusal, conservative memory refusal and
-unchanged GLM adapter bounds. Run `libs/darkbloom-cluster/Tests/PlacementChecks/run.sh`
+unchanged GLM adapter bounds. `GemmaRoutedExpertChecks.swift` builds the Gemma
+QAT 4-bit layout from the retained real headers in
+`libs/darkbloom-cluster/Tests/StageMetadataChecks/Inputs`, requires it to equal
+its golden layout with `routedExperts` included, and requires the per-token
+read of the [routed-expert prior](../architecture/inference.md#gemma-routed-expert-prior).
+Run `libs/darkbloom-cluster/Tests/PlacementChecks/run.sh`
 and `provider-swift/Tests/ClusterPlacementChecks/run.sh`; then run
 `provider-swift/Tests/ClusterPlacementChecks/run-flow.sh` for the real child-process
 provider path with a fake installed helper. These checks use recorded metadata
@@ -566,6 +571,17 @@ first, and a request for the loading model when a second copy would not fit.
 `darkbloom benchmark --prompt-prep --model <id>` times prompt preparation
 and the body decode on the CPU with only the tokenizer loaded and the background
 comparisons off; it exits 2 if any token ID or decoded field differs.
+
+```bash
+swift test --skip-build --filter 'LocalTokenizerByteFallbackTests'
+```
+
+`LocalTokenizerByteFallbackTests` loads a synthetic tokenizer with Gemma 4's decoder
+sequence through the production `LocalTokenizerLoader` and requires characters
+written as `<0xHH>` tokens to survive a whole decode, a stream, a segment restart
+inside the run and a trailing special token, a run cut inside a character to end in
+one U+FFFD, and the unknown token not to read as a byte. A literal `<0x41>` token on
+another decoder keeps its spelling.
 
 ## Desktop Control And Frontend
 
@@ -1158,13 +1174,16 @@ with isolated fixture runners: each `provider-swift/Tests/Cluster*Checks/run.sh`
 `libs/darkbloom-cluster/Tests/*Checks/run.sh` and
 `libs/darkbloom-cluster-worker/Tests/*Checks/run.sh` prints its pass count and
 exits non-zero on a failure. The CI job `test-cluster-checks` (Cluster Metadata
-Checks, `.github/workflows/ci.yml`) runs five of them on every pull request that
+Checks, `.github/workflows/ci.yml`) runs these runners on every pull request that
 changes provider code: `libs/darkbloom-cluster-worker/Tests/CapabilityChecks/run.sh`,
+`libs/darkbloom-cluster/Tests/PrefillScheduleChecks/run.sh`,
 `libs/darkbloom-cluster/Tests/StageMetadataChecks/run.py`,
 `libs/darkbloom-cluster/Tests/GPTOSSStageChecks/run.sh`,
 `libs/darkbloom-cluster/Tests/NemotronStageChecks/run.sh` and
 `provider-swift/Tests/ClusterModelProvisioningChecks/run.sh provisioning`. The
-last one runs the provisioning checks only. Its download cache-policy check
+job `test-cluster-focused` (Cluster Focused Checks) runs every other runner
+under `libs/darkbloom-cluster/Tests`. The provisioning runner runs the
+provisioning checks only. Its download cache-policy check
 reads how many written pages stay in the file cache, which the host's kernel
 and disk decide: on the hosted CI VM 0.75 of the pages written with
 `F_NOCACHE` stayed resident. Run `run.sh` with no argument on a Mac for that
@@ -1172,10 +1191,28 @@ check. The capability runner compiles with
 `DARKBLOOM_CLUSTER_METADATA_BUILD_JOBS` jobs (4 by default; CI uses 12). CI
 keeps its build in `DARKBLOOM_CLUSTER_METADATA_BUILD_ROOT` between runs and
 restores source timestamps only for unchanged files, so SwiftPM rebuilds only
-what changed. The library's XCTest targets
-(`swift test --package-path libs/darkbloom-cluster`) and the worker package's
-tests (built for macOS 26.2) need the GPU and exclusive device access. A
-loopback or fixture pass never counts as a two-Mac hardware pass.
+what changed. The worker package's tests (built for macOS 26.2) need the GPU
+and exclusive device access. A loopback or fixture pass never counts as a
+two-Mac hardware pass.
+
+CI runs the runtime test target (`DarkbloomClusterRuntimeTests`) on the
+provider's Blacksmith macOS runners, in selections that
+`scripts/cluster-test-plan.py` defines. Each selection runs in a process of its
+own through `scripts/run-nested-suite.sh`, which fails when the selection runs
+no test or skips a test. Every process starts with `MLX_QMV_BATCH_INVARIANT=1`,
+as every cluster process does.
+
+| Selection | Job | Tests |
+|---|---|---|
+| Base | Cluster Runtime Tests (blocking) | Every test that needs no environment switch. The base selections pass `--skip` for the switched tests and the tests that need a model, so a test that skips there has a gate that the plan does not name |
+| Opt-in | Cluster Runtime Tests (blocking) | The tests that one switch (for example `QWEN_TP_MTP_GPU=1`) enables and that pass on the CI runners |
+| Opt-in | Cluster GPU Tests (non-blocking) | The switched tests that fail on the CI runners' GPU, the long-running tests and the benchmarks. The job reports their results and does not fail the workflow |
+| Needs a model | None | The tests that need a model directory, an artifact or its metadata (`REQUIRES_MODEL`). CI has no model |
+
+`python3 scripts/test-cluster-test-plan.py` (Release Integrity) checks that the
+plan names each gated test in the sources once, and each runner under
+`libs/darkbloom-cluster/Tests` once. When you add an environment gate to a
+runtime test, add the test to a selection or to `REQUIRES_MODEL`.
 
 Build the runtime tests once (`swift build --package-path libs/darkbloom-cluster
 -c release --build-tests --triple arm64-apple-macosx26.2 -Xcc -target -Xcc
@@ -1908,6 +1945,36 @@ preserving conservative memory charges. These tests do not load the registered
 weight payload or establish hardware numerical qualification. See the
 [native dtype contract](../architecture/inference.md#gpt-oss-native-residual-dtype).
 
+## Pipeline decode command buffer checks
+
+`PipelineDecodeCommandBufferTests` drives random synthetic stages of each
+layer-stage family as its stage session does: the prompt under the rank's
+16-operation guard, then decode once under a guard and once under
+`QwenLayerStageSession.decodeCommandBuffers`. Every output row, verify window
+and cache or state array must be byte-equal. The cases are a dense and a
+routed-expert Qwen 3.5 on a paged stage KV host (decode steps, a captured verify
+window kept to two rows, and two lanes), two Nemotron stages, a Gemma 4 decoder
+(one request and two lanes), two GPT-OSS stages (decode and lanes) and the
+verified GLM fixture's two stages. The reference run keeps the rank's guard,
+except routed Qwen and Gemma, which use `bankGuard`: their expert banks of 2 Mi
+elements each commit a buffer, as registered banks do. The Nemotron and GLM
+fixtures are too small for any size bound, so every family also runs with a
+buffer every second dispatch (`everyOperation`), a finer partition than one
+buffer per bank. Build and stage the runtime tests as described for the cluster
+runtime tests above, then, with the same build flags:
+
+```bash
+swift test --package-path libs/darkbloom-cluster -c release --skip-build --no-parallel \
+  --filter 'PipelineDecodeCommandBufferTests|ContextAdmissionTests|ResidentAdmissionNemotronTests|GPTOSSResidentAdmissionTests|ResidentAdmissionGemma4Tests'
+```
+
+The admission suites check each family's decode-row charge. These are synthetic
+GPU checks: not registered weights, pair runs, speed or peak memory. Served
+Qwen, Nemotron and Gemma 4 stages all attend through the paged stage KV, but
+only the Qwen cases use it here; the Nemotron and Gemma 4 cases keep
+request-owned KV. See
+[pipeline decode command buffers](../architecture/inference.md#pipeline-decode-command-buffers).
+
 ## Qwen batch projection arithmetic
 
 `libs/mlx-swift-lm/Tests/MLXLMTests/Integration/Qwen/Qwen35BatchDecodeProjectionTests.swift`
@@ -1934,8 +2001,12 @@ with the fixed owner arguments and checks its exact environment, supported
 lane widths, out-of-range rejection, malformed-override parity even with an
 eight-lane family default, admission/owner/native parity, unsupported
 mode and image gates, and both member ranks. No model, GPU or real service is
-started. The checks preserve the singleton and GLM tensor-parallel defaults;
-actual multi-lane output, encrypted transport and retirement still require
+started. The checks preserve the singleton and GLM tensor-parallel defaults
+and the serial-prefill Gemma 4 pipeline's default lanes
+(`DistributedInstalledPlan.gemma4PipelineBatchLanes`), which reach the rank,
+while a Gemma setup saved with the one-chunk lookahead keeps one lane;
+`DistributedInstalledLanesTests` covers the same rules for every adapter and
+schedule. Actual multi-lane output, encrypted transport and retirement still require
 qualification on both Macs. The same real-child checks pass canonical local
 `MLX_METAL_FAST_SYNCH=0|1` choices through the owner and final native launch,
 reject free-text spellings from forwarding, preserve unrelated native guards,
@@ -2250,6 +2321,36 @@ salt's digest); a repeat under another tenant must report no reused tokens.
 These are synthetic checks: tenant isolation on a real model and pair, and GLM
 bit-identity with no partition, are hardware gates.
 
+## MiMo pipeline decode command buffers
+
+`MiMoDecodeCommandBufferTests` (cluster runtime, GPU) drives two random MiMo
+stages as `MiMoLayerStageSession` drives them. The prompt runs under the rank's
+16-operation guard. Decode steps, a verify window rolled back to two rows and
+lane steps then run twice: once under the guard and once under
+`MiMoLayerStageSession.decodeCommandBuffers`. Every residual crossing the cut,
+every logits row and every cache or page array must be byte-equal. The tests
+cover a tiny BF16 model and one quantized like the registered row (MXFP4
+experts, affine 8-bit projections, key width 192, value width 128), each on
+ordinary caches and on request-owned pages. The quantized model's guard scales
+MLX's size bound to its small expert banks (`bankGuard`), so each expert launch
+commits a buffer, as each registered bank does. Build and stage the runtime
+tests as described for the cluster runtime tests above, then, with the same
+build flags:
+
+```bash
+swift test --package-path libs/darkbloom-cluster -c release --skip-build --no-parallel \
+  --filter 'MiMoDecodeCommandBufferTests|MiMoResidentAdmissionTests|MiMoPagedAdmissionTests'
+bash libs/darkbloom-cluster/Tests/PlacementChecks/run.sh
+```
+
+The admission tests check that every full-attention layer's decode-row scores
+are charged at once (`MiMoRequestStateBudget`). The placement run includes
+`MiMoRoutedExpertChecks`: the MiMo layout built from the registered headers
+names 282 routed-expert tensors (160,859,947,008 bytes). The hardware prior
+reads 10,767,036,288 bytes for one decode step, and the golden plans change only
+by the layout they echo. These are synthetic and metadata checks. They run no
+registered weights and measure no speed.
+
 ## MiMo paged speculative and phase checks
 
 Run `MiMoV26MTPPagedHistoryTests` and `MiMoV26IndependentHistoryTests` in the
@@ -2281,13 +2382,24 @@ prompt projections with actual singleton calls at chunk boundaries, checks
 explicit scope restoration and unsupported/custom fallbacks, and verifies the
 unchanged tied head. `Gemma4PrefillExpertTests` executes the actual Gemma decoder, router,
 shared MLP and sparse expert block with the attention output isolated to zero;
-it assembles an independent projection/expert oracle while preserving the
-original rectangular normalization and elementwise operations, and compares
-selected routes across prompt boundaries. A separate expert-only composition
+it assembles an independent projection/expert oracle from one-token expert
+calls while preserving the original rectangular normalization and elementwise
+operations. It requires one expert call, never hinted as sorted, carrying every
+token's routes (grouped by expert from 64 assignments), with the oracle's
+bytes, at 7 to 512 tokens. A separate expert-only composition
 check compares complete singleton calls with the shared branch isolated to
-zero. Ordinary and verification paths remain covered. These checks do not
+zero, and a decode check requires 2, 3 and 8 independent rows to share one
+call with each row's one-row bytes. A direct check compares the shared call
+with one-row calls for a single row and for rows that all route to the same
+experts. Ordinary and verification paths
+remain covered, and the original rectangular call still sorts. These checks do not
 claim whole-layer singleton equivalence: existing normalization can depend on
-rectangle shape on CPU.
+rectangle shape on CPU. With `GEMMA4_EXPERT_ROWS_GPU=1` the suite also
+compares the shared call with one-row calls on the GPU for 1 to 2,048 rows,
+tied routes included, at
+a geometry with the production kernel classes; `=production` adds hidden 2,816,
+expert width 704 and 128 experts. Run the GPU case alone, in an exclusive
+hardware window.
 `GemmaPrefillArithmeticTests` in the runtime target verifies that both exact
 policies change the receipt while the family environment and chunk policy
 remain bound. These CPU checks do not establish full-model cross-chip qualification

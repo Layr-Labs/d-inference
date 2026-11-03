@@ -752,13 +752,12 @@ public actor ProviderLoop {
     /// When the pair slot's engine was first seen wedged ("crashed"), for the
     /// supervisor's liveness guard (S18).
     internal var clusterPairWedgedSince: ContinuousClock.Instant?
-    /// The leader's serving context for committed starts (S10), and the one
-    /// start it serves: its epoch, whether the session asked it to stop, and
-    /// whether the pair is still forming.
+    /// The leader's serving context for committed starts (S10), the one
+    /// start it serves (held from its serve until its session's stop), and
+    /// the last start whose session stopped, which is never served after.
     internal var clusterPairServing: ClusterPairServingContext?
     internal var clusterPairServingEpoch: UUID?
-    internal var clusterPairServingStopped = false
-    internal var clusterPairServingForming = false
+    internal var clusterPairServingEndedEpoch: UUID?
     /// The follower member's link serving of its committed starts; retained
     /// here because the session control holds its serving host weakly.
     internal var clusterPairFollower: DistributedMemberLinkFollower?

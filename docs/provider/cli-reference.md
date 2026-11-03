@@ -741,12 +741,47 @@ and mixed prompt arrivals, see [the profiling workflow](https://github.com/Layr-
 |---|---|---|---|
 | `--coordinator <url>` | `String?` | config URL | Release source |
 | `--check-only` | flag | `false` | Report; do not install |
-| `--override-quarantine` | flag | `false` | Reinstall a version quarantined after 3 failed starts |
-| `--timeout <seconds>` | integer, 0–3600 | `600` | Drain the running service before activating the installed update |
-| `--force` | flag | `false` | Explicitly permit interruption during update activation |
+| `--override-quarantine` | flag | `false` | Reinstall a quarantined version: one that failed 3 starts, or one rolled back with `--rollback` |
+| `--rollback` | flag | `false` | Restore the release kept for rollback (the retained predecessor) and quarantine the installed release. Contacts no coordinator |
+| `--yes`, `-y` | flag | `false` | With `--rollback`: do not ask for confirmation. Required when standard input is not a terminal |
+| `--timeout <seconds>` | integer, 0–3600 | `600` | Drain the running service before activating the installed update or the rollback |
+| `--force` | flag | `false` | Explicitly permit interruption during update or rollback activation |
 
 Exit 1 on `quarantined`, `busy`, `cancelled`, `downloadFailed`, `hashMismatch`,
 `replaceFailed`, or a failed check (`UpdateResult`, `provider-swift/Sources/ProviderCore/Update/SelfUpdater.swift`).
+
+`--rollback` cannot be combined with `--check-only`, `--override-quarantine` or
+`--coordinator`, and `--yes` applies only to it. It prints the plan (installed
+version, restored version, the install generation it records) and asks
+`Roll back to vX? [y/N]`. A loaded provider is drained, the layout is swapped
+through the watchdog's journaled rollback under the update lease, and the
+provider is restarted and the watchdog rearmed, as for an installed update; a
+stopped provider, or one stopped while the prompt was open, is only swapped
+(`provider-swift/Sources/darkbloom/UpdateRollback.swift`, `UpdateRollback`;
+`provider-swift/Sources/ProviderCore/Update/SelfUpdater+Rollback.swift`,
+`rollbackPlan`, `rollBackToPredecessor`). The prompt runs without a lock, so
+the command decides every check again once it holds the update lease, before
+the drain, and again at the swap for what the drain could let change. Over the
+swap it holds the cluster service lock, so no cluster service starts, and the
+provider instance lock (or leaves it with the drained service process), so no
+other provider starts. A pair's coordinated update holds the same lease from
+its check through its install, and its cluster service login agent stays
+loaded through its restart, so a rollback and a pair update never interleave.
+It runs only as the user the provider runs as, not as root. It exits 1 and
+changes nothing when
+this Mac serves in a `darkbloom cluster` pair (a running cluster service, a
+loaded cluster service login agent, or a loaded cluster-member provider job), a
+provider runs outside launchd (`darkbloom start --foreground`, also when it
+replaced the service while the prompt was open) or started after the plan was
+shown, the installed release changed after the plan was shown, another update
+or recovery holds the lease,
+no release is kept for rollback, the installed release is already that
+release, the installed `Darkbloom.app` is not the recorded release, or the kept
+release fails its hash or signature check (`RollbackRefusal`). A refusal at
+the swap, after the drain, restarts the drained provider on the installed
+release; when another provider took the instance lock during the drain, it is
+not signalled and the service stays drained. Steps are in
+[installation → Roll back to the previous release](./installation.md#roll-back-to-the-previous-release).
 See [installation → Update](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/provider/installation.md).
 
 ### `darkbloom enroll` / `darkbloom unenroll`
@@ -1832,12 +1867,15 @@ Check for and apply provider updates.
 
 ```bash
 darkbloom update [--check-only] [--coordinator <url>] [--timeout <seconds>] [--force]
+darkbloom update --rollback [--yes] [--timeout <seconds>] [--force]
 ```
 
 | Flag | Description |
 |------|-------------|
 | `--check-only` | Report whether an update is available without installing |
 | `--coordinator <url>` | Override coordinator URL |
+| `--rollback` | Restore the release kept for rollback and quarantine the installed one ([details](#darkbloom-update)) |
+| `--yes`, `-y` | With `--rollback`: do not ask for confirmation |
 | `--timeout <seconds>` | Drain deadline: default `600`, valid 0–3600 seconds |
 | `--force` | Explicitly permit interruption during activation; default `false` |
 

@@ -65,6 +65,14 @@ public enum ProcessLifecycle {
         }
     }
 
+    /// Holds the provider instance lock without becoming the provider, so no provider (launchd or foreground) starts
+    /// until the hold is released: its `acquireSingleInstanceLock` fails as busy. Busy, with the provider that holds
+    /// it, while one runs; throws when the lock cannot be opened.
+    public static func holdStartsOut(operation: String,
+                                     at pidFile: URL = ProcessLifecycle.defaultPIDFile()) throws -> UpdateProcessLock.Attempt {
+        try UpdateProcessLock.attempt(at: pidFile.appendingPathExtension("lock"), operation: operation)
+    }
+
     public static func existingPID(at pidFile: URL = ProcessLifecycle.defaultPIDFile()) -> Int32? {
         readPID(at: pidFile)
     }
@@ -145,8 +153,7 @@ public enum ProcessLifecycle {
     }
 
     /// Replace this process image with the current executable and argv.
-    /// Used after startup auto-update so launchd keeps the same service
-    /// lifecycle while the provider begins serving with the new binary.
+    /// Only for a provider that launchd does not run (`RelaunchRoute.exec`).
     public static func execCurrentProcess() throws -> Never {
         #if canImport(Darwin)
         guard let executablePath = Bundle.main.executablePath else {
@@ -188,31 +195,48 @@ public enum ProcessLifecycle {
 
     // MARK: - Launchd-Aware Restart
 
-    /// Restart the provider process after a background auto-update.
+    /// How a provider relaunch reaches its new process.
+    public enum RelaunchRoute: Sendable, Equatable {
+        /// `launchctl kickstart -k`: launchd stops this process and starts a
+        /// new one from the plist.
+        case launchd
+        /// `execv` in place: the same kernel process runs the new image.
+        case exec
+
+        /// launchd only when this process is the provider agent's job. A
+        /// foreground `start` beside a loaded agent, or a cluster member, keeps
+        /// exec, so it never hands its work to a different process.
+        public static func current() -> RelaunchRoute {
+            LaunchAgent.isCurrentProcessJob() ? .launchd : .exec
+        }
+    }
+
+    /// Restart the provider process after a self-update (startup or
+    /// background) or for App Attest recovery.
     ///
-    /// If the process is managed by launchd, delegates to
-    /// `LaunchAgent.restart()` (`launchctl kickstart -k`), which is a single
-    /// atomic launchd operation: it kills this instance and relaunches the
-    /// service from the same plist (picking up the freshly-installed binary).
-    /// launchd — not this process — performs the kill+relaunch, so it
-    /// completes even after we exit. Otherwise, falls back to
-    /// `execCurrentProcess()` (execv) which replaces the process image
-    /// in-place.
+    /// On `RelaunchRoute.launchd`, delegates to `LaunchAgent.restart()`
+    /// (`launchctl kickstart -k`), which is a single atomic launchd operation:
+    /// it kills this instance and relaunches the service from the same plist
+    /// (picking up the freshly-installed binary). launchd — not this process —
+    /// performs the kill+relaunch, so it completes even after we exit. On
+    /// `RelaunchRoute.exec`, `execCurrentProcess()` (execv) replaces the
+    /// process image in place.
     /// `cause` is recorded in the run marker so the next process reports
     /// `start_reason` (update vs App Attest stall restart).
-    public static func restartAfterUpdate(cause: ProviderRunMarker.ExitCause = .update) throws -> Never {
+    public static func restartAfterUpdate(cause: ProviderRunMarker.ExitCause = .update,
+                                          route: RelaunchRoute = .current()) throws -> Never {
         ProviderProcessRun.finish(cause: cause)
         do {
-            if LaunchAgent.isLoaded() {
-                // Launchd-managed: kickstart -k kills us and relaunches the
-                // service in place. Issue it, then exit so launchd is free to
-                // bring the new binary up cleanly (it may already have signalled
-                // us; the exit is the belt-and-suspenders path).
+            switch route {
+            case .launchd:
+                // kickstart -k kills us and relaunches the service in place.
+                // Issue it, then exit so launchd is free to bring the new
+                // binary up cleanly (it may already have signalled us; the
+                // exit is the belt-and-suspenders path).
                 try LaunchAgent.restart()
                 Thread.sleep(forTimeInterval: 2.0)
                 exit(0)
-            } else {
-                // Not under launchd: replace process image with execv.
+            case .exec:
                 try execCurrentProcess()
             }
         } catch {

@@ -9,7 +9,8 @@ extension Cluster {
     /// part while the leader has the cluster serving. Runs until SIGTERM or SIGINT.
     ///
     /// launchd runs it as `--supervise`: the S18 supervisor, which runs the
-    /// service as its child and restarts it with the restart budget and backoff.
+    /// service as its child and restarts it with the restart budget and backoff,
+    /// and updates the pair together with the other Mac's supervisor.
     struct Service: AsyncParsableCommand {
         static let configuration = CommandConfiguration(commandName: "service",
             abstract: "Run this Mac's cluster service (started by `darkbloom cluster`).", shouldDisplay: false)
@@ -64,28 +65,64 @@ extension Cluster {
 
         /// `cluster service --supervise`: the S18 supervisor around `cluster service`.
         private func runSupervisor() async throws {
-            let environment = ProcessInfo.processInfo.environment
-            let directory = try ClusterService.paths().lock.deletingLastPathComponent()
             let executable = Start.currentExecutablePath()
-            let supervisor = ClusterMemberSupervisor(configuration: .init(
-                executable: executable,
-                childArguments: ClusterServiceAgentPlan.childArguments(serviceOptions: serviceOptions),
-                environment: environment,
-                statePath: ClusterServiceAgent.supervisorStatePath(serviceDirectory: directory),
-                healthPath: ClusterServiceAgent.healthPath(serviceDirectory: directory),
-                // The service waits for the cable itself (it answers once the link is up) and is
-                // updated with the app, not at the member's update slot.
-                setup: nil, coordinatorURL: "", autoUpdate: false,
-                budgetLimits: .resolve(environment), guardLimits: .resolve(environment),
-                recycleGraceSeconds: Double(ClusterServiceAgentPlan.partStopGraceSeconds),
-                reexecArguments: [executable] + Array(CommandLine.arguments.dropFirst()),
-                logName: "cluster service supervisor",
-                restartHint: "`darkbloom cluster` is run again (or `darkbloom cluster stop`)"))
+            let supervisor = ClusterMemberSupervisor(configuration: Self.supervisorConfiguration(
+                executable: executable, serviceOptions: serviceOptions, configPath: configOptions.config,
+                environment: ProcessInfo.processInfo.environment,
+                serviceDirectory: try ClusterService.paths().lock.deletingLastPathComponent(),
+                reexecArguments: [executable] + Array(CommandLine.arguments.dropFirst())))
             let signals = try DistributedStartSignals()
             defer { signals.close() }
             signals.attach { supervisor.requestStop() }
             // Exit 0 also when another supervisor already keeps the service, so launchd does not relaunch this one.
             _ = await supervisor.run()
+        }
+
+        /// The supervisor updates the pair as the single-Mac updater updates one Mac: the same `auto_update` and
+        /// `DARKBLOOM_NO_UPDATE_CHECK` gate and the same coordinator (`Watchdog.settings`), at the update slot of the
+        /// pairing's cluster ID, which both Macs share (`ClusterPairUpdateCycle`).
+        static func supervisorConfiguration(
+            executable: String, serviceOptions: [String], configPath: String?, environment: [String: String],
+            serviceDirectory: URL, reexecArguments: [String],
+            clusterID: @escaping @Sendable () -> String? = { try? ClusterSetupLinkExchange.pairing()?.clusterID }
+        ) -> ClusterMemberSupervisor.Configuration {
+            let settings = Watchdog.settings(configPath: configPath, environment: environment)
+            let coordinatorURL = settings.coordinatorURL
+            let followEnvironment = ClusterPairUpdateCycle.Environment.live(
+                serviceDirectory: serviceDirectory, coordinatorURL: coordinatorURL, log: { _ in })
+            return .init(
+                executable: executable,
+                childArguments: ClusterServiceAgentPlan.childArguments(serviceOptions: serviceOptions),
+                environment: environment,
+                statePath: ClusterServiceAgent.supervisorStatePath(serviceDirectory: serviceDirectory),
+                healthPath: ClusterServiceAgent.healthPath(serviceDirectory: serviceDirectory),
+                // The service waits for the cable itself (it answers once the link is up).
+                setup: nil, coordinatorURL: coordinatorURL, autoUpdate: settings.autoUpdate,
+                budgetLimits: .resolve(environment), guardLimits: .resolve(environment),
+                recycleGraceSeconds: Double(ClusterServiceAgentPlan.partStopGraceSeconds),
+                reexecArguments: reexecArguments,
+                logName: "cluster service supervisor",
+                restartHint: "`darkbloom cluster` is run again (or `darkbloom cluster stop`)",
+                pairUpdate: .init(
+                    clusterID: clusterID,
+                    run: { request, log, restart in
+                        let environment = ClusterPairUpdateCycle.Environment.live(
+                            serviceDirectory: serviceDirectory, coordinatorURL: coordinatorURL, log: log)
+                        return await ClusterPairUpdateCycle(environment: environment).run(request: request, restart: restart)
+                    },
+                    requestPath: ClusterServiceAgent.updateRequestPath(serviceDirectory: serviceDirectory),
+                    progressPath: ClusterServiceAgent.updateProgressPath(serviceDirectory: serviceDirectory),
+                    recovery: ClusterCandidateRecovery(updater: SelfUpdater(coordinatorBaseURL: coordinatorURL)),
+                    partServes: {
+                        ClusterService.publishedLive().map { $0.serving && $0.child.running && $0.session?.ready != false } ?? false
+                    },
+                    // Built once: its peer address and network session are kept between the minute's checks.
+                    follow: { [followEnvironment] log, restart in
+                        var environment = followEnvironment
+                        environment.log = log
+                        return await ClusterPairUpdateCycle(environment: environment).followRollback(restart: restart)
+                    },
+                    quarantined: { SelfUpdater(coordinatorBaseURL: coordinatorURL).quarantinedVersion() }))
         }
     }
 

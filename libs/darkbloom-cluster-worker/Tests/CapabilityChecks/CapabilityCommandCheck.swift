@@ -140,16 +140,17 @@ import Foundation
                     "The Nemotron capability does not round-trip within the byte bound")
             }
             // A second adapter, through the one catalog the worker's command asks: MiMo's own
-            // row, its own session bound, the pipeline modes, the speculative rounds and the phase split
-            // (a hand-off mode the planner considers only behind the explicit opt-in), serial and
-            // lookahead prefill. Only metadata executes, even though MLX is linked.
+            // row, its own session bound, the pipeline modes, the speculative rounds, the phase split
+            // (a hand-off mode the planner considers only behind the explicit opt-in) and tensor parallel
+            // (text only), serial and lookahead prefill. Only metadata executes, even though MLX is linked.
             try checks.yes("registered-mimo-is-described-from-its-own-row") {
                 let mimoConfiguration = try Data(contentsOf: fixtures.appendingPathComponent("registered-mimo-v26-flash-mopd.configuration.json"))
                 let mimoManifest = try Data(contentsOf: fixtures.appendingPathComponent("registered-mimo-v26-flash-mopd.manifest.json"))
                 let mimo = try ClusterResidentModelCatalog.describe(configuration: mimoConfiguration, manifest: mimoManifest,
                                                                     runtimeBinarySHA256: binary)
                 try capabilityCheck(mimo.adapterID == "mimo-v26-layer-stage" && mimo.runtimeModelID == "registered_mimo_v26_flash_mopd"
-                    && mimo.supportedGenerationModes == [.pipeline, .pipelineCompactDecode, .phaseSplit, .pipelineMTP]
+                    && mimo.supportedGenerationModes == [.pipeline, .pipelineCompactDecode, .phaseSplit, .tensorParallel,
+                        .pipelineMTP]
                     && mimo.supportedPrefillSchedules == [.serial, .oneChunkLookahead]
                     && mimo.partitions.map { $0.stages[0].sourceLayerEnd } == Array(1...47)
                     && mimo.partitions.allSatisfy { $0.stages.count == 2 && $0.stages[1].sourceLayerEnd == 48 },
@@ -182,7 +183,7 @@ import Foundation
                         && value.runtimeModelID == model && value.profile.id == model + "_greedy_generation_v1"
                         && value.profile.vocabularySize == 262_144 && value.profile.maximumPromptTokens == 32_768
                         && value.arithmeticPolicyID == "gemma4_cbv2_query128_bf16_tf32_weighted_r1_v1"
-                        && value.supportedGenerationModes == [.pipeline]
+                        && value.supportedGenerationModes == [.pipeline, .tensorParallel]
                         && value.supportedPrefillSchedules == [.serial, .oneChunkLookahead]
                         && value.partitions.map { $0.stages[0].sourceLayerEnd } == Array(1...29)
                         && value.partitions.allSatisfy { $0.stages[1].sourceLayerEnd == 30 },

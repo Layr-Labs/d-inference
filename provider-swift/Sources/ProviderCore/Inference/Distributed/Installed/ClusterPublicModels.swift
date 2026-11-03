@@ -66,7 +66,9 @@ public struct ClusterPublicTensorAssistant: Sendable, Equatable {
 /// The models whose clusters serve public traffic: the owner's declaration
 /// (jonathan308, 2026-10-31: "public traffic should not be manual"; "only glm
 /// 5.3 flash should be serving public & qwen 3.8 27b they are both good to go
-/// they should be approved for serving"), reviewed in PRs like any code. A
+/// they should be approved for serving"; 2026-11-03: "Mark them all approved
+/// for public traffic", then "just add Mimo and Gemma to start": MiMo-V2.6-Flash
+/// and Gemma 4 26B QAT), reviewed in PRs like any code. A
 /// release's cluster runtime facts carry, for each of these models, a
 /// pair-serving grant of the declared families and a parity qualification for
 /// each declared family and schedule (`ClusterRuntimeApprovalFacts`), from
@@ -77,16 +79,22 @@ public struct ClusterPublicTensorAssistant: Sendable, Equatable {
 /// equal), so a released CLI names it without carrying the file.
 public enum ClusterPublicModels {
     public static let evidenceDocument = "docs/reports/2026-10-31-public-cluster-models.md"
-    public static let evidenceSHA256 = "dccbc68bd337f634be9295eed8f909702252eab707a4ac3fdb5290ce8b98a86d"
-    public static let qualifiedAt = "2026-10-31T00:00:00Z"
+    public static let evidenceSHA256 = "cb16451549b2ba1f3a1908e280c17f572260c227aa27e86b73d39b8c3e6530a9"
+    public static let qualifiedAt = "2026-11-03T00:00:00Z"
     /// A public request's prompt and output allowance: the coordinator's
     /// maximum, so only the model's own limits apply.
     public static let maximumTokens = 1_048_576
 
-    /// Two Apple M5 Ultras (Metal `applegpu_g17d`, NAX on) on macOS 27.0.
+    /// Two Apple M5 Ultras (Metal `applegpu_g17d`, NAX on) on macOS 27.0: where the declared evidence ran. It names the
+    /// evidence, not a limit: a coordinator applies each declared family's qualification on any Apple silicon pair and
+    /// cut (owner, 2026-11-03: "universal for hardware not hardwired to 2x m5 ultras").
     static let twoM5Ultras = ClusterPublicModel.Ranks(count: 2, gpuArchitecture: "applegpu_g17d", macOSMajor: 27, macOSMinor: 0)
 
     /// Owner ruling, 2026-10-31: "It should be tensor or pipeline obviously but that shouldn't matter for the coordinator".
+    /// MiMo-V2.6-Flash and Gemma 4 26B QAT (2026-11-03) take the same two families: their pipeline rests on the bundled
+    /// records, their tensor parallel on the owner's decision (its code lands with #1706 and #1707). MiMo also keeps
+    /// the speculative pipeline its records grant, its default split: a declared grant replaces the records' families,
+    /// and a coordinator never forms a pair planned in a family its grant omits.
     public static let declared: [ClusterPublicModel] = [
         .init(runtimeModelID: "registered_glm53_flash", catalogModelID: "glm-5.3-flash",
               artifactSHA256: "3aae613ff188bb0f72e880774a84e4d8e9943ab20c929d8a302af9c57b97d5ac",
@@ -94,22 +102,29 @@ public enum ClusterPublicModels {
         .init(runtimeModelID: "registered_qwen38_27b", catalogModelID: "EigenLabs/Qwen3.8-27B-4bit-mtp",
               artifactSHA256: "bbd0e0adcfe74e095073fefd0b9e116e4311d606ad9989cf81f8175e8ac18463",
               families: [.pipeline, .tensorParallel], schedules: [1, 2], ranks: twoM5Ultras),
+        .init(runtimeModelID: "registered_mimo_v26_flash_mopd", catalogModelID: "mimo-v2.6-flash-mopd",
+              artifactSHA256: "2334547d8acc9898ad4a74570ce44d2b12390bbac8d4bc52c092eb5ad5cfe034",
+              families: [.pipeline, .pipelineSpeculative, .tensorParallel], schedules: [1, 2], ranks: twoM5Ultras),
+        .init(runtimeModelID: "registered_gemma4_26b_qat_4bit", catalogModelID: "gemma-4-26b-qat-4bit",
+              artifactSHA256: "2468a0cb3049a871f42052f4d9f9380bf12a0792f64c7a29f768559fc7d28785",
+              families: [.pipeline, .tensorParallel], schedules: [1, 2], ranks: twoM5Ultras),
     ]
 
     /// The placement a declared family is qualified at, for a model of
     /// `layers` layers on `ranks` ranks: tensor parallel splits every layer
     /// (`tensor_parallel_v1`, no cut); a pipeline (`pipeline_v1`) cuts the
-    /// layers evenly (two ranks: `[layers / 2]`), so it needs the layer count.
-    /// Nil for a family without such a placement here, or a pipeline without
-    /// enough layers.
+    /// layers evenly (two ranks: `[layers / 2]`), so it needs the layer count,
+    /// and a speculative pipeline (`pipeline_mtp_v1`, its last rank drafting)
+    /// is cut the same way. Nil for a hand-off (an opt-in, never declared), or
+    /// a pipeline without enough layers.
     static func placement(of family: ClusterPairServingModeFamily, layers: Int?, ranks: Int)
         -> (mode: ClusterGenerationMode, cuts: [Int])? {
         switch family {
         case .tensorParallel: return (.tensorParallel, [])
-        case .pipeline:
+        case .pipeline, .pipelineSpeculative:
             guard let layers, ranks >= 2, layers >= ranks else { return nil }
-            return (.pipeline, (1..<ranks).map { $0 * layers / ranks })
-        case .pipelineSpeculative, .handOff: return nil
+            return (family == .pipeline ? .pipeline : .pipelineMTP, (1..<ranks).map { $0 * layers / ranks })
+        case .handOff: return nil
         }
     }
 

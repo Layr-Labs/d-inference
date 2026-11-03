@@ -22,6 +22,16 @@ import MLX
 //       tensor parallel against one rank without a registered model; never a model pass)
 //   darkbloom-cluster-tp-check record --rank0 FILE --rank1 FILE --reference FILE [--reference FILE] --model-dir DIR
 //       --output FILE [--partials float32|bfloat16] [--near-tie-ulps U]   (appends one qualification record line)
+//   darkbloom-cluster-tp-check glm ...       (GLM-5.3-Flash, GLMBench.swift)
+//   darkbloom-cluster-tp-check gemma ...     (Gemma 4 MoE oracles, GemmaCheck.swift)
+//   darkbloom-cluster-tp-check mimo ...      (MiMo V2.6 oracles, MiMoCheck.swift)
+//   darkbloom-cluster-tp-check qwen-rows synthesize|run|layers ...   (27B batch rows at the registered per-rank
+//       widths: each row against itself alone and in verify windows over the loopback ring, or the first layer
+//       that differs; `QwenRowsCheck`)
+//   darkbloom-cluster-tp-check qwen-wavefront --model-dir /DIR ...   (a prompt one frame a step and in merged
+//       wavefront steps over the loopback ring: step times and digests; `QwenWavefrontCheck`)
+//   darkbloom-cluster-tp-check qwen-decode --model-dir /DIR ...   (the batch driver's decode over the loopback
+//       ring, control exchanged a step or folded into the selection sum: step times and tokens; `QwenDecodeCheck`)
 //
 // `full` is the unsharded model on one Mac (this code path's single-Mac
 // reference); `simulated` is the single-process tensor-parallel oracle (the
@@ -519,6 +529,26 @@ enum CompareCommand {
             }
             if CommandLine.arguments.count > 1, CommandLine.arguments[1] == "qwen-prefill" {
                 try QwenPrefillBench.run(Array(CommandLine.arguments.dropFirst(2)))
+                return
+            }
+            if CommandLine.arguments.count > 1, CommandLine.arguments[1] == "gemma" {
+                try GemmaCheck.run(Array(CommandLine.arguments.dropFirst(2)))
+                return
+            }
+            if CommandLine.arguments.count > 1, CommandLine.arguments[1] == "mimo" {
+                try MiMoCheck.run(Array(CommandLine.arguments.dropFirst(2)))
+                return
+            }
+            if CommandLine.arguments.count > 1, CommandLine.arguments[1] == "qwen-rows" {
+                try QwenRowsCheck.run(Array(CommandLine.arguments.dropFirst(2)))
+                return
+            }
+            if CommandLine.arguments.count > 1, CommandLine.arguments[1] == "qwen-wavefront" {
+                try QwenWavefrontCheck.run(Array(CommandLine.arguments.dropFirst(2)))
+                return
+            }
+            if CommandLine.arguments.count > 1, CommandLine.arguments[1] == "qwen-decode" {
+                try QwenDecodeCheck.run(Array(CommandLine.arguments.dropFirst(2)))
                 return
             }
             let options = try Options(Array(CommandLine.arguments.dropFirst()))

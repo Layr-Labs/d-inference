@@ -83,6 +83,7 @@ class ComponentPathsTests(unittest.TestCase):
             "scripts/run-nested-suite.sh", "scripts/run-paged-kernel-tests.sh",
             "scripts/run-exclusive-native-gpu-test.sh", "scripts/provider-test-shards.py",
             "scripts/provider-test-shard-weights.json",
+            "scripts/cluster-test-plan.py",
             "scripts/run-provider-test-watchdog.py", "scripts/prepare-mimo-audio-fixtures.py",
             "scripts/prepare-mimo-provider-fixtures.py", "scripts/prepare-mimo-prompt-fixtures.py",
             "scripts/prepare-prompt-fixtures.py", "scripts/test-prepare-prompt-fixtures.py",
@@ -236,27 +237,27 @@ class WorkflowRoutingTests(unittest.TestCase):
             jobs = workflow.job_blocks((ROOT / ".github/workflows" / name).read_text())
             self.assertIn("uses: ./.github/workflows/component-changes.yml", jobs["changes"])
             self.assertIn("contents: read", jobs["changes"])
-            # Runner routing follows the classifier, so only selected lanes are requested.
+            # The route job waits for the classifier (ci.yml, route).
             self.assertIn("    needs: changes\n", jobs["route"])
             for lane, component in lanes.items():
-                self.assertIn("    needs: [changes, route]\n", jobs[lane])
+                self.assertIn("    needs: changes\n", jobs[lane])
                 self.assertIn("    if: ${{ needs.changes.outputs." + component + " == 'true' }}\n", jobs[lane])
                 self.assertNotIn("continue-on-error:", jobs[lane])
         ci = workflow.job_blocks((ROOT / ".github/workflows/ci.yml").read_text())
         # The SDK lane runs on every push and on pull requests that change its inputs.
-        self.assertIn("    needs: [changes, route]\n", ci["test-provider-sdk"])
+        self.assertIn("    needs: changes\n", ci["test-provider-sdk"])
         self.assertIn("    if: ${{ github.event_name == 'push' || needs.changes.outputs.sdk == 'true' }}\n",
                       ci["test-provider-sdk"])
         self.assertNotIn("continue-on-error:", ci["test-provider-sdk"])
         # The summary runs after failed shards too, but only when the shards were selected.
-        self.assertIn("    needs: [changes, route, test-provider]\n", ci["test-provider-summary"])
+        self.assertIn("    needs: [changes, test-provider]\n", ci["test-provider-summary"])
         self.assertIn("    if: ${{ !cancelled() && needs.changes.outputs.provider == 'true' }}\n",
                       ci["test-provider-summary"])
         self.assertNotIn("continue-on-error:", ci["test-provider-summary"])
         for policy in ("release-integrity", "docs"):
             self.assertNotIn("    if:", ci[policy])
         self.assertIn("python3 scripts/test-ci-component-paths.py", ci["release-integrity"])
-        self.assertIn("if: github.event_name == 'push'", ci["cache-swift"])
+        self.assertNotIn("cache-swift", ci)
 
     def test_detector_has_full_history_no_credentials_or_api_truncation(self):
         text = (ROOT / ".github/workflows/component-changes.yml").read_text()
@@ -275,7 +276,7 @@ class WorkflowRoutingTests(unittest.TestCase):
     def test_provider_aggregate_exhaustive_truth_table(self):
         jobs = workflow.job_blocks((ROOT / ".github/workflows/ci.yml").read_text())
         gate = jobs["provider-test-gate"]
-        self.assertIn("needs: [changes, test-provider, test-provider-summary]", gate)
+        self.assertIn("needs: [changes, test-provider, test-provider-summary, test-cluster, test-cluster-focused]", gate)
         self.assertNotIn("test-provider-sdk", gate)
         self.assertIn("if: ${{ always() }}", gate)
         self.assertNotIn("continue-on-error:", gate)
@@ -283,18 +284,20 @@ class WorkflowRoutingTests(unittest.TestCase):
         for name, expression in {
             "CHANGES_RESULT": "needs.changes.result", "PROVIDER_CHANGED": "needs.changes.outputs.provider",
             "UNIT_RESULT": "needs.test-provider.result", "SUMMARY_RESULT": "needs.test-provider-summary.result",
+            "CLUSTER_RESULT": "needs.test-cluster.result",
+            "CLUSTER_FOCUSED_RESULT": "needs.test-cluster-focused.result",
         }.items():
             self.assertIn(name + ": ${{ " + expression + " }}", step)
         command = workflow.run_command(step)
         results = ("success", "skipped", "failure", "cancelled")
         # Prompt Parity runs in a provider shard, so UNIT_RESULT carries it.
         self.assertNotIn("PARITY_RESULT", step)
-        for detector, changed, unit, summary in itertools.product(
-                results, ("true", "false", ""), results, results):
+        names = ("UNIT_RESULT", "SUMMARY_RESULT", "CLUSTER_RESULT", "CLUSTER_FOCUSED_RESULT")
+        for detector, changed, *lanes in itertools.product(
+                results, ("true", "false", ""), *[results] * len(names)):
             result = subprocess.run(["bash", "-e", "-c", command], capture_output=True, timeout=5,
                                     env={**os.environ, "CHANGES_RESULT": detector, "PROVIDER_CHANGED": changed,
-                                         "UNIT_RESULT": unit, "SUMMARY_RESULT": summary})
-            lanes = (unit, summary)
+                                         **dict(zip(names, lanes))})
             expected = detector == "success" and ((changed == "true" and set(lanes) == {"success"}) or
                                                   (changed == "false" and set(lanes) == {"skipped"}))
             self.assertEqual(result.returncode == 0, expected, (detector, changed, *lanes))

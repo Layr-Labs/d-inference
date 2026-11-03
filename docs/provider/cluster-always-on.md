@@ -27,18 +27,16 @@ the cluster comes back by itself, with no command run on either Mac (see
 [After a restart or a power cut](#after-a-restart-or-a-power-cut)).
 
 - launchd runs `darkbloom cluster service --supervise`: the same supervisor as
-  below, around `darkbloom cluster service`, without its update slot. A service
+  below, around `darkbloom cluster service`. A service
   that ends is restarted after 15 s, doubling to 300 s; three runs in a row each
   shorter than 120 s park it (nothing runs) until `darkbloom cluster` is run
   again, which restarts it and resets the budget.
-- Nothing updates Darkbloom on these Macs: the supervisor runs with automatic
-  updates off (`provider-swift/Sources/darkbloom/ClusterServiceCommand.swift`,
-  `runSupervisor`), this Mac's part runs no updater
-  (`provider-swift/Sources/ProviderCore/ProviderLoop+Serve.swift`, which starts
+- The supervisor updates Darkbloom on this Mac together with the other Mac
+  ([the pair's coordinated update](#the-pairs-coordinated-update)). This Mac's
+  part runs no updater of its own
+  (`provider-swift/Sources/ProviderCore/ProviderLoop+Serve.swift` starts
   `startAutoUpdateMonitor` only for a single-Mac provider), and the single-Mac
-  provider does not run beside the cluster. Run `darkbloom update` on both Macs
-  ([updating Darkbloom on the pair](two-mac-cluster.md#updating-darkbloom-on-the-pair));
-  automatic updates for a pair are a follow-up.
+  provider does not run beside the cluster.
 - `RunAtLoad`, and `KeepAlive` only after an unsuccessful exit (throttled to
   the budget's first backoff): launchd brings back a supervisor that crashed,
   never one that was stopped.
@@ -114,6 +112,167 @@ says which applies to each Mac, from its own settings:
 Darkbloom does not switch to a system daemon for this: with FileVault on, the
 disk stays locked until someone logs in, so a daemon would not help.
 
+### The pair's coordinated update
+
+Each Mac's cluster service supervisor runs the single-Mac updater's sequence
+(`AutoUpdateController`) for the pair, with the single-Mac gate: `auto_update`,
+`DARKBLOOM_NO_UPDATE_CHECK` and the configured coordinator, read when the
+supervisor starts (`Watchdog.settings`,
+`provider-swift/Sources/darkbloom/ClusterServiceCommand.swift`,
+`supervisorConfiguration`). One cycle
+(`provider-swift/Sources/ProviderCore/Update/ClusterPairUpdateCycle.swift`,
+`ClusterPairUpdateCycle`) runs beside the serving cluster service:
+
+| Step | Single Mac | Pair (both Macs) |
+|---|---|---|
+| When | 5 min after start, then every 30 min | Every 30 min at the update slot of the pairing's cluster ID (`ClusterMemberUpdateSlot`), the same moment on both Macs; or at once for `darkbloom update` |
+| Check, download, verify, stage | While serving (`SelfUpdater`) | The same, on each Mac, while the pair serves |
+| Stop taking requests | Once staged | Once staged on both Macs (each reads the other's progress, `ClusterPairUpdateProgress`, from the other cluster service's status over the link) |
+| Drain | Accepted requests finish, at most 120 s; never cancelled | The part that serves the pair (rank 0) finishes its accepted requests, at most 120 s (`ClusterUpdateDrainRequest`, through its lifecycle mailbox); the other part serves none. A request still running reopens the pair on both Macs and defers to the next slot |
+| Install | Commit the staged bundle | Each Mac commits once both drained |
+| Restart | launchd restarts the provider | The supervisor stops its cluster service (the drained part stops with it), checks that the installed binary starts, and starts again from it |
+| Recovery | The watchdog promotes the candidate after 600 s of fresh heartbeats, rolls back after 3 failed starts | A binary that fails the start check is never restarted into: the supervisor restores the previous release and quarantines the new one at once, and starts its cluster service again. Otherwise the restarted supervisor does what the watchdog does, with its cluster service's heartbeat (`ClusterCandidateRecovery`) |
+
+The rules each Mac applies to the other's progress are in
+`provider-swift/Sources/ProviderCore/Service/ClusterSupervision/ClusterPairUpdate.swift`
+(`ClusterPairUpdate.partnerState`), and those for its own part in
+`ClusterPairUpdateCycle`:
+
+1. Neither Mac stops taking requests before both have the release on disk, and
+   neither installs before both drained, so a release one Mac cannot download,
+   verify or stage is installed on neither; both retry at the next slot.
+2. The drain never cancels an accepted request and sends no drain barrier: a
+   drain the pair gives up reopens admission on the same coordinator connection.
+   The stop that follows a completed drain acknowledges it as every stop does.
+3. A Mac whose partner cannot be asked (no answer, a build without this
+   progress, or a progress not rewritten for
+   `ClusterPairUpdate.progressStaleSeconds`) goes on alone only when no cluster
+   worker runs on it, checked again before it installs, so it never breaks a
+   serving pair; with a pair loaded it waits, then defers.
+4. Only the coordinator-paired part answers the drain
+   (`ProviderLoopConfig.clusterMemberAnswersUpdateDrain`). A part that serves
+   otherwise (the leader's local API server, a Mac serving alone) does not, so
+   the update defers while it serves. A service whose status says so
+   (`localOnly`, a solo part) gives the release up before downloading it.
+5. A Mac whose partner has automatic updates off gives the slot's release up
+   before downloading it. A Mac with automatic updates off reports `disabled`
+   whenever no cycle runs on it, except for the minute after a cycle that
+   `darkbloom update` asked for ended. A cycle for `darkbloom update` instead
+   waits, while serving, for the other Mac's `darkbloom update`, at most
+   `ClusterPairUpdate.partnerStageWaitSeconds` (900 s) from its start.
+
+The supervisor restarts by replacing itself with the installed binary
+(`execv`). Unlike a single Mac's watchdog, no other process outlives that
+restart to roll a release back, so the supervisor first runs the binary once as
+its child (the start check, `ClusterCandidateRecovery.startCheckFailure`):
+`darkbloom --version` must exit 0 within
+`ClusterCandidateRecovery.startCheckTimeoutSeconds` (30 s) and print the
+release's version. This loads the binary as the restart would: the dynamic
+loader and the frameworks it links, its code signature and the argument parser.
+A binary that fails is not restarted into. The supervisor counts one failed
+start, restores the verified predecessor and quarantines the release at once
+(`ClusterCandidateRecovery.recordFailedStartCheck`), and starts the cluster
+service again from the restored binary. The other Mac follows that rollback
+([a rollback on one Mac](#a-rollback-on-one-mac)). A rollback after three
+failed starts checks the restored predecessor the same way; if that check fails
+too, the supervisor starts the cluster service itself instead of restarting
+into it. A binary that passes the check but whose supervisor fails before it
+starts the cluster service is still not rolled back.
+
+### A rollback on one Mac
+
+When one Mac of a pair rolls a release back, the other Mac rolls back to the
+same earlier release, and the pair serves that release together. This answers
+the question the coordinated update left open: before, the pair stayed split
+(each Mac on another release, so the leader never planned it again) until a
+newer release updated both Macs.
+
+A rollback is any of: three failed starts of the release's cluster service, a
+failed start check, or `darkbloom update --rollback` run while the Mac's
+cluster service was stopped. Each restores the verified predecessor and
+quarantines the release on that Mac. The Mac's progress then reports the
+quarantined release beside the version it runs
+(`ClusterPairUpdateProgress.quarantined`), and the other Mac reads it over the
+link with the rest of the progress.
+
+The other Mac's supervisor checks for a rollback to follow at its start and
+then every `ClusterPairUpdate.followCheckSeconds` (60 s) while no update cycle
+runs, also with automatic updates off: the release it restores is one the Mac
+ran before. It follows (`ClusterPairUpdateCycle.followRollback`) when the other
+Mac quarantined the release this Mac runs (installed or promoted) and runs the
+release this Mac keeps for rollback. The check reads both Macs' recovery state
+without the update lease; only a Mac that runs the quarantined release and keeps
+the other Mac's release for rollback takes the lease and verifies it. The follow is the update cycle's sequence
+with a rollback in place of the install:
+
+1. It takes the update lease, the one every update cycle, candidate recovery
+   and `darkbloom update --rollback` take, and decides again under it. Another
+   holder (this Mac's own cycle, still installing or restarting) makes it wait
+   for the next check, with nothing changed.
+2. It waits until the other Mac reports the earlier release (it does already,
+   so this is at once), then drains this Mac's part as for an update. An other
+   Mac that stops answering is waited for at most
+   `ClusterPairUpdate.progressStaleSeconds` (60 s) while a pair runs on this
+   Mac. The follow is then deferred with the reason `the other Mac did not
+   confirm it runs v<version> within 60 s`, nothing is changed, and it is tried
+   again at the pair's next update slot, as a deferred update is. With no pair
+   running on this Mac, it follows alone, as an update goes on alone.
+3. It restores the verified predecessor and quarantines the release
+   (`SelfUpdater.rollBackToPredecessor`), with the reason `the other Mac of the
+   pair rolled v<release> back to v<previous>; this Mac followed`. Both Macs
+   now keep the release quarantined: neither's update slot installs it again,
+   and a Mac whose partner reports the release quarantined gives it up too
+   (`ClusterPairUpdate.partnerState`). The next newer release updates both.
+4. The supervisor restarts the cluster service from the restored binary, after
+   the same start check as for an update. Once both Macs answer with the same
+   build, the leader plans the model again.
+
+It does not follow, changes nothing, and says why once in its log
+(`cluster update: not following the other Mac's rollback: <reason>`) when:
+
+- it keeps another release for rollback, or none: the pair serves again once a
+  newer release updates both Macs;
+- its part does not drain for an update (it serves on the leader's local API,
+  or alone): it follows once its part can drain.
+
+The Mac that rolled back says once `cluster update: the other Mac still runs
+v<release>, which is quarantined on this Mac` while the other Mac has not
+followed, or has installed the release again on purpose. Other lines:
+`cluster update: the other Mac rolled v<release> back to v<previous> and
+quarantined it; this Mac follows to v<previous>` and `cluster update: restored
+v<previous> and quarantined v<release>, as on the other Mac`.
+
+To install a release both Macs quarantined anyway, run `darkbloom update
+--override-quarantine` on both Macs: the cycle the first command starts waits,
+while serving, for the other Mac's, as for `darkbloom update` with automatic
+updates off. An update slot, by contrast, gives up a release the other Mac
+reports quarantined. Right after an override, the other Mac may still read the
+old quarantine for up to a minute and follow it.
+
+Both Macs need a build that follows rollbacks. The quarantine is reported by
+the Mac that rolled back after the rollback, so by the restored release's
+binary: a rollback *to* a release without this behaviour is not reported, and
+the other Mac does not follow it. The first release with this behaviour is
+therefore not followed when it is itself rolled back; rollbacks from the
+release after it on are. The other Mac must run a build with the follow too.
+
+A cluster-member provider service (`darkbloom start --cluster-member
+--always-on`) does not run this coordinated update and does not follow a
+rollback: roll back both Macs.
+
+After both Macs restarted, the leader's cluster service plans the same model
+again once both answer with the same worker build
+(`ClusterOnboardingUpdate.oneBuild`), and the pair registers again under the
+new release's cluster approval. Each step is one `cluster update:` line in
+`~/.darkbloom/cluster-setup/service.log`, for example `cluster update: waiting
+for the other Mac to have v<version>`, `cluster update: this Mac's part finished
+its accepted requests`, `cluster update: installed v<version>`, `cluster update
+deferred: <reason>; no request was cancelled; the next update slot tries again`,
+`cluster update: v<version> failed its start check (<reason>), so the supervisor
+does not restart into it; restored v<previous> and quarantined v<version>`,
+`cluster update: starting the cluster service on candidate v<version>` and
+`cluster update: this Mac's part serves again on v<version>`.
+
 ## Permissions asked once
 
 One administrator approval sets up the cluster link per Mac; macOS then decides
@@ -184,6 +343,7 @@ system setting:
 | Follower never connects; log shows `Local network prohibited` | **Privacy & Security → Local Network** | Turn on Darkbloom; an ad-hoc build needs this per build |
 | A firewall alert after an update | `codesign -dv` on the listening binary | The binary is not Developer-ID signed; install the release build |
 | Install or provider log says `permissions: not asked once` | The listed reasons | Install the signed release (a locally built binary is ad-hoc signed and outside `Darkbloom.app`) |
+| The pair does not update | `cluster update:` lines in `~/.darkbloom/cluster-setup/service.log` on both Macs | `automatic updates are off`: run `darkbloom update` on both Macs, or set `auto_update` on both (`darkbloom autoupdate enable`), which takes effect when the cluster service next starts (at login, or after its next update). `deferred`: a request ran past 120 s, or one Mac could not take the release; the next slot tries again. `does not drain for an update`: the pair serves on the local API or a Mac serves alone. `failed its start check`: the release did not start on this Mac, which keeps its previous release and does not install that release again; the other Mac follows it back ([a rollback on one Mac](#a-rollback-on-one-mac)), and a newer release updates both. `not following the other Mac's rollback` or `the other Mac still runs`: see [a rollback on one Mac](#a-rollback-on-one-mac) |
 
 ## Developer: a coordinator-paired member as a service
 
@@ -254,7 +414,7 @@ it. It documents the developer route that runs `darkbloom start
 | The leader's pair engine stays wedged (its own watchdog's verdict) for 180 s | Same recycle |
 | An active request made no progress at all for `clamp(120, 120 + prompt tokens / 1000, 900)` s (when the member reports one) | Same recycle |
 | A pair forms | The leader runs one greedy 8-token warmup request before the pair accepts work; if it fails or takes over 300 s the pair is retired and formed again (`DARKBLOOM_CLUSTER_WARMUP=0` turns this off) |
-| Cluster update slot (every 30 min, at an offset fixed by the cluster ID, the same on both Macs), on this route only, with `auto_update` on (the default) | If a release is available: drains the member, installs, restarts from the new binary; both Macs do this together. The cluster service of `darkbloom cluster` has no update slot ([updating Darkbloom on the pair](two-mac-cluster.md#updating-darkbloom-on-the-pair)) |
+| Cluster update slot (every 30 min, at an offset fixed by the cluster ID, the same on both Macs), with `auto_update` on (the default) | On this route, if a release is available and the pair is idle: drains the member, installs, restarts from the new binary. The cluster service of `darkbloom cluster` runs [the pair's coordinated update](#the-pairs-coordinated-update) instead |
 | `darkbloom stop` | Drains, stops the member and keeps it stopped across reboots |
 | Before every run, and at the member's own start and end | Orphan sweep: a worker or owner whose parent is gone is given its own contract to end, then SIGTERM, SIGKILL only after the kill margin; a stranded device journal is cleared once nothing it names runs; bootstrap directories whose socket no process holds any more are removed (read from the descriptor tables; nothing connects). One log line when it found something (`darkbloom cluster reap --json` runs the same sweep by hand) |
 

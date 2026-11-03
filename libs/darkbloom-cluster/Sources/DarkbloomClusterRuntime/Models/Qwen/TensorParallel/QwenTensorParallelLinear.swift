@@ -132,8 +132,15 @@ final class QwenTensorParallelRowLinear: QuantizedLinear, Qwen35BatchDecodeProje
             eval(partial)
             Stream.gpu.synchronize()
         }
-        return Self.finish(reduction.value.allSum(partial), dtype: x.dtype)
+        let summed = reduction.value.allSum(partial)
+        Self.issuedSums?.sums.append(summed)
+        return Self.finish(summed, dtype: x.dtype)
     }
+
+    /// A prompt wavefront's phase (`QwenTensorParallelPromptWavefront`): the
+    /// raw all-sums its projections issue, before rounding, so the phase can
+    /// submit them before the next chunk is built. nil changes nothing.
+    @TaskLocal static var issuedSums: QwenTensorParallelIssuedSums?
 }
 
 /// Diagnostic only: a rank's shard with no peer. `allSum` returns this rank's

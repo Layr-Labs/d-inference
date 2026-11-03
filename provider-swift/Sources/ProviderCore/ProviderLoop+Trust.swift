@@ -47,6 +47,7 @@ extension ProviderLoop {
             warmModels: state.warmModels,
             advertisedModels: advertisedModels.keys.sorted(),
             servingSelection: ordinaryServingModelIDs.sorted(),
+            registeredModels: state.registeredModels,
             evictionExclusions: evictionExclusionRecords(),
             startupPreloadPendingModels: startupPreloadPendingModels,
             inferenceActive: state.inferenceActive,
@@ -167,6 +168,7 @@ extension ProviderLoop {
             trustLevel: trustLevel, status: status, reason: reason,
             receivedAt: receivedAt, authorization: authorization)
         writeDaemonState()
+        recordAppAttestVerifiedIfGranted(authorization, at: receivedAt)
     }
 
 }

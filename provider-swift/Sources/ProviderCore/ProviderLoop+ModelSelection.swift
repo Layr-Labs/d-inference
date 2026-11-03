@@ -15,6 +15,7 @@ extension ProviderLoop {
             }.sorted { $0.id < $1.id },
             fingerprints: modelHashFingerprints)
         let previouslyPersistedSwitch = hasPersistedModelSwitch
+        let previousFilter = operatorModelFilter
         var persistedReplacement: ProviderModelSelection.Replacement?
         var mutationStarted = false
         do {
@@ -45,7 +46,10 @@ extension ProviderLoop {
             }
             guard servingDrain.owner == .modelSwitch, !isShuttingDown, !Task.isCancelled else { throw error }
             do {
-                if mutationStarted { try await applyModelSelection(previous) }
+                if mutationStarted {
+                    try await applyModelSelection(previous)
+                    operatorModelFilter = previousFilter
+                }
                 await client.stageModelSelection(previous.models)
                 if let persistedReplacement {
                     try ProviderModelSelection.restore(persistedReplacement)
@@ -101,6 +105,8 @@ extension ProviderLoop {
         try checkModelSwitchOwnership()
         advertisedModels = next
         ordinaryServingModelIDs = Set(next.keys)
+        // The switch persists this selection as `enabled_models`.
+        operatorModelFilter = Set(next.keys)
         modelHashes = Dictionary(uniqueKeysWithValues: models.compactMap { model in
             model.weightHash.map { (model.id, $0) }
         })
@@ -112,6 +118,14 @@ extension ProviderLoop {
         await resliceGrowSurvivorsLocked()
         await updateAggregateCapacity()
         persistLoadedModelSet()
+    }
+
+    /// Coordinator commands (`load_model`, `prefetch_model`, a desired build
+    /// and an alias successor) never reach a model outside the operator's
+    /// filter, so a nudge cannot re-select or re-download what the operator
+    /// deselected or removed. Autopilot's consented paths keep their own gates.
+    func operatorFilterAllows(_ id: String) -> Bool {
+        operatorModelFilter?.contains(id) ?? true
     }
 
     internal func validateModelSwitchSelfTests(_ models: [ModelInfo]) throws {

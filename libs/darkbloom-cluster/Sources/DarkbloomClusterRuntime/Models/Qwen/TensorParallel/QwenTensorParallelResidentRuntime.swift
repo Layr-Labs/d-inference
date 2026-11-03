@@ -38,9 +38,12 @@ import MLXVLM
 /// and the output count are known to both ranks and end both at once.
 ///
 /// Prompt prefixes: each rank keeps its own heads' state at chunk boundaries,
-/// resident and on its SSD tier (`QwenTensorParallelBatchPrefixCache`); a
-/// request restores the longest boundary BOTH ranks hold (one sealed vote), or
-/// neither restores.
+/// to the request's context, resident and on its SSD tier
+/// (`QwenTensorParallelBatchPrefixCache`, `QwenTensorParallelBatchPrefixBudget`);
+/// a request restores the longest boundary BOTH ranks hold (one sealed vote),
+/// or neither restores. Each request is charged its own capture; the
+/// resident tier's budget is half the room measured at LOAD, and its entries
+/// give way before a reservation or the running batch is refused for memory.
 ///
 /// Limits: the profile is the row's (`QwenResidentAdmission.profile`, the
 /// native context for Qwen3.8 27B); LOAD quotes every lane at the memory
@@ -154,6 +157,7 @@ public final class QwenTensorParallelResidentRuntime {
         var batchMTPBudget: QwenTensorParallelBatchMTPBudget?
         var requestCharge: QwenTensorParallelRequestCharge?
         var loadedMTPHead: QwenTensorParallelMTPHead?
+        var prefixRoom = 0
         do {
             try control.check(); try QwenResidentResourceEnvironment.require()
             try admission.jaccl.requireUnchanged(environment: environment, read: { try BoundedProbeInput.data($0, maximumBytes: $1) })
@@ -193,6 +197,7 @@ public final class QwenTensorParallelResidentRuntime {
                 + QwenTensorParallelTargetWindow.agreementFields
                 + QwenTensorParallelPlan.arithmeticAgreementFields(routedExperts: admission.specification.routedExperts != nil)
                 + QwenTensorParallelBatchSession.decodeAgreementFields
+                + QwenTensorParallelPromptWavefront.agreementFields
                 + ["qwen-tensor-parallel-prefix-v2", prefixEnabled ? "on" : "off"]
                 + (prefixEnabled ? prefixRecords.loadAgreementFields : [])
                 + (mediaEnabled ? [ClusterQwenMedia.contract, Qwen3VLMediaProcessor.policyID] : [])
@@ -245,6 +250,7 @@ public final class QwenTensorParallelResidentRuntime {
                                 tensors: profile.canonicalTensors, maximumTokens: memory.maximumContextTokens,
                                 chunkSize: memory.maximumChunkTokens, lanes: batch.lanes,
                                 paged: batch.backend == .paged, rank: collective.rank,
+                                promptTokens: memory.maximumPromptTokens,
                                 allocationBound: QwenResidentResourceEnvironment.allocationBound)
                             batchBudget = quote
                             return quote.allowance.reservedBytes
@@ -309,6 +315,11 @@ public final class QwenTensorParallelResidentRuntime {
                     contextTokens: memory.maximumContextTokens)
                 try allowance.requireLive()
                 try checked()
+                // The prefix memory tier, charged nowhere: the pipeline's budget,
+                // half the admissible room measured beside the whole LOAD quote.
+                if prefixEnabled {
+                    prefixRoom = try ClusterStagePrefixBudget.roomBytes(chargeBytes: complete.reservedBytes)
+                }
                 let charge = QwenTensorParallelRequestCharge(geometry: value.profile.geometry, plan: value.model.plan,
                     tensors: value.profile.canonicalTensors, lanes: batch.lanes, paged: batch.backend == .paged,
                     assistant: speculativeTerms.map { ($0.depth, maximumSpeculativeWidth) }, rank: collective.rank,
@@ -371,6 +382,10 @@ public final class QwenTensorParallelResidentRuntime {
                 log("darkbloom-serving-context-v1 rank=\(collective.rank) tokens=\(serving) previous=0 grown=\(grown)"
                     + " profile=\(admission.profile.maximumContextTokens) memory_plan=\(admission.memoryProfile.maximumContextTokens)")
             }
+            let prefixBudget = prefixEnabled ? QwenStagePrefixCache.budget(roomBytes: prefixRoom) : 0
+            log("darkbloom-prefix-v1 rank=\(collective.rank) family=qwen mode=tensor_parallel enabled=\(prefixEnabled)"
+                + " policy=\(QwenTensorParallelBatchPrefixBudget.policy) budget_bytes=\(prefixBudget)"
+                + " capture_charge=\(batchBudget?.prefix.captureBytes ?? 0) room_bytes=\(prefixRoom) ssd=\(prefixDisk != nil)")
             return QwenTensorParallelResidentRuntime(admission: admission, control: control, collective: collective,
                 group: group, codec: codec, model: loaded, vision: loadedVision, visionInventory: loadedVisionInventory,
                 profile: profile, shares: shares,
@@ -378,7 +393,7 @@ public final class QwenTensorParallelResidentRuntime {
                 loadAgreement: loadAgreement, capacity: capacity, receipt: receipt, linkProbe: probe,
                 batchLanes: batch.lanes, batchHost: batchHost, batchBudget: batchBudget, batchMTPBudget: batchMTPBudget,
                 requestCharge: requestCharge, servingContextTokens: serving, batchPrefixEnabled: prefixEnabled,
-                prefixDisk: prefixDisk,
+                batchPrefixBudgetBytes: prefixBudget, prefixDisk: prefixDisk,
                 mtpTerms: speculativeTerms, mtpHead: loadedMTPHead, assistantReady: assistantReady)
         } catch {
             let primary = error
@@ -415,7 +430,8 @@ public final class QwenTensorParallelResidentRuntime {
                  batchLanes: Int, batchHost: CBv2StageKVHost?,
                  batchBudget: QwenTensorParallelBatchBudget?, batchMTPBudget: QwenTensorParallelBatchMTPBudget?,
                  requestCharge: QwenTensorParallelRequestCharge, servingContextTokens: Int?,
-                 batchPrefixEnabled: Bool, prefixDisk: QwenTensorParallelPrefixDisk?, mtpTerms: QwenMTPTerms?,
+                 batchPrefixEnabled: Bool, batchPrefixBudgetBytes: Int, prefixDisk: QwenTensorParallelPrefixDisk?,
+                 mtpTerms: QwenMTPTerms?,
                  mtpHead: QwenTensorParallelMTPHead?, assistantReady: ClusterQwenTensorAssistantReady?) {
         self.admission = admission; self.control = control; self.collective = collective; self.group = group
         self.codec = codec; self.model = model; self.profile = profile; self.shares = shares
@@ -429,8 +445,8 @@ public final class QwenTensorParallelResidentRuntime {
         self.mtpPrefix = batchMTPBudget.map {
             .init(enabled: batchPrefixEnabled, budgetBytes: $0.prefix.residentBytes)
         }
-        self.batchPrefix = batchBudget.map {
-            .init(enabled: batchPrefixEnabled, budgetBytes: $0.prefix.residentBytes)
+        self.batchPrefix = batchBudget.map { _ in
+            .init(enabled: batchPrefixEnabled, budgetBytes: batchPrefixBudgetBytes)
         }
         self.prefixDisk = prefixDisk
         self.receipt = receipt.storageCommitmentSHA256
@@ -457,9 +473,10 @@ public final class QwenTensorParallelResidentRuntime {
 
     /// The serving context re-derived while idle, on each keep-warm answer
     /// (`ClusterWorkerEvent.keptWarm`), with the reservation gate's own
-    /// arithmetic: kept prefix entries are part of the charge they were
-    /// allocated under. Nil (and nothing changes) while a lane is held, or for
-    /// a row whose profile is its memory plan. Allocates nothing.
+    /// arithmetic: kept prefix entries count as room, since they give way to
+    /// a reservation (`yieldingPrefixMemory`). Nil (and nothing changes)
+    /// while a lane is held, or for a row whose profile is its memory plan.
+    /// Allocates nothing.
     public func refreshServingContext() -> Int? {
         guard servingContextTokens != nil, operation.try() else { return nil }
         defer { operation.unlock() }

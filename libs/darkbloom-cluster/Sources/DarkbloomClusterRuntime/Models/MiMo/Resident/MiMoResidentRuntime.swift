@@ -188,9 +188,9 @@ public final class MiMoResidentRuntime {
             configBytes: read(directory.appendingPathComponent("config.json"), 1_048_576),
             manifestBytes: read(directory.appendingPathComponent("manifest.json"), 4_194_304),
             environment: environment, now: DispatchTime.now().uptimeNanoseconds, read: read)
-        guard admission.specification.supportedGenerationModes.contains(mode) else {
+        guard admission.specification.supportedGenerationModes.contains(mode), mode != .tensorParallel else {
             throw ProbeError("Generation mode \(mode.rawValue) is not in the resident row of "
-                + admission.specification.model.rawValue)
+                + admission.specification.model.rawValue + " (tensor parallel has its own owner)")
         }
         let speculativeTerms: MiMoMTPTerms?
         if mode.usesSpeculativeHead {

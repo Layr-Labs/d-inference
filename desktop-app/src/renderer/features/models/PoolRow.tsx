@@ -3,6 +3,7 @@ import type { NativeModel, Operation } from '../../../shared/contracts';
 import { Button } from '../../components/UI';
 import { modelFacts } from '../../models/facts';
 import { ModelGlyph } from './ModelGlyph';
+import { ModelRegistration } from './ModelRegistration';
 import { ModelEarningsAmount } from './ModelEarnings';
 import type { ModelEarnings } from './earnings';
 import { poolLabels, type PoolState } from './pool';
@@ -78,6 +79,10 @@ export function PoolRow({
         <small className={state === 'ineligible' ? 'warning-text' : 'muted'}>
           {modelFacts(model, true)}
         </small>
+        <ModelRegistration
+          model={model}
+          expected={state === 'pool' || state === 'loaded' || state === 'pinned'}
+        />
         {model.description && (
           <details className={styles.description}>
             <summary>Model details</summary>

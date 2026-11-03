@@ -34,7 +34,8 @@ enum DoctorRunner {
         // "Fresh" = the daemon is running AND its state snapshot isn't stale, so
         // its live fields (trust level, current model, capacity) are trustworthy.
         let stateFresh = daemonUp && !(state?.isStale(now: now) ?? true)
-        let authorization = state?.currentProviderAuthorization(coordinatorURL: coordinatorURL, now: now)
+        let authorization = state?.displayedProviderAuthorization(coordinatorURL: coordinatorURL, now: now)
+        let removalAuthorization = state?.currentProviderAuthorization(coordinatorURL: coordinatorURL, now: now)
         let appAttestAuthorized = authorization?.hasCurrentAppAttestAuthorization(now: now) == true
 
         // ---- Attestation key (read-only daemon state) ----
@@ -74,7 +75,8 @@ enum DoctorRunner {
         if let authorization {
             out.append(Diagnostic(section: .trust, name: "serving authorization",
                                   level: appAttestAuthorized || authorization.path == "legacy" ? .pass : .warn,
-                                  message: ProviderAuthorizationReadiness.summary(authorization, now: now),
+                                  message: ProviderAuthorizationReadiness.summary(
+                                      authorization, removalAuthorization: removalAuthorization, now: now),
                                   fix: nil))
         } else if let state, let trust = state.trust, daemonUp, !state.isStale(now: now) {
             let advice = TrustReasonCatalog.advice(level: trust.trustLevel, status: trust.status, reason: trust.reason)
@@ -207,7 +209,12 @@ enum DoctorRunner {
                     ? daemonBasis.map(\.id)
                     : daemonBasis.map(\.id).filter(enabled.contains)
             }
-            for target in targets {
+            // A Mac set up for a two-Mac cluster holds its share of the pair's
+            // model: one row says so instead of a single-Mac verdict
+            // (`ModelFitDiagnostic.clusterMember`).
+            let clusterMember = servesCluster(snapshot.config)
+            if clusterMember { out.append(ModelFitDiagnostic.clusterMember()) }
+            for target in targets where !clusterMember {
                 let targetID = target.id
                 out.append(ModelFitDiagnostic.diagnose(
                     modelID: targetID, weightGb: target.weightGb,
@@ -297,6 +304,16 @@ enum DoctorRunner {
         }
 
         return out
+    }
+
+    /// Whether this Mac is set up for a two-Mac cluster: its provider config
+    /// names a saved cluster setup and it holds a pairing. The pairing store is
+    /// read only when the config names a setup, so a Mac without one is
+    /// diagnosed exactly as before.
+    static func servesCluster(
+        _ config: ProviderConfig, paired: @autoclosure () -> Bool = !ClusterService.holdsNoPairing()
+    ) -> Bool {
+        config.cluster != nil && paired()
     }
 
     private static func formatDuration(_ seconds: Double) -> String {

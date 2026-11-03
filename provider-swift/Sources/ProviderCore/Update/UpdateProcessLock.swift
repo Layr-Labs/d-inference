@@ -136,6 +136,15 @@ public final class UpdateProcessLock: @unchecked Sendable {
         return UpdateProcessLock(descriptor: descriptor, path: path, owner: owner)
     }
 
+    /// One try: nil when another process holds the lock, thrown otherwise.
+    public static func acquireUnlessBusy(at path: URL, operation: String) throws -> UpdateProcessLock? {
+        do {
+            return try acquire(at: path, operation: operation)
+        } catch LockError.busy {
+            return nil
+        }
+    }
+
     /// Owner-local check that this object's retained kernel lock still names
     /// the canonical file. A path snapshot alone cannot prove descriptor custody.
     func requireHeld() throws {

@@ -6,8 +6,28 @@ import ProviderCore
 /// one Mac. It restores the release kept for rollback through the watchdog's
 /// journaled rollback (`SelfUpdater.rollBackToPredecessor`) and quarantines the
 /// installed one, between the drain and restart `darkbloom update` uses: the
-/// running provider drains first (the drain holds the update lease), the
-/// layout is swapped, then the provider restarts.
+/// running provider drains first, the layout is swapped, then the provider
+/// restarts.
+///
+/// Exclusion (R4-1729-A). The plan and the prompt run without any lock, so
+/// everything they checked is decided again once the command holds the update
+/// lease, before anything changes, and stays true until the swap is done:
+/// - The update lease (`SelfUpdater.beginUpdateSession`) is the one every
+///   install mutation takes: a pair's coordinated update for its whole cycle
+///   (`ClusterPairUpdateCycle`, "cluster-auto-update") and its candidate
+///   recovery, the watchdog, the in-process auto-update, `darkbloom update`,
+///   and every `start`, `stop` and `restart` drain, including the one that
+///   installs a cluster member job. A rollback and a pair update never
+///   interleave: whichever takes the lease second is refused or waits for the
+///   next update slot.
+/// - A cluster service starts without the update lease, so under the lease the
+///   command also holds the cluster service lock (`ClusterService.holdStopped`)
+///   until the swap is done, and refuses when this Mac serves in a pair.
+/// - The provider is read again under the lease. One started since the plan,
+///   or replaced by a foreground provider (service to foreground), is refused
+///   before the drain. A provider that is not running is kept from starting
+///   until the swap is done (`ProcessLifecycle.holdStartsOut`); a foreground
+///   start takes no update lease.
 struct UpdateRollback {
     /// This Mac's provider service, injected so tests never reach launchd.
     enum Provider {
@@ -19,13 +39,19 @@ struct UpdateRollback {
     }
 
     struct Host {
-        /// A `darkbloom cluster` service runs, or the provider job runs a cluster member.
+        /// A `darkbloom cluster` service runs or its login agent is loaded, or the provider job runs a cluster member.
         var servesInCluster: () -> Bool
+        /// Called under the update lease: holds this Mac's cluster service from starting until released, or nil when
+        /// this Mac serves in a cluster pair (as `servesInCluster`).
+        var holdClusterOut: () throws -> UpdateProcessLock?
         var provider: () -> Provider
+        /// Called under the update lease for a provider that is not running: holds every provider start (launchd or
+        /// foreground) out until released, or nil when a provider holds its instance lock.
+        var holdProviderStartsOut: () throws -> UpdateProcessLock?
         var canAsk: () -> Bool
         var readAnswer: () -> String?
-        /// Drains the running provider and returns the update lease the drain holds.
-        var drain: () async throws -> SelfUpdater.UpdateSession
+        /// Drains the running provider service. Called while the command holds the update lease.
+        var drain: () async throws -> Void
         /// Relaunches the drained provider and rearms the watchdog.
         var restart: () async throws -> Void
         /// Waits until the relaunched provider is freshly authorized.
@@ -60,6 +86,9 @@ struct UpdateRollback {
 
     private static var cli: String { BuildEnvironment.current.cliName }
 
+    /// The update lease's operation, and the owner the cluster service and provider holds name.
+    static let operation = "operator-rollback"
+
     func run(skipConfirmation: Bool) async throws {
         guard !host.servesInCluster() else { throw Failure(description: Self.clusterRefusal) }
         let provider = host.provider()
@@ -80,16 +109,32 @@ struct UpdateRollback {
         }
 
         let session = try await refusingClearly {
-            if loaded { return try await host.drain() }
-            return try updater.beginUpdateSession(operation: "operator-rollback", timeout: 0)
+            try updater.beginUpdateSession(operation: Self.operation, timeout: 0)
         }
         defer { session.release() }
-        // The plan and prompt ran without the lease: a provider started since
-        // is not swapped under, and one stopped since is not restarted.
+        // Under the lease, before anything changes: the plan and the prompt ran
+        // without it. Each hold lasts until the swap is done.
+        guard let clusterHold = try heldOrRefused({ try host.holdClusterOut() }) else {
+            throw Failure(description: Self.clusterRefusal)
+        }
+        defer { clusterHold.release() }
         let providerNow = host.provider()
+        guard providerNow != .foreground else { throw Failure(description: Self.foregroundRefusal) }
         guard loaded || providerNow == .stopped else { throw Failure(description: Self.startedRefusal) }
-        let restarts = loaded && providerNow == .service
+        // A provider stopped since the plan is swapped without a restart.
+        let restarts = providerNow == .service
+        var startsHold: UpdateProcessLock?
+        if restarts {
+            try await host.drain()
+        } else {
+            guard let hold = try heldOrRefused({ try host.holdProviderStartsOut() }) else {
+                throw Failure(description: Self.startedRefusal)
+            }
+            startsHold = hold
+        }
         let outcome = Result { try updater.rollBackToPredecessor(session: session, plan: plan) }
+        startsHold?.release()
+        clusterHold.release()
         // A drained provider restarts whether or not the rollback completed:
         // the layout is always one complete release (the journal guarantees it).
         var restartFailure: Error?
@@ -137,6 +182,15 @@ struct UpdateRollback {
         ]
     }
 
+    /// A hold that could not be taken for another reason than contention refuses with nothing changed.
+    private func heldOrRefused(_ take: () throws -> UpdateProcessLock?) throws -> UpdateProcessLock? {
+        do {
+            return try take()
+        } catch {
+            throw Failure(description: "The rollback could not lock out a concurrent start (\(error)). Nothing was changed.")
+        }
+    }
+
     /// Lease contention and every rollback refusal print as one plain line.
     private func refusingClearly<Value>(_ body: () async throws -> Value) async throws -> Value {
         do {
@@ -152,17 +206,28 @@ struct UpdateRollback {
 extension UpdateRollback.Host {
     static func live(drain options: DrainOptions, configPath: String?) -> Self {
         let previous = LaunchAgent.launchSnapshot()?.process
+        // Configured to serve in a pair even while its service is not running: `darkbloom cluster stop` unloads
+        // the login agent, and the member job runs under the provider's own label.
+        let configuredInCluster = {
+            ClusterServiceAgent.installedLabels().contains { ClusterServiceAgent.isLoaded(label: $0) }
+                || (LaunchAgent.isLoaded() && LaunchAgent.installedJobIsClusterMember())
+        }
         return Self(
-            servesInCluster: {
-                ClusterService.running() || (LaunchAgent.isLoaded() && LaunchAgent.installedJobIsClusterMember())
+            servesInCluster: { ClusterService.running() || configuredInCluster() },
+            holdClusterOut: {
+                // The service lock first: once it is held, no service starts, so the configuration read after it holds.
+                guard let hold = try ClusterService.holdStopped(operation: UpdateRollback.operation) else { return nil }
+                guard !configuredInCluster() else { hold.release(); return nil }
+                return hold
             },
             provider: {
                 if LaunchAgent.isLoaded() { return .service }
                 return DaemonStateFile.read()?.processIdentity?.isCurrent() == true ? .foreground : .stopped
             },
+            holdProviderStartsOut: { try ProcessLifecycle.holdStartsOut(operation: UpdateRollback.operation) },
             canAsk: { isatty(STDIN_FILENO) != 0 },
             readAnswer: { readLine() },
-            drain: { try await ServiceDrain.prepare(options: options) },
+            drain: { try await ServiceDrain.drain(options: options) },
             restart: {
                 try await ServiceDrain.stopDrainedProvider(unloadService: false)
                 try LaunchAgent.restartAfterDrain()

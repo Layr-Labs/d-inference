@@ -758,11 +758,18 @@ provider is restarted and the watchdog rearmed, as for an installed update; a
 stopped provider, or one stopped while the prompt was open, is only swapped
 (`provider-swift/Sources/darkbloom/UpdateRollback.swift`, `UpdateRollback`;
 `provider-swift/Sources/ProviderCore/Update/SelfUpdater+Rollback.swift`,
-`rollbackPlan`, `rollBackToPredecessor`). It exits 1 and changes nothing when
-this Mac serves in a `darkbloom cluster` pair (a running cluster service or a
-loaded cluster-member provider job), a provider runs outside launchd
-(`darkbloom start --foreground`) or started after the plan was shown, another
-update or recovery holds the lease,
+`rollbackPlan`, `rollBackToPredecessor`). The prompt runs without a lock, so
+the command decides the cluster and provider checks again once it holds the
+update lease, before the drain, and keeps them true until the swap is done: it
+holds the cluster service lock so no cluster service starts, and, for a stopped
+provider, the provider instance lock so no provider starts. The update lease is
+the one a pair's coordinated update holds for its whole cycle, so a rollback and
+a pair update never interleave. It exits 1 and changes nothing when
+this Mac serves in a `darkbloom cluster` pair (a running cluster service, a
+loaded cluster service login agent, or a loaded cluster-member provider job), a
+provider runs outside launchd (`darkbloom start --foreground`, also when it
+replaced the service while the prompt was open) or started after the plan was
+shown, another update or recovery holds the lease,
 no release is kept for rollback, the installed release is already that
 release, the installed `Darkbloom.app` is not the recorded release, or the kept
 release fails its hash or signature check (`RollbackRefusal`). Steps are in

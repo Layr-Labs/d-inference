@@ -207,6 +207,16 @@ public final class ClusterService: @unchecked Sendable {
         return running(in: directory) == true
     }
 
+    /// Holds this home's service lock, so no cluster service starts here until the hold is released (a start fails as
+    /// "already running", and its login agent retries). Nil when a service holds the lock; throws when the lock
+    /// cannot be opened. `darkbloom update --rollback` holds it across its swap, so this Mac cannot join a pair while
+    /// its release changes.
+    public static func holdStopped(operation: String) throws -> UpdateProcessLock? {
+        let lockFile = try paths().lock
+        try ClusterConfigurationFiles.ensureDirectory(lockFile.deletingLastPathComponent(), create: true, privateMode: true)
+        return try UpdateProcessLock.acquireUnlessBusy(at: lockFile, operation: operation)
+    }
+
     private static func running(in directory: URL) -> Bool? {
         let lockFile = files(in: directory).lock
         let fd = open(lockFile.path, O_RDONLY | O_CLOEXEC)

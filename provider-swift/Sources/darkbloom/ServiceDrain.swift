@@ -22,54 +22,62 @@ enum ServiceDrain {
         let updater = SelfUpdater(coordinatorBaseURL: state?.coordinatorUrl ?? BuildEnvironment.current.coordinatorHTTPURL)
         let session = try updater.beginUpdateSession(operation: "provider-lifecycle", timeout: 0)
         do {
-            let identity = WatchdogProbe.providerIdentity(daemonState: state, launchSnapshotProcess: LaunchAgent.launchSnapshot()?.process)
-            if let identity, identity.isCurrent(), !options.force {
-                guard state?.processIdentity == identity, state?.lifecycle != nil else {
-                    throw ValidationError("This running provider does not expose graceful-drain control. Upgrade it, or explicitly use --force to interrupt it.")
-                }
-            }
-            let hasControl = identity?.isCurrent() == true && state?.processIdentity == identity && state?.lifecycle != nil
-            if !hasControl && !options.force && LaunchAgent.launchSnapshot()?.process != nil {
-                throw ValidationError("Cannot confirm the running provider identity. No process or recovery setting was changed.")
-            }
-            let request = identity.flatMap { hasControl ? ProviderDrainRequest(target: $0, timeoutSeconds: options.timeout, force: options.force) : nil }
-            let mailbox = identity.map { LifecycleMailbox(identity: $0) }
-            let recovery = try ServiceRecoverySnapshot.capture()
-            try withConfigurationChange {
-                try publishWithRecoveryRollback(disable: {
-                    try WatchdogAgent.stop()
-                    try LaunchAgent.disableAutomaticStartup()
-                }, publish: {
-                    if let request, let mailbox { try mailbox.writeRequest(request) }
-                }, restore: { try recovery.restore() })
-            }
-            // Only a published request (or a confirmed stopped process) may
-            // discard prior recovery history. Later drain timeouts stay fenced.
-            try? FileManager.default.removeItem(at: WatchdogStateStore.path())
-
-            if let request, let mailbox {
-                print("Draining accepted requests (deadline: \(options.timeout)s). New work is refused by the running provider.")
-                do {
-                    let result = try await wait(request: request, mailbox: mailbox)
-                    let confirmation = result.coordinatorAcknowledged ? "received" : (result.outcome == .drained ? "not needed (no coordinator connection)" : "unconfirmed")
-                    print("Drain \(result.outcome.rawValue): \(result.remaining) unfinished request(s); coordinator acknowledgement: \(confirmation).")
-                } catch {
-                    guard options.force else { throw error }
-                    print("Forced stop: drain acknowledgement unavailable; unfinished work will be interrupted.")
-                }
-            } else if options.force {
-                print("Forced lifecycle requested: unfinished work may be interrupted; completion is unconfirmed.")
-
-            }
-            if options.force, let identity, identity.isCurrent() {
-                guard ProcessLifecycle.terminate(identity, gracePeriod: 1) else {
-                    throw ValidationError("Forced termination did not finish; the service remains disabled.")
-                }
-            }
+            try await drain(options: options, state: state, withConfigurationChange: withConfigurationChange)
             return session
         } catch {
             session.release()
             throw error
+        }
+    }
+
+    /// `prepare`'s drain, for a caller that already holds the update lease and decided under it that the provider
+    /// service is to be drained (`darkbloom update --rollback`).
+    static func drain(options: DrainOptions,
+                      state: DaemonState? = DaemonStateFile.read(),
+                      withConfigurationChange: (_ setup: () throws -> Void) throws -> Void = { try $0() }) async throws {
+        let identity = WatchdogProbe.providerIdentity(daemonState: state, launchSnapshotProcess: LaunchAgent.launchSnapshot()?.process)
+        if let identity, identity.isCurrent(), !options.force {
+            guard state?.processIdentity == identity, state?.lifecycle != nil else {
+                throw ValidationError("This running provider does not expose graceful-drain control. Upgrade it, or explicitly use --force to interrupt it.")
+            }
+        }
+        let hasControl = identity?.isCurrent() == true && state?.processIdentity == identity && state?.lifecycle != nil
+        if !hasControl && !options.force && LaunchAgent.launchSnapshot()?.process != nil {
+            throw ValidationError("Cannot confirm the running provider identity. No process or recovery setting was changed.")
+        }
+        let request = identity.flatMap { hasControl ? ProviderDrainRequest(target: $0, timeoutSeconds: options.timeout, force: options.force) : nil }
+        let mailbox = identity.map { LifecycleMailbox(identity: $0) }
+        let recovery = try ServiceRecoverySnapshot.capture()
+        try withConfigurationChange {
+            try publishWithRecoveryRollback(disable: {
+                try WatchdogAgent.stop()
+                try LaunchAgent.disableAutomaticStartup()
+            }, publish: {
+                if let request, let mailbox { try mailbox.writeRequest(request) }
+            }, restore: { try recovery.restore() })
+        }
+        // Only a published request (or a confirmed stopped process) may
+        // discard prior recovery history. Later drain timeouts stay fenced.
+        try? FileManager.default.removeItem(at: WatchdogStateStore.path())
+
+        if let request, let mailbox {
+            print("Draining accepted requests (deadline: \(options.timeout)s). New work is refused by the running provider.")
+            do {
+                let result = try await wait(request: request, mailbox: mailbox)
+                let confirmation = result.coordinatorAcknowledged ? "received" : (result.outcome == .drained ? "not needed (no coordinator connection)" : "unconfirmed")
+                print("Drain \(result.outcome.rawValue): \(result.remaining) unfinished request(s); coordinator acknowledgement: \(confirmation).")
+            } catch {
+                guard options.force else { throw error }
+                print("Forced stop: drain acknowledgement unavailable; unfinished work will be interrupted.")
+            }
+        } else if options.force {
+            print("Forced lifecycle requested: unfinished work may be interrupted; completion is unconfirmed.")
+
+        }
+        if options.force, let identity, identity.isCurrent() {
+            guard ProcessLifecycle.terminate(identity, gracePeriod: 1) else {
+                throw ValidationError("Forced termination did not finish; the service remains disabled.")
+            }
         }
     }
 

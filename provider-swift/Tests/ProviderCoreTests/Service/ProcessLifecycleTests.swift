@@ -48,6 +48,19 @@ struct ProcessLifecycleTests {
         #expect(written == "\(ProcessInfo.processInfo.processIdentifier)")
     }
 
+    @Test("a rollback's start hold keeps every provider start out until it is released")
+    func startHoldExcludesProviderStart() throws {
+        let pidFile = tempPIDFile()
+        defer { ProcessLifecycle.releaseSingleInstanceLock(at: pidFile) }
+
+        let hold = try #require(try ProcessLifecycle.holdStartsOut(operation: "operator-rollback", at: pidFile))
+        #expect(throws: UpdateProcessLock.LockError.self) { try ProcessLifecycle.acquireSingleInstanceLock(at: pidFile) }
+        hold.release()
+        try ProcessLifecycle.acquireSingleInstanceLock(at: pidFile)
+        // A running provider keeps the rollback's hold out in turn.
+        #expect(try ProcessLifecycle.holdStartsOut(operation: "operator-rollback", at: pidFile) == nil)
+    }
+
     @Test("acquire is idempotent for the running process")
     func acquireIdempotent() throws {
         let pidFile = tempPIDFile()

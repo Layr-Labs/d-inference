@@ -140,9 +140,10 @@ struct UpdateRollbackCommandTests {
         #expect(try install.liveBinary() == "2.0.0-darkbloom")
         #expect(try install.store.loadState().quarantine == nil)
 
+        // Read under the lease before any drain: a provider that stopped is not drained either.
         let stopped = RecordingHost(install: install, loaded: true, answer: "y", providerOnceAnswered: .stopped)
         try await install.rollback(host: stopped, yes: false)
-        #expect(stopped.events == ["drain"])
+        #expect(stopped.events.isEmpty)
         #expect(try install.liveBinary() == "1.0.0-darkbloom")
         #expect(try install.store.loadState().quarantine?.version == "2.0.0")
         #expect(stopped.said.last == "The provider is not running; `darkbloom start` starts v1.0.0.")
@@ -183,6 +184,66 @@ struct UpdateRollbackCommandTests {
         #expect(try install.liveBinary() == "2.0.0-darkbloom")
         #expect(try install.store.loadState().quarantine == nil)
         try install.updater.beginUpdateSession(operation: "lease-check").release()
+    }
+
+    @Test("the rollback and a pair's coordinated update exclude each other through the update lease")
+    func sharedExclusionWithThePairUpdate() async throws {
+        let install = try RollbackInstall()
+        defer { install.remove() }
+
+        // A pair update cycle holds the lease (`ClusterPairUpdateCycle.claim`): the rollback is refused.
+        let cycle = try install.updater.beginUpdateSession(operation: "cluster-auto-update")
+        let refused = RecordingHost(install: install, loaded: true, answer: "y")
+        let error = await #expect(throws: UpdateRollback.Failure.self) { try await install.rollback(host: refused, yes: true) }
+        #expect(error?.description.contains("cluster-auto-update") == true)
+        #expect(refused.events.isEmpty)
+        cycle.release()
+
+        // The rollback holds the lease from the drain to the swap: a pair update cycle cannot claim it, and no
+        // cluster service can start.
+        let probe = Probe()
+        let host = RecordingHost(install: install, loaded: true, answer: "y", beforeDrain: {
+            probe.cycleRefused = (try? install.updater.beginUpdateSession(operation: "cluster-auto-update")) == nil
+            probe.serviceHeldOut = try !install.isFree(install.clusterServiceLock)
+        })
+        try await install.rollback(host: host, yes: true)
+        #expect(probe.cycleRefused && probe.serviceHeldOut)
+        #expect(try install.liveBinary() == "1.0.0-darkbloom")
+        #expect(try install.isFree(install.clusterServiceLock))
+        try install.updater.beginUpdateSession(operation: "lease-check").release()
+    }
+
+    @Test("a stopped provider is held out of starting over the swap, and a provider holding its lock refuses the rollback")
+    func stoppedProviderStartsAreHeldOut() async throws {
+        let install = try RollbackInstall()
+        defer { install.remove() }
+
+        let racing = RecordingHost(install: install, loaded: false, providerHoldsInstanceLock: true)
+        let error = await #expect(throws: UpdateRollback.Failure.self) { try await install.rollback(host: racing, yes: true) }
+        #expect(error?.description == UpdateRollback.startedRefusal)
+        #expect(try install.liveBinary() == "2.0.0-darkbloom")
+        #expect(try install.store.loadState().quarantine == nil)
+
+        let stopped = RecordingHost(install: install, loaded: false)
+        try await install.rollback(host: stopped, yes: true)
+        #expect(try install.liveBinary() == "1.0.0-darkbloom")
+        #expect(try install.isFree(install.providerInstanceLock))
+        #expect(try install.isFree(install.clusterServiceLock))
+    }
+
+    @Test("a hold that cannot be taken refuses with nothing changed")
+    func unopenableHoldRefuses() async throws {
+        let install = try RollbackInstall()
+        defer { install.remove() }
+        // A directory where the lock file belongs cannot be opened as a lock.
+        try FileManager.default.createDirectory(at: install.clusterServiceLock, withIntermediateDirectories: true)
+        let host = RecordingHost(install: install, loaded: true, answer: "y")
+
+        let error = await #expect(throws: UpdateRollback.Failure.self) { try await install.rollback(host: host, yes: true) }
+
+        #expect(error?.description.contains("could not lock out a concurrent start") == true)
+        #expect(host.events.isEmpty)
+        #expect(try install.liveBinary() == "2.0.0-darkbloom")
     }
 }
 
@@ -240,6 +301,17 @@ private struct RollbackInstall {
 
     var store: UpdateRecoveryStore { UpdateRecoveryStore(installRoot: root, verifyCodeSignatures: false) }
 
+    /// Stand-ins for the cluster service lock and the provider instance lock, which the rollback holds over its swap.
+    var clusterServiceLock: URL { scratch.appendingPathComponent("cluster-setup/service.lock") }
+    var providerInstanceLock: URL { scratch.appendingPathComponent("provider.pid.lock") }
+
+    /// Whether `lock` is free now (taken and released at once).
+    func isFree(_ lock: URL) throws -> Bool {
+        guard let held = try UpdateProcessLock.acquireUnlessBusy(at: lock, operation: "lock-check") else { return false }
+        held.release()
+        return true
+    }
+
     func rollback(host: RecordingHost, yes: Bool) async throws {
         try await UpdateRollback(updater: updater, host: host.host, say: host.say).run(skipConfirmation: yes)
     }
@@ -268,6 +340,7 @@ private final class RecordingHost: @unchecked Sendable {
         var lines: [String] = []
         var provider: UpdateRollback.Provider = .stopped
         var inCluster = false
+        var providerHoldsInstanceLock = false
     }
 
     private let log: Log
@@ -277,17 +350,28 @@ private final class RecordingHost: @unchecked Sendable {
 
     /// `providerOnceAnswered` is the provider's state from the prompt's answer on.
     /// `inClusterOnceAnswered`: this Mac joins a cluster pair while the prompt is open.
+    /// `providerHoldsInstanceLock`: a provider holds its instance lock without showing in the state file yet.
     init(install: RollbackInstall, loaded: Bool, foreground: Bool = false, inCluster: Bool = false, canAsk: Bool = true,
          answer: String? = nil, providerOnceAnswered: UpdateRollback.Provider? = nil,
-         inClusterOnceAnswered: Bool? = nil, beforeDrain: @escaping () throws -> Void = {}) {
+         inClusterOnceAnswered: Bool? = nil, providerHoldsInstanceLock: Bool = false,
+         beforeDrain: @escaping () throws -> Void = {}) {
         let log = Log()
         log.provider = loaded ? .service : foreground ? .foreground : .stopped
         log.inCluster = inCluster
+        log.providerHoldsInstanceLock = providerHoldsInstanceLock
         self.log = log
         let record = { (event: String) in log.lock.withLock { log.events.append(event) } }
         host = UpdateRollback.Host(
             servesInCluster: { log.lock.withLock { log.inCluster } },
+            holdClusterOut: {
+                guard !log.lock.withLock({ log.inCluster }) else { return nil }
+                return try UpdateProcessLock.acquireUnlessBusy(at: install.clusterServiceLock, operation: UpdateRollback.operation)
+            },
             provider: { log.lock.withLock { log.provider } },
+            holdProviderStartsOut: {
+                guard !log.lock.withLock({ log.providerHoldsInstanceLock }) else { return nil }
+                return try UpdateProcessLock.acquireUnlessBusy(at: install.providerInstanceLock, operation: UpdateRollback.operation)
+            },
             canAsk: { canAsk },
             readAnswer: {
                 if let providerOnceAnswered { log.lock.withLock { log.provider = providerOnceAnswered } }
@@ -297,11 +381,16 @@ private final class RecordingHost: @unchecked Sendable {
             drain: {
                 record("drain")
                 try beforeDrain()
-                return try install.updater.beginUpdateSession(operation: "provider-lifecycle", timeout: 0)
             },
             restart: { record("restart") },
             waitForRestart: { record("wait") })
     }
 
     func say(_ line: String) { log.lock.withLock { log.lines.append(line) } }
+}
+
+/// What a hook observed while the rollback held its locks.
+private final class Probe: @unchecked Sendable {
+    var cycleRefused = false
+    var serviceHeldOut = false
 }

@@ -65,6 +65,14 @@ public enum ProcessLifecycle {
         }
     }
 
+    /// Holds the provider instance lock without becoming the provider, so no provider (launchd or foreground) starts
+    /// until the hold is released: its `acquireSingleInstanceLock` fails as busy. Nil when a provider holds it;
+    /// throws when the lock cannot be opened.
+    public static func holdStartsOut(operation: String,
+                                     at pidFile: URL = ProcessLifecycle.defaultPIDFile()) throws -> UpdateProcessLock? {
+        try UpdateProcessLock.acquireUnlessBusy(at: pidFile.appendingPathExtension("lock"), operation: operation)
+    }
+
     public static func existingPID(at pidFile: URL = ProcessLifecycle.defaultPIDFile()) -> Int32? {
         readPID(at: pidFile)
     }

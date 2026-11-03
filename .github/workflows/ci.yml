@@ -841,8 +841,10 @@ jobs:
             cmp -s "$list" "${lists[0]}" || { echo "::error::$list differs from ${lists[0]}"; exit 1; }
           done
           python3 scripts/cluster-test-plan.py audit-runs "${lists[0]}" "$RUNNER_TEMP/cluster-test-shards"
+      # Report-only: a bad xUnit file or upload never fails this job.
       - name: Measure unit times for shard balance
         if: ${{ !cancelled() }}
+        continue-on-error: true
         run: |
           set -euo pipefail
           shopt -s nullglob
@@ -852,6 +854,7 @@ jobs:
             > "$RUNNER_TEMP/cluster-test-weights/cluster-test-weights.json"
       - name: Upload measured unit times
         if: ${{ !cancelled() }}
+        continue-on-error: true
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: cluster-test-weights

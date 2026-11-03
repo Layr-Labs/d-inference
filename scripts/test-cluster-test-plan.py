@@ -190,10 +190,14 @@ class ClusterTestPlanTests(unittest.TestCase):
         self.assertIn("    needs: [changes, test-cluster]\n", job)
         self.assertIn("    if: ${{ !cancelled() && needs.changes.outputs.provider == 'true' }}\n", job)
         self.assertIn("    runs-on: ubuntu-24.04\n", job)
-        self.assertNotIn("continue-on-error:", job)
+        self.assertNotRegex(job, r"(?m)^    continue-on-error:")
         steps = workflow.step_blocks(job)
         audit = next(step for step in steps if "audit-runs" in step)
         self.assertIsNone(workflow.field(audit, "if"))
+        self.assertNotIn("continue-on-error:", audit)
+        # Only the report-only weight steps may fail without failing the job.
+        tolerant = [workflow.field(step, "name", indent=6) for step in steps if "continue-on-error: true" in step]
+        self.assertEqual(tolerant, ["Measure unit times for shard balance", "Upload measured unit times"])
         self.assertIn('cmp -s "$list" "${lists[0]}"', audit)
         self.assertIn('python3 scripts/cluster-test-plan.py audit-runs "${lists[0]}" "$RUNNER_TEMP/cluster-test-shards"',
                       audit)
@@ -205,7 +209,7 @@ class ClusterTestPlanTests(unittest.TestCase):
         self.assertIn("continue-on-error: true", workflow.step_blocks(self.jobs["test-cluster-gpu"])[-1])
         gate = workflow.field(self.jobs["provider-test-gate"], "needs", indent=4)
         needs = [name.strip() for name in gate.strip("[]").split(",")]
-        for job_id in ("test-cluster", "test-cluster-summary", "test-cluster-focused"):
+        for job_id in ("test-cluster", "test-cluster-focused"):
             with self.subTest(job=job_id):
                 self.assertNotIn("continue-on-error:", self.jobs[job_id])
                 self.assertIn(job_id, needs)

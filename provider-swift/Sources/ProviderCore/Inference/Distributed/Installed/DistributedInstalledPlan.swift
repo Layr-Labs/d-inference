@@ -320,8 +320,10 @@ struct DistributedInstalledPlan: Sendable {
     ///   saved the one-chunk lookahead keeps it and one lane. A nil schedule
     ///   names no setup and takes the family-neutral default.
     /// - Qwen tensor parallel (every registered TP row, dense or routed
-    ///   experts): one by default; a priced saved width or explicit local
-    ///   diagnostic may select its native 2...8 lane owner.
+    ///   experts): one for a setup saved without a width. Guided placement
+    ///   saves the widest width both Macs admit now under its LOAD quote
+    ///   (`ClusterPlacementTensorWidth`); that saved width or an explicit
+    ///   local diagnostic selects the native 2...8 lane owner.
     /// - Other tensor parallel: GLM (`GLM5NextTensorParallelResidentRuntime`'s lane
     ///   loop), at `tensorParallelBatchLanes`. Each lane keeps its request's
     ///   own arithmetic, so a request's tokens are those it gets alone. A
@@ -355,7 +357,9 @@ struct DistributedInstalledPlan: Sendable {
     /// while the repaired joining and cancellation paths undergo
     /// model-specific multi-lane qualification. Earlier pair measurements
     /// (Qwen 3.5 35B A3B, 2026-10-19) preceded those repairs and do not
-    /// qualify the current loop.
+    /// qualify the current loop. A Qwen TP width is saved at placement
+    /// instead, priced by the owner's LOAD quote; a default here would be held
+    /// to no quote.
     static let defaultBatchLanes = 1
     /// Concurrent requests a serial-prefill Gemma 4 pipeline serves by
     /// default, coordinator-registered pairs included. Each decode row keeps

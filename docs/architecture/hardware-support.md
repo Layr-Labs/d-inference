@@ -1222,7 +1222,10 @@ a rank reserves it ([native context](inference.md#qwen27-tensor-parallel-native-
 the shard, two whole host tensors, aligned-read scratch and loading headroom.
 The placement and shard assessment add it to the LOAD peak and allocator ask;
 resident and request phases are not substitutes for that simultaneous peak.
-No native gate or headroom threshold is reduced. Both ranks must fit current
+No native gate or headroom threshold is reduced. Initial placement saves the
+widest of these widths at which both ranks fit current observations, with
+nothing credited ([saved width](inference.md#qwen-tensor-parallel-saved-width)).
+Both ranks must fit current
 observations before replacement is proposed (crediting at most the running
 owner's resident weights on that Mac, and only for a replacement with the same
 split) and again after previous ownership releases, with nothing credited. Source-bound metadata and child-launch checks establish budget and

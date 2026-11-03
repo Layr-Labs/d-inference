@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-11-02
+> Last updated: 2026-11-03
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -91,7 +91,10 @@ assistant media remain unsupported; legacy model ingestion is unchanged. Sources
 
 ## Automatic local cluster batching
 
-`DistributedAutomaticBatchFactory` keeps the initial singleton placement. A
+`DistributedAutomaticBatchFactory` keeps the initial placement and its saved
+width; a Qwen TP placement already saves the widest width both Macs admit
+([saved width](#qwen-tensor-parallel-saved-width)), so it proposes only a
+wider one (`DistributedAutomaticBatchFactory.replacementWidths`). A
 managed cluster API with queued demand may propose a wider plain pipeline for
 Qwen dense/routed experts, Bonsai, Nemotron Lightning, Gemma, GPT-OSS or the
 MiMo text plain-pipeline owner. Every Qwen TP row (the 9B and 27B dense rows,
@@ -5339,8 +5342,9 @@ prerequisite does not advertise media support or activate a native model path.
 
 Every registered Qwen TP row (the 9B and 27B dense rows, the Qwen3.5 and Qwen3.6
 35B A3B routed-expert rows) serves request-owned lanes on main's paged KV host
-(`CBv2StageKVHost`) at every capacity, one through eight; the default remains
-one, and one lane is the same path one lane wide (the singleton wire adapts to
+(`CBv2StageKVHost`) at every capacity, one through eight; a setup saved without
+a width serves one ([saved width](#qwen-tensor-parallel-saved-width)), and one
+lane is the same path one lane wide (the singleton wire adapts to
 the shared driver, `QwenTensorParallelSingletonHost`). The former single-lane
 owner (request-local caches on its own page pool and the
 `DARKBLOOM_CLUSTER_QWEN_TP_PAGED_KV` switch, with its own prefix cache) is
@@ -5449,8 +5453,8 @@ every selected token is unchanged.
 
 The batch path can restore mutually held original-grid prefix snapshots into
 fresh request-owned state. TP speculative rounds remain a separate integration. Installed owners propagate a priced
-saved width or explicit diagnostic width for every Qwen TP row; automatic placement
-uses the separate full native TP quote described above. A row that may also run
+saved width or explicit diagnostic width for every Qwen TP row; placement and automatic
+replacement use the separate full native TP quote described above. A row that may also run
 the pipeline prices tensor parallel with its singleton quote and keeps the
 pipeline modes as candidates (`ClusterPlacementTensorBatchQuote.applySingletonCandidate`);
 the 27B, whose features keep it in tensor parallel, and an assistant quote bind the
@@ -5511,6 +5515,75 @@ Sources: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Ten
 (`shouldDefer`), and
 `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/TensorParallel/QwenTensorParallelResidentRuntime+Batch.swift`
 (`serveBatch`, `prepareBatch`).
+
+### Qwen tensor-parallel saved width
+
+Guided placement saves each Qwen TP pair's width (`batchLanes`), so the pair
+serves concurrent requests from its first load. Before, such a setup saved no
+width and served one request at a time: a local pair widened only through a
+drained replacement, which the first burst waited for, and a pair saved for
+coordinator pairing never widened.
+
+1. The guided setup (`ClusterSetupWizardLiveOperations`, which the onboarding
+   and the six-step wizard share) reads the owner's complete quote at widths 2,
+   4, 6 and 8 (`ClusterPlacementTensorAssistantSelection.readAutomatic` with
+   `lanes`), each for the singleton quote's own request envelope and assistant.
+2. The placement is chosen as before, from the singleton quote: mode, leader,
+   split and reference request (`ClusterPlacementFlow.decide`).
+3. `ClusterPlacementTensorWidth.widest` prices that placement, leader and split
+   unchanged, at 8, 6, 4 and 2 in turn, with each width's quote in place of the
+   singleton's (`ClusterPlacementTensorBatchQuote.applyWidth`), and saves the
+   first that both Macs admit now. The predicate is the one an automatic
+   replacement is held to (`ClusterPlacementCandidate.admitted`): possible,
+   inside the GPU working set, and every rank within what its Mac admits now.
+   The plan then reports that width's memory and keeps the reasons its mode was
+   chosen for one request, including a row's comparison with the pipeline
+   where the pipeline stays a candidate. When no width fits, the setup saves
+   none and serves one request at a time, as before.
+4. LOAD quotes, measured floors and live admission are unchanged. Both ranks
+   reserve the saved width's complete quote at LOAD and admit each request
+   alone.
+
+A typed assistant policy (the developer wizard) and `darkbloom cluster plan`
+read no width quotes and save no width.
+
+A pair saved for coordinator pairing keeps its width for the life of the
+setup. The width is a field of each Mac's saved setup only. The approval, the
+roster registration, the committed native start and the release's runtime
+facts name no width, so no approval digest changes. The approval is saved
+beside the width unchanged (`ClusterApprovalAttachment`), and both workers bind
+the width in their sealed load agreement. Automatic replacement never plans for
+an approved setup (`DistributedAutomaticBatchPlanner.snapshot`). A re-plan,
+after an update or a refused load, sizes the width again on the memory then.
+
+On a local pair, queued demand still proposes a width wider than the saved one
+through a drained replacement: the fallback for Macs that admitted a narrower
+width when planned. A pair saved at eight is never drained.
+
+The widths the registered Qwen3.8 27B saves on idle pairs (its retained
+headers and LOAD's own quotes, the vision tower's resident bytes aside as in
+the served layout; `ClusterPlacementTensorWidthRegisteredTests`):
+
+| Each Mac | Without the assistant (served through Darkbloom) | With the depth-3 assistant (local) |
+|---|---|---|
+| 32 GiB | 2 | 1 |
+| 36 GiB | 2 | 1 |
+| 48 GiB | 4 | 2 |
+| 64 GiB | 8 | 4 |
+| 96 GiB and larger | 8 | 8 |
+
+At eight lanes, each rank of an equal split reserves 40,544,616,448 bytes at
+LOAD without the assistant and 60,367,765,504 bytes with it, each lane's
+prompt-prefix capture included ([prefix ownership](hardware-support.md#qwen27-tp-batch-prefix-ownership));
+with its weights and loading headroom it needs 54,074,305,024 and
+77,631,564,288 bytes. Every
+registered Qwen TP row is sized the same way from its own quotes. GLM keeps its
+eight lanes and other families keep their defaults.
+
+Sources: `provider-swift/Sources/ProviderCore/Inference/Distributed/Placement/ClusterPlacementTensorWidth.swift`
+(`ClusterPlacementTensorWidth`),
+`provider-swift/Sources/ProviderCore/Inference/Distributed/Placement/ClusterPlacementFlow.swift` (`decide`) and
+`libs/darkbloom-cluster/Sources/DarkbloomClusterPlacement/ClusterPlacementTensorBatchQuote.swift` (`applyWidth`).
 
 ### Qwen27 tensor-parallel native context
 

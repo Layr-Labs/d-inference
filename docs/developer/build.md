@@ -317,14 +317,16 @@ the caches of the runners it ran on.
 | MiMo audio codec | `$RUNNER_TEMP/mimo-audio-source` | `mimo-audio-source-v2-<sha256>`, exact only | the last provider shard |
 | Cluster metadata build | `$RUNNER_TEMP/cluster-native-metadata` | toolchain, submodule pins, manifests and paths, then the commit | `test-cluster-checks` |
 
-Every checkout uses the same six steps. The job computes the UTC day
-(`date -u +%F`), restores `.git`, and runs `actions/checkout` over it with
-`continue-on-error`. The checkout then fetches only the objects the restored
-`.git` lacks and reuses submodule repositories under `.git/modules`. If it
-fails for any reason, the job deletes the workspace and runs `actions/checkout`
-again without the cache; a failure there fails the job. The `.git` key names
-the day, not the commit, so a branch saves `.git` once a day: later runs that
-day restore the exact key and save nothing. Checkouts set
+Every checkout uses the same five steps. The job computes the UTC day
+(`date -u +%F`) and restores `.git`. A step that cannot fail then deletes the
+restored `.git` unless `git rev-parse --verify HEAD` and
+`git fsck --connectivity-only` accept it. One ordinary `actions/checkout`
+follows: it fetches only the objects `.git` lacks and reuses the submodule
+repositories under `.git/modules`, and its failure fails the job. No step uses
+`continue-on-error`. A `.git` that passes fsck but still breaks the checkout
+fails the job; change the key version, such as `git-v1`, to start over. The
+`.git` key names the day, not the commit, so a branch saves `.git` once a day:
+later runs that day restore the exact key and save nothing. Checkouts set
 `persist-credentials: false`, so the saved `.git/config` holds no job token.
 
 Checkouts download only what their job reads. Every checkout but Docs Lint's
@@ -342,9 +344,9 @@ uses both settings.
 ```mermaid
 flowchart LR
   W[UTC day] --> R["Restore .git<br/>(today, else newest)"]
-  R --> C{"checkout over<br/>cached .git"}
-  C -- fails --> D[Delete workspace] --> K[Cold checkout]
-  C -- succeeds --> G
+  R --> V{"git fsck<br/>accepts .git?"}
+  V -- no --> D[Delete .git] --> K
+  V -- yes --> K[actions/checkout]
   K --> G{"master or dev push,<br/>no exact hit?"}
   G -- yes --> S[Save .git]
   G -- no --> B
@@ -354,7 +356,7 @@ flowchart LR
   classDef save fill:#d4f7dc,stroke:#1a7f37,color:#0b2e13
   classDef fail fill:#ffe1e1,stroke:#cf222e,color:#3d0a0a
   class S,T save
-  class D,K fail
+  class D fail
 ```
 
 - Swift build prefixes contain no pull-request data; the commit is only the
@@ -373,8 +375,7 @@ flowchart LR
   zstd never restores an entry saved with it. Each job logs
   `actions/cache compressor: zstd` or `gzip` before its first cache step.
 - Concurrent jobs of one push save the same key; one wins, and the others log a
-  `409 Conflict` warning. To start a cache over, change its version, such as
-  `git-v1`.
+  `409 Conflict` warning.
 
 ## Dev Build Identity
 

@@ -160,21 +160,24 @@ SAVE_POLICY = ("  SAVE_CACHES: ${{ github.event_name == 'push' && (github.ref ==
                "|| github.ref == 'refs/heads/dev') }}\n")
 SAVE_CACHES = "env.SAVE_CACHES == 'true'"
 SAVE_INPUT = "inputs.save-caches == 'true'"
+VALIDATE_GIT = """if [ -d .git ] && ! { git rev-parse --verify -q HEAD >/dev/null &&
+    git fsck --connectivity-only --no-progress >/dev/null 2>&1; }; then
+  echo "::warning title=.git cache::git fsck rejected the restored .git; checking out without it."
+  rm -rf .git
+fi"""
 SPARSE_PATTERNS = ("/*", "!/docs/reports/**/*.gz", "!/landing/public/**/*.mp4")
 GIT_CACHE_STEPS = ("Select today's .git cache", "Restore the newest saved .git",
-                   "Check out over the cached .git", "Discard the cached .git",
-                   "Check out without the cache", "Save .git for later runs")
+                   "Discard a damaged cached .git", None, "Save .git for later runs")
+
+
+def uses(step):
+    """The action a step uses, whether `uses:` opens the step or follows `name:`."""
+    return field(step, "uses") or field(step, "uses", indent=6)
 
 
 def checkout_options(step):
     lines = step.split("        with:\n", 1)[1].splitlines()
     return [line.split(" #", 1)[0].strip() for line in lines if line.startswith("          ")]
-
-
-def without_cached_checkout(job):
-    """Drop the one step allowed to fail; the cold checkout after it is not."""
-    step = next(step for step in step_blocks(job) if field(step, "id") == "checkout")
-    return job.replace(step, "", 1)
 
 
 def work_steps(job):
@@ -243,7 +246,7 @@ class ProviderCIWorkflowTests(unittest.TestCase):
                                   "      fail-fast: false\n      matrix:\n        shard: %s\n" % PROVIDER_SHARDS, job)
                 else:
                     self.assertNotRegex(job, re.compile(r"^    strategy:", re.MULTILINE), msg=job)
-                self.assertNotIn("continue-on-error:", without_cached_checkout(job))
+                self.assertNotIn("continue-on-error:", job)
                 self.assertNotIn("DARKBLOOM_EXCLUSIVE_NATIVE_GPU_TEST:", job)
         self.assertIn("    name: Provider Unit Tests (shard ${{ matrix.shard }})\n", self.jobs["test-provider"])
 
@@ -285,8 +288,8 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         for job_id, lane in LANES.items():
             with self.subTest(lane=lane):
                 steps = step_blocks(self.jobs[job_id])
-                checkout = next(step for step in steps if field(step, "id") == "checkout")
-                self.assertEqual(field(checkout, "uses"), CHECKOUT)
+                checkout = next(step for step in steps if uses(step) == CHECKOUT)
+                self.assertEqual(uses(checkout), CHECKOUT)
                 self.assertEqual(field(checkout, "submodules", indent=10), "recursive")
                 builds = [step for step in steps if field(step, "uses") == BUILD_ACTION]
                 self.assertEqual(len(builds), 1)
@@ -342,7 +345,7 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         self.assertIn("    if: ${{ !cancelled() && needs.changes.outputs.provider == 'true' }}\n", summary)
         self.assertIn("    runs-on: blacksmith-12vcpu-macos-27\n", summary)
         self.assertNotIn("        test-provider-summary ", self.jobs["route"])
-        self.assertNotIn("continue-on-error:", without_cached_checkout(summary))
+        self.assertNotIn("continue-on-error:", summary)
         summary_steps = step_blocks(summary)
         summary_names = [field(step, "name", indent=6) for step in summary_steps]
         summary_build = next(index for index, step in enumerate(summary_steps)
@@ -440,7 +443,7 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         self.assertEqual(field(upload, "uses"), "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1")
         self.assertEqual(field(upload, "path", indent=10), "${{ runner.temp }}/provider-test-diagnostics")
         self.assertEqual(field(upload, "retention-days", indent=10), "7")
-        self.assertNotIn("continue-on-error:", without_cached_checkout(self.jobs["test-provider"]))
+        self.assertNotIn("continue-on-error:", self.jobs["test-provider"])
 
     def test_coverage_summary_preserves_weighted_rows_and_failure_checks(self):
         report = next(step for step in step_blocks(self.jobs["test-provider-summary"])
@@ -694,10 +697,10 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         self.assertIn("    runs-on: blacksmith-12vcpu-macos-27\n", job)
         self.assertNotIn("        test-cluster-checks ", self.jobs["route"])
         for forbidden in ("continue-on-error:", "secrets.", "DARKBLOOM_EXCLUSIVE_NATIVE_GPU_TEST:"):
-            self.assertNotIn(forbidden, without_cached_checkout(job))
+            self.assertNotIn(forbidden, job)
         steps = step_blocks(job)
-        checkout = next(step for step in steps if field(step, "id") == "checkout")
-        self.assertEqual(field(checkout, "uses"), CHECKOUT)
+        checkout = next(step for step in steps if uses(step) == CHECKOUT)
+        self.assertEqual(uses(checkout), CHECKOUT)
         self.assertEqual(field(checkout, "submodules", indent=10), "recursive")
         toolchain = next(step for step in steps if field(step, "id") == "toolchain")
         self.assertEqual(run_command(toolchain), "./scripts/prepare-provider-release-toolchain.sh")
@@ -817,11 +820,11 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         for job_id, job in checkouts.items():
             with self.subTest(job=job_id):
                 steps = step_blocks(job)
-                self.assertEqual([field(step, "name", indent=6) for step in steps[:6]], list(GIT_CACHE_STEPS))
-                week, restore, cached, discard, cold, save = steps[:6]
-                self.assertEqual(run_command(week).splitlines()[:3], ['day=$(date -u +%F)', 'echo "day=$day" >> "$GITHUB_OUTPUT"',
-                                                                  'echo "month=${day%-*}" >> "$GITHUB_OUTPUT"'])
-                self.assertIn("command -v zstd >/dev/null && echo zstd || echo gzip", week)
+                self.assertEqual([field(step, "name", indent=6) for step in steps[:5]], list(GIT_CACHE_STEPS))
+                day, restore, validate, checkout, save = steps[:5]
+                self.assertEqual(run_command(day).splitlines()[:3], ['day=$(date -u +%F)', 'echo "day=$day" >> "$GITHUB_OUTPUT"',
+                                                                 'echo "month=${day%-*}" >> "$GITHUB_OUTPUT"'])
+                self.assertIn("command -v zstd >/dev/null && echo zstd || echo gzip", day)
                 # Full history never seeds, or is restored by, a shallow job.
                 family = ("git-full-v1" if job_id == "docs" else "git-v1") + "-${{ runner.os }}-"
                 # One entry per day and branch; restore the newest earlier day.
@@ -830,31 +833,63 @@ class ProviderCIWorkflowTests(unittest.TestCase):
                 self.assertEqual(field(restore, "path", indent=10), ".git")
                 self.assertEqual(field(restore, "key", indent=10), family + "${{ steps.git-day.outputs.day }}")
                 self.assertIn(f"restore-keys: |\n            {monthly}\n            {family}\n", restore)
-                # Only the cached attempt may fail: the cold one repeats its
-                # options after discarding the workspace, and fails the job.
-                self.assertEqual(sum("continue-on-error:" in step for step in steps[:6]), 1)
-                self.assertEqual(field(cached, "continue-on-error"), "true")
-                for step in (discard, cold):
-                    self.assertEqual(field(step, "if"), "steps.checkout.outcome == 'failure'")
-                self.assertEqual(run_command(discard), "find . -mindepth 1 -delete")
-                self.assertEqual([field(cached, "uses"), field(cold, "uses")], [CHECKOUT, CHECKOUT])
+                # The validation cannot fail and nothing may continue on error:
+                # one ordinary checkout follows, and its failure fails the job.
+                self.assertEqual(run_command(validate), VALIDATE_GIT)
+                for step in (validate, checkout):
+                    self.assertIsNone(field(step, "if"))
+                self.assertFalse(any("continue-on-error" in step for step in steps[:5]))
+                self.assertEqual(uses(checkout), CHECKOUT)
+                self.assertEqual(sum(uses(step) == CHECKOUT for step in steps), 1)
                 # Each job keeps its checkout options; a persisted token would
                 # be saved with .git/config.
                 sparse = ["sparse-checkout: ${{ env.CHECKOUT_SPARSE }}", "sparse-checkout-cone-mode: false"]
                 options = {"release-integrity": ["persist-credentials: false", *sparse],
                            "docs": ["fetch-depth: 0", "filter: blob:none", "persist-credentials: false"]
                            }.get(job_id, ["submodules: recursive", "persist-credentials: false", *sparse])
-                for step in (cached, cold):
-                    self.assertEqual(checkout_options(step), options)
+                self.assertEqual(checkout_options(checkout), options)
                 self.assertEqual(field(save, "if"), SAVE_CACHES + " && steps.git-cache.outputs.cache-hit != 'true'")
                 self.assertEqual(field(save, "uses"), CACHE_SAVE)
                 self.assertEqual(field(save, "path", indent=10), ".git")
                 self.assertEqual(field(save, "key", indent=10), "${{ steps.git-cache.outputs.cache-primary-key }}")
 
+    def test_git_validation_keeps_healthy_and_partial_clones_and_discards_damage(self):
+        with tempfile.TemporaryDirectory() as work:
+            def git(cwd, *args):
+                return subprocess.run(["git", "-C", str(cwd), "-c", "user.name=t", "-c", "user.email=t@t",
+                                       "-c", "commit.gpgsign=false", "-c", "protocol.file.allow=always", *args],
+                                      check=True, capture_output=True, text=True).stdout.strip()
+            origin = Path(work, "origin")
+            origin.mkdir()
+            git(origin, "init", "-q")
+            for name in ("a", "b"):
+                (origin / name).write_text(name * 1000)
+                git(origin, "add", name)
+                git(origin, "commit", "-q", "-m", name)
+            git(origin, "config", "uploadpack.allowFilter", "true")
+            cases = {"healthy": True, "blobless": True, "damaged": False}
+            for case in cases:
+                options = ["--filter=blob:none", "--no-checkout"] if case == "blobless" else []
+                git(work, "clone", "-q", *options, f"file://{origin}", case)
+            loose = Path(work, "damaged", ".git", "objects")
+            tree = git(Path(work, "damaged"), "rev-parse", "HEAD^{tree}")
+            git(Path(work, "damaged"), "repack", "-q", "-a", "-d")
+            for pack in (loose / "pack").glob("*.pack"):
+                pack.unlink()
+            Path(work, "empty").mkdir()
+            for case, kept in {**cases, "empty": False}.items():
+                with self.subTest(case=case):
+                    result = subprocess.run(["bash", "-e", "-o", "pipefail", "-c", VALIDATE_GIT],
+                                            cwd=Path(work, case), capture_output=True, text=True)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(Path(work, case, ".git").is_dir(), kept, result.stdout)
+                    self.assertEqual("::warning" in result.stdout, case == "damaged")
+            self.assertTrue(tree)
+
     def test_sparse_checkouts_skip_only_evidence_archives_and_landing_videos(self):
         env = self.workflow.split("\njobs:\n", 1)[0]
         self.assertIn("  CHECKOUT_SPARSE: |\n" + "".join(f"    {pattern}\n" for pattern in SPARSE_PATTERNS), env)
-        self.assertEqual(self.workflow.count("sparse-checkout: ${{ env.CHECKOUT_SPARSE }}"), 16)
+        self.assertEqual(self.workflow.count("sparse-checkout: ${{ env.CHECKOUT_SPARSE }}"), 8)
         docs_impact = (ROOT / ".github/workflows/docs-impact.yml").read_text()
         self.assertIn("          filter: blob:none\n          sparse-checkout: |\n"
                       + "".join(f"            {pattern}\n" for pattern in SPARSE_PATTERNS)

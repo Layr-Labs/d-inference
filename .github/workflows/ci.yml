@@ -54,9 +54,9 @@ jobs:
     runs-on: ${{ fromJSON(needs.route.outputs.routes)['release-integrity'] }}
     timeout-minutes: 30
     steps:
-      # Every checkout in this workflow uses the same six steps: check out over
-      # the newest .git a push saved, discard it and check out cold if that
-      # fails, and save .git once a day per branch (docs/developer/build.md#ci-caching).
+      # Every checkout in this workflow uses the same five steps: restore the
+      # newest .git a push saved, discard it unless git fsck accepts it, check
+      # out, and save .git once a day per branch (docs/developer/build.md#ci-caching).
       - name: Select today's .git cache
         id: git-day
         run: |
@@ -73,24 +73,16 @@ jobs:
           restore-keys: |
             git-v1-${{ runner.os }}-${{ steps.git-day.outputs.month }}-
             git-v1-${{ runner.os }}-
-      - name: Check out over the cached .git
-        id: checkout
-        # A damaged cache must not fail the job: the next two steps discard it
-        # and check out cold, and a failure there fails the job.
-        continue-on-error: true
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Discard a damaged cached .git
+        run: |
+          if [ -d .git ] && ! { git rev-parse --verify -q HEAD >/dev/null &&
+              git fsck --connectivity-only --no-progress >/dev/null 2>&1; }; then
+            echo "::warning title=.git cache::git fsck rejected the restored .git; checking out without it."
+            rm -rf .git
+          fi
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false # Keeps the job token out of the saved .git/config.
-          sparse-checkout: ${{ env.CHECKOUT_SPARSE }}
-          sparse-checkout-cone-mode: false
-      - name: Discard the cached .git
-        if: steps.checkout.outcome == 'failure'
-        run: find . -mindepth 1 -delete
-      - name: Check out without the cache
-        if: steps.checkout.outcome == 'failure'
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          persist-credentials: false
           sparse-checkout: ${{ env.CHECKOUT_SPARSE }}
           sparse-checkout-cone-mode: false
       - name: Save .git for later runs
@@ -185,23 +177,17 @@ jobs:
           restore-keys: |
             git-full-v1-${{ runner.os }}-${{ steps.git-day.outputs.month }}-
             git-full-v1-${{ runner.os }}-
-      - name: Check out over the cached .git
-        id: checkout
-        continue-on-error: true
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Discard a damaged cached .git
+        run: |
+          if [ -d .git ] && ! { git rev-parse --verify -q HEAD >/dev/null &&
+              git fsck --connectivity-only --no-progress >/dev/null 2>&1; }; then
+            echo "::warning title=.git cache::git fsck rejected the restored .git; checking out without it."
+            rm -rf .git
+          fi
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           fetch-depth: 0 # Frozen source links require committed document provenance.
           filter: blob:none # Old file contents are fetched only when read.
-          persist-credentials: false
-      - name: Discard the cached .git
-        if: steps.checkout.outcome == 'failure'
-        run: find . -mindepth 1 -delete
-      - name: Check out without the cache
-        if: steps.checkout.outcome == 'failure'
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          fetch-depth: 0
-          filter: blob:none
           persist-credentials: false
       - name: Save .git for later runs
         if: env.SAVE_CACHES == 'true' && steps.git-cache.outputs.cache-hit != 'true'
@@ -253,21 +239,14 @@ jobs:
           restore-keys: |
             git-v1-${{ runner.os }}-${{ steps.git-day.outputs.month }}-
             git-v1-${{ runner.os }}-
-      - name: Check out over the cached .git
-        id: checkout
-        continue-on-error: true
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          submodules: recursive
-          persist-credentials: false
-          sparse-checkout: ${{ env.CHECKOUT_SPARSE }}
-          sparse-checkout-cone-mode: false
-      - name: Discard the cached .git
-        if: steps.checkout.outcome == 'failure'
-        run: find . -mindepth 1 -delete
-      - name: Check out without the cache
-        if: steps.checkout.outcome == 'failure'
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Discard a damaged cached .git
+        run: |
+          if [ -d .git ] && ! { git rev-parse --verify -q HEAD >/dev/null &&
+              git fsck --connectivity-only --no-progress >/dev/null 2>&1; }; then
+            echo "::warning title=.git cache::git fsck rejected the restored .git; checking out without it."
+            rm -rf .git
+          fi
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           submodules: recursive
           persist-credentials: false
@@ -498,21 +477,14 @@ jobs:
           restore-keys: |
             git-v1-${{ runner.os }}-${{ steps.git-day.outputs.month }}-
             git-v1-${{ runner.os }}-
-      - name: Check out over the cached .git
-        id: checkout
-        continue-on-error: true
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          submodules: recursive
-          persist-credentials: false
-          sparse-checkout: ${{ env.CHECKOUT_SPARSE }}
-          sparse-checkout-cone-mode: false
-      - name: Discard the cached .git
-        if: steps.checkout.outcome == 'failure'
-        run: find . -mindepth 1 -delete
-      - name: Check out without the cache
-        if: steps.checkout.outcome == 'failure'
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Discard a damaged cached .git
+        run: |
+          if [ -d .git ] && ! { git rev-parse --verify -q HEAD >/dev/null &&
+              git fsck --connectivity-only --no-progress >/dev/null 2>&1; }; then
+            echo "::warning title=.git cache::git fsck rejected the restored .git; checking out without it."
+            rm -rf .git
+          fi
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           submodules: recursive
           persist-credentials: false
@@ -703,21 +675,14 @@ jobs:
           restore-keys: |
             git-v1-${{ runner.os }}-${{ steps.git-day.outputs.month }}-
             git-v1-${{ runner.os }}-
-      - name: Check out over the cached .git
-        id: checkout
-        continue-on-error: true
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          submodules: recursive
-          persist-credentials: false
-          sparse-checkout: ${{ env.CHECKOUT_SPARSE }}
-          sparse-checkout-cone-mode: false
-      - name: Discard the cached .git
-        if: steps.checkout.outcome == 'failure'
-        run: find . -mindepth 1 -delete
-      - name: Check out without the cache
-        if: steps.checkout.outcome == 'failure'
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Discard a damaged cached .git
+        run: |
+          if [ -d .git ] && ! { git rev-parse --verify -q HEAD >/dev/null &&
+              git fsck --connectivity-only --no-progress >/dev/null 2>&1; }; then
+            echo "::warning title=.git cache::git fsck rejected the restored .git; checking out without it."
+            rm -rf .git
+          fi
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           submodules: recursive
           persist-credentials: false
@@ -913,21 +878,14 @@ jobs:
           restore-keys: |
             git-v1-${{ runner.os }}-${{ steps.git-day.outputs.month }}-
             git-v1-${{ runner.os }}-
-      - name: Check out over the cached .git
-        id: checkout
-        continue-on-error: true
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          submodules: recursive
-          persist-credentials: false
-          sparse-checkout: ${{ env.CHECKOUT_SPARSE }}
-          sparse-checkout-cone-mode: false
-      - name: Discard the cached .git
-        if: steps.checkout.outcome == 'failure'
-        run: find . -mindepth 1 -delete
-      - name: Check out without the cache
-        if: steps.checkout.outcome == 'failure'
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Discard a damaged cached .git
+        run: |
+          if [ -d .git ] && ! { git rev-parse --verify -q HEAD >/dev/null &&
+              git fsck --connectivity-only --no-progress >/dev/null 2>&1; }; then
+            echo "::warning title=.git cache::git fsck rejected the restored .git; checking out without it."
+            rm -rf .git
+          fi
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           submodules: recursive
           persist-credentials: false
@@ -1056,21 +1014,14 @@ jobs:
           restore-keys: |
             git-v1-${{ runner.os }}-${{ steps.git-day.outputs.month }}-
             git-v1-${{ runner.os }}-
-      - name: Check out over the cached .git
-        id: checkout
-        continue-on-error: true
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          submodules: recursive
-          persist-credentials: false
-          sparse-checkout: ${{ env.CHECKOUT_SPARSE }}
-          sparse-checkout-cone-mode: false
-      - name: Discard the cached .git
-        if: steps.checkout.outcome == 'failure'
-        run: find . -mindepth 1 -delete
-      - name: Check out without the cache
-        if: steps.checkout.outcome == 'failure'
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Discard a damaged cached .git
+        run: |
+          if [ -d .git ] && ! { git rev-parse --verify -q HEAD >/dev/null &&
+              git fsck --connectivity-only --no-progress >/dev/null 2>&1; }; then
+            echo "::warning title=.git cache::git fsck rejected the restored .git; checking out without it."
+            rm -rf .git
+          fi
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           submodules: recursive
           persist-credentials: false
@@ -1125,21 +1076,14 @@ jobs:
           restore-keys: |
             git-v1-${{ runner.os }}-${{ steps.git-day.outputs.month }}-
             git-v1-${{ runner.os }}-
-      - name: Check out over the cached .git
-        id: checkout
-        continue-on-error: true
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          submodules: recursive
-          persist-credentials: false
-          sparse-checkout: ${{ env.CHECKOUT_SPARSE }}
-          sparse-checkout-cone-mode: false
-      - name: Discard the cached .git
-        if: steps.checkout.outcome == 'failure'
-        run: find . -mindepth 1 -delete
-      - name: Check out without the cache
-        if: steps.checkout.outcome == 'failure'
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Discard a damaged cached .git
+        run: |
+          if [ -d .git ] && ! { git rev-parse --verify -q HEAD >/dev/null &&
+              git fsck --connectivity-only --no-progress >/dev/null 2>&1; }; then
+            echo "::warning title=.git cache::git fsck rejected the restored .git; checking out without it."
+            rm -rf .git
+          fi
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           submodules: recursive
           persist-credentials: false
@@ -1190,21 +1134,14 @@ jobs:
           restore-keys: |
             git-v1-${{ runner.os }}-${{ steps.git-day.outputs.month }}-
             git-v1-${{ runner.os }}-
-      - name: Check out over the cached .git
-        id: checkout
-        continue-on-error: true
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          submodules: recursive
-          persist-credentials: false
-          sparse-checkout: ${{ env.CHECKOUT_SPARSE }}
-          sparse-checkout-cone-mode: false
-      - name: Discard the cached .git
-        if: steps.checkout.outcome == 'failure'
-        run: find . -mindepth 1 -delete
-      - name: Check out without the cache
-        if: steps.checkout.outcome == 'failure'
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Discard a damaged cached .git
+        run: |
+          if [ -d .git ] && ! { git rev-parse --verify -q HEAD >/dev/null &&
+              git fsck --connectivity-only --no-progress >/dev/null 2>&1; }; then
+            echo "::warning title=.git cache::git fsck rejected the restored .git; checking out without it."
+            rm -rf .git
+          fi
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           submodules: recursive
           persist-credentials: false

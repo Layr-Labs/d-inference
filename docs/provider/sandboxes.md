@@ -10,19 +10,75 @@ into your Darkbloom balance.
 
 ## Prerequisites
 
-- A Mac with Apple silicon and macOS 27 or later, with room for at least one job
-  after what stays yours and what inference keeps. `darkbloom sandbox setup`
-  checks this before it installs anything; the rules are in the
-  [CLI reference](./cli-reference.md#setup).
-- Free disk for the jobs. A tenth of the disk, 50 to 100 GiB, stays free for
-  you. The first job of a platform also needs that platform's VM images
-  (Linux 4 GiB, macOS 46 GiB, nothing once installed). Each Linux job needs a
-  30 GiB scratch disk and each macOS job 40 GiB.
+- A Mac with Apple silicon and macOS 27 or later, with the memory, cores and
+  free disk for at least one job: see [What this Mac needs](#what-this-mac-needs).
+  `darkbloom sandbox setup` measures this Mac and shows its plan before it
+  installs anything.
 - A Darkbloom account that Darkbloom approved to host sandboxes. An account not
   approved yet joins a waitlist, and the Mac enrolls once it is approved.
 - The Mac plugged in, never sleeping on its power adapter, and logged in at the
   desktop, where the add-on runs. Ethernet works better than Wi-Fi.
 - Outbound HTTPS to `api-sandbox.darkbloom.dev`.
+
+### What this Mac needs
+
+Read this before you run setup. Setup uses the same rules and shows the result
+for this Mac (step 1); nothing changes until you answer `y`. The rules as a
+table are in the [CLI reference](./cli-reference.md#setup).
+
+**Memory and cores.** Jobs get only what is left after what stays yours and
+what inference keeps:
+
+- You keep a quarter of the cores (at least 2) and a quarter of the memory (at
+  least 8 GB).
+- When the inference provider runs on this Mac, it keeps another quarter of the
+  memory.
+- Each Linux job takes 4 cores and 16 GB of what is left. Each macOS job takes
+  8 cores and 16 GB. A Mac runs at most 16 Linux jobs and 2 macOS jobs (macOS
+  runs at most two macOS VMs, your own included).
+
+| To run at a time | Memory without inference | Memory with inference | Cores |
+|---|---|---|---|
+| One Linux job | 24 GB | 32 GB | 6 |
+| One macOS job | 24 GB | 32 GB | 10 |
+| One Linux and one macOS job | 43 GB (a 48 GB Mac) | 64 GB | 15 (a 16-core Mac) |
+
+Jobs are counted at the smaller VM size. Some repositories ask for a larger VM
+(Linux 8 cores and 32 GB, macOS 12 cores and 32 GB). Such a job starts only when
+this Mac reports that much free; a 12-core, 32 GB macOS job beside inference
+takes 16 cores and 64 GB.
+
+**Disk.** On the disk that holds your home folder:
+
+- A tenth of the disk, at least 50 GiB and at most 100 GiB, always stays free
+  for you.
+- The first job of a platform also needs that platform's VM images: Linux
+  4 GiB, macOS 46 GiB (nothing once they are installed).
+- Each Linux job needs 30 GiB for its scratch disk, and each macOS job 40 GiB.
+
+So a first install needs, above the free tenth: about 34 GiB for one Linux job,
+86 GiB for one macOS job, or 120 GiB for one of each. Free disk is what
+`df -h ~` shows under `Avail`.
+
+**Recommended Macs.**
+
+| Tier | Cores | Memory | Free disk before setup | Jobs |
+|---|---|---|---|---|
+| macOS and Linux | 24 or more | 128 GB or more | 400 GB or more | A macOS job and Linux jobs at the same time |
+| macOS | 16 or more | 64 GB or more | 250 GB or more | Usually one job at a time, macOS or Linux; with 128 GB, a Linux job beside a macOS one |
+| Linux only | 10 to 14 | 32 GB or more | 100 GB or more (150 GB on a disk larger than 512 GB) | Linux jobs only |
+
+Examples, with enough free disk and the inference provider running unless
+stated:
+
+| Mac | Linux jobs | macOS jobs |
+|---|---|---|
+| 8 cores, 16 GB | 0 (setup stops) | 0 |
+| 12 cores, 32 GB | 1 | 0 |
+| 16 cores, 48 GB | 1 | 0 (1 without inference) |
+| 16 cores, 128 GB | 1 | 1 |
+| 24 cores, 192 GB | 2 | 1 |
+| 32 cores, 512 GB | 2 | 2 |
 
 ## Steps
 

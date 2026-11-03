@@ -165,7 +165,7 @@ VALIDATE_GIT = """if [ -d .git ] && ! { git rev-parse --verify -q HEAD >/dev/nul
   echo "::warning title=.git cache::git fsck rejected the restored .git; checking out without it."
   rm -rf .git
 fi"""
-SPARSE_PATTERNS = ("/*", "!/docs/reports/evidence/", "!/landing/public/media/")
+SPARSE_PATTERNS = ("/*", "!/docs/reports/evidence/**/*.gz", "!/landing/public/media/")
 GIT_CACHE_STEPS = ("Select today's .git cache", "Restore the newest saved .git",
                    "Discard a damaged cached .git", None, "Save .git for later runs")
 
@@ -891,7 +891,7 @@ class ProviderCIWorkflowTests(unittest.TestCase):
                     self.assertEqual("::warning" in result.stdout, case == "damaged")
             self.assertTrue(tree)
 
-    def test_sparse_checkouts_skip_only_report_evidence_and_landing_media(self):
+    def test_sparse_checkouts_skip_only_evidence_tarballs_and_landing_media(self):
         env = self.workflow.split("\njobs:\n", 1)[0]
         self.assertIn("  CHECKOUT_SPARSE: |\n" + "".join(f"    {pattern}\n" for pattern in SPARSE_PATTERNS), env)
         self.assertEqual(self.workflow.count("sparse-checkout: ${{ env.CHECKOUT_SPARSE }}"), 8)
@@ -900,12 +900,14 @@ class ProviderCIWorkflowTests(unittest.TestCase):
                       + "".join(f"            {pattern}\n" for pattern in SPARSE_PATTERNS)
                       + "          sparse-checkout-cone-mode: false\n", docs_impact)
         # Real git decides what the patterns keep: every file a job may read,
-        # including the report a provider test hashes, but no evidence or media.
+        # including the report a provider test hashes and the evidence harness
+        # manifest the provider CI cache hashes, but no evidence tarball or media.
         kept = ["Makefile", "docs/reports/report.md", "docs/reports/archive.tar.gz",
+                "docs/reports/evidence/run/cpu-harness/Package.swift", "docs/reports/evidence/notes.json",
                 "provider-swift/Tests/Fixtures/clip.mp4", "fixtures/data.gz", "landing/src/page.tsx",
                 "landing/README.md", "landing/public/favicon.svg",
                 "docs/reports/2026-10-31-public-cluster-models.md"]
-        skipped = ["docs/reports/evidence/run/packets.jsonl.gz", "docs/reports/evidence/notes.json",
+        skipped = ["docs/reports/evidence/run/packets.jsonl.gz", "docs/reports/evidence/payloads.tar.gz",
                    "landing/public/media/demo.mp4", "landing/public/media/poster.png"]
         with tempfile.TemporaryDirectory() as work:
             def git(*args):
@@ -921,6 +923,14 @@ class ProviderCIWorkflowTests(unittest.TestCase):
             self.assertEqual([path for path in kept if not (Path(work) / path).is_file()], [])
             self.assertEqual([path for path in skipped if (Path(work) / path).exists()], [])
         self.assertTrue((ROOT / "docs/reports/2026-10-31-public-cluster-models.md").is_file())
+        # scripts/provider-ci-cache.py hashes every tracked Package.swift,
+        # Package.resolved and .gitmodules; the patterns must keep each one.
+        tracked = subprocess.run(["git", "-C", str(ROOT), "ls-files", "-z"], check=True,
+                                 capture_output=True, text=True).stdout.split("\0")
+        manifests = [path for path in tracked if Path(path).name in {"Package.swift", "Package.resolved", ".gitmodules"}]
+        self.assertIn("docs/reports/evidence/ssd-read-coordination-runtime-2026-09-06/cpu-harness/Package.swift", manifests)
+        self.assertEqual([path for path in manifests
+                          if path.endswith(".gz") or path.startswith("landing/public/media/")], [])
 
     def test_composite_action_cannot_bypass_build_and_metallib_on_cache_hits(self):
         action = ACTION.read_text()

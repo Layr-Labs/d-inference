@@ -334,11 +334,13 @@ later runs that day restore the exact key and save nothing. Checkouts set
 `persist-credentials: false`, so the saved `.git/config` holds no job token.
 
 Checkouts download only what their job reads. Every checkout but Docs Lint's
-skips `docs/reports/evidence` and `landing/public/media` (`CHECKOUT_SPARSE`,
-415 MB of evidence tarballs, landing videos and their companions): a sparse
+skips the `.gz` tarballs under `docs/reports/evidence` and `landing/public/media`
+(`CHECKOUT_SPARSE`, 408 MB of evidence tarballs and landing videos): a sparse
 checkout fetches commits and trees without file contents (`blob:none`), then
-only the files it checks out. The reports themselves stay, because a provider
-test hashes `docs/reports/2026-10-31-public-cluster-models.md`. Docs Lint
+only the files it checks out. The reports and the rest of the evidence stay: a
+provider test hashes `docs/reports/2026-10-31-public-cluster-models.md`, and
+`scripts/provider-ci-cache.py` hashes every tracked `Package.swift`, including
+one under `docs/reports/evidence`. Docs Lint
 checks link targets on disk, so it checks out every file, but fetches history
 with `filter: blob:none`; the provenance check then fetches the old document
 versions it reads (about 29 MiB for its 12 checks). Docs Impact

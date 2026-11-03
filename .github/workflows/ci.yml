@@ -17,11 +17,12 @@ env:
   # Only pushes to master and dev save caches. A pull request restores its
   # base branch's entries and saves none (docs/developer/build.md#ci-caching).
   SAVE_CACHES: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/dev') }}
-  # Every checkout but Docs Lint's skips the report evidence and landing media
-  # (415 MB of the tree), which only Docs Lint reads.
+  # Every checkout but Docs Lint's skips the evidence tarballs and landing media
+  # (408 MB of the tree), which only Docs Lint reads. The rest of the evidence
+  # stays: provider-ci-cache.py hashes every tracked Package.swift.
   CHECKOUT_SPARSE: |
     /*
-    !/docs/reports/evidence/
+    !/docs/reports/evidence/**/*.gz
     !/landing/public/media/
 
 # Only revisions of the same PR supersede each other; pushes stay independent.

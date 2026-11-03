@@ -4323,6 +4323,12 @@ vocabulary rows, so each end counts as divided. The family also states its
 routing, 8 of 128 experts (`expertRouting`, `isRoutedExpert`), so the hardware
 prior reads 2,424,219,708 weight bytes per QAT 4-bit token.
 
+**Prefill schedule.** A tensor-parallel candidate prefills serially
+(`ClusterPrefillSchedule.planned`): every tensor-parallel runtime, Gemma's and
+MiMo's included, admits only `serial_v1`, while a pipeline of the same model
+takes the one-chunk lookahead. Planned with the lookahead, a Gemma or MiMo pair
+in tensor parallel saved a setup its runtime refused at load (2026-11-03).
+
 **The fastest-plan rule.** `ClusterTensorParallelChoice.fastest` exempts a
 family from `ClusterPlacementPolicy.tensorParallelFirst`: its tensor-parallel
 candidate is ranked by the planner's own comparison, which chooses it only when

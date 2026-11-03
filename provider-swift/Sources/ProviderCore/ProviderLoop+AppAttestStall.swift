@@ -267,41 +267,4 @@ extension ProviderLoop {
             logger.warning("App Attest: cannot persist the verified marker: \(error)")
         }
     }
-
-    /// A version before `AppAttestVerifiedMarker` never wrote it, so the first
-    /// `is_supported_false` after an update from it would not restart. Seed the
-    /// marker once, while it is missing, from what that version left in
-    /// `daemon-state.json`. Runs before this process writes its own state.
-    internal func seedAppAttestVerifiedFromPreviousRun() {
-        let marker = appAttestVerifiedMarker()
-        // The usual eligibility rules (7 days, after the last restart) apply
-        // to the seeded time as to any other.
-        guard !FileManager.default.fileExists(atPath: marker.url.path),
-              let previous = DaemonStateFile.read(from: daemonStateFileOverride ?? DaemonStateFile.path()),
-              let verifiedAt = Self.appAttestVerifiedEvidence(in: previous) else { return }
-        do {
-            try marker.record(verifiedAt)
-            logger.info("App Attest: seeded the verified marker from the previous provider's state")
-        } catch {
-            logger.warning("App Attest: cannot seed the verified marker: \(error)")
-        }
-    }
-
-    /// The latest time an earlier provider's state shows App Attest working on
-    /// this Mac: a coordinator App Attest grant (cleared at a disconnect, so
-    /// often absent after a clean restart), or a stored key that Apple attested,
-    /// at its last successful Apple attestation or assertion. Nil without a time.
-    static func appAttestVerifiedEvidence(in state: DaemonState) -> Date? {
-        var times: [Double] = []
-        if let trust = state.trust, let grant = trust.authorization,
-           grant.hasCurrentAppAttestAuthorization(now: trust.receivedAt) {
-            times.append(trust.receivedAt)
-        }
-        if let status = state.appAttest, status.key?.attested == true,
-           let age = status.keyHistory?.lastSuccessAgeSeconds, age >= 0 {
-            let anchor = status.keyHistoryObservedAt ?? status.observedAt
-            times.append(anchor - Double(age))
-        }
-        return times.filter(\.isFinite).max().map(Date.init(timeIntervalSince1970:))
-    }
 }

@@ -537,46 +537,107 @@ struct AppAttestUnsupportedRestartTests {
         #expect(await loop.appAttestUnsupportedSince == nil)
         #expect(await loop.appAttestStallMonitorTask == nil)
     }
+}
 
-    /// The daemon-state shape that v0.10.5 to v0.10.6 and dev builds before the
-    /// verified marker leave behind: an attested key with its last Apple success.
+/// The first `is_supported_false` episode after an update from a version that
+/// never wrote `app-attest-verified.json`.
+@Suite("App Attest verified marker seed")
+struct AppAttestVerifiedSeedTests {
+    /// The shape the serving provider writes, through today's encoder.
     private func previousRunState(at now: Date, attested: Bool = true, lastSuccessAge: Int? = 600,
+                                  unsupported: Bool = false,
                                   grant: ProviderAuthorizationStatus? = nil, grantAt: Date? = nil) -> DaemonState {
-        let status = AppAttestLocalStatus(
-            observedAt: now.timeIntervalSince1970 - 30, launchSession: .gui,
-            key: AppAttestKeyState(recordPresent: true, attested: attested, generationBlockedUntil: nil),
-            keyHistory: AppAttestKeyHistory(lastSuccessAgeSeconds: lastSuccessAge),
-            keyHistoryObservedAt: now.timeIntervalSince1970 - 30)
+        let status = unsupported
+            ? AppAttestLocalStatus(observedAt: now.timeIntervalSince1970 - 30, launchSession: .gui,
+                                   availabilityReason: .isSupportedFalse)
+            : AppAttestLocalStatus(
+                observedAt: now.timeIntervalSince1970 - 30, launchSession: .gui,
+                key: AppAttestKeyState(recordPresent: true, attested: attested, generationBlockedUntil: nil),
+                keyHistory: AppAttestKeyHistory(lastSuccessAgeSeconds: lastSuccessAge),
+                keyHistoryObservedAt: now.timeIntervalSince1970 - 30)
         let trust = grant.map { DaemonState.Trust(trustLevel: "self_signed", status: "online", reason: "",
                                                    receivedAt: (grantAt ?? now).timeIntervalSince1970, authorization: $0) }
         return DaemonState(pid: 1, version: "0.10.6", writtenAt: now.timeIntervalSince1970 - 30,
                            startedAt: 0, trust: trust, appAttest: status)
     }
 
-    @Test func previousRunEvidenceIsAnAttestedKeysLastSuccessOrAGrant() {
-        let now = wholeSecondsNow()
-        #expect(ProviderLoop.appAttestVerifiedEvidence(in: previousRunState(at: now))
-                == now.addingTimeInterval(-630))
-        #expect(ProviderLoop.appAttestVerifiedEvidence(in: previousRunState(at: now, attested: false)) == nil,
-                "a key Apple never attested is no evidence")
-        #expect(ProviderLoop.appAttestVerifiedEvidence(in: previousRunState(at: now, lastSuccessAge: nil)) == nil,
-                "evidence without a time is not used")
-        // A grant newer than the key's last success wins.
-        let granted = previousRunState(at: now, lastSuccessAge: 7200,
-            grant: appAttestGrant(expiresAt: now.timeIntervalSince1970 + 900), grantAt: now.addingTimeInterval(-60))
-        #expect(ProviderLoop.appAttestVerifiedEvidence(in: granted) == now.addingTimeInterval(-60))
-        // A legacy path or an expired lease is not a grant.
-        let legacy = previousRunState(at: now, attested: false,
-            grant: appAttestGrant(expiresAt: now.timeIntervalSince1970 + 900, path: "legacy"))
-        #expect(ProviderLoop.appAttestVerifiedEvidence(in: legacy) == nil)
-        let expired = previousRunState(at: now, attested: false,
-            grant: appAttestGrant(expiresAt: now.timeIntervalSince1970 - 1))
-        #expect(ProviderLoop.appAttestVerifiedEvidence(in: expired) == nil)
+    private func stateDirectory() throws -> URL {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        return root
     }
 
-    /// The first episode after an update from a version that never wrote the
-    /// verified marker: the seed arms the restart; every other guard still holds.
-    @Test func firstUnsupportedEpisodeAfterAnUpdateFromAnOlderVersionArmsOnce() async throws {
+    @Test func evidenceIsAnAttestedKeysLastSuccessOrAGrant() {
+        let now = wholeSecondsNow()
+        #expect(previousRunState(at: now).appAttestVerifiedAt == now.addingTimeInterval(-630))
+        #expect(previousRunState(at: now, attested: false).appAttestVerifiedAt == nil,
+                "a key Apple never attested is no evidence")
+        #expect(previousRunState(at: now, lastSuccessAge: nil).appAttestVerifiedAt == nil,
+                "evidence without a time is not used")
+        // The previous process was itself unsupported: it published no key.
+        #expect(previousRunState(at: now, unsupported: true).appAttestVerifiedAt == nil)
+        // A grant (left only by an unclean exit) newer than the key's last success wins.
+        let granted = previousRunState(at: now, lastSuccessAge: 7200,
+            grant: appAttestGrant(expiresAt: now.timeIntervalSince1970 + 900), grantAt: now.addingTimeInterval(-60))
+        #expect(granted.appAttestVerifiedAt == now.addingTimeInterval(-60))
+        let legacy = previousRunState(at: now, attested: false,
+            grant: appAttestGrant(expiresAt: now.timeIntervalSince1970 + 900, path: "legacy"))
+        #expect(legacy.appAttestVerifiedAt == nil)
+        let expired = previousRunState(at: now, attested: false,
+            grant: appAttestGrant(expiresAt: now.timeIntervalSince1970 - 1))
+        #expect(expired.appAttestVerifiedAt == nil)
+    }
+
+    /// A file as v0.10.6 writes it (snake_case keys, its field set), not one
+    /// from today's encoder: a future required field would break the seed.
+    @Test func aDaemonStateWrittenByV0106Seeds() throws {
+        let root = try stateDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let now = 1_793_700_000.0
+        let json = """
+        {"schema":1,"pid":4242,"version":"0.10.6","written_at":\(now),"started_at":\(now - 3600),
+         "warm_models":[],"inference_active":false,
+         "stats":{"requests_served":3,"tokens_generated":40,"usage_gaps":0},
+         "app_attest":{"observed_at":\(now - 20),"launch_session":"gui","boot_time":1789441846,
+           "key":{"record_present":true,"attested":true},
+           "key_history":{"generations_last_24h":0,"last_success_age_seconds":120,"key_age_seconds":86400},
+           "key_history_observed_at":\(now - 20)}}
+        """
+        let stateFile = root.appendingPathComponent("daemon-state.json")
+        try Data(json.utf8).write(to: stateFile)
+        let seeded = AppAttestVerifiedMarker.seedFromPreviousRun(stateFile: stateFile, now: Date(timeIntervalSince1970: now))
+        #expect(seeded == Date(timeIntervalSince1970: now - 140))
+        #expect(AppAttestVerifiedMarker(directory: root).lastVerified() == Date(timeIntervalSince1970: now - 140))
+    }
+
+    @Test func seedWritesOnlyAMissingMarkerWithRecentEvidence() throws {
+        let root = try stateDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let stateFile = root.appendingPathComponent("state.json")
+        let marker = AppAttestVerifiedMarker(directory: root)
+        let now = wholeSecondsNow()
+
+        // No previous state, or evidence older than 7 days: nothing is written,
+        // so fresher evidence can still seed later.
+        #expect(AppAttestVerifiedMarker.seedFromPreviousRun(stateFile: stateFile, now: now) == nil)
+        let old = Int(AppAttestStallRestartPolicy.verifiedWithin) + 3600
+        DaemonStateFile.write(previousRunState(at: now, lastSuccessAge: old), to: stateFile)
+        #expect(AppAttestVerifiedMarker.seedFromPreviousRun(stateFile: stateFile, now: now) == nil)
+        #expect(!FileManager.default.fileExists(atPath: marker.url.path))
+
+        DaemonStateFile.write(previousRunState(at: now), to: stateFile)
+        #expect(AppAttestVerifiedMarker.seedFromPreviousRun(stateFile: stateFile, now: now) == now.addingTimeInterval(-630))
+        // Seeded once: newer evidence never replaces an existing marker, even a damaged one.
+        DaemonStateFile.write(previousRunState(at: now.addingTimeInterval(60), lastSuccessAge: 0), to: stateFile)
+        #expect(AppAttestVerifiedMarker.seedFromPreviousRun(stateFile: stateFile, now: now) == nil)
+        #expect(marker.lastVerified() == now.addingTimeInterval(-630))
+        try Data("not json".utf8).write(to: marker.url)
+        #expect(AppAttestVerifiedMarker.seedFromPreviousRun(stateFile: stateFile, now: now) == nil)
+        #expect(marker.lastVerified() == nil, "a damaged marker is no evidence and is not replaced")
+    }
+
+    /// The seed arms the restart on the first episode; every other guard holds.
+    @Test func firstUnsupportedEpisodeAfterAnUpdateFromAnOlderVersionRestartsOnce() async throws {
         let (loop, root) = try await lifecycleLoop()
         defer { try? FileManager.default.removeItem(at: root) }
         let install = try UpdateRecoveryFixture()
@@ -586,44 +647,32 @@ struct AppAttestUnsupportedRestartTests {
                                             updater: install.updater(baseURL: URL(string: "http://127.0.0.1:9")!))
         await loop.installIdleAppAttestClient()
         let now = wholeSecondsNow()
-        DaemonStateFile.write(previousRunState(at: now), to: root.appendingPathComponent("state.json"))
-        let verified = AppAttestVerifiedMarker(directory: root)
-        #expect(verified.lastVerified() == nil)
-
-        await loop.seedAppAttestVerifiedFromPreviousRun()
-        #expect(verified.lastVerified() == now.addingTimeInterval(-630))
+        let stateFile = root.appendingPathComponent("state.json")
+        DaemonStateFile.write(previousRunState(at: now), to: stateFile)
+        #expect(AppAttestVerifiedMarker.seedFromPreviousRun(stateFile: stateFile, now: now) != nil)
 
         await loop.noteAppAttestAvailability(
             unsupportedReady(), now: now.addingTimeInterval(-AppAttestStallRestartPolicy.unsupportedThreshold - 60))
         #expect(await waitFor { restarts.routes.count == 1 })
         #expect(restarts.routes == [.launchd])
-
-        // Seeded once: the next process does not seed again from older state,
-        // so the restart does not repeat for the same episode.
-        DaemonStateFile.write(previousRunState(at: now.addingTimeInterval(60), lastSuccessAge: 0),
-                              to: root.appendingPathComponent("state.json"))
-        await loop.seedAppAttestVerifiedFromPreviousRun()
-        #expect(verified.lastVerified() == now.addingTimeInterval(-630), "an existing marker is never overwritten")
+        // The same episode in the next process: the seeded time is older than
+        // the restart, so it does not restart again.
         await loop.noteAppAttestAvailability(unsupportedReady(), now: now.addingTimeInterval(120))
         #expect(await loop.appAttestUnsupportedSince == nil, "one restart per episode")
         await loop.cancelAppAttestStallMonitor()
     }
 
-    @Test func seedNeedsEvidenceFromTheLast7Days() async throws {
+    /// An older version's stall restart after the seeded evidence also counts.
+    @Test func aStallRestartByTheOlderVersionAfterTheEvidenceBlocksTheRestart() async throws {
         let (loop, root) = try await lifecycleLoop()
         defer { try? FileManager.default.removeItem(at: root) }
         await loop.setAppAttestRestartSeams(route: .launchd, supported: false)
         let now = wholeSecondsNow()
-        let old = Int(AppAttestStallRestartPolicy.verifiedWithin) + 3600
-        DaemonStateFile.write(previousRunState(at: now, lastSuccessAge: old), to: root.appendingPathComponent("state.json"))
-        await loop.seedAppAttestVerifiedFromPreviousRun()
+        let stateFile = root.appendingPathComponent("state.json")
+        DaemonStateFile.write(previousRunState(at: now), to: stateFile)
+        try AppAttestStallRestartMarker(directory: root).record(now.addingTimeInterval(-60))
+        #expect(AppAttestVerifiedMarker.seedFromPreviousRun(stateFile: stateFile, now: now) != nil)
         await loop.noteAppAttestAvailability(unsupportedReady(), now: now)
-        #expect(await loop.appAttestUnsupportedSince == nil, "evidence older than 7 days does not arm the restart")
-
-        // No previous state at all: nothing is seeded.
-        let (fresh, freshRoot) = try await lifecycleLoop()
-        defer { try? FileManager.default.removeItem(at: freshRoot) }
-        await fresh.seedAppAttestVerifiedFromPreviousRun()
-        #expect(!FileManager.default.fileExists(atPath: AppAttestVerifiedMarker(directory: freshRoot).url.path))
+        #expect(await loop.appAttestUnsupportedSince == nil)
     }
 }

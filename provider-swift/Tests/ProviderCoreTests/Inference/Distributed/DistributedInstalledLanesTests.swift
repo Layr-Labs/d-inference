@@ -23,6 +23,15 @@ struct DistributedInstalledLanesTests {
         #expect(!Plan.lanesRetireAlone(adapter: .gemma4LayerStage, mode: .tensorParallel, hasPrivateImages: false, lanes: 1))
     }
 
+    @Test func mimoTensorParallelServesOneRequestAtATime() {
+        #expect(Plan.defaultBatchLanes(adapter: .mimoV26LayerStage, mode: .tensorParallel, hasPrivateImages: false) == nil)
+        #expect(Plan.tensorParallelLaneAdapters[.mimoV26LayerStage] == nil)
+        for lanes in 1...8 {
+            #expect(!Plan.lanesRetireAlone(adapter: .mimoV26LayerStage, mode: .tensorParallel, hasPrivateImages: false, lanes: lanes))
+        }
+        #expect(Plan.defaultBatchLanes(adapter: .mimoV26LayerStage, mode: .pipeline, hasPrivateImages: false) == Plan.defaultBatchLanes)
+    }
+
     @Test func lightningSupportsExplicitPipelineLanesWithSingletonDefault() {
         #expect(Plan.laneAdapters.contains(.nemotronH))
         #expect(Plan.defaultBatchLanes(adapter: .nemotronH, mode: .pipeline, hasPrivateImages: false) == 1)

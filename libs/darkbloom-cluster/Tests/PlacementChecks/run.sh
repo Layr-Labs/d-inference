@@ -78,6 +78,8 @@ xcrun swiftc -j 4 "${task_flags[@]}" -parse-as-library "${task_links[@]}" -lDark
   "$R/Models/MiMo/Metadata/MiMoRegisteredSpecification.swift" \
   "$R/Models/MiMo/Metadata/MiMoLayerStagePlan.swift" \
   "$R/Models/MiMo/Metadata/MiMoRequestStateBudget.swift" \
+  "$R/Models/MiMo/TensorParallel/MiMoTensorParallelPlan.swift" \
+  "$R/Models/MiMo/TensorParallel/MiMoTensorParallelRequestBudget.swift" \
   "$R/Models/MiMo/Metadata/MiMoPlacementFamily.swift" \
   "$R/Models/Gemma4/Metadata/Gemma4RegisteredSpecification.swift" \
   "$R/Models/Gemma4/Metadata/Gemma4StageGeometry.swift" \

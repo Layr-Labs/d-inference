@@ -1458,6 +1458,107 @@ neither real-weight numerics, a pair qualification nor speed.
    The script also prints QualificationComparator's verdict for each rank
    against `full`.
 
+## Focused MiMo V2.6 tensor-parallel checks
+
+These checks use synthetic weights on one Mac, over loopback only. They prove
+neither real-weight numerics, a pair qualification nor speed. Never load the
+registered artifact for them.
+
+1. Run the unit tests. The FP32-partial suite runs on the GPU, so stage the
+   source-matched `mlx.metallib` in the test bundle first
+   (`scripts/stage-test-metallib.sh`):
+
+   ```bash
+   swift test --package-path libs/darkbloom-cluster --filter MiMoTensorParallel
+   ```
+
+   They cover:
+
+   - the plan against the registered 1,732-tensor inventory and configuration
+     (`darkbloom-cluster-worker/Tests/CapabilityChecks/Fixtures`), per-rank
+     bytes and the SDK shard's agreement on every cut axis;
+   - refusals of renamed, foreign, excluded and odd-shaped tensors;
+   - the shard configuration and per-rank KV geometry;
+   - shard cuts and byte runs against independent slices;
+   - two in-process ranks against each other and the whole model;
+   - FP32 partials (`MiMoTensorParallelFloat32PartialTests`, on the GPU): two
+     ranks' expert rows add up bit for bit to the exact full-width row that
+     one Mac rounds once, through the decode-expert kernel and MLX's sorted
+     gather; every partial a rank sums is FP32, and no `o_proj` or dense
+     partial was rounded to BF16 first; the contract v2 strings are pinned;
+   - the vocabulary-split head against the whole head;
+   - the resident runtime's verified load: each rank reads exactly its shard's
+     bytes, and a tampered or foreign checkpoint is refused;
+   - its paged requests: ranks agree bit for bit and equal the ordinary caches,
+     with per-rank paged geometry, the selection rules, logprobs (an exactly
+     tied maximum included), every stop kind (the owner's stop just before a
+     stop token included), the request and load agreements, the request budget
+     and the text-only launch.
+
+   `libs/darkbloom-cluster/Tests/PlacementChecks/run.sh` also runs
+   `MiMoTensorParallelChecks.swift` (model-free). It builds the layout from the
+   registered configuration and inventory and requires its tensor-parallel
+   facts (97 sums a step, `fastest_v1`), a rank's share of exactly
+   84,013,770,176 bytes, the routing prior (10,767,036,288 bytes a step), no
+   facts for the image candidate, the same facts in the golden layout, and the
+   rank's reserve (`MiMoTensorParallelRequestBudget`) in the quote. Under the
+   provider's tensor-parallel-first policy it checks the fastest-plan rule on
+   constructed pairs against the plain pipeline: 2x M5 Max 128 GB takes tensor
+   parallel where predicted faster and keeps the pipeline inside the margin or
+   for long prompts; 2x M5 Ultra 256 GB keeps the pipeline on default link
+   costs; measured links flip the choice both ways. As the provider plans MiMo
+   (the speculative pipeline credited the 1.37x its records measured, a fresh
+   pair's 32,768 + 32,768 request), both pairs keep the speculative pipeline
+   until a load measures the link, take tensor parallel for that request on the
+   measured 29 us link, and keep the pipeline for 8,192 + 128 or on a 109 us
+   link. `provider-swift/Tests/ClusterPlacementChecks/run.sh` checks that the
+   guided step credits MiMo's rounds from its shipped records and prints the
+   fastest-plan and logprob lines.
+
+2. Build `darkbloom-cluster-tp-check` and put a source-matched `mlx.metallib`
+   beside it ([build](build.md)). Then run the GPU oracles:
+
+   ```bash
+   bash libs/darkbloom-cluster-worker/Tests/MiMoTensorParallelOracles/run.sh \
+     /path/to/darkbloom-cluster-tp-check /new/scratch/dir 58223
+   ```
+
+   The script synthesizes four variants: `kernel`, `tiny`, `kernel` with every
+   token taking all 8 experts (no route can flip), and FP32 `kernel`. For
+   each, and for a 40-token and a 6-token prompt around the 8-token window, it
+   runs `full`, `simulated` and two `tp` ranks over the sealed local ring on
+   the given port and the next one. It then runs the socket backend once, and
+   one sampled run: temperature 0.8, drawn from the gathered row (by the
+   product's sampler on the paged path). It runs this matrix twice:
+
+   - `contiguous`: the foundation's path (tensors read whole and cut, ordinary
+     caches);
+   - `paged`: the resident runtime's path (`--path paged`: verified load, paged
+     KV, the per-step agreement sum, 100-op decode buffers). Paged histories
+     are BF16 only, so this matrix skips the FP32 variant.
+
+   The paged matrix also checks that:
+
+   - each rank read only its byte runs;
+   - paged `full` and `simulated` equal contiguous ones bit for bit;
+   - ranks given different agreements refuse;
+   - a checkpoint changed after its manifest is refused;
+   - a 192-token prompt (three 64-token pages before decode) gives the same
+     results on both paths and over the ring;
+   - recording route sets (`--record-routes yes`) changes nothing.
+
+   It also reports, without requiring anything of it, where `simulated` first
+   routes a token to other experts than `full`, over the positions whose inputs
+   are still equal (`mimo compare` prints a `route sets:` line).
+
+   `MIMO_ORACLE_PATHS=paged` runs one matrix.
+
+3. Verify. Each `tp` rank must equal `simulated` bit for bit, KV caches
+   included, and greedy ranks must agree with `full` under
+   QualificationComparator (exit status 0). A sampled run's verdict against
+   `full` is informational: rows that differ by rounding can draw a
+   neighbouring token.
+
 ## Focused Tooling Checks
 
 For the PR reviewer, run the seven offline suites listed in

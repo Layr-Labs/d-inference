@@ -78,6 +78,7 @@ LANES = {
     "test-provider": "provider",
     "test-provider-sdk": "sdk",
 }
+PROVIDER_SHARDS = [1, 2, 3, 4, 5]
 # Prompt Parity runs in a provider shard (scripts/provider-test-shards.py PARITY_SHARD).
 PARITY_STEPS = {
     "Verify public prompt golden vectors": ("./scripts/verify-prompt-parity.sh", "ProductionPromptParityTests", "prompt"),
@@ -195,30 +196,41 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         for job_id, lane in LANES.items():
             with self.subTest(lane=lane):
                 job = self.jobs[job_id]
+                if job_id == "test-provider":
+                    # Shards are independent: a failed shard never cancels
+                    # another, and each shard reads a route lane of its own.
+                    self.assertIn("    strategy:\n      # A failed shard does not cancel the other shards.\n"
+                                  "      fail-fast: false\n      matrix:\n        shard: %s\n" % PROVIDER_SHARDS, job)
+                    route_lanes = [f"test-provider-{shard}" for shard in PROVIDER_SHARDS]
+                    lane_key = "format('test-provider-{0}', matrix.shard)"
+                else:
+                    self.assertNotRegex(job, re.compile(r"^    strategy:", re.MULTILINE), msg=job)
+                    route_lanes = [job_id]
+                    lane_key = f"'{job_id}'"
                 # A Darkbloom macOS sandbox when granted, otherwise the same
-                # dedicated Blacksmith runner; requested only when the lane runs.
-                self.assertIn("    runs-on: ${{ fromJSON(needs.route.outputs.routes)['%s'] }}\n" % job_id, job)
-                # The provider lane asks for one runner per shard. The SDK lane
-                # runs on every push and on pull requests that change its inputs.
-                count = 5 if job_id == "test-provider" else 1
+                # dedicated Blacksmith runner; requested only when the job runs.
+                self.assertIn("    runs-on: ${{ fromJSON(needs.route.outputs.routes)[%s] }}\n" % lane_key, job)
+                # The SDK lane runs on every push and on pull requests that change its inputs.
                 condition = (SDK_CONDITION if job_id == "test-provider-sdk"
                              else "needs.changes.outputs.provider == 'true'")
                 requested = f"({condition})" if "||" in condition else condition
-                self.assertIn("        %s macos_arm64 blacksmith-12vcpu-macos-27 "
-                              "${{ %s && %d || 0 }}\n" % (job_id, requested, count),
-                              self.jobs["route"])
+                for route_lane in route_lanes:
+                    self.assertIn("        %s macos_arm64 blacksmith-12vcpu-macos-27 "
+                                  "${{ %s && 1 || 0 }}\n" % (route_lane, requested), self.jobs["route"])
                 self.assertIn("    timeout-minutes: 60\n", job)
                 self.assertIn("    needs: [changes, route]\n", job)
                 self.assertIn("    if: ${{ %s }}\n" % condition, job)
-                if job_id == "test-provider":
-                    # Shards are independent: a failed shard never cancels another.
-                    self.assertIn("    strategy:\n      # A failed shard does not cancel the other shards.\n"
-                                  "      fail-fast: false\n      matrix:\n        shard: [1, 2, 3, 4, 5]\n", job)
-                else:
-                    self.assertNotRegex(job, re.compile(r"^    strategy:", re.MULTILINE), msg=job)
                 self.assertNotIn("continue-on-error:", job)
                 self.assertNotIn("DARKBLOOM_EXCLUSIVE_NATIVE_GPU_TEST:", job)
         self.assertIn("    name: Provider Unit Tests (shard ${{ matrix.shard }})\n", self.jobs["test-provider"])
+
+    def test_route_requests_exactly_one_lane_per_provider_shard(self):
+        # The plane grants a lane whole: one lane for all shards would need a
+        # free Mac for every shard at once and otherwise fall back entirely.
+        # test_lanes_are_independent_on_dedicated_supported_mac_runners pins
+        # the matrix to PROVIDER_SHARDS.
+        self.assertEqual(re.findall(r"(?m)^        (test-provider(?:-[0-9]+)?) ", self.jobs["route"]),
+                         [f"test-provider-{shard}" for shard in PROVIDER_SHARDS])
 
     def test_existing_required_check_requires_every_lane_even_after_failures(self):
         job = self.jobs["provider-test-gate"]

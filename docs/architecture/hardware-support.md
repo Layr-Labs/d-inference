@@ -1209,17 +1209,54 @@ Sources: `libs/darkbloom-cluster/Sources/DarkbloomClusterPlacement/ClusterPlacem
 
 ### Qwen27 TP batch prefix ownership
 
-`QwenTensorParallelBatchPrefixBudget` separately bounds every compact attention,
-conv and SSM array using the native allocator metadata. Full unsliced geometry
-conservatively covers either rank and unequal shares. The complete native
-batch allowance adds one snapshot bank per live lane plus two banks for the
-resident cache; the existing live-state, gather, replacement and collective
-charges remain. The metadata planner and verified LOAD call the same helper.
-A reused prefix does not lower admission or refund the destination's future
-state. The configured budget is a ceiling; cache arrays materialize only on
-capture. See [prefix ownership](prefix-cache.md#cluster-sliding-prefix-adoption).
+`QwenTensorParallelBatchPrefixBudget` prices one plain lane's prompt-prefix
+capture, separately bounding every array with the native allocator metadata:
+its own heads' keys and values to its deepest kept boundary, and one
+convolution and SSM state for every boundary a prompt with that deepest
+boundary keeps (`pricedStates`: the deepest, the margin boundary, and the
+stripe boundaries up to nine, so at most eleven, and never fewer for a longer
+prompt). Each request's reservation charges its own prompt's capture
+(`QwenTensorParallelRequestCharge`); LOAD and the placement quote charge one
+capture of the profile's longest prompt per lane (`promptTokens`), and nothing
+for a resident tier. The geometry is the rank's own heads at LOAD and in each
+rank's placement quote; without a rank, the full unsliced geometry covers either
+rank and unequal shares. The existing live-state, gather, replacement and
+collective charges remain, and a reused prefix does not lower admission or
+refund the destination's future state.
+
+The memory tier that keeps captures after their requests is charged nowhere.
+Its budget is half the room LOAD measures beside its whole quote
+(`ClusterStagePrefixBudget.roomBytes`, `QwenStagePrefixCache.budget(roomBytes:)`):
+at most a thirty-second of the Mac's memory, in 256 MiB steps, and 0 when the
+room is under 512 MiB. The reservation and running-batch gates do not credit
+its entries as the owner's own allocations, nor, while the SSD writer is busy,
+up to its queue's byte bound for the retired captures it still holds; the
+writer drains and then the entries give way before either gate refuses
+(`QwenTensorParallelSnapshotCache.yieldingMemory`). A capture always keeps what
+its request's charge covers. With no tier budget it keeps nothing resident and
+still writes its SSD record. A request whose prompt exceeds the memory plan's
+is charged at its own prompt, outside LOAD's per-lane quote
+([native context](inference.md#qwen27-tensor-parallel-native-context)). The assistant's lanes
+keep their single 4,096-token frontier and its two charged resident banks
+(`QwenTensorParallelMTPPrefixBudget`). See [prefix ownership](prefix-cache.md#cluster-sliding-prefix-adoption).
+
+The registered Qwen3.8 27B, one rank's own heads at the memory plan (32,768
+prompt tokens, 65,536 context, 16 KiB allocator pages;
+`QwenTensorParallelBatchPrefixTests`, `QwenTensorParallelPrefixPlacementTests`):
+
+| Term | Before (`qwen-tp-batch-grid-prefix-4096-v1`) | Now (`qwen-tp-batch-prefix-depth-v2`) |
+|---|---|---|
+| A lane's capture | 212,860,928 B (4,096 tokens) | 1,764,753,408 B (rows to 32,256 and nine recurrent states) |
+| Resident tier in the quote | 425,721,856 B (two banks) | 0 (half the measured room) |
+| LOAD request bytes, one lane | 9,184,591,872 B | 10,310,762,496 B |
+| LOAD request bytes, eight lanes | 28,471,181,312 B | 40,460,599,296 B |
+| Idle pairs the planner places tensor parallel on, one lane | 2 x 36 GiB and larger | the same; a rank needs 1,126,170,624 B more |
+| The same, eight lanes | 2 x 96 GiB and larger | the same; a rank needs 11,989,417,984 B more |
+
+The planner rows leave out the vision tower's resident bytes, as the served
+layout does; both columns leave them out alike.
 Source: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Resources/QwenTensorParallelBatchPrefixBudget.swift`
-(`derive`).
+(`captureBytes`, `derive`).
 
 A drained automatic batch replacement uses the device index and this pair's
 recorded keyed-link measurement. Missing or invalid measurements continue to

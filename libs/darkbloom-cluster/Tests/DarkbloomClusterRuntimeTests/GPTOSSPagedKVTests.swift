@@ -129,6 +129,103 @@ struct GPTOSSPagedKVTests {
         }
     }
 
+    @Test func slidingPagesRestoreOnlyTheSDKRingsMetadataForTheirRows() {
+        Device.withDefaultDevice(.cpu) {
+            let ring = RotatingKVCache(maxSize: 128, keep: 0)
+            var checked = 0
+            // Short, chunked past the window, wrapped, wrapped back to its end, chunked again.
+            for (step, count) in ([3, 1, 512] + Array(repeating: 1, count: 128) + [2]).enumerated() {
+                let input = rows(count, start: ring.offset)
+                _ = ring.update(keys: input.0, values: input.1)
+                guard [0, 2, 3, 130, 131].contains(step) else { continue }
+                let metadata = ring.metaState, held = ring.state[0].dim(2)
+                guard let position = GPTOSSSlidingRing.position(of: metadata, window: 128, rows: held) else {
+                    Issue.record("The SDK ring's own metadata \(metadata) was refused"); continue
+                }
+                checked += 1
+                #expect(GPTOSSSlidingRing.metadata(window: 128, at: position) == metadata)
+                #expect(GPTOSSSlidingRing.position(of: metadata, window: 128, rows: held - 1) == nil)
+                #expect(GPTOSSSlidingRing.position(of: metadata, window: 64, rows: held) == nil)
+                func replacing(_ field: Int, _ value: String) -> [String] {
+                    var fields = metadata; fields[field] = value; return fields
+                }
+                // Legacy, rewind reserve, kept prefix, other step, requested origin, non-canonical offset,
+                // fewer positions than rows.
+                for refused in [Array(metadata.prefix(5)), metadata + ["2"], replacing(0, "1"), replacing(2, "64"),
+                                replacing(5, "requested"), replacing(3, "+\(position.offset)"),
+                                replacing(3, String(held - 1))] {
+                    #expect(GPTOSSSlidingRing.position(of: refused, window: 128, rows: held) == nil)
+                }
+                // A flipped flag claims other rows, except at a full window's end.
+                if position.index != held || held != 128 {
+                    #expect(GPTOSSSlidingRing.position(of: replacing(6, String(!position.wrapped)),
+                        window: 128, rows: held) == nil)
+                }
+            }
+            #expect(checked == 5)
+        }
+    }
+
+    /// Restores pages from the SDK ring's own state and metadata, then checks
+    /// they continue exactly as a copy of that ring.
+    private func expectRestoredPagesContinue(_ ring: RotatingKVCache) {
+        guard GPTOSSSlidingRing.position(of: ring.metaState, window: 128, rows: ring.state[0].dim(2)) != nil else {
+            Issue.record("Pages refused the SDK ring's metadata \(ring.metaState)"); return
+        }
+        let pages = GPTOSSPagedKVCache(window: 128), expected = ring.copy()
+        pages.state = ring.state; pages.metaState = ring.metaState
+        #expect(pages.metaState == ring.metaState)
+        for n in [1, 2, 1] {
+            for returnArray in [false, true] {
+                equalMask(pages.makeMask(n: n, windowSize: 128, returnArray: returnArray),
+                          expected.makeMask(n: n, windowSize: 128, returnArray: returnArray))
+            }
+            let next = rows(n, start: expected.offset)
+            let a = pages.update(keys: next.0, values: next.1)
+            let b = expected.update(keys: next.0, values: next.1)
+            equal(a.0, b.0); equal(a.1, b.1)
+            #expect(pages.offset == expected.offset && pages.isTrimmable == expected.isTrimmable
+                && pages.metaState == expected.metaState)
+        }
+    }
+
+    @Test func slidingPagesRestoredFromTheSDKRingContinueAsThatRing() {
+        Device.withDefaultDevice(.cpu) {
+            let ring = RotatingKVCache(maxSize: 128, keep: 0)
+            var restored = 0
+            // Short, full, wrapped, chunked past the window, wrapped back to its end, chunked again.
+            for (step, count) in ([3, 1, 124, 1, 512] + Array(repeating: 1, count: 128) + [2]).enumerated() {
+                let input = rows(count, start: ring.offset)
+                _ = ring.update(keys: input.0, values: input.1)
+                guard [0, 2, 3, 4, 132, 133].contains(step) else { continue }
+                expectRestoredPagesContinue(ring)
+                restored += 1
+            }
+            #expect(restored == 6)
+        }
+    }
+
+    @Test func aRingTrimmedAfterEvictionRestoresOnlyWithWindowMinusOneRows() {
+        Device.withDefaultDevice(.cpu) {
+            func ring(_ counts: [Int]) -> RotatingKVCache {
+                let ring = RotatingKVCache(maxSize: 128, keep: 0)
+                for count in counts {
+                    let input = rows(count, start: ring.offset)
+                    _ = ring.update(keys: input.0, values: input.1)
+                }
+                return ring
+            }
+            // Pages cap masks and trims by the offset; the ring caps them by the rows it holds.
+            let evicted = ring([300, 2]), wrapped = ring([129, 1])
+            #expect(evicted.trim(2) == 2 && evicted.state[0].dim(2) == 127 && evicted.offset == 300)
+            expectRestoredPagesContinue(evicted)
+            for (trimmed, count, held) in [(evicted, 1, 126), (evicted, 97, 29), (wrapped, 80, 48)] {
+                #expect(trimmed.trim(count) == count && trimmed.state[0].dim(2) == held)
+                #expect(GPTOSSSlidingRing.position(of: trimmed.metaState, window: 128, rows: held) == nil)
+            }
+        }
+    }
+
     @Test func slidingPagesStayBoundedAndRequestRetirementDropsEveryOwner() {
         Device.withDefaultDevice(.cpu) {
             weak var released: GPTOSSPagedKVCache?

@@ -147,6 +147,43 @@ struct UpdateRollbackCommandTests {
         #expect(try install.store.loadState().quarantine?.version == "2.0.0")
         #expect(stopped.said.last == "The provider is not running; `darkbloom start` starts v1.0.0.")
     }
+
+    // R4-1729-A: the cluster check and the provider check ran before the
+    // prompt only. Both are decided again under the update lease, before the
+    // drain, and nothing is changed when either changed during the prompt.
+
+    @Test("a Mac that joins a cluster pair during the prompt is refused under the lease, with nothing changed",
+          arguments: [true, false])
+    func clusterMembershipChangesDuringThePrompt(loaded: Bool) async throws {
+        let install = try RollbackInstall()
+        defer { install.remove() }
+        let host = RecordingHost(install: install, loaded: loaded, answer: "y", inClusterOnceAnswered: true)
+
+        let error = await #expect(throws: UpdateRollback.Failure.self) { try await install.rollback(host: host, yes: false) }
+
+        #expect(error?.description == UpdateRollback.clusterRefusal)
+        #expect(host.events.isEmpty)
+        #expect(try install.liveBinary() == "2.0.0-darkbloom")
+        let state = try install.store.loadState()
+        #expect(state.current?.version == "2.0.0")
+        #expect(state.quarantine == nil)
+        try install.updater.beginUpdateSession(operation: "lease-check").release()
+    }
+
+    @Test("a service provider replaced by a foreground provider during the prompt is refused before any drain")
+    func serviceReplacedByForegroundDuringThePrompt() async throws {
+        let install = try RollbackInstall()
+        defer { install.remove() }
+        let host = RecordingHost(install: install, loaded: true, answer: "y", providerOnceAnswered: .foreground)
+
+        let error = await #expect(throws: UpdateRollback.Failure.self) { try await install.rollback(host: host, yes: false) }
+
+        #expect(error?.description == UpdateRollback.foregroundRefusal)
+        #expect(host.events.isEmpty)
+        #expect(try install.liveBinary() == "2.0.0-darkbloom")
+        #expect(try install.store.loadState().quarantine == nil)
+        try install.updater.beginUpdateSession(operation: "lease-check").release()
+    }
 }
 
 /// v1 installed, then v2 installed and promoted by the updater, in a temporary root.
@@ -230,6 +267,7 @@ private final class RecordingHost: @unchecked Sendable {
         var events: [String] = []
         var lines: [String] = []
         var provider: UpdateRollback.Provider = .stopped
+        var inCluster = false
     }
 
     private let log: Log
@@ -238,19 +276,22 @@ private final class RecordingHost: @unchecked Sendable {
     var said: [String] { log.lock.withLock { log.lines } }
 
     /// `providerOnceAnswered` is the provider's state from the prompt's answer on.
+    /// `inClusterOnceAnswered`: this Mac joins a cluster pair while the prompt is open.
     init(install: RollbackInstall, loaded: Bool, foreground: Bool = false, inCluster: Bool = false, canAsk: Bool = true,
          answer: String? = nil, providerOnceAnswered: UpdateRollback.Provider? = nil,
-         beforeDrain: @escaping () throws -> Void = {}) {
+         inClusterOnceAnswered: Bool? = nil, beforeDrain: @escaping () throws -> Void = {}) {
         let log = Log()
         log.provider = loaded ? .service : foreground ? .foreground : .stopped
+        log.inCluster = inCluster
         self.log = log
         let record = { (event: String) in log.lock.withLock { log.events.append(event) } }
         host = UpdateRollback.Host(
-            servesInCluster: { inCluster },
+            servesInCluster: { log.lock.withLock { log.inCluster } },
             provider: { log.lock.withLock { log.provider } },
             canAsk: { canAsk },
             readAnswer: {
                 if let providerOnceAnswered { log.lock.withLock { log.provider = providerOnceAnswered } }
+                if let inClusterOnceAnswered { log.lock.withLock { log.inCluster = inClusterOnceAnswered } }
                 return answer
             },
             drain: {

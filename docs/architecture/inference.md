@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-11-01
+> Last updated: 2026-11-03
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -124,6 +124,12 @@ Existing per-request
 admission and LOAD safeguards remain authoritative. GLM, private-image and
 coordinator-installed native-member sessions do not use this
 automatic policy. Explicit diagnostic mode or lane settings retain their choice.
+
+A stage's resident prefix tier takes half the room that LOAD measures beside
+its quote, in 256 MiB steps, up to a ceiling of a thirty-second of the Mac's
+memory (`QwenStagePrefixCache.budget(roomBytes:maximumBytes:)`, and the idle
+refresh `refreshBudget`). The ceiling is the Mac's own unless the caller gives
+the ceiling of the Mac that it models, as the budget tests do for a 128 GiB Mac.
 
 Automatic replacement reads the installed plan helper's device profile and the
 current pair's recorded keyed-link costs and served-request history. It uses

@@ -184,10 +184,10 @@ On the `dev` branch a plain `swift build` is a DevNet build:
 from the `dev` branch.
 
 CI enforces both defaults. The Release Integrity job runs
-`scripts/provider-build-default.py`: a pull request into master or a push to
-master fails unless the default is `prod`, and the same for `dev` with `dev`. A
-staging or prod release runs the same check and stops if master's default is
-not `prod`.
+`scripts/provider-build-default.py`: a pull request into master, or a push to
+master, fails unless the default is `prod`; one into or to `dev` fails unless
+it is `dev`. Every release of master runs the same check and stops before the
+build if the default is not `prod`.
 
 Use the `dev` branch to run a provider from source against the DevNet
 coordinator. A push to `dev` that changes the provider publishes the DevNet

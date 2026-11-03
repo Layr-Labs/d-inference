@@ -1460,13 +1460,9 @@ public final class GLM5NextTensorParallelResidentRuntime {
                 }
             }
         } else {
-            // Greedy steps are built one ahead: step k+1 is submitted before step
-            // k's choice is read. A sampled step is built after its token is known
-            // (the sampler draws at the output index with the history up to it).
-            let pipelined = sampler == nil
-            var current = choose(firstLogits, stop: 0)
+            // One token a step (`GLM5NextTensorParallelStepLoop`).
+            let current = choose(firstLogits, stop: 0)
             asyncEval(current)
-            var pending: MLXArray?
             func step(from selection: MLXArray, stop: Float) throws -> MLXArray {
                 let next = selection[0 ..< 1].asType(.int32).reshaped(1, 1)
                 let candidate = try stage.prepareForward(tokens: next, cache: cache, readout: .lastToken)
@@ -1476,42 +1472,18 @@ public final class GLM5NextTensorParallelResidentRuntime {
                 asyncEval(chosen)
                 return chosen
             }
-            steps: for index in 0 ..< request.outputCount {
-                pending = nil
-                if pipelined, index + 1 < request.outputCount {
-                    growPages(needed: prompt.count + index + 2)
-                    pending = try step(from: current, stop: stopKeep)
-                }
-                // The answer to the last token arrived while this step was encoded.
-                if stopKeep == 0 { try readAnswer() }
-                let agreed = current.asArray(Float.self)
-                let value = try token(agreed)
-                let flags = [agreed[2], agreed[3]].filter { $0 > 0 }
-                if let slot = flags.min() {
-                    let stop = QwenTensorParallelStopRule.stop(slot: slot)
-                    tokens = Array(tokens.prefix(stop.keep))
-                    finish = stop.finish == .length ? .length : .clientStop; break
-                }
-                if stopKeep == 0 {
+            let steps = GLM5NextTensorParallelStepLoop<MLXArray>(outputCount: request.outputCount,
+                promptCount: prompt.count, stopTokenIDs: request.stopTokenIDs, pipelined: sampler == nil,
+                step: { try step(from: $0, stop: $1) }, agreement: { $0.asArray(Float.self) }, evaluate: { eval($0) },
+                growPages: { growPages(needed: $0) }, pagesRefused: { pagesRefused },
+                stopKeep: { stopKeep }, setStopKeep: { stopKeep = $0 }, readAnswer: readAnswer,
+                committed: { tokens.count }, keep: { tokens = Array(tokens.prefix($0)) },
+                commit: { value in
                     try keepStepLogprobs()
                     sampler?.commit(value)
-                    if let end = try commit(value) { finish = end; break steps }
-                    if localStop() {
-                        stopKeep = Float(tokens.count)
-                    } else if pagesRefused {
-                        stopKeep = QwenTensorParallelStopRule.lengthStop(keep: tokens.count)
-                    }
-                }
-                if !pipelined, index + 1 < request.outputCount {
-                    growPages(needed: prompt.count + index + 2)
-                    if pagesRefused, stopKeep == 0 { stopKeep = QwenTensorParallelStopRule.lengthStop(keep: tokens.count) }
-                    pending = try step(from: current, stop: stopKeep)
-                }
-                guard let next = pending else { break }
-                current = next; pending = nil
-            }
-            // A step both ranks submitted is evaluated by both, so its reductions meet.
-            if let pending { eval(pending) }
+                    return try commit(value)
+                }, localStop: localStop)
+            if let ended = try steps.run(first: current) { finish = ended }
         }
         // The owner answers every published token, the last one too. A stop
         // answer to a token the request ended at changes nothing.

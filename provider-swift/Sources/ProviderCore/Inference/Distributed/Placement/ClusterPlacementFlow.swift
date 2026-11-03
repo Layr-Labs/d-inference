@@ -52,6 +52,8 @@ public enum ClusterPlacementFlow {
 
     /// The planning itself, with everything detected already in hand. Pure,
     /// so a check can run the whole decision without a child process.
+    /// `coordinator`: the setup will serve through the coordinator, whose member registration carries no
+    /// tensor-parallel shares (`NativePairMemberRoster`), so it is planned with equal shares only.
     public static func decide(description: ClusterPairDescription, capability: ClusterRuntimeCapability,
                               localMemberID: String, localProfile: ClusterDeviceProfile, peerProfile: ClusterDeviceProfile,
                               layout: ClusterModelLayout, measurements: [ClusterSpeedMeasurement] = [],
@@ -67,6 +69,7 @@ public enum ClusterPlacementFlow {
                               shareProbes: [String: [ClusterShareRate]] = [:],
                               incumbentMode: ClusterGenerationMode? = nil,
                               incumbentTensorShares: [Int]? = nil,
+                              coordinator: Bool = false,
                               assumeUnmeasuredLink: Bool = true,
                               environment: [String: String] = ProcessInfo.processInfo.environment,
                               benchDebugBuild: Bool = ClusterPlannerBenchCap.isDebugBuild) throws
@@ -105,6 +108,7 @@ public enum ClusterPlacementFlow {
         // replacement (`assumeUnmeasuredLink: false`) prices only the pair's recorded keyed link.
         policy.tensorParallelFirst = true
         policy.tensorParallelAssumesUnmeasuredLink = assumeUnmeasuredLink
+        policy.equalTensorShares = coordinator
         // A model no stage adapter runs is still planned, with the refusal in the plan's words; records never rule a
         // chip, an order or a mode out (owner, 2026-10-14 08:45).
         let granted = try leaderUnderGrant(requested: leader, members: [(local.id, localProfile.chip), (peer.id, peerProfile.chip)],

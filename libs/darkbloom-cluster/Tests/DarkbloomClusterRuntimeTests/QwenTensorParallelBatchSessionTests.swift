@@ -714,7 +714,7 @@ struct QwenTensorParallelBatchSessionTests {
                                 self.mediaInputs(model, row: reservation.request.promptTokenIDs[0] - 10)
                             }, completedDecode: { _ in }, completedPrefill: {}, releaseResources: { _ in },
                             prefix: warm ? caches[rank] : nil,
-                            prefixBudget: warm ? .init(maximumTokens: 128, captureBytes: 8 << 20, residentBytes: 64 << 20) : nil,
+                            prefixBudget: warm ? .init(maximumTokens: 128, captureBytes: 8 << 20) : nil,
                             prefixScope: warm ? { _ in "same-authenticated-load-and-media-policy" } : nil,
                             allocationBound: warm ? { (($0 + 16383) / 16384) * 16384 } : nil)
                         return owner
@@ -850,7 +850,7 @@ struct QwenTensorParallelBatchSessionTests {
                     owner.executor = try .init(model: model, configuration: configuration, host: owner.host,
                         group: reduction, prepare: { _, _ in nil }, completedDecode: { _ in }, completedPrefill: {},
                         releaseResources: { _ in }, prefix: warm ? caches[rank] : nil,
-                        prefixBudget: warm ? .init(maximumTokens: 128, captureBytes: 8 << 20, residentBytes: 64 << 20) : nil,
+                        prefixBudget: warm ? .init(maximumTokens: 128, captureBytes: 8 << 20) : nil,
                         prefixScope: warm ? { reservation in suffix(reservation).map { load + "|" + $0 } } : nil,
                         prefixDisk: warm ? disks[rank] : nil,
                         prefixDiskScope: warm ? { reservation in suffix(reservation).map(disks[rank].scope) } : nil,
@@ -967,7 +967,7 @@ struct QwenTensorParallelBatchSessionTests {
                             self.mediaInputs(model, row: reservation.request.promptTokenIDs[0] - 10)
                         }, completedDecode: { _ in }, completedPrefill: {}, releaseResources: { _ in },
                         prefix: caches?[rank],
-                        prefixBudget: warm ? .init(maximumTokens: 128, captureBytes: 8 << 20, residentBytes: 64 << 20) : nil,
+                        prefixBudget: warm ? .init(maximumTokens: 128, captureBytes: 8 << 20) : nil,
                         prefixScope: warm ? { _ in load } : nil,
                         prefixDisk: disks?[rank], prefixDiskScope: disks == nil ? nil : { _ in planScope + "|chunk=5|text" },
                         allocationBound: warm ? { (($0 + 16383) / 16384) * 16384 } : nil)
@@ -1122,7 +1122,7 @@ struct QwenTensorParallelBatchSessionTests {
                     owner.executor = try .init(model: model, configuration: configuration, host: owner.host,
                         group: reduction, prepare: { _, _ in nil }, completedDecode: { _ in }, completedPrefill: {},
                         releaseResources: { _ in }, prefix: caches?[rank],
-                        prefixBudget: warm ? .init(maximumTokens: 384, captureBytes: 16 << 20, residentBytes: 64 << 20) : nil,
+                        prefixBudget: warm ? .init(maximumTokens: 384, captureBytes: 16 << 20) : nil,
                         prefixScope: warm ? { _ in load } : nil,
                         prefixDisk: disks?[rank], prefixDiskScope: disks == nil ? nil : { _ in planScope + "|chunk=16|text" },
                         allocationBound: warm ? { (($0 + 16383) / 16384) * 16384 } : nil)

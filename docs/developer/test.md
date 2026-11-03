@@ -544,7 +544,10 @@ platform parity.
 Ordinary fixtures use symmetric 128-context geometry; the separate complete-prefix
 process uses `--asymmetric` for K64/V128 and 1,024-context geometry.
 `scripts/prepare-mimo-audio-fixtures.py` prepares hash-pinned public inputs
-including the genuine audio codec. Keep these output directories isolated from
+including the genuine audio codec. The script downloads only the files that its
+cache directory lacks. It retries a failed download up to 5 times and ends an
+attempt that stays below 100 KB/s for 60 s. It keeps a file only when the size
+and SHA-256 match. Keep these output directories isolated from
 the ordinary regression inputs. Audio gates exercise PCM8 and AAC-video with a
 small target, not full-model quality or peak memory. Release-only builds do not
 provision test fixtures or opt into native qualification.
@@ -1395,9 +1398,13 @@ neither real-weight numerics, a pair qualification nor speed.
      split top-k, also at an exactly tied maximum whose other ID leads the gather;
    - the verified load's cut of every text tensor, and its refusals;
    - the load agreement's fields;
+   - what the capability declares of each mode (`ClusterServingFeatures`):
+     tensor parallel's prompt-prefix setting is the one its load agreement binds;
    - the product's Gemma layout with its tensor-parallel facts: big Macs keep
-     the pipeline on default link costs, a measured fast link takes tensor
-     parallel, the forced mode places it, and each rank is charged its own heads.
+     the pipeline on default link costs; on a measured fast link tensor
+     parallel is predicted faster on the device index alone and the pipeline is
+     kept, until each rank's share probe lets it be chosen; the forced mode
+     places it; and each rank is charged its own heads.
 
    `swift test --package-path libs/darkbloom-cluster --filter Gemma4TensorParallelPrefixTests`
    (GPU, as above) covers the prompt-prefix tiers on two in-process ranks:
@@ -1428,11 +1435,16 @@ neither real-weight numerics, a pair qualification nor speed.
    14,915,635,260 bytes), and the rank's reserve (`Gemma4TensorParallelRequestBudget`)
    must be quoted. Under the provider's tensor-parallel-first policy it checks the
    fastest-plan rule on constructed pairs: 2x M5 Ultra 256 GB keeps the pipeline on
-   default link costs; 2x M4 Pro 24 or 32 GB takes tensor parallel where predicted
-   faster, each rank quoted with its request's prompt-prefix capture; measured
-   links flip the choice both ways. It also pins the device-index
-   prior's choice for 2x M5 Ultra on the measured link: tensor parallel for a
-   128 + 128 request.
+   default link costs. Where tensor parallel is predicted faster on the device
+   index alone (2x M4 Pro 24 or 32 GB, each rank quoted with its request's
+   prompt-prefix capture, and 2x M5 Ultra for a 128 + 128 request on the
+   measured 29 us link), the pipeline is kept with the verdict
+   `predictedFasterOnPriorOnly`, its plan line and model-list note. Share probes
+   of the model on both Macs (through `ClusterShareProbeHistory`) and requests
+   served in tensor parallel (through `ClusterServedCalibration`) then decide
+   both ways. A probe on one Mac or of another model is no evidence. A kept mode
+   still applies, the forced mode still places tensor parallel, and the same
+   layout without its choice still takes tensor parallel on the prior.
 
    The `Gemma4TensorParallelTests` suite covers:
 
@@ -1501,7 +1513,11 @@ registered artifact for them.
      ranks' expert rows add up bit for bit to the exact full-width row that
      one Mac rounds once, through the decode-expert kernel and MLX's sorted
      gather; every partial a rank sums is FP32, and no `o_proj` or dense
-     partial was rounded to BF16 first; the contract v2 strings are pinned;
+     partial was rounded to BF16 first; the contract v2 strings are pinned; a
+     speculative round's verify window (every width from 2 to 4 rows, after a
+     prompt that wrapped the sliding ring) hands each sum the one-token steps'
+     own FP32 partials, row for row and bit for bit, with logits to match
+     (`windowPartialsAreTheOneTokenStepsFloat32Partials`);
    - the vocabulary-split head against the whole head;
    - the resident runtime's verified load: each rank reads exactly its shard's
      bytes, and a tampered or foreign checkpoint is refused;
@@ -1509,7 +1525,30 @@ registered artifact for them.
      with per-rank paged geometry, the selection rules, logprobs (an exactly
      tied maximum included), every stop kind (the owner's stop just before a
      stop token included), the request and load agreements, the request budget
-     and the text-only launch.
+     and the text-only launch;
+   - speculative rounds (`MiMoTensorParallelSpeculativeTests`, a checkpoint with
+     three random trained heads): rounds of the heads' own proposals and of
+     proposals scripted from the one-token path's tokens (every one kept, or
+     every third moved off) equal the one-token path bit for bit, caches
+     included; a stop token inside a window, the owner's stop inside a round
+     (and just before a stop token of the same round), a cancel between rounds
+     and greedy logprobs for every kept column (the one-token path's own) end
+     both ranks together; the LOAD gate's configuration-only drafter charge is
+     what the loaded heads declare; a window's rollback
+     (`MiMoV26VerifyWindow.settle`) leaves exactly the cache of one-token
+     appends on the registered 128-row ring (two 64-token pages, across its
+     page boundary and wrap) and on a full layer; exactly tied columns and
+     draft readouts choose the lowest token ID; the window contract
+     (`windows=row-exact-one-token-float32-partials-v2`) is in the agreement; and
+     the product layout quotes what the LOAD gate charges with rounds on by
+     default: the heads (42 tensors, 1,975,640,448 bytes, equal to the LOAD
+     gate's head inventory over the same headers) and each request's
+     speculative charge beside the reserve, no speed-up credited
+     (`placementQuotesWhatTheLoadGateChargesWithRounds`);
+   - what the text row's capability declares of each mode (`ClusterServingFeatures`):
+     tensor parallel decodes in rounds at `ClusterMiMoTensorParallel.speculativeDepth`,
+     so it drops nothing of the speculative or compact-decode pipeline and only
+     the plain pipeline's batch lanes.
 
    `libs/darkbloom-cluster/Tests/PlacementChecks/run.sh` also runs
    `MiMoTensorParallelChecks.swift` (model-free). It builds the layout from the
@@ -1517,19 +1556,47 @@ registered artifact for them.
    facts (97 sums a step, `fastest_v1`), a rank's share of exactly
    84,013,770,176 bytes, the routing prior (10,767,036,288 bytes a step), no
    facts for the image candidate, the same facts in the golden layout, and the
-   rank's reserve (`MiMoTensorParallelRequestBudget`) in the quote. Under the
+   rank's reserve (`MiMoTensorParallelRequestBudget`) in the quote. With the
+   rounds on by default, it prices them as the product layout does (the SDK's
+   drafter declaration stands in at its registered 438,426,984 bytes plus the
+   window's 36,347,904): each rank holds the 42 head tensors whole in whole pages,
+   its request need carries the speculative charge, its need is exactly the
+   rank's LOAD gate plus its tensors' page padding, decode is credited nothing,
+   and two idle 128 GB M5 Max still fit now (99.9 GiB a rank). Under the
    provider's tensor-parallel-first policy it checks the fastest-plan rule on
-   constructed pairs against the plain pipeline: 2x M5 Max 128 GB takes tensor
-   parallel where predicted faster and keeps the pipeline inside the margin or
-   for long prompts; 2x M5 Ultra 256 GB keeps the pipeline on default link
-   costs; measured links flip the choice both ways. As the provider plans MiMo
-   (the speculative pipeline credited the 1.37x its records measured, a fresh
-   pair's 32,768 + 32,768 request), both pairs keep the speculative pipeline
-   until a load measures the link, take tensor parallel for that request on the
-   measured 29 us link, and keep the pipeline for 8,192 + 128 or on a 109 us
-   link. `provider-swift/Tests/ClusterPlacementChecks/run.sh` checks that the
+   constructed pairs against the plain pipeline: 2x M5 Max 128 GB keeps the
+   pipeline where tensor parallel is predicted faster on the device index alone,
+   inside the margin and for long prompts; 2x M5 Ultra 256 GB keeps the pipeline
+   on default link costs. As the provider plans MiMo (the speculative pipeline
+   credited the 1.37x its records measured, a fresh pair's 32,768 + 32,768
+   request), both pairs keep the speculative pipeline before a load measures the
+   link and on the measured 29 us link, where tensor parallel is predicted faster
+   on the prior alone (`predictedFasterOnPriorOnly`), and for 8,192 + 128 or on a
+   109 us link. Requests served in tensor parallel decide both ways on both
+   pairs. `provider-swift/Tests/ClusterPlacementChecks/run.sh` checks that the
    guided step credits MiMo's rounds from its shipped records and prints the
-   fastest-plan and logprob lines.
+   fastest-plan and logprob lines. Through the guided step it also checks feature
+   parity (`ClusterModeParity`) before the evidence rule:
+   - as this build declares them, MiMo's tensor parallel decodes in rounds, so it
+     keeps every feature of the speculative pipeline and the evidence rule
+     decides: on two 256 GB Macs the speculative pipeline is kept with no served
+     record (prior only) or another build's, and this build's served records
+     choose (95 tok/s: tensor parallel; 60: the speculative pipeline);
+   - a MiMo record without tensor parallel's rounds holds it back even with this
+     build's served records, and where the plain pipeline is the mode it would
+     replace (a record without `pipeline_mtp_v1`), that pipeline's 8 batch lanes
+     hold one-lane tensor parallel back, served records or not;
+   - a Gemma record whose tensor parallel keeps no prompt prefixes (as builds
+     before 0.10.7 declared it) keeps the pipeline even with both Macs' share
+     probes, after an update that served tensor parallel, and with nothing
+     measured; each plan says what tensor parallel would drop; with Gemma's record
+     as this build declares it (prefix reuse kept), Gemma follows both Macs' share
+     probes;
+   - where only tensor parallel fits, the plan refuses and saves no setup; the
+     forced mode places it and says what it drops; a record without features
+     holds it back, and the forced mode then says what it drops is not known;
+     per-mode features cross the capability codec canonically; a GLM record
+     declaring a gap plans exactly as without it.
 
 2. Build `darkbloom-cluster-tp-check` and put a source-matched `mlx.metallib`
    beside it ([build](build.md)). Then run the GPU oracles:
@@ -1566,6 +1633,19 @@ registered artifact for them.
    It also reports, without requiring anything of it, where `simulated` first
    routes a token to other experts than `full`, over the positions whose inputs
    are still equal (`mimo compare` prints a `route sets:` line).
+
+   A third matrix, `mtp`, runs speculative rounds (`--mtp-depth`) on `kernel`
+   and `tiny` checkpoints with three random trained heads
+   (`mimo synthesize --mtp yes`; the text weights equal the plain variant's).
+   For each prompt (40, 6 and, on `kernel`, 192 tokens) it requires every
+   round run to equal the one-token path bit for bit (tokens, rows and caches):
+   the heads' own proposals (random, so mostly rejected), proposals scripted
+   from the one-token run's tokens (`--mtp-script REPORT`, all kept) and every
+   fifth scripted proposal moved off (`--mtp-misses 5`: accepts, rejects and
+   rollback). Sampled rounds (temperature 0.8: the heads, and the misses scripted
+   from the sampled one-token run) must equal the sampled one-token path bit for
+   bit. Two `tp` ranks over the ring must equal `simulated` for the heads, the
+   misses and a sampled run.
 
    `MIMO_ORACLE_PATHS=paged` runs one matrix.
 
@@ -2248,7 +2328,10 @@ default.
 
 Run `bash provider-swift/Tests/ClusterInstalledSessionChecks/run.sh`. The CPU
 runner compiles the actual local-owner launcher, installed plan/session and
-member-installation code. `InstalledBatchLanesCheck.swift` launches a real child
+member-installation code. Its generation-mode check also launches MiMo tensor
+parallel: both ranks get `--mtp-depth 2` after the mode exactly where the pinned
+record declares tensor parallel's rounds, and the status then reports the head
+as decoding. `InstalledBatchLanesCheck.swift` launches a real child
 with the fixed owner arguments and checks its exact environment, supported
 lane widths, out-of-range rejection, malformed-override parity even with an
 eight-lane family default, admission/owner/native parity, unsupported

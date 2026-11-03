@@ -32,6 +32,23 @@ final class MiMoImageStartupBindingTests:XCTestCase {
             .flatMap { [args[$0],args[$0+1]] }
         XCTAssertNil(try WorkerConfiguration(arguments:text,now:100).load.runtimeProfile)
     }
+    /// MiMo's text row in tensor parallel takes a speculative depth (rounds on replicated heads) only keyed and text-only.
+    func testTensorParallelTakesASpeculativeDepthKeyedAndTextOnly() throws {
+        let args = try arguments()
+        let text = stride(from:0,to:args.count,by:2).filter { !["--runtime-profile","--qualification-switches"].contains(args[$0]) }
+            .flatMap { [args[$0],args[$0+1]] }
+        let tp = ["--generation-mode",ClusterGenerationMode.tensorParallel.rawValue]
+        XCTAssertNil(try WorkerConfiguration(arguments:text+tp,now:100).speculativeTerms)
+        for depth in 1...3 {
+            let value = try WorkerConfiguration(arguments:text+tp+["--mtp-depth",String(depth)],now:100)
+            XCTAssertEqual(value.generationMode,.tensorParallel); XCTAssertEqual(value.speculativeTerms?.depth,depth)
+        }
+        let unkeyed = stride(from:0,to:text.count,by:2).filter { text[$0] != "--data-plane" }.flatMap { [text[$0],text[$0+1]] }
+        XCTAssertThrowsError(try WorkerConfiguration(arguments:unkeyed+tp+["--mtp-depth","2"],now:100))
+        XCTAssertThrowsError(try WorkerConfiguration(arguments:args+tp+["--mtp-depth","2"],now:100))
+        XCTAssertThrowsError(try WorkerConfiguration(arguments:text+["--generation-mode",ClusterGenerationMode.pipeline.rawValue,
+                                                                     "--mtp-depth","2"],now:100))
+    }
     func testCrossedModelProfileUnqualifiedOrUnencryptedLaunchRefuses() throws {
         let args = try arguments()
         for name in ["--runtime-profile","--model-id","--artifact-sha256","--configuration-sha256"] {

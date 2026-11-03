@@ -25,7 +25,98 @@ func checkMiMoTensorParallel(golden: URL, _ checks: PlacementChecks) throws {
     let priced = try ClusterPlacementLayouts.layout(configuration: configuration, tensors: tensors,
         tensorParallelAllocationBound: { $0 + 16_384 })
     try checkMiMoRequestAllowance(priced, configuration: configuration, checks)
-    try checkMiMoFastestPlan(priced, checks)
+    let rounds = try mimoWithRounds(priced, configuration: configuration, allocationBound: { $0 + 16_384 })
+    try checkMiMoRounds(priced, rounds: rounds, checks)
+    try checkMiMoFastestPlan(rounds, checks)
+}
+
+/// One request's speculative charge at the registered geometry, at exact sizes: the drafter's bounded state at
+/// depth 2 and 512-token chunks (438,426,984 bytes) and the window's rows (36,347,904), both pinned by
+/// `MiMoTensorParallelSpeculativeTests`. The product prices it at the allocator's bound, a few pages more
+/// (`placementQuotesWhatTheLoadGateChargesWithRounds`); its drafter half needs the SDK these checks do not compile.
+private let mimoSpeculativeRequestBytes = 438_426_984 + 36_347_904
+
+/// The layout as the product prices it (`MiMoTensorParallelResidentRuntime.placementRounds`): MiMo tensor
+/// parallel decodes in speculative rounds by default (`ClusterMiMoTensorParallel`), so its plan holds the three
+/// heads whole on every rank and its reserve carries each request's speculative charge, with no speed-up credited.
+private func mimoWithRounds(_ layout: ClusterModelLayout, configuration: Data,
+                            allocationBound: @escaping (Int) throws -> Int) throws -> ClusterModelLayout {
+    guard let tp = layout.tensorParallel else { throw ProbeError("the MiMo layout carries no tensor-parallel plan") }
+    let budget = try MiMoTensorParallelRequestBudget.derive(plan: MiMoTensorParallelPlan(configuration: configuration),
+        slidingWindow: 128, contextTokens: 65_536, chunkTokens: 512, allocationBound: allocationBound)
+    let f = tp.family
+    let family = ClusterTensorParallelFamilyPlan(plan: f.plan, ranks: f.ranks, reductionsPerLayer: f.reductionsPerLayer,
+        reductionsPerStep: f.reductionsPerStep, partialBytesPerToken: f.partialBytesPerToken,
+        layerPartialBytesPerToken: f.layerPartialBytesPerToken, stateDividesByHeads: f.stateDividesByHeads,
+        shareOptions: f.shareOptions, shareUnits: f.shareUnits,
+        requestAllowance: try budget.allowance(speculativeRequestBytes: mimoSpeculativeRequestBytes, allocationBound: allocationBound),
+        additionalResidentBytes: f.additionalResidentBytes,
+        speculativeHead: .init(depth: ClusterMiMoTensorParallel.speculativeDepth, requestBytes: mimoSpeculativeRequestBytes,
+                               decodeSpeedup: 1),
+        choice: f.choice)
+    return try layout.with(tensorParallel: .init(family: family, terms: tp.terms, layerDividedBytes: tp.layerDividedBytes,
+        layerReplicatedBytes: tp.layerReplicatedBytes, ingressDividedBytes: tp.ingressDividedBytes,
+        ingressReplicatedBytes: tp.ingressReplicatedBytes, egressDividedBytes: tp.egressDividedBytes,
+        egressReplicatedBytes: tp.egressReplicatedBytes))
+}
+
+/// Rounds in the quote (2026-11-01, on by default): every rank holds the three heads whole beside its share, in
+/// whole pages, and each request's speculative charge beside its reserve, so the plan admits only pairs the rank's
+/// LOAD gate (shard + heads + reserve + charge, then the loading headroom) admits. Decode is credited nothing until
+/// records measure the rounds. Two 128 GB M5 Max, which cannot hold MiMo alone, still fit now.
+private func checkMiMoRounds(_ priced: ClusterModelLayout, rounds: ClusterModelLayout, _ checks: PlacementChecks) throws {
+    guard let head = rounds.speculativeHead, let plan = rounds.tensorParallel?.family.speculativeHead,
+          let allowance = rounds.tensorParallel?.family.requestAllowance,
+          let plain = priced.tensorParallel?.family.requestAllowance else {
+        checks.require("mimo rounds: the layout carries the three heads and the plan prices them", false)
+        return
+    }
+    checks.require("mimo rounds: the heads are the artifact's three next-N layers (42 tensors, 1,975,640,448 bytes), in no range; depth 2, no speed-up credited",
+        head.tensorCount == 42 && head.storedBytes == 1_975_640_448 && head.loadedBytes == 1_975_640_448
+            && plan.depth == 2 && plan.decodeSpeedup == 1 && plan.requestBytes == mimoSpeculativeRequestBytes)
+    checks.require("mimo rounds: the quoted reserve carries each request's speculative charge beside the plain reserve (+\(mimoSpeculativeRequestBytes) bytes), its collectives unchanged",
+        allowance.reservedBytes == plain.reservedBytes + mimoSpeculativeRequestBytes
+            && allowance.collectiveScratchBytes == plain.collectiveScratchBytes
+            && allowance.maximumContextTokens == 65_536 && allowance.maximumChunkTokens == 512)
+    func mac(_ label: String, _ gib: Double) throws -> ClusterPlacementDevice {
+        .init(label: label, profile: try SyntheticMac.idle(gib).profile(chip: "Apple M5 Max"), speed: measured(prefill: 400, decode: 40))
+    }
+    let maxes = try [mac("a", 128), mac("b", 128)]
+    // The pair's own probe (two M5 Ultra, keyed JACCL, 2026-10-31): sealed all-sum 29 us at 16 KB, 3,919 us at 32 MiB.
+    let link = ClusterLinkCosts(probe: ClusterWorkerLinkProbe(transport: "jaccl", keyed: true, pointToPointSmallBytes: 64,
+        pointToPointSmallMicroseconds: 180, pointToPointLargeBytes: 4 << 20, pointToPointLargeMicroseconds: 2_502,
+        allSumSmallBytes: 16_384, allSumSmallMicroseconds: 29, allSumLargeBytes: 32 << 20, allSumLargeMicroseconds: 3_919),
+        measuredUTC: "2026-10-31T00:00:00Z")!
+    func tensor(_ layout: ClusterModelLayout, _ devices: [ClusterPlacementDevice]) throws -> ClusterPlacementCandidate {
+        try ClusterPlacementPlanner.evaluate(devices: devices, cuts: [], mode: .tensorParallel, prefillSchedule: .serial,
+            layout: layout, policy: ClusterPlacementPolicy(), link: link)
+    }
+    let before = try tensor(priced, maxes), after = try tensor(rounds, maxes)
+    let pages = head.loadedBytes + head.tensorCount * SyntheticMac.page
+    checks.require("mimo rounds: each rank holds the heads whole beside its share, each tensor in whole pages (+\(pages) bytes)",
+        before.ranks.count == 2 && zip(before.ranks, after.ranks).allSatisfy { $1.weightsBytes == $0.weightsBytes + pages })
+    checks.require("mimo rounds: each rank's request need carries the speculative charge",
+        zip(before.ranks, after.ranks).allSatisfy { $1.requestNeedBytes == $0.requestNeedBytes + mimoSpeculativeRequestBytes })
+    checks.require("mimo rounds: so each rank needs both more before it loads",
+        zip(before.ranks, after.ranks).allSatisfy { $1.needBytes == $0.needBytes + pages + mimoSpeculativeRequestBytes })
+    // The rank's LOAD gate with rounds: its exact shard, the heads, the reserve with the charge, then the headroom.
+    let loadGate = 84_013_770_176 + 1_975_640_448 + allowance.reservedBytes + maxes[0].profile.memory.loadingHeadroomBytes
+    checks.require("mimo rounds: the plan's need is the rank's LOAD gate (\(loadGate) bytes on a 128 GB Mac) plus its tensors' page padding",
+        after.ranks.allSatisfy { $0.needBytes == loadGate + ($0.weightsBytes - 84_013_770_176 - 1_975_640_448) })
+    checks.require("mimo rounds: decode and the first token are predicted as before (no credit for unmeasured rounds)",
+        after.rested.decodeTokensPerSecond == before.rested.decodeTokensPerSecond
+            && after.rested.firstTokenSeconds == before.rested.firstTokenSeconds)
+    checks.require(String(format: "mimo rounds: two 128 GB M5 Max still fit now with the heads (each rank needs %.1f GiB of 128)",
+            Double(after.ranks[0].needBytes) / Double(gib)),
+        after.ranks.allSatisfy { $0.fit == .now })
+    checks.require("mimo rounds: a pipeline holds no tensor-parallel heads and keeps its prediction",
+        try ClusterPlacementPlanner.evaluate(devices: maxes, cuts: [41], mode: .pipeline, prefillSchedule: .serial, layout: rounds,
+            policy: ClusterPlacementPolicy(), link: link) == ClusterPlacementPlanner.evaluate(devices: maxes, cuts: [41],
+                mode: .pipeline, prefillSchedule: .serial, layout: priced, policy: ClusterPlacementPolicy(), link: link))
+    checks.require("mimo rounds: the layout's description says the rounds, their charge and that decode is credited nothing until measured",
+        ClusterPlacementExplanation.layout(rounds).contains {
+            $0.contains("speculative rounds of up to 2 proposals") && $0.hasSuffix("credited nothing over one token per step until the rounds are measured.")
+        } && !ClusterPlacementExplanation.layout(priced).contains { $0.contains("speculative rounds of up to") })
 }
 
 /// What one rank holds of a layout's tensor-parallel facts: every part's
@@ -106,6 +197,9 @@ private func checkMiMoRequestAllowance(_ priced: ClusterModelLayout, configurati
 /// first-placement policy (`ClusterPlacementFlow.decide`: tensor parallel
 /// first, an unmeasured link assumed): against the plain pipeline (1-3), then
 /// as the provider plans MiMo, its speculative pipeline credited by its records (4).
+/// Every tensor-parallel win the device-index prior alone predicts keeps the
+/// pipeline; requests served in tensor parallel decide (MiMo's runtime takes
+/// no share probe yet).
 private func checkMiMoFastestPlan(_ layout: ClusterModelLayout, _ checks: PlacementChecks) throws {
     // Each Mac's whole-model rates and device index (`qmm_h4096_b4_g64_x16_v1`). M5 Ultra 256 GB: MiMo alone on the
     // cluster path, 57 tok/s (MTP off, 2026-10-13); 1,000 prefill tok/s (none is recorded on an M5 Ultra; the plan
@@ -143,19 +237,25 @@ private func checkMiMoFastestPlan(_ layout: ClusterModelLayout, _ checks: Placem
     func predicted(_ r: ClusterPlacementResult) -> (tensor: Double, other: Double) {
         (r.tensorParallel?.tensorParallel?.prediction(.rested).requestSeconds ?? .infinity, r.tensorParallel?.bestOtherSeconds ?? .infinity)
     }
+    // Predicted faster by the margin on the device-index prior alone: the best other mode is kept (the evidence rule).
+    func held(_ r: ClusterPlacementResult) -> Bool {
+        r.chosen.map { !$0.mode.usesTensorParallelDecode } == true && r.tensorParallel?.verdict == .predictedFasterOnPriorOnly
+            && r.tensorParallel?.evidence == .priorOnly && predicted(r).tensor < predicted(r).other * 0.95
+    }
     func times(_ r: ClusterPlacementResult) -> String {
         String(format: "%.2f s vs %.2f s", predicted(r).tensor, predicted(r).other)
     }
 
-    // 1. Two M5 Max 128 GB, which cannot hold MiMo alone, default link costs: tensor parallel where it is predicted
-    // faster by the margin (decode-heavy requests), a pipeline where not (within the margin, or the prompt's FP32 sums).
+    // 1. Two M5 Max 128 GB, which cannot hold MiMo alone, default link costs: tensor parallel is predicted faster by
+    // the margin for decode-heavy requests, on the device-index prior alone, so the pipeline is kept; a pipeline also
+    // where tensor parallel is not predicted faster (within the margin, or the prompt's FP32 sums).
     let alone = try plan(maxes, first(128, 128), .unmeasured).alone
     checks.require("mimo fastest plan: neither M5 Max 128 GB can hold MiMo alone",
         alone.count == 2 && alone.allSatisfy { if case .never = $0.fit { return true } else { return false } })
     for (prompt, outputs) in [(128, 128), (1_024, 1_024)] {
-        let result = try plan(maxes, first(prompt, outputs), .unmeasured), t = predicted(result)
-        checks.require("mimo fastest plan: 2x M5 Max 128 GB, default link costs, \(prompt) + \(outputs): tensor parallel, predicted faster by the margin (\(times(result)))",
-            tensor(result) && t.tensor < t.other * 0.95 && result.chosen?.ranks.allSatisfy({ $0.fit == .now }) == true)
+        let result = try plan(maxes, first(prompt, outputs), .unmeasured)
+        checks.require("mimo fastest plan: 2x M5 Max 128 GB, default link costs, \(prompt) + \(outputs): tensor parallel predicted faster by the margin on the prior only (\(times(result))), so the pipeline is kept",
+            held(result) && result.tensorParallel?.tensorParallel?.ranks.allSatisfy({ $0.fit == .now }) == true)
     }
     let maxNearTie = try plan(maxes, first(1_024, 128), .unmeasured), nearTie = predicted(maxNearTie)
     checks.require("mimo fastest plan: 2x M5 Max 128 GB, default link costs, 1,024 + 128: a pipeline, tensor parallel faster but within the margin (\(times(maxNearTie)))",
@@ -177,43 +277,46 @@ private func checkMiMoFastestPlan(_ layout: ClusterModelLayout, _ checks: Placem
     checks.require("mimo fastest plan: without its choice the same layout, Macs and policy put tensor parallel first",
         ruled.chosen?.mode == .tensorParallel)
 
-    // 3. A measured link flips the choice as predicted, both ways.
+    // 3. A measured link moves the prediction both ways; on the prior alone it never chooses tensor parallel.
     let ultraDefault = try plan(ultras, first(1_024, 128), .unmeasured)
     let ultraMeasured = try plan(ultras, first(1_024, 128), measuredLink), ultraSlow = try plan(ultras, first(1_024, 128), slowLink)
-    checks.require("mimo fastest plan: 2x M5 Ultra, 1,024 + 128: a pipeline on default costs, tensor parallel on the pair's measured 29 us link (\(times(ultraMeasured))), a pipeline on a measured 109 us one",
-        pipeline(ultraDefault) && tensor(ultraMeasured) && pipeline(ultraSlow)
-            && (ClusterPlacementExplanation.deploymentReason(ultraMeasured) ?? "").hasPrefix("Tensor parallel: predicted"))
+    checks.require("mimo fastest plan: 2x M5 Ultra, 1,024 + 128: a pipeline on default costs, tensor parallel predicted faster on the pair's measured 29 us link but on the prior only (\(times(ultraMeasured))), a pipeline on a measured 109 us one",
+        pipeline(ultraDefault) && held(ultraMeasured) && pipeline(ultraSlow)
+            && (ClusterPlacementExplanation.deploymentReason(ultraMeasured) ?? "").hasPrefix("Pipeline: tensor parallel is predicted"))
     checks.require("mimo fastest plan: 2x M5 Ultra, 8,192 + 128, the measured 29 us link: a pipeline (the prompt's sums)",
         pipeline(try plan(ultras, first(8_192, 128), measuredLink)))
     let maxMeasured = try plan(maxes, first(1_024, 128), measuredLink)
-    checks.require("mimo fastest plan: 2x M5 Max 128 GB, 1,024 + 128: a pipeline on default costs, tensor parallel on the measured 29 us link (\(times(maxMeasured)))",
-        pipeline(maxNearTie) && tensor(maxMeasured))
+    checks.require("mimo fastest plan: 2x M5 Max 128 GB, 1,024 + 128: a pipeline on default costs, tensor parallel predicted faster on the measured 29 us link but on the prior only (\(times(maxMeasured)))",
+        pipeline(maxNearTie) && held(maxMeasured))
     // The pipeline's speculative rounds are in the comparison: credited MiMo's recorded 1.37x (pipeline_mtp_v1,
     // M5 Ultra + M3 Ultra, 2026-10-14), the speculative pipeline is what tensor parallel must beat.
     var credited = first(128, 128); credited.recordedPipelineSpeculativeFactor = 1.37
     let plain = try plan(ultras, first(128, 128), measuredLink), rounds = try plan(ultras, credited, measuredLink)
-    checks.require("mimo fastest plan: 2x M5 Ultra, 128 + 128, 29 us: the pipeline credited 1.37x for its rounds is the one compared (\(times(rounds)), plain \(times(plain))), and tensor parallel still wins on the prior",
-        tensor(plain) && tensor(rounds) && predicted(rounds).other < predicted(plain).other * 0.8
-            && rounds.alternatives.contains { $0.mode == .pipelineMTP })
+    checks.require("mimo fastest plan: 2x M5 Ultra, 128 + 128, 29 us: the pipeline credited 1.37x for its rounds is the one compared (\(times(rounds)), plain \(times(plain))) and is kept, tensor parallel predicted faster on the prior only",
+        held(plain) && held(rounds) && predicted(rounds).other < predicted(plain).other * 0.8 && rounds.chosen?.mode == .pipelineMTP)
     // An automatic replacement invents no link: without a measured one, the pipeline it runs.
     var replacement = first(128, 128); replacement.tensorParallelAssumesUnmeasuredLink = false
     let kept = try plan(maxes, replacement, .unmeasured)
     checks.require("mimo fastest plan: an automatic replacement before any measured link keeps a pipeline (tensor parallel not predicted)",
         kept.chosen.map { !$0.mode.usesTensorParallelDecode } == true && kept.tensorParallel?.verdict == .reductionNotMeasured)
-    // A pipeline the pair keeps holds a tensor-parallel win back under the margin it must beat, as for any mode.
+    // A pipeline the pair keeps holds a tensor-parallel win back under the margin it must beat, as for any mode, even
+    // one requests served in tensor parallel measured (70 tok/s against the pipeline's 39).
     var keep = first(128, 128); keep.keptMode = .pipeline; keep.keptModeMargin = .infinity; keep.keptModeReason = "kept after the update"
-    checks.require("mimo fastest plan: a kept pipeline holds tensor parallel back (unlike a TP-first family)",
-        try plan(maxes, keep, measuredLink).chosen?.mode == .pipeline)
-    // The developer setting still places it.
+    let servedMaxes = try afterServedTensorParallel(maxes, layout: layout, link: measuredLink, decode: 70, prompt: 128, outputs: 128)
+    let keptPipeline = try plan(servedMaxes, keep, measuredLink), unkept = try plan(servedMaxes, first(128, 128), measuredLink)
+    checks.require("mimo fastest plan: a kept pipeline holds tensor parallel back even on served share steps (unlike a TP-first family)",
+        keptPipeline.chosen?.mode == .pipeline && keptPipeline.keptModeReason == "kept after the update" && tensor(unkept))
+    // The developer setting still places it (MiMo's served records start from such a session).
     var forced = ClusterPlacementPolicy(); forced.forcedMode = .tensorParallel
-    checks.require("mimo fastest plan: the developer's forced mode still places tensor parallel",
+    checks.require("mimo fastest plan: the developer's forced mode still places tensor parallel, with nothing measured",
         try plan(ultras, forced, .unmeasured).chosen?.mode == .tensorParallel)
 
     // 4. As the provider plans MiMo: its shipped records credit the speculative pipeline the decode speed-up they
     // measured (pipeline_mtp_v1, M5 Ultra + M3 Ultra, 2026-10-14: 59.18 against 43.05 tok/s; the provider's setup
     // checks pin that `ClusterPlacementFlow.decide` credits it), and a fresh pair plans for the layout's longest
     // request. Before a load measures the link every pair keeps the speculative pipeline, even for a short request;
-    // on the measured 29 us link both take tensor parallel for that decode-heavy request but not for a long prompt.
+    // on the measured 29 us link tensor parallel is predicted faster for that decode-heavy request on the prior
+    // alone (`mainnet/mimo-tp-plan.md` makes it about a tie on 2x M5 Ultra, -22% at worst), so both keep it too.
     let recordedRounds = 59.175439562562005 / 43.05376848056872
     func asProvider(_ prompt: Int? = nil, _ outputs: Int? = nil) -> ClusterPlacementPolicy {
         var p = first(prompt, outputs); p.recordedPipelineSpeculativeFactor = recordedRounds
@@ -227,11 +330,29 @@ private func checkMiMoFastestPlan(_ layout: ClusterModelLayout, _ checks: Placem
         checks.require("mimo as the provider plans it: \(name) before a load measures the link keeps the speculative pipeline for a fresh pair's \(fresh.promptTokens) + \(fresh.outputTokens) (\(times(fresh))) and for 128 + 128 (\(times(short)))",
             fresh.promptTokens == 32_768 && fresh.outputTokens == 32_768 && speculative(fresh) && speculative(short))
         let fast = try plan(devices, asProvider(), measuredLink), long = try plan(devices, asProvider(8_192, 128), measuredLink)
-        checks.require("mimo as the provider plans it: \(name) on the measured 29 us link takes tensor parallel for a fresh pair's request (\(times(fast))) and keeps the speculative pipeline for 8,192 + 128 (\(times(long)))",
-            tensor(fast) && speculative(long))
+        checks.require("mimo evidence rule: \(name) on the measured 29 us link, nothing served in tensor parallel: tensor parallel predicted faster for a fresh pair's request on the prior only (\(times(fast))), so the speculative pipeline is kept; also for 8,192 + 128 (\(times(long)))",
+            held(fast) && fast.chosen?.mode == .pipelineMTP && speculative(long)
+                && ClusterPlacementExplanation.tensorParallelNote(fast) == .notMeasuredYet)
         checks.require("mimo as the provider plans it: \(name) on a measured 109 us link keeps the speculative pipeline for a fresh pair's request",
             speculative(try plan(devices, asProvider(), slowLink)))
     }
+    // Requests this build served in tensor parallel are MiMo's evidence: the shard rates they corrected decide against
+    // the credited rounds (2x M5 Ultra: 76.8 tok/s; 2x M5 Max: 54.2).
+    for (name, devices, slow, fast) in [("2x M5 Ultra 256 GB", ultras, 70.0, 95.0), ("2x M5 Max 128 GB", maxes, 45.0, 70.0)] {
+        let slower = try plan(try afterServedTensorParallel(devices, layout: layout, link: measuredLink, decode: slow, prompt: 128, outputs: 128),
+            asProvider(128, 128), measuredLink)
+        let faster = try plan(try afterServedTensorParallel(devices, layout: layout, link: measuredLink, decode: fast, prompt: 128, outputs: 128),
+            asProvider(128, 128), measuredLink)
+        checks.require("mimo evidence rule: \(name), 29 us, 128 + 128, served in tensor parallel at \(Int(slow)) tok/s: the speculative pipeline on the served split (\(times(slower)))",
+            speculative(slower) && slower.tensorParallel?.evidence == .measured)
+        checks.require("mimo evidence rule: \(name), the same served at \(Int(fast)) tok/s: tensor parallel on the served split (\(times(faster))), and its line says so",
+            tensor(faster) && faster.tensorParallel?.evidence == .measured
+                && (ClusterPlacementExplanation.deploymentReason(faster) ?? "").hasSuffix(", on its own step as measured on both Macs."))
+    }
+    // The rule is model-neutral: a share probe would count as for any family, were MiMo's runtime to take one.
+    let probed = try plan(withShareProbes(ultras, layout: layout, halfStepMicroseconds: 9_000), asProvider(128, 128), measuredLink)
+    checks.require("mimo evidence rule: share probes of MiMo at 9.0 ms a half step on both Macs (its runtime records none yet) would let the measured split choose (\(times(probed)))",
+        tensor(probed) && probed.tensorParallel?.evidence == .measured)
 }
 
 /// The same layout with its plan's choice removed: a family that keeps the tensor-parallel-first rule.

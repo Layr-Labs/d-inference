@@ -547,21 +547,27 @@ import Foundation
                       constructionConfigurationSHA256: hash("4"))])
         }
         let adapter = ClusterRuntimeAdapter.glm5NextLayerStage
-        let capability = try ClusterRuntimeCapability(runtimeBinarySHA256: build, adapterID: adapter.rawValue, adapterVersion: adapter.version,
-            runtimeModelID: layout.runtimeModelID, artifactSHA256: layout.artifactSHA256, configurationSHA256: layout.configurationSHA256,
-            manifestSHA256: hash("d"), profile: .init(id: ClusterGLMImageCandidate.textProfileID, vocabularySize: 154_880,
-                maximumPromptTokens: 1_048_575, maximumOutputTokens: 65_536, maximumChunkTokens: 2048, maximumContextTokens: 1_048_576),
-            profileFingerprint: hash("e"), partitions: partitions, arithmeticPolicyID: adapter.arithmeticPolicyID,
-            arithmeticPolicySHA256: hash("5"), supportedPrefillSchedules: [.serial], supportedGenerationModes: [.pipeline, .tensorParallel])
-        let description = ClusterPairDescription(schema: ClusterPairDescription.schemaName, clusterID: "fixture",
-            publicModelID: "EigenLabs/GLM-5.3-Flash-MLX-NVFP4-mtp",
-            capabilitySHA256: ClusterConfigurationCodec.sha256(try ClusterRuntimeCapabilityCodec.encode(capability)),
-            chunkTokens: 2048, requestTimeoutSeconds: 900, coordinatorPort: 5577, members: ["ultra-a", "ultra-b"].enumerated().map { index, id in
-                .init(id: id, host: "192.0.2.\(index + 1)", port: 22, user: "fixture", ownerExecutable: "/fixture/darkbloom",
-                    workerExecutable: "/fixture/darkbloom-cluster-worker", modelDirectory: "/fixture/model", runtimeBinarySHA256: build,
-                    jacclDevice: "rdma_en\(index + 1)", linkAddress: "192.0.2.\(index + 1)", trust: nil, linkSecretFile: "/fixture/\(id).secret")
-            }, tokenizerFiles: [.init(path: "tokenizer.json", sha256: hash("6"), purpose: .tokenizer)],
-            linkControl: .init(port: 5578, linkEpoch: "00000000-0000-4000-8000-000000000001", edgeID: "00000000-0000-4000-8000-000000000002"))
+        func record(_ features: [ClusterGenerationMode: ClusterServingFeatures]?) throws -> ClusterRuntimeCapability {
+            try ClusterRuntimeCapability(runtimeBinarySHA256: build, adapterID: adapter.rawValue, adapterVersion: adapter.version,
+                runtimeModelID: layout.runtimeModelID, artifactSHA256: layout.artifactSHA256, configurationSHA256: layout.configurationSHA256,
+                manifestSHA256: hash("d"), profile: .init(id: ClusterGLMImageCandidate.textProfileID, vocabularySize: 154_880,
+                    maximumPromptTokens: 1_048_575, maximumOutputTokens: 65_536, maximumChunkTokens: 2048, maximumContextTokens: 1_048_576),
+                profileFingerprint: hash("e"), partitions: partitions, arithmeticPolicyID: adapter.arithmeticPolicyID,
+                arithmeticPolicySHA256: hash("5"), supportedPrefillSchedules: [.serial], supportedGenerationModes: [.pipeline, .tensorParallel],
+                modeFeatures: features)
+        }
+        func describe(_ capability: ClusterRuntimeCapability) throws -> ClusterPairDescription {
+            ClusterPairDescription(schema: ClusterPairDescription.schemaName, clusterID: "fixture",
+                publicModelID: "EigenLabs/GLM-5.3-Flash-MLX-NVFP4-mtp",
+                capabilitySHA256: ClusterConfigurationCodec.sha256(try ClusterRuntimeCapabilityCodec.encode(capability)),
+                chunkTokens: 2048, requestTimeoutSeconds: 900, coordinatorPort: 5577, members: ["ultra-a", "ultra-b"].enumerated().map { index, id in
+                    .init(id: id, host: "192.0.2.\(index + 1)", port: 22, user: "fixture", ownerExecutable: "/fixture/darkbloom",
+                        workerExecutable: "/fixture/darkbloom-cluster-worker", modelDirectory: "/fixture/model", runtimeBinarySHA256: build,
+                        jacclDevice: "rdma_en\(index + 1)", linkAddress: "192.0.2.\(index + 1)", trust: nil, linkSecretFile: "/fixture/\(id).secret")
+                }, tokenizerFiles: [.init(path: "tokenizer.json", sha256: hash("6"), purpose: .tokenizer)],
+                linkControl: .init(port: 5578, linkEpoch: "00000000-0000-4000-8000-000000000001", edgeID: "00000000-0000-4000-8000-000000000002"))
+        }
+        let capability = try record(nil), description = try describe(capability)
         let measured = ClusterLinkCosts(probe: ClusterWorkerLinkProbe(transport: "jaccl", keyed: true, pointToPointSmallBytes: 64,
             pointToPointSmallMicroseconds: 167, pointToPointLargeBytes: 4 << 20, pointToPointLargeMicroseconds: 2_622,
             allSumSmallBytes: 20_480, allSumSmallMicroseconds: 38, allSumLargeBytes: 10_485_760, allSumLargeMicroseconds: 1_296),
@@ -578,6 +584,18 @@ import Foundation
                     && chosen?.ranks.allSatisfy({ $0.fit == .now }) == true && saved.count == 2
                     && saved.allSatisfy { $0.selectedGenerationMode == .tensorParallel && $0.tensorShares == nil && $0.batchLanes == nil })
         }
+        // Feature parity is the fastest-plan families' rule (`ClusterModeParity`): a GLM record declaring a tensor-parallel
+        // gap (a hypothetical one: no prompt prefix) plans exactly what production does, line for line.
+        let gapped = try record([
+            .pipeline: .init(promptPrefixReuse: true, ssdPrefixTier: true, speculativeRounds: false, maximumLanes: 1, logprobs: false),
+            .tensorParallel: .init(promptPrefixReuse: false, ssdPrefixTier: false, speculativeRounds: true, maximumLanes: 8,
+                requestMedia: [.images, .video], logprobs: true)])
+        let plain = try ClusterPlacementFlow.decide(description: description, capability: capability, localMemberID: "ultra-a",
+            localProfile: m5, peerProfile: m5, layout: layout, link: measured, environment: [:], benchDebugBuild: false)
+        let declared = try ClusterPlacementFlow.decide(description: try describe(gapped), capability: gapped, localMemberID: "ultra-a",
+            localProfile: m5, peerProfile: m5, layout: layout, link: measured, environment: [:], benchDebugBuild: false)
+        require("glm pair: a declared tensor-parallel gap changes nothing for a tensor-parallel-first family (same choice, same plan, same lines)",
+            declared.result.chosen?.mode == .tensorParallel && declared.result == plain.result && declared.lines == plain.lines)
     }
 
     /// The universal rule of qualification records (`ClusterPairQualificationRecords`, chip-agnostic since
@@ -812,6 +830,99 @@ import Foundation
         require("owner pilot: the same model on 2x M4 Max 128 GB is planned", fits.result.chosen != nil && fits.setup != nil)
     }
 
+    /// A worker capability for `layout` (one partition per admitted cut) in `modes`, each keeping `features` (those
+    /// of its modes; nil declares none), and the pair description that pins it.
+    static func capability(layout: ClusterModelLayout, adapterID: String, profileID: String, vocabularySize: Int,
+                           arithmeticPolicyID: String, modes: [ClusterGenerationMode], publicModelID: String,
+                           features: [ClusterGenerationMode: ClusterServingFeatures]? = nil,
+                           description base: [String: Any]) throws -> (ClusterRuntimeCapability, ClusterPairDescription) {
+        let cuts = layout.admittedCuts, layers = layout.layerCount
+        let value = try ClusterRuntimeCapability(runtimeBinarySHA256: hash("a"), adapterID: adapterID, adapterVersion: 1,
+            runtimeModelID: layout.runtimeModelID, artifactSHA256: layout.artifactSHA256,
+            configurationSHA256: layout.configurationSHA256, manifestSHA256: hash("d"),
+            profile: .init(id: profileID, vocabularySize: vocabularySize,
+                maximumPromptTokens: layout.maximumPromptTokens, maximumOutputTokens: layout.maximumOutputTokens,
+                maximumChunkTokens: layout.maximumChunkTokens, maximumContextTokens: layout.maximumContextTokens),
+            profileFingerprint: hash("e"), partitions: cuts.map { cut in
+                .init(planSHA256: String(repeating: "7", count: 62) + String(format: "%02d", cut), stages: [
+                    .init(rank: 0, sourceLayerStart: 0, sourceLayerEnd: cut, stagePlanSHA256: String(repeating: "1", count: 62) + String(format: "%02d", cut),
+                          constructionConfigurationSHA256: hash("2")),
+                    .init(rank: 1, sourceLayerStart: cut, sourceLayerEnd: layers, stagePlanSHA256: String(repeating: "3", count: 62) + String(format: "%02d", cut),
+                          constructionConfigurationSHA256: hash("4"))]) },
+            arithmeticPolicyID: arithmeticPolicyID, arithmeticPolicySHA256: hash("5"),
+            supportedPrefillSchedules: [.serial, .oneChunkLookahead], supportedGenerationModes: modes,
+            modeFeatures: features?.filter { modes.contains($0.key) })
+        var description = base
+        description["capabilitySHA256"] = ClusterConfigurationCodec.sha256(try ClusterRuntimeCapabilityCodec.encode(value))
+        description["publicModelID"] = publicModelID
+        return (value, try ClusterPairDescription.decode(JSONSerialization.data(withJSONObject: description)))
+    }
+
+    /// Gemma 4's modes as its worker declares them (`Gemma4ResidentAdapterDefinition.servingFeatures`, pinned by
+    /// `Gemma4TensorParallelRuntimeTests`): tensor parallel keeps prompt prefixes resident and on the SSD tier, as the
+    /// pipeline does, and adds logprobs.
+    static let gemmaFeatures: [ClusterGenerationMode: ClusterServingFeatures] = [
+        .pipeline: .init(promptPrefixReuse: true, ssdPrefixTier: true, speculativeRounds: false, maximumLanes: 8, logprobs: false),
+        .tensorParallel: .init(promptPrefixReuse: true, ssdPrefixTier: true, speculativeRounds: false, maximumLanes: 8, logprobs: true),
+    ]
+    /// Gemma 4's modes as a worker build whose tensor parallel kept no prompt prefix declared them (before 0.10.7):
+    /// the record the rule must hold back.
+    static let gemmaFeaturesWithoutPrefixes = with(gemmaFeatures, tensorParallelPrefixes: false)
+    /// MiMo V2.6's text modes as its worker declares them (`MiMoResidentCapabilityMetadata.servingFeatures`, pinned
+    /// by `MiMoTensorParallelResidentTests`): no mode keeps prompt prefixes, only the plain pipeline batches lanes, the
+    /// speculative pipeline decodes in rounds, and tensor parallel serves one lane in rounds (the owner launches it
+    /// with `ClusterMiMoTensorParallel.speculativeDepth`) and adds logprobs.
+    static let mimoFeatures: [ClusterGenerationMode: ClusterServingFeatures] = [
+        .pipeline: .init(promptPrefixReuse: false, ssdPrefixTier: false, speculativeRounds: false, maximumLanes: 8, logprobs: false),
+        .pipelineCompactDecode: .init(promptPrefixReuse: false, ssdPrefixTier: false, speculativeRounds: false, maximumLanes: 1, logprobs: false),
+        .phaseSplit: .init(promptPrefixReuse: false, ssdPrefixTier: false, speculativeRounds: false, maximumLanes: 1, logprobs: false),
+        .tensorParallel: .init(promptPrefixReuse: false, ssdPrefixTier: false, speculativeRounds: true, maximumLanes: 1, logprobs: true),
+        .pipelineMTP: .init(promptPrefixReuse: false, ssdPrefixTier: false, speculativeRounds: true, maximumLanes: 1, logprobs: false),
+    ]
+    /// `features` with tensor parallel's entry changed, as a later worker build might declare it.
+    static func with(_ features: [ClusterGenerationMode: ClusterServingFeatures], tensorParallelPrefixes prefixes: Bool? = nil,
+                     tensorParallelRounds rounds: Bool? = nil) -> [ClusterGenerationMode: ClusterServingFeatures] {
+        var value = features
+        guard let tp = features[.tensorParallel] else { return value }
+        value[.tensorParallel] = .init(promptPrefixReuse: prefixes ?? tp.promptPrefixReuse, ssdPrefixTier: prefixes ?? tp.ssdPrefixTier,
+            speculativeRounds: rounds ?? tp.speculativeRounds, maximumLanes: tp.maximumLanes, requestMedia: tp.requestMedia,
+            penaltiesAndLogitBias: tp.penaltiesAndLogitBias, stopHandling: tp.stopHandling, logprobs: tp.logprobs)
+        return value
+    }
+    /// The plan's line where tensor parallel would drop a feature of the mode it would replace.
+    static func heldLine(_ drops: String) -> String {
+        "  Pipeline: tensor parallel would drop \(drops); held back until it keeps them."
+    }
+
+    /// The line the guided step prints for a model chosen only where faster (`ClusterTensorParallelChoice.fastest`).
+    static let fastestLine = "  This model runs tensor parallel only where it is predicted faster than a pipeline on its own step "
+        + "as measured on both Macs, never on the device index alone; until a load measures the link, tensor parallel "
+        + "is priced on a slow assumed link."
+
+    /// Two 256 GB Macs that report the M5 Ultra's measured device index (`qmm_h4096_b4_g64_x16_v1`), and the pair's
+    /// measured link (two M5 Ultra, keyed JACCL, 2026-10-31: sealed all-sum 29 us at 16 KB, 3,919 us at 32 MiB).
+    static func indexedUltras() throws -> (local: ClusterDeviceProfile, peer: ClusterDeviceProfile, link: ClusterLinkCosts) {
+        func ultra(_ label: String) throws -> ClusterDeviceProfile {
+            var profile = try device(label, physicalGiB: 256, freeGiB: 240, prefill: 1, decode: 1).profile
+            profile.speedIndex = .init(chip: profile.chip, osBuild: profile.osBuild, benchmark: "qmm_h4096_b4_g64_x16_v1",
+                prefillIndex: 2_337_768, decodeIndex: 46_409)
+            return profile
+        }
+        let link = ClusterLinkCosts(probe: ClusterWorkerLinkProbe(transport: "jaccl", keyed: true, pointToPointSmallBytes: 64,
+            pointToPointSmallMicroseconds: 180, pointToPointLargeBytes: 4 << 20, pointToPointLargeMicroseconds: 2_502,
+            allSumSmallBytes: 16_384, allSumSmallMicroseconds: 29, allSumLargeBytes: 32 << 20, allSumLargeMicroseconds: 3_919),
+            measuredUTC: "2026-10-31T00:00:00Z")!
+        return (try ultra("mac-one"), try ultra("mac-two"), link)
+    }
+
+    /// A model's whole-model speed on the check Macs' chip, as a speed probe records it.
+    static func aloneSpeed(_ layout: ClusterModelLayout, prefill: Double, decode: Double) throws -> ClusterSpeedMeasurement {
+        try .init(key: .init(artifactSHA256: layout.artifactSHA256, chip: "Check chip", osBuild: "CHECK", runtimeBinarySHA256: hash("a"),
+                probe: "check"), promptTokens: 512, chunkTokens: 512, probedLayers: layout.layerCount, layerCount: layout.layerCount,
+            rested: .init(prefillTokensPerSecond: prefill, decodeTokensPerSecond: decode), sustained: nil,
+            measuredUTC: "2026-10-31T00:00:00Z", provenance: "check: the model alone on one Mac")
+    }
+
     /// MiMo V2.6's plan, on its golden layout (read from the real headers, with the family's tensor-parallel facts
     /// and `fastest_v1`) with the mode list its row now advertises and its MTP head as those headers give it
     /// (`PipelineSpeculativeChecks`): the guided step's "Tensor parallel or pipeline" lines say the model runs
@@ -827,31 +938,14 @@ import Foundation
         object["speculativeHead"] = ["storedBytes": 1_975_640_448, "loadedBytes": 1_975_640_448, "largestTensorBytes": 134_217_728,
                                      "tensorCount": 42, "requestWorkBytes": 0]
         let layout = try ClusterModelLayout.decode(JSONSerialization.data(withJSONObject: object))
-        func capability(_ modes: [ClusterGenerationMode]) throws -> (ClusterRuntimeCapability, ClusterPairDescription) {
-            let cuts = layout.admittedCuts, layers = layout.layerCount
-            let value = try ClusterRuntimeCapability(runtimeBinarySHA256: hash("a"), adapterID: "mimo-v26-layer-stage", adapterVersion: 1,
-                runtimeModelID: layout.runtimeModelID, artifactSHA256: layout.artifactSHA256,
-                configurationSHA256: layout.configurationSHA256, manifestSHA256: hash("d"),
-                profile: .init(id: "registered_mimo_v26_flash_mopd_greedy_generation_v1", vocabularySize: 152_576,
-                    maximumPromptTokens: layout.maximumPromptTokens, maximumOutputTokens: layout.maximumOutputTokens,
-                    maximumChunkTokens: layout.maximumChunkTokens, maximumContextTokens: layout.maximumContextTokens),
-                profileFingerprint: hash("e"), partitions: cuts.map { cut in
-                    .init(planSHA256: String(repeating: "7", count: 62) + String(format: "%02d", cut), stages: [
-                        .init(rank: 0, sourceLayerStart: 0, sourceLayerEnd: cut, stagePlanSHA256: String(repeating: "1", count: 62) + String(format: "%02d", cut),
-                              constructionConfigurationSHA256: hash("2")),
-                        .init(rank: 1, sourceLayerStart: cut, sourceLayerEnd: layers, stagePlanSHA256: String(repeating: "3", count: 62) + String(format: "%02d", cut),
-                              constructionConfigurationSHA256: hash("4"))]) },
-                arithmeticPolicyID: "mimo_v26_text_ordinary_cache_bf16_defaults_v1", arithmeticPolicySHA256: hash("5"),
-                supportedPrefillSchedules: [.serial, .oneChunkLookahead], supportedGenerationModes: modes)
-            var description = base
-            description["capabilitySHA256"] = ClusterConfigurationCodec.sha256(try ClusterRuntimeCapabilityCodec.encode(value))
-            description["publicModelID"] = "fixture/mimo"
-            return (value, try ClusterPairDescription.decode(JSONSerialization.data(withJSONObject: description)))
+        func capability(_ modes: [ClusterGenerationMode], features: [ClusterGenerationMode: ClusterServingFeatures] = mimoFeatures) throws
+            -> (ClusterRuntimeCapability, ClusterPairDescription) {
+            try Self.capability(layout: layout, adapterID: "mimo-v26-layer-stage", profileID: "registered_mimo_v26_flash_mopd_greedy_generation_v1",
+                vocabularySize: 152_576, arithmeticPolicyID: "mimo_v26_text_ordinary_cache_bf16_defaults_v1", modes: modes,
+                publicModelID: "fixture/mimo", features: features, description: base)
         }
         let local = try device("mac-one", physicalGiB: 128, freeGiB: 116, prefill: 400, decode: 40).profile
         let peer = try device("mac-two", physicalGiB: 128, freeGiB: 116, prefill: 400, decode: 40).profile
-        let fastestLine = "  This model runs tensor parallel only where it is predicted faster than a pipeline; until a load "
-            + "measures the link, tensor parallel is priced on a slow assumed link."
         let logprobLine = "  Committed-token logprobs are captured in tensor parallel only; a pipeline pair refuses requests for them."
         let (both, bothDescription) = try capability(rowModes)
         let planned = try ClusterPlacementFlow.decide(description: bothDescription, capability: both, localMemberID: "mac-one",
@@ -870,6 +964,228 @@ import Foundation
             localProfile: local, peerProfile: peer, layout: layout)
         require("MiMo plan lines: a capability without tensor parallel prints neither line",
             !piped.lines.contains(fastestLine) && !piped.lines.contains(logprobLine))
+
+        // The evidence rule through the guided step (`ClusterTensorParallelChoice.fastest`): two 256 GB Macs with the M5
+        // Ultra's index, MiMo alone at 57 tok/s and the pair's measured link. On the index alone tensor parallel is
+        // predicted faster than the credited rounds for 128 + 128, so the speculative pipeline is kept. MiMo's runtime
+        // takes no share probe: requests this build served in tensor parallel are its only evidence. Feature parity
+        // comes first: as this build declares it, tensor parallel decodes in speculative rounds (on by default), so it
+        // keeps every feature of the speculative pipeline it would replace and the evidence rule decides; a record
+        // without tensor parallel's rounds (an older build's) holds it back whatever the evidence, and so do the plain
+        // pipeline's batch lanes where that pipeline is the mode it would replace.
+        let (roundsOff, roundsOffDescription) = try capability(rowModes, features: with(mimoFeatures, tensorParallelRounds: false))
+        let ultras = try indexedUltras(), alone = try aloneSpeed(layout, prefill: 1_000, decode: 57)
+        func served(_ decode: Double, build: String) -> [ClusterServedSpeedRecords.Entry] {
+            let setup = ClusterServedSpeedRecords.Setup(modelID: bothDescription.publicModelID, mode: ClusterGenerationMode.tensorParallel.rawValue,
+                cut: ClusterServedSpeedRecords.Setup.cut([], layerCount: layout.layerCount, mode: .tensorParallel, ranks: 2),
+                ranks: ["mac-one", "mac-two"], rankBuildSHA256: [build, build])
+            return (0..<3).map { .init(setup: setup, sample: .init(route: .pair, member: nil, promptTokens: 128, outputTokens: 128,
+                firstTokenSeconds: 0.08, decodeTokensPerSecond: decode, finishedAt: Double($0))) }
+        }
+        func decide(_ records: [ClusterServedSpeedRecords.Entry],
+                    record: (ClusterRuntimeCapability, ClusterPairDescription)? = nil)
+            throws -> (lines: [String], result: ClusterPlacementResult, setup: ClusterPlacementSetup?) {
+            try ClusterPlacementFlow.decide(description: record?.1 ?? bothDescription, capability: record?.0 ?? both,
+                localMemberID: "mac-one", localProfile: ultras.local, peerProfile: ultras.peer, layout: layout, measurements: [alone],
+                promptTokens: 128, outputTokens: 128, served: records, link: ultras.link, environment: [:], benchDebugBuild: false)
+        }
+        func line(_ decided: (lines: [String], result: ClusterPlacementResult, setup: ClusterPlacementSetup?), _ prefix: String) -> String {
+            decided.lines.first { $0.hasPrefix(prefix) } ?? "-"
+        }
+        let roundsLine = heldLine("speculative (MTP) rounds that the speculative pipeline keeps")
+        for (name, records) in [("nothing served in tensor parallel", [ClusterServedSpeedRecords.Entry]()),
+                                ("three requests this build served in tensor parallel at 95 tok/s", served(95, build: hash("a")))] {
+            let held = try decide(records, record: (roundsOff, roundsOffDescription))
+            require("MiMo parity: a record whose tensor parallel has no speculative rounds holds it back; with \(name) the speculative pipeline is kept and the line says what tensor parallel would drop (\(line(held, "  Pipeline:")))",
+                held.result.chosen?.mode == .pipelineMTP && held.result.tensorParallel?.verdict == .dropsFeatures
+                    && held.lines.contains(roundsLine) && held.setup != nil
+                    && ClusterPlacementExplanation.tensorParallelNote(held.result) == .dropsFeature
+                    && held.result.shards?.options.first { $0.kind == .tensorParallel }?.verdict == .dropsFeatures
+                    && !held.result.alternatives.contains { $0.mode.usesTensorParallelDecode })
+        }
+        let priorOnly = try decide([])
+        require("MiMo parity and evidence: as this build declares it, tensor parallel keeps every feature of the speculative pipeline; 2x 256 GB on the measured link, nothing served in tensor parallel: the speculative pipeline is kept on the evidence rule alone, and the line says tensor parallel is predicted faster only from the device index (\(line(priorOnly, "  Pipeline:")))",
+            priorOnly.result.chosen?.mode == .pipelineMTP && priorOnly.result.tensorParallel?.verdict == .predictedFasterOnPriorOnly
+                && line(priorOnly, "  Pipeline:").contains(", but from the device index, not its own measured step; it can be chosen once its step is measured on both Macs")
+                && !priorOnly.lines.contains { $0.contains("would drop") }
+                && priorOnly.lines.contains(fastestLine) && priorOnly.setup != nil)
+        let fast = try decide(served(95, build: hash("a")))
+        require("MiMo parity and evidence: as this build declares it (rounds on), three requests this build served in tensor parallel at 95 tok/s: tensor parallel, chosen on its own measured step, and the line says so (\(line(fast, "  Tensor parallel:")))",
+            fast.result.chosen?.mode == .tensorParallel && fast.result.tensorParallel?.evidence == .measured
+                && !fast.lines.contains { $0.contains("would drop") }
+                && line(fast, "  Tensor parallel:").hasSuffix(", on its own step as measured on both Macs.") && fast.setup != nil)
+        let slow = try decide(served(60, build: hash("a")))
+        require("MiMo evidence rule: served in tensor parallel at 60 tok/s: the speculative pipeline, tensor parallel predicted slower on the served split",
+            slow.result.chosen?.mode == .pipelineMTP && slow.result.tensorParallel?.verdict == .predictedSlower
+                && slow.result.tensorParallel?.evidence == .measured)
+        let otherBuild = try decide(served(95, build: hash("9")))
+        require("MiMo evidence rule: another worker build's tensor-parallel records are no evidence: the speculative pipeline is kept, and the plan says they were ignored",
+            otherBuild.result.chosen?.mode == .pipelineMTP && otherBuild.result.tensorParallel?.verdict == .predictedFasterOnPriorOnly
+                && otherBuild.lines.contains { $0.hasPrefix("  3 record(s) from other worker builds ignored") })
+        // Where the plain pipeline is the mode tensor parallel would replace (here a record without the speculative
+        // pipeline), its 8 lanes hold one-lane tensor parallel back, even on this build's served records.
+        let plainRecord = try capability(rowModes.filter { $0 != .pipelineMTP })
+        let lanesLine = heldLine("batch lanes up to 8 (it serves 1) that the pipeline keeps")
+        for (name, records) in [("nothing served in tensor parallel", [ClusterServedSpeedRecords.Entry]()),
+                                ("three requests this build served in tensor parallel at 95 tok/s", served(95, build: hash("a")))] {
+            let held = try decide(records, record: plainRecord)
+            require("MiMo parity: where the plain pipeline is the mode it would replace, with \(name), its batch lanes hold tensor parallel back (\(line(held, "  Pipeline:")))",
+                held.result.chosen.map { !$0.mode.usesTensorParallelDecode } == true
+                    && held.result.tensorParallel?.verdict == .dropsFeatures && held.lines.contains(lanesLine) && held.setup != nil)
+        }
+    }
+
+    /// The Gemma 4 QAT 4-bit golden layout (with the family's tensor-parallel facts and `fastest_v1`), `adjust`ed, and
+    /// a worker capability for it whose modes keep `features`.
+    static func gemma(features: [ClusterGenerationMode: ClusterServingFeatures]?, description base: [String: Any],
+                      adjust: (inout [String: Any]) -> Void = { _ in }) throws
+        -> (layout: ClusterModelLayout, capability: ClusterRuntimeCapability, description: ClusterPairDescription) {
+        let golden = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent(
+            "../../../libs/darkbloom-cluster/Tests/PlacementChecks/Golden/layouts/gemma-4-26b-qat-4bit.json")
+        var object = try JSONSerialization.jsonObject(with: Data(contentsOf: golden)) as? [String: Any] ?? [:]
+        adjust(&object)
+        let layout = try ClusterModelLayout.decode(JSONSerialization.data(withJSONObject: object))
+        let (capability, description) = try capability(layout: layout, adapterID: "gemma4-layer-stage",
+            profileID: "registered_gemma4_26b_qat_4bit_greedy_generation_v1", vocabularySize: 262_144,
+            arithmeticPolicyID: "gemma4_cbv2_query128_bf16_tf32_weighted_r1_v1", modes: [.pipeline, .tensorParallel],
+            publicModelID: "fixture/gemma", features: features, description: base)
+        return (layout, capability, description)
+    }
+
+    /// Gemma 4 QAT 4-bit through the guided step, on two 256 GB Macs with the M5 Ultra's index, Gemma alone at 90 tok/s
+    /// and the pair's measured link, for a 128 + 128 request. Feature parity first: a record whose tensor parallel keeps
+    /// no prompt prefix, resident or on the SSD tier, which the pipeline it would replace keeps (as builds before 0.10.7
+    /// declared it), is held back whatever the evidence, a kept mode or the device index say; a developer's forced mode
+    /// places it and says what it drops. As this build declares it (prefix reuse kept), the evidence rule decides: the
+    /// device index alone keeps the pipeline, and the share probes a Gemma tensor-parallel load records
+    /// (`Gemma4TensorParallelShareProbe`, kept by `ClusterShareProbeHistory`) decide.
+    static func gemmaEvidenceLines(description base: [String: Any]) throws {
+        let withoutPrefixes = try gemma(features: gemmaFeaturesWithoutPrefixes, description: base)
+        let (layout, capability, description) = try gemma(features: gemmaFeatures, description: base)
+        let ultras = try indexedUltras(), alone = try aloneSpeed(layout, prefill: 7_000, decode: 90)
+        func probes(halfStepMicroseconds: Int) -> [String: [ClusterShareRate]] {
+            ClusterShareProbeHistory().recording(["mac-one", "mac-two"].map {
+                .init(member: $0, buildSHA256: hash("a"), probe: .init(sharePerMille: 500, plainStepMicroseconds: halfStepMicroseconds, rounds: 7))
+            }, artifactSHA256: layout.artifactSHA256, now: 1_000).shareRates(artifactSHA256: layout.artifactSHA256,
+                members: ["mac-one", "mac-two"], now: 1_060)
+        }
+        func decide(_ shareProbes: [String: [ClusterShareRate]], keepingNoPrefix reduced: Bool = false, incumbentMode: ClusterGenerationMode? = nil,
+                    environment: [String: String] = [:]) throws -> (lines: [String], result: ClusterPlacementResult, setup: ClusterPlacementSetup?) {
+            try ClusterPlacementFlow.decide(description: reduced ? withoutPrefixes.description : description,
+                capability: reduced ? withoutPrefixes.capability : capability,
+                localMemberID: "mac-one", localProfile: ultras.local, peerProfile: ultras.peer, layout: layout, measurements: [alone],
+                promptTokens: 128, outputTokens: 128, link: ultras.link, shareProbes: shareProbes, incumbentMode: incumbentMode,
+                environment: environment, benchDebugBuild: !environment.isEmpty)
+        }
+        let prefixLine = heldLine("prompt-prefix reuse and the SSD prefix tier that the pipeline keeps")
+        for (name, shareProbes) in [("no share probe", [String: [ClusterShareRate]]()),
+                                    ("both Macs' share probes at 7.0 ms a half step", probes(halfStepMicroseconds: 7_000))] {
+            let held = try decide(shareProbes, keepingNoPrefix: true)
+            require("Gemma parity: a record whose tensor parallel keeps no prompt prefix, with \(name): the pipeline is kept and the line says what tensor parallel would drop (\(held.lines.first { $0.hasPrefix("  Pipeline:") } ?? "-"))",
+                held.result.chosen?.mode == .pipeline && held.result.tensorParallel?.verdict == .dropsFeatures
+                    && held.lines.contains(prefixLine) && held.lines.contains("  " + ClusterModeParity.ruleLine) && held.setup != nil
+                    && ClusterPlacementExplanation.tensorParallelNote(held.result) == .dropsFeature
+                    && !held.result.alternatives.contains { $0.mode == .tensorParallel })
+        }
+        let kept = try decide(probes(halfStepMicroseconds: 7_000), keepingNoPrefix: true, incumbentMode: .tensorParallel)
+        require("Gemma parity: a pair that served tensor parallel before an update is planned as the pipeline (parity before the kept mode)",
+            kept.result.chosen?.mode == .pipeline && kept.result.tensorParallel?.verdict == .dropsFeatures && kept.lines.contains(prefixLine))
+        let forced = try decide([:], keepingNoPrefix: true, environment: [ClusterForcedModeSetting.environmentName: "tensor_parallel_v1"])
+        require("Gemma parity: the developer's forced mode places tensor parallel and the plan says exactly what it drops",
+            forced.result.chosen?.mode == .tensorParallel && forced.setup != nil
+                && forced.lines.contains("  Developer setting: tensor parallel is placed because it is forced; it drops "
+                    + "prompt-prefix reuse and the SSD prefix tier that the pipeline keeps."))
+        let priorOnly = try decide([:])
+        require("Gemma evidence rule: 2x 256 GB on the measured link, no share probe: the pipeline is kept and the line says why",
+            priorOnly.result.chosen?.mode == .pipeline && priorOnly.result.tensorParallel?.verdict == .predictedFasterOnPriorOnly
+                && priorOnly.lines.contains { $0.hasPrefix("  Pipeline: tensor parallel is predicted") && $0.contains("from the device index") }
+                && priorOnly.lines.contains(fastestLine))
+        let measured = try decide(probes(halfStepMicroseconds: 7_000)), planned = try decide(probes(halfStepMicroseconds: 10_300))
+        require("Gemma parity and evidence: as this build declares it, tensor parallel keeps prefix reuse resident and on the SSD tier and is admissible; both Macs' share probes at 7.0 ms a half step: tensor parallel, chosen on its measured step",
+            measured.result.chosen?.mode == .tensorParallel && measured.result.tensorParallel?.evidence == .measured
+                && !measured.lines.contains { $0.contains("would drop") }
+                && measured.lines.contains { $0.hasPrefix("  Tensor parallel: predicted") && $0.hasSuffix(", on its own step as measured on both Macs.") })
+        require("Gemma evidence rule: both Macs' share probes at 10.3 ms a half step: the pipeline, tensor parallel predicted slower on its measured step",
+            planned.result.chosen?.mode == .pipeline && planned.result.tensorParallel?.verdict == .predictedSlower
+                && planned.result.tensorParallel?.evidence == .measured)
+    }
+
+    /// Feature parity's record and refusals: per-mode features cross the capability codec canonically and a record
+    /// without them keeps its bytes; a fastest-plan family whose record declares none holds tensor parallel back;
+    /// where only tensor parallel fits and it drops a feature, the plan refuses and saves nothing (owner, 2026-11-01),
+    /// and the same Macs place it once its record keeps that feature.
+    static func featureParity(description base: [String: Any]) throws {
+        let built = try gemma(features: gemmaFeaturesWithoutPrefixes, description: base)
+        let data = try ClusterRuntimeCapabilityCodec.encode(built.capability)
+        let decoded = try ClusterRuntimeCapabilityCodec.decode(data)
+        require("parity record: a capability's per-mode serving features cross the codec canonically", decoded == built.capability
+            && decoded.modeFeatures?[.tensorParallel]?.promptPrefixReuse == false && decoded.modeFeatures?[.pipeline]?.ssdPrefixTier == true
+            && String(decoding: data, as: UTF8.self).contains("\"modeFeatures\":{\"pipeline_v1\":{"))
+        let undeclared = try gemma(features: nil, description: base)
+        require("parity record: a capability that declares no features writes no field, its bytes as before",
+            !String(decoding: try ClusterRuntimeCapabilityCodec.encode(undeclared.capability), as: UTF8.self).contains("modeFeatures"))
+        func record(_ features: [ClusterGenerationMode: ClusterServingFeatures]) throws -> ClusterRuntimeCapability {
+            let c = built.capability
+            return try ClusterRuntimeCapability(runtimeBinarySHA256: c.runtimeBinarySHA256, adapterID: c.adapterID,
+                adapterVersion: c.adapterVersion, runtimeModelID: c.runtimeModelID, artifactSHA256: c.artifactSHA256,
+                configurationSHA256: c.configurationSHA256, manifestSHA256: c.manifestSHA256, profile: c.profile,
+                profileFingerprint: c.profileFingerprint, partitions: c.partitions, arithmeticPolicyID: c.arithmeticPolicyID,
+                arithmeticPolicySHA256: c.arithmeticPolicySHA256, supportedPrefillSchedules: c.supportedPrefillSchedules,
+                supportedGenerationModes: c.supportedGenerationModes, modeFeatures: features)
+        }
+        refuses("parity record: features that leave a supported mode out", because: "Serving features must name exactly the supported generation modes") {
+            _ = try record(gemmaFeatures.filter { $0.key == .pipeline })
+        }
+        refuses("parity record: an SSD prefix tier without the resident cache, or nine lanes", because: "Malformed serving features") {
+            _ = try record(gemmaFeatures.merging([.pipeline: .init(promptPrefixReuse: false, ssdPrefixTier: true, speculativeRounds: false,
+                maximumLanes: 9, logprobs: false)]) { $1 })
+        }
+        let ultras = try indexedUltras(), alone = try aloneSpeed(built.layout, prefill: 7_000, decode: 90)
+        let blind = try ClusterPlacementFlow.decide(description: undeclared.description, capability: undeclared.capability,
+            localMemberID: "mac-one", localProfile: ultras.local, peerProfile: ultras.peer, layout: undeclared.layout,
+            measurements: [alone], promptTokens: 128, outputTokens: 128, link: ultras.link, environment: [:], benchDebugBuild: false)
+        require("parity: a fastest-plan family whose record declares no features keeps tensor parallel back and says why",
+            blind.result.chosen?.mode == .pipeline && blind.result.tensorParallel?.verdict == .dropsFeatures
+                && blind.lines.contains("  Pipeline: this worker build declares no serving features for its modes, so tensor parallel is held back until it does."))
+        let blindForced = try ClusterPlacementFlow.decide(description: undeclared.description, capability: undeclared.capability,
+            localMemberID: "mac-one", localProfile: ultras.local, peerProfile: ultras.peer, layout: undeclared.layout,
+            measurements: [alone], promptTokens: 128, outputTokens: 128, link: ultras.link,
+            environment: [ClusterForcedModeSetting.environmentName: "tensor_parallel_v1"], benchDebugBuild: true)
+        require("parity: the forced mode places tensor parallel on a record that declares no features, and says nothing shows what it drops",
+            blindForced.result.chosen?.mode == .tensorParallel && blindForced.lines.contains("  Developer setting: tensor parallel is placed "
+                + "because it is forced; this worker build declares no serving features for its modes, so what it drops is not known."))
+
+        // Only tensor parallel fits: the layout admits one cut only, 1, whose last rank holds every layer but one, on two
+        // equal Macs too small for that rank and large enough for a tensor-parallel half (found by planning each mode alone).
+        let narrow: (inout [String: Any]) -> Void = { $0["admittedCuts"] = [1] }
+        let reduced = try gemma(features: gemmaFeaturesWithoutPrefixes, description: base, adjust: narrow)
+        let gained = try gemma(features: gemmaFeatures, description: base, adjust: narrow)
+        func macs(_ giB: Int) throws -> [ClusterPlacementDevice] {
+            try ["mac-one", "mac-two"].map { try device($0, physicalGiB: giB, freeGiB: giB - 4, prefill: 7_000, decode: 90) }
+        }
+        func places(_ giB: Int, _ mode: ClusterGenerationMode) throws -> Bool {
+            var policy = ClusterPlacementPolicy()
+            policy.modes = [mode]; policy.promptTokens = 128; policy.outputTokens = 128
+            return try ClusterPlacementPlanner.plan(devices: macs(giB), layout: reduced.layout, policy: policy, link: ultras.link).chosen != nil
+        }
+        guard let giB = try (8...64).first(where: { try places($0, .tensorParallel) && !places($0, .pipeline) }) else {
+            return require("parity refusal: equal Macs exist that hold a tensor-parallel half and not the pipeline at cut 1", false)
+        }
+        func decided(_ record: (layout: ClusterModelLayout, capability: ClusterRuntimeCapability, description: ClusterPairDescription))
+            throws -> (lines: [String], result: ClusterPlacementResult, setup: ClusterPlacementSetup?) {
+            let pair = try macs(giB)
+            return try ClusterPlacementFlow.decide(description: record.description, capability: record.capability, localMemberID: "mac-one",
+                localProfile: pair[0].profile, peerProfile: pair[1].profile, layout: record.layout, promptTokens: 128, outputTokens: 128,
+                link: ultras.link, environment: [:], benchDebugBuild: false)
+        }
+        let refused = try decided(reduced), placed = try decided(gained)
+        let refusal = "Only tensor parallel fits these Macs, and it would drop prompt-prefix reuse and the SSD prefix tier that the "
+            + "pipeline keeps. No reduced-feature setup was saved."
+        require("parity refusal: where only tensor parallel fits (two \(giB) GB Macs, cut 1 only), the plan refuses, says why and saves no setup",
+            refused.result.chosen == nil && refused.setup == nil && refused.lines.contains("  " + refusal)
+                && refused.result.modesReason == refusal && refused.result.tensorParallel?.verdict == .dropsFeatures)
+        require("parity refusal: the same Macs place tensor parallel with the record this build declares (prefix reuse kept)",
+            placed.result.chosen?.mode == .tensorParallel && placed.setup != nil && !placed.lines.contains { $0.contains("would drop") })
     }
 
     static func main() throws {
@@ -990,6 +1306,8 @@ import Foundation
         try qualifiedShapes(description: descriptionObject, slowTwo: slowTwo)
         try ownerPilot(description: descriptionObject)
         try mimoFastestPlanLines(description: descriptionObject)
+        try gemmaEvidenceLines(description: descriptionObject)
+        try featureParity(description: descriptionObject)
         try benchCap(layout: layout, description: description, capability: capability, slowTwo: slowTwo)
         try forcedMode(layout: layout, description: description, capability: capability, slowTwo: slowTwo)
         try requestMix(layout: layout, description: description, capability: capability, slowTwo: slowTwo)

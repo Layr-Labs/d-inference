@@ -23,13 +23,16 @@ extension MiMoTensorParallelModel {
 
     /// The variant's whole `config.json` object. `experts`/`topK` replace the
     /// variant's routed bank (with `topK == experts` every token takes every
-    /// expert, so no rounding can change a route).
+    /// expert, so no rounding can change a route). `mtp` declares the three
+    /// trained next-N heads and spells the quantization as the registered
+    /// artifact does (affine 4-bit default, every 8-bit module named), so each
+    /// text module keeps the same policy.
     public static func syntheticConfiguration(_ variant: SyntheticVariant, dtype: DType = .bfloat16,
-                                              experts: Int? = nil, topK: Int? = nil) -> [String: Any] {
+                                              experts: Int? = nil, topK: Int? = nil, mtp: Bool = false) -> [String: Any] {
         let kernel = variant == .kernel
         let layers = kernel ? 6 : 4
         let dtypeName = dtype == .float32 ? "float32" : "bfloat16"
-        var quantization: [String: Any] = ["group_size": 64, "bits": 8, "mode": "affine"]
+        var quantization: [String: Any] = ["group_size": 64, "bits": mtp ? 4 : 8, "mode": "affine"]
         let pattern = kernel ? [0, 1, 1, 0, 1, 1] : [0, 1, 1, 0]
         let routed = (0 ..< layers).map { $0 == 0 ? 0 : 1 }
         for layer in 0 ..< layers where routed[layer] == 1 {
@@ -38,12 +41,24 @@ extension MiMoTensorParallelModel {
                     ["group_size": 32, "bits": 4, "mode": "mxfp4"]
             }
         }
+        if mtp {
+            let eight: [String: Any] = ["group_size": 64, "bits": 8, "mode": "affine"]
+            for name in ["language_model.model.embed_tokens", "language_model.lm_head"] { quantization[name] = eight }
+            for layer in 0 ..< layers {
+                for module in ["q_proj", "k_proj", "v_proj", "o_proj"] {
+                    quantization["language_model.model.layers.\(layer).self_attn.\(module)"] = eight
+                }
+                for module in ["gate_proj", "up_proj", "down_proj"] where routed[layer] == 0 {
+                    quantization["language_model.model.layers.\(layer).mlp.\(module)"] = eight
+                }
+            }
+        }
         return [
             "model_type": "mimo_v2", "architectures": ["MiMoV2ForCausalLM"],
             "hidden_size": kernel ? 1024 : 256, "intermediate_size": kernel ? 2048 : 512,
             "moe_intermediate_size": kernel ? 1024 : 256, "vocab_size": kernel ? 4096 : 512,
             "num_hidden_layers": layers, "max_position_embeddings": 4096,
-            "sliding_window": 8, "sliding_window_size": 8, "num_nextn_predict_layers": 0,
+            "sliding_window": 8, "sliding_window_size": 8, "num_nextn_predict_layers": mtp ? 3 : 0,
             "hybrid_layer_pattern": pattern, "moe_layer_freq": routed,
             "partial_rotary_factor": 0.334, "attention_value_scale": 0.707, "layernorm_epsilon": 1e-5,
             "attention_projection_layout": "fused_qkv", "moe_router_dtype": dtypeName, "hidden_act": "silu",
@@ -65,10 +80,12 @@ extension MiMoTensorParallelModel {
     /// registered artifact is (MXFP4 experts, affine 8-bit group 64
     /// elsewhere; BF16 router, norms and sinks; FP32 score correction), with
     /// one MTP and one vision tensor that every loader must skip by name.
+    /// `mtp` writes the three next-N heads whole instead (BF16, random).
     public static func writeSyntheticCheckpoint(directory: URL, variant: SyntheticVariant, seed: UInt64 = 7,
-                                                dtype: DType = .bfloat16, experts: Int? = nil, topK: Int? = nil) throws {
-        guard [.bfloat16, .float32].contains(dtype) else {
-            throw ProbeError("MiMo synthetic checkpoint: weights are bfloat16 or float32")
+                                                dtype: DType = .bfloat16, experts: Int? = nil, topK: Int? = nil,
+                                                mtp: Bool = false) throws {
+        guard [.bfloat16, .float32].contains(dtype), !mtp || dtype == .bfloat16 else {
+            throw ProbeError("MiMo synthetic checkpoint: weights are bfloat16 or float32 (bfloat16 with heads)")
         }
         if experts != nil || topK != nil {
             guard let experts, let topK, (2 ... 64).contains(experts), (1 ... experts).contains(topK) else {
@@ -76,7 +93,7 @@ extension MiMoTensorParallelModel {
             }
         }
         let configurationData = try JSONSerialization.data(
-            withJSONObject: syntheticConfiguration(variant, dtype: dtype, experts: experts, topK: topK),
+            withJSONObject: syntheticConfiguration(variant, dtype: dtype, experts: experts, topK: topK, mtp: mtp),
             options: [.sortedKeys, .prettyPrinted])
         let plan = try MiMoTensorParallelPlan(configuration: configurationData)
         let configuration = try JSONDecoder().decode(MiMoV26Configuration.self, from: configurationData)
@@ -107,13 +124,32 @@ extension MiMoTensorParallelModel {
                       let policy = plan.policy(module: MiMoTensorParallelPlan.textNamespace + path) else { return nil }
                 return (policy.groupSize, policy.bits, policy.mode == "mxfp4" ? .mxfp4 : .affine)
             }
-            let flat = Dictionary(uniqueKeysWithValues: model.parameters().flattened().map {
+            var flat = Dictionary(uniqueKeysWithValues: model.parameters().flattened().map {
                 (MiMoTensorParallelPlan.textNamespace + $0.0, $0.1)
             })
             eval(Array(flat.values))
+            if mtp {
+                // The heads draw after every text tensor, so the text weights equal the variant's without heads.
+                let heads = try MiMoV26MTP(target: model, floatingProjections: true)
+                for (key, value) in heads.parameters().flattened() {
+                    let shape = value.shape
+                    let generated: MLXArray
+                    if key.hasSuffix("attention_sink_bias") {
+                        generated = MLXRandom.uniform(low: -1.0, high: 1.0, shape)
+                    } else if key.hasSuffix("norm.weight") {
+                        generated = MLXRandom.uniform(low: 0.6, high: 1.4, shape)
+                    } else {
+                        generated = MLXRandom.normal(shape) * (1 / Float(shape.last ?? 1).squareRoot())
+                    }
+                    flat[MiMoTensorParallelDraftHead.prefix + key] = generated.asType(.bfloat16)
+                }
+                eval(Array(flat.values))
+            }
             return flat
         }
-        arrays["language_model.model.mtp.layers.0.enorm.weight"] = MLXArray.ones([plan.hiddenSize], dtype: dtype)
+        if !mtp {
+            arrays["language_model.model.mtp.layers.0.enorm.weight"] = MLXArray.ones([plan.hiddenSize], dtype: dtype)
+        }
         arrays["vision_tower.patch_embed.proj.weight"] = MLXArray.zeros([8, 8], dtype: dtype)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         try configurationData.write(to: directory.appendingPathComponent("config.json"))

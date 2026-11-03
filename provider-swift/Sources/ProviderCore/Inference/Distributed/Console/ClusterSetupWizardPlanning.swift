@@ -230,6 +230,8 @@ enum ClusterSetupPlanning {
     /// Why a model is not offered, plain action or fact first (the screen cuts long reasons).
     static func refusalWords(_ result: ClusterPlacementResult, localMemberID: String, names: [String: String] = [:]) -> String {
         func name(_ device: String) -> String { names[device] ?? device }
+        // Only tensor parallel fits, and it would drop a feature of the model's other modes (`ClusterModeParity`).
+        if result.tensorParallel?.verdict == .dropsFeatures, let why = result.modesReason { return why }
         if let excluded = result.unqualifiedPossible, excluded > 0 {
             let alone = result.alone.first(where: { $0.fit.possible })
                 .map { " \(name($0.device)) can serve it alone in single-Mac Darkbloom." } ?? ""

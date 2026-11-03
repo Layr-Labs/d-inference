@@ -175,7 +175,7 @@ private func checkServedReplacesPrior(_ layout: ClusterModelLayout, _ checks: Pl
         NewMac(gib: 128, chip: "Apple M4 Max", decodeIndex: 21_100, prefillIndex: 520_000), layout: layout), layout: layout, link: link)
     var p = policy(prompt: 128, outputs: 128)
     let predicted = try ClusterPlacementPlanner.evaluate(devices: devices, cuts: [], mode: .tensorParallel,
-        prefillSchedule: layout.prefillSchedules.contains(.oneChunkLookahead) ? .oneChunkLookahead : .serial,
+        prefillSchedule: ClusterPrefillSchedule.planned(for: .tensorParallel, supported: layout.prefillSchedules),
         layout: layout, policy: p, link: link)
     let slower = predicted.rested.decodeTokensPerSecond * 0.6
     let samples = (0..<3).map { _ in ClusterServedSample(route: .pair, member: nil, promptTokens: 128, outputTokens: 128,

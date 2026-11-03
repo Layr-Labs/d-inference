@@ -214,6 +214,12 @@ private func checkGemmaFastestPlan(_ layout: ClusterModelLayout, _ checks: Place
         policy: first(8_192, 128), link: .unmeasured)
     checks.require("Gemma fastest plan: without its choice the same layout, Macs and policy put tensor parallel first",
         ruled.chosen?.mode == .tensorParallel)
+    // Tensor parallel prefills serially, the only schedule a tensor-parallel runtime admits; the pipeline keeps the
+    // lookahead (2026-11-03: a Gemma or MiMo pair planned in tensor parallel was saved with the lookahead and refused at load).
+    let piped = try plan(ultras, first(8_192, 128), .unmeasured)
+    checks.require("Gemma: a plan in tensor parallel prefills serially, a pipeline with the lookahead",
+        ruled.chosen?.prefillSchedule == .serial && piped.chosen?.mode == .pipeline && piped.chosen?.prefillSchedule == .oneChunkLookahead
+            && layout.prefillSchedules.contains(.oneChunkLookahead))
 
     // 2. Two small Macs (24 and 32 GB M4 Pro), default link costs: tensor parallel is predicted faster for a
     // decode-heavy request, but on the device-index prior alone, so the pipeline is kept until it is measured.
@@ -221,7 +227,8 @@ private func checkGemmaFastestPlan(_ layout: ClusterModelLayout, _ checks: Place
         let small = try pros(gib)
         let decodeHeavy = try plan(small, first(128, 128), .unmeasured)
         checks.require("Gemma fastest plan: 2x M4 Pro \(Int(gib)) GB, default link costs, 128 + 128: tensor parallel predicted faster by the margin on the prior only (\(times(decodeHeavy))), so the pipeline is kept",
-            held(decodeHeavy) && decodeHeavy.tensorParallel?.tensorParallel?.ranks.allSatisfy({ $0.fit == .now }) == true)
+            held(decodeHeavy) && decodeHeavy.tensorParallel?.tensorParallel?.ranks.allSatisfy({ $0.fit == .now }) == true
+                && decodeHeavy.tensorParallel?.tensorParallel?.prefillSchedule == .serial)
         checks.require("Gemma fastest plan: 2x M4 Pro \(Int(gib)) GB, default link costs, 8,192 + 128: a pipeline (the prompt's sums dominate)",
             pipeline(try plan(small, first(8_192, 128), .unmeasured)))
     }

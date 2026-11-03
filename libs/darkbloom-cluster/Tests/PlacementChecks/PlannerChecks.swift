@@ -183,6 +183,12 @@ func checkRegisteredLayouts(_ inputs: RetainedQwenInputs, _ checks: PlacementChe
     checks.require("both list every generation mode the runtime executes (tensor parallel, not the hybrid) and both prefill schedules",
         nine.generationModes == executed && big.generationModes == executed
             && nine.prefillSchedules == [.serial, .oneChunkLookahead])
+    let both: [ClusterPrefillSchedule] = [.serial, .oneChunkLookahead]
+    checks.require("prefill schedule: tensor parallel prefills serially; every layer split takes the lookahead the model has",
+        ClusterPrefillSchedule.planned(for: .tensorParallel, supported: both) == .serial
+            && ClusterGenerationMode.allCases.filter { !$0.usesTensorParallelPrefill }
+                .allSatisfy { ClusterPrefillSchedule.planned(for: $0, supported: both) == .oneChunkLookahead }
+            && ClusterPrefillSchedule.planned(for: .pipeline, supported: [.serial]) == .serial)
     // Stage sizes recorded by verified loads of the 27B (active bytes loaded).
     func loadedGiB(_ layout: ClusterModelLayout, _ range: Range<Int>) -> Double { Double(layout.range(range).loadedBytes) / Double(gib) }
     for (cut, first, last) in [(12, 3.059, 11.035), (16, 3.857, 10.238), (20, 4.654, 9.440)] {

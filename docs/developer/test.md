@@ -1233,7 +1233,10 @@ each. `scripts/cluster-test-plan.py` places the work by the measured seconds in
 `scripts/cluster-test-weights.json`, longest first onto the least loaded shard.
 A shard runs one process for each selection it holds. The base selection's
 units are top-level suites, and single tests of the suites in `SPLIT_SUITES`
-(each longer than one shard). The last blocking shard runs the base catch-all:
+(each longer than one shard). The suites of each `BASE_GROUPS` family run in
+one process, because some of their tests pass only after another suite of the
+family has run its native code in that process. A selection that names
+`after` runs in that selection's shard, after it. The last blocking shard runs the base catch-all:
 every base test that no other shard selects, so a new suite always runs.
 `Cluster Runtime Tests Summary` lists the tests with `swift test list` and fails
 unless each process executed as many tests as its selection lists and the

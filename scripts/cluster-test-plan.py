@@ -58,6 +58,12 @@ SHARD_COUNTS = {"blocking": 12, "focused": 3}
 # Base suites whose tests are weighed and placed one by one: each is longer
 # than one shard. Every other base unit is a whole top-level suite.
 SPLIT_SUITES = ("QwenTensorParallelBatchSessionTests",)
+# Base suites placed together, in one process, by name prefix. Some of their
+# tests give a peer 1 s to answer and pass only after another suite of the
+# family has run the family's native code in the process: as the first GLM
+# suite of a process, GLM5NextStageFrameTransportTests timed out (run
+# 41700931534); on dev every GLM suite runs in one process.
+BASE_GROUPS = ("GLM5Next",)
 # Measured start-up of one `swift test` process, and the seconds assumed for a
 # unit the weights do not list yet.
 PROCESS_SECONDS = 8.0
@@ -348,7 +354,10 @@ def assign(shards, items, fixed=()):
         cost = lambda index: seconds + (0 if selection.name in placed[index] else PROCESS_SECONDS)
         index = min(range(shards), key=lambda index: (loads[index] + cost(index), index))
         loads[index] += cost(index)
-        placed[index][selection.name].append(unit)
+        if isinstance(unit, tuple):
+            placed[index][selection.name].extend(unit)
+        else:
+            placed[index][selection.name].append(unit)
     return placed, loads
 
 
@@ -368,7 +377,11 @@ def processes(lane, weights=None):
     base, units = base_units(weights)
     items = [(weights.get(unit_key(selection, test), UNWEIGHED_SECONDS), selection, test)
              for selection in selections if selection.tests and not selection.after for test in selection.tests]
-    items += [(weights[unit_key(base, unit)], base, unit) for unit in units]
+    grouped = {prefix: tuple(sorted(unit for unit in units if unit.startswith(prefix))) for prefix in BASE_GROUPS}
+    items += [(sum(weights[unit_key(base, unit)] for unit in group), base, group)
+              for group in grouped.values() if group]
+    items += [(weights[unit_key(base, unit)], base, unit) for unit in units
+              if not unit.startswith(BASE_GROUPS)]
     catch_all_seconds = weights.get(unit_key(base, CATCH_ALL_KEY), 0.0)
     placed, _ = assign(shards, items, fixed=[(shards - 1, base, catch_all_seconds)])
     # A selection with `after` joins the first shard that runs that selection,

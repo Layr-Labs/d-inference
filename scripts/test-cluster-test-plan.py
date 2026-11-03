@@ -99,6 +99,14 @@ class ClusterTestPlanTests(unittest.TestCase):
                     follower = next(key for key in keys if key[1] == selection.name)
                     self.assertEqual(follower[0], leader[0])
                     self.assertGreater(keys.index(follower), keys.index(leader))
+        # Each BASE_GROUPS family runs in one process.
+        for prefix in plan.BASE_GROUPS:
+            with self.subTest(group=prefix):
+                holders = [process for process in blocking if process.selection is base
+                           and any(unit.startswith(prefix) for unit in process.units)]
+                self.assertEqual(len(holders), 1)
+                self.assertEqual(sorted(unit for unit in holders[0].units if unit.startswith(prefix)),
+                                 sorted(unit for unit in units if unit.startswith(prefix)))
         share_probe = next(s for s in plan.SELECTIONS if s.name == "qwen-tp-share-probe-gpu")
         self.assertEqual(share_probe.after, "qwen-tp-batch-gpu")
         focused = plan.processes("focused", weights)

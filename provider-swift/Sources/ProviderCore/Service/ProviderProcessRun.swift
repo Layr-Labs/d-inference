@@ -86,3 +86,15 @@ public enum ProviderProcessRun {
         }
     }
 }
+
+extension ProviderProcessRun {
+    /// Writes `AppAttestEntitlementEvidence` for this serve process to stderr,
+    /// which launchd sends to the local provider log. Never sent anywhere.
+    public static func logAppAttestEntitlementEvidence(context label: String) {
+        let run = current
+        let started = run?.processStartMicros.map { Date(timeIntervalSince1970: Double($0) / 1_000_000) }
+        let line = AppAttestEntitlementEvidence.current(processStartedAt: started)
+            .line(context: label, startReason: run?.startReason)
+        FileHandle.standardError.write(Data((line + "\n").utf8))
+    }
+}

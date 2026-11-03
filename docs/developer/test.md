@@ -2574,7 +2574,11 @@ ranks in one process; start it with the worker's arithmetic environment.
 `darkbloom-cluster-tp-check qwen-rows synthesize --output DIR` writes that checkpoint (about 2.1 GB), and
 `darkbloom-cluster-tp-check qwen-rows run --model-dir DIR --report FILE` runs the check as two processes
 (`MLX_RANK`, `MLX_HOSTFILE` with two free `127.0.0.1` ports; `--backend ring` or `socket`,
-`--reduction native` or `sealed-bench`).
+`--reduction native` or `sealed-bench`). `qwen-rows layers` takes the same options plus `--target ROW
+--other ROW` (rows 0 to 7; default 7 beside 6) and reports, for three decode steps, the first decoder layer
+whose output differs between the row alone and beside the other. Both ranks must pass the same command and
+rows. `QWEN_TP_AQV_GPU=1` runs `AffineQuantizedVectorsTests`, including the fused SwiGLU against the two
+projections and the compiled SwiGLU at every normal bf16 and f16 gate value.
 `QWEN_TP_MOE_BATCH_MODEL=<registered A3B directory>` runs `QwenTensorParallelRoutedCohortRealTests`: the
 artifact's real shards, both ranks in one process on the GPU, rows of one cohort against the same rows
 alone, byte for byte. The reference rows in these tests (and the singleton owner of the capacity-parity

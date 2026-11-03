@@ -92,7 +92,7 @@ runs:
       shell: bash
       run: python3 scripts/provider-release-cache.py snapshot-mtimes
     - name: Save lane-specific Swift test build
-      if: ${{ !cancelled() && steps.timestamps.outcome == 'success' && steps.swift-cache.outputs.cache-hit != 'true' }}
+      if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/master' && steps.timestamps.outcome == 'success' && steps.swift-cache.outputs.cache-hit != 'true' }}
       uses: actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
       with:
         path: |
@@ -126,7 +126,7 @@ runs:
         fi
         ./scripts/stage-test-metallib.sh "$bin"
     - name: Save validated source-matched Metal cache
-      if: ${{ !cancelled() && steps.metallib.outcome == 'success' && steps.metallib-cache.outputs.cache-hit != 'true' }}
+      if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/master' && steps.metallib.outcome == 'success' && steps.metallib-cache.outputs.cache-hit != 'true' }}
       uses: actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
       with:
         path: ${{ runner.temp }}/metallib-cache

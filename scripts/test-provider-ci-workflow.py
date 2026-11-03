@@ -330,8 +330,9 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         self.assertIn("if-no-files-found: error", steps[shard_upload])
         for step in (steps[merge], steps[shard_upload]):
             self.assertNotIn("continue-on-error:", step)
-        # The summary merges every shard's profile against the shards' cached
-        # build and writes the report; the gate requires it.
+        # The summary merges every shard's profile against a build of the same
+        # commit (the shards' own on master pushes) and writes the report; the
+        # gate requires it.
         summary = self.jobs["test-provider-summary"]
         self.assertIn("    name: Provider Unit Tests Summary\n", summary)
         self.assertIn("    needs: [changes, route, test-provider]\n", summary)
@@ -731,9 +732,15 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         self.assertIn("python3 scripts/provider-release-cache.py restore-mtimes", steps[timestamps])
         self.assertIn("python3 scripts/provider-release-cache.py snapshot-mtimes", steps[record])
         key = named["Resolve cluster metadata build cache key"]
-        for component in ("swift --version", "xcodebuild -version", "git submodule status --recursive",
+        pins = "git submodule status --recursive | awk '{print $1, $2}'"
+        for component in ("swift --version", "xcodebuild -version", pins,
                           "$GITHUB_WORKSPACE $RUNNER_TEMP $MANIFESTS", "native-metadata.sh"):
             self.assertIn(component, key)
+        # `git describe` text depends on the refs a restored .git holds; the
+        # key keeps only each submodule's state, pin and path.
+        status = " 0123abc libs/mlx (heads/main)\n+4567def libs/mlx-swift (v0.30.0-2-g4567def)\n"
+        pinned = subprocess.run(["awk", "{print $1, $2}"], input=status, capture_output=True, text=True, check=True)
+        self.assertEqual(pinned.stdout, "0123abc libs/mlx\n+4567def libs/mlx-swift\n")
         for step in (steps[record], steps[upload]):
             self.assertIn("steps.capability-checks.outcome == 'success'", field(step, "if"))
         support = (ROOT / "libs/darkbloom-cluster/Tests/Support/native-metadata.sh").read_text()
@@ -767,6 +774,25 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         self.assertIn("python3 scripts/test-provider-ci-workflow.py", self.jobs["release-integrity"])
         self.assertIn("python3 scripts/test-provider-test-shards.py", self.jobs["release-integrity"])
         self.assertIn("python3 scripts/test-native-gpu-ci.py", self.jobs["release-integrity"])
+
+    def test_only_master_pushes_save_caches(self):
+        # A pull request's entry is scoped to its merge ref, where nothing else
+        # restores it, and it evicts master's entries from the shared quota.
+        saves = [(job_id, field(step, "name", indent=6), field(step, "if"))
+                 for job_id, job in self.jobs.items() for step in step_blocks(job) if "actions/cache/save@" in step]
+        composite = [(field(step, "name", indent=4), field(step, "if", indent=6))
+                     for step in step_blocks(ACTION.read_text(), indent=4) if "actions/cache/save@" in step]
+        self.assertEqual({name for name, _ in composite}, {"Save lane-specific Swift test build",
+                                                           "Save SwiftPM repositories",
+                                                           "Save validated source-matched Metal cache"})
+        for job_id, name, condition in saves + [("provider-ci-build", *save) for save in composite]:
+            with self.subTest(job=job_id, step=name):
+                if (job_id, name) == ("cache-swift", "Save SwiftPM cache"):
+                    # The whole job runs only on pushes, on Blacksmith's cache.
+                    self.assertIsNone(condition)
+                    self.assertIn("    if: github.event_name == 'push'\n", self.jobs["cache-swift"])
+                else:
+                    self.assertIn(MASTER_PUSH + " && ", condition)
 
     def test_every_checkout_reuses_master_git_and_falls_back_to_a_cold_checkout(self):
         checkouts = {job_id: job for job_id, job in self.jobs.items() if "actions/checkout@" in job}

@@ -124,7 +124,8 @@ class ClusterTestPlanTests(unittest.TestCase):
         needs = [name.strip() for name in gate.strip("[]").split(",")]
         for job_id in ("test-cluster", "test-cluster-focused"):
             with self.subTest(job=job_id):
-                self.assertNotIn("continue-on-error:", self.jobs[job_id])
+                # Only the cached checkout may fail; its cold retry may not.
+                self.assertNotIn("continue-on-error:", workflow.without_cached_checkout(self.jobs[job_id]))
                 self.assertIn(job_id, needs)
         self.assertNotIn("test-cluster-gpu", self.jobs["provider-test-gate"])
 

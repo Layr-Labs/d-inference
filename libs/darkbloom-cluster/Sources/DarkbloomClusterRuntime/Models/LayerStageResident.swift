@@ -55,13 +55,43 @@ extension LayerStageResidentAdmission {
     }
 }
 
+/// What one decode forward of a request runs on a rank. Under the decode
+/// command buffers (`QwenLayerStageSession.decodeCommandBuffers`) the
+/// temporaries of every layer it runs can be alive at once: `rows` a layer (1,
+/// or a verify window's `depth + 1`), over the rank's own stage or, on the
+/// decoding rank of a phase split, which runs both stages, over every layer.
+/// The other rank of a phase split hands its prompt state over and decodes
+/// nothing: 0 rows.
+struct LayerStageDecodeShape: Equatable {
+    var rows = 1
+    var wholeModel = false
+
+    static let plain = Self()
+
+    init(rows: Int = 1, wholeModel: Bool = false) {
+        self.rows = rows; self.wholeModel = wholeModel
+    }
+
+    init(mode: QwenResidentGenerationMode, rank: Int, speculativeTerms: QwenMTPTerms?) {
+        let rows = mode.usesSpeculativeHead ? (speculativeTerms?.depth ?? 0) + 1 : 1
+        self.init(rows: mode.isPhaseSplit && rank == 0 ? 0 : rows, wholeModel: mode.isPhaseSplit && rank == 1)
+    }
+
+    /// The stages of `plan` whose layers one decode forward on `rank` runs.
+    func stages(of plan: QwenLayerStagePlan, rank: Int) -> [QwenLayerStagePlan.Stage] {
+        wholeModel ? plan.stages : [plan.stages[rank]]
+    }
+}
+
 /// One rank's loaded stage and what its family knows about a request's storage.
 protocol LayerStageResidentStage {
     var loaded: LoadedQwenLayerStage { get }
     /// The registered model's own ceiling for one request's named state.
     func namedStateByteCeiling() throws -> Int
-    /// This rank's named request storage, each array at the allocator's bound.
+    /// This rank's named request storage, each array at the allocator's bound,
+    /// for a request whose decode forwards run `decode`.
     func requestAllowance(plan: QwenLayerStagePlan, rank: Int, maximumTokens: Int, chunkSize: Int,
+                          decode: LayerStageDecodeShape,
                           bound: (Int) throws -> Int) throws -> QwenResidentRequestAllowance
     /// A recording capture's live gate, bound to this loaded source and to the
     /// allowance the owner reserved.
@@ -70,6 +100,15 @@ protocol LayerStageResidentStage {
     /// What a phase-split hand-off is planned from; nil for a family whose
     /// request state does not change owner.
     var handoffGeometry: QwenLongPrefillBudgetGeometry? { get }
+}
+
+extension LayerStageResidentStage {
+    /// A request that decodes one row a step on this rank's stage.
+    func requestAllowance(plan: QwenLayerStagePlan, rank: Int, maximumTokens: Int, chunkSize: Int,
+                          bound: (Int) throws -> Int) throws -> QwenResidentRequestAllowance {
+        try requestAllowance(plan: plan, rank: rank, maximumTokens: maximumTokens, chunkSize: chunkSize,
+            decode: .plain, bound: bound)
+    }
 }
 
 /// Admits one rank's load through the registered family its identity names.

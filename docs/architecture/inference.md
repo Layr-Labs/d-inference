@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-11-01
+> Last updated: 2026-11-02
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -4172,6 +4172,84 @@ A Qwen tensor-parallel rank waits for each all-sum the same way GLM's does: the 
 The GLM finite-calibration adapter samples each Mac locally and reuses `GLM5NextQualificationPlacement.evaluateLocal`. It supplies serial PP only; TP, lookahead and speculative execution are not part of that calibration seam. The cost layout leaves public admitted cuts empty. Existing keyed measurements feed `ClusterSpeedEstimator`; absent measurements remain priors, and the uniform layer-cost and unmeasured-link assumptions are reported. Predicted fastest is not measured-best pair throughput. Experimental workspace allowances never become measured or calibrated serving evidence.
 
 The installed run command recomputes the decision from both snapshots, binds it to the unchanged local template, and then invokes the existing signed quotation/owner path with the chosen cut. Local and peer quotes must still agree, and current-device/load/reserve/start checks retain authority. Public endpoint activation, automated calibration scheduling and a MiMo adapter for this exact-quote seam are separate integrations.
+
+## Pipeline decode command buffers
+
+The pipeline stages of the Qwen catalog (dense, routed-expert and Prism rows),
+Nemotron, Gemma 4, GPT-OSS and GLM encode decode work as GLM's and Qwen's
+tensor-parallel decode do: up to 100 operations a Metal command buffer with no
+input-size bound (`QwenLayerStageSession.decodeCommandBuffers`), on the thread
+that encodes it. The rank's own limits are the worker's 16-operation guard
+(`ClusterWorkerEnvironmentGuards`) and MLX's per-chip size bound, which counts
+the distinct input elements of a buffer: a routed-expert launch takes a whole
+expert bank as input, and banks above the bound (the 35B A3B rows, Nemotron,
+Gemma 4 and GLM) commit a buffer at every launch. Prefill frames keep the
+rank's limits. MiMo's pipeline is not covered here.
+
+| Work | Where the limits apply |
+|---|---|
+| Plain and compact decode frames, phase-split and alone-route decode (Qwen catalog, Nemotron, Gemma 4) | `QwenLayerStageSession.decode` |
+| Lane steps | `QwenLayerStageSession.decodeBatch` |
+| `pipeline_mtp_v1` rounds: drafts, verify windows on both ranks, settlement | `QwenPipelineMTPGeneration.runProducer`, `QwenPipelineMTPGeneration.runConsumer` |
+| `phase_split_mtp_v1` rounds on the decoding rank | `QwenMTPDecoder.step` |
+| GPT-OSS decode frames and lane steps | `GPTOSSLayerStageSession.decode`, `GPTOSSLayerStageSession.decodeBatch` |
+| GLM decode frames | `GLM5NextStageSession.forward`, decode phase only |
+
+Only the commit points move: every kernel, input and rounded value is the same,
+so load agreements and arithmetic contracts are unchanged.
+`PipelineDecodeCommandBufferTests` compares every output row, verify window and
+cache or state array byte for byte under each family's guard and under the
+decode limits, on synthetic stages.
+
+MLX keeps up to ten command buffers in flight (`MLX_MAX_ACTIVE_TASKS`) and frees
+a buffer's temporaries when it completes, so under the decode limits a whole
+stage step's temporaries can be alive at once. Each request charge therefore
+prices every attending layer's decode rows together, and never less than one
+prompt frame's:
+
+| Family | Charge | Decode rows priced together |
+|---|---|---|
+| Qwen catalog, Nemotron | `QwenResidentPrefillTransient.bytes` (`decodeRows`), from `QwenResidentRequestAllowance.derive` | One a layer, or the verify window's `depth + 1` (`LayerStageDecodeShape`), on the rank's stage; on every layer on a phase split's decoding rank; none on its other rank, which hands its prompt state over |
+| Gemma 4 | `Gemma4PrefillTransient.bytes` (`decodeRows`, `decodeLayers`) | One on each layer of the stage, sliding layers over their window |
+| GPT-OSS | `GPTOSSRequestStateBudget` workspace | One a full-attention layer |
+| GLM | Unchanged (`GLM5NextRequestStateBudget.estimate`): every DSA layer of the stage is charged three float32 copies of twice the context the request is charged for, and every request the conservative 5.5 GiB workspace | None added: a step's pages and reads on every layer at once stay well inside that charge (below) |
+
+The LOAD quotes are unchanged: they are computed at the largest prompt chunk,
+512 rows, and a decode step prices at most 80 rows (5 on each of 16 attending
+layers; one on each of Gemma's 30). Only requests whose prompt frames are
+shorter than their decode rows are charged more, and only on a rank that
+decodes. The rows are priced as float32 score rows over the whole context.
+The Qwen, Nemotron and Gemma 4 stages keep their keys and values in the paged
+stage KV (`CBv2StageKVHost`). There, decode steps, lane steps and verify
+windows (one decode row a window column, `CBv2OwnedRequestState.buildingWindow`)
+attend through the paged decode kernel (`PagedAttentionKernel.decode` in
+`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedAttentionKernel.swift`).
+Its float32 partials take `heads × ceil(keys / 256) × (head width + 2) × 4`
+bytes a row: about one score row at head width 256, two on Gemma's full layers
+(width 512) and half on Nemotron's (width 128, whose charge prices only the
+output). GPT-OSS attends through MLX's attention, whose vector kernel on Max
+and Ultra GPUs at 1,024 keys or more keeps float32 partials that exceed a score
+row by at most about 4 MiB a layer (`sdpa_vector_2pass` in
+`libs/mlx-swift/Source/Cmlx/mlx/mlx/backend/metal/scaled_dot_product_attention.cpp`).
+The excess over the priced rows is not charged; [INFERENCE] it is at most tens
+of MiB a request, times the lanes.
+
+GLM needs no decode term. Each DSA layer of a GLM stage is already charged
+three float32 copies of twice its context
+(`GLM5NextRequestStateBudget.HistoryBound.geometric`: 18,438 bytes a token at
+the registered widths). A decode step keeps that layer's history in bfloat16
+pages (1,537 bytes a token) and reads at most one gathered copy of it, only the
+index planes (513 bytes a token) once the history passes 4,102 tokens, so every
+layer's reads alive at once stay well inside the term at any context. The rest
+of a step, mostly each linear-attention layer's next 4.4 MB state, is inside the
+conservative 5.5 GiB workspace every request is charged
+(`GLM5NextServingResources.workspaceNativeBytes`). On a synthetic stage at the
+registered widths (three DSA and three linear-attention layers, bfloat16
+pages), a decode step held 16 MB above its baseline at a 20-token context and
+136 MB at 65,520 tokens of history, the same under these limits as with the
+whole step in one buffer (131 MB under the rank's guard), against 6.0 and
+11.1 GB charged at those contexts. The decode speed effect and peak memory on
+registered models are not measured yet.
 
 ## GLM cluster prefill bounds
 

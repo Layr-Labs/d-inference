@@ -115,6 +115,65 @@ struct StatusResidencyTests {
         #expect(!autopilot.contains("Adopted"))
         #expect(!autopilot.contains("Target:"))
     }
+
+    @Test("a selected model the daemon keeps retrying and a filter edit waiting for a restart")
+    func retryingSelectedModelAndPendingFilterChange() async throws {
+        let result = try await #require(processExitsWith: .success, observing: [\.standardOutputContent]) {
+            let sandbox = try CLICommandSandbox.enter(enabledModels: [Self.superID, Self.gemmaID], autoRestart: false)
+            defer { sandbox.remove() }
+            let now = Date().timeIntervalSince1970
+            try sandbox.writeState(Self.reportedState(now: now, adoptedHoldExpiresAtMs: nil), adding: [
+                "serving_selection": [Self.gemmaID, Self.glmID, Self.superID],
+                "enabled_models_at_start": [Self.superID, Self.gemmaID, Self.glmID],
+                "selected_model_recovery": [[
+                    "model": Self.superID, "waiting_since": now - 3 * 3_600 - 240, "next_check_at": now + 125,
+                    "checks": 9,
+                    "blocker": "needs 83.6 GB; 34.8 GB usable; waiting for \(Self.glmID) (171.3 GB: 1 request in flight)",
+                ]],
+            ])
+            print("== STATUS")
+            try await runCLICommand(Status.self, ["status", "--config", sandbox.config.path])
+            print("== END")
+        }
+        let output = decodedText(result.standardOutputContent)
+        let status = try #require(outputSection(output, from: "== STATUS", to: "== END"))
+        #expect(status.contains("\nConfiguration change needs a restart to apply: enabled_models removes \(Self.glmID). "
+            + "Run `\(BuildEnvironment.current.cliName) restart`.\n"), "\(status)")
+        #expect(status.contains("\nRetrying \(Self.superID) when memory frees; next check in 2m (waiting 3h4m)\n"
+            + "  Last check: needs 83.6 GB; 34.8 GB usable; waiting for \(Self.glmID) (171.3 GB: 1 request in flight)\n"),
+            "\(status)")
+    }
+
+    /// `darkbloom switch` saves the filter it applies, so the running
+    /// selection already matches the saved file; only a later edit waits for
+    /// a restart, and it is compared with the switch, not the start.
+    @Test("a filter a switch saved and applied needs no restart; a later edit does")
+    func switchedFilterAndLaterEdit() async throws {
+        let result = try await #require(processExitsWith: .success, observing: [\.standardOutputContent]) {
+            let sandbox = try CLICommandSandbox.enter(enabledModels: [Self.superID, Self.gemmaID], autoRestart: false)
+            defer { sandbox.remove() }
+            let now = Date().timeIntervalSince1970
+            try sandbox.writeState(Self.reportedState(now: now, adoptedHoldExpiresAtMs: nil), adding: [
+                "serving_selection": [Self.gemmaID, Self.superID],
+                "enabled_models_at_start": [Self.superID, Self.gemmaID, Self.glmID],
+                "enabled_models_at_last_switch": [Self.gemmaID, Self.superID],
+            ])
+            print("== SWITCHED")
+            try await runCLICommand(Status.self, ["status", "--config", sandbox.config.path])
+            var config = try ConfigManager.load(from: sandbox.config)
+            config.backend.enabledModels = [Self.superID]
+            try ConfigManager.save(config, to: sandbox.config)
+            print("== EDITED")
+            try await runCLICommand(Status.self, ["status", "--config", sandbox.config.path])
+            print("== END")
+        }
+        let output = decodedText(result.standardOutputContent)
+        let switched = try #require(outputSection(output, from: "== SWITCHED", to: "== EDITED"))
+        #expect(!switched.contains("Configuration change needs a restart"), "\(switched)")
+        let edited = try #require(outputSection(output, from: "== EDITED", to: "== END"))
+        #expect(edited.contains("\nConfiguration change needs a restart to apply: enabled_models removes \(Self.gemmaID). "
+            + "Run `\(BuildEnvironment.current.cliName) restart`.\n"), "\(edited)")
+    }
 }
 
 extension CLICommandSandbox {

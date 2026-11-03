@@ -133,6 +133,10 @@ public struct StartupPreloader: Sendable {
         public var loaded: [String] = []
         public var skippedInsufficientMemory: [String] = []
         public var failed: [String] = []
+        /// The subset of `failed` the load gate refused for memory.
+        public var failedInsufficientMemory: [String] = []
+        /// Candidates never tried: the slot cap was reached or the run stopped.
+        public var notAttempted: [String] = []
         public var selfTestFailed: [String] = []
         public var retired: [String] = []
 
@@ -150,9 +154,12 @@ public struct StartupPreloader: Sendable {
     /// `preload_models`). Honors task cancellation between and inside steps.
     public func run(candidates: [Candidate]) async -> Summary {
         var summary = Summary()
-        for candidate in candidates {
+        for (index, candidate) in candidates.enumerated() {
             if Task.isCancelled { break }
-            if let canLoadMore = deps.canLoadMore, !(await canLoadMore()) { break }
+            if let canLoadMore = deps.canLoadMore, !(await canLoadMore()) {
+                summary.notAttempted = candidates[index...].map(\.modelId)
+                break
+            }
             let modelId = candidate.modelId
             if let onCandidateStarted = deps.onCandidateStarted {
                 await onCandidateStarted(modelId)
@@ -193,7 +200,10 @@ public struct StartupPreloader: Sendable {
                 // can still refuse after an interleaved load changes memory.
                 // The gate and its pending-load rechecks use two bounded
                 // insufficient-memory message shapes. Keep public text closed.
-                if Self.isInsufficientMemoryLoad(error) { deps.onInsufficientMemory?() }
+                if Self.isInsufficientMemoryLoad(error) {
+                    deps.onInsufficientMemory?()
+                    summary.failedInsufficientMemory.append(modelId)
+                }
                 deps.onFailure(modelId, error)
                 deps.log(
                     "WARN: startup preload failed for '\(modelId)': "
@@ -246,7 +256,7 @@ public struct StartupPreloader: Sendable {
         return liveGb
     }
 
-    private static func isInsufficientMemoryLoad(_ error: any Error) -> Bool {
+    static func isInsufficientMemoryLoad(_ error: any Error) -> Bool {
         guard let loadError = error as? InferenceError,
               case .modelLoadFailed(let message) = loadError else { return false }
         return message.hasPrefix("Insufficient memory (")

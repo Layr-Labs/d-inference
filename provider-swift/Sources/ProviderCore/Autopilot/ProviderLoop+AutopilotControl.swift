@@ -77,6 +77,7 @@ extension ProviderLoop {
     func refreshAutopilotSettings() {
         guard let path = loopConfig.configPath,
               let config = try? ConfigManager.load(from: path) else { return }
+        savedEnabledModels = config.backend.enabledModels
         // Download settings are provider configuration, never consent: they
         // change no control, lease or revision.
         let downloads = config.backend.autopilotDownloads ?? .init()

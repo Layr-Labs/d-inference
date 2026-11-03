@@ -517,6 +517,18 @@ extension ProviderLoop {
 }
 
 extension ProviderLoop {
+    /// Test seam: replaces the selected-model recovery's no-eviction load.
+    func setSelectedModelRecoveryLoadOverrideForTesting(_ load: (@Sendable (String) async throws -> Void)?) {
+        selectedModelRecoveryLoadOverride = load
+    }
+
+    /// Waits for the selected-model recovery attempt in progress, if any.
+    func awaitSelectedModelRecoveryAttemptForTesting() async {
+        await selectedModelRecovery.attempt?.task.value
+    }
+}
+
+extension ProviderLoop {
     /// Test seam: the managed Super loader and its runtime-policy environment.
     func setNemotronSuperSlotLoaderForTesting(_ loader: NemotronSuperSlotLoader,
                                               environment: [String: String]) {

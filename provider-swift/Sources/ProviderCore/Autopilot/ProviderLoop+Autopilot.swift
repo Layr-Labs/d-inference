@@ -210,6 +210,7 @@ extension ProviderLoop {
                           await unloadModel(victim, forEviction: true, autopilotCommandId: command.commandId) else {
                         throw AutopilotFailure("victim_became_busy")
                     }
+                    noteSelectedModelUnloaded(victim, by: command)
                 }
             }
             // Cancellation is cooperative: an unload or a load past its slot

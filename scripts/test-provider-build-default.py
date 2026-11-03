@@ -90,7 +90,7 @@ class ProviderBuildDefaultTests(unittest.TestCase):
         release = (ROOT / ".github/workflows/release-provider.yml").read_text(encoding="utf-8")
         resolve = release.split("\n  resolve-env:\n", 1)[1].split("\n  build-provider:\n", 1)[0]
         guard = resolve.split("- name: Check that master's plain build defaults to prod\n", 1)[1].split("\n      - ", 1)[0]
-        self.assertIn("if: inputs.environment != 'dev'", guard)
+        self.assertIn("if: github.ref != 'refs/heads/dev'", guard)
         self.assertIn("run: python3 scripts/provider-build-default.py --branch master", guard)
         self.assertLess(resolve.index("ref: ${{ steps.trust.outputs.source_sha }}"),
                         resolve.index("provider-build-default.py"))

@@ -403,9 +403,9 @@ identity (`provider-swift/Package.swift`). Config, CLI flags and
 `DARKBLOOM_R2_CDN_URL` still override defaults. Dev/prod products have different
 cache keys, and packaged smoke must report the selected build environment.
 
-A staging or prod lane builds master. Before the build, job `resolve-env` runs
-`scripts/provider-build-default.py --branch master`. The lane stops if the
-plain-build default in master's `provider-swift/Package.swift` is not `prod`.
+Every run except a dev push builds master's source. Before the build, job
+`resolve-env` runs `scripts/provider-build-default.py --branch master`. The run
+stops if the plain-build default in `provider-swift/Package.swift` is not `prod`.
 
 A dev release from a dev push has the version `X.Y.Z-dev.branch.N`, and a
 master validation build has `X.Y.Z-dev.N`. `X.Y.Z` is the source

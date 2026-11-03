@@ -158,12 +158,13 @@ jobs:
         with:
           ref: ${{ steps.trust.outputs.source_sha }}
           persist-credentials: false
-      # staging and prod release master, whose plain build must be prod even
-      # though the build sets DARKBLOOM_RELEASE_ENVIRONMENT. A wrong default
-      # stops the release here, before any build or signing. The dev lane
-      # releases the dev branch, whose default is dev; CI checks that one.
+      # Every run except a dev push builds master's source (a tag, a master
+      # push or a dispatch), whose plain build must be prod even though the
+      # build sets DARKBLOOM_RELEASE_ENVIRONMENT. A wrong default stops the run
+      # here, before any build or signing. The dev branch defaults to dev; CI
+      # checks that one.
       - name: Check that master's plain build defaults to prod
-        if: inputs.environment != 'dev'
+        if: github.ref != 'refs/heads/dev'
         run: python3 scripts/provider-build-default.py --branch master
       - id: pick
         env:

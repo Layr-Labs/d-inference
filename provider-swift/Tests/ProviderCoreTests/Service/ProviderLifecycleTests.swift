@@ -36,6 +36,10 @@ private extension ProviderLoop {
         appAttestSupportProbe = supported
         appAttestRestart = { restarts.append($0, $1) }
         appAttestRestartUpdater = updater
+        appAttestEvidenceLog = { _ in }
+    }
+    func captureAppAttestEvidence(_ contexts: AppAttestEvidenceContexts) {
+        appAttestEvidenceLog = { contexts.append($0) }
     }
     func setAppAttestRestartSeams(route: ProcessLifecycle.RelaunchRoute, supported: Bool) {
         setAppAttestRestartSeams(route: route, supported: { supported })
@@ -314,6 +318,13 @@ private final class AppAttestRestartLog: @unchecked Sendable {
     var causes: [ProviderRunMarker.ExitCause] { lock.withLock { entries.map(\.0) } }
 }
 
+private final class AppAttestEvidenceContexts: @unchecked Sendable {
+    private let lock = NSLock()
+    private var entries: [String] = []
+    func append(_ context: String) { lock.withLock { entries.append(context) } }
+    var values: [String] { lock.withLock { entries } }
+}
+
 /// Apple boundary with no outstanding call; availability comes from the probe seam.
 private actor IdleAppAttestService: AppAttestService {
     func checkAvailability(environment: String) {}
@@ -501,6 +512,20 @@ struct AppAttestUnsupportedRestartTests {
         #expect(AppAttestStallRestartMarker(directory: root).lastRestart() == nil,
                 "a state that cleared on its own does not spend the limit")
         await loop.cancelAppAttestStallMonitor()
+    }
+
+    @Test func everyUnsupportedReadyWritesEntitlementEvidenceEvenWithoutARestart() async throws {
+        let (loop, root) = try await lifecycleLoop()
+        defer { try? FileManager.default.removeItem(at: root) }
+        await loop.setAppAttestRestartSeams(route: .exec, supported: false)
+        let contexts = AppAttestEvidenceContexts()
+        await loop.captureAppAttestEvidence(contexts)
+        // Never verified and not under launchd: no restart, but the evidence is written.
+        await loop.noteAppAttestAvailability(unsupportedReady(), now: Date())
+        await loop.noteAppAttestAvailability(AppAttestLocalStatus(observedAt: 0, launchSession: .gui), now: Date())
+        await loop.noteAppAttestAvailability(unsupportedReady(), now: Date())
+        #expect(contexts.values == ["is_supported_false", "is_supported_false"])
+        #expect(await loop.appAttestUnsupportedSince == nil)
     }
 
     @Test func clusterMemberNeverArmsTheUnsupportedRestart() async throws {

@@ -205,6 +205,7 @@ extension Start {
         // Only the lock holder is the serving process: record its start
         // (previous_exit / start_reason) before any in-place update exec.
         ProviderProcessRun.begin()
+        ProviderProcessRun.logAppAttestEntitlementEvidence(context: "startup")
 
         let selectedIDs = Set(selectedModels.map(\.id))
         let autopilot = config.backend.modelAutopilot

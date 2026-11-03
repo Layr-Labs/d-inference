@@ -105,7 +105,16 @@ this Mac App Attest in the last 7 days and launchd runs the provider, the
 provider restarts once through launchd when the state lasts 5 minutes and the
 provider is idle. It restarts once per verified episode: if the new process
 still reports unsupported, it waits until the coordinator verifies the Mac
-again. This restart shares the stall restart's limit of one per 6 hours. The log line starts with `App Attest: isSupported is false`. See the
+again. This restart shares the stall restart's limit of one per 6 hours.
+
+For root-cause analysis, the provider log (`~/.darkbloom/provider.log`) gets a
+line that starts with `App Attest entitlement evidence` once at startup and at
+each `is_supported_false` answer. It shows the start reason, the App Attest
+entitlements the kernel gave the running process next to the ones in the code
+on disk, and the executable's modification time minus the process start time.
+The line stays on the Mac; it is not sent to the coordinator
+(`provider-swift/Sources/ProviderAppAttest/AppAttestPreflightProbe.swift`,
+`AppAttestEntitlementEvidence`). The log line starts with `App Attest: isSupported is false`. See the
 [thresholds and limits](../reference/app-attest-shadow.md#bounds-and-credential-lifecycle).
 
 The separate [supervised worker candidate](../architecture/security/identity-binding.md#supervised-app-attest-worker-candidate)

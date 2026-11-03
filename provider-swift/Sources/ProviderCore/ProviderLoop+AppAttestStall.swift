@@ -38,6 +38,9 @@ extension ProviderLoop {
     /// Called with each `ready` this process answers. Starts the monitor when
     /// `isSupported` is false on a Mac that may restart for it.
     internal func noteAppAttestAvailability(_ status: AppAttestLocalStatus?, now: Date = Date()) {
+        // Root-cause evidence for every unsupported answer, whether or not a
+        // restart may follow.
+        if status?.availabilityReason == .isSupportedFalse { appAttestEvidenceLog("is_supported_false") }
         guard serveUsesHostServices, !isClusterMember, !usesAppAttestWorker, status?.availabilityReason == .isSupportedFalse,
               appAttestUnsupportedRestartEligible(status, now: now) else {
             appAttestUnsupportedSince = nil

@@ -231,6 +231,10 @@ public actor ProviderLoop {
     internal var appAttestRestart: AppAttestRestart = { try ProcessLifecycle.restartAfterUpdate(cause: $0, route: $1) }
     /// Seam for the install the App Attest restart leases; nil is the running install.
     internal var appAttestRestartUpdater: SelfUpdater?
+    /// Seam for the local entitlement evidence line written at `is_supported_false`.
+    internal var appAttestEvidenceLog: @Sendable (_ context: String) -> Void = {
+        ProviderProcessRun.logAppAttestEntitlementEvidence(context: $0)
+    }
     internal let loopConfig: ProviderLoopConfig
     internal var ordinaryServingModelIDs: Set<String>
     /// The operator's explicit selection: `enabled_models` with the start

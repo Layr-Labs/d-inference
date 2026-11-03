@@ -660,6 +660,18 @@ public struct SelfUpdater: Sendable {
         return Self.installRoot(forExecutablePath: executablePath)
     }
 
+    /// The release quarantined on this Mac, read without the lease as
+    /// `checkForUpdate` reads it (the state file is replaced atomically); nil
+    /// when none is, or the state cannot be read.
+    public func quarantinedVersion() -> String? {
+        recordedRecoveryState()?.quarantine?.version
+    }
+
+    /// The recovery state, read without the lease as `quarantinedVersion` reads it; nil when it cannot be read.
+    public func recordedRecoveryState() -> UpdateRecoveryState? {
+        try? recoveryStore()?.loadState()
+    }
+
     private func recoveryStore() -> UpdateRecoveryStore? {
         guard let root = resolvedInstallRoot() else { return nil }
         return UpdateRecoveryStore(

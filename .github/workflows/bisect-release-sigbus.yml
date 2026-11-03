@@ -29,21 +29,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: nemotron-slot
-            filter: '^(ProviderCoreTests[./]NemotronSuperManagedSlotTests|ProviderCoreTests[./]Qwen4PagingPrefixIntegrationTests)([./]|$)'
+          - name: wedge-confirmed
+            filter: '^(ProviderCoreTests[./]NemotronSuperManagedSlotTests/confirmedWedgeRetiresTheSlotOffTheCapacityTick|ProviderCoreTests[./]Qwen4PagingPrefixIntegrationTests)([./(]|$)'
             skip: ''
           - name: wedge-both
             filter: '^(ProviderCoreTests[./]NemotronSuperManagedSlotTests/(confirmedWedgeRetiresTheSlotOffTheCapacityTick|wedgedRetirementPastItsBoundIsARetainedFault)|ProviderCoreTests[./]Qwen4PagingPrefixIntegrationTests)([./(]|$)'
             skip: ''
-          - name: wedge-confirmed
-            filter: '^(ProviderCoreTests[./]NemotronSuperManagedSlotTests/confirmedWedgeRetiresTheSlotOffTheCapacityTick|ProviderCoreTests[./]Qwen4PagingPrefixIntegrationTests)([./(]|$)'
-            skip: ''
-          - name: wedge-retained
-            filter: '^(ProviderCoreTests[./]NemotronSuperManagedSlotTests/wedgedRetirementPastItsBoundIsARetainedFault|ProviderCoreTests[./]Qwen4PagingPrefixIntegrationTests)([./(]|$)'
-            skip: ''
-          - name: nemotron-no-wedge
-            filter: '^(ProviderCoreTests[./]NemotronSuperManagedSlotTests|ProviderCoreTests[./]Qwen4PagingPrefixIntegrationTests)([./]|$)'
-            skip: 'confirmedWedgeRetiresTheSlotOffTheCapacityTick|wedgedRetirementPastItsBoundIsARetainedFault'
     env:
       DARKBLOOM_RELEASE_ENVIRONMENT: prod
       BISECT_NAME: ${{ matrix.name }}

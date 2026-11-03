@@ -53,12 +53,17 @@ if [[ -n "${BISECT_FILTER:-}" ]]; then
   status=$?
   if [ "$status" -ne 0 ]; then
     helper="$(dirname "${PROVIDER_SWIFT:-$(xcrun -f swift)}")/../libexec/swift/pm/swiftpm-testing-helper"
-    bundle=$(find .build -path '*debug/DarkbloomProviderPackageTests.xctest/Contents/MacOS/DarkbloomProviderPackageTests' -type f | head -1)
-    echo "BISECT_LLDB helper=$helper bundle=$bundle"
-    xcrun lldb --batch -o "process handle SIGBUS -s true -p false" -o "process launch -X false" \
-      -k "thread backtrace all -c 60" -k "register read far" -k "image lookup -a \$pc" -k "quit 1" \
+    bundle="$PWD/$(find .build -path '*debug/DarkbloomProviderPackageTests.xctest/Contents/MacOS/DarkbloomProviderPackageTests' -type f | head -1)"
+    platform_developer=$(dirname "$(dirname "${PROVIDER_SDKROOT:-$(xcrun --show-sdk-path)}")")
+    testing=$(find "$platform_developer" "$(dirname "$helper")/../.." -name Testing.framework -maxdepth 6 2>/dev/null | head -1)
+    interop=$(find "$platform_developer" "$(dirname "$helper")/../.." -name 'lib_TestingInterop.dylib' -maxdepth 6 2>/dev/null | head -1)
+    echo "BISECT_LLDB helper=$helper bundle=$bundle testing=$testing interop=$interop"
+    xcrun lldb --batch \
+      -o "settings set target.env-vars DYLD_FRAMEWORK_PATH=$(dirname "$testing") DYLD_LIBRARY_PATH=$(dirname "${interop:-$testing}")" \
+      -o "process handle SIGBUS -s true -p false" -o "process launch -X false" \
+      -k "thread backtrace all -c 80" -k "register read far" -k "image lookup -a \$pc" -k "quit 1" \
       -- "$helper" --test-bundle-path "$bundle" --skip-build --no-parallel --filter "$BISECT_FILTER" ${skip[@]+"${skip[@]}"} \
-      "$bundle" --testing-library swift-testing 2>&1 | tail -n 1500
+      "$bundle" --testing-library swift-testing 2>&1 | grep -v -E '^(.[^ ]* )?[◇✔↳➜] ' | tail -n 2500
   fi
   echo "BISECT_RESULT name=${BISECT_NAME:-} status=$status"
   exit "$status"

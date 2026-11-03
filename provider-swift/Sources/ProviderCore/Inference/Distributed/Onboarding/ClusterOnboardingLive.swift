@@ -338,12 +338,10 @@ final class OnboardingLive: @unchecked Sendable {
                 last = report
                 step = flow.observed(report)
             case .fix(let device):
-                // The one macOS approval; where no prompt can show (an SSH session has no window to show it in), one
-                // owner-only script, which the onboarding runs with sudo in this terminal (the person never has to
-                // find it, so the link flow's line telling them to run it by hand is not shown).
-                if !ClusterLocalNetworkAccess.overSSH() {
-                    say("macOS asks for your password to set up the cable's port: approve it (once per Mac).")
-                }
+                // The one macOS approval (Connect's first line said macOS asks for the password; its window says
+                // what for); where no prompt can show (an SSH session has no window to show it in), one owner-only
+                // script, which the onboarding runs with sudo in this terminal (the person never has to find it, so
+                // the link flow's line telling them to run it by hand is not shown).
                 let result = ClusterLinkRepair.fix(device: device, mode: .durable, dryRun: false)
                 manualScript = result.manualScript
                 step = flow.repaired(result)
@@ -928,8 +926,8 @@ final class OnboardingLive: @unchecked Sendable {
                 return .success(lines)
             }
             if let model = lock.withLock({ catalogChoices[index] }) {
+                // Its line ("✓ Downloaded …") is the download's own last report.
                 folder = try downloadOnThisMac(model, store: store, progress: progress)
-                lines.append("\(model.id) is on this Mac now (downloaded from Darkbloom's catalog and verified, as `darkbloom` downloads models).")
             }
             let manifest = store.appendingPathComponent(folder).appendingPathComponent("manifest.json")
             guard let data = ClusterModelStore.readSmall(manifest) else { throw ClusterSetupFailure("this Mac's \(folder) has no readable manifest") }
@@ -937,23 +935,23 @@ final class OnboardingLive: @unchecked Sendable {
             if let peer = lock.withLock({ peerReport }),
                peer.models.contains(where: { artifact.sameEntry(modelID: $0.modelID, version: $0.version, aggregate: $0.artifactSHA256)
                    && ($0.filesSHA256 == nil || $0.filesSHA256 == artifact.filesDigest) }) {
-                lines.append("\(Self.sentence(there)) has it already (same catalog digest).")
+                lines.append("\(ClusterOnboardingDriver.done) \(Self.sentence(thereShort)) already has it")
                 return .success(lines)
             }
             guard let pairing = try ClusterSetupLinkExchange.pairing() else { throw ClusterSetupFailure("This Mac is not paired.") }
             let selection = try context.linkSelection()
-            let name = there
-            let reports = ClusterTransferReports(label: "Copying \(artifact.modelID) to \(thereShort)", send: progress)
+            let reports = ClusterTransferReports(label: "Copying to \(thereShort)", send: progress)
             let outcome = try ClusterSetupLinkExchange.copyModel(pairing: pairing, selection: selection, peerAddress: nil, artifact: artifact,
                 source: store.appendingPathComponent(folder), folder: folder) { sent, total in
                     reports.report(done: sent, total: total)
                 }
             if outcome.alreadyThere {
-                lines.append("\(Self.sentence(name)) has it already (same catalog digest).")
+                lines.append("\(ClusterOnboardingDriver.done) \(Self.sentence(thereShort)) already has it")
             } else {
+                // Every file matched the catalog manifest's SHA-256 (the copy fails otherwise).
                 let rate = outcome.seconds > 0 ? Double(outcome.sentBytes) / outcome.seconds : 0
                 if rate > 0 { try? Data(String(format: "%.0f", rate).utf8).write(to: copyRateFile, options: .atomic) }
-                lines.append("Copied \(ClusterModelProvisioning.gigabytes(outcome.sentBytes)) to \(name) over the Thunderbolt cable in \(String(format: "%.1f", outcome.seconds)) s (\(String(format: "%.2f", rate / 1e9)) GB/s); every file matched the catalog manifest's SHA-256.")
+                lines.append("\(ClusterOnboardingDriver.done) Copied to \(thereShort) (\(ClusterModelProvisioning.gigabytes(outcome.sentBytes)), \(String(format: "%.1f", outcome.seconds)) s)")
             }
             // The member's answer now lists the model, so the plan and the start see it there.
             if case .reached(let report, _) = context.reachPeer() { lock.withLock { peerReport = report } }
@@ -976,14 +974,15 @@ final class OnboardingLive: @unchecked Sendable {
         let deadline = started.addingTimeInterval(120 + Double(model.totalBytes) / 50e6)
         let staging = store.appendingPathComponent(".darkbloom-incoming-" + String(model.artifactSHA256.prefix(32)))
         var lastCheck = Date.distantPast
-        let reports = ClusterTransferReports(label: "Receiving \(model.modelID) from \(thereShort)", send: progress)
+        let reports = ClusterTransferReports(label: "Copying from \(thereShort)", send: progress)
         while Date() < deadline {
             if let data = ClusterModelStore.readSmall(store.appendingPathComponent(model.folder).appendingPathComponent("manifest.json")),
                let artifact = try? ClusterCatalogArtifact.parse(manifest: data),
                artifact.sameEntry(modelID: model.modelID, version: model.version, aggregate: model.artifactSHA256),
                model.filesSHA256 == nil || model.filesSHA256 == artifact.filesDigest {
+                // Every file matched the catalog manifest's SHA-256 (this Mac's service verified each one).
                 let seconds = Date().timeIntervalSince(started)
-                return "\(Self.sentence(sender)) copied \(ClusterModelProvisioning.gigabytes(model.totalBytes)) of \(model.modelID) to \(hereShort) over the Thunderbolt cable in \(String(format: "%.1f", seconds)) s; every file matched the catalog manifest's SHA-256."
+                return "\(ClusterOnboardingDriver.done) Copied from \(thereShort) (\(ClusterModelProvisioning.gigabytes(model.totalBytes)), \(String(format: "%.1f", seconds)) s)"
             }
             if Date().timeIntervalSince(lastCheck) >= 1 {
                 lastCheck = Date()
@@ -1027,14 +1026,13 @@ final class OnboardingLive: @unchecked Sendable {
         // Written and verified uncached, like the copy over the cable: a download does not take memory from a model load.
         downloader.uncachedWrites = true
         let started = Date()
-        let reports = ClusterTransferReports(label: "Downloading \(model.id)", send: progress)
+        let reports = ClusterTransferReports(label: "Downloading", send: progress)
         let verifying = ClusterOnboardingMailbox<Bool>()
         downloader.byteProgress = { done, total in
             guard done >= total else { reports.report(done: done, total: total); return }
             // Every byte is here; the downloader checks each file and the aggregate digest before it publishes.
             if verifying.take().isEmpty {
-                let checking = "Downloaded \(ClusterModelProvisioning.gigabytes(total)); checking every file against the catalog manifest"
-                progress(.live({ _ in checking }, logged: true))
+                progress(.live({ _ in "Checking the download" }, logged: true))
             }
             verifying.post(true)
         }
@@ -1060,7 +1058,8 @@ final class OnboardingLive: @unchecked Sendable {
         guard case .complete(let folder) = ClusterModelStore.holding(store: store, artifact: installed.artifact) else {
             throw ClusterSetupFailure("\(model.id) could not be placed in the cluster's model store")
         }
-        progress(.line("Downloaded \(ClusterModelProvisioning.gigabytes(installed.artifact.totalBytes)) in \(String(format: "%.1f", Date().timeIntervalSince(started))) s; every file matched the catalog manifest."))
+        // Every file matched the catalog manifest (the downloader checked each one before it published).
+        progress(.line("\(ClusterOnboardingDriver.done) Downloaded (\(ClusterModelProvisioning.gigabytes(installed.artifact.totalBytes)), \(String(format: "%.1f", Date().timeIntervalSince(started))) s)"))
         return folder
     }
 
@@ -1518,12 +1517,9 @@ final class OnboardingLive: @unchecked Sendable {
             }
         }
         if let error = answer.error { return .failure(.init("The test request failed: \(error)")) }
-        let reply = answer.text.replacingOccurrences(of: "\n", with: " ").trimmingCharacters(in: .whitespaces)
-        var figures = "\(answer.tokens) tokens"
-        if let first = answer.firstTokenMilliseconds { figures += ", first token \(String(format: "%.2f", Double(first) / 1000)) s" }
-        if let rate = answer.tokensPerSecond { figures += ", \(String(format: "%.1f", rate)) tokens/s" }
-        if let finish = answer.finishReason { figures += ", finished: \(finish)" }
-        return .success(["\"\(text)\" -> \"\(String(reply.prefix(200)))\"", figures])
+        if answer.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return .failure(.init("The test request got an empty answer.")) }
+        // One line for the screen: how fast it answered (its first token).
+        return .success([answer.firstTokenMilliseconds.map { "in \(String(format: "%.2f", Double($0) / 1000)) s" } ?? ""])
     }
 
     func status() -> [String] {
@@ -1552,38 +1548,33 @@ final class OnboardingLive: @unchecked Sendable {
         if let updating = ClusterService.publishedLive()?.updating { lines.append(updating) }
         let answering = self.answering
         if let control = ClusterService.published()?.control, ["alone", "cannotServe", "waiting"].contains(control.mode) {
-            lines.append((answering ? Self.sentence(here) + ": " : "") + control.line + ".")
-            lines.append("Commands typed here are handled by \(here).")
+            lines.append((answering ? Self.sentence(hereShort) + ": " : "") + control.line + ".")
             return lines
         }
+        // One line for the screen (the banner above says which Mac leads): what serves and where, or why it does not.
         let model = (leadership?.modelName).map(modelTitle) ?? "the chosen model"
         let now = session()
         if leadership?.serving != true {
-            lines.append("Not serving (stopped)\(leadership?.modelName.map { "; the last model was " + modelTitle($0) } ?? "").")
+            lines.append("Stopped\(leadership?.modelName.map { "; last model " + modelTitle($0) } ?? "").")
             if let scope = leadership?.scope, scope.isLocalOnly { lines.append("When it starts: " + scope.line + ".") }
         } else if let offered = offeredLine() {
             let ready = offeredReadiness(offered, own: ClusterService.published()?.child)
-            lines.append((ready.ready?.lines(model: model) ?? ["\(model): \(ready.line)"]).joined(separator: ". ") + ".")
+            lines.append((ready.ready?.summary(model: model) ?? "\(model): \(ready.line)") + ".")
         } else if let session = now.session, session.observed {
             if session.ready {
-                // The deployment first, then where the API is.
-                // The local-serving line is worded for the screen it lands on (`noticeLine`): a member's status says
-                // that Mac's API, as the API line above names it.
                 let ready = ready(now, port: session.port ?? 0)
-                lines.append(ready.lines(model: model)[0] + ".")
-                lines.append(ready.apiLine + "; \(session.readyRanks) of \(session.ranks) parts ready.")
-                if let notice = ready.noticeLine { lines.append(notice + ".") }
+                lines.append(ready.summary(model: model)
+                    + ClusterOnboardingDriver.servesWords(scope: leadership?.scope ?? .publicServing, ready: ready) + ".")
                 // Why the pair serves locally although its coordinator offers a cluster approval (one line).
                 if leadership?.scope.isLocalOnly != true, let note = (try? store.readRecord())?.approvalNote { lines.append(note + ".") }
             } else {
-                lines.append("\(model): \(session.readyRanks) of \(session.ranks) parts ready" + (session.detail.map { " (\($0))" } ?? "") + ".")
+                lines.append("Loading \(model): \(session.readyRanks) of \(session.ranks) parts ready" + (session.detail.map { " (\($0))" } ?? "") + ".")
             }
         } else if let error = now.error {
-            lines.append("\(Self.sentence(there)) does not answer over the cable now (\(error)); it rejoins by itself when it is back.")
+            lines.append("\(Self.sentence(thereShort)) doesn't answer over the cable (\(error)); it rejoins by itself.")
         } else {
-            lines.append("\(model) is starting (both Macs keep trying by themselves).")
+            lines.append("Starting \(model).")
         }
-        lines.append(answering ? "Leader: \(here). This Mac is a member." : "Member: \(there). This Mac leads.")
         return lines
     }
 
@@ -1656,6 +1647,6 @@ final class OnboardingLive: @unchecked Sendable {
             let reason = (error as? ClusterSetupFailure)?.text ?? "\(error)"
             return .failure(.init("\(mac) stopped serving; \(there) did not answer (\(reason)). \(mac)'s cluster service tells it to stop as soon as it answers again."))
         }
-        return .success(["Both Macs stop their parts now (each releases its memory first). Run `darkbloom cluster` here to serve again."])
+        return .success(["Stopping both Macs. Run `darkbloom cluster` to serve again."])
     }
 }

@@ -44,10 +44,11 @@ public enum ClusterOnboardingBrand {
         }
     }
 
-    /// "●●○○○" for a heading that starts "2 / 5"; nil for any other heading.
+    /// "●●○○○" for a heading that starts "2/5" (or "2 / 5"); nil for any other heading.
     static func meter(_ title: String) -> String? {
         let parts = title.split(separator: " ", maxSplits: 3, omittingEmptySubsequences: true)
-        guard parts.count >= 3, parts[1] == "/", let step = Int(parts[0]), let total = Int(parts[2]),
+        let fraction = parts.count >= 3 && parts[1] == "/" ? [parts[0], parts[2]] : parts.first?.split(separator: "/") ?? []
+        guard fraction.count == 2, let step = Int(fraction[0]), let total = Int(fraction[1]),
               (1...9).contains(total), (1...total).contains(step) else { return nil }
         return String(repeating: "\u{25CF}", count: step) + String(repeating: "\u{25CB}", count: total - step)
     }

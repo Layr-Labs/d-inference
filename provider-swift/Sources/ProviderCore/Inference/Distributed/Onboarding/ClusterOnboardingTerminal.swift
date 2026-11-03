@@ -106,7 +106,7 @@ public final class ClusterOnboardingTerminal: ClusterOnboardingConsole {
         // wraps, and the bloom's climb of `height` rows would leave the top
         // behind: such a window keeps the heading lines (and the meter).
         let widest = 2 + ClusterOnboardingBrand.width + 3 + (texts.map(\.count).max() ?? 0)
-        guard decorates, widest < columns else { heading(title); say(subtitle); return }
+        guard decorates, widest < columns else { heading(title); if !subtitle.isEmpty { say(subtitle) }; return }
         let beside = ["\u{1B}[1m\(texts[0])\u{1B}[0m", "\u{1B}[2m\(texts[1])\u{1B}[0m",
                       "\u{1B}[2m\(texts[2])\u{1B}[0m", ""]
         func draw(_ revealed: Int) {
@@ -139,8 +139,16 @@ public final class ClusterOnboardingTerminal: ClusterOnboardingConsole {
     /// A copy's or download's report: the live line, laid out for its room, where
     /// one shows; in a transcript only the logged reports, as plain lines.
     public func progress(_ text: (_ width: Int?) -> String, logged: Bool) {
-        if decorates { working(text(liveRoom)) } else if logged { say("  " + text(nil)) }
+        guard decorates else { if logged { say("  " + text(nil)) }; return }
+        // Redrawn at most eight times a second: a copy or download reports more often than a person reads.
+        let now = DispatchTime.now().uptimeNanoseconds
+        let due = now &- progressDrawn >= 125_000_000
+        if due { progressDrawn = now }
+        drawWorking(text(liveRoom), force: due)
     }
+
+    /// When the progress line was last redrawn (uptime, nanoseconds).
+    private var progressDrawn: UInt64 = 0
 
     /// One row only: the return and erase that replace the live line reach just
     /// the cursor's row, so a wrapped line would leave its start behind.
@@ -287,9 +295,11 @@ public final class ClusterOnboardingTerminal: ClusterOnboardingConsole {
     /// presentation keeps one transcript.
     private func typedChoice(_ options: [String], _ start: Int, _ abandon: () -> Bool) -> Int? {
         for (index, option) in options.enumerated() { say("  \(index + 1)) \(option)") }
-        let prompt = "  Choose 1-\(options.count) (enter = \(start + 1)): "
+        // Enter takes the first line unless another is the default, which the prompt then names.
+        let prompt = "  Choose 1-\(options.count)" + (start == 0 ? "" : " (enter = \(start + 1))") + ": "
+        // The option taken, by its name: what the list said after its first " · " (a size, how it moves) is above.
         func finish(_ index: Int?) -> Int? {
-            write((index.map { options[$0] } ?? "") + "\n")
+            write((index.map { options[$0].components(separatedBy: " \u{00B7} ")[0] } ?? "") + "\n")
             return index
         }
         write(prompt)

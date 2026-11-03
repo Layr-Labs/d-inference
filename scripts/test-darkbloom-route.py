@@ -52,6 +52,9 @@ ROUTED = {
         "test-provider-summary": ("macos_arm64", MACOS_FALLBACK, PROVIDER),
         "test-provider-sdk": ("macos_arm64", MACOS_FALLBACK, SDK),
         "test-cluster-checks": ("macos_arm64", MACOS_FALLBACK, PROVIDER),
+        "test-cluster": ("macos_arm64", MACOS_FALLBACK, PROVIDER),
+        "test-cluster-gpu": ("macos_arm64", MACOS_FALLBACK, PROVIDER),
+        "test-cluster-focused": ("macos_arm64", MACOS_FALLBACK, PROVIDER),
     },
     "docs-impact.yml": {
         "commit-signatures": ("linux_arm64", LINUX_FALLBACK, None),
@@ -68,7 +71,7 @@ UNROUTED = ("release-swift.yml", "release-provider.yml", "release-dev-branch.yml
             "threat-model-review.yml", "bedrock-smoke.yml", "claude.yml", "codex.yml")
 # The plane grants a lane whole, so each shard of these jobs reads a lane of its
 # own, `<job>-<shard>`, and gets a free sandbox even when the others fall back.
-SHARDED = {"test-provider"}
+SHARDED = {"test-provider", "test-cluster", "test-cluster-gpu"}
 # Master and dispatched warming feed release builds, so only PRs read the route.
 RUNS_ON = {"warm": "${{ github.event_name == 'pull_request' && "
                    "fromJSON(needs.route.outputs.routes)['warm'] || 'blacksmith-12vcpu-macos-27' }}"}

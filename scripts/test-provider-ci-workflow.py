@@ -235,7 +235,7 @@ class ProviderCIWorkflowTests(unittest.TestCase):
     def test_existing_required_check_requires_every_lane_even_after_failures(self):
         job = self.jobs["provider-test-gate"]
         self.assertIn("    name: Provider Tests\n", job)
-        self.assertIn("    needs: [changes, test-provider, test-provider-summary]\n", job)
+        self.assertIn("    needs: [changes, test-provider, test-provider-summary, test-cluster, test-cluster-focused]\n", job)
         # Provider SDK Tests notifies after merge and never blocks this gate.
         self.assertNotIn("test-provider-sdk", job)
         self.assertIn("    if: ${{ always() }}\n", job)
@@ -244,14 +244,15 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         command = run_command(step)
         # Prompt Parity is a step of a provider shard: its failure is UNIT_RESULT's.
         self.assertNotIn("test-provider-parity", job)
-        for unit, summary in (("success", "success"), ("failure", "success"), ("success", "failure"),
-                              ("skipped", "success"), ("success", "skipped"), ("cancelled", "success"),
-                              ("success", "cancelled")):
-            result = subprocess.run(["bash", "-e", "-c", command],
-                                    env={**os.environ, "CHANGES_RESULT": "success", "PROVIDER_CHANGED": "true", "UNIT_RESULT": unit,
-                                         "SUMMARY_RESULT": summary},
-                                    capture_output=True, timeout=5)
-            self.assertEqual(result.returncode == 0, unit == summary == "success")
+        lanes = ("UNIT_RESULT", "SUMMARY_RESULT", "CLUSTER_RESULT", "CLUSTER_FOCUSED_RESULT")
+        for failed in (None, *lanes):
+            for outcome in ("failure", "skipped", "cancelled"):
+                results = {lane: outcome if lane == failed else "success" for lane in lanes}
+                result = subprocess.run(["bash", "-e", "-c", command],
+                                        env={**os.environ, "CHANGES_RESULT": "success", "PROVIDER_CHANGED": "true",
+                                             **results},
+                                        capture_output=True, timeout=5)
+                self.assertEqual(result.returncode == 0, failed is None, results)
 
     def test_each_lane_checks_out_recursive_sources_before_its_build(self):
         for job_id, lane in LANES.items():
@@ -670,6 +671,7 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         self.assertEqual(run_command(toolchain), "./scripts/prepare-provider-release-toolchain.sh")
         runners = {
             "Run worker capability checks": "bash libs/darkbloom-cluster-worker/Tests/CapabilityChecks/run.sh",
+            "Run prefill schedule checks": "bash libs/darkbloom-cluster/Tests/PrefillScheduleChecks/run.sh",
             "Run stage metadata checks": 'python3 libs/darkbloom-cluster/Tests/StageMetadataChecks/run.py '
                                          '--output "$RUNNER_TEMP/stage-metadata-checks"',
             "Run GPT-OSS stage checks": "bash libs/darkbloom-cluster/Tests/GPTOSSStageChecks/run.sh",
@@ -685,13 +687,18 @@ class ProviderCIWorkflowTests(unittest.TestCase):
                 self.assertEqual(field(step, "if"), "${{ !cancelled() && steps.toolchain.outcome == 'success' }}")
                 self.assertTrue((ROOT / command.split()[1]).is_file())
         # The capability build may use the whole dedicated runner.
-        capability = named["Run worker capability checks"]
-        self.assertEqual(field(capability, "DARKBLOOM_CLUSTER_METADATA_BUILD_JOBS", indent=10), "'12'")
-        # Its release build is restored with timestamps only for unchanged
-        # sources, keyed by toolchain, manifests, submodule pins and paths.
-        self.assertEqual(field(capability, "DARKBLOOM_CLUSTER_METADATA_BUILD_ROOT", indent=10),
-                         "${{ runner.temp }}/cluster-native-metadata")
+        # The prefill schedule runner builds its bootstrap product in the same
+        # retained build, before that build is recorded and saved.
+        for name in ("Run worker capability checks", "Run prefill schedule checks"):
+            native = named[name]
+            self.assertEqual(field(native, "DARKBLOOM_CLUSTER_METADATA_BUILD_JOBS", indent=10), "'12'")
+            # Its release build is restored with timestamps only for unchanged
+            # sources, keyed by toolchain, manifests, submodule pins and paths.
+            self.assertEqual(field(native, "DARKBLOOM_CLUSTER_METADATA_BUILD_ROOT", indent=10),
+                             "${{ runner.temp }}/cluster-native-metadata")
         order = [field(step, "name", indent=6) for step in steps]
+        self.assertLess(order.index("Run prefill schedule checks"),
+                        order.index("Record source timestamps for the cluster build"))
         restore, timestamps, record, upload = (order.index(name) for name in (
             "Restore cluster metadata build", "Restore unchanged source timestamps",
             "Record source timestamps for the cluster build", "Upload cluster metadata build cache"))
@@ -747,6 +754,7 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         by_id = {field(step, "id", indent=6): step for step in steps if field(step, "id", indent=6)}
         provider = by_id["provider-build"]
         sdk = by_id["sdk-build"]
+        cluster = by_id["cluster-build"]
         metallib = by_id["metallib"]
         self.assertEqual(field(provider, "if", indent=6), "inputs.lane == 'provider'")
         self.assertEqual(field(provider, "working-directory", indent=6), "provider-swift")
@@ -756,9 +764,12 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         self.assertEqual(field(sdk, "working-directory", indent=6), "libs/mlx-swift-lm")
         self.assertIn("swift package edit --path ../mlx-swift mlx-swift", sdk)
         self.assertIn("swift build --build-tests", sdk)
+        self.assertEqual(field(cluster, "if", indent=6), "inputs.lane == 'cluster'")
+        self.assertEqual(field(cluster, "working-directory", indent=6), "libs/darkbloom-cluster")
+        self.assertIn("swift build --build-tests", cluster)
         self.assertIsNone(field(metallib, "if", indent=6))
         self.assertIn('./scripts/stage-test-metallib.sh "$bin"', metallib)
-        for step in (provider, sdk, metallib):
+        for step in (provider, sdk, cluster, metallib):
             self.assertNotIn("--filter", step)
             self.assertNotIn("--skip", step)
             self.assertNotIn("cache-hit", step)

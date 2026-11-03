@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-11-02
+> Last updated: 2026-11-03
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -2203,7 +2203,7 @@ qualification or performance. Sources:
 | Watchdog state | `~/.darkbloom/watchdog-state.json` (`DARKBLOOM_WATCHDOG_STATE`) | `provider-swift/Sources/ProviderCore/Service/WatchdogState.swift` |
 | KV-backend crash-loop guard | `~/.darkbloom/kv-backend-guard.json` (`DARKBLOOM_KV_BACKEND_GUARD`) | `provider-swift/Sources/ProviderCore/Service/KVBackendGuard.swift` |
 | App Attest stall restart marker | `app-attest-stall-restart.json` beside the daemon state file, `0600`; time of the last automatic App Attest restart, for a stalled DeviceCheck call or for `is_supported_false` ([limits](../reference/app-attest-shadow.md#bounds-and-credential-lifecycle)) | `provider-swift/Sources/ProviderAppAttest/AppAttestStallRestart.swift` (`AppAttestStallRestartMarker`) |
-| App Attest verified marker | `app-attest-verified.json` beside the daemon state file, `0600`; time of the last coordinator App Attest authorization, rewritten at most once per hour. It only allows the `is_supported_false` restart; it never authorizes serving | `provider-swift/Sources/ProviderAppAttest/AppAttestStallRestart.swift` (`AppAttestVerifiedMarker`) |
+| App Attest verified marker | `app-attest-verified.json` beside the daemon state file, `0600`; time of the last coordinator App Attest authorization, rewritten at most once per hour. When it is missing at start, it is seeded once from the previous daemon state (an App Attest grant, or the last Apple success of an attested key). It only allows the `is_supported_false` restart; it never authorizes serving | `provider-swift/Sources/ProviderAppAttest/AppAttestStallRestart.swift` (`AppAttestVerifiedMarker`) |
 | Provider run marker | `provider-run.json` beside the daemon state file, `0600`. Set to `running` when a serve process starts and to `clean` (with cause) after its drain or before an update/stall relaunch. Explicit update/stall relaunch causes survive later generic termination callbacks; a failed hand-off restores running state and clears the cause. The next process derives `previous_exit` and `start_reason` from it | `provider-swift/Sources/ProviderCore/Service/ProviderRunMarker.swift`, `ProviderProcessRun.swift` |
 | APNs push history | `apns-push-history.json` beside the daemon state file, `0600`. The last 50 code-identity push receipt times and reply times, plus whether a device token was present. No token, nonce or payload | `provider-swift/Sources/ProviderCore/Apns/APNsPushHistory.swift` |
 | Provider LaunchAgent | label `io.darkbloom.provider`; `~/Library/LaunchAgents/io.darkbloom.provider.plist`; `RunAtLoad = true`, `KeepAlive = false`; stdout/stderr → `~/.darkbloom/provider.log` | `provider-swift/Sources/ProviderCore/Service/LaunchAgent.swift` (`label`, `plistPath`, `logPath`) |

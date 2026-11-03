@@ -537,4 +537,93 @@ struct AppAttestUnsupportedRestartTests {
         #expect(await loop.appAttestUnsupportedSince == nil)
         #expect(await loop.appAttestStallMonitorTask == nil)
     }
+
+    /// The daemon-state shape that v0.10.5 to v0.10.6 and dev builds before the
+    /// verified marker leave behind: an attested key with its last Apple success.
+    private func previousRunState(at now: Date, attested: Bool = true, lastSuccessAge: Int? = 600,
+                                  grant: ProviderAuthorizationStatus? = nil, grantAt: Date? = nil) -> DaemonState {
+        let status = AppAttestLocalStatus(
+            observedAt: now.timeIntervalSince1970 - 30, launchSession: .gui,
+            key: AppAttestKeyState(recordPresent: true, attested: attested, generationBlockedUntil: nil),
+            keyHistory: AppAttestKeyHistory(lastSuccessAgeSeconds: lastSuccessAge),
+            keyHistoryObservedAt: now.timeIntervalSince1970 - 30)
+        let trust = grant.map { DaemonState.Trust(trustLevel: "self_signed", status: "online", reason: "",
+                                                   receivedAt: (grantAt ?? now).timeIntervalSince1970, authorization: $0) }
+        return DaemonState(pid: 1, version: "0.10.6", writtenAt: now.timeIntervalSince1970 - 30,
+                           startedAt: 0, trust: trust, appAttest: status)
+    }
+
+    @Test func previousRunEvidenceIsAnAttestedKeysLastSuccessOrAGrant() {
+        let now = wholeSecondsNow()
+        #expect(ProviderLoop.appAttestVerifiedEvidence(in: previousRunState(at: now))
+                == now.addingTimeInterval(-630))
+        #expect(ProviderLoop.appAttestVerifiedEvidence(in: previousRunState(at: now, attested: false)) == nil,
+                "a key Apple never attested is no evidence")
+        #expect(ProviderLoop.appAttestVerifiedEvidence(in: previousRunState(at: now, lastSuccessAge: nil)) == nil,
+                "evidence without a time is not used")
+        // A grant newer than the key's last success wins.
+        let granted = previousRunState(at: now, lastSuccessAge: 7200,
+            grant: appAttestGrant(expiresAt: now.timeIntervalSince1970 + 900), grantAt: now.addingTimeInterval(-60))
+        #expect(ProviderLoop.appAttestVerifiedEvidence(in: granted) == now.addingTimeInterval(-60))
+        // A legacy path or an expired lease is not a grant.
+        let legacy = previousRunState(at: now, attested: false,
+            grant: appAttestGrant(expiresAt: now.timeIntervalSince1970 + 900, path: "legacy"))
+        #expect(ProviderLoop.appAttestVerifiedEvidence(in: legacy) == nil)
+        let expired = previousRunState(at: now, attested: false,
+            grant: appAttestGrant(expiresAt: now.timeIntervalSince1970 - 1))
+        #expect(ProviderLoop.appAttestVerifiedEvidence(in: expired) == nil)
+    }
+
+    /// The first episode after an update from a version that never wrote the
+    /// verified marker: the seed arms the restart; every other guard still holds.
+    @Test func firstUnsupportedEpisodeAfterAnUpdateFromAnOlderVersionArmsOnce() async throws {
+        let (loop, root) = try await lifecycleLoop()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let install = try UpdateRecoveryFixture()
+        defer { install.cleanup() }
+        let restarts = AppAttestRestartLog()
+        await loop.setAppAttestRestartSeams(route: .launchd, supported: { false }, restarts: restarts,
+                                            updater: install.updater(baseURL: URL(string: "http://127.0.0.1:9")!))
+        await loop.installIdleAppAttestClient()
+        let now = wholeSecondsNow()
+        DaemonStateFile.write(previousRunState(at: now), to: root.appendingPathComponent("state.json"))
+        let verified = AppAttestVerifiedMarker(directory: root)
+        #expect(verified.lastVerified() == nil)
+
+        await loop.seedAppAttestVerifiedFromPreviousRun()
+        #expect(verified.lastVerified() == now.addingTimeInterval(-630))
+
+        await loop.noteAppAttestAvailability(
+            unsupportedReady(), now: now.addingTimeInterval(-AppAttestStallRestartPolicy.unsupportedThreshold - 60))
+        #expect(await waitFor { restarts.routes.count == 1 })
+        #expect(restarts.routes == [.launchd])
+
+        // Seeded once: the next process does not seed again from older state,
+        // so the restart does not repeat for the same episode.
+        DaemonStateFile.write(previousRunState(at: now.addingTimeInterval(60), lastSuccessAge: 0),
+                              to: root.appendingPathComponent("state.json"))
+        await loop.seedAppAttestVerifiedFromPreviousRun()
+        #expect(verified.lastVerified() == now.addingTimeInterval(-630), "an existing marker is never overwritten")
+        await loop.noteAppAttestAvailability(unsupportedReady(), now: now.addingTimeInterval(120))
+        #expect(await loop.appAttestUnsupportedSince == nil, "one restart per episode")
+        await loop.cancelAppAttestStallMonitor()
+    }
+
+    @Test func seedNeedsEvidenceFromTheLast7Days() async throws {
+        let (loop, root) = try await lifecycleLoop()
+        defer { try? FileManager.default.removeItem(at: root) }
+        await loop.setAppAttestRestartSeams(route: .launchd, supported: false)
+        let now = wholeSecondsNow()
+        let old = Int(AppAttestStallRestartPolicy.verifiedWithin) + 3600
+        DaemonStateFile.write(previousRunState(at: now, lastSuccessAge: old), to: root.appendingPathComponent("state.json"))
+        await loop.seedAppAttestVerifiedFromPreviousRun()
+        await loop.noteAppAttestAvailability(unsupportedReady(), now: now)
+        #expect(await loop.appAttestUnsupportedSince == nil, "evidence older than 7 days does not arm the restart")
+
+        // No previous state at all: nothing is seeded.
+        let (fresh, freshRoot) = try await lifecycleLoop()
+        defer { try? FileManager.default.removeItem(at: freshRoot) }
+        await fresh.seedAppAttestVerifiedFromPreviousRun()
+        #expect(!FileManager.default.fileExists(atPath: AppAttestVerifiedMarker(directory: freshRoot).url.path))
+    }
 }

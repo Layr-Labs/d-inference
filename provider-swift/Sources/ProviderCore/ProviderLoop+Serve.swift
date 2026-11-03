@@ -19,6 +19,8 @@ extension ProviderLoop {
     // MARK: - Main Run Loop
 
     public func run() async throws {
+        // Before this run's first daemon-state write replaces the previous one.
+        seedAppAttestVerifiedFromPreviousRun()
         nativePairConfigurationClosed = true
         if isClusterMember { try prepareClusterMemberControl() }
         defer {

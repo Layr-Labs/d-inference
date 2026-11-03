@@ -748,10 +748,12 @@ public enum ClusterPlacementPlanner {
             var result: [ClusterPlacementCandidate] = []
             let most = min(policy.maximumRanges, devices.count)
             guard most >= 2 else { return [] }
-            // A lookahead prefill is never slower than a serial one of the same placement.
-            let schedule = schedules.contains(.oneChunkLookahead) ? ClusterPrefillSchedule.oneChunkLookahead : schedules[0]
+            // A layer split prefills with the lookahead where the model has it; tensor parallel prefills serially.
+            let schedule = ClusterPrefillSchedule.planned(for: .pipeline, supported: schedules)
+            let tensorSchedule = ClusterPrefillSchedule.planned(for: .tensorParallel, supported: schedules)
             for ranges in 2...most {
-                let tensor = scope == .admitted && modes.contains(.tensorParallel) && placeable(.tensorParallel, ranges: ranges)
+                let tensor = scope == .admitted && modes.contains(.tensorParallel) && schedules.contains(tensorSchedule)
+                    && placeable(.tensorParallel, ranges: ranges)
                 let layerModes = modes.filter { !($0.usesTensorParallelPrefill) && placeable($0, ranges: ranges) }
                 let pipeline = !layerModes.isEmpty && available.count >= ranges - 1
                 guard tensor || pipeline else { continue }
@@ -770,10 +772,10 @@ public enum ClusterPlacementPlanner {
                     if tensor {
                         var splits: [ClusterPlacementCandidate] = []
                         if let weights = policy.requiredTensorShares {
-                            splits.append(evaluate(order: order, cuts: [], mode: .tensorParallel, schedule: schedule, weights: weights))
-                        } else { splits.append(bestTensorShares(order: order, schedule: schedule)) }
+                            splits.append(evaluate(order: order, cuts: [], mode: .tensorParallel, schedule: tensorSchedule, weights: weights))
+                        } else { splits.append(bestTensorShares(order: order, schedule: tensorSchedule)) }
                         for weights in shares {
-                            splits.append(evaluate(order: order, cuts: [], mode: .tensorParallel, schedule: schedule, weights: weights))
+                            splits.append(evaluate(order: order, cuts: [], mode: .tensorParallel, schedule: tensorSchedule, weights: weights))
                         }
                         result += keepingWidenable(splits)
                     }
@@ -1235,7 +1237,7 @@ public enum ClusterPlacementPlanner {
         /// (`first`) or from its end, whatever is freed on it; 0 for none. A
         /// range's need only grows with its length, so the first failure ends it.
         func extent(_ device: ClusterPlacementDevice, first: Bool) -> Int {
-            let schedule = schedules.contains(.oneChunkLookahead) ? ClusterPrefillSchedule.oneChunkLookahead : schedules[0]
+            let schedule = ClusterPrefillSchedule.planned(for: .pipeline, supported: schedules)
             var most = 0
             for count in 1..<layout.layerCount {
                 let range = first ? layout.range(0..<count) : layout.range((layout.layerCount - count)..<layout.layerCount)

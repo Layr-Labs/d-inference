@@ -266,6 +266,11 @@ fallback and the plane is not contacted. When it is on, the route job sends one
 most once after a transient failure. It uses a grant only when the grant
 repeats the exact Darkbloom labels for the job's profile. Errors, timeouts and
 malformed replies keep the fallback; the plane never fails the route job.
+A push run asks exactly as a same-repository pull request does; the request
+names only the repository, run and lanes, and the plane's approval decides
+which pushed branches it admits. Other branches get `branch_not_admitted` and
+keep their fallback, so a push saves caches on Darkbloom only from an admitted
+branch and only in routed lanes ([CI Caching](#ci-caching)).
 Release, signing, publication, model registration, review automation and
 `master` or dispatched cache warming keep literal Blacksmith labels. The
 component classifier and the `Provider Tests` gate run on `ubuntu-24.04`.

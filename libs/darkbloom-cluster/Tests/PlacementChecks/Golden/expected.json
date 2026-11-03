@@ -127,9 +127,9 @@
  },
  "mimo-v2.6-flash-mopd-2026-09-28-r1": {
   "cut": 41,
-  "handOffPlanSHA256": "b5ad60578a8438482ea406eac34caf0a4083237335d0a94c6214bfe33d7d0454",
+  "handOffPlanSHA256": "6a1b96bcc6cd5b3fc16ee04e13199d01b2105639943a643bad0d9baf4d5bb700",
   "mode": "pipeline_v1",
-  "planSHA256": "b8e47f8ec25b077706df9be8516a679cf4503960491729e6915e47c6b70e3d1a",
+  "planSHA256": "b6051c34d22236f1f42add34fc54474eaf5b5beb2fc3f1509d11bbb26a91dfde",
   "ranks": [
    {
     "device": "mac-a",

@@ -1,6 +1,6 @@
 # Two Macs as one provider (guided setup)
 
-> Last updated: 2026-10-30
+> Last updated: 2026-11-01
 
 Two Apple Silicon Macs joined by one Thunderbolt 5 cable serve a model together:
 each Mac holds part of its layers, and the pair serves as one provider. Setting
@@ -74,6 +74,35 @@ cluster plan` says how many records it left out). A request that answers fewer
 than 64 tokens (the setup's test answer, a quick "Say hi") is not counted as a
 speed and does not shape the plan.
 
+Qwen3.8 27B in tensor parallel can also decode with the speculative assistant
+its artifact ships, but only on a cluster that serves locally only. The
+assistant is not qualified for public traffic, and a setup registered with the
+coordinator never carries it. So, with the default `[backend] mtp_mode` of
+`auto`:
+
+| You run | Qwen3.8 27B decodes | One request on two M5 Ultras (2026-10-31) | The coordinator |
+|---|---|---|---|
+| `darkbloom cluster` | without the assistant | about 40 tokens/s | the pair registers when the coordinator serves a matching approval |
+| [`darkbloom cluster local`](#serving-locally-only) | with the assistant | about 93 tokens/s | never contacted |
+
+With `mtp_mode = "on"`, `darkbloom cluster` keeps the assistant too. That pair
+is then not offered to the coordinator: its plan says "not offered for public
+traffic", and it serves on the leader's local API. A serving cluster switched
+with `l` or `p` keeps the setup it has; press `m` to plan the model again for
+the new way of serving. Public speculative decoding for Qwen pairs needs
+qualification evidence of its own, which no record holds yet. Rules:
+[Qwen27 TP assistant policy](../reference/configuration.md#qwen27-tp-assistant-policy).
+
+A JSON `response_format` request that a single Mac would answer under a grammar
+(no tools or `tool_choice`, no media, a schema the grammar covers) is refused on
+a Qwen pair before any output: a pair's ranks cannot apply the grammar
+(`constrained_decoding_unsupported`, HTTP 400). The coordinator moves a public
+request refused this way to a single Mac, which constrains it
+(darkbloom-platform `fix/coord-pair-refusal-failover`); a request to the owner's
+local cluster API gets the refusal. Other JSON requests are served with the
+format instruction only, as on one Mac
+([constrained Qwen JSON answers](../architecture/inference.md#constrained-qwen-json-answers)).
+
 | # | Where | What you do | What it asks |
 |---|---|---|---|
 | 1 | the first Mac | Run `darkbloom cluster`. It checks the Thunderbolt cable ("Cable found.", "Cable ready."). Nobody waits on the cable yet, so it says **"On your other Mac, run `darkbloom cluster`."** and waits (q cancels). With two cables it asks which one to use. | one macOS administrator approval when the selected port needs configuration ("Darkbloom needs network access for the cluster cable") |
@@ -109,16 +138,27 @@ clusters. A coordinator that refuses this pair is not treated this way; the
 start fails and says why. To serve without any coordinator, use
 [`darkbloom cluster local`](#serving-locally-only).
 
-## Registered with the coordinator as a cluster member (DevNet)
+## Registered with the coordinator as a cluster member
 
-When the coordinator's operator approval file holds a cluster approval for this
-pair's model (DevNet only), the pair registers with the coordinator by itself.
-Nothing is typed and no file is copied. Production and staging serve no
-approvals, and the pair serves as described above. The pair
-serves its owner's own requests, and public requests too once the coordinator's
-operator has turned public cluster routing on and qualified the pair's model and
-split ([serving a pair](../reference/cluster-control-protocol.md#serving-a-pair)).
+When the coordinator serves a cluster approval for this pair's model, the pair
+registers with the coordinator by itself. Nothing is typed and no file is
+copied. DevNet's coordinator serves the approvals its operator posts.
+Production's derives them from each release's
+[cluster runtime facts](../operations/provider-release.md#cluster-runtime-facts),
+from 0.10.6 on, once it runs darkbloom-platform#643 with
+`EIGENINFERENCE_CLUSTER_PAIR_APPROVALS_FROM_RELEASES=true`; such an approval
+names one release's build, so a pair registers with it only on that release.
+Before that deploy production serves no approvals (`GET /v1/cluster/approvals`
+answers 404), staging serves none, and the pair serves as described above. The
+pair serves its owner's own requests, and public requests too once the
+coordinator has public cluster routing on and a parity qualification for the
+pair's model and split; a release's cluster runtime facts carry them for
+GLM-5.3-Flash and Qwen3.8-27B
+([serving a pair](../reference/cluster-control-protocol.md#serving-a-pair)).
 A tensor-parallel pair registers like a pipeline one; its plan names no cut.
+A Gemma 4 pipeline pair whose plan prefills serially takes several requests at
+once; one planned with the one-chunk lookahead takes one at a time
+([Gemma pipeline lanes](../architecture/inference.md#gemma-pipeline-lanes)).
 
 1. Run `darkbloom cluster` and choose a model, as in [the steps](#the-steps-once).
    After the Test stage passes, the leader reads the approvals the coordinator
@@ -138,7 +178,9 @@ A tensor-parallel pair registers like a pipeline one; its plan names no cut.
    There is no local API in this mode. `darkbloom cluster` status shows the
    same line.
 
-An approval ends at its `not_after`, which the operator sets. The
+An approval ends at its `not_after`, which the operator sets; one derived from
+a release ends 90 days after that release registered
+([`releaseApprovalExpiry`](https://github.com/Layr-Labs/darkbloom-platform/blob/df61dd6f93714b4458d0eef3125c377087c08b52/coordinator/registry/cluster_release_approvals.go)). The
 leader asks again at each start of its cluster service, after each Darkbloom
 update and every minute while the pair is registered, and takes a later
 matching approval when the saved one ends within a day. A Mac whose approval
@@ -150,10 +192,16 @@ The pair also serves on the leader's local API, both Macs without the
 approval, when the coordinator gives no answer for the absence grace (10
 minutes, the same grace as in [if a Mac goes away](#if-a-mac-goes-away)), when
 it no longer lists the approval, or when the coordinator-paired parts end three
-times in a row right after starting. When the coordinator lists a matching
-approval again, the pair registers again (after repeated failures, only with a
-later approval). Both Macs carry the same approval, or neither does: the leader
-compares the two at every check.
+times in a row right after starting. An end the coordinator decides is not
+counted: one because it could not be reached, or because it did not accept the
+part's registration in time, as during a coordinator deploy. This complements
+the coordinator's side: a coordinator that ends each pair session before its
+shutdown closes the members' connections gives a deploy cleaner ends, and this
+rule still covers a coordinator without that change, a coordinator crash and a
+slow registration. When the coordinator lists a matching approval again, the
+pair registers again (after repeated failures, with the same approval an hour
+later, or at once with a later one). Both Macs carry the same approval, or
+neither does: the leader compares the two at every check.
 
 What `darkbloom cluster` status says in each mode:
 
@@ -162,9 +210,9 @@ What `darkbloom cluster` status says in each mode:
 | Registered | `Registered with the coordinator as a cluster member: approval <id>, until <date>.` |
 | Coordinator gave no answer for the grace | The API line, then `The coordinator has not answered for 10 minutes: the pair serves on the leader's local API until it answers again, then it is offered again with approval <id>.` |
 | Approval no longer listed | The API line, then `The coordinator no longer lists cluster approval <id>: the pair serves on the leader's local API until it lists a matching one again.` |
-| Parts kept ending | The API line, then `The coordinator-paired parts ended 3 times in a row right after starting with cluster approval <id>: the pair serves on the leader's local API until the coordinator lists a later one.` |
+| Parts kept ending | The API line, then `The coordinator-paired parts ended 3 times in a row right after starting with cluster approval <id>: the pair serves on the leader's local API for 60 minutes, then it is offered again with it, or sooner with a later one the coordinator lists.` |
 | Approval ended | The API line, then one line that says the cluster approval `<id>` expired and the pair serves on the leader's local API |
-| No approval (production, staging, no matching entry) | The API line, then (only after a refusal) `Not offered for pairing: <reason>.` |
+| No approval (staging, production before its coordinator derives approvals from releases, no matching entry) | The API line, then (only after a refusal) `Not offered for pairing: <reason>.` |
 
 Approval sources, checks and saved fields:
 [coordinator-paired member](../reference/configuration.md#coordinator-paired-member).
@@ -190,7 +238,9 @@ to keep waiting (it leads) and the other says so and joins it.
 choice, planner, copies, speculative decoding, caches, failover and stop as
 `darkbloom cluster`, but no Mac of the cluster contacts a coordinator. Nothing
 registers, sends heartbeats, takes public traffic or bills, and serving needs
-no network beyond the cable.
+no network beyond the cable. It is also where Qwen3.8 27B in tensor parallel
+decodes with its speculative assistant under the default `mtp_mode`
+([above](#the-steps-once)).
 
 1. On the leader, run:
 
@@ -412,7 +462,11 @@ for 30 days) and the next plan balances the shares by them, with no step from
 you. For example, with the timings an M3 Ultra and an M5 Max measured for
 Qwen3.8 27B, a pair first split 2:1 toward the M3 Ultra is planned 1:1 after
 one load. A split that gives a Mac more is still chosen only when that Mac's
-memory holds its share.
+memory holds its share. Unequal shares are for a pair that serves you alone
+(`darkbloom cluster local`): a pair served through Darkbloom is always planned
+with equal shares, because its registration with the coordinator cannot name
+unequal ones yet. A pair saved with unequal shares is not offered for pairing,
+and its status says why; press `m` in `darkbloom cluster` to plan it again.
 
 ## Prompt prefixes on the pair
 
@@ -482,12 +536,58 @@ a restart, and writes why to `~/.darkbloom/cluster-setup/service.log`.
 
 After a restart or power cut a Mac serves again once it is logged in. With
 automatic login on (System Settings → Users & Groups; needs FileVault off) that
-happens by itself; `darkbloom cluster` says which applies to each Mac. After a
-Darkbloom update, the cluster sets itself up again by itself ("Updating the
-cluster setup after a Darkbloom update."). The leader checks for an update
-every minute; while a Mac serves, those checks and any plan made then use the
-speed it measured while idle and never run a GPU benchmark beside the model
+happens by itself; `darkbloom cluster` says which applies to each Mac.
+
+## Updating Darkbloom on the pair
+
+The Macs of a pair update themselves together, as a single Mac does, while
+`auto_update` is on (the default) and `DARKBLOOM_NO_UPDATE_CHECK` is not set on
+either Mac. Nothing needs to be run. Every 30 minutes, at the pair's update slot
+(a time fixed by the pairing's cluster ID, the same on both Macs), each Mac's
+cluster service asks the coordinator for its latest release:
+
+1. Each Mac downloads, verifies and stages the release while the pair serves.
+2. Once both Macs have it, the pair stops taking new requests. The Mac that
+   serves the pair finishes the requests it accepted, within 120 seconds, and
+   never cancels one.
+3. Both Macs install the release and restart their cluster services from it.
+4. The leader plans the same model again for the new release once both Macs
+   answer with it, and the pair registers again under that release's cluster
+   approval. The log says `Darkbloom changed on both Macs: setting the cluster
+   up again for <model>`.
+
+A pair still running a request after 120 seconds takes requests again and tries
+at the next slot. A release that one Mac cannot download or verify is installed
+on neither Mac; both try again at the next slot. Until a new
+release's cluster service has stayed healthy for 10 minutes, three of its starts
+that end by themselves bring back the previous release and quarantine the new
+one, as the watchdog does for a single Mac. A Mac never restarts into a new
+release that does not start at all (it checks before the restart): it brings
+back the previous release at once and quarantines the new one. How the cluster
+service does this is in
+[the pair's coordinated update](cluster-always-on.md#the-pairs-coordinated-update).
+
+To update at once, run on each Mac:
+
+```bash
+darkbloom update
+```
+
+It installs the release, then asks this Mac's cluster service to restart into it
+together with the other Mac, after the pair drained, and prints its progress
+(`drained for v<version>; waiting for the other Mac`). Both Macs restart once both
+have the release. The Mac where it ran first waits up to 15 minutes, while it
+serves, for the other Mac: for its `darkbloom update`, or for its next slot when
+its automatic updates are on.
+No log-out is needed. A cluster service started by an earlier release cannot do
+this: log out and back in on both Macs once both have the release.
+
+While a Mac serves, the re-plan uses the speed it measured while idle and never
+runs a GPU benchmark beside the model
 ([device profile](../architecture/inference.md#automatic-local-cluster-batching)).
+A pair that serves on the leader's local API, or a Mac that serves alone, is not
+drained for an update yet: its update waits while it serves (the log says
+`this Mac's part does not drain for an update`).
 
 ## When something is in the way
 
@@ -506,6 +606,14 @@ speed it measured while idle and never run a GPU benchmark beside the model
   run `darkbloom cluster` and press `f` when offered; macOS asks for administrator
   approval to configure that port. Recovery RDMA enablement and Local Network
   privacy permission remain separate steps.
+- **The Macs were paired again** while their cluster services ran
+  (`darkbloom cluster` or `darkbloom cluster pair`): each service answers with
+  the new pairing within seconds, and its log,
+  `~/.darkbloom/cluster-setup/service.log`, says `this Mac's pairing changed`
+  ([listeners](../architecture/inference.md#cluster-service-listeners-follow-the-cable-and-the-pairing)).
+  If the other Mac still refuses the connection (`refused (handshakeRejected)`),
+  restart its service, since one an earlier release started keeps the earlier
+  pairing: on that Mac, run `darkbloom cluster stop`, then `darkbloom cluster`.
 - **A part keeps ending the same way**: after three identical ends the screen
   says it and offers `d`; both Macs keep trying by themselves.
 - **The leader cannot reach the other Mac**: make sure the other Mac is on and
@@ -548,10 +656,14 @@ and they must match.
 
 ## Not yet in this build
 
+- A pair that serves on the leader's local API, or a Mac that serves alone,
+  does not update while it serves
+  ([updating Darkbloom on the pair](#updating-darkbloom-on-the-pair)).
 - The login agent and macOS's one Local Network approval need the signed
   Darkbloom.app ([always on](cluster-always-on.md)).
-- A setup with unequal tensor-parallel shares cannot register with the
-  coordinator yet.
+- A pair served through Darkbloom cannot use unequal tensor-parallel shares
+  yet: on two different Macs it is planned 1:1, so the slower Mac sets the pace
+  ([how the split is chosen](#how-the-split-is-chosen)).
 - A member cannot yet download a catalog model itself (the leader downloads and
   copies), and a model change typed on a Mac that does not lead cannot copy a
   model (run it on the leader).

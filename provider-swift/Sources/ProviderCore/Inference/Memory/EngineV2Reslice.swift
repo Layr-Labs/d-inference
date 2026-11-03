@@ -25,10 +25,12 @@
 // boxes. Invariant: Σ(grants) ≤ fleetBudget at all times.
 //
 // Serviceability floor: a load whose re-slice would leave ANY slot below
-// the minimum serveable KV (`UnifiedMemoryCap.minimumLoadKVBytes`, the same
-// 1 GiB figure the post-load headroom guard enforces) is REFUSED — fail
-// loud (503, coordinator reroutes) rather than thrashing every co-resident
-// model below serviceability.
+// its floor (the 1 GiB `UnifiedMemoryCap.minimumLoadKVBytes` plus that
+// slot's fixed request workspace and admission watermark) is REFUSED —
+// fail loud (503, coordinator reroutes) rather than thrashing every
+// co-resident model below serviceability. Given the floors, a split that
+// would leave a slot below its floor is replaced by floors first and the
+// remainder by weight, so only a budget smaller than Σ(floors) refuses.
 
 import Foundation
 
@@ -68,12 +70,19 @@ extension EngineV2KVSizing {
     ///   * Σ(shares) ≤ budget always (floor division; the ≤ slot-count
     ///     remainder bytes are deliberately left unassigned).
     ///
+    /// `minimumGrantBytes` (the floors `resliceMeetsServiceabilityFloor`
+    /// checks) keeps the proportional result whenever it clears every
+    /// floor. Otherwise, if Σ(floors) fits the budget, each slot gets its
+    /// floor and the rest of the budget is split by the same weights; if it
+    /// does not, the proportional result stands and the floor check refuses.
+    ///
     /// Returns modelId → grant bytes. The caller enforces the
     /// serviceability floor (`resliceMeetsServiceabilityFloor`) on LOAD.
     static func resliceGrants(
         existing: [ResliceSlot],
         newcomer: ResliceSlot?,
-        fleetKVBudgetBytes: UInt64
+        fleetKVBudgetBytes: UInt64,
+        minimumGrantBytes: [String: Int]? = nil
     ) -> [String: Int] {
         var all = existing
         if let newcomer { all.append(newcomer) }
@@ -86,6 +95,31 @@ extension EngineV2KVSizing {
             return [all[0].modelId: Int(budget)]
         }
 
+        let proportional = proportionalGrants(all, budget: budget)
+        guard let minimumGrantBytes,
+            !resliceMeetsServiceabilityFloor(proportional, minimumGrantBytes: minimumGrantBytes)
+        else { return proportional }
+
+        var floors: [Int] = []
+        var floorTotal: UInt64 = 0
+        for slot in all {
+            let floor = serviceabilityFloor(slot.modelId, minimumGrantBytes: minimumGrantBytes)
+            let (total, overflow) = floorTotal.addingReportingOverflow(UInt64(floor))
+            guard floor < Int.max, !overflow, total <= budget else { return proportional }
+            floors.append(floor)
+            floorTotal = total
+        }
+        let remainder = proportionalGrants(all, budget: budget - floorTotal)
+        var grants: [String: Int] = [:]
+        for (slot, floor) in zip(all, floors) {
+            grants[slot.modelId] = floor + (remainder[slot.modelId] ?? 0)
+        }
+        return grants
+    }
+
+    /// `budget` split across ≥ 2 slots by their weights (equal split when
+    /// any rate is unknown), Σ ≤ budget.
+    private static func proportionalGrants(_ all: [ResliceSlot], budget: UInt64) -> [String: Int] {
         // Per-model weights. Any unknown rate degrades the WHOLE slice to
         // an equal split — mixing real weights with a guessed one would
         // silently starve whichever side the guess was wrong about.
@@ -161,8 +195,14 @@ extension EngineV2KVSizing {
         minimumGrantBytes: [String: Int] = [:]
     ) -> Bool {
         grants.allSatisfy { modelId, grant in
-            let floor = max(Int(minimumServiceableGrantBytes), minimumGrantBytes[modelId] ?? 0)
+            let floor = serviceabilityFloor(modelId, minimumGrantBytes: minimumGrantBytes)
             return floor < Int.max && grant >= floor
         }
+    }
+
+    /// One slot's floor: its total from `minimumGrantBytes`, never below
+    /// the base `minimumServiceableGrantBytes`.
+    private static func serviceabilityFloor(_ modelId: String, minimumGrantBytes: [String: Int]) -> Int {
+        max(Int(minimumServiceableGrantBytes), minimumGrantBytes[modelId] ?? 0)
     }
 }

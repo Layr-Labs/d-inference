@@ -27,11 +27,12 @@ struct ClusterApprovalWatchTests {
 
     private func step(_ macs: ClusterApprovalMacs, _ fetched: ClusterApprovalFetch.Outcome,
                       setAside: ClusterSetupRecord.ApprovalSetAside? = nil, quickEnds: Int = 0, peer: String?? = nil,
-                      scope: ClusterServingScope = .publicServing, _ watched: Watched, clock: Double) throws -> ClusterApprovalCheck.Step {
+                      scope: ClusterServingScope = .publicServing, _ watched: Watched, clock: Double,
+                      now: Double = Date().timeIntervalSince1970) throws -> ClusterApprovalCheck.Step {
         let facts = try macs.facts()
         return ClusterApprovalCheck.step(saved: try macs.saved(macs.leader), fetched: fetched, setAside: setAside, scope: scope,
                                          memberQuickEnds: quickEnds, peerApprovalID: peer, watch: &watched.watch, clock: clock,
-                                         grace: grace, now: Date().timeIntervalSince1970, facts: { _ in facts })
+                                         grace: grace, now: now, facts: { _ in facts })
     }
 
     /// The other Mac's saved cluster approval ID, as its status reports it.
@@ -158,7 +159,7 @@ struct ClusterApprovalWatchTests {
         #expect(try step(macs, noAnswer, quickEnds: limit, watch, clock: 0) == .serveLocally(approval, .failing))
 
         _ = serveLocally(macs, approval, facts: facts, reason: .failing)
-        let failing = ClusterSetupRecord.ApprovalSetAside(approval: approval, reason: .failing)
+        let failing = ClusterSetupRecord.ApprovalSetAside(approval: approval, reason: .failing, setAt: Date().timeIntervalSince1970)
         #expect(try step(macs, .approvals([approval]), setAside: failing, watch, clock: 0) == .keep)
         let later = macs.approval(endsIn: 20 * 86_400, id: "later")
         #expect(try step(macs, .approvals([approval, later]), setAside: failing, watch, clock: 0) == .save(later))
@@ -173,8 +174,8 @@ struct ClusterApprovalWatchTests {
     }
 
     /// A model approval names no build and keeps its `id` across updates: its parts failing on one build set it aside
-    /// for that build only, so the build an update installs takes it again. A record from an older build, which names
-    /// no build, keeps it aside by its `id`.
+    /// for that build only, so the build an update installs takes it again. A record from an older build names neither
+    /// the build nor the time it was set aside: it is past the hour, so any build takes the approval again.
     @Test func aModelApprovalSetAsideAsFailingIsTakenAgainByTheNextBuild() throws {
         let macs = try ClusterApprovalMacs(coordinatorURL: "ws://127.0.0.1:9/ws/provider")
         let model = macs.modelApproval(), facts = try macs.facts(), watch = Watched()
@@ -183,21 +184,124 @@ struct ClusterApprovalWatchTests {
         #expect(try step(macs, .approvals([model]), quickEnds: limit, watch, clock: 0) == .serveLocally(model, .failing))
         #expect(serveLocally(macs, model, facts: facts, reason: .failing).changed)
         let failing = ClusterSetupRecord.ApprovalSetAside(approval: model, reason: .failing,
-            runtimeBinarySHA256: try macs.saved(macs.leader).capability.runtimeBinarySHA256)
+            runtimeBinarySHA256: try macs.saved(macs.leader).capability.runtimeBinarySHA256, setAt: Date().timeIntervalSince1970)
         // The build its parts kept failing on does not take it again.
         #expect(try step(macs, .approvals([model]), setAside: failing, watch, clock: 0) == .keep)
-        // A record saved by an older build reads without the field.
+        // A record saved by an older build reads without the fields it did not write.
         var object = try #require(try JSONSerialization.jsonObject(with: JSONEncoder().encode(failing)) as? [String: Any])
         let removed = object.removeValue(forKey: "runtimeBinarySHA256") as? String
         #expect(removed == failing.runtimeBinarySHA256)
+        let removedTime = object.removeValue(forKey: "setAt") as? Double
+        #expect(removedTime == failing.setAt)
         let older = try JSONDecoder().decode(ClusterSetupRecord.ApprovalSetAside.self,
                                              from: JSONSerialization.data(withJSONObject: object))
         #expect(older == ClusterSetupRecord.ApprovalSetAside(approval: model, reason: .failing))
+        #expect(try step(macs, .approvals([model]), setAside: older, watch, clock: 0) == .save(model))
 
         // An update re-adopts both setups for a new worker: the new build takes the same model approval again.
         try macs.readopt(runtime: ClusterApprovalMacs.hash("9"))
         #expect(try step(macs, .approvals([model]), setAside: failing, watch, clock: 0) == .save(model))
-        #expect(try step(macs, .approvals([model]), setAside: older, watch, clock: 0) == .keep)
+        #expect(try step(macs, .approvals([model]), setAside: older, watch, clock: 0) == .save(model))
+    }
+
+    /// Ends the coordinator decides are not the pair's failures: a registration it did not accept in its negotiation
+    /// window (during a deploy, right after a restart, or when it is slow; twice within three minutes during an e2e
+    /// model change) leaves the count of quick ends as it is. Read from the parts' own log lines, as the cluster service
+    /// reads them, any number of them never sets the approval aside.
+    @Test func coordinatorSideEndsDoNotReachTheFailingLimit() throws {
+        let (macs, approval, _) = try offered()
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("rank-log-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let log = folder.appendingPathComponent("rank.log")
+        #expect(FileManager.default.createFile(atPath: log.path, contents: nil))
+        let notAccepted = ClusterMemberControlError.negotiationFailed.rawValue
+        var count = 0
+        for ran in [13.0, 12, 40, 3, 90] {
+            // Each part writes after where the one before it stopped.
+            let handle = try FileHandle(forWritingTo: log)
+            let offset = try handle.seekToEnd()
+            try handle.write(contentsOf: Data("cluster-member pair serving: follower (dials the leader)\nError: \(notAccepted)\n".utf8))
+            try handle.close()
+            count = ClusterApprovalCheck.memberQuickEnds(after: count, ranSeconds: ran, lastError: ClusterService.lastError(in: log, from: offset))
+        }
+        #expect(count == 0)
+        #expect(try step(macs, .approvals([approval]), quickEnds: count, Watched(), clock: 0) == .keep)
+        // Between local quick ends it neither adds one nor starts the count again; a part that ran long before the
+        // coordinator ended it still starts it again, as any long run does.
+        #expect(ClusterApprovalCheck.memberQuickEnds(after: 2, ranSeconds: 12, lastError: notAccepted) == 2)
+        #expect(ClusterApprovalCheck.memberQuickEnds(after: 2, ranSeconds: ClusterControlSoloAdmission.quickEndSeconds,
+                                                     lastError: notAccepted) == 0)
+    }
+
+    /// Ends with a local cause still count, with ends the coordinator decided between them: a changed input (the DevNet
+    /// trigger), a crash that wrote no error line and a member that ended before it registered set the approval aside.
+    @Test func localQuickEndsStillSetTheApprovalAside() throws {
+        let (macs, approval, _) = try offered()
+        let notAccepted = ClusterMemberControlError.negotiationFailed.rawValue
+        let ends: [String?] = ["Installed input identity or SHA-256 differs", notAccepted, nil, notAccepted,
+                               ClusterMemberControlError.connectionEnded.rawValue]
+        var count = 0, counts: [Int] = []
+        for lastError in ends {
+            count = ClusterApprovalCheck.memberQuickEnds(after: count, ranSeconds: 8, lastError: lastError)
+            counts.append(count)
+        }
+        #expect(counts == [1, 1, 2, 2, ClusterControlSoloAdmission.maximumQuickEnds])
+        #expect(try step(macs, .approvals([approval]), quickEnds: count, Watched(), clock: 0) == .serveLocally(approval, .failing))
+    }
+
+    /// An approval set aside as failing is offered again, by the same build, `ClusterApprovalFallback.failingSeconds`
+    /// after the cluster service set it aside (a later matching one at once, as before). Each Mac's part that served
+    /// locally meanwhile started its count of quick ends again, so the pair is offered with none.
+    @Test func aFailingApprovalIsOfferedAgainAnHourAfterItWasSetAside() throws {
+        let (macs, approval, facts) = try offered()
+        let watch = Watched(), limit = ClusterControlSoloAdmission.maximumQuickEnds, hour = ClusterApprovalFallback.failingSeconds
+        let fallback = ClusterApprovalCheck.Step.serveLocally(approval, .failing)
+        #expect(try step(macs, .approvals([approval]), quickEnds: limit, watch, clock: 0) == fallback)
+        #expect(serveLocally(macs, approval, facts: facts, reason: .failing).changed)
+        let worker = try macs.saved(macs.leader).capability.runtimeBinarySHA256, now = Date().timeIntervalSince1970
+        func setAside(at time: Double) throws -> ClusterSetupRecord.ApprovalSetAside {
+            try #require(ClusterApprovalCheck.setAside(by: fallback, worker: worker, now: time))
+        }
+        // What the cluster service keeps: the approval, why, the setup's worker digest and when.
+        #expect(try setAside(at: now) == .init(approval: approval, reason: .failing, runtimeBinarySHA256: worker, setAt: now))
+        #expect(ClusterApprovalCheck.setAside(by: .save(approval), worker: worker, now: now) == nil)
+        #expect(try step(macs, .approvals([approval]), setAside: setAside(at: now), watch, clock: 0, now: now) == .keep)
+        #expect(try step(macs, .approvals([approval]), setAside: setAside(at: now - hour + 60), watch, clock: 0, now: now) == .keep)
+        #expect(try step(macs, .approvals([approval]), setAside: setAside(at: now - hour), watch, clock: 0, now: now) == .save(approval))
+        // A time ahead of a clock that was set back holds it aside no longer either.
+        #expect(try step(macs, .approvals([approval]), setAside: setAside(at: now + 600), watch, clock: 0, now: now) == .save(approval))
+        #expect(ClusterApprovalFallback.failing.line(approval, grace: grace).hasSuffix(
+            "the pair serves on the leader's local API for 60 minutes, then it is offered again with it, or sooner with a later one the coordinator lists"))
+
+        // Saved on both Macs again, the pair is offered and stays offered while its parts' new count is under the limit.
+        #expect(macs.sync(.approvals([approval]), leaderFacts: facts, followerFacts: facts).changed)
+        #expect(try step(macs, .approvals([approval]), quickEnds: 0, watch, clock: 0, now: now) == .keep)
+        #expect(try step(macs, .approvals([approval]), quickEnds: limit, watch, clock: 0, now: now) == fallback)
+    }
+
+    /// The leader's record as the current build writes it (the set-aside names its approval, reason and worker digest,
+    /// no time) reads cleanly with every field kept, and is past the hour: the approval is offered again. A set-aside
+    /// this build writes keeps its time through the store.
+    @Test func aSetAsideInTheCurrentRecordFormatReadsCleanlyAndIsPastTheHour() throws {
+        let (macs, approval, facts) = try offered()
+        #expect(serveLocally(macs, approval, facts: facts, reason: .failing).changed)
+        let worker = try macs.saved(macs.leader).capability.runtimeBinarySHA256, now = Date().timeIntervalSince1970
+        let store = ClusterSetupStore(paths: ClusterSetupPaths(paths: macs.leader.paths))
+        let note = ClusterApprovalFallback.failing.line(approval, grace: grace)
+        let current = ClusterSetupRecord.ApprovalSetAside(approval: approval, reason: .failing, runtimeBinarySHA256: worker)
+        try store.updateRecord { $0.approvalNote = note; $0.approvalSetAside = current }
+        let written = try #require(try JSONSerialization.jsonObject(with: Data(contentsOf: store.paths.record)) as? [String: Any])
+        let keys = try #require(written["approvalSetAside"] as? [String: Any]).keys.sorted()
+        #expect(keys == ["approval", "reason", "runtimeBinarySHA256"])
+        let read = try store.readRecord()
+        #expect(read.approvalSetAside == current && read.approvalSetAside?.setAt == nil && read.approvalNote == note)
+        #expect(try step(macs, .approvals([approval]), setAside: read.approvalSetAside, Watched(), clock: 0, now: now) == .save(approval))
+
+        let dated = try #require(ClusterApprovalCheck.setAside(by: .serveLocally(approval, .failing), worker: worker, now: now))
+        try store.updateRecord { $0.approvalSetAside = dated }
+        #expect(try store.readRecord().approvalSetAside?.setAt == now)
+        #expect(try step(macs, .approvals([approval]), setAside: store.readRecord().approvalSetAside, Watched(), clock: 0, now: now) == .keep)
     }
 
     @Test func aClusterThatServesLocallyOnlyNeverAsksTheCoordinatorAndChangesNothing() throws {

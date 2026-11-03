@@ -17,5 +17,6 @@ xcrun swiftc -swift-version 6 -warnings-as-errors -target "$(uname -m)-apple-mac
   -module-name ClusterSupervisionChecks \
   "$sources"/Service/ClusterSupervision/*.swift \
   "$sources/Inference/Distributed/Diagnostics/Link/ClusterLinkReadinessState.swift" \
+  "$sources/Inference/Distributed/Installed/ClusterPairUpdateProgress.swift" \
   "$here/main.swift" -o "$build/checks"
 EXPECTED_FNV_OFFSET="$expected_offset" "$build/checks"

@@ -52,6 +52,8 @@ public enum ClusterPlacementFlow {
 
     /// The planning itself, with everything detected already in hand. Pure,
     /// so a check can run the whole decision without a child process.
+    /// `coordinator`: the setup will serve through the coordinator, whose member registration carries no
+    /// tensor-parallel shares (`NativePairMemberRoster`), so it is planned with equal shares only.
     public static func decide(description: ClusterPairDescription, capability: ClusterRuntimeCapability,
                               localMemberID: String, localProfile: ClusterDeviceProfile, peerProfile: ClusterDeviceProfile,
                               layout: ClusterModelLayout, measurements: [ClusterSpeedMeasurement] = [],
@@ -60,12 +62,14 @@ public enum ClusterPlacementFlow {
                               batchScope: ClusterPlacementBatchScope? = nil,
                               tensorAssistantQuote: ClusterPlacementTensorBatchQuote? = nil,
                               tensorWideningQuote: ClusterPlacementTensorBatchQuote? = nil,
+                              tensorWidthQuotes: [ClusterPlacementTensorBatchQuote] = [],
                               regime: ClusterPlacementPolicy.Regime = .rested, leader: String? = nil,
                               served: [ClusterServedSpeedRecords.Entry] = [],
                               link: ClusterLinkCosts = .unmeasured,
                               shareProbes: [String: [ClusterShareRate]] = [:],
                               incumbentMode: ClusterGenerationMode? = nil,
                               incumbentTensorShares: [Int]? = nil,
+                              coordinator: Bool = false,
                               assumeUnmeasuredLink: Bool = true,
                               environment: [String: String] = ProcessInfo.processInfo.environment,
                               benchDebugBuild: Bool = ClusterPlannerBenchCap.isDebugBuild) throws
@@ -104,6 +108,7 @@ public enum ClusterPlacementFlow {
         // replacement (`assumeUnmeasuredLink: false`) prices only the pair's recorded keyed link.
         policy.tensorParallelFirst = true
         policy.tensorParallelAssumesUnmeasuredLink = assumeUnmeasuredLink
+        policy.equalTensorShares = coordinator
         // A model no stage adapter runs is still planned, with the refusal in the plan's words; records never rule a
         // chip, an order or a mode out (owner, 2026-10-14 08:45).
         let granted = try leaderUnderGrant(requested: leader, members: [(local.id, localProfile.chip), (peer.id, peerProfile.chip)],
@@ -275,7 +280,11 @@ public enum ClusterPlacementFlow {
             policy.modesReason = policy.modesReason ?? "a capacity change keeps the running tensor-parallel shares"
             policy.requiredTensorShares = incumbentTensorShares
         }
-        let result = try ClusterPlacementPlanner.plan(devices: devices, layout: layout, policy: policy, link: link)
+        // A singleton tensor placement saves the widest width its owner's quotes admit on both Macs now. One call
+        // initializes a constant `result`, so the sizing's plans stay off this frame, which a deep planner stack shares.
+        var batchLanes = batchScope?.lanes
+        let result = try ClusterPlacementTensorWidth.plan(devices: devices, layout: layout, policy: policy, link: link,
+            quotes: tensorWidthQuotes, lanes: &batchLanes)
         var lines = (forced.map(ClusterForcedModeSetting.lines) ?? [])
             + (benchCap.map(ClusterPlannerBenchCap.lines(capBytes:)) ?? []) + (benchChip.map(ClusterBenchChip.lines(chipName:)) ?? [])
             + servedLines
@@ -299,8 +308,8 @@ public enum ClusterPlacementFlow {
                 + "This pair's own figure replaces it once the pair has served the same placement both with and without the rounds.")
         }
         if let note = granted.note { lines.append("Pair serving"); lines.append("  " + note) }
-        if let batchScope {
-            lines += ["Concurrent request memory", "  \(batchScope.lanes) independent histories, charged at the quoted request bound on both Macs. Stage-rate predictions remain single-request estimates; no batch speed is inferred from the lane count."]
+        if let batchLanes {
+            lines += ["Concurrent request memory", "  \(batchLanes) independent histories, charged at the quoted request bound on both Macs. Stage-rate predictions remain single-request estimates; no batch speed is inferred from the lane count."]
         }
         if records.restrictsShapes {
             lines.append("Diverged placements")
@@ -308,9 +317,12 @@ public enum ClusterPlacementFlow {
                 + "(\(records.restrictedFamilies.sorted().map(\.description).joined(separator: ", ")) modes): \(records.failedShapesText). "
                 + "Those exact shapes are not planned; every other placement is, on any Macs.")
         }
-        // Public traffic in one line (owner serving never waits for it): the coordinator's parity qualification decides.
+        // Public traffic in one line (owner serving never waits for it): the coordinator's parity qualification decides,
+        // and a setup that decodes with Qwen's speculative assistant is never offered to it.
+        let assistant = (batchScope?.tensorParallelQuote ?? tensorAssistantQuote)?.assistant
         let publicLine = ClusterPairServingGrants.publicTrafficLine(runtimeModelID: capability.runtimeModelID,
-            artifactSHA256: capability.artifactSHA256, mode: result.chosen?.mode)
+            artifactSHA256: capability.artifactSHA256, mode: result.chosen?.mode,
+            tensorAssistant: assistant != nil && result.chosen?.mode == .tensorParallel)
         lines.append("Public traffic")
         lines.append("  " + publicLine.prefix(1).uppercased() + publicLine.dropFirst() + ".")
         var setup: ClusterPlacementSetup?
@@ -327,8 +339,7 @@ public enum ClusterPlacementFlow {
                 lines.append("  Request deadline " + deadline.basis + ".")
             }
             let value = try ClusterPlacementSetup.synthesize(description: described, capability: capability,
-                chosen: chosen, batchLanes: batchScope?.lanes,
-                tensorAssistant: (batchScope?.tensorParallelQuote ?? tensorAssistantQuote)?.assistant?.policy)
+                chosen: chosen, batchLanes: batchLanes, tensorAssistant: assistant?.policy)
             lines.append("What happens next")
             lines += value.narration(localMemberID: localMemberID).map { "  " + $0 }
             setup = value

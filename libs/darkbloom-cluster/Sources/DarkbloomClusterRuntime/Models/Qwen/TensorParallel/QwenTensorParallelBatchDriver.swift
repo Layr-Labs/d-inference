@@ -14,12 +14,22 @@ protocol QwenTensorParallelBatchLane: AnyObject {
     var reusedPrefixTokens: Int { get }
     var storedPrefixFrontiers: [Int] { get }
     var canSelectNext: Bool { get }
+    /// The lane's decode selects through the plain selection sum (no
+    /// assistant round or accepted queue), which can carry control words.
+    var plainSelection: Bool { get }
+    func promptStep(frames: Int) -> QwenLayerStageFrame?
+    func promptStep(tokens: Int) -> QwenLayerStageFrame?
 }
 
 extension QwenTensorParallelBatchLane {
     var reusedPrefixTokens: Int { 0 }
     var storedPrefixFrontiers: [Int] { [] }
     var canSelectNext: Bool { nextFrame?.phase == .decode }
+    var plainSelection: Bool { true }
+    /// The prompt step of up to `frames` consecutive frames (`QwenTensorParallelPromptWavefront`).
+    func promptStep(frames: Int) -> QwenLayerStageFrame? { nextFrame }
+    /// The planned prompt step of `tokens`, if it is one this lane may run.
+    func promptStep(tokens: Int) -> QwenLayerStageFrame? { nextFrame.flatMap { $0.tokenCount == tokens ? $0 : nil } }
 }
 
 /// Both ranks run every forward. Selection returns the same token to both;
@@ -32,20 +42,47 @@ protocol QwenTensorParallelBatchExecutor: AnyObject {
     func discard(_ reservation: Reservation) throws
     func open(_ reservation: Reservation, check: () throws -> Void) throws -> Lane
     func prefill(_ lane: Lane, frame: QwenLayerStageFrame, check: () throws -> Void) throws -> Int?
+    /// Whether this executor's selection sum can carry control words; the
+    /// driver folds only for one that can.
+    var carriesSelectionControl: Bool { get }
+    /// One decode rectangle whose selection sum carries no control words.
     func decode(_ lanes: [Lane], tokens: [Int], check: () throws -> Void) throws -> [Int]
+    /// One decode rectangle. `control` runs once the forward committed and
+    /// before selection; words it returns (plain lanes only) ride the
+    /// selection's sealed sum, and both ranks' summed words come back.
+    func decode(_ lanes: [Lane], tokens: [Int], control: () throws -> [Float]?,
+                check: () throws -> Void) throws -> (tokens: [Int], control: [Float]?)
     func retire(_ lane: Lane, reason: QwenLayerStageGenerationFinishReason?, selected: Int, last: Int?) throws
     func takeLogprobs(_ lane: Lane) throws -> ClusterWorkerTokenLogprobs?
     func confirmedRetirement(_ lane: Lane, clean: Bool) throws
 }
 
 extension QwenTensorParallelBatchExecutor {
+    var carriesSelectionControl: Bool { false }
     func confirmedRetirement(_ lane: Lane, clean: Bool) throws {}
+
+    /// An executor whose selection sum carries no control words: the driver
+    /// never folds for it, so `control` is always empty.
+    func decode(_ lanes: [Lane], tokens: [Int], control: () throws -> [Float]?,
+                check: () throws -> Void) throws -> (tokens: [Int], control: [Float]?) {
+        let selected = try decode(lanes, tokens: tokens, check: check)
+        guard try control() == nil else { throw ProbeError("This TP executor's selection sum carries no control words") }
+        return (selected, nil)
+    }
 }
 
-/// One prefill frame on its original grid and one real decode rectangle per
+/// One prompt step (consecutive frames on the original grid) and one real decode rectangle per
 /// step. Every active request owns its native history. A slow client holds
 /// only its own token credit. Successful retirement is published only after
 /// both ranks have drained, including cancellation and deadline departures.
+///
+/// A step whose decode rectangle is plain and runs no prompt folds the next
+/// step's plan and report into its selection sum: one sealed sum and one host
+/// read a step. That plan is made before the step's tokens are known, so
+/// host events (answers, credits, cancellations, joins) apply one step later,
+/// and both ranks drop a carried decode whose token ended its request (EOS or
+/// length). Rank 0 publishes a token only once the owner answered the one
+/// before it; a token selected before a stop answer is never published.
 final class QwenTensorParallelBatchDriver<Executor: QwenTensorParallelBatchExecutor> {
     typealias Reservation = Executor.Reservation
     private final class Record {
@@ -53,17 +90,25 @@ final class QwenTensorParallelBatchDriver<Executor: QwenTensorParallelBatchExecu
         let slot: Int, order: Int
         var native: Executor.Lane?
         var tokens: [Int] = []
+        /// Rank 0: tokens published, the logprobs of a selected token not yet
+        /// published, and whether a leave was planned (nothing more is published).
+        var published = 0
+        var heldLogprobs: ClusterWorkerTokenLogprobs?
+        var leaving = false
         var id: UUID { reservation.request.requestID }
         var fingerprint: [Int32] { QwenBatchWire.fingerprintWords(reservation.request.fingerprint) }
         init(_ reservation: Reservation, slot: Int, order: Int) {
             self.reservation = reservation; self.slot = slot; self.order = order
         }
-        func finish(_ proceed: Bool) -> QwenLayerStageGenerationFinishReason? {
-            guard let last = tokens.last else { return nil }
-            if reservation.request.stopTokenIDs.contains(last) { return .eos }
-            if tokens.count == reservation.request.outputCount { return .length }
+        /// How the request ends at its first `count` tokens, given the owner's answer to the last.
+        func finish(_ proceed: Bool, count: Int) -> QwenLayerStageGenerationFinishReason? {
+            guard count >= 1, count <= tokens.count else { return nil }
+            if reservation.request.stopTokenIDs.contains(tokens[count - 1]) { return .eos }
+            if count == reservation.request.outputCount { return .length }
             return proceed ? nil : .clientStop
         }
+        /// Its last token ends the request: no further forward.
+        var ended: Bool { finish(true, count: tokens.count) != nil }
     }
     private let executor: Executor
     private let book: ClusterBatchLaneBook<Reservation>
@@ -72,14 +117,17 @@ final class QwenTensorParallelBatchDriver<Executor: QwenTensorParallelBatchExecu
     private let joinWaitNanoseconds: UInt64
     private var records: [Int: Record] = [:]
     private var order = 0
+    /// Folds the next step's control into plain selection sums. Off only to
+    /// measure the exchange a step (`QwenTensorParallelDecodeBench`); both ranks must agree.
+    private let foldsControl: Bool
 
     init(executor: Executor, book: ClusterBatchLaneBook<Reservation>, capacity: Int, vocabulary: Int,
-         joinWaitNanoseconds: UInt64 = 30_000_000_000,
+         joinWaitNanoseconds: UInt64 = 30_000_000_000, foldsControl: Bool = true,
          now: @escaping () -> UInt64 = { DispatchTime.now().uptimeNanoseconds }) throws {
         guard (0...1).contains(executor.rank), (1...8).contains(capacity), vocabulary > 0,
               joinWaitNanoseconds > 0 else { throw ProbeError("Qwen TP batch driver has invalid geometry") }
         self.executor = executor; self.book = book; self.capacity = capacity; self.vocabulary = vocabulary
-        self.joinWaitNanoseconds = joinWaitNanoseconds; self.now = now
+        self.joinWaitNanoseconds = joinWaitNanoseconds; self.foldsControl = foldsControl; self.now = now
     }
 
     private func cancelled(_ record: Record) -> Bool {
@@ -95,27 +143,37 @@ final class QwenTensorParallelBatchDriver<Executor: QwenTensorParallelBatchExecu
         var decisions = QwenBatchDecisionProgress()
         var coalescing = QwenBatchDecodeCoalescing()
         var peerCancelled = Set<Int>()
+        /// This step's plan and report, when they rode the last step's selection sum.
+        var carried: (plan: QwenBatchWire.Header, peer: QwenBatchWire.Reply)?
         do {
             while true {
                 let stop = try autoreleasepool { () throws -> Bool in
-                    let answers = executor.rank == 0 ? try decisions.serviceAndPoll(host) : [:]
-                    if executor.rank == 1 { try host.serviceControl() }
-                    try check()
-                    let localPlan = executor.rank == 0
-                        ? makePlan(step: step, answers: answers, decisions: decisions, peerCancelled: peerCancelled,
-                                   coalescing: &coalescing) : nil
-                    let localReport = executor.rank == 1 ? report(step: step) : nil
-                    let sum = try executor.exchange(QwenTensorParallelBatchWire.contribution(
-                        rank: executor.rank, plan: localPlan, report: localReport), check: check)
-                    let (plan, peer) = try QwenTensorParallelBatchWire.read(sum, step: step, lanes: capacity)
-                    if let localPlan, plan != localPlan { throw ProbeError("Qwen TP leader plan changed in transit") }
-                    if let localReport, peer != localReport { throw ProbeError("Qwen TP follower report changed in transit") }
+                    let plan: QwenBatchWire.Header, peer: QwenBatchWire.Reply
+                    let wasCarried = carried != nil
+                    if let folded = carried {
+                        (plan, peer) = folded; carried = nil
+                        if executor.rank == 1 { try host.serviceControl() }
+                        try check()
+                    } else {
+                        let answers = executor.rank == 0 ? try decisions.serviceAndPoll(host) : [:]
+                        if executor.rank == 1 { try host.serviceControl() }
+                        try check()
+                        let localPlan = executor.rank == 0
+                            ? try makePlan(step: step, answers: answers, decisions: &decisions, host: host,
+                                           peerCancelled: peerCancelled, coalescing: &coalescing) : nil
+                        let localReport = executor.rank == 1 ? report(step: step) : nil
+                        let sum = try executor.exchange(QwenTensorParallelBatchWire.contribution(
+                            rank: executor.rank, plan: localPlan, report: localReport), check: check)
+                        (plan, peer) = try Self.read(sum, step: step, lanes: capacity, plan: localPlan, report: localReport)
+                    }
                     try validate(plan, peer: peer)
                     peerCancelled = Set((0..<capacity).filter { peer.cancelledMask & (1 << $0) != 0 })
                     if plan.stop { return true }
                     try leave(plan, host: host, decisions: &decisions, retiredSelection: retiredSelection, check: check)
                     try join(plan, host: host, check: check)
                     let decode = plan.slots.indices.filter { plan.slots[$0].role == .decode }
+                    let prompts = plan.slots.indices.filter { plan.slots[$0].role == .prefill }
+                    guard prompts.count <= 1 else { throw ProbeError("Qwen TP plan has multiple prefill frames") }
                     if !decode.isEmpty {
                         let lanes = try decode.map { slot -> Record in
                             guard let record = records[slot], let native = record.native,
@@ -124,25 +182,52 @@ final class QwenTensorParallelBatchDriver<Executor: QwenTensorParallelBatchExecu
                             }
                             return record
                         }
-                        let tokens = try executor.decode(lanes.map { $0.native! }, tokens: lanes.map { $0.tokens.last! },
-                            check: { try check(); try host.serviceControl() })
-                        guard tokens.count == lanes.count else { throw ProbeError("Qwen TP decode omitted a lane") }
-                        for (lane, token) in zip(lanes, tokens) { try selected(token, lane: lane, decisions: &decisions, host: host, publish: !peerCancelled.contains(lane.slot)) }
+                        // A plain rectangle with no prompt after it carries the next step's
+                        // plan and report, made once its forward committed (agreed state only).
+                        let folds = foldsControl && executor.carriesSelectionControl && prompts.isEmpty
+                            && lanes.allSatisfy { $0.native!.plainSelection }
+                        let carrying = Set(decode)
+                        var nextPlan: QwenBatchWire.Header?, nextReport: QwenBatchWire.Reply?
+                        let result = try executor.decode(lanes.map { $0.native! }, tokens: lanes.map { $0.tokens.last! },
+                            control: { [self] () throws -> [Float]? in
+                                guard folds else { return nil }
+                                if executor.rank == 0 {
+                                    let answers = try decisions.serviceAndPoll(host)
+                                    try check()
+                                    nextPlan = try makePlan(step: step + 1, answers: answers, decisions: &decisions, host: host,
+                                        peerCancelled: peerCancelled, coalescing: &coalescing, carrying: carrying)
+                                } else {
+                                    try host.serviceControl(); try check()
+                                    nextReport = report(step: step + 1, carrying: carrying)
+                                }
+                                return try QwenTensorParallelBatchWire.contribution(rank: executor.rank, plan: nextPlan, report: nextReport)
+                            }, check: { try check(); try host.serviceControl() })
+                        guard result.tokens.count == lanes.count, (result.control != nil) == folds else {
+                            throw ProbeError("Qwen TP decode omitted a lane or its control words")
+                        }
+                        for (lane, token) in zip(lanes, result.tokens) {
+                            try selected(token, lane: lane, decisions: &decisions, host: host, peerCancelled: peerCancelled)
+                        }
+                        if let words = result.control {
+                            let (next, nextPeer) = try Self.read(words, step: step + 1, lanes: capacity, plan: nextPlan, report: nextReport)
+                            carried = (try resolve(next, carrying: carrying), nextPeer)
+                        }
                     }
-                    let prompts = plan.slots.indices.filter { plan.slots[$0].role == .prefill }
-                    guard prompts.count <= 1 else { throw ProbeError("Qwen TP plan has multiple prefill frames") }
                     if let slot = prompts.first {
                         let value = plan.slots[slot]
-                        guard let lane = records[slot], let native = lane.native, let frame = native.nextFrame,
+                        guard let lane = records[slot], let native = lane.native, let frame = native.promptStep(tokens: value.frameCount),
                               frame.phase == .prefill, frame.tokenOffset == value.frameOffset,
                               frame.tokenCount == value.frameCount, frame.finalPromptChunk == value.finalChunk else {
                             throw ProbeError("Qwen TP prefill differs from its original chunk grid")
                         }
                         let token = try executor.prefill(native, frame: frame, check: { try check(); try host.serviceControl() })
                         guard (token != nil) == frame.finalPromptChunk else { throw ProbeError("Qwen TP prefill returned the wrong final-row kind") }
-                        if let token { try selected(token, lane: lane, decisions: &decisions, host: host, publish: !peerCancelled.contains(lane.slot)) }
+                        if let token { try selected(token, lane: lane, decisions: &decisions, host: host, peerCancelled: peerCancelled) }
                     }
-                    if decode.isEmpty && prompts.isEmpty && plan.slots.allSatisfy({ $0.state == .active || $0.state == .empty }) {
+                    // A carried plan whose decodes ended is idle only by the tokens just read;
+                    // the next step exchanges at once.
+                    if !wasCarried, decode.isEmpty, prompts.isEmpty,
+                       plan.slots.allSatisfy({ $0.state == .active || $0.state == .empty }) {
                         Thread.sleep(forTimeInterval: 0.0005)
                     }
                     return false
@@ -158,19 +243,35 @@ final class QwenTensorParallelBatchDriver<Executor: QwenTensorParallelBatchExecu
         }
     }
 
-    private func makePlan(step: Int, answers: [UUID: Bool], decisions: QwenBatchDecisionProgress,
-                          peerCancelled: Set<Int>, coalescing: inout QwenBatchDecodeCoalescing) -> QwenBatchWire.Header {
+    /// Rank 0's plan for `step`. `carrying`: rows decoding in the step whose
+    /// selection sum carries this plan. Each counts the token it is selecting
+    /// and decodes on it (`carriedToken`) only if the owner already answered
+    /// the token before it; a stop keeps the tokens the owner saw.
+    private func makePlan(step: Int, answers: [UUID: Bool], decisions: inout QwenBatchDecisionProgress,
+                          host: QwenBatchServingHost, peerCancelled: Set<Int>,
+                          coalescing: inout QwenBatchDecodeCoalescing, carrying: Set<Int> = []) throws -> QwenBatchWire.Header {
         var slots = [QwenBatchWire.Slot](repeating: .init(), count: capacity)
         for (slot, record) in records {
+            let selecting = carrying.contains(slot)
             var value = QwenBatchWire.Slot(state: .active, requestID: record.id)
             value.committedTokens = record.native?.committedTokens ?? 0
-            value.selectedTokens = record.tokens.count; value.fingerprintWords = record.fingerprint
-            let reason = answers[record.id].flatMap { record.finish($0) }
+            value.selectedTokens = record.tokens.count + (selecting ? 1 : 0); value.fingerprintWords = record.fingerprint
+            // An answer is to the last published token.
+            let reason = answers[record.id].flatMap { record.finish($0, count: record.published) }
             if cancelled(record) || peerCancelled.contains(slot) || reason != nil {
                 value.state = .leaving; value.leaveCancelled = cancelled(record) || peerCancelled.contains(slot)
                 value.leaveReason = value.leaveCancelled ? nil : reason
-            } else if record.native?.canSelectNext == true, decisions.canForward(record.id) {
-                value.role = .decode; value.inputToken = record.tokens.last ?? -1
+                if !value.leaveCancelled { value.selectedTokens = record.published }
+                record.leaving = true
+            } else {
+                if answers[record.id] == true {
+                    try publishHeld(record, decisions: &decisions, host: host, peerCancelled: peerCancelled)
+                }
+                if record.native?.canSelectNext == true, record.published == record.tokens.count,
+                   decisions.canForward(record.id) {
+                    value.role = .decode
+                    value.inputToken = selecting ? QwenTensorParallelBatchWire.carriedToken : record.tokens.last ?? -1
+                }
             }
             slots[slot] = value
         }
@@ -182,7 +283,9 @@ final class QwenTensorParallelBatchDriver<Executor: QwenTensorParallelBatchExecu
         }
         if let prompt = records.values.filter({
             slots[$0.slot].state == .active && $0.native?.nextFrame?.phase == .prefill
-        }).min(by: { $0.order < $1.order }), let frame = prompt.native?.nextFrame {
+        }).min(by: { $0.order < $1.order }), let frame = prompt.native?.promptStep(frames:
+            records.values.contains { $0 !== prompt && $0.native?.canSelectNext == true }
+                ? QwenTensorParallelPromptWavefront.framesBesideDecoding : QwenTensorParallelPromptWavefront.maximumFrames) {
             slots[prompt.slot].role = .prefill; slots[prompt.slot].frameOffset = frame.tokenOffset
             slots[prompt.slot].frameCount = frame.tokenCount; slots[prompt.slot].finalChunk = frame.finalPromptChunk
         }
@@ -200,9 +303,37 @@ final class QwenTensorParallelBatchDriver<Executor: QwenTensorParallelBatchExecu
         return .init(step: step, stop: slots.allSatisfy({ $0.state == .empty }) && !book.hasStarted, slots: slots)
     }
 
-    private func report(step: Int) -> QwenBatchWire.Reply {
+    private func report(step: Int, carrying: Set<Int> = []) -> QwenBatchWire.Reply {
         let mask = records.values.reduce(0) { $0 | (cancelled($1) ? 1 << $1.slot : 0) }
-        return .init(step: step, tokens: (0..<capacity).map { records[$0]?.tokens.count ?? -1 }, cancelledMask: mask)
+        return .init(step: step, tokens: (0..<capacity).map { slot in
+            records[slot].map { $0.tokens.count + (carrying.contains(slot) ? 1 : 0) } ?? -1
+        }, cancelledMask: mask)
+    }
+
+    /// Both ranks' control words for `step`; this rank's own part must have crossed unchanged.
+    private static func read(_ sum: [Float], step: Int, lanes: Int, plan: QwenBatchWire.Header?,
+                             report: QwenBatchWire.Reply?) throws -> (QwenBatchWire.Header, QwenBatchWire.Reply) {
+        let (received, peer) = try QwenTensorParallelBatchWire.read(sum, step: step, lanes: lanes)
+        if let plan, received != plan { throw ProbeError("Qwen TP leader plan changed in transit") }
+        if let report, peer != report { throw ProbeError("Qwen TP follower report changed in transit") }
+        return (received, peer)
+    }
+
+    /// A carried plan was made before the tokens of the step that carried it.
+    /// A row that decodes on its new token takes it, unless that token ended
+    /// its request (a stop token or its output count): both ranks read it in
+    /// the same sum and drop that decode alike.
+    private func resolve(_ plan: QwenBatchWire.Header, carrying: Set<Int>) throws -> QwenBatchWire.Header {
+        var plan = plan
+        for slot in plan.slots.indices where plan.slots[slot].inputToken == QwenTensorParallelBatchWire.carriedToken {
+            guard plan.slots[slot].role == .decode, carrying.contains(slot), let record = records[slot],
+                  let token = record.tokens.last else {
+                throw ProbeError("Qwen TP carried decode has no carrying row")
+            }
+            if record.ended { plan.slots[slot].role = .none; plan.slots[slot].inputToken = -1 }
+            else { plan.slots[slot].inputToken = token }
+        }
+        return plan
     }
 
     private func validate(_ plan: QwenBatchWire.Header, peer: QwenBatchWire.Reply) throws {
@@ -221,8 +352,12 @@ final class QwenTensorParallelBatchDriver<Executor: QwenTensorParallelBatchExecu
             case .joining:
                 guard executor.rank == 0 || record == nil else { throw ProbeError("Qwen TP join replaces a held lane") }
             case .active, .leaving:
+                // A client stop keeps what the owner saw: it may drop the one token selected after it.
+                let dropsOne = value.state == .leaving && !value.leaveCancelled && value.leaveReason == .clientStop
                 guard let record, record.id == value.requestID, record.fingerprint == value.fingerprintWords,
-                      record.tokens.count == value.selectedTokens, record.native?.committedTokens == value.committedTokens else {
+                      record.tokens.count == value.selectedTokens
+                        || (dropsOne && record.tokens.count == value.selectedTokens + 1),
+                      record.native?.committedTokens == value.committedTokens else {
                     throw ProbeError("Qwen TP plan differs in request identity or committed frontier")
                 }
             }
@@ -266,15 +401,25 @@ final class QwenTensorParallelBatchDriver<Executor: QwenTensorParallelBatchExecu
     }
 
     private func selected(_ token: Int, lane: Record, decisions: inout QwenBatchDecisionProgress,
-                          host: QwenBatchServingHost, publish: Bool) throws {
+                          host: QwenBatchServingHost, peerCancelled: Set<Int>) throws {
         guard (0..<vocabulary).contains(token) else { throw ProbeError("Qwen TP selected token lies outside the vocabulary") }
         lane.tokens.append(token)
-        if executor.rank == 0, publish, !cancelled(lane) {
-            let logprobs = try executor.takeLogprobs(lane.native!)
-            try decisions.published(lane.id)
-            try host.publishToken(requestID: lane.id, ordinal: lane.tokens.count - 1, tokenID: token,
-                committedTokens: lane.reservation.request.promptCount + lane.tokens.count - 1, logprobs: logprobs)
-        }
+        guard executor.rank == 0 else { return }
+        lane.heldLogprobs = try executor.takeLogprobs(lane.native!)
+        try publishHeld(lane, decisions: &decisions, host: host, peerCancelled: peerCancelled)
+    }
+
+    /// Rank 0 publishes a selected token once the owner answered "go on" to
+    /// the token before it (at once when it already had); never after a stop
+    /// answer, a planned leave or a cancellation.
+    private func publishHeld(_ lane: Record, decisions: inout QwenBatchDecisionProgress,
+                             host: QwenBatchServingHost, peerCancelled: Set<Int>) throws {
+        guard lane.published == lane.tokens.count - 1, !lane.leaving, decisions.canForward(lane.id),
+              !peerCancelled.contains(lane.slot), !cancelled(lane) else { return }
+        try decisions.published(lane.id)
+        try host.publishToken(requestID: lane.id, ordinal: lane.published, tokenID: lane.tokens[lane.published],
+            committedTokens: lane.reservation.request.promptCount + lane.published, logprobs: lane.heldLogprobs)
+        lane.published += 1; lane.heldLogprobs = nil
     }
 
     private func leave(_ plan: QwenBatchWire.Header, host: QwenBatchServingHost,
@@ -285,8 +430,10 @@ final class QwenTensorParallelBatchDriver<Executor: QwenTensorParallelBatchExecu
         guard !leaving.isEmpty else { return }
         for slot in leaving {
             let value = plan.slots[slot], record = records[slot]!
-            guard let native = record.native,
-                  value.leaveCancelled || (value.leaveReason != nil && record.finish(value.leaveReason != .clientStop) == value.leaveReason) else {
+            // Validated: only a client stop drops a token, the one selected after the owner's answer.
+            if !value.leaveCancelled { record.tokens = Array(record.tokens.prefix(value.selectedTokens)) }
+            guard let native = record.native, value.leaveCancelled || (value.leaveReason != nil
+                    && record.finish(value.leaveReason != .clientStop, count: record.tokens.count) == value.leaveReason) else {
                 throw ProbeError("Qwen TP leave reason differs from selected tokens")
             }
             try executor.retire(native, reason: value.leaveCancelled ? nil : value.leaveReason,

@@ -6,11 +6,14 @@ struct QwenResidentRequestAllowance {
     let stateBytes: Int
     let fusionBytes: Int
     let reservedBytes: Int
-    /// One prefill frame's attention transient at this request's context
+    /// One prefill frame's attention transient at this request's context, or
+    /// its decode step's on every layer it runs when larger
     /// (`QwenResidentPrefillTransient`), included in `reservedBytes`.
     var transientBytes = 0
     /// Prompt plus output tokens this allowance was derived for; 0 when unknown.
     var contextTokens = 0
+    /// What this request's decode forwards run, as derived.
+    var decode = LayerStageDecodeShape.plain
     /// This request's record at the host memory gate, and its first sample.
     let watch = QwenDenseStageLoadWatch("Resident request")
 
@@ -22,7 +25,7 @@ struct QwenResidentRequestAllowance {
     /// them, and `fusionBytes` is the allowance for those copies.
     /// This named ledger excludes unknown workspace/whole-process peak claims.
     static func derive(profile: QwenRegisteredDenseModelProfile, plan: QwenLayerStagePlan,
-                       rank: Int, maximumTokens: Int, chunkSize: Int,
+                       rank: Int, maximumTokens: Int, chunkSize: Int, decode: LayerStageDecodeShape = .plain,
                        bound: (Int) throws -> Int) throws -> Self {
         guard plan.stages.count == 2, (0...1).contains(rank) else {
             throw ProbeError("Resident request allowance requires an admitted two-stage Plan")
@@ -87,12 +90,15 @@ struct QwenResidentRequestAllowance {
         // U#3651), so a context the gate admits is one the frame can run in.
         // From the stage's own layer kinds: a Plan without an interval (Nemotron,
         // interval 0) names its attention blocks `attention`.
-        let stageHasAttention = plan.stages[rank].layers.contains { ["full_attention", "attention"].contains($0.kind) }
+        func attends(_ layer: QwenLayerStagePlan.Layer) -> Bool { ["full_attention", "attention"].contains(layer.kind) }
+        let stageHasAttention = plan.stages[rank].layers.contains(where: attends)
+        // A decode step's rows on every attending layer it runs, alive at once.
+        let decodeLayers = decode.stages(of: plan, rank: rank).flatMap(\.layers).filter(attends).count
         let transientLogical = try QwenResidentPrefillTransient.bytes(geometry: g, stageHasAttention: stageHasAttention,
-            chunkTokens: chunkSize, contextTokens: maximumTokens)
+            chunkTokens: chunkSize, contextTokens: maximumTokens, decodeRows: try product([decode.rows, decodeLayers]))
         let transient = transientLogical == 0 ? 0 : try allowance(transientLogical, 1)
         return .init(stateBytes: state, fusionBytes: fusion, reservedBytes: try sum([state, fusion, transient]),
-            transientBytes: transient, contextTokens: maximumTokens)
+            transientBytes: transient, contextTokens: maximumTokens, decode: decode)
     }
 
     /// `onLoadedStage`: a request's reservation on a stage that is already loaded. It asks for what the request

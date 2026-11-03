@@ -18,7 +18,7 @@ struct MiMoPagedAdmissionTests {
                         verificationTokens: width, bound: { $0 })
                     let target = try MiMoRequestStateBudget.estimate(specification: spec,
                         layers: plan.stages[rank].sourceRange, rank: rank, maximumTokens: 4096,
-                        chunkSize: width, bound: { $0 })
+                        chunkSize: width, decodeRows: width, bound: { $0 })
                     let pageBytes = pages ? try MiMoPagedKVAllowance.pages(spec: spec,
                         layers: plan.stages[rank].sourceRange, maximumTokens: 4096, chunkSize: width, bound: { $0 }) : 0
                     #expect(actual.budget == target)

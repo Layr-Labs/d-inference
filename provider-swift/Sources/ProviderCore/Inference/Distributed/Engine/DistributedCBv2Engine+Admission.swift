@@ -44,21 +44,25 @@ extension DistributedCBv2Engine {
             admissionStartedAt: admissionStartedAt, reservedAt: clock.now())
         actives[state.generation] = state
         observe(state, phase: .reserved)
+        // Both run from task cancellation: they never wait for the queue (a
+        // cancellation already consumed here, during reserve, still runs at once).
         cancellation?.arm { [weak self, weak state] in
             guard let self, let state else { return }
-            self.onQueue { self.stop(state, reason: .cancelled) }
+            self.onQueueWithoutWaiting { self.stop(state, reason: .cancelled) }
         }
         continuation.onTermination = { [weak self, generation = state.generation] _ in
-            self?.onQueue {
-                guard self?.actives[generation] != nil else { return }
-                self?.stop(state, reason: .cancelled)
+            guard let self else { return }
+            self.onQueueWithoutWaiting {
+                guard self.actives[generation] != nil else { return }
+                self.stop(state, reason: .cancelled)
             }
         }
         // Always retain the engine and lease until acknowledgement, even if the
         // consumer drops the stream or the owner throws after partially starting.
+        // A cooperative thread never waits for the queue.
         Task { [self, state] in
             await state.lease.waitUntilRetired()
-            onQueue { retire(state) }
+            queue.async { [self] in retire(state) }
         }
         var refused = false
         let admittedAt = clock.now()

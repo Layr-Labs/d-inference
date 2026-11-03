@@ -33,12 +33,13 @@ enum MiMoPhaseSplitState {
     /// in temporal order); a frame of one token is written in place (the
     /// buffer grows by `step` up to the window, then rotates). Returns the
     /// length of the arrays its `state` gives (its buffer, or the positions
-    /// written while fewer than the buffer) and its write index.
-    static func slidingState(window: Int, step: Int, frames: [Int]) throws -> (length: Int, index: Int) {
+    /// written while fewer than the buffer), its write index and whether it
+    /// has wrapped (rotated since its last frame of several tokens).
+    static func slidingState(window: Int, step: Int, frames: [Int]) throws -> (length: Int, index: Int, wrapped: Bool) {
         guard window >= 1, step >= 1, !frames.isEmpty, frames.allSatisfy({ $0 >= 1 }) else {
             throw ProbeError("A sliding-window layer needs a positive window and step, and a prompt")
         }
-        var capacity: Int?, index = 0, offset = 0
+        var capacity: Int?, index = 0, offset = 0, wrapped = false
         for count in frames {
             if count == 1 {
                 if capacity == nil || (offset >= capacity! && capacity! < window) {
@@ -46,7 +47,7 @@ enum MiMoPhaseSplitState {
                     index = offset
                 }
                 if capacity! - window > 0 { capacity = window; index = window }
-                if index == window { index = 0 }
+                if index == window { index = 0; wrapped = true }
                 offset += 1; index += 1
             } else {
                 if var held = capacity {
@@ -58,10 +59,10 @@ enum MiMoPhaseSplitState {
                 } else {
                     capacity = count
                 }
-                offset += count; index = capacity!
+                offset += count; index = capacity!; wrapped = false
             }
         }
-        return (offset < capacity! ? offset : capacity!, index)
+        return (offset < capacity! ? offset : capacity!, index, wrapped)
     }
 
     /// The retained length alone (frames of several tokens each).
@@ -100,16 +101,19 @@ enum MiMoPhaseSplitState {
         return shapes
     }
 
-    /// The rotating cache's metadata after the prompt (`RotatingKVCache.metaState`):
-    /// keep 0, the window, the cache's own step, the prompt as its offset and
-    /// the write index the frame grid gives.
-    static func slidingMetadata(window: Int, index: Int, prompt: Int, step: Int) -> [String] {
+    /// A sliding layer's page metadata after the prompt
+    /// (`MiMoV26IndependentHistoryCache.metaState`), the rotating cache's first
+    /// five values: keep 0, the window, the step, the prompt as its offset and
+    /// the write index the frame grid gives. The ordinary ring's are
+    /// `MiMoSlidingRing.metadata`.
+    static func pagedMetadata(window: Int, index: Int, prompt: Int, step: Int) -> [String] {
         ["0", String(window), String(step), String(prompt), String(index)]
     }
 
     /// The producer caches' arrays after the prompt, in `shapes` order, each
     /// checked against its agreed shape and (for a rotating cache) the
-    /// rotation the frame grid gives. Lazy views; the caller reads the bytes.
+    /// metadata, rotation included, the frame grid gives. Lazy views; the
+    /// caller reads the bytes.
     static func exportArrays(caches: [KVCache], configuration: MiMoV26Configuration, frames: [Int],
                              shapes: [QwenPhaseSplitStateShape]) throws -> [MLXArray] {
         let prompt = frames.reduce(0, +)
@@ -134,15 +138,17 @@ enum MiMoPhaseSplitState {
                     let step = defaultStep(window: window)
                     let expected = try slidingState(window: window, step: step, frames: frames)
                     guard expected.length == keys.shape[2],
-                        pages.metaState == slidingMetadata(window: window, index: expected.index, prompt: prompt, step: step) else {
+                        pages.metaState == pagedMetadata(window: window, index: expected.index, prompt: prompt, step: step) else {
                         throw ProbeError("Producer page rotation differs from the request frame grid")
                     }
                 }
             } else if let rotating = cache as? RotatingKVCache {
-                guard let window = geometry.slidingWindow, let step = Int(rotating.metaState[2]),
-                      let expected = try? slidingState(window: window, step: step, frames: frames),
+                guard let window = geometry.slidingWindow,
+                      let expected = try? slidingState(window: window, step: defaultStep(window: window), frames: frames),
                       expected.length == keys.shape[2],
-                      rotating.metaState == slidingMetadata(window: window, index: expected.index, prompt: prompt, step: step) else {
+                      let metadata = MiMoSlidingRing.metadata(window: window, offset: prompt, index: expected.index,
+                                                              wrapped: expected.wrapped),
+                      rotating.metaState == metadata else {
                     throw ProbeError("Producer layer \(local) rotation differs from the request's frame grid")
                 }
             } else {
@@ -157,7 +163,8 @@ enum MiMoPhaseSplitState {
 
     /// Installs adopted arrays into fresh caches: a full-attention layer's
     /// growing cache takes keys and values as they are; a sliding layer's
-    /// rotating cache also takes the rotation the frame grid gives.
+    /// rotating cache, a fresh ring of the model's, also takes the metadata,
+    /// rotation included, the frame grid gives.
     static func install(_ state: QwenLayerStageAdoptedState, into caches: [KVCache], shapes: [QwenPhaseSplitStateShape],
                         frames: [Int], configuration: MiMoV26Configuration) throws {
         let prompt = frames.reduce(0, +)
@@ -190,12 +197,14 @@ enum MiMoPhaseSplitState {
                 try pages.validateRestore(keys: arrays.keys, values: arrays.values, offset: prompt, index: index)
                 install.append { try pages.restore(keys: arrays.keys, values: arrays.values, offset: prompt, index: index) }
             } else if let rotating = cache as? RotatingKVCache {
-                guard let window = geometry.slidingWindow, let step = Int(rotating.metaState[2]),
-                      let expected = try? slidingState(window: window, step: step, frames: frames),
-                      expected.length == keys.shape[2] else {
+                guard let window = geometry.slidingWindow,
+                      rotating.metaState == MiMoSlidingRing.metadata(window: window, offset: 0, index: 0, wrapped: false),
+                      let expected = try? slidingState(window: window, step: defaultStep(window: window), frames: frames),
+                      expected.length == keys.shape[2],
+                      let metadata = MiMoSlidingRing.metadata(window: window, offset: prompt, index: expected.index,
+                                                              wrapped: expected.wrapped) else {
                     throw ProbeError("Adopted layer \(local) is not the sliding-window layer the frame grid describes")
                 }
-                let metadata = slidingMetadata(window: window, index: expected.index, prompt: prompt, step: step)
                 install.append {
                     rotating.metaState = metadata
                     rotating.state = [arrays.keys, arrays.values]

@@ -1086,7 +1086,7 @@ threadgroup per page, with no zero fill, and a selection read copies each row
 with one SIMD-group (`GLM5NextPagedTransfers`). Plain decode steps (every row
 one token) and MTP rounds whose rows are all decode or verification rows (at
 most 8 tokens) commit a Metal command buffer every 100 operations with no
-input-size bound, as Nemotron Super and Flint do for plain decode
+input-size bound, as Nemotron Super, Flint and Gemma 4 do for plain decode
 (`GLM5NextDecodeCommandBuffers`); prefill chunks keep MLX's defaults. A longer
 row whose selection rows would read at least
 its history instead reads its whole latent plane once per layer through
@@ -5450,6 +5450,19 @@ Sources: `provider-swift/Sources/ProviderCore/Inference/Distributed/Requests/Dis
 `provider-swift/Sources/ProviderCore/Inference/Distributed/Requests/DistributedQwenMediaIngress+Preparation.swift`,
 `provider-swift/Sources/ProviderCore/Inference/Distributed/Requests/DistributedQwenMediaLifetime.swift`, and
 `provider-swift/Sources/ProviderCore/Inference/Distributed/Engine/DistributedEngineFactory.swift`.
+
+## Gemma decode command buffers
+
+Gemma 4's plain decode steps (every row one token) commit a Metal command buffer
+every 100 operations with no input-size bound (`Gemma4DecodeCommandBuffers`,
+through `CBv2DecodeCommandBufferLimitsProviding`), as Nemotron Super, Flint and
+GLM do. MLX's defaults commit every 40 to 50 operations or 40 to 50 M distinct
+input elements. A step's inputs include the weights and each 64 MiB KV segment
+its history reads, so decode committed many times per step, reached MLX's limit
+of ten command buffers in flight, and waited inside evaluation instead of
+encoding ahead of the GPU. Results do not depend on the partitioning. Prefill
+chunks and assistant rounds keep MLX's defaults, so a row served with the
+assistant does not gain from this.
 
 ## Qwen27 feature-preserving mode selection
 

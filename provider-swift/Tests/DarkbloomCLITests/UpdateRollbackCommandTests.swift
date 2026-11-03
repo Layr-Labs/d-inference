@@ -220,7 +220,7 @@ struct UpdateRollbackCommandTests {
 
         let racing = RecordingHost(install: install, loaded: false, providerHoldsInstanceLock: true)
         let error = await #expect(throws: UpdateRollback.Failure.self) { try await install.rollback(host: racing, yes: true) }
-        #expect(error?.description == UpdateRollback.startedRefusal)
+        #expect(error?.description.contains("holds the provider instance lock. Nothing was changed") == true)
         #expect(try install.liveBinary() == "2.0.0-darkbloom")
         #expect(try install.store.loadState().quarantine == nil)
 
@@ -242,8 +242,89 @@ struct UpdateRollbackCommandTests {
         let error = await #expect(throws: UpdateRollback.Failure.self) { try await install.rollback(host: host, yes: true) }
 
         #expect(error?.description.contains("could not lock out a concurrent start") == true)
+        #expect(host.events == ["drain", "restart"], "decided at the swap: the drained provider restarts")
+        #expect(try install.liveBinary() == "2.0.0-darkbloom")
+    }
+
+    // Independent review of R4-1729-A: what the drain could let change is decided again at the swap.
+
+    @Test("a cluster pair that forms during the drain is refused at the swap, and the drained provider restarts")
+    func clusterFormsDuringTheDrain() async throws {
+        let install = try RollbackInstall()
+        defer { install.remove() }
+        let probe = Probe()
+        let host = RecordingHost(install: install, loaded: true, answer: "y", beforeDrain: { probe.joinCluster?() })
+        probe.joinCluster = { host.joinCluster() }
+
+        let error = await #expect(throws: UpdateRollback.Failure.self) { try await install.rollback(host: host, yes: true) }
+
+        #expect(error?.description.contains("started serving in a two-Mac cluster while the provider drained") == true)
+        #expect(host.events == ["drain", "restart"])
+        #expect(try install.liveBinary() == "2.0.0-darkbloom")
+        #expect(try install.store.loadState().quarantine == nil)
+    }
+
+    @Test("the drained service may keep its instance lock over the swap; any other holder refuses without a restart")
+    func instanceLockAfterTheDrain() async throws {
+        let me = try #require(ProcessIdentity.current())
+
+        // The drained service still runs and holds its instance lock: the swap goes on under it.
+        let kept = try RollbackInstall()
+        defer { kept.remove() }
+        let serviceLock = Probe()
+        let drainedHolds = RecordingHost(install: kept, loaded: true, serviceProcess: me, beforeDrain: {
+            serviceLock.lock = try UpdateProcessLock.attempt(at: kept.providerInstanceLock, operation: "provider-instance").lock
+        })
+        try await kept.rollback(host: drainedHolds, yes: true)
+        #expect(serviceLock.lock != nil)
+        #expect(drainedHolds.events == ["drain", "restart", "wait"])
+        #expect(try kept.liveBinary() == "1.0.0-darkbloom")
+        serviceLock.lock?.release()
+
+        // Another process took the lock while the service drained (here: the service is a different process).
+        let raced = try RollbackInstall()
+        defer { raced.remove() }
+        let foreignLock = Probe()
+        let foreign = RecordingHost(install: raced, loaded: true, serviceProcess: nil, beforeDrain: {
+            foreignLock.lock = try UpdateProcessLock.attempt(at: raced.providerInstanceLock, operation: "provider-instance").lock
+        })
+        let error = await #expect(throws: UpdateRollback.Failure.self) { try await raced.rollback(host: foreign, yes: true) }
+        #expect(error?.description.contains("started outside the provider service while it drained. Nothing was swapped") == true)
+        #expect(foreign.events == ["drain"], "its restart would signal the other process")
+        #expect(try raced.liveBinary() == "2.0.0-darkbloom")
+        #expect(try raced.isFree(raced.clusterServiceLock))
+        foreignLock.lock?.release()
+        try raced.updater.beginUpdateSession(operation: "lease-check").release()
+    }
+
+    @Test("an install that changed during the prompt is refused before the drain")
+    func planChangedDuringThePromptIsRefusedBeforeTheDrain() async throws {
+        let install = try RollbackInstall()
+        defer { install.remove() }
+        let host = RecordingHost(install: install, loaded: true, answer: "y", onceAnswered: {
+            var state = try install.store.loadState()
+            state.installGeneration += 1
+            try install.store.writeState(state)
+        })
+
+        let error = await #expect(throws: UpdateRollback.Failure.self) { try await install.rollback(host: host, yes: false) }
+
+        #expect(error?.description.contains("changed after the rollback was confirmed") == true)
         #expect(host.events.isEmpty)
         #expect(try install.liveBinary() == "2.0.0-darkbloom")
+    }
+
+    @Test("a foreground provider beside a loaded but dead service job is classed as foreground")
+    func providerClassification() throws {
+        let service = ProcessIdentity(pid: 100, startTimeMicros: 1)
+        let foreground = ProcessIdentity(pid: 200, startTimeMicros: 2)
+        #expect(UpdateRollback.classify(loaded: true, recorded: service, launch: service) == .service)
+        #expect(UpdateRollback.classify(loaded: true, recorded: nil, launch: service) == .service)
+        #expect(UpdateRollback.classify(loaded: true, recorded: nil, launch: nil) == .service)
+        #expect(UpdateRollback.classify(loaded: true, recorded: foreground, launch: nil) == .foreground)
+        #expect(UpdateRollback.classify(loaded: true, recorded: foreground, launch: service) == .foreground)
+        #expect(UpdateRollback.classify(loaded: false, recorded: foreground, launch: nil) == .foreground)
+        #expect(UpdateRollback.classify(loaded: false, recorded: nil, launch: nil) == .stopped)
     }
 }
 
@@ -307,7 +388,7 @@ private struct RollbackInstall {
 
     /// Whether `lock` is free now (taken and released at once).
     func isFree(_ lock: URL) throws -> Bool {
-        guard let held = try UpdateProcessLock.acquireUnlessBusy(at: lock, operation: "lock-check") else { return false }
+        guard let held = try UpdateProcessLock.attempt(at: lock, operation: "lock-check").lock else { return false }
         held.release()
         return true
     }
@@ -351,9 +432,11 @@ private final class RecordingHost: @unchecked Sendable {
     /// `providerOnceAnswered` is the provider's state from the prompt's answer on.
     /// `inClusterOnceAnswered`: this Mac joins a cluster pair while the prompt is open.
     /// `providerHoldsInstanceLock`: a provider holds its instance lock without showing in the state file yet.
+    /// `serviceProcess`: the launchd service's process, which the drain drains.
     init(install: RollbackInstall, loaded: Bool, foreground: Bool = false, inCluster: Bool = false, canAsk: Bool = true,
          answer: String? = nil, providerOnceAnswered: UpdateRollback.Provider? = nil,
          inClusterOnceAnswered: Bool? = nil, providerHoldsInstanceLock: Bool = false,
+         serviceProcess: ProcessIdentity? = nil, onceAnswered: @escaping () throws -> Void = {},
          beforeDrain: @escaping () throws -> Void = {}) {
         let log = Log()
         log.provider = loaded ? .service : foreground ? .foreground : .stopped
@@ -365,17 +448,19 @@ private final class RecordingHost: @unchecked Sendable {
             servesInCluster: { log.lock.withLock { log.inCluster } },
             holdClusterOut: {
                 guard !log.lock.withLock({ log.inCluster }) else { return nil }
-                return try UpdateProcessLock.acquireUnlessBusy(at: install.clusterServiceLock, operation: UpdateRollback.operation)
+                return try UpdateProcessLock.attempt(at: install.clusterServiceLock, operation: UpdateRollback.operation).lock
             },
             provider: { log.lock.withLock { log.provider } },
+            serviceProcess: { serviceProcess },
             holdProviderStartsOut: {
-                guard !log.lock.withLock({ log.providerHoldsInstanceLock }) else { return nil }
-                return try UpdateProcessLock.acquireUnlessBusy(at: install.providerInstanceLock, operation: UpdateRollback.operation)
+                guard !log.lock.withLock({ log.providerHoldsInstanceLock }) else { return .busy(nil) }
+                return try UpdateProcessLock.attempt(at: install.providerInstanceLock, operation: UpdateRollback.operation)
             },
             canAsk: { canAsk },
             readAnswer: {
                 if let providerOnceAnswered { log.lock.withLock { log.provider = providerOnceAnswered } }
                 if let inClusterOnceAnswered { log.lock.withLock { log.inCluster = inClusterOnceAnswered } }
+                try? onceAnswered()
                 return answer
             },
             drain: {
@@ -387,10 +472,15 @@ private final class RecordingHost: @unchecked Sendable {
     }
 
     func say(_ line: String) { log.lock.withLock { log.lines.append(line) } }
+
+    /// This Mac starts serving in a cluster pair from now on.
+    func joinCluster() { log.lock.withLock { log.inCluster = true } }
 }
 
 /// What a hook observed while the rollback held its locks.
 private final class Probe: @unchecked Sendable {
     var cycleRefused = false
     var serviceHeldOut = false
+    var joinCluster: (() -> Void)?
+    var lock: UpdateProcessLock?
 }

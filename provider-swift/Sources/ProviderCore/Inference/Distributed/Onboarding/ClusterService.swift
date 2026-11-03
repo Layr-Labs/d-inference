@@ -212,9 +212,12 @@ public final class ClusterService: @unchecked Sendable {
     /// cannot be opened. `darkbloom update --rollback` holds it across its swap, so this Mac cannot join a pair while
     /// its release changes.
     public static func holdStopped(operation: String) throws -> UpdateProcessLock? {
-        let lockFile = try paths().lock
+        try holdStopped(operation: operation, lockFile: try paths().lock)
+    }
+
+    static func holdStopped(operation: String, lockFile: URL) throws -> UpdateProcessLock? {
         try ClusterConfigurationFiles.ensureDirectory(lockFile.deletingLastPathComponent(), create: true, privateMode: true)
-        return try UpdateProcessLock.acquireUnlessBusy(at: lockFile, operation: operation)
+        return try UpdateProcessLock.attempt(at: lockFile, operation: operation).lock
     }
 
     private static func running(in directory: URL) -> Bool? {

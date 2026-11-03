@@ -84,10 +84,13 @@ struct UpdateRollbackEndToEndTests {
         let host = UpdateRollback.Host(
             servesInCluster: { false },
             holdClusterOut: {
-                try UpdateProcessLock.acquireUnlessBusy(at: scratch.appendingPathComponent("service.lock"), operation: "operator-rollback")
+                try UpdateProcessLock.attempt(at: scratch.appendingPathComponent("service.lock"), operation: "operator-rollback").lock
             },
             provider: { .service },
-            holdProviderStartsOut: { nil },
+            serviceProcess: { nil },
+            holdProviderStartsOut: {
+                try UpdateProcessLock.attempt(at: scratch.appendingPathComponent("provider.pid.lock"), operation: "operator-rollback")
+            },
             canAsk: { false },
             readAnswer: { nil },
             drain: { log.record("drain") },

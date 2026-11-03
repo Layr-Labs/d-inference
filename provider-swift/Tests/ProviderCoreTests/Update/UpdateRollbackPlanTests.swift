@@ -1,6 +1,7 @@
 /// The operator rollback API behind `darkbloom update --rollback`: its plan,
 /// each refusal, and a failure finished under the same lease.
 
+import Darwin
 import Foundation
 import Testing
 @testable import ProviderCore
@@ -19,6 +20,43 @@ struct UpdateRollbackPlanTests {
                 generation: state.installGeneration + 1))
             await installed.shutdown()
         }
+    }
+
+    @Test("the rollback's cluster hold keeps a cluster service out of its lock, taken as `ClusterService.run` takes it")
+    func clusterHoldKeepsTheServiceOut() throws {
+        // The resolved path: the directory check refuses a link in any component (`/var` is one).
+        let temporary = try #require(realpath(FileManager.default.temporaryDirectory.path, nil))
+        defer { free(temporary) }
+        let directory = URL(fileURLWithPath: String(cString: temporary), isDirectory: true)
+            .appendingPathComponent("cluster-hold-\(UUID().uuidString)/cluster-setup", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory.deletingLastPathComponent()) }
+        let lockFile = directory.appendingPathComponent("service.lock")
+
+        let hold = try #require(try ClusterService.holdStopped(operation: "operator-rollback", lockFile: lockFile))
+        let service = open(lockFile.path, O_RDWR | O_CREAT | O_CLOEXEC, 0o600)
+        #expect(service >= 0)
+        defer { close(service) }
+        #expect(flock(service, LOCK_EX | LOCK_NB) != 0, "no cluster service starts while the rollback holds it")
+        hold.release()
+        #expect(flock(service, LOCK_EX | LOCK_NB) == 0)
+        #expect(try ClusterService.holdStopped(operation: "operator-rollback", lockFile: lockFile) == nil,
+                "a running cluster service keeps the rollback out")
+        _ = flock(service, LOCK_UN)
+    }
+
+    @Test("a plan confirmed before the lease must still hold under it")
+    func confirmedPlanMustStillHold() async throws {
+        let installed = try await InstalledUpdate.make(promote: true)
+        defer { Task { await installed.shutdown() } }
+        let plan = try installed.updater.rollbackPlan()
+        let session = try installed.updater.beginUpdateSession(operation: "operator-rollback")
+        defer { session.release() }
+        try installed.updater.confirmRollbackPlan(plan, session: session)
+        var state = try installed.store.loadState()
+        state.installGeneration += 1
+        try installed.store.writeState(state)
+        #expect(throws: SelfUpdater.RollbackRefusal.self) { try installed.updater.confirmRollbackPlan(plan, session: session) }
+        #expect(try installed.store.loadState().quarantine == nil)
     }
 
     @Test("rolling back a pending candidate quarantines it with its failed starts")

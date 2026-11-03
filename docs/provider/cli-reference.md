@@ -759,20 +759,27 @@ stopped provider, or one stopped while the prompt was open, is only swapped
 (`provider-swift/Sources/darkbloom/UpdateRollback.swift`, `UpdateRollback`;
 `provider-swift/Sources/ProviderCore/Update/SelfUpdater+Rollback.swift`,
 `rollbackPlan`, `rollBackToPredecessor`). The prompt runs without a lock, so
-the command decides the cluster and provider checks again once it holds the
-update lease, before the drain, and keeps them true until the swap is done: it
-holds the cluster service lock so no cluster service starts, and, for a stopped
-provider, the provider instance lock so no provider starts. The update lease is
-the one a pair's coordinated update holds for its whole cycle, so a rollback and
-a pair update never interleave. It exits 1 and changes nothing when
+the command decides every check again once it holds the update lease, before
+the drain, and again at the swap for what the drain could let change. Over the
+swap it holds the cluster service lock, so no cluster service starts, and the
+provider instance lock (or leaves it with the drained service process), so no
+other provider starts. A pair's coordinated update holds the same lease from
+its check through its install, and its cluster service login agent stays
+loaded through its restart, so a rollback and a pair update never interleave.
+It runs only as the user the provider runs as, not as root. It exits 1 and
+changes nothing when
 this Mac serves in a `darkbloom cluster` pair (a running cluster service, a
 loaded cluster service login agent, or a loaded cluster-member provider job), a
 provider runs outside launchd (`darkbloom start --foreground`, also when it
 replaced the service while the prompt was open) or started after the plan was
-shown, another update or recovery holds the lease,
+shown, the installed release changed after the plan was shown, another update
+or recovery holds the lease,
 no release is kept for rollback, the installed release is already that
 release, the installed `Darkbloom.app` is not the recorded release, or the kept
-release fails its hash or signature check (`RollbackRefusal`). Steps are in
+release fails its hash or signature check (`RollbackRefusal`). A refusal at
+the swap, after the drain, restarts the drained provider on the installed
+release; when another provider took the instance lock during the drain, it is
+not signalled and the service stays drained. Steps are in
 [installation → Roll back to the previous release](./installation.md#roll-back-to-the-previous-release).
 See [installation → Update](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/provider/installation.md).
 

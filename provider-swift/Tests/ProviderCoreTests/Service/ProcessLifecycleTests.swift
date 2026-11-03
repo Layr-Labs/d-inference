@@ -53,12 +53,16 @@ struct ProcessLifecycleTests {
         let pidFile = tempPIDFile()
         defer { ProcessLifecycle.releaseSingleInstanceLock(at: pidFile) }
 
-        let hold = try #require(try ProcessLifecycle.holdStartsOut(operation: "operator-rollback", at: pidFile))
+        let hold = try #require(try ProcessLifecycle.holdStartsOut(operation: "operator-rollback", at: pidFile).lock)
         #expect(throws: UpdateProcessLock.LockError.self) { try ProcessLifecycle.acquireSingleInstanceLock(at: pidFile) }
         hold.release()
         try ProcessLifecycle.acquireSingleInstanceLock(at: pidFile)
-        // A running provider keeps the rollback's hold out in turn.
-        #expect(try ProcessLifecycle.holdStartsOut(operation: "operator-rollback", at: pidFile) == nil)
+        // A running provider keeps the rollback's hold out in turn, and names itself.
+        guard case .busy(let owner) = try ProcessLifecycle.holdStartsOut(operation: "operator-rollback", at: pidFile) else {
+            Issue.record("the rollback took a running provider's instance lock"); return
+        }
+        #expect(owner?.processIdentity == ProcessIdentity.current())
+        #expect(owner?.operation == "provider-instance")
     }
 
     @Test("acquire is idempotent for the running process")

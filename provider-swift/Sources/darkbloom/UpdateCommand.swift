@@ -67,6 +67,11 @@ struct Update: AsyncParsableCommand {
         let updater = SelfUpdater(coordinatorBaseURL: coordinatorURL)
 
         if rollback {
+            // Run as root, the locks it creates in this home would be root's, and the user's provider and cluster
+            // service could no longer take them.
+            guard geteuid() != 0 else {
+                throw ValidationError("Run `\(BuildEnvironment.current.cliName) update --rollback` as the user the provider runs as, not as root.")
+            }
             try await UpdateRollback(
                 updater: updater,
                 host: .live(drain: drain, configPath: configOptions.config),

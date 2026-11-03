@@ -104,17 +104,22 @@ extension SelfUpdater {
             generation: generation)
     }
 
-    /// Carries out a confirmed `plan` while the caller holds `session` (for a
-    /// running provider, the lease its drain took). Returns the restored version.
-    @discardableResult
-    public func rollBackToPredecessor(session: UpdateSession, plan: RollbackPlan) throws -> String {
+    /// Under `session`: `plan`, confirmed without the lease, still holds. A
+    /// promotion since then is the same rollback; any other install or
+    /// rollback is not (`changedSinceConfirmation`).
+    public func confirmRollbackPlan(_ plan: RollbackPlan, session: UpdateSession) throws {
         try session.recover(now: now())
-        // The plan was confirmed without the lease. A promotion since then is
-        // the same rollback; any other install or rollback is not.
         let current = try rollbackPlan(session: session)
         guard current.from == plan.from, current.to == plan.to, current.generation == plan.generation else {
             throw RollbackRefusal.changedSinceConfirmation(installed: current.from, predecessor: current.to)
         }
+    }
+
+    /// Carries out a confirmed `plan` while the caller holds `session` (for a
+    /// running provider, the lease its drain took). Returns the restored version.
+    @discardableResult
+    public func rollBackToPredecessor(session: UpdateSession, plan: RollbackPlan) throws -> String {
+        try confirmRollbackPlan(plan, session: session)
         let reason = "rolled back by the operator to v\(plan.to) (\(BuildEnvironment.current.cliName) update --rollback)"
         do {
             return try session.rollback(now: now(), reason: reason)

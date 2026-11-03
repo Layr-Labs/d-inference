@@ -1889,11 +1889,15 @@ threats:
           predecessor verification and the same single-slot exact-version
           quarantine; it also refuses an installed bundle that differs from
           the recorded release and never rolls back one Mac of a cluster pair.
-          Cluster membership and the provider's state are decided under the
-          update lease (the lease a pair's coordinated update holds), and the
-          cluster service lock and, for a stopped provider, the provider
-          instance lock are held until the swap is done, so neither a cluster
-          service nor a foreground provider can start mid-swap.
+          Cluster membership (a running cluster service, a loaded cluster
+          service login agent, a cluster member job), the provider's state
+          (by process identity) and the plan are decided under the update
+          lease, the lease a pair's coordinated update holds from its check
+          through its install, before the drain. At the swap the cluster
+          service lock and the provider instance lock are held (or the latter
+          stays with the drained service process) until the swap is done, so
+          neither a cluster service nor another provider can start mid-swap;
+          another holder refuses the rollback without signalling it.
         status: implemented
       - description: >
           Bounded watchdog network I/O (URLSession request/resource timeouts)

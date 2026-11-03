@@ -47,6 +47,7 @@ extension ProviderLoop {
             warmModels: state.warmModels,
             advertisedModels: advertisedModels.keys.sorted(),
             servingSelection: ordinaryServingModelIDs.sorted(),
+            registeredModels: state.registeredModels,
             evictionExclusions: evictionExclusionRecords(),
             startupPreloadPendingModels: startupPreloadPendingModels,
             inferenceActive: state.inferenceActive,

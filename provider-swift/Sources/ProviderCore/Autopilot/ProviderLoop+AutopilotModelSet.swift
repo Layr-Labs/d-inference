@@ -104,30 +104,48 @@ extension ProviderLoop {
         await coordinatorClient?.sendEventHeartbeat()
     }
 
-    /// Re-registers once, on a capacity tick with nothing busy, when the set
-    /// gained a build the last registration did not carry. A planned
-    /// reconnect at an idle moment interrupts no request; a busy provider
-    /// keeps waiting. Each build is tried once.
-    func refreshAutopilotInventoryRegistration() async {
-        guard !autopilotInventoryAwaitingRegistration.isEmpty else { return }
+    /// The longest a build waits for an idle capacity tick. After it, in-flight
+    /// work and a live lease no longer defer the re-registration.
+    static let autopilotInventoryRegistrationMaxWait: Duration = .seconds(600)
+
+    /// Re-registers once, on a capacity tick, when the set gained a build the
+    /// last registration did not carry. Each build is tried once.
+    /// - First the provider waits for a tick with nothing busy and no live
+    ///   lease, so the planned reconnect interrupts no request.
+    /// - A provider that is never idle at a tick stops waiting after
+    ///   `autopilotInventoryRegistrationMaxWait`. The planned reconnect then
+    ///   makes the idle gap itself: it closes admission and lets accepted work
+    ///   finish before it reconnects. It never cancels accepted work.
+    func refreshAutopilotInventoryRegistration(now: ContinuousClock.Instant = .now) async {
         let registered = state.registeredAutopilotInventoryIDs ?? []
         autopilotInventoryAwaitingRegistration = autopilotInventoryAwaitingRegistration.filter {
             !registered.contains($0) && autopilotInventoryModels[$0] != nil && autopilotSetAllows($0)
         }
-        guard isIdleForInventoryRegistration, await autopilotDownloadsAreIdle(),
-              await autopilotRegistrationIsLive(), isIdleForInventoryRegistration else { return }
+        guard !autopilotInventoryAwaitingRegistration.isEmpty else {
+            autopilotInventoryAwaitingSince = nil
+            return
+        }
+        let since = autopilotInventoryAwaitingSince ?? now
+        autopilotInventoryAwaitingSince = since
+        let overdue = now - since >= Self.autopilotInventoryRegistrationMaxWait
+        guard inventoryRegistrationAllowed(overdue: overdue), await autopilotDownloadsAreIdle(),
+              await autopilotRegistrationIsLive(), inventoryRegistrationAllowed(overdue: overdue) else { return }
         let builds = autopilotInventoryAwaitingRegistration.sorted()
-        // Tried once; a refused request keeps waiting for the next idle tick.
+        // Tried once; a refused request keeps waiting for the next tick.
         guard requestAutopilotInventoryRegistration() else { return }
-        logger.info("Re-registering to report Autopilot inventory: \(builds.joined(separator: ", "))")
+        let wait = overdue ? " (no idle tick in time; draining first)" : ""
+        logger.info("Re-registering to report Autopilot inventory\(wait): \(builds.joined(separator: ", "))")
         autopilotInventoryAwaitingRegistration.removeAll()
+        autopilotInventoryAwaitingSince = nil
     }
 
-    /// Rechecked after every hop: consent, a reported set, no live lease, no
-    /// operation and no busy reason, so the reconnect interrupts nothing.
-    private var isIdleForInventoryRegistration: Bool {
+    /// Rechecked after every hop: consent, a reported set, no operation, no
+    /// transition and the background verification finished. Before the wait
+    /// is overdue, also no live lease and no in-flight work.
+    private func inventoryRegistrationAllowed(overdue: Bool) -> Bool {
         !autopilotInventoryAwaitingRegistration.isEmpty && autopilotConsented && !autopilotNeedsInventoryRefresh
-            && !modelAutopilotEnabled && autopilotCommand == nil && autopilotBusyReasons().isEmpty
+            && (overdue || !modelAutopilotEnabled) && autopilotCommand == nil
+            && autopilotBusyReasons().allSatisfy { overdue && $0 == .inflightWork }
             && autopilotCandidateVerificationIsIdle
     }
 

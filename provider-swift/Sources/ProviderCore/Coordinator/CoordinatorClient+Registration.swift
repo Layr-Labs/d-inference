@@ -74,6 +74,7 @@ extension CoordinatorClient {
         }
         if case .register(let sent) = registration {
             state.registeredAutopilotInventoryIDs = Set((sent.autopilotInventory ?? []).map(\.id))
+            state.registeredModelIDs = Set(sent.models.map(\.id))
         }
     }
 

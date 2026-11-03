@@ -1,6 +1,6 @@
 # Provider ↔ coordinator protocol messages
 
-> Last updated: 2026-10-30
+> Last updated: 2026-11-02
 
 Every JSON frame on the provider WebSocket (`GET /ws/provider`), with the Go
 type, the Swift type, and the presence rule for each field. Go is the canon in
@@ -1428,7 +1428,8 @@ registration inventory, and sends **no** `models_update`, because that would mak
 it ordinary and publicly routable. It never loads or advertises the build; an
 Autopilot operation may load it. With consent but downloads off, such a request
 is refused `model_not_selected` and never takes the ordinary path. The provider then re-registers once when idle (no busy reason,
-operation, live lease or other download)
+operation, live lease or other download), or after a bounded wait during which
+only in-flight work or a live lease deferred it,
 so `register.autopilot_inventory` carries the build's `ModelInfo`
 ([Autopilot set](../architecture/model-autopilot.md#the-autopilot-model-set)).
 

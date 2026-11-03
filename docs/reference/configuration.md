@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-10-31
+> Last updated: 2026-11-02
 
 Provider CLI and native-runtime environment variables, compiled defaults and reading symbols. Secrets are named, never valued. Unless specified otherwise, values are read at process start.
 
@@ -99,6 +99,10 @@ it and shutdown stays draining.
 Provider `auto_update`, `idle_timeout_mins`, schedule windows, and startup
 preloading retain their existing native configuration. The app writes them
 through the [versioned desktop API](desktop-control.md), using expected revisions.
+
+The Models page reads which models the network registered from the daemon state
+file (`registered_models`), not from configuration. It has no setting. See
+[model registration](desktop-control.md) in the desktop API.
 
 ## Runtime metallib snapshots
 

@@ -1,6 +1,6 @@
 # Desktop control API
 
-> Last updated: 2026-10-18
+> Last updated: 2026-11-02
 
 The Electron app controls the Swift CLI/backend through its authenticated local
 API. The backend owns provider operations, configuration, model state, credentials,
@@ -230,6 +230,22 @@ Each `Snapshot.models` entry reports `network`: whether the catalog lists it.
 The list is the catalog plus every model found on disk, so a local-only model
 can be `eligible` for Local only yet never be advertised or enrolled in
 Autopilot (`DesktopBackend.state`).
+
+Each entry also reports `registration`: what the live coordinator registration
+carries for the model (`DesktopBackend.modelRegistration`).
+
+| Value | Meaning |
+|---|---|
+| `routable` | In the registration's `models`. The network sends it requests. |
+| `autopilot` | In `autopilot_inventory` only. Autopilot can load it. |
+| `none` | In neither. The network does not know this Mac has it. |
+| `null` | Not known: the daemon is stopped, stale, Local only, not connected, or older. |
+
+The daemon writes the set to `registered_models` in its state file: the
+`register` sent on the live connection, plus each written `models_update`,
+replaced by an accepted `models_replace` (`ProviderState.registeredModels`).
+`serving` is different: it is the selection. The Models page warns when a selected
+or pool model is `none` (`ModelRegistration`).
 
 `Snapshot.autopilot` contains `configured` (consent recorded), `enabled`, `paused`,
 `selected` and `pinned`. Its `phase` is populated only by a fresh live daemon;

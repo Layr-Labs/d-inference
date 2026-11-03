@@ -35,6 +35,12 @@ an arbitrary prebuilt metallib or infer GPU qualification from compilation.
 Keep separate worktrees/output directories for independent native builds;
 never share an active Swift scratch path or another suite's GPU reservation.
 
+After changing provider authorization summaries, rebuild the provider test
+product before running the [authorization guidance tests](test.md#provider-authorization-guidance).
+They exercise shared production decisions without invoking status/doctor's
+host probes or native Apple operations; signed-release qualification remains
+separate.
+
 ## Cluster metadata check builds
 
 The worker capability and worker startup-argument checks link the actual
@@ -177,23 +183,36 @@ importing its certificate. See [release qualification](test.md#sdk-27-release-qu
 
 ## The `dev` branch
 
-The `dev` branch is master plus one commit. On it, a plain `swift build` is a
-DevNet build: `DARKBLOOM_RELEASE_ENVIRONMENT` defaults to `dev`, so the
-provider talks to `https://api.dev.darkbloom.dev` and nothing else. On master
-the default is `prod`. Set `DARKBLOOM_RELEASE_ENVIRONMENT=prod` to build a
-production binary from the `dev` branch.
+On the `dev` branch a plain `swift build` is a DevNet build:
+`DARKBLOOM_RELEASE_ENVIRONMENT` defaults to `dev`, so the provider talks to
+`https://api.dev.darkbloom.dev` and nothing else. On master the default is
+`prod`. Set `DARKBLOOM_RELEASE_ENVIRONMENT=prod` to build a production binary
+from the `dev` branch.
+
+CI enforces both defaults. The Release Integrity job runs
+`scripts/provider-build-default.py`: a pull request into master, or a push to
+master, fails unless the default is `prod`; one into or to `dev` fails unless
+it is `dev`. Every release of master runs the same check and stops before the
+build if the default is not `prod`.
 
 Use the `dev` branch to run a provider from source against the DevNet
-coordinator. Published dev providers do not come from this branch: a master
-push that changes the provider publishes one through `release-swift.yml`
+coordinator. A push to `dev` that changes the provider publishes the DevNet
+release through `.github/workflows/release-dev-branch.yml`
 (see `docs/operations/provider-release.md`).
 
 Rules for the branch:
 
-- Merge master into `dev` to update it. Never merge `dev` into master.
-- Never tag a commit on `dev`. Tags publish production.
-- Code changes go to master through a pull request, then reach `dev` by
-  merging master. Only the default-environment commit lives on `dev` alone.
+- Changes reach `dev` through pull requests into `dev`, which land as merge
+  commits, and through merges of master into `dev`.
+- `dev`'s changes reach master through pull requests into master.
+  [#1688](https://github.com/Layr-Labs/d-inference/pull/1688) merged a snapshot
+  branch of `dev` with a merge commit, for which an admin briefly allowed merge
+  commits on the squash-only master ruleset; 0.10.6's cluster changes reached
+  master as a squash-merged pull request of `dev` with master merged in.
+- Master keeps one commit of its own, `e9babca4`, which sets plain builds back
+  to `prod`. A merge of master into `dev` reverts that commit on its sync
+  branch, so `dev` keeps its DevNet default.
+- Never tag a commit on `dev`. Tags publish production, from master.
 
 `scripts/provider-release-cache.py` separates optimized and qualification Swift
 caches by compiler/SDK, architecture, absolute checkout/toolchain paths,
@@ -229,7 +248,8 @@ see [resource and release tooling checks](test.md#focused-tooling-checks).
 `.github/workflows/darkbloom-route.yml` chooses where read-only CI jobs run: a
 Darkbloom Sandbox when its plane grants one, otherwise the job's Blacksmith
 fallback. It runs on GitHub-hosted `ubuntu-24.04` with no token permissions or
-checkout. Each routed job runs on `fromJSON(needs.route.outputs.routes)['<lane>']`.
+checkout. Each routed job runs on `fromJSON(needs.route.outputs.routes)['<lane>']`,
+where the lane is the job's name.
 
 | Workflow | Routed jobs | Fallback |
 |---|---|---|
@@ -251,8 +271,9 @@ Release, signing, publication, model registration, review automation and
 component classifier and the `Provider Tests` gate run on `ubuntu-24.04`.
 
 The macOS jobs of `ci.yml` (`test-provider`, `test-provider-summary`,
-`test-provider-sdk` and `test-cluster-checks`) are not routed. They always run
-on `blacksmith-12vcpu-macos-27`. In 43 provider shard jobs on Darkbloom macOS
+`test-provider-sdk`, `test-cluster-checks`, `test-cluster`, `test-cluster-gpu`
+and `test-cluster-focused`) are not routed. They always run on
+`blacksmith-12vcpu-macos-27`. In 43 provider shard jobs on Darkbloom macOS
 sandboxes (2026-10-31 to 11-02), the median job took 17.3 min against 9.8 min
 on Blacksmith (362 jobs). The depth-1 checkout took 146 s at the median and up
 to 22 min, against 13 s on Blacksmith. The sandboxes found almost no build

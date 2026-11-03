@@ -8,9 +8,16 @@ import DarkbloomClusterSecurity
 /// saves the setup without one. Nothing another Mac or a file says is taken on trust: a build-pinned approval's digests
 /// must be this Mac's cluster runtime facts (`ClusterRuntimeApprovalFacts`, every digest of the release's block), a
 /// model approval's artifact must be the saved setup's (the member takes the runtime from its own setup), the roster
-/// must be the one this Mac countersigned when it paired (S17), and the saved setup's own checks
-/// (`ClusterNativeMemberAttachment.validate`) run as at every load.
+/// must be the one this Mac countersigned when it paired (S17), and the saved setup's own checks with the approval
+/// attached (`ClusterConfiguration.validate`, which runs `ClusterNativeMemberAttachment.validate`) run as at every load.
 enum ClusterApprovalAttachment {
+    /// The refusal of an approval beside unequal tensor-parallel shares: the member's registration names no shares
+    /// (`NativePairMemberRoster`), so such a setup could never register. A cluster served through Darkbloom is planned
+    /// with equal shares (`ClusterPlacementFlow.decide`). Short enough to reach the leader whole through the other
+    /// Mac's refusal (`ClusterSetupFailure` keeps 240 characters).
+    static let unequalTensorSharesServeLocally = "Unequal tensor-parallel shares serve local clusters only (the coordinator "
+        + "registration carries no shares yet); press m in `darkbloom cluster` to plan equal shares"
+
     /// The block digests of a build-pinned `approval` that are not this Mac's facts, by their contract names; `model`
     /// when the facts describe no entry for the approval's model. A model approval is never compared with facts.
     static func mismatches(_ approval: ClusterRuntimeApproval, facts: ClusterRuntimeApprovalFacts) -> [String] {
@@ -97,6 +104,9 @@ enum ClusterApprovalAttachment {
         guard ClusterApprovalLifetime.current(approval, now: now) else {
             throw ClusterConfigurationError.invalid("the approval expired at \(approval.notAfter)")
         }
+        guard configuration.tensorShares == nil else {
+            throw ClusterConfigurationError.invalid(unequalTensorSharesServeLocally)
+        }
         if approval.isModelApproval {
             // No build facts: the member's runtime is its own saved setup's, and a new build keeps the approval.
             guard approval.artifactSHA256 == saved.capability.artifactSHA256 else {
@@ -131,9 +141,12 @@ enum ClusterApprovalAttachment {
         let attachment = ClusterNativeMemberAttachment(ownerSHA256: owner, metallibPath: tools.metallib.path,
             resourceLibraryPath: tools.resourceLibrary.path, clusterApproval: approval, roster: paired.roster,
             memberPins: paired.pins, edges: edge.map { [$0] })
-        // The saved setup's own checks, as at every load: the approval names this setup's model, artifact and schedule
-        // (and a build-pinned one its runtime, capability and profile), and the roster's pins are its members in rank order.
-        try attachment.validate(configuration: configuration.replacingNativeMember(attachment), capability: saved.capability)
+        // Every check the save runs on the setup with the attachment, as at every load: the approval names this setup's
+        // model, artifact and schedule (and a build-pinned one its runtime, capability and profile), the roster's pins
+        // are its members in rank order, and nothing the setup carries is refused beside an approval (a tensor
+        // assistant serves local clusters only). So no part stops for an approval either Mac must refuse at the save.
+        try configuration.replacingNativeMember(attachment).validate(capability: saved.capability,
+                                                                    rawCapabilitySHA256: configuration.capabilitySHA256)
         return attachment
     }
 

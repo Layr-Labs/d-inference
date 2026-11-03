@@ -42,6 +42,9 @@ extension ClusterSetupOperations {
         /// An explicit test/qualification override. Normal setup discovers the
         /// catalog model's embedded assistant and pins the native quote.
         public var tensorAssistants: [String: ClusterQwenTensorAssistantPolicy] = [:]
+        /// How this run of `darkbloom cluster` was asked to serve (`darkbloom cluster local`); nil keeps the scope
+        /// the setup record saved. The onboarding plans for it (`OnboardingLive.planningScope`).
+        public var servingScope: ClusterServingScope? = nil
         public var privateImageQualification: Bool { privateMiMoImageQualification || privateGLMImageQualification }
 
         public init(providerConfiguration: URL, darkbloomExecutable: URL, sessionArguments: [String],
@@ -517,8 +520,11 @@ final class LiveContext: @unchecked Sendable {
     // MARK: - Planning
 
     /// `keeping`: the mode each model id keeps when it is planned again after a Darkbloom update (the service's
-    /// re-plan), as `ClusterSetupPlanning.decide` takes it; empty for every other plan.
-    func plan(peer: ClusterSetupReport, keeping: [String: ClusterGenerationMode] = [:]) -> ClusterSetupPlansResult {
+    /// re-plan), as `ClusterSetupPlanning.decide` takes it; empty for every other plan. `coordinator`: the setup will
+    /// serve through the coordinator (the onboarding's public scope): no speculative assistant under `auto`, and equal
+    /// tensor-parallel shares only. The six-step wizard's local sessions leave it off.
+    func plan(peer: ClusterSetupReport, keeping: [String: ClusterGenerationMode] = [:],
+              coordinator: Bool = false) -> ClusterSetupPlansResult {
         let input = pairInput()
         guard let description = input.description, let memberID = input.pair?.memberID,
               let local = description.members.first(where: { $0.id == memberID }) else {
@@ -555,6 +561,9 @@ final class LiveContext: @unchecked Sendable {
         let mtpMode: MTPMode
         do { mtpMode = try ConfigManager.loadOrDefaults(from: settings.providerConfiguration).backend.mtpMode }
         catch { return .failed("The provider configuration could not be read: \(clean(ClusterConsoleText.bounded(error)))") }
+        // A setup that serves through the coordinator carries no speculative assistant: under `auto` its plan quotes
+        // the ordinary target only.
+        let discovery = ClusterPlacementTensorAssistantSelection.discoveryMode(mtpMode, coordinator: coordinator)
         let readings = models.filter {
             settings.privateGLMImageQualification ? ClusterGLMOnboardingSelection.accepts($0)
                 : ClusterMiMoOnboardingSelection.accepts($0, qualifying: settings.privateMiMoImageQualification)
@@ -587,7 +596,7 @@ final class LiveContext: @unchecked Sendable {
             let manifest = ClusterSetupModelFolders.readManifest(directory.appendingPathComponent("manifest.json")) ?? Data()
             let assistantQuote: Result<ClusterPlacementTensorBatchQuote, ClusterSetupFailure>?
             var targetFallback: Result<ClusterPlacementTensorBatchQuote, ClusterSetupFailure>? = nil
-            var discoveredWidening: ClusterPlacementTensorBatchQuote?, fallbackWidening: ClusterPlacementTensorBatchQuote?
+            var discoveredWidths: [ClusterPlacementTensorBatchQuote] = [], fallbackWidths: [ClusterPlacementTensorBatchQuote] = []
             if !settings.privateImageQualification,
                case .success(let admittedValue) = capability,
                ClusterPlacementTensorBatchQuote.runtimeModelIDs.contains(admittedValue.record.runtimeModelID) {
@@ -597,6 +606,17 @@ final class LiveContext: @unchecked Sendable {
                         ? ClusterPlacementRequestLimits.chunkTokens(runtimeModelID: admitted.runtimeModelID,
                             artifactSHA256: admitted.artifactSHA256, layoutMaximum: measured.maximumChunkTokens,
                             capabilityMaximum: admitted.profile.maximumChunkTokens).tokens : description.chunkTokens
+                    // The same owner's complete quote at every wider width, each of the singleton's own request and
+                    // assistant: the plan saves the widest both Macs admit now, and the two-lane one also steers the
+                    // retained split (capacity changes keep the shares). A width the helper does not quote is not offered.
+                    func widths(of singleton: ClusterPlacementTensorBatchQuote?, mode: MTPMode) -> [ClusterPlacementTensorBatchQuote] {
+                        guard let singleton else { return [] }
+                        return ClusterPlacementBatchScope.tensorParallelWidths.compactMap { lanes in
+                            try? ClusterPlacementTensorAssistantSelection.readAutomatic(tool: tool, modelDirectory: directory,
+                                publicModelID: model.modelID, capability: admitted, mode: mode, chunkTokens: chunk,
+                                deadline: deadline(), lanes: lanes)
+                        }.filter { $0.request == singleton.request && $0.assistant?.policy == singleton.assistant?.policy }
+                    }
                     if mtpMode != .off, SpecDecArtifactFunnel.killSwitchEnabled(environment: ProcessInfo.processInfo.environment),
                        let policy = settings.tensorAssistants[model.modelID] {
                         assistantQuote = .success(try ClusterPlacementTensorAssistantSelection.read(tool: tool,
@@ -607,33 +627,28 @@ final class LiveContext: @unchecked Sendable {
                     } else {
                         let discovered = try ClusterPlacementTensorAssistantSelection.readAutomatic(tool: tool,
                             modelDirectory: directory, publicModelID: model.modelID, capability: admitted,
-                            mode: mtpMode, chunkTokens: chunk, deadline: deadline())
+                            mode: discovery, chunkTokens: chunk, deadline: deadline())
                         assistantQuote = discovered.map { .success($0) }
-                        // Capacity changes keep the shares, so the first widening's complete
-                        // quote steers the initial split; without it the choice is speed-only.
-                        if discovered != nil {
-                            discoveredWidening = try? ClusterPlacementTensorAssistantSelection.readAutomatic(tool: tool,
-                                modelDirectory: directory, publicModelID: model.modelID, capability: admitted,
-                                mode: mtpMode, chunkTokens: chunk, deadline: deadline(), lanes: 2)
-                        }
+                        discoveredWidths = widths(of: discovered, mode: discovery)
                         // Only a discovered assistant may give way to the ordinary target (`assistantOrTarget`).
                         if discovered?.assistant != nil {
+                            var target: ClusterPlacementTensorBatchQuote?
                             do {
-                                targetFallback = try ClusterPlacementTensorAssistantSelection.readAutomatic(tool: tool,
+                                target = try ClusterPlacementTensorAssistantSelection.readAutomatic(tool: tool,
                                     modelDirectory: directory, publicModelID: model.modelID, capability: admitted,
-                                    mode: .off, chunkTokens: chunk, deadline: deadline()).map { .success($0) }
+                                    mode: .off, chunkTokens: chunk, deadline: deadline())
+                                targetFallback = target.map { .success($0) }
                             } catch { targetFallback = .failure(ClusterSetupFailure(error)) }
-                            fallbackWidening = try? ClusterPlacementTensorAssistantSelection.readAutomatic(tool: tool,
-                                modelDirectory: directory, publicModelID: model.modelID, capability: admitted,
-                                mode: .off, chunkTokens: chunk, deadline: deadline(), lanes: 2)
+                            fallbackWidths = widths(of: target, mode: .off)
                         }
                     }
                 } catch { assistantQuote = .failure(ClusterSetupFailure(error)) }
             } else { assistantQuote = nil }
             return .init(model: model, layout: layout, capability: capability,
                 tokenizerFiles: ClusterSetupPlanning.tokenizerFiles(manifest: manifest), tensorAssistantQuote: assistantQuote,
-                targetFallbackQuote: targetFallback, tensorWideningQuote: discoveredWidening,
-                targetFallbackWideningQuote: fallbackWidening)
+                targetFallbackQuote: targetFallback, tensorWideningQuote: discoveredWidths.first { $0.lanes == 2 },
+                targetFallbackWideningQuote: fallbackWidths.first { $0.lanes == 2 },
+                tensorWidthQuotes: discoveredWidths, targetFallbackWidthQuotes: fallbackWidths)
         }
         // The profiles are kept for the serving leader's per-request route; the speed
         // records of requests this pair served join the measurements (the next plan).
@@ -647,7 +662,8 @@ final class LiveContext: @unchecked Sendable {
             link: description.members.count == 2
                 ? ClusterLinkProbeHistory.costs(homeDirectory: home, members: description.members.map(\.id)) ?? .unmeasured : .unmeasured,
             shareProbes: ClusterShareProbeHistory.read(ClusterShareProbeHistory.defaultFile(homeDirectory: home)),
-            peerMayReceive: settings.derivedPlacement && !settings.privateImageQualification, keeping: keeping)
+            peerMayReceive: settings.derivedPlacement && !settings.privateImageQualification, keeping: keeping,
+            coordinator: coordinator)
         lock.withLock { decisions = Dictionary(decided.map { ($0.option.model.folder, $0) }, uniquingKeysWith: { a, _ in a }) }
         // Models that can be chosen first, each group by size.
         let options = decided.map(\.option)

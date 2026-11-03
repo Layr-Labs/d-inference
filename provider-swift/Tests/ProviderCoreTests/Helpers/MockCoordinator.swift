@@ -457,6 +457,10 @@ public final class MockCoordinator: @unchecked Sendable {
         try await sendCoordinatorMessage(msg)
     }
 
+    public func pushPrefetchModel(modelId: String, priority: Int = 0) async throws {
+        try await sendCoordinatorMessage(.prefetchModel(.init(modelId: modelId, priority: priority)))
+    }
+
     /// Echo a member acceptance exactly as the coordinator sends it; the
     /// client's negotiation refuses any nonce that is not its own.
     public func pushClusterMemberAcceptance(nonce: String, providerID: String = "mock-provider") async throws {

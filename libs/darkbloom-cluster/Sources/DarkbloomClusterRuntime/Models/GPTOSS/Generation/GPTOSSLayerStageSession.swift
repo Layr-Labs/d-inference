@@ -97,12 +97,15 @@ final class GPTOSSLayerStageSession {
         } catch { try fail(error) }
     }
 
+    /// Encodes under the pipeline decode limits (`QwenLayerStageSession.decodeCommandBuffers`).
     func decode(_ token: Int, offset: Int, incoming: QwenLayerStageBoundary? = nil,
                 check: () throws -> Void) throws -> QwenLayerStageOutput {
         do {
             try requireOpen()
             let frame = try schedule.admitDecode(offset: offset)
-            return try perform(tokens: [token], frame: frame, incoming: incoming, check: check)
+            return try GPU.withCommandBufferLimits(QwenLayerStageSession.decodeCommandBuffers) {
+                try perform(tokens: [token], frame: frame, incoming: incoming, check: check)
+            }
         } catch { try fail(error) }
     }
 
@@ -291,10 +294,12 @@ extension GPTOSSLayerStageSession {
                 histories.append(pages)
             }
             let frontiers = sessions.map { $0.schedule.committedTokens }
-            let output = try GPTOSSBatchForward.decode(model: first.stage.model, head: first.stage.head,
-                stageIndex: first.stage.stageIndex, hiddenSize: first.hiddenSize,
-                vocabularySize: first.stage.vocabularySize, dtype: first.stage.residualDType,
-                tokens: tokens, residual: residual, histories: histories, check: check)
+            let output = try GPU.withCommandBufferLimits(QwenLayerStageSession.decodeCommandBuffers) {
+                try GPTOSSBatchForward.decode(model: first.stage.model, head: first.stage.head,
+                    stageIndex: first.stage.stageIndex, hiddenSize: first.hiddenSize,
+                    vocabularySize: first.stage.vocabularySize, dtype: first.stage.residualDType,
+                    tokens: tokens, residual: residual, histories: histories, check: check)
+            }
             for (session, frontier) in zip(sessions, frontiers) { try session.requireFrontier(after: frontier + 1) }
             for (session, frame) in zip(sessions, frames) { try session.schedule.commit(frame) }
             if first.stage.stageIndex == 0 {

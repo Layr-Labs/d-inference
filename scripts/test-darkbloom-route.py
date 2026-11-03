@@ -60,7 +60,8 @@ UNROUTED = ("release-swift.yml", "release-provider.yml", "release-dev-branch.yml
             "release-desktop.yml", "provider-signing-validation.yml", "register-model.yml",
             "threat-model-review.yml", "bedrock-smoke.yml", "claude.yml", "codex.yml")
 # The CI macOS jobs keep their literal Blacksmith label (build.md, CI Runner Routing).
-CI_MACOS_JOBS = ("test-provider", "test-provider-summary", "test-provider-sdk", "test-cluster-checks")
+CI_MACOS_JOBS = ("test-provider", "test-provider-summary", "test-provider-sdk", "test-cluster-checks",
+                 "test-cluster", "test-cluster-gpu", "test-cluster-focused")
 # Master and dispatched warming feed release builds, so only PRs read the route.
 RUNS_ON = {"warm": "${{ github.event_name == 'pull_request' && "
                    "fromJSON(needs.route.outputs.routes)['warm'] || 'blacksmith-12vcpu-macos-27' }}"}
@@ -116,6 +117,12 @@ def job_field(job, name):
 def needs(job):
     value = job_field(job, "needs") or ""
     return [name.strip() for name in value.strip("[]").split(",") if name.strip()]
+
+
+def matrix_shards(job):
+    """Return the job's `shard` matrix entries, or [] when it has none."""
+    matrix = re.search(r"(?m)^        shard: \[([0-9, ]+)\]$", job)
+    return [shard.strip() for shard in matrix.group(1).split(",")] if matrix else []
 
 
 def lane_lines(route_job):
@@ -479,10 +486,9 @@ class RouteWorkflowTests(unittest.TestCase):
                     condition = job_field(job, "if")
                     if name != "warm":
                         # A lane is requested exactly when its job runs, once per
-                        # matrix entry. `!cancelled()` cannot be evaluated in the
-                        # route job and is true there.
-                        matrix = re.search(r"(?m)^        shard: \[([0-9, ]+)\]$", job)
-                        jobs_requested = len(matrix.group(1).split(",")) if matrix else 1
+                        # matrix entry that reads it. `!cancelled()` cannot be
+                        # evaluated in the route job and is true there.
+                        jobs_requested = len(matrix_shards(job)) or 1
                         expected_count = None
                         if condition is not None:
                             inner = condition.removeprefix("${{ ").removesuffix(" }}")
@@ -518,7 +524,8 @@ class RouteWorkflowTests(unittest.TestCase):
     def test_router_accepts_every_caller_configuration(self):
         script = route_step()
         for filename in ROUTED:
-            text = "\n".join(lane_lines(jobs(self.texts[filename])["route"])) + "\n"
+            workflow = jobs(self.texts[filename])
+            text = "\n".join(lane_lines(workflow["route"])) + "\n"
             for outcome in ("1", "0"):
                 # Evaluate each `${{ condition && N || 0 }}` count both ways.
                 lanes = re.sub(r"\$\{\{ .+? && (\d+) \|\| 0 \}\}",
@@ -528,7 +535,7 @@ class RouteWorkflowTests(unittest.TestCase):
                         script, Path(work), LANES=lanes, ROUTING="", PLANE_URL="", EVENT_NAME="push",
                         HEAD_REPOSITORY="", REPOSITORY="Layr-Labs/d-inference", RUN_ID="1", RUN_ATTEMPT="1")
                     self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-                    self.assertEqual(routes, [{name: fallback for name, (_, fallback, _)
+                    self.assertEqual(routes, [{lane: fallback for lane, (_, fallback, _)
                                                in ROUTED[filename].items()}])
 
     def test_release_and_credentialed_workflows_keep_literal_runners(self):

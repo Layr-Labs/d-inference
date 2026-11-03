@@ -102,6 +102,8 @@ final class HistoryBatchTestSession: IndependentHistoryBatchSession {
     var frames: [QwenLayerStageFrame] = [], history: [Int] = []
     var committedTokens: Int { history.count }
     var isClosed = false, isFailed = false, failCleanup = false
+    /// Qwen TP driver tests: false stands for an assisted row, which never folds control.
+    var plainSelection = true
     var nextFrame: QwenLayerStageFrame? { try? request.frame(sequence: frames.count) }
     init(_ request: QwenLayerStageGenerationRequest) { self.request = request }
     static func next(_ history: [Int]) -> Int { (history.reduce(0, +) + history.count * 7) % 64 }
@@ -125,7 +127,16 @@ final class HistoryBatchTestSession: IndependentHistoryBatchSession {
         history += tokens; frames.append(frame)
     }
     func finishGeneration(_ reason: QwenLayerStageGenerationFinishReason, selectedTokenCount: Int, lastTokenID: Int) throws {
-        guard lastTokenID == Self.next(history), selectedTokenCount == frames.count - request.prefillFrameCount + 1 else {
+        try finishGeneration(reason, selectedTokenCount: selectedTokenCount, lastTokenID: lastTokenID, discarded: 0)
+    }
+    /// `discarded`: decode forwards whose selection a client stop dropped
+    /// (the last selected token kept is then the input of the forward after it).
+    func finishGeneration(_ reason: QwenLayerStageGenerationFinishReason, selectedTokenCount: Int, lastTokenID: Int,
+                          discarded: Int) throws {
+        let decoded = frames.count - request.prefillFrameCount
+        guard discarded == 0 || (reason == .clientStop && discarded == 1),
+              lastTokenID == (discarded == 0 ? Self.next(history) : history[history.count - discarded]),
+              selectedTokenCount == decoded + 1 - discarded else {
             throw ProbeError("Test finish differs from committed history")
         }
         guard !failCleanup else { throw ProbeError("Injected native retirement failure") }

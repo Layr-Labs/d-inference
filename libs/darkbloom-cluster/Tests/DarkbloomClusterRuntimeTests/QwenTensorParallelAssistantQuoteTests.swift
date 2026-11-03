@@ -85,7 +85,8 @@ struct QwenTensorParallelAssistantQuoteTests {
             chunkTokens: 16, lanes: 1, allocationBound: bound)
         let native = try QwenTensorParallelBatchBudget.derive(geometry: family.geometry, plan: plan,
             tensors: tensors, maximumTokens: family.profile.maximumContextTokens,
-            chunkSize: family.profile.maximumChunkTokens, lanes: 1, paged: true, allocationBound: bound)
+            chunkSize: family.profile.maximumChunkTokens, lanes: 1, paged: true,
+            promptTokens: family.profile.maximumPromptTokens, allocationBound: bound)
         #expect(quote.assistant == nil && quote.lanes == 1)
         #expect(quote.allowance == native.allowance && quote.perLaneStateBytes == native.perLaneStateBytes)
         #expect(quote.sharedBytesExcludingCollectives == native.sharedBytesExcludingCollectives)

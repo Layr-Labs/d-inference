@@ -15,14 +15,14 @@ struct QwenTensorParallelBatchBudget {
     let sharedBytesExcludingCollectives: Int
     let batchProjectionConstantBytes: Int
     let pagedPoolSlackBytes: Int
-    /// Paged: one full-history gather bank, shared (one prompt frame per step).
+    /// Paged: one full-history gather bank, shared (one prompt step at a time).
     let promptGatherBytes: Int
     let prefix: QwenTensorParallelBatchPrefixBudget
     let allowance: ClusterTensorParallelRequestAllowance
 
     static func derive(geometry g: QwenLongPrefillBudgetGeometry, plan: QwenTensorParallelPlan,
                        tensors: [QwenDenseCanonicalTensor], maximumTokens: Int, chunkSize: Int,
-                       lanes: Int, paged: Bool, rank: Int? = nil,
+                       lanes: Int, paged: Bool, rank: Int? = nil, promptTokens: Int? = nil,
                        allocationBound: (Int) throws -> Int) throws -> Self {
         guard (1...8).contains(lanes) else {
             throw ProbeError("Qwen TP batch budget requires 1...8 lanes")
@@ -43,7 +43,7 @@ struct QwenTensorParallelBatchBudget {
             // The full-history gather bank is a prompt frame's transient: decode
             // and verify windows attend the pages in place (the fused paged
             // decode kernel, one query column at a time), and the batch driver
-            // runs at most one prompt frame per step, so one bank serves every
+            // runs one lane's prompt step at a time, so one bank serves every
             // lane (`QwenTensorParallelBatchSessionTests.fullHistoryGatherIsOne
             // PromptFramesTransient` measures both). The scalar floor's F32 KV
             // term (two BF16 banks) is replaced by the lane's own BF16 page
@@ -69,10 +69,13 @@ struct QwenTensorParallelBatchBudget {
         }
         // Row-M1 partials cause a second live FP32 scales/offsets bank while
         // singleton/prefill's ConstantArrayCastCache retains its first bank.
-        // The rank's own columns of both banks, and prefix copies of its own
-        // heads; without a rank, full canonical bytes cover either rank.
+        // The rank's own columns of both banks, and each lane's prefix capture
+        // of its own heads (`promptTokens`: the profile's longest prompt, or a
+        // request's own); without a rank, full canonical bytes cover either
+        // rank. The prefix memory tier is not charged here.
         let prefix = try QwenTensorParallelBatchPrefixBudget.derive(geometry: local,
-            maximumTokens: maximumTokens, allocationBound: allocationBound)
+            maximumTokens: maximumTokens, promptTokens: promptTokens, chunkSize: chunkSize,
+            allocationBound: allocationBound)
         perLaneState = try sum([perLaneState, prefix.captureBytes])
         let batchConstants = scalar.projectionConstantBytes
         let logits = try bound(product([lanes, plan.vocabularySize, 4]), count: 3)
@@ -87,14 +90,18 @@ struct QwenTensorParallelBatchBudget {
             bound(product([plan.expertsPerToken, plan.hiddenSize, 4]), count: lanes),
             bound(product([plan.hiddenSize, 4]), count: lanes),
         ]) : 0)
+        // A merged prompt step's further frames in flight (one prompt step at a time, shared).
+        let wavefront = try QwenTensorParallelPromptWavefront.inFlightBytes(plan: plan, chunkTokens: chunkSize,
+            allocationBound: allocationBound)
         let shared = try sum([scalar.fusionBytes, transient, logits,
-            scalar.projectionConstantBytes, batchConstants, poolSlack, prefix.residentBytes, packing, promptGather])
+            scalar.projectionConstantBytes, batchConstants, poolSlack, packing, promptGather, wavefront])
         // A one-token batch can gather more bytes than a short prompt frame.
-        // Control limbs and retirement votes also travel in the sealed codec.
+        // Control limbs and retirement votes also travel in the sealed codec,
+        // the next step's limbs after a greedy selection's six words a row.
         let payload = max(scalar.allowance.maximumCollectivePayloadBytes,
             try product([lanes, plan.maximumPartialBytesPerToken]),
             try product([lanes, plan.vocabularySize, 4]),
-            try product([QwenTensorParallelBatchWire.words, 4]))
+            try product([QwenTensorParallelBatchWire.words + 6 * lanes, 4]))
         let frame = try sum([payload, QwenTensorParallelSealCodec.frameOverhead])
         let allowance = try ClusterTensorParallelRequestAllowance(maximumContextTokens: maximumTokens,
             maximumChunkTokens: chunkSize,

@@ -844,7 +844,34 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         self.assertEqual(rust_steps, [])
         self.assertNotIn("rust-key:", action)
         self.assertNotIn("rust-cache-hit:", action)
-        self.assertEqual(sum("actions/cache/save@" in step for step in steps), 2)
+        self.assertEqual(sum("actions/cache/save@" in step for step in steps), 3)
+
+    def test_composite_restores_swiftpm_repositories_per_lane_and_runner_layout(self):
+        steps = step_blocks(ACTION.read_text(), indent=4)
+        by_id = {field(step, "id", indent=6): step for step in steps if field(step, "id", indent=6)}
+        names = [field(step, "name", indent=4) for step in steps]
+        restore = by_id["spm-repos"]
+        save = next(step for step in steps if field(step, "name", indent=4) == "Save SwiftPM repositories")
+        # actions/cache archives this home path relative to the workspace, so
+        # the key binds the runner layout as well as the lane and the pins.
+        self.assertIn('echo "home-layout=$(printf \'%s\\n\' "$HOME" "$GITHUB_WORKSPACE" | shasum -a 256',
+                      by_id["keys"])
+        self.assertIn("command -v zstd >/dev/null && echo zstd || echo gzip", by_id["keys"])
+        prefix = "spm-repos-v1-${{ runner.os }}-${{ steps.keys.outputs.home-layout }}-${{ inputs.lane }}-"
+        for step in (restore, save):
+            self.assertEqual(field(step, "path", indent=8), "~/Library/Caches/org.swift.swiftpm/repositories")
+        self.assertEqual(field(restore, "uses", indent=6), CACHE_RESTORE)
+        self.assertEqual(field(restore, "key", indent=8),
+                         prefix + "${{ hashFiles('**/Package.resolved', '!**/.build/**') }}")
+        self.assertEqual(field(restore, "restore-keys", indent=8), prefix)
+        self.assertLess(steps.index(restore), steps.index(by_id["provider-build"]))
+        self.assertLess(steps.index(restore), steps.index(by_id["sdk-build"]))
+        self.assertEqual(field(save, "uses", indent=6), CACHE_SAVE)
+        self.assertEqual(field(save, "key", indent=8), "${{ steps.spm-repos.outputs.cache-primary-key }}")
+        self.assertEqual(field(save, "if", indent=6),
+                         "${{ !cancelled() && " + MASTER_PUSH + " && steps.timestamps.outcome == 'success' "
+                         "&& steps.spm-repos.outputs.cache-hit != 'true' }}")
+        self.assertGreater(names.index("Save SwiftPM repositories"), names.index("Record timestamps for successfully built sources"))
 
 
 if __name__ == "__main__":

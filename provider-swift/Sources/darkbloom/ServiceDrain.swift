@@ -38,9 +38,7 @@ enum ServiceDrain {
                       accepts: (ProcessIdentity) -> Bool = { _ in true },
                       withConfigurationChange: (_ setup: () throws -> Void) throws -> Void = { try $0() }) async throws {
         let identity = WatchdogProbe.providerIdentity(daemonState: state, launchSnapshotProcess: LaunchAgent.launchSnapshot()?.process)
-        if let identity, identity.isCurrent(), !accepts(identity) {
-            throw ValidationError("Provider process \(identity.pid) is not the provider service's process. No process or recovery setting was changed.")
-        }
+        try requireAccepted(identity, accepts)
         if let identity, identity.isCurrent(), !options.force {
             guard state?.processIdentity == identity, state?.lifecycle != nil else {
                 throw ValidationError("This running provider does not expose graceful-drain control. Upgrade it, or explicitly use --force to interrupt it.")
@@ -88,10 +86,13 @@ enum ServiceDrain {
 
     /// Stop only a confirmed drained owner. A PID file alone never authorizes
     /// signalling a process, and ordinary replacement never escalates to SIGKILL.
-    static func stopDrainedProvider(unloadService: Bool = true) async throws {
+    /// `accepts`: as for `drain`; any other running provider is refused before it is signalled.
+    static func stopDrainedProvider(unloadService: Bool = true,
+                                    accepts: (ProcessIdentity) -> Bool = { _ in true }) async throws {
         let launchIdentity = LaunchAgent.launchSnapshot()?.process
         let identity = WatchdogProbe.providerIdentity(daemonState: DaemonStateFile.read(),
                                                       launchSnapshotProcess: LaunchAgent.launchSnapshot()?.process)
+        try requireAccepted(identity, accepts)
         // Restart must keep the service loaded until restartAfterDrain reloads
         // its plist.
         if !unloadService && identity == launchIdentity { return }
@@ -107,6 +108,13 @@ enum ServiceDrain {
         guard !identity.isCurrent() else {
             throw ValidationError("The drained provider is still shutting down. No replacement was started. Retry or explicitly use --force.")
         }
+    }
+
+    /// A running provider the caller did not mean is refused: it is neither drained nor signalled.
+    static func requireAccepted(_ identity: ProcessIdentity?, _ accepts: (ProcessIdentity) -> Bool,
+                                isCurrent: (ProcessIdentity) -> Bool = { $0.isCurrent() }) throws {
+        guard let identity, isCurrent(identity), !accepts(identity) else { return }
+        throw ValidationError("Provider process \(identity.pid) is not the provider service's process; it was not drained or signalled.")
     }
 
     static func prepareForegroundReplacement(options: DrainOptions) async throws {

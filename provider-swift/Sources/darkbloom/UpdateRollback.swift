@@ -212,14 +212,22 @@ struct UpdateRollback {
     /// service is not restarted: its restart would signal that process.
     struct ForeignStart: Error, CustomStringConvertible {
         let owner: String
-        /// The restored version when the swap had completed.
-        var restored: String?
+        /// The swap's result when the other process was found after it; nil when found before it.
+        var swapped: Result<String, Error>?
         var description: String {
-            let what = restored.map { "Rolled back to v\($0), but \(owner.prefix(1).lowercased() + owner.dropFirst()) started outside "
-                + "the provider service during the swap." }
-                ?? "\(owner) started outside the provider service while it drained. Nothing was swapped."
+            let what: String
+            switch swapped {
+            case nil:
+                what = "\(owner) started outside the provider service while it drained. Nothing was swapped."
+            case .success(let restored)?:
+                what = "Rolled back to v\(restored), but \(owner.lowercased()) started outside the provider service "
+                    + "during the swap."
+            case .failure(let error)?:
+                what = "\(owner) started outside the provider service during the swap, and the rollback did not "
+                    + "complete: \(error)."
+            }
             return what + " The service stays drained with automatic restart off; stop that process, then run "
-                + "`\(UpdateRollback.cli) restart`" + (restored == nil ? " or `\(UpdateRollback.cli) update --rollback` again." : ".")
+                + "`\(UpdateRollback.cli) restart`" + (swapped == nil ? " or `\(UpdateRollback.cli) update --rollback` again." : ".")
         }
     }
 
@@ -231,8 +239,7 @@ struct UpdateRollback {
             return hold
         case .busy(let owner):
             if let drained, owner?.processIdentity == drained { return nil }
-            throw ForeignStart(owner: owner.map { "A provider (pid \($0.pid))" } ?? "A provider",
-                               restored: try? swapped.get())
+            throw ForeignStart(owner: owner.map { "A provider (pid \($0.pid))" } ?? "A provider", swapped: swapped)
         }
     }
 
@@ -325,12 +332,7 @@ extension UpdateRollback.Host {
             restart: { drained, startsHold in
                 // A held instance lock means no provider runs: there is nothing to stop.
                 if startsHold == nil {
-                    let target = WatchdogProbe.providerIdentity(daemonState: DaemonStateFile.read(),
-                                                                launchSnapshotProcess: LaunchAgent.launchSnapshot()?.process)
-                    if let target, target.isCurrent(), target != drained {
-                        throw ValidationError("provider process \(target.pid) is not the drained service's process; it was not signalled")
-                    }
-                    try await ServiceDrain.stopDrainedProvider(unloadService: false)
+                    try await ServiceDrain.stopDrainedProvider(unloadService: false, accepts: { $0 == drained })
                 }
                 startsHold?.release()
                 try LaunchAgent.restartAfterDrain()

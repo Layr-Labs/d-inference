@@ -314,6 +314,41 @@ struct UpdateRollbackCommandTests {
         #expect(try install.liveBinary() == "1.0.0-darkbloom")
     }
 
+    @Test("a provider that takes the instance lock during the swap is not signalled, and the service is not restarted")
+    func foreignStartDuringTheSwap() async throws {
+        let install = try RollbackInstall()
+        defer { install.remove() }
+        let service = ProcessIdentity(pid: 4242, startTimeMicros: 7)
+        let foreign = ProcessIdentity(pid: 9, startTimeMicros: 1)
+        func owner(_ identity: ProcessIdentity) -> UpdateProcessLock.Owner {
+            .init(pid: identity.pid, processIdentity: identity, operation: "provider-instance", acquiredAt: 1)
+        }
+        // At the swap the drained service holds its lock; after it, another provider does.
+        let host = RecordingHost(install: install, loaded: true, serviceProcess: service,
+                                 scriptedStarts: [.busy(owner(service)), .busy(owner(foreign))])
+
+        let error = await #expect(throws: UpdateRollback.Failure.self) { try await install.rollback(host: host, yes: true) }
+
+        #expect(error?.description.hasPrefix("Rolled back to v1.0.0, but a provider (pid 9) started outside the provider service during the swap.") == true)
+        #expect(host.events == ["drain"], "no restart: it would signal pid 9")
+        #expect(try install.liveBinary() == "1.0.0-darkbloom")
+        #expect(try install.isFree(install.clusterServiceLock))
+        try install.updater.beginUpdateSession(operation: "lease-check").release()
+    }
+
+    @Test("the drain and the relaunch refuse a running provider they were not told of, and act on the one they were")
+    func drainAndRelaunchTouchOnlyTheDrainedProcess() throws {
+        let service = ProcessIdentity(pid: 4242, startTimeMicros: 7)
+        let other = ProcessIdentity(pid: 9, startTimeMicros: 1)
+        let accepts = { (identity: ProcessIdentity) in identity == service }
+        #expect(throws: ValidationError.self) { try ServiceDrain.requireAccepted(other, accepts, isCurrent: { _ in true }) }
+        try ServiceDrain.requireAccepted(service, accepts, isCurrent: { _ in true })
+        try ServiceDrain.requireAccepted(other, accepts, isCurrent: { _ in false })
+        try ServiceDrain.requireAccepted(nil, accepts)
+        // The default of every other caller accepts any provider.
+        try ServiceDrain.requireAccepted(other, { _ in true }, isCurrent: { _ in true })
+    }
+
     @Test("an install that changed during the prompt is refused before the drain")
     func planChangedDuringThePromptIsRefusedBeforeTheDrain() async throws {
         let install = try RollbackInstall()
@@ -441,6 +476,7 @@ private final class RecordingHost: @unchecked Sendable {
         var providerHoldsInstanceLock = false
         var drained: ProcessIdentity?
         var restartHeldStartsOut = false
+        var scriptedStarts: [UpdateProcessLock.Attempt] = []
     }
 
     private let log: Log
@@ -459,12 +495,14 @@ private final class RecordingHost: @unchecked Sendable {
     init(install: RollbackInstall, loaded: Bool, foreground: Bool = false, inCluster: Bool = false, canAsk: Bool = true,
          answer: String? = nil, providerOnceAnswered: UpdateRollback.Provider? = nil,
          inClusterOnceAnswered: Bool? = nil, providerHoldsInstanceLock: Bool = false,
-         serviceProcess: ProcessIdentity? = nil, onceAnswered: @escaping () throws -> Void = {},
+         serviceProcess: ProcessIdentity? = nil, scriptedStarts: [UpdateProcessLock.Attempt] = [],
+         onceAnswered: @escaping () throws -> Void = {},
          beforeDrain: @escaping () throws -> Void = {}) {
         let log = Log()
         log.provider = loaded ? .service : foreground ? .foreground : .stopped
         log.inCluster = inCluster
         log.providerHoldsInstanceLock = providerHoldsInstanceLock
+        log.scriptedStarts = scriptedStarts
         self.log = log
         let record = { (event: String) in log.lock.withLock { log.events.append(event) } }
         host = UpdateRollback.Host(
@@ -476,6 +514,9 @@ private final class RecordingHost: @unchecked Sendable {
             provider: { log.lock.withLock { log.provider } },
             serviceProcess: { serviceProcess },
             holdProviderStartsOut: {
+                if let next = log.lock.withLock({ log.scriptedStarts.isEmpty ? nil : log.scriptedStarts.removeFirst() }) {
+                    return next
+                }
                 guard !log.lock.withLock({ log.providerHoldsInstanceLock }) else { return .busy(nil) }
                 return try UpdateProcessLock.attempt(at: install.providerInstanceLock, operation: UpdateRollback.operation)
             },

@@ -200,6 +200,7 @@ struct DistributedCBv2DeadlineTests {
         _ = await distributedCollect(first)
         let second = try engine.submit(distributedTestRequest(maxTokens: 1))
         oldTermination?(.cancelled)
+        engine.onQueue {} // the termination reaches the queue without waiting for it
         #expect(owner.last.cancelCount == 0)
         owner.last.send(.token(5))
         owner.last.acknowledge()

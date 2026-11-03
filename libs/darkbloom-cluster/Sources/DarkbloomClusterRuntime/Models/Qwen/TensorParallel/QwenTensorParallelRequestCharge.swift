@@ -19,9 +19,10 @@ import MLX
 ///   history and gathers;
 /// - the workspaces every lane shares, at the longest context any held
 ///   request has and never below LOAD's: the full-history gather bank of one
-///   prompt frame (the batch driver runs at most one a step), the frame's
-///   attention scores and the decode and verify transients grow with the
-///   context; the pool slack, logits and casts do not.
+///   prompt step (the batch driver runs one lane's prompt step at a time), the
+///   frame's attention scores and the decode and verify transients grow with
+///   the context; the pool slack, logits, casts and a merged prompt step's
+///   further frames in flight (`QwenTensorParallelPromptWavefront.inFlightBytes`) do not.
 ///
 /// The pages themselves grow with the request (`CBv2OwnedRequestState.growReservation`);
 /// the charge is the whole request's, admitted once at reservation and held

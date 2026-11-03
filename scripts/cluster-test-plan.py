@@ -116,7 +116,6 @@ SELECTIONS = (
         "deepRestoresEqualColdPrefillOnBothRanks",
     )),
     Selection("qwen-tp-batch-gpu-paged", "blocking", 3, {"QWEN_TP_BATCH_GPU": "1", "QWEN_TP_BATCH_KV": "paged"}, tests=(
-        "fullHistoryGatherIsOnePromptFramesTransient",
         "cohortSurvivorKeepsOnlyItsOwnRows",
         "routedExpertCapacityOneAndTwoKeepExactPagedLogitsAndHistory",
         "capacityOneAndTwoKeepExactPagedLogitsAndHistory",
@@ -134,7 +133,6 @@ SELECTIONS = (
         "siluMultiplyEqualsTheUnfusedChain",
         "sigmoidGateEqualsTheUnfusedChain",
         "cachedGatedDeltaScalesEqualFreshOnes",
-        "transposedCPUSumWaitsBeforeTheCopyOnGPU",
     )),
     Selection("qwen-tp-moe-gpu", "blocking", 3, {"QWEN_TP_MOE_GPU": "1", "QWEN_TP_MOE_GPU_DIAG": "1"}, tests=(
         "packedSharedExpertCollectiveIsBitIdenticalOnTwoGPURanks",
@@ -148,6 +146,21 @@ SELECTIONS = (
         "aServingStageRestoresFromTheSSDExactly",
         "aServingStageRestoresFromABalancedRecord",
     )),
+    Selection("glm53-paged-kv", "blocking", 2, {"GLM53_PAGED_KV": "1"}, tests=(
+        "pagedRequestsDecideAndHoldWhatContiguousOnesDo",
+        "pagedMediaRequestsDecideAndHoldWhatContiguousOnesDo",
+    )),
+    Selection("glm53-row-invariance", "blocking", 2, {"GLM53_ROW_INVARIANCE": "1"}, tests=(
+        "roundsAreEachRequestsOwnRound",
+    )),
+    Selection("glm53-depth-invariance", "blocking", 2, {"GLM53_DEPTH_INVARIANCE": "1"}, tests=(
+        "prefillIsTheSameWithAndWithoutTheSwitch",
+        "unpaddedLastRoundsStayOneRowWindows",
+    )),
+    Selection("glm53-window-census", "blocking", 2, {"GLM53_WINDOW_CENSUS": "1"}, tests=(
+        "sublayerCensus",
+        "projectionRowCensus",
+    )),
     Selection("qwen-tp-real-geometry-gpu", "nonblocking", 1, {"QWEN_TP_REAL_GEOMETRY_GPU": "1"}, tests=(
         "rowsEqualTheirSoloStepsAndWindowPositionsAtRealWidths",
     )),
@@ -160,24 +173,18 @@ SELECTIONS = (
         "gatedDeltaQKNormEqualsTheUnfusedOps",
         "cpuStreamSumIsBitwiseOnGPU",
         "chainWithCPUHopsIsBitwiseOnGPU",
+        "transposedCPUSumWaitsBeforeTheCopyOnGPU",
     )),
-    Selection("glm53-paged-kv", "nonblocking", 2, {"GLM53_PAGED_KV": "1"}, tests=(
-        "pagedRequestsDecideAndHoldWhatContiguousOnesDo",
-        "pagedMediaRequestsDecideAndHoldWhatContiguousOnesDo",
+    Selection("qwen-tp-batch-gpu-paged-transient", "nonblocking", 2,
+              {"QWEN_TP_BATCH_GPU": "1", "QWEN_TP_BATCH_KV": "paged"}, tests=(
+        "fullHistoryGatherIsOnePromptFramesTransient",
     )),
-    Selection("glm53-row-invariance", "nonblocking", 2, {"GLM53_ROW_INVARIANCE": "1"}, tests=(
-        "roundsAreEachRequestsOwnRound",
-    )),
-    Selection("glm53-depth-invariance", "nonblocking", 2, {"GLM53_DEPTH_INVARIANCE": "1"}, tests=(
+    Selection("glm53-depth-invariance-widths", "nonblocking", 2, {"GLM53_DEPTH_INVARIANCE": "1"}, tests=(
         "everyDepthAndKeptPatternIsTheDepthTwoDecode",
         "loadPolicyLanesAreEachRequestAloneAtDepthTwo",
-        "prefillIsTheSameWithAndWithoutTheSwitch",
-        "unpaddedLastRoundsStayOneRowWindows",
     )),
-    Selection("glm53-window-census", "nonblocking", 2, {"GLM53_WINDOW_CENSUS": "1"}, tests=(
+    Selection("glm53-window-width-census", "nonblocking", 2, {"GLM53_WINDOW_CENSUS": "1"}, tests=(
         "windowWidthCensus",
-        "sublayerCensus",
-        "projectionRowCensus",
     )),
     Selection("paged-verify-bench", "nonblocking", 2, {"DARKBLOOM_PAGED_BENCH": "1"}, tests=(
         "verifyAndPrefillAttention",

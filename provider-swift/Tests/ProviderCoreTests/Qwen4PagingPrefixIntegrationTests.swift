@@ -46,7 +46,14 @@ struct Qwen4PagingPrefixIntegrationTests {
         text.sharedExpertIntermediateSize = 32
         text.moeIntermediateSize = 32
         text.mropeSection = [2, 1, 1]
-        return Qwen4ExpTextModel(text)
+        // Evaluate the random weights, as a loaded model's are. The compiled
+        // hyper-connection trace captures the weights; unevaluated, MLX's
+        // recursive compile walks their graph into the process-global random
+        // key chain, which every earlier unevaluated draw in the test process
+        // lengthens, and overflows the test thread's stack (SIGBUS).
+        let model = Qwen4ExpTextModel(text)
+        eval(model)
+        return model
     }
 
     private func preparation(

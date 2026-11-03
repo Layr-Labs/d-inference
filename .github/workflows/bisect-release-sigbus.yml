@@ -62,3 +62,20 @@ jobs:
           lane: qualification
           environment: dev
           shard: 1/5
+      - name: Collect crash reports
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/crash"
+          for d in "$HOME/Library/Logs/DiagnosticReports" /Library/Logs/DiagnosticReports; do
+            [ -d "$d" ] && find "$d" -type f -mmin -90 \( -name '*.ips' -o -name '*.crash' \) -exec cp {} "$RUNNER_TEMP/crash/" \; || true
+          done
+          ls -la "$RUNNER_TEMP/crash"
+          for f in "$RUNNER_TEMP"/crash/*; do [ -f "$f" ] && head -c 20000 "$f"; done || true
+      - name: Retain crash reports
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: bisect-crash-${{ matrix.name }}
+          path: ${{ runner.temp }}/crash
+          if-no-files-found: ignore

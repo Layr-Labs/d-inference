@@ -369,8 +369,10 @@ struct MiMoTensorParallelResidentTests {
 
     /// What the text row's capability declares of each mode is what its loads run: no mode keeps prompt prefixes
     /// (paged or handed-off histories), only the plain pipeline takes lanes, the speculative pipeline decodes in
-    /// rounds, and tensor parallel serves one lane without rounds and adds logprobs. The provider's setup check plans
-    /// with these values (`PlacementSetupCheck.mimoFeatures`).
+    /// rounds, and tensor parallel serves one lane in rounds (the installed owner passes every MiMo tensor-parallel
+    /// launch `ClusterMiMoTensorParallel.speculativeDepth`) and adds logprobs. So tensor parallel keeps every
+    /// feature of the speculative pipeline and of the compact-decode pipeline, and drops only the plain pipeline's
+    /// lanes. The provider's setup check plans with these values (`PlacementSetupCheck.mimoFeatures`).
     @Test func capabilityDeclaresWhatEachTextModeKeeps() throws {
         let modes: [ClusterGenerationMode] = [.pipeline, .pipelineCompactDecode, .phaseSplit, .tensorParallel, .pipelineMTP]
         let features = try MiMoResidentCapabilityMetadata.servingFeatures(modes)
@@ -378,8 +380,17 @@ struct MiMoTensorParallelResidentTests {
             .init(promptPrefixReuse: false, ssdPrefixTier: false, speculativeRounds: rounds, maximumLanes: lanes, logprobs: logprobs)
         }
         #expect(features == [.pipeline: entry(lanes: 8), .pipelineCompactDecode: entry(lanes: 1), .phaseSplit: entry(lanes: 1),
-                             .tensorParallel: entry(lanes: 1, logprobs: true), .pipelineMTP: entry(lanes: 1, rounds: true)])
-        #expect(features[.pipelineMTP]?.dropped(by: MiMoTensorParallelResidentRuntime.servingFeatures) == ["speculative (MTP) rounds"])
+                             .tensorParallel: entry(lanes: 1, rounds: true, logprobs: true), .pipelineMTP: entry(lanes: 1, rounds: true)])
+        let tensorParallel = MiMoTensorParallelResidentRuntime.servingFeatures
+        #expect(ClusterMiMoTensorParallel.speculativeDepth == MiMoMTPTerms.standard.depth)
+        #expect(features[.pipelineMTP]?.dropped(by: tensorParallel) == [])
+        #expect(features[.pipelineCompactDecode]?.dropped(by: tensorParallel) == [])
+        #expect(features[.phaseSplit]?.dropped(by: tensorParallel) == [])
+        #expect(features[.pipeline]?.dropped(by: tensorParallel) == ["batch lanes up to 8 (it serves 1)"])
+        let mimo = MiMoRegisteredModel.v26FlashMOPD.rawValue
+        #expect(ClusterMiMoTensorParallel.workerArguments(runtimeModelID: mimo, mode: .tensorParallel) == ["--mtp-depth", "2"])
+        #expect(ClusterMiMoTensorParallel.workerArguments(runtimeModelID: mimo, mode: .pipelineMTP).isEmpty)
+        #expect(ClusterMiMoTensorParallel.workerArguments(runtimeModelID: "registered_glm53_flash", mode: .tensorParallel).isEmpty)
     }
 
     /// The registered plan's per-rank reserve: paged history (full layers grow

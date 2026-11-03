@@ -15,14 +15,15 @@ struct InstalledFixture: Sendable {
     }
     /// `pairing` saves the setup with a coordinator pair approval that matches its own pins.
     /// `generationMode` is written into the setup when given; `advertisedModes`
-    /// is what the fabricated worker's capability record lists. `registered`
-    /// selects the registered model the record describes.
+    /// is what the fabricated worker's capability record lists, with `modeFeatures`
+    /// when given. `registered` selects the registered model the record describes.
     static func make(root: URL, probe: URL, owner: URL, worker: URL, lifetimeSeconds: Int = 10, pairing: Bool = false,
                      generationMode: String? = nil, advertisedModes: [ClusterGenerationMode] = [.pipeline],
                      registered: (model: String, profile: String, publicID: String) = ("registered_qwen35_9b",
                         "registered_qwen35_9b_greedy_generation_v1", "fixture/public-model"),
                      adapter: ClusterRuntimeAdapter = .qwen35Dense, standsForRegisteredArtifact: Bool = true,
-                     batchLanes: Int? = nil, prefillSchedule: ClusterPrefillSchedule? = nil) throws -> Self {
+                     batchLanes: Int? = nil, prefillSchedule: ClusterPrefillSchedule? = nil,
+                     modeFeatures: [ClusterGenerationMode: ClusterServingFeatures]? = nil) throws -> Self {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         let model = root.appendingPathComponent("model", isDirectory: true)
         try FileManager.default.createDirectory(at: model, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
@@ -59,7 +60,7 @@ struct InstalledFixture: Sendable {
                 .init(rank:1,sourceLayerStart:4,sourceLayerEnd:32,stagePlanSHA256:pin("3"),constructionConfigurationSHA256:pin("4"))])],
             arithmeticPolicyID:adapter.arithmeticPolicyID,arithmeticPolicySHA256:pin("5"),
             supportedPrefillSchedules:prefillSchedule == nil ? [.serial] : ClusterPrefillSchedule.allCases,
-            supportedGenerationModes:advertisedModes)
+            supportedGenerationModes:advertisedModes,modeFeatures:modeFeatures)
         let capBytes = try ClusterRuntimeCapabilityCodec.encode(cap), capHash = hash(capBytes)
         try capBytes.write(to: model.appendingPathComponent("fixture-capability.json"))
         let key=root.appendingPathComponent("key"),hosts=root.appendingPathComponent("known_hosts")

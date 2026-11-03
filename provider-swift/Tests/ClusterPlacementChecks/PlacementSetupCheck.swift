@@ -870,12 +870,13 @@ import Foundation
     static let gemmaFeaturesWithoutPrefixes = with(gemmaFeatures, tensorParallelPrefixes: false)
     /// MiMo V2.6's text modes as its worker declares them (`MiMoResidentCapabilityMetadata.servingFeatures`, pinned
     /// by `MiMoTensorParallelResidentTests`): no mode keeps prompt prefixes, only the plain pipeline batches lanes, the
-    /// speculative pipeline decodes in rounds, and tensor parallel serves one lane without rounds and adds logprobs.
+    /// speculative pipeline decodes in rounds, and tensor parallel serves one lane in rounds (the owner launches it
+    /// with `ClusterMiMoTensorParallel.speculativeDepth`) and adds logprobs.
     static let mimoFeatures: [ClusterGenerationMode: ClusterServingFeatures] = [
         .pipeline: .init(promptPrefixReuse: false, ssdPrefixTier: false, speculativeRounds: false, maximumLanes: 8, logprobs: false),
         .pipelineCompactDecode: .init(promptPrefixReuse: false, ssdPrefixTier: false, speculativeRounds: false, maximumLanes: 1, logprobs: false),
         .phaseSplit: .init(promptPrefixReuse: false, ssdPrefixTier: false, speculativeRounds: false, maximumLanes: 1, logprobs: false),
-        .tensorParallel: .init(promptPrefixReuse: false, ssdPrefixTier: false, speculativeRounds: false, maximumLanes: 1, logprobs: true),
+        .tensorParallel: .init(promptPrefixReuse: false, ssdPrefixTier: false, speculativeRounds: true, maximumLanes: 1, logprobs: true),
         .pipelineMTP: .init(promptPrefixReuse: false, ssdPrefixTier: false, speculativeRounds: true, maximumLanes: 1, logprobs: false),
     ]
     /// `features` with tensor parallel's entry changed, as a later worker build might declare it.
@@ -968,10 +969,11 @@ import Foundation
         // Ultra's index, MiMo alone at 57 tok/s and the pair's measured link. On the index alone tensor parallel is
         // predicted faster than the credited rounds for 128 + 128, so the speculative pipeline is kept. MiMo's runtime
         // takes no share probe: requests this build served in tensor parallel are its only evidence. Feature parity
-        // comes first: tensor parallel as this build runs it has no speculative rounds, which the speculative pipeline
-        // it would replace keeps, so it is held back whatever the evidence; the evidence rule is checked on a record
-        // whose tensor parallel decodes in rounds, as a later build's may.
-        let (roundsOn, roundsDescription) = try capability(rowModes, features: with(mimoFeatures, tensorParallelRounds: true))
+        // comes first: as this build declares it, tensor parallel decodes in speculative rounds (on by default), so it
+        // keeps every feature of the speculative pipeline it would replace and the evidence rule decides; a record
+        // without tensor parallel's rounds (an older build's) holds it back whatever the evidence, and so do the plain
+        // pipeline's batch lanes where that pipeline is the mode it would replace.
+        let (roundsOff, roundsOffDescription) = try capability(rowModes, features: with(mimoFeatures, tensorParallelRounds: false))
         let ultras = try indexedUltras(), alone = try aloneSpeed(layout, prefill: 1_000, decode: 57)
         func served(_ decode: Double, build: String) -> [ClusterServedSpeedRecords.Entry] {
             let setup = ClusterServedSpeedRecords.Setup(modelID: bothDescription.publicModelID, mode: ClusterGenerationMode.tensorParallel.rawValue,
@@ -980,9 +982,10 @@ import Foundation
             return (0..<3).map { .init(setup: setup, sample: .init(route: .pair, member: nil, promptTokens: 128, outputTokens: 128,
                 firstTokenSeconds: 0.08, decodeTokensPerSecond: decode, finishedAt: Double($0))) }
         }
-        func decide(_ records: [ClusterServedSpeedRecords.Entry], asBuilt: Bool = false)
+        func decide(_ records: [ClusterServedSpeedRecords.Entry],
+                    record: (ClusterRuntimeCapability, ClusterPairDescription)? = nil)
             throws -> (lines: [String], result: ClusterPlacementResult, setup: ClusterPlacementSetup?) {
-            try ClusterPlacementFlow.decide(description: asBuilt ? bothDescription : roundsDescription, capability: asBuilt ? both : roundsOn,
+            try ClusterPlacementFlow.decide(description: record?.1 ?? bothDescription, capability: record?.0 ?? both,
                 localMemberID: "mac-one", localProfile: ultras.local, peerProfile: ultras.peer, layout: layout, measurements: [alone],
                 promptTokens: 128, outputTokens: 128, served: records, link: ultras.link, environment: [:], benchDebugBuild: false)
         }
@@ -992,8 +995,8 @@ import Foundation
         let roundsLine = heldLine("speculative (MTP) rounds that the speculative pipeline keeps")
         for (name, records) in [("nothing served in tensor parallel", [ClusterServedSpeedRecords.Entry]()),
                                 ("three requests this build served in tensor parallel at 95 tok/s", served(95, build: hash("a")))] {
-            let held = try decide(records, asBuilt: true)
-            require("MiMo parity: as this build declares it, tensor parallel has no speculative rounds, so with \(name) the speculative pipeline is kept and the line says what tensor parallel would drop (\(line(held, "  Pipeline:")))",
+            let held = try decide(records, record: (roundsOff, roundsOffDescription))
+            require("MiMo parity: a record whose tensor parallel has no speculative rounds holds it back; with \(name) the speculative pipeline is kept and the line says what tensor parallel would drop (\(line(held, "  Pipeline:")))",
                 held.result.chosen?.mode == .pipelineMTP && held.result.tensorParallel?.verdict == .dropsFeatures
                     && held.lines.contains(roundsLine) && held.setup != nil
                     && ClusterPlacementExplanation.tensorParallelNote(held.result) == .dropsFeature
@@ -1001,12 +1004,13 @@ import Foundation
                     && !held.result.alternatives.contains { $0.mode.usesTensorParallelDecode })
         }
         let priorOnly = try decide([])
-        require("MiMo evidence rule: 2x 256 GB on the measured link, nothing served in tensor parallel: the speculative pipeline is kept, and the line says tensor parallel is predicted faster only from the device index (\(line(priorOnly, "  Pipeline:")))",
+        require("MiMo parity and evidence: as this build declares it, tensor parallel keeps every feature of the speculative pipeline; 2x 256 GB on the measured link, nothing served in tensor parallel: the speculative pipeline is kept on the evidence rule alone, and the line says tensor parallel is predicted faster only from the device index (\(line(priorOnly, "  Pipeline:")))",
             priorOnly.result.chosen?.mode == .pipelineMTP && priorOnly.result.tensorParallel?.verdict == .predictedFasterOnPriorOnly
                 && line(priorOnly, "  Pipeline:").contains(", but from the device index, not its own measured step; it can be chosen once its step is measured on both Macs")
+                && !priorOnly.lines.contains { $0.contains("would drop") }
                 && priorOnly.lines.contains(fastestLine) && priorOnly.setup != nil)
         let fast = try decide(served(95, build: hash("a")))
-        require("MiMo parity and evidence: with its rounds on, tensor parallel keeps every feature of the speculative pipeline; three requests this build served in tensor parallel at 95 tok/s: tensor parallel, chosen on its own measured step, and the line says so (\(line(fast, "  Tensor parallel:")))",
+        require("MiMo parity and evidence: as this build declares it (rounds on), three requests this build served in tensor parallel at 95 tok/s: tensor parallel, chosen on its own measured step, and the line says so (\(line(fast, "  Tensor parallel:")))",
             fast.result.chosen?.mode == .tensorParallel && fast.result.tensorParallel?.evidence == .measured
                 && !fast.lines.contains { $0.contains("would drop") }
                 && line(fast, "  Tensor parallel:").hasSuffix(", on its own step as measured on both Macs.") && fast.setup != nil)
@@ -1018,6 +1022,17 @@ import Foundation
         require("MiMo evidence rule: another worker build's tensor-parallel records are no evidence: the speculative pipeline is kept, and the plan says they were ignored",
             otherBuild.result.chosen?.mode == .pipelineMTP && otherBuild.result.tensorParallel?.verdict == .predictedFasterOnPriorOnly
                 && otherBuild.lines.contains { $0.hasPrefix("  3 record(s) from other worker builds ignored") })
+        // Where the plain pipeline is the mode tensor parallel would replace (here a record without the speculative
+        // pipeline), its 8 lanes hold one-lane tensor parallel back, even on this build's served records.
+        let plainRecord = try capability(rowModes.filter { $0 != .pipelineMTP })
+        let lanesLine = heldLine("batch lanes up to 8 (it serves 1) that the pipeline keeps")
+        for (name, records) in [("nothing served in tensor parallel", [ClusterServedSpeedRecords.Entry]()),
+                                ("three requests this build served in tensor parallel at 95 tok/s", served(95, build: hash("a")))] {
+            let held = try decide(records, record: plainRecord)
+            require("MiMo parity: where the plain pipeline is the mode it would replace, with \(name), its batch lanes hold tensor parallel back (\(line(held, "  Pipeline:")))",
+                held.result.chosen.map { !$0.mode.usesTensorParallelDecode } == true
+                    && held.result.tensorParallel?.verdict == .dropsFeatures && held.lines.contains(lanesLine) && held.setup != nil)
+        }
     }
 
     /// The Gemma 4 QAT 4-bit golden layout (with the family's tensor-parallel facts and `fastest_v1`), `adjust`ed, and

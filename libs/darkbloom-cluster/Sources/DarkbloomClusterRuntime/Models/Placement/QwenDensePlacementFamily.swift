@@ -363,9 +363,19 @@ public enum ClusterPlacementLayouts {
             #endif
             if let plan = family.tensorParallel, let bound {
                 // What a rank's LOAD gate reserves beside its shard: one request at the profile's longest context.
-                family.tensorParallelRequestAllowance = try MiMoTensorParallelRequestBudget.derive(plan: plan,
+                let budget = try MiMoTensorParallelRequestBudget.derive(plan: plan,
                     slidingWindow: family.specification.slidingWindow, contextTokens: family.profile.maximumContextTokens,
-                    chunkTokens: family.profile.maximumChunkTokens, allocationBound: bound).allowance
+                    chunkTokens: family.profile.maximumChunkTokens, allocationBound: bound)
+                family.tensorParallelRequestAllowance = budget.allowance
+                #if canImport(MLXLLM)
+                // Its speculative rounds (`ClusterMiMoTensorParallel`): the heads whole, and each request's drafter
+                // state (the SDK's own declaration) and window rows beside the reserve, as the LOAD gate adds them.
+                if let rounds = try MiMoTensorParallelResidentRuntime.placementRounds(configuration: configuration,
+                    plan: plan, chunkTokens: family.profile.maximumChunkTokens, budget: budget, allocationBound: bound) {
+                    family.tensorParallelSpeculativeHead = rounds.head
+                    family.tensorParallelRequestAllowance = rounds.allowance
+                }
+                #endif
             }
             return try ClusterModelLayoutBuilder.build(family: family, tensors: tensors,
                 artifactSHA256: family.specification.artifactSHA256,

@@ -21,7 +21,8 @@ extension Unenroll {
         let authorization = DaemonStateFile.read()?.currentProviderAuthorization(
             coordinatorURL: coordinator, now: now)
         guard ProviderAuthorizationReadiness.removalReady(authorization, now: now) else {
-            printError(ProviderAuthorizationReadiness.summary(authorization, now: now))
+            printError(ProviderAuthorizationReadiness.summary(
+                authorization, removalAuthorization: authorization, now: now))
             throw ExitCode.failure
         }
 

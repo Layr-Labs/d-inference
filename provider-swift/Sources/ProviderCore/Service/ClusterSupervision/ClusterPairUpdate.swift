@@ -59,6 +59,8 @@ public enum ClusterPairUpdate {
                                     now: Double, requested: Bool = false) -> PartnerState {
         guard case .reported(let progress) = partner else { return .cannotCoordinate }
         if progress.running == target { return .ready }
+        // The other Mac rolled this release back: it will not install it, so neither does this Mac.
+        if progress.quarantined == target { return .gaveUp("the other Mac quarantined v\(target)") }
         switch progress.phase {
         case .disabled:
             // Its slot never comes, but its own `darkbloom update` may: a requested cycle waits for it while serving.

@@ -88,6 +88,8 @@ extension Cluster {
         ) -> ClusterMemberSupervisor.Configuration {
             let settings = Watchdog.settings(configPath: configPath, environment: environment)
             let coordinatorURL = settings.coordinatorURL
+            let followEnvironment = ClusterPairUpdateCycle.Environment.live(
+                serviceDirectory: serviceDirectory, coordinatorURL: coordinatorURL, log: { _ in })
             return .init(
                 executable: executable,
                 childArguments: ClusterServiceAgentPlan.childArguments(serviceOptions: serviceOptions),
@@ -114,9 +116,10 @@ extension Cluster {
                     partServes: {
                         ClusterService.publishedLive().map { $0.serving && $0.child.running && $0.session?.ready != false } ?? false
                     },
-                    follow: { log, restart in
-                        let environment = ClusterPairUpdateCycle.Environment.live(
-                            serviceDirectory: serviceDirectory, coordinatorURL: coordinatorURL, log: log)
+                    // Built once: its peer address and network session are kept between the minute's checks.
+                    follow: { [followEnvironment] log, restart in
+                        var environment = followEnvironment
+                        environment.log = log
                         return await ClusterPairUpdateCycle(environment: environment).followRollback(restart: restart)
                     },
                     quarantined: { SelfUpdater(coordinatorBaseURL: coordinatorURL).quarantinedVersion() }))

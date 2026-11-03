@@ -1081,7 +1081,12 @@ candidate that failed its start check; and the other Mac following a rollback
 holds the update lease (it waits, then follows), with the other Mac no longer
 answering (bounded wait, then a deferral with nothing changed), and the
 quarantine on both Macs, with no follow back and no follow to a release the Mac
-does not keep.
+does not keep; and what is decided before the lease (the Mac that rolled back
+names the release the other Mac still runs, a part that cannot drain does not
+follow yet, a Mac on another release does not ask for the lease).
+`Tests/ClusterSupervisionChecks/run.sh` also checks that a release the other Mac
+quarantined is given up, and that an older build's progress decodes without a
+quarantine.
 `ClusterServiceUpdateTests`
 (`provider-swift/Tests/DarkbloomCLITests/ClusterServiceUpdateTests.swift`) drives
 the real supervisor with a shell standing in for the cluster service: the

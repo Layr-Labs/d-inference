@@ -200,36 +200,54 @@ then every `ClusterPairUpdate.followCheckSeconds` (60 s) while no update cycle
 runs, also with automatic updates off: the release it restores is one the Mac
 ran before. It follows (`ClusterPairUpdateCycle.followRollback`) when the other
 Mac quarantined the release this Mac runs (installed or promoted) and runs the
-release this Mac keeps for rollback. The follow is the update cycle's sequence
+release this Mac keeps for rollback. The check reads both Macs' recovery state
+without the update lease; only a Mac that runs the quarantined release takes the
+lease and verifies its kept release. The follow is the update cycle's sequence
 with a rollback in place of the install:
 
 1. It takes the update lease, the one every update cycle, candidate recovery
-   and `darkbloom update --rollback` take, and decides under it. Another
+   and `darkbloom update --rollback` take, and decides again under it. Another
    holder (this Mac's own cycle, still installing or restarting) makes it wait
    for the next check, with nothing changed.
 2. It waits until the other Mac reports the earlier release (it does already,
    so this is at once), then drains this Mac's part as for an update. An other
    Mac that stops answering is waited for at most
-   `ClusterPairUpdate.partnerStageWaitSeconds` (900 s) while a pair runs on
-   this Mac. The follow is then deferred with the reason `the other Mac did not
-   confirm it runs v<version> within 900 s`, nothing is changed, and the next
-   check tries again.
+   `ClusterPairUpdate.progressStaleSeconds` (60 s) while a pair runs on this
+   Mac. The follow is then deferred with the reason `the other Mac did not
+   confirm it runs v<version> within 60 s`, nothing is changed, and it is tried
+   again at the pair's next update slot, as a deferred update is. With no pair
+   running on this Mac, it follows alone, as an update goes on alone.
 3. It restores the verified predecessor and quarantines the release
    (`SelfUpdater.rollBackToPredecessor`), with the reason `the other Mac of the
    pair rolled v<release> back to v<previous>; this Mac followed`. Both Macs
    now keep the release quarantined: neither's update slot installs it again,
-   and the next newer release updates both.
+   and a Mac whose partner reports the release quarantined gives it up too
+   (`ClusterPairUpdate.partnerState`). The next newer release updates both.
 4. The supervisor restarts the cluster service from the restored binary, after
    the same start check as for an update. Once both Macs answer with the same
    build, the leader plans the model again.
 
-A Mac that keeps another release for rollback, or none, cannot restore the same
-release. It changes nothing and says once `cluster update: not following the
-other Mac's rollback: <reason>`; the pair serves again once a newer release
-updates both Macs. Other lines: `cluster update: the other Mac rolled
-v<release> back to v<previous> and quarantined it; this Mac follows to
-v<previous>` and `cluster update: restored v<previous> and quarantined
-v<release>, as on the other Mac`.
+It does not follow, changes nothing, and says why once in its log
+(`cluster update: not following the other Mac's rollback: <reason>`) when:
+
+- it keeps another release for rollback, or none: the pair serves again once a
+  newer release updates both Macs;
+- its part does not drain for an update (it serves on the leader's local API,
+  or alone): it follows once its part can drain.
+
+The Mac that rolled back says once `cluster update: the other Mac still runs
+v<release>, which this Mac rolled back and quarantined` while the other Mac has
+not followed. Other lines: `cluster update: the other Mac rolled v<release>
+back to v<previous> and quarantined it; this Mac follows to v<previous>` and
+`cluster update: restored v<previous> and quarantined v<release>, as on the
+other Mac`.
+
+Both Macs need a build that follows rollbacks. The quarantine is reported by
+the Mac that rolled back after the rollback, so by the restored release's
+binary: a rollback *to* a release without this behaviour is not reported, and
+the other Mac does not follow it. The first release with this behaviour is
+therefore not followed when it is itself rolled back; rollbacks from the
+release after it on are. The other Mac must run a build with the follow too.
 
 A cluster-member provider service (`darkbloom start --cluster-member
 --always-on`) does not run this coordinated update and does not follow a
@@ -318,7 +336,7 @@ system setting:
 | Follower never connects; log shows `Local network prohibited` | **Privacy & Security → Local Network** | Turn on Darkbloom; an ad-hoc build needs this per build |
 | A firewall alert after an update | `codesign -dv` on the listening binary | The binary is not Developer-ID signed; install the release build |
 | Install or provider log says `permissions: not asked once` | The listed reasons | Install the signed release (a locally built binary is ad-hoc signed and outside `Darkbloom.app`) |
-| The pair does not update | `cluster update:` lines in `~/.darkbloom/cluster-setup/service.log` on both Macs | `automatic updates are off`: run `darkbloom update` on both Macs, or set `auto_update` on both (`darkbloom autoupdate enable`), which takes effect when the cluster service next starts (at login, or after its next update). `deferred`: a request ran past 120 s, or one Mac could not take the release; the next slot tries again. `does not drain for an update`: the pair serves on the local API or a Mac serves alone. `failed its start check`: the release did not start on this Mac, which keeps its previous release and does not install that release again; a newer release updates it |
+| The pair does not update | `cluster update:` lines in `~/.darkbloom/cluster-setup/service.log` on both Macs | `automatic updates are off`: run `darkbloom update` on both Macs, or set `auto_update` on both (`darkbloom autoupdate enable`), which takes effect when the cluster service next starts (at login, or after its next update). `deferred`: a request ran past 120 s, or one Mac could not take the release; the next slot tries again. `does not drain for an update`: the pair serves on the local API or a Mac serves alone. `failed its start check`: the release did not start on this Mac, which keeps its previous release and does not install that release again; the other Mac follows it back ([a rollback on one Mac](#a-rollback-on-one-mac)), and a newer release updates both. `not following the other Mac's rollback` or `the other Mac still runs`: see [a rollback on one Mac](#a-rollback-on-one-mac) |
 
 ## Developer: a coordinator-paired member as a service
 

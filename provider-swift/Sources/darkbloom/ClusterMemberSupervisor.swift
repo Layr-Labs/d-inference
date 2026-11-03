@@ -93,7 +93,9 @@ final class ClusterMemberSupervisor: @unchecked Sendable {
     // When the next check for a rollback of the other Mac to follow is due (main loop only), and the last reason it
     // could not be followed (under `lock`), said once.
     private var nextFollowCheck: Double = 0
-    private var cannotFollow: String?
+    private var followNotice: String?
+    /// A deferred follow is tried again only at the pair's next update slot, as a deferred update is (under `lock`).
+    private var followDeferredUntil: Double = 0
     // The candidate this run's service is (main loop only), until it is promoted.
     private var candidate: String?
     private var updatedServiceServes = false
@@ -507,8 +509,10 @@ final class ClusterMemberSupervisor: @unchecked Sendable {
     /// Mac rolled back the release this Mac runs, which this Mac then follows, as a cycle of its own. Automatic updates
     /// off do not stop it: it restores a release this Mac ran before, as a rollback after failed starts does.
     private func startFollowCheckIfDue(_ pair: PairUpdate, pid: Int32, now: Double) {
-        guard now >= nextFollowCheck else { return }
+        guard now >= nextFollowCheck, now >= lock.withLock({ followDeferredUntil }) else { return }
         nextFollowCheck = now + ClusterPairUpdate.followCheckSeconds
+        let nextSlot = pair.clusterID().map { ClusterMemberUpdateSlot.nextSlot(after: now, clusterID: $0) }
+            ?? now + ClusterMemberUpdateSlot.periodSeconds
         publishQuarantine(pair)
         lock.withLock { pairCycleRunning = true }
         let log: @Sendable (String) -> Void = { [weak self] in self?.log($0) }
@@ -518,13 +522,21 @@ final class ClusterMemberSupervisor: @unchecked Sendable {
         pairCycle = Task.detached { [weak self] in
             let outcome = await pair.follow(log, restart)
             guard let self else { return }
-            let say: String? = self.lock.withLock {
-                defer { self.pairCycleRunning = false }
-                guard case .cannotFollow(let reason) = outcome else { self.cannotFollow = nil; return nil }
-                defer { self.cannotFollow = reason }
-                return self.cannotFollow == reason ? nil : reason
+            // Each reason is said once, until the outcome changes.
+            let notice: String?
+            switch outcome {
+            case .cannotFollow(let reason): notice = "not following the other Mac's rollback: " + reason
+            case .otherMacStillRuns(let reason): notice = reason
+            default: notice = nil
             }
-            if let say { self.log("cluster update: not following the other Mac's rollback: \(say)") }
+            let say: String? = self.lock.withLock {
+                defer { self.pairCycleRunning = false; self.followNotice = notice }
+                if case .followed(let ended) = outcome {
+                    if case .restarted = ended {} else { self.followDeferredUntil = nextSlot }
+                }
+                return notice == self.followNotice ? nil : notice
+            }
+            if let say { self.log("cluster update: \(say)") }
         }
     }
 

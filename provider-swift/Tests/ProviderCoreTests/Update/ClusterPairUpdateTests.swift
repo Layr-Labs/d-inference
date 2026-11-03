@@ -608,4 +608,35 @@ struct ClusterPairUpdateTests {
         #expect(try other.fixture.liveBinaryContents() == "2.0.0-darkbloom")
         #expect(try other.store.loadState().quarantine == nil)
     }
+
+    /// What decides the follow before the lease: the Mac that rolled back says the other Mac still runs the release; a
+    /// Mac whose part cannot drain does not follow yet; a Mac on another release finds nothing to follow without the
+    /// lease, even while another update holds it.
+    @Test func followIsDecidedBeforeTheLease() async throws {
+        let rolledBack = try await PairMac.make(part: false), peer = try await PairMac.make(part: false)
+        defer { Task { await rolledBack.cleanUp(); await peer.cleanUp() } }
+        try await peer.installCandidate()
+        try peer.promote()
+        try await rolledBack.rollBackAfterFailedStartCheck()
+        let log = Lines(), now = Date().timeIntervalSince1970
+
+        ClusterPairUpdate.writeProgress(.init(phase: .idle, running: "2.0.0", writtenAt: now), to: peer.progressPath)
+        guard case .otherMacStillRuns(let line) = await rolledBack.cycle(partner: peer, log: log).followRollback({ _ in }) else {
+            Issue.record("the Mac that rolled back did not say the other Mac still runs v2.0.0"); return
+        }
+        #expect(line.contains("the other Mac still runs v2.0.0"))
+
+        guard case .cannotFollow(let reason) = await peer.cycle(partner: rolledBack, log: log, part: .undrainable)
+            .followRollback({ _ in }) else { Issue.record("a part that cannot drain followed"); return }
+        #expect(reason.contains("it follows once its part can drain"))
+        #expect(try peer.fixture.liveBinaryContents() == "2.0.0-darkbloom" && peer.store.loadState().quarantine == nil)
+        #expect(ClusterPairUpdate.readProgress(from: peer.progressPath)?.phase == .idle, "nothing was published")
+
+        let held = try rolledBack.fixture.updater(baseURL: rolledBack.baseURL).beginUpdateSession(operation: "cluster-auto-update")
+        defer { held.release() }
+        ClusterPairUpdate.writeProgress(.init(phase: .idle, running: "1.0.0", writtenAt: now, quarantined: "2.0.0"),
+                                        to: peer.progressPath)
+        let other = await rolledBack.cycle(partner: peer, log: log).followRollback { _ in }
+        #expect(other == .nothingToFollow, "not .busy: the lease is not asked for")
+    }
 }

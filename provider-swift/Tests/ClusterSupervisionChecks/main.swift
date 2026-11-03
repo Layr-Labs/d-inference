@@ -293,6 +293,15 @@ do {
     if case .gaveUp(let reason) = state(disabled, .staged) {
         check(reason.contains("off on the other Mac"), "auto_update off on the other Mac: \(reason)")
     } else { check(false, "the other Mac's automatic updates are off") }
+    // A release the other Mac rolled back and quarantined is installed on neither Mac.
+    let quarantinedThere = U.Partner.reported(.init(phase: .idle, running: "1.0.0", writtenAt: start, quarantined: "2.0.0"))
+    if case .gaveUp(let reason) = state(quarantinedThere, .staged) {
+        check(reason.contains("quarantined v2.0.0"), "the other Mac's quarantine is named: \(reason)")
+    } else { check(false, "a release the other Mac quarantined is not installed here") }
+    // A progress from a build without the quarantine field still decodes, with none.
+    let older = try? JSONDecoder().decode(ClusterPairUpdateProgress.self,
+                                          from: Data(#"{"phase":"idle","running":"1.0.0","writtenAt":1}"#.utf8))
+    check(older != nil && older?.quarantined == nil, "an older build's progress has no quarantine")
     // `darkbloom update` waits, while serving, for the one run on the other Mac; a drained Mac does not wait for it.
     check(state(disabled, .staged, requested: true) == .waiting, "a requested update waits for the other Mac's")
     if case .gaveUp = state(disabled, .drained, requested: true) {} else { check(false, "a drained Mac does not wait for a Mac with updates off") }

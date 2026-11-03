@@ -664,7 +664,12 @@ public struct SelfUpdater: Sendable {
     /// `checkForUpdate` reads it (the state file is replaced atomically); nil
     /// when none is, or the state cannot be read.
     public func quarantinedVersion() -> String? {
-        try? recoveryStore()?.loadState().quarantine?.version
+        recordedRecoveryState()?.quarantine?.version
+    }
+
+    /// The recovery state, read without the lease as `quarantinedVersion` reads it; nil when it cannot be read.
+    public func recordedRecoveryState() -> UpdateRecoveryState? {
+        try? recoveryStore()?.loadState()
     }
 
     private func recoveryStore() -> UpdateRecoveryStore? {

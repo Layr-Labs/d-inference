@@ -322,6 +322,18 @@ the day, not the commit, so a branch saves `.git` once a day: later runs that
 day restore the exact key and save nothing. Checkouts set
 `persist-credentials: false`, so the saved `.git/config` holds no job token.
 
+Checkouts download only what their job reads. Every checkout but Docs Lint's
+skips the 738 `.gz` evidence archives under `docs/reports` and the videos under
+`landing/public` (`CHECKOUT_SPARSE`, 379 MiB of the 470 MiB tree): a sparse
+checkout fetches commits and trees without file contents (`blob:none`), then
+only the files it checks out. The reports themselves stay, because a provider
+test hashes `docs/reports/2026-10-31-public-cluster-models.md`. Docs Lint
+checks link targets on disk, so it checks out every file, but fetches history
+with `filter: blob:none`; the provenance check then fetches the old document
+versions it reads (about 29 MiB for its 12 checks). Docs Impact
+(`.github/workflows/docs-impact.yml`) needs commits, trees and the docs, so it
+uses both settings.
+
 ```mermaid
 flowchart LR
   W[UTC day] --> R["Restore .git<br/>(today, else newest)"]

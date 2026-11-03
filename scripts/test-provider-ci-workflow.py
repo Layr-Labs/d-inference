@@ -160,6 +160,7 @@ SAVE_POLICY = ("  SAVE_CACHES: ${{ github.event_name == 'push' && (github.ref ==
                "|| github.ref == 'refs/heads/dev') }}\n")
 SAVE_CACHES = "env.SAVE_CACHES == 'true'"
 SAVE_INPUT = "inputs.save-caches == 'true'"
+SPARSE_PATTERNS = ("/*", "!/docs/reports/**/*.gz", "!/landing/public/**/*.mp4")
 GIT_CACHE_STEPS = ("Select today's .git cache", "Restore the newest saved .git",
                    "Check out over the cached .git", "Discard the cached .git",
                    "Check out without the cache", "Save .git for later runs")
@@ -839,13 +840,45 @@ class ProviderCIWorkflowTests(unittest.TestCase):
                 self.assertEqual([field(cached, "uses"), field(cold, "uses")], [CHECKOUT, CHECKOUT])
                 # Each job keeps its checkout options; a persisted token would
                 # be saved with .git/config.
-                options = {"release-integrity": [], "docs": ["fetch-depth: 0"]}.get(job_id, ["submodules: recursive"])
+                sparse = ["sparse-checkout: ${{ env.CHECKOUT_SPARSE }}", "sparse-checkout-cone-mode: false"]
+                options = {"release-integrity": ["persist-credentials: false", *sparse],
+                           "docs": ["fetch-depth: 0", "filter: blob:none", "persist-credentials: false"]
+                           }.get(job_id, ["submodules: recursive", "persist-credentials: false", *sparse])
                 for step in (cached, cold):
-                    self.assertEqual(checkout_options(step), options + ["persist-credentials: false"])
+                    self.assertEqual(checkout_options(step), options)
                 self.assertEqual(field(save, "if"), SAVE_CACHES + " && steps.git-cache.outputs.cache-hit != 'true'")
                 self.assertEqual(field(save, "uses"), CACHE_SAVE)
                 self.assertEqual(field(save, "path", indent=10), ".git")
                 self.assertEqual(field(save, "key", indent=10), "${{ steps.git-cache.outputs.cache-primary-key }}")
+
+    def test_sparse_checkouts_skip_only_evidence_archives_and_landing_videos(self):
+        env = self.workflow.split("\njobs:\n", 1)[0]
+        self.assertIn("  CHECKOUT_SPARSE: |\n" + "".join(f"    {pattern}\n" for pattern in SPARSE_PATTERNS), env)
+        self.assertEqual(self.workflow.count("sparse-checkout: ${{ env.CHECKOUT_SPARSE }}"), 16)
+        docs_impact = (ROOT / ".github/workflows/docs-impact.yml").read_text()
+        self.assertIn("          filter: blob:none\n          sparse-checkout: |\n"
+                      + "".join(f"            {pattern}\n" for pattern in SPARSE_PATTERNS)
+                      + "          sparse-checkout-cone-mode: false\n", docs_impact)
+        # Real git decides what the patterns keep: every file a job may read,
+        # including the report a provider test hashes, but no archive or video.
+        kept = ["Makefile", "docs/reports/report.md", "docs/reports/evidence/notes.json",
+                "provider-swift/Tests/Fixtures/clip.mp4", "fixtures/data.gz", "landing/src/page.tsx",
+                "landing/public/favicon.svg", "docs/reports/2026-10-31-public-cluster-models.md"]
+        skipped = ["docs/reports/evidence/run.jsonl.gz", "docs/reports/archive.tar.gz", "landing/public/media/demo.mp4"]
+        with tempfile.TemporaryDirectory() as work:
+            def git(*args):
+                subprocess.run(["git", "-C", work, "-c", "user.name=t", "-c", "user.email=t@t",
+                                "-c", "commit.gpgsign=false", *args], check=True, capture_output=True)
+            git("init", "-q")
+            for path in kept + skipped:
+                (Path(work) / path).parent.mkdir(parents=True, exist_ok=True)
+                (Path(work) / path).write_text(path)
+            git("add", "-A")
+            git("commit", "-q", "-m", "tree")
+            git("sparse-checkout", "set", "--no-cone", *SPARSE_PATTERNS)
+            self.assertEqual([path for path in kept if not (Path(work) / path).is_file()], [])
+            self.assertEqual([path for path in skipped if (Path(work) / path).exists()], [])
+        self.assertTrue((ROOT / "docs/reports/2026-10-31-public-cluster-models.md").is_file())
 
     def test_composite_action_cannot_bypass_build_and_metallib_on_cache_hits(self):
         action = ACTION.read_text()

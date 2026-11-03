@@ -92,12 +92,18 @@ struct Gemma4ResidentResourceCeilings: Equatable {
 /// planner prices it beside the KV, oMLX U#3651). Both head dimensions (512 on
 /// a full layer, 256 on a sliding one) take MLX's unfused path, so a frame
 /// materializes float32 scores beside a float32 output: over the whole context
-/// on a full layer, over the window and the frame on a sliding one. Layers run
-/// one after another, so the stage's transient is its largest layer's.
+/// on a full layer, over the window and the frame on a sliding one. Prefill
+/// layers run one after another under the rank's command-buffer limits, so the
+/// frame's transient is its largest layer's. A decode step's command buffers
+/// (`QwenLayerStageSession.decodeCommandBuffers`) can keep every layer's
+/// temporaries alive at once: `decodeRows` a layer over each of `decodeLayers`,
+/// added up, priced the same way, and the larger of the two is charged.
 enum Gemma4PrefillTransient {
-    static func bytes(layers: [QwenLayerStagePlan.Layer], chunkTokens: Int, contextTokens: Int) throws -> Int {
+    static func bytes(layers: [QwenLayerStagePlan.Layer], chunkTokens: Int, contextTokens: Int,
+                      decodeRows: Int = 0, decodeLayers: [QwenLayerStagePlan.Layer] = []) throws -> Int {
         try bytes(fullAttention: layers.map { $0.kind == Gemma4StageGeometry.fullKind },
-            queryHeads: Gemma4StageGeometry.queryHeads, chunkTokens: chunkTokens, contextTokens: contextTokens)
+            queryHeads: Gemma4StageGeometry.queryHeads, chunkTokens: chunkTokens, contextTokens: contextTokens,
+            decodeRows: decodeRows, decodeFullAttention: decodeLayers.map { $0.kind == Gemma4StageGeometry.fullKind })
     }
 
     /// The same over layers of these kinds with `queryHeads` query heads each

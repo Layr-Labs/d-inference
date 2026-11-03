@@ -10,6 +10,9 @@ struct GPTOSSPagedKVLayout: Equatable {
     private(set) var offset = 0
     private(set) var count = 0
     private(set) var index = 0
+    /// RotatingKVCache's wrapped flag: a one-token write that rotates sets it;
+    /// a chunk or a trim clears it.
+    private(set) var wrapped = false
 
     struct Update: Equatable {
         /// Nil keeps the existing pages. Otherwise these old physical rows
@@ -45,7 +48,7 @@ struct GPTOSSPagedKVLayout: Equatable {
                 return kept.isEmpty ? nil : kept
             }
             let kept = ranges.reduce(0) { $0 + $1.count }
-            count = kept + n; index = count
+            count = kept + n; index = count; wrapped = false
             return .init(retained: ranges, writeOffset: kept, count: count)
         }
         var retained: [Range<Int>]?
@@ -53,7 +56,7 @@ struct GPTOSSPagedKVLayout: Equatable {
             retained = [(count - window)..<count]
             count = window; index = window
         }
-        if index == window { index = 0 }
+        if index == window { index = 0; wrapped = true }
         let start = index
         index += 1; count = max(count, index)
         return .init(retained: retained, writeOffset: start, count: count)
@@ -64,12 +67,12 @@ struct GPTOSSPagedKVLayout: Equatable {
     mutating func trim(_ n: Int) -> Int {
         guard isTrimmable else { return 0 }
         let removed = min(offset, max(0, n))
-        offset -= removed; count = offset; index = offset
+        offset -= removed; count = offset; index = offset; wrapped = false
         return removed
     }
 
-    mutating func restore(count: Int, offset: Int, index: Int) {
+    mutating func restore(count: Int, offset: Int, index: Int, wrapped: Bool) {
         precondition(count >= 0 && offset >= count && index >= 0 && index <= count)
-        self.count = count; self.offset = offset; self.index = index
+        self.count = count; self.offset = offset; self.index = index; self.wrapped = wrapped
     }
 }

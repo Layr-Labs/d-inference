@@ -26,6 +26,10 @@ enum ClusterSetupPlanning {
         /// the retained split. Absent, the split is chosen by speed alone.
         var tensorWideningQuote: ClusterPlacementTensorBatchQuote? = nil
         var targetFallbackWideningQuote: ClusterPlacementTensorBatchQuote? = nil
+        /// The same owners' complete quotes at the wider widths: the setup
+        /// saves the widest both Macs admit now (`ClusterPlacementTensorWidth`).
+        var tensorWidthQuotes: [ClusterPlacementTensorBatchQuote] = []
+        var targetFallbackWidthQuotes: [ClusterPlacementTensorBatchQuote] = []
     }
 
     typealias PlacementDecision = (lines: [String], result: ClusterPlacementResult, setup: ClusterPlacementSetup?)
@@ -89,13 +93,16 @@ enum ClusterSetupPlanning {
 
     /// Plans every model folder this Mac has. The local member leads every
     /// plan: the installed session is started from rank 0, over the pinned
-    /// route only this Mac holds.
+    /// route only this Mac holds. `coordinator`: the setup will serve through
+    /// the coordinator, so tensor parallel is planned with equal shares only
+    /// (`ClusterPlacementFlow.decide`).
     static func decide(readings: [ModelReading], description: ClusterPairDescription, localMemberID: String,
                        localProfile: ClusterDeviceProfile, peerProfile: ClusterDeviceProfile, peerModels: [ClusterSetupLocalModel],
                        measurements: [ClusterSpeedMeasurement], leader: String?? = .none,
                        served: [ClusterServedSpeedRecords.Entry] = [], link: ClusterLinkCosts = .unmeasured,
                        shareProbes: ClusterShareProbeHistory? = nil, now: Double = Date().timeIntervalSince1970,
-                       peerMayReceive: Bool = false, keeping: [String: ClusterGenerationMode] = [:]) -> [Decision] {
+                       peerMayReceive: Bool = false, keeping: [String: ClusterGenerationMode] = [:],
+                       coordinator: Bool = false) -> [Decision] {
         // The wizard's own steps lead from this Mac; the onboarding (`nil`) leaves which Mac leads the
         // session (rank 0) and which decodes to the planner and the model's pair-serving grant.
         let sessionLeader: String? = leader ?? localMemberID
@@ -143,12 +150,16 @@ enum ClusterSetupPlanning {
                 func widening(_ quote: ClusterPlacementTensorBatchQuote?) -> ClusterPlacementTensorBatchQuote? {
                     quote == nil ? nil : quote == discovered ? reading.tensorWideningQuote : reading.targetFallbackWideningQuote
                 }
+                func widths(_ quote: ClusterPlacementTensorBatchQuote?) -> [ClusterPlacementTensorBatchQuote] {
+                    quote == nil ? [] : quote == discovered ? reading.tensorWidthQuotes : reading.targetFallbackWidthQuotes
+                }
                 let selected = try assistantOrTarget(discovered,
                     fallback: try? reading.targetFallbackQuote?.get()) { quote in
                     try ClusterPlacementFlow.decide(description: pair, capability: capability.record, localMemberID: localMemberID,
                         localProfile: localProfile, peerProfile: peerProfile, layout: layout, measurements: measurements,
-                        tensorAssistantQuote: quote, tensorWideningQuote: widening(quote), leader: sessionLeader,
-                        served: served, link: link, shareProbes: probes, incumbentMode: incumbent)
+                        tensorAssistantQuote: quote, tensorWideningQuote: widening(quote), tensorWidthQuotes: widths(quote),
+                        leader: sessionLeader, served: served, link: link, shareProbes: probes, incumbentMode: incumbent,
+                        coordinator: coordinator)
                 }
                 var decided = selected.decision
                 let assistantQuote = selected.quote, fellBack = discovered != nil && selected.quote != discovered
@@ -157,8 +168,9 @@ enum ClusterSetupPlanning {
                     decided = try ClusterPlacementFlow.decide(description: pair.withPorts(.conventional), capability: capability.record,
                         localMemberID: localMemberID, localProfile: localProfile, peerProfile: peerProfile, layout: layout,
                         measurements: measurements, tensorAssistantQuote: assistantQuote,
-                        tensorWideningQuote: widening(assistantQuote), leader: sessionLeader,
-                        served: served, link: link, shareProbes: probes, incumbentMode: incumbent)
+                        tensorWideningQuote: widening(assistantQuote), tensorWidthQuotes: widths(assistantQuote),
+                        leader: sessionLeader, served: served, link: link, shareProbes: probes, incumbentMode: incumbent,
+                        coordinator: coordinator)
                     if fellBack { decided.lines = [assistantDoesNotFit] + decided.lines }
                 }
                 guard let chosen = decided.result.chosen else {

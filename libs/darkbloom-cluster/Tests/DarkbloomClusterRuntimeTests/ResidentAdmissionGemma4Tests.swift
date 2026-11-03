@@ -373,6 +373,26 @@ struct ResidentAdmissionGemma4Tests {
         #expect(small.stateAndBoundaryBytes < largest.stateAndBoundaryBytes)
     }
 
+    /// A decode step's command buffers can keep every layer's temporaries
+    /// alive at once (`QwenLayerStageSession.decodeCommandBuffers`): the
+    /// transient prices each layer's decode row together whenever that is
+    /// more than one prompt frame's largest layer.
+    @Test func theDecodeStepPricesEveryLayersRowAtOnce() throws {
+        typealias G = Gemma4StageGeometry
+        let layers = (0..<15).map { QwenLayerStagePlan.Layer(globalIndex: $0, localIndex: $0, kind: G.kind(globalLayerIndex: $0)) }
+        let full = layers.filter { $0.kind == G.fullKind }.count, sliding = layers.count - full
+        #expect(full == 2 && sliding == 13)
+        func bytes(chunk: Int, rows: Int) throws -> Int {
+            try Gemma4PrefillTransient.bytes(layers: layers, chunkTokens: chunk, contextTokens: 8320,
+                decodeRows: rows, decodeLayers: layers)
+        }
+        let fullRow = G.queryHeads * (8320 + G.fullHeadDimension) * 4
+        let slidingRow = G.queryHeads * (G.slidingWindow + G.slidingHeadDimension) * 4
+        #expect(try bytes(chunk: 1, rows: 0) == fullRow)
+        #expect(try bytes(chunk: 1, rows: 1) == full * fullRow + sliding * slidingRow)
+        #expect(try bytes(chunk: 512, rows: 1) == (try bytes(chunk: 512, rows: 0)))
+    }
+
     @Test func onlyTheLastLayerOfTheOutputRankNarrowsAPromptChunk() {
         typealias Policy = Gemma4StagePromptPolicy
         func decide(_ layer: Int, prefill: Bool = true, owns: Bool = true, length: Int = 512,

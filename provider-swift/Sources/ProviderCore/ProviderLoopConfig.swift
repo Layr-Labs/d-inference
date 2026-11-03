@@ -37,6 +37,10 @@ public struct ProviderLoopConfig: Sendable {
     /// Whether an accepted member connection that later drops ends the loop
     /// (true) or permits a reconnect (false). Read only in member mode.
     public let clusterMemberStopsOnDisconnect: Bool
+    /// Whether this member answers its cluster service supervisor's drain for the pair's coordinated update
+    /// (`ClusterUpdateDrainRequest`). Only a coordinator-paired part does: the control-only member inside a
+    /// local-API leader holds no pair slot, but its leader's HTTP server serves requests the member cannot see.
+    public let clusterMemberAnswersUpdateDrain: Bool
     /// Cluster member only: the models whose pair-serving grant this Mac's
     /// rank has passed (`ClusterMemberPreparation.prepare`).
     /// A member serves no solo inference, so for these models the single-Mac
@@ -60,6 +64,7 @@ public struct ProviderLoopConfig: Sendable {
         autopilotPendingCandidates: AutopilotStartInventory.Pending? = nil,
         executionRole: ProviderExecutionRole = .solo,
         clusterMemberStopsOnDisconnect: Bool = true,
+        clusterMemberAnswersUpdateDrain: Bool = false,
         pairServingGrantedModelIDs: Set<String> = []
     ) {
         self.coordinatorURL = coordinatorURL
@@ -77,6 +82,7 @@ public struct ProviderLoopConfig: Sendable {
         self.localEndpoint = localEndpoint
         self.executionRole = executionRole
         self.clusterMemberStopsOnDisconnect = clusterMemberStopsOnDisconnect
+        self.clusterMemberAnswersUpdateDrain = clusterMemberAnswersUpdateDrain
         self.pairServingGrantedModelIDs = pairServingGrantedModelIDs
     }
 

@@ -37,7 +37,7 @@ final class QwenGenerationDiagnosticResources {
         // with the actual allocator, then require the owner's reservation to match.
         let actual = try QwenResidentRequestAllowance.derive(profile: profile, plan: plan, rank: rank,
             maximumTokens: request.maximumTokens, chunkSize: min(request.chunkSize, request.promptCount),
-            bound: QwenResidentResourceEnvironment.allocationBound)
+            decode: requestAllowance.decode, bound: QwenResidentResourceEnvironment.allocationBound)
         guard actual.stateBytes == requestAllowance.stateBytes,
               actual.fusionBytes == requestAllowance.fusionBytes,
               actual.transientBytes == requestAllowance.transientBytes,

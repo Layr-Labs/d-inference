@@ -1133,12 +1133,47 @@ every such request with its prefix cache off, so both ranks neither restore nor
 keep it ([tenant partitions](#cluster-prefix-tenant-partitions)). Source:
 `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Media/QwenMediaRequestState.swift`.
 
-The exact27 multi-lane TP owner retains one compact snapshot per completed
-request at an original chunk boundary, at most 4,096 prompt tokens. The resident
-LRU holds at most 32 entries and two maximum-sized snapshot banks. A sealed
-vote selects the longest boundary both ranks hold; a one-sided miss computes
-cold on both ranks. Restoration writes fresh request-owned attention storage
-and adopts immutable confirmed conv/SSM state. It never splits the final chunk.
+The exact27 multi-lane TP owner keeps a completed plain request's state at
+original chunk boundaries to the request's own context (past LOAD's memory
+plan too), strictly before the final token and after what it restored
+(`QwenTensorParallelBatchPrefixBudget.frontiers`, policy
+`qwen-tp-batch-prefix-depth-v2`):
+
+| Boundary | Serves | One Mac's counterpart |
+|---|---|---|
+| The deepest whole chunk before the final token | a repeated prompt | the rolling latest checkpoint |
+| The deepest whole chunk at least 64 tokens before the prompt end, from 1,024 tokens on | the next turn of a conversation, whose template re-renders the generation prompt | `demandedLatestPromptEndMarginTokens = 64` |
+| 4,096, then every multiple of 4,096 below the deepest, the stripe doubling until at most 8 remain | prompts sharing a long system prompt | the first, fork-target and stripe-end checkpoints of `EngineV2Factory.defaultDenseQwenSoloPrefillStripeTokens` |
+
+On TP's 512-token grid this reuses at least one Mac's reuse rounded down to the
+grid for a repeat, a next turn and a shared system prompt within the first
+eight stripes. One Mac's 64-token-margin cut is on a 256-token grid, so for
+some prompt lengths it is 256 tokens deeper than TP's deepest boundary. One Mac
+keeps three boundaries a donor: its first, its latest, and the fork target the
+coordinator's `cache_repeated_prefix_tokens` hint names. TP gets no hint, so it
+keeps the stripe boundaries instead
+([parity checks](../developer/test.md#qwen27-tp-warm-prefix-checks)).
+
+A capture copies the attention rows once, at its deepest boundary, and the
+convolution and SSM state at each boundary (`QwenTensorParallelPrefixCapture`).
+The shallower boundaries view the deepest copy, and the resident tier counts it
+once per capture. Each request's own capture is charged in its reservation, so
+a capture always keeps what its charge covers. The resident tier is charged
+nowhere ([memory](hardware-support.md#qwen27-tp-batch-prefix-ownership)). Its
+byte budget is set at LOAD from the room measured beside the quote
+(`QwenStagePrefixCache.budget(roomBytes:)`). Under that budget it gives up other
+captures' shallower boundaries first, then the newest capture's, then whole
+captures, least recently used first, so an exact repeat's boundary outlives the
+rest. A capture whose deepest boundary does not fit the budget is not kept
+resident at all (on a 256 GB Mac, an 8 GiB budget holds the 27B's capture to
+about 235,000 tokens). Its entries also give way, after the SSD writer's queue
+drains, before a reservation or the running batch is refused for memory
+(`QwenTensorParallelSnapshotCache.yieldingMemory`). The vote carries every
+chunk boundary of the prompt, at most 512, and selects the longest one both
+ranks hold; a one-sided miss computes cold on both ranks. Restoration writes
+fresh request-owned attention storage and adopts immutable confirmed conv/SSM
+state. It never splits the final chunk. The assistant's lanes keep one boundary
+of at most 4,096 tokens ([assistant prefix ownership](#qwen27-tp-assistant-prefix-ownership)).
 
 Keys bind the loaded agreement, backend, chunk size, prompt prefix and media
 identity. The native owner completes media preparation before reuse, so cached
@@ -1152,14 +1187,17 @@ is the same batch owner one lane wide, with both tiers; other models retain
 their existing behavior. The SSD tier is described below.
 
 Source: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/TensorParallel/QwenTensorParallelBatchPrefixCache.swift`
-(`QwenTensorParallelBatchPrefixCache`) and
+(`QwenTensorParallelBatchPrefixCache`),
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Resources/QwenTensorParallelBatchPrefixBudget.swift`,
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/TensorParallel/QwenTensorParallelPrefixSnapshot.swift`
+(`QwenTensorParallelPrefixCapture`) and
 `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/TensorParallel/QwenTensorParallelNativeBatchExecutor.swift`
 (`open`, `confirmedRetirement`). Tiny fixtures do not qualify full-artifact
 warm-prefix correctness, media parity, RDMA or useful speed.
 
 ### Qwen27 TP assistant prefix ownership
 
-The TP assistant prefix donor binds a compact target attention/recurrent snapshot and the same assistant's trusted prompt history at one confirmed original prompt frontier. Restore creates request-owned mutable state and both ranks negotiate the common usable frontier. The bounded cache publishes donors only after checked retirement and a final cancellation/deadline vote; a failed decoder cannot donate. Captured speculative target windows, pending assistant drafts and queued accepted tokens are not prefix donors. Both resident donor banks and the temporary capture bank remain in the complete quote.
+The TP assistant prefix donor binds a compact target attention/recurrent snapshot and the same assistant's trusted prompt history at one confirmed original prompt frontier, at most 4,096 tokens deep (`QwenTensorParallelMTPPrefixBudget.maximumTokens`, policy `qwen-tp-mtp-grid-prefix-4096-v1`). That bound is the assistant's history ledger as well: prefill holds the trusted history unflushed up to the checkpoint frontier, so a deeper frontier would keep a lane's whole prompt history resident, not only a larger capture. A request an assistant lane serves therefore reuses at most 4,096 prompt tokens, less than one Mac reuses for a long prompt: a known gap, not covered by the plain lanes' parity. Restore creates request-owned mutable state and both ranks negotiate the common usable frontier. The bounded cache publishes donors only after checked retirement and a final cancellation/deadline vote; a failed decoder cannot donate. Captured speculative target windows, pending assistant drafts and queued accepted tokens are not prefix donors. Both resident donor banks and the temporary capture bank remain in the complete quote.
 
 Code: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/TensorParallel/QwenTensorParallelMTPPrefix.swift` (`QwenTensorParallelMTPPrefixState`), `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/TensorParallel/QwenTensorParallelMTPPrefixBudget.swift`, and `libs/mlx-swift-lm/Libraries/MLXLLM/Models/Qwen35MTP+PrefixCheckpoint.swift` (`Qwen35InlineMTPAssistant`). Full-artifact warm-prefix numerical and cancellation checks remain separate from tiny ownership fixtures.
 
@@ -1168,24 +1206,33 @@ Code: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Tensor
 Both ranks of every Qwen TP row's batch owner (9B, 27B, Qwen3.5/3.6 35B A3B) also keep their prefix snapshots in the
 pipeline's encrypted SSD tier (`QwenStagePrefixDiskTier`), so a repeated long
 prompt restores its prefix after both Macs restart. Each rank writes only its
-own shard: its heads' attention rows and its recurrent state at the captured
-boundary, and for a speculating owner the assistant's trusted history at that
-boundary as the record's speculative history. Records are written behind
-serving after bilateral clean retirement, and only for a capture the resident
-tier accepted, so a restore fits that tier again. The record directory is
-named by the plan and shares, the verified artifact, this rank's storage
-commitment, both builds and the assistant policy, never by the membership
-epoch. A restarted pair finds what the last one kept; a re-split, a reinstall
-or another assistant starts a new directory.
+own shard: its heads' attention rows to the deepest kept boundary, and its
+recurrent state at that boundary and at each kept boundary on the record's grid
+(the tier's stride, doubled until at most `maximumGridFrontiers` remain; the
+kept stripe boundaries past 4,096 are on it, the margin boundary and the 4,096
+one of a prompt past the first eight stripes generally are not). For a
+speculating owner, the record also carries the assistant's trusted history at
+its boundary as the record's speculative history. Records are written behind
+serving after bilateral clean retirement, for every clean capture, including
+one the resident tier's budget does not hold. Until a record is written, the
+writer holds that capture's arrays, within the queue's bounds. The record
+directory is named by the plan and shares, the verified artifact, this rank's
+storage commitment, both builds, the assistant policy and the prefix policy,
+never by the membership epoch. A restarted pair finds what the last one kept;
+a re-split, a reinstall, another assistant or another prefix policy (the
+4,096-token `qwen-tp-batch-grid-prefix-4096-v1` included) starts a new
+directory, so no rank offers an older policy's record.
 
 The sealed vote counts a boundary held in memory or as a complete SSD record.
 Each rank restores the agreed boundary from its own tiers, memory first. It
 checks that an SSD shard adopts into its request geometry before any page is
-written, and charges the shard to the resident tier at once. A second sealed
-exchange confirms that both ranks restored. Otherwise both prefill from zero,
-and a rank that did read its record keeps it resident, so the next offer finds
-it in memory. An unreadable or unadoptable record is deleted. The load
-agreement carries `qwen-tensor-parallel-prefix-v2`.
+written. The resident tier keeps the shard when its budget holds it; otherwise
+the shard is restored once, within the request's own charged capture, which
+covers its deepest boundary. A second sealed exchange confirms that both ranks
+restored. Otherwise both prefill from zero, and a rank that did read its record
+keeps it resident when the budget holds it, so the next offer finds it in
+memory. An unreadable or unadoptable record is deleted. The load agreement
+carries `qwen-tensor-parallel-prefix-v2` and the prefix policy.
 
 Attention rows are stored at the pair's checkpoint precision (`balanced` by
 default): a shard restored from its record has older rows approximate and the
@@ -1195,15 +1242,20 @@ the request then differs from a cold one. The load agreement then also carries
 [cluster SSD prefix record encoding](inference.md#cluster-ssd-prefix-record-encoding).
 
 The tier logs `darkbloom-prefix-ssd-v1` lines (`open`, `persist`, `restore`,
-`restore-confirmed`, `restore-declined`, `close`); the
-`darkbloom-tp-batch-prefix-v1` events are unchanged. Shutdown closes the tier
-(queued writes finish, bounded) before the model is released.
+`restore-confirmed`, `restore-declined`, `restore-unkept`, `close`); the
+`darkbloom-tp-batch-prefix-v1` events are unchanged (`stored` names the
+deepest boundary the resident tier kept, 0 for none). LOAD logs
+`darkbloom-prefix-v1 rank=<r> family=qwen mode=tensor_parallel enabled=<bool>
+policy=<policy> budget_bytes=<tier budget> capture_charge=<per-lane capture>
+room_bytes=<measured room> ssd=<bool>`. Shutdown closes the tier (queued writes
+finish, bounded) before the model is released.
 
 Code: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/TensorParallel/QwenTensorParallelPrefixDisk.swift`,
 `QwenTensorParallelNativeBatchExecutor.swift` (`agreePrefix`, `confirmedRetirement`) and
 `QwenTensorParallelResidentRuntime.swift` (load and shutdown) in the same directory.
-Tests: `QwenTensorParallelBatchSessionTests` (`ssd…AfterTheTiersReopen`) and
-`QwenTensorParallelMTPSessionTests` (the SSD round trip onto a newly loaded head).
+Tests: `QwenTensorParallelBatchSessionTests` (`ssd…AfterTheTiersReopen`),
+`QwenTensorParallelMTPSessionTests` (the SSD round trip onto a newly loaded head)
+and `QwenTensorParallelBatchPrefixTests` (`recordsOfAnotherPolicyAreNeverOffered`).
 
 ### GLM TP prefix SSD tier
 

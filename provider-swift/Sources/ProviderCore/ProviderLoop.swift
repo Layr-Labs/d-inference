@@ -218,6 +218,10 @@ public actor ProviderLoop {
     internal var appAttestStallRetryAt: ContinuousClock.Instant?
     internal let loopConfig: ProviderLoopConfig
     internal var ordinaryServingModelIDs: Set<String>
+    /// The operator's explicit selection: `enabled_models` with the start
+    /// selection, then each live switch. Nil when `enabled_models` is empty,
+    /// which serves any model the coordinator pushes (`operatorFilterAllows`).
+    internal var operatorModelFilter: Set<String>?
     internal var autopilotSuccessorNeedsInventoryRefresh = false
     internal var autopilotInventoryModels: [String: ModelInfo]
     internal let keyPair: NodeKeyPair
@@ -563,6 +567,10 @@ public actor ProviderLoop {
     /// processes; released on every non-restart exit and immediately after a
     /// durable commit.
     internal var updateSession: SelfUpdater.UpdateSession?
+    /// Cluster member only: the supervisor's drain for the pair's coordinated update that owns admission (its request
+    /// id), and the task that waits for the accepted requests and then holds the drain (`ProviderLoop+ClusterUpdateDrain`).
+    internal var clusterUpdateDrainID: String?
+    internal var clusterUpdateDrainTask: Task<Void, Never>?
 
     /// Latest desired_models push received while admission is closed. A switch
     /// clears obsolete state before committing, then replays the fresh snapshot
@@ -725,13 +733,12 @@ public actor ProviderLoop {
     /// When the pair slot's engine was first seen wedged ("crashed"), for the
     /// supervisor's liveness guard (S18).
     internal var clusterPairWedgedSince: ContinuousClock.Instant?
-    /// The leader's serving context for committed starts (S10), and the one
-    /// start it serves: its epoch, whether the session asked it to stop, and
-    /// whether the pair is still forming.
+    /// The leader's serving context for committed starts (S10), the one
+    /// start it serves (held from its serve until its session's stop), and
+    /// the last start whose session stopped, which is never served after.
     internal var clusterPairServing: ClusterPairServingContext?
     internal var clusterPairServingEpoch: UUID?
-    internal var clusterPairServingStopped = false
-    internal var clusterPairServingForming = false
+    internal var clusterPairServingEndedEpoch: UUID?
     /// The follower member's link serving of its committed starts; retained
     /// here because the session control holds its serving host weakly.
     internal var clusterPairFollower: DistributedMemberLinkFollower?
@@ -939,6 +946,9 @@ public actor ProviderLoop {
             sink: logSinkForTesting)
         self.loopConfig = config
         self.ordinaryServingModelIDs = Set(config.models.map(\.id))
+        let enabledModels = config.config.backend.enabledModels
+        self.operatorModelFilter = enabledModels.isEmpty
+            ? nil : Set(enabledModels).union(config.models.map(\.id))
         self.autopilotInventoryModels = Dictionary(config.autopilotInventory.filter {
             $0.weightHash?.isEmpty == false && EngineV2SupportedModels.isSupported(model: $0)
                 && ModelRuntimeRequirements.isEligible(modelID: $0.id, available: config.runtimeCapabilities)

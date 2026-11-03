@@ -68,7 +68,7 @@ struct QwenTensorParallelMTPBudget {
         // prompt stays one rectangle, as before.
         let chunks = (promptTokens + chunkSize - 1) / chunkSize
         let decodeRoots = min(flushRows ?? 0, maximumTokens)
-        let checkpointRows = min(QwenTensorParallelBatchPrefixBudget.maximumTokens, maximumTokens)
+        let checkpointRows = min(QwenTensorParallelMTPPrefixBudget.maximumTokens, maximumTokens)
         let heldRows = flushRows.map {
             $0 >= promptTokens ? promptTokens : min(promptTokens, max(checkpointRows, $0 + chunkSize + 1))
         } ?? promptTokens

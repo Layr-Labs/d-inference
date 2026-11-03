@@ -167,7 +167,11 @@ and linking on that SDK. Ordinary development retains the package's Swift 6.3
 minimum; release evidence must use the selected release toolchain.
 
 Pinned Python 3.12.10 and checksum-verified CMake 3.31.12 provide missing build
-tools. `scripts/prepare-metal-toolchain.py` requires a working compiler probe,
+tools. `scripts/install-release-cmake.sh` uses the CMake 3.31.12 that Darkbloom macOS
+images unpack from the same checksum-verified archive into
+`$RUNNER_TOOL_CACHE/cmake/3.31.12/universal`, when its `universal.complete`
+marker exists and the binary reports that exact version; elsewhere it
+downloads and verifies the 80 MB archive. `scripts/prepare-metal-toolchain.py` requires a working compiler probe,
 not merely a completed component download. It clears stale discovery state,
 waits boundedly for registration, and uses Apple's component export/import
 fallback. The specific transient asset-catalog download error gets at most

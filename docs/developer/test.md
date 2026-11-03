@@ -567,6 +567,17 @@ first, and a request for the loading model when a second copy would not fit.
 and the body decode on the CPU with only the tokenizer loaded and the background
 comparisons off; it exits 2 if any token ID or decoded field differs.
 
+```bash
+swift test --skip-build --filter 'LocalTokenizerByteFallbackTests'
+```
+
+`LocalTokenizerByteFallbackTests` loads a synthetic tokenizer with Gemma 4's decoder
+sequence through the production `LocalTokenizerLoader` and requires characters
+written as `<0xHH>` tokens to survive a whole decode, a stream, a segment restart
+inside the run and a trailing special token, a run cut inside a character to end in
+one U+FFFD, and the unknown token not to read as a byte. A literal `<0x41>` token on
+another decoder keeps its spelling.
+
 ## Desktop Control And Frontend
 
 `make desktop-test` exercises the frontend journeys and bridge validation.

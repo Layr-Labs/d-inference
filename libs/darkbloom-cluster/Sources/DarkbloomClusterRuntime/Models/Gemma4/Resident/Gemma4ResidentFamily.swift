@@ -47,6 +47,7 @@ extension Gemma4ResidentLoadedStage: LayerStageResidentStage {
     }
 
     func requestAllowance(plan: QwenLayerStagePlan, rank: Int, maximumTokens: Int, chunkSize: Int,
+                          decode: LayerStageDecodeShape,
                           bound: (Int) throws -> Int) throws -> QwenResidentRequestAllowance {
         guard plan.stages.count == 2, (0...1).contains(rank), loaded.plan.fingerprint == plan.fingerprint else {
             throw ProbeError("Resident request allowance requires this stage's admitted two-stage Plan")
@@ -58,13 +59,15 @@ extension Gemma4ResidentLoadedStage: LayerStageResidentStage {
         }
         let state = try budget.allowance(bound: bound)
         // One prefill frame's attention transient at this context, as the
-        // dense allowance adds it, so a context the gate admits is one a frame runs in.
+        // dense allowance adds it, so a context the gate admits is one a frame
+        // runs in; or a decode step's on every layer it runs, when larger.
         let logical = try Gemma4PrefillTransient.bytes(layers: plan.stages[rank].layers, chunkTokens: chunkSize,
-                                                       contextTokens: maximumTokens)
+            contextTokens: maximumTokens, decodeRows: decode.rows,
+            decodeLayers: decode.stages(of: plan, rank: rank).flatMap(\.layers))
         let transient = logical == 0 ? 0 : try bound(logical)
         return .init(stateBytes: state.stateBytes, fusionBytes: state.fusionBytes,
             reservedBytes: try QwenLongPrefillCheckedBytes.sum([state.reservedBytes, transient]),
-            transientBytes: transient, contextTokens: maximumTokens)
+            transientBytes: transient, contextTokens: maximumTokens, decode: decode)
     }
 
     func diagnosticResources(plan: QwenLayerStagePlan, request: QwenLayerStageGenerationRequest, rank: Int,
@@ -84,7 +87,7 @@ extension Gemma4ResidentLoadedStage: LayerStageResidentStage {
         // A byte-only allowance is not a permit: rederive the exact request with
         // the actual allocator, then require the owner's reservation to match.
         let actual = try self.requestAllowance(plan: plan, rank: rank, maximumTokens: request.maximumTokens,
-            chunkSize: min(request.chunkSize, request.promptCount),
+            chunkSize: min(request.chunkSize, request.promptCount), decode: requestAllowance.decode,
             bound: QwenResidentResourceEnvironment.allocationBound)
         guard actual.stateBytes == requestAllowance.stateBytes, actual.fusionBytes == requestAllowance.fusionBytes,
               actual.reservedBytes == requestAllowance.reservedBytes else {

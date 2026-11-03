@@ -12,6 +12,7 @@ extension EngineV2Bridge {
         continuation: AsyncStream<GenerationEvent>.Continuation,
         holdsSharedReservation: Bool,
         stopSequences: [String] = [],
+        stopStringScope: CBv2StopStringScope? = nil,
         usageSignal: EngineV2RequestUsageSignal? = nil,
         prefixCacheReceiptID: CBv2RequestID? = nil,
         readyReceiptRegistered: Bool = false,
@@ -28,6 +29,7 @@ extension EngineV2Bridge {
                 id: id, events: events, continuation: continuation,
                 holdsSharedReservation: holdsSharedReservation,
                 stopSequences: stopSequences,
+                stopStringScope: stopStringScope,
                 usageSignal: usageSignal,
                 prefixCacheReceiptID: prefixCacheReceiptID,
                 readyReceiptRegistered: readyReceiptRegistered,
@@ -59,6 +61,7 @@ extension EngineV2Bridge {
         continuation: AsyncStream<GenerationEvent>.Continuation,
         holdsSharedReservation: Bool,
         stopSequences: [String] = [],
+        stopStringScope: CBv2StopStringScope? = nil,
         usageSignal: EngineV2RequestUsageSignal? = nil,
         prefixCacheReceiptID: CBv2RequestID? = nil,
         readyReceiptRegistered: Bool = false,
@@ -153,7 +156,8 @@ extension EngineV2Bridge {
                 if reason == .stop || reason == .length {
                     usageSignal?.record(matchedStopSequence: matchedStopSequence(
                         candidates: stopSequences,
-                        generatedTokens: generatedTokens
+                        generatedTokens: generatedTokens,
+                        scope: stopStringScope
                     ))
                 }
                 // Out-of-band usage detail: the

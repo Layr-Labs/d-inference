@@ -165,7 +165,7 @@ VALIDATE_GIT = """if [ -d .git ] && ! { git rev-parse --verify -q HEAD >/dev/nul
   echo "::warning title=.git cache::git fsck rejected the restored .git; checking out without it."
   rm -rf .git
 fi"""
-SPARSE_PATTERNS = ("/*", "!/docs/reports/**/*.gz", "!/landing/public/**/*.mp4")
+SPARSE_PATTERNS = ("/*", "!/docs/reports/evidence/", "!/landing/public/media/")
 GIT_CACHE_STEPS = ("Select today's .git cache", "Restore the newest saved .git",
                    "Discard a damaged cached .git", None, "Save .git for later runs")
 
@@ -886,7 +886,7 @@ class ProviderCIWorkflowTests(unittest.TestCase):
                     self.assertEqual("::warning" in result.stdout, case == "damaged")
             self.assertTrue(tree)
 
-    def test_sparse_checkouts_skip_only_evidence_archives_and_landing_videos(self):
+    def test_sparse_checkouts_skip_only_report_evidence_and_landing_media(self):
         env = self.workflow.split("\njobs:\n", 1)[0]
         self.assertIn("  CHECKOUT_SPARSE: |\n" + "".join(f"    {pattern}\n" for pattern in SPARSE_PATTERNS), env)
         self.assertEqual(self.workflow.count("sparse-checkout: ${{ env.CHECKOUT_SPARSE }}"), 8)
@@ -895,11 +895,13 @@ class ProviderCIWorkflowTests(unittest.TestCase):
                       + "".join(f"            {pattern}\n" for pattern in SPARSE_PATTERNS)
                       + "          sparse-checkout-cone-mode: false\n", docs_impact)
         # Real git decides what the patterns keep: every file a job may read,
-        # including the report a provider test hashes, but no archive or video.
-        kept = ["Makefile", "docs/reports/report.md", "docs/reports/evidence/notes.json",
+        # including the report a provider test hashes, but no evidence or media.
+        kept = ["Makefile", "docs/reports/report.md", "docs/reports/archive.tar.gz",
                 "provider-swift/Tests/Fixtures/clip.mp4", "fixtures/data.gz", "landing/src/page.tsx",
-                "landing/public/favicon.svg", "docs/reports/2026-10-31-public-cluster-models.md"]
-        skipped = ["docs/reports/evidence/run.jsonl.gz", "docs/reports/archive.tar.gz", "landing/public/media/demo.mp4"]
+                "landing/README.md", "landing/public/favicon.svg",
+                "docs/reports/2026-10-31-public-cluster-models.md"]
+        skipped = ["docs/reports/evidence/run/packets.jsonl.gz", "docs/reports/evidence/notes.json",
+                   "landing/public/media/demo.mp4", "landing/public/media/poster.png"]
         with tempfile.TemporaryDirectory() as work:
             def git(*args):
                 subprocess.run(["git", "-C", work, "-c", "user.name=t", "-c", "user.email=t@t",

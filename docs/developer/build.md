@@ -334,8 +334,8 @@ later runs that day restore the exact key and save nothing. Checkouts set
 `persist-credentials: false`, so the saved `.git/config` holds no job token.
 
 Checkouts download only what their job reads. Every checkout but Docs Lint's
-skips the 738 `.gz` evidence archives under `docs/reports` and the videos under
-`landing/public` (`CHECKOUT_SPARSE`, 379 MiB of the 470 MiB tree): a sparse
+skips `docs/reports/evidence` and `landing/public/media` (`CHECKOUT_SPARSE`,
+415 MB of evidence tarballs, landing videos and their companions): a sparse
 checkout fetches commits and trees without file contents (`blob:none`), then
 only the files it checks out. The reports themselves stay, because a provider
 test hashes `docs/reports/2026-10-31-public-cluster-models.md`. Docs Lint

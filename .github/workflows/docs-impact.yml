@@ -59,12 +59,12 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
           # The diff needs commits and trees; old file contents are fetched only
-          # when read. Evidence archives and landing videos are never read.
+          # when read. Report evidence and landing media are never read.
           filter: blob:none
           sparse-checkout: |
             /*
-            !/docs/reports/**/*.gz
-            !/landing/public/**/*.mp4
+            !/docs/reports/evidence/
+            !/landing/public/media/
           sparse-checkout-cone-mode: false
       - name: Test documentation-impact validation
         run: python3 scripts/test-docs-impact-check.py

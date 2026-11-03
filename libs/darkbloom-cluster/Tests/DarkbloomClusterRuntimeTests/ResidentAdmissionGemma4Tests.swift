@@ -512,7 +512,7 @@ struct ResidentAdmissionGemma4Tests {
         #expect(Set(all.map(\.runtimeModelID)).count == all.count && Set(all.map(\.manifestSHA256)).count == all.count)
         for model in all.suffix(3) {
             #expect(model.layerCount == 30 && model.supportedCuts == Array(1...29))
-            #expect(model.supportedGenerationModes == [.pipeline])
+            #expect(model.supportedGenerationModes == [.pipeline, .tensorParallel])
             #expect(model.supportedPrefillSchedules == [.serial, .oneChunkLookahead])
             #expect(model.profileID == model.runtimeModelID + "_greedy_generation_v1")
             #expect(model.requiredArithmeticEnvironment == Gemma4ArithmeticEnvironment.requiredValues)

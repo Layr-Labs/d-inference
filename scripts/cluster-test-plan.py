@@ -165,6 +165,9 @@ SELECTIONS = (
     Selection("tf32-off", "blocking", 2, {"MLX_ENABLE_TF32": "0"}, tests=(
         "receiverCommitPrecedesProducerPublicationAndMatchesFullCachedForward",
     )),
+    Selection("gemma-tp-diag", "blocking", 2, {"GEMMA_TP_DIAG": "1"}, tests=(
+        "diagnosticShardOperationsEqualWholeOperations",
+    )),
     Selection("qwen-tp-real-geometry-gpu", "nonblocking", 1, {"QWEN_TP_REAL_GEOMETRY_GPU": "1"}, tests=(
         "rowsEqualTheirSoloStepsAndWindowPositionsAtRealWidths",
     )),
@@ -270,7 +273,7 @@ def command(selection, output):
 
 # Variables the runtime tests read to change what they run; no selection
 # inherits one from the runner.
-TEST_SWITCH_PREFIXES = ("QWEN_TP_", "GLM53_", "DARKBLOOM_PAGED_BENCH", "PREFIX_RECORD_")
+TEST_SWITCH_PREFIXES = ("QWEN_TP_", "GLM53_", "GEMMA_TP_", "DARKBLOOM_PAGED_BENCH", "PREFIX_RECORD_")
 
 
 def environment(selection):

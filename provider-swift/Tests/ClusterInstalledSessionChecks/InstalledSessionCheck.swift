@@ -298,8 +298,13 @@ final class EndpointBox: @unchecked Sendable {
             if count>0 { let reply=Array("echo:".utf8)+buffer[0..<count]; _=reply.withUnsafeBytes{write(connection,$0.baseAddress,$0.count)} }
             close(connection)
         }
-        let relayPort=ClusterLocalServing.servingPort(preferred:47_000+Int(getpid()%1_000),span:200)
-        guard let relay=ClusterLocalRelay(port:relayPort,bind:"127.0.0.1",target:.init(host:"127.0.0.1",port:apiPort)) else{throw CheckFailure(message:"relay did not listen on \(relayPort)")}
+        // A port the OS assigns from its ephemeral range, never a cluster port a live pair on this Mac may hold.
+        var listening:ClusterLocalRelay?
+        for _ in 0..<8 where listening==nil {
+            listening=ClusterLocalRelay(port:try ephemeralLoopbackPort(),bind:"127.0.0.1",target:.init(host:"127.0.0.1",port:apiPort))
+        }
+        guard let relay=listening else{throw CheckFailure(message:"relay did not listen on an ephemeral loopback port")}
+        let relayPort=relay.port
         try require(!ClusterLocalServing.portIsFree(relayPort),"the relay's port read as free")
         guard let client=ClusterLocalRelay.connect(.init(host:"127.0.0.1",port:relayPort)) else{throw CheckFailure(message:"could not reach the relay")}
         defer{close(client)}
@@ -309,6 +314,23 @@ final class EndpointBox: @unchecked Sendable {
         try require(String(decoding:received,as:UTF8.self)=="echo:hello","relay passed \(String(decoding:received,as:UTF8.self))")
         relay.stop()
         try require(relay.isStopped && ClusterLocalServing.portIsFree(relayPort),"a stopped relay kept its port")
+    }
+    /// The cluster's own ports (pairing 47421, setup exchange 47422, control lease 47423): a live pair on this Mac
+    /// listens there, so no check binds them.
+    static let clusterPorts=47_421...47_423
+    /// A free loopback port the OS assigns (port 0: macOS takes it from 49152 and up), never one of `clusterPorts`.
+    static func ephemeralLoopbackPort() throws->Int {
+        let probe=socket(AF_INET,SOCK_STREAM,0)
+        guard probe>=0 else{throw CheckFailure(message:"no socket for a test port")}
+        defer{close(probe)}
+        var address=sockaddr_in(); address.sin_len=UInt8(MemoryLayout<sockaddr_in>.size); address.sin_family=sa_family_t(AF_INET)
+        address.sin_port=0; address.sin_addr=in_addr(s_addr:INADDR_LOOPBACK.bigEndian)
+        let bound=withUnsafePointer(to:&address){$0.withMemoryRebound(to:sockaddr.self,capacity:1){bind(probe,$0,socklen_t(MemoryLayout<sockaddr_in>.size))}}
+        var length=socklen_t(MemoryLayout<sockaddr_in>.size)
+        let named=withUnsafeMutablePointer(to:&address){$0.withMemoryRebound(to:sockaddr.self,capacity:1){getsockname(probe,$0,&length)}}
+        let port=Int(UInt16(bigEndian:address.sin_port))
+        try require(bound==0 && named==0 && port>0 && !clusterPorts.contains(port),"the OS gave no usable test port (\(port))")
+        return port
     }
     static func main() async throws {
         signal(SIGALRM){_ in Darwin._exit(124)};alarm(110);defer{alarm(0)}
@@ -803,7 +825,7 @@ final class EndpointBox: @unchecked Sendable {
     /// Both installed and member serving derive their profile through the same
     /// selected-mode initializer; a pipeline must not inherit GLM TP capture.
     static func logprobModeAdmission(_ f: InstalledFixture) throws {
-        for adapter in [ClusterRuntimeAdapter.qwen35Dense, .glm5NextLayerStage] {
+        for adapter in [ClusterRuntimeAdapter.qwen35Dense, .glm5NextLayerStage, .gemma4LayerStage] {
             let registered = adapter.registeredProfiles[0]
             for mode in [ClusterGenerationMode.pipeline, .tensorParallel] {
                 let fixture = try InstalledFixture.make(root: f.root.appendingPathComponent("logprobs-\(adapter.rawValue)-\(mode.rawValue)"),
@@ -817,8 +839,8 @@ final class EndpointBox: @unchecked Sendable {
                 let memberProfile = try DistributedResidentExecutionProfile(capability: prepared.plan.capability,
                     generationMode: prepared.plan.configuration.selectedGenerationMode,
                     requestTimeout: .seconds(prepared.plan.configuration.requestTimeoutSeconds))
-                // GLM and every Qwen TP row capture logprobs in tensor parallel; no pipeline does.
-                let supported = mode == .tensorParallel && (adapter == .glm5NextLayerStage
+                // GLM, Gemma 4 and every Qwen TP row capture logprobs in tensor parallel; no pipeline does.
+                let supported = mode == .tensorParallel && (adapter == .glm5NextLayerStage || adapter == .gemma4LayerStage
                     || adapter.servesQwenTensorLanes(runtimeModelID: registered.runtimeModelID))
                 try require(installed.profile.supportsLogprobs == supported && memberProfile.supportsLogprobs == supported,
                     "logprob support did not follow the installed adapter and selected mode")

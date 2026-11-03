@@ -76,18 +76,16 @@ public struct DistributedResidentExecutionProfile: Sendable {
     }
 
     /// The installed-session and member-pair paths use the same selected-mode
-    /// capability. Keep this aligned with NativeWorkerRuntime.capturesLogprobs;
-    /// an unknown adapter fails closed before either worker reserves a request.
+    /// capability (`ClusterModelFeaturePolicy.capturesLogprobs`, kept aligned
+    /// with NativeWorkerRuntime.capturesLogprobs); an unknown adapter fails
+    /// closed before either worker reserves a request.
     init(capability: ClusterRuntimeCapability, generationMode: ClusterGenerationMode,
          requestTimeout: Duration) throws {
         let wire = capability.profile
         try self.init(id: wire.id, vocabularySize: wire.vocabularySize,
             maxPromptTokens: wire.maximumPromptTokens, maxOutputTokens: wire.maximumOutputTokens,
             maxContextTokens: wire.maximumContextTokens, requestTimeout: requestTimeout,
-            supportsLogprobs: generationMode == .tensorParallel && (
-                capability.adapterID == ClusterRuntimeAdapter.glm5NextLayerStage.rawValue
-                || ClusterRuntimeAdapter(rawValue: capability.adapterID)?
-                    .servesQwenTensorLanes(runtimeModelID: capability.runtimeModelID) == true))
+            supportsLogprobs: ClusterModelFeaturePolicy.capturesLogprobs(capability, mode: generationMode))
     }
 }
 

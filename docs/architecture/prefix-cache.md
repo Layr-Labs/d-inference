@@ -1040,7 +1040,8 @@ reach both ranks in its reservation: `ClusterWorkerReservation.prefixCache`
   stage families through `qwenStagePrefixScope` (resident cache, SSD tier,
   speculative history), GLM tensor parallel through
   `GLM5NextTensorParallelResidentRuntime.prefixScope` (vote, restore and kept
-  boundary) and `prefixDiskScope` (its SSD records), and the Qwen
+  boundary) and `prefixDiskScope` (its SSD records), Gemma tensor parallel
+  through `Gemma4TensorParallelPrefix.scopes` (both tiers), and the Qwen
   tensor-parallel batch owner through
   `QwenTensorParallelResidentRuntime.batchPrefixScope` (both tiers and the
   assistant's donors).
@@ -1074,10 +1075,13 @@ restored in chronological writes no larger than
 `PagedKVBackend.pool.config.maxPrefillChunk` by `CBv2PagedPrefixRestore.write`
 in `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/State/CBv2PagedPrefixRestore.swift`.
 This permits a retained window larger than a legal individual write without
-changing its absolute position or dropping tail tokens. Adoption releases its
-new rows when restoration throws. Contiguous rows keep their existing update
-path. This is resident stage restoration; it adds no SSD format, persistent
-cache identity or cross-host KV-transfer contract.
+changing its absolute position or dropping tail tokens. With `reservedTokens`
+(Gemma tensor parallel), the new rows are reserved for the request's first
+tokens and grow as a fresh request's do; without it, as before, for its whole
+length. Adoption releases its new rows when restoration throws. Contiguous
+rows keep their existing update path. This is resident stage restoration; it
+adds no SSD format, persistent cache identity or cross-host KV-transfer
+contract.
 
 ## Nemotron chunk-grid reuse
 
@@ -1312,3 +1316,57 @@ native records; `GLM53_PREFIX_SSD=1` on the serving-width synthetic stage,
 also through a balanced record) and
 `GLM5NextTensorParallelPrefixRecordEncodingTests` (a balanced record encodes
 only the DSA latents and adopts).
+
+### Gemma TP prompt prefixes
+
+Both ranks of Gemma 4 tensor parallel keep their prompt prefixes as the Gemma
+pipeline keeps a stage's: in the same memory tier (`QwenStagePrefixCache`) and
+the same encrypted SSD tier (`QwenStagePrefixDiskTier`), each rank only its own
+KV heads of every layer (4 sliding, 1 full on the 26B). Code:
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Gemma4/TensorParallel/Gemma4TensorParallelPrefix.swift`
+(`Gemma4TensorParallelPrefix`, `Gemma4TensorParallelPrefixCapture`).
+
+| Step | What happens |
+|---|---|
+| Capture | During the prompt, after each chunk that ends on the cache's stride grid strictly before the prompt end (the [chunk-grid rule](#gemma-chunk-grid-reuse)), the rank copies each sliding layer's window, and at the deepest such boundary its full-attention rows; a capture keeps the deepest boundary first, then the deepest grid boundaries its limit holds (`QwenStagePrefixCaptureCost.kept`). The record shape is the pipeline stage's: full rows as attention entries, each window in the recurrent slots. |
+| Keep | Only after the request ended on both ranks: a solo request after the end-of-request exchange and its pages' release, a lane after the batch driver's bilateral retirement (`confirmedRetirement`). Its boundaries become resident and are written to the SSD tier behind serving. A failed request keeps nothing, and the rank drops every entry (its peer may hold others). |
+| Scope | Resident: the load agreement and the request's chunk grid; on SSD: `Gemma4TensorParallelPrefix.planScope` (the plan and its arithmetic terms, the prompt policy, the arithmetic receipt and profile, the verified artifact and storage commitment, both builds; never the membership epoch) and the request's chunk grid; both in the request's [tenant partition](#cluster-prefix-tenant-partitions) (`Gemma4TensorParallelPrefix.scopes`). |
+| Vote | One sealed sum of every stride-grid boundary before the prompt's final token: each rank offers 1 for a boundary in memory and 3 for one held only as a complete SSD record (`QwenTensorParallelPrefixCache.offer`); the deepest boundary both offer (a sum of 2, 4 or 6) is agreed. A request whose cache is off, or whose prompt is shorter than one stride, votes on neither rank. |
+| Restore | Each rank reads the agreed boundary from its own tiers, memory first, checks it adopts into its geometry (`Gemma4TensorParallelPrefix.adopts`), and writes it into fresh pages of a new request, reserved for its first tokens as a cold request's are (`CBv2OwnedRequestState` sliding adoption). Then a second sealed sum (`QwenTensorParallelPrefixCache.confirm`) shows both ranks restored; otherwise both discard what they restored and prefill from zero. An unreadable record is deleted by the tier, one that does not adopt by the rank; a state read from SSD stays resident either way. |
+
+A restore continues the prompt from the boundary on the same chunk grid, so its
+frames are the cold request's frames from there: the restored rows, windows and
+position offsets equal the cold request's at the boundary, and its logits and
+tokens equal the cold request's bit for bit. Gemma records are native
+(`QwenStagePrefixDiskFamily.native`), so an SSD restore is exact too. The load
+agreement carries `gemma4-tensor-parallel-prefix-v1` `on`; a rank whose
+`DARKBLOOM_CLUSTER_PREFIX_CACHE=off` loads `off` and its peer refuses it.
+
+Memory: each request's charge includes its own prompt's capture at its deepest
+boundary (none when its cache is off), and the LOAD quote the capture of the
+profile's longest prompt
+([rank memory](hardware-support.md#gemma-4-tensor-parallel-rank-memory)). The
+memory tier is charged nowhere: as the pipeline's, its budget is half the room
+the load measures beside the shard and that quote
+(`QwenStagePrefixCache.budget(roomBytes:)`), so it never exceeds that room. A
+request captures what its charge covers whatever the tier's budget
+(`Gemma4TensorParallelPrefix.captureLimit`): a tier the measured room leaves
+without budget keeps nothing resident, and the capture still reaches the SSD
+tier. A capture beyond its charged part (the pipeline's limit) is asked of the
+live gate and cut to that part when refused. Kept entries give way before a
+reservation, a lane or a running request is refused for memory, and a request
+served alone then lets its own capture go, as the pipeline's does; under host
+pressure an idle rank drops them (`releaseIdleMemory`). The SSD tier's
+configuration, key, owner-only directories, TTL, daily write cap, free-space
+floor and bounded close are every cluster family's
+(`QwenStagePrefixDiskConfiguration`).
+
+Logs: `darkbloom-prefix-v1 … family=gemma4 mode=tensor_parallel` at load
+(`budget_bytes=`, `capture_charge=`, `room_bytes=`, `ssd=`), at each agreed boundary
+(`agreed=`, `reused=`, `tier=`) and at each keep (`stored=`); the tier's
+`darkbloom-prefix-ssd-v1` lines and `restore-declined`. Tests:
+`Gemma4TensorParallelPrefixTests` (restore against cold bit for bit, the
+state at and after the boundary, hits and misses on both ranks, the request
+loop and lanes, budget and eviction, the SSD round trip, refused records and
+the cache rules) and the paged oracle matrix's `--prefix repeat` runs
+([focused checks](../developer/test.md#focused-gemma-4-tensor-parallel-checks)).

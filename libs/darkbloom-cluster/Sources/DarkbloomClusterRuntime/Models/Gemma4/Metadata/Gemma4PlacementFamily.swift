@@ -12,11 +12,19 @@ import Foundation
 struct Gemma4PlacementFamily: ClusterPlacementFamily {
     let specification: Gemma4RegisteredSpecification
     let profile: QwenLayerStageGenerationProfile
+    /// The tensor-parallel plan (`Gemma4TensorParallelPlan`, two ranks by
+    /// heads and expert channels) when the resident row lists the mode.
+    let tensorParallel: Gemma4TensorParallelPlan?
+    /// The native request reservation of a tensor-parallel rank
+    /// (`Gemma4TensorParallelRequestBudget`), set where the allocator's bound
+    /// is known (`ClusterPlacementLayouts.layout`); nil in metadata-only layouts.
+    var tensorParallelRequestAllowance: ClusterTensorParallelRequestAllowance?
 
     /// The row a manifest names, or, without one, the first row of this
     /// configuration: the two 8-bit catalog entries are one artifact (one
     /// configuration, aggregate and inventory) and lay out identically.
     init(configuration: Data, manifest: Data?) throws {
+        let specification: Gemma4RegisteredSpecification
         if let manifest {
             specification = try Gemma4RegisteredSpecification.registered(configuration: configuration, manifest: manifest)
         } else {
@@ -26,8 +34,16 @@ struct Gemma4PlacementFamily: ClusterPlacementFamily {
             }
             specification = row
         }
-        _ = try Gemma4StageGeometry.decode(configuration, defaultQuantizationBits: specification.defaultQuantizationBits)
+        try self.init(specification: specification,
+            decoded: Gemma4StageGeometry.decode(configuration, defaultQuantizationBits: specification.defaultQuantizationBits))
+    }
+
+    /// The row's family over a configuration already held to its geometry.
+    init(specification: Gemma4RegisteredSpecification, decoded: Gemma4StageGeometry.Decoded) throws {
+        self.specification = specification
         profile = try Gemma4ResidentAdapterDefinition.profile(specification: specification)
+        tensorParallel = Gemma4ResidentAdapterDefinition.supportedGenerationModes.contains(.tensorParallel)
+            ? try Gemma4TensorParallelPlan(configuration: decoded.root) : nil
     }
 
     var runtimeModelID: String { specification.model.rawValue }
@@ -125,5 +141,51 @@ struct Gemma4PlacementFamily: ClusterPlacementFamily {
               ClusterPlacementInventory.fingerprint(text) == specification.inventorySHA256 else {
             throw ProbeError("The artifact's tensor headers are not the registered Gemma 4 inventory")
         }
+    }
+
+    // MARK: - Tensor parallel
+
+    /// `Gemma4TensorParallelResidentRuntime`'s plan: each layer sums its
+    /// attention partial and one packed feed-forward collective (the dense
+    /// row and the 8 selected experts' rows, FP32), and each step the
+    /// vocabulary-split selection once. Each rank keeps its own KV heads.
+    /// Equal shares only (overlapping zero-padded channel splits). Chosen
+    /// only where predicted faster than the pipeline
+    /// (`ClusterTensorParallelChoice.fastest`): on big Macs one Gemma step is
+    /// mostly a per-token floor that two ranks do not halve, while 61 sums
+    /// cross the link (`docs/architecture/inference.md`).
+    var tensorParallelPlan: ClusterTensorParallelFamilyPlan? {
+        tensorParallel.map { plan in
+            ClusterTensorParallelFamilyPlan(plan: Gemma4TensorParallelPlan.name, ranks: [plan.size],
+                reductionsPerLayer: plan.reductionsPerLayer, reductionsPerStep: plan.reductionsPerStep,
+                partialBytesPerToken: plan.feedForwardPartialBytesPerToken,
+                layerPartialBytesPerToken: plan.layerPartialBytesPerToken, stateDividesByHeads: true,
+                requestAllowance: tensorParallelRequestAllowance, choice: .fastest)
+        }
+    }
+
+    /// The plan's cut (the same on both ranks): replicated, or rows, input
+    /// columns or expert channels divided. The tied embedding is listed at
+    /// both ends of the layout (the lookup and the head); a rank holds it
+    /// once, whole, and its head reads its own half of the vocabulary rows,
+    /// so each end counts as divided: two halves are the one copy a rank holds.
+    func tensorParallelCut(ofStoredTensor name: String) -> ClusterTensorParallelTensorCut? {
+        guard let plan = tensorParallel else { return nil }
+        if loadsAtBothEnds(storedTensor: name) { return .divided }
+        guard let cut = try? plan.cut(key: name, rank: 0) else { return nil }
+        return cut == .replicate ? .replicated : .divided
+    }
+
+    /// Both ranks store the down projection's middle quantization group and
+    /// pad their gate and up rows with the other rank's half of it as zeros
+    /// (`Gemma4TensorParallelPlan.ChannelSplit`): a rank's share of such a
+    /// tensor is more than half, by these bytes.
+    func tensorParallelOverlapBytes(of tensor: ClusterPlacementStoredTensor, loadedBytes: Int) -> Int {
+        guard let plan = tensorParallel, layer(ofStoredTensor: tensor.name) != nil,
+              let cut = try? plan.cut(key: tensor.name, rank: 0),
+              let local = try? plan.localShape(key: tensor.name, shape: tensor.shape, cut: cut) else { return 0 }
+        let elements = tensor.shape.reduce(1, *), held = local.reduce(1, *)
+        guard elements > 0, tensor.byteCount % elements == 0, loadedBytes == tensor.byteCount else { return 0 }
+        return max(0, 2 * held * (tensor.byteCount / elements) - tensor.byteCount)
     }
 }

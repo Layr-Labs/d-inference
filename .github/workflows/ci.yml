@@ -777,10 +777,10 @@ jobs:
         run: bash provider-swift/Tests/ClusterOnboardingChecks/run.sh
 
   test-cluster:
-    # DarkbloomClusterRuntimeTests in selections, each in its own process, on
-    # separate Macs: every test without a switch, and the switched tests that
-    # pass on these runners. scripts/cluster-test-plan.py places them in
-    # shards by measured seconds; the last shard runs the base catch-all.
+    # DarkbloomClusterRuntimeTests in processes on separate Macs: every test
+    # without a switch, and the switched tests that pass on these runners.
+    # scripts/cluster-test-plan.py places them in shards by measured seconds;
+    # the last shard runs the base catch-all.
     # Cluster Runtime Tests Summary checks that every test ran once.
     name: Cluster Runtime Tests (shard ${{ matrix.shard }})
     needs: changes

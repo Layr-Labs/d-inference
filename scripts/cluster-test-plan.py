@@ -31,7 +31,7 @@ Subcommands:
 """
 
 import argparse
-from collections import defaultdict
+from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 import importlib.util
 import json
@@ -337,7 +337,7 @@ def assign(shards, items, fixed=()):
     placed = [defaultdict(list) for _ in range(shards)]
     for index, selection, seconds in fixed:
         loads[index] += PROCESS_SECONDS + seconds
-        placed[index][selection.name]
+        placed[index].setdefault(selection.name, [])
     for seconds, selection, unit in sorted(items, key=lambda item: (-item[0], item[1].name, str(item[2]))):
         cost = lambda index: seconds + (0 if selection.name in placed[index] else PROCESS_SECONDS)
         index = min(range(shards), key=lambda index: (loads[index] + cost(index), index))
@@ -433,6 +433,7 @@ def stream(argv, cwd, env, log):
                                                  stderr=subprocess.STDOUT, text=True, errors="replace") as child:
         for line in child.stdout:
             sys.stdout.write(line)
+            sys.stdout.flush()
             copy.write(line)
         return child.wait()
 
@@ -450,15 +451,16 @@ def run(lane, shard):
     if reports:
         reports.mkdir(parents=True, exist_ok=True)
         listing = subprocess.run(["swift", "test", "list", "--skip-build"], cwd=PACKAGE,
-                                 capture_output=True, text=True, check=True).stdout
-        (reports / f"tests-{shard}.txt").write_text(listing)
+                                 stdout=subprocess.PIPE, text=True, check=True).stdout
         listed = provider_shards.listed_tests(listing)
+        (reports / f"tests-{shard}.txt").write_text("\n".join(listed) + "\n")
     rows = []
     for process in selected:
         report_name = f"{lane}-{shard}-{process.name}"
-        if listed is not None and not process.catch_all and not planned(listed, process):
-            # Only units the weights name and the sources no longer have; the
-            # audit still requires every listed test to run once.
+        if listed is not None and process.selection.base and not process.catch_all and not planned(listed, process):
+            # Only base units the weights name and the sources no longer have;
+            # the catch-all and the audit still require every listed test once.
+            # An opt-in process always runs: its tests come from the plan.
             print(f"::notice::{process.name} selects no listed test in shard {shard}; refresh the weights", flush=True)
             (reports / f"{report_name}.json").write_text(json.dumps(
                 {"shard": shard, "process": process.name, "swift_testing": 0, "xctest": 0}))
@@ -517,7 +519,7 @@ def audit_runs(test_ids, reports, weights=None):
         print(f"shard {process.shard} {process.name}: planned {len(selected)}, executed {ran}")
         if ran != len(selected):
             errors.append(f"Shard {process.shard} {process.name} executed {ran} tests but selects {len(selected)}")
-    duplicates = sorted({test_id for test_id in seen if seen.count(test_id) > 1})
+    duplicates = sorted(test_id for test_id, count in Counter(seen).items() if count > 1)
     if duplicates:
         errors.append(f"{len(duplicates)} tests are selected by more than one process, first {duplicates[0]}")
     expected = blocking_expected(test_ids)
@@ -541,13 +543,19 @@ def measured_weights(paths, weights):
         if selection is None:
             continue
         for case in ElementTree.parse(path).getroot().iter("testcase"):
-            suite = case.get("classname", "").removeprefix(f"{MODULE}.").split("/")[0].split(".")[0]
+            classname = case.get("classname", "")
+            if not classname.startswith(f"{MODULE}."):
+                continue
+            path = classname.removeprefix(f"{MODULE}.")
+            suite = path.split("/")[0].split(".")[0]
             test = re.match(r"\w+", case.get("name", ""))
             if not suite or not test:
                 continue
             if selection.tests:
                 key = unit_key(selection, test.group(0))
             elif suite in SPLIT_SUITES:
+                if path != suite:
+                    continue  # A nested suite's test runs in the catch-all.
                 key = unit_key(selection, f"{suite}/{test.group(0)}")
             else:
                 key = unit_key(selection, suite)

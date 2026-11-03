@@ -1202,14 +1202,14 @@ two-Mac hardware pass.
 
 CI runs the runtime test target (`DarkbloomClusterRuntimeTests`) on the
 provider's Blacksmith macOS runners, in selections that
-`scripts/cluster-test-plan.py` defines. Each selection runs in a process of its
-own through `scripts/run-nested-suite.sh`, which fails when the process runs
-no test or skips a test. Every process starts with `MLX_QMV_BATCH_INVARIANT=1`,
+`scripts/cluster-test-plan.py` defines. Each process runs one selection, or
+part of one, through `scripts/run-nested-suite.sh`, which fails when the
+process runs no test or skips a test. Every process starts with `MLX_QMV_BATCH_INVARIANT=1`,
 as every cluster process does.
 
 | Selection | Job | Tests |
 |---|---|---|
-| Base | Cluster Runtime Tests (blocking) | Every test that needs no environment switch. The base selections pass `--skip` for the switched tests and the tests that need a model, so a test that skips there has a gate that the plan does not name |
+| Base | Cluster Runtime Tests (blocking) | Every test that needs no environment switch. The base processes pass `--skip` for the switched tests and the tests that need a model, so a test that skips there has a gate that the plan does not name |
 | Opt-in | Cluster Runtime Tests (blocking) | The tests that one switch (for example `QWEN_TP_MTP_GPU=1`) enables and that pass on the CI runners |
 | Opt-in | Cluster GPU Tests (non-blocking) | The switched tests that fail on the CI runners' GPU, the long-running tests and the benchmarks. The job reports their results and does not fail the workflow |
 | Needs a model | None | The tests that need a model directory, an artifact or its metadata (`REQUIRES_MODEL`). CI has no model |
@@ -1223,9 +1223,10 @@ units are top-level suites, and single tests of the suites in `SPLIT_SUITES`
 (each longer than one shard). The last blocking shard runs the base catch-all:
 every base test that no other shard selects, so a new suite always runs.
 `Cluster Runtime Tests Summary` lists the tests with `swift test list` and fails
-unless each process executed exactly its selection and the blocking processes
-together ran every listed test once, except the tests that need a model and the
-non-blocking selections. It also uploads measured seconds per unit
+unless each process executed as many tests as its selection lists and the
+blocking processes together selected every listed test once, except the tests
+that need a model and the non-blocking selections. A base process whose units
+select no listed test does not run; the shard logs a notice. It also uploads measured seconds per unit
 (`cluster-test-weights`); when the shards drift apart, replace the weights file
 with that artifact. The focused runners' seconds are in each shard's step
 summary.

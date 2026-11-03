@@ -262,7 +262,22 @@ extension SandboxSizingPlan {
             lines.append("  macOS runs at most 2 macOS VMs at once, yours included; "
                 + "`--macos-slots 1` keeps one for you.")
         }
+        if let freeSpaceNote { lines.append("  " + freeSpaceNote) }
         return lines
+    }
+
+    /// Why Finder shows more free space than this plan, when the plan gives
+    /// macOS no job for want of free disk space (its own `limit`). The
+    /// shortfall is a lower bound: a macOS job alone, images included, above
+    /// the floor; the add-on hands its first Linux job out first, which may
+    /// need more. Left out when no job fits, whose verdict names it already.
+    var freeSpaceNote: String? {
+        guard macOS.slots == 0, macOS.limit?.contains("disk") == true else { return nil }
+        let short = canRunJobs ? diskShortfall(macOS) : 0
+        return "Free space here, \(gibDown(freeBytes)) GiB, is what `df -h ~` shows as Avail. Finder also counts "
+            + "purgeable space (local snapshots, caches), which macOS frees only when it needs to; restarting or "
+            + "deleting Time Machine local snapshots (`tmutil listlocalsnapshots /` lists them) frees it now."
+            + (short > 0 ? " macOS jobs need at least \(gibUp(short)) GiB more." : "")
     }
 
     /// The plan's message, how much disk to free for one job of each
@@ -278,6 +293,7 @@ extension SandboxSizingPlan {
         if !linux.automatic || !macOS.automatic {
             lines.append("  That is with the slot counts you chose; change --linux-slots or --macos-slots.")
         }
+        if let freeSpaceNote { lines.append("  " + freeSpaceNote) }
         return lines
     }
 

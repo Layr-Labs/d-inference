@@ -1,0 +1,7 @@
+### Sandbox setup offers the add-on's new plan on a Mac that is set up
+
+- Running `darkbloom sandbox setup` on a Mac that is set up now asks the Darkbloom Sandbox installer for the add-on's plan again (`--plan`, which changes nothing). When the plan's Linux and macOS job counts differ from the installed ones, setup shows the plan's CPU, memory and disk lines and both counts, for example `This Mac now fits 1 Linux + 1 macOS jobs at a time (installed: 3 Linux + 0 macOS). macOS jobs pay the most.`, and asks `[Y/n]`. Yes reinstalls with the plan's counts; no prints the `--linux-slots`/`--macos-slots` command that applies it later. When the counts match, the output is as before.
+- With `--yes` or without a terminal, setup applies the plan only when it adds jobs and removes none; otherwise it prints `Not applied` and the command, and exits 0.
+- While jobs run, setup skips the check and says to run it again once they finish: the add-on's installer refuses a slot change while jobs run (exit 4), and changes nothing.
+- Explicit `--linux-slots`/`--macos-slots`, an installer without `--plan` and a failed download behave as before.
+- When the plan gives macOS no job for want of free disk space, setup adds a note: its free space is what `df -h ~` shows as Avail, Finder also counts purgeable space (local snapshots, caches), and a restart or deleting Time Machine local snapshots (`tmutil listlocalsnapshots /`) frees it now. When a job fits, the note adds how many GiB a macOS job needs at least.

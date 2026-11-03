@@ -1,6 +1,6 @@
 # Host Darkbloom Sandbox CI jobs
 
-> Last updated: 2026-11-02
+> Last updated: 2026-11-03
 
 How to let this Mac run Darkbloom Sandbox jobs, approved GitHub Actions jobs in
 Linux and macOS virtual machines, beside the inference provider: set it up,
@@ -82,11 +82,26 @@ Uninstalling ends running jobs, which are not paid: pause first and uninstall
 once they finish. Running `setup` again at any time is safe: it reports the
 state, continues an unfinished setup or repairs the add-on.
 
+On a Mac that is set up, `setup` also asks the installer for the add-on's plan
+again. When the plan fits other job counts, for example after you freed disk,
+setup shows them beside the installed ones and asks `[Y/n]`. Yes reinstalls
+with the plan's counts and restarts the add-on; while a job runs the installer
+changes nothing, so run setup again once it finishes. With `--yes` or without
+a terminal, setup applies the plan only when it adds jobs and removes none;
+otherwise it prints the command that applies it. While jobs run, setup skips
+the check. The [CLI reference](./cli-reference.md#setup) has the details.
+
 ## Troubleshooting
 
 - **`Free up N GiB of disk for one Linux job`.** No job fits in the free disk.
   The disk rules are under [Prerequisites](#prerequisites). Free the space it
   names, then run setup again.
+- **`no macOS jobs (limited by free disk space)`, while Finder shows more
+  free.** The plan counts what `df -h ~` shows as Avail. Finder also counts
+  purgeable space, such as local snapshots and caches, which macOS frees only
+  when it needs it. Restart, or delete Time Machine local snapshots
+  (`tmutil listlocalsnapshots /` lists them), then run setup again: it offers
+  the new plan.
 - **`On the waitlist`.** Darkbloom has not approved your account yet. With
   add-on 1.1.2 and later you can close the window: the Mac keeps waiting, also
   across restarts, and enrolls by itself once your account is approved;
@@ -99,8 +114,10 @@ state, continues an unfinished setup or repairs the add-on.
   not paid. Follow the `↳ fix:` line.
 - **`This Mac was not enrolled`** (exit status 3). The code was denied or
   expired, or the waitlist request ended. Run setup again for a new code.
-- **`Jobs are running on this Mac`** (exit status 4). An add-on update or a
-  slot change waits for running jobs; run setup again once they finish.
+- **`Jobs are running on this Mac`** (exit status 4). The installer refuses
+  to replace the add-on or change its slots while jobs run, and changes
+  nothing; run setup again once they finish. `darkbloom sandbox pause` keeps
+  new ones from starting.
 - **`This version of the add-on …`.** The add-on predates the command; it
   updates itself, or `darkbloom sandbox setup` updates it now.
 - **`Sandboxes: installed; the add-on did not answer within 2s`.** `darkbloom

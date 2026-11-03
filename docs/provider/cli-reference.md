@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-11-02
+> Last updated: 2026-11-03
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -1089,6 +1089,17 @@ darkbloom sandbox uninstall [--yes]
    images and one Linux job: 1 Linux job, no macOS job. When no job fits, the
    verdict gives the plan's message and the GiB to free for one Linux job and
    for one macOS job, and setup stops before installing.
+
+   When the plan gives macOS no job and its `macos_limit` names disk, the
+   verdict adds a note (`SandboxSizingPlan.freeSpaceNote`): the plan's free
+   space is what `df -h ~` shows as Avail (`statfs` `f_bavail`); Finder also
+   counts purgeable space (local snapshots, caches), which macOS frees only when
+   it needs it, and a restart or deleting Time Machine local snapshots
+   (`tmutil listlocalsnapshots /` lists them) frees it now. When a job fits, it
+   ends with `macOS jobs need at least N GiB more`: `diskShortfall` for one
+   macOS job, images included, above the floor. It is a lower bound, since the
+   add-on hands its first Linux job out first; it is left out when a macOS job
+   alone would fit.
 4. **Confirm.** Explains that inference pauses while a job runs, that each job
    pays its price minus a 10% fee into the Darkbloom balance, the VM images and
    the one browser approval, then asks `[y/N]`. `--yes` skips it; without a
@@ -1121,7 +1132,19 @@ Rerunning `setup` decides from the add-on's answer
 | No add-on, or `not_installed` | A first setup: check, plan, explain, confirm, install |
 | `waiting_for_approval`, `waitlisted`, `enrolling` | Runs the installer again to continue, without the check or the question |
 | `stopped`, `error`, no answer within 10 s, a failed status, an add-on older than `status --json` | Runs the installer again to repair or update the add-on |
-| `ready`, `running`, `paused`, `downloading_images`, `updating`, an unknown state | Reports the state and changes nothing; with `--linux-slots` or `--macos-slots` it runs the installer to apply them |
+| `ready`, `running`, `paused`, `downloading_images`, `updating`, an unknown state | Reports the state, then checks the plan again (below); with `--linux-slots` or `--macos-slots` it runs the installer to apply them, without the plan |
+
+On a Mac that is set up, after the report, setup downloads the installer and
+runs its plan as for a first setup, which changes nothing, and compares the
+plan's `linux_slots` and `macos_slots` with the installed `slots.linux.total`
+and `slots.macos.total` (`SandboxSlotChange`):
+
+| Case | `setup` |
+|---|---|
+| Same counts, no plan (an installer without `--plan`, a failed plan), a plan without a job, no `slots` in the status, or a failed download | The report, then `To change how many jobs run at a time: darkbloom sandbox setup --linux-slots <n> --macos-slots <n>`, plus the free-space note when it applies; a failed download adds why it could not check |
+| `jobs_running` above `0` | No plan: the add-on's installer refuses a slot change while jobs run (exit `4`; the CLI never passes `--force`), and their disk would shrink the plan. Setup says to run it again once they finish |
+| Different counts, at a terminal | The plan's CPU, memory and disk lines, `This Mac now fits <l> Linux + <m> macOS jobs at a time (installed: …)` (with `macOS jobs pay the most.` when it adds a macOS job), the free-space note, that applying restarts the agent and changes nothing while a job runs, then `[Y/n]`. Yes runs the installer with the plan's counts as `--linux-slots` and `--macos-slots`; no prints the command that applies it |
+| Different counts, `--yes` or no terminal | Applies the plan only when it adds slots and removes none; otherwise prints `Not applied` and the command that applies it, and exits `0` |
 
 ### Installer progress events
 

@@ -26,6 +26,19 @@ public struct ProviderLaunchSnapshot: Codable, Sendable, Equatable {
 }
 
 extension LaunchAgent {
+    /// launchd's record of the loaded provider job names this exact process.
+    /// An in-place exec keeps the process identity, so it still matches.
+    /// Environment such as `XPC_SERVICE_NAME` is not enough: child processes
+    /// inherit it.
+    public static func isCurrentProcessJob() -> Bool {
+        isJob(launchSnapshot()?.process, current: ProcessIdentity.current())
+    }
+
+    static func isJob(_ jobProcess: ProcessIdentity?, current: ProcessIdentity?) -> Bool {
+        guard let jobProcess, let current else { return false }
+        return jobProcess == current
+    }
+
     public static func launchSnapshot() -> ProviderLaunchSnapshot? {
         let output = LaunchctlControl.printOutput(label: label)
         guard output.succeeded else { return nil }

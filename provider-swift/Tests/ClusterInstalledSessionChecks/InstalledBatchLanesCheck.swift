@@ -201,6 +201,23 @@ extension InstalledSessionCheck {
             registered: ("registered_gemma4_26b_qat_4bit", "registered_gemma4_26b_qat_4bit_greedy_generation_v1", "fixture/gemma"),
             adapter: .gemma4LayerStage)
         let gemmaPrepared = try gemma.prepare()
+        // A serial-prefill Gemma pipeline, coordinator-registered or not, serves its four default lanes.
+        try require(gemmaPrepared.plan.configuration.selectedPrefillSchedule == .serial
+            && gemmaPrepared.plan.batchLanes([:]) == DistributedInstalledPlan.gemma4PipelineBatchLanes
+            && gemmaPrepared.plan.lanesRetireAlone([:]), "Gemma serial pipeline default lanes differ")
+        let gemmaDefault = gemmaPrepared.plan.nativeEnvironment(matrix: gemmaPrepared.matrixURL,
+            ownerEnvironment: try observed(gemmaPrepared.plan.localOwnerConfiguration(ownerEnvironment: [:])))
+        try require(gemmaDefault[key] == String(DistributedInstalledPlan.gemma4PipelineBatchLanes),
+            "Gemma default lanes did not reach the rank")
+        // A saved one-chunk lookahead keeps its schedule: lanes prefill serially, so it keeps one lane.
+        let lookahead = try InstalledFixture.make(root: f.root.appendingPathComponent("lane-gemma-lookahead"),
+            probe: f.probe, owner: probe, worker: f.worker,
+            registered: ("registered_gemma4_26b_qat_4bit", "registered_gemma4_26b_qat_4bit_greedy_generation_v1", "fixture/gemma"),
+            adapter: .gemma4LayerStage, prefillSchedule: .oneChunkLookahead)
+        let lookaheadPlan = try lookahead.prepare().plan
+        try require(lookaheadPlan.configuration.selectedPrefillSchedule == .oneChunkLookahead
+            && lookaheadPlan.batchLanes([:]) == 1 && !lookaheadPlan.lanesRetireAlone([:]),
+            "Gemma lookahead pipeline gained default lanes")
         for lanes in [1, 2, 4, 8] {
             let child = try observed(gemmaPrepared.plan.localOwnerConfiguration(ownerEnvironment: [key: String(lanes)]))
             let native = gemmaPrepared.plan.nativeEnvironment(matrix: gemmaPrepared.matrixURL, ownerEnvironment: child)

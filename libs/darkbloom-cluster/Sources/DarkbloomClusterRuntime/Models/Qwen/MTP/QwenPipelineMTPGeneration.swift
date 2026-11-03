@@ -71,10 +71,34 @@ enum QwenPipelineMTPGeneration {
     }
 
     /// Rank 0: run each window rank 1 asks for, check what it keeps, publish.
+    /// Every round encodes as a decode step does (`QwenLayerStageSession.decodeCommandBuffers`).
     static func runProducer(session: QwenLayerStageSession, control: QwenLayerStageGenerationControl,
                             terms: QwenMTPTerms, collective: Collective,
                             recording: QwenGenerationDiagnosticCapture? = nil,
                             onCommittedToken: (Int) throws -> Bool, check: () throws -> Void) throws -> Outcome {
+        try GPU.withCommandBufferLimits(QwenLayerStageSession.decodeCommandBuffers) {
+            try producerRounds(session: session, control: control, terms: terms, collective: collective,
+                               recording: recording, onCommittedToken: onCommittedToken, check: check)
+        }
+    }
+
+    /// Rank 1: draft, verify each window rank 0 runs, keep, and follow rank
+    /// 0's publication. Every round, drafts included, encodes as a decode
+    /// step does (`QwenLayerStageSession.decodeCommandBuffers`).
+    static func runConsumer(session: QwenLayerStageSession, decoder: QwenMTPDecoder,
+                            control: QwenLayerStageGenerationControl, collective: Collective,
+                            recording: QwenGenerationDiagnosticCapture? = nil,
+                            check: () throws -> Void) throws -> Outcome {
+        try GPU.withCommandBufferLimits(QwenLayerStageSession.decodeCommandBuffers) {
+            try consumerRounds(session: session, decoder: decoder, control: control, collective: collective,
+                               recording: recording, check: check)
+        }
+    }
+
+    private static func producerRounds(session: QwenLayerStageSession, control: QwenLayerStageGenerationControl,
+                                       terms: QwenMTPTerms, collective: Collective,
+                                       recording: QwenGenerationDiagnosticCapture?,
+                                       onCommittedToken: (Int) throws -> Bool, check: () throws -> Void) throws -> Outcome {
         let agreement = control.agreement, request = agreement.request
         guard collective.rank == 0, agreement.speculativeRoundsFraming == terms.pipelineDecodeFraming else {
             throw ProbeError("Only rank 0 of an agreed speculative pipeline runs the producer side of a round")
@@ -155,12 +179,10 @@ enum QwenPipelineMTPGeneration {
         return .init(selected: selected, finalDecision: finalDecision, discardedDecodeForwards: discarded, statistics: nil)
     }
 
-    /// Rank 1: draft, verify each window rank 0 runs, keep, and follow rank
-    /// 0's publication.
-    static func runConsumer(session: QwenLayerStageSession, decoder: QwenMTPDecoder,
-                            control: QwenLayerStageGenerationControl, collective: Collective,
-                            recording: QwenGenerationDiagnosticCapture? = nil,
-                            check: () throws -> Void) throws -> Outcome {
+    private static func consumerRounds(session: QwenLayerStageSession, decoder: QwenMTPDecoder,
+                                       control: QwenLayerStageGenerationControl, collective: Collective,
+                                       recording: QwenGenerationDiagnosticCapture?,
+                                       check: () throws -> Void) throws -> Outcome {
         let agreement = control.agreement, request = agreement.request
         guard collective.rank == 1, agreement.speculativeRoundsFraming == decoder.terms.pipelineDecodeFraming else {
             throw ProbeError("Only rank 1 of an agreed speculative pipeline runs the consumer side of a round")

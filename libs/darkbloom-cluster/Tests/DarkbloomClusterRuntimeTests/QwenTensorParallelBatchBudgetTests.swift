@@ -40,12 +40,16 @@ struct QwenTensorParallelBatchBudgetTests {
                     * family.geometry.kvHeads * family.geometry.headDimension * 2)
             #expect(candidate.promptGatherBytes == bank)
             #expect(candidate.perLaneStateBytes + candidate.promptGatherBytes >= scalar.stateBytes)
-            #expect(candidate.perLaneStateBytes < scalar.stateBytes)
+            // Beside its own prompt-prefix capture (`QwenTensorParallelBatchPrefixBudget`).
+            #expect(candidate.perLaneStateBytes - candidate.prefix.captureBytes < scalar.stateBytes)
             #expect(candidate.allowance.requestBytesExcludingCollectives == lanes * candidate.perLaneStateBytes + candidate.sharedBytesExcludingCollectives)
             let logits = 3 * bound(lanes * plan.vocabularySize * 4)
+            // A merged prompt step's seven further frames: five frames' FP32 payload each.
+            let wavefront = plan.routedExperts ? 0 : 7 * 5 * bound(chunk * plan.maximumPartialBytesPerToken)
+            #expect(wavefront == 367_001_600, "the 27B rank's merged-step charge at 512-row frames")
             #expect(candidate.sharedBytesExcludingCollectives == scalar.fusionBytes + scalar.transientBytes + logits
-                + 2 * scalar.projectionConstantBytes + candidate.pagedPoolSlackBytes + candidate.prefix.residentBytes
-                + candidate.promptGatherBytes)
+                + 2 * scalar.projectionConstantBytes + candidate.pagedPoolSlackBytes
+                + candidate.promptGatherBytes + wavefront)
             #expect(candidate.pagedPoolSlackBytes >= 2 * CBv2StageKVHost.segmentBytes)
             // The underlying host's entire admitted page capacity, its gather
             // and replacement pages fit inside the full state charges, at every
@@ -65,7 +69,8 @@ struct QwenTensorParallelBatchBudgetTests {
         for context in [1, 17, 512, 65536] {
             let candidate = try QwenTensorParallelBatchBudget.derive(geometry: family.geometry, plan: plan,
                 tensors: tensors, maximumTokens: context, chunkSize: 1, lanes: 8, paged: true, allocationBound: bound)
-            let payload = max(8 * plan.vocabularySize * 4, QwenTensorParallelBatchWire.words * 4, 8 * plan.maximumPartialBytesPerToken)
+            let payload = max(8 * plan.vocabularySize * 4, (QwenTensorParallelBatchWire.words + 6 * 8) * 4,
+                8 * plan.maximumPartialBytesPerToken)
             #expect(candidate.allowance.maximumCollectivePayloadBytes == payload)
             #expect(candidate.allowance.maximumCollectiveFrameBytes == payload + QwenTensorParallelSealCodec.frameOverhead)
             #expect(candidate.allowance.collectiveScratchBytes == 8 * bound(payload + QwenTensorParallelSealCodec.frameOverhead))

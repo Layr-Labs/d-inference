@@ -21,6 +21,10 @@ private func state(_ frontier: Int) -> QwenStagePrefixState {
 
 @Suite("Prompt prefix reuse contracts (two-rank, no execution)")
 struct PrefixCacheContractTests {
+    /// The budget ceiling of a 128 GiB Mac. The budget checks use it, not
+    /// the ceiling of the Mac running the tests, which a smaller Mac lowers.
+    static let ceiling128GiB = QwenStagePrefixDiskPolicy.residentCeilingBytes(physicalBytes: 128 << 30)
+
     @Test func plannedFramesStartAtTheReusedPrefixAndSplitTheLastToken() throws {
         let request = try QwenLayerStageGenerationRequest(profile: prefixProfile(), requestID: UUID(),
             promptTokenIDs: Array(0..<50), chunkSize: 16, outputCount: 3, stopTokenIDs: [])
@@ -223,9 +227,12 @@ struct PrefixCacheContractTests {
     @Test func theBudgetComesFromTheRoomAndTheCaptureLimitFromTheMeasuredCost() {
         let gib = 1 << 30
         #expect(QwenStagePrefixCache.budget(roomBytes: 26 * gib) == QwenStagePrefixCache.maximumBudgetBytes)
-        #expect(QwenStagePrefixCache.budget(roomBytes: 6 * gib) == 3 * gib)
-        #expect(QwenStagePrefixCache.budget(roomBytes: -1) == 0)
-        #expect(QwenStagePrefixCache.budget(roomBytes: 6 * gib + 300 << 20) == 3 * gib)
+        // A 128 GiB Mac's ceiling (4 GiB), whatever the memory of the Mac running the test.
+        let ceiling = Self.ceiling128GiB
+        #expect(QwenStagePrefixCache.budget(roomBytes: 26 * gib, maximumBytes: ceiling) == 4 * gib)
+        #expect(QwenStagePrefixCache.budget(roomBytes: 6 * gib, maximumBytes: ceiling) == 3 * gib)
+        #expect(QwenStagePrefixCache.budget(roomBytes: -1, maximumBytes: ceiling) == 0)
+        #expect(QwenStagePrefixCache.budget(roomBytes: 6 * gib + 300 << 20, maximumBytes: ceiling) == 3 * gib)
         let cache = QwenStagePrefixCache(entryLimit: 32, budgetBytes: 8 * gib)
         // Unmeasured: the budget is charged.
         #expect(cache.captureLimit(promptCount: 20_480, chunkSize: 512) == 8 * gib)
@@ -394,21 +401,22 @@ struct PrefixCacheContractTests {
     /// both directions: a load during a memory dip does not keep the cache
     /// small (and prefix reuse off on the pair) for as long as it stays loaded.
     @Test func theIdleRefreshFollowsTheRoomInBothDirections() {
-        let mib = 1 << 20
+        let mib = 1 << 20, ceiling = Self.ceiling128GiB
         // Loaded during a dip: 256 MiB.
         let cache = QwenStagePrefixCache(entryLimit: 32, budgetBytes: 256 * mib)
-        #expect(cache.refreshBudget(roomBytes: 4_096 * mib) && cache.budgetBytes == 2_048 * mib)
+        #expect(cache.refreshBudget(roomBytes: 4_096 * mib, maximumBytes: ceiling) && cache.budgetBytes == 2_048 * mib)
         // Drift within one 256 MiB step changes nothing.
-        #expect(!cache.refreshBudget(roomBytes: 4_096 * mib + 100 * mib) && cache.budgetBytes == 2_048 * mib)
-        #expect(cache.refreshBudget(roomBytes: 64 * 1_024 * mib)
-            && cache.budgetBytes == QwenStagePrefixCache.maximumBudgetBytes)
+        #expect(!cache.refreshBudget(roomBytes: 4_096 * mib + 100 * mib, maximumBytes: ceiling)
+            && cache.budgetBytes == 2_048 * mib)
+        #expect(cache.refreshBudget(roomBytes: 64 * 1_024 * mib, maximumBytes: ceiling) && cache.budgetBytes == ceiling)
         // Lowered with the room: entries beyond the new budget go at once.
         cache.insert(scope: "s", tokens: Array(0..<100),
             states: [sized(50, own: 300 * mib), sized(99, own: 300 * mib)], sharedBytes: 100 * mib)
         #expect(cache.bytesInUse == 700 * mib)
-        #expect(cache.refreshBudget(roomBytes: 1_024 * mib) && cache.budgetBytes == 512 * mib)
+        #expect(cache.refreshBudget(roomBytes: 1_024 * mib, maximumBytes: ceiling) && cache.budgetBytes == 512 * mib)
         #expect(cache.bytesInUse <= 512 * mib && cache.heldFrontiers == [99])
-        #expect(cache.refreshBudget(roomBytes: 0) && cache.budgetBytes == 0 && cache.count == 0 && cache.bytesInUse == 0)
+        #expect(cache.refreshBudget(roomBytes: 0, maximumBytes: ceiling) && cache.budgetBytes == 0 && cache.count == 0
+            && cache.bytesInUse == 0)
     }
 
     /// Finding F4: four rotating 8K documents, each captured with its split

@@ -1,6 +1,6 @@
 # Build The Provider And Landing
 
-> Last updated: 2026-10-31
+> Last updated: 2026-11-03
 
 Build the provider, its source-matched native resources, and the independent
 landing site from this repository. Backend, sidecar, console and admin builds
@@ -34,6 +34,12 @@ selected by `scripts/prepare-provider-release-toolchain.sh`. Do not substitute
 an arbitrary prebuilt metallib or infer GPU qualification from compilation.
 Keep separate worktrees/output directories for independent native builds;
 never share an active Swift scratch path or another suite's GPU reservation.
+
+After changing provider authorization summaries, rebuild the provider test
+product before running the [authorization guidance tests](test.md#provider-authorization-guidance).
+They exercise shared production decisions without invoking status/doctor's
+host probes or native Apple operations; signed-release qualification remains
+separate.
 
 ## Cluster metadata check builds
 
@@ -182,6 +188,12 @@ On the `dev` branch a plain `swift build` is a DevNet build:
 `https://api.dev.darkbloom.dev` and nothing else. On master the default is
 `prod`. Set `DARKBLOOM_RELEASE_ENVIRONMENT=prod` to build a production binary
 from the `dev` branch.
+
+CI enforces both defaults. The Release Integrity job runs
+`scripts/provider-build-default.py`: a pull request into master, or a push to
+master, fails unless the default is `prod`; one into or to `dev` fails unless
+it is `dev`. Every release of master runs the same check and stops before the
+build if the default is not `prod`.
 
 Use the `dev` branch to run a provider from source against the DevNet
 coordinator. A push to `dev` that changes the provider publishes the DevNet

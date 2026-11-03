@@ -12,10 +12,12 @@ import MLXLMCommon
 /// rows are approximate; native keeps them exact); a restored shard has the
 /// native shapes and dtypes either way, so adoption is unchanged. The record scope
 /// outlives the owner process (plan and shares, the verified artifact and
-/// this rank's storage commitment, both builds, the assistant policy), never
-/// a membership epoch, so a restarted pair finds what the last one kept.
-/// A record is only an offer: restoration stays a sealed two-rank vote and a
-/// confirmation, both ranks or neither.
+/// this rank's storage commitment, both builds, the assistant policy and the
+/// prefix policy, `QwenTensorParallelBatchPrefixBudget.policy`), never a
+/// membership epoch, so a restarted pair finds what the last one kept and a
+/// record of another policy is never offered. A record is only an offer:
+/// restoration stays a sealed two-rank vote and a confirmation, both ranks or
+/// neither.
 struct QwenTensorParallelPrefixDisk {
     let tier: QwenStagePrefixDiskTier
     /// The persistent part of every request scope on this rank.
@@ -26,12 +28,18 @@ struct QwenTensorParallelPrefixDisk {
     static func planScope(plan: QwenTensorParallelPlan, planFingerprint: String, artifactAggregateSHA256: String,
                           storageCommitmentSHA256: String, rankBuildSHA256: [String],
                           assistantPolicy: String?) -> String {
-        QwenStagePrefixDiskTier.planScope(
-            planFingerprint: [planFingerprint, plan.name, "shares=" + plan.shares.map(String.init).joined(separator: ":")]
-                .joined(separator: "|"),
+        let fields = planScopeFields(planFingerprint: planFingerprint, planName: plan.name, shares: plan.shares,
+            assistantPolicy: assistantPolicy)
+        return QwenStagePrefixDiskTier.planScope(planFingerprint: fields.planFingerprint,
             artifactAggregateSHA256: artifactAggregateSHA256, storageCommitmentSHA256: storageCommitmentSHA256,
-            rankBuildSHA256: rankBuildSHA256, generationMode: "tensor_parallel_v1",
-            prefillSchedule: "serial|assistant=" + (assistantPolicy ?? "none"))
+            rankBuildSHA256: rankBuildSHA256, generationMode: "tensor_parallel_v1", prefillSchedule: fields.prefillSchedule)
+    }
+
+    /// The plan's and the prompt policy's parts of `planScope`.
+    static func planScopeFields(planFingerprint: String, planName: String, shares: [Int], assistantPolicy: String?)
+        -> (planFingerprint: String, prefillSchedule: String) {
+        ([planFingerprint, planName, "shares=" + shares.map(String.init).joined(separator: ":")].joined(separator: "|"),
+         "serial|assistant=" + (assistantPolicy ?? "none") + "|prefix=" + QwenTensorParallelBatchPrefixBudget.policy)
     }
 
     /// A request scope on disk: the persistent plan scope plus the request's

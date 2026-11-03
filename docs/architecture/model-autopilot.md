@@ -1,6 +1,6 @@
 # Provider Autopilot
 
-> Last updated: 2026-10-27
+> Last updated: 2026-11-02
 
 Provider Autopilot offers an external controller the models of a Mac whose
 operator saved Autopilot consent: the saved selection plus every verified
@@ -244,6 +244,12 @@ stops the driver at its next candidate, and the current step finishes normally.
 9. Without saved consent, or with downloads turned off, there is no download, no
    `inventory_downloads` capability and no `download_storage`
    (`autopilotDownloadsEnabled`, `handlePrefetchModelRequest`).
+10. Without Autopilot, coordinator `load_model`, `prefetch_model` and desired
+    builds stay inside the
+    [operator filter](../reference/configuration.md#provider-model-selection), and
+    a selected build's alias successor becomes ordinary only inside it, with or
+    without consent (`autopilotAllowsModel`, `operatorFilterAllows`). Consented
+    downloads and operations keep their own gates.
 
 ## Failure modes
 

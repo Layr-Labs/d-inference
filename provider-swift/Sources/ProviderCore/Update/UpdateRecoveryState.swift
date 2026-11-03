@@ -302,12 +302,21 @@ public struct UpdateRecoveryState: Codable, Sendable, Equatable {
         return true
     }
 
+    /// The installed release a rollback replaces: the pending candidate, else
+    /// a promoted release that is not the retained predecessor. Nil once a
+    /// rollback has completed (`current` is then the predecessor's record).
+    public var rollbackSource: InstalledReleaseRecord? {
+        if let candidate { return candidate.release }
+        guard let current, let predecessor, current != predecessor.release else { return nil }
+        return current
+    }
+
     public mutating func completeRollback(now: Double, reason: String) {
-        guard let failed = candidate, let predecessor else { return }
+        guard let replaced = rollbackSource, let predecessor else { return }
         current = predecessor.release
         quarantine = FailedReleaseQuarantine(
-            version: failed.release.version,
-            failureCount: failed.failureCount,
+            version: replaced.version,
+            failureCount: candidate?.failureCount ?? 0,
             quarantinedAt: now,
             reason: reason
         )

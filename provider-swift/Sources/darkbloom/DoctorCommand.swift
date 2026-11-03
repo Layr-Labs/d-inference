@@ -46,6 +46,8 @@ struct Doctor: AsyncParsableCommand {
             snapshot: snapshot,
             coordinatorOverride: coordinator
         ))
+        // A Mac paired for a cluster: the cluster's own checks too (none on a single Mac).
+        checks.append(contentsOf: await buildClusterDoctorChecks(configPath: configOptions.config))
 
         // Operator-facing diagnosis: trust reason, SE key, model fit, runtime,
         // billing, version — the "why am I / aren't I earning?" answers.

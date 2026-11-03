@@ -33,7 +33,7 @@ extension ClusterOnboardingOperations {
             pair: { events in live.pair(events) },
             answerCode: { live.answer($0) },
             ensureService: { live.ensureService() },
-            reachMembers: { say in live.reachMembers(say) },
+            reachMembers: { live.reachMembers() },
             planModels: { live.planModels() },
             adopt: { live.adopt($0) },
             serve: { live.serve() },
@@ -49,7 +49,14 @@ extension ClusterOnboardingOperations {
             saveDiagnostics: { live.saveDiagnostics() },
             developerNotice: { ClusterForcedModeSetting.notice(environment: ProcessInfo.processInfo.environment) },
             setScope: { live.setScope($0) },
-            register: { live.register() })
+            register: { live.register() },
+            localNetwork: { subject in
+                subject == .service ? ClusterLocalNetworkAccess.serviceState() : ClusterLocalNetworkAccess.probe()
+            },
+            commandApp: { ClusterLocalNetworkAccess.commandApp() },
+            runAsAdministrator: { ClusterLocalNetworkAccess.runLinkScriptWithSudo($0, paths: paths) },
+            serviceOutlivesWindow: { live.serviceOutlivesWindow() },
+            remote: { ClusterLocalNetworkAccess.overSSH() })
     }
 }
 
@@ -307,6 +314,8 @@ final class OnboardingLive: @unchecked Sendable {
         var flow = ClusterLinkSetupFlow(mayPrompt: true, device: device, plain: true)
         var step = flow.begin()
         let started = Date()
+        // Where macOS could not show its prompt: the script of the same commands, which the onboarding runs with sudo.
+        var manualScript: String?
         while true {
             for line in step.lines { say(line) }
             switch step.action {
@@ -328,17 +337,19 @@ final class OnboardingLive: @unchecked Sendable {
                 last = report
                 step = flow.observed(report)
             case .fix(let device):
-                // The one macOS approval; where no prompt can show, one owner-only script and one line to run.
-                say("Darkbloom needs network access for the cluster cable: approve the macOS prompt (once per Mac).")
-                let result = ClusterLinkRepair.fix(device: device, mode: .durable, dryRun: false)
-                if let script = result.manualScript {
-                    say("No macOS prompt can show here. Run this one line once, as an administrator, then run `darkbloom cluster` again:")
-                    say("  sudo sh \(script)")
+                // The one macOS approval; where no prompt can show (an SSH session has no window to show it in), one
+                // owner-only script, which the onboarding runs with sudo in this terminal (the person never has to
+                // find it, so the link flow's line telling them to run it by hand is not shown).
+                if !ClusterLocalNetworkAccess.overSSH() {
+                    say("macOS asks for your password to set up the cable's port: approve it (once per Mac).")
                 }
+                let result = ClusterLinkRepair.fix(device: device, mode: .durable, dryRun: false)
+                manualScript = result.manualScript
                 step = flow.repaired(result)
+                if manualScript != nil { step = .init(lines: step.lines.filter { $0 != result.message }, action: step.action) }
             case .finish(let code):
                 if !flow.choices.isEmpty { return .init(ready: false, exitCode: max(code, 1), ports: flow.choices.map { $0.interface }) }
-                guard code == 0, flow.linkState == .ready else { return .init(ready: false, exitCode: max(code, 1)) }
+                guard code == 0, flow.linkState == .ready else { return .init(ready: false, exitCode: max(code, 1), manualScript: manualScript) }
                 // A port isolated as link setup v2 leaves it but with no record (an administrator ran the commands
                 // by hand): recorded now, with no prompt and no change, so the earlier settings can be restored.
                 if let ready = last?.devices.first(where: { $0.portActive && $0.verdict == .ready && (device == nil || $0.device == device) }),
@@ -383,7 +394,8 @@ final class OnboardingLive: @unchecked Sendable {
             case .dialing: events(.joining)
             case .connected: events(.connected)
             case .refused(let reason): events(.note("The cable connection was refused (\(reason)); still trying…"))
-            case .storing: events(.note("Pinning each other's Secure Enclave keys (owner-only files)…"))
+            // Saving each other's keys takes a moment and needs nothing from the person: no line for it.
+            case .storing: break
             }
         }, askConfirmation: { [self] code, peer, respond in
             let early: Bool? = lock.withLock {
@@ -462,10 +474,16 @@ final class OnboardingLive: @unchecked Sendable {
         lock.withLock { serviceAtLogin } == true ? restartLine() : nil
     }
 
+    /// The service started in this run is a login agent (it keeps serving once the window closes), not a development
+    /// build's session service.
+    func serviceOutlivesWindow() -> Bool {
+        lock.withLock { serviceAtLogin } != false
+    }
+
     /// Installs this Mac's cluster service as its login agent (it starts at login, and its supervisor restarts it
-    /// with backoff), idempotently, and says what happens after a restart. Where launchd cannot take the job, the
-    /// service still starts for this session, and the screen says it will not come back by itself.
-    func ensureService() -> Result<String, ClusterOnboardingFailure> {
+    /// with backoff), idempotently. Where launchd cannot take the job, the service still starts for this session, and
+    /// the screen says to keep the window open (`serviceOutlivesWindow`).
+    func ensureService() -> Result<Void, ClusterOnboardingFailure> {
         let executable = settings.service.wizard.darkbloomExecutable
         let arguments = settings.serviceArguments
         let options = Array(arguments.starts(with: ["cluster", "service"]) ? arguments.dropFirst(2) : arguments[...])
@@ -478,33 +496,23 @@ final class OnboardingLive: @unchecked Sendable {
                                   reason: refusal + "; install the signed Darkbloom release for a service that starts at login")
         }
         do {
-            let outcome = try ClusterService.installAtLogin(executable: executable, serviceOptions: options)
+            _ = try ClusterService.installAtLogin(executable: executable, serviceOptions: options)
             lock.withLock { serviceAtLogin = true }
-            switch outcome {
-            case .installed, .replaced:
-                return .success("Started this Mac's cluster service: it runs this Mac's part whenever the cluster serves. " + restartLine())
-            case .restarted:
-                return .success("Restarted this Mac's cluster service. " + restartLine())
-            case .unchanged:
-                return .success("This Mac's cluster service is running. " + restartLine())
-            }
+            return .success(())
         } catch let agentError {
             lock.withLock { serviceAtLogin = false }
             return sessionService(executable: executable, arguments: arguments, reason: Self.reason(agentError))
         }
     }
 
-    /// The service for this session only (no login agent). The screen says what to do after a restart; why it cannot
+    /// The service for this session only (no login agent): the screen says to keep the window open; why it cannot
     /// start at login (`reason`, e.g. an ad-hoc signed build) goes to the service log, not the screen.
-    private func sessionService(executable: URL, arguments: [String], reason: String) -> Result<String, ClusterOnboardingFailure> {
+    private func sessionService(executable: URL, arguments: [String], reason: String) -> Result<Void, ClusterOnboardingFailure> {
         do {
             let started = try ClusterService.ensureRunning(executable: executable, arguments: arguments)
             // Once per service start, not on every `darkbloom cluster`.
             if started { Self.logLoginAgentReason(reason) }
-            return .success((started ? "Started this Mac's cluster service" : "This Mac's cluster service is running")
-                + " for this development session; it is not installed at login. "
-                + "Keep the originating Terminal or SSH session open: a detached service can lose Local Network access "
-                + "when that session closes. Use a signed Darkbloom.app for reliable background serving.")
+            return .success(())
         } catch let failure as ClusterOnboardingFailure {
             return .failure(failure)
         } catch {
@@ -536,11 +544,9 @@ final class OnboardingLive: @unchecked Sendable {
 
     // MARK: - The leader
 
-    func reachMembers(_ say: @escaping @Sendable (String) -> Void) -> Result<[ClusterOnboardingMachine], ClusterOnboardingFailure> {
+    func reachMembers() -> Result<[ClusterOnboardingMachine], ClusterOnboardingFailure> {
         let local = (try? ClusterSetupLinkExchange.pairing())?.localMemberID
-        return routed(.init(op: .reachMembers), seconds: 150, acting: true,
-                      forwarding: { say("Asking the control leader, \(ClusterOnboardingMacName.other(named: self.leaderName)), over the cable…") },
-                      local: { localReachMembers(say) }) { reply in
+        return routed(.init(op: .reachMembers), seconds: 150, acting: true, local: { localReachMembers { _ in } }) { reply in
             (reply.machines ?? []).map { machine in
                 var machine = machine
                 machine.here = machine.memberID != nil && machine.memberID == local
@@ -654,7 +660,8 @@ final class OnboardingLive: @unchecked Sendable {
                     ? namesByArtifact[option.model.artifactSHA256].map { [modelID: $0] } ?? [:] : names)
                 guard let plan = option.plan else {
                     keys.append((option.model.folder, "", modelID, [], nil, nil))
-                    return .init(title: title, lines: [], blocker: option.blocker ?? "Not offered on these Macs.", modelID: modelID)
+                    return .init(title: title, lines: [], blocker: option.blocker ?? "Not offered on these Macs.", modelID: modelID,
+                                 validated: approved(option.model.artifactSHA256))
                 }
                 let offer = option.onOtherMac != false ? nil : copyOffer(model: option.model, peer: peer)
                 // One line: size, how it is split (the planner's choice), each Mac's share, the expected speed.
@@ -674,7 +681,7 @@ final class OnboardingLive: @unchecked Sendable {
                              blocker: option.blocker, provision: offer, fitRemedy: remedy, modelID: modelID,
                              publicTraffic: context.settings.privateImageQualification
                                 ? "Private unqualified image candidate; public traffic is prohibited." : plan.publicTraffic,
-                             tensorParallelNote: plan.tensorParallelNote)
+                             tensorParallelNote: plan.tensorParallelNote, validated: approved(option.model.artifactSHA256))
             }
             // Open choices first (the models this Mac has), then catalog models no Mac has yet, then the blocked ones.
             typealias Listed = (choice: ClusterOnboardingModelChoice, key: ChoiceKey, artifact: ListedArtifact?)
@@ -699,13 +706,16 @@ final class OnboardingLive: @unchecked Sendable {
                 ordered.append((.init(title: ClusterOnboardingDeployment.title(modelID: model.modelID, displayNames: names),
                     lines: ["\(ClusterModelProvisioning.gigabytes(model.totalBytes)) · only on \(thereShort): copied over the cable first"], blocker: nil,
                     provision: .init(lines: ClusterModelProvisioning.lines(plan), downloadAlternative: false, leaderDownloads: true, blocker: plan.blocker,
-                        quickSeconds: ClusterModelProvisioning.quickCopySeconds(plan)), modelID: model.modelID),
+                        quickSeconds: ClusterModelProvisioning.quickCopySeconds(plan)), modelID: model.modelID,
+                    validated: approved(model.artifactSHA256)),
                     (model.folder, "", model.modelID, [], nil, nil), ListedArtifact(model)))
             }
             for model in catalogModels(catalogAll, peer: peer) where !held.contains(model.aggregateSHA256 ?? "")
                 && ClusterModelCopyTrust.servableArtifacts.contains(model.aggregateSHA256 ?? "") {
                 catalog[ordered.count] = model
-                ordered.append((downloadChoice(model, peer: peer), ("", "", model.id, [], nil, nil),
+                var offer = downloadChoice(model, peer: peer)
+                offer.validated = approved(model.aggregateSHA256)
+                ordered.append((offer, ("", "", model.id, [], nil, nil),
                                 model.aggregateSHA256.map { ListedArtifact(aggregate: $0, files: nil) }))
             }
             ordered += planned.filter { $0.choice.blocker != nil }
@@ -717,6 +727,16 @@ final class OnboardingLive: @unchecked Sendable {
             fromPeer = Dictionary(uniqueKeysWithValues: fromPeer.compactMap { index, model in position[index].map { ($0, model) } })
             lock.withLock { self.choices = presented.map { ordered[$0.index].key }; self.catalogChoices = catalog; self.peerChoices = fromPeer }
             return .success(presented.map(\.choice))
+        }
+    }
+
+    /// Whether the owner approved the model for clusters (`ClusterPublicModels.declared`, by its artifact): the setup
+    /// lists only those. Nil, no judgement, in a private image qualification run (its candidate is never public).
+    func approved(_ artifactSHA256: String?) -> Bool? {
+        guard !context.settings.privateImageQualification else { return nil }
+        guard let artifactSHA256 else { return false }
+        return ClusterPublicModels.declared.contains {
+            ClusterPairServingGrants.qualifyingArtifact(for: artifactSHA256, runtimeModelID: $0.runtimeModelID) == $0.artifactSHA256
         }
     }
 

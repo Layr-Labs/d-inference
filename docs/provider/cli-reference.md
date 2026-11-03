@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-11-02
+> Last updated: 2026-11-03
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -587,7 +587,8 @@ darkbloom cluster local [<model>] [--bind <address>]
 
 Runs the onboarding asking for local-only serving (`ClusterOnboardingRequest`),
 saved in the leader's setup record (`ClusterOnboardingLeadership.localOnly`,
-`localBind`) until `p` in `darkbloom cluster` serves through Darkbloom again.
+`localBind`) until **Serve through Darkbloom** in `darkbloom cluster` serves
+through Darkbloom again.
 The leader part then starts with `--no-coordinator`. Needs a terminal; exit 1
 otherwise. On the Mac that joins a waiting leader it pairs, says to run it on
 the leader and ends (exit 0) like `darkbloom cluster`
@@ -1459,6 +1460,13 @@ The report header prints `Build` (`prod` or `dev`, fixed at compile time),
 `darkbloom doctor` is read-only except for the subprocess calls used by public
 ProviderCore checks and the explicit `--clear-backend-guard` action
 (`provider-swift/Sources/darkbloom/DoctorCommand.swift`, `runClearBackendGuard`).
+On a Mac paired for a two-Mac cluster, the detailed checks also list the
+checks `darkbloom cluster doctor` runs (installed metadata, trust files, the
+Thunderbolt RDMA link, the saved setup), each named `cluster <check>`; a failed
+one fails the run and points to `darkbloom cluster doctor` for its details. A
+Mac that is not paired gets none of them, and its link is not inspected
+(`provider-swift/Sources/darkbloom/DoctorClusterChecks.swift`,
+`buildClusterDoctorChecks`).
 The operator report begins with a readiness summary and the first concrete
 action. A failed model-fit check names the live usable memory, the required
 load budget and their shortfall; it tells the operator to free memory, rerun

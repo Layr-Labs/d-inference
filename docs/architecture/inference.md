@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-11-01
+> Last updated: 2026-11-03
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -222,8 +222,8 @@ and `libs/darkbloom-cluster/Sources/DarkbloomClusterPlacement/ClusterPlacementBa
 
 ## Cluster setup presentation
 
-`ClusterOnboardingDriver` presents connection, pairing, model choice, startup
-and a test response as five stages. Completion requires the test response to
+`ClusterOnboardingDriver` presents connection, pairing, model choice and
+startup (with its test response) as four steps. Completion requires the test response to
 succeed; a failed response retains the saved setup for a later retry. After
 the test response succeeds, the control leader registers the pair with the
 coordinator when the coordinator serves a cluster approval for this pair
@@ -260,6 +260,38 @@ artifact and name (`OnboardingLive.presentedChoices`): a choice that cannot be
 served is left out when another offers the same digests under the same name,
 and an artifact this build serves is never called unsupported for a copy the
 worker does not take (`ClusterSetupPlanning.copyNotTaken`).
+
+Every choice goes through one console call (`ClusterOnboardingConsole.choose`):
+on a color terminal a list moved with ↑↓ and taken with enter that folds to the
+chosen line (`ClusterOnboardingTerminal.pick`), elsewhere numbered lines and one
+key read the same way on every console (`ClusterOnboardingChoice.match`), so the
+plain transcript stays byte for byte the same on a terminal and a pipe. The
+setup's list holds only models the owner approved for clusters
+(`ClusterOnboardingModelChoice.validated`, `listed`; `OnboardingLive.approved`
+against `ClusterPublicModels.declared`); an older leader's choices carry no
+such field and are listed as they come. A member's `darkbloom cluster` shows
+the status and where to manage the cluster, with no list
+(`ClusterOnboardingDriver.member`); the leader's is a list of the control
+operations (`ClusterOnboardingDriver.menu`).
+
+The Mac the cluster was set up on leads. `LiveContext.plan` makes the Mac that
+plans (the control leader) every plan's rank 0, so the derived leadership
+(rank 0 of the adopted plan) stays there, and before a plan exists derivation
+prefers it among the members present (`ClusterControlDerivation.derive`,
+`preferred`; `ClusterControlNode.preferredLeader`, from the pairing's leader
+pin). A Mac that is away never leads, so failover is unchanged.
+
+macOS's permissions are asked at stated moments
+(`ClusterOnboardingDriver.allowLocalNetwork`): the command probes Local Network
+access in the Connect step (`ClusterLocalNetworkAccess.probe`: one datagram to
+the cable's subnet broadcast, refused with `EHOSTUNREACH` until allowed), and
+the cluster service probes as it starts, right after pairing, keeping each
+outcome for the onboarding (`ClusterLocalNetworkAccess.startServiceProbe`,
+`serviceState`). Where macOS shows no approval window for the cable's port, the
+link setup's owner-only script runs with sudo in the same terminal
+(`ClusterOnboardingLinkResult.manualScript`,
+`ClusterLocalNetworkAccess.runLinkScriptWithSudo`), with the terminal in its
+ordinary mode while sudo reads the password (`ClusterOnboardingConsole.suspended`).
 
 A DevNet build is installed as `Darkbloom Dev.app`, and its CLI is
 `darkbloom-dev`. A saved setup accepts a space in its installed paths
@@ -2924,11 +2956,8 @@ resource policy and profile from its saved setup,
 `DistributedInstalledNativeStart.runtimeBlock`), so both members must run the
 same runtime to register the same plan; the start must carry that block
 ([model approvals](../reference/configuration.md#model-approvals)). For a
-cluster that serves through Darkbloom, the onboarding's start
-line says it serves its owner's requests, and public requests where Darkbloom
-has qualified the model and split
-(`provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/ClusterOnboardingFlow.swift`);
-the coordinator decides each public placement.
+cluster that serves through Darkbloom, the coordinator decides each public
+placement ([serving a pair](../reference/cluster-control-protocol.md#serving-a-pair)).
 
 ### Two-Mac cluster stages (experimental)
 
@@ -2998,7 +3027,8 @@ answer with the same worker build (`ClusterOnboardingUpdate.oneBuild`): the
 [pair's coordinated update](../provider/cluster-always-on.md#the-pairs-coordinated-update)
 restarts the two Macs seconds apart, and a plan made while one still runs the
 other build would fail and wait 600 s. A model change of
-a serving cluster (`m`, or `darkbloom cluster local <model>`) plans the same way:
+a serving cluster (**Change model** in the leader's menu, `ClusterOnboardingDriver.menu`,
+or `darkbloom cluster local <model>`) plans the same way:
 its list was priced while the running parts held their memory, where tensor
 parallel may not fit now, so once both parts stopped and both Macs gave the
 memory back (`OnboardingLive.awaitReleased`) it plans again and adopts the
@@ -3705,7 +3735,7 @@ says the gain. Predictions are still made and reported. A first placement, befor
 any load measured the link, plans tensor parallel on the keyed reduction a forced
 plan assumes (`tensorParallelAssumesUnmeasuredLink`, labelled as assumed), so a new
 pair's first setup is tensor parallel too: every plan made by `ClusterPlacementFlow.decide`
-(the onboarding, `m`, the re-plan after a Darkbloom update or after two load
+(the onboarding, **Change model**, the re-plan after a Darkbloom update or after two load
 refusals) is a first placement in this sense. Since tensor parallel's place no
 longer depends on the link's speed, the first load's keyed probe changes no
 choice, and nothing has to re-plan a pair after it. A pair still serves a

@@ -97,12 +97,20 @@ public enum ClusterControlDerivation {
     }
 
     /// The leader for these members, of which `present` answer now. `rankOrder` is the adopted plan's
-    /// member order (rank 0 first), nil before a plan.
-    public static func derive(members: [ClusterControlMember], present: Set<String>, rankOrder: [String]?) -> Choice? {
+    /// member order (rank 0 first), nil before a plan. `preferred`: the Mac the cluster was set up on, which
+    /// leads whenever it is present and no plan's rank 0 decides (2026-11-02 onboarding review: on two
+    /// identical Macs the tie went to the lower key identity, and the Mac that joined became the leader).
+    /// The planner makes that Mac rank 0 as well, so the two rules agree; a Mac that is away never leads.
+    public static func derive(members: [ClusterControlMember], present: Set<String>, rankOrder: [String]?,
+                              preferred: String? = nil) -> Choice? {
         let candidates = members.filter { present.contains($0.memberID) }
         guard !candidates.isEmpty else { return nil }
         if let first = rankOrder?.first, present.contains(first), candidates.contains(where: { $0.memberID == first }) {
             return .init(memberID: first, reason: "rank 0 of the adopted plan: requests enter there and the coordinator registers it as the head")
+        }
+        if let preferred, candidates.contains(where: { $0.memberID == preferred }) {
+            return .init(memberID: preferred, reason: rankOrder == nil ? "the Mac the cluster was set up on"
+                         : "rank 0 is absent; the Mac the cluster was set up on is present")
         }
         let best = candidates.min { a, b in
             let aloneA = a.holdsModelAlone == true, aloneB = b.holdsModelAlone == true
@@ -113,6 +121,14 @@ public enum ClusterControlDerivation {
         }!
         let why = best.holdsModelAlone == true ? "holds the chosen model alone" : "the most memory and GPU cores present"
         return .init(memberID: best.memberID, reason: rankOrder == nil ? why : "rank 0 is absent; of the members present, \(why)")
+    }
+
+    /// The member a plan puts at rank 0: `setUp`, the Mac the cluster was set up on, whichever Mac plans, so a
+    /// re-plan on the Mac that joined (a memory refusal, an update) hands rank 0 back to it; `localID` (the Mac
+    /// planning) when `setUp` is not one of the plan's members (no onboarding record, or one of an earlier pairing).
+    public static func planLeader(setUp: String?, members: [String], localID: String) -> String {
+        guard let setUp, members.contains(setUp) else { return localID }
+        return setUp
     }
 }
 
@@ -160,6 +176,8 @@ public struct ClusterControlNode: Sendable, Equatable {
     public private(set) var claim: ClusterControlClaim
     public private(set) var members: [String: ClusterControlMember]
     public var rankOrder: [String]?
+    /// The Mac the cluster was set up on (`ClusterControlDerivation.derive`'s `preferred`).
+    public let preferredLeader: String?
     /// On a member: whether the leader's last lease said the cluster runs.
     public private(set) var leaderRunsCluster = false
     /// The leader: when each member last accepted this claim. A member: when the leader (or its awaited successor) last renewed.
@@ -186,8 +204,9 @@ public struct ClusterControlNode: Sendable, Equatable {
 
     /// `claim` as persisted, or nil before the first one (term 0: derived among the known members).
     public init(localID: String, members: [ClusterControlMember], claim: ClusterControlClaim?, rankOrder: [String]?, now: Double, ttl: Double,
-                soloGrace: Double = ClusterControlNode.defaultSoloGraceSeconds) {
+                soloGrace: Double = ClusterControlNode.defaultSoloGraceSeconds, preferredLeader: String? = nil) {
         self.localID = localID
+        self.preferredLeader = preferredLeader
         self.soloGrace = soloGrace
         self.members = Dictionary(members.map { ($0.memberID, $0) }, uniquingKeysWith: { _, b in b })
         self.rankOrder = rankOrder
@@ -197,7 +216,7 @@ public struct ClusterControlNode: Sendable, Equatable {
             resolved = claim
         } else {
             let ids = Set(members.map(\.memberID) + [localID])
-            let choice = ClusterControlDerivation.derive(members: members, present: ids, rankOrder: rankOrder)
+            let choice = ClusterControlDerivation.derive(members: members, present: ids, rankOrder: rankOrder, preferred: preferredLeader)
             resolved = ClusterControlClaim(term: 0, leaderID: choice?.memberID ?? localID, members: Array(ids),
                 reason: choice?.reason ?? "the only member known")
         }
@@ -320,7 +339,8 @@ public struct ClusterControlNode: Sendable, Equatable {
             // Leadership moves by derivation once a plan exists (before it, the Mac that drives the onboarding keeps
             // the screens and the claim; a failover's survivor keeps it until the plan's rank 0 is back).
             if let plan = rankOrder, !plan.isEmpty,
-               let choice = ClusterControlDerivation.derive(members: Array(members.values), present: present(now: now), rankOrder: plan),
+               let choice = ClusterControlDerivation.derive(members: Array(members.values), present: present(now: now), rankOrder: plan,
+                                                            preferred: preferredLeader),
                choice.memberID != localID, confirmed.contains(choice.memberID) {
                 let offer = ClusterControlClaim(term: claim.term + 1, leaderID: choice.memberID, members: claim.members, reason: choice.reason)
                 pendingHandOver = offer
@@ -336,7 +356,8 @@ public struct ClusterControlNode: Sendable, Equatable {
         heard[previous] = nil
         leaderRunsCluster = false
         let remaining = Set(claim.members).subtracting(expired).union([localID])
-        guard let choice = ClusterControlDerivation.derive(members: Array(members.values), present: remaining, rankOrder: rankOrder)
+        guard let choice = ClusterControlDerivation.derive(members: Array(members.values), present: remaining, rankOrder: rankOrder,
+                                                           preferred: preferredLeader)
         else { return [] }
         if choice.memberID == localID {
             claim = ClusterControlClaim(term: claim.term + 1, leaderID: localID, members: claim.members,

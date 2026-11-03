@@ -263,6 +263,9 @@ public final class ClusterService: @unchecked Sendable {
         try? Data("\(getpid())\n".utf8).write(to: files.pid, options: .atomic)
         defer { unlink(files.pid.path) }
         say("started (pid \(getpid()))")
+        // Makes macOS ask once about Darkbloom's Local Network access now: the onboarding starts this service right
+        // after pairing, while the person is at this Mac, and waits for the answer (`ClusterLocalNetworkAccess`).
+        ClusterLocalNetworkAccess.startServiceProbe(say: say)
         refreshPowerAssertions(power)
         // A part a previous run of this service started and left running (that run ended without stopping it, e.g.
         // killed): stopped before anything starts, or it would hold the model's memory and the serving port forever.

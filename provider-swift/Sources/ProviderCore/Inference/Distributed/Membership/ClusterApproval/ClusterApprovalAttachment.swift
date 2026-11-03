@@ -11,6 +11,13 @@ import DarkbloomClusterSecurity
 /// must be the one this Mac countersigned when it paired (S17), and the saved setup's own checks with the approval
 /// attached (`ClusterConfiguration.validate`, which runs `ClusterNativeMemberAttachment.validate`) run as at every load.
 enum ClusterApprovalAttachment {
+    /// The refusal of an approval beside unequal tensor-parallel shares: the member's registration names no shares
+    /// (`NativePairMemberRoster`), so such a setup could never register. A cluster served through Darkbloom is planned
+    /// with equal shares (`ClusterPlacementFlow.decide`). Short enough to reach the leader whole through the other
+    /// Mac's refusal (`ClusterSetupFailure` keeps 240 characters).
+    static let unequalTensorSharesServeLocally = "Unequal tensor-parallel shares serve local clusters only (the coordinator "
+        + "registration carries no shares yet); press m in `darkbloom cluster` to plan equal shares"
+
     /// The block digests of a build-pinned `approval` that are not this Mac's facts, by their contract names; `model`
     /// when the facts describe no entry for the approval's model. A model approval is never compared with facts.
     static func mismatches(_ approval: ClusterRuntimeApproval, facts: ClusterRuntimeApprovalFacts) -> [String] {
@@ -96,6 +103,9 @@ enum ClusterApprovalAttachment {
         }
         guard ClusterApprovalLifetime.current(approval, now: now) else {
             throw ClusterConfigurationError.invalid("the approval expired at \(approval.notAfter)")
+        }
+        guard configuration.tensorShares == nil else {
+            throw ClusterConfigurationError.invalid(unequalTensorSharesServeLocally)
         }
         if approval.isModelApproval {
             // No build facts: the member's runtime is its own saved setup's, and a new build keeps the approval.

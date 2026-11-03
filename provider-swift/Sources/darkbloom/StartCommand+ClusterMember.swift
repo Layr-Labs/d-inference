@@ -10,8 +10,10 @@ extension Start {
     }
 
     /// `offered`: the saved setup carries an approval this Mac installed, so its member registers a membership and
-    /// the coordinator may form a pair with it.
-    func makeClusterMemberLoopAndPreparation(reference: ClusterConfigurationReference, stopOnDisconnect: Bool = false)
+    /// the coordinator may form a pair with it. `answersUpdateDrain`: the coordinator-paired part, which drains for
+    /// the pair's coordinated update (`ProviderLoopConfig.clusterMemberAnswersUpdateDrain`).
+    func makeClusterMemberLoopAndPreparation(reference: ClusterConfigurationReference, stopOnDisconnect: Bool = false,
+                                             answersUpdateDrain: Bool = false)
         async throws -> (loop: ProviderLoop, prepared: ClusterMemberPreparation, offered: Bool) {
         // The model's pair-serving grant for the rank this Mac runs, with this
         // Mac's own chip class (any Apple silicon; owner 2026-10-14), is decided inside the
@@ -57,6 +59,7 @@ extension Start {
             runtimeCapabilities: capabilities,
             modelHashes: prepared.model.weightHash.map { [prepared.model.id: $0] } ?? [:],
             executionRole: .clusterMember, clusterMemberStopsOnDisconnect: stopOnDisconnect,
+            clusterMemberAnswersUpdateDrain: answersUpdateDrain,
             pairServingGrantedModelIDs: [prepared.model.id])
         let loop = try ProviderLoop(config: loopConfig)
         if let installation {
@@ -89,7 +92,8 @@ extension Start {
         // bootstrap directories), reported in this member's log.
         Self.sweepOrphans(phase: "start", waitForContract: true)
         defer { Self.sweepOrphans(phase: "end", waitForContract: true) }
-        let (loop, prepared, offered) = try await makeClusterMemberLoopAndPreparation(reference: factory.reference)
+        let (loop, prepared, offered) = try await makeClusterMemberLoopAndPreparation(reference: factory.reference,
+                                                                                      answersUpdateDrain: true)
         heartbeat.attach(loop: loop)
         // A setup saved for coordinator pairing over the link serves the
         // pair's committed starts (S10): the leader hosts the link listener

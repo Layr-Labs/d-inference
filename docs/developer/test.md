@@ -74,6 +74,18 @@ Build the relevant test products and stage matching metallibs before any
 `--skip-build` command below. Run provider commands from `provider-swift/` and
 SDK commands from `libs/mlx-swift-lm/` unless a command specifies otherwise.
 
+## Provider authorization guidance
+
+After rebuilding the provider test product, run
+`swift test --skip-build --no-parallel --filter ProviderAuthorizationReadinessTests`
+from `provider-swift/`. The suite exercises the production freshness checks and
+summary used by status and both doctor paths: a late but unexpired serving lease
+stays visible while removal advice requires the matching fresh decision. It
+covers the receipt-window boundary, disabled rollout, missing or mismatched
+decisions and exact lease expiry. These checks use fixed snapshots and injected
+process identity; they do not run the CLI's host probes, change profiles or
+establish native App Attest acceptance.
+
 ## Provider Terminal And Stop Signals
 
 After rebuilding the provider test products, run the focused
@@ -96,7 +108,9 @@ selector. Use `scripts/run-nested-suite.sh` for documented nested Swift Testing
 cases and `scripts/run-exclusive-native-gpu-test.sh` for exclusive native work.
 
 CI runs the provider suite in five shards (`Provider Unit Tests (shard K)`), one
-Mac each. `PROVIDER_TEST_SHARD=K/N` selects a shard in `scripts/run-provider-tests.sh`,
+Mac each, each routed through its own lane `test-provider-K`
+([CI runner routing](build.md#ci-runner-routing)).
+`PROVIDER_TEST_SHARD=K/N` selects a shard in `scripts/run-provider-tests.sh`,
 and `scripts/provider-test-shards.py` chooses its suites:
 
 | Class | Process | Suites |
@@ -524,8 +538,12 @@ provision test fixtures or opt into native qualification.
 ## Prompt Preparation And Admission
 
 ```bash
-swift test --skip-build --filter 'PromptTokenCacheTests|ChatTemplateLoopRewritesTests|InboundChatRequestDecodeTests|ServeLoopColdLoadTests'
+swift test --skip-build --filter 'LocalTokenizerDecodeSpacingTests|PromptTokenCacheTests|ChatTemplateLoopRewritesTests|InboundChatRequestDecodeTests|ServeLoopColdLoadTests'
 ```
+
+`LocalTokenizerDecodeSpacingTests` requires a tokenizer whose config omits
+`clean_up_tokenization_spaces` (Gemma 4's published config does) to decode and
+stream text exactly, with the same input IDs and an explicit Boolean kept.
 
 `PromptTokenCacheTests` loads synthetic tokenizers through the production
 `LocalTokenizerLoader` for the Qwen split, GPT-2 byte-level and Gemma metaspace
@@ -1041,6 +1059,49 @@ timeout, one-time failure accounting and heartbeat promotion. It does not run
 native launchd, the controller cancellation interleaving or a signed release
 installation.
 
+## Cluster Pair Coordinated Update
+
+`ClusterPairUpdateTests`
+(`provider-swift/Tests/ProviderCoreTests/Update/ClusterPairUpdateTests.swift`)
+runs two Macs' `ClusterPairUpdateCycle` in one process: each with the real
+updater on its own temporary install, a loopback `MockCoordinator` serving the
+release, and a real member loop as its part (a scripted pair owner holds rank 0's
+request). It checks that a busy pair stages while serving, closes admission only
+once both Macs staged, finishes the accepted request uncancelled and then
+installs on both; that a request past the drain bound reopens admission and
+defers both Macs, and the next cycle updates; that one Mac's failed download
+stops both and the next cycle updates both; that a Mac whose partner has
+automatic updates off downloads nothing at the slot, while `darkbloom update` on
+both Macs updates them; that a part that cannot drain downloads nothing; that a
+Mac whose partner cannot be asked goes on alone only while no pair runs on it;
+the candidate's promotion (kept under another update's lease) and rollback;
+the start check's verdicts on script binaries; and the rollback at once of a
+candidate that failed its start check.
+`ClusterServiceUpdateTests`
+(`provider-swift/Tests/DarkbloomCLITests/ClusterServiceUpdateTests.swift`) drives
+the real supervisor with a shell standing in for the cluster service: the
+single-Mac gate, a slot fired from a cluster ID whose slot is seconds away, no
+slot cycle with automatic updates off (and `disabled` reported again once a
+cycle's end is a minute old), `darkbloom update`'s request and the candidate's
+rollback and promotion. The start check runs the temporary install's
+`darkbloom`, a script: a release whose `--version` exits non-zero, outlasts a
+1 s bound or reports another version is rolled back and quarantined without the
+re-exec, and the supervisor serves again from the restored binary; a release
+that answers is re-executed into as before; a restored predecessor that cannot
+start is not re-executed into. The re-exec is observed, never performed.
+`Tests/ClusterSupervisionChecks/run.sh` checks the progress rules
+(`ClusterPairUpdate.partnerState`) with plain `swiftc`.
+
+```bash
+CFFIXED_USER_HOME="$(mktemp -d)" swift test --skip-build --no-parallel \
+  --filter 'ClusterPairUpdateTests|ClusterServiceUpdateTests'
+```
+
+Keep `CFFIXED_USER_HOME` (or an isolated user) on a Mac that serves: the member
+loops and supervisors otherwise use the real `~/.darkbloom` for their cluster
+files. These checks use loopback and temporary roots only; they do not run a
+pair, launchd, a signed release or the coordinator's routing of a draining pair.
+
 ## Public Fixtures And Private Qualification
 
 Public protocol JSON and prompt golden vectors contain fixed inputs and expected
@@ -1366,9 +1427,10 @@ removed first, its failure fatal only when `CLUSTER_RUNTIME_SEND` is true, and
 HTTPS plane with a throwaway certificate; the host needs Bash, Python, jq, curl
 and openssl. It covers the default-off switch, fork pull requests, exact label
 grants, HTTP errors, the single retry, timeouts, untrusted or plain-HTTP planes
-and hostile reply text. It also pins each routed job's fallback, timeout and
-read-only permissions, and keeps release workflows on literal Blacksmith
-runners. No check contacts the real plane.
+and hostile reply text. It also pins each routed job's lanes (one per provider
+shard, matching the job's matrix), fallback, timeout and read-only permissions,
+and keeps release workflows on literal Blacksmith runners. No check contacts the
+real plane.
 
 Docs-impact tests retain provider, protocol, privacy, native capacity, cache,
 release/model publication and fixture mappings. Historical links need exact
@@ -1823,9 +1885,11 @@ swift test --package-path libs/darkbloom-cluster -c release \
   --filter GPTOSSPagedKVTests
 ```
 
-`GPTOSSPagedKVTests` compares exact rows, masks, offsets and learned-sink SDPA
-results with `StandardKVCache` and `RotatingKVCache`. It also checks demand
-allocation, bounded sliding retention, copy/trim isolation and owner release.
+`GPTOSSPagedKVTests` compares exact rows, masks, offsets, ring metadata and
+learned-sink SDPA results with `StandardKVCache` and `RotatingKVCache`. It also
+checks demand allocation, bounded sliding retention, copy/trim isolation, owner
+release, and that sliding pages restore only ring metadata they can continue,
+then continue exactly as that ring.
 `GPTOSSStageChecks` checks each page's allocator overhead and sliding repack
 charge. These are CPU correctness checks, not native transport, MXFP4 model
 parity or performance evidence. Retain the existing two-Mac reference comparator
@@ -2399,7 +2463,17 @@ separate hardware gates.
 ### Qwen27 TP warm-prefix checks
 
 `QwenTensorParallelBatchPrefixTests` checks original-grid boundaries, bilateral
-misses, media/key isolation, allocator rounding and bounded LRU eviction. The
+misses, media/key isolation, allocator rounding and bounded LRU eviction. It
+also checks, for every prompt from 1,100 to 70,000 tokens, that the kept
+boundaries reuse at least one Mac's reuse rounded to the 512-token grid (a
+repeat, the next turn, a shared system prompt). It checks each request's
+charge, LOAD's one capture per lane, the shared-copy eviction order, the
+memory tier giving way before a refusing gate, and that a record of another
+prefix policy is in another scope. On the GPU (`QWEN_TP_BATCH_GPU=1`),
+`QwenTensorParallelPrefixDepthTests` restores a 33,000-token prompt's
+boundaries at 32,768, 32,256, 16,384 and 8,192 on two synthetic hybrid
+shards and compares the final logits and every attention, convolution and SSM
+array with a cold prefill on the same grid, byte for byte, on both ranks. The
 real-shard `QwenTensorParallelBatchSessionTests` compares cold and restored
 outputs plus attention/conv/SSM state at widths 2, 4 and 8, mixed positions,
 reordered decode and one-sided cache loss. Run it with both contiguous and
@@ -2462,6 +2536,27 @@ The planned-stop lifecycle suite also pauses the actual service immediately befo
 
 Planned-stop lifecycle checks exercise the actual peerLeaseState projection, accepted ClusterControlNode follower lease, ClusterControlIntent recording and follower part selection while the real owned child is retained after TERM, while start is paused, and after retirement. A held outbound lease custody flag must block final peer stop after local child exit. Optional-record compatibility and an already-idle peer are checked separately. No physical peer transport or installed native shutdown is claimed by these CPU cases.
 
+### Cluster service listeners after pairing again
+
+`ClusterServicePairingChangeTests` runs the actual service's two listeners on
+loopback ports of their own (`ClusterService.Listening`), keyed from real pairing
+ceremonies stored in a private home. After the same two Macs pair again, the
+earlier listeners refuse the new pairing (`handshakeRejected`) until the next
+check starts them again; then the new pairing is answered and the earlier one
+refused. A removed pairing stops both listeners, an unchanged or unreadable
+pairing store keeps the same ones, and the control node of this Mac's earlier key
+is dropped. The other Mac dials without the per-user request lock, which a
+cluster service running on the same Mac shares; no production port or
+Thunderbolt interface is used. `ClusterConsoleChecks` (`listenersFollowThePairing`)
+checks the same refusal and restart on real ceremonies and listeners without the
+service, and that a re-read pairing store gives the same identity, a new
+ceremony another one and an unsafe store a read failure rather than no pairing.
+
+Focused check: `swift test --filter ClusterServicePairingChangeTests` from
+`provider-swift`. Sources:
+`provider-swift/Tests/ProviderCoreTests/Inference/Distributed/ClusterServicePairingChangeTests.swift`
+and `provider-swift/Tests/ClusterConsoleChecks/ConsolePairingChangeChecks.swift`.
+
 ### Qwen27 capacity consistency checks
 
 Every Qwen TP row serves through these request-owned lanes. `QwenTensorParallelBatchSessionTests`
@@ -2515,6 +2610,18 @@ holds. Golden plans must stay byte-identical. Run
 `shareProbe` round trip, bounds and earlier records, and
 `provider-swift/Tests/ClusterInstalledSessionChecks/run.sh` for the owner-only
 history file.
+
+A pair that registers with a coordinator is planned with equal shares only
+(`ClusterPlacementPolicy.equalTensorShares`): the same `run.sh` places the
+weighted check's unequal Macs under that policy as if the family offered no
+unequal shares, keeps equal Macs' chosen placement and GLM-5.3-Flash's whole
+plan, and refuses a retained unequal partition. From `provider-swift`,
+`swift test --filter 'DistributedAutomaticBatchPlannerTests|ClusterApprovalTensorSharesTests'`
+checks the guided setup's plan for Qwen3.8 27B on two unequal Macs (unequal for
+a local cluster, equal for one served through Darkbloom) and that a cluster
+approval beside unequal shares is refused by the leader's check before any part
+stops and by the other Mac's before it saves, because a member's registration
+names no shares (`NativePairMemberRoster`).
 
 From `libs/darkbloom-cluster`, `swift test --filter QwenTensorParallelShareProbeTests`
 checks the per-mille share and the probe request's shape on the CPU. With

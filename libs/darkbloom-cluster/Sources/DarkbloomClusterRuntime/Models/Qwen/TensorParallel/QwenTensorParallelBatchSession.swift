@@ -24,10 +24,7 @@ final class QwenTensorParallelBatchSession: QwenTensorParallelMTPTarget {
     private var inputs: QwenTensorParallelBatchInputs?
     private var window: QwenTensorParallelTargetWindow?
     private var failed = false
-    private let captureFrontier: Int
-    private let captureLimitBytes: Int
-    private let allocationBound: (Int) throws -> Int
-    private var captured: QwenTensorParallelBatchPrefixState?
+    private let prefixCapture: QwenTensorParallelPrefixCapture?
     /// `frameTiming` only: this prompt's frames so far.
     private var promptClock: QwenTensorParallelPromptClock?
     private(set) var schedule: QwenLayerStageGenerationSchedule
@@ -36,24 +33,20 @@ final class QwenTensorParallelBatchSession: QwenTensorParallelMTPTarget {
 
     init(model: QwenTensorParallelModel, configuration: Data, host: CBv2StageKVHost,
          request: QwenLayerStageGenerationRequest, inputs: QwenTensorParallelBatchInputs? = nil,
-         restored: QwenTensorParallelBatchPrefixState? = nil, captureFrontier: Int = 0,
-         captureLimitBytes: Int = 0, allocationBound: ((Int) throws -> Int)? = nil) throws {
+         restored: QwenTensorParallelBatchPrefixState? = nil, capture: QwenTensorParallelPrefixCapture? = nil) throws {
         guard case .shard(_, let ranks) = model.role, ranks == 2,
               sha256(configuration) == model.configurationSHA256,
               request.profile.hiddenSize == model.plan.hiddenSize,
               request.profile.vocabularySize == model.plan.vocabularySize,
               request.reusedPrefixTokens == (restored?.committedTokens ?? 0),
               request.reusedPrefixTokens % request.chunkSize == 0,
-              captureFrontier == 0 || (captureFrontier > request.reusedPrefixTokens
-                && captureFrontier < request.promptCount && captureFrontier % request.chunkSize == 0),
-              captureLimitBytes >= 0, captureFrontier == 0 || allocationBound != nil else {
+              capture?.fits(request) ?? true else {
             throw ProbeError("Qwen TP batch session requires a matching shard and original-grid state")
         }
         let geometry = try Self.geometry(model: model, configuration: configuration, host: host,
             maximumTokens: request.maximumTokens)
         self.model = model; self.request = request; self.inputs = inputs
-        self.captureFrontier = captureFrontier; self.captureLimitBytes = captureLimitBytes
-        self.allocationBound = allocationBound ?? { _ in throw ProbeError("Unpriced TP prefix capture") }
+        self.prefixCapture = capture
         // Paged pages grow with the request (`reservePages`); the reference
         // contiguous backend keeps its whole-length rows.
         let reserved = host.kind == .paged ? Self.initialReservedTokens(request) : nil
@@ -120,7 +113,7 @@ final class QwenTensorParallelBatchSession: QwenTensorParallelMTPTarget {
         let merges = QwenTensorParallelPromptWavefront.merges(model: model, request: request,
             mediaInputs: inputs != nil, packedStorage: state.packedStorage)
         return QwenTensorParallelPromptWavefront.frames(request: request, from: schedule.nextSequence,
-            frontiers: captureFrontier > 0 ? [captureFrontier] : [], limit: merges ? limit : 1)
+            frontiers: prefixCapture?.frontiers ?? [], limit: merges ? limit : 1)
     }
 
     /// Runs the planned prompt step `step` (`promptFrames`), its frames as one graph.
@@ -226,7 +219,7 @@ final class QwenTensorParallelBatchSession: QwenTensorParallelMTPTarget {
                 eval(hidden); try checked()
             }
             schedule = planned
-            if committedTokens == captureFrontier { try capturePrefix(check: checked) }
+            try prefixCapture?.capture(state, at: committedTokens, check: checked)
             if let timing, case .shard(let rank, _) = model.role {
                 let clock = promptClock ?? QwenTensorParallelPromptClock()
                 promptClock = clock
@@ -596,18 +589,16 @@ final class QwenTensorParallelBatchSession: QwenTensorParallelMTPTarget {
         }
     }
 
-    private func capturePrefix(check: () throws -> Void) throws {
-        guard captured == nil else { throw ProbeError("Qwen TP prefix is already captured") }
-        captured = try .capture(state: state, frontier: captureFrontier, limitBytes: captureLimitBytes,
-            allocationBound: allocationBound, check: check)
-    }
-
-    func takeCapturedPrefix() throws -> QwenTensorParallelBatchPrefixState? {
+    /// The kept boundaries' states and the attention copy they share, once,
+    /// after native retirement.
+    func takeCapturedPrefix() throws -> (states: [QwenTensorParallelBatchPrefixState], sharedBytes: Int)? {
         guard retired && state.isClosed else { throw ProbeError("Qwen TP prefix donation precedes native retirement") }
-        defer { captured = nil }
-        return captured
+        guard let prefixCapture else { return nil }
+        defer { prefixCapture.discard() }
+        let states = prefixCapture.states()
+        return states.isEmpty ? nil : (states, prefixCapture.sharedBytes)
     }
-    func discardCapturedPrefix() { captured = nil }
+    func discardCapturedPrefix() { prefixCapture?.discard() }
 
     func retire() throws {
         guard !retired else { return }

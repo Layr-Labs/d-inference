@@ -50,7 +50,8 @@ struct QwenTensorParallelBatchQuoteTests {
                 let plan = try QwenTensorParallelPlan(textConfiguration: text, quantization: quantization, size: 2, shares: shares)
                 let native = try QwenTensorParallelBatchBudget.derive(geometry: family.geometry, plan: plan,
                     tensors: canonical, maximumTokens: family.profile.maximumContextTokens,
-                    chunkSize: family.profile.maximumChunkTokens, lanes: lanes, paged: true, allocationBound: bound)
+                    chunkSize: family.profile.maximumChunkTokens, lanes: lanes, paged: true,
+                    promptTokens: family.profile.maximumPromptTokens, allocationBound: bound)
                 #expect(quote.allowance == native.allowance)
                 #expect(quote.perLaneStateBytes == native.perLaneStateBytes)
                 // Cluster stage KV is paged only (a contiguous backend is refused by

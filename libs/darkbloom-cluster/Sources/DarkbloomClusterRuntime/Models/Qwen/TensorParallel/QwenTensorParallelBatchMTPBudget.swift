@@ -32,7 +32,7 @@ struct QwenTensorParallelBatchMTPBudget {
         }
         let target = try QwenTensorParallelBatchBudget.derive(geometry: geometry, plan: plan,
             tensors: tensors, maximumTokens: maximumTokens, chunkSize: chunkSize,
-            lanes: lanes, paged: true, rank: rank, allocationBound: allocationBound)
+            lanes: lanes, paged: true, rank: rank, promptTokens: promptTokens, allocationBound: allocationBound)
         let local = try geometry.tensorParallelShard(plan: plan, rank: rank)
         // Every decode observation can leave a separately allocated one-token
         // root before this lane becomes singleton again. Ordinary observations

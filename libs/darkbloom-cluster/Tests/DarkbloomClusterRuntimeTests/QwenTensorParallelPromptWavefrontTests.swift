@@ -141,16 +141,17 @@ struct QwenTensorParallelPromptWavefrontTests {
                         let donorHost = try CBv2StageKVHost(model: model.model, kind: kind, lanes: 1,
                             maximumTokensPerRequest: prompt + 16, maximumChunkTokens: 512)
                         let donor = try QwenTensorParallelBatchSession(model: model, configuration: configuration,
-                            host: donorHost, request: target, captureFrontier: restoreAt, captureLimitBytes: 256 << 20,
-                            allocationBound: bound)
+                            host: donorHost, request: target,
+                            capture: QwenTensorParallelPrefixCapture(frontiers: [restoreAt], limitBytes: 256 << 20, allocationBound: bound))
                         while donor.schedule.committedPromptTokens < prompt { _ = try donor.prefill(check: {}) }
                         try donor.retire()
-                        restored = try #require(try donor.takeCapturedPrefix())
+                        restored = try #require(try donor.takeCapturedPrefix()?.states.first(where: { $0.committedTokens == restoreAt }))
                         target = try target.planned(reusedPrefix: restoreAt, splitFinalToken: false)
                     }
                     let session = try QwenTensorParallelBatchSession(model: model, configuration: configuration,
-                        host: host, request: target, restored: restored, captureFrontier: captureFrontier,
-                        captureLimitBytes: captureFrontier > 0 ? 256 << 20 : 0, allocationBound: bound)
+                        host: host, request: target, restored: restored,
+                        capture: captureFrontier > 0
+                            ? QwenTensorParallelPrefixCapture(frontiers: [captureFrontier], limitBytes: 256 << 20, allocationBound: bound) : nil)
                     var beside: QwenTensorParallelBatchSession?
                     if decodeBeside {
                         let short = try Self.request(prompt: 300)
@@ -185,11 +186,15 @@ struct QwenTensorParallelPromptWavefrontTests {
                     (outcome.rows, outcome.recurrent) = state(of: session)
                     try session.retire()
                     if let captured = try session.takeCapturedPrefix() {
-                        outcome.capture = [Data("\(captured.committedTokens)".utf8)]
-                            + captured.attention.keys.sorted().flatMap { [bytes(captured.attention[$0]!.keys),
-                                bytes(captured.attention[$0]!.values)] }
-                            + captured.recurrent.keys.sorted().flatMap { [bytes(captured.recurrent[$0]!.conv),
-                                bytes(captured.recurrent[$0]!.ssm)] }
+                        // Every kept boundary's state, beside the one attention copy they share.
+                        outcome.capture = [Data("\(captured.sharedBytes)".utf8)]
+                        for kept in captured.states {
+                            outcome.capture.append(Data("\(kept.committedTokens)".utf8))
+                            outcome.capture += kept.attention.keys.sorted().flatMap { [bytes(kept.attention[$0]!.keys),
+                                bytes(kept.attention[$0]!.values)] }
+                            outcome.capture += kept.recurrent.keys.sorted().flatMap { [bytes(kept.recurrent[$0]!.conv),
+                                bytes(kept.recurrent[$0]!.ssm)] }
+                        }
                     }
                     try beside?.retire()
                     results[rank].outcome = outcome

@@ -2785,6 +2785,19 @@ bytes, cancellation before start, early-release refusal and idempotent release
 after retirement. It runs no model or MLX code; it does not replace the full
 provider contract or hardware suites.
 
+A pair request whose admission deadline passes while a rank is still answering
+ends alone. `ClusterWorkerPairAdmissionDeadlineTests` (in
+`bash libs/darkbloom-cluster/Tests/RemoteChecks/run.sh`) drives a lane pair over
+scripted ranks: rank 0 answers after the request's deadline while another lane
+decodes, a request ends before rank 1 was asked, and a link closes during
+admission. `bash libs/darkbloom-cluster/Tests/LinkWorkerChecks/run.sh` runs the
+same deadline through both stand-in owners (the actual owner service) and the
+loopback link, and relays a reservation past its delivery deadline to an
+in-process follower. `PartialAdmissionTests` and `ProviderDeadlinePipeCheck` in
+`bash libs/darkbloom-cluster/Tests/ProcessChecks/run.sh` run it with actual
+children, the latter through the provider's own deadline and owner sources.
+None of these is a hardware pass.
+
 ### Qwen27 tensor-parallel native batch checks
 
 Run `QwenTensorParallelBatchDriverTests`, `QwenTensorParallelBatchBudgetTests`

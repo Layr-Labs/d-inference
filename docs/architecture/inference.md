@@ -71,6 +71,34 @@ the public calls keep their synchronous queue order. Source:
 (`onQueueWithoutWaiting`) and
 `provider-swift/Sources/ProviderCore/Inference/Distributed/Engine/DistributedCBv2Engine+Admission.swift`.
 
+A pair request's admission deadline (the first-content budget left when it
+arrived, `DistributedRequestDeadlineContext`) is that request's alone. It bounds
+how long the pair's reservation waits for the ranks' answers, never how long a
+reservation may take to reach a rank: each rank's owner fences a worker whose
+reservation is unanswered past its delivery deadline
+(`ClusterWorkerOwnerService`), so every reservation is delivered within the
+pair's admission wait, at least `ClusterWorkerRequest.laneAdmissionWaitNanoseconds`
+(30 s) with lanes. A busy rank answers at its next step boundary. When the
+request's own deadline passes first, the pair throws
+`ClusterWorkerOwnerError.deadline` for that request only. A rank not yet asked
+is not asked; an answer still on its way is read and an admission given back
+(`retired(cancelled)`) within `ClusterWorkerRequest.laneRetirementWaitNanoseconds`
+(30 s); the other lanes run on. Only a rank that does not give the reservation
+back in time ends the pair. A rank never asked is never fenced for a request,
+whatever ended it: a failing pair's owner shuts it down. A relayed reservation
+that reaches the follower past its delivery deadline is that request's refusal
+(`commandRefused`, `deadline`), not a fence of the follower's session. A closed
+link, a lost rank, or a rank that does not answer within the pair's admission
+wait still ends the pair. Before, the deadline ended the whole pair: every lane
+in flight failed and the follower logged `leader fenced: the request was
+cancelled before it started`. Sources:
+`libs/darkbloom-cluster/Sources/DarkbloomClusterProcess/ClusterWorkerPair.swift`
+(`reserve`),
+`libs/darkbloom-cluster/Sources/DarkbloomClusterProcess/ClusterWorkerRequest.swift`
+(`admit`, `cleanup`) and
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterLinkWorkerEndpoint.swift`
+(`ClusterLinkWorkerWire.requestRefusal`).
+
 The cluster setup liveness probe uses the same request validation as ordinary
 chat completions. `ClusterSetupProbeRequest` sends no family-specific thinking
 override, so each model’s prompt policy remains authoritative.

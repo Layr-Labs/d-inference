@@ -31,11 +31,16 @@ enum ServiceDrain {
     }
 
     /// `prepare`'s drain, for a caller that already holds the update lease and decided under it that the provider
-    /// service is to be drained (`darkbloom update --rollback`).
+    /// service is to be drained (`darkbloom update --rollback`). `accepts` decides whether a running provider is the
+    /// one the caller means to drain; any other is refused before anything changes.
     static func drain(options: DrainOptions,
                       state: DaemonState? = DaemonStateFile.read(),
+                      accepts: (ProcessIdentity) -> Bool = { _ in true },
                       withConfigurationChange: (_ setup: () throws -> Void) throws -> Void = { try $0() }) async throws {
         let identity = WatchdogProbe.providerIdentity(daemonState: state, launchSnapshotProcess: LaunchAgent.launchSnapshot()?.process)
+        if let identity, identity.isCurrent(), !accepts(identity) {
+            throw ValidationError("Provider process \(identity.pid) is not the provider service's process. No process or recovery setting was changed.")
+        }
         if let identity, identity.isCurrent(), !options.force {
             guard state?.processIdentity == identity, state?.lifecycle != nil else {
                 throw ValidationError("This running provider does not expose graceful-drain control. Upgrade it, or explicitly use --force to interrupt it.")

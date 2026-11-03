@@ -93,8 +93,8 @@ struct UpdateRollbackEndToEndTests {
             },
             canAsk: { false },
             readAnswer: { nil },
-            drain: { log.record("drain") },
-            restart: { log.record("restart") },
+            drain: { _ in log.record("drain") },
+            restart: { _, _ in log.record("restart") },
             waitForRestart: { log.record("wait") })
         try await UpdateRollback(updater: updater, host: host, say: { log.say($0) }).run(skipConfirmation: command.yes)
 

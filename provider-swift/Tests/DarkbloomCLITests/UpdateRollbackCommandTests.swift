@@ -297,6 +297,23 @@ struct UpdateRollbackCommandTests {
         try raced.updater.beginUpdateSession(operation: "lease-check").release()
     }
 
+    @Test("the drain is told which process it drains, and with no provider left the relaunch is asked under the start hold")
+    func drainedIdentityAndHoldThroughTheRelaunch() async throws {
+        let install = try RollbackInstall()
+        defer { install.remove() }
+        let service = ProcessIdentity(pid: 4242, startTimeMicros: 7)
+        // The drained service ended (a forced drain, or it exited): nothing holds the instance lock after the drain.
+        let host = RecordingHost(install: install, loaded: true, serviceProcess: service)
+
+        try await install.rollback(host: host, yes: true)
+
+        #expect(host.drainedProcess == service)
+        #expect(host.events == ["drain", "restart", "wait"])
+        #expect(host.restartHeldStartsOut, "no provider can start between the swap and the relaunch")
+        #expect(try install.isFree(install.providerInstanceLock), "released once the relaunch was asked for")
+        #expect(try install.liveBinary() == "1.0.0-darkbloom")
+    }
+
     @Test("an install that changed during the prompt is refused before the drain")
     func planChangedDuringThePromptIsRefusedBeforeTheDrain() async throws {
         let install = try RollbackInstall()
@@ -422,12 +439,18 @@ private final class RecordingHost: @unchecked Sendable {
         var provider: UpdateRollback.Provider = .stopped
         var inCluster = false
         var providerHoldsInstanceLock = false
+        var drained: ProcessIdentity?
+        var restartHeldStartsOut = false
     }
 
     private let log: Log
     let host: UpdateRollback.Host
     var events: [String] { log.lock.withLock { log.events } }
     var said: [String] { log.lock.withLock { log.lines } }
+    /// The process the drain was told it drains.
+    var drainedProcess: ProcessIdentity? { log.lock.withLock { log.drained } }
+    /// The relaunch was asked for while the command still held the provider instance lock.
+    var restartHeldStartsOut: Bool { log.lock.withLock { log.restartHeldStartsOut } }
 
     /// `providerOnceAnswered` is the provider's state from the prompt's answer on.
     /// `inClusterOnceAnswered`: this Mac joins a cluster pair while the prompt is open.
@@ -463,11 +486,18 @@ private final class RecordingHost: @unchecked Sendable {
                 try? onceAnswered()
                 return answer
             },
-            drain: {
+            drain: { drained in
                 record("drain")
+                log.lock.withLock { log.drained = drained }
                 try beforeDrain()
             },
-            restart: { record("restart") },
+            restart: { _, startsHold in
+                record("restart")
+                // Whether the command still held every provider start out when it asked for the relaunch.
+                let held = startsHold != nil
+                    && (try? UpdateProcessLock.attempt(at: install.providerInstanceLock, operation: "lock-check").lock) == nil
+                log.lock.withLock { log.restartHeldStartsOut = held }
+            },
             waitForRestart: { record("wait") })
     }
 

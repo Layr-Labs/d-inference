@@ -56,10 +56,12 @@ struct UpdateRollback {
         var holdProviderStartsOut: () throws -> UpdateProcessLock.Attempt
         var canAsk: () -> Bool
         var readAnswer: () -> String?
-        /// Drains the running provider service. Called while the command holds the update lease.
-        var drain: () async throws -> Void
-        /// Relaunches the drained provider and rearms the watchdog.
-        var restart: () async throws -> Void
+        /// Drains the running provider service, whose process is `drained` (nil when none runs); any other running
+        /// provider is refused before anything changes. Called while the command holds the update lease.
+        var drain: (_ drained: ProcessIdentity?) async throws -> Void
+        /// Relaunches the drained provider and rearms the watchdog. Only `drained` may be stopped. `startsHold`: the
+        /// provider instance lock the command holds (no provider runs), released just before the relaunch.
+        var restart: (_ drained: ProcessIdentity?, _ startsHold: UpdateProcessLock?) async throws -> Void
         /// Waits until the relaunched provider is freshly authorized.
         var waitForRestart: () async throws -> Void
     }
@@ -127,14 +129,28 @@ struct UpdateRollback {
         // A provider stopped since the plan is swapped without a restart.
         let restarts = providerNow == .service
         let drained = restarts ? host.serviceProcess() : nil
-        if restarts { try await host.drain() }
+        if restarts { try await host.drain(drained) }
 
-        // At the swap: what the drain let change is decided again and held until the swap is done.
+        // At the swap: what the drain let change is decided again and held until the swap is done. The provider
+        // instance hold lasts until the relaunch, so no other provider starts and none is signalled.
         let outcome: Result<String, Error>
+        var startsHold: UpdateProcessLock?
         do {
             let holds = try holdStartsOut(drained: drained, drainedService: restarts)
-            defer { holds.forEach { $0.release() } }
-            outcome = Result { try updater.rollBackToPredecessor(session: session, plan: plan) }
+            defer { holds.cluster.release() }
+            let swapped = Result { try updater.rollBackToPredecessor(session: session, plan: plan) }
+            if let starts = holds.starts {
+                startsHold = starts
+            } else {
+                do {
+                    startsHold = try afterTheSwap(drained: drained, swapped: swapped)
+                } catch let foreign as ForeignStart {
+                    throw foreign
+                } catch {
+                    // The lock could not be opened: the restart still signals only the drained process.
+                }
+            }
+            outcome = swapped
         } catch let refusal as ForeignStart {
             throw Failure(description: refusal.description)
         } catch let refusal where !restarts {
@@ -143,11 +159,13 @@ struct UpdateRollback {
         } catch {
             outcome = .failure(error)
         }
+        if !restarts { startsHold?.release() }
         // A drained provider restarts whether or not the rollback completed:
         // the layout is always one complete release (the journal guarantees it).
         var restartFailure: Error?
         if restarts {
-            do { try await host.restart() } catch { restartFailure = error }
+            do { try await host.restart(drained, startsHold) } catch { restartFailure = error }
+            startsHold?.release()
         }
         session.release()
         let notRestarted = restartFailure.map {
@@ -190,20 +208,38 @@ struct UpdateRollback {
         ]
     }
 
-    /// Another process took the provider instance lock while the service drained. Nothing is swapped, and the
-    /// drained service is not restarted: its restart would signal that process.
+    /// Another process took the provider instance lock while the service drained, or during the swap. The drained
+    /// service is not restarted: its restart would signal that process.
     struct ForeignStart: Error, CustomStringConvertible {
         let owner: String
+        /// The restored version when the swap had completed.
+        var restored: String?
         var description: String {
-            "\(owner) started outside the provider service while it drained. Nothing was swapped. The service stays "
-                + "drained with automatic restart off; stop that process, then run `\(UpdateRollback.cli) restart` or "
-                + "`\(UpdateRollback.cli) update --rollback` again."
+            let what = restored.map { "Rolled back to v\($0), but \(owner.prefix(1).lowercased() + owner.dropFirst()) started outside "
+                + "the provider service during the swap." }
+                ?? "\(owner) started outside the provider service while it drained. Nothing was swapped."
+            return what + " The service stays drained with automatic restart off; stop that process, then run "
+                + "`\(UpdateRollback.cli) restart`" + (restored == nil ? " or `\(UpdateRollback.cli) update --rollback` again." : ".")
+        }
+    }
+
+    /// The drained service kept its instance lock over the swap. If it ended meanwhile, the lock is taken now and
+    /// held until the relaunch; held by another process, that process is not signalled (`ForeignStart`).
+    private func afterTheSwap(drained: ProcessIdentity?, swapped: Result<String, Error>) throws -> UpdateProcessLock? {
+        switch try heldOrRefused({ try host.holdProviderStartsOut() }) {
+        case .acquired(let hold):
+            return hold
+        case .busy(let owner):
+            if let drained, owner?.processIdentity == drained { return nil }
+            throw ForeignStart(owner: owner.map { "A provider (pid \($0.pid))" } ?? "A provider",
+                               restored: try? swapped.get())
         }
     }
 
     /// At the swap, under the update lease: holds the cluster service lock and, unless the drained service process
-    /// still holds it, the provider instance lock. Every hold is released by the caller once the swap is done.
-    private func holdStartsOut(drained: ProcessIdentity?, drainedService: Bool) throws -> [UpdateProcessLock] {
+    /// still holds it, the provider instance lock (`starts`, nil when the drained process keeps it).
+    private func holdStartsOut(drained: ProcessIdentity?, drainedService: Bool)
+        throws -> (cluster: UpdateProcessLock, starts: UpdateProcessLock?) {
         guard let cluster = try heldOrRefused({ try host.holdClusterOut() }) else {
             throw Failure(description: drainedService
                 ? "This Mac started serving in a two-Mac cluster while the provider drained. Nothing was swapped."
@@ -218,10 +254,10 @@ struct UpdateRollback {
         }
         switch starts {
         case .acquired(let hold):
-            return [cluster, hold]
+            return (cluster, hold)
         case .busy(let owner):
             // The drained service still runs and holds its instance lock: no other provider can start either.
-            if drainedService, let drained, owner?.processIdentity == drained { return [cluster] }
+            if drainedService, let drained, owner?.processIdentity == drained { return (cluster, nil) }
             cluster.release()
             let holder = owner.map { "A provider (pid \($0.pid))" } ?? "A provider"
             if drainedService { throw ForeignStart(owner: holder) }
@@ -285,9 +321,18 @@ extension UpdateRollback.Host {
             holdProviderStartsOut: { try ProcessLifecycle.holdStartsOut(operation: UpdateRollback.operation) },
             canAsk: { isatty(STDIN_FILENO) != 0 },
             readAnswer: { readLine() },
-            drain: { try await ServiceDrain.drain(options: options) },
-            restart: {
-                try await ServiceDrain.stopDrainedProvider(unloadService: false)
+            drain: { drained in try await ServiceDrain.drain(options: options, accepts: { $0 == drained }) },
+            restart: { drained, startsHold in
+                // A held instance lock means no provider runs: there is nothing to stop.
+                if startsHold == nil {
+                    let target = WatchdogProbe.providerIdentity(daemonState: DaemonStateFile.read(),
+                                                                launchSnapshotProcess: LaunchAgent.launchSnapshot()?.process)
+                    if let target, target.isCurrent(), target != drained {
+                        throw ValidationError("provider process \(target.pid) is not the drained service's process; it was not signalled")
+                    }
+                    try await ServiceDrain.stopDrainedProvider(unloadService: false)
+                }
+                startsHold?.release()
                 try LaunchAgent.restartAfterDrain()
                 ServiceDrain.rearmWatchdog(explicitConfig: configPath)
             },

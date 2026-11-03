@@ -25,7 +25,12 @@ not native model capabilities, numerical parity or hardware qualification.
 
 The placement checks also cover exact family request scopes, completion-heavy
 and long-prompt helper plans, overflow refusal, conservative memory refusal and
-unchanged GLM adapter bounds. Run `libs/darkbloom-cluster/Tests/PlacementChecks/run.sh`
+unchanged GLM adapter bounds. `GemmaRoutedExpertChecks.swift` builds the Gemma
+QAT 4-bit layout from the retained real headers in
+`libs/darkbloom-cluster/Tests/StageMetadataChecks/Inputs`, requires it to equal
+its golden layout with `routedExperts` included, and requires the per-token
+read of the [routed-expert prior](../architecture/inference.md#gemma-routed-expert-prior).
+Run `libs/darkbloom-cluster/Tests/PlacementChecks/run.sh`
 and `provider-swift/Tests/ClusterPlacementChecks/run.sh`; then run
 `provider-swift/Tests/ClusterPlacementChecks/run-flow.sh` for the real child-process
 provider path with a fake installed helper. These checks use recorded metadata
@@ -1945,8 +1950,12 @@ with the fixed owner arguments and checks its exact environment, supported
 lane widths, out-of-range rejection, malformed-override parity even with an
 eight-lane family default, admission/owner/native parity, unsupported
 mode and image gates, and both member ranks. No model, GPU or real service is
-started. The checks preserve the singleton and GLM tensor-parallel defaults;
-actual multi-lane output, encrypted transport and retirement still require
+started. The checks preserve the singleton and GLM tensor-parallel defaults
+and the serial-prefill Gemma 4 pipeline's default lanes
+(`DistributedInstalledPlan.gemma4PipelineBatchLanes`), which reach the rank,
+while a Gemma setup saved with the one-chunk lookahead keeps one lane;
+`DistributedInstalledLanesTests` covers the same rules for every adapter and
+schedule. Actual multi-lane output, encrypted transport and retirement still require
 qualification on both Macs. The same real-child checks pass canonical local
 `MLX_METAL_FAST_SYNCH=0|1` choices through the owner and final native launch,
 reject free-text spellings from forwarding, preserve unrelated native guards,
@@ -2292,13 +2301,24 @@ prompt projections with actual singleton calls at chunk boundaries, checks
 explicit scope restoration and unsupported/custom fallbacks, and verifies the
 unchanged tied head. `Gemma4PrefillExpertTests` executes the actual Gemma decoder, router,
 shared MLP and sparse expert block with the attention output isolated to zero;
-it assembles an independent projection/expert oracle while preserving the
-original rectangular normalization and elementwise operations, and compares
-selected routes across prompt boundaries. A separate expert-only composition
+it assembles an independent projection/expert oracle from one-token expert
+calls while preserving the original rectangular normalization and elementwise
+operations. It requires one expert call, never hinted as sorted, carrying every
+token's routes (grouped by expert from 64 assignments), with the oracle's
+bytes, at 7 to 512 tokens. A separate expert-only composition
 check compares complete singleton calls with the shared branch isolated to
-zero. Ordinary and verification paths remain covered. These checks do not
+zero, and a decode check requires 2, 3 and 8 independent rows to share one
+call with each row's one-row bytes. A direct check compares the shared call
+with one-row calls for a single row and for rows that all route to the same
+experts. Ordinary and verification paths
+remain covered, and the original rectangular call still sorts. These checks do not
 claim whole-layer singleton equivalence: existing normalization can depend on
-rectangle shape on CPU.
+rectangle shape on CPU. With `GEMMA4_EXPERT_ROWS_GPU=1` the suite also
+compares the shared call with one-row calls on the GPU for 1 to 2,048 rows,
+tied routes included, at
+a geometry with the production kernel classes; `=production` adds hidden 2,816,
+expert width 704 and 128 experts. Run the GPU case alone, in an exclusive
+hardware window.
 `GemmaPrefillArithmeticTests` in the runtime target verifies that both exact
 policies change the receipt while the family environment and chunk policy
 remain bound. These CPU checks do not establish full-model cross-chip qualification

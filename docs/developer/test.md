@@ -130,7 +130,11 @@ native MiMo, desktop and installer gates. `Provider Unit Tests Summary` lists th
 the shards together executed the full list, checks that each Prompt Parity run
 executed every listed test of its suite, merges the shards' coverage
 profiles and uploads measured seconds per suite (`provider-test-shard-weights`).
-When the shards drift apart, replace the weights file with that artifact. A
+When the shards drift apart, replace the weights file with that artifact.
+The suites in `KEPT_APART` never share a shard: a process that ran
+`NemotronSuperManagedSlotTests` and then `Qwen4PagingPrefixIntegrationTests`
+crashed with SIGBUS, and each passes alone. The pair stays apart until the
+Nemotron fixture cleanup is fixed. A
 suite moves from the parallel class to the serial class when it fails or flakes
 in parallel; when in doubt, a suite stays serial.
 

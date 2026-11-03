@@ -197,9 +197,9 @@ private func checkTensorParallelWeighted(_ big: ClusterModelLayout, _ checks: Pl
     checks.require("tensor parallel weighted: the weighted choice is faster than the equal-only plan's choice",
         chosen.rested.requestSeconds < (plain.chosen?.rested.requestSeconds ?? 0))
     // Equal Macs keep equal shards.
-    let twin = try ClusterPlacementPlanner.plan(devices: [try SyntheticMac.idle(192).device("a", speed: fast, chip: "Apple M2 Ultra"),
-                                                          try SyntheticMac.idle(192).device("b", speed: fast, chip: "Apple M2 Ultra")],
-                                                layout: layout, policy: sharded, link: link)
+    let twins = [try SyntheticMac.idle(192).device("a", speed: fast, chip: "Apple M2 Ultra"),
+                 try SyntheticMac.idle(192).device("b", speed: fast, chip: "Apple M2 Ultra")]
+    let twin = try ClusterPlacementPlanner.plan(devices: twins, layout: layout, policy: sharded, link: link)
     checks.require("tensor parallel weighted: equal Macs that choose tensor parallel keep equal shards (no tensorShares)",
         twin.chosen?.mode == .tensorParallel && twin.chosen?.tensorShares == nil)
     // An explicit evaluation accepts an offered share and refuses another.
@@ -209,6 +209,23 @@ private func checkTensorParallelWeighted(_ big: ClusterModelLayout, _ checks: Pl
         because: "Tensor-parallel shares must be one the family's plan accepts") {
         _ = try ClusterPlacementPlanner.evaluate(devices: devices, cuts: [], mode: .tensorParallel, prefillSchedule: .serial,
             layout: layout, policy: sharded, link: link, tensorShares: [1, 7])
+    }
+    // A pair that registers with a coordinator (`equalTensorShares`) is placed exactly as if the family offered no
+    // options, equal Macs keep the plan they had, and a retained unequal partition is refused there.
+    var registers = sharded
+    registers.equalTensorShares = true
+    let registered = try ClusterPlacementPlanner.plan(devices: devices, layout: layout, policy: registers, link: link)
+    checks.require("tensor parallel weighted: a pair that registers with a coordinator is placed as with equal shards only (no tensorShares)",
+        registered.chosen == plain.chosen && registered.alternatives == plain.alternatives
+            && ([registered.chosen].compactMap { $0 } + registered.alternatives).allSatisfy { $0.tensorShares == nil })
+    let twinRegistered = try ClusterPlacementPlanner.plan(devices: twins, layout: layout, policy: registers, link: link)
+    checks.require("tensor parallel weighted: equal Macs that register with a coordinator choose the plan they chose before",
+        twinRegistered.chosen == twin.chosen)
+    var retained = registers
+    retained.modes = [.tensorParallel]; retained.leader = "small"; retained.requiredTensorShares = [1, 3]
+    checks.refuses("tensor parallel weighted: a pair that registers with a coordinator refuses a retained unequal partition",
+        because: "A retained tensor partition needs its exact ordered, supported two-rank shares") {
+        _ = try ClusterPlacementPlanner.plan(devices: devices, layout: layout, policy: retained, link: link)
     }
     // The plan's words name the split.
     let lines = ClusterPlacementExplanation.candidate(chosen, basis: result.basis, prompt: 1024, outputs: 128)

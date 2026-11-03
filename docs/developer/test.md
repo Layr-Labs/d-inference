@@ -2590,6 +2590,18 @@ holds. Golden plans must stay byte-identical. Run
 `provider-swift/Tests/ClusterInstalledSessionChecks/run.sh` for the owner-only
 history file.
 
+A pair that registers with a coordinator is planned with equal shares only
+(`ClusterPlacementPolicy.equalTensorShares`): the same `run.sh` places the
+weighted check's unequal Macs under that policy as if the family offered no
+unequal shares, keeps equal Macs' chosen placement and GLM-5.3-Flash's whole
+plan, and refuses a retained unequal partition. From `provider-swift`,
+`swift test --filter 'DistributedAutomaticBatchPlannerTests|ClusterApprovalTensorSharesTests'`
+checks the guided setup's plan for Qwen3.8 27B on two unequal Macs (unequal for
+a local cluster, equal for one served through Darkbloom) and that a cluster
+approval beside unequal shares is refused by the leader's check before any part
+stops and by the other Mac's before it saves, because a member's registration
+names no shares (`NativePairMemberRoster`).
+
 From `libs/darkbloom-cluster`, `swift test --filter QwenTensorParallelShareProbeTests`
 checks the per-mille share and the probe request's shape on the CPU. With
 exclusive GPU custody and the matching Metal library, set

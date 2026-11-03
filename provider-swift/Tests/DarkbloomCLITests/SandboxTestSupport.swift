@@ -265,3 +265,28 @@ extension SandboxHostFacts {
             sleepMinutes: 0)
     }
 }
+
+/// Ctrl-C for an exit test: once `ready` holds, SIGINT goes to this process
+/// alone, as the terminal sends it to the CLI's process group and not to the
+/// group of a child the CLI started. When `ready` never holds, SIGTERM ends
+/// the run instead of a test that waits forever.
+@discardableResult
+func sendInterrupt(when ready: @escaping @Sendable () -> Bool) -> Task<Void, Never> {
+    Task.detached {
+        let deadline = ContinuousClock.now + .seconds(20)
+        while !ready(), ContinuousClock.now < deadline { try? await Task.sleep(for: .milliseconds(50)) }
+        kill(getpid(), ready() ? SIGINT : SIGTERM)
+    }
+}
+
+/// Whether this process has a child process with exactly this name.
+func hasChildProcess(named name: String) -> Bool {
+    let pgrep = Process()
+    pgrep.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
+    pgrep.arguments = ["-x", "-P", String(getpid()), name]
+    pgrep.standardOutput = FileHandle.nullDevice
+    pgrep.standardError = FileHandle.nullDevice
+    guard (try? pgrep.run()) != nil else { return false }
+    pgrep.waitUntilExit()
+    return pgrep.terminationStatus == 0
+}

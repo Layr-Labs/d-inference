@@ -107,13 +107,15 @@ struct SandboxAddonTests {
             URL(fileURLWithPath: "/bin/sh"), ["-c", "printf 'one\\ntwo\\r\\nthree'; echo oops >&2; exit 3"],
             closeStandardInput: true, standardOutput: .lines { lines.append($0) }, standardError: .tail(errors))
         #expect(exit == .init(status: 3, signal: nil))
-        #expect(!exit.succeeded && !exit.interrupted)
+        #expect(!exit.succeeded && !exit.interrupted && exit.failureStatus == 3)
         #expect(lines.all == ["one", "two", "three"])
         #expect(errors.lastLines(5) == ["oops"])
         // A shell's `exit 130` after Ctrl-C, and death by SIGINT, both read as interrupted.
         #expect(try await SandboxChildProcess.run(URL(fileURLWithPath: "/bin/sh"), ["-c", "exit 130"]).interrupted)
         let killed = try await SandboxChildProcess.run(URL(fileURLWithPath: "/bin/sh"), ["-c", "kill -INT $$"])
-        #expect(killed == .init(status: SIGINT, signal: SIGINT) && killed.interrupted)
+        #expect(killed == .init(status: SIGINT, signal: SIGINT) && killed.interrupted && killed.failureStatus == 130)
+        let terminated = try await SandboxChildProcess.run(URL(fileURLWithPath: "/bin/sh"), ["-c", "kill -TERM $$"])
+        #expect(!terminated.interrupted && terminated.failureStatus == 1)
         await #expect(throws: (any Error).self) {
             try await SandboxChildProcess.run(URL(fileURLWithPath: "/nonexistent/tool"), [])
         }
@@ -272,6 +274,19 @@ struct SandboxAddonTests {
             == "Darkbloom Sandbox is not set up on this Mac, so it has no log. Set it up with `darkbloom sandbox setup`.\n")
         #expect(outputSection(output, from: "== NO LOG", to: "== LOG")?.hasPrefix("No agent log yet at ") == true)
         #expect(outputSection(output, from: "== LOG", to: "== END") == "two\nthree\n")
+    }
+
+    @Test("Ctrl-C stops logs -f and its tail, and the command exits 130")
+    func followInterrupted() async {
+        await #expect(processExitsWith: .exitCode(130)) {
+            let sandbox = try CLICommandSandbox.enter(autoRestart: false)
+            let log = sandbox.sandboxAddonRoot.appendingPathComponent("agent/agent.log")
+            try FileManager.default.createDirectory(at: log.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try Data("one\n".utf8).write(to: log)
+            // `tail -F` never ends by itself; before the fix this run hung until SIGTERM.
+            sendInterrupt(when: { hasChildProcess(named: "tail") })
+            await exitWithCommandStatus { try await runCLICommand(Sandbox.Logs.self, ["sandbox", "logs", "-f"]) }
+        }
     }
 
     @Test("uninstall explains, then runs the add-on's uninstall; without --yes it needs a terminal")

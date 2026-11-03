@@ -111,7 +111,8 @@ extension Sandbox {
             let exit = try await SandboxChildProcess.run(
                 URL(fileURLWithPath: "/usr/bin/tail"),
                 Self.tailArguments(path: addon.agentLog.path, lines: lines, follow: follow))
-            if !exit.succeeded, !exit.interrupted { throw ExitCode(exit.status) }
+            // Ctrl-C ends `-F`; it exits 130 as the shell expects.
+            if !exit.succeeded { throw ExitCode(exit.failureStatus) }
         }
 
         /// `-F` keeps following when the agent's restart recreates the file.
@@ -152,7 +153,7 @@ extension Sandbox {
                 }
             }
             let exit = try await SandboxChildProcess.run(addon.command, ["uninstall", "--yes"])
-            guard exit.succeeded else { throw ExitCode(exit.signal == nil ? exit.status : 1) }
+            guard exit.succeeded else { throw ExitCode(exit.failureStatus) }
             print("Set it up again any time with `\(Sandbox.cli) sandbox setup`.")
         }
 
@@ -185,7 +186,7 @@ extension Sandbox {
                 + "itself, or run `\(cli) sandbox setup` to update it now.")
             print("")
             let exit = try await SandboxChildProcess.run(addon.command, ["status"])
-            if !exit.succeeded { throw ExitCode(exit.signal == nil ? exit.status : 1) }
+            if !exit.succeeded { throw ExitCode(exit.failureStatus) }
         case .unresponsive(let seconds):
             printError("The Darkbloom Sandbox add-on did not answer within \(seconds) seconds. "
                 + "See `\(cli) sandbox logs`, or run `\(cli) sandbox setup` to repair it.")

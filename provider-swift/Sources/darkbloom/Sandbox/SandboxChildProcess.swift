@@ -2,11 +2,13 @@ import Darwin
 import Foundation
 
 /// Runs one child process for a sandbox command and waits for it from its
-/// termination handler, never blocking a thread. While the child runs, Ctrl-C
-/// goes to the child alone (it shares the terminal's process group) and
-/// SIGTERM sent to this process is passed on, so the command can say how the
-/// child ended. The child starts with default signal handling: a handler, not
-/// `SIG_IGN`, is installed here, and exec resets handlers.
+/// termination handler, never blocking a thread. `Process` starts the child in
+/// a process group of its own, so the terminal's Ctrl-C reaches only this
+/// process. While the child runs, this process passes SIGINT on to the child's
+/// whole group, as the terminal would, and SIGTERM on to the child, so the
+/// command can say how the child ended. The child starts with default signal
+/// handling: a handler, not `SIG_IGN`, is installed here, and exec resets
+/// handlers.
 enum SandboxChildProcess {
     struct Exit: Equatable, Sendable {
         let status: Int32
@@ -16,6 +18,9 @@ enum SandboxChildProcess {
         var succeeded: Bool { signal == nil && status == 0 }
         /// Ctrl-C: killed by SIGINT, or a shell's `exit 130` after trapping it.
         var interrupted: Bool { signal == SIGINT || (signal == nil && status == 130) }
+        /// The command's exit status when the child did not succeed: 130 after
+        /// Ctrl-C, else the child's own status, or 1 when a signal ended it.
+        var failureStatus: Int32 { interrupted ? 130 : signal == nil && status != 0 ? status : 1 }
     }
 
     enum Output: Sendable {
@@ -48,10 +53,14 @@ enum SandboxChildProcess {
 
         SignalHandlers.shared.retain()
         let child = ChildReference(process)
+        let interrupt = DispatchSource.makeSignalSource(signal: SIGINT, queue: .global())
+        interrupt.setEventHandler { child.interrupt() }
+        interrupt.resume()
         let terminate = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .global())
         terminate.setEventHandler { child.terminate() }
         terminate.resume()
         defer {
+            interrupt.cancel()
             terminate.cancel()
             SignalHandlers.shared.release()
         }
@@ -105,10 +114,20 @@ enum SandboxChildProcess {
         private let process: Process
         init(_ process: Process) { self.process = process }
         func terminate() { if process.isRunning { process.terminate() } }
+
+        /// Ctrl-C as the terminal delivers it: to every process in the
+        /// child's group, so a shell script and the command it waits for stop
+        /// together. A child outside a group of its own gets it alone.
+        func interrupt() {
+            guard process.isRunning else { return }
+            let pid = process.processIdentifier
+            if getpgid(pid) == pid { kill(-pid, SIGINT) } else { process.interrupt() }
+        }
     }
 
-    /// No-op SIGINT and SIGTERM handlers while any child runs; the first run
-    /// saves the previous handlers and the last one restores them.
+    /// No-op SIGINT and SIGTERM handlers while any child runs, so that the
+    /// signal sources above pass them on instead of this process dying; the
+    /// first run saves the previous handlers and the last one restores them.
     private final class SignalHandlers: @unchecked Sendable {
         static let shared = SignalHandlers()
 

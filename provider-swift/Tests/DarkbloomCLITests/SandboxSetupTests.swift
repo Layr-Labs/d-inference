@@ -915,6 +915,41 @@ struct SandboxSetupTests {
         #expect(output.hasSuffix("== ARGUMENTS\n--macos-slots\n1\n"))
     }
 
+    @Test("Ctrl-C stops the installer and the command it waits for, and setup exits 130")
+    func interruptedInstaller() async throws {
+        let result = try await #require(processExitsWith: .exitCode(130), observing: [\.standardOutputContent]) {
+            let sandbox = try CLICommandSandbox.enter(autoRestart: false)
+            let root = sandbox.sandboxAddonRoot
+            // `sleep` stands in for the installer's wait for approval. The shell
+            // waits for it, so the script ends early only when both get Ctrl-C.
+            CoordinatorStub.install(["/install.sh": .init(status: 200, body: Data("""
+                #!/bin/sh
+                # Understands --json-progress.
+                mkdir -p "$DARKBLOOM_SANDBOX_ROOT"
+                : > "$DARKBLOOM_SANDBOX_ROOT/installer-started"
+                sleep 30
+                : > "$DARKBLOOM_SANDBOX_ROOT/installer-finished"
+
+                """.utf8))])
+            sendInterrupt(when: { FileManager.default.fileExists(atPath: root.appendingPathComponent("installer-started").path) })
+            await exitWithCommandStatus {
+                defer {
+                    print("finished \(FileManager.default.fileExists(atPath: root.appendingPathComponent("installer-finished").path))")
+                }
+                try await SandboxSetupFlow(
+                    options: SandboxSetupOptions(server: "https://sandbox.invalid"), confirmed: true, addon: .live(),
+                    interactiveInput: false, terminal: false, color: false,
+                    probe: { _ in .mac(cores: 16, memoryGiB: 128, freeGiB: 157, volumeGiB: 1_858) }).run()
+            }
+        }
+        let output = decodedText(result.standardOutputContent)
+        #expect(output.hasSuffix("""
+            Setup stopped. An enrollment waiting for approval goes on; run `darkbloom sandbox setup` again to follow it.
+            finished false
+
+            """))
+    }
+
     @Test("a failing installer keeps its exit status and says what it means")
     func failingInstaller() async throws {
         let message = "Darkbloom Sandbox 1.0.1 needs macOS 28 or later"

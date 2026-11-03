@@ -305,7 +305,7 @@ struct SandboxSetupFlow {
         if exit.interrupted || exit.signal != nil {
             print("")
             print("Setup stopped. Nothing changed.")
-            throw ExitCode(exit.interrupted ? 130 : 1)
+            throw ExitCode(exit.failureStatus)
         }
         guard exit.succeeded else { return nil }
         return output.lastLines(.max).compactMap(SandboxSizingPlan.init(line:)).last
@@ -367,7 +367,7 @@ struct SandboxSetupFlow {
         guard exit.succeeded else {
             print("")
             print(Self.advice(exit, waitsInBackground: waitsInBackground))
-            throw ExitCode(exit.interrupted ? 130 : exit.signal == nil && exit.status != 0 ? exit.status : 1)
+            throw ExitCode(exit.failureStatus)
         }
         printSummary(installer: summary)
     }

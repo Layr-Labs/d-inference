@@ -167,6 +167,7 @@ extension ProviderLoop {
             trustLevel: trustLevel, status: status, reason: reason,
             receivedAt: receivedAt, authorization: authorization)
         writeDaemonState()
+        recordAppAttestVerifiedIfGranted(authorization, at: receivedAt)
     }
 
 }

@@ -1,6 +1,6 @@
 # Migrate a public model to a new build
 
-> Last updated: 2026-10-15
+> Last updated: 2026-11-02
 
 Runbook for moving a public model name (an **alias**, e.g. `gemma-4-26b`) from
 one concrete build to another with no downtime and without consumers ever
@@ -73,6 +73,20 @@ coordinator logs `provider now advertises build (models_update)` and
 `previous_build` until the desired one is routable, and otherwise queues
 against the desired build — capacity never black-holes. There are no weights,
 ramps, or migration controllers.
+
+**The operator's filter wins.** A provider converges only when the desired
+build is in its [operator filter](../reference/configuration.md#provider-model-selection).
+A background `darkbloom start` and every `darkbloom switch` save that filter, so
+almost every provider has one and almost none lists a newly published build: a
+flip converges providers with an empty `enabled_models` and nobody else until
+operators pick the new build. The others keep serving the previous build and log
+`desired_models: <alias> → <build> is outside the enabled model filter; not
+converging`. `ResolveModel` sends alias traffic to the desired build whenever a
+provider can take it, so previous-build providers then serve only overflow, and
+providers on a retired build serve none of it. After the flip, ask operators to
+run `darkbloom switch` and pick the public model's name, which the picker then
+maps to the desired build; before retiring the previous build, count the
+providers still advertising it.
 
 ## Steps
 

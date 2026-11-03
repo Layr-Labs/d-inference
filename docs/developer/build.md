@@ -35,6 +35,12 @@ an arbitrary prebuilt metallib or infer GPU qualification from compilation.
 Keep separate worktrees/output directories for independent native builds;
 never share an active Swift scratch path or another suite's GPU reservation.
 
+After changing provider authorization summaries, rebuild the provider test
+product before running the [authorization guidance tests](test.md#provider-authorization-guidance).
+They exercise shared production decisions without invoking status/doctor's
+host probes or native Apple operations; signed-release qualification remains
+separate.
+
 ## Cluster metadata check builds
 
 The worker capability and worker startup-argument checks link the actual
@@ -177,23 +183,30 @@ importing its certificate. See [release qualification](test.md#sdk-27-release-qu
 
 ## The `dev` branch
 
-The `dev` branch is master plus one commit. On it, a plain `swift build` is a
-DevNet build: `DARKBLOOM_RELEASE_ENVIRONMENT` defaults to `dev`, so the
-provider talks to `https://api.dev.darkbloom.dev` and nothing else. On master
-the default is `prod`. Set `DARKBLOOM_RELEASE_ENVIRONMENT=prod` to build a
-production binary from the `dev` branch.
+On the `dev` branch a plain `swift build` is a DevNet build:
+`DARKBLOOM_RELEASE_ENVIRONMENT` defaults to `dev`, so the provider talks to
+`https://api.dev.darkbloom.dev` and nothing else. On master the default is
+`prod`. Set `DARKBLOOM_RELEASE_ENVIRONMENT=prod` to build a production binary
+from the `dev` branch.
 
 Use the `dev` branch to run a provider from source against the DevNet
-coordinator. Published dev providers do not come from this branch: a master
-push that changes the provider publishes one through `release-swift.yml`
+coordinator. A push to `dev` that changes the provider publishes the DevNet
+release through `.github/workflows/release-dev-branch.yml`
 (see `docs/operations/provider-release.md`).
 
 Rules for the branch:
 
-- Merge master into `dev` to update it. Never merge `dev` into master.
-- Never tag a commit on `dev`. Tags publish production.
-- Code changes go to master through a pull request, then reach `dev` by
-  merging master. Only the default-environment commit lives on `dev` alone.
+- Changes reach `dev` through pull requests into `dev`, which land as merge
+  commits, and through merges of master into `dev`.
+- `dev`'s changes reach master through pull requests into master.
+  [#1688](https://github.com/Layr-Labs/d-inference/pull/1688) merged a snapshot
+  branch of `dev` with a merge commit, for which an admin briefly allowed merge
+  commits on the squash-only master ruleset; 0.10.6's cluster changes reached
+  master as a squash-merged pull request of `dev` with master merged in.
+- Master keeps one commit of its own, `e9babca4`, which sets plain builds back
+  to `prod`. A merge of master into `dev` reverts that commit on its sync
+  branch, so `dev` keeps its DevNet default.
+- Never tag a commit on `dev`. Tags publish production, from master.
 
 `scripts/provider-release-cache.py` separates optimized and qualification Swift
 caches by compiler/SDK, architecture, absolute checkout/toolchain paths,
@@ -229,12 +242,14 @@ see [resource and release tooling checks](test.md#focused-tooling-checks).
 `.github/workflows/darkbloom-route.yml` chooses where read-only CI jobs run: a
 Darkbloom Sandbox when its plane grants one, otherwise the job's Blacksmith
 fallback. It runs on GitHub-hosted `ubuntu-24.04` with no token permissions or
-checkout. Each routed job runs on `fromJSON(needs.route.outputs.routes)['<lane>']`.
+checkout. Each routed job runs on `fromJSON(needs.route.outputs.routes)['<lane>']`,
+where the lane is the job's name; each provider shard reads its own lane,
+`format('test-provider-{0}', matrix.shard)`.
 
 | Workflow | Routed jobs | Fallback |
 |---|---|---|
 | `ci.yml` | `release-integrity`, `docs` | `blacksmith-4vcpu-ubuntu-2404` |
-| `ci.yml` | `test-provider` (one per shard), `test-provider-summary`, `test-provider-sdk`, `test-cluster-checks` | `blacksmith-12vcpu-macos-27` |
+| `ci.yml` | `test-provider` (lanes `test-provider-1` to `test-provider-5`, one per shard), `test-provider-summary`, `test-provider-sdk`, `test-cluster-checks` | `blacksmith-12vcpu-macos-27` |
 | `docs-impact.yml` | `commit-signatures`, `docs-impact` | `blacksmith-4vcpu-ubuntu-2404` |
 | `landing.yml`, `desktop.yml`, `nightly-linear-package.yml` | `check`, `frontend`, `test` | `blacksmith-4vcpu-ubuntu-2404` |
 | `provider-release-cache.yml` | `warm`, pull requests only | `blacksmith-12vcpu-macos-27` |
@@ -247,6 +262,10 @@ fallback and the plane is not contacted. When it is on, the route job sends one
 most once after a transient failure. It uses a grant only when the grant
 repeats the exact Darkbloom labels for the job's profile. Errors, timeouts and
 malformed replies keep the fallback; the plane never fails the route job.
+Every job of a lane shares one `runs-on` value, so the plane grants a lane
+whole, for its requested job count, or not at all. Each provider shard is
+therefore a lane of its own and runs on a Darkbloom Mac whenever one is free,
+independently of the other shards.
 Release, signing, publication, model registration, review automation,
 `cache-swift` and `master` or dispatched cache warming keep literal Blacksmith
 labels. The component classifier and the `Provider Tests` gate run on

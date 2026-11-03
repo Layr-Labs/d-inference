@@ -1,6 +1,6 @@
 # Hardware support and the provider memory model
 
-> Last updated: 2026-10-26
+> Last updated: 2026-11-01
 
 What hardware the provider runs on and how it decides, in bytes, whether a
 model may load and how much KV cache each resident model may use. Read this to
@@ -556,6 +556,22 @@ Unknown or saturated policy evidence and a fixed pool that cannot meet the floor
 fail closed. `resliceMeetsServiceabilityFloor` rejects the unattainable `Int.max`
 sentinel rather than accepting it as a usable grant.
 
+Every re-slice passes those floors to `resliceGrants`; a newcomer, whose engine
+does not exist yet, has only the base `minimumServiceableGrantBytes`. When the
+proportional split already gives each slot at least its floor, that split is the
+result. Otherwise, if the floors sum to no more than the budget, each slot
+receives its floor plus its weighted share of the rest; if they do not, the
+proportional split stands and `resliceMeetsServiceabilityFloor` refuses the load
+or reserve raise. Regrowth after an unload or rollback uses the same floors, so
+it never shrinks a slot below its floor. Without this, a slot with a small KV
+rate and a fixed per-request workspace, such as `nvidia-nemotron-3.5-lightning`
+with its embedded assistant, falls below its floor beside high-rate models even
+when every floor fits (`EngineV2KVSizing.resliceGrants`,
+`ProviderLoop.resliceAndBuildEngineV2Bundle`, `ProviderLoop.resliceGrowSurvivorsLocked`).
+A newcomer's own floor is checked only when its engine is assembled, so such a
+model loaded last can still receive less than its floor and fail with
+`no_kv_headroom` (`EngineV2Bridge.requireServiceableOrdinaryGrant`).
+
 A private hybrid-cache carve is added once to the engine floor. The bridge
 retains the total requested grant for exact rollback instead of feeding an
 already-carved engine grant back through the carve. Physically retained cache
@@ -831,8 +847,10 @@ grant or reported capacity field changes, so
    replaces the first term with its own claim's ledger room, which keeps no
    load reserve — `ProviderLoop.evictUntilNemotronSuperFits`,
    `nemotronSuperLoadIsCertainToFail`.
-6. Load-time re-slicing refuses a newcomer if any resulting engine share falls
-   below `minimumServiceableGrantBytes`; shrink preserves existing ownership —
+6. Load-time re-slicing refuses a newcomer only when the slots'
+   `minimumServiceableGrantBytes` floors sum to more than the fleet KV budget;
+   otherwise every engine share is at least its floor. Shrink preserves existing
+   ownership — `EngineV2KVSizing.resliceGrants`,
    `EngineV2KVSizing.resliceMeetsServiceabilityFloor`, `AdmissionV2.updateBytesCapacity`.
 7. `freeForLoadGb` applies no multiplicative discount; the only padding is the
    scanner's `memoryOverheadFactor` on weights — `ModelLoadAdmission.swift`,
@@ -846,6 +864,7 @@ grant or reported capacity field changes, so
 | Start refused: Metal unavailable | `GPUEnforcement.requireMetal()` threw | `GPUEnforcement.swift` |
 | Load refused: "… need N GB to serve — unloaded" | Post-load `hasServeableKVHeadroom` false (live KV headroom below `minimumLoadKVBytes`) | `ProviderLoop+ModelLoading.swift`, `KVHeadroomProbe.swift` |
 | Load refused with `no_kv_headroom` | Slot KV sizing overflowed or no serviceable grant during construction | `EngineV2Config.swift` (`EngineV2RefusalReason.noKVHeadroom`), `EngineV2SlotFactory.swift` |
+| Load refused: "loading '…' would leave a model without its fixed request workspace, admission watermark and 1.0 GB minimum KV allowance (fleet KV budget … B across … slots) — refused" | The slots' `minimumServiceableGrantBytes` floors sum to more than the fleet KV budget | `ProviderLoop+EngineV2.swift` (`resliceAndBuildEngineV2Bundle`), `EngineV2Reslice.swift` (`resliceGrants`) |
 | Catalog says the tier fits, provider refuses | Static cap arithmetic passes but `freeForLoadGb` (real free minus `loadReserveBytes` and in-flight reservations) is below `requiredToLoadGb` | `ModelLoadAdmission.swift`, `ProviderLoop+ModelLoading.swift` |
 | Nemotron Super refused: "Insufficient memory (… GB of LOAD room, need … GB) …" | The claim's ledger room cannot hold its narrowest configuration, even after evicting every idle model | `provider-swift/Sources/ProviderCore/NemotronSuper/ProviderLoop+NemotronSuperAdmission.swift` |
 | New request cannot fit | Its complete request promise exceeds the slot grant, or live ownership/OS pressure leaves no process headroom | `AdmissionV2.swift`, `ProcessMemoryLedger.swift` |
@@ -1186,17 +1205,54 @@ Sources: `libs/darkbloom-cluster/Sources/DarkbloomClusterPlacement/ClusterPlacem
 
 ### Qwen27 TP batch prefix ownership
 
-`QwenTensorParallelBatchPrefixBudget` separately bounds every compact attention,
-conv and SSM array using the native allocator metadata. Full unsliced geometry
-conservatively covers either rank and unequal shares. The complete native
-batch allowance adds one snapshot bank per live lane plus two banks for the
-resident cache; the existing live-state, gather, replacement and collective
-charges remain. The metadata planner and verified LOAD call the same helper.
-A reused prefix does not lower admission or refund the destination's future
-state. The configured budget is a ceiling; cache arrays materialize only on
-capture. See [prefix ownership](prefix-cache.md#cluster-sliding-prefix-adoption).
+`QwenTensorParallelBatchPrefixBudget` prices one plain lane's prompt-prefix
+capture, separately bounding every array with the native allocator metadata:
+its own heads' keys and values to its deepest kept boundary, and one
+convolution and SSM state for every boundary a prompt with that deepest
+boundary keeps (`pricedStates`: the deepest, the margin boundary, and the
+stripe boundaries up to nine, so at most eleven, and never fewer for a longer
+prompt). Each request's reservation charges its own prompt's capture
+(`QwenTensorParallelRequestCharge`); LOAD and the placement quote charge one
+capture of the profile's longest prompt per lane (`promptTokens`), and nothing
+for a resident tier. The geometry is the rank's own heads at LOAD and in each
+rank's placement quote; without a rank, the full unsliced geometry covers either
+rank and unequal shares. The existing live-state, gather, replacement and
+collective charges remain, and a reused prefix does not lower admission or
+refund the destination's future state.
+
+The memory tier that keeps captures after their requests is charged nowhere.
+Its budget is half the room LOAD measures beside its whole quote
+(`ClusterStagePrefixBudget.roomBytes`, `QwenStagePrefixCache.budget(roomBytes:)`):
+at most a thirty-second of the Mac's memory, in 256 MiB steps, and 0 when the
+room is under 512 MiB. The reservation and running-batch gates do not credit
+its entries as the owner's own allocations, nor, while the SSD writer is busy,
+up to its queue's byte bound for the retired captures it still holds; the
+writer drains and then the entries give way before either gate refuses
+(`QwenTensorParallelSnapshotCache.yieldingMemory`). A capture always keeps what
+its request's charge covers. With no tier budget it keeps nothing resident and
+still writes its SSD record. A request whose prompt exceeds the memory plan's
+is charged at its own prompt, outside LOAD's per-lane quote
+([native context](inference.md#qwen27-tensor-parallel-native-context)). The assistant's lanes
+keep their single 4,096-token frontier and its two charged resident banks
+(`QwenTensorParallelMTPPrefixBudget`). See [prefix ownership](prefix-cache.md#cluster-sliding-prefix-adoption).
+
+The registered Qwen3.8 27B, one rank's own heads at the memory plan (32,768
+prompt tokens, 65,536 context, 16 KiB allocator pages;
+`QwenTensorParallelBatchPrefixTests`, `QwenTensorParallelPrefixPlacementTests`):
+
+| Term | Before (`qwen-tp-batch-grid-prefix-4096-v1`) | Now (`qwen-tp-batch-prefix-depth-v2`) |
+|---|---|---|
+| A lane's capture | 212,860,928 B (4,096 tokens) | 1,764,753,408 B (rows to 32,256 and nine recurrent states) |
+| Resident tier in the quote | 425,721,856 B (two banks) | 0 (half the measured room) |
+| LOAD request bytes, one lane | 9,184,591,872 B | 10,310,762,496 B |
+| LOAD request bytes, eight lanes | 28,471,181,312 B | 40,460,599,296 B |
+| Idle pairs the planner places tensor parallel on, one lane | 2 x 36 GiB and larger | the same; a rank needs 1,126,170,624 B more |
+| The same, eight lanes | 2 x 96 GiB and larger | the same; a rank needs 11,989,417,984 B more |
+
+The planner rows leave out the vision tower's resident bytes, as the served
+layout does; both columns leave them out alike.
 Source: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Resources/QwenTensorParallelBatchPrefixBudget.swift`
-(`derive`).
+(`captureBytes`, `derive`).
 
 A drained automatic batch replacement uses the device index and this pair's
 recorded keyed-link measurement. Missing or invalid measurements continue to

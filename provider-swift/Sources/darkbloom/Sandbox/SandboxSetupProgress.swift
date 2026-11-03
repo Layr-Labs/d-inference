@@ -61,6 +61,10 @@ struct SandboxInstallerEvent: Equatable, Sendable {
     var verificationURIComplete: String?
     var browserOpened: Bool?
     var waitlisted = false
+    /// On the approval and waitlist events (add-on 1.1.2 and later): the wait
+    /// goes on without the installer, also across restarts, and the Mac
+    /// enrolls by itself. Absent before 1.1.2, which reads as false.
+    var background = false
     // `downloading_images` with `--wait-ready`
     var progress: Double?
     // `summary`
@@ -100,6 +104,7 @@ struct SandboxInstallerEvent: Equatable, Sendable {
         verificationURIComplete = text("verification_uri_complete")
         browserOpened = object["browser_opened"] as? Bool
         waitlisted = object["waitlisted"] as? Bool ?? false
+        background = object["background"] as? Bool ?? false
         progress = (object["progress"] as? Double).map { min(max($0, 0), 1) }
         hostID = text("host_id")
         consoleURL = text("console_url")
@@ -120,6 +125,62 @@ struct SandboxInstallerEvent: Equatable, Sendable {
         case "ready": return "Ready"
         default: return message ?? stage.map { $0.replacingOccurrences(of: "_", with: " ").capitalized } ?? "Setup"
         }
+    }
+}
+
+/// The add-on's own slot plan: the one `{"schema":1,"event":"plan",…}` line
+/// that `install.sh --plan --json-progress` (add-on 1.1.1 and later) prints
+/// once it has verified the release and run the add-on's checks and sizing,
+/// installing nothing. Disk: the floor stays free, a platform's first slot
+/// costs its VM images and one job's disk, each further slot one job's disk.
+struct SandboxSizingPlan: Equatable, Sendable {
+    struct Platform: Equatable, Sendable {
+        var slots: Int
+        /// False when the owner chose `slots`.
+        var automatic = true
+        /// What capped `slots`, in the add-on's words (`free disk space`).
+        var limit: String?
+        /// Disk its VM images take; 0 when they are installed.
+        var imagesBytes: Int64
+        /// Disk each job takes: a Linux job's scratch disk, a macOS job's budget.
+        var slotBytes: Int64
+    }
+
+    /// The add-on's one-line result, such as `1 Linux slot`.
+    var message: String?
+    var linux: Platform
+    var macOS: Platform
+    var freeBytes: Int64
+    /// Free space that stays the owner's.
+    var floorBytes: Int64
+    var cores: Int
+    var coresKept: Int
+    var memoryBytes: Int64
+    var memoryKeptBytes: Int64
+    /// Memory kept for a running inference provider.
+    var providerMemoryBytes: Int64
+}
+
+extension SandboxSizingPlan {
+    /// The `plan` event in one stdout line. Unknown members are ignored;
+    /// another schema or event, or a missing number, is not a plan.
+    init?(line: String) {
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(line.utf8))) as? [String: Any],
+              object["schema"] as? Int == 1, object["event"] as? String == "plan" else { return nil }
+        func platform(_ name: String) -> Platform? {
+            guard let slots = object["\(name)_slots"] as? Int, let images = object["\(name)_images_bytes"] as? Int64,
+                  let slot = object["\(name)_slot_bytes"] as? Int64 else { return nil }
+            return Platform(slots: slots, automatic: object["\(name)_automatic"] as? Bool ?? true,
+                            limit: object["\(name)_limit"] as? String, imagesBytes: images, slotBytes: slot)
+        }
+        guard let linux = platform("linux"), let macOS = platform("macos"),
+              let free = object["free_bytes"] as? Int64, let floor = object["floor_bytes"] as? Int64,
+              let cores = object["cores"] as? Int, let coresKept = object["cores_kept"] as? Int,
+              let memory = object["memory_bytes"] as? Int64, let memoryKept = object["memory_kept_bytes"] as? Int64,
+              let providerMemory = object["provider_memory_bytes"] as? Int64 else { return nil }
+        self.init(message: object["message"] as? String, linux: linux, macOS: macOS, freeBytes: free,
+                  floorBytes: floor, cores: cores, coresKept: coresKept, memoryBytes: memory,
+                  memoryKeptBytes: memoryKept, providerMemoryBytes: providerMemory)
     }
 }
 
@@ -162,6 +223,7 @@ final class SandboxSetupRenderer: @unchecked Sendable {
     private var frame = 0
     private var approvalShown = false
     private var waitlistShown = false
+    private var waitingInBackground = false
     private var reportedTenths = -1
     private var failure: String?
     private var summaryEvent: SandboxInstallerEvent?
@@ -176,6 +238,11 @@ final class SandboxSetupRenderer: @unchecked Sendable {
 
     /// The run's `summary` event, if it succeeded with one.
     var summary: SandboxInstallerEvent? { lock.withLock { summaryEvent } }
+
+    /// This Mac waits for approval in the background, also across restarts:
+    /// the run's approval or waitlist event said `background` (add-on 1.1.2
+    /// and later), and no `enrolled` stage has been `done` since.
+    var waitsInBackground: Bool { lock.withLock { waitingInBackground } }
 
     func handle(_ output: SandboxInstallerOutput) {
         render { out in
@@ -253,6 +320,8 @@ final class SandboxSetupRenderer: @unchecked Sendable {
         case .done, .failed:
             let isFailure = event.status == .failed
             if isFailure { failure = event.message }
+            // Enrolled: nothing waits for approval any more.
+            if !isFailure, event.stage == "enrolled" { waitingInBackground = false }
             if var stage = active {
                 if let message = event.message { stage.details.append(message) }
                 complete(stage, marker: isFailure ? failed : done, into: &out)
@@ -275,7 +344,10 @@ final class SandboxSetupRenderer: @unchecked Sendable {
     }
 
     private func progress(_ event: SandboxInstallerEvent, into out: inout String) {
-        if event.userCode != nil || event.verificationURI != nil {
+        let approval = event.userCode != nil || event.verificationURI != nil
+        // Only these two events say whether the wait goes on in the background.
+        if approval || event.waitlisted, event.background { waitingInBackground = true }
+        if approval {
             showApproval(event, into: &out)
         } else if event.waitlisted {
             active?.waitlisted = true
@@ -318,11 +390,17 @@ final class SandboxSetupRenderer: @unchecked Sendable {
     private func showWaitlist(into out: inout String) {
         guard !waitlistShown else { return }
         waitlistShown = true
+        let cli = BuildEnvironment.current.cliName
         emit("", into: &out)
         emit("    Your account is on the waitlist: Darkbloom reviews new Mac owners before their first Mac joins.",
              into: &out)
-        emit("    Leave this running, or press Ctrl-C and run `\(BuildEnvironment.current.cliName) sandbox setup` "
-             + "again later; this Mac enrolls once your account is approved.", into: &out)
+        if waitingInBackground {
+            emit("    You can close this window: this Mac keeps waiting, also across restarts, and enrolls by itself "
+                 + "once your account is approved. `\(cli) sandbox status` shows where it is.", into: &out)
+        } else {
+            emit("    Leave this running, or press Ctrl-C and run `\(cli) sandbox setup` "
+                 + "again later; this Mac enrolls once your account is approved.", into: &out)
+        }
         emit("", into: &out)
     }
 

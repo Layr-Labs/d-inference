@@ -216,6 +216,25 @@ public actor ProviderLoop {
     /// attempt waits until this instant (monotonic; this process only, since a
     /// new process has no stalled call).
     internal var appAttestStallRetryAt: ContinuousClock.Instant?
+    /// When a `ready` in this process first answered `is_supported_false` on a
+    /// Mac that may restart for it; nil once a later `ready` answers otherwise.
+    internal var appAttestUnsupportedSince: Date?
+    /// Last write of `AppAttestVerifiedMarker` by this process.
+    internal var appAttestVerifiedRecordedAt: Date?
+    /// Seam for the launchd boundary: how a restart would reach its new process.
+    internal var appAttestRelaunchRoute: @Sendable () -> ProcessLifecycle.RelaunchRoute = { .current() }
+    /// Seam for Apple's live `DCAppAttestService.isSupported`.
+    internal var appAttestSupportProbe: @Sendable () -> Bool = { AppleAppAttestService.isSupportedNow() }
+    /// Seam for the App Attest restart itself (launchd kickstart or exec).
+    /// Production relaunches for real; tests replace only this boundary.
+    internal typealias AppAttestRestart = @Sendable (ProviderRunMarker.ExitCause, ProcessLifecycle.RelaunchRoute) throws -> Void
+    internal var appAttestRestart: AppAttestRestart = { try ProcessLifecycle.restartAfterUpdate(cause: $0, route: $1) }
+    /// Seam for the install the App Attest restart leases; nil is the running install.
+    internal var appAttestRestartUpdater: SelfUpdater?
+    /// Seam for the local entitlement evidence line written at `is_supported_false`.
+    internal var appAttestEvidenceLog: @Sendable (_ context: String) -> Void = {
+        ProviderProcessRun.logAppAttestEntitlementEvidence(context: $0)
+    }
     internal let loopConfig: ProviderLoopConfig
     internal var ordinaryServingModelIDs: Set<String>
     /// The operator's explicit selection: `enabled_models` with the start

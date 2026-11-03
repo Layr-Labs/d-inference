@@ -1158,7 +1158,7 @@ with isolated fixture runners: each `provider-swift/Tests/Cluster*Checks/run.sh`
 `libs/darkbloom-cluster/Tests/*Checks/run.sh` and
 `libs/darkbloom-cluster-worker/Tests/*Checks/run.sh` prints its pass count and
 exits non-zero on a failure. The CI job `test-cluster-checks` (Cluster Metadata
-Checks, `.github/workflows/ci.yml`) runs these of them on every pull request that
+Checks, `.github/workflows/ci.yml`) runs these runners on every pull request that
 changes provider code: `libs/darkbloom-cluster-worker/Tests/CapabilityChecks/run.sh`,
 `libs/darkbloom-cluster/Tests/PrefillScheduleChecks/run.sh`,
 `libs/darkbloom-cluster/Tests/StageMetadataChecks/run.py`,

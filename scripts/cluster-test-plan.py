@@ -16,14 +16,12 @@ reported but not failing the workflow) and `focused` (Cluster Focused Checks,
 the model-free runner scripts).
 
 Subcommands:
-  shards LANE        print the lane's shard numbers as a JSON list
   run LANE SHARD     run the selections of one shard, each in its own process
   audit              check the plan against the sources and the workflow
 """
 
 import argparse
 from dataclasses import dataclass, field
-import json
 import os
 from pathlib import Path
 import re
@@ -161,6 +159,9 @@ SELECTIONS = (
         "sublayerCensus",
         "projectionRowCensus",
     )),
+    Selection("tf32-off", "blocking", 2, {"MLX_ENABLE_TF32": "0"}, tests=(
+        "receiverCommitPrecedesProducerPublicationAndMatchesFullCachedForward",
+    )),
     Selection("qwen-tp-real-geometry-gpu", "nonblocking", 1, {"QWEN_TP_REAL_GEOMETRY_GPU": "1"}, tests=(
         "rowsEqualTheirSoloStepsAndWindowPositionsAtRealWidths",
     )),
@@ -227,9 +228,6 @@ REQUIRES_MODEL = (
     "verifyWindowRoundsByRowCount",
 )
 REQUIRES_MODEL_SUITES = ("GLM5NextServingMetadataTests", "GLM5NextTensorParallelMediaTowerTests")
-# Gated on the GPU, not on a switch: enabled where float32 products are full
-# (no TF32 on the CI VM's GPU). They run in a base selection.
-HARDWARE_GATED = ("receiverCommitPrecedesProducerPublicationAndMatchesFullCachedForward",)
 # Runners the Cluster Metadata Checks job runs with its retained native build.
 METADATA_JOB_RUNNERS = ("GPTOSSStageChecks", "NemotronStageChecks", "PrefillScheduleChecks", "StageMetadataChecks")
 
@@ -267,9 +265,15 @@ def command(selection, output):
     return ROOT, ["bash", str(directory / "run.sh")]
 
 
+# Variables the runtime tests read to change what they run; no selection
+# inherits one from the runner.
+TEST_SWITCH_PREFIXES = ("QWEN_TP_", "GLM53_", "DARKBLOOM_PAGED_BENCH", "PREFIX_RECORD_")
+
+
 def environment(selection):
     switches = {name for other in SELECTIONS for name in other.environment}
-    values = {name: value for name, value in os.environ.items() if name not in switches}
+    values = {name: value for name, value in os.environ.items()
+              if name not in switches and not name.startswith(TEST_SWITCH_PREFIXES)}
     return {**values, **PROCESS_ENVIRONMENT, **selection.environment}
 
 
@@ -307,7 +311,7 @@ def gated_in_sources(directory=RUNTIME_TESTS):
     """(gated test functions, gated suites, function names defined more than once)."""
     functions, suites, defined = set(), set(), {}
     attribute = re.compile(r"@(Test|Suite)\(")
-    for path in sorted(directory.glob("*.swift")):
+    for path in sorted(directory.rglob("*.swift")):
         text = path.read_text()
         for match in re.finditer(r"\bfunc (\w+)\(", text):
             defined[match.group(1)] = defined.get(match.group(1), 0) + 1
@@ -334,10 +338,10 @@ def audit():
     planned = [name for selection in SELECTIONS for name in selection.tests]
     for name in sorted({name for name in planned if planned.count(name) > 1}):
         errors.append(f"{name} is in more than one selection")
-    named_once = planned + list(REQUIRES_MODEL) + list(HARDWARE_GATED)
+    named_once = planned + list(REQUIRES_MODEL)
     functions, suites, repeated = gated_in_sources()
     for name in sorted(functions - set(named_once)):
-        errors.append(f"Gated test {name} is in no selection, REQUIRES_MODEL or HARDWARE_GATED")
+        errors.append(f"Gated test {name} is in no selection or REQUIRES_MODEL")
     for name in sorted(set(named_once) - functions):
         errors.append(f"{name} is planned but is not a gated test in {RUNTIME_TESTS.relative_to(ROOT)}")
     for name in sorted(set(named_once) & repeated):
@@ -365,16 +369,11 @@ def audit():
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     commands = parser.add_subparsers(dest="command", required=True)
-    command_parser = commands.add_parser("shards")
-    command_parser.add_argument("lane", choices=LANES)
     command_parser = commands.add_parser("run")
     command_parser.add_argument("lane", choices=LANES)
     command_parser.add_argument("shard", type=int)
     commands.add_parser("audit")
     args = parser.parse_args()
-    if args.command == "shards":
-        print(json.dumps(shards(args.lane)))
-        return 0
     if args.command == "run":
         return run(args.lane, args.shard)
     errors = audit()

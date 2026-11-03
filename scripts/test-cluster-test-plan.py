@@ -36,7 +36,6 @@ class ClusterTestPlanTests(unittest.TestCase):
         module = plan.MODULE
         swift = [selection for selection in plan.SELECTIONS if selection.runner is None]
         cases = {f"{module}.AnySuite/{name}(sharded:)": name for selection in swift for name in selection.tests}
-        cases.update({f"{module}.AnySuite/{name}()": name for name in plan.HARDWARE_GATED})
         cases.update({
             f"{module}.QwenTensorParallelBatchSessionTests/actualShardsBatchIndependentHistories()": "base-batch-session",
             f"{module}.QwenTensorParallelBatchSessionTests/Nested/plainCase()": "base-batch-session",
@@ -49,8 +48,7 @@ class ClusterTestPlanTests(unittest.TestCase):
                 runs = [selection for selection in swift if selected(selection, test_id)]
                 self.assertEqual(len(runs), 1, [selection.name for selection in runs])
                 runner = runs[0]
-                self.assertTrue(runner.name == owner or owner in runner.tests or
-                                (owner in plan.HARDWARE_GATED and runner.base), runner.name)
+                self.assertTrue(runner.name == owner or owner in runner.tests, runner.name)
         needs_model = [f"{module}.AnySuite/{name}()" for name in plan.REQUIRES_MODEL]
         needs_model += [f"{module}.{suite}/anyCase()" for suite in plan.REQUIRES_MODEL_SUITES]
         for test_id in needs_model:
@@ -71,12 +69,14 @@ class ClusterTestPlanTests(unittest.TestCase):
 
     def test_each_process_has_only_its_own_switches(self):
         switches = {name: "1" for selection in plan.SELECTIONS for name in selection.environment}
+        switches.update({"GLM53_WINDOW_CENSUS_LONG": "1", "DARKBLOOM_PAGED_BENCH_CTX": "4096"})
         with mock.patch.dict(os.environ, switches):
             for selection in plan.SELECTIONS:
                 with self.subTest(selection=selection.name):
                     environment = plan.environment(selection)
                     self.assertEqual(environment["MLX_QMV_BATCH_INVARIANT"], "1")
                     own = {name: value for name, value in environment.items() if name in switches}
+                    # Only its own switches: also none of the other variables the tests read.
                     self.assertEqual(own, selection.environment)
 
     def test_jobs_run_every_shard_of_their_lane(self):
@@ -102,10 +102,12 @@ class ClusterTestPlanTests(unittest.TestCase):
 
     def test_only_the_gpu_job_continues_after_a_failure_and_the_gate_requires_the_others(self):
         self.assertIn("continue-on-error: true", workflow.step_blocks(self.jobs["test-cluster-gpu"])[-1])
+        gate = workflow.field(self.jobs["provider-test-gate"], "needs", indent=4)
+        needs = [name.strip() for name in gate.strip("[]").split(",")]
         for job_id in ("test-cluster", "test-cluster-focused"):
             with self.subTest(job=job_id):
                 self.assertNotIn("continue-on-error:", self.jobs[job_id])
-                self.assertIn(job_id, workflow.field(self.jobs["provider-test-gate"], "needs", indent=4))
+                self.assertIn(job_id, needs)
         self.assertNotIn("test-cluster-gpu", self.jobs["provider-test-gate"])
 
 

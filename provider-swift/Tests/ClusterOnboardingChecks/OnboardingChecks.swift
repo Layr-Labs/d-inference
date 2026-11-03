@@ -1254,6 +1254,12 @@ import Darwin
         expect(U.changed(pinned: pinned, current: ["mac-a": "a2a2", "mac-b": "b2b2"]) == ["mac-a", "mac-b"], "update: both updated")
         expect(U.changed(pinned: pinned, current: ["mac-a": "aaaa", "mac-b": nil]).isEmpty, "update: a Mac that did not answer is no reason")
         expect(U.changed(pinned: pinned, current: [:]).isEmpty, "update: nothing known, nothing re-planned")
+        // The pair's coordinated update restarts both Macs seconds apart: plan again once both answer with one build.
+        expect(U.oneBuild(pinned: pinned, current: ["mac-a": "a2a2", "mac-b": "a2a2"]), "update: both run the new build: plan again")
+        expect(!U.oneBuild(pinned: pinned, current: ["mac-a": "a2a2", "mac-b": "bbbb"]), "update: the other Mac still runs the old build: wait")
+        expect(!U.oneBuild(pinned: pinned, current: ["mac-a": "a2a2", "mac-b": nil]), "update: the other Mac has not answered yet: wait")
+        expect(!U.oneBuild(pinned: pinned, current: ["mac-a": "a2a2"]), "update: the other Mac not asked: wait")
+        expect(!U.oneBuild(pinned: [:], current: [:]), "update: no setup, nothing to plan")
         expect(U.statusLine == "Updating the cluster setup after a Darkbloom update.", "update: the status line")
         expect(U.checkEverySeconds <= 60 && U.retryAfterFailureSeconds >= 300, "update: noticed within a minute, a failure not retried in a loop")
         // The re-plan waits for both Macs' memory: every Mac's summary, and both of them.

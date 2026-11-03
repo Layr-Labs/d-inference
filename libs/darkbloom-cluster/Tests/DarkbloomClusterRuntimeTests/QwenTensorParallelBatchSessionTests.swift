@@ -458,7 +458,19 @@ struct QwenTensorParallelBatchSessionTests {
         try verifySelectionBoundary(nonfinite: true)
     }
 
-    private func verifySelectionBoundary(nonfinite: Bool) throws {
+    /// Non-finite logits on one rank's vocabulary rows only: the count rides
+    /// the selection's own sum, so both ranks fail before either selects.
+    @Test func nativeNonfiniteRowsOnOneRankFailBothRanks() throws {
+        try verifySelectionBoundary(nonfinite: true, upperRankOnly: true)
+    }
+
+    /// The same for a sampled row with logprobs: both ranks gather the row
+    /// and refuse it before rank 0 samples or captures a logprob.
+    @Test func nativeNonfiniteSampledRowsOnOneRankFailBothRanks() throws {
+        try verifySelectionBoundary(nonfinite: true, upperRankOnly: true, sampled: true)
+    }
+
+    private func verifySelectionBoundary(nonfinite: Bool, upperRankOnly: Bool = false, sampled: Bool = false) throws {
         try Device.withDefaultDevice(device) {
             let fixture = QwenTensorParallelFixtures.checkpoint(hidden: 256, layers: 4, heads: 4, kvHeads: 2, vocabulary: 256)
             var root = try JSONSerialization.jsonObject(with: fixture.configuration) as! [String: Any]
@@ -469,6 +481,12 @@ struct QwenTensorParallelBatchSessionTests {
             for layer in 0..<3 { tensors += attention.map { ($0.0.replacingOccurrences(of: ".layers.3.", with: ".layers.\(layer)."), $0.1) } }
             tensors = tensors.map { name, value in
                 guard name.hasPrefix("language_model.lm_head."), value.dtype != .uint32 else { return (name, value) }
+                if upperRankOnly {
+                    // Rank 1 holds the upper half of the vocabulary rows.
+                    let half = value.dim(0) / 2, rest = Array(value.shape.dropFirst())
+                    return (name, concatenated([MLXArray.zeros([half] + rest, dtype: value.dtype),
+                        MLXArray.full([value.dim(0) - half] + rest, values: MLXArray(Float.nan), dtype: value.dtype)], axis: 0))
+                }
                 return (name, MLXArray.full(value.shape, values: MLXArray(nonfinite ? Float.nan : Float(0)), dtype: value.dtype))
             }
             let configuration = try JSONSerialization.data(withJSONObject: root, options: [.sortedKeys])
@@ -493,8 +511,12 @@ struct QwenTensorParallelBatchSessionTests {
             }
             defer { for owner in owners { for lane in owner.nativeLanes { try? lane.session.retire() } } }
             for row in 0..<(nonfinite ? 1 : 8) {
+                let sampling: ClusterWorkerSampling? = sampled ? .init(temperature: 0.7, topP: 0.9, topK: 32, minP: 0.01,
+                    repetitionPenalty: 1.1, repetitionContextSize: 12, frequencyPenalty: 0.15, presencePenalty: 0.2,
+                    seed: UInt64(77 + row), stream: UInt64(5 * row + 1), logitBias: [.init(tokenID: row + 3, bias: 0.5)],
+                    topLogprobs: 5) : nil
                 let request = try QwenLayerStageGenerationRequest(profile: profile, requestID: UUID(),
-                    promptTokenIDs: [1, 2, row + 3], chunkSize: 5, outputCount: 12, stopTokenIDs: [])
+                    promptTokenIDs: [1, 2, row + 3], chunkSize: 5, outputCount: 12, stopTokenIDs: [], sampling: sampling)
                 for owner in owners { owner.nativeLanes.append(try owner.executor!.open(.init(request: request), check: {})) }
                 let body: (Owned) throws -> Void = { owner in
                     let lane = owner.nativeLanes[row]
@@ -502,7 +524,11 @@ struct QwenTensorParallelBatchSessionTests {
                 }
                 if nonfinite {
                     #expect(throws: ProbeError.self) { try parallel(owners, body: body) }
-                    #expect(owners.allSatisfy { $0.failure != nil && $0.selected.isEmpty })
+                    // Both ranks refuse the row in selection itself: the greedy sum's counts, or the gathered rows.
+                    let refusal = sampled ? "Qwen TP gathered sampling rows are invalid"
+                        : "Qwen TP selection rows have a non-finite logit"
+                    #expect(owners.allSatisfy { ($0.failure as? ProbeError)?.description == refusal && $0.selected.isEmpty })
+                    #expect(try owners[0].executor!.takeLogprobs(owners[0].nativeLanes[row]) == nil)
                 } else {
                     try parallel(owners, body: body)
                 }
@@ -688,7 +714,7 @@ struct QwenTensorParallelBatchSessionTests {
                                 self.mediaInputs(model, row: reservation.request.promptTokenIDs[0] - 10)
                             }, completedDecode: { _ in }, completedPrefill: {}, releaseResources: { _ in },
                             prefix: warm ? caches[rank] : nil,
-                            prefixBudget: warm ? .init(maximumTokens: 128, captureBytes: 8 << 20, residentBytes: 64 << 20) : nil,
+                            prefixBudget: warm ? .init(maximumTokens: 128, captureBytes: 8 << 20) : nil,
                             prefixScope: warm ? { _ in "same-authenticated-load-and-media-policy" } : nil,
                             allocationBound: warm ? { (($0 + 16383) / 16384) * 16384 } : nil)
                         return owner
@@ -824,7 +850,7 @@ struct QwenTensorParallelBatchSessionTests {
                     owner.executor = try .init(model: model, configuration: configuration, host: owner.host,
                         group: reduction, prepare: { _, _ in nil }, completedDecode: { _ in }, completedPrefill: {},
                         releaseResources: { _ in }, prefix: warm ? caches[rank] : nil,
-                        prefixBudget: warm ? .init(maximumTokens: 128, captureBytes: 8 << 20, residentBytes: 64 << 20) : nil,
+                        prefixBudget: warm ? .init(maximumTokens: 128, captureBytes: 8 << 20) : nil,
                         prefixScope: warm ? { reservation in suffix(reservation).map { load + "|" + $0 } } : nil,
                         prefixDisk: warm ? disks[rank] : nil,
                         prefixDiskScope: warm ? { reservation in suffix(reservation).map(disks[rank].scope) } : nil,
@@ -941,7 +967,7 @@ struct QwenTensorParallelBatchSessionTests {
                             self.mediaInputs(model, row: reservation.request.promptTokenIDs[0] - 10)
                         }, completedDecode: { _ in }, completedPrefill: {}, releaseResources: { _ in },
                         prefix: caches?[rank],
-                        prefixBudget: warm ? .init(maximumTokens: 128, captureBytes: 8 << 20, residentBytes: 64 << 20) : nil,
+                        prefixBudget: warm ? .init(maximumTokens: 128, captureBytes: 8 << 20) : nil,
                         prefixScope: warm ? { _ in load } : nil,
                         prefixDisk: disks?[rank], prefixDiskScope: disks == nil ? nil : { _ in planScope + "|chunk=5|text" },
                         allocationBound: warm ? { (($0 + 16383) / 16384) * 16384 } : nil)
@@ -1096,7 +1122,7 @@ struct QwenTensorParallelBatchSessionTests {
                     owner.executor = try .init(model: model, configuration: configuration, host: owner.host,
                         group: reduction, prepare: { _, _ in nil }, completedDecode: { _ in }, completedPrefill: {},
                         releaseResources: { _ in }, prefix: caches?[rank],
-                        prefixBudget: warm ? .init(maximumTokens: 384, captureBytes: 16 << 20, residentBytes: 64 << 20) : nil,
+                        prefixBudget: warm ? .init(maximumTokens: 384, captureBytes: 16 << 20) : nil,
                         prefixScope: warm ? { _ in load } : nil,
                         prefixDisk: disks?[rank], prefixDiskScope: disks == nil ? nil : { _ in planScope + "|chunk=16|text" },
                         allocationBound: warm ? { (($0 + 16383) / 16384) * 16384 } : nil)

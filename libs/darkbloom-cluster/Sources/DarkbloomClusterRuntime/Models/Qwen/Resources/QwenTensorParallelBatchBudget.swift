@@ -22,7 +22,7 @@ struct QwenTensorParallelBatchBudget {
 
     static func derive(geometry g: QwenLongPrefillBudgetGeometry, plan: QwenTensorParallelPlan,
                        tensors: [QwenDenseCanonicalTensor], maximumTokens: Int, chunkSize: Int,
-                       lanes: Int, paged: Bool, rank: Int? = nil,
+                       lanes: Int, paged: Bool, rank: Int? = nil, promptTokens: Int? = nil,
                        allocationBound: (Int) throws -> Int) throws -> Self {
         guard (1...8).contains(lanes) else {
             throw ProbeError("Qwen TP batch budget requires 1...8 lanes")
@@ -69,10 +69,13 @@ struct QwenTensorParallelBatchBudget {
         }
         // Row-M1 partials cause a second live FP32 scales/offsets bank while
         // singleton/prefill's ConstantArrayCastCache retains its first bank.
-        // The rank's own columns of both banks, and prefix copies of its own
-        // heads; without a rank, full canonical bytes cover either rank.
+        // The rank's own columns of both banks, and each lane's prefix capture
+        // of its own heads (`promptTokens`: the profile's longest prompt, or a
+        // request's own); without a rank, full canonical bytes cover either
+        // rank. The prefix memory tier is not charged here.
         let prefix = try QwenTensorParallelBatchPrefixBudget.derive(geometry: local,
-            maximumTokens: maximumTokens, allocationBound: allocationBound)
+            maximumTokens: maximumTokens, promptTokens: promptTokens, chunkSize: chunkSize,
+            allocationBound: allocationBound)
         perLaneState = try sum([perLaneState, prefix.captureBytes])
         let batchConstants = scalar.projectionConstantBytes
         let logits = try bound(product([lanes, plan.vocabularySize, 4]), count: 3)
@@ -88,7 +91,7 @@ struct QwenTensorParallelBatchBudget {
             bound(product([plan.hiddenSize, 4]), count: lanes),
         ]) : 0)
         let shared = try sum([scalar.fusionBytes, transient, logits,
-            scalar.projectionConstantBytes, batchConstants, poolSlack, prefix.residentBytes, packing, promptGather])
+            scalar.projectionConstantBytes, batchConstants, poolSlack, packing, promptGather])
         // A one-token batch can gather more bytes than a short prompt frame.
         // Control limbs and retirement votes also travel in the sealed codec.
         let payload = max(scalar.allowance.maximumCollectivePayloadBytes,

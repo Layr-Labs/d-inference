@@ -128,6 +128,8 @@ struct Update: AsyncParsableCommand {
             print("Updated: v\(from) -> v\(to)")
             if LaunchAgent.isLoaded() {
                 try await restartInstalledProvider(updater, operation: "manual-update-restart")
+            } else if ClusterService.running() {
+                try await restartClusterService(into: to)
             } else {
                 print("Restart the provider for the new version to take effect.")
             }
@@ -136,6 +138,8 @@ struct Update: AsyncParsableCommand {
             print("v\(to) is already installed (current process: v\(from)).")
             if LaunchAgent.isLoaded() {
                 try await restartInstalledProvider(updater, operation: "manual-candidate-restart")
+            } else if ClusterService.running() {
+                try await restartClusterService(into: to)
             } else {
                 print("Restart the provider for v\(to) to take effect.")
             }
@@ -196,4 +200,59 @@ struct Update: AsyncParsableCommand {
         try await ServiceDrain.waitForRestart(previous: previous, timeout: 180)
     }
 
+    /// A `darkbloom cluster` Mac: its cluster service supervisor restarts into the installed release together with
+    /// the other Mac, after the pair drained, as at the pair's update slot (`ClusterPairUpdateCycle`).
+    private func restartClusterService(into version: String) async throws {
+        let directory = try ClusterService.paths().lock.deletingLastPathComponent()
+        let request = ClusterPairUpdate.Request(createdAt: Date().timeIntervalSince1970)
+        let outcome = try await ClusterServiceUpdateRequest.restart(into: version, request: request, serviceDirectory: directory,
+            timeoutSeconds: drain.timeout, say: { print($0) })
+        guard outcome != .failed else { throw ExitCode.failure }
+    }
+
+}
+
+/// `darkbloom update` asks the cluster service supervisor for the pair's restart into the installed release
+/// (`ClusterPairUpdate.Request`) and follows its progress.
+enum ClusterServiceUpdateRequest {
+    enum Outcome: Equatable { case restarting, waiting, failed }
+
+    static func restart(into version: String, request: ClusterPairUpdate.Request, serviceDirectory: URL, timeoutSeconds: Int,
+                        pollSeconds: Double = 1, say: (String) -> Void) async throws -> Outcome {
+        let progressPath = ClusterServiceAgent.updateProgressPath(serviceDirectory: serviceDirectory)
+        // A supervisor of an earlier build neither publishes progress nor reads the request.
+        guard ClusterPairUpdate.readProgress(from: progressPath) != nil else {
+            say("This Mac's cluster service runs a build that does not restart for an update. Log out and back in on both Macs "
+                + "(or restart them) once both have v\(version).")
+            return .waiting
+        }
+        guard ClusterPairUpdate.writeRequest(request, to: ClusterServiceAgent.updateRequestPath(serviceDirectory: serviceDirectory)) else {
+            throw ValidationError("Could not ask this Mac's cluster service to restart (\(serviceDirectory.path) is not writable).")
+        }
+        say("Asked this Mac's cluster service to restart into v\(version) together with the other Mac; the pair finishes its accepted requests first.")
+        say("Run `darkbloom update` on the other Mac too (or wait for the pair's next update slot): both restart once both have v\(version).")
+        let deadline = Date().addingTimeInterval(Double(timeoutSeconds))
+        var said: String?
+        while Date() < deadline {
+            if let progress = ClusterPairUpdate.readProgress(from: progressPath), progress.request == request.id {
+                if progress.line != said {
+                    said = progress.line
+                    say("  \(progress.line)")
+                }
+                switch progress.phase {
+                case .restarting:
+                    say("The cluster service restarts into v\(version); the cluster sets itself up again once both Macs run it.")
+                    return .restarting
+                case .deferred, .failed:
+                    say("Not restarted now. The pair tries again at its next update slot, or run `darkbloom update` again.")
+                    return .failed
+                default:
+                    break
+                }
+            }
+            try await Task.sleep(nanoseconds: UInt64(pollSeconds * 1_000_000_000))
+        }
+        say("Still waiting after \(timeoutSeconds) s; the cluster service goes on by itself. Its log: ~/.darkbloom/cluster-setup/service.log")
+        return .waiting
+    }
 }

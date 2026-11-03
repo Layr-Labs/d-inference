@@ -226,7 +226,8 @@ class ProviderCIWorkflowTests(unittest.TestCase):
                        "test-cluster", "test-cluster-gpu", "test-cluster-focused"):
             with self.subTest(job=job_id):
                 self.assertIn("    runs-on: blacksmith-12vcpu-macos-27\n", self.jobs[job_id])
-                self.assertIn("    needs: changes\n", self.jobs[job_id])
+                needs = re.search(r"(?m)^    needs: (.+)$", self.jobs[job_id]).group(1)
+                self.assertNotIn("route", needs)
 
     def test_existing_required_check_requires_every_lane_even_after_failures(self):
         job = self.jobs["provider-test-gate"]

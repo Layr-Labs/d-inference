@@ -237,7 +237,7 @@ class WorkflowRoutingTests(unittest.TestCase):
             jobs = workflow.job_blocks((ROOT / ".github/workflows" / name).read_text())
             self.assertIn("uses: ./.github/workflows/component-changes.yml", jobs["changes"])
             self.assertIn("contents: read", jobs["changes"])
-            # Runner routing follows the classifier, so only selected lanes are requested.
+            # The route job waits for the classifier (ci.yml, route).
             self.assertIn("    needs: changes\n", jobs["route"])
             for lane, component in lanes.items():
                 self.assertIn("    needs: changes\n", jobs[lane])

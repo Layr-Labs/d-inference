@@ -134,9 +134,9 @@ When the shards drift apart, replace the weights file with that artifact. A
 suite moves from the parallel class to the serial class when it fails or flakes
 in parallel; when in doubt, a suite stays serial.
 
-The provider lanes and Cluster Metadata Checks restore their build cache by the
-exact key first, then by the key prefix. A push to `dev`, `main` or `master`
-saves its build. A pull request saves its build only when it restored nothing.
+The jobs that use the `provider-ci-build` action and Cluster Metadata Checks
+restore their build cache by the exact key first, then by the key prefix. A
+push to `dev`, `main` or `master` saves its build. A pull request saves its build only when it restored nothing.
 Its later pushes then restore that entry or the base branch's entry and add no
 new entry, so they do not evict the base branch's entries. CI has no separate
 push-only Swift cache job.

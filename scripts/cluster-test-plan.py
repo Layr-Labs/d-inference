@@ -112,6 +112,9 @@ SELECTIONS = (
         "warmHybridPrefixesPreserveConvSSMAndMixedPositions",
         "ssdHybridPrefixesRestoreConvSSMAfterTheTiersReopen",
         "deepRestoresEqualColdPrefillOnBothRanks",
+        "mergedStepTemporariesStayWithinTheirCharge",
+        "mergedFramesKeepEveryBit",
+        "executorRunsThePlannedMergedStep",
     )),
     Selection("qwen-tp-batch-gpu-paged", "blocking", 3, {"QWEN_TP_BATCH_GPU": "1", "QWEN_TP_BATCH_KV": "paged"}, tests=(
         "cohortSurvivorKeepsOnlyItsOwnRows",

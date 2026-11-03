@@ -62,7 +62,7 @@ struct QwenTensorParallelNativeContextTests {
         }
         let quote = try QwenTensorParallelBatchBudget.derive(geometry: family.geometry, plan: plan, tensors: tensors,
             maximumTokens: memory.maximumContextTokens, chunkSize: memory.maximumChunkTokens, lanes: lanes, paged: true,
-            rank: rank, allocationBound: bound)
+            rank: rank, promptTokens: memory.maximumPromptTokens, allocationBound: bound)
         return .init(charge: .init(geometry: family.geometry, plan: plan, tensors: tensors, lanes: lanes, paged: true,
                 assistant: nil, rank: rank, allocationBound: bound,
                 loadSharedBytes: quote.sharedBytesExcludingCollectives,
@@ -92,6 +92,21 @@ struct QwenTensorParallelNativeContextTests {
             #expect(value.laneBytes <= load.laneBytes, "lanes=\(lanes) depth=\(String(describing: depth)) context=\(context)")
             #expect(value.sharedBytes == load.sharedBytes)
         }
+    }
+
+    /// A prompt past the memory plan's within its context: its own prefix
+    /// capture lifts its lane above LOAD's, so it is not within the memory
+    /// plan, and the gate charges it at its own prompt as it does a longer context.
+    @Test(arguments: [1, 8], [nil, 3] as [Int?])
+    func aPromptPastTheMemoryPlansIsChargedAtItsOwn(lanes: Int, depth: Int?) throws {
+        let load = try Self.loaded(lanes: lanes, depth: depth)
+        let memory = try Self.input().0.profile
+        let within = QwenTensorParallelRequestCharge.withinMemoryPlan
+        #expect(within(65_536, 32_768, memory) && within(513, 512, memory))
+        #expect(!within(65_537, 32_768, memory) && !within(64_000, 32_769, memory))
+        let value = try load.charge.charge(maximumTokens: 64_000, promptTokens: 60_000, chunkSize: 512)
+        #expect(value.laneBytes > load.laneBytes, "lanes=\(lanes) depth=\(String(describing: depth))")
+        #expect(!within(64_000, 60_000, memory))
     }
 
     /// Past the memory plan a request is charged at its own context: its lane

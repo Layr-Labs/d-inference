@@ -152,6 +152,7 @@ extension ProviderLoop {
                 }
                 _ = await self?.acceptPendingModelSwitch(from: mailbox)
                 _ = await self?.acceptPendingAddonControl(from: mailbox)
+                await self?.acceptPendingClusterUpdateDrain(from: mailbox)
                 try? await Task.sleep(nanoseconds: 250_000_000)
             }
         }

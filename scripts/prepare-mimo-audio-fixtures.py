@@ -54,8 +54,13 @@ def prepare(cache, output):
         temporary = path.with_name(path.name + ".download")
         if temporary.is_symlink():
             raise ValueError("unexpected download symlink")
+        # Retry every transfer error too (a reset connection, error 56, or a
+        # cut transfer is not a transient error to plain `--retry`), and
+        # end a stalled attempt so the next one starts. The digest check
+        # below still decides.
         subprocess.run(["curl", "--fail", "--silent", "--show-error", "--location",
-                        "--retry", "3", "--max-time", "900",
+                        "--retry", "5", "--retry-all-errors", "--retry-delay", "5",
+                        "--speed-limit", "102400", "--speed-time", "60", "--max-time", "900",
                         (VIDEO_URL if relative == "openrouter-aac.mp4" else BASE_URL + "/" + relative), "--output", str(temporary)], check=True)
         if not verify(temporary, size, digest):
             raise ValueError("MiMo audio fixture digest mismatch: " + relative)

@@ -540,7 +540,9 @@ platform parity.
 Ordinary fixtures use symmetric 128-context geometry; the separate complete-prefix
 process uses `--asymmetric` for K64/V128 and 1,024-context geometry.
 `scripts/prepare-mimo-audio-fixtures.py` prepares hash-pinned public inputs
-including the genuine audio codec. Keep these output directories isolated from
+including the genuine audio codec. It downloads only what its cache directory
+lacks, retries every transfer error, ends a stalled attempt after 60 s below
+100 KB/s, and keeps a file only when its size and SHA-256 match. Keep these output directories isolated from
 the ordinary regression inputs. Audio gates exercise PCM8 and AAC-video with a
 small target, not full-model quality or peak memory. Release-only builds do not
 provision test fixtures or opt into native qualification.

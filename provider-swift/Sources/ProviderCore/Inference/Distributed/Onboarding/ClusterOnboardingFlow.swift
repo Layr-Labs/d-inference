@@ -734,8 +734,10 @@ public struct ClusterOnboardingPairing: Sendable, Equatable {
     private var peerAnswered = false
     /// The code is on screen and waits for its answer (`codeAnswers`).
     public private(set) var asking: String?
+    /// This Mac's own name, said beside "this Mac" (`ClusterOnboardingDriver.thisMac`).
+    private let named: String?
 
-    public init() {}
+    public init(named: String? = nil) { self.named = named }
 
     /// The one thing to do on the other Mac while this one waits: said last, so it is the line the person reads.
     public static let otherMacLine = "Now run `darkbloom cluster` on the other Mac."
@@ -769,7 +771,8 @@ public struct ClusterOnboardingPairing: Sendable, Equatable {
             role = .leader
             guard !announcedWait else { return [] }
             announcedWait = true
-            return ["This Mac leads. It waits up to 10 minutes for the other Mac (q cancels).", Self.otherMacLine]
+            return [ClusterOnboardingDriver.thisMac(named: named) + " leads. It waits up to 10 minutes for the other Mac (q cancels).",
+                    Self.otherMacLine]
         case .joining:
             let yielded = role == .leader
             phase = .joining
@@ -1090,7 +1093,7 @@ public enum ClusterOnboardingDriver {
         let events = ClusterOnboardingMailbox<ClusterOnboardingPairEvent>()
         let outcome = ClusterOnboardingMailbox<ClusterOnboardingPairResult>()
         Thread.detachNewThread { outcome.post(operations.pair { events.post($0) }) }
-        var pairing = ClusterOnboardingPairing()
+        var pairing = ClusterOnboardingPairing(named: shownName(operations.thisMacName()))
         var result: ClusterOnboardingPairResult?
         func show() { for event in events.take() { for line in pairing.handle(event) { console.say("  " + line) } } }
         while result == nil {

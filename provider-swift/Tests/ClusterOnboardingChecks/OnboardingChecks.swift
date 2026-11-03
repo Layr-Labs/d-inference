@@ -2080,6 +2080,9 @@ import Darwin
         expect(D.leaderSubtitle(named: nil) == D.leaderSubtitle, "names: unknown, unchanged")
         expect(D.followerSubtitle(memberResume(), named: "Studio B") == "This Mac (Studio B) follows the other Mac (Apple M3 Ultra, 256 GB)",
                "names: the member's opening")
+        var waits = ClusterOnboardingPairing(named: "Studio A")
+        expect(waits.handle(.waitingAsLeader).first == "This Mac (Studio A) leads. It waits up to 10 minutes for the other Mac (q cancels).",
+               "names: the first Mac's wait")
         var leads = ClusterOnboardingPairing()
         expect(leads.finished(.paired(role: .leader, peerName: "Apple M5 Ultra, 256 GB"), named: "Studio A").last
             == "\u{2713} Paired with the other Mac (Apple M5 Ultra, 256 GB). This Mac (Studio A) leads.", "names: the leader's paired line")
@@ -2097,6 +2100,8 @@ import Darwin
         expect(paired.finish() == 0, "names: served")
         expect(paired.text.contains("  \u{2713} Paired with the other Mac (Apple M5 Ultra, 256 GB). This Mac (Studio A) leads.\n"),
                "names: identical Macs, this one named where it says it leads")
+        expect(paired.text.contains("  This Mac (Studio A) leads. It waits up to 10 minutes for the other Mac (q cancels).\n"),
+               "names: identical Macs, this one named where it starts waiting")
         for (label, resume, name, opening) in [
             ("leader", ClusterOnboardingResume(role: .leader, peerName: "Apple M3 Ultra, 256 GB", serving: true, modelName: "Qwen3.8-27B-4bit-mtp"),
              "Studio A", "This Mac (Studio A) leads the cluster"),

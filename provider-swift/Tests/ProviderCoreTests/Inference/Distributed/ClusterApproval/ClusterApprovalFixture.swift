@@ -30,10 +30,11 @@ final class ClusterApprovalMacs: @unchecked Sendable {
     static let chip = ClusterChipClass(chipName: "Apple M3 Ultra")
 
     /// What both Macs' setups place: the Qwen3.5 9B pipeline, or Qwen3.8 27B in tensor parallel as the guided setup
-    /// saves it, with or without the model's embedded speculative assistant (`ClusterConfiguration.tensorAssistant`).
+    /// saves it, with or without the model's embedded speculative assistant (`ClusterConfiguration.tensorAssistant`)
+    /// and with equal shares or the unequal ones a plan for two unequal Macs saves (`ClusterConfiguration.tensorShares`).
     enum Shape {
         case pipeline
-        case qwen27TensorParallel(assistant: ClusterQwenTensorAssistantPolicy?)
+        case qwen27TensorParallel(assistant: ClusterQwenTensorAssistantPolicy?, shares: [Int]? = nil)
     }
 
     let root: URL
@@ -152,9 +153,10 @@ final class ClusterApprovalMacs: @unchecked Sendable {
                 "linkControl": ["schema": ClusterLinkControlAttachment.schemaName, "port": 47999,
                                 "linkEpoch": record.link.linkEpoch, "edgeID": record.link.edgeID, "secretFile": secret.path],
                 "tokenizerFiles": [["path": "tokenizer.json", "sha256": h("6"), "purpose": "tokenizer"]]]
-            if case .qwen27TensorParallel(let assistant) = shape {
+            if case .qwen27TensorParallel(let assistant, let shares) = shape {
                 configuration["generationMode"] = ClusterGenerationMode.tensorParallel.rawValue
                 if let assistant { configuration["tensorAssistant"] = assistant.object }
+                if let shares { configuration["tensorShares"] = shares }
             }
             let input = mac.scratch.appendingPathComponent("setup.json"), capabilityInput = mac.scratch.appendingPathComponent("capability.json")
             try JSONSerialization.data(withJSONObject: configuration, options: [.sortedKeys]).write(to: input)

@@ -1028,6 +1028,23 @@ private func runPairOutcome(_ outcome: Int, decorated: Bool) async throws -> Nev
     }
 }
 
+/// `darkbloom autopilot <subcommand>` on a Mac not in a cluster, plain or with a terminal's look. Its config can't be
+/// read, so the `start` it runs inside itself ends right after the terms notice, before any other work.
+private func runAutopilotStart(_ subcommand: String, decorated: Bool) async throws -> Never {
+    try await DarkbloomCommandLook.$forTesting.withValue(decorated ? terminalLook() : DarkbloomCommandLook(mode: .plain)) {
+        try await exitWithPair(.notPaired, actions: nil) { sandbox in
+            let broken = sandbox.root.appendingPathComponent("broken.toml")
+            try Data("[[[ not toml".utf8).write(to: broken)
+            let arguments = ["autopilot", subcommand, "--config", broken.path]
+            if subcommand == "enable" {
+                try await runAsCLI(Autopilot.Enable.self, arguments)
+            } else {
+                try await runAsCLI(Autopilot.Models.self, arguments)
+            }
+        }
+    }
+}
+
 /// The decorated stream less the mark block and the live line: what a transcript would have had.
 private func withoutLook(_ stream: String, title: String) -> String {
     let mark = "\n" + DarkbloomCommandLook.mark(title, revealed: Int.max, colour: "38;5;27") + "\n"
@@ -1281,6 +1298,64 @@ struct DarkbloomCommandLookRunTests {
             #expect(each.decorated.contains("\u{1B}[2m\(each.live)\u{2026}\u{1B}[0m"))
             #expect(withoutLook(each.decorated, title: each.title) == each.plain, "\(each.decorated.debugDescription)")
         }
+    }
+
+    @Test("a command run inside another draws no mark and no live line: the mark is the outer command's, once, at the top")
+    func nestedRunDrawsNoMark() async {
+        let nested = await #expect(processExitsWith: .success, observing: [\.standardOutputContent]) {
+            try await DarkbloomCommandLook.$forTesting.withValue(terminalLook()) {
+                try await exitWithPair(servingPair(), actions: pairActions()) { _ in
+                    try await DarkbloomCommandLook.runNested { try await runAsCLI(Stop.self, ["stop"]) }
+                }
+            }
+        }
+        #expect(lines(nested?.standardOutputContent) == [
+            "This Mac is in a two-Mac cluster with \(otherMac): stopping both Macs.",
+            "Stopped on both Macs. They stay stopped after a restart; `darkbloom start` on either Mac starts the pair again.",
+            "Memory freed on both Macs ✓", ""])
+    }
+
+    @Test("`autopilot enable` and `autopilot models` run `start` inside themselves: no mark, the same bytes as plain")
+    func autopilotStartDrawsNoMark() async {
+        let terms = "By starting the provider, you agree to the Darkbloom Terms of Service:\n  \(Start.termsURL)\n\n"
+        let enablePlain = await #expect(processExitsWith: .failure, observing: [\.standardOutputContent]) {
+            try await runAutopilotStart("enable", decorated: false)
+        }
+        let enable = await #expect(processExitsWith: .failure, observing: [\.standardOutputContent]) {
+            try await runAutopilotStart("enable", decorated: true)
+        }
+        let modelsPlain = await #expect(processExitsWith: .failure, observing: [\.standardOutputContent]) {
+            try await runAutopilotStart("models", decorated: false)
+        }
+        let models = await #expect(processExitsWith: .failure, observing: [\.standardOutputContent]) {
+            try await runAutopilotStart("models", decorated: true)
+        }
+        #expect(text(enablePlain?.standardOutputContent) == terms)
+        #expect(text(enable?.standardOutputContent) == terms)
+        #expect(text(modelsPlain?.standardOutputContent) == terms)
+        #expect(text(models?.standardOutputContent) == terms)
+    }
+
+    @Test("unenrollment's `stop --solo` and bare `darkbloom sandbox` draw no mark: the same bytes as plain")
+    func unenrollStopAndBareSandboxDrawNoMark() async {
+        let unenroll = await #expect(processExitsWith: .success, observing: [\.standardOutputContent]) {
+            try await DarkbloomCommandLook.$forTesting.withValue(terminalLook()) {
+                try await exitWithPair(servingPair(), actions: pairActions()) { _ in try await Unenroll.stopProviderBeforeUnenrollment() }
+            }
+        }
+        #expect(text(unenroll?.standardOutputContent) == transcript(servingPair().soloStopNothing))
+        let sandboxPlain = await #expect(processExitsWith: .success, observing: [\.standardOutputContent]) {
+            try await exitWithPair(.notPaired, actions: nil) { _ in try await runAsCLI(Sandbox.self, ["sandbox"]) }
+        }
+        let sandbox = await #expect(processExitsWith: .success, observing: [\.standardOutputContent]) {
+            try await DarkbloomCommandLook.$forTesting.withValue(terminalLook()) {
+                try await exitWithPair(.notPaired, actions: nil) { _ in try await runAsCLI(Sandbox.self, ["sandbox"]) }
+            }
+        }
+        // Bare `sandbox` runs the add-on's own status (`Sandbox.Status`), never `darkbloom status`: no mark, its own bytes.
+        let sandboxText = text(sandbox?.standardOutputContent)
+        #expect(sandboxText == text(sandboxPlain?.standardOutputContent))
+        #expect(!sandboxText.contains("\u{2588}") && !sandboxText.contains("\u{1B}[1mDarkbloom\u{1B}[0m"))
     }
 
     @Test("`darkbloom update --rollback` as root (exit 64) draws no mark; its first lines stay")

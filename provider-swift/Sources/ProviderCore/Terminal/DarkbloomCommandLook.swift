@@ -79,6 +79,11 @@ public final class DarkbloomCommandLook: @unchecked Sendable {
         forTesting ?? DarkbloomCommandLook(mode: .standard())
     }
 
+    /// Runs a command inside another command (`unenroll` runs `stop --solo`, `autopilot enable` runs `start`).
+    public static func runNested<T>(_ body: () async throws -> T) async rethrows -> T {
+        try await body()
+    }
+
     // MARK: - The mark
 
     /// The command's opening, once: the mark beside `title` (its first word bold, the rest dim), blooming where it

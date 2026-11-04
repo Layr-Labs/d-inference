@@ -29,12 +29,12 @@ INTRO = '# Changelog\n\nUnreleased changes live in `changelog.d/`.\n'
 PULLS = {
     11: ('Add feature A', 'alice'), 12: ('Add feature B', 'bob'), 13: ('Sync master into dev', 'carol'),
     14: ('Add feature C', 'alice'), 15: ('Add feature D', 'dave'), 16: ('Add feature E', 'erin'),
-    17: ('Add feature F', 'bob'), 18: ('Add feature G', 'erin'), 20: ('Fix master directly', 'frank'),
-    21: ('Fix master again', 'frank'), 22: ('Hotfix on master', 'grace'),
+    17: ('Add feature F', 'bob'), 18: ('Add feature G', 'erin'), 19: ('Add feature H', 'hank'),
+    20: ('Fix master directly', 'frank'), 21: ('Fix master again', 'frank'), 22: ('Hotfix on master', 'grace'),
     30: ('Release dev into master: provider 1.1.0', 'david'), 31: ('Prepare provider 1.1.0', 'jonathan'),
     40: ('Release dev into master: provider 1.2.0', 'david'), 41: ('Prepare provider 1.2.0', 'jonathan'),
     42: ('Prepare provider 1.2.1', 'jonathan'), 50: ('Release dev into master: provider 1.3.0', 'david'),
-    51: ('Prepare provider 1.3.0', 'jonathan'),
+    51: ('Prepare provider 1.3.0', 'jonathan'), 60: ('Prepare provider 1.4.0 from dev', 'jonathan'),
 }
 # Each release of the synthetic history: what it lists through dev and directly
 # on master, and the pull requests it names once as release pull requests.
@@ -43,6 +43,7 @@ RELEASES = {
     'v1.2.0': {'previous': 'v1.1.0', 'dev': [15, 16], 'master': [21], 'release': [40, 41]},
     'v1.2.1': {'previous': 'v1.2.0', 'dev': [], 'master': [22], 'release': [42]},
     'v1.3.0': {'previous': 'v1.2.1', 'dev': [17, 18], 'master': [], 'release': [50, 51]},
+    'v1.4.0': {'previous': 'v1.3.0', 'dev': [19], 'master': [], 'release': [60]},
 }
 
 
@@ -120,10 +121,16 @@ class History:
         self.git('merge', '-q', '--no-ff', 'master', '-m', 'Merge master into the dev-to-master release snapshot')
         return name
 
-    def prepare(self, number, version, upgrade):
-        """The release preparation: renders the version's section and bumps the version."""
+    def prepare(self, number, version, upgrade, start='master'):
+        """The release preparation: renders the version's section and bumps the version.
+
+        Cut from a dev commit instead of master, it also promotes that commit.
+        """
         name = f'release/prepare-{version}'
-        self.git('switch', '-q', '-c', name, 'master')
+        if start == 'master':
+            self.git('switch', '-q', '-c', name, 'master')
+        else:
+            self.snapshot(name, start)
         text = (self.origin / 'CHANGELOG.md').read_text().removeprefix(INTRO)
         section = (f'\n## v{version} — candidate (unpublished)\n\n'
                    f'Prepared on 2026-02-01; tagging and publication are separate steps.\n\n'
@@ -139,7 +146,8 @@ class History:
 
 
 def build_history(directory):
-    """Four releases: two squash promotions, a hotfix without one, then a merge-commit promotion."""
+    """Five releases: two squash promotions, a hotfix without one, a merge-commit promotion, then a
+    release whose preparation, cut from dev, is its only promotion."""
     history = History(directory)
     history.feature(11)
     history.feature(20, into='master', squash=True)
@@ -173,6 +181,10 @@ def build_history(directory):
     history.snapshot('release/dev-to-master-3', 'dev')
     history.merge(50, 'release/dev-to-master-3', into='master')
     history.tag('v1.3.0')
+
+    history.feature(19)
+    history.prepare(60, '1.4.0', 'Prepared on a dev snapshot.', start='dev')
+    history.tag('v1.4.0')
     history.git('switch', '-q', 'master')
 
     work = directory / 'work'
@@ -353,6 +365,18 @@ class ReleaseContents(unittest.TestCase):
         self.assertIn(f'3 release pull requests, not listed above: #30 promoted `dev` up to `{contents.carried[:10]}`; '
                       '#31 prepared the release; #13 merged `master` into `dev`.', body)
         self.assertLess(body.index('## What\'s new in v1.1.0'), body.index('## Pull requests in this release'))
+
+    def test_dev_pull_requests_that_a_preparation_promoted_are_listed(self):
+        # v1.4.0's only promotion is its Prepare pull request, cut from dev: named once as the
+        # preparation, it is still the commit its dev pull requests reached master with.
+        pulls = {number: {'title': title, 'author': author, 'url': ''} for number, (title, author) in PULLS.items()}
+        contents, body = NOTES.release_body('', 'v1.4.0', REPOSITORY, self.repository(), lookup=lambda wanted: pulls)
+        lines = body.splitlines()
+        self.assertIn(pull_line(19), lines)
+        self.assertIn('1 pull request merged into `dev` reached `master` with #60, which promoted `dev` up to '
+                      f'`{contents.carried[:10]}`:', lines)
+        self.assertIn('1 release pull request, not listed above: #60 prepared the release.', lines)
+        self.assertNotIn(pull_line(60), lines)
 
     def test_a_number_that_names_no_pull_request_is_a_commit_without_one(self):
         pulls = {number: {'title': title, 'author': author, 'url': ''} for number, (title, author) in PULLS.items()

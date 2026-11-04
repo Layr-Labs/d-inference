@@ -161,6 +161,11 @@ extension Cluster {
             return pair.pairingUnreadable ? .refuse : .pair
         }
 
+        /// `cluster stop` while this Mac's pairing record can't be read: nothing changes, and why.
+        static func refusal(_ pair: ClusterPairSummary) -> [String] {
+            pair.unsureRefusal("stop", "stopped") + ["To stop this Mac's cluster service anyway: `darkbloom cluster stop --service`."]
+        }
+
         mutating func run() async throws {
             Darkbloom.ensureLogging()
             let pair = ClusterPairSummary.local()
@@ -171,8 +176,7 @@ extension Cluster {
                 if code != 0 { throw ExitCode(code) }
                 return
             case .refuse:
-                for line in pair.unsureRefusal("stop", "stopped") { print(line) }
-                print("To stop this Mac's cluster service anyway: `darkbloom cluster stop --service`.")
+                for line in Self.refusal(pair) { print(line) }
                 throw ExitCode.failure
             case .serviceOff:
                 break

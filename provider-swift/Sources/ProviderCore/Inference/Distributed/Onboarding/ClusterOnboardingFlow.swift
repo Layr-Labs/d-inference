@@ -865,7 +865,13 @@ public enum ClusterOnboardingSync {
 /// A step that failed, in words for the screen.
 public struct ClusterOnboardingFailure: Error, Sendable, Equatable {
     public var lines: [String]
-    public init(_ lines: [String]) { self.lines = lines }
+    /// Set only by a pair stop that stopped this Mac's serving and then could not reach the other Mac: what the
+    /// other Mac did ("The other Mac (…) did not answer (…)"). `cluster stop --service` then still stops this Mac.
+    public var otherMacUnanswered: String?
+    public init(_ lines: [String], otherMacUnanswered: String? = nil) {
+        self.lines = lines
+        self.otherMacUnanswered = otherMacUnanswered
+    }
     public init(_ line: String) { self.lines = [line] }
 }
 

@@ -27,8 +27,8 @@ REPOSITORY = 'Layr-Labs/d-inference'
 INTRO = '# Changelog\n\nUnreleased changes live in `changelog.d/`.\n'
 # Every pull request of the synthetic history: (title, author).
 PULLS = {
-    11: ('Add feature A', 'alice'), 12: ('Add feature B', 'bob'), 13: ('Sync master into dev', 'carol'),
-    14: ('Add feature C', 'alice'), 15: ('Add feature D', 'dave'), 16: ('Add feature E', 'erin'),
+    11: ('Add feature A <b>bold</b>', 'alice'), 12: ('Add feature B', 'bob'), 13: ('Sync master into dev', 'carol'),
+    14: ('Add feature C with `--flag` and *stars*', 'alice'), 15: ('Add feature D', 'dave'), 16: ('Add feature E', 'erin'),
     17: ('Add feature F', 'bob'), 18: ('Add feature G', 'erin'), 19: ('Add feature H', 'hank'),
     20: ('Fix master directly', 'frank'), 21: ('Fix master again', 'frank'), 22: ('Hotfix on master', 'grace'),
     30: ('Release dev into master: provider 1.1.0', 'david'), 31: ('Prepare provider 1.1.0', 'jonathan'),
@@ -36,6 +36,10 @@ PULLS = {
     42: ('Prepare provider 1.2.1', 'jonathan'), 50: ('Release dev into master: provider 1.3.0', 'david'),
     51: ('Prepare provider 1.3.0', 'jonathan'), 60: ('Prepare provider 1.4.0 from dev', 'jonathan'),
 }
+# Titles as the release page must show them: as typed, a code span kept as code.
+RENDERED = {11: 'Add feature A \\<b\\>bold\\</b\\>', 14: 'Add feature C with `--flag` and \\*stars\\*'}
+# Commit authors other than the fixture's own: GitHub noreply addresses, with and without an account ID.
+AUTHORS = {12: 'Bob <1234+bob@users.noreply.github.com>', 20: 'Frank <frank@users.noreply.github.com>'}
 # Each release of the synthetic history: what it lists through dev and directly
 # on master, and the pull requests it names once as release pull requests.
 RELEASES = {
@@ -89,15 +93,15 @@ class History:
     def write(self, name, text):
         (self.origin / name).write_text(text)
 
-    def commit(self, message):
+    def commit(self, message, author=None):
         self.git('add', '-A')
-        self.git('commit', '-q', '-m', message)
+        self.git('commit', '-q', '-m', message, *(['--author', author] if author else []))
         return self.git('rev-parse', 'HEAD')
 
-    def branch(self, name, start):
+    def branch(self, name, start, author=None):
         self.git('switch', '-q', '-c', name, start)
         self.write(name.replace('/', '-') + '.txt', name + '\n')
-        return self.commit(name)
+        return self.commit(name, author)
 
     def merge(self, number, branch, into='dev'):
         """A pull request merged with a merge commit, as GitHub writes it."""
@@ -112,12 +116,13 @@ class History:
         self.git('update-ref', f'refs/pull/{number}/head', head)
         self.git('switch', '-q', into)
         self.git('merge', '-q', '--squash', head)
-        self.git('commit', '-q', '-m', f'{PULLS[number][0]} (#{number})')
+        author = AUTHORS.get(number)
+        self.git('commit', '-q', '-m', f'{PULLS[number][0]} (#{number})', *(['--author', author] if author else []))
         return self.git('rev-parse', 'HEAD')
 
     def feature(self, number, into='dev', squash=False):
         name = f'feature/{number}'
-        self.branch(name, into)
+        self.branch(name, into, None if squash else AUTHORS.get(number))
         return self.squash(number, name, into) if squash else self.merge(number, name, into)
 
     def snapshot(self, name, dev_commit):
@@ -209,12 +214,24 @@ def graphql_response(args):
                                    'author': {'login': author}}
         else:
             data[f'pr{number}'] = {'__typename': 'Issue'}
-    return json.dumps({'data': {'repository': data}})
+    return SimpleNamespace(returncode=0, stdout=json.dumps({'data': {'repository': data}}), stderr='')
 
 
-def pull_line(number):
-    title, author = PULLS[number]
-    return f'* {title} by @{author} in https://github.com/{REPOSITORY}/pull/{number}'
+def graphql_forbidden(args):
+    """GitHub's answer to a token without pull request access, such as the release job's."""
+    numbers = re.findall(r'\bpr([0-9]+): issueOrPullRequest', next(arg for arg in args if arg.startswith('query=')))
+    errors = [{'type': 'FORBIDDEN', 'path': ['repository', 'pr' + number],
+               'message': 'Resource not accessible by integration'} for number in numbers]
+    stdout = json.dumps({'data': {'repository': {'pr' + number: None for number in numbers}}, 'errors': errors})
+    return SimpleNamespace(returncode=1, stdout=stdout, stderr='gh: Resource not accessible by integration')
+
+
+def pull_line(number, author=True):
+    """A listed pull request; author=None for no author, or a login other than GitHub's."""
+    title, login = PULLS[number]
+    login = login if author is True else author
+    by = f' by @{login}' if login else ''
+    return f'* {RENDERED.get(number, title)}{by} in https://github.com/{REPOSITORY}/pull/{number}'
 
 
 class ReleasePublicationListsTheReleaseContents(unittest.TestCase):
@@ -226,7 +243,7 @@ class ReleasePublicationListsTheReleaseContents(unittest.TestCase):
         self.base = Path(self.tmp.name)
         self.history, self.work = build_history(self.base)
 
-    def published_notes(self, tag):
+    def published_notes(self, tag, graphql=graphql_response):
         root = self.base / ('publication-' + tag)
         root.mkdir()
         bundle = root / PUB.BUNDLE
@@ -241,7 +258,7 @@ class ReleasePublicationListsTheReleaseContents(unittest.TestCase):
             if args[0] == 'git':
                 return real_run(args, **kwargs)
             if args[:3] == ['gh', 'api', 'graphql']:
-                return SimpleNamespace(returncode=0, stdout=graphql_response(args), stderr='')
+                return graphql(args)
             op = args[2]
             if op == 'view':
                 return SimpleNamespace(returncode=1 if not release else 0, stdout=json.dumps(release))
@@ -279,6 +296,24 @@ class ReleasePublicationListsTheReleaseContents(unittest.TestCase):
         self.assertIn('## What\'s new in v1.1.0', notes)
         self.assertIn('- Update both Macs of a pair to 1.1.0.', lines)
         self.assertIn(f'**Full Changelog**: https://github.com/{REPOSITORY}/compare/v1.0.0...v1.1.0', lines)
+
+    def test_without_githubs_api_every_pull_request_is_listed_with_its_title_from_git(self):
+        # The release job's token has no pull request access, so GitHub may refuse the title lookup.
+        with patch('sys.stderr') as stderr:
+            created = self.published_notes('v1.1.0', graphql=graphql_forbidden)
+        lines = created['notes'].splitlines()
+        # Titles from the merge commit's body or the squash's subject, as typed; an author only
+        # where the pull request's own commit has a GitHub noreply address that names the login.
+        for number, author in ((11, None), (12, 'bob'), (14, None), (20, 'frank')):
+            self.assertIn(pull_line(number, author), lines)
+        for number in RELEASES['v1.1.0']['release'] + [15]:
+            self.assertFalse([line for line in lines if line.endswith(f'/pull/{number}')], number)
+        self.assertIn('3 pull requests merged into `dev` reached `master` with #30, which promoted `dev` up to',
+                      created['notes'])
+        warning = ''.join(call.args[0] for call in stderr.write.call_args_list)
+        self.assertIn('::warning::', warning)
+        self.assertIn('titles from git', warning)
+        self.assertIn('Resource not accessible by integration', warning)
 
     def test_a_failed_generation_still_publishes_the_release_and_says_so(self):
         with patch.object(NOTES.Repository, 'carried', side_effect=RuntimeError('no history')), \
@@ -325,7 +360,7 @@ class ReleaseContents(unittest.TestCase):
 
     def test_the_carried_commit_is_the_promoted_dev_commit_not_the_newest_in_the_window(self):
         carried = self.contents('v1.1.0').carried
-        self.assertEqual(self.history.git('log', '-1', '--format=%s', carried), 'Add feature C (#14)')
+        self.assertEqual(self.history.git('log', '-1', '--format=%s', carried), f'{PULLS[14][0]} (#14)')
         # #15 merged into dev after that commit and before the promotion merged: inside
         # the release's date window, it is not in the release and waits for the next one.
         times = dict(line.split('\t', 1)[::-1] for line in
@@ -382,6 +417,23 @@ class ReleaseContents(unittest.TestCase):
                       f'`{contents.carried[:10]}`:', lines)
         self.assertIn('1 release pull request, not listed above: #60 prepared the release.', lines)
         self.assertNotIn(pull_line(60), lines)
+
+    def test_githubs_title_and_author_come_first_when_github_answers(self):
+        pulls = {number: {'title': title, 'author': author, 'url': ''} for number, (title, author) in PULLS.items()}
+        pulls[11] = {'title': 'Renamed after the merge', 'author': 'alice', 'url': ''}
+        _, body, source = NOTES.release_body('', 'v1.1.0', REPOSITORY, self.repository(), lookup=lambda wanted: pulls)
+        self.assertIn(f'* Renamed after the merge by @alice in https://github.com/{REPOSITORY}/pull/11', body)
+        self.assertIn(pull_line(12), body.splitlines())
+        self.assertEqual(source, 'GitHub')
+
+    def test_titles_from_git_on_request(self):
+        def refuse(wanted):
+            raise AssertionError('GitHub was asked')
+        _, body, source = NOTES.release_body('', 'v1.1.0', REPOSITORY, self.repository(), lookup=refuse,
+                                             use_github=False)
+        for number, author in ((11, None), (12, 'bob'), (14, None), (20, 'frank')):
+            self.assertIn(pull_line(number, author), body.splitlines())
+        self.assertIn('titles from git', source)
 
     def test_a_git_failure_says_what_git_said(self):
         # The release job's warning carries the message, so it must say why git failed.

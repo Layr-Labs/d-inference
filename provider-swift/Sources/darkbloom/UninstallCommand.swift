@@ -98,10 +98,12 @@ struct Uninstall: AsyncParsableCommand {
             elsewhere.append("Darkbloom Sandbox stays (\(sandbox.root.path)); to remove it, run `\(cli) sandbox uninstall` "
                 + "before removing everything.")
         }
+        let paths = ProviderUninstallPaths.live(config: config, configPath: configPath)
         return .init(clusterService: ClusterServiceAgent.installedLabels().map { ClusterServiceAgent.plistPath(label: $0).path },
                      clusterServiceRunning: ClusterService.running(),
+                     runningClusterService: ProviderUninstall.liveRunningClusterService(paths: paths),
                      services: agents.map { .init(name: $0.0, path: FileManager.default.fileExists(atPath: $0.1.path) ? $0.1.path : nil) },
-                     items: ProviderUninstall.inventory(.live(config: config, configPath: configPath)),
+                     items: ProviderUninstall.inventory(paths),
                      pairing: ProviderUninstallPairing.read(),
                      elsewhere: elsewhere)
     }
@@ -172,7 +174,11 @@ struct Uninstall: AsyncParsableCommand {
             availableBytes: {
                 let values = try? FileManager.default.homeDirectoryForCurrentUser.resourceValues(forKeys: [.volumeAvailableCapacityKey])
                 return values?.volumeAvailableCapacity.map(Int64.init)
-            })
+            },
+            runningClusterService: {
+                ProviderUninstall.liveRunningClusterService(paths: ProviderUninstallPaths(home: FileManager.default.homeDirectoryForCurrentUser))
+            },
+            stopClusterService: { try ProviderUninstall.liveStopClusterService(pid: $0) })
     }
 
     /// The drain's lease, held until the services are removed, so an update cannot start the provider in between.

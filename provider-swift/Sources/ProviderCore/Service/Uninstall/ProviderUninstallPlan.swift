@@ -204,6 +204,8 @@ extension ProviderUninstall {
         /// A cluster service holds this Mac's service lock without a login agent (`ClusterService.running`), as one
         /// `darkbloom cluster` started in a session does.
         public let clusterServiceRunning: Bool
+        /// That service, and whose it is (`Operations.runningClusterService`), when it could be read.
+        public let runningClusterService: RunningClusterService?
         public let services: [Service]
         public let items: [ProviderUninstallItem]
         public let pairing: ProviderUninstallPairing?
@@ -212,11 +214,13 @@ extension ProviderUninstall {
 
         public init(cli: String = BuildEnvironment.current.cliName,
                     installCommand: String = "curl -fsSL \(BuildEnvironment.current.coordinatorHTTPURL)/install.sh | bash",
-                    clusterService: [String] = [], clusterServiceRunning: Bool = false, services: [Service],
+                    clusterService: [String] = [], clusterServiceRunning: Bool = false,
+                    runningClusterService: RunningClusterService? = nil, services: [Service],
                     items: [ProviderUninstallItem],
                     pairing: ProviderUninstallPairing?, elsewhere: [String] = []) {
             self.cli = cli; self.installCommand = installCommand; self.clusterService = clusterService
-            self.clusterServiceRunning = clusterServiceRunning
+            self.clusterServiceRunning = clusterServiceRunning || runningClusterService != nil
+            self.runningClusterService = runningClusterService
             self.services = services; self.items = items; self.pairing = pairing; self.elsewhere = elsewhere
         }
 

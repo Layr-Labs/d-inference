@@ -320,7 +320,8 @@ Run it as yourself, not with `sudo`: it refuses to run as root, and macOS asks
 for the password when a step needs it.
 
 Both choices stop serving (the drain of `darkbloom stop`), stop this Mac's
-part of a two-Mac pair, remove every Darkbloom background service, revoke this
+part of a two-Mac pair (also when its cluster service runs without a login
+agent; while one it can't stop runs, nothing is deleted), remove every Darkbloom background service, revoke this
 Mac's account token, forget the pairing, undo the cable port setup (macOS asks
 for an administrator's password) and delete `~/.config/darkbloom`,
 `~/Library/Caches/darkbloom`, the `/usr/local/bin/darkbloom` link and

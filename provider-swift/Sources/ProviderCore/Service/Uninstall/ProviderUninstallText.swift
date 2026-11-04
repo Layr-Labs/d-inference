@@ -32,10 +32,11 @@ extension ProviderUninstall {
     public static func screen(_ plan: Plan) -> [String] {
         var lines = ["Uninstall Darkbloom from this Mac", "",
                      "  1) Remove everything",
-                     "     The app, settings, pairing, logs and all models · frees \(formatBytes(plan.frees(.everything)))",
+                     "     \(everythingRemoves(plan)) · frees \(formatBytes(plan.frees(.everything)))",
                      "  2) Keep models",
-                     plan.models.isEmpty ? "     Removes everything else (no models are downloaded)"
-                        : "     Removes everything else; a reinstall reuses the \(formatBytes(plan.modelBytes)) of models"]
+                     !plan.models.isEmpty ? "     Removes everything else; a reinstall reuses the \(formatBytes(plan.modelBytes)) of models"
+                        : keepsModels(plan) ? "     Removes everything else; the models stay either way (below)"
+                        : "     Removes everything else (no models are downloaded)"]
         let notes = neverTouched(plan).filter { $0 != keychainLine }
             + plan.refused.map { "Not deleted: \($0.label) (\($0.path)): \($0.reason ?? "")" }
         if !notes.isEmpty { lines += [""] + notes.map { "  \($0)" } }
@@ -50,8 +51,17 @@ extension ProviderUninstall {
         func action(_ text: String) { number += 1; lines.append("  \(number). \(text)") }
         action("\(stopServingStep): drain accepted requests, as `\(plan.cli) stop`")
         if let shared = plan.items.first(where: { $0.sharedWith != nil }), let other = shared.sharedWith {
-            action("\(ownClusterStep): \(shared.ownClusterAgentPlist ?? "this install has none"); the pair and \(other)'s "
-                + "cluster service are left as they are")
+            let agent = shared.ownClusterAgentPlist ?? "this install has none"
+            switch plan.runningClusterService?.owner {
+            case .thisInstall?:
+                action("\(ownClusterStep): stop it first (pid \(plan.runningClusterService!.pid), running from this install); "
+                    + (shared.ownClusterAgentPlist.map { "then remove \($0)" } ?? "it has no login agent")
+                    + "; the pairing and the cable port setup stay for \(other)")
+            case .unknown?:
+                action("\(ownClusterStep): refused, deleting nothing: \(ProviderUninstall.stillRunningReason(plan.runningClusterService!, cli: plan.cli))")
+            default:
+                action("\(ownClusterStep): \(agent); the pair and \(other)'s cluster service are left as they are")
+            }
         } else {
             action("\(clusterStep), as `\(plan.cli) cluster stop --service`: "
                 + (!plan.clusterService.isEmpty ? plan.clusterService.joined(separator: ", ")
@@ -106,6 +116,18 @@ extension ProviderUninstall {
         }
         if let pairing = plan.pairing, !plan.sharesCluster { lines.append(otherMacLine(pairing, cli: plan.cli)) }
         return lines
+    }
+
+    /// What option 1 removes on this Mac: no pairing while another install shares it, and no "all models" while some stay.
+    static func everythingRemoves(_ plan: Plan) -> String {
+        let models = plan.models.isEmpty ? nil : keepsModels(plan) ? "the models not kept below" : "all models"
+        let parts = ["The app", "settings"] + (plan.sharesCluster ? [] : ["pairing"]) + ["logs"] + (models.map { [$0] } ?? [])
+        return parts.dropLast().joined(separator: ", ") + " and " + parts.last!
+    }
+
+    /// Whether models stay whichever option: chosen, shared with another install, or behind a link.
+    static func keepsModels(_ plan: Plan) -> Bool {
+        plan.kept.contains { $0.kind == .model || $0.label == chosenModelsLabel || $0.label == chosenStoreLabel || $0.label == "Models" }
     }
 
     /// Why the run left something of Darkbloom's: its app folder is (in) the models folder the person chose, or a folder

@@ -2309,7 +2309,11 @@ replacing the running binary (`provider-swift/Sources/ProviderCore/Update/SelfUp
 On a Mac whose `darkbloom cluster` service runs, the command then asks that
 service's supervisor to restart into the installed release together with the
 other Mac, after the pair drained, and prints its progress until the restart
-(at most `--timeout` seconds); a deferral exits 1
+(at most `--timeout` seconds); a deferral exits 1. It also ends as soon as this
+Mac's cluster service runs the installed release (`This Mac's cluster service now
+runs v<version>; the cluster sets itself up again once both Macs run it.`): the
+restarted service may report that no update runs before the command reads the
+restart
 (`provider-swift/Sources/darkbloom/UpdateCommand.swift`, `ClusterServiceUpdateRequest`;
 [updating Darkbloom on the pair](two-mac-cluster.md#updating-darkbloom-on-the-pair)).
 

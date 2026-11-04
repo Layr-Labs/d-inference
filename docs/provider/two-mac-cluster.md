@@ -993,7 +993,8 @@ together with the other Mac, after the pair drained, and prints its progress
 (`drained for v<version>; waiting for the other Mac`). Both Macs restart once both
 have the release. The Mac where it ran first waits up to 15 minutes, while it
 serves, for the other Mac: for its `darkbloom update`, or for its next slot when
-its automatic updates are on.
+its automatic updates are on. The command ends once this Mac's cluster service
+runs the release (`This Mac's cluster service now runs v<version>; …`).
 No log-out is needed. A cluster service started by an earlier release cannot do
 this: log out and back in on both Macs once both have the release.
 

@@ -239,7 +239,7 @@ struct Update: AsyncParsableCommand {
 /// `darkbloom update` asks the cluster service supervisor for the pair's restart into the installed release
 /// (`ClusterPairUpdate.Request`) and follows its progress.
 enum ClusterServiceUpdateRequest {
-    enum Outcome: Equatable { case restarting, waiting, failed }
+    enum Outcome: Equatable { case restarting, restarted, waiting, failed }
 
     static func restart(into version: String, request: ClusterPairUpdate.Request, serviceDirectory: URL, timeoutSeconds: Int,
                         pollSeconds: Double = 1, say: (String) -> Void) async throws -> Outcome {
@@ -258,6 +258,12 @@ enum ClusterServiceUpdateRequest {
         let deadline = Date().addingTimeInterval(Double(timeoutSeconds))
         var said: String?
         while Date() < deadline {
+            // The restarted service publishes `idle` for the release it now runs, without the request; it may do so
+            // before this command reads `restarting` (R5-3: the command waited out its whole timeout).
+            if let progress = ClusterPairUpdate.readProgress(from: progressPath), Self.runs(version, progress.running) {
+                say("This Mac's cluster service now runs v\(version); the cluster sets itself up again once both Macs run it.")
+                return .restarted
+            }
             if let progress = ClusterPairUpdate.readProgress(from: progressPath), progress.request == request.id {
                 if progress.line != said {
                     said = progress.line
@@ -278,5 +284,11 @@ enum ClusterServiceUpdateRequest {
         }
         say("Still waiting after \(timeoutSeconds) s; the cluster service goes on by itself. Its log: ~/.darkbloom/cluster-setup/service.log")
         return .waiting
+    }
+
+    /// Whether the service's running version is the release asked for (either may carry a leading "v").
+    static func runs(_ version: String, _ running: String) -> Bool {
+        func bare(_ text: String) -> Substring { text.hasPrefix("v") ? text.dropFirst() : Substring(text) }
+        return !version.isEmpty && bare(version) == bare(running)
     }
 }

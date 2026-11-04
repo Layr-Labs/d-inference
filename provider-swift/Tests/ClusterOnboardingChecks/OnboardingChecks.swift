@@ -770,8 +770,8 @@ import Darwin
         let positions = stages.compactMap { text.range(of: $0)?.lowerBound }
         expect(positions.count == stages.count && positions == positions.sorted(), "setup stages stay in order")
         expect(!text.contains("\u{1B}"), "NO_COLOR transcript has no terminal escapes")
-        // The 2026-11-03 call asked for the Start step's notice and an unmistakable outcome block: four lines more.
-        expect(visible(text).filter { !$0.isEmpty }.count <= 25, "leader: a short screen: \(visible(text).filter { !$0.isEmpty }.count) lines")
+        expect(visible(text).filter { !$0.isEmpty }.count <= leaderLineBudget,
+               "leader: a short screen: \(visible(text).filter { !$0.isEmpty }.count) lines")
         // 2026-11-03 (owner, from the customer's review): "less is better". The setup's screen keeps to a word budget.
         expect(words(text) <= leaderWordBudget, "leader: at most \(leaderWordBudget) words, got \(words(text))")
         expect(run.keys == 2, "leader: two keys (y, enter), got \(run.keys)")
@@ -1874,10 +1874,11 @@ import Darwin
         visible(text).joined(separator: " ").split(whereSeparator: { $0.isWhitespace }).count
     }
 
-    /// The from-scratch screens' word budgets (2026-11-03: about 70% fewer words than the 2026-11-02 screens, 293 and
-    /// 148): a line that grows them back fails here.
-    /// 2026-11-03 call (Dylan): the Start step's notice and an unmistakable outcome block on the leader, and where the
-    /// other Mac's window shows the outcome; both budgets grew by that much.
+    /// The from-scratch screens' budgets (2026-11-03: about 70% fewer words than the 2026-11-02 screens, 293 and 148):
+    /// a line that grows them back fails here. The 2026-11-03 call (Dylan) added the Start step's notice and the outcome
+    /// block on the leader (21 to 25 lines, 100 to 125 words) and, on the member, where the other Mac's window shows
+    /// the outcome (60 to 70 words).
+    static let leaderLineBudget = 25
     static let leaderWordBudget = 125
     static let memberWordBudget = 70
 
@@ -2377,6 +2378,11 @@ import Darwin
         expect(N.words(reason: "x\u{1B}[2J", mac: other) == "The coordinator didn't accept the pair (no reason given)", "words: never control characters")
         expect(N.notLoggedIn(["this Mac"]) == "This Mac isn't logged in to Darkbloom, so the coordinator won't pair it", "words: one Mac")
         expect(N.remedy(forReason: notVerified)?.contains("Retry") == true && N.remedy(forReason: "anything") == nil, "remedy")
+        expect(N.isMissingLogin(N.notLoggedIn(["this Mac"])) && !N.isMissingLogin(notVerified), "words: a missing login is told apart")
+        let status = N.statusLine(model: "m", reason: "r")
+        expect(status == "m is not serving yet: r." && N.reason(inStatusLine: status) == "r" && N.reason(inStatusLine: "Serving m.") == nil,
+               "status line: the other Mac reads the reason back: \(status)")
+        expect(N.title(reason: "r") == "Not serving: r.", "the outcome's title")
     }
 
     static let offeredLogLine = "Notice: " + ClusterOnboardingReady.registeredNotice + " with an installed cluster approval"
@@ -2476,14 +2482,16 @@ import Darwin
     /// (h) The other Mac's window: where to see the outcome once it joined, and the outcome itself when it can know it.
     static func memberSeesTheOutcomeOrWhereToLook() {
         expect(ClusterOnboardingDriver.joinedLine.contains("its screen shows whether the cluster serves"), "member: where to look: \(ClusterOnboardingDriver.joinedLine)")
+        // The status lines as the leader's status writes them (`OnboardingLive.localStatus`).
         let serving = TerminalRun(operations(Recorder(), resume: .init(role: .member, peerName: "Apple M5 Ultra, 256 GB", serving: true),
-            pairEvents: [], pairResult: .failed([]), statusLines: ["Serving Qwen3.8-27B-4bit-mtp (pipeline) through Darkbloom on both Macs."]))
+            pairEvents: [], pairResult: .failed([]), statusLines: [offeredReady.pairServingLine(model: "Qwen3.8-27B-4bit-mtp") + "."]))
         expect(serving.finish() == 0, "member: served")
-        expect(serving.text.contains(block("\u{2713}", "Serving Qwen3.8-27B-4bit-mtp (pipeline) through Darkbloom on both Macs", [])),
+        expect(serving.text.contains(block("\u{2713}", "Serving Qwen3.8-27B-4bit-mtp through Darkbloom on both Macs (pipeline)", [])),
                "member: the outcome block: \(serving.text)")
         let notServing = TerminalRun(operations(Recorder(), resume: .init(role: .member, peerName: "Apple M5 Ultra, 256 GB", serving: true),
-            pairEvents: [], pairResult: .failed([]), statusLines: ["Qwen3.8-27B-4bit-mtp is not serving yet: " + notVerifiedTimed + ".",
-                ClusterOnboardingNotServing.remedy(forReason: notVerifiedTimed) ?? "-"]))
+            pairEvents: [], pairResult: .failed([]),
+            statusLines: [ClusterOnboardingNotServing.statusLine(model: "Qwen3.8-27B-4bit-mtp", reason: notVerifiedTimed),
+                          ClusterOnboardingNotServing.remedy(forReason: notVerifiedTimed) ?? "-"]))
         _ = notServing.finish()
         expect(notServing.text.contains(block("\u{2717}", "Not serving: " + notVerifiedTimed + ".",
             [ClusterOnboardingNotServing.remedy(forReason: notVerifiedTimed) ?? "-"])), "member: the not-serving block: \(notServing.text)")

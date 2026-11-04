@@ -46,7 +46,7 @@ public enum ClusterOnboardingPairReport {
             else { return .serving(test: nil) }
             return .serving(test: "in " + text[open.upperBound..<close.lowerBound])
         }
-        if text.hasPrefix("stopped (") , text.hasSuffix(")") {
+        if text.hasPrefix("stopped ("), text.hasSuffix(")") {
             return .stopped(String(text.dropFirst("stopped (".count).dropLast()))
         }
         return nil
@@ -100,6 +100,9 @@ public enum ClusterOnboardingNotServing {
             + "so the coordinator won't pair \(macs.count == 1 ? "it" : "them")"
     }
 
+    /// The reason is a missing login (`notLoggedIn`): no wait mends it, only `darkbloom login`.
+    public static func isMissingLogin(_ reason: String) -> Bool { reason.contains("logged in to Darkbloom") }
+
     /// The coordinator pairs only members Apple has verified (App Attest). `retryAt`: when this Mac's local
     /// key-generation safeguard lets Darkbloom try again, said in local time; unknown, "within minutes". A restart
     /// meanwhile cut an attestation once (an end user's M4 pair, 2026-11-03), so the line asks to leave both Macs alone.
@@ -143,11 +146,28 @@ public enum ClusterOnboardingNotServing {
 
     /// What to do next, said under the reason (the choices follow it).
     public static func remedy(forReason line: String) -> String? {
-        if line.contains("logged in to Darkbloom") { return "Run `darkbloom login` on each Mac named, then Retry; or serve locally only." }
+        if isMissingLogin(line) { return "Run `darkbloom login` on each Mac named, then Retry; or serve locally only." }
         if line.contains("isn't verified by Apple yet") { return "Then choose Retry, or serve locally only now." }
         if line.contains("lacks free memory") { return "Quit apps on that Mac, then Retry; or change the model." }
         return nil
     }
+
+    /// The outcome block's title when nothing serves (`reason` without its final period): the leader's after a start,
+    /// and the other Mac's from the status.
+    public static func title(reason: String) -> String { "Not serving: \(reason)." }
+
+    /// The status line of a pair that does not serve yet (`OnboardingLive.localStatus`); the other Mac's window reads
+    /// it back (`reason(inStatusLine:)`) to show the outcome block.
+    public static func statusLine(model: String, reason: String) -> String { model + statusMarker + reason + "." }
+
+    /// The reason a `statusLine` carries, without its final period; nil for any other line.
+    public static func reason(inStatusLine line: String) -> String? {
+        guard let marker = line.range(of: statusMarker) else { return nil }
+        let reason = line[marker.upperBound...]
+        return String(reason.hasSuffix(".") ? reason.dropLast() : reason)
+    }
+
+    static let statusMarker = " is not serving yet: "
 
     static func joined(_ macs: [String]) -> String {
         macs.count <= 1 ? (macs.first ?? ClusterOnboardingMacName.other) : macs.dropLast().joined(separator: ", ") + " and " + macs.last!

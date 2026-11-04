@@ -1505,7 +1505,7 @@ final class OnboardingLive: @unchecked Sendable {
     /// How long the setup waits for the coordinator to pair both Macs and both to load the model (MiMo's load takes
     /// minutes); a reason the Macs know ends it sooner.
     static let pairServingSeconds: Double = 900
-    /// A reason other than a missing login holds this long before the wait ends on it: a new key's App Attest
+    /// The wait ends on a reason other than a missing login only once it has run this long: a new key's App Attest
     /// authorization lands about a minute after its registration, and the coordinator retries a start that failed.
     static let pairReasonSettleSeconds: Double = 90
 
@@ -1519,7 +1519,7 @@ final class OnboardingLive: @unchecked Sendable {
             if look.serving { return .success([look.test ?? ""]) }
             if let reason = look.reason {
                 last = reason
-                let settle = reason.contains("logged in to Darkbloom") ? 0 : Self.pairReasonSettleSeconds
+                let settle = ClusterOnboardingNotServing.isMissingLogin(reason) ? 0 : Self.pairReasonSettleSeconds
                 if Date().timeIntervalSince(started) >= settle { return .failure(.init(reason)) }
             }
             if look.progress != said { progress(look.progress); said = look.progress }
@@ -1548,7 +1548,7 @@ final class OnboardingLive: @unchecked Sendable {
         }
         let progress = (rankZero == .starting ? "the coordinator paired both Macs" : "waiting for the coordinator to pair both Macs")
             + "\n" + row(here, own?.child) + "\n" + row(there, peer?.child)
-        let missing = (AuthTokenStore.load() == nil ? [here] : []) + (peer?.loggedIn == false ? [there] : [])
+        let missing = missingLogins(peer: peer)
         if !missing.isEmpty { return (false, nil, progress, ClusterOnboardingNotServing.notLoggedIn(missing)) }
         // Not verified by Apple yet: with when this Mac's key-generation safeguard lets it try again, when it says.
         for (mac, child) in [(here, own?.child), (there, peer?.child)] where child?.appAttest == false {
@@ -1561,11 +1561,15 @@ final class OnboardingLive: @unchecked Sendable {
         return (false, nil, progress, nil)
     }
 
-    /// The Macs without a Darkbloom login, as this screen names them (the other Mac's own status says; an older build
-    /// that does not is not counted).
+    /// The Macs without a Darkbloom login, as this screen names them.
     func missingLogins() -> [String] {
-        let peer = try? JSONDecoder().decode(ClusterServiceStatus.self, from: command(.init(op: .status), seconds: 10))
-        return (AuthTokenStore.load() == nil ? [here] : []) + (peer?.loggedIn == false ? [there] : [])
+        missingLogins(peer: try? JSONDecoder().decode(ClusterServiceStatus.self, from: command(.init(op: .status), seconds: 10)))
+    }
+
+    /// This Mac without a login, and the other Mac when its own status says so (an older build that does not say is
+    /// not counted).
+    func missingLogins(peer: ClusterServiceStatus?) -> [String] {
+        (AuthTokenStore.load() == nil ? [here] : []) + (peer?.loggedIn == false ? [there] : [])
     }
 
     /// `darkbloom login` in this terminal (the console is suspended): true when this Mac is logged in afterwards.
@@ -1652,7 +1656,7 @@ final class OnboardingLive: @unchecked Sendable {
                     lines.append(registered.pairServingLine(model: model) + ".")
                 } else {
                     let wait = look.progress.components(separatedBy: "\n").first ?? look.progress
-                    lines.append("\(model) is not serving yet: " + (look.reason ?? wait) + ".")
+                    lines.append(ClusterOnboardingNotServing.statusLine(model: model, reason: look.reason ?? wait))
                     if let remedy = look.reason.flatMap(ClusterOnboardingNotServing.remedy(forReason:)) { lines.append(remedy) }
                 }
             } else {

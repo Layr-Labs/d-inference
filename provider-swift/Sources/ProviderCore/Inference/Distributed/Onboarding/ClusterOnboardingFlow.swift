@@ -577,24 +577,30 @@ public struct ClusterOnboardingReady: Codable, Sendable, Equatable {
         return servesHere ? notice : notice.replacingOccurrences(of: "this Mac's API", with: "that Mac's API")
     }
 
-    /// A pair offered for pairing once the coordinator paired both Macs, both loaded the model and it answered its first
-    /// request: "Serving Qwen3.8 27B through Darkbloom on both Macs (pipeline)". Registered alone is not serving.
-    public func pairServingLine(model: String) -> String {
-        "Serving \(model) through Darkbloom on both Macs" + (ClusterOnboardingDeployment.shownMarker(split).map { " (\($0))" } ?? "")
-    }
+    /// A pair that serves through Darkbloom: "Serving Qwen3.8 27B through Darkbloom on both Macs (pipeline)". A pair
+    /// offered for pairing says it only once the coordinator paired both Macs, both loaded the model and it answered its
+    /// first request: registered alone is not serving.
+    public func pairServingLine(model: String) -> String { "Serving \(model) through Darkbloom on both Macs" + splitMarker }
 
     /// The outcome block once the pair serves and a request answered (`test`: "in 0.61 s"): through Darkbloom on both
     /// Macs, or on the serving Mac's local API only (asked for, or a coordinator without cluster support).
     public func outcome(model: String, scope: ClusterServingScope, test: String?) -> (title: String, lines: [String]) {
         let tested = "Test response" + (test.map { " " + $0 } ?? "")
         if offered != nil { return (pairServingLine(model: model), [Self.offeredAPILine, tested]) }
-        guard scope.isLocalOnly || notice.map({ !$0.hasPrefix(Self.registeredNotice) }) == true else {
-            return (pairServingLine(model: model), [apiLine, tested])
-        }
-        let mode = ClusterOnboardingDeployment.shownMarker(split).map { " (\($0))" } ?? ""
+        guard servesLocallyOnly(scope: scope) else { return (pairServingLine(model: model), [apiLine, tested]) }
         let whose = servesHere ? "this Mac's" : servedBy + "'s"
-        return ("Serving \(model) on \(whose) local API only\(mode)", [apiLine] + (scope.isLocalOnly ? [] : noticeLine.map { [$0] } ?? []) + [tested])
+        return ("Serving \(model) on \(whose) local API only" + splitMarker,
+                [apiLine] + (scope.isLocalOnly ? [] : noticeLine.map { [$0] } ?? []) + [tested])
     }
+
+    /// Serving on the local API only: asked for, or a coordinator without cluster support (its local-serving notice;
+    /// the registered member's notice is not one).
+    func servesLocallyOnly(scope: ClusterServingScope) -> Bool {
+        scope.isLocalOnly || notice.map { !$0.hasPrefix(Self.registeredNotice) } == true
+    }
+
+    /// " (pipeline)" after the outcome's title; empty when the split is unknown or not shown plainly.
+    private var splitMarker: String { ClusterOnboardingDeployment.shownMarker(split).map { " (\($0))" } ?? "" }
 
     /// How the line of a pair registered with the coordinator as a cluster member starts (`ClusterLocalServing`).
     public static let registeredNotice = "Registered with the coordinator as a cluster member"
@@ -1257,16 +1263,16 @@ public enum ClusterOnboardingDriver {
     }
 
     /// The cluster's status as the outcome block on the other Mac, when its first line tells it: "Serving …" (✓) or
-    /// "<model> is not serving yet: <reason>." (✗); false (nothing said) for any other status.
+    /// "<model> is not serving yet: <reason>." (✗, `ClusterOnboardingNotServing.statusLine`); false (nothing said) for
+    /// any other status.
     static func showOutcome(_ status: [String], _ console: ClusterOnboardingConsole) -> Bool {
         guard let first = status.first else { return false }
-        let line = first.hasSuffix(".") ? String(first.dropLast()) : first
-        if line.hasPrefix("Serving ") {
-            console.result(true, line, Array(status.dropFirst()))
+        if first.hasPrefix("Serving ") {
+            console.result(true, first.hasSuffix(".") ? String(first.dropLast()) : first, Array(status.dropFirst()))
             return true
         }
-        guard let marker = line.range(of: " is not serving yet: ") else { return false }
-        console.result(false, "Not serving: " + line[marker.upperBound...] + ".", Array(status.dropFirst()))
+        guard let reason = ClusterOnboardingNotServing.reason(inStatusLine: first) else { return false }
+        console.result(false, ClusterOnboardingNotServing.title(reason: reason), Array(status.dropFirst()))
         return true
     }
 
@@ -1467,7 +1473,7 @@ public enum ClusterOnboardingDriver {
         }
         var choice = choices[chosen!]
         // A private image candidate says at the choice that it never takes public traffic; whether the pair earns is
-        // said once it serves (`servesWords`).
+        // said once it serves (`ClusterOnboardingReady.outcome`).
         if privateImage, let line = choice.publicTraffic {
             console.say("  " + ClusterOnboardingMacName.sentence(line) + (line.hasSuffix(".") ? "" : "."))
         }
@@ -1657,7 +1663,7 @@ public enum ClusterOnboardingDriver {
                            _ console: ClusterOnboardingConsole) -> NotServingChoice {
         let first = lines.first ?? "the cluster did not report ready"
         let reason = first.hasSuffix(".") ? String(first.dropLast()) : first
-        console.result(false, "Not serving: \(reason).",
+        console.result(false, ClusterOnboardingNotServing.title(reason: reason),
                        Array(lines.dropFirst()) + (ClusterOnboardingNotServing.remedy(forReason: reason).map { [$0] } ?? []))
         while true {
             switch console.choose(notServingItems, selected: 0) {
@@ -1678,20 +1684,8 @@ public enum ClusterOnboardingDriver {
     /// live; the pair's first request's time ("in 0.84 s"), or why it does not serve.
     static func awaitPairServing(title: String, _ operations: ClusterOnboardingOperations,
                                  _ console: ClusterOnboardingConsole) -> Result<String?, ClusterOnboardingFailure> {
-        let progress = ClusterOnboardingMailbox<String>()
-        let finished = ClusterOnboardingMailbox<Result<[String], ClusterOnboardingFailure>>()
-        Thread.detachNewThread { finished.post(operations.pairServing { progress.post($0) }) }
-        var latest: String?
-        var clock = ClusterOnboardingLoadRows(started: Date())
-        while true {
-            if let line = progress.take().last { latest = line }
-            if let value = finished.take().first {
-                console.settle()
-                return value.map { $0.first.flatMap { $0.isEmpty ? nil : $0 } }
-            }
-            console.workingRows(clock.rows("Serving \(title) through Darkbloom", report: latest, now: Date()))
-            _ = console.key(milliseconds: 120)
-        }
+        waitWithRows("Serving \(title) through Darkbloom", console, operations.pairServing)
+            .map { $0.first.flatMap { $0.isEmpty ? nil : $0 } }
     }
 
     /// The leader's last line: `darkbloom cluster` again manages the cluster (its menu tests, changes the model, stops).
@@ -1701,9 +1695,7 @@ public enum ClusterOnboardingDriver {
     /// coordinator without cluster support, which leaves its local-serving notice).
     public static func servesWords(scope: ClusterServingScope, ready: ClusterOnboardingReady) -> String {
         guard ready.offered == nil else { return "" }
-        if scope.isLocalOnly { return " (local only)" }
-        if let notice = ready.notice, !notice.hasPrefix(ClusterOnboardingReady.registeredNotice) { return " (local only)" }
-        return " (earning through Darkbloom)"
+        return ready.servesLocallyOnly(scope: scope) ? " (local only)" : " (earning through Darkbloom)"
     }
 
     /// After the Test stage: registers the pair with the coordinator when it serves a cluster approval for this pair.
@@ -1737,19 +1729,26 @@ public enum ClusterOnboardingDriver {
         }
     }
 
-    /// Waits for the started cluster's parts with their progress as the live line.
+    /// Waits for the started cluster's parts with their progress as the live rows.
     static func waitForParts(title: String, _ operations: ClusterOnboardingOperations, _ console: ClusterOnboardingConsole)
         -> Result<ClusterOnboardingReady, ClusterOnboardingFailure> {
+        waitWithRows("Loading \(title) on both Macs", console, operations.waitReady)
+    }
+
+    /// Runs `work` off the console's thread with its progress ("1 of 2 parts ready", then a row per Mac) as live rows
+    /// under `title` (`ClusterOnboardingLoadRows`), until it ends. The rows are live only: the screen keeps the result.
+    static func waitWithRows<Value: Sendable>(_ title: String, _ console: ClusterOnboardingConsole,
+                                              _ work: @escaping @Sendable (_ progress: @escaping @Sendable (String) -> Void) -> Value)
+        -> Value {
         let progress = ClusterOnboardingMailbox<String>()
-        let finished = ClusterOnboardingMailbox<Result<ClusterOnboardingReady, ClusterOnboardingFailure>>()
-        Thread.detachNewThread { finished.post(operations.waitReady { progress.post($0) }) }
-        // The parts' progress ("1 of 2 parts ready", then a row per Mac) is live only: the screen keeps the result.
+        let finished = ClusterOnboardingMailbox<Value>()
+        Thread.detachNewThread { finished.post(work { progress.post($0) }) }
         var latest: String?
         var clock = ClusterOnboardingLoadRows(started: Date())
         while true {
             if let line = progress.take().last { latest = line }
             if let value = finished.take().first { console.settle(); return value }
-            console.workingRows(clock.rows("Loading \(title) on both Macs", report: latest, now: Date()))
+            console.workingRows(clock.rows(title, report: latest, now: Date()))
             _ = console.key(milliseconds: 120)
         }
     }

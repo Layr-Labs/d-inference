@@ -50,6 +50,7 @@ private final class Calls: @unchecked Sendable {
 
 private struct Fixture {
     static let pin = String(repeating: "ab", count: 32)
+    static let ours = ".cache/huggingface/hub/models--org--ours-mlx"
     static let clusterLabel = ClusterServiceAgentPlan.labelPrefix + "0123456789ab"
 
     let root: URL
@@ -78,16 +79,21 @@ private struct Fixture {
                      "\(install)/cluster-pairing/pairings.json", "\(install)/auth_token",
                      "\(paths.configDirectory.path.dropFirst(home.path.count + 1))/provider.toml",
                      "\(paths.cacheDirectory.path.dropFirst(home.path.count + 1))/kv3/segment",
-                     ".cache/huggingface/hub/models--org--ours/snapshots/rev1/.darkbloom-manifest.json",
-                     ".cache/huggingface/hub/models--org--ours/snapshots/rev1/model.safetensors",
+                     "\(Self.ours)/snapshots/rev1/.darkbloom-manifest.json", "\(Self.ours)/snapshots/rev1/model.safetensors",
                      ".cache/huggingface/hub/models--org--partial/snapshots/.local-staging-v2__org__partial/a.part",
-                     ".cache/huggingface/hub/models--org--other/snapshots/rev1/model.safetensors",
-                     ".cache/huggingface/hub/.artifact-writer-locks/models--org--ours",
-                     ".cache/huggingface/darkbloom-cluster-models/org--ours/model.safetensors",
+                     ".cache/huggingface/hub/models--org--other-mlx/snapshots/rev1/model.safetensors",
+                     ".cache/huggingface/hub/.artifact-writer-locks/models--org--ours-mlx",
+                     ".cache/huggingface/darkbloom-cluster-models/org--ours/.darkbloom-manifest.json",
                      "Library/LaunchAgents/\(LaunchAgent.label).plist", "Library/LaunchAgents/\(WatchdogAgent.label).plist",
                      "Library/LaunchAgents/io.darkbloom.desktop-api.plist", "Library/LaunchAgents/\(clusterLabel).plist"] {
             try fixture.write(home.appendingPathComponent(file))
         }
+        // The scanner's selected revision, and the cluster store's copy as `darkbloom cluster` makes it: an APFS clone.
+        let ref = home.appendingPathComponent("\(Self.ours)/refs/main")
+        try FileManager.default.createDirectory(at: ref.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("rev1".utf8).write(to: ref)
+        try fixture.clone(home.appendingPathComponent("\(Self.ours)/snapshots/rev1/model.safetensors"),
+                          to: home.appendingPathComponent(".cache/huggingface/darkbloom-cluster-models/org--ours/model.safetensors"))
         try fixture.link(home.appendingPathComponent("\(install)/bin/\(paths.commandLink.lastPathComponent)"),
                          to: "../\(paths.appBundleName)/Contents/MacOS/\(paths.commandLink.lastPathComponent)")
         try fixture.link(paths.commandLink, to: paths.installDirectory.appendingPathComponent("bin/\(paths.commandLink.lastPathComponent)").path)
@@ -99,6 +105,11 @@ private struct Fixture {
     func write(_ url: URL, bytes: Int = 8192) throws {
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         try Data(repeating: 7, count: bytes).write(to: url)
+    }
+
+    func clone(_ source: URL, to destination: URL) throws {
+        try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+        guard clonefile(source.path, destination.path, 0) == 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
     }
 
     func link(_ url: URL, to destination: String) throws {
@@ -133,7 +144,8 @@ private struct Fixture {
                      items: ProviderUninstall.inventory(paths), pairing: pairing)
     }
 
-    func operations(drainFails: Bool = false, clusterFails: Bool = false, linkFails: Bool = false) -> ProviderUninstall.Operations {
+    func operations(drainFails: Bool = false, clusterFails: Bool = false, linkFails: Bool = false,
+                    tokenUnconfirmed: Bool = false) -> ProviderUninstall.Operations {
         let calls = calls, desktop = desktopPlist
         let free = Calls()
         return .init(
@@ -162,6 +174,11 @@ private struct Fixture {
                 }),
             ],
             servicesHandled: { calls.add("lease released") },
+            revokeToken: {
+                calls.add("revoke token")
+                return tokenUnconfirmed ? .skipped("the coordinator did not confirm it (offline, or the token's issuer is unknown)")
+                    : .done()
+            },
             forget: { calls.add("forget \($0)") },
             removeCableSetup: {
                 calls.add("link remove")
@@ -200,26 +217,50 @@ private func transcript(_ name: String, _ lines: [String], _ fixture: Fixture) {
 
 @Suite("darkbloom uninstall")
 struct ProviderUninstallTests {
-    @Test("(a) keep: every service is removed and every file stays")
-    func keepRemovesServicesAndKeepsData() async throws {
+    @Test("(a) keep models: everything else goes, unpaired and cable undone; the models stay and are found again")
+    func keepModelsRemovesEverythingElse() async throws {
         let fixture = try Fixture.make()
         defer { fixture.remove() }
-        let before = fixture.tree(fixture.root, excluding: "home/Library/LaunchAgents")
+        let hub = fixture.home.appendingPathComponent(".cache/huggingface/hub")
+        let models = [hub.appendingPathComponent("models--org--ours-mlx"), hub.appendingPathComponent("models--org--partial"),
+                      hub.appendingPathComponent(".artifact-writer-locks"), fixture.paths.clusterModelStore]
+        let before = models.map { fixture.tree($0) }
+        let receipts = [Fixture.ours + "/refs/main", Fixture.ours + "/snapshots/rev1/.darkbloom-manifest.json",
+                        ".cache/huggingface/darkbloom-cluster-models/org--ours/.darkbloom-manifest.json"]
+            .map { try? Data(contentsOf: fixture.home.appendingPathComponent($0)) }
         let plan = fixture.plan(pairing: fixture.pairing)
-        let report = await fixture.run(.keepData, items: plan.items, pairing: fixture.pairing)
+        let report = await fixture.run(.keepModels, items: plan.items, pairing: fixture.pairing)
 
         #expect(!report.failed, "\(report.steps)")
         #expect(fixture.tree(fixture.agents).isEmpty, "provider, watchdog, desktop API and cluster agents are gone")
         #expect(Set(fixture.launchd.bootedOut) == [LaunchAgent.label, WatchdogAgent.label, Fixture.clusterLabel])
-        #expect(fixture.tree(fixture.root, excluding: "home/Library/LaunchAgents") == before, "no file was deleted")
-        #expect(fixture.calls.all == ["drain", "cluster stop", "lease released"], "no unpairing and no cable change")
+        #expect(fixture.calls.all == ["drain", "cluster stop", "lease released", "revoke token", "forget \(Fixture.pin)",
+                                      "link remove"], "unpaired and the cable undone, as for everything")
+        for gone in [fixture.paths.installDirectory, fixture.paths.configDirectory, fixture.paths.cacheDirectory,
+                     fixture.paths.commandLink] {
+            #expect(!fixture.exists(gone), "\(gone.path) is deleted")
+        }
+        #expect(models.map { fixture.tree($0) } == before, "every model folder, lock and the cluster store stay as they were")
+        #expect(receipts.allSatisfy { $0 != nil })
+        #expect([Fixture.ours + "/refs/main", Fixture.ours + "/snapshots/rev1/.darkbloom-manifest.json",
+                 ".cache/huggingface/darkbloom-cluster-models/org--ours/.darkbloom-manifest.json"]
+            .map { try? Data(contentsOf: fixture.home.appendingPathComponent($0)) } == receipts, "receipts and refs are untouched")
+        // A reinstall's discovery: the scanner over the same cache finds the model again.
+        #expect(ModelScanner.scanAllModels(in: hub, environment: [:]).map(\.id).contains("org/ours-mlx"))
+        #expect(fixture.exists(fixture.savedModels.appendingPathComponent("models--org--big/snapshots/rev1/.darkbloom-manifest.json")))
+        #expect(!report.steps.contains { $0.name.hasPrefix("Delete Model") || $0.name == "Delete Cluster model store" })
         let summary = ProviderUninstall.summary(report, plan: plan)
-        transcript("keep-summary-leader", summary, fixture)
-        #expect(summary.contains("To come back: install Darkbloom again, then run `darkbloom start` or `darkbloom cluster`."))
+        transcript("keep-models-summary-leader", summary, fixture)
+        #expect(summary.first == "Darkbloom is removed from this Mac; its models are kept.")
+        #expect(summary.contains { $0.hasPrefix("Kept: 2 models and the cluster model store, ") && $0.contains(hub.path) })
+        #expect(summary.contains("To come back: run `curl -fsSL \(BuildEnvironment.current.coordinatorHTTPURL)/install.sh | bash`, "
+            + "then `darkbloom start` or `darkbloom cluster`; the models are found automatically."))
+        #expect(summary.contains { $0.hasPrefix("Models in the folder you chose are not found automatically") })
         #expect(summary.contains(ProviderUninstall.keychainLine))
+        #expect(summary.contains { $0.hasPrefix("Never touched: Models in the folder you chose") && $0.contains(fixture.savedModels.path) })
     }
 
-    @Test("(b) everything: data, models, the app and the command link go; forget and link remove run once each")
+    @Test("(b) everything: data, models, the app and the command link go; revoke, forget and link remove run once each")
     func everythingRemovesDarkbloomData() async throws {
         let fixture = try Fixture.make()
         defer { fixture.remove() }
@@ -229,15 +270,16 @@ struct ProviderUninstallTests {
 
         #expect(!report.failed, "\(report.steps)")
         for gone in [fixture.paths.installDirectory, fixture.paths.configDirectory, fixture.paths.cacheDirectory,
-                     hub.appendingPathComponent("models--org--ours"), hub.appendingPathComponent("models--org--partial"),
+                     hub.appendingPathComponent("models--org--ours-mlx"), hub.appendingPathComponent("models--org--partial"),
                      hub.appendingPathComponent(".artifact-writer-locks"), fixture.paths.clusterModelStore,
                      fixture.paths.commandLink] {
             #expect(!fixture.exists(gone), "\(gone.path) is deleted")
         }
-        #expect(fixture.exists(hub.appendingPathComponent("models--org--other/snapshots/rev1/model.safetensors")),
+        #expect(fixture.exists(hub.appendingPathComponent("models--org--other-mlx/snapshots/rev1/model.safetensors")),
                 "another tool's model in the shared cache stays")
         #expect(fixture.exists(fixture.savedModels.appendingPathComponent("models--org--big/snapshots/rev1/.darkbloom-manifest.json")),
                 "models in the folder the person chose stay")
+        #expect(fixture.calls.count("revoke token") == 1)
         #expect(fixture.calls.count("forget \(Fixture.pin)") == 1)
         #expect(fixture.calls.count("link remove") == 1)
         #expect(fixture.calls.all.firstIndex(of: "forget \(Fixture.pin)")! < fixture.calls.all.firstIndex(of: "link remove")!,
@@ -246,50 +288,86 @@ struct ProviderUninstallTests {
                 "the folder with the running app goes last")
         let summary = ProviderUninstall.summary(report, plan: plan)
         transcript("everything-summary-leader", summary, fixture)
+        #expect(summary.first == "Darkbloom is removed from this Mac.")
         #expect(summary.contains { $0.hasPrefix("Space freed: 250 MB (this disk had 1 GB free, now 1.25 GB") })
-        #expect(summary.contains { $0.hasPrefix("Kept: Models in the folder you chose") && $0.contains(fixture.savedModels.path) })
+        #expect(summary.contains { $0.hasPrefix("Never touched: Models in the folder you chose") && $0.contains(fixture.savedModels.path) })
         #expect(summary.contains(ProviderUninstall.keychainLine))
+        #expect(!summary.contains { $0.hasPrefix("To come back") })
     }
 
-    @Test("(c) dry run: lists every action and path with sizes, and changes nothing")
+    @Test("(c) dry run, both choices: every action and path with sizes, and nothing changes")
     func dryRunChangesNothing() async throws {
         let fixture = try Fixture.make()
         defer { fixture.remove() }
         let before = fixture.tree(fixture.root)
         let plan = fixture.plan(pairing: fixture.pairing)
-        let lines = ProviderUninstall.dryRun(plan, mode: .everything)
-        let text = lines.joined(separator: "\n")
-        transcript("screen", ProviderUninstall.screen(plan), fixture)
-        transcript("dry-run-everything", lines, fixture)
-        transcript("dry-run-keep-data", ProviderUninstall.dryRun(plan, mode: .keepData), fixture)
+        let everything = ProviderUninstall.dryRun(plan, mode: .everything)
+        let keepModels = ProviderUninstall.dryRun(plan, mode: .keepModels)
+        transcript("screen", ProviderUninstall.screen(plan) + [ProviderUninstall.choicePrompt], fixture)
+        transcript("dry-run-everything", everything, fixture)
+        transcript("dry-run-keep-models", keepModels, fixture)
 
         #expect(fixture.tree(fixture.root) == before)
         #expect(fixture.launchd.callCount == 0, "nothing asked launchd")
         #expect(fixture.calls.all.isEmpty)
-        for item in plan.items where item.verdict == .remove {
-            #expect(text.contains("Delete \(ProviderUninstall.row(item))"))
-            #expect(item.bytes > 0 || item.path == fixture.paths.commandLink.path, "\(item.label) is measured")
+        for (lines, mode) in [(everything, ProviderUninstall.Mode.everything), (keepModels, .keepModels)] {
+            let text = lines.joined(separator: "\n")
+            for action in ["Stop serving on this Mac",
+                           "Stop this Mac's cluster part and remove its service, as `darkbloom cluster stop`: "
+                            + "\(fixture.agents.path)/\(Fixture.clusterLabel).plist",
+                           "Remove the provider service: \(fixture.agents.path)/\(LaunchAgent.label).plist",
+                           "Remove the watchdog service: \(fixture.agents.path)/\(WatchdogAgent.label).plist",
+                           "Remove the desktop API service: \(fixture.desktopPlist.path)",
+                           "Revoke this Mac's account token, as `darkbloom logout` does (best effort)",
+                           "Forget the pairing with M3 Ultra, 512 GB", "Undo the cable port setup",
+                           "Delete Settings", "Delete Darkbloom folder"] {
+                #expect(text.contains(action), "\(mode): \(action)")
+            }
+            for item in plan.items where item.verdict == .remove {
+                #expect(text.contains("Delete \(ProviderUninstall.row(item))") == (mode == .everything || item.kind != .model),
+                        "\(mode): \(item.label)")
+            }
+            #expect(text.contains("Never touched: Models in the folder you chose"))
         }
-        #expect(plan.items.first { $0.label == "Model org/ours" }.map { $0.bytes >= 16384 } == true, "sizes are measured")
-        for action in ["Stop serving on this Mac",
-                       "Stop this Mac's cluster part and remove its service, as `darkbloom cluster stop`: "
-                        + "\(fixture.agents.path)/\(Fixture.clusterLabel).plist",
-                       "Remove the provider service: \(fixture.agents.path)/\(LaunchAgent.label).plist",
-                       "Remove the watchdog service: \(fixture.agents.path)/\(WatchdogAgent.label).plist",
-                       "Remove the desktop API service: \(fixture.desktopPlist.path)",
-                       "Forget the pairing with M3 Ultra, 512 GB", "Undo the cable port setup"] {
-            #expect(text.contains(action), "\(action)")
-        }
-        #expect(text.contains("Keeps Models in the folder you chose"))
-        let keep = ProviderUninstall.dryRun(plan, mode: .keepData).joined(separator: "\n")
-        #expect(!keep.contains("Delete ") && !keep.contains("Forget") && keep.contains("Keeps every file"))
+        #expect(keepModels.contains { $0.hasPrefix("  Kept: 2 models and the cluster model store") })
+        let screen = ProviderUninstall.screen(plan)
+        #expect(Array(screen.prefix(6)) == ["Uninstall Darkbloom from this Mac", "",
+            "  1) Remove everything",
+            "     The app, settings, pairing, logs and all models · frees \(ProviderUninstall.formatBytes(plan.frees(.everything)))",
+            "  2) Keep models",
+            "     Removes everything else; a reinstall reuses the \(ProviderUninstall.formatBytes(plan.modelBytes)) of models"])
+        #expect(ProviderUninstall.choicePrompt == "  Choose 1 or 2 (Esc cancels): ")
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
         let json = try encoder.encode(ProviderUninstall.dryRunDocument(plan, modes: ProviderUninstall.Mode.allCases))
         transcript("dry-run-json", [String(decoding: json, as: UTF8.self)], fixture)
         let document = try #require(try JSONSerialization.jsonObject(with: json) as? [String: Any])
         #expect(document["schema"] as? String == "darkbloom_uninstall_plan_v1")
-        #expect((document["modes"] as? [[String: Any]])?.count == 2)
+        #expect((document["modes"] as? [[String: Any]])?.map { $0["mode"] as? String } == ["everything", "keep-models"])
+    }
+
+    @Test("(e) sizes count an APFS clone once, and not at all while a clone outside stays")
+    func clonedModelIsCountedOnce() throws {
+        let fixture = try Fixture.make()
+        defer { fixture.remove() }
+        let weights = fixture.home.appendingPathComponent("\(Fixture.ours)/snapshots/rev1/model.safetensors")
+        let storeCopy = fixture.paths.clusterModelStore.appendingPathComponent("org--ours/model.safetensors")
+        for url in [storeCopy, weights] { try FileManager.default.removeItem(at: url) }
+        try Data((0..<(4 << 20)).map { UInt8(truncatingIfNeeded: $0 &* 2_654_435_761 >> 13) }).write(to: weights)
+        try fixture.clone(weights, to: storeCopy)
+        let items = ProviderUninstall.inventory(fixture.paths)
+        let model = try #require(items.first { $0.label == "Model org/ours-mlx" })
+        let store = try #require(items.first { $0.label == "Cluster model store" })
+        #expect(model.bytes >= 4 << 20 && store.bytes >= 4 << 20, "each item shows its own size")
+        let both = ProviderUninstall.uniqueBytes([model, store])
+        #expect(both == model.bytes + store.bytes - (4 << 20), "the clone's 4 MiB are counted once")
+        let plan = fixture.plan(pairing: nil)
+        #expect(plan.modelBytes == ProviderUninstall.uniqueBytes(plan.models))
+        #expect(plan.frees(.everything) == plan.items.filter { $0.verdict == .remove }.reduce(0) { $0 + $1.bytes } - (4 << 20))
+        // A third clone outside Darkbloom's folders keeps those blocks in use: deleting both frees none of them.
+        try fixture.clone(weights, to: fixture.outside.appendingPathComponent("my-copy.safetensors"))
+        let again = ProviderUninstall.inventory(fixture.paths).filter { [model.label, store.label].contains($0.label) }
+        #expect(ProviderUninstall.uniqueBytes(again) == model.bytes + store.bytes - 2 * (4 << 20))
     }
 
     @Test("(d) a link or a path outside Darkbloom's folders is refused and left as it is")
@@ -352,18 +430,23 @@ struct ProviderUninstallTests {
     @Test("(e) without a terminal and without a mode, it refuses with one usage line")
     func invocationNeedsAModeWithoutATerminal() {
         let usage = ProviderUninstall.usage(cli: "darkbloom")
-        #expect(ProviderUninstall.invocation(keepData: false, everything: false, yes: false, dryRun: false,
+        #expect(usage == "Usage: darkbloom uninstall --everything|--keep-models [--yes] [--dry-run [--json]] (no terminal to ask which)")
+        #expect(ProviderUninstall.invocation(everything: false, keepModels: false, yes: false, dryRun: false,
                                              interactive: false, cli: "darkbloom") == .refuse(usage))
-        #expect(ProviderUninstall.invocation(keepData: false, everything: true, yes: false, dryRun: false,
+        #expect(ProviderUninstall.invocation(everything: true, keepModels: false, yes: false, dryRun: false,
                                              interactive: false, cli: "darkbloom") == .refuse(usage), "no one to confirm")
-        #expect(!usage.contains("\n"))
-        #expect(ProviderUninstall.invocation(keepData: false, everything: false, yes: false, dryRun: false, interactive: true) == .ask)
-        #expect(ProviderUninstall.invocation(keepData: false, everything: true, yes: false, dryRun: false, interactive: true)
+        #expect(ProviderUninstall.invocation(everything: false, keepModels: false, yes: false, dryRun: false, interactive: true) == .ask)
+        #expect(ProviderUninstall.invocation(everything: true, keepModels: false, yes: false, dryRun: false, interactive: true)
                 == .run(.everything, confirm: true))
-        #expect(ProviderUninstall.invocation(keepData: true, everything: false, yes: true, dryRun: false, interactive: false)
-                == .run(.keepData, confirm: false))
-        #expect(ProviderUninstall.invocation(keepData: false, everything: false, yes: false, dryRun: true, interactive: false)
-                == .dryRun([.keepData, .everything]))
+        #expect(ProviderUninstall.invocation(everything: false, keepModels: true, yes: true, dryRun: false, interactive: false)
+                == .run(.keepModels, confirm: false))
+        #expect(ProviderUninstall.invocation(everything: false, keepModels: false, yes: false, dryRun: true, interactive: false)
+                == .dryRun([.everything, .keepModels]))
+        // The screen's keys: 1 or 2 choose, Esc cancels, an arrow key's sequence or another key waits.
+        #expect(ProviderUninstall.key(Array("1".utf8)) == .choose(.everything))
+        #expect(ProviderUninstall.key(Array("2".utf8)) == .choose(.keepModels))
+        for cancel in [[0x1B], [], Array("q".utf8), [0x03], [0x04]] as [[UInt8]] { #expect(ProviderUninstall.key(cancel) == .cancel) }
+        for ignored in [[0x1B, 0x5B, 0x41], Array("3".utf8), Array("\n".utf8)] as [[UInt8]] { #expect(ProviderUninstall.key(ignored) == nil) }
     }
 
     @Test("(f) on a paired leader and member, the last line names the other Mac and what to run there")
@@ -386,7 +469,7 @@ struct ProviderUninstallTests {
                 + "or `darkbloom cluster` on it to pair it with another Mac."),
         ]
         for mode in ProviderUninstall.Mode.allCases {
-            let report = ProviderUninstall.Report(mode: mode, steps: [], items: [], availableBefore: nil, availableAfter: nil)
+            let report = ProviderUninstall.Report(mode: mode, steps: [], availableBefore: nil, availableAfter: nil)
             for (pairing, line) in cases {
                 #expect(ProviderUninstall.summary(report, plan: fixture.plan(pairing: pairing)).last == line, "\(mode)")
             }
@@ -420,6 +503,29 @@ struct ProviderUninstallTests {
                 "a setup saved for another pairing says nothing about this one")
     }
 
+    @Test("(f) the account token is revoked once, best effort: an unconfirmed revocation is reported and blocks nothing")
+    func tokenRevocationIsBestEffort() async throws {
+        let fixture = try Fixture.make()
+        defer { fixture.remove() }
+        let plan = fixture.plan(pairing: fixture.pairing)
+        let report = await fixture.run(.keepModels, items: plan.items, pairing: fixture.pairing,
+                                       operations: fixture.operations(tokenUnconfirmed: true))
+        #expect(fixture.calls.count("revoke token") == 1)
+        #expect(report.steps.first { $0.name == "Revoke this Mac's account token" }
+                == .init(name: "Revoke this Mac's account token", status: .skipped,
+                         detail: "the coordinator did not confirm it (offline, or the token's issuer is unknown)"))
+        #expect(!report.failed)
+        #expect(!fixture.exists(fixture.paths.installDirectory), "the token goes with ~/.darkbloom all the same")
+        #expect(fixture.calls.count("forget") == 1 && fixture.calls.count("link remove") == 1)
+
+        // A provider that did not stop still holds the token: it is not revoked under it.
+        let second = try Fixture.make()
+        defer { second.remove() }
+        let draining = await second.run(.everything, operations: second.operations(drainFails: true))
+        #expect(second.calls.count("revoke token") == 0)
+        #expect(status(draining, "Revoke this Mac's account token") == .skipped)
+    }
+
     @Test("(g) one failing step: the others run, and the summary says which failed and why")
     func failedStepIsReportedAndTheRestRun() async throws {
         let fixture = try Fixture.make()
@@ -449,7 +555,7 @@ struct ProviderUninstallTests {
         let second = try Fixture.make()
         defer { second.remove() }
         let secondPlan = second.plan(pairing: second.pairing)
-        let stuck = await second.run(.everything, items: secondPlan.items, pairing: second.pairing,
+        let stuck = await second.run(.keepModels, items: secondPlan.items, pairing: second.pairing,
                                      operations: second.operations(clusterFails: true))
         #expect(stuck.steps.filter { $0.status == .failed }.map(\.name) == ["Stop this Mac's cluster part and remove its service"])
         #expect(status(stuck, "Remove the provider service") == .done && status(stuck, "Remove the watchdog service") == .done)
@@ -458,14 +564,14 @@ struct ProviderUninstallTests {
             $0.status == .skipped && $0.detail == ProviderUninstall.servicesRunningReason })
         #expect(second.exists(second.paths.installDirectory))
         let stuckSummary = ProviderUninstall.summary(stuck, plan: secondPlan)
-        transcript("everything-summary-cluster-stuck", stuckSummary, second)
+        transcript("keep-models-summary-cluster-stuck", stuckSummary, second)
         #expect(stuckSummary.first == "Darkbloom is not fully removed from this Mac (see the failed step).")
         #expect(!stuckSummary.contains { $0.hasPrefix("Space freed") }, "nothing was deleted, so no space is claimed")
 
         // A provider that did not drain keeps its agents, as `stop --uninstall` leaves them.
         let third = try Fixture.make()
         defer { third.remove() }
-        let draining = await third.run(.keepData, operations: third.operations(drainFails: true))
+        let draining = await third.run(.keepModels, operations: third.operations(drainFails: true))
         #expect(status(draining, "Stop serving on this Mac") == .failed)
         #expect(status(draining, "Remove the provider service") == .skipped)
         #expect(third.exists(third.agents.appendingPathComponent("\(LaunchAgent.label).plist")))

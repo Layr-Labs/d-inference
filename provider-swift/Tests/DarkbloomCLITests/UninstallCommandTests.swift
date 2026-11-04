@@ -9,26 +9,30 @@ import Testing
 struct UninstallCommandTests {
     private let cli = BuildEnvironment.current.cliName
 
-    @Test("uninstall is a command, with the mode flags, --yes, --dry-run, --json and stop's drain options")
+    @Test("uninstall is a command, with --everything or --keep-models, --yes, --dry-run, --json and stop's drain options")
     func uninstallParses() throws {
-        for arguments in [["uninstall"], ["uninstall", "--keep-data", "--yes"], ["uninstall", "--everything", "-y"],
-                          ["uninstall", "--everything", "--dry-run", "--json"], ["uninstall", "--dry-run"],
-                          ["uninstall", "--keep-data", "--yes", "--force", "--timeout", "30"]] {
+        for arguments in [["uninstall"], ["uninstall", "--everything", "--yes"], ["uninstall", "--keep-models", "-y"],
+                          ["uninstall", "--keep-models", "--dry-run", "--json"], ["uninstall", "--dry-run"],
+                          ["uninstall", "--everything", "--yes", "--force", "--timeout", "30"]] {
             let command = try Darkbloom.parseAsRoot(arguments)
             #expect(String(describing: type(of: command)) == "Uninstall", "\(arguments)")
         }
         #expect(Darkbloom.helpMessage().contains("uninstall"))
     }
 
-    @Test("conflicting flags are refused before anything runs")
+    @Test("conflicting flags, and the old --keep-data, are refused with the usage before anything runs")
     func conflictingFlagsAreRefused() {
-        for (arguments, message) in [(["uninstall", "--keep-data", "--everything"], "Choose one of --keep-data and --everything."),
-                                     (["uninstall", "--everything", "--json"], "--json goes with --dry-run.")] {
+        for (arguments, message) in [(["uninstall", "--everything", "--keep-models"], "Choose one of --everything and --keep-models."),
+                                     (["uninstall", "--everything", "--json"], "--json goes with --dry-run."),
+                                     (["uninstall", "--keep-data", "--yes"], "Unknown option '--keep-data'")] {
             do {
                 _ = try Darkbloom.parseAsRoot(arguments)
                 Issue.record("\(arguments) parsed")
             } catch {
                 #expect(Darkbloom.message(for: error).contains(message), "\(arguments)")
+                #expect(Darkbloom.fullMessage(for: error).contains("Usage: \(cli) uninstall [--everything] [--keep-models]"),
+                        "\(arguments)")
+                #expect(Darkbloom.exitCode(for: error) == .validationFailure, "\(arguments)")
             }
         }
     }

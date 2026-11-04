@@ -120,6 +120,9 @@ import Darwin
         offeredPairThatTheCoordinatorRefusesSaysWhy()
         failedRestartAfterTheRegistrationIsNotDone()
         missingLoginIsSaidBeforeTheStart()
+        theDevNetAppNamesItsOwnCommand()
+        aDevNetLiveRowNamingACommandStillFitsTheWindow()
+        aLoginCheckThatTurnsLocalAdoptsTheLocalPlan()
         offeredPairServesOnceLoaded()
         pairReportsAndReasonsInPlainWords()
         // The end user's call (Dylan, 2026-11-03): a clear outcome, a sense of time, the reason with its time.
@@ -2786,6 +2789,62 @@ import Darwin
         expect(Array(recorder.all.prefix { $0 != "register" }.suffix(2)) == ["waitReady", "testRequest"]
             && recorder.all.filter { $0 == "waitReady" }.count == 2, "restart: tested, registered, then the parts awaited: \(recorder.all)")
         transcript("restart-after-registration-fails", text, keys: run.keys)
+    }
+
+    /// The 0.10.8 candidate on pair-2 (c3, B14): "Serve locally only" at the first setup's login check started the plan
+    /// made for serving through Darkbloom, so Qwen tensor parallel ran without its assistant (15.7 tok/s against 36–39
+    /// with its local plan). The list is planned for the scope the start names; a login check that turns it local plans
+    /// again for local and adopts that model from the new plan, before anything starts.
+    static func aLoginCheckThatTurnsLocalAdoptsTheLocalPlan() {
+        let both = [ClusterOnboardingMacName.this, ClusterOnboardingMacName.other(named: "Apple M3 Ultra, 256 GB")]
+        let recorder = Recorder()
+        var made = operations(recorder, resume: .init(role: .leader, peerName: "Apple M3 Ultra, 256 GB"), pairEvents: [],
+            pairResult: .failed([]), choices: switchChoices, replanned: [switchChoices[1], switchChoices[0]],
+            readyResult: .success(localReady), missingLogins: both)
+        made.planScope = { recorder.note("planScope " + ($0.isLocalOnly ? "local" : "public")) }
+        let run = TerminalRun(made)
+        expect(run.waitFor(prompt(2)), "B14: the list"); run.type("\r")
+        expect(run.waitFor("  1) Log in on this Mac\n  2) Serve locally only\n  3) Cancel\n"), "B14: the login check"); run.type("2")
+        _ = run.finish()
+        let calls = recorder.all
+        func at(_ call: String) -> Int { calls.firstIndex(of: call) ?? Int.max }
+        let plans = calls.indices.filter { calls[$0] == "planModels" }
+        expect(plans.count == 2 && at("planScope local") < plans[1] && plans[1] < at("adopt 1") && !calls.contains("adopt 0")
+               && calls.contains { $0.hasPrefix("setScope") }, "B14: planned again for local, and that plan's Qwen adopted: \(calls)")
+        transcript("leader-login-check-local-plans-again", run.text, keys: run.keys)
+    }
+
+    /// The 0.10.8 candidate on pair-2 (c3, B13): the DevNet app's cluster screens told the person to run `darkbloom …`,
+    /// which on a Mac with both apps is the production command. Every command the screens print names the running
+    /// identity's command.
+    /// The refactor pass on the c3 fix (DevNet only): the command rename ran after a live row was fitted to the window, so a
+    /// fitted row naming a command grew 4 columns and wrapped, leaving a stale row. Rows are named, then fitted.
+    static func aDevNetLiveRowNamingACommandStillFitsTheWindow() {
+        ClusterOnboardingCommand.use("darkbloom-dev")
+        defer { ClusterOnboardingCommand.use("darkbloom") }
+        let report = "1 of 2 parts ready\nThe other Mac: run `darkbloom cluster` again there once it answers"
+        let run = TerminalRun(operations(Recorder(), resume: .init(role: .leader, peerName: "Apple M3 Ultra, 256 GB"), pairEvents: [],
+            pairResult: .failed([]), readyReports: [report], readyReportPause: 900_000), environment: colourTerminal, columns: 45)
+        expect(run.waitFor(arrowHint), "dev row: the list"); run.type("\r")
+        expect(run.waitFor("darkbloom-dev"), "dev row: drawn")
+        _ = run.finish()
+        let dim = run.text.components(separatedBy: "\u{1B}[2m").dropFirst().compactMap { $0.components(separatedBy: "\u{1B}[0m").first }
+        let named = dim.filter { $0.contains("darkbloom-dev") }
+        expect(!named.isEmpty && named.allSatisfy { $0.replacingOccurrences(of: "\u{2026}", with: "").count <= 45 - 6 },
+               "dev row: named, then fitted to its room: \(named)")
+    }
+
+    static func theDevNetAppNamesItsOwnCommand() {
+        ClusterOnboardingCommand.use("darkbloom-dev")
+        defer { ClusterOnboardingCommand.use("darkbloom") }
+        let run = TerminalRun(operations(Recorder(), pairEvents: leaderEvents, pairResult: .paired(role: .leader, peerName: "Apple M3 Ultra, 256 GB")))
+        expect(run.waitFor(codeQuestion), "dev: the code"); run.type("y")
+        expect(run.waitFor(prompt(2), count: 2), "dev: the list"); run.type("\r")
+        expect(run.finish() == 0, "dev: served")
+        let text = run.text
+        expect(text.contains("  darkbloom-dev stop     Stop both Macs\n") && text.contains("`darkbloom-dev cluster`")
+               && !text.contains("`darkbloom ") && !text.contains("  darkbloom stop"), "dev: its own command everywhere: \(text)")
+        transcript("leader-devnet-commands", text, keys: run.keys)
     }
 
     /// (c) Serving through Darkbloom needs both Macs logged in: a Mac without a login is named before the Start step

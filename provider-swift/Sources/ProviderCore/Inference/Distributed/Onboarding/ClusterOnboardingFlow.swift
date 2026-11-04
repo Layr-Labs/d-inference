@@ -294,6 +294,22 @@ public struct ClusterOnboardingModelChoice: Codable, Sendable, Equatable {
     }
 }
 
+/// The command the cluster screens tell the person to run: the running identity's CLI name (the live operations set it
+/// from `BuildEnvironment.current.cliName`; `darkbloom-dev` in the DevNet app), so a Mac with both apps is never told to
+/// run the production command (the candidate on pair-2, c3 B13). The console names every command in backticks with it.
+public enum ClusterOnboardingCommand {
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var current = "darkbloom"
+    public static var name: String { lock.withLock { current } }
+    public static func use(_ name: String) { lock.withLock { current = name } }
+    /// `text` with each command in backticks ("`darkbloom …`") named for the running identity.
+    public static func named(_ text: String) -> String { rename(text, to: name) }
+    static func rename(_ text: String, to name: String) -> String {
+        guard name != "darkbloom" else { return text }
+        return text.replacingOccurrences(of: "`darkbloom ", with: "`\(name) ").replacingOccurrences(of: "`darkbloom`", with: "`\(name)`")
+    }
+}
+
 /// A start's pending check with Darkbloom (`ClusterSetupRecord.registrationPendingPID` and `registrationPendingStarted`),
 /// as the leader's status reads it: pending while that start's process runs, the same process (its start time matches,
 /// so a pid the system has given to another process never counts). A start that died before it asked leaves its mark
@@ -917,6 +933,10 @@ public struct ClusterOnboardingOperations: Sendable {
     /// then publishes its outcome (`OnboardingLive.markRegistrationPending`). `serve` alone never marks. Not in `init`:
     /// only the live operations set it.
     public var markRegistrationPending: @Sendable () -> Void = {}
+    /// The way of serving the coming plan and adopt are for (`chooseAndServe`): the list is planned for the scope the
+    /// start names, and a start whose scope changes before it adopts is planned again (`OnboardingLive.usePlanningScope`).
+    /// Not in `init`: only the live operations set it.
+    public var planScope: @Sendable (ClusterServingScope) -> Void = { _ in }
 
     public init(resume: @escaping @Sendable () -> ClusterOnboardingResume,
                 checkLink: @escaping @Sendable (@escaping @Sendable (String) -> Void) -> ClusterOnboardingLinkResult,
@@ -1731,9 +1751,10 @@ public enum ClusterOnboardingDriver {
     }
 
     /// What controls the pair once it runs, as `darkbloom start` ends (on a paired Mac they act on both Macs).
-    public static let pairCommands = ["darkbloom stop     Stop both Macs",
-                                      "darkbloom restart  Restart with the current model",
-                                      "darkbloom status   Check status"]
+    public static var pairCommands: [String] {
+        let cli = ClusterOnboardingCommand.name
+        return ["\(cli) stop     Stop both Macs", "\(cli) restart  Restart with the current model", "\(cli) status   Check status"]
+    }
 
     /// Where the cluster service writes (`ClusterService.paths().log`).
     static let serviceLogPath = "~/.darkbloom/cluster-setup/service.log"
@@ -1926,6 +1947,7 @@ public enum ClusterOnboardingDriver {
             }
         }
         if let notice = operations.developerNotice() { console.say(notice) }
+        operations.planScope(scope)
         let choices: [ClusterOnboardingModelChoice]
         switch busy(console, "Planning each model for both Macs", operations.planModels) {
         case .success(let value): choices = value
@@ -2074,6 +2096,24 @@ public enum ClusterOnboardingDriver {
             return 0
         }
         let savesScope = saveScope || startScope != scope
+        // The list was planned for `scope`. A start that serves another way (the login check's "Serve locally only")
+        // starts that way's plan: planned again for it, the same model adopted from the new plan (the candidate on pair-2,
+        // B14: Darkbloom's plan ran Qwen tensor parallel without its assistant, 15.7 against 36–39 tok/s locally).
+        if startScope.isLocalOnly != scope.isLocalOnly {
+            operations.planScope(startScope)
+            guard case .success(let again) = busy(console, "Planning \(choice.title) to serve "
+                    + (startScope.isLocalOnly ? "locally only" : "through Darkbloom"), operations.planModels),
+                  let index = again.firstIndex(where: { ($0.modelID ?? $0.title) == (choice.modelID ?? choice.title) }) else {
+                console.say("Couldn't plan \(choice.title) to serve that way. Run `darkbloom cluster` again.")
+                return 1
+            }
+            if let blocker = again[index].blocker {
+                console.say("\(choice.title) can't run on these Macs that way: \(blocker)")
+                return 1
+            }
+            choice = again[index]
+            chosen = index
+        }
         if heading != startHeading { console.heading(heading == nil ? "4/4 Start" : startHeading) }
         console.say("  " + startNotice)
         // Memory moves while the person reads: the fit is checked again right before anything starts.

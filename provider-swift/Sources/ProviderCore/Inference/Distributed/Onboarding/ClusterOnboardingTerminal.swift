@@ -182,7 +182,11 @@ public final class ClusterOnboardingTerminal: ClusterOnboardingConsole {
         drawnFrame = frame
         let petal = animates ? ClusterOnboardingBrand.spin(now) : ClusterOnboardingBrand.spinner[0]
         // Each row fits one row of the window: the climb back to the first row counts rows, never wrapped lines.
-        func fit(_ text: String) -> String { text.count > liveRoom ? String(text.prefix(liveRoom)) : text }
+        // Named for the running identity before it is fitted, so a renamed command never grows a fitted row (DevNet).
+        func fit(_ text: String) -> String {
+            let text = ClusterOnboardingCommand.named(text)
+            return text.count > liveRoom ? String(text.prefix(liveRoom)) : text
+        }
         let drawn = rows.enumerated().map { index, text in
             index == 0 ? "  \u{1B}[\(brand)m\(petal)\u{1B}[0m \u{1B}[2m\(fit(text))\u{2026}\u{1B}[0m" : "    \u{1B}[2m\(fit(text))\u{1B}[0m"
         }
@@ -207,7 +211,7 @@ public final class ClusterOnboardingTerminal: ClusterOnboardingConsole {
     }
 
     private func write(_ text: String) {
-        let bytes = Array(text.utf8)
+        let bytes = Array(ClusterOnboardingCommand.named(text).utf8)
         var offset = 0
         while offset < bytes.count {
             let count = bytes[offset...].withUnsafeBytes { Darwin.write(output, $0.baseAddress, $0.count) }
@@ -264,7 +268,10 @@ public final class ClusterOnboardingTerminal: ClusterOnboardingConsole {
         let marker = decorates ? "\u{25B8}" : ">"
         let room = columns > 10 ? columns - 6 : Int.max
         let rows = options.count + 1
-        func fit(_ text: String) -> String { text.count > room ? String(text.prefix(room - 1)) + "\u{2026}" : text }
+        func fit(_ text: String) -> String {
+            let text = ClusterOnboardingCommand.named(text)
+            return text.count > room ? String(text.prefix(room - 1)) + "\u{2026}" : text
+        }
         let hints = decorates ? ["\u{2191}\u{2193} move \u{00B7} enter select \u{00B7} q cancel", "\u{2191}\u{2193} \u{00B7} enter \u{00B7} q"]
             : ["up/down move, enter select, q cancel", "up/down, enter, q"]
         let hint = fit(hints.first { $0.count <= room } ?? hints[hints.count - 1])

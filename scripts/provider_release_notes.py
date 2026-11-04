@@ -330,7 +330,7 @@ def render(header, contents, pulls, section, *, tag, previous, version, reposito
     rollups += [f'{name(c)} prepared the release' for c in contents.preparations]
     rollups += [f'{name(c)} merged `master` into `dev`' for c in contents.syncs]
     if rollups:
-        pulls_part += [f'Release pull requests, not listed above: {"; ".join(rollups)}.', '']
+        pulls_part += [f'{count(len(rollups), "release pull request")}, not listed above: {"; ".join(rollups)}.', '']
     pulls_part += [f'**Full Changelog**: https://github.com/{repository}/compare/{previous}...{tag}']
     link = f'https://github.com/{repository}/blob/{tag}/CHANGELOG.md'
     if section is None:

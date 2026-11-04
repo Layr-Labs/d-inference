@@ -350,7 +350,7 @@ class ReleaseContents(unittest.TestCase):
         self.assertIn('3 pull requests merged into `dev` reached `master` with #30, which promoted `dev` up to '
                       f'`{contents.carried[:10]}`:', body)
         self.assertIn('1 pull request merged directly into `master`:', body)
-        self.assertIn(f'Release pull requests, not listed above: #30 promoted `dev` up to `{contents.carried[:10]}`; '
+        self.assertIn(f'3 release pull requests, not listed above: #30 promoted `dev` up to `{contents.carried[:10]}`; '
                       '#31 prepared the release; #13 merged `master` into `dev`.', body)
         self.assertLess(body.index('## What\'s new in v1.1.0'), body.index('## Pull requests in this release'))
 

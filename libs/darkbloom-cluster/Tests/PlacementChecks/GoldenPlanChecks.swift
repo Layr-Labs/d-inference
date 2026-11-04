@@ -108,8 +108,8 @@ private func checkIndexedPlans(_ directory: URL, _ checks: PlacementChecks) thro
     let m5Alone = ((result?["alone"] as? [[String: Any]])?.first { $0["device"] as? String == "mac-b" })?["needBytes"] as? Int ?? 0
     // The recorded M5 Ultra admits the whole model now though not at rest, and a split that loads now is
     // possible (owner, 2026-10-19): under the opt-in it decodes with every layer, holding more of them.
-    checks.require("indexed[m3ultra-m5ultra] MiMo, under the hand-off opt-in: the M5 Ultra admits every layer now though not at rest, so it decodes holding more layers (cut \(cut), \(ranks))",
-        m5Alone > m5.atRestAdmissibleBytes && m5Alone <= m5.memory.admissibleNowBytes
+    checks.require("indexed[m3ultra-m5ultra] MiMo, under the hand-off opt-in: the M5 Ultra admits every layer now and at rest, so it decodes holding more layers (cut \(cut), \(ranks))",
+        m5Alone <= m5.atRestAdmissibleBytes && m5Alone <= m5.memory.admissibleNowBytes
             && ranks == ["mac-a", "mac-b"] && cut > 0 && cut < 24)
 }
 

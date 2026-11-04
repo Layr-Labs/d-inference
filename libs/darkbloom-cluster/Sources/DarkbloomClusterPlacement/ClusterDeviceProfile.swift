@@ -115,16 +115,19 @@ public struct ClusterDeviceProfile: Codable, Equatable, Sendable {
     }
 
     /// What the memory gate can admit on this Mac at rest: every application
-    /// closed and no other model loaded. That is physical memory less what
-    /// macOS itself wires (`systemWiredBytes`) and the file cache the kernel
-    /// always keeps out of the rest (XNU's minimum, `fileCacheReserveShare`
-    /// of unwired memory). Only physical memory enters it: what is wired,
-    /// cached or running now does not move it. It is the ceiling a split is
-    /// planned under, not a promise: the load gate still decides each load
-    /// on the Mac's own sample.
+    /// closed and no other model loaded. The gate counts every free page and
+    /// every file-backed page (58d7371a), so that is physical memory less
+    /// what macOS itself wires (`systemWiredBytes`); the gate's own floor and
+    /// loading headroom, inside every need, are the desktop's margin. Only
+    /// physical memory enters it: what is wired, cached or running now does
+    /// not move it. It is the ceiling a split is planned under, not a
+    /// promise: the load gate still decides each load on the Mac's own
+    /// sample. (Until 0.10.8 it also kept out the kernel's file-cache minimum,
+    /// which the gate counts: 75.6 GiB of a 128 GiB Mac, below what any split
+    /// of MiMo V2.6 Flash asks a Mac for and below the GLM ranks a 256 GiB
+    /// pair serves.)
     public var atRestAdmissibleBytes: Int {
-        let unwired = max(0, physicalMemoryBytes - Self.systemWiredBytes(physical: physicalMemoryBytes))
-        return unwired - (unwired * Self.fileCacheReserveShare.numerator).dividedRoundingUp(by: Self.fileCacheReserveShare.denominator)
+        max(0, physicalMemoryBytes - Self.systemWiredBytes(physical: physicalMemoryBytes))
     }
 
     /// What macOS wires on a Mac at rest, by its memory alone: a sixteenth of
@@ -132,22 +135,20 @@ public struct ClusterDeviceProfile: Codable, Equatable, Sendable {
     /// and 6 % of 128 GiB).
     static func systemWiredBytes(physical: Int) -> Int { max(4 << 30, physical / 16) }
 
-    /// XNU keeps this share of non-compressed pageable memory as file cache
-    /// (`vps_calculate_filecache_min`; the gate's `fileCacheReserveNumerator`).
-    static let fileCacheReserveShare = (numerator: 10, denominator: 27)
-
     /// Whether this Mac's hardware can hold the range at all: the GPU's buffer
-    /// limit, the allocator's limit, and the whole need (weights, request
-    /// state, transients and the gate's headroom) within both what the Mac
-    /// keeps resident for the GPU (`residentCapacityBytes`) and what its gate
-    /// admits at rest (`atRestAdmissibleBytes`). Nothing live (free pages,
-    /// cached files, other programs) enters it, so the split chosen from it is
-    /// the same whatever the Mac is doing when it is planned, and a Mac at
-    /// rest can load it.
-    public func hardwareFits(needBytes: Int, weightsBytes: Int, largestTensorBytes: Int) -> Bool {
-        largestTensorBytes <= gpuMaximumBufferBytes
+    /// limit, the allocator's limit, the whole need (weights, request state,
+    /// transients and the gate's headroom) within what its gate admits at rest
+    /// (`atRestAdmissibleBytes`), and what the GPU keeps resident
+    /// (`gpuResidentBytes`, the planner's `withinGPUWorkingSet` figure; the
+    /// whole need when not given) within its limit (`residentCapacityBytes`).
+    /// Nothing live (free pages, cached files, other programs) enters it, so
+    /// the split chosen from it is the same whatever the Mac is doing when it
+    /// is planned, and a Mac at rest can load it.
+    public func hardwareFits(needBytes: Int, weightsBytes: Int, largestTensorBytes: Int, gpuResidentBytes: Int? = nil) -> Bool {
+        let need = max(memory.minimumAdmissibleBytes, needBytes)
+        return largestTensorBytes <= gpuMaximumBufferBytes
             && weightsBytes + largestTensorBytes + memory.allocatorHeadroomBytes <= allocatorLimitBytes
-            && max(memory.minimumAdmissibleBytes, needBytes) <= min(residentCapacityBytes, atRestAdmissibleBytes)
+            && need <= atRestAdmissibleBytes && (gpuResidentBytes ?? need) <= residentCapacityBytes
     }
 }
 
@@ -277,7 +278,14 @@ public struct ClusterDeviceMemory: Codable, Equatable, Sendable {
         if required > physicalMemoryBytes { return .never(shortBytes: required - physicalMemoryBytes) }
         // A sample the gate would not judge says nothing about what is free.
         guard judged else { return .afterApplicationsRelease(bytes: required) }
-        if required <= kernelWouldGiveBytes { return .gateCountsLess(bytes: max(0, required - admissibleNowBytes)) }
+        // Above normal pressure the gate counts no file cache and lets the kernel drop none for a load
+        // (`QwenDenseStageLoadWatch`), so cache the kernel would give is no room: applications have to give memory
+        // back first. (A 128 GB member at warning pressure, 0.17 GiB free, refused a 49.08 GiB share, 2026-11-03.)
+        let gateCountsCache = countedFileCacheBytes > 0 || fileBackedBytes == 0
+        if gateCountsCache, required <= kernelWouldGiveBytes { return .gateCountsLess(bytes: max(0, required - admissibleNowBytes)) }
+        if !gateCountsCache, required <= withApplicationsClosedBytes {
+            return .afterApplicationsRelease(bytes: required - admissibleNowBytes)
+        }
         if required <= withApplicationsClosedBytes { return .afterApplicationsRelease(bytes: required - kernelWouldGiveBytes) }
         if required <= afterRestartBytes { return .afterRestart(bytes: required - withApplicationsClosedBytes) }
         return .never(shortBytes: required - afterRestartBytes)
@@ -348,8 +356,4 @@ public enum ClusterPlacementFit: Codable, Equatable, Sendable {
 public struct ClusterPlacementError: Error, CustomStringConvertible, Equatable, Sendable {
     public let description: String
     public init(_ description: String) { self.description = description }
-}
-
-private extension Int {
-    func dividedRoundingUp(by divisor: Int) -> Int { (self + divisor - 1) / divisor }
 }

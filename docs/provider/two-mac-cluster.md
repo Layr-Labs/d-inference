@@ -574,10 +574,30 @@ Mac, `darkbloom cluster` shows the status and names the Mac to use.
 
 The split is worked out from each Mac's hardware and measured speed only: what
 is cached or running when you plan never moves it. A Mac is given a share only
-when its whole need fits its GPU working set and what its memory can give a
-model with every app closed (macOS keeps part of the memory as file cache that
-no model can use). If a Mac's apps hold memory the chosen share needs, the
-screen says "Quit apps on … first" instead of picking a slower split.
+when two things hold, by the same rule the load-time memory gate uses:
+
+- **Memory with every app closed.** The gate counts free memory and the files
+  macOS keeps cached, so a Mac at rest can give a model its memory less what
+  macOS itself wires (a sixteenth, at least 4 GiB): 120 GiB of a 128 GB Mac,
+  240 GiB of a 256 GB Mac. If a Mac's apps hold memory the chosen share needs,
+  or the Mac is under memory pressure (then the gate counts no cached files),
+  the screen says "Quit apps on … first" instead of picking a slower split.
+- **The GPU memory limit.** What the share keeps on the GPU (weights, request
+  memory and the attention workspace) must fit the Mac's GPU wired-memory limit:
+  macOS's default (`iogpu.wired_limit_mb=0`) is the GPU's recommended working
+  set, 107.52 GiB of a 128 GB M5 Max and 222.72 GiB of a 256 GB M3 Ultra. A
+  split whose GPU part is larger is never offered, however much memory is free,
+  because its first requests would fail with "Insufficient Memory".
+
+When a model fits only with a higher GPU limit, the plan says so as data
+(`ClusterPlacementMemoryVerdict.needsGPULimitRaise`): each Mac's GPU need, its
+limit now and the most Darkbloom would set, physical memory less 16 GiB (112 GiB
+of 128 GB, 240 GiB of 256 GB, the value the production GLM hosts run; a
+sixteenth of memory from 512 GB). Its question reads, for example: "MiMo needs
+109 GB of GPU memory on this Mac; macOS allows 107 GB by default. Allow
+Darkbloom to raise it to 112 GB? (one password prompt; kept after a restart)".
+MiMo V2.6 Flash fits two 128 GB Macs without a raise in all three modes (per
+Mac at most 95.9 GiB on the GPU, tensor parallel, against 107.52 GiB).
 
 When several splits predict the same time (two identical Macs, or Macs with
 equal measured speed), the one that leaves each Mac the largest share of its

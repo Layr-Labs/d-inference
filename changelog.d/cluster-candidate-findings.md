@@ -1,4 +1,4 @@
-### Two-Mac cluster: Serve locally only starts the faster local plan, and a closing link names the other Mac
+### Two-Mac cluster: Serve locally only starts the faster local plan, and each ✗ names the Mac where the problem is
 
 - Choosing **Serve locally only** at the first setup's login check now starts the local plan: the model is planned again
   for serving locally before anything starts, so Qwen 3.8 27B in tensor parallel keeps the speculative assistant that

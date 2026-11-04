@@ -55,8 +55,9 @@
 - `status` and `cluster status` no longer say "loading" while macOS keeps a Mac off the local network: both Macs say
   the pair is not serving and what to turn on, on which Mac. A stopped pair reads stopped even when the other Mac has
   gone.
-- On the leading Mac, that "not serving" now holds while the other Mac stays refused, also while the leading Mac's
-  part restarts; `cluster status --json` then lists the same "Not serving" line as the plain output. The DevNet app's
+- On the leading Mac, that "not serving" now stays as long as macOS keeps the other Mac off the local network, also
+  while the leading Mac's part restarts, instead of going back to "loading"; `cluster status --json` then lists the
+  same "Not serving" line as the plain output. The DevNet app's
   stopped pair names its own `local` command.
 - `cluster status --json` gives the serving mode and each Mac's share, and the "Model:" line of `status` and `cluster
   status` names the mode, for every mode. Before, a pair serving GLM-5.3-Flash in pipeline left them out.

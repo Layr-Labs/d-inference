@@ -71,8 +71,8 @@ Network prompts."). Each prompt's line says what to click:
   waits until Allow ("✓ Allowed"), however long you
   take at the other Mac, or until q; after 15 s it also names the switch in
   System Settings → Privacy & Security → Local Network. A cluster service that
-  reports no probe within 10 s (an older build) gets the line as an "if", and
-  the setup goes on.
+  reports no probe within 10 s (one an earlier Darkbloom release started) gets
+  the line as an "if", and the setup goes on.
 
 When macOS cannot show its password window (an SSH session with no desktop),
 the setup runs the same commands with `sudo` in that terminal ("Type this Mac's
@@ -104,13 +104,15 @@ follows the start from the cluster's status the two Macs exchange over the cable
    with the same ✗, reason and note ("Setup saved, but the test failed."; through
    Darkbloom "… the pair was not offered to Darkbloom."). Serving locally only,
    the leader's status says "Starting <model>: loaded on both Macs; the leading
-   Mac is testing it." until its test is answered. With a leader on an older
-   build, which publishes none of this, this Mac sends its own test request and
-   may show ✓ before Darkbloom accepts the pair. Later tests from the leading
-   Mac's screen (choosing the serving model, its Retry, a scope switch's test)
+   Mac is testing it." until its test is answered. With a leading Mac on an
+   earlier Darkbloom release, which publishes none of this, this Mac sends its
+   own test request and may show ✓ before Darkbloom accepts the pair. Later
+   tests from the leading Mac's screen (choosing the serving model, its Retry,
+   the test after switching between local only and serving through Darkbloom)
    replace that result in the status: a failure reads "The last test from the
-   leading Mac failed." under the not-serving line. A scope switch, the next
-   start or serve, and a stop clear it.
+   leading Mac failed." under the not-serving line. Switching between local
+   only and serving through Darkbloom, the next start or serve, and a stop
+   clear it.
 3. It ends with the same ✓ or ✗ block as the leader's screen. After ✓: "You can
    close this window." After ✗: the reason, then "Choose Retry on the other Mac
    (…): its screen shows the choices."; after a failed test, "To test again, run
@@ -1011,8 +1013,8 @@ drained for an update yet: its update waits while it serves (the log says
 ## When something is in the way
 
 At the first setup's login check, **Serve locally only** plans the model again
-for serving locally before anything starts, so Qwen 3.8 27B keeps its tensor
-assistant there, as any local start does. When a start's part keeps ending
+for serving locally before anything starts, so Qwen 3.8 27B keeps its
+speculative assistant there, as any local start does. When a start's part keeps ending
 because the link to the other Mac keeps closing, the ✗ says so and names the
 other Mac's side ("the other Mac's worker ended or the cable dropped"): that
 Mac's service restarts its worker without reporting it, so its line says what

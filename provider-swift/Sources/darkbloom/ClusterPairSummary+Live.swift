@@ -84,10 +84,7 @@ extension ClusterPairSummary {
     private static func liveFacts(config: String?) -> ClusterPairSummary {
         var summary = localFacts()
         guard summary.paired, summary.role != nil,
-              let settings = try? Cluster.Setup.serviceSettings(config: config, modelDir: nil, worker: nil),
-              let operations = try? ClusterOnboardingOperations.live(.init(service: settings,
-                  serviceArguments: ClusterServiceAgentPlan.childArguments(
-                      serviceOptions: ClusterServiceAgentPlan.serviceOptions(config: config, worker: nil)))) else { return summary }
+              let operations = try? ClusterOnboardingOperations.live(.clusterService(config: config, worker: nil)) else { return summary }
         summary.read(status: operations.status(),
                      leaderMode: summary.leads ? ClusterService.publishedLive()?.control?.mode : nil)
         return summary

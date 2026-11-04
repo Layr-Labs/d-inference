@@ -3,8 +3,10 @@ import Foundation
 import ProviderCore
 
 struct DrainOptions: ParsableArguments {
+    static let defaultTimeout = 600
+
     @Option(help: "Seconds to wait for accepted requests and coordinator acknowledgement (0...3600). Timeout leaves the service draining.")
-    var timeout: Int = 600
+    var timeout: Int = DrainOptions.defaultTimeout
     @Flag(help: "Explicitly permit cancellation and interruption of unfinished requests.")
     var force = false
 
@@ -19,7 +21,7 @@ enum ServiceDrain {
     /// The daemon state of single-Mac serving, never of the cluster's part: on a Mac in a two-Mac cluster the cluster
     /// service runs a provider of its own (`start --foreground --cluster-member`) that writes the same state file.
     /// `stop`, `restart` and `start` drain only the provider service (the cluster service would start its part again;
-    /// `darkbloom cluster stop` stops the cluster).
+    /// on a Mac in a cluster, `darkbloom stop` without `--solo` stops the pair instead).
     static func soloProviderState(_ state: DaemonState? = DaemonStateFile.read(),
                                   clusterPart: Int32? = ClusterPairSummary.runningPartPID()) -> DaemonState? {
         guard let state, let clusterPart else { return state }

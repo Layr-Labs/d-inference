@@ -77,10 +77,6 @@ struct ClusterPairSummary: Sendable, Equatable {
 
     var pairingUnreadable: Bool { state == .pairingUnreadable }
 
-    /// Single-Mac serving here needs `--solo` (`darkbloom start` and `restart`): the cluster service runs, or this Mac
-    /// may be in a cluster (its pairing record couldn't be read).
-    var singleMacServingNeedsSolo: Bool { serviceRunning || pairingUnreadable }
-
     /// What to do when the pairing record couldn't be read.
     static let checkPairingLine = "Run `darkbloom cluster` on this Mac to check it."
 
@@ -142,8 +138,9 @@ struct ClusterPairSummary: Sendable, Equatable {
         return ["Memory:"] + lines.map { "  " + $0 }
     }
 
-    /// `darkbloom stop` or `restart` without `--solo` while this Mac's pairing record can't be read: it can't tell which
-    /// pair to act on, so nothing changes, and `--solo` acts on single-Mac serving alone.
+    /// `darkbloom stop` or `restart` without `--solo` (and `cluster stop` without `--service`) while this Mac's pairing
+    /// record can't be read: it can't tell which pair to act on, so nothing changes, and `--solo` acts on single-Mac
+    /// serving alone.
     func unsureRefusal(_ command: String, _ done: String) -> [String] {
         [pairSentence, "`darkbloom \(command)` can't tell which pair to \(command), so nothing was \(done).",
          "To \(command) single-Mac serving on this Mac only: `darkbloom \(command) --solo`. " + Self.checkPairingLine]
@@ -155,6 +152,21 @@ struct ClusterPairSummary: Sendable, Equatable {
         [pairSentence,
          "Single-Mac serving next to a cluster would compete for this Mac's memory. To serve on this Mac alone, run "
             + "`darkbloom cluster` on this Mac to check the pairing first, or pass --solo."]
+    }
+
+    /// `darkbloom start` with single-Mac options (`--model`, `--local`, …) but no `--solo` on a Mac in a cluster:
+    /// nothing starts, since they would otherwise be ignored. `--local` has a pair form (`darkbloom cluster local`).
+    func singleMacOptionsRefusal(_ options: [String]) -> [String] {
+        let named = options.map { "`\($0)`" }
+        let list = named.count < 2 ? named.joined() : named.dropLast().joined(separator: ", ") + " and " + named.last!
+        var lines = ["This Mac is in a two-Mac cluster with \(otherMac): \(list) \(named.count == 1 ? "is" : "are") for "
+                        + "single-Mac serving, so nothing was started.",
+                     "To choose the pair's model, run `darkbloom start` in a terminal; to serve this Mac alone with "
+                        + "\(named.count == 1 ? "it" : "them"), add --solo."]
+        if options.contains(where: { $0 == "--local" || $0 == "--local-endpoint" }) {
+            lines.append("To serve the pair on the leading Mac's own API only: `darkbloom cluster local`.")
+        }
+        return lines
     }
 
     /// `darkbloom start --solo` on a Mac in a cluster: one line, and single-Mac serving starts.
@@ -174,7 +186,7 @@ struct ClusterPairSummary: Sendable, Equatable {
         ["`darkbloom stop --solo` stops single-Mac serving, and none runs on this Mac: nothing was stopped.", soloLeftPair("stop")]
     }
 
-    /// After `darkbloom stop --solo` stopped single-Mac serving on a Mac in a cluster.
+    /// After `darkbloom stop --solo` (or `--uninstall`) stopped single-Mac serving on a Mac in a cluster.
     var stopAddendum: [String] { [pairSentence, soloLeftPair("stop")] }
 
     /// `darkbloom restart --solo` where no single-Mac serving is installed.
@@ -209,7 +221,7 @@ struct ClusterPairSummary: Sendable, Equatable {
 
     // MARK: - darkbloom status and doctor (no network)
 
-    /// One line for `darkbloom status` and `darkbloom doctor`, from what this Mac knows by itself.
+    /// One line for `darkbloom status --solo` and `darkbloom doctor`, from what this Mac knows by itself.
     var statusLine: String {
         guard paired else { return "Cluster: not in a cluster" }
         if pairingUnreadable {
@@ -231,7 +243,7 @@ struct ClusterPairSummary: Sendable, Equatable {
         return "Cluster: " + parts.joined(separator: " · ") + " (details: `darkbloom cluster status`)"
     }
 
-    /// `darkbloom status` instead of "Daemon: not running (run `darkbloom start`)" on a Mac in a cluster.
+    /// `darkbloom status --solo` instead of "Daemon: not running (run `darkbloom start`)" on a Mac in a cluster.
     static let singleMacServingOffLine =
         "Single-Mac serving: off (this Mac serves in its two-Mac cluster: `darkbloom cluster status`)"
     /// The same when this Mac's pairing record couldn't be read.
@@ -293,12 +305,12 @@ extension ClusterPairSummary {
         case .serving: return "To stop or change it: `darkbloom cluster` on \(leadingMac)."
         case .loading: return "Loading takes a few minutes for a large model; check again with `darkbloom cluster status`."
         case .stopped:
-            return "To start it again: `darkbloom cluster` on \(leadingMac), then choose the model."
-                + (serviceRunning ? "" : " This Mac's cluster service is off; `darkbloom cluster` starts it again.")
+            return "`darkbloom start` on either Mac starts the pair again."
+                + (serviceRunning ? "" : " This Mac's cluster service is off; `darkbloom start` here turns it back on.")
         case .otherMacAway:
-            return "\(ClusterOnboardingMacName.sentence(otherMac)) isn't answering over the cable. Its cluster service is "
-                + "probably off (it was stopped with `darkbloom cluster stop`), or that Mac is asleep, off, or waiting for "
-                + "someone to log in. On that Mac, run `darkbloom cluster`."
+            return "\(ClusterOnboardingMacName.sentence(otherMac)) isn't answering over the cable. Its cluster service may "
+                + "have been turned off with `darkbloom cluster stop --service`, or that Mac is asleep, off, or waiting for "
+                + "someone to log in. On that Mac, run `darkbloom start` (or `darkbloom cluster`)."
         case .notServing:
             let reason = reason ?? ""
             if ClusterOnboardingNotServing.isMissingLogin(reason) {

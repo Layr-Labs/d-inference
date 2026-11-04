@@ -249,10 +249,20 @@ service's solo part) and launchd's `--foreground` child are never redirected,
 and a replacement drains only the provider service's process, never the
 cluster's part (`ServiceDrain.soloProviderState`).
 
+Options on a paired Mac (`Start.singleMacOptions`, `ClusterPairSummary.singleMacOptionsRefusal`):
+
+| Options | Without `--solo` on a paired Mac |
+|---|---|
+| `--config` | Applies to the pair (its cluster service settings) |
+| `--model`, `--all`, `--idle-timeout`, `--schedule`, `--autopilot`/`--no-autopilot`, `--coordinator-url`, `--timeout`, `--force`, `--local-endpoint`, `--port`, `--bind`, `--no-auth` | Refused by name, nothing starts, exit 64: ``This Mac is in a two-Mac cluster with the other Mac (…): `--model` is for single-Mac serving, so nothing was started.`` then ``To choose the pair's model, run `darkbloom start` in a terminal; to serve this Mac alone with it, add --solo.`` |
+| `--local` | Refused the same way, plus ``To serve the pair on the leading Mac's own API only: `darkbloom cluster local`.`` (also said for `--local-endpoint`) |
+| `--cluster-member`, `--distributed`, `--foreground` | The cluster's own starts and launchd's child: never redirected to the pair |
+| `--always-on`, `--supervise`, `--no-coordinator` | Valid only with `--cluster-member` or `--distributed` (refused at parse otherwise) |
+
 A Mac whose pairing record can't be read is never taken for "not in a cluster"
-(as `ClusterService.holdsNoPairing`): `start` and `restart` refuse without
-`--solo` whether or not the cluster service runs, and say why
-(`ClusterPairSummary.membership`):
+(as `ClusterService.holdsNoPairing`): `start`, `stop` and `restart` change
+nothing without `--solo` (`cluster stop`: without `--service` or
+`--local-only`), and say why (`ClusterPairSummary.membership`):
 
 ```text
 This Mac's pairing record couldn't be read (pairings.json is malformed; nothing is trusted from it), so it may be in a two-Mac cluster.
@@ -1432,6 +1442,15 @@ Memory freed on both Macs ✓
 
 When the leading Mac doesn't answer, nothing is stopped; it names the Mac and
 says how to stop this Mac alone (`darkbloom cluster stop --local-only`), exit 1.
+Two rarer endings: on the Mac that follows, a pair that is already stopped gives
+``The pair is already stopped; `darkbloom start` on either Mac starts it again.``
+(exit 0); when this Mac's cluster can't be reached from the command, it says
+``This Mac's cluster can't be reached from this command; run `darkbloom cluster` on this Mac to see it.``
+(exit 1). `darkbloom cluster stop` refuses the same way as `stop` when this
+Mac's pairing record can't be read, and points to `--service` to stop this
+Mac's cluster service anyway (`Cluster.Stop.refusal`). After
+`darkbloom cluster stop --local-only` it says to run
+`darkbloom cluster stop --service` on the other Mac if it comes back.
 `stop --solo` (and `--uninstall`) stops single-Mac serving on this Mac only and
 never touches the pair; a daemon state the cluster's part wrote is never drained
 (`ServiceDrain.soloProviderState`).

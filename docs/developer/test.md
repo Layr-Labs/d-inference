@@ -402,19 +402,12 @@ a runtime prohibition. `GLM5ToolFailureTests` separately exercises streaming
 suffix rejection, including a valid call followed by malformed output, before
 fallback text or partial calls can escape.
 
-The provider test host also carries the SDK's `GLM5NextAlignedPayloadReaderTests`
-(eight filesystem/resource tests), `GLM5NextArtifactCachePolicyTests` (three
-filesystem policy/cleanup tests), their inventory fixture and suite namespaces,
-and `GLM5NextArtifactLoaderTests` (eight native tiny-artifact tests). The first
-two suites exercise real files without creating MLX arrays. The loader suite
-creates arrays and belongs in an authorized native test window. Sources live in
-`provider-swift/Tests/ProviderCoreTests/Inference/Models/GLM5Next/`.
-Use an immutable SDK revision containing `GLM5NextAlignedPayloadReader`,
-`verificationHostBytes`, `payloadReadScratchAllowanceBytes` and the internal
-descriptor-policy test initializer. An older SDK pin cannot compile this host;
-resolve the dependency in the SDK rather than weakening the tests or importing
-cluster-stage APIs. These tests retain full-artifact verification, aligned
-windows, mutation/truncation refusal, cancellation and resource charges.
+The SDK's `GLM5NextAlignedPayloadReaderTests`, `GLM5NextArtifactCachePolicyTests`
+and `GLM5NextArtifactLoaderTests` run in the Fork Tests workflow of
+Layr-Labs/mlx-swift-lm. The provider test host does not carry copies of them. Their inventory fixture,
+`GLM5NextArtifactCachePolicySDKFixtures.swift`, stays in
+`provider-swift/Tests/ProviderCoreTests/Inference/Models/GLM5Next/` because the
+provider's GLM cluster tests use it.
 
 The metadata-only `GLM5NextDiscoveryLoadFootprintTests`,
 `GLM5NextDiscoveryTests` and `rawDiscoveryQuotationMatchesManagedTinyFixture`

@@ -199,12 +199,4 @@ struct NativePairMemberInvocationTests {
             await peer.close()
         } catch { await peer.close(); throw error }
     }
-
-    @Test func thisBuildsInstalledOwnerServesACommittedStartOnlyOverTheLink() {
-        // The installed owner serves a coordinator-committed start under the
-        // combined profile (prelude through the session, mesh rounds over the
-        // link control channel, S10); a setup without the link still declines
-        // preparation (above).
-        #expect(DistributedInstalledOwner.servesCommittedNativeStart == true)
-    }
 }

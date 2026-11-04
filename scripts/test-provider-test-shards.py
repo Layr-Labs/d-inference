@@ -67,8 +67,7 @@ class ParallelClassTests(unittest.TestCase):
                 self.assertNotIn("ProviderCore", seen)
 
     def test_serial_targets_that_link_mlx_are_never_parallel(self):
-        for module in ("ProviderCoreTests", "DarkbloomCLITests", "ServingQualificationTests",
-                       "GPTOSSOptimizationTests"):
+        for module in ("ProviderCoreTests", "DarkbloomCLITests", "ServingQualificationTests"):
             self.assertNotIn(module, shards.PARALLEL_MODULES)
 
 

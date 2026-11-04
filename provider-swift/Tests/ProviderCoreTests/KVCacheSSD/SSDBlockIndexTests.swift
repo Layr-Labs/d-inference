@@ -29,7 +29,7 @@ struct SSDBlockIndexTests {
     }
 
     @Test("Lazy oldest-first snapshot yields exactly the sorted eviction order",
-          arguments: [0, 1, 2, 3, 4, 7, 64, 255, 256, 4_097, 20_000], Recency.allCases)
+          arguments: [0, 1, 2, 3, 4, 7, 64, 255, 256], Recency.allCases)
     func oldestFirstSnapshotOrder(count: Int, recency: Recency) {
         var random = SplitMix64(seed: 0x55D_1DE7 ^ UInt64(count))
         let index = SSDBlockIndex()

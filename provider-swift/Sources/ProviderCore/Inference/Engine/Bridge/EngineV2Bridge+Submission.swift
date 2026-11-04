@@ -1055,7 +1055,7 @@ extension EngineV2Bridge {
         )
         consumePrefillReceipt(id: id, receipt: prefillReceipt)
         // Wedge instrumentation: the request is now in the engine's hands.
-        wedgeMonitor.recordAdmit(now: .now)
+        wedgeMonitor.recordAdmit(now: .now, firstTokenDeadline: firstContentDeadline?.instant)
 
         // Emit one engagement event for an accepted media request.
         if multimodal != nil {

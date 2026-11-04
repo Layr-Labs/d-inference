@@ -56,6 +56,8 @@ struct WedgeMonitor {
     /// admit; the front is removed on a no-first-token terminal; cleared entirely
     /// on a first token (engine proven alive ⇒ nothing is wedged).
     private var hangingAdmitsSince: [ContinuousClock.Instant] = []
+    /// The first-token allowance of each hanging admit, in the same order.
+    private var hangingFirstTokenDeadlines: [ContinuousClock.Instant?] = []
 
     /// Number of admits currently hanging (no first token, not terminated).
     /// Derived from the FIFO so it can never disagree with the streak anchor.
@@ -79,9 +81,10 @@ struct WedgeMonitor {
     // MARK: - Recording (called from the bridge lifecycle)
 
     /// A request was handed to the engine (preamble path). Call once per request.
-    mutating func recordAdmit(now: ContinuousClock.Instant) {
+    mutating func recordAdmit(now: ContinuousClock.Instant, firstTokenDeadline: ContinuousClock.Instant? = nil) {
         admits += 1
         hangingAdmitsSince.append(now)
+        hangingFirstTokenDeadlines.append(firstTokenDeadline)
         lastAdmitAt = now
     }
 
@@ -91,6 +94,7 @@ struct WedgeMonitor {
     mutating func recordFirstToken(now: ContinuousClock.Instant) {
         firstTokens += 1
         hangingAdmitsSince.removeAll()
+        hangingFirstTokenDeadlines.removeAll()
         lastFirstTokenAt = now
     }
 
@@ -113,6 +117,7 @@ struct WedgeMonitor {
         // backstop against false positives.
         if !hangingAdmitsSince.isEmpty {
             hangingAdmitsSince.removeFirst()
+            hangingFirstTokenDeadlines.removeFirst()
         }
     }
 
@@ -170,6 +175,29 @@ struct WedgeMonitor {
         consecutiveAdmitsWithoutFirstToken >= Self.suspectConsecutiveAdmits
             && dryStreakSeconds(now: now) >= Self.suspectStallSeconds
             && secondsSinceLastStep(now: now) >= Self.suspectStallSeconds
+    }
+
+    /// How long a hanging admit may outlast its own first-token allowance before
+    /// an engine without a step counter is marked crashed. A pair's engine ends a
+    /// request at that allowance and reports the failure at once, or, for a
+    /// request stopped before its prompt started, once its ranks retire it or are
+    /// fenced (the cluster's lane retirement wait, 30 s). Still hanging after
+    /// both means the engine's own deadline did not act.
+    static let pastAllowanceGraceSeconds: Double = 40
+
+    /// The slot-state verdict. An engine with a step counter keeps
+    /// `wedgeSuspected`. A two-Mac pair's engine has none (its ranks send
+    /// nothing while they prefill, and they prefill one prompt at a time), so
+    /// the flatline term would read every long prefill behind three admits as a
+    /// wedge. It is marked crashed only when a hanging admit is still without a
+    /// first token `pastAllowanceGraceSeconds` after its own first-token
+    /// allowance, which grows with the prompt. `wedgeSuspected` still feeds the
+    /// telemetry for both.
+    func marksCrashed(now: ContinuousClock.Instant, engineReportsSteps: Bool) -> Bool {
+        guard !engineReportsSteps else { return wedgeSuspected(now: now) }
+        return hangingFirstTokenDeadlines.contains { deadline in
+            deadline.map { Self.seconds(now - $0) >= Self.pastAllowanceGraceSeconds } ?? false
+        }
     }
 
     /// `ContinuousClock.Duration` → seconds (Double).

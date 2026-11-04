@@ -38,6 +38,44 @@ struct WedgeMonitorTests {
         return m
     }
 
+    /// A pair (no step counter) is marked crashed only once a hanging request
+    /// is `pastAllowanceGraceSeconds` past its own first-token allowance; an
+    /// engine with a step counter keeps `wedgeSuspected`.
+    @Test func anEngineWithoutStepsIsMarkedCrashedOnlyPastAnAllowance() {
+        var m = WedgeMonitor()
+        let allowance = base.advanced(by: .seconds(200))
+        for _ in 0..<WedgeMonitor.suspectConsecutiveAdmits {
+            m.recordAdmit(now: base, firstTokenDeadline: allowance)
+        }
+        m.sampleSteps(0, now: base)
+        let afterStall = base.advanced(by: .seconds(11))
+        #expect(m.wedgeSuspected(now: afterStall))
+        #expect(m.marksCrashed(now: afterStall, engineReportsSteps: true))
+        #expect(!m.marksCrashed(now: afterStall, engineReportsSteps: false))
+        let grace = Int(WedgeMonitor.pastAllowanceGraceSeconds)
+        #expect(!m.marksCrashed(now: allowance.advanced(by: .seconds(grace - 1)), engineReportsSteps: false))
+        #expect(m.marksCrashed(now: allowance.advanced(by: .seconds(grace)), engineReportsSteps: false))
+        // A request with no allowance never marks a pair crashed; a first
+        // token clears every hanging request.
+        var unbounded = WedgeMonitor()
+        unbounded.recordAdmit(now: base)
+        #expect(!unbounded.marksCrashed(now: base.advanced(by: .seconds(3600)), engineReportsSteps: false))
+        m.recordFirstToken(now: afterStall)
+        #expect(!m.marksCrashed(now: allowance.advanced(by: .seconds(grace)), engineReportsSteps: false))
+    }
+
+    /// The allowances leave with their requests, oldest first.
+    @Test func anEndedRequestTakesItsAllowanceWithIt() {
+        var m = WedgeMonitor()
+        let early = base.advanced(by: .seconds(10))
+        m.recordAdmit(now: base, firstTokenDeadline: early)
+        m.recordAdmit(now: base, firstTokenDeadline: base.advanced(by: .seconds(500)))
+        let later = early.advanced(by: .seconds(Int(WedgeMonitor.pastAllowanceGraceSeconds)))
+        #expect(m.marksCrashed(now: later, engineReportsSteps: false))
+        m.recordTerminalWithoutFirstToken()
+        #expect(!m.marksCrashed(now: later, engineReportsSteps: false))
+    }
+
     @Test func notSuspectedBelowConsecutiveThreshold() {
         var m = WedgeMonitor()
         // Two admits (< 3) with steps frozen + a long stall must NOT trip.

@@ -205,7 +205,7 @@ extension EngineV2Bridge {
             // deroutes the model without treating it as crashed-forever.
             state = "reloading"
         } else if (ownedEngine as? CBv2NativeBlockEngine)?.isHealthy == false
-            || wedgeMonitor.wedgeSuspected(now: now) {
+            || wedgeMonitor.marksCrashed(now: now, engineReportsSteps: !(ownedEngine is DistributedCBv2Engine)) {
             // Same truthful-derouting contract as the legacy heartbeat: a
             // wedged slot must not keep advertising healthy.
             state = "crashed"

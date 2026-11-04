@@ -296,7 +296,8 @@ extension ClusterLinkCheck {
             "AppleScript wrapper")
         expectEqual(requestA.appleScript.filter { $0 == "\"" }.count, 4, "no double quote inside the script or prompt")
         expect(!requestA.appleScript.contains("\\"), "no backslash")
-        expectEqual(requestA.manualCommands.first, "sudo " + expectedA[0], "manual commands")
+        expectEqual(requestA.manualCommands, ["sudo /bin/sh -e <<'DARKBLOOM_CLUSTER_LINK'"] + expectedA + ["DARKBLOOM_CLUSTER_LINK"],
+            "manual commands: one root shell block")
         expectEqual(requestA.prompt, "Darkbloom wants to give Thunderbolt port en7 its own network service with a fixed address and no router or DNS and switch the other service on that port off, so RDMA can use it.", "Mac A prompt")
 
         let planB = ClusterLinkIsolationPlan(interface: "en6", address: IsolationFixtures.macBAddress, hardwarePort: "Thunderbolt 2",
@@ -435,7 +436,7 @@ extension ClusterLinkCheck {
         let unavailable = FakeIsolationWorld(IsolationFixtures.macA)
         let noPrompt = unavailable.fix()
         expectEqual(noPrompt.outcome, .approvalUnavailable, "unavailable")
-        expectEqual(noPrompt.manualCommands.first, "sudo /usr/sbin/networksetup -createnetworkservice 'Darkbloom Cluster Link (en7)' 'Thunderbolt 6'",
+        expect(noPrompt.manualCommands.contains("/usr/sbin/networksetup -createnetworkservice 'Darkbloom Cluster Link (en7)' 'Thunderbolt 6'"),
             "manual commands for an administrator")
         expect(!compactJSON(noPrompt).contains("sudo"), "manual commands stay out of JSON")
         expect(unavailable.isolationRecord.entry(on: "en7") != nil, "the entry stays for what an administrator may do")
@@ -457,7 +458,7 @@ extension ClusterLinkCheck {
         expect(bodyLines.contains("/usr/sbin/networksetup -createnetworkservice 'Darkbloom Cluster Link (en7)' 'Thunderbolt 6'"),
             "the exact commands the prompt would run")
         expect(!bodyLines.contains { $0.hasPrefix("sudo ") }, "commands without sudo: the one line runs the script with sudo")
-        expectEqual(bodyLines.filter { !$0.hasPrefix("#") && $0 != "set -e" }.count, noPrompt.manualCommands.count, "every command, nothing else")
+        expectEqual(bodyLines.filter { !$0.hasPrefix("#") && $0 != "set -e" }.count, noPrompt.manualCommands.count - 2, "every command, nothing else")
         expect(oneLine.message.contains("sudo sh ~/.darkbloom/cluster-device/link-fix.sh") && oneLine.message.contains("--remove"),
             "the message names the one line and the undo: \(oneLine.message)")
         expect(compactJSON(oneLine).contains("\"manualScript\":\"~/.darkbloom/cluster-device/link-fix.sh\""), "JSON names the script")
@@ -648,42 +649,7 @@ extension ClusterLinkCheck {
                   bridge: .init(bridge: "bridge0", index: 1), addressToRemove: nil, keeperToRemove: false, lastService: last),
               let request = ClusterLinkIsolationRequest(.restore([restore])) else { return expect(false, "fixture restore") }
         func run(serviceStillThere: Bool) -> (status: Int32, log: String) {
-            let directory = FileManager.default.temporaryDirectory.appendingPathComponent("last-service-\(getpid())-\(serviceStillThere)")
-            try? FileManager.default.removeItem(at: directory)
-            try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            defer { try? FileManager.default.removeItem(at: directory) }
-            let log = directory.appendingPathComponent("ran.log").path
-            let stubs = [
-                "PlistBuddy": """
-                    case "$2" in
-                      Add*) echo "PlistBuddy $2" >> \(log) ;;
-                      *:UserDefinedName) echo 'Darkbloom Cluster Link (en6)' ;;
-                      *:Interface:DeviceName) echo en6 ;;
-                      *) \(serviceStillThere ? "exit 0" : "exit 1") ;;
-                    esac
-                    """,
-                "scutil": "cat >/dev/null; exit 0",
-                "networksetup": "echo \"networksetup $*\" >> \(log)",
-                "ifconfig": "echo \"ifconfig $*\" >> \(log)",
-            ]
-            for (name, body) in stubs {
-                let path = directory.appendingPathComponent(name).path
-                FileManager.default.createFile(atPath: path, contents: Data(("#!/bin/sh\n" + body + "\n").utf8))
-                chmod(path, 0o755)
-            }
-            var line = request.shellCommand
-            for (real, name) in [("/usr/libexec/PlistBuddy", "PlistBuddy"), ("/usr/sbin/scutil", "scutil"),
-                                 ("/usr/sbin/networksetup", "networksetup"), ("/sbin/ifconfig", "ifconfig")] {
-                line = line.replacingOccurrences(of: real, with: directory.appendingPathComponent(name).path)
-            }
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: "/bin/sh")
-            process.arguments = ["-c", line]
-            process.standardOutput = FileHandle.nullDevice
-            process.standardError = FileHandle.nullDevice
-            guard (try? process.run()) != nil else { return (-1, "") }
-            process.waitUntilExit()
-            return (process.terminationStatus, (try? String(contentsOfFile: log, encoding: .utf8)) ?? "")
+            runWithStubs(request.shellCommand, serviceStillThere: serviceStillThere)
         }
         let failed = run(serviceStillThere: true)
         expect(failed.status != 0, "a commit that removed nothing stops the restore (exit \(failed.status))")
@@ -697,6 +663,80 @@ extension ClusterLinkCheck {
         expect(ClusterLinkLastService.isID(IsolationFixtures.serviceID("e6")), "an ASCII ID")
         expect(!ClusterLinkLastService.isID("0000000\u{FF10}-0000-4000-8000-0000000000E6"), "a fullwidth digit is refused")
         expect(!ClusterLinkLastService.isID("0000000G-0000-4000-8000-0000000000E6"), "a letter past F is refused")
+    }
+
+    /// Runs `text` in `/bin/sh` with stubs in place of the system tools (only the absolute paths are rewritten, in
+    /// this copy): PlistBuddy names Darkbloom's service on en6 and still finds it when `serviceStillThere`; scutil
+    /// reads its input and exits 0 without changing anything; networksetup, ifconfig and PlistBuddy `Add` write what
+    /// they were asked to the log; `sudo` runs its arguments. Returns the exit status and the log.
+    static func runWithStubs(_ text: String, serviceStillThere: Bool) -> (status: Int32, log: String) {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("last-service-\(getpid())-\(UUID().uuidString)")
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let log = directory.appendingPathComponent("ran.log").path
+        let stubs = [
+            "PlistBuddy": """
+                case "$2" in
+                  Add*) echo "PlistBuddy $2" >> \(log) ;;
+                  *:UserDefinedName) echo 'Darkbloom Cluster Link (en6)' ;;
+                  *:Interface:DeviceName) echo en6 ;;
+                  *) \(serviceStillThere ? "exit 0" : "exit 1") ;;
+                esac
+                """,
+            "scutil": "cat >/dev/null; exit 0",
+            "networksetup": "echo \"networksetup $*\" >> \(log)",
+            "ifconfig": "echo \"ifconfig $*\" >> \(log)",
+            "sudo": "exec \"$@\"",
+        ]
+        for (name, body) in stubs {
+            let path = directory.appendingPathComponent(name).path
+            FileManager.default.createFile(atPath: path, contents: Data(("#!/bin/sh\n" + body + "\n").utf8))
+            chmod(path, 0o755)
+        }
+        var line = text
+        for (real, name) in [("/usr/libexec/PlistBuddy", "PlistBuddy"), ("/usr/sbin/scutil", "scutil"),
+                             ("/usr/sbin/networksetup", "networksetup"), ("/sbin/ifconfig", "ifconfig")] {
+            line = line.replacingOccurrences(of: real, with: directory.appendingPathComponent(name).path)
+        }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-c", line]
+        process.environment = ["PATH": directory.path + ":/usr/bin:/bin"]
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        guard (try? process.run()) != nil else { return (-1, "") }
+        process.waitUntilExit()
+        return (process.terminationStatus, (try? String(contentsOfFile: log, encoding: .utf8)) ?? "")
+    }
+
+    /// Integration review of `6a3874827c`: where no script could be written, the commands printed for an administrator
+    /// to paste must run as the script does, as root and under `set -e`. Pasted in `/bin/sh` with the same stubs
+    /// (`sudo` passing through), they run exactly the script's steps, and stop where it stops.
+    static func isolationManualCommandsRunAsTheScript() {
+        guard let last = ClusterLinkLastService(serviceID: IsolationFixtures.serviceID("e6"), set: IsolationFixtures.networkSet,
+                                                serviceOrder: [IsolationFixtures.serviceID("b0"), IsolationFixtures.serviceID("e6")]),
+              let restore = ClusterLinkIsolationRestore(interface: "en6", removeClusterService: true, servicesToEnable: ["Thunderbolt 2"],
+                  bridge: .init(bridge: "bridge0", index: 1), addressToRemove: nil, keeperToRemove: false, lastService: last),
+              let request = ClusterLinkIsolationRequest(.restore([restore])) else { return expect(false, "fixture restore") }
+        let pasted = request.manualCommands.joined(separator: "\n") + "\n"
+        for still in [false, true] {
+            let script = runWithStubs(request.shellCommand, serviceStillThere: still)
+            let manual = runWithStubs(pasted, serviceStillThere: still)
+            expect((manual.status == 0) == (script.status == 0) && manual.log == script.log,
+                   "pasted, service \(still ? "still there" : "gone"): the script's steps (\(script.status)) and no others: "
+                   + "pasted exit \(manual.status), ran \(manual.log)")
+        }
+        expect(!runWithStubs(request.shellCommand, serviceStillThere: false).log.isEmpty, "the comparison saw steps run")
+        // Every request's lines: none is the delimiter, so the block always ends where it should; setup's too.
+        let setup = ClusterLinkIsolationRequest(.isolate(ClusterLinkIsolationPlan(interface: "en6", address: IsolationFixtures.macBAddress,
+            hardwarePort: "Thunderbolt 2", bridge: .init(bridge: "bridge0", index: 1), servicesToDisable: ["Thunderbolt 2"],
+            replaceClusterService: true, linkLocalToRemove: nil, keeperToRemove: false)!))!
+        for each in [request, setup] {
+            expect(!each.commands.contains(ClusterLinkIsolationRequest.manualDelimiter)
+                && each.manualCommands.first == "sudo /bin/sh -e <<'\(ClusterLinkIsolationRequest.manualDelimiter)'"
+                && each.manualCommands.last == ClusterLinkIsolationRequest.manualDelimiter
+                && Array(each.manualCommands.dropFirst().dropLast()) == each.commands, "one root shell block: \(each.manualCommands.first ?? "")")
+        }
     }
 
     /// The exact removal of a port's only service through SCPreferences (`ClusterLinkLastService.removal`).

@@ -392,8 +392,17 @@ human will be asked and about how long it takes, then has four steps:
    this setting. If it is still off when the pair starts, the leader's ✗ in
    step 7 says so within about 20 seconds ([Local Network](#on-a-two-mac-pair)).
 4. The other Mac then says ``Waiting for the other Mac (…) to choose the model
-   and start…`` and follows the start, one line per change, such as
-   ``The other Mac: <status>.``. When a part ends there, it adds ``Choose Retry
+   and start…``. With a leader on this release or later, it also says once what
+   the leader's screen waits on, such as ``The other Mac (…): it's waiting for
+   Allow on its Local Network prompt.`` or ``… it's waiting for a model to be
+   chosen on its screen.``: **STOP** and have the human answer it on the
+   leader. Its live line shows how long it has waited out of 15 minutes. It then
+   follows the start, one line per change, such as ``The other Mac: <status>.``.
+   If it ends with ``✗ Not serving: The two Macs run different Darkbloom
+   builds.``, run `darkbloom update` on the Mac it names (or on the one whose
+   `darkbloom --version` is lower), then `darkbloom cluster` on the leader. If
+   it ends with ``✗ Not serving: The other Mac (…) didn't start a model within
+   15 minutes.``, the leader's screen is still waiting on the step it names. When a part ends there, it adds ``Choose Retry
    on the other Mac (…): its screen shows the choices.``. If macOS keeps this
    Mac off the local network, it says ``This Mac can't reach the other Mac
    over the cable: macOS keeps Darkbloom off the local network.`` and where to

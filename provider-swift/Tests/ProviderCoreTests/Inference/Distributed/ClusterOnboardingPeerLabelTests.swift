@@ -112,6 +112,35 @@ struct ClusterOnboardingPeerLabelTests {
                                             serving: serving) == [serving, "Test response in 0.58 s (the leading Mac's test)"])
     }
 
+    /// The leading Mac's setup step reaches the Mac that joined in its status reply (a user's report, 2026-11-04: the
+    /// joined Mac said only "waiting for the other Mac" while the leader waited at its own screen): with this build's
+    /// version, only while the screen that set it runs, a refusal after its screen ended, and nothing from an older
+    /// leader's reply.
+    @Test func theLeadersSetupStepIsPublishedInItsStatus() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let live = fixture.live(peerPin: Fixture.peerPin)
+        #expect(live.currentLeaderStep() == nil, "nothing set: no step")
+        live.publishStep(.init(.localNetwork))
+        let reply = live.execute(.init(op: .status), leaderID: "leader")
+        #expect(reply.step == .init(.localNetwork, version: ProviderCore.version))
+        let decoded = try JSONDecoder().decode(ClusterControlReply.self, from: JSONEncoder().encode(reply))
+        #expect(decoded.step?.words == "it's waiting for Allow on its Local Network prompt", "the step crosses the cable")
+        let older = try JSONDecoder().decode(ClusterControlReply.self, from: Data(#"{"lines":["Stopped."],"failed":false}"#.utf8))
+        #expect(older.step == nil && older.lines == ["Stopped."], "an older leader's reply reads as no step")
+
+        // A screen that is gone (its process no longer runs) leaves a step that no longer counts; its refusal still does.
+        let gone = ClusterOnboardingLeaderStepMark(step: .init(.modelList), pid: Int32.max, started: 1, at: Date().timeIntervalSince1970)
+        try fixture.store.updateRecord { $0.onboardingStep = gone }
+        #expect(live.currentLeaderStep() == nil)
+        let refused = ClusterOnboardingLeaderStepMark(step: .init(.refused, reason: ClusterSetupPlanning.differentBuilds), pid: Int32.max,
+                                                      started: 1, at: Date().timeIntervalSince1970)
+        try fixture.store.updateRecord { $0.onboardingStep = refused }
+        #expect(live.currentLeaderStep()?.differentBuilds == true, "the planner's different-builds blocker is the refusal the joined Mac reads")
+        live.publishStep(nil)
+        #expect(try fixture.store.readRecord().onboardingStep == nil)
+    }
+
     /// A running start publishes its own outcome: while its mark is live, another test writes nothing.
     @Test func aRunningStartsOutcomeIsNeverOverwrittenByAnotherTest() throws {
         let fixture = try Fixture()

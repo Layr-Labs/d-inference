@@ -25,11 +25,19 @@ public final class ClusterOnboardingTerminal: ClusterOnboardingConsole {
     /// The mark blooms and live work turns (never in a transcript).
     private let animates: Bool
     /// The window's width in columns when the setup started (0 when unknown).
-    private let columns: Int
+    private let startColumns: Int
+    /// The window's width now: a window made narrower after the start must not wrap a live row, whose redraw climbs
+    /// back by rows and would leave each wrapped part behind as a repeated line.
+    private var columns: Int {
+        var window = winsize()
+        return ioctl(output, TIOCGWINSZ, &window) == 0 && window.ws_col > 0 ? Int(window.ws_col) : startColumns
+    }
     private let brand: String
     /// The live work rows on screen (one, or one per Mac while the parts load), if any; the next said line replaces them.
     private var working: [String]?
     private var drawnFrame = -1
+    /// The visible width of each live row as last drawn: a window made narrower since may show a row on several rows.
+    private var drawnWidths = [Int]()
     private let echoesInput: Bool
     private var saved = termios()
     /// The mode keys are read in (no line editing, no echo), put back after `suspended`.
@@ -55,7 +63,7 @@ public final class ClusterOnboardingTerminal: ClusterOnboardingConsole {
             outputIsTerminal: isatty(output) == 1, environment: environment)
         var window = winsize()
         let columns = ioctl(output, TIOCGWINSZ, &window) == 0 ? Int(window.ws_col) : 0
-        self.columns = columns
+        startColumns = columns
         decorates = usesColor && ClusterOnboardingBrand.drawsBlocks(environment) && columns >= 40
         animates = decorates && environment["DARKBLOOM_NO_ANIMATION"] == nil && environment["CI"] == nil
         brand = ClusterOnboardingBrand.colour(environment)
@@ -100,13 +108,21 @@ public final class ClusterOnboardingTerminal: ClusterOnboardingConsole {
     public func say(_ line: String) {
         guard let live = working else { write(line + "\n"); return }
         // The said line takes the live rows' place; the live rows move below it.
-        write(Self.up(live.count) + "\r\u{1B}[J" + line + "\n")
+        write(climb() + "\r\u{1B}[J" + line + "\n")
+        drawnWidths = []
         working = nil
         drawWorking(live, force: true)
     }
 
     /// From the last live row back to the first.
     private static func up(_ rows: Int) -> String { rows > 1 ? "\u{1B}[\(rows - 1)A" : "" }
+
+    /// Back to the first live row as the window shows them now: each drawn row fitted the window it was drawn in, and
+    /// a terminal that reflows a narrower window shows it on more rows.
+    private func climb() -> String {
+        let width = max(1, columns)
+        return Self.up(drawnWidths.reduce(0) { $0 + max(1, ($1 + width - 1) / width) })
+    }
 
     /// The outcome block: the rules dim, the outcome bold, green for ✓ and red for ✗ (the mark carries it too).
     public func result(_ succeeded: Bool, _ title: String, _ lines: [String]) {
@@ -156,9 +172,10 @@ public final class ClusterOnboardingTerminal: ClusterOnboardingConsole {
 
     /// Clears the live work rows, leaving the cursor at the start of the first.
     public func settle() {
-        guard let live = working else { return }
+        guard working != nil else { return }
         working = nil; drawnFrame = -1
-        write(Self.up(live.count) + "\r\u{1B}[J")
+        write(climb() + "\r\u{1B}[J")
+        drawnWidths = []
     }
 
     /// A copy's or download's report: the live line, laid out for its room, where
@@ -185,7 +202,6 @@ public final class ClusterOnboardingTerminal: ClusterOnboardingConsole {
     private func drawWorking(_ rows: [String], force: Bool) {
         let now = DispatchTime.now().uptimeNanoseconds
         let frame = animates ? Int((now / 125_000_000) % 4) : 0
-        let shownRows = working?.count ?? 0
         working = rows
         guard force || frame != drawnFrame else { return }
         drawnFrame = frame
@@ -199,7 +215,10 @@ public final class ClusterOnboardingTerminal: ClusterOnboardingConsole {
         let drawn = rows.enumerated().map { index, text in
             index == 0 ? "  \u{1B}[\(brand)m\(petal)\u{1B}[0m \u{1B}[2m\(fit(text))\u{2026}\u{1B}[0m" : "    \u{1B}[2m\(fit(text))\u{1B}[0m"
         }
-        write(Self.up(shownRows) + "\r\u{1B}[J" + drawn.joined(separator: "\n"))
+        let fittedRows = rows.map(fit)
+        write(climb() + "\r\u{1B}[J" + drawn.joined(separator: "\n"))
+        // The indent, petal, space and ellipsis of the first row; the indent of the others.
+        drawnWidths = fittedRows.enumerated().map { index, text in text.count + (index == 0 ? 5 : 4) }
     }
 
     static func supportsColor(inputIsTerminal: Bool, outputIsTerminal: Bool,

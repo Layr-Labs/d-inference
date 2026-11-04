@@ -182,6 +182,8 @@ import Darwin
         onlyTheStartThatRegistersMarksItself()
         thePendingCheckIsNoTickOnAnyScreen()
         eachStageOfTheStartHasItsOwnBound()
+        // A user's report (2026-11-04): "an infinite loop of waiting for the other Mac, Apple M5 Max 128 GB".
+        followWaitChecks()
         print("onboarding checks: \(passed) passed, \(failures.count) failed")
         for failure in failures { print("FAIL " + failure) }
         exit(failures.isEmpty ? 0 : 1)
@@ -776,6 +778,12 @@ import Darwin
         func finish(seconds: Double = 10) -> Int32? {
             _ = done.wait(timeout: .now() + seconds)
             return code
+        }
+
+        /// Closes both ends once the run ended, so a long list of checks never runs out of pseudo-terminals.
+        func release() {
+            guard code != nil else { return }
+            Darwin.close(master); Darwin.close(slave)
         }
     }
 
@@ -3841,7 +3849,9 @@ import Darwin
         let waited = joining(Recorder(), statusSequence: [["Stopped."]], followSeconds: 0.6)
         expect(waited.waitFor(codeQuestion), "follow bound: the code"); waited.type("y")
         expect(waited.finish() == 1, "follow bound: ends, not success")
-        expect(waited.text.hasSuffix(ClusterOnboardingDriver.notStartedLine(leaderName, seconds: 0.6) + "\n"), "follow bound, not started: said: \(waited.text)")
+        expect(waited.text.hasSuffix(block("\u{2717}", ClusterOnboardingNotServing.title(reason: ClusterOnboardingDriver.notStartedReason(leaderName, seconds: 0.6)),
+            ClusterOnboardingDriver.notStartedLines(leaderName, step: nil, status: "Stopped")) + ClusterOnboardingDriver.notStartedAfterLine + "\n"),
+               "follow bound, not started: ✗ with the last status and what to do: \(waited.text)")
         let stuck = joining(Recorder(), statusSequence: [["Stopped."], ["Loading Qwen 3.8 27B: 1 of 2 parts ready."]], followSeconds: 0.6)
         expect(stuck.waitFor(codeQuestion), "follow bound, started: the code"); stuck.type("y")
         expect(stuck.finish() == 1, "follow bound, started: not success")

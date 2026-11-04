@@ -945,6 +945,15 @@ public struct ClusterOnboardingOperations: Sendable {
     public var useMode: @Sendable (_ index: Int, _ mode: String) -> Void
     /// How the Mac that joined follows the start (`ClusterOnboardingDriver.followStart`).
     public var followTiming = ClusterOnboardingFollowTiming()
+    /// The leading Mac's status with its published setup step (`ClusterControlReply.step`), as the Mac that joined
+    /// follows it; nil: `status` alone. Not in `init`: only the live operations set it.
+    public var leaderStatus: (@Sendable () -> ClusterOnboardingLeaderStatus)? = nil
+    /// Records the leading Mac's current setup step where its status publishes it (nil clears it). Not in `init`.
+    public var publishStep: @Sendable (ClusterOnboardingLeaderStep?) -> Void = { _ in }
+    /// This Mac's Darkbloom version, for the different-builds ✗; nil when unknown. Not in `init`.
+    public var thisVersion: String? = nil
+    /// How long the setup waits for Allow on a Local Network prompt before its ✗ (`allowLocalNetwork`). Not in `init`.
+    public var localNetworkWaitSeconds: Double = 600
     /// How long the pairing waits without finding the other Mac before it says what to check (`otherMacNotFoundLines`).
     public var pairHintSeconds: Double = 25
     /// Marks the screen's start (`finishStart` with `registers`, local only or through Darkbloom) until its test is
@@ -1514,16 +1523,29 @@ public enum ClusterOnboardingDriver {
         case .blocked: break
         }
         console.say("  " + localNetworkLine(app, remote: remote) + (subject == .service ? " " + otherMacAllowLine : ""))
+        // The other Mac follows this step from the leading Mac's status (`ClusterOnboardingLeaderStep.localNetwork`).
+        if subject == .service { operations.publishStep(.init(.localNetwork)) }
         let started = Date()
+        let bound = operations.localNetworkWaitSeconds
         var hinted = false
         while !console.closed {
-            if !hinted, Date().timeIntervalSince(started) >= settingsHintSeconds {
+            let waited = Date().timeIntervalSince(started)
+            if waited >= bound {
+                console.settle()
+                console.result(false, "Local Network access is off for \(app): no Allow within \(minutes(bound)) minutes.",
+                               localNetworkOffLines(subject, app: app))
+                return false
+            }
+            if !hinted, waited >= settingsHintSeconds {
                 hinted = true
                 console.settle()
                 console.say("  No prompt? On this Mac: System Settings → Privacy & Security → Local Network → turn on “\(app)” "
                     + "(on a Mac with no display, through Screen Sharing).")
             }
-            console.working("Waiting for Allow (q cancels)")
+            console.progress({ width in
+                fitted(["Waiting for Allow \u{00B7} " + waitedWords(waited, of: bound) + " (q cancels)",
+                        "Waiting for Allow \u{00B7} " + waitedWords(waited, of: bound), "Allow \u{00B7} " + waitedWords(waited, of: bound)], width: width)
+            }, logged: false)
             if let key = console.key(milliseconds: 1_000), key == "q" || key == "Q" || key == "\u{1B}" { break }
             state = operations.localNetwork(subject)
             if state == .allowed {
@@ -1536,6 +1558,14 @@ public enum ClusterOnboardingDriver {
         console.say("Local Network is off for \(app). On this Mac: System Settings → Privacy & Security → Local Network → turn on "
             + "“\(app)” (on a Mac with no display, through Screen Sharing), then run `darkbloom cluster` again.")
         return false
+    }
+
+    /// Under the ✗ when no Allow came: where to turn it on, the row macOS shows ("Darkbloom" for the cluster service),
+    /// and what to do when that row isn't there (macOS never recorded an answer).
+    static func localNetworkOffLines(_ subject: ClusterOnboardingLocalNetworkSubject, app: String) -> [String] {
+        let row = subject == .service ? "Darkbloom" : app
+        return ["On this Mac: System Settings → Privacy & Security → Local Network → turn on “\(row)” (on a Mac with no display, through Screen Sharing).",
+                "If “\(row)” isn't listed, macOS asks on this Mac's screen the next time it connects over the cable: run `darkbloom cluster` again and click Allow."]
     }
 
     /// Starts this Mac's cluster service (its login agent) unless it runs; says only what went wrong.
@@ -1979,10 +2009,12 @@ public enum ClusterOnboardingDriver {
         console.heading(heading ?? "3/4 Model")
         var reached: [ClusterOnboardingMachine]?
         while reached == nil {
+            operations.publishStep(.init(.reading))
             switch readBothMacs(operations, console) {
             case .success(let value): reached = value
             case .failure(let failure):
                 for line in failure.lines { console.say(line) }
+                operations.publishStep(.init(.tryAgain))
                 let gone = "Nothing changed. Run `darkbloom cluster` again when the other Mac is on."
                 if let request = startOverRequest {
                     // Paired before: the other Mac may no longer hold the pairing, or may only be away (UX audit P3), so
@@ -2019,9 +2051,18 @@ public enum ClusterOnboardingDriver {
             console.say("No approved model can run on these Macs now.")
             // One line per reason, the approved models it holds back named before it.
             let held = choices.indices.filter { choices[$0].validated != false && choices[$0].blocker != nil }
-            for reason in reasonsInOrder(held.compactMap { choices[$0].blocker }) {
+            let reasons = reasonsInOrder(held.compactMap { choices[$0].blocker })
+            for reason in reasons {
                 let titles = held.filter { choices[$0].blocker == reason }.map { choices[$0].title }
                 console.say("  \(titles.joined(separator: ", ")): \(reason)")
+            }
+            // Fail closed on both screens: the other Mac follows this refusal from the status (`followRefused`).
+            let builds = reasons == [ClusterOnboardingLeaderStep.differentBuildsReason]
+            operations.publishStep(.init(.refused, reason: builds ? ClusterOnboardingLeaderStep.differentBuildsReason
+                : reasons.first ?? "no approved model can run on these Macs now"))
+            if builds {
+                console.result(false, differentBuildsTitle, ["Run `darkbloom --version` on both Macs, and `darkbloom update` on the one that's behind.",
+                                                             "Then run `darkbloom cluster` here again."])
             }
             return pair == nil ? 1 : noListChoices(startOverRequest: startOverRequest, operations, console)
         }
@@ -2060,6 +2101,7 @@ public enum ClusterOnboardingDriver {
             }
             // A set-up pair's two other things to do, under its models.
             let actions = pair.map { [scopeLine($0.scope), startOverItem] } ?? []
+            operations.publishStep(.init(.modelList))
             guard let picked = console.choose(lines + actions, selected: current.flatMap { open.firstIndex(of: $0) } ?? 0) else {
                 console.say("Nothing changed.")
                 if pair != nil { unchangedEnding(operations, console) }
@@ -2115,6 +2157,7 @@ public enum ClusterOnboardingDriver {
             console.say("  " + ClusterOnboardingMacName.sentence(line) + (line.hasSuffix(".") ? "" : "."))
         }
         if let offer = choice.provision {
+            operations.publishStep(.init(.copy))
             switch provision(offer, title: choice.title, index: chosen!, operations, console) {
             case .stopped: return 0
             case .failed: return 1
@@ -2178,6 +2221,7 @@ public enum ClusterOnboardingDriver {
         }
         let index = chosen!
         if let mode, choice.modes?.contains(where: { $0.mode == mode }) == true { operations.useMode(index, mode) }
+        operations.publishStep(.init(.starting))
         switch busy(console, "Sending the setup to the other Mac", { operations.adopt(index) }) {
         case .success: break
         case .failure(let failure):
@@ -2213,6 +2257,7 @@ public enum ClusterOnboardingDriver {
         while true {
             let missing = operations.missingLogins()
             guard !missing.isEmpty else { return scope }
+            operations.publishStep(.init(.login))
             console.say("  " + ClusterOnboardingNotServing.notLoggedIn(missing) + ".")
             let here = missing.contains(ClusterOnboardingMacName.this)
             if !here { console.say("  Run `darkbloom login` on the other Mac, then Check again.") }

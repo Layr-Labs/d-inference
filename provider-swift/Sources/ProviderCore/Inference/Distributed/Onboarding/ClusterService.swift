@@ -79,6 +79,9 @@ public final class ClusterService: @unchecked Sendable {
     private let beforePartStart: (@Sendable () -> Void)?
     /// The environment this Mac's parts start from (`partEnvironment`); nil: this process's own at each start.
     private let environment: [String: String]?
+    /// The name of this service's power assertions. macOS lists a process's assertions together, so a check that
+    /// runs several services in one process gives each a name of its own.
+    private let powerAssertionReason: String
     /// Main supervision thread only; a pending stop cannot be acknowledged by
     /// a cycle that read the preceding serving intent.
     private var supervisedStopDrainID: UUID?
@@ -164,10 +167,12 @@ public final class ClusterService: @unchecked Sendable {
     }
 
     /// Internal composition of the service's existing stores. Public callers keep the canonical user namespace,
-    /// the normal recovery deadline, the one-second supervision interval and the cable's listeners.
+    /// the normal recovery deadline, the one-second supervision interval, the cable's listeners and the power
+    /// assertions' name.
     init(settings: Settings, paths: ClusterUserPaths, recoveryGraceSeconds: Double = 300,
          supervisionIntervalSeconds: Double = 1, beforePartStart: (@Sendable () -> Void)? = nil,
-         environment: [String: String]? = nil, listening: Listening = .init()) {
+         environment: [String: String]? = nil, listening: Listening = .init(),
+         powerAssertionReason: String = ClusterServicePowerAssertions.servingReason) {
         precondition(recoveryGraceSeconds.isFinite && recoveryGraceSeconds >= 0)
         precondition(supervisionIntervalSeconds.isFinite && supervisionIntervalSeconds > 0)
         self.recoveryGraceSeconds = recoveryGraceSeconds
@@ -175,6 +180,7 @@ public final class ClusterService: @unchecked Sendable {
         self.beforePartStart = beforePartStart
         self.environment = environment
         self.listening = listening
+        self.powerAssertionReason = powerAssertionReason
         pairingStore = .default(home: paths.homeDirectory)
         var wizard = settings.wizard
         wizard.derivedPlacement = true
@@ -265,7 +271,7 @@ public final class ClusterService: @unchecked Sendable {
 
     /// Runs until `stop` is signalled; returns false when a rank had to be left running.
     public func run(stop: DispatchSemaphore, say: @escaping @Sendable (String) -> Void) throws -> Bool {
-        let power = ClusterServicePowerAssertions()
+        let power = ClusterServicePowerAssertions(reason: powerAssertionReason)
         defer { power.release() }
         let files = serviceFiles
         try ClusterConfigurationFiles.ensureDirectory(files.lock.deletingLastPathComponent(), create: true, privateMode: true)

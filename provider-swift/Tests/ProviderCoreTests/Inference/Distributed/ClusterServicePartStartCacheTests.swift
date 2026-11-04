@@ -36,7 +36,9 @@ struct ClusterServicePartStartCacheTests {
                 version: "fixture")
             let service = ClusterService(settings: .init(wizard: wizard, leaderArguments: [], followerArguments: []),
                 paths: follower.paths, recoveryGraceSeconds: 0.2, supervisionIntervalSeconds: 0.1,
-                beforePartStart: { atStart.append(files.map { Self.residentShare($0.0) }) })
+                beforePartStart: { atStart.append(files.map { Self.residentShare($0.0) }) },
+                // Its power assertions apart from those of the other services this test process runs.
+                powerAssertionReason: "Cluster part-start cache test " + UUID().uuidString)
             var leadership = ClusterOnboardingLeadership(role: "member", leaderPin: leader.pin, peerPin: leader.pin,
                 peerName: "fixture leader", since: "fixture")
             leadership.serving = true; leadership.modelName = ClusterApprovalMacs.model

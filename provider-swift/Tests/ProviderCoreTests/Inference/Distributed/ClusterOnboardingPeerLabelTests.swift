@@ -77,6 +77,48 @@ struct ClusterOnboardingPeerLabelTests {
         #expect(older.mode == nil && older.op == .adopt)
     }
 
+    /// The owner (2026-11-04): the mode question recommends one mode for these Macs. The leading Mac reads it from the
+    /// plans the list made: each mode's own plan (the listed one for its family, else its family plan) for whether it
+    /// fits now and its predicted speed, and the mode for its measured speed, requests at once and public traffic.
+    @Test func theRecommendationComesFromEachModesOwnPlan() {
+        typealias Share = ClusterSetupPlanSummary.Mode.Share
+        func plan(_ mode: String, fitsNow: Bool, decode: Double, absolute: Bool = true) -> ClusterSetupPlanSummary {
+            .init(cut: 0, mode: mode, prefillSchedule: "serial", leaderID: "local", ranks: Self.ranks(peerID: "peer"), promptTokens: 1024,
+                  outputTokens: 256, firstTokenSeconds: 1, decodeTokensPerSecond: decode, absolute: absolute, measured: false, alone: [],
+                  aloneAsFast: [], fitsNow: fitsNow, needsBytes: nil, explanation: [])
+        }
+        let shares = [Share(local: true, firstLayer: 0, endLayer: 45, share: 0.5), Share(local: false, firstLayer: 0, endLayer: 45, share: 0.5)]
+        func mode(_ raw: String, lanes: Int, measured: Double? = nil, planned: Bool = true) -> ClusterSetupPlanSummary.Mode {
+            var mode = ClusterSetupPlanSummary.Mode(mode: raw, shares: planned ? shares : [], servedDecodeTokensPerSecond: measured)
+            mode.concurrentRequests = lanes; mode.publicTraffic = true
+            return mode
+        }
+        let tp = ClusterGenerationMode.tensorParallel.rawValue, pp = ClusterGenerationMode.pipeline.rawValue
+        let modes = [mode(tp, lanes: 8), mode(pp, lanes: 1)]
+        // Two M5 Ultras, nothing measured yet: the planner's predictions, then the requests at once.
+        let advice = OnboardingLive.modeAdvice(modes, listed: plan(tp, fitsNow: true, decode: 92),
+                                               families: [plan(pp, fitsNow: true, decode: 38)], throughDarkbloom: true, serving: false)
+        #expect(advice == ClusterOnboardingModeAdvice(mode: tp, reason: "faster here (about 92 against 38 tokens/s, predicted) and serves up to 8 requests at once"))
+        // A memory-tight pair: the pipeline's own plan fits now, tensor parallel's doesn't.
+        let tight = OnboardingLive.modeAdvice(modes, listed: plan(pp, fitsNow: true, decode: 20),
+                                              families: [plan(tp, fitsNow: false, decode: 30)], throughDarkbloom: true, serving: false)
+        #expect(tight == ClusterOnboardingModeAdvice(mode: pp, reason: "the only one that fits these Macs now"))
+        // Only relative figures and one lane each: no evidence, no guess.
+        let equal = [mode(tp, lanes: 1), mode(pp, lanes: 1)]
+        let unknown = OnboardingLive.modeAdvice(equal, listed: plan(tp, fitsNow: true, decode: 1, absolute: false),
+                                                families: [plan(pp, fitsNow: true, decode: 1, absolute: false)], throughDarkbloom: false, serving: false)
+        #expect(unknown == ClusterOnboardingModeAdvice(mode: nil, reason: "no speed is measured or predicted for these Macs yet"))
+        // A mode with no plan of its own (its split is empty) is not recommended.
+        let lone = OnboardingLive.modeAdvice([mode(tp, lanes: 8, planned: false), mode(pp, lanes: 1)], listed: plan(pp, fitsNow: true, decode: 20),
+                                             families: [], throughDarkbloom: true, serving: false)
+        #expect(lone?.mode == pp)
+        // While a model serves, the split still reads "decided when it loads" (round 4); the recommendation stands.
+        #expect(OnboardingLive.modeSplit(shares, here: "this Mac", there: "the other Mac", serving: true) == ClusterOnboardingMode.decidedWhenItLoads)
+        let serving = OnboardingLive.modeAdvice(modes, listed: plan(tp, fitsNow: false, decode: 92),
+                                                families: [plan(pp, fitsNow: false, decode: 38)], throughDarkbloom: true, serving: true)
+        #expect(serving?.mode == tp)
+    }
+
     /// R3-2 (the round-3 re-test): the joining Mac's window ended "After a restart, this Mac serves again by itself"
     /// while its service ran from an SSH session (`starts_at_login: false`): the ending read what this run's service
     /// setup left at its start. The running service's own word, read when the line is said, decides.

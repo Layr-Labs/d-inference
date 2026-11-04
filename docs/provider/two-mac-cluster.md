@@ -231,9 +231,26 @@ On the leader, the pair's model list follows, like `darkbloom start`'s picker:
   (unpair and set up again)** asks once ([pairing again](#pairing-again)).
 - q or Esc changes nothing; the screen shows the status again and the commands.
 
-A model that runs more than one way here asks how both Macs split it: the model
-serving now keeps its mode by default, any other offers the fastest measured mode
-first (else the planner's), the other one keypress away:
+A model that runs more than one way here asks how both Macs split it. Under
+the question, one line recommends a mode for these two Macs and says why, and
+that mode's line ends "· recommended for these Macs"; Enter takes it
+(`ClusterOnboardingModeAdvice.advise`). The leading Mac makes the
+recommendation from its plans, so both Macs' screens show the same one:
+
+- Only modes whose own plan fits both Macs' free memory now count (while a
+  model serves, its memory is freed first, so fitting now doesn't decide). One
+  that fits alone is "the only one that fits these Macs now". Serving through
+  Darkbloom, a mode Darkbloom serves publicly comes before one it doesn't.
+- Among the rest, through Darkbloom, the mode that serves more requests at once
+  wins, because Darkbloom turns away what a busy pair can't take; serving
+  locally only, the mode clearly faster on this pair wins (measured, else the
+  planner's prediction; within 5 % counts as the same speed).
+- Nothing fits, or there is no measured or predicted speed and no difference
+  in requests at once: "No recommendation for these Macs: <why>.", nothing is
+  marked, and the cursor starts as before: the model serving now keeps its
+  mode, any other starts on the fastest measured mode (else the planner's).
+
+The modes:
 
 - **Tensor parallel**: both Macs work on every layer, each holding a share of it
   (half each through Darkbloom; local serving balances the shares by speed).

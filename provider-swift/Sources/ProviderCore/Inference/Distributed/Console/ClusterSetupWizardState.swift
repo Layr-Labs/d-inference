@@ -171,6 +171,9 @@ public struct ClusterSetupPlanSummary: Codable, Sendable, Equatable {
         /// Requests the pair serves at once in this mode, as its plan's setup says (1: one at a time); nil when not
         /// known, and in a summary written before it existed.
         public var concurrentRequests: Int? = nil
+        /// Darkbloom's coordinator serves the model publicly in this mode (`ClusterPairServingGrants.publicTrafficLine`);
+        /// nil when not known, and in a summary written before it existed.
+        public var publicTraffic: Bool? = nil
     }
 }
 

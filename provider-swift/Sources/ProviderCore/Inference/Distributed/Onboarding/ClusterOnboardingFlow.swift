@@ -269,13 +269,16 @@ public struct ClusterOnboardingModelChoice: Codable, Sendable, Equatable {
     /// The modes it runs on these Macs, the planner's first, each with its speed measured on this pair when one is;
     /// nil from an older leader (the list then shows `split` alone).
     public var modes: [ClusterOnboardingMode]?
+    /// Which of `modes` suits these two Macs, and why, or why none can be said (`ClusterOnboardingModeAdvice.advise`):
+    /// made on the leading Mac with its plans, so both Macs' screens show the same. Nil from an older leader.
+    public var modeAdvice: ClusterOnboardingModeAdvice?
 
     public init(title: String, lines: [String], blocker: String?, provision: ClusterOnboardingProvisionOffer? = nil, fitRemedy: String? = nil,
                 modelID: String? = nil, publicTraffic: String? = nil, tensorParallelNote: String? = nil, validated: Bool? = nil,
-                split: String? = nil, modes: [ClusterOnboardingMode]? = nil) {
+                split: String? = nil, modes: [ClusterOnboardingMode]? = nil, modeAdvice: ClusterOnboardingModeAdvice? = nil) {
         self.title = title; self.lines = lines; self.blocker = blocker; self.provision = provision; self.fitRemedy = fitRemedy
         self.modelID = modelID; self.publicTraffic = publicTraffic; self.tensorParallelNote = tensorParallelNote
-        self.validated = validated; self.split = split; self.modes = modes
+        self.validated = validated; self.split = split; self.modes = modes; self.modeAdvice = modeAdvice
     }
 
     /// Offered on the setup's list: it can be served on these Macs and is not known to be unapproved.
@@ -423,6 +426,112 @@ public struct ClusterOnboardingMode: Codable, Sendable, Equatable {
             mode.label.lowercased() + (mode.measuredTokensPerSecond.map { " \(Int($0.rounded())) tok/s" } ?? " (not measured on these Macs yet)")
         }.joined(separator: " or ")
     }
+}
+
+/// The mode the setup recommends for these two Macs (owner, 2026-11-04: "it also does not suggest which one to select
+/// for the hardware"), from what the plans already know: whether each mode fits now, its speed on this pair (measured,
+/// else the planner's prediction), how many requests it serves at once, and whether Darkbloom serves it publicly.
+/// Exactly one mode, or none with the reason: it never guesses past the evidence.
+public struct ClusterOnboardingModeAdvice: Codable, Sendable, Equatable {
+    /// The recommended `ClusterOnboardingMode.mode`; nil when none is recommended.
+    public var mode: String?
+    /// Why, in a few plain words; why none, when `mode` is nil.
+    public var reason: String
+
+    public init(mode: String?, reason: String) { self.mode = mode; self.reason = reason }
+
+    /// One mode as the plans describe it.
+    public struct Option: Sendable, Equatable {
+        public var mode: String
+        /// A plan was made for it on these Macs.
+        public var planned: Bool
+        /// Every Mac's part fits in the memory it has free now.
+        public var fitsNow: Bool
+        public var measuredTokensPerSecond: Double?
+        /// The planner's decode prediction in tokens per second; nil when its figures are only relative.
+        public var predictedTokensPerSecond: Double?
+        public var concurrentRequests: Int?
+        /// Darkbloom's coordinator serves this mode publicly; nil when not known.
+        public var publicTraffic: Bool?
+        public init(mode: String, planned: Bool, fitsNow: Bool, measuredTokensPerSecond: Double? = nil,
+                    predictedTokensPerSecond: Double? = nil, concurrentRequests: Int? = nil, publicTraffic: Bool? = nil) {
+            self.mode = mode; self.planned = planned; self.fitsNow = fitsNow; self.measuredTokensPerSecond = measuredTokensPerSecond
+            self.predictedTokensPerSecond = predictedTokensPerSecond; self.concurrentRequests = concurrentRequests
+            self.publicTraffic = publicTraffic
+        }
+    }
+
+    /// Speeds closer than this are the same to the advice: the planner's own figures differ by about as much.
+    static let sameSpeed = 0.05
+
+    /// The recommendation among `options` (nil with fewer than two). `throughDarkbloom`: the pair serves through Darkbloom,
+    /// where requests beyond those a mode serves at once are turned away as "at capacity". `serving`: a model serves now,
+    /// so the list counts its memory as taken; the start frees it, so fitting now does not decide.
+    public static func advise(_ options: [Option], throughDarkbloom: Bool, serving: Bool) -> ClusterOnboardingModeAdvice? {
+        guard options.count > 1 else { return nil }
+        let planned = options.filter(\.planned)
+        var open = planned.filter { serving || $0.fitsNow }
+        guard !open.isEmpty else {
+            return .init(mode: nil, reason: planned.isEmpty ? "none of them could be planned on these Macs"
+                : "none of them fits in these Macs' free memory now")
+        }
+        var publicOnly = false
+        if throughDarkbloom {
+            let served = open.filter { $0.publicTraffic == true }
+            if !served.isEmpty, served.count < open.count { open = served; publicOnly = true }
+        }
+        if open.count == 1 {
+            return .init(mode: open[0].mode, reason: publicOnly ? "the only one Darkbloom serves publicly on these Macs"
+                : "the only one that fits these Macs now")
+        }
+        func lanes(_ option: Option) -> Int? { option.concurrentRequests.map { max(1, $0) } }
+        func atOnce(_ option: Option) -> String {
+            guard let n = lanes(option) else { return "" }
+            return n == 1 ? "serves one request at a time" : "serves up to \(n) requests at once"
+        }
+        let lanesKnown = open.allSatisfy { lanes($0) != nil }
+        let mostLanes = lanesKnown ? open.max { lanes($0)! < lanes($1)! } : nil
+        let lanesDiffer = lanesKnown && Set(open.map { lanes($0)! }).count > 1
+        let measured = open.allSatisfy { $0.measuredTokensPerSecond != nil }
+        let speeds: [Double]? = measured ? open.map { $0.measuredTokensPerSecond! }
+            : open.allSatisfy({ $0.predictedTokensPerSecond != nil }) ? open.map { $0.predictedTokensPerSecond! } : nil
+        let basis = measured ? "measured" : "predicted"
+        func speedWords(_ fast: Int, _ other: Int) -> String {
+            "faster here (about \(Int(speeds![fast].rounded())) against \(Int(speeds![other].rounded())) tokens/s, \(basis))"
+        }
+        if let speeds {
+            let fastest = speeds.indices.max { speeds[$0] < speeds[$1] }!
+            let runnerUp = speeds.indices.filter { $0 != fastest }.max { speeds[$0] < speeds[$1] }!
+            let clearlyFaster = speeds[fastest] > speeds[runnerUp] * (1 + sameSpeed)
+            // Through Darkbloom, a mode that serves one at a time turns the rest away: serving more at once wins there.
+            if lanesDiffer, let most = mostLanes, lanes(most)! > lanes(open[fastest])!, throughDarkbloom || !clearlyFaster {
+                let index = open.firstIndex(of: most)!
+                let other = open.indices.first { $0 != index }!
+                let slower = speeds[index] < speeds[other]
+                return .init(mode: most.mode, reason: atOnce(most) + (slower ? "; the others take fewer, and Darkbloom turns the rest away"
+                    : ", and " + speedWords(index, other)))
+            }
+            guard clearlyFaster else {
+                return .init(mode: nil, reason: "they are about as fast on these Macs (\(basis)) and serve as many requests at once")
+            }
+            let lanesNote = lanesKnown && lanes(open[fastest])! > 1 ? " and " + atOnce(open[fastest]) : ""
+            return .init(mode: open[fastest].mode, reason: speedWords(fastest, runnerUp) + lanesNote)
+        }
+        if lanesDiffer, let most = mostLanes {
+            return .init(mode: most.mode, reason: atOnce(most) + "; no speed is known for these Macs yet")
+        }
+        return .init(mode: nil, reason: "no speed is measured or predicted for these Macs yet")
+    }
+
+    /// The question's line under its title: the recommendation and why, or why there is none.
+    public var line: String {
+        guard let mode else { return "No recommendation for these Macs: \(reason)." }
+        return "Recommended for these Macs: \(ClusterOnboardingMode(mode: mode, split: nil, measuredTokensPerSecond: nil).label), "
+            + "\(reason)."
+    }
+
+    /// The marker on the recommended option's line.
+    static let marker = "recommended for these Macs"
 }
 
 /// How a chosen model is spread over the Macs, in one plain line, from what the planner chose (the mode and each
@@ -1285,9 +1394,9 @@ public enum ClusterOnboardingDriver {
 
     /// The mode question for a model with more than one mode, and each mode's line.
     public static func modeQuestion(model: String) -> String { "How should both Macs split \(model)?" }
-    public static func modeLine(_ mode: ClusterOnboardingMode) -> String {
+    public static func modeLine(_ mode: ClusterOnboardingMode, recommended: Bool = false) -> String {
         menuLine(mode.label, mode.what + (mode.split.map { " (\($0))" } ?? "") + (mode.requestsWords.map { " · " + $0 } ?? "")
-            + " · " + mode.speedWords)
+            + " · " + mode.speedWords + (recommended ? " · " + ClusterOnboardingModeAdvice.marker : ""))
     }
 
     /// The fresh setup's opening (brief: "one screen before 1/4"): what will be asked, and how long it takes.
@@ -2111,8 +2220,13 @@ public enum ClusterOnboardingDriver {
         }
         if model == nil, let modes = choice.modes, modes.count > 1 {
             console.say("  " + modeQuestion(model: choice.title))
-            let preferred = modes.firstIndex { $0.mode == keep } ?? ClusterOnboardingMode.defaultIndex(modes)
-            guard let picked = console.choose(modes.map(modeLine), selected: preferred) else {
+            // The recommendation for these Macs, the same on both Macs' screens (the leading Mac made it), and the cursor on it.
+            let advice = choice.modeAdvice
+            if let advice { console.say("  " + advice.line) }
+            let recommended = advice?.mode.flatMap { mode in modes.firstIndex { $0.mode == mode } }
+            let preferred = recommended ?? modes.firstIndex { $0.mode == keep } ?? ClusterOnboardingMode.defaultIndex(modes)
+            guard let picked = console.choose(modes.indices.map { modeLine(modes[$0], recommended: $0 == recommended) },
+                                              selected: preferred) else {
                 console.say("Nothing changed.")
                 if pair != nil { unchangedEnding(operations, console) }
                 return 0

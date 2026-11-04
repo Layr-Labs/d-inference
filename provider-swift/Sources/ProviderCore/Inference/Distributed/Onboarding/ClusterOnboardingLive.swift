@@ -789,6 +789,22 @@ final class OnboardingLive: @unchecked Sendable {
         }.joined(separator: " / ")
     }
 
+    /// The mode question's recommendation (`ClusterOnboardingModeAdvice.advise`) from the plans the list made: each mode's
+    /// own plan (the listed one for its family, else its family plan) says whether it fits now and its predicted speed;
+    /// the mode says its measured speed, its requests at once and whether Darkbloom serves it publicly.
+    static func modeAdvice(_ modes: [ClusterSetupPlanSummary.Mode], listed: ClusterSetupPlanSummary, families: [ClusterSetupPlanSummary],
+                           throughDarkbloom: Bool, serving: Bool) -> ClusterOnboardingModeAdvice? {
+        func family(_ raw: String) -> ClusterForcedMode? { ClusterGenerationMode(rawValue: raw).flatMap { m in ClusterForcedMode.allCases.first { $0.admits(m) } } }
+        let options = modes.map { mode -> ClusterOnboardingModeAdvice.Option in
+            let own = family(mode.mode).flatMap { f in ([listed] + families).first { family($0.mode) == f } }
+            return .init(mode: mode.mode, planned: own != nil && !mode.shares.isEmpty, fitsNow: own?.fitsNow == true,
+                         measuredTokensPerSecond: mode.servedDecodeTokensPerSecond,
+                         predictedTokensPerSecond: own.flatMap { $0.absolute ? $0.decodeTokensPerSecond : nil },
+                         concurrentRequests: mode.concurrentRequests, publicTraffic: mode.publicTraffic)
+        }
+        return ClusterOnboardingModeAdvice.advise(options, throughDarkbloom: throughDarkbloom, serving: serving)
+    }
+
     /// Whether this Mac's cluster service starts by itself at login: as the running service says (`now`,
     /// `ClusterServiceStatus.startsAtLogin`), else as this run's own service setup left it (`setUp`).
     static func startsAtLogin(now: Bool?, setUp: Bool?) -> Bool? { now ?? setUp }
@@ -873,7 +889,9 @@ final class OnboardingLive: @unchecked Sendable {
                                 ? "Private unqualified image candidate; public traffic is prohibited." : plan.publicTraffic,
                              tensorParallelNote: plan.tensorParallelNote, validated: approved(option.model.artifactSHA256),
                              split: ClusterOnboardingDeployment.splitMarker(plan.mode),
-                             modes: plan.modes.map { $0.map { screenMode($0, serving: serving) } })
+                             modes: plan.modes.map { $0.map { screenMode($0, serving: serving) } },
+                             modeAdvice: plan.modes.flatMap { Self.modeAdvice($0, listed: plan, families: option.familyPlans ?? [],
+                                 throughDarkbloom: !planningScope(scope).isLocalOnly, serving: serving) })
             }
             // Open choices first (the models this Mac has), then catalog models no Mac has yet, then the blocked ones.
             typealias Listed = (choice: ClusterOnboardingModelChoice, key: ChoiceKey, artifact: ListedArtifact?)

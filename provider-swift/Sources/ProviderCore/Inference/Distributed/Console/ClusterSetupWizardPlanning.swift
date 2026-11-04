@@ -270,6 +270,15 @@ enum ClusterSetupPlanning {
                     }
                     plan.modes = offered(listed, listed: loads(chosen, setup: decided.setup, localMemberID: localMemberID, capability: capability),
                         listedMode: chosen.mode, families: Dictionary(families.map { ($0.family, $0.loads) }, uniquingKeysWith: { first, _ in first }))
+                    // Whether Darkbloom serves each mode publicly: the mode question's recommendation weighs it.
+                    plan.modes = plan.modes?.map { mode in
+                        var mode = mode
+                        mode.publicTraffic = ClusterGenerationMode(rawValue: mode.mode).map {
+                            ClusterPairServingGrants.publicTrafficLine(runtimeModelID: capability.record.runtimeModelID,
+                                artifactSHA256: capability.record.artifactSHA256, mode: $0).hasPrefix("qualified")
+                        }
+                        return mode
+                    }
                 }
                 var option = ClusterSetupModelOption(model: reading.model, onOtherMac: onOther, blocker: nil, plan: plan)
                 option.familyPlans = families.isEmpty ? nil : families.map { $0.plan }

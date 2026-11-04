@@ -150,6 +150,7 @@ import Darwin
         alreadyServingTestsAgainOrSaysWhyNot()
         aDeadPendingStartIsClearedOnlyWhileStillRecorded()
         modeChoiceOffersBothWithTheFastestMeasuredFirst()
+        modeQuestionRecommendsOneForTheseMacs()
         modelListMarksTheCurrentModelAndMeasuredSpeeds()
         firstRunSaysWhatWillBeAsked()
         stoppedPairPreselectsTheLastModel()
@@ -3547,6 +3548,92 @@ import Darwin
         expect(recorder.all.contains("useMode 1 tensor_parallel_v1") && !run.text.contains(D.switchAnswers[0]),
                "mode screen: tensor parallel chosen; nothing served, so nothing to confirm: \(recorder.all)")
         transcript("leader-mode-choice", run.text, keys: run.keys)
+    }
+
+    /// The owner (2026-11-04): "it also does not suggest which one to select for the hardware like it should." The
+    /// question marks exactly one mode "recommended for these Macs", with why (faster, serves more at once, or the only
+    /// one that fits), from what the plans know; or none, and why. The leading Mac makes it, so both Macs' screens show
+    /// the same, and the cursor starts on it.
+    static func modeQuestionRecommendsOneForTheseMacs() {
+        typealias D = ClusterOnboardingDriver
+        typealias A = ClusterOnboardingModeAdvice
+        let tp = "tensor_parallel_v1", pp = "pipeline_v1"
+        // GLM-5.3-Flash on two M5 Ultras (DevNet, 2026-11-04): tensor parallel 105.6 tok/s and 8 at once, pipeline 40.8 and one.
+        let glm = [A.Option(mode: tp, planned: true, fitsNow: true, measuredTokensPerSecond: 105.6, concurrentRequests: 8, publicTraffic: true),
+                   A.Option(mode: pp, planned: true, fitsNow: true, measuredTokensPerSecond: 40.8, concurrentRequests: 1, publicTraffic: true)]
+        let measured = A.advise(glm, throughDarkbloom: true, serving: false)
+        expect(measured == A(mode: tp, reason: "faster here (about 106 against 41 tokens/s, measured) and serves up to 8 requests at once"),
+               "advice: GLM on two M5 Ultras, measured: \(String(describing: measured))")
+        let fresh = glm.map { var option = $0; option.measuredTokensPerSecond = nil; return option }
+        expect(A.advise(fresh, throughDarkbloom: true, serving: false)
+               == A(mode: tp, reason: "serves up to 8 requests at once; no speed is known for these Macs yet"), "advice: nothing measured yet, lanes decide")
+        let predicted = fresh.enumerated().map { var option = $1; option.predictedTokensPerSecond = $0 == 0 ? 92 : 38; return option }
+        expect(A.advise(predicted, throughDarkbloom: true, serving: false)?.reason == "faster here (about 92 against 38 tokens/s, predicted) and serves up to 8 requests at once",
+               "advice: the planner's prediction when nothing is measured")
+        // A memory-tight pair (an M3 Ultra and an M5 Max 128 GB): tensor parallel doesn't fit now.
+        let tight = [A.Option(mode: tp, planned: true, fitsNow: false, concurrentRequests: 8, publicTraffic: true),
+                     A.Option(mode: pp, planned: true, fitsNow: true, concurrentRequests: 1, publicTraffic: true)]
+        expect(A.advise(tight, throughDarkbloom: true, serving: false) == A(mode: pp, reason: "the only one that fits these Macs now"), "advice: the only one that fits")
+        let neither = tight.map { var option = $0; option.fitsNow = false; return option }
+        expect(A.advise(neither, throughDarkbloom: true, serving: false) == A(mode: nil, reason: "none of them fits in these Macs' free memory now"),
+               "advice: nothing fits, none recommended")
+        expect(A.advise(neither, throughDarkbloom: true, serving: true)?.mode == tp, "advice: while a model serves its memory is freed first, so fitting now does not decide")
+        let unknown = [A.Option(mode: tp, planned: true, fitsNow: true), A.Option(mode: pp, planned: true, fitsNow: true)]
+        expect(A.advise(unknown, throughDarkbloom: false, serving: false) == A(mode: nil, reason: "no speed is measured or predicted for these Macs yet"),
+               "advice: no evidence, no guess")
+        let unplanned = [A.Option(mode: tp, planned: false, fitsNow: false), A.Option(mode: pp, planned: false, fitsNow: false)]
+        expect(A.advise(unplanned, throughDarkbloom: false, serving: false)?.mode == nil, "advice: nothing planned")
+        // Locally a clearly faster pipeline wins; through Darkbloom the mode that takes more at once does.
+        let fastPipe = [A.Option(mode: tp, planned: true, fitsNow: true, measuredTokensPerSecond: 30, concurrentRequests: 8, publicTraffic: true),
+                        A.Option(mode: pp, planned: true, fitsNow: true, measuredTokensPerSecond: 46, concurrentRequests: 1, publicTraffic: true)]
+        expect(A.advise(fastPipe, throughDarkbloom: false, serving: false)?.mode == pp, "advice: locally, the faster")
+        expect(A.advise(fastPipe, throughDarkbloom: true, serving: false)
+               == A(mode: tp, reason: "serves up to 8 requests at once; the others take fewer, and Darkbloom turns the rest away"),
+               "advice: through Darkbloom, more at once")
+        let privatePipe = fastPipe.map { var option = $0; option.publicTraffic = $0.mode == pp ? false : true; return option }
+        expect(A.advise(privatePipe, throughDarkbloom: true, serving: false) == A(mode: tp, reason: "the only one Darkbloom serves publicly on these Macs"),
+               "advice: what Darkbloom serves publicly")
+        expect(A.advise([glm[0]], throughDarkbloom: true, serving: false) == nil, "advice: one mode, no question")
+        // The screens: the leading Mac's and the other Mac's (its list comes from the leading Mac, worded for it).
+        func choice(_ here: String, _ there: String) -> ClusterOnboardingModelChoice {
+            ClusterOnboardingModelChoice(title: "Z.ai: GLM-5.3-Flash", lines: ["181.8 GB · tensor parallel · \(here) 50% / \(there) 50%"], blocker: nil,
+                modelID: "glm-5.3-flash", validated: true, split: "tensor parallel",
+                modes: [.init(mode: tp, split: "\(here) 50% / \(there) 50%", measuredTokensPerSecond: 105.6, concurrentRequests: 8),
+                        .init(mode: pp, split: "\(here) 44 layers / \(there) 1 layer", measuredTokensPerSecond: 40.8, concurrentRequests: 1)],
+                modeAdvice: measured)
+        }
+        var stopped = qwenServing
+        stopped.serving = false
+        var screens: [String] = []
+        for (label, glmChoice) in [("leading Mac", choice("this Mac", "the other Mac")), ("other Mac", choice("the other Mac", "this Mac"))] {
+            let recorder = Recorder()
+            let run = TerminalRun(operations(recorder, resume: stopped, pairEvents: [], pairResult: .failed([]), choices: [switchChoices[0], glmChoice],
+                statusLines: ["Stopped; last model Qwen 3.8 27B."]))
+            expect(run.waitFor(prompt(4)), "recommended, \(label): the list"); run.type("2")
+            let modes = glmChoice.modes!
+            let question = "  " + D.modeQuestion(model: "Z.ai: GLM-5.3-Flash") + "\n  " + (measured?.line ?? "") + "\n  1) " + D.modeLine(modes[0], recommended: true)
+                + "\n  2) " + D.modeLine(modes[1]) + "\n  " + prompt(2)
+            expect(run.waitFor(question), "recommended, \(label): marked, said and preselected: \(run.text)")
+            run.type("\r")
+            expect(run.finish() == 0 && recorder.all.contains("useMode 1 \(tp)"), "recommended, \(label): enter takes it: \(recorder.all)")
+            screens.append(run.text)
+            transcript("mode-recommended-\(label == "leading Mac" ? "leader" : "other")", run.text, keys: run.keys)
+        }
+        expect(D.modeLine(choice("this Mac", "the other Mac").modes![0], recommended: true).hasSuffix(" · recommended for these Macs"), "recommended: the marker")
+        expect(screens.allSatisfy { $0.contains("  Recommended for these Macs: Tensor parallel, faster here (about 106 against 41 tokens/s, measured) "
+            + "and serves up to 8 requests at once.\n") }, "recommended: the same words on both Macs")
+        // None recommended: said, nothing marked, and the cursor where it was (the fastest measured, else the planner's).
+        var unsure = choice("this Mac", "the other Mac")
+        unsure.modeAdvice = A(mode: nil, reason: "no speed is measured or predicted for these Macs yet")
+        unsure.modes = unsure.modes!.map { var mode = $0; mode.measuredTokensPerSecond = nil; mode.concurrentRequests = 1; return mode }
+        let run = TerminalRun(operations(Recorder(), resume: stopped, pairEvents: [], pairResult: .failed([]), choices: [switchChoices[0], unsure],
+            statusLines: ["Stopped; last model Qwen 3.8 27B."]))
+        expect(run.waitFor(prompt(4)), "no recommendation: the list"); run.type("2")
+        expect(run.waitFor("  No recommendation for these Macs: no speed is measured or predicted for these Macs yet.\n  1) " + D.modeLine(unsure.modes![0])
+            + "\n  2) " + D.modeLine(unsure.modes![1]) + "\n  " + prompt(2)), "no recommendation: why, nothing marked: \(run.text)")
+        run.type("q")
+        _ = run.finish()
+        transcript("mode-no-recommendation", run.text, keys: run.keys)
     }
 
     /// The list (team note: "Model selection should hide model that we don't allow them to be run there"): the model

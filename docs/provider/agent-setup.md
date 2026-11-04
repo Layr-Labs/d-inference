@@ -430,7 +430,8 @@ A line ends with `copy` or `download` when one Mac lacks the model. Lines that
 end with `does not fit now` (apps hold the memory it needs) or
 `not enough free disk` come after the others.
 
-Tell the human how the split works. Never choose a mode for them:
+Tell the human how the split works. Never choose a model for them; for the
+mode, take the one the screen recommends (step 2):
 
 - **Tensor parallel** splits every layer across both Macs. Each Mac holds
   half of every layer, and both work on every token.
@@ -448,9 +449,13 @@ Tell the human how the split works. Never choose a mode for them:
 1. **STOP**: read the list to the human and ask which model to serve. Enter
    selects the first line. Rule 5 applies: a `download` model is downloaded on
    the leader and then copied, so it takes its full size on each Mac.
-2. If the screen then asks ``How should both Macs split <model>?``, the first
-   choice is the fastest mode measured on these Macs, or the planner's choice
-   when none is measured yet. Keep it unless the human wants the other.
+2. If the screen then asks ``How should both Macs split <model>?``, the next
+   line is ``Recommended for these Macs: <mode>, <why>.`` and that mode's line
+   ends with `· recommended for these Macs`; Enter selects it. Pick the
+   recommended mode unless the human wants the other: it is the one that fits,
+   serves more requests at once through Darkbloom, or is faster on these Macs.
+   When the line is ``No recommendation for these Macs: <why>.``, read the why
+   to the human and keep the selected line unless they choose otherwise.
 3. If the model still has to reach a Mac, a second list offers `Download`,
    `Copy to the other Mac (about N s)` or `Copy from the other Mac`, and
    `Cancel`. Enter selects the first. Progress is shown, and an interrupted

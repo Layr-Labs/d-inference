@@ -11,3 +11,6 @@
   dials the other Mac name the row System Settings shows, "Darkbloom". The DevNet app's row has that name too, since
   both apps share one bundle ID. Where macOS never recorded an answer for the app and lists no row, the hints say to
   click Allow when macOS asks on that Mac's screen.
+- The question recommends one way for these two Macs and says why: the only one that fits now, the one that serves
+  more requests at once through Darkbloom, or the clearly faster one. It is the same on both Macs' screens, and Enter
+  takes it. When nothing fits or nothing is known yet, it recommends none and says why.

@@ -197,7 +197,7 @@ extension Cluster {
                     let resume = operations.resume()
                     switch Self.pairStop(role: resume.role, serving: resume.serving) {
                     case .stopHere: break
-                    case .leaderStopsBoth: stopped = Self.stopPair(operations, progressAfter: progressAfter)
+                    case .leaderStopsBoth: stopped = Self.stopBothMacs(operations, progressAfter: progressAfter)
                     case .askLeader:
                         // The menu's Stop, sent to the leading Mac: both Macs stop, instead of the leader waiting
                         // for this one and then serving alone or nothing.
@@ -205,7 +205,7 @@ extension Cluster {
                             leader: ClusterOnboardingMacName.other(named: resume.leaderName ?? resume.peerName)))
                         fflush(stdout)
                         forwarded = true
-                        stopped = Self.stopPair(operations, progressAfter: progressAfter)
+                        stopped = Self.stopBothMacs(operations, progressAfter: progressAfter)
                     }
                 }
                 return try Self.finishStop(stopped, localOnly: localOnly, forwarded: forwarded) {
@@ -216,7 +216,7 @@ extension Cluster {
         }
 
         /// The pair stop `--service` asks for first, saying what it waits for when it runs long.
-        private static func stopPair(_ operations: ClusterOnboardingOperations, progressAfter: Double)
+        private static func stopBothMacs(_ operations: ClusterOnboardingOperations, progressAfter: Double)
             -> Result<[String], ClusterOnboardingFailure> {
             ClusterPairCommands.saying(ClusterPairCommands.stopWaitLine, after: progressAfter, say: ClusterPairCommands.printLine,
                                        operations.stop)

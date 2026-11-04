@@ -1996,8 +1996,7 @@ public enum ClusterOnboardingDriver {
         }
         // What it does, never the result before the outcome below (the candidate, 2026-11-04: it said "Serving through
         // Darkbloom." and then ✗).
-        console.say("  " + (wanted.isLocalOnly ? "Switching to local only" : "Switching to serving through Darkbloom")
-            + ": the leading Mac's part starts again that way.")
+        console.say("  Switching to local only: the leading Mac's part starts again that way.")
         // The same truth as the start (2026-11-04: from the menu, a pair only registered with the coordinator was
         // called serving): ✓ once the pair serves and a request answered, else ✗ with the reason and the choices.
         return finishStart(title: resume.modelTitle ?? resume.modelName ?? "the model", scope: wanted, registers: false,
@@ -2283,8 +2282,8 @@ public enum ClusterOnboardingDriver {
     /// After the start. Serving and Done are said only once the model is loaded on both Macs and a request answered
     /// (2026-11-03: a pair offered for pairing said both while nothing was loaded). A pair that does not serve says why
     /// and stays open with the choices; leaving it never claims success.
-    /// `registers`: a pair on the leader's API is registered with the coordinator after its test (the start; the
-    /// menu's switch of scope leaves that to the cluster service). `startOverRequest`: as `chooseAndServe`'s, kept for
+    /// `registers`: a pair on the leader's API is registered with the coordinator after its test (a start, and the
+    /// switch to Darkbloom, which is one; not the switch to local only or the serving model's Retry). `startOverRequest`: as `chooseAndServe`'s, kept for
     /// Change model, so a Mac paired before this run keeps its choices when the other Mac stops answering.
     static func finishStart(title: String, scope: ClusterServingScope, registers: Bool = true,
                             startOverRequest: ClusterOnboardingRequest? = nil, peer: String? = nil,

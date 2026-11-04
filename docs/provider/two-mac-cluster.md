@@ -273,8 +273,9 @@ the test.
 up yet ([below](#when-something-is-in-the-way)).
 
 Switching how a serving pair serves says what it does ("Switching to serving
-through Darkbloom: the leading Mac's part starts again that way."), never the
-result: the outcome block follows once the pair serves, or why it doesn't. A
+through Darkbloom: both Macs load the model again from a plan made for
+Darkbloom." or "Switching to local only: the leading Mac's part starts again
+that way."), never the result: the outcome block follows once the pair serves, or why it doesn't. A
 part that stops serving says why in its log ("Distributed serving stops: …",
 for example "the coordinator reported this member's runtime as outdated");
 the ✗ block and the diagnostics file give that reason, not the cancellation

@@ -2983,6 +2983,33 @@ The planned-stop lifecycle suite also pauses the actual service immediately befo
 
 Planned-stop lifecycle checks exercise the actual peerLeaseState projection, accepted ClusterControlNode follower lease, ClusterControlIntent recording and follower part selection while the real owned child is retained after TERM, while start is paused, and after retirement. A held outbound lease custody flag must block final peer stop after local child exit. Optional-record compatibility and an already-idle peer are checked separately. No physical peer transport or installed native shutdown is claimed by these CPU cases.
 
+### Cluster model file cache before a load
+
+These checks measure the page cache with `mincore` on temporary files they
+create, on the Mac that runs them. A file just read must be in the cache first,
+or the check fails rather than passing on a host that caches nothing.
+
+- `ClusterServicePartStartCacheTests` runs the actual service loop for the
+  follower's part of a saved pair setup (pairing moved away, so nothing
+  listens; the part is `/usr/bin/true`). The model folder holds a 64 MiB weight
+  file and a 32 MiB file one folder down, both read into the cache. When the
+  part starts (`beforePartStart`), each must be under 10 % resident, and their
+  bytes unchanged afterwards. Run it from `provider-swift` with
+  `swift test --skip-build --disable-sandbox --filter ClusterServicePartStartCacheTests`
+  under the sandbox profile that denies `~/.darkbloom`.
+- `provider-swift/Tests/ClusterModelProvisioningChecks/run.sh provisioning`
+  checks which files `ClusterModelStore.dropCachedPages` drops: regular files in
+  the folder and one folder down, no symbolic link, nothing deeper.
+- `libs/darkbloom-cluster/Tests/CheckpointChecks/run.sh` (and
+  `CheckpointPayloadCacheTests` in the runtime tests) run
+  `CheckpointPayloadCacheCheck`: after `bypassTensorPayloadCache`, a 32 MiB
+  weight file read into the cache is under 10 % resident, `config.json` keeps
+  its cached page, `checkUnchanged` passes, and the uncached aligned read
+  returns the original bytes.
+
+Sources: `provider-swift/Tests/ProviderCoreTests/Inference/Distributed/ClusterServicePartStartCacheTests.swift`
+and `libs/darkbloom-cluster/Tests/DarkbloomClusterRuntimeTests/CheckpointPayloadCacheCheck.swift`.
+
 ### Cluster service listeners after pairing again
 
 `ClusterServicePairingChangeTests` runs the actual service's two listeners on

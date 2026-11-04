@@ -1491,11 +1491,13 @@ public final class ClusterService: @unchecked Sendable {
         }
         // A cluster part starting again clears the solo record: the next time this Mac is left alone it may try again.
         if case .cluster = want { lock.withLock { soloQuickEnds = nil } }
-        // The model's own pages stay in, and are read into, the file cache while the part starts: the load gate
-        // counts all of it as available (58d7371a), and the rank's load reads cached pages at memory speed instead of
-        // from the SSD (GLM tensor parallel: 101 GB/s against 14 GB/s on an M5 Ultra), most of a restart's time.
+        // The model's own pages leave the file cache before the part starts, so its load reads them from the SSD into
+        // free pages. A load into a cache full of its own model makes macOS compress other memory to free that cache
+        // page by page; past the load gate's compression guard (512 MiB) the gate counts no cache and refuses, and a
+        // restart that read the model back in was refused again (MiMo on two 128 GB Macs, 680 of 680 starts,
+        // 2026-11-01). The worker's hashing and loads read uncached and add none back.
         if case .cluster = want, let configuration = saved.configuration, configuration.peers.indices.contains(configuration.localRank) {
-            ClusterModelStore.prefetchPagesInBackground(folder: URL(fileURLWithPath: configuration.peers[configuration.localRank].modelDirectory))
+            ClusterModelStore.dropCachedPages(folder: URL(fileURLWithPath: configuration.peers[configuration.localRank].modelDirectory))
         }
         let process = Process()
         process.executableURL = settings.wizard.darkbloomExecutable

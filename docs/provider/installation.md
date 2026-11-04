@@ -289,41 +289,40 @@ each Mac: `darkbloom cluster`; no SSH, no network settings typed).
 
 ## Uninstall
 
-One command takes Darkbloom off this Mac. In a terminal, it shows what each
-choice removes, with sizes, and asks:
+One command takes Darkbloom off this Mac. In a terminal it shows two choices
+with this Mac's sizes and reads one key (Esc cancels):
 
 ```bash
 darkbloom uninstall
 ```
 
-1. **Keep models and settings (you might come back).** Stops serving (the drain
-   of `darkbloom stop`), stops this Mac's part of a two-Mac pair and removes
-   every Darkbloom background service: the provider, its watchdog, the desktop
-   API and the cluster service. Every file stays, with the pairing and the cable
-   port setup. To come back, install again, then run `darkbloom start` or
-   `darkbloom cluster`.
-2. **Remove everything (not coming back).** Also forgets this Mac's pairing,
-   undoes the cable port setup (macOS asks for an administrator's password) and
-   deletes `~/.darkbloom` (the app, logs, pairing and cluster setup),
-   `~/.config/darkbloom`, `~/Library/Caches/darkbloom`, the models Darkbloom
-   downloaded into `~/.cache/huggingface/hub`, the cluster model store and the
-   `/usr/local/bin/darkbloom` link. Removing everything asks for the word `yes`,
-   then lists each step as done, skipped or failed, and the space freed. If the
-   cable port setup could not be undone, `~/.darkbloom` stays so you can run it
-   again.
-3. **Cancel.**
+1. **Remove everything.** The app, settings, pairing, logs and all models.
+2. **Keep models.** Removes everything else; a reinstall reuses the models.
+
+Both choices stop serving (the drain of `darkbloom stop`), stop this Mac's
+part of a two-Mac pair, remove every Darkbloom background service, revoke this
+Mac's account token, forget the pairing, undo the cable port setup (macOS asks
+for an administrator's password) and delete `~/.config/darkbloom`,
+`~/Library/Caches/darkbloom`, the `/usr/local/bin/darkbloom` link and
+`~/.darkbloom`, which holds the app, logs and pairing. **Remove everything** also
+deletes the models Darkbloom downloaded into `~/.cache/huggingface/hub` and the
+cluster model store. **Keep models** leaves them where they are: after
+reinstalling, `darkbloom start` or `darkbloom cluster` finds them without
+downloading. The summary lists each step as done, skipped or failed, what was
+kept and where, and the space freed. If the cable port setup could not be
+undone, `~/.darkbloom` stays so you can run it again.
 
 For scripts and agents:
 
 ```bash
-darkbloom uninstall --everything --dry-run   # every action and path, with sizes; changes nothing (--json too)
-darkbloom uninstall --keep-data --yes
+darkbloom uninstall --keep-models --dry-run   # every action and path, with sizes; changes nothing (--json too)
+darkbloom uninstall --keep-models --yes
 darkbloom uninstall --everything --yes
 ```
 
-It never deletes models or caches in a folder you chose, anything that
+No choice deletes models or caches in a folder you chose, anything that
 resolves outside Darkbloom's folders, or Keychain keys (a new install replaces
-them). Before removing everything, remove what it leaves, if you use it:
+them). Remove what it leaves first, if you use it:
 
 ```bash
 sudo darkbloom fan uninstall   # fan control: restores macOS automatic control

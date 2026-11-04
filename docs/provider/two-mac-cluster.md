@@ -823,24 +823,25 @@ altogether, see [Uninstall](#uninstall).
 
 ## Uninstall
 
-`darkbloom uninstall` takes Darkbloom off one Mac of the pair and asks how:
+`darkbloom uninstall` takes Darkbloom off one Mac of the pair. It offers
+**Remove everything** or **Keep models**, and both do the same for the pair:
 
-- **Keep models and settings (you might come back).** This Mac stops its part,
-  as `darkbloom cluster stop` does (the leader stops the pair first), and no
-  Darkbloom service starts at login any more. The pairing, the cable port setup
-  and the models stay: install again and run `darkbloom cluster`, and the pair
-  resumes.
-- **Remove everything (not coming back).** It also forgets the pairing, as
-  `darkbloom cluster pair --forget` (a leader tells the other Mac first, over
-  the cable), undoes the cable port setup, as `darkbloom cluster link --remove`
-  (one approval), and deletes Darkbloom's folders, the cluster model store
-  included.
+- this Mac stops its part, as `darkbloom cluster stop` does (the leader stops
+  the pair first), and no Darkbloom service starts at login any more;
+- it forgets the pairing, as `darkbloom cluster pair --forget` (a leader tells
+  the other Mac first, over the cable);
+- it undoes the cable port setup, as `darkbloom cluster link --remove` (one
+  approval).
+
+**Keep models** keeps the models and the cluster model store, so after a
+reinstall `darkbloom cluster` pairs again and uses them without copying or
+downloading. **Remove everything** deletes them too.
 
 When the other Mac does not answer, this Mac stops only its own part, as
 `darkbloom cluster stop --local-only`. The other Mac keeps its own pairing, so
-either way the command ends with one line about it, by name: run
-`darkbloom uninstall` there too, or `darkbloom cluster` on it to pair it with
-another Mac. Every step and path: [CLI reference](./cli-reference.md#darkbloom-uninstall).
+the command ends with one line about it, by name: run `darkbloom uninstall`
+there too, or `darkbloom cluster` on it to pair it with another Mac. Every step
+and path: [CLI reference](./cli-reference.md#darkbloom-uninstall).
 
 ## Cache settings
 

@@ -69,10 +69,10 @@ public struct ProviderUninstallPaths: Sendable, Equatable {
     }
 }
 
-/// One thing `darkbloom uninstall` lists: what it is, its size and whether `--everything` deletes it.
+/// One thing `darkbloom uninstall` lists: what it is, its size and whether it is deleted.
 public struct ProviderUninstallItem: Codable, Sendable, Equatable {
     public enum Verdict: String, Codable, Sendable {
-        /// Darkbloom's, inside its folders: deleted by `--everything`.
+        /// Darkbloom's, inside its folders: deleted (a model only by `--everything`).
         case remove
         /// Outside Darkbloom's folders (a location the person chose, another install's): never deleted.
         case keep
@@ -80,16 +80,35 @@ public struct ProviderUninstallItem: Codable, Sendable, Equatable {
         case refused
     }
 
+    public enum Kind: String, Codable, Sendable {
+        case data
+        /// A model folder Darkbloom downloaded, its download locks or the cluster model store: `--keep-models` keeps it.
+        case model
+        /// Deleting it takes away the `darkbloom` command: the install folder (the app, and the cable records
+        /// `cluster link --remove` reads) and the command link.
+        case command
+    }
+
     public let label: String
     public let path: String
     public let bytes: Int64
     public let verdict: Verdict
     public let reason: String?
-    /// Deleting it takes away the `darkbloom` command: the install folder (the app, and the cable records
-    /// `cluster link --remove` reads) and the command link.
-    var removesTheCommand = false
+    public var kind: Kind = .data
+    /// Its files' blocks, for counting APFS clones once (`ProviderUninstall.uniqueBytes`).
+    var files: [ProviderUninstallFile] = []
 
-    private enum CodingKeys: String, CodingKey { case label, path, bytes, verdict, reason }
+    private enum CodingKeys: String, CodingKey { case label, path, bytes, verdict, reason, kind }
+}
+
+/// One regular file's allocated bytes and, on APFS, its clone facts (`getattrlist`'s `ATTR_CMNEXT_*`).
+struct ProviderUninstallFile: Sendable, Equatable {
+    let allocated: Int64
+    /// Bytes no other file shares.
+    var privateBytes: Int64?
+    /// Pure clones (`clonefile`, `cp -c`) share one id while neither changes; `references` is how many files hold it.
+    var cloneID: UInt64?
+    var references: UInt32?
 }
 
 /// The other Mac this one is paired with, from the saved records only (no cable, no key).
@@ -139,9 +158,9 @@ extension ProviderUninstall {
     /// command runs from) comes last.
     public static func inventory(_ paths: ProviderUninstallPaths) -> [ProviderUninstallItem] {
         var items: [ProviderUninstallItem] = []
-        func add(_ label: String, _ url: URL, keep reason: String? = nil, removesTheCommand: Bool = false) {
+        func add(_ label: String, _ url: URL, keep reason: String? = nil, kind: ProviderUninstallItem.Kind = .data) {
             guard var item = item(label, url, paths: paths, keep: reason) else { return }
-            item.removesTheCommand = removesTheCommand
+            item.kind = kind
             items.append(item)
         }
         // A chosen folder inside Darkbloom's own goes with it, so only one outside them is listed as kept.
@@ -157,11 +176,11 @@ extension ProviderUninstall {
         }
         items += models(paths)
         if let saved = chosen(paths.savedModelCache) {
-            add("Models in the folder you chose", saved, keep: "outside Darkbloom's folders")
+            add(chosenModelsLabel, saved, keep: "outside Darkbloom's folders")
         }
-        add("Cluster model store", paths.clusterModelStore, keep: paths.otherInstall.map(sharedReason))
-        add("The `\(paths.commandLink.lastPathComponent)` command link", paths.commandLink, removesTheCommand: true)
-        add("Darkbloom folder: the app, logs, pairing and cluster setup", paths.installDirectory, removesTheCommand: true)
+        add(clusterStoreLabel, paths.clusterModelStore, keep: paths.otherInstall.map(sharedReason), kind: .model)
+        add("The `\(paths.commandLink.lastPathComponent)` command link", paths.commandLink, kind: .command)
+        add("Darkbloom folder: the app, logs, pairing and cluster setup", paths.installDirectory, kind: .command)
         return items
     }
 
@@ -182,10 +201,16 @@ extension ProviderUninstall {
             let folder = cache.appendingPathComponent(name, isDirectory: true)
             guard isDarkbloomModel(folder) else { continue }
             let id = name.dropFirst("models--".count).replacingOccurrences(of: "--", with: "/")
-            if let item = item("Model \(id)", folder, paths: paths, keep: paths.otherInstall.map(sharedReason)) { items.append(item) }
+            if var item = item("Model \(id)", folder, paths: paths, keep: paths.otherInstall.map(sharedReason)) {
+                item.kind = .model
+                items.append(item)
+            }
         }
         let locks = cache.appendingPathComponent(".artifact-writer-locks", isDirectory: true)
-        if paths.otherInstall == nil, let item = item("Model download locks", locks, paths: paths) { items.append(item) }
+        if paths.otherInstall == nil, var item = item("Model download locks", locks, paths: paths) {
+            item.kind = .model
+            items.append(item)
+        }
         return items
     }
 
@@ -223,7 +248,7 @@ extension ProviderUninstall {
             return .init(label: label, path: url.path, bytes: measured.bytes, verdict: .refused,
                          reason: "another disk is mounted inside it")
         }
-        return .init(label: label, path: url.path, bytes: measured.bytes, verdict: .remove, reason: nil)
+        return .init(label: label, path: url.path, bytes: measured.bytes, verdict: .remove, reason: nil, files: measured.files)
     }
 
     /// Sized where it resolves, so a kept or refused link shows what it holds.
@@ -237,26 +262,71 @@ extension ProviderUninstall {
         return URL(fileURLWithPath: destination, relativeTo: link.deletingLastPathComponent()).standardizedFileURL.path
     }
 
-    /// Allocated bytes under `url`, never following a link, each hard-linked file once; and whether a folder
-    /// inside it is on another volume.
-    static func measure(_ url: URL) -> (bytes: Int64, otherVolume: Bool) {
+    /// Allocated bytes under `url`, never following a link and each hard-linked file once; whether a folder inside
+    /// it is on another volume; and each file's blocks, which `uniqueBytes` counts with APFS clones once.
+    static func measure(_ url: URL) -> (bytes: Int64, otherVolume: Bool, files: [ProviderUninstallFile]) {
         var root = stat()
-        guard stat(url.path, &root) == 0 else { return (0, false) }
+        guard stat(url.path, &root) == 0 else { return (0, false, []) }
         guard root.st_mode & S_IFMT == S_IFDIR, lstat(url.path, &root) == 0, root.st_mode & S_IFMT == S_IFDIR,
               let walker = FileManager.default.enumerator(atPath: url.path) else {
-            return (Int64(root.st_blocks) * 512, false)
+            return (Int64(root.st_blocks) * 512, false, [])
         }
-        var bytes: Int64 = 0, seen = Set<[UInt64]>(), otherVolume = false
+        var files: [ProviderUninstallFile] = [], seen = Set<[UInt64]>(), otherVolume = false
         while let relative = walker.nextObject() as? String {
+            let path = url.appendingPathComponent(relative).path
             var info = stat()
-            guard lstat(url.appendingPathComponent(relative).path, &info) == 0 else { continue }
+            guard lstat(path, &info) == 0 else { continue }
             if info.st_mode & S_IFMT == S_IFDIR {
                 if info.st_dev != root.st_dev { otherVolume = true; walker.skipDescendants() }
                 continue
             }
             if info.st_nlink > 1, !seen.insert([UInt64(UInt32(bitPattern: info.st_dev)), info.st_ino]).inserted { continue }
-            bytes += Int64(info.st_blocks) * 512
+            var file = ProviderUninstallFile(allocated: Int64(info.st_blocks) * 512)
+            if info.st_mode & S_IFMT == S_IFREG { cloneFacts(path, into: &file) }
+            files.append(file)
         }
-        return (bytes, otherVolume)
+        return (files.reduce(0) { $0 + $1.allocated }, otherVolume, files)
+    }
+
+    /// Bytes deleting all of `files` frees: a pure-clone family's shared blocks count once, and only when every
+    /// file holding them is among `files`. Clones that have since diverged are each counted in full.
+    static func uniqueBytes(_ files: [ProviderUninstallFile]) -> Int64 {
+        var total: Int64 = 0
+        var families: [UInt64: (members: Int, references: UInt32, shared: Int64)] = [:]
+        for file in files {
+            guard let id = file.cloneID, let references = file.references, references > 1, let own = file.privateBytes else {
+                total += file.allocated
+                continue
+            }
+            total += own
+            var family = families[id] ?? (0, references, 0)
+            family.members += 1
+            family.shared = max(family.shared, file.allocated - own)
+            families[id] = family
+        }
+        return families.values.reduce(total) { $0 + ($1.members >= Int($1.references) ? $1.shared : 0) }
+    }
+
+    /// The deduplicated size of `items` together.
+    public static func uniqueBytes(_ items: [ProviderUninstallItem]) -> Int64 {
+        uniqueBytes(items.flatMap { $0.files.isEmpty ? [ProviderUninstallFile(allocated: $0.bytes)] : $0.files })
+    }
+
+    /// `ATTR_CMNEXT_PRIVATESIZE`, `_CLONEID` and `_CLONE_REFCNT`, when the volume returns all three (APFS).
+    private static func cloneFacts(_ path: String, into file: inout ProviderUninstallFile) {
+        var request = attrlist()
+        request.bitmapcount = u_short(ATTR_BIT_MAP_COUNT)
+        request.commonattr = attrgroup_t(ATTR_CMN_RETURNED_ATTRS)
+        let wanted = attrgroup_t(ATTR_CMNEXT_PRIVATESIZE | ATTR_CMNEXT_CLONEID | ATTR_CMNEXT_CLONE_REFCNT)
+        request.forkattr = wanted
+        var buffer = [UInt8](repeating: 0, count: 64)
+        guard getattrlist(path, &request, &buffer, buffer.count, UInt32(FSOPT_ATTR_CMN_EXTENDED | FSOPT_NOFOLLOW)) == 0 else { return }
+        buffer.withUnsafeBytes { raw in
+            // u_int32_t length, attribute_set_t (five groups; forkattr last), then the values in bit order.
+            guard raw.loadUnaligned(fromByteOffset: 20, as: attrgroup_t.self) & wanted == wanted else { return }
+            file.privateBytes = raw.loadUnaligned(fromByteOffset: 24, as: Int64.self)
+            file.cloneID = raw.loadUnaligned(fromByteOffset: 32, as: UInt64.self)
+            file.references = raw.loadUnaligned(fromByteOffset: 40, as: UInt32.self)
+        }
     }
 }

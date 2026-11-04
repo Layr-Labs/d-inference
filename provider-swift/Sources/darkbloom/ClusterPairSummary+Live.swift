@@ -150,11 +150,9 @@ extension ClusterPairSummary {
     private static func localNetworkRefusal(of summary: ClusterPairSummary) -> ClusterLocalNetworkAccess.Refused? {
         guard summary.started else { return nil }
         guard summary.leads else { return ClusterLocalNetworkAccess.serviceState() == .blocked ? .thisMac : nil }
-        let own = ClusterService.published()?.child, now = Date().timeIntervalSince1970
-        guard summary.state == .unknown || (summary.state == .loading && summary.lines.first?.hasPrefix("Starting ") == true),
-              ClusterLocalNetworkAccess.refusalCanBeCurrent(own: own, now: now) else { return nil }
-        let member = ClusterLocalNetworkAccess.otherMacStatus()?.child
-        return ClusterLocalNetworkAccess.otherMacRefused(member: member, own: own, now: now) ? .otherMac : nil
+        guard summary.state == .unknown || (summary.state == .loading && summary.lines.first?.hasPrefix("Starting ") == true)
+        else { return nil }
+        return ClusterLocalNetworkAccess.otherMacRefused() ? .otherMac : nil
     }
 
     /// This Mac's own view of the cluster, from its cluster service's last status (no other Mac is asked): stopped, the

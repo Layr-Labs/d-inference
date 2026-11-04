@@ -1874,11 +1874,12 @@ final class OnboardingLive: @unchecked Sendable {
     }
 
     /// The ✗ when the other Mac can't reach this one over the cable for that reason: why, and what to do there. It can't
-    /// clear until someone turns the setting on, so the wait ends at once.
-    static func localNetworkRefusalLines(otherMac: String, app: String) -> [String] {
+    /// clear until someone turns the setting on, so the wait ends at once. `then`: the step once it's on (`cluster status`
+    /// names its command instead: `ClusterLocalNetworkAccess.statusWords`).
+    static func localNetworkRefusalLines(otherMac: String, app: String, then: String = "Then choose Retry here") -> [String] {
         ["The other Mac can't reach this Mac over the cable: macOS keeps \(app) there off the local network",
          "\(otherMac): System Settings → Privacy & Security → Local Network → turn on “\(app)” (on a Mac with no display, "
-            + "through Screen Sharing). Then choose Retry here."]
+            + "through Screen Sharing). \(then)."]
     }
 
     /// The live row's line once the other Mac's part reports that refusal (`readinessOnce`).

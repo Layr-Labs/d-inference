@@ -204,22 +204,25 @@ extension ClusterLocalNetworkAccess {
         case otherMac
     }
 
+    /// On the leading Mac, whether the other Mac's part reports the refusal now (`otherMacRefused(member:own:now:)`). That
+    /// Mac is asked (`otherMacStatus`) only once this Mac's part has run long enough for its answer to count; before
+    /// that, asking would not tell.
+    public static func otherMacRefused() -> Bool {
+        let own = ClusterService.published()?.child, now = Date().timeIntervalSince1970
+        guard OnboardingLive.refusalIsCurrent(own: own, now: now) else { return false }
+        return otherMacRefused(member: otherMacStatus()?.child, own: own, now: now)
+    }
+
     /// Whether the other Mac's part reports the refusal, by the rule of the setup screen's ✗: that part runs and says so
     /// (`OnboardingLive.otherMacRefused`), and this Mac's part has run long enough for one more dial to reach it
     /// (`OnboardingLive.refusalIsCurrent`).
-    public static func otherMacRefused(member: ClusterServiceStatus.Child?, own: ClusterServiceStatus.Child?, now: Double) -> Bool {
+    static func otherMacRefused(member: ClusterServiceStatus.Child?, own: ClusterServiceStatus.Child?, now: Double) -> Bool {
         OnboardingLive.otherMacRefused(member) && OnboardingLive.refusalIsCurrent(own: own, now: now)
-    }
-
-    /// Whether this Mac's part has run long enough for the other Mac's refusal to count (`OnboardingLive.refusalIsCurrent`);
-    /// before that, asking the other Mac would not tell.
-    public static func refusalCanBeCurrent(own: ClusterServiceStatus.Child?, now: Double) -> Bool {
-        OnboardingLive.refusalIsCurrent(own: own, now: now)
     }
 
     /// The other Mac's cluster service status: one `status` command over the cable, as the ✗'s readiness asks it, within
     /// `OnboardingLive.answerSeconds`; nil when it doesn't answer.
-    public static func otherMacStatus() -> ClusterServiceStatus? {
+    static func otherMacStatus() -> ClusterServiceStatus? {
         guard let pairing = try? ClusterSetupLinkExchange.pairing(), let selection = try? LiveContext.defaultLinkSelection(),
               let body = try? JSONEncoder().encode(ClusterServiceCommand(op: .status)),
               let answer = try? ClusterSetupLinkExchange.command(pairing: pairing, selection: selection, peerAddress: nil,
@@ -238,9 +241,9 @@ extension ClusterLocalNetworkAccess {
                 app: app, then: "then run `\(cli) start` here, or choose Retry in `\(cli) cluster` on the other Mac")
             return (lines[0].hasSuffix(".") ? String(lines[0].dropLast()) : lines[0], lines[1])
         case .otherMac:
-            let lines = OnboardingLive.localNetworkRefusalLines(otherMac: otherMac, app: app)
-            return (lines[0], lines[1].replacingOccurrences(of: "Then choose Retry here.",
-                                                            with: "Then run `\(cli) start` here, or choose Retry in `\(cli) cluster`."))
+            let lines = OnboardingLive.localNetworkRefusalLines(
+                otherMac: otherMac, app: app, then: "Then run `\(cli) start` here, or choose Retry in `\(cli) cluster`")
+            return (lines[0], lines[1])
         }
     }
 }

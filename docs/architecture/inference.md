@@ -3952,10 +3952,12 @@ away; mixed pairs are first-class).
   same refusal by the same rule (`ClusterLocalNetworkAccess.Refused`): on the
   refused Mac its own service's state, on the leading Mac the other Mac's
   status, asked (`otherMacStatus`) only while the pair has been starting past
-  the settle time (`refusalCanBeCurrent`, `otherMacRefused`). They say
-  `not_serving` in the screens' words, ending with the command that starts the
-  pair again (`statusWords`). A stopped pair reads stopped whatever the other
-  Mac's presence (`ClusterPairSummary.state(ofStatus:started:leaderMode:)`).
+  the settle time (`otherMacRefused`). They say `not_serving` in the screens'
+  words, ending with the command that starts the pair again instead of the
+  screen's Retry (`statusWords`, through the `then` of
+  `localNetworkRefusalLines` and `localNetworkBlockedLines`). A stopped pair
+  reads stopped whatever the other Mac's presence
+  (`ClusterPairSummary.state(ofStatus:started:leaderMode:)`).
 - **The person's family:** `useMode` keeps the chosen family for every model
   (`OnboardingLive.keptFamily`), never inferred from the listing's order, which
   says nothing of the plan; `localAdopt` plans again in it only when the listed

@@ -322,6 +322,8 @@ struct ClusterServiceStopReasonTests {
         let app = "Darkbloom Dev", leader = "The other Mac (Apple M5 Ultra, 256 GB)"
         let own = OnboardingLive.localNetworkRefusalLines(line: OnboardingLive.localNetworkLine(forwarded: false), otherMac: leader, app: app)
         #expect(own?.first == "The other Mac can't reach this Mac over the cable: macOS keeps Darkbloom Dev there off the local network")
+        #expect(own?.last == "\(leader): System Settings → Privacy & Security → Local Network → turn on “Darkbloom Dev” (on a Mac with no "
+                + "display, through Screen Sharing). Then choose Retry here.", "the screen's own step: \(String(describing: own))")
         let forwarded = OnboardingLive.localNetworkRefusalLines(line: OnboardingLive.localNetworkLine(forwarded: true), otherMac: leader,
                                                                 app: app)
         #expect(forwarded?.first == "This Mac can't reach the other Mac over the cable: macOS keeps Darkbloom Dev off the local network."

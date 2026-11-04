@@ -1675,10 +1675,10 @@ struct ClusterStatusTruthTests {
         let refused = ClusterServiceStatus.Child(running: true, starts: 1,
                                                  lastError: ClusterService.localNetworkReasonPrefix + ": macOS refused the dial")
         let own = ClusterServiceStatus.Child(running: true, starts: 1, startedAt: now - 25)
-        #expect(ClusterLocalNetworkAccess.refusalCanBeCurrent(own: own, now: now))
+        #expect(OnboardingLive.refusalIsCurrent(own: own, now: now))
         #expect(ClusterLocalNetworkAccess.otherMacRefused(member: refused, own: own, now: now))
         let young = ClusterServiceStatus.Child(running: true, starts: 1, startedAt: now - 5)
-        #expect(!ClusterLocalNetworkAccess.refusalCanBeCurrent(own: young, now: now))
+        #expect(!OnboardingLive.refusalIsCurrent(own: young, now: now))
         #expect(!ClusterLocalNetworkAccess.otherMacRefused(member: refused, own: young, now: now), "before one more dial it may be stale")
         var ended = refused
         ended.running = false

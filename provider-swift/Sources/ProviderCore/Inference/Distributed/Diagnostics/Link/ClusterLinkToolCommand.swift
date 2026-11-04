@@ -28,6 +28,13 @@ enum ClusterLinkToolCommand: Equatable, Sendable {
     case networkServiceInfo(service: String)
     /// The bridges macOS keeps in its network preferences and their members.
     case bridgePreferences
+    /// The network services macOS keeps in its preferences, by service ID (`NetworkServices`): which one is
+    /// Darkbloom's on a port, for a removal of a port's only service through SCPreferences.
+    case networkServicePreferences
+    /// The current network set's path ("/Sets/<ID>", `CurrentSet`).
+    case currentNetworkSet
+    /// The IPv4 service order of the set `set` (an ID checked by `ClusterLinkLastService.isID`).
+    case networkServiceOrderPreferences(set: String)
     /// Whether Internet Sharing is turned on (`com.apple.nat` NAT.Enabled).
     case internetSharingEnabled
     /// The devices Internet Sharing shares to (`com.apple.nat` NAT.SharingDevices).
@@ -49,7 +56,8 @@ enum ClusterLinkToolCommand: Equatable, Sendable {
         case .keeperJobFile: return "/usr/bin/plutil"
         case .keeperJobFileList: return "/bin/ls"
         case .hardwarePorts, .networkServiceOrder, .networkServiceInfo: return "/usr/sbin/networksetup"
-        case .bridgePreferences, .internetSharingEnabled, .internetSharingDevices: return "/usr/bin/plutil"
+        case .bridgePreferences, .internetSharingEnabled, .internetSharingDevices, .networkServicePreferences, .currentNetworkSet,
+             .networkServiceOrderPreferences: return "/usr/bin/plutil"
         case .routeTable: return "/usr/sbin/netstat"
         case .dnsConfiguration: return "/usr/sbin/scutil"
         case .dhcpPacket: return "/usr/sbin/ipconfig"
@@ -73,6 +81,12 @@ enum ClusterLinkToolCommand: Equatable, Sendable {
         case .networkServiceInfo(let service): return ["-getinfo", service]
         case .bridgePreferences:
             return ["-extract", "VirtualNetworkInterfaces.Bridge", "json", "-o", "-", ClusterLinkIsolationPlan.networkPreferences]
+        case .networkServicePreferences:
+            return ["-extract", "NetworkServices", "json", "-o", "-", ClusterLinkIsolationPlan.networkPreferences]
+        case .currentNetworkSet:
+            return ["-extract", "CurrentSet", "raw", "-o", "-", ClusterLinkIsolationPlan.networkPreferences]
+        case .networkServiceOrderPreferences(let set):
+            return ["-extract", "Sets.\(set).Network.Global.IPv4.ServiceOrder", "json", "-o", "-", ClusterLinkIsolationPlan.networkPreferences]
         case .internetSharingEnabled:
             return ["-extract", "NAT.Enabled", "raw", "-o", "-", ClusterLinkIsolationPlan.internetSharingPreferences]
         case .internetSharingDevices:

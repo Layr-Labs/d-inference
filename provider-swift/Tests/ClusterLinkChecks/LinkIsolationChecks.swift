@@ -323,8 +323,22 @@ extension ClusterLinkCheck {
         expectEqual(ClusterLinkIsolationRequest(.isolate(both))!.prompt, "Darkbloom wants to give Thunderbolt port en6 its own network service with a fixed address and no router or DNS, switch the other service on that port off and take the port out of bridge0, so RDMA can use it.", "a prompt with all three")
         let replaced = ClusterLinkIsolationPlan(interface: "en6", address: IsolationFixtures.macBAddress, hardwarePort: "Thunderbolt 2",
             bridge: nil, servicesToDisable: [], replaceClusterService: true, linkLocalToRemove: nil, keeperToRemove: false)!
-        expectEqual(replaced.commands.first, "/usr/sbin/networksetup -removenetworkservice 'Darkbloom Cluster Link (en6)'",
-            "an existing service of Darkbloom's is made afresh")
+        // R5-2 (pair-2's MacBook): macOS refuses to remove a port's only service, which Darkbloom's is where the ports
+        // start in the bridge. An existing service of Darkbloom's is set up again in place, never removed and made again.
+        expectEqual(replaced.commands, [
+            "/usr/sbin/networksetup -setnetworkserviceenabled 'Darkbloom Cluster Link (en6)' on",
+            "/usr/sbin/networksetup -setmanual 'Darkbloom Cluster Link (en6)' \(IsolationFixtures.macBAddress.dottedDecimal) 255.255.0.0",
+            "/usr/sbin/networksetup -setdnsservers 'Darkbloom Cluster Link (en6)' Empty",
+            "/usr/sbin/networksetup -setv6LinkLocal 'Darkbloom Cluster Link (en6)'",
+        ], "an existing service of Darkbloom's is reconfigured in place")
+        // The MacBook as found: en6 in bridge0's saved members and in its own service.
+        let inBoth = ClusterLinkIsolationPlan(interface: "en6", address: IsolationFixtures.macBAddress, hardwarePort: "Thunderbolt 2",
+            bridge: .init(bridge: "bridge0", index: 0), servicesToDisable: [], replaceClusterService: true, linkLocalToRemove: nil,
+            keeperToRemove: false)!
+        expect(!inBoth.commands.contains { $0.contains("-removenetworkservice") || $0.contains("-createnetworkservice") }
+            && inBoth.commands.contains { $0.contains("Delete :VirtualNetworkInterfaces:Bridge:bridge0:Interfaces:0") }
+            && inBoth.commands.last == "/usr/sbin/networksetup -setv6LinkLocal 'Darkbloom Cluster Link (en6)'",
+            "in both: out of the bridge, the service kept and set: \(inBoth.commands)")
 
         // Nothing unvalidated reaches a command.
         let address = IsolationFixtures.macAAddress
@@ -497,8 +511,9 @@ extension ClusterLinkCheck {
             bridge: .init(bridge: "bridge0", index: 1), disabledServices: []))
         let dry = b.remove(dryRun: true)
         expectEqual(dry.outcome, .dryRun, "remove dry run")
-        expectEqual(dry.plannedCommands, [
-            "/usr/sbin/networksetup -removenetworkservice 'Darkbloom Cluster Link (en6)'",
+        // Darkbloom's service is the only one on Mac B's port: removed through SCPreferences, as proven on pair-2's MacBook.
+        expectEqual(dry.plannedCommands, lastServiceRemoval(id: IsolationFixtures.serviceID("e6"), interface: "en6",
+                order: [IsolationFixtures.serviceID("b0")]) + [
             "/usr/libexec/PlistBuddy -c 'Add :VirtualNetworkInterfaces:Bridge:bridge0:Interfaces:1 string en6' /Library/Preferences/SystemConfiguration/preferences.plist",
             "/sbin/ifconfig bridge0 addm en6",
         ], "the exact restore of Mac B, the service first")
@@ -559,7 +574,9 @@ extension ClusterLinkCheck {
     /// undone under one approval, never a choice; a failure part-way says what is left; `--device` still names one.
     static func isolationRemoveEveryPort() {
         let mac = IsolationFixtures.pairedM5Max
-        let removals = ["en2", "en1", "en6"].map { "/usr/sbin/networksetup -removenetworkservice 'Darkbloom Cluster Link (\($0))'" }
+        // Each is its port's only service; one approval, and every removal leaves all three out of the service order.
+        let removals = ["en2", "en1", "en6"].flatMap { lastServiceRemoval(id: IsolationFixtures.serviceID("a" + String($0.last!)), interface: $0,
+                                                                         order: [IsolationFixtures.serviceID("f0")]) }
         let dry = FakeIsolationWorld(mac.tools()).remove(dryRun: true)
         expectEqual(dry.outcome, .dryRun, "every port, no choice: \(dry.message)")
         expectEqual(dry.plannedCommands, removals, "one removal for each of Darkbloom's ports")
@@ -595,7 +612,40 @@ extension ClusterLinkCheck {
             && failed.message.contains("Still to undo: Thunderbolt ports en1 and en6."), "said truthfully: \(failed.message)")
         expect(compactJSON(failed).contains("\"remaining\":[\"rdma_en1\",\"rdma_en6\"]"), "and in JSON")
         // A named port is still the only one.
-        expectEqual(FakeIsolationWorld(mac.tools()).remove(device: "rdma_en6", dryRun: true).plannedCommands, [removals[2]], "--device names one")
+        expectEqual(FakeIsolationWorld(mac.tools()).remove(device: "rdma_en6", dryRun: true).plannedCommands,
+                    lastServiceRemoval(id: IsolationFixtures.serviceID("a6"), interface: "en6",
+                                       order: [IsolationFixtures.serviceID("f0"), IsolationFixtures.serviceID("a1"), IsolationFixtures.serviceID("a2")]),
+                    "--device names one, and leaves only its own ID out of the order")
+        // The MacBook as found: en6 in bridge0's saved members and in its own service. Only the service goes.
+        var inBoth = mac.tools()
+        inBoth.isolation.bridgePreferences = .output("{\"bridge0\":{\"Interfaces\":[\"en6\"]}}\n")
+        let both = FakeIsolationWorld(inBoth)
+        both.isolationRecord.set(.init(interface: "en6", address: IsolationFixtures.macBAddress, hardwarePort: "Thunderbolt 2",
+            bridge: .init(bridge: "bridge0", index: 0), disabledServices: []))
+        expectEqual(both.remove(device: "rdma_en6", dryRun: true).plannedCommands,
+                    lastServiceRemoval(id: IsolationFixtures.serviceID("a6"), interface: "en6",
+                                       order: [IsolationFixtures.serviceID("f0"), IsolationFixtures.serviceID("a1"), IsolationFixtures.serviceID("a2")]),
+                    "in both: the service goes; the port is already in the bridge's saved members")
+        // Unreadable preferences: nothing is guessed.
+        var unread = mac.tools()
+        unread.isolation.servicePreferences = .unavailable
+        expectEqual(FakeIsolationWorld(unread).remove(dryRun: true).outcome, .nothingFixable(.probeFailed), "no service ID, no removal")
+        // AppleScript carries the shell's quotes and backslash escaped.
+        let script = ClusterLinkIsolationRequest(.restore([ClusterLinkRepair.restoreNeeded(interface: "en6", entry: nil,
+            run: mac.tools().outcome(of:))!]))!.appleScript
+        expect(script.contains("printf '%s\\\\n' ") && !script.dropFirst(17).dropLast(80).contains("\"\""), "escaped: \(script.prefix(400))")
+    }
+
+    /// The exact removal of a port's only service through SCPreferences (`ClusterLinkLastService.removal`).
+    static func lastServiceRemoval(id: String, interface: String, order: [String]) -> [String] {
+        let preferences = "/Library/Preferences/SystemConfiguration/preferences.plist", set = IsolationFixtures.networkSet
+        return [
+            "/usr/libexec/PlistBuddy -c 'Print :NetworkServices:\(id):UserDefinedName' \(preferences) | /usr/bin/grep -qxF 'Darkbloom Cluster Link (\(interface))'",
+            "/usr/libexec/PlistBuddy -c 'Print :NetworkServices:\(id):Interface:DeviceName' \(preferences) | /usr/bin/grep -qxF \(interface)",
+            "/usr/bin/printf '%s\\n' 'remove /NetworkServices/\(id)' 'remove /Sets/\(set)/Network/Service/\(id)' 'get /Sets/\(set)/Network/Global/IPv4' "
+                + "'d.add ServiceOrder * \(order.joined(separator: " "))' 'set /Sets/\(set)/Network/Global/IPv4' 'commit' 'apply' | /usr/sbin/scutil --prefs",
+            "! /usr/libexec/PlistBuddy -c 'Print :NetworkServices:\(id)' \(preferences) >/dev/null 2>&1",
+        ]
     }
 
     static func isolationRecordFile() {

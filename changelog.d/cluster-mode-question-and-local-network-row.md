@@ -22,3 +22,7 @@
   is removed before the port goes back into its bridge (it used to end up in both), the removal stops at the first
   command that fails and says which ports are left, and an uninstall that already forgot the pairing says what is
   left and that running `darkbloom uninstall` again finishes it.
+- On a Mac whose Thunderbolt ports start in the Thunderbolt Bridge, such as a MacBook, Darkbloom's network service is
+  the port's only one, which macOS refuses to remove with its usual command. The removal now takes it out through
+  macOS's network preferences, after checking its name and port, and setting up the cable port again reuses
+  Darkbloom's existing service instead of removing and remaking it.

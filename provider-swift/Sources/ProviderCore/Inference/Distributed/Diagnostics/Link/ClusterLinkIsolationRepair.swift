@@ -227,9 +227,29 @@ extension ClusterLinkRepair {
             !clusterServicePresent && ClusterLinkNetworkFacts.lists(entry.address.dottedDecimal, on: interface, inListing: listing)
                 ? entry.address : nil
         }
+        // Darkbloom's service alone on its port: macOS's `networksetup` refuses to remove it, so it goes through
+        // SCPreferences, with its ID read now (R5-2, pair-2's MacBook).
+        var lastService: ClusterLinkLastService?
+        if clusterServicePresent, !machine.services.contains(where: { $0.interface == interface && $0.name != ours }) {
+            guard case .output(let services) = run(.networkServicePreferences),
+                  let id = ClusterLinkLastService.serviceID(of: ours, on: interface, inPreferences: services),
+                  case .output(let current) = run(.currentNetworkSet) else { return nil }
+            let set = current.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: "/Sets/", with: "")
+            guard ClusterLinkLastService.isID(set) else { return nil }
+            var order: [String]?
+            switch run(.networkServiceOrderPreferences(set: set)) {
+            case .output(let text):
+                guard let ids = try? JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String] else { return nil }
+                order = ids
+            case .unavailable: order = nil
+            case .timedOut, .outputTooLarge: return nil
+            }
+            guard let resolved = ClusterLinkLastService(serviceID: id, set: set, serviceOrder: order) else { return nil }
+            lastService = resolved
+        }
         return ClusterLinkIsolationRestore(interface: interface, removeClusterService: clusterServicePresent,
             servicesToEnable: toEnable, bridge: bridge, addressToRemove: leftover,
-            keeperToRemove: countingKeeper && keeperInstalled(interface: interface, run: run))
+            keeperToRemove: countingKeeper && keeperInstalled(interface: interface, run: run), lastService: lastService)
     }
 
     /// Whether the first version's keeper is loaded or its file exists.

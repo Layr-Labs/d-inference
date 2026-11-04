@@ -1236,7 +1236,13 @@ To take Darkbloom off a Mac altogether, see [Uninstall](#uninstall).
   (enN)" service whose record is gone), under one macOS approval, never asking
   which port. On each port it removes Darkbloom's service first and only then
   puts the port back in its bridge, and it stops at the first command that
-  fails. If that step fails after the pairing was forgotten, the summary says
+  fails. Where Darkbloom's service is the port's only one (a Mac whose
+  Thunderbolt ports start in the Thunderbolt Bridge, such as a MacBook), macOS's
+  `networksetup` refuses to remove it, so the service goes through macOS's
+  network preferences instead (`scutil --prefs`, `ClusterLinkLastService`),
+  checked first by its name and port; macOS then puts the port back in its
+  saved bridge itself. Setting the port up again reconfigures an existing
+  Darkbloom service in place instead of removing and remaking it. If that step fails after the pairing was forgotten, the summary says
   so, what is left, and the one command that finishes it: `darkbloom uninstall`
   again (the app and the cable records are kept for that).
 

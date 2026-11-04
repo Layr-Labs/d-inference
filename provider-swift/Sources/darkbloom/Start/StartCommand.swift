@@ -137,9 +137,15 @@ struct Start: AsyncParsableCommand {
         case openScreen
         /// No terminal: the pair starts with its saved model.
         case startPair
+        /// Single-Mac options without `--solo`: nothing starts, and why (never ignored).
+        case refuseOptions([String])
     }
 
-    static func pairStart(_ pair: ClusterPairSummary, solo: Bool, terminal: Bool) -> PairStart {
+    /// The single-Mac options given, by name. On a Mac in a cluster each needs `--solo`; `--config` applies to the pair.
+    var singleMacOptions: [String] { [] }
+
+    static func pairStart(_ pair: ClusterPairSummary, solo: Bool, terminal: Bool,
+                          singleMacOptions: [String] = []) -> PairStart {
         guard pair.paired else { return .single(note: nil) }
         if solo { return .single(note: pair.startNote) }
         if pair.pairingUnreadable { return .refuse(pair.startRefusal) }
@@ -152,12 +158,15 @@ struct Start: AsyncParsableCommand {
         Darkbloom.ensureLogging()
         if startsSingleMacServing, !ClusterPairSummary.startedByClusterService() {
             let pair = ClusterPairSummary.local()
-            switch Self.pairStart(pair, solo: solo, terminal: ClusterPairCommands.isTerminal()) {
+            switch Self.pairStart(pair, solo: solo, terminal: ClusterPairCommands.isTerminal(), singleMacOptions: singleMacOptions) {
             case .single(let note):
                 if let note { print(note) }
             case .refuse(let lines):
                 for line in lines { print(line) }
                 throw ExitCode.failure
+            case .refuseOptions(let lines):
+                for line in lines { print(line) }
+                throw ExitCode.validationFailure
             case .openScreen:
                 print(pair.actingLine("starting the pair"))
                 try await ClusterPairCommands.openScreen(config: configOptions.config)

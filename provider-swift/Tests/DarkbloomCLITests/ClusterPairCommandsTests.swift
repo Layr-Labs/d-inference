@@ -245,8 +245,8 @@ struct ClusterStatusPlainTests {
             "Serves: locally only (API key: `darkbloom local` on the Mac that serves it)",
             "■ Stopped; last model Qwen 3.8 27B.",
             "  When it starts: Local only, on this Mac's networks; API key: `darkbloom local`.",
-            "Next: To start it again: `darkbloom cluster` on this Mac, then choose the model. This Mac's cluster service is "
-                + "off; `darkbloom cluster` starts it again.",
+            "Next: `darkbloom start` on either Mac starts the pair again. This Mac's cluster service is off; "
+                + "`darkbloom start` here turns it back on.",
         ])
         #expect(ClusterPairSummary.notPaired.clusterStatusLines == ["This Mac isn't in a cluster.",
             "Next: To set up a cluster: `darkbloom cluster` on each Mac."])
@@ -649,6 +649,48 @@ struct ClusterPairControlTests {
         #expect(lines(result?.standardOutputContent) == ["This Mac is in a two-Mac cluster with \(otherMac): starting the pair."]
             + servingBlock + [""])
         #expect(pairActionCalls(text(result?.standardErrorContent)) == ["ensureService", "serve"])
+    }
+
+    @Test("`darkbloom start` with single-Mac options and no --solo on a Mac in a cluster refuses them by name")
+    func startRefusesSingleMacOptions() throws {
+        #expect(try Start.parse(["--model", "acme/Alpha-4bit"]).singleMacOptions == ["--model"])
+        #expect(try Start.parse(["--solo"]).singleMacOptions.isEmpty)
+        #expect(try Start.parse(["--config", "/tmp/provider.toml"]).singleMacOptions.isEmpty)
+        #expect(try Start.parse(["--coordinator-url", "wss://coordinator.invalid/ws", "--no-autopilot", "--all", "--idle-timeout",
+                                 "5", "--schedule", "--local", "--port", "8123", "--bind", "0.0.0.0", "--no-auth", "--timeout",
+                                 "30", "--force"]).singleMacOptions
+            == ["--coordinator-url", "--no-autopilot", "--all", "--idle-timeout", "--schedule", "--local", "--port", "--bind",
+                "--no-auth", "--timeout", "--force"])
+        #expect(try Start.parse(["--local-endpoint", "--autopilot"]).singleMacOptions == ["--autopilot", "--local-endpoint"])
+        let refusal = [
+            "This Mac is in a two-Mac cluster with \(otherMac): `--model` is for single-Mac serving, so nothing was started.",
+            "To choose the pair's model, run `darkbloom start` in a terminal; to serve this Mac alone with it, add --solo.",
+        ]
+        #expect(Start.pairStart(pair(), solo: false, terminal: true, singleMacOptions: ["--model"]) == .refuseOptions(refusal))
+        #expect(Start.pairStart(pair(), solo: false, terminal: false, singleMacOptions: ["--model"]) == .refuseOptions(refusal))
+        #expect(Start.pairStart(pair(), solo: true, terminal: false, singleMacOptions: ["--model"]) == .single(note:
+            "Starting single-Mac serving beside the two-Mac cluster with \(otherMac) (--solo): both use this Mac's memory."))
+        #expect(Start.pairStart(.notPaired, solo: false, terminal: false, singleMacOptions: ["--model"]) == .single(note: nil))
+        #expect(pair().singleMacOptionsRefusal(["--local", "--port", "--bind"]) == [
+            "This Mac is in a two-Mac cluster with \(otherMac): `--local`, `--port` and `--bind` are for single-Mac serving, so "
+                + "nothing was started.",
+            "To choose the pair's model, run `darkbloom start` in a terminal; to serve this Mac alone with them, add --solo.",
+            "To serve the pair on the leading Mac's own API only: `darkbloom cluster local`.",
+        ])
+    }
+
+    @Test("`darkbloom start --model X` on a Mac in a cluster starts nothing and says why; exit 64")
+    func startWithAModelOnThePair() async {
+        let result = await #expect(processExitsWith: .exitCode(64), observing: [\.standardOutputContent, \.standardErrorContent]) {
+            try await exitWithPair(servingPair(), actions: pairActions()) { _ in
+                try await runCLICommand(Start.self, ["start", "--model", "acme/Alpha-4bit"])
+            }
+        }
+        #expect(lines(result?.standardOutputContent) == [
+            "This Mac is in a two-Mac cluster with \(otherMac): `--model` is for single-Mac serving, so nothing was started.",
+            "To choose the pair's model, run `darkbloom start` in a terminal; to serve this Mac alone with it, add --solo.", ""])
+        let calls = pairActionCalls(text(result?.standardErrorContent))
+        #expect(calls.isEmpty, "\(calls)")
     }
 
     @Test("`darkbloom start` without a terminal and no model ever chosen says how to choose one; exit 1")

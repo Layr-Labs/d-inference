@@ -154,6 +154,21 @@ struct ClusterPairSummary: Sendable, Equatable {
             + "`darkbloom cluster` on this Mac to check the pairing first, or pass --solo."]
     }
 
+    /// `darkbloom start` with single-Mac options (`--model`, `--local`, …) but no `--solo` on a Mac in a cluster:
+    /// nothing starts, since they would otherwise be ignored. `--local` has a pair form (`darkbloom cluster local`).
+    func singleMacOptionsRefusal(_ options: [String]) -> [String] {
+        let named = options.map { "`\($0)`" }
+        let list = named.count < 2 ? named.joined() : named.dropLast().joined(separator: ", ") + " and " + named.last!
+        var lines = ["This Mac is in a two-Mac cluster with \(otherMac): \(list) \(named.count == 1 ? "is" : "are") for "
+                        + "single-Mac serving, so nothing was started.",
+                     "To choose the pair's model, run `darkbloom start` in a terminal; to serve this Mac alone with "
+                        + "\(named.count == 1 ? "it" : "them"), add --solo."]
+        if options.contains(where: { $0 == "--local" || $0 == "--local-endpoint" }) {
+            lines.append("To serve the pair on the leading Mac's own API only: `darkbloom cluster local`.")
+        }
+        return lines
+    }
+
     /// `darkbloom start --solo` on a Mac in a cluster: one line, and single-Mac serving starts.
     var startNote: String {
         if pairingUnreadable {

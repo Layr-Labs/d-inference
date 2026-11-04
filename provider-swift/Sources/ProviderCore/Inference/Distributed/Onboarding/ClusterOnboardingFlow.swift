@@ -1357,9 +1357,11 @@ public enum ClusterOnboardingDriver {
             return 1
         }
         // Only models the owner approved for clusters that these Macs can serve, those that fit now first, so enter
-        // picks one that fits (2026-11-02: the list showed the whole catalog).
+        // picks one that fits (2026-11-02: the list showed the whole catalog); last, those a Mac has no room for on disk.
         let listed = choices.indices.filter { choices[$0].listed }
-        let open = listed.filter { choices[$0].fitRemedy == nil } + listed.filter { choices[$0].fitRemedy != nil }
+        let roomy = listed.filter { choices[$0].provision?.fitsOnDisk != false }
+        let open = roomy.filter { choices[$0].fitRemedy == nil } + roomy.filter { choices[$0].fitRemedy != nil }
+            + listed.filter { choices[$0].provision?.fitsOnDisk == false }
         guard !open.isEmpty else {
             console.say("No approved model can run on these Macs now.")
             // One line per reason, the approved models it holds back named before it.
@@ -1390,7 +1392,8 @@ public enum ClusterOnboardingDriver {
             let titles = choices.map(\.title)
             let lines = open.map { index -> String in
                 let line = choices[index].listLine(sameTitleElsewhere: titles.filter { $0 == choices[index].title }.count > 1)
-                return choices[index].fitRemedy == nil ? line : line + " · does not fit now"
+                return line + (choices[index].fitRemedy == nil ? "" : " · does not fit now")
+                    + (choices[index].provision?.fitsOnDisk == false ? " · not enough free disk" : "")
             }
             guard let picked = console.choose(lines, selected: 0) else {
                 console.say("Nothing changed.")

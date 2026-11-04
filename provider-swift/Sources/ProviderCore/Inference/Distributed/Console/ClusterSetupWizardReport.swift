@@ -96,7 +96,8 @@ public struct ClusterSetupMac: Codable, Sendable, Equatable {
     /// macOS's version as numbers, for the minimum RDMA needs.
     public var osMajor: Int
     public var osMinor: Int
-    /// Free space for important use on the volume that holds the models; nil when not read.
+    /// Free space now on the volume that holds the models (`ClusterDiskSpace.freeBytes`; what macOS could purge is not
+    /// counted); nil when not read.
     public var diskFreeBytes: Int?
     public var diskTotalBytes: Int?
 

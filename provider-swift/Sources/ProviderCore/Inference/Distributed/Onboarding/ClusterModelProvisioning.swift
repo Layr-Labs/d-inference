@@ -318,9 +318,12 @@ public enum ClusterModelStore {
     }
 }
 
-/// Room on a volume for a model: the bytes free now, and what macOS says it could free on top of them.
+/// Room on a volume for a model. A copy or download counts only the bytes free now. macOS's "important usage"
+/// capacity adds what it could purge (local snapshots, files iCloud keeps elsewhere), which it may never free: on the
+/// owner's M3 Ultra it read 256.6 GB with 54.1 GB free, and the setup offered a 172.9 GB download (2026-11-03). That
+/// space is said when it alone would make room, never counted.
 public struct ClusterDiskSpace: Sendable, Equatable {
-    /// Free now.
+    /// Free now: the volume's available capacity, else `statfs`'s blocks available to this user.
     public var freeBytes: Int64
     /// What macOS could free beyond `freeBytes` for important use; 0 when it says nothing more.
     public var purgeableBytes: Int64
@@ -330,16 +333,24 @@ public struct ClusterDiskSpace: Sendable, Equatable {
     }
 
     /// From macOS's figures, each nil when not read: `available` (`volumeAvailableCapacity`), `importantUsage`
-    /// (`volumeAvailableCapacityForImportantUsage`) and `statfs` (`f_bavail` × `f_bsize`). Nil when none was read.
+    /// (`volumeAvailableCapacityForImportantUsage`) and `statfs` (`f_bavail` × `f_bsize`). Nil when no free figure was read.
     public init?(available: Int64?, importantUsage: Int64?, statfs: Int64?) {
-        guard let free = importantUsage.flatMap({ $0 > 0 ? $0 : nil }) ?? statfs else { return nil }
-        self.init(freeBytes: free)
+        guard let free = available.flatMap({ $0 > 0 ? $0 : nil }) ?? statfs else { return nil }
+        self.init(freeBytes: free, purgeableBytes: importantUsage.map { $0 > free ? $0 - free : 0 } ?? 0)
     }
 
     /// Whether `bytes` fit with `reserve` kept free.
     public func holds(_ bytes: Int64, keeping reserve: Int64) -> Bool {
         let (need, overflow) = bytes.addingReportingOverflow(reserve)
         return !overflow && freeBytes >= need
+    }
+
+    /// "macOS could free up to 202.5 GB more (…)": only when `bytes` and `reserve` do not fit now and that space would
+    /// make room.
+    func purgeableNote(_ bytes: Int64, keeping reserve: Int64) -> String? {
+        let (need, overflow) = bytes.addingReportingOverflow(reserve)
+        guard !overflow, freeBytes < need, purgeableBytes >= need - freeBytes else { return nil }
+        return "macOS could free up to \(ClusterModelProvisioning.gigabytes(purgeableBytes)) more (purgeable files such as local snapshots), but Darkbloom doesn't count on it"
     }
 }
 
@@ -434,9 +445,11 @@ public enum ClusterModelProvisioning {
 
     public static func gigabytes(_ bytes: Int64) -> String { String(format: "%.1f GB", Double(bytes) / 1e9) }
 
-    /// "this Mac has 54.1 GB free; the model needs 172.9 GB and 2.1 GB to spare". `what` is "the model" or "the copy".
+    /// "this Mac has 54.1 GB free; the model needs 172.9 GB and 2.1 GB to spare", then what macOS could purge when that
+    /// would make room (`ClusterDiskSpace.purgeableNote`). `what` is "the model" or "the copy".
     static func diskShortWords(mac: String, disk: ClusterDiskSpace, needs what: String, bytes: Int64) -> String {
-        "\(mac) has \(gigabytes(disk.freeBytes)) free; \(what) needs \(gigabytes(bytes)) and \(gigabytes(reserveBytes)) to spare"
+        let words = "\(mac) has \(gigabytes(disk.freeBytes)) free; \(what) needs \(gigabytes(bytes)) and \(gigabytes(reserveBytes)) to spare"
+        return disk.purgeableNote(bytes, keeping: reserveBytes).map { words + ". " + $0 } ?? words
     }
 
     /// "about 4 s", "about 3 min".

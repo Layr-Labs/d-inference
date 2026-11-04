@@ -116,11 +116,11 @@ enum ClusterSetupLocalReader {
         let osText = "\(os.majorVersion).\(os.minorVersion)" + (os.patchVersion > 0 ? ".\(os.patchVersion)" : "")
         let volume = URL(fileURLWithPath: installation.modelDirectory.map { URL(fileURLWithPath: $0).deletingLastPathComponent().path }
             ?? NSHomeDirectory())
-        let values = try? volume.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey, .volumeTotalCapacityKey])
+        let values = try? volume.resourceValues(forKeys: [.volumeTotalCapacityKey])
         return .init(profile: profile, profileError: profileError, chip: profile?.chip ?? sysctlString("machdep.cpu.brand_string") ?? "Apple silicon",
             physicalMemoryBytes: profile?.physicalMemoryBytes ?? Int(clamping: ProcessInfo.processInfo.physicalMemory),
             osVersion: profile.map { "\($0.osVersion) (\($0.osBuild))" } ?? osText, osMajor: os.majorVersion, osMinor: os.minorVersion,
-            diskFreeBytes: values?.volumeAvailableCapacityForImportantUsage.map { Int(clamping: $0) },
+            diskFreeBytes: ClusterModelStore.diskSpace(at: volume).map { Int(clamping: $0.freeBytes) },
             diskTotalBytes: values?.volumeTotalCapacity)
     }
 

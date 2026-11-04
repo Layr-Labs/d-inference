@@ -63,9 +63,10 @@ set up, three commands work from your shell without a terminal:
    Never install a local build, `darkbloom-dev`, or an app copied from another Mac.
 10. Use `sudo` only where a Darkbloom message asks for it, and let the human type the password.
 11. On a paired Mac, `darkbloom start`, `stop`, `restart` and `status` act on
-    the pair, from either Mac, and say so in their first line. Add `--solo`
-    only when the human wants single-Mac serving on this Mac alone. It then
-    runs beside the pair, and both use this Mac's memory.
+    the pair, from either Mac, and say so in their first line. Single-Mac
+    options such as `--model` are refused there (exit status 64). Add `--solo`
+    only when the human wants single-Mac serving on this Mac alone, and only
+    while the pair is stopped: it is refused while this Mac's part of the pair serves.
 
 ### What only the human can do
 
@@ -83,7 +84,7 @@ Tell the human about these at the start.
 | Choose the model | Step 3 or [step 6](#6-two-macs-choose-the-model-on-the-leader), and when changing it later | Picks from the list that you read out |
 | Screen Sharing (headless Macs) | Any macOS prompt, and the login session | macOS prompts appear only on the Mac's own screen, so the human opens it with Screen Sharing. Apple's App Attest also needs someone logged in to the Mac's desktop |
 | Log in to macOS after a restart or power cut | Any time | Logs in on that Mac. With FileVault on, the disk stays locked until then, and Darkbloom serves again only after that. A pair serves only once both Macs are logged in |
-| Run `darkbloom cluster` in Terminal | Steps 5–7, and to change the pair's model later | It needs a terminal window. Without one it prints ``Run `darkbloom cluster` in a Terminal window on this Mac.`` |
+| Run `darkbloom cluster` in Terminal | Steps 5–7, and later to change or test the pair's model (`darkbloom start` in a terminal opens the same screen) | It needs a terminal window. Without one it prints ``Run `darkbloom cluster` in a Terminal window on this Mac.`` |
 | Optional: a Darkbloom API key | [Verify](#a-test-request-through-darkbloom) | Creates a key in the console and puts it in your environment as `DARKBLOOM_API_KEY` |
 
 ### What each Mac needs
@@ -297,9 +298,11 @@ human will be asked and about how long it takes, then has four steps:
    too."). The human clicks **Allow** on each Mac, and each screen shows
    `✓ Allowed`. Over SSH, the prompt appears on the Mac's own screen, so the
    human uses Screen Sharing.
-4. The other Mac then says that the leader chooses the model. Its window
-   follows the start and ends with the same result as the leader's, and it
-   says when the window can be closed. Everything after this is chosen on the leader.
+4. The other Mac then says ``Waiting for the other Mac (…) to choose the model
+   and start…`` and follows the start. It ends with the same ✓ or ✗ block as
+   the leader. After ✓ it says `You can close this window.`; after ✗,
+   ``Choose Retry on the other Mac (…): its screen shows the choices.``.
+   Everything after this is chosen on the leader.
 
 If ``Cable port not set up. Run `darkbloom cluster` again.`` appears, the
 password prompt was declined or failed. Run `darkbloom cluster` again with
@@ -336,8 +339,9 @@ Tell the human how the split works. Never choose a mode for them:
 1. **STOP**: read the list to the human and ask which model to serve. Enter
    selects the first line. Rule 5 applies: a `download` model is downloaded on
    the leader and then copied, so it takes its full size on each Mac.
-2. If the screen then asks which mode, its default is the fastest one
-   measured on these Macs. Keep it unless the human wants the other.
+2. If the screen then asks ``How should both Macs split <model>?``, the first
+   choice is the fastest mode measured on these Macs, or the planner's choice
+   when none is measured yet. Keep it unless the human wants the other.
 3. If the model still has to reach a Mac, a second list offers `Download`,
    `Copy to the other Mac (about N s)` or `Copy from the other Mac`, and
    `Cancel`. Enter selects the first. Progress is shown, and an interrupted
@@ -363,10 +367,12 @@ Tell the human how the split works. Never choose a mode for them:
    loading its share) shows the time since loading began. The leader waits at
    most 15 minutes for both Macs to load the model and answer a first request.
    Wait, and don't touch either Mac.
-3. The result appears as one block. Success starts with `✓` and names the
-   model, its split, both Macs and how the pair serves. A failure looks like
-   this, followed by the choices **Retry**, **Change model**, **Serve locally
-   only** and **Diagnostics**:
+3. The result appears as one block. Success is the `✓` block, then the
+   pair's card: `Model:`, `Macs:`, `Serves:` (or `Local:` for a pair served
+   locally only), `Logs:`, `Starts by itself at login on both Macs.` and the
+   commands `darkbloom stop`, `restart` and `status`. The command then returns
+   to the shell. A failure looks like this, followed by the choices **Retry**,
+   **Change model**, **Serve locally only** and **Diagnostics**:
 
    ```text
    ────────────────────────────────────────────────
@@ -382,9 +388,11 @@ Tell the human how the split works. Never choose a mode for them:
 
 ## Verify it really serves
 
-Never report success because a start command finished. A line that says the
-pair is registered with, or offered to, Darkbloom does not mean serving: the
-coordinator still has to pair both Macs, and both have to load the model.
+Never report success because a start command finished.
+``Offered to Darkbloom as a pair for <model>; waiting for Darkbloom to accept
+this pair…`` on the screen, or `Registered with the coordinator as a cluster
+member` in a log, does not mean serving: the coordinator still has to pair
+both Macs, and both have to load the model.
 Before 0.10.8, the setup could even say `✓ Serving … Done.` with nothing loaded.
 
 ### One Mac
@@ -473,7 +481,9 @@ The test proves that the pair serves only if no other Mac of the account
 serves the same model. See [self-route](self-route.md) for more. A pair that
 serves locally only takes no requests through Darkbloom. Its API is on the
 Mac that `darkbloom cluster status` names, and `darkbloom local` there prints
-the API key. Its start already answered a test request.
+the API key. Its start already answered a test request; to send one again,
+the human chooses the model it serves in
+[the pair's model list](#the-pairs-model-list).
 
 ## Manage it later
 
@@ -483,21 +493,22 @@ otherwise ([stopping and starting again](two-mac-cluster.md#stopping-and-startin
 | To | On | Do |
 |---|---|---|
 | See whether the pair serves, and why not | Either Mac | `darkbloom cluster status` (`--json` for you). `darkbloom status` starts with the same block |
-| Stop the pair | Either Mac | `darkbloom stop`, the same as `darkbloom cluster stop`. Both Macs stop and stay stopped after a restart. It ends with `Memory freed on both Macs ✓` |
-| Start it again | Either Mac | `darkbloom start`. Without a terminal it starts the saved model on both Macs, waits up to 10 minutes and prints a result block. Exit status `0` means it serves, `3` not yet, `4` stopped, `5` the other Mac isn't answering, `1` it couldn't start. In a terminal it opens the `darkbloom cluster` screen |
-| Restart it with the same model | Either Mac | `darkbloom restart`, with the same result block and exit statuses |
-| Change the model, or switch between serving through Darkbloom and locally only | The leader, in a terminal | `darkbloom cluster`: the pair's model list, with the current model selected. Enter on it keeps it, or starts it again on a stopped pair. Another model asks once before it switches, then shows the progress and the result block |
-| Start over and pair again | Either Mac, in a terminal | `darkbloom cluster` → **Start over (pair again)** → **Yes, start over**. Then run `darkbloom cluster` on the other Mac and choose **Start over (pair again)**, or **Pair again**, if it offers it ([pairing again](two-mac-cluster.md#pairing-again)) |
+| Stop the pair | Either Mac | `darkbloom stop`, the same as `darkbloom cluster stop`. Both Macs stop and stay stopped after a restart. Once both parts have ended it says `Stopped on both Macs.` and `Memory freed on both Macs ✓` (exit status 0). `Asked both Macs to stop; …` with what still runs means a part hasn't ended yet (exit status 1): run `darkbloom stop` again a minute later |
+| Start it again | Either Mac | `darkbloom start`. Without a terminal it starts the saved model on both Macs and waits up to 10 minutes, also through reasons the Macs fix by themselves, then prints a result block. Exit status `0` means it serves, `3` not yet, `4` stopped, `5` the other Mac isn't answering, `1` it couldn't start. In a terminal it opens the `darkbloom cluster` screen |
+| Restart it with the same model | Either Mac | `darkbloom restart`, with the same result block and exit statuses. If a part hasn't released its memory after the stop, it doesn't start again and exits with status 1 |
+| Change or test the model, or switch between serving through Darkbloom and locally only | The leader, in a terminal | `darkbloom cluster`, or `darkbloom start` in a terminal ([below](#the-pairs-model-list)) |
+| Start over and pair again | Either Mac, in a terminal | `darkbloom cluster` → **Start over (unpair and set up again)** → **Yes, start over**. Then run `darkbloom cluster` on the other Mac and choose **Start over (unpair and set up again)**, or **Pair again**, if it offers it ([pairing again](two-mac-cluster.md#pairing-again)) |
 | Update | Every Mac | `darkbloom update` on each Mac, and the pair restarts together. Automatic updates are on by default |
-| Run single-Mac serving on one Mac, beside the pair | That Mac | `darkbloom start --solo --model <id>`. `stop --solo`, `restart --solo` and `status --solo` act on it alone |
+| Serve on one Mac alone instead of the pair | That Mac | Stop the pair first (`darkbloom stop`), then `darkbloom start --solo --model <id>`. `--solo` is refused while this Mac's part of the pair serves. `stop --solo`, `restart --solo` and `status --solo` act on single-Mac serving alone. Stop it with `darkbloom stop --solo` before you start the pair again |
 | Stop one Mac whose partner is gone for good | That Mac | `darkbloom cluster stop --local-only` |
 | Keep this Mac's cluster service from starting at login | That Mac | `darkbloom cluster stop --service`. It stops the pair first. `darkbloom cluster` turns it on again |
 | List the cluster commands | Any Mac | `darkbloom cluster --help` |
 
 `darkbloom start` without a terminal needs a model chosen earlier. Otherwise
 it says ``No model was chosen for the pair yet: run `darkbloom start` in a
-terminal to choose one.`` and exits with status 1. Without a terminal it
-looks like this:
+terminal to choose one.`` and exits with status 1. Single-Mac options such as
+`--model` are refused there by name, without `--solo` (exit status 64).
+Without a terminal it looks like this:
 
 ```text
 This Mac is in a two-Mac cluster with the other Mac (Apple M5 Max, 128 GB): starting the pair.
@@ -511,9 +522,30 @@ This Mac is in a two-Mac cluster with the other Mac (Apple M5 Max, 128 GB): star
   darkbloom status   Check status
 ```
 
-On the Mac that follows, `darkbloom cluster` shows the pair's status and
-names the leader, where the model is changed. `darkbloom stop` there stops
-both Macs.
+### The pair's model list
+
+On the leader, `darkbloom cluster` opens with both Macs and the cable, then
+the pair's ✓ or ✗ status, then the pair's model list. The model serving now
+(or the one last used) is selected:
+
+- Enter on the model serving now (and on its mode, if asked) sends one test
+  request: ``✓ Already serving <model>; test response in N s`` and the card,
+  or the ✗ block with its choices. A pair served only through Darkbloom has no
+  local API on that Mac to test from, and the screen says so: use the
+  [test request](#a-test-request-through-darkbloom) instead.
+- On a stopped pair, Enter starts the last model again.
+- Another model asks ``Switch to <model>? …`` once (**No** by default), then
+  says `✓ Stopped <model> on both Macs`, shows each Mac's load and ends like a start.
+- A line that ends with ` · not enough free disk` is refused before anything stops.
+- **Switch to local only** (or **Switch to serving through Darkbloom**) and
+  **Start over (unpair and set up again)** are lines in the same list. q
+  changes nothing.
+
+On the Mac that follows, `darkbloom cluster` shows the pair's status,
+`This Mac runs its part by itself.` and ``To change the model, run `darkbloom
+cluster` or `darkbloom start` on the other Mac (…). `darkbloom stop` here
+stops both Macs.``. Enter closes; **Start over (unpair and set up again)** is
+the other choice.
 
 ## Uninstall
 
@@ -530,9 +562,12 @@ of a pair, remove Darkbloom's background services, revoke this Mac's account
 token, unpair the Mac, undo the cable port setup (macOS asks for an
 administrator password) and remove the `darkbloom` command link. The summary
 lists each step as done, skipped or failed, and the space freed. The exit
-status is 1 when a step failed. Without a terminal, the command needs a
-choice and `--yes`; otherwise it prints its `Usage:` line and exits with
-status 64.
+status is 1 when a step failed or a folder was not removed (its line says
+`not removed: <why>`). Without a terminal, the command needs a choice and
+`--yes`; otherwise it prints its `Usage:` line and exits with status 64. Run
+it as the logged-in user, never with `sudo`: it refuses `sudo` (exit status
+64) and asks for the password itself when a step needs it. In a terminal
+without flags, **Remove everything** asks once more before it starts.
 
 1. **STOP**: ask the human which choice they want, and show them the plan
    first. `--dry-run` changes nothing and needs no `--yes`. Add `--json` for
@@ -577,13 +612,16 @@ yet"](troubleshooting.md#a-two-mac-cluster-says-not-serving-yet) and
 |---|---|---|
 | doctor: `[FAIL] cluster localLinkIsolation.rdma_enN: clusterSubnetInUse: The cluster port enN cannot be isolated yet (the cluster subnet 10.219/16 is already used on this Mac) …`, on a version below 0.10.8 | A known false alarm on paired Macs: macOS reaches the port's own address through a loopback route | Don't stop for it, and never run `darkbloom cluster link --remove` because of it. Verify serving instead, and update both Macs. 0.10.8 no longer reports it |
 | The same `[FAIL]` on 0.10.8 or later | Another interface or a VPN on this Mac uses 10.219/16 | **STOP**: show the human the line. They remove that address or VPN route, then run `darkbloom cluster` again |
-| `This Mac's Secure Enclave key changed after it paired …`, or one Mac waits at `2/4 Pair` while the other shows its status | An old pairing: a Mac was reinstalled, unpaired or replaced, or moved between apps | On the Mac with the old pairing, choose **Pair again** if it offers it, otherwise **Start over (pair again)** → **Yes, start over**. Then pair as in step 5 ([pairing again](two-mac-cluster.md#pairing-again)) |
-| `The other Mac (…) isn't answering over the cable. …`, or `darkbloom cluster status` exits with status 5 | That Mac's cluster service is off, or the Mac is asleep, off, or waiting for someone to log in | **STOP**: the human wakes or logs in to that Mac and runs `darkbloom cluster` there. Then choose **Try again** here, where the screen offers it, or run `darkbloom cluster status` again. Silence is not a broken pairing: use **Start over (pair again)** only if that Mac was reinstalled, unpaired or replaced |
+| `This Mac's Secure Enclave key changed after it paired …`, or one Mac waits at `2/4 Pair` while the other shows its status | An old pairing: a Mac was reinstalled, unpaired or replaced, or moved between apps | On the Mac with the old pairing, choose **Pair again** if it offers it, otherwise **Start over (unpair and set up again)** → **Yes, start over**. Then pair as in step 5 ([pairing again](two-mac-cluster.md#pairing-again)) |
+| `The other Mac (…) isn't answering over the cable. …`, or `darkbloom cluster status` exits with status 5 | That Mac's cluster service is off, or the Mac is asleep, off, or waiting for someone to log in | **STOP**: the human wakes or logs in to that Mac and runs `darkbloom start` or `darkbloom cluster` there. Then choose **Try again** here, or run `darkbloom cluster status` again. Silence is not a broken pairing: use **Start over (unpair and set up again)** only if that Mac was reinstalled, unpaired or replaced |
 | `<model> doesn't fit in free memory now: Quit apps on … first.`, a list line ending `does not fit now`, or `✗ Not serving: <Mac> lacks free memory for its share` | That Mac's apps hold memory its share needs | **STOP**: ask the human to quit apps (or stop single-Mac serving there with `darkbloom stop --solo`), then **Retry**. Or choose a smaller model. Never raise `iogpu.wired_limit_mb` or change other memory settings to force a fit |
 | ``Can't start <model>: … Free space, then run `darkbloom cluster` again.``, or a list line ending `not enough free disk` | A Mac doesn't have the model's size free now, plus 2.1 GB | **STOP**: tell the human the figures in the line. They free space on that Mac (`tmutil listlocalsnapshots /` lists local snapshots), then run `darkbloom cluster` again |
 | `No approved model can run on these Macs now.` | No approved model fits these Macs or is supported on them | Read the reasons it prints, then **STOP** |
 | `… aren't logged in to Darkbloom …` or `[WARN] account link: not logged in` | No Darkbloom login on that Mac | Run `darkbloom login` on that Mac (step 2), then **Check again** or **Retry** |
 | `A part keeps ending the same way: …` | One Mac's part keeps failing at start | Choose **Diagnostics**, which saves a redacted file in the home folder. Then [report it](#report-a-problem) |
+| `darkbloom stop` says `Asked both Macs to stop; …`, then what still runs (exit status 1) | Both Macs took the stop, but a part hasn't ended yet | Wait a minute, then run `darkbloom stop` again: once both parts have ended it says `Stopped on both Macs.` and `Memory freed on both Macs ✓`. Don't kill Darkbloom processes |
+| ``… `--model` is for single-Mac serving, so nothing was started.`` (exit status 64), or ``This Mac's part of the pair holds its serving lock, so single-Mac serving can't start beside it. …`` | On a paired Mac, single-Mac options need `--solo`, and `--solo` needs the pair stopped | Leave the pair alone. Only if the human wants this Mac to serve alone: `darkbloom stop`, then `darkbloom start --solo --model <id>` |
+| `This Mac isn't in a cluster, but a cluster service is still set up on it (left from an earlier pairing).` (exit status 6) | A cluster service without a pairing, left from an earlier pairing | To pair, go to step 5. To remove it, with the human's go: `darkbloom cluster stop --service` |
 | `darkbloom stop` on the Mac that follows says `Nothing was stopped on this Mac.` | The leader stops both Macs, and it isn't answering | Wake or log in to the leader, then run `darkbloom stop` again. Only if the human says the leader is gone for good: `darkbloom cluster stop --local-only` |
 | `This Mac's pairing record couldn't be read (…), so it may be in a two-Mac cluster.` | The pairing file is damaged or unsafe | **STOP**: the human runs `darkbloom cluster` on this Mac to check it. Don't add `--solo` to get around it |
 | ``Run `darkbloom cluster` in a Terminal window on this Mac.`` | It ran without a terminal | Ask the human to run it in Terminal (step 5) |
@@ -635,7 +673,8 @@ Code that prints the lines quoted here:
 | `Local link:` states and the `localLinkIsolation` check | `provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/Link/ClusterLinkReadinessState.swift`, `provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/Link/ClusterLinkIsolationStatus.swift` |
 | Models approved for clusters, and the tensor-parallel and pipeline placements | `provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/ClusterPublicModels.swift` (`declared`, `placement`) |
 | Tensor parallel first wherever it fits | `provider-swift/Sources/ProviderCore/Inference/Distributed/Placement/ClusterPlacementFlow.swift` (`tensorParallelFirst`) |
-| The setup's steps, code question, lists, login check and result block | `provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/ClusterOnboardingFlow.swift` (`ClusterOnboardingDriver.checkLogins`, `finishStart`) |
+| The setup's steps, code question, lists, login check, result block and card, and the test on the serving model | `provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/ClusterOnboardingFlow.swift` (`ClusterOnboardingDriver.checkLogins`, `finishStart`, `pairCard`, `testServing`) |
+| The joining Mac following the first start | `ClusterOnboardingDriver.followStart` |
 | Why a pair does not serve | `ClusterOnboardingNotServing` |
 | `darkbloom start`, `stop`, `restart` and `status` on a paired Mac | `provider-swift/Sources/darkbloom/Start/StartCommand.swift` (`Start.pairStart`), `provider-swift/Sources/darkbloom/StopCommand.swift` (`Stop.pairedStop`), `provider-swift/Sources/darkbloom/RestartCommand.swift` (`Restart.pairRestart`), `ClusterPairCommands` |
 | `darkbloom cluster status`, its exit statuses and `--json` | `provider-swift/Sources/darkbloom/ClusterDiagnosticsCommand.swift` (`Cluster.Status`), `ClusterPairSummary.JSON` |

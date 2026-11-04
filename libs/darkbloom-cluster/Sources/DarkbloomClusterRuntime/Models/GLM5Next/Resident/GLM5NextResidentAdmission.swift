@@ -309,17 +309,13 @@ public struct GLM5NextResidentResourceEnvelope {
         let context = "its \(scope.maximumContextTokens)-token request"
         let capacity = "more than its load capacity of \(gib(loadCapacityBytes)) (on a serving rank, what its GPU keeps resident)"
         let weights = load.sourceAllocationBoundBytes, scratch = load.initialLoadPeakBytes - weights
-        if admitsRequestsOnArrival {
-            guard load.initialLoadPeakBytes > loadCapacityBytes else {
-                return "GLM rank \(rank) at cut \(cut) quotes \(gib(request.reservedBytes)) for \(context), "
-                    + "more than its request capacity of \(gib(requestCapacityBytes))"
-            }
-            return "GLM rank \(rank) at cut \(cut) needs \(gib(load.initialLoadPeakBytes)) to load (weights \(gib(weights)), "
-                + "load scratch \(gib(scratch))), \(capacity)"
-        }
-        guard peak.reservedBytes > loadCapacityBytes else {
+        guard (admitsRequestsOnArrival ? load.initialLoadPeakBytes : peak.reservedBytes) > loadCapacityBytes else {
             return "GLM rank \(rank) at cut \(cut) quotes \(gib(request.reservedBytes)) for \(context), "
                 + "more than its request capacity of \(gib(requestCapacityBytes))"
+        }
+        if admitsRequestsOnArrival {
+            return "GLM rank \(rank) at cut \(cut) needs \(gib(load.initialLoadPeakBytes)) to load (weights \(gib(weights)), "
+                + "load scratch \(gib(scratch))), \(capacity)"
         }
         return "GLM rank \(rank) at cut \(cut) needs \(gib(peak.reservedBytes)) to load and serve \(context) "
             + "(weights \(gib(weights)), load scratch \(gib(scratch)), request \(gib(request.reservedBytes))), \(capacity)"

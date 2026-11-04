@@ -947,7 +947,6 @@ public enum ClusterPlacementPlanner {
             }
             var serving = 0, low = min(memoryContext, chunk + 1), high = memoryContext
             if short == 0, fitsNow(low) {
-                serving = low
                 while low < high {
                     let middle = low + (high - low + 1) / 2
                     if fitsNow(middle) { low = middle } else { high = middle - 1 }

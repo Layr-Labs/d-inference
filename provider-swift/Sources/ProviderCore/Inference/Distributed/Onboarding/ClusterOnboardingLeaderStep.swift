@@ -121,5 +121,9 @@ public struct ClusterOnboardingLeaderStepMark: Codable, Sendable, Equatable {
 public struct ClusterOnboardingLeaderStatus: Sendable, Equatable {
     public var lines: [String]
     public var step: ClusterOnboardingLeaderStep?
-    public init(lines: [String], step: ClusterOnboardingLeaderStep?) { self.lines = lines; self.step = step }
+    /// How far its start is (`ClusterOnboardingStartProgress`); nil before it starts, and from an older build.
+    public var start: ClusterOnboardingStartProgress?
+    public init(lines: [String], step: ClusterOnboardingLeaderStep?, start: ClusterOnboardingStartProgress? = nil) {
+        self.lines = lines; self.step = step; self.start = start
+    }
 }

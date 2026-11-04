@@ -206,6 +206,8 @@ public final class ClusterOnboardingTerminal: ClusterOnboardingConsole {
     /// Room: the indent, petal and space, the ellipsis and the last column.
     private var liveRoom: Int { max(1, columns - 6) }
 
+    public var liveWidth: Int? { decorates ? liveRoom : nil }
+
     private func drawWorking(_ rows: [String], force: Bool) {
         let now = DispatchTime.now().uptimeNanoseconds
         let frame = animates ? Int((now / 125_000_000) % 4) : 0

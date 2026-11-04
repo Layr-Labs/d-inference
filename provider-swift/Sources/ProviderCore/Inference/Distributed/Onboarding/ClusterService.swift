@@ -1003,7 +1003,8 @@ public final class ClusterService: @unchecked Sendable {
         if leads {
             let live = context.observe(link: false)
             session = .init(observed: live.observed, ready: live.ready, readyRanks: live.readyRanks,
-                ranks: max(live.members.count, configuration?.peers.count ?? 2), port: live.port, detail: live.detail ?? live.sessionPhase)
+                ranks: max(live.members.count, configuration?.peers.count ?? 2), port: live.port, detail: live.detail ?? live.sessionPhase,
+                readyRankList: live.members.filter(\.ready).map(\.rank))
         }
         return lock.withLock {
             let reference = try? saved.reference.get()

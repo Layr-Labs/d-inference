@@ -988,7 +988,7 @@ public final class ClusterService: @unchecked Sendable {
                     startedAt: child?.isRunning == true ? childStartedAt : oldPart?.startedAt,
                     solo: child?.isRunning == true ? childSetup?.hasPrefix("solo:") == true : oldPart?.solo,
                     notice: oldPart != nil ? "the previous run's part is still releasing; waiting before starting another"
-                        : child?.isRunning == true && childSetup?.hasPrefix("solo:") != true ? Self.servingNotice(in: serviceFiles.rankLog) : nil,
+                        : child?.isRunning == true && childSetup?.hasPrefix("solo:") != true ? Self.servingNotice(in: serviceFiles.rankLog, from: childLogOffset) : nil,
                     configurationSHA256: child?.isRunning == true && childSetup?.hasPrefix("cluster:") == true
                         ? String(childSetup!.dropFirst("cluster:".count).prefix(64)) : nil),
                 session: session,
@@ -999,6 +999,13 @@ public final class ClusterService: @unchecked Sendable {
                 control: controlStatusLocked(model: record?.leadership?.modelName), servicePID: getpid())
             value.updating = updatingLine
             value.localOnly = record?.leadership.map { $0.scope.isLocalOnly }
+            value.loggedIn = AuthTokenStore.load() != nil
+            if child?.isRunning == true, childIsMember {
+                value.child.pair = Self.pairReport(in: serviceFiles.rankLog, from: childLogOffset).map(ClusterOnboardingPairReport.text)
+                let state = DaemonStateFile.read()
+                value.child.appAttest = Self.memberAppAttest(pid: child?.processIdentifier, state: state)
+                value.child.appAttestRetryAt = Self.memberAppAttestRetryAt(pid: child?.processIdentifier, state: state)
+            }
             value.memberQuickEnds = memberQuickEnds
             value.approvalID = configuration?.nativeMember?.clusterApproval?.id ?? ""
             value.pairUpdate = ClusterPairUpdate.readProgress(from: ClusterServiceAgent.updateProgressPath(serviceDirectory: store.paths.directory))
@@ -1230,17 +1237,38 @@ public final class ClusterService: @unchecked Sendable {
         return ClusterConsoleText.plain(ClusterConsoleText.bounded(String(line.dropFirst(6)).trimmingCharacters(in: .whitespaces), maximum: 240))
     }
 
+    /// The latest pair line (`ClusterOnboardingPairReport`) the running coordinator-paired part wrote in `log` since
+    /// `offset`, where it began writing: a line an earlier part wrote is never this part's.
+    /// The line is written once per change and every request adds a line after it, so it is read backwards from the end
+    /// (`ClusterLogScan`), not from a fixed tail.
+    static func pairReport(in log: URL, from offset: UInt64) -> ClusterOnboardingPairReport.State? {
+        ClusterOnboardingPairReport.latest(inLogFile: log, from: offset)
+    }
+
+    /// Whether the coordinator's latest trust status for the running coordinator-paired part (`pid`, the process that
+    /// wrote the daemon state) carries a current App Attest serving authorization; nil when it has sent none yet.
+    static func memberAppAttest(pid: Int32?, state: DaemonState? = DaemonStateFile.read(), now: Double = Date().timeIntervalSince1970) -> Bool? {
+        guard let pid, let state, state.pid == pid, let trust = state.trust else { return nil }
+        return trust.authorization?.hasCurrentAppAttestAuthorization(now: now) ?? false
+    }
+
+    /// When the running coordinator-paired part (`pid`) may make a new App Attest key again: its local key-generation
+    /// safeguard as its daemon state last reported it (read only); nil when nothing blocks it or nothing is known.
+    static func memberAppAttestRetryAt(pid: Int32?, state: DaemonState?, now: Double = Date().timeIntervalSince1970) -> Double? {
+        guard let pid, let state, state.pid == pid, let until = state.appAttest?.key?.generationBlockedUntil, until > now else { return nil }
+        return until
+    }
+
     /// `ClusterLocalServing.notice` when this Mac's running part (rank 0) said it serves on its local API only.
     public static func servingNotice() -> String? {
         (try? paths().rankLog).flatMap { servingNotice(in: $0) }
     }
 
-    private static func servingNotice(in log: URL) -> String? {
-        guard let handle = FileHandle(forReadingAtPath: log.path) else { return nil }
-        defer { try? handle.close() }
-        let size = (try? handle.seekToEnd()) ?? 0
-        try? handle.seek(toOffset: size > 16_384 ? size - 16_384 : 0)
-        return ClusterLocalServing.notice(inLog: String(decoding: handle.readDataToEndOfFile(), as: UTF8.self))
+    /// The same notice in `log` from `offset` on (where the running part began writing): a part writes it once its API
+    /// listens and every request adds a line after it, so it is read backwards from the end (`ClusterLogScan`).
+    static func servingNotice(in log: URL, from offset: UInt64 = 0) -> String? {
+        ClusterLogScan.lastLine(in: log, from: offset) { $0.hasPrefix(ClusterLocalServing.logPrefix) }
+            .flatMap { ClusterLocalServing.notice(inLog: String($0)) }
     }
 
     /// Private local acknowledgement; only the supervision loop can advance

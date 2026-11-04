@@ -297,10 +297,11 @@ struct SandboxSetupFlow {
     private func checkWorkDisks(_ disks: [String]) throws {
         var ready = true
         for path in disks {
-            let check = SandboxWorkDisk.check(path: path, volume: workDiskVolume(path))
+            let volume = workDiskVolume(path)
+            let check = SandboxWorkDisk.check(path: path, volume: volume)
             printChecks([check])
             guard check.level == .fail else { continue }
-            if let mount = ownershipToTurnOn(path), turnOnOwnership(mount) {
+            if let mount = ownershipToTurnOn(path, on: volume), turnOnOwnership(mount) {
                 let again = SandboxWorkDisk.check(path: path, volume: workDiskVolume(path))
                 printChecks([again])
                 if again.level != .fail { continue }
@@ -314,10 +315,10 @@ struct SandboxSetupFlow {
         throw ExitCode.failure
     }
 
-    /// The mount point of the drive at `path` when its one problem is
-    /// ownership off and there is a prompt to offer the fix at.
-    private func ownershipToTurnOn(_ path: String) -> String? {
-        guard !confirmed, interactiveInput, let volume = workDiskVolume(path),
+    /// The mount point of the drive at `path` (on `volume`) when its one
+    /// problem is ownership off and there is a prompt to offer the fix at.
+    private func ownershipToTurnOn(_ path: String, on volume: SandboxWorkDisk.Volume?) -> String? {
+        guard !confirmed, interactiveInput, let volume,
               SandboxWorkDisk.problem(path: path, volume: volume) == .ownershipOff else { return nil }
         return volume.mountPoint
     }

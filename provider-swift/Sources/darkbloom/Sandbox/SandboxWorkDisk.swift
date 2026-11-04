@@ -3,7 +3,7 @@ import Foundation
 
 /// A drive for the add-on's VM images and jobs (`setup --disk`, or the drive
 /// the owner picks in setup). Setup checks the two things an owner must set up
-/// by hand, APFS and ownership, before it downloads anything; the installer
+/// by hand, APFS and ownership, before it installs anything; the installer
 /// checks each disk again by the add-on's full rules before it writes anything.
 enum SandboxWorkDisk {
     /// The first add-on release whose installer takes `--disk`.
@@ -88,12 +88,11 @@ enum SandboxWorkDisk {
         func refuse(_ detail: String, fix: String) -> SandboxEligibility.Check {
             SandboxEligibility.Check(level: .fail, name: "Work disk", detail: detail, fix: fix)
         }
-        guard let volume else {
-            return refuse("\(path) cannot be read", fix: "check the path, then run setup again")
-        }
+        let unreadable = refuse("\(path) cannot be read", fix: "check the path, then run setup again")
+        guard let volume else { return unreadable }
         switch problem(path: path, volume: volume) {
         case .unreadable:
-            return refuse("\(path) cannot be read", fix: "check the path, then run setup again")
+            return unreadable
         case .notMounted(let mount):
             return refuse("\(mount) is not a mounted drive",
                           fix: "connect the drive and check that it shows in Finder, then run setup again")

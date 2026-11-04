@@ -28,7 +28,8 @@ INTRO = '# Changelog\n\nUnreleased changes live in `changelog.d/`.\n'
 # Every pull request of the synthetic history: (title, author).
 PULLS = {
     11: ('Add feature A <b>bold</b>', 'alice'), 12: ('Add feature B', 'bob'), 13: ('Sync master into dev', 'carol'),
-    14: ('Add feature C with `--flag` and *stars*', 'alice'), 15: ('Add feature D', 'dave'), 16: ('Add feature E', 'erin'),
+    14: ('Add feature C with `--flag` and *stars*', 'alice'), 15: ('Add feature D', 'dave'),
+    16: ('Add feature E', 'erin'),
     17: ('Add feature F', 'bob'), 18: ('Add feature G', 'erin'), 19: ('Add feature H', 'hank'),
     20: ('Fix master directly', 'frank'), 21: ('Fix master again', 'frank'), 22: ('Hotfix on master', 'grace'),
     30: ('Release dev into master: provider 1.1.0', 'david'), 31: ('Prepare provider 1.1.0', 'jonathan'),
@@ -434,7 +435,7 @@ class ReleaseContents(unittest.TestCase):
                                              use_github=False)
         for number, author in ((11, None), (12, 'bob'), (14, None), (20, 'frank')):
             self.assertIn(pull_line(number, author), body.splitlines())
-        self.assertIn('titles from git', source)
+        self.assertEqual(source, 'git (GitHub not asked)')
 
     def test_a_git_failure_says_what_git_said(self):
         # The release job's warning carries the message, so it must say why git failed.

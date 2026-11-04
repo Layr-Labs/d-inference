@@ -415,14 +415,14 @@ def release_body(header, tag, repository, history, *, target=None, previous=None
         raise ValueError(f'No release before v{version} in the history of {target}')
     contents = release_contents(history, target, previous, version)
     listed = contents.dev + contents.master
-    source = 'titles from git (GitHub not asked)'
+    source = 'git (GitHub not asked)'
     pulls = None
     if use_github:
         try:
             pulls = (lookup or (lambda found: github_pull_requests(repository, found)))([c.number for c in listed])
             source = 'GitHub'
         except Exception as error:  # noqa: BLE001 - git still names every pull request
-            source = f'titles from git, GitHub did not answer: {error}'
+            source = f'git (GitHub did not answer: {error})'
     if pulls is None:
         pulls = git_pull_requests(history, listed, repository)
     text = history.git('show', f'{target}:CHANGELOG.md')
@@ -443,8 +443,8 @@ def write_release_notes(root, env):
     try:
         _, body, source = release_body(header, tag, env['GITHUB_REPOSITORY'], Repository())
         if source != 'GitHub':
-            print(f'::warning::Release notes for {tag}: pull request {source}. Authors are shown only where a '
-                  f"commit's GitHub noreply address names them.", file=sys.stderr)
+            print(f'::warning::Release notes for {tag}: pull request titles from {source}. Authors are shown '
+                  f"only where a commit's GitHub noreply address names them.", file=sys.stderr)
     except Exception as error:  # noqa: BLE001 - the release itself must still be published
         print(f'::warning::Release notes for {tag} lack the changelog and pull requests: {error}', file=sys.stderr)
         body = (header.rstrip('\n') + '\n\n' + f'The changelog section and pull request list could not be '
@@ -489,7 +489,7 @@ def main():
                                           previous=args.previous, version=args.tag.removeprefix('v'),
                                           use_github=not args.git_titles)
     print(summary(contents), file=sys.stderr)
-    print(f'pull request titles: {source}', file=sys.stderr)
+    print(f'pull request titles from {source}', file=sys.stderr)
     if args.output:
         args.output.write_text(body)
     else:

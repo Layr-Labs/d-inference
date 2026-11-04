@@ -8,14 +8,12 @@ import struct
 import subprocess
 import zlib
 
+from verified_download_cache import cached
+
 SPEC = importlib.util.spec_from_file_location(
     "mimo_audio_pins", Path(__file__).with_name("prepare-mimo-audio-fixtures.py"))
 PINS = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(PINS)
-SPEC = importlib.util.spec_from_file_location(
-    "mimo_prompt_fixtures", Path(__file__).with_name("prepare-mimo-prompt-fixtures.py"))
-PROMPT = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(PROMPT)
 NAMES = ("config.json", "tokenizer.json", "tokenizer_config.json", "chat_template.jinja")
 
 
@@ -62,7 +60,7 @@ def main():
     args = parser.parse_args()
     if any(c in str(args.output) for c in "\r\n"):
         raise ValueError("invalid environment path")
-    fetch = download if args.cache is None else PROMPT.cached(download, args.cache, lambda name: PINS.FILES[name][1])
+    fetch = download if args.cache is None else cached(download, args.cache, lambda name: PINS.FILES[name][1])
     output = prepare(args.output, fetch)
     with args.github_env.open("a", encoding="utf-8") as stream:
         stream.write(f"MIMO_CLUSTER_IMAGE_METADATA_DIR={output}\nMIMO_CLUSTER_IMAGE_ASSET_DIR={output}\n")

@@ -94,12 +94,15 @@ if [ -z "$provider_test_shard" ]; then
 else
   : "${PROVIDER_TEST_REPORT_DIR:?PROVIDER_TEST_SHARD needs PROVIDER_TEST_REPORT_DIR}"
   mkdir -p "$PROVIDER_TEST_REPORT_DIR" || exit 1
-  if ! [[ "$provider_test_shard" =~ ^([1-9][0-9]*)/([1-9][0-9]*)$ ]] ||
-      (( BASH_REMATCH[1] > BASH_REMATCH[2] )) || ! [[ "$provider_test_processes" =~ ^[1-9]$ ]]; then
+  # Read K and N before any other match replaces BASH_REMATCH.
+  job="" jobs=""
+  if [[ "$provider_test_shard" =~ ^([1-9][0-9]*)/([1-9][0-9]*)$ ]]; then
+    job=${BASH_REMATCH[1]} jobs=${BASH_REMATCH[2]}
+  fi
+  if [ -z "$job" ] || (( job > jobs )) || ! [[ "$provider_test_processes" =~ ^[1-9]$ ]]; then
     echo "PROVIDER_TEST_SHARD must be K/N with 1 <= K <= N and PROVIDER_TEST_PROCESSES 1 to 9" >&2
     exit 2
   fi
-  job=${BASH_REMATCH[1]} jobs=${BASH_REMATCH[2]}
   if [ "$provider_test_processes" = 1 ]; then
     run_provider_test_slot "$provider_test_shard" || provider_test_status=$?
   else

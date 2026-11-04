@@ -156,7 +156,7 @@ The last provider shard runs the MiMo audio gate (`testNativeAudioRelease`),
 whose fixture needs the 1.87 GB pinned audio codec, only when the gate's
 inputs change (`MIMO_AUDIO` in `scripts/ci-component-paths.py`: the MiMo,
 audio and media provider code, the MiMo tests, the MLX pins, the audio and
-provider fixture scripts and the gate's recipe) and on every `master` push, which runs every
+provider fixture scripts and the gate's recipe) and on every `master` and `dev` push, which runs every
 component. A pull request outside those inputs neither downloads the codec
 nor runs the gate.
 
@@ -1273,8 +1273,9 @@ in selections that `scripts/cluster-test-plan.py` defines. Each selection runs
 in a process of its own through `scripts/run-nested-suite.sh`, which fails when
 the selection runs no test or skips a test. Runtime shard 1 runs `base`, the
 longest selection, alone. Shard 2 runs two groups at the same time, each in
-plan order with its own `TMPDIR` (the CPU batch-session suite and the GLM,
-TF32 and Gemma selections; the Qwen GPU chain), then the share probe alone,
+plan order with its own `TMPDIR` (the CPU batch-session suite with the GLM
+paged-KV, invariance and census, TF32 and Gemma selections; the Qwen GPU chain
+with `glm53-prefix-ssd`), then the share probe alone,
 whose 1.5 s budget includes the first use of the Qwen TP kernels on the Mac. Every process starts with
 `MLX_QMV_BATCH_INVARIANT=1`, as every cluster process does.
 

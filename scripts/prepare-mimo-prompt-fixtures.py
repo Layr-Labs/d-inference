@@ -3,11 +3,12 @@
 
 import argparse
 import hashlib
-import os
 from pathlib import Path
 import stat
 import urllib.parse
 import urllib.request
+
+from verified_download_cache import cached
 
 REPOSITORY = "XiaomiMiMo/MiMo-V2.6-Flash-RL"
 REVISION = "5711b268169967567844e1e560e8a3966da959b1"
@@ -37,30 +38,6 @@ def public_metadata(name):
         if urllib.parse.urlsplit(response.geturl()).scheme != "https":
             raise ValueError("insecure fixture redirect")
         return response.read(MAXIMUM + 1)
-
-
-def cached(fetch, cache, pin):
-    """Wrap `fetch(name)` with a content-addressed cache directory.
-
-    An entry is named by the SHA-256 that `pin(name)` returns and is used only
-    when its bytes still have that digest; otherwise `fetch` runs and its
-    verified bytes replace the entry. The caller still checks every result.
-    """
-    def fetch_cached(name):
-        digest = pin(name)
-        entry = cache / digest
-        if entry.is_file() and not entry.is_symlink():
-            data = entry.read_bytes()
-            if hashlib.sha256(data).hexdigest() == digest:
-                return data
-        data = fetch(name)
-        if hashlib.sha256(data).hexdigest() == digest:
-            cache.mkdir(parents=True, exist_ok=True)
-            temporary = cache / f".{digest}.{os.getpid()}"
-            temporary.write_bytes(data)
-            temporary.replace(entry)
-        return data
-    return fetch_cached
 
 
 def prepare(output, corpus, download=public_metadata):

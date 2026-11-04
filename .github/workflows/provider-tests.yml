@@ -189,7 +189,11 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: provider-test-diagnostics-${{ matrix.shard }}
-          path: ${{ runner.temp }}/provider-test-diagnostics
+          # The watchdog's diagnostics, and each process's whole output, which
+          # the runner prints only after all of the shard's processes end.
+          path: |
+            ${{ runner.temp }}/provider-test-diagnostics
+            ${{ runner.temp }}/provider-unit-shard/slot-*.out
           if-no-files-found: warn
           retention-days: 7
       # Prompt Parity runs once, in shard 1 (the shard of selection

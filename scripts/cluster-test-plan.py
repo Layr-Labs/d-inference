@@ -107,10 +107,11 @@ QWEN_TP_MTP_GPU_TESTS = (
 
 SELECTIONS = (
     # Blocking shard 1 runs `base`, the longest selection, alone. Shard 2 runs
-    # group 1 (the CPU batch-session suite, then the GLM, TF32 and Gemma
-    # selections) beside group 2 (the Qwen GPU chain), then the share probe
-    # alone: its 1.5 s budget includes the first use of the Qwen TP kernels on
-    # the Mac, after qwen-tp-batch-gpu, with no other process beside it.
+    # group 1 (the CPU batch-session suite, then the GLM paged-KV, invariance
+    # and census, TF32 and Gemma selections) beside group 2 (the Qwen GPU
+    # chain and glm53-prefix-ssd), then the share probe alone: its 1.5 s
+    # budget includes the first use of the Qwen TP kernels on the Mac, after
+    # qwen-tp-batch-gpu, with no other process beside it.
     Selection("base-batch-session", "blocking", 2, suites=("QwenTensorParallelBatchSessionTests",), group=1),
     Selection("base", "blocking", 1),
     Selection("qwen-tp-batch-gpu", "blocking", 2, {"QWEN_TP_BATCH_GPU": "1"}, tests=(
@@ -274,7 +275,12 @@ def swift_arguments(selection):
 
 def command(selection, output):
     if selection.runner is None:
-        return PACKAGE, [str(NESTED_SUITE), *swift_arguments(selection)]
+        filter_regex, *extra = swift_arguments(selection)
+        # The groups of a shard share one build. With --skip-build no process
+        # writes it, so they skip SwiftPM's lock on .build, which would
+        # otherwise run them one after another.
+        lock = ["--ignore-lock"] if selection.group is not None else []
+        return PACKAGE, [str(NESTED_SUITE), filter_regex, *lock, *extra]
     directory = PACKAGE / "Tests" / selection.runner
     if (directory / "run.py").is_file():
         return ROOT, ["python3", str(directory / "run.py"), "--output", str(output / selection.runner)]

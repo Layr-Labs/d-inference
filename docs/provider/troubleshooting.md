@@ -1,6 +1,6 @@
 # Provider troubleshooting
 
-> Last updated: 2026-10-23
+> Last updated: 2026-11-02
 
 Symptom → check → fix for the `darkbloom` provider: installer exits, `doctor`
 check names, service lifecycle, coordinator connection, updates, models and the
@@ -80,11 +80,12 @@ App Attest, attestation readiness, trust, model fit, runtime, billing, version;
 | `coordinator health`, `minimum version`, `coordinator trust` | Coordinator reachable, this version is accepted, trust verdict with reasons | `darkbloom update`; reasons are explained in [attestation](./attestation.md) |
 | `trust level` stuck at `self_signed` | The MDM `SecurityInfo` cross-check has not passed for this connection | `darkbloom enroll` if not enrolled; otherwise wait — see [Reaching and keeping `hardware` trust](./attestation.md#troubleshooting) |
 | `daemon`, `daemon connected`, `daemon state freshness` | Daemon process alive, WebSocket connected, snapshot refreshed | See [service lifecycle](#the-service-does-not-stay-running); a stale snapshot ⇒ `darkbloom restart` |
+| `coordinator traffic` | Whether the coordinator can route work to this connection: connected, a coordinator verdict received, and an App Attest lease, legacy authorization or a request routed since the latest status. ✗ names the cause from current evidence only: disconnected, no verdict minutes after connecting, an `untrusted` or `offline` status, an expired lease, or a refusal received in the last minute with the coordinator's reason. ℹ `unconfirmed`: the last refusal is older than that, so it does not show an exclusion; the current coordinator sends no status when legacy verification authorizes a connection after its registration refusal. Skipped while an add-on holds the connected Mac on purpose: `darkbloom status` prints `Not serving: held by add-on …` and `darkbloom addon` shows the hold (`provider-swift/Sources/ProviderCore/Diagnostics/ServingReadiness.swift`) | Follow the printed fix. A locked login keychain, a stalled Apple call or a provider started outside the logged-in GUI session clears after logging in at the console or `darkbloom restart`; `app_attest_identity_required` needs `darkbloom login`; macOS 26 needs macOS 27 unless the Mac is in the legacy MDM cohort. `unconfirmed` prints no fix: its reason is the coordinator's last, which may no longer apply. See [connected but no traffic](#coordinator-connection) |
 | `recent model load` | Last model-load error recorded by the daemon | See [models and memory](#models-and-memory) |
 | `kv backend posture`, `kv backend crash-loop guard` | Explicit `engine_v2_kv_backend` request honoured; guard record present | See [KV-backend guard](#kv-backend-crash-loop-guard) |
 | `competing inference` | Another inference server holds the GPU (`provider-swift/Sources/darkbloom/Diagnostics/CompetingInferenceDiagnostics.swift`) | Quit it; it competes for the same unified memory and GPU time |
 | `glm wired limit` | Shown only when GLM-5.3-Flash is downloaded, selected or served on a 256 GB M5 Mac: the GPU wired-memory limit (`iogpu.wired_limit_mb`, or Metal's working set while it is `0`) and both user wire limits against the production values (`provider-swift/Sources/darkbloom/Diagnostics/GLMWiredLimitAdvice.swift`) | ⚠ only; follow [GLM-5.3-Flash GPU wired-memory limit](#glm-53-flash-gpu-wired-memory-limit) |
-| `usage reporting` | Usage rows the coordinator has not acknowledged (`usageGaps > 0`) | Transient after reconnects; persistent gaps ⇒ `darkbloom report` |
+| `usage reporting` | Requests completed since the daemon started whose usage chunk was missing (`usageGaps > 0`); the pass line counts this daemon's completions, not paid jobs | Transient after reconnects; persistent gaps ⇒ `darkbloom report` |
 | `up to date` | `SelfUpdater.checkForUpdate`; also reports a quarantined release | See [updates](#updates) |
 
 `darkbloom verify` runs the same set, except the doctor-only `glm wired limit`,
@@ -137,16 +138,18 @@ tail -50 ~/.darkbloom/provider.log ~/.darkbloom/watchdog.log
 
 | Symptom | Mechanism | Fix |
 |---|---|---|
-| `daemon connected` ⚠, console shows offline | The client reconnects with an exponential backoff (`ExponentialBackoff`, `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient+Connection.swift`; bounds in [runtime constants](./cli-reference.md#runtime-constants)) | `curl -v https://api.darkbloom.dev/health`; check DNS, clock, TLS interception, firewall on 443 |
+| `daemon connected` ⚠, console shows offline | The client reconnects with an exponential backoff (`CoordinatorReconnectPolicy`, `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorReconnectPolicy.swift`; bounds in [runtime constants](./cli-reference.md#runtime-constants)) | `curl -v https://api.darkbloom.dev/health`; check DNS, clock, TLS interception, firewall on 443 |
 | Log: `WebSocket pong timeout (no response in 30s)` | No pong within `pongTimeout` of a `pingInterval` ping closes the socket and the backoff restarts it ([runtime constants](./cli-reference.md#runtime-constants)) | Network path stalls; nothing to configure on the provider |
-| Heartbeats arrive but requests do not | A heartbeat every `heartbeat_interval_secs` proves the connection, not routability | `darkbloom doctor` → `trust level`, `coordinator trust`; the routing gates are listed in [`../architecture/security/attestation.md#routing-gate`](../architecture/security/attestation.md#routing-gate) |
+| Heartbeats arrive but requests do not ("no traffic until restart") | A heartbeat every `heartbeat_interval_secs` proves the connection, not routability. The coordinator routes only a connection it authorizes (an App Attest lease or legacy verification) | `darkbloom status` → `Traffic:` and `darkbloom doctor` → `coordinator traffic` name the cause and fix. The provider re-registers a connection while that verdict stays `NOT receiving` for 15–30 minutes, then after 30 minutes, 1 hour, 2 hours and every 4 hours, only while it is idle: no accepted or local requests, model loads, Autopilot operation, drain or update (`provider-swift/Sources/ProviderCore/Coordinator/UnauthorizedConnectionRecovery.swift`, `provider-swift/Sources/ProviderCore/ProviderLoop+ServingAuthorizationRecovery.swift`). A refusal counts only while the coordinator keeps repeating it, so a refusal sent once at registration never triggers a re-registration. `darkbloom logs` records when the coordinator starts refusing the connection, when it authorizes it, and when its refusal is no longer current. The routing gates are listed in [`../architecture/security/attestation.md#routing-gate`](../architecture/security/attestation.md#routing-gate) |
 | `minimum version` ✗ | Coordinator rejects this `ProviderCore.version` | `darkbloom update` |
+| `Requests served` in `status` is higher than the jobs in the console's Earnings | The status count covers only the time since the daemon started (the `… ago` on the line) and includes requests that ended early on a coordinator cancel or a dropped connection, which the coordinator may not pay for, and free [self-route](./self-route.md) requests to your own machine. Earnings lists only paid jobs (`provider-swift/Sources/darkbloom/StatusCommand+ServedRequests.swift`) | Compare Earnings over the same period; the machine card's Tokens/reqs add the status counters up across restarts |
 
 ## Updates
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `Latest release vX is quarantined on this machine.` | vX crashed `rollbackThreshold` times before surviving `defaultStabilizationSeconds` (`provider-swift/Sources/ProviderCore/Update/UpdateRecoveryState.swift`; values in [runtime constants](./cli-reference.md#runtime-constants)) | Wait for the next release (it installs normally), or `darkbloom update --override-quarantine` |
+| `Latest release vX is quarantined on this machine.` | vX crashed `rollbackThreshold` times before surviving `defaultStabilizationSeconds`, or was rolled back with `darkbloom update --rollback` (`provider-swift/Sources/ProviderCore/Update/UpdateRecoveryState.swift`; values in [runtime constants](./cli-reference.md#runtime-constants)) | Wait for the next release (it installs normally), or `darkbloom update --override-quarantine` |
+| A new release runs but regresses | Automatic updates install every newer release | `darkbloom update --rollback` restores the previous release and quarantines this one; leave automatic updates on ([roll back](./installation.md#roll-back-to-the-previous-release)) |
 | `vX is already installed on disk but this process is vY.` | Update landed, daemon not restarted | `darkbloom restart` |
 | `SHA-256 hash mismatch!` | Download ≠ `bundle_hash`/`binary_hash`/`metallib_hash` | Retry; persistent mismatch means the release record and artifact disagree |
 | `another update/recovery operation is active` | Watchdog recovery or a previous update holds the lock | Wait a minute; retry |
@@ -164,11 +167,16 @@ are tabulated in [`cli-reference.md`](./cli-reference.md#runtime-constants).
 |---|---|---|
 | `model fits in RAM` FAIL / `Cold load blocked (memory)` in status | The live no-eviction load budget is below the scanner's complete model estimate plus activation and minimum-KV serving reserve, and request-time idle eviction cannot close the gap. The nominal `Inference memory` hardware figure is not live free RAM. Status and doctor show both the preload gap and the smaller eviction-aware cold-load gap ([load gate](../architecture/hardware-support.md#load-gate-modelloadadmission)). A busy machine with an active request gets a temporary verdict instead | Free at least the **cold-load** shortfall with margin, rerun `darkbloom doctor`, then `darkbloom restart` to retry preload when enabled; or select a smaller model ([hardware requirements](./hardware-requirements.md)). A request cannot cold-load at the same memory level. |
 | `Preload skipped (no eviction)` in status | The model does not fit alongside the current resident slots. The request-time allowance can fit it by evicting idle models; startup preload deliberately avoids that churn | Keep the current serving set, or free memory if both models should stay resident. |
+| A load refusal says `Not evictable: <model> (… GB: …)`, or status says `Not evictable for a load now: …` | That resident model cannot be evicted for the load: an Autopilot placement hold (until the UTC time shown), requests in flight, a local request, an Autopilot pin, an unload or an MTP upgrade in progress. `adopted by Autopilot outside the selected models` means an Autopilot operation placed it there, not your selection ([placements](../architecture/model-autopilot.md#placements-after-an-operation)) | Wait for the hold to expire or the requests to finish, then retry the load; a hold also ends when an operation unloads the model or Autopilot is disabled. |
+| `Serving outside the enabled model filter: <model>` in status | The running daemon serves a model your saved `enabled_models` omits: an Autopilot operation adopted it, it is in the running daemon's selection (a hand-edited filter applies only at the next start), or a live Autopilot lease published it. A coordinator command or model rollout never adds one ([operator filter](../reference/configuration.md#provider-model-selection)); on provider 0.10.6 or earlier, see the next row | For an adoption see `darkbloom autopilot status`; otherwise `darkbloom restart` applies the saved filter. |
+| Provider 0.10.6 or earlier: a build you deselected with `darkbloom switch` or deleted with `darkbloom models remove` comes back within minutes, downloads again and replaces the build you selected (for example `gemma-4-26b-qat-4bit` replacing `gemma-4-26b`); status shows `Serving outside the enabled model filter: <build>` | The coordinator moved a public model you serve to `<build>`, and these providers follow that rollout even when `enabled_models` omits it. It reaches every Mac that serves any build of that public model, including its rollback build (`gemma-4-26b-8bit`) | Update the provider. Until then, serve the newest build (pick the public model's name in `darkbloom switch`) or select no build of that public model; a restart, a new login or selecting the rollback build does not stop it. |
+| The log says `desired_models: <model> → <build> is outside the enabled model filter; not converging` | A public model you serve moved to a newer build that your `enabled_models` does not list. The provider keeps serving your build. The coordinator now sends the public model's requests to the newer build first, so your build gets them only when no Mac with the newer build has room | To keep your build, nothing. To take the new build, run `darkbloom switch` and pick the public model's name (the picker shows its newest build under that name and downloads it), with your other models. |
 | Model missing from `darkbloom models list` | Not in `~/.cache/huggingface/hub`, or filtered by `enabled_models` | `darkbloom models download <id>`; `darkbloom models list --all` |
 | Load fails after a catalog update | New build published for the alias | `darkbloom models remove <id>` then `darkbloom models download <id>` |
 | `Skipping <id>: model_type … has no engine-v2 adapter` | Family not served by CBv2 | Use a supported family; the model is never advertised |
 | Slow decode, GPU busy | `competing inference` ⚠ | Quit the other server |
 | GLM-5.3-Flash requests or loads fail and the log mentions Metal `Insufficient Memory` | The macOS GPU wired-memory limit is below what GLM plans at full KV | [GLM-5.3-Flash GPU wired-memory limit](#glm-53-flash-gpu-wired-memory-limit) |
+| Failed jobs on the console's Jobs card; `darkbloom logs` shows `Inference failure: invalid request (…)` lines | Each line is one request the provider refused before running it; the reason names the request shape ([refusal lines](./cli-reference.md#refusal-lines)). Request text is never logged | Nothing to change on the Mac. The client must change the request; a model that refuses the shape refuses it on every provider |
 
 ## GLM-5.3-Flash GPU wired-memory limit
 
@@ -234,6 +242,13 @@ SSD caching remains enabled by default with no resident retention; use
 `DARKBLOOM_PREFIX_CACHE=0` to disable local reuse independently
 ([prefix-cache defaults](../architecture/prefix-cache.md#invariants)).
 
+## Missing base reward
+
+`doctor` billing is local usage reporting, not a coordinator
+`model=base_reward` grant. If last-1000 earnings show no `base_reward` rows
+(or amounts that match a smaller RAM class) while `doctor` is green, follow
+[Check a missing base reward](base-rewards.md).
+
 ## Collect a report
 
 ```bash
@@ -259,4 +274,5 @@ provider logs or `devicecheckd` evidence.
 - [CLI reference](./cli-reference.md) — flags, paths, runtime constants.
 - [Installation](./installation.md) · [Quickstart](./quickstart.md).
 - [Attestation](./attestation.md) — trust levels, enrollment, challenge cadence.
+- [Check a missing base reward](./base-rewards.md) — green `doctor` vs missing `model=base_reward`.
 - [Direct mode](./direct-mode.md) · [Fan control](./fan-control.md) · [Beta features](./beta-features.md).

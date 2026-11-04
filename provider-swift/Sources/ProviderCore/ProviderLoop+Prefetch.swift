@@ -43,6 +43,7 @@ extension ProviderLoop {
     /// `.started` status is queued; the download runs on a low-priority task and
     /// never consumes a GPU slot or blocks inference.
     func handlePrefetchModelRequest(modelId: String, priority: Int, send: SendHandle) async {
+        if isClusterMember { rejectClusterMemberPrefetch(modelId, send: send); return }
         // With saved consent, a build outside ordinary serving never takes the
         // ordinary path, not even under a live lease, or a `models_update`
         // would make it ordinary: it is an Autopilot download into the set
@@ -344,11 +345,12 @@ extension ProviderLoop {
             return
         }
         // A declared successor of a selected build remains that model's
-        // existing update workflow. Unrelated observation-only inventory never
-        // inherits permission merely by appearing in desired state.
+        // existing update workflow, inside the operator's filter only.
+        // Unrelated observation-only inventory never inherits permission
+        // merely by appearing in desired state.
         for entry in entries {
             if let previous = entry.previousBuild, ordinaryServingModelIDs.contains(previous),
-                !entry.desiredBuild.isEmpty {
+                !entry.desiredBuild.isEmpty, operatorFilterAllows(entry.desiredBuild) {
                 ordinaryServingModelIDs.insert(entry.desiredBuild)
                 if autopilotConsented && !autopilotSetAllows(entry.desiredBuild) {
                     autopilotSuccessorNeedsInventoryRefresh = true
@@ -377,7 +379,13 @@ extension ProviderLoop {
 
         for entry in entries {
             let desired = entry.desiredBuild
-            guard !desired.isEmpty, autopilotAllowsModel(desired) else { continue }
+            guard !desired.isEmpty else { continue }
+            guard autopilotAllowsModel(desired) else {
+                if !operatorFilterAllows(desired) {
+                    logger.info("desired_models: \(entry.modelName) → \(desired) is outside the enabled model filter; not converging")
+                }
+                continue
+            }
             guard ModelRuntimeRequirements.isEligible(
                 modelID: desired, available: loopConfig.runtimeCapabilities)
             else {

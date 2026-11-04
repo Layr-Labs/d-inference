@@ -174,6 +174,10 @@ struct ModelPrefetchDownloaderTests {
         return URLSession(configuration: config)
     }
 
+    /// The same three attempts per file with a short wait between them: these
+    /// tests count requests and bytes, not the production one-second backoff.
+    private static let retryBackoff: Duration = .milliseconds(1)
+
     @Test("prefetch downloads, verifies aggregate, and publishes the snapshot")
     func prefetchFullSuccess() async throws {
         PrefetchURLProtocol.reset()
@@ -206,7 +210,7 @@ struct ModelPrefetchDownloaderTests {
             "/\(prefix)/model.safetensors": weightBytes,
         ]
 
-        let downloader = ModelDownloader(r2CDNURL: "https://cdn.example.test", urlSession: makeSession())
+        let downloader = ModelDownloader(r2CDNURL: "https://cdn.example.test", urlSession: makeSession(), retryBackoff: Self.retryBackoff)
         let model = CatalogModel(id: modelID, s3Name: "unused", displayName: "Full", sizeGb: 0.001,
                                  r2Prefix: prefix, aggregateSHA256: aggregate)
 
@@ -254,7 +258,7 @@ struct ModelPrefetchDownloaderTests {
         PrefetchURLProtocol.files = ["/\(prefix)/model.safetensors": payload]
         let model = CatalogModel(id: modelID, s3Name: "unused", displayName: "Symlink", sizeGb: 0.001,
                                  r2Prefix: prefix, aggregateSHA256: aggregate)
-        let downloader = ModelDownloader(r2CDNURL: "https://cdn.example.test", urlSession: makeSession())
+        let downloader = ModelDownloader(r2CDNURL: "https://cdn.example.test", urlSession: makeSession(), retryBackoff: Self.retryBackoff)
         if prefetch {
             try await downloader.prefetch(model: model, manifest: manifest)
         } else {
@@ -310,7 +314,7 @@ struct ModelPrefetchDownloaderTests {
         try FileManager.default.createDirectory(at: stagingDir, withIntermediateDirectories: true)
         try configBytes.write(to: stagingDir.appendingPathComponent("config.json"))
 
-        let downloader = ModelDownloader(r2CDNURL: "https://cdn.example.test", urlSession: makeSession())
+        let downloader = ModelDownloader(r2CDNURL: "https://cdn.example.test", urlSession: makeSession(), retryBackoff: Self.retryBackoff)
         let model = CatalogModel(id: modelID, s3Name: "unused", displayName: "Resume", sizeGb: 0.001,
                                  r2Prefix: prefix, aggregateSHA256: aggregate)
 
@@ -366,7 +370,7 @@ struct ModelPrefetchDownloaderTests {
         let stagingName = ".prefetch-staging-" + prefix.replacingOccurrences(of: "/", with: "__")
         let stagingDir = snapshotsDir.appendingPathComponent(stagingName, isDirectory: true)
 
-        let downloader = ModelDownloader(r2CDNURL: "https://cdn.example.test", urlSession: makeSession())
+        let downloader = ModelDownloader(r2CDNURL: "https://cdn.example.test", urlSession: makeSession(), retryBackoff: Self.retryBackoff)
         let model = CatalogModel(id: modelID, s3Name: "unused", displayName: "Interrupt", sizeGb: 0.001,
                                  r2Prefix: prefix, aggregateSHA256: aggregate)
 
@@ -474,7 +478,7 @@ struct ModelPrefetchDownloaderTests {
         let modelDir = ModelDownloader.cacheModelDirectory(for: modelID)
         defer { try? FileManager.default.removeItem(at: modelDir) }
 
-        let downloader = ModelDownloader(r2CDNURL: "https://cdn.example.test", urlSession: makeSession())
+        let downloader = ModelDownloader(r2CDNURL: "https://cdn.example.test", urlSession: makeSession(), retryBackoff: Self.retryBackoff)
         let model = CatalogModel(id: modelID, s3Name: "unused", displayName: "Partial", sizeGb: 0.001,
                                  r2Prefix: prefix, aggregateSHA256: aggregate)
 
@@ -552,7 +556,7 @@ struct ModelPrefetchDownloaderTests {
         let stagingDir = snapshotsDir.appendingPathComponent(stagingName, isDirectory: true)
         let partFile = stagingDir.appendingPathComponent(shardName).appendingPathExtension("part")
 
-        let downloader = ModelDownloader(r2CDNURL: "https://cdn.example.test", urlSession: makeSession())
+        let downloader = ModelDownloader(r2CDNURL: "https://cdn.example.test", urlSession: makeSession(), retryBackoff: Self.retryBackoff)
         let model = CatalogModel(id: modelID, s3Name: "unused", displayName: "ByteResume", sizeGb: 0.001,
                                  r2Prefix: prefix, aggregateSHA256: aggregate)
 
@@ -623,7 +627,7 @@ struct ModelPrefetchDownloaderTests {
         let stagingDir = snapshotsDir.appendingPathComponent(stagingName, isDirectory: true)
         let partFile = stagingDir.appendingPathComponent(shardName).appendingPathExtension("part")
 
-        let downloader = ModelDownloader(r2CDNURL: "https://cdn.example.test", urlSession: makeSession())
+        let downloader = ModelDownloader(r2CDNURL: "https://cdn.example.test", urlSession: makeSession(), retryBackoff: Self.retryBackoff)
         let model = CatalogModel(id: modelID, s3Name: "unused", displayName: "PartPrefix", sizeGb: 0.001,
                                  r2Prefix: prefix, aggregateSHA256: manifest.aggregateSHA256)
 
@@ -690,7 +694,7 @@ struct ModelPrefetchDownloaderTests {
         let stagingName = ".prefetch-staging-" + prefix.replacingOccurrences(of: "/", with: "__")
         let stagingDir = snapshotsDir.appendingPathComponent(stagingName, isDirectory: true)
 
-        let downloader = ModelDownloader(r2CDNURL: "https://cdn.example.test", urlSession: makeSession())
+        let downloader = ModelDownloader(r2CDNURL: "https://cdn.example.test", urlSession: makeSession(), retryBackoff: Self.retryBackoff)
         let badModel = CatalogModel(id: modelID, s3Name: "unused", displayName: "AggPoison", sizeGb: 0.001,
                                     r2Prefix: prefix, aggregateSHA256: wrongAggregate)
 
@@ -807,7 +811,7 @@ struct ModelPrefetchDownloaderTests {
         try FileManager.default.createDirectory(at: stagingDir, withIntermediateDirectories: true)
         try bigBytes.write(to: stagingDir.appendingPathComponent("big.safetensors"))
 
-        let downloader = ModelDownloader(r2CDNURL: "https://cdn.example.test", urlSession: makeSession())
+        let downloader = ModelDownloader(r2CDNURL: "https://cdn.example.test", urlSession: makeSession(), retryBackoff: Self.retryBackoff)
         let model = CatalogModel(id: modelID, s3Name: "unused", displayName: "Capacity", sizeGb: 0.001,
                                  r2Prefix: prefix, aggregateSHA256: aggregate)
 
@@ -867,7 +871,7 @@ struct ModelPrefetchDownloaderTests {
         try FileManager.default.createDirectory(at: stagingDir, withIntermediateDirectories: true)
         try bigBytes.write(to: stagingDir.appendingPathComponent("model-00001-of-00001.safetensors"))
 
-        let downloader = ModelDownloader(r2CDNURL: "https://cdn.example.test", urlSession: makeSession())
+        let downloader = ModelDownloader(r2CDNURL: "https://cdn.example.test", urlSession: makeSession(), retryBackoff: Self.retryBackoff)
         let model = CatalogModel(id: modelID, s3Name: "unused", displayName: "FG", sizeGb: 0.001,
                                  r2Prefix: prefix, aggregateSHA256: aggregate)
 
@@ -923,7 +927,7 @@ struct ModelPrefetchDownloaderTests {
         let stagingDir = snapshotsDir.appendingPathComponent(stagingName, isDirectory: true)
         let partFile = stagingDir.appendingPathComponent(shardName).appendingPathExtension("part")
 
-        let downloader = ModelDownloader(r2CDNURL: "https://cdn.example.test", urlSession: makeSession())
+        let downloader = ModelDownloader(r2CDNURL: "https://cdn.example.test", urlSession: makeSession(), retryBackoff: Self.retryBackoff)
         let model = CatalogModel(id: modelID, s3Name: "unused", displayName: "FGByteResume", sizeGb: 0.001,
                                  r2Prefix: prefix, aggregateSHA256: aggregate)
 
@@ -1010,7 +1014,7 @@ struct ModelPrefetchDownloaderTests {
         // "resuming" surfacing).
         #expect(ModelDownloader.hasResumableStaging(modelID: modelID, r2Prefix: prefix))
 
-        let downloader = ModelDownloader(r2CDNURL: "https://cdn.example.test", urlSession: makeSession())
+        let downloader = ModelDownloader(r2CDNURL: "https://cdn.example.test", urlSession: makeSession(), retryBackoff: Self.retryBackoff)
         let model = CatalogModel(id: modelID, s3Name: "unused", displayName: "FGFinish", sizeGb: 0.001,
                                  r2Prefix: prefix, aggregateSHA256: aggregate)
 
@@ -1051,7 +1055,7 @@ struct ModelPrefetchDownloaderTests {
         let modelDir = ModelDownloader.cacheModelDirectory(for: modelID)
         defer { try? FileManager.default.removeItem(at: modelDir) }
 
-        let downloader = ModelDownloader(r2CDNURL: "https://cdn.example.test", urlSession: makeSession())
+        let downloader = ModelDownloader(r2CDNURL: "https://cdn.example.test", urlSession: makeSession(), retryBackoff: Self.retryBackoff)
         let model = CatalogModel(id: modelID, s3Name: "unused", displayName: "Mismatch", sizeGb: 0.001,
                                  r2Prefix: prefix, aggregateSHA256: manifest.aggregateSHA256)
 
@@ -1089,7 +1093,7 @@ struct ModelPrefetchDownloaderTests {
         let modelDir = ModelDownloader.cacheModelDirectory(for: modelID)
         defer { try? FileManager.default.removeItem(at: modelDir) }
 
-        let downloader = ModelDownloader(r2CDNURL: "https://cdn.example.test", urlSession: makeSession())
+        let downloader = ModelDownloader(r2CDNURL: "https://cdn.example.test", urlSession: makeSession(), retryBackoff: Self.retryBackoff)
         let model = CatalogModel(id: modelID, s3Name: "unused", displayName: "Cancel", sizeGb: 0.001,
                                  r2Prefix: prefix, aggregateSHA256: manifest.aggregateSHA256)
 
@@ -1222,7 +1226,7 @@ extension ModelPrefetchDownloaderTests {
         PrefetchURLProtocol.reset()
         let id = "test-org/revision-\(UUID().uuidString)"
         defer { try? ModelDownloader.remove(modelID: id) }
-        let downloader = ModelDownloader(r2CDNURL: "https://fixture.test", urlSession: makeSession())
+        let downloader = ModelDownloader(r2CDNURL: "https://fixture.test", urlSession: makeSession(), retryBackoff: Self.retryBackoff)
         let (a, ma) = revisionFixture(id, version: "a", weights: Data("old weights".utf8))
         let old = try await downloader.prefetch(model: a, manifest: ma)
         let (b, mb) = revisionFixture(id, version: "b", weights: Data("new weights".utf8))
@@ -1246,7 +1250,7 @@ extension ModelPrefetchDownloaderTests {
         PrefetchURLProtocol.reset()
         let id = "test-org/renamed-revision-\(UUID().uuidString)"
         defer { try? ModelDownloader.remove(modelID: id) }
-        let downloader = ModelDownloader(r2CDNURL: "https://fixture.test", urlSession: makeSession())
+        let downloader = ModelDownloader(r2CDNURL: "https://fixture.test", urlSession: makeSession(), retryBackoff: Self.retryBackoff)
         let weights = Data("unchanged weights".utf8)
         let (a, ma) = revisionFixture(id, version: "a", weights: weights)
         let old = try await downloader.prefetch(model: a, manifest: ma)
@@ -1281,7 +1285,7 @@ extension ModelPrefetchDownloaderTests {
         PrefetchURLProtocol.reset()
         let id = "test-org/concurrent-revision-\(UUID().uuidString)"
         defer { try? ModelDownloader.remove(modelID: id) }
-        let downloader = ModelDownloader(r2CDNURL: "https://fixture.test", urlSession: makeSession())
+        let downloader = ModelDownloader(r2CDNURL: "https://fixture.test", urlSession: makeSession(), retryBackoff: Self.retryBackoff)
         let (model, manifest) = revisionFixture(id, version: "a", weights: Data("weights".utf8))
         async let first = downloader.prefetch(model: model, manifest: manifest, activate: false)
         async let second = downloader.prefetch(model: model, manifest: manifest, activate: false)
@@ -1296,7 +1300,7 @@ extension ModelPrefetchDownloaderTests {
         PrefetchURLProtocol.reset()
         let id = "test-org/failed-revision-\(UUID().uuidString)"
         defer { try? ModelDownloader.remove(modelID: id) }
-        let downloader = ModelDownloader(r2CDNURL: "https://fixture.test", urlSession: makeSession())
+        let downloader = ModelDownloader(r2CDNURL: "https://fixture.test", urlSession: makeSession(), retryBackoff: Self.retryBackoff)
         let (a, ma) = revisionFixture(id, version: "a", weights: Data("old".utf8))
         let old = try await downloader.prefetch(model: a, manifest: ma)
         let (b, mb) = revisionFixture(id, version: "b", weights: Data("new".utf8))

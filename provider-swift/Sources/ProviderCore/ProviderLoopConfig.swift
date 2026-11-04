@@ -29,6 +29,24 @@ public struct ProviderLoopConfig: Sendable {
     /// endpoint off the SAME loaded models it serves to the coordinator
     /// (unified mode). nil = coordinator-only (the default).
     public let localEndpoint: LocalInferenceHTTPConfig?
+    /// Restrictive registration role. The default stays ordinary solo; the
+    /// control-only cluster member role is reachable only by an explicit
+    /// configuration that also constructs the member control owner. It grants
+    /// no trust or model capability by itself.
+    public let executionRole: ProviderExecutionRole
+    /// Whether an accepted member connection that later drops ends the loop
+    /// (true) or permits a reconnect (false). Read only in member mode.
+    public let clusterMemberStopsOnDisconnect: Bool
+    /// Whether this member answers its cluster service supervisor's drain for the pair's coordinated update
+    /// (`ClusterUpdateDrainRequest`). Only a coordinator-paired part does: the control-only member inside a
+    /// local-API leader holds no pair slot, but its leader's HTTP server serves requests the member cannot see.
+    public let clusterMemberAnswersUpdateDrain: Bool
+    /// Cluster member only: the models whose pair-serving grant this Mac's
+    /// rank has passed (`ClusterMemberPreparation.prepare`).
+    /// A member serves no solo inference, so for these models the single-Mac
+    /// requirements, which a pair is not judged by, do not keep them out of
+    /// the member's registration and pair approval. Ignored in every other role.
+    public let pairServingGrantedModelIDs: Set<String>
 
     public init(
         coordinatorURL: String,
@@ -43,7 +61,11 @@ public struct ProviderLoopConfig: Sendable {
         localEndpoint: LocalInferenceHTTPConfig? = nil,
         configPath: URL? = nil,
         autopilotInventory: [ModelInfo] = [],
-        autopilotPendingCandidates: AutopilotStartInventory.Pending? = nil
+        autopilotPendingCandidates: AutopilotStartInventory.Pending? = nil,
+        executionRole: ProviderExecutionRole = .solo,
+        clusterMemberStopsOnDisconnect: Bool = true,
+        clusterMemberAnswersUpdateDrain: Bool = false,
+        pairServingGrantedModelIDs: Set<String> = []
     ) {
         self.coordinatorURL = coordinatorURL
         self.hardware = hardware
@@ -58,5 +80,28 @@ public struct ProviderLoopConfig: Sendable {
         self.modelHashes = modelHashes
         self.modelHashFingerprints = modelHashFingerprints
         self.localEndpoint = localEndpoint
+        self.executionRole = executionRole
+        self.clusterMemberStopsOnDisconnect = clusterMemberStopsOnDisconnect
+        self.clusterMemberAnswersUpdateDrain = clusterMemberAnswersUpdateDrain
+        self.pairServingGrantedModelIDs = pairServingGrantedModelIDs
+    }
+
+    /// Whether this configuration admits a model (`ProviderExecutionRole.admitsModel`).
+    func admitsModel(_ modelID: String) -> Bool {
+        executionRole.admitsModel(modelID, pairServingGrantedModelIDs: pairServingGrantedModelIDs,
+            runtimeCapabilities: runtimeCapabilities)
+    }
+}
+
+extension ProviderExecutionRole {
+    /// Whether a provider in this role admits a model: by the single-Mac
+    /// requirements, or, for a cluster member only, by the pair-serving grant
+    /// its rank passed for that model. A member's capabilities are
+    /// hardware-only (`DistributedServingEligibility.memberCapabilities`), so
+    /// its grant, not the single-Mac requirements, admits its pair model.
+    func admitsModel(_ modelID: String, pairServingGrantedModelIDs: Set<String>,
+                     runtimeCapabilities: Set<ProviderRuntimeCapability>) -> Bool {
+        (self == .clusterMember && pairServingGrantedModelIDs.contains(modelID))
+            || ModelRuntimeRequirements.isEligible(modelID: modelID, available: runtimeCapabilities)
     }
 }

@@ -46,6 +46,13 @@ extension Autopilot {
             }
             if fresh, let state = live?.autopilot {
                 print("  Loaded in memory: \(state.residentModels.map(\.modelId).joined(separator: ", "))")
+                if let adopted = state.adoptedModels, !adopted.isEmpty {
+                    print("  Adopted (serving outside the selection): \(adopted.joined(separator: ", "))")
+                }
+                let now = Date().timeIntervalSince1970
+                for hold in state.heldModels ?? [] {
+                    print("  Held: \(hold.modelId) until \(darkbloom.Status.holdExpiry(hold.expiresAtMs, now: now))")
+                }
                 if let command = state.activeCommandId { print("  Transition: \(command)") }
                 if let result = state.lastCommandStatus { print("  Last transition: \(result.rawValue)") }
             }

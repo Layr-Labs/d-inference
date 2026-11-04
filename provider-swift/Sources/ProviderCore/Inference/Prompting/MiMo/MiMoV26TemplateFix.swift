@@ -266,20 +266,23 @@ enum MiMoV26TemplateFix {
     /// A direct primitive argument array is not the HTTP string "[1,null]".
     /// The latter intentionally takes the template's raw-string branch; the
     /// former makes `items` silently empty in Swift-Jinja and is rejected here.
+    /// Results pair with calls by ID only: the native template renders a
+    /// result's content, never its `name`, so the name is not compared with
+    /// the call's function.
     static func normalizeHistory(
         _ messages: [[String: any Sendable]]
     ) throws -> [[String: any Sendable]] {
         var output: [[String: any Sendable]] = []
         var seenIDs = Set<Data>()
-        var pending: [(id: String, name: String)] = []
+        var pending: [Data] = []
         var results: [Data: [String: any Sendable]] = [:]
 
         func orderedResults() throws -> [[String: any Sendable]] {
             guard results.count == pending.count else {
                 throw invalid("all tool results must precede the next non-tool message or end of history")
             }
-            return try pending.map { call in
-                guard let result = results[Data(call.id.utf8)] else {
+            return try pending.map { id in
+                guard let result = results[id] else {
                     throw invalid("history is missing a tool result")
                 }
                 return result
@@ -303,14 +306,9 @@ enum MiMoV26TemplateFix {
 
             if role == "tool" {
                 guard let id = message["tool_call_id"] as? String,
-                    let call = pending.first(where: { sameBytes($0.id, id) }),
+                    pending.contains(Data(id.utf8)),
                     results[Data(id.utf8)] == nil
                 else { throw invalid("tool results must match each preceding call ID exactly once") }
-                if let name = message["name"] {
-                    guard let name = name as? String, sameBytes(name, call.name) else {
-                        throw invalid("tool result name does not match its call")
-                    }
-                }
                 guard message["tool_calls"] == nil else {
                     throw invalid("only assistant messages may carry tool_calls")
                 }
@@ -360,15 +358,11 @@ enum MiMoV26TemplateFix {
                 {
                     throw invalid("raw history arguments contain an ambiguous native call delimiter")
                 }
-                pending.append((id, name))
+                pending.append(Data(id.utf8))
             }
         }
         output.append(contentsOf: try orderedResults())
         return output
-    }
-
-    private static func sameBytes(_ lhs: String, _ rhs: String) -> Bool {
-        lhs.utf8.elementsEqual(rhs.utf8)
     }
 
     private static func invalid(_ message: String) -> MultiModelBatchSchedulerEngineError {

@@ -48,6 +48,23 @@ struct ProcessLifecycleTests {
         #expect(written == "\(ProcessInfo.processInfo.processIdentifier)")
     }
 
+    @Test("a rollback's start hold keeps every provider start out until it is released")
+    func startHoldExcludesProviderStart() throws {
+        let pidFile = tempPIDFile()
+        defer { ProcessLifecycle.releaseSingleInstanceLock(at: pidFile) }
+
+        let hold = try #require(try ProcessLifecycle.holdStartsOut(operation: "operator-rollback", at: pidFile).lock)
+        #expect(throws: UpdateProcessLock.LockError.self) { try ProcessLifecycle.acquireSingleInstanceLock(at: pidFile) }
+        hold.release()
+        try ProcessLifecycle.acquireSingleInstanceLock(at: pidFile)
+        // A running provider keeps the rollback's hold out in turn, and names itself.
+        guard case .busy(let owner) = try ProcessLifecycle.holdStartsOut(operation: "operator-rollback", at: pidFile) else {
+            Issue.record("the rollback took a running provider's instance lock"); return
+        }
+        #expect(owner?.processIdentity == ProcessIdentity.current())
+        #expect(owner?.operation == "provider-instance")
+    }
+
     @Test("acquire is idempotent for the running process")
     func acquireIdempotent() throws {
         let pidFile = tempPIDFile()
@@ -172,4 +189,20 @@ struct ProcessLifecycleTests {
     let modern = ServiceRecoverySnapshot.enabledStates(labels: ["provider", "watchdog"],
         output: "disabled services = { \"provider\" => enabled \"watchdog\" => disabled }")
     #expect(modern == ["provider": true, "watchdog": false])
+}
+
+/// A self-update or App Attest restart of a provider that launchd runs goes
+/// through launchd; any other provider keeps the in-place exec. The route
+/// follows launchd's record of the job, which names one exact process.
+@Test func relaunchRouteUsesLaunchdOnlyForTheLaunchdJobItself() {
+    let current = ProcessIdentity(pid: 4242, startTimeMicros: 1_000_000)
+    #expect(LaunchAgent.isJob(current, current: current))
+    // A foreground `start` beside a loaded agent, or a child of the job (a
+    // cluster member inherits XPC_SERVICE_NAME), must not hand its work to the agent.
+    #expect(!LaunchAgent.isJob(ProcessIdentity(pid: 4243, startTimeMicros: 1_000_000), current: current))
+    // Same PID, another process: PID reuse never counts.
+    #expect(!LaunchAgent.isJob(ProcessIdentity(pid: 4242, startTimeMicros: 2_000_000), current: current))
+    // No loaded job (launchctl print fails) or no readable identity.
+    #expect(!LaunchAgent.isJob(nil, current: current))
+    #expect(!LaunchAgent.isJob(current, current: nil))
 }

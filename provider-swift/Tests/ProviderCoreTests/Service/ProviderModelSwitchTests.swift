@@ -534,11 +534,14 @@ struct ProviderModelSwitchTests {
         let commitMessages = try #require(try await mock.waitForSnapshot { $0.modelsReplacements.count == 2 })
         let commit = try #require(commitMessages.modelsReplacements.last)
         #expect(await loop.deferredDesiredModels == nil)
-        let current = CoordinatorMessage.DesiredModelEntry(modelName: "retained-alias",
+        // An alias successor outside the switched selection, which the
+        // operator's filter refuses, and a desired build the selection holds.
+        let successor = CoordinatorMessage.DesiredModelEntry(modelName: "retained-alias",
             desiredBuild: "org/current-\(UUID().uuidString)", previousBuild: "old-model")
+        let current = [successor, .init(modelName: "new-model", desiredBuild: "new-model")]
         if delivery != "after-ack" {
-            try await mock.pushDesiredModels([current])
-            #expect(try await switchEventually { await loop.deferredDesiredModels == [current] })
+            try await mock.pushDesiredModels(current)
+            #expect(try await switchEventually { await loop.deferredDesiredModels == current })
         }
         if delivery == "disconnected" {
             await mock.dropActiveWebSocket()
@@ -553,16 +556,15 @@ struct ProviderModelSwitchTests {
         #expect(await committing.value)
         if delivery == "after-ack" {
             // The forced snapshot follows the successful ack on the same socket.
-            try await mock.pushDesiredModels([current])
-            #expect(try await switchEventually { await loop.deferredDesiredModels == [current] })
+            try await mock.pushDesiredModels(current)
+            #expect(try await switchEventually { await loop.deferredDesiredModels == current })
         }
         await loop.resumeAfterModelSwitch()
-        let prefetched = try #require(try await mock.waitForSnapshot {
-            $0.prefetchModelStatuses.contains { $0.modelId == current.desiredBuild && $0.status == .started }
+        #expect(try await switchEventually { await loop.desiredPrefetchTargets == ["new-model"] })
+        #expect(!mock.snapshot().prefetchModelStatuses.contains {
+            $0.modelId == obsolete.desiredBuild || $0.modelId == successor.desiredBuild
         })
-        #expect(!prefetched.prefetchModelStatuses.contains { $0.modelId == obsolete.desiredBuild })
-        #expect(await loop.desiredSwapDrop[current.desiredBuild] == "old-model")
-        #expect(await loop.desiredPrefetchTargets == [current.desiredBuild])
+        #expect(await loop.desiredSwapDrop.isEmpty)
         #expect(await loop.deferredDesiredModels == nil)
         #expect(await !loop.state.refusingNewWork)
         #expect(await loop.isModelAdvertised("old-model"))
@@ -696,7 +698,8 @@ struct ProviderModelSwitchTests {
 }
 
 private final class SwitchSlotLanguageModel: Module, LanguageModel {
-    func prepare(_ input: LMInput, cache: [KVCache], state: LMOutput.State?, prefill: PrefillParameters) throws -> PrepareResult { .tokens(input.text) }
+    func prepare(_ input: LMInput, cache: [KVCache], state: LMOutput.State?, prefill: PrefillParameters) throws
+        -> PrepareResult { .tokens(input.text) }
     func newCache(parameters: GenerateParameters?) -> [KVCache] { [] }
 }
 

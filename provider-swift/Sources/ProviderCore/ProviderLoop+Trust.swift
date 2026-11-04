@@ -46,6 +46,9 @@ extension ProviderLoop {
             currentModel: state.currentModel,
             warmModels: state.warmModels,
             advertisedModels: advertisedModels.keys.sorted(),
+            servingSelection: ordinaryServingModelIDs.sorted(),
+            registeredModels: state.registeredModels,
+            evictionExclusions: evictionExclusionRecords(),
             startupPreloadPendingModels: startupPreloadPendingModels,
             inferenceActive: state.inferenceActive,
             requestWorkPending: DaemonWorkPosture.hasPendingRequest(
@@ -64,7 +67,8 @@ extension ProviderLoop {
                 usageGaps: stats.usageGaps,
                 promptTokensProcessed: self.stats.promptTokensProcessed,
                 cachedInputTokens: self.stats.cachedInputTokens,
-                reasoningTokens: self.stats.reasoningTokens
+                reasoningTokens: self.stats.reasoningTokens,
+                cancellationsPartialComplete: stats.cancellationsPartialComplete
             ),
             capacity: cap.map {
                 DaemonState.Capacity(
@@ -99,10 +103,12 @@ extension ProviderLoop {
                 // longer-than-default timeout keeps evidence just as long.
                 failureMaxAge: DaemonSlotPostureBuilder.failureMaxAge(
                     idleTimeoutMins: loopConfig.config.backend.idleTimeoutMins)),
+            coordinatorConnection: coordinatorConnection,
             appAttest: appAttestLocalStatus,
             autopilot: state.modelAutopilot,
             autopilotPhase: autopilotPhase,
-            autopilotOperation: autopilotOperationView
+            autopilotOperation: autopilotOperationView,
+            addonHold: addonHoldSnapshot
         )
     }
 
@@ -148,7 +154,8 @@ extension ProviderLoop {
     }
 
     internal func handleTrustStatus(trustLevel: String, status: String, reason: String,
-                                    authorization: ProviderAuthorizationStatus? = nil) {
+                                    authorization: ProviderAuthorizationStatus? = nil,
+                                    receivedAt: Double = Date().timeIntervalSince1970) {
         let previous = lastTrustStatus
         if previous?.trustLevel != trustLevel || previous?.status != status || previous?.reason != reason
             || !ProviderAuthorizationStatus.sameDiagnosticDecision(previous?.authorization, authorization) {
@@ -159,9 +166,9 @@ extension ProviderLoop {
         // the coordinator's reason (otherwise it is only in the logs).
         lastTrustStatus = DaemonState.Trust(
             trustLevel: trustLevel, status: status, reason: reason,
-            receivedAt: Date().timeIntervalSince1970,
-            authorization: authorization)
+            receivedAt: receivedAt, authorization: authorization)
         writeDaemonState()
+        recordAppAttestVerifiedIfGranted(authorization, at: receivedAt)
     }
 
 }

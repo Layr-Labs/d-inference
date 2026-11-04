@@ -1,6 +1,6 @@
 # Install, update, and uninstall the provider
 
-> Last updated: 2026-10-23
+> Last updated: 2026-11-02
 
 How to put the `darkbloom` CLI on an Apple Silicon Mac with `scripts/install.sh`,
 what the script verifies before it touches an existing install, how the binary
@@ -216,6 +216,46 @@ that exact version is blocked; a newer release installs normally.
 `darkbloom update --override-quarantine` reinstalls it anyway, and
 `darkbloom doctor` reports the quarantine under `up to date`.
 
+### Roll back to the previous release
+
+When the updater installs a release, it keeps the signed release it replaced
+in `~/.darkbloom/recovery/predecessor/` (`provider-swift/Sources/ProviderCore/Update/UpdateInstallLayout.swift`,
+`snapshotLiveAsPredecessor`). A release that runs but regresses can be rolled
+back to it on one Mac, with automatic updates left on:
+
+1. On a Mac that serves in a `darkbloom cluster` pair, first stop its cluster
+   service with `darkbloom cluster stop`, roll it back, then start it again
+   with `darkbloom cluster`. The other Mac follows the rollback to the same
+   release by itself ([the pair's coordinated update](./cluster-always-on.md#a-rollback-on-one-mac)).
+   For a cluster-member provider service, stop it with `darkbloom stop` and
+   roll back both Macs. The command refuses while the pair serves.
+2. Run the rollback and answer `y`:
+
+   ```bash
+   darkbloom update --rollback
+   ```
+
+   It prints the installed and restored versions first and changes nothing
+   until you confirm (`--yes` skips the question). The running provider
+   finishes its accepted requests (`--timeout`, as for `darkbloom update`),
+   the kept release replaces the installed one in one journaled swap, and the
+   provider restarts on it. The installed release is quarantined: the
+   provider's own checks, the startup check and the watchdog skip it, and the
+   next newer release installs normally.
+
+Only one earlier release is kept, so a second rollback is refused. To install
+the rolled-back release again, run `darkbloom update --override-quarantine`.
+
+Verify:
+
+```bash
+darkbloom --version                 # the restored version
+darkbloom update --check-only       # while vX is the latest: "Latest release vX is quarantined on this machine."
+```
+
+Refusals and flags are listed in the
+[`darkbloom update` reference](./cli-reference.md#darkbloom-update).
+
 If the watchdog exits after starting a candidate but before recording the
 launch receipt, its next health observations reconcile the saved intent with
 launchd's run count or process identity for the same job. For each comparison,
@@ -241,15 +281,32 @@ state; an existing guard remains intact
 `kickstartIfLoaded`; `provider-swift/Sources/ProviderCore/Service/WatchdogRecoveryService.swift`,
 `recoverDownProvider`). Use `darkbloom start` to start a stopped provider.
 
+## Two Macs as one provider
+
+Two Macs joined by a Thunderbolt 5 cable are set up once with `darkbloom cluster`
+on each Mac: see [two-mac-cluster.md](./two-mac-cluster.md) (one command on
+each Mac: `darkbloom cluster`; no SSH, no network settings typed).
+
 ## Uninstall
 
 ```bash
 sudo darkbloom fan uninstall    # only if fan control was enabled
+darkbloom cluster link --remove # only if `darkbloom cluster` set up a two-Mac link; asks for approval
 darkbloom stop --uninstall      # stops the daemon, removes both LaunchAgent plists
 darkbloom unenroll              # opens System Settings to remove the MDM profile; offers to delete config + tokens
 rm -rf ~/.darkbloom ~/.config/darkbloom
 sudo rm -f /usr/local/bin/darkbloom
 ```
+
+`darkbloom cluster link --remove` (`provider-swift/Sources/darkbloom/ClusterLinkCommand.swift`)
+restores what `darkbloom cluster` changed for a two-Mac link: it removes the
+network service `Darkbloom Cluster Link (<port>)`, switches the services it
+turned off on that port on again and puts the port back into its bridge, or,
+for a link set up by an earlier version, removes the root launchd job
+`io.darkbloom.cluster-link.<port>` and the address it kept. Run it before
+deleting `~/.darkbloom`, which holds the record of what was changed; without
+the record it still removes Darkbloom's own service or job. It changes nothing
+on a Mac that never ran `darkbloom cluster`.
 
 `darkbloom stop --uninstall` (`provider-swift/Sources/darkbloom/StopCommand.swift`)
 disarms the watchdog first, deletes `~/Library/LaunchAgents/io.darkbloom.watchdog.plist`

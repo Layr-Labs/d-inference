@@ -63,6 +63,8 @@ extension ProviderLoop {
             appAttestLocalStatus = published
             writeDaemonState()
         }
+        // Only `ready` carries the availability answer.
+        if prepared { noteAppAttestAvailability(localStatus) }
         // Only these results can leave an unanswered Apple call holding admission.
         if !usesAppAttestWorker && (response.result == "busy" || response.result == "operation_timeout") { startAppAttestStallMonitorIfNeeded() }
         appAttestShadowTask = nil
@@ -112,12 +114,12 @@ extension ProviderLoop {
     @discardableResult
     func resumeAppAttestWorkerAfterUpdate() async -> Bool {
         guard appAttestWorkerStopReason == .update, updatePhase == .idle,
-              !isShuttingDown, !servingDrain.refusing else { return false }
+              !isShuttingDown, !servingDrain.refusingForServiceChange else { return false }
         let generation = appAttestShadowGeneration
         let retired = await appAttestWorkerRetirement?.value ?? true
         guard retired, generation == appAttestShadowGeneration,
               appAttestWorkerStopReason == .update, updatePhase == .idle,
-              !isShuttingDown, !servingDrain.refusing else { return false }
+              !isShuttingDown, !servingDrain.refusingForServiceChange else { return false }
         appAttestWorkerClient = nil
         appAttestWorkerRetirement = nil
         appAttestWorkerStopReason = nil

@@ -7,3 +7,14 @@ extension OutboundMessage {
         return nil
     }
 }
+
+extension CoordinatorClient {
+    /// A written `models_update` joins the registered set
+    /// (`ProviderState.registeredModelIDs`); other messages change nothing.
+    nonisolated func registeredSetUpdate(_ message: OutboundMessage) -> (@Sendable () -> Void)? {
+        guard case .modelsUpdate(let models) = message else { return nil }
+        let state = self.state
+        let ids = models.map(\.id)
+        return { state.noteModelsUpdateWritten(ids) }
+    }
+}

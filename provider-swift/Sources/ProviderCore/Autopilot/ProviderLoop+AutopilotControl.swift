@@ -5,8 +5,12 @@ extension ProviderLoop {
         autopilotSettingsOverride ?? loopConfig.config.backend.modelAutopilot
     }
 
+    /// A control-only cluster member holds no solo residency to place, so
+    /// saved consent never applies to it: it advertises no participation and
+    /// its handlers refuse a lease or command that arrives anyway.
     var autopilotConsented: Bool {
         autopilotSettings.hasConsent && !loopConfig.config.coordinator.privateOnly
+            && !isClusterMember
     }
 
     /// Keep exact cached consent separate from ordinary selected-model updates.
@@ -48,7 +52,7 @@ extension ProviderLoop {
     func autopilotAllowsModel(_ id: String) -> Bool {
         if ordinaryServingModelIDs.contains(id) { return true }
         if !autopilotSettings.enabled {
-            return autopilotInventoryModels[id] == nil
+            return autopilotInventoryModels[id] == nil && operatorFilterAllows(id)
         }
         // Inventory is observational until a valid live lease. Never let
         // waiting, shadow, paused, expired or disconnected control widen it.

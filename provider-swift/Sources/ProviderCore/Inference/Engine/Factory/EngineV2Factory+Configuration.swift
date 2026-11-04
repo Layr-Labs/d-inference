@@ -232,6 +232,35 @@ extension EngineV2Factory {
         return scheduler
     }
 
+    /// Decode-only steps after each GLM prompt chunk while other requests decode
+    /// (`CBv2SchedulerConfig.decodeStepsBetweenPrefillChunks`). A 2,048-token
+    /// chunk step takes about a second on an M5 Ultra, so without them a
+    /// decoding request gets about one token per chunk while another request
+    /// prefills. A step without decode rows is never held, so a request served
+    /// alone prefills exactly as before. The first-token deadline projection
+    /// charges every held step.
+    public static let glm5NextDecodeStepsKey = "DARKBLOOM_GLM_DECODE_STEPS_BETWEEN_CHUNKS"
+    static let glm5NextDefaultDecodeStepsBetweenChunks = 8
+    static let glm5NextMaximumDecodeStepsBetweenChunks = 64
+
+    /// `glm5NextDecodeStepsKey`, `0`…`glm5NextMaximumDecodeStepsBetweenChunks`;
+    /// unset or blank selects the default. A malformed or out-of-range value
+    /// fails the load rather than silently serving another interleave.
+    static func glm5NextDecodeStepsBetweenChunks(environment: [String: String]) throws -> Int {
+        guard let raw = environment[glm5NextDecodeStepsKey]?.trimmingCharacters(in: .whitespaces),
+            !raw.isEmpty
+        else {
+            return glm5NextDefaultDecodeStepsBetweenChunks
+        }
+        guard let steps = Int(raw), (0 ... glm5NextMaximumDecodeStepsBetweenChunks).contains(steps)
+        else {
+            throw EngineV2ProductionError.invalidDecodeStepsBetweenChunks(
+                key: glm5NextDecodeStepsKey, value: raw,
+                maximum: glm5NextMaximumDecodeStepsBetweenChunks)
+        }
+        return steps
+    }
+
     /// Names every native reason the protected GLM engine stayed inactive, with
     /// the step geometry it was priced at, so a refused load (for example a
     /// step-scratch `capacityExhausted(needed:available:)`) is diagnosable from

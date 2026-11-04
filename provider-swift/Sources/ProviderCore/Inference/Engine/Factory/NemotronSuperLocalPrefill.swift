@@ -15,10 +15,16 @@ enum NemotronSuperLocalPrefill {
     /// calibrated prefill limit. Default `defaultChunkTokens`.
     static let chunkKey = "DARKBLOOM_NEMOTRON_SUPER_PREFILL_CHUNK"
     /// Runtime-policy key: decode-only steps between two prompt chunks while
-    /// requests are decoding, `0`…`maximumDecodeStepsBetweenChunks`. Default 0:
-    /// every step may carry a chunk beside the decode rows.
+    /// requests are decoding, `0`…`maximumDecodeStepsBetweenChunks`; `0` lets
+    /// every step carry a chunk beside the decode rows.
     static let decodeStepsKey = "DARKBLOOM_NEMOTRON_SUPER_DECODE_STEPS_BETWEEN_CHUNKS"
     static let defaultChunkTokens = 2048
+    /// A chunk step is far longer than a decode step, so without held steps a
+    /// decoding request gets about one token per chunk while another request
+    /// prefills. On an M5 Ultra four held steps raised a decoder's rate during
+    /// an 8K prefill from 5.8 to 16.3 tok/s and delayed the prefilling
+    /// request's first token by 15-26%; eight gave 24.7 tok/s for 33-52%.
+    static let defaultDecodeStepsBetweenChunks = 4
     static let maximumDecodeStepsBetweenChunks = 64
 
     enum Failure: Error, Equatable {
@@ -43,7 +49,7 @@ enum NemotronSuperLocalPrefill {
                 }
                 chunk = value
             }
-            var decodeSteps = 0
+            var decodeSteps = defaultDecodeStepsBetweenChunks
             if let raw = environment[decodeStepsKey]?.trimmingCharacters(in: .whitespaces) {
                 guard let value = Int(raw), (0 ... maximumDecodeStepsBetweenChunks).contains(value)
                 else { throw Failure.invalidDecodeSteps }

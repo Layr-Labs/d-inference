@@ -79,10 +79,12 @@ extension NemotronSuperManagedSlotTests {
             attestationSigner: nil, kvBudgetForTesting: budget)
         let template = try #require(Data(base64Encoded: superImagePinnedTemplateBase64,
                                         options: .ignoreUnknownCharacters))
+        // The operator's resident bank: the claims and rooms below include it
+        // (default complete SSD checkpoints take no claim).
         await loop.setNemotronSuperSlotLoaderForTesting(
             loader(tokenizer: TokenizerHandle(SuperScriptedTokenizer(script: SuperOutputScript())),
                    template: template, physicalBytes: 128 << 30, pinned: true),
-            environment: [:])
+            environment: [PrefixCachePolicy.memoryEnvironmentFlag: "1"])
         for (index, stub) in stubs.enumerated() {
             await loop.modelLoadingInstallSlot(coResidentID(index), bridge: stub.bridge,
                 weightsBytes: Int(weights[index]), lastInferenceAt: ContinuousClock.now - .seconds(stubs.count - index))

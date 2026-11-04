@@ -88,6 +88,44 @@ struct SSDHybridCheckpointStoreFactoryFailureTests {
         #expect(!FileManager.default.fileExists(atPath: root.path))
     }
 
+    @Test("a refusal is never cached: the next load builds the store once its cause clears")
+    func nextLoadRetriesAfterTheCauseClears() async throws {
+        let parent = temporaryRoot("retry")
+        try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
+        defer {
+            SSDWholeRootMaintainer.shared.stopPeriodicMaintenance(root: parent.appendingPathComponent("root"))
+            try? FileManager.default.removeItem(at: parent)
+        }
+        let root = parent.appendingPathComponent("root")
+        try Data([0]).write(to: root)  // a file where the cache directory belongs
+        let environment = ["DARKBLOOM_PREFIX_CACHE_ALLOW_EPHEMERAL": "1",
+                           SSDPrefixCacheFactory.testRootEnvironmentKey: root.path]
+        let refused = await SSDHybridCheckpointStoreFactory.build(
+            modelId: "retry", identity: identity, kvBudget: nil, environment: environment)
+        #expect(refusal(refused)?.reason == .unsafePath)
+
+        try FileManager.default.removeItem(at: root)
+        let store = try await SSDHybridCheckpointStoreFactory.build(
+            modelId: "retry", identity: identity, kvBudget: nil, environment: environment).get()
+        defer { store.close() }
+        #expect(store.prefixCacheV2Capability() != nil)
+    }
+
+    @Test("a refused store's status names disk problems and keeps every typed cause behind an error")
+    func refusalStatusesAreSharedByEveryFactory() {
+        let disk = PrefixCacheConstructionStatus(refusal: .unsafePath)
+        #expect(disk.state == .error && disk.reason == .diskUnavailable && disk.failure == .unsafePath)
+        let key = PrefixCacheConstructionStatus(refusal: .keyUnavailable)
+        #expect(key.state == .error && key.reason == .cacheInitFailed && key.failure == .keyUnavailable)
+        let layout = PrefixCacheConstructionStatus(refusal: .layoutUnavailable)
+        #expect(layout.state == .disabled && layout.reason == .unsupportedLayout && layout.failure == nil)
+        for failure in [SSDPrefixCacheConstructionFailure.epochUnavailable, .writeBudgetUnavailable,
+                        .identityUnavailable, .blockContractMismatch, .ephemeralKeyUnavailable] {
+            let status = PrefixCacheConstructionStatus(refusal: failure)
+            #expect(status.state == .error && status.reason == .cacheInitFailed && status.failure == failure)
+        }
+    }
+
     @Test("an error status keeps the wire reason and carries the typed refusal locally")
     func statusCarriesLocalFailure() {
         let box = PrefixCacheConstructionStatusBox()

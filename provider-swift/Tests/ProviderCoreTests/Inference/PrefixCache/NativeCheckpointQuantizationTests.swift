@@ -116,6 +116,76 @@ struct NativeCheckpointQuantizationTests {
         }
     }
 
+    /// An exact-history assistant (the Super and GLM MTP owners) keeps its
+    /// history native beside lossy older rows, in the distinct MTP layout,
+    /// only on paged recurrent storage; contiguous storage stays native.
+    @Test func exactHistoryAssistantsSelectTheMTPLayoutOnlyWhenPaged() throws {
+        let requested = try #require(EngineV2KVQuantizationSelection.balanced.configuration)
+        let paged = try #require(EngineV2SlotFactory.completeCheckpointStorage(
+            kind: .paged, layerKinds: kinds, supportsRecurrent: true, supportsHistoricalAttention: false,
+            modelDTypes: [.float32], nativeDTypes: [.float32], pagedConfig: pagedConfig(),
+            assistant: .persistentExactHistory, checkpointQuantization: requested))
+        #expect(paged.checkpointQuantization == requested)
+        #expect(paged.backendLayout == CBv2CompleteCheckpointManifest.nativeQuantizedPagedMTPLayout)
+        #expect(paged.fingerprintFields["storage.layout"] == paged.backendLayout)
+        let native = try #require(EngineV2SlotFactory.completeCheckpointStorage(
+            kind: .paged, layerKinds: kinds, supportsRecurrent: true, supportsHistoricalAttention: false,
+            modelDTypes: [.float32], nativeDTypes: [.float32], pagedConfig: pagedConfig(),
+            assistant: .persistentExactHistory, checkpointQuantization: nil))
+        #expect(native.checkpointQuantization == nil)
+        #expect(native.backendLayout == CBv2CompleteCheckpointManifest.pagedLayout)
+        #expect(try identity(native).numericsFingerprint != (try identity(paged).numericsFingerprint))
+        let contiguous = try #require(EngineV2SlotFactory.completeCheckpointStorage(
+            kind: .contiguous, layerKinds: kinds, supportsRecurrent: true, supportsHistoricalAttention: false,
+            modelDTypes: [.float32], nativeDTypes: [.float32], pagedConfig: nil,
+            assistant: .persistentExactHistory, checkpointQuantization: requested))
+        #expect(contiguous.checkpointQuantization == nil)
+        #expect(contiguous.backendLayout == CBv2CompleteCheckpointManifest.layout)
+        // Historical targets admit only absent or stateless assistants.
+        #expect(EngineV2SlotFactory.completeCheckpointStorage(
+            kind: .paged, layerKinds: kinds, supportsRecurrent: false, supportsHistoricalAttention: true,
+            modelDTypes: nil, nativeDTypes: [.float32], pagedConfig: pagedConfig(),
+            assistant: .persistentExactHistory, checkpointQuantization: requested) == nil)
+        for assistant in [EngineV2SlotFactory.CompleteCheckpointAssistant.none, .stateless] {
+            #expect(!assistant.keepsNativeStorage(pagedRecurrent: false))
+        }
+        for assistant in [EngineV2SlotFactory.CompleteCheckpointAssistant.persistentCodec, .unsupportedPersistent] {
+            #expect(assistant.keepsNativeStorage(pagedRecurrent: true))
+        }
+        #expect(!EngineV2SlotFactory.CompleteCheckpointAssistant.persistentExactHistory
+            .keepsNativeStorage(pagedRecurrent: true))
+        #expect(EngineV2SlotFactory.CompleteCheckpointAssistant.persistentExactHistory
+            .keepsNativeStorage(pagedRecurrent: false))
+    }
+
+    /// GLM's own full-state identity: a resolved profile selects the distinct
+    /// lossy GLM layout and namespace; nil keeps the exact v2 layout.
+    @Test func glmProfileSelectsItsLossyFullStateLayout() throws {
+        let glmKinds = [CBv2LayerKind(
+            attention: .full, headDim: 64, valueHeadDim: 5, kvHeads: 1, queryHeads: 2, modelLayerIndex: 3)]
+        let limits = try CBv2PagedGatheredAttentionLimits(
+            maximumBatchSize: 1, maximumQueryTokens: 16, maximumContextTokens: 64,
+            maximumInFlightGraphs: 2, maximumScratchBytes: 1 << 20,
+            admissionMode: .stepOwned(.pinnedMetal))
+        let config = PagedKVPoolConfig(pageSize: 16, capacityBytes: 1 << 20, maxBufferLength: 1 << 20,
+            segmentSizeBytes: 64 << 10, layerDTypes: [.float32], gatheredAttention: limits)
+        let requested = try #require(EngineV2KVQuantizationSelection.balanced.configuration)
+        let resolved = try #require(CBv2CompleteCheckpointStorageQuantization.resolveGLM5Next(
+            requested, layerKinds: glmKinds, pagedConfig: config, assistant: nil))
+        let lossy = try #require(CompleteCheckpointStorageIdentity(kind: .paged, layerDTypes: [.float32],
+            pagedConfig: config, target: .glm5Next(glmKinds), checkpointQuantization: resolved))
+        let exact = try #require(CompleteCheckpointStorageIdentity(kind: .paged, layerDTypes: [.float32],
+            pagedConfig: config, target: .glm5Next(glmKinds)))
+        #expect(lossy.backendLayout == CBv2CompleteCheckpointManifest.glm5NextQuantizedPagedLayout)
+        #expect(exact.backendLayout == CBv2CompleteCheckpointManifest.glm5NextPagedLayout)
+        #expect(lossy.fingerprintFields["storage.quantization"] == requested.identity)
+        #expect(exact.fingerprintFields["storage.quantization"] == "native")
+        #expect(try identity(lossy).numericsFingerprint != (try identity(exact).numericsFingerprint))
+        // A persistent assistant without the exact-history contract keeps GLM exact.
+        #expect(CBv2CompleteCheckpointStorageQuantization.resolveGLM5Next(
+            requested, layerKinds: glmKinds, pagedConfig: config, assistant: NSObject()) == nil)
+    }
+
     @Test func explicitLivePackedCheckpointRetainsItsOriginalEncoding() throws {
         let liveFormat = try #require(EngineV2KVQuantizationSelection.k8v4.configuration)
         let storage = try #require(EngineV2SlotFactory.completeCheckpointStorage(
@@ -159,14 +229,16 @@ struct NativeCheckpointQuantizationTests {
         let binding = CBv2CompleteCheckpointIdentity(modelAggregateHash: "weights", promptContractID: "prompt",
             buildID: "build", numericsFingerprint: "numerics")
         for layout in [CBv2CompleteCheckpointManifest.nativeQuantizedPagedLayout,
+                       CBv2CompleteCheckpointManifest.nativeQuantizedPagedMTPLayout,
+                       CBv2CompleteCheckpointManifest.glm5NextQuantizedPagedLayout,
                        CBv2CompleteCheckpointManifest.nativeQuantizedHistoricalLayout,
                        CBv2CompleteCheckpointManifest.nativeQuantizedContiguousLayout,
                        CBv2CompleteCheckpointManifest.nativeQuantizedContiguousHistoricalLayout,
                        CBv2CompleteCheckpointManifest.nativeContiguousHistoricalLayout] {
-            let store = try #require(await SSDHybridCheckpointStoreFactory.make(
+            let store = try await SSDHybridCheckpointStoreFactory.build(
                 modelId: "native-target", identity: binding, backendLayout: layout, kvBudget: nil,
                 environment: [SSDPrefixCacheFactory.testRootEnvironmentKey: root.path,
-                              "DARKBLOOM_PREFIX_CACHE_ALLOW_EPHEMERAL": "1"]))
+                              "DARKBLOOM_PREFIX_CACHE_ALLOW_EPHEMERAL": "1"]).get()
             #expect(store.config.backendLayout == layout)
             #expect(store.identity == binding)
             await store.closeAndWait()

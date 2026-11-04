@@ -199,6 +199,12 @@ extension ProviderLoop {
         modelId: String, allowEviction: Bool = true, revisionUpdate: Bool = false,
         revisionDirectory: URL? = nil, autopilotCommandId: String? = nil
     ) async throws {
+        if isClusterMember {
+            // A member loads nothing: only its live pair slot is resident, and
+            // anything else keeps the member guard's own refusal.
+            guard clusterPairSlotServes(modelId) else { throw ClusterMemberControlError.incompatibleConfiguration }
+            return
+        }
         try GLM5NextLoadFaultState.requireHealthy(modelType: advertisedModels[modelId]?.modelType)
         try requireNativeMiMoProcessWorkAllowed()
         try refuseClosingNativeMiMoOwner(modelId)
@@ -393,6 +399,8 @@ extension ProviderLoop {
         defer { glmOwnership?.release() }
         // Super's own slot state refuses its load before either eviction below.
         if managedSuper { try refuseNemotronSuperReload(modelId) }
+        // No suspension separates this fence from taking the load gate.
+        if let refusal = addonHoldLoadRefusal(for: modelId) { throw refusal }
         isLoadingAny = true
         transitionGenerations.begin(.modelLoading)
         let deviceActivity = kvBudget.serviceBudget.beginUnboundedActivity()
@@ -415,6 +423,7 @@ extension ProviderLoop {
                 throw InferenceError.invalidModelDirectory(
                     allowEviction
                         ? "All \(maxModelSlots) model slot(s) are active; cannot load '\(modelId)'"
+                            + unevictableResidentsSentence()
                         : "All \(maxModelSlots) model slot(s) are occupied and eviction is disabled for this load; cannot load '\(modelId)'"
                 )
             }
@@ -570,6 +579,8 @@ extension ProviderLoop {
                 try Task.checkCancellation()
                 if isShuttingDown { throw CancellationError() }
             }
+            // A hold that began while hashing ends the load before its weights.
+            if let refusal = addonHoldLoadRefusal(for: modelId) { throw refusal }
             // Hashing and hooks may suspend; recheck this exact held owner with
             // current policy and coherent usage before shard allocation begins.
             if let acceptedLoad = pendingLoad, !(await kvBudget.recheckPendingLoad(acceptedLoad)) {
@@ -703,10 +714,10 @@ extension ProviderLoop {
                 await newcomer.releaseAfterExternalResources()
                 throw InferenceError.modelLoadFailed("Model load ownership changed during setup")
             }
-            if isShuttingDown || Task.isCancelled {
+            if let interruption = modelLoadInterruption(modelId) {
                 await newcomer.releaseAfterExternalResources()
                 clearCacheAfterConfirmedNativeOwnership()
-                throw CancellationError()
+                throw interruption
             }
 
             // Post-load measured-headroom guard: the load gate admitted on an
@@ -934,13 +945,13 @@ extension ProviderLoop {
                 + Double(loadElapsed.components.attoseconds) / 1e15
             await engineV2Bridge.recordModelLoadTime(ms: Int64(max(0, loadMs.rounded())))
 
-            // A startup stop can arrive during bridge construction or the
-            // timing await above. Never install a new slot after teardown has
-            // begun; unwind the bridge and weights under the re-slice gate.
-            if isShuttingDown || Task.isCancelled {
+            // A startup stop or an add-on hold can arrive during bridge
+            // construction or the timing await above. Never install a new slot
+            // then; unwind the bridge and weights under the re-slice gate.
+            if let interruption = modelLoadInterruption(modelId) {
                 try await unwindHoldingResliceGate()
                 releaseResliceGate()
-                throw CancellationError()
+                throw interruption
             }
 
             guard let installContainer = newcomer.modelContainer else {
@@ -1033,6 +1044,14 @@ extension ProviderLoop {
             await retryReserveDeferredPrefetches()
             throw loadError
         }
+    }
+
+    /// Why a running load must stop before it installs its slot: a stop or
+    /// its caller's cancellation (`CancellationError`), or an add-on hold.
+    /// Nil while the load may continue.
+    private func modelLoadInterruption(_ modelID: String) -> (any Error)? {
+        if isShuttingDown || Task.isCancelled { return CancellationError() }
+        return addonHoldLoadRefusal(for: modelID)
     }
 
     /// Hand a completed load to calibration while retaining the transition gate.
@@ -1185,7 +1204,8 @@ extension ProviderLoop {
         // A NON-shutdown unload (idle timeout, eviction, retirement) drops the
         // model from the persisted serving set. Shutdown teardown skips this on
         // purpose: a stop/update/restart must remember what was being served so
-        // the next boot's startup preload can re-warm it.
+        // the next boot's startup preload can re-warm it. An add-on hold's
+        // temporary unload keeps the set too (`persistLoadedModelSet`).
         if !isShuttingDown {
             persistLoadedModelSet()
         }
@@ -1312,21 +1332,14 @@ extension ProviderLoop {
     }
 
     /// One actor-local eviction snapshot shared by slot-cap, memory-load and
-    /// pre-accept admission decisions. Callers still recheck after suspension;
+    /// pre-accept admission decisions: every resident model without an
+    /// `evictionExclusions` entry. Callers still recheck after suspension;
     /// unloadModel(forEviction:) is the authoritative final gate. An Autopilot
     /// placement hold is created only by a settled operation, which excludes
     /// concurrent loads, so a slot cannot become held after this snapshot.
     internal func evictableModelSlots() -> [String: ModelSlot] {
-        let modelsWithInflight = Set(requestToModel.values)
-        let now = ContinuousClock.now
-        return modelSlots.filter {
-            !(autopilotProtectsPins && autopilotPinnedModels.contains($0.key))
-                && !autopilotHoldsModel($0.key, now: now)
-                && !modelsWithInflight.contains($0.key)
-                && !hasLocalReservation($0.key)
-                && !modelsUnloading.contains($0.key)
-                && !isMTPUpgradeTargetRetained($0.key)
-        }
+        let excluded = evictionExclusions()
+        return modelSlots.filter { excluded[$0.key] == nil }
     }
 
     private func reclaimableMemoryGb(
@@ -1435,7 +1448,8 @@ extension ProviderLoop {
                     let reclaimableText = String(format: "%.1f", reclaimableGb)
                     throw InferenceError.modelLoadFailed(
                         "Insufficient memory (\(availableText) GB free, need \(requiredText) GB) even after "
-                            + "evicting every idle model (\(reclaimableText) GB reclaimable) — refusing without evicting")
+                            + "evicting every idle model (\(reclaimableText) GB reclaimable) — refusing without evicting"
+                            + unevictableResidentsSentence())
                 }
             }
             let candidate = allowEviction
@@ -1455,7 +1469,7 @@ extension ProviderLoop {
                 let required = String(format: "%.1f", retriedRequiredGb)
                 throw InferenceError.modelLoadFailed(
                     allowEviction
-                        ? "Insufficient memory (\(available) GB free, need \(required) GB) and all loaded models are actively serving"
+                        ? "Insufficient memory (\(available) GB free, need \(required) GB) " + noEvictionCandidateClause()
                         : "Insufficient memory (\(available) GB free, need \(required) GB) to load without evicting resident models"
                 )
             }

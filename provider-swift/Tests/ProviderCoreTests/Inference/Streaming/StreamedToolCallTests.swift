@@ -286,6 +286,42 @@ struct StreamedToolCallTests {
         }
     }
 
+    /// Without a GLM JSON format, streamed calls send the frames they sent
+    /// before that format could sit beside tools, byte for byte and in order,
+    /// whether the call's end tag was generated or the stop token ended it.
+    @Test(arguments: [true, false])
+    func streamedCallFramesWithoutAGLMJSONFormatAreUnchanged(endTagGenerated: Bool) async throws {
+        let call = Self.gemmaCall(#"location:<|"|>Paris<|"|>,days:3"#)
+        let upstream = AsyncStream<GenerationEvent>.makeStream()
+        upstream.continuation.yield(.chunk("Checking.\n"))
+        upstream.continuation.yield(.chunk(endTagGenerated ? call : String(call.dropLast("<tool_call|>".count))))
+        upstream.continuation.yield(.info(promptTokens: 9, completionTokens: 30, tokensPerSecond: 0,
+            finishReason: nil))
+        upstream.continuation.finish()
+        var frames: [String] = []
+        for try await frame in try await MLXOpenAIService(
+            engine: RoutedEngine(upstream: upstream.stream, modelType: "gemma4")
+        ).streamChatCompletionFrames(request: try Self.request()) {
+            frames.append(frame
+                .replacingOccurrences(of: #""id":"[^"]*""#, with: #""id":"ID""#, options: .regularExpression)
+                .replacingOccurrences(of: #""created":[0-9]+"#, with: #""created":0"#, options: .regularExpression))
+        }
+        let chunk = #""created":0,"id":"ID","model":"gemma-4-26b-qat-4bit","object":"chat.completion.chunk""#
+        #expect(frames == [
+            #"data: {"choices":[{"delta":{"role":"assistant"},"index":0}],"# + chunk + "}",
+            #"data: {"choices":[{"delta":{"content":"Checking.\n"},"index":0}],"# + chunk + "}",
+            #"data: {"choices":[{"delta":{"tool_calls":[{"function":{"arguments":"","name":"get_weather"},"id":"ID","index":0,"type":"function"}]},"index":0}],"#
+                + chunk + "}",
+            #"data: {"choices":[{"delta":{"tool_calls":[{"function":{"arguments":"{\"location\":\"Paris\""},"index":0}]},"index":0}],"#
+                + chunk + "}",
+            #"data: {"choices":[{"delta":{"tool_calls":[{"function":{"arguments":",\"days\":3}"},"index":0}]},"index":0}],"#
+                + chunk + "}",
+            #"data: {"choices":[{"delta":{},"finish_reason":"tool_calls","index":0}],"# + chunk
+                + #","usage":{"completion_tokens":30,"prompt_tokens":9,"total_tokens":39}}"#,
+            "data: [DONE]",
+        ].map { $0 + "\n\n" })
+    }
+
     /// Thinking-on Qwen: reasoning streams first, then the call's fragments,
     /// in order and before the engine terminal's usage frame.
     @Test func qwenReasoningThenCallStreamsInOrder() async throws {

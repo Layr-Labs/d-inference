@@ -37,18 +37,15 @@ public enum MultiModelBatchSchedulerEngineError: Error, LocalizedError, Equatabl
     /// Tool-bearing chat payload violates the chat-template invariants
     /// before generation begins. Surfaced as 400 so malformed OpenAI
     /// histories do not trip model-specific Jinja assertions as provider
-    /// 500s.
-    case invalidToolPayload(String)
+    /// 500s. `refusal` names the closed reason `darkbloom logs` shows; the
+    /// message never reaches a log or the wire.
+    case invalidToolPayload(String, refusal: InferenceRefusalReason? = nil)
     /// The owned native Flash-Next or Qwen3.8-27B template does not support
     /// the resolved thinking effort. Deterministic request error, before
     /// template rendering.
     case unsupportedReasoningEffort
     /// Native binary-thinking model received an unknown effort alias.
     case unsupportedNativeReasoningEffort
-    /// The provider returns the reasoning GLM-5.3-Flash generates, so a
-    /// reasoning-exclusion request is a deterministic request error, before
-    /// template rendering. Thinking-off is served.
-    case reasoningExclusionUnsupported
     /// The MODEL failed to satisfy the request's forced `tool_choice`
     /// contract, or the inference-time grammar reached an impossible state.
     /// This depends on what the model GENERATED —
@@ -79,10 +76,11 @@ public enum MultiModelBatchSchedulerEngineError: Error, LocalizedError, Equatabl
     case mediaUnsupportedByModel(String)
     /// The v2 engine rejected a vision (multimodal) submission at submit
     /// time (`CBv2MultimodalError` → the canonical `multimodal_rejected:`
-    /// message, see `EngineV2Translation.admissionErrorMessage`). Every
-    /// such rejection is deterministic for the request/engine pairing —
-    /// never transient capacity — so it surfaces as 400, not a retry
-    /// signal.
+    /// message, see `EngineV2Translation.admissionErrorMessage`), or media
+    /// preparation met a fault of the request's own media
+    /// (`EngineV2VisionPrefill.clientFault(for:)`). Every such rejection is
+    /// deterministic for the request/engine pairing — never transient
+    /// capacity — so it surfaces as 400, not a retry signal.
     case multimodalRejected(String)
     /// The prompt plus resolved output reservation is outside this candidate's
     /// advertised context. Deterministic client fault; no request content carried.
@@ -106,6 +104,13 @@ public enum MultiModelBatchSchedulerEngineError: Error, LocalizedError, Equatabl
     /// already includes the cause for the human-readable `error` field.
     case platformTerminal(
         cause: InferenceTerminalCause, message: String, attemptUsage: UsageInfo)
+    /// A cluster pair refused the request before it reached the pair: the
+    /// request asks for something the loaded model on that pair can never do
+    /// as asked (prompt or output over its limits, logprobs, constrained
+    /// decoding). Deterministic for the request, so 400. `message` comes from
+    /// the closed refusal's own template (rule and model limits only, never
+    /// request content), so it may be shown to the client.
+    case distributedRequestRefused(DistributedRequestRefusal, message: String)
 
     public var errorDescription: String? {
         switch self {
@@ -117,14 +122,12 @@ public enum MultiModelBatchSchedulerEngineError: Error, LocalizedError, Equatabl
             return "No model is loaded; cannot tokenize or apply template"
         case .invalidRole(let role):
             return "Unsupported chat message role: '\(role)'"
-        case .invalidToolPayload(let message):
+        case .invalidToolPayload(let message, _):
             return message
         case .unsupportedReasoningEffort:
             return "This model supports reasoning effort low, medium, or xhigh when thinking is enabled"
         case .unsupportedNativeReasoningEffort:
             return "DiffusionGemma supports binary reasoning: none/off/0 or minimal/low/medium/high/xhigh"
-        case .reasoningExclusionUnsupported:
-            return GLM5NextPromptPolicy.reasoningExclusionUnsupportedMessage
         case .toolChoiceViolation(let message):
             return message
         case .tokenBudgetExhausted(let message):
@@ -148,6 +151,8 @@ public enum MultiModelBatchSchedulerEngineError: Error, LocalizedError, Equatabl
             return "This model requires at least one user message that is not only a tool response"
         case .platformTerminal(_, let message, _):
             return message
+        case .distributedRequestRefused(_, let message):
+            return message
         }
     }
 
@@ -169,6 +174,12 @@ public enum MultiModelBatchSchedulerEngineError: Error, LocalizedError, Equatabl
         // capacity by the broader substring checks below.
         if lowercased.hasPrefix(EngineV2Translation.multimodalRejectedPrefix) {
             return .multimodalRejected(message)
+        }
+        if let refused = EngineV2Translation.distributedRefusal(fromMessage: message) {
+            return .distributedRequestRefused(refused.refusal, message: refused.message)
+        }
+        if message == EngineV2Translation.distributedUnavailableMessage {
+            return .requestRejected("Distributed session is unavailable")
         }
         if lowercased == Qwen4SupportPolicy.contextRejectionMessage {
             return .advertisedContextExceeded

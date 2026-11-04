@@ -76,10 +76,15 @@ struct NemotronSuperManagedSlotTests {
     /// loader sizes its prefix bank for, so no result depends on the host.
     /// `decodeGate` holds the engine's detokenization while closed.
     /// `environment` is the provider process environment the plan reads.
+    /// `checkpointQuantizationByModel` is the `[backend]` per-model checkpoint
+    /// precision table. `tokenizer` replaces the scripted three-token prompt tokenizer.
     static func fixture(mode: MTPMode, totalGiB: UInt64 = 64, physicalGiB: UInt64? = nil,
                         memory: ReturningMemory? = nil, probe: InstallationProbe? = nil,
                         decodeGate: DecodeGate? = nil,
-                        environment: [String: String] = [:]) async throws -> Fixture {
+                        environment: [String: String] = [:],
+                        checkpointQuantizationByModel: [String: String] = [:],
+                        tokenizer makeTokenizer: ((SuperOutputScript) -> any MLXLMCommon.Tokenizer)? = nil)
+        async throws -> Fixture {
         let budget = GlobalKVCacheBudget(capFraction: 0.9, activationReserveBytes: 0) {
             .init(total: totalGiB << 30, active: 0, cache: 0,
                   systemAvailable: memory?.available(total: totalGiB << 30) ?? totalGiB << 30)
@@ -89,24 +94,32 @@ struct NemotronSuperManagedSlotTests {
             cpuCores: .init(total: 28, performance: 20, efficiency: 8), gpuCores: 60, memoryBandwidthGbs: 819)
         let model = ModelInfo(id: modelID, modelType: "nemotron_h_omni", sizeBytes: 1 << 20,
                               estimatedMemoryGb: 0.01)
+        var backend = BackendSettings(idleTimeoutMins: 0, maxModelSlots: 1, mtpMode: mode)
+        backend.engineV2KVCheckpointQuantizationByModel = checkpointQuantizationByModel
         let loop = try ProviderLoop(config: .init(coordinatorURL: "ws://127.0.0.1:0/unused",
             hardware: hardware, models: [model], config: .init(provider: .init(name: "super-managed"),
-                backend: .init(idleTimeoutMins: 0, maxModelSlots: 1, mtpMode: mode),
-                coordinator: .init(heartbeatIntervalSecs: 60))),
+                backend: backend, coordinator: .init(heartbeatIntervalSecs: 60))),
             attestationSigner: nil, kvBudgetForTesting: budget)
         let script = SuperOutputScript()
         let template = try #require(Data(base64Encoded: superImagePinnedTemplateBase64,
                                         options: .ignoreUnknownCharacters))
-        let scripted = SuperScriptedTokenizer(script: script)
+        let scripted = makeTokenizer?(script) ?? SuperScriptedTokenizer(script: script)
         let tokenizer: any MLXLMCommon.Tokenizer = decodeGate.map { GatedTokenizer(base: scripted, gate: $0) }
             ?? scripted
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("super-managed-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+        // Complete SSD checkpoints default on for Super: keep them in this
+        // fixture's own root under an in-memory key, never the user's cache.
+        var environment = environment
+        environment["DARKBLOOM_PREFIX_CACHE_ALLOW_EPHEMERAL"] = environment["DARKBLOOM_PREFIX_CACHE_ALLOW_EPHEMERAL"] ?? "1"
+        environment[SSDPrefixCacheFactory.testRootEnvironmentKey] =
+            environment[SSDPrefixCacheFactory.testRootEnvironmentKey]
+            ?? directory.appendingPathComponent("prefix-cache", isDirectory: true).path
         await loop.setNemotronSuperSlotLoaderForTesting(
             loader(tokenizer: TokenizerHandle(tokenizer), template: template,
                    physicalBytes: (physicalGiB ?? totalGiB) << 30, probe: probe),
             environment: environment)
-        let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("super-managed-\(UUID().uuidString)", isDirectory: true)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
         try Data(#"{"model_type":"nemotron_h_omni"}"#.utf8).write(to: directory.appendingPathComponent("config.json"))
         return Fixture(loop: loop, budget: budget, script: script, directory: directory)
     }
@@ -146,10 +159,23 @@ struct NemotronSuperManagedSlotTests {
             eosTokenIDs: [], sizing: sizing, kvBytesCapacity: request.kvBytesCapacity,
             admissionKVBytes: request.admissionKVBytes, backendAllowanceBytes: 1 << 20,
             modelID: request.modelID, environment: request.environment,
-            physicalBytes: request.physicalBytes)
+            physicalBytes: request.physicalBytes,
+            routingIdentity: request.modelAggregateHash.map {
+                .init(modelAggregateHash: $0, promptContractID: fixturePromptContractID)
+            },
+            checkpointQuantizationConfig: request.checkpointQuantizationConfig,
+            checkpointQuantizationConfigByModel: request.checkpointQuantizationConfigByModel,
+            completeCheckpointIdentity: request.modelAggregateHash.map {
+                CBv2CompleteCheckpointIdentity(modelAggregateHash: $0, promptContractID: fixturePromptContractID,
+                    buildID: "super-managed-fixture", numericsFingerprint: "super-managed-fixture")
+            })
         return try await NemotronSuperSlotOwner(transaction: transaction, bridge: bridge,
             tokenizer: tokenizer, sizing: sizing, templateBytes: template)
     }
+
+    /// The fixture directory has no real prompt files; its bank advertises
+    /// this contract beside the aggregate the provider published.
+    static let fixturePromptContractID = String(repeating: "c", count: 64)
 
     static func body(_ pieces: [String], script: SuperOutputScript,
                              _ extra: [String: Any] = [:]) throws -> Data {
@@ -164,15 +190,20 @@ struct NemotronSuperManagedSlotTests {
     /// One encrypted coordinator request: the decrypted SSE and its terminal.
     static func send(_ body: Data, to loop: ProviderLoop, recorder: Recorder,
         consumer: NodeKeyPair, scope: String? = "tenant-a", deadline seconds: Int = 60,
-        toolSchemaMetadataProtocol: Int? = nil,
+        toolSchemaMetadataProtocol: Int? = nil, cacheReceiptNonce: String? = nil,
+        prefixCacheProtocol: Int? = nil, cacheRepeatedPrefixTokens: Int? = nil,
+        cacheReceiptBoundaryMode: String? = nil,
         whileRunning: (@Sendable (String) async -> Void)? = nil
     ) async throws -> (sse: String, terminal: OutboundMessage) {
         let id = "super-coordinator-\(UUID().uuidString)"
         let ciphertext = try consumer.encrypt(recipientPublicKey: await loop.keyPair.publicKeyBytes,
                                               plaintext: body)
         await loop.handleInferenceRequest(requestId: id, ciphertext: ciphertext,
-            senderPublicKey: consumer.publicKeyBytes, cacheReceiptNonce: nil,
-            authenticatedCacheScope: scope, toolSchemaMetadataProtocol: toolSchemaMetadataProtocol,
+            senderPublicKey: consumer.publicKeyBytes, cacheReceiptNonce: cacheReceiptNonce,
+            authenticatedCacheScope: scope, prefixCacheProtocol: prefixCacheProtocol,
+            cacheReceiptBoundaryMode: cacheReceiptBoundaryMode,
+            cacheRepeatedPrefixTokens: cacheRepeatedPrefixTokens,
+            toolSchemaMetadataProtocol: toolSchemaMetadataProtocol,
             send: SendHandle(recorder.record))
         if let whileRunning { await whileRunning(id) }
         let deadline = ContinuousClock.now + .seconds(seconds)
@@ -219,7 +250,8 @@ struct NemotronSuperManagedSlotTests {
         #expect(script.prompt.hasSuffix("<|im_start|>assistant\n<think></think>"))
         let usage = try #require(Self.usage(text.terminal))
         #expect(usage.promptTokens == 3 && usage.completionTokens == 3)
-        #expect(usage.cacheOutcome == nil && usage.cachedTokens == nil)
+        // Shorter than one prompt chunk: the store has no checkpoint for it.
+        #expect(usage.cacheOutcome == .missAbsent && usage.cacheTier == .ssd && usage.cachedTokens == 0)
         // Tools are held until validated, then returned as tool calls.
         let weather: [String: Any] = ["type": "function", "function": ["name": "get_weather",
             "parameters": ["type": "object", "properties": ["city": ["type": "string"]], "required": ["city"]]]]
@@ -243,11 +275,38 @@ struct NemotronSuperManagedSlotTests {
         // An undecodable image and unhonored controls are refused.
         let image = ["role": "user", "content": [["type": "image_url", "image_url": ["url":
             "data:image/png;base64,iVBORw0KGgo="]], ["type": "text", "text": "Describe."]]] as [String: Any]
-        for extra in [["messages": [image]], ["logit_bias": ["5": 2]], ["logprobs": true]] as [[String: Any]] {
+        for extra in [["messages": [image]], ["logit_bias": ["5": 2]], ["logprobs": true, "top_logprobs": 21]]
+            as [[String: Any]] {
             let refused = try await Self.send(Self.body(["x"], script: script, extra), to: loop,
                                               recorder: recorder, consumer: consumer)
             #expect(Self.failure(refused.terminal)?.statusCode == 400, "\(extra.keys.sorted())")
         }
+        // Logprobs leave on the relay's channel: one entry per generated token
+        // on the content frames with the requested alternatives, and the
+        // logprob row never drafts.
+        let engine = try #require(await owner.bridge.ownedEngine as? EngineV2)
+        let draftedBefore = try #require(engine.mtpMetricsSnapshot()).draftedTokens
+        let relayed = SuperSSE(try await Self.send(Self.body(pieces, script: script,
+            ["logprobs": true, "top_logprobs": 2]), to: loop, recorder: recorder, consumer: consumer).sse)
+        #expect(relayed.content == streamed.content)
+        #expect(relayed.logprobs.count == pieces.count)
+        #expect(relayed.logprobs.allSatisfy { $0.top.count == 2 && $0.top.first == $0.logprob })
+        #expect(try #require(engine.mtpMetricsSnapshot()).draftedTokens == draftedBefore)
+        // With thinking on, entries cover reasoning tokens too and ride the
+        // reasoning frames: a response that ends while reasoning still
+        // carries one per token, and a mixed reply one per generated token.
+        let thinkingOn: [String: Any] = ["logprobs": true, "chat_template_kwargs": ["enable_thinking": true]]
+        let thinking = SuperSSE(try await Self.send(Self.body(["Plan", " it."], script: script, thinkingOn),
+            to: loop, recorder: recorder, consumer: consumer).sse)
+        #expect(thinking.reasoning == "Plan it." && thinking.content.isEmpty)
+        #expect(thinking.finishReason == "length" && thinking.logprobs.count == 2)
+        #expect(thinking.reasoningFrameLogprobs == 2)
+        let mixedPieces = ["Plan", " it.", "</think>", "Hello", " there."]
+        let mixed = SuperSSE(try await Self.send(Self.body(mixedPieces, script: script, thinkingOn),
+            to: loop, recorder: recorder, consumer: consumer).sse)
+        #expect(mixed.reasoning == "Plan it." && mixed.content == "Hello there.")
+        #expect(mixed.logprobs.count == mixedPieces.count)
+        #expect(mixed.reasoningFrameLogprobs > 0 && mixed.textlessFrameLogprobs == 0)
 
         // The unified local endpoint serves the same owner identically.
         let app = makeLocalInferenceApplication(
@@ -255,10 +314,10 @@ struct NemotronSuperManagedSlotTests {
             acquire: { id in try await loop.acquireModelForLocal(id) },
             tokenizerProvider: { _ in throw MultiModelBatchSchedulerEngineError.noModelLoadedForTokenization },
             availableModels: { [Self.modelID] }, mtpSlots: { [] },
-            managedSuperEngine: { body, request in
+            managedSuperEngine: { body, request, logprobs in
                 guard request.model == Self.modelID else { return nil }
                 return NemotronSuperLocalEndpointEngine(body: body, hasMedia: false, cacheScope: "local",
-                    acquire: { try await loop.acquireNemotronSuperForLocal(Self.modelID) })
+                    acquire: { try await loop.acquireNemotronSuperForLocal(Self.modelID) }, logprobs: logprobs)
             })
         try await app.test(.live) { client in
             let headers: HTTPFields = [.contentType: "application/json", .authorization: "Bearer super-managed"]
@@ -268,6 +327,16 @@ struct NemotronSuperManagedSlotTests {
                 let local = SuperSSE(String(buffer: response.body))
                 #expect(local.content == streamed.content && local.reasoning == streamed.reasoning)
                 #expect(local.finishReason == streamed.finishReason)
+            }
+            for stream in [true, false] {
+                let extra: [String: Any] = ["logprobs": true, "top_logprobs": 2, "stream": stream]
+                let text = try await client.execute(uri: "/v1/chat/completions", method: .post, headers: headers,
+                    body: ByteBuffer(bytes: try Self.body(pieces, script: script, extra))) { response in
+                    #expect(response.status == .ok)
+                    return String(buffer: response.body)
+                }
+                let entries = stream ? SuperSSE(text).logprobs : try SuperJSON(text).logprobs
+                #expect(entries.count == pieces.count, "local stream \(stream)")
             }
             // The generic local engine never serves Super.
             try await client.execute(uri: "/v1/completions", method: .post, headers: headers,
@@ -341,10 +410,12 @@ struct NemotronSuperManagedSlotTests {
                                          revisionDirectory: fixture.directory)
         let owner = try #require(await loop.nemotronSuperOwnerForTesting(modelId: Self.modelID))
         #expect(!owner.speculates)
-        // The plain owner holds its lane and exact text prefix bank from load.
+        // The plain owner holds its lane from load; its exact text prefixes
+        // are complete SSD checkpoints, which hold no reservation.
         let held = await fixture.budget.reservationBytesSnapshot().keys
         #expect(held.contains(where: NemotronSuperLocalPrefill.isLaneReservationID))
-        #expect(held.contains(where: NemotronSuperLocalPrefixCache.isBankReservationID))
+        #expect(!held.contains(where: NemotronSuperLocalPrefixCache.isBankReservationID))
+        #expect(owner.bridge.ssdHybridCheckpointStore != nil)
         let recorder = Recorder(), consumer = NodeKeyPair.generate()
         let long = Array(repeating: "a", count: 900)
         let cancelled = try await Self.send(Self.body(long, script: fixture.script), to: loop,
@@ -435,12 +506,14 @@ struct NemotronSuperManagedSlotTests {
         #expect(await fixture.loop.nemotronSuperRetainedWeightBytesForTesting() == 0)
     }
 
-    /// The slot's planned bank is the bank its builder builds and holds,
-    /// whatever machine memory the loader sizes it for: the fixture owner's
-    /// generic 1 GiB bank on a 64 GiB and a 256 GiB machine.
+    /// The slot's planned bank, when the operator selects the resident tier,
+    /// is the bank its builder builds and holds, whatever machine memory the
+    /// loader sizes it for: the fixture owner's generic 1 GiB bank on a
+    /// 64 GiB and a 256 GiB machine.
     @Test(.timeLimit(.minutes(2)), arguments: [64, 256] as [UInt64])
     func plannedBankIsHeldWhateverTheMachine(physicalGiB: UInt64) async throws {
-        let fixture = try await Self.fixture(mode: .auto, physicalGiB: physicalGiB)
+        let fixture = try await Self.fixture(mode: .auto, physicalGiB: physicalGiB,
+            environment: [PrefixCachePolicy.memoryEnvironmentFlag: "1"])
         defer { try? FileManager.default.removeItem(at: fixture.directory) }
         try await fixture.loop.ensureModelLoaded(modelId: Self.modelID, allowEviction: false,
                                                  revisionDirectory: fixture.directory)

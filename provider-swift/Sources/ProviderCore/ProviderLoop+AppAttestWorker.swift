@@ -6,7 +6,8 @@ extension ProviderLoop {
         guard !isShuttingDown, servingDrain.owner != .lifecycle else { return }
         if appAttestWorkerStopped {
             guard appAttestWorkerStopReason == .update else { return }
-            guard request.action == "prepare", updatePhase == .idle, !servingDrain.refusing else {
+            // An add-on hold keeps the worker serving; only a service change waits.
+            guard request.action == "prepare", updatePhase == .idle, !servingDrain.refusingForServiceChange else {
                 Task { await reply.send(Self.workerUnavailableReply(to: request)) }
                 return
             }

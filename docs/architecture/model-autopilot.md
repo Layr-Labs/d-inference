@@ -1,6 +1,6 @@
 # Provider Autopilot
 
-> Last updated: 2026-10-23
+> Last updated: 2026-11-02
 
 Provider Autopilot offers an external controller the models of a Mac whose
 operator saved Autopilot consent: the saved selection plus every verified
@@ -33,6 +33,13 @@ Failed or expired control cannot manufacture ownership of accepted work.
 Cancellation, disconnect and shutdown must preserve native retirement and
 restore ordinary serving eligibility only through the existing lifecycle.
 Files already on disk are not evidence that a model can load safely.
+
+A control-only cluster member never participates, whatever consent its saved
+configuration records: `autopilotConsented` is false in that role, so it
+advertises no participation and downloads nothing on the operator's behalf
+(`autopilotDownloadsEnabled`), and `consumeClusterMemberEvent` drops a control
+lease or command that arrives anyway. The coordinator does not send one either;
+that guard is in `Layr-Labs/darkbloom-platform`.
 
 ## The Autopilot model set
 
@@ -77,9 +84,14 @@ valid. The coordinator learns inventory metadata (`ModelInfo`) only from
 heartbeat's `selected_models`, and the provider re-registers once
 (`refreshAutopilotInventoryRegistration`, a planned reconnect) on the first
 capacity tick with no busy reason, no operation, no live lease, no running or
-queued download and the background verification finished. A busy provider
-keeps waiting rather than interrupting work; a registration made for any other
-reason also ends the wait (`registeredAutopilotInventoryIDs`).
+queued download and the background verification finished. A registration made
+for any other reason also ends the wait (`registeredAutopilotInventoryIDs`).
+After `autopilotInventoryRegistrationMaxWait` (10 minutes), in-flight work and a
+live lease no longer defer it. The planned reconnect then closes admission, lets
+accepted work finish, and reconnects; it never cancels accepted work. An
+operation, every other busy reason, a download and the verification still
+defer it. `models_update` cannot carry the build: the coordinator would make it
+ordinary and publicly routable.
 
 ## Downloads on the operator's behalf
 
@@ -165,7 +177,13 @@ operator's ordinary selection and idle policy.
 Neither form is machine-level control. The idle timer keeps running, other
 models keep their ordinary idle and eviction policy, and cold loads into free
 memory proceed. A load that would have to evict a held slot fails with the
-existing transient slot or insufficient-memory refusal.
+existing transient slot or insufficient-memory refusal, which names each
+resident model the load could not evict and why
+(`Not evictable: <model> (<GB>: Autopilot hold until <UTC>; adopted by Autopilot
+outside the selected models)`, `ProviderLoop.evictionExclusions`).
+`darkbloom status` prints the placements with each hold's expiry and the models
+served outside the saved `enabled_models`; `darkbloom autopilot status` prints
+`Adopted` and `Held` lines.
 
 ## Busy reasons and stalled transitions
 
@@ -173,6 +191,9 @@ existing transient slot or insufficient-memory refusal.
 exactly when the operation policy's busy input is false. A `provider_busy`
 status carries the first reason as `detail`, and consented snapshots report the
 reasons and their age ([protocol](../reference/protocol-messages.md#model_autopilot-state)).
+While a local add-on holds the Mac the reason is `addon_hold`, reported instead
+of `draining` for the drain the hold owns; operations are refused until the
+[hold](addon-hold.md) ends.
 
 `superviseTransitions` runs on the capacity tick while consent is saved. It ages
 each occurrence of a bounded transition (`ModelAutopilotTransition.stallBound`).
@@ -228,6 +249,12 @@ stops the driver at its next candidate, and the current step finishes normally.
 9. Without saved consent, or with downloads turned off, there is no download, no
    `inventory_downloads` capability and no `download_storage`
    (`autopilotDownloadsEnabled`, `handlePrefetchModelRequest`).
+10. Without Autopilot, coordinator `load_model`, `prefetch_model` and desired
+    builds stay inside the
+    [operator filter](../reference/configuration.md#provider-model-selection), and
+    a selected build's alias successor becomes ordinary only inside it, with or
+    without consent (`autopilotAllowsModel`, `operatorFilterAllows`). Consented
+    downloads and operations keep their own gates.
 
 ## Failure modes
 
@@ -246,12 +273,15 @@ stops the driver at its next candidate, and the current step finishes normally.
   recorded downloads in the set until the next start.
 - Until the provider re-registers, a coordinator sees a newly downloaded build
   only as an ID in `selected_models`; operations on it are refused as not
-  cached. A provider that is never idle keeps waiting.
+  cached. A provider that is never idle at a capacity tick waits at most
+  `autopilotInventoryRegistrationMaxWait`.
 - A build at the 256-ID bound downloads but stays out of the set and its
   download reports `model_not_supported`.
 - A re-registration closes admission briefly, like any planned reconnect, and
   fails coordinator-side operations queued for that machine; it waits for an
-  idle tick and happens once per batch of new builds.
+  idle tick, or for the end of the bounded wait, and happens once per batch of
+  new builds. After the bounded wait it also ends a live lease, as any
+  reconnect does.
 
 ## External Policy
 

@@ -216,8 +216,31 @@ public actor ProviderLoop {
     /// attempt waits until this instant (monotonic; this process only, since a
     /// new process has no stalled call).
     internal var appAttestStallRetryAt: ContinuousClock.Instant?
+    /// When a `ready` in this process first answered `is_supported_false` on a
+    /// Mac that may restart for it; nil once a later `ready` answers otherwise.
+    internal var appAttestUnsupportedSince: Date?
+    /// Last write of `AppAttestVerifiedMarker` by this process.
+    internal var appAttestVerifiedRecordedAt: Date?
+    /// Seam for the launchd boundary: how a restart would reach its new process.
+    internal var appAttestRelaunchRoute: @Sendable () -> ProcessLifecycle.RelaunchRoute = { .current() }
+    /// Seam for Apple's live `DCAppAttestService.isSupported`.
+    internal var appAttestSupportProbe: @Sendable () -> Bool = { AppleAppAttestService.isSupportedNow() }
+    /// Seam for the App Attest restart itself (launchd kickstart or exec).
+    /// Production relaunches for real; tests replace only this boundary.
+    internal typealias AppAttestRestart = @Sendable (ProviderRunMarker.ExitCause, ProcessLifecycle.RelaunchRoute) throws -> Void
+    internal var appAttestRestart: AppAttestRestart = { try ProcessLifecycle.restartAfterUpdate(cause: $0, route: $1) }
+    /// Seam for the install the App Attest restart leases; nil is the running install.
+    internal var appAttestRestartUpdater: SelfUpdater?
+    /// Seam for the local entitlement evidence line written at `is_supported_false`.
+    internal var appAttestEvidenceLog: @Sendable (_ context: String) -> Void = {
+        ProviderProcessRun.logAppAttestEntitlementEvidence(context: $0)
+    }
     internal let loopConfig: ProviderLoopConfig
     internal var ordinaryServingModelIDs: Set<String>
+    /// The operator's explicit selection: `enabled_models` with the start
+    /// selection, then each live switch. Nil when `enabled_models` is empty,
+    /// which serves any model the coordinator pushes (`operatorFilterAllows`).
+    internal var operatorModelFilter: Set<String>?
     internal var autopilotSuccessorNeedsInventoryRefresh = false
     internal var autopilotInventoryModels: [String: ModelInfo]
     internal let keyPair: NodeKeyPair
@@ -372,6 +395,9 @@ public actor ProviderLoop {
     /// Builds added to the Autopilot inventory since the last registration;
     /// the coordinator learns inventory metadata only from `register`.
     internal var autopilotInventoryAwaitingRegistration: Set<String> = []
+    /// When the current batch of `autopilotInventoryAwaitingRegistration`
+    /// began to wait; nil while nothing waits.
+    internal var autopilotInventoryAwaitingSince: ContinuousClock.Instant?
     /// Last check that cached Autopilot builds are still on disk.
     internal var autopilotCacheSweepAt: ContinuousClock.Instant?
     /// Background verification of the cached builds the start path left
@@ -481,6 +507,25 @@ public actor ProviderLoop {
     internal var isLoadingAny: Bool = false
     internal var isShuttingDown: Bool = false
     internal var servingDrain = ProviderDrain()
+    /// Add-on holds (`ProviderLoop+AddonHold`): active holds and recent
+    /// outcomes, the drain-and-unload driver, the lease monitor and the local
+    /// socket. `addonHoldPaths` stays nil when no add-on service runs.
+    internal var addonHolds = AddonHoldBook()
+    internal var addonHoldTask: Task<Void, Never>?
+    internal var addonHoldGeneration: UInt64 = 0
+    internal var addonHoldMonitorTask: Task<Void, Never>?
+    internal var addonIPCServer: AddonIPCServer?
+    internal var addonHoldPaths: AddonHoldPaths?
+    /// Test seams: isolated paths, a peer check, a wall clock and the drain
+    /// and settle bounds.
+    internal var addonHoldPathsOverride: AddonHoldPaths?
+    internal var addonPeerAuthenticatorOverride: AddonIPCServer.Authenticate?
+    internal var addonHoldNowMs: @Sendable () -> Int64 = { Int64(Date().timeIntervalSince1970 * 1_000) }
+    internal var addonHoldDrainTimeout: Duration = ProviderLoop.addonHoldDrainTimeoutDefault
+    internal var addonHoldSettleTimeout: Duration = ProviderLoop.addonHoldSettleTimeoutDefault
+    /// Internal, nil in production: suspends the drain bound's cancellation
+    /// pass where a release can interleave with it.
+    internal var addonHoldBeforeCancellingStragglersForTesting: (@Sendable () async -> Void)?
     internal var lifecycleStatus = ProviderDrainStatus()
     internal var lastLifecycleTelemetry: ProviderDrainStatus?
     internal var lifecycleDrainTask: Task<ProviderDrainStatus, Never>?
@@ -544,6 +589,10 @@ public actor ProviderLoop {
     /// processes; released on every non-restart exit and immediately after a
     /// durable commit.
     internal var updateSession: SelfUpdater.UpdateSession?
+    /// Cluster member only: the supervisor's drain for the pair's coordinated update that owns admission (its request
+    /// id), and the task that waits for the accepted requests and then holds the drain (`ProviderLoop+ClusterUpdateDrain`).
+    internal var clusterUpdateDrainID: String?
+    internal var clusterUpdateDrainTask: Task<Void, Never>?
 
     /// Latest desired_models push received while admission is closed. A switch
     /// clears obsolete state before committing, then replays the fresh snapshot
@@ -659,6 +708,62 @@ public actor ProviderLoop {
     /// pushed into reconnect registrations (models[].weight_hash drives the
     /// coordinator's per-model catalog routing filter). Set in `run()`.
     internal var coordinatorClient: CoordinatorClient?
+
+    // MARK: - Native pair member (private cluster staging, fail-closed)
+
+    /// Set when the serving configuration closes; member installation is only
+    /// valid before serving starts.
+    internal var nativePairConfigurationClosed = false
+    /// The staged member control owner; installed only in member mode.
+    /// `nativePairMemberStatus` stays nil in ordinary solo serving.
+    internal var nativePairMemberControl: NativePairMemberControl?
+
+    // MARK: - Cluster member connection state
+
+    /// Identity of the current accepted member control connection; nil while
+    /// unacknowledged or after a boundary. Never a grant by itself.
+    internal var memberConnectionID: UUID?
+    /// Whether any connection on this loop completed member acceptance; used by
+    /// `clusterMemberStopsOnDisconnect` to end the loop after a later drop.
+    internal var memberHadAcceptedConnection = false
+    /// Set when the member's accepted connection ended or trust was lost; the
+    /// event dispatcher consumes and stops instead of serving.
+    internal var memberControlRequiresStop = false
+    /// Why the member stopped (the first latched reason); nil while serving.
+    public internal(set) var memberStopReason: String?
+    /// Startup member-registration wait state (single waiter).
+    internal var memberRegistrationWaiter: CheckedContinuation<Void, Error>?
+    internal var memberRegistrationTimer: Task<Void, Never>?
+    internal var memberRegistrationWaitID: UUID?
+    /// The current wait's deadline, handed to the coordinator client so its
+    /// reconnects stay inside it.
+    internal var memberRegistrationWaitDeadline: ContinuousClock.Instant?
+    /// Each member connection's negotiation window; nil keeps
+    /// `ClusterMemberNegotiation.window`. Tests set it per loop.
+    internal var clusterMemberNegotiationWindow: Duration?
+    /// The pair slot this leader member serves (S09), at most one; nil on a
+    /// follower and whenever the pair is not ready.
+    internal var clusterPairSlot: ClusterPairSlotHandle?
+    /// Keeps the member's published capacity current while a pair slot exists.
+    internal var clusterPairCapacityTask: Task<Void, Never>?
+    /// The last pair formation's warmup canary (S18), for the member heartbeat.
+    internal var clusterPairWarmup: ClusterPairWarmupResult?
+    /// The warmup canary's deadline; nil when the canary is off
+    /// (`DARKBLOOM_CLUSTER_WARMUP=0`). Tests set it per loop.
+    internal var clusterPairWarmupTimeoutSeconds: Double? =
+        ProviderLoop.clusterWarmupEnabled() ? ProviderLoop.clusterWarmupTimeoutSeconds : nil
+    /// When the pair slot's engine was first seen wedged ("crashed"), for the
+    /// supervisor's liveness guard (S18).
+    internal var clusterPairWedgedSince: ContinuousClock.Instant?
+    /// The leader's serving context for committed starts (S10), the one
+    /// start it serves (held from its serve until its session's stop), and
+    /// the last start whose session stopped, which is never served after.
+    internal var clusterPairServing: ClusterPairServingContext?
+    internal var clusterPairServingEpoch: UUID?
+    internal var clusterPairServingEndedEpoch: UUID?
+    /// The follower member's link serving of its committed starts; retained
+    /// here because the session control holds its serving host weakly.
+    internal var clusterPairFollower: DistributedMemberLinkFollower?
 
     /// Rate cap + trailing-edge coalescing for event-triggered heartbeats
     /// (routing v2, Phase 1). Driven from `updateAggregateCapacity()` — the
@@ -784,6 +889,16 @@ public actor ProviderLoop {
     /// operator WHY they are / aren't earning. Start time uses wall-clock epoch
     /// (not ContinuousClock) so it survives across the CLI process boundary.
     internal var lastTrustStatus: DaemonState.Trust?
+    /// The live coordinator connection as reported to `status`/`doctor`;
+    /// nil until the coordinator client starts.
+    internal var coordinatorConnection: DaemonState.CoordinatorConnection?
+    /// When the coordinator's verdict for this connection last became "not
+    /// routable" (`ProviderLoop+ServingAuthorizationRecovery`).
+    internal var unauthorizedSince: Double?
+    internal var lastUnauthorizedReconnectAt: Double?
+    internal var unauthorizedReconnectAttempts = 0
+    internal var unauthorizedReconnectJitter = Double.random(
+        in: 0..<UnauthorizedConnectionRecovery.thresholdJitter)
     internal var lastModelLoadError: DaemonState.ModelLoadError?
     /// Live per-slot KV-backend + MTP posture, resampled once per capacity
     /// refresh (`updateAggregateCapacity`) because `mtpStatusSnapshot()` is
@@ -824,7 +939,7 @@ public actor ProviderLoop {
     /// deallocated. See `MemoryPressureMonitor` / `OOMDetector`.
     internal var memoryPressureMonitor: MemoryPressureMonitor?
 
-    internal let logger = ProviderLogger(subsystem: BuildEnvironment.current.serviceLogSubsystem, category: "loop")
+    internal let logger: ProviderLogger
 
     internal static let shutdownDrainTimeout: Duration = .seconds(600)
     internal static let preloadShutdownTimeout: Duration = .seconds(10)
@@ -846,10 +961,16 @@ public actor ProviderLoop {
         beforeModelLoad: (@Sendable (String) async -> Void)? = nil,
         // Scripted slot fixtures must not inherit the test host's RAM.
         kvBudgetForTesting: GlobalKVCacheBudget? = nil,
-        nativeMiMoRegistryForTesting: MiMoV26NativeLoadRegistry? = nil
+        nativeMiMoRegistryForTesting: MiMoV26NativeLoadRegistry? = nil,
+        logSinkForTesting: ProviderLogger.Sink? = nil
     ) throws {
+        self.logger = ProviderLogger(subsystem: BuildEnvironment.current.serviceLogSubsystem, category: "loop",
+            sink: logSinkForTesting)
         self.loopConfig = config
         self.ordinaryServingModelIDs = Set(config.models.map(\.id))
+        let enabledModels = config.config.backend.enabledModels
+        self.operatorModelFilter = enabledModels.isEmpty
+            ? nil : Set(enabledModels).union(config.models.map(\.id))
         self.autopilotInventoryModels = Dictionary(config.autopilotInventory.filter {
             $0.weightHash?.isEmpty == false && EngineV2SupportedModels.isSupported(model: $0)
                 && ModelRuntimeRequirements.isEligible(modelID: $0.id, available: config.runtimeCapabilities)
@@ -871,8 +992,7 @@ public actor ProviderLoop {
         var unsupportedModelIds: [String] = []
         var ineligibleModelIds: [String] = []
         for model in config.models where advertised[model.id] == nil {
-            guard ModelRuntimeRequirements.isEligible(
-                modelID: model.id, available: config.runtimeCapabilities)
+            guard config.admitsModel(model.id)
             else {
                 ineligibleModelIds.append(model.id)
                 continue
@@ -1114,8 +1234,35 @@ public actor ProviderLoop {
     }
 
     /// Try persistent keychain-backed SE key first; fall back to ephemeral CryptoKit key.
+    /// The signer a cluster member registers with and countersigns its
+    /// roster with (`darkbloom cluster member-identity`): the same key the
+    /// member's loop uses.
+    public static func clusterMemberSigner() -> (any AttestationSigner)? { createAttestationSigner() }
+
+    /// The signer the pairing ceremony (S17) pins, chosen exactly as the
+    /// member's attestation signer is, and whether it outlives this process:
+    /// a pin is worth storing only when the next start signs with the same key.
+    public static func clusterPairingSigner() -> (signer: any AttestationSigner, persistent: Bool)? {
+        #if DEBUG
+        if let path = ProcessInfo.processInfo.environment["DARKBLOOM_DEBUG_SE_KEY_FILE"], path.hasPrefix("/"),
+           SecureEnclaveIdentity.isAvailable, let key = try? SecureEnclaveIdentity.debugPersisted(at: path) {
+            return (key, true)
+        }
+        #endif
+        if PersistentEnclaveKey.isAvailable, let key = try? PersistentEnclaveKey.loadOrCreateVerified() { return (key, true) }
+        if let key = try? SecureEnclaveIdentity.createEphemeral() { return (key, false) }
+        return nil
+    }
+
     private static func createAttestationSigner() -> (any AttestationSigner)? {
         let log = ProviderLogger(subsystem: BuildEnvironment.current.serviceLogSubsystem, category: "loop")
+        #if DEBUG
+        if let path = ProcessInfo.processInfo.environment["DARKBLOOM_DEBUG_SE_KEY_FILE"], path.hasPrefix("/"),
+           SecureEnclaveIdentity.isAvailable {
+            do { return try SecureEnclaveIdentity.debugPersisted(at: path) }
+            catch { log.warning("Debug Secure Enclave key file unusable (\(error)); using the ordinary signer") }
+        }
+        #endif
 
         if PersistentEnclaveKey.isAvailable {
             do {

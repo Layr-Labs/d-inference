@@ -239,16 +239,13 @@ extension Models {
                 catalogClient: client,
                 runtimeCapabilities: runtimeCapabilities)
             do {
-                try await downloader.download(model: entry) { progress in
-                    let mb = Double(progress.bytesDownloaded) / 1_048_576
-                    print("  ✓ \(progress.file)  \(String(format: "%.1f MB", mb))")
-                }
+                try await downloader.download(model: entry)
             } catch let error as ModelCatalogError {
                 printError("\(error)")
                 throw ExitCode.failure
             }
 
-            print("Done. Cached at \(ModelDownloader.cacheModelDirectory(for: entry.id).path)")
+            print("Cached at \(ModelDownloader.cacheModelDirectory(for: entry.id).path)")
         }
     }
 }

@@ -6,7 +6,9 @@ import { publishConfig, updateFeedEnv } from './src/main/updateFeed';
 // Without DARKBLOOM_DESKTOP_UPDATE_URL, `publish: null` embeds no app-update.yml
 // and stops electron-builder from inferring a GitHub feed from GH_TOKEN.
 // A release build (DARKBLOOM_DESKTOP_RELEASE=1, set by release-desktop.yml) must be signed and
-// notarized with the Developer ID team that also signs the CLI; it refuses to build otherwise.
+// notarized with the Developer ID team that also signs the CLI, and must embed an update feed:
+// the feed is fixed at build time, so a release without one could never update itself.
+// It refuses to build otherwise.
 export const releaseTeam = 'SLDQ2GJ6TL';
 const notarizationEnv = ['APPLE_ID', 'APPLE_APP_SPECIFIC_PASSWORD', 'APPLE_TEAM_ID'] as const;
 
@@ -25,6 +27,8 @@ export function desktopBuildConfig(env: NodeJS.ProcessEnv): Configuration {
       throw new Error(`A release build needs notarization credentials: ${missing.join(', ')}`);
     if (env.APPLE_TEAM_ID !== releaseTeam)
       throw new Error(`A release build must be notarized for team ${releaseTeam}`);
+    if (!publishConfig(env[updateFeedEnv]))
+      throw new Error(`A release build needs ${updateFeedEnv} so installs can update themselves`);
   }
   return {
     appId: team ? 'io.darkbloom.desktop.preview' : 'io.darkbloom.desktop',

@@ -6,6 +6,23 @@ import ProviderCore
 /// the daemon state file (trust reason, live runtime), and a coordinator
 /// version check. Returns sectioned `Diagnostic`s for the renderer.
 enum DoctorRunner {
+    static func trafficDiagnostic(_ verdict: ServingReadiness.Verdict) -> Diagnostic {
+        switch verdict {
+        case .authorized(let detail):
+            return Diagnostic(section: .traffic, name: "coordinator traffic", level: .pass,
+                              message: "eligible for coordinator work (\(detail))", fix: nil)
+        case .pending(let detail):
+            return Diagnostic(section: .traffic, name: "coordinator traffic", level: .info,
+                              message: "not yet eligible (\(detail))", fix: nil)
+        case .unconfirmed(let detail):
+            return Diagnostic(section: .traffic, name: "coordinator traffic", level: .info,
+                              message: "unconfirmed (\(detail))", fix: nil)
+        case .blocked(let advice):
+            return Diagnostic(section: .traffic, name: "coordinator traffic", level: .fail,
+                              message: "NOT receiving coordinator work: \(advice.message)", fix: advice.fix)
+        }
+    }
+
     static func buildOperatorDiagnosis(
         snapshot: RuntimeSnapshot,
         coordinatorURL: String
@@ -17,7 +34,8 @@ enum DoctorRunner {
         // "Fresh" = the daemon is running AND its state snapshot isn't stale, so
         // its live fields (trust level, current model, capacity) are trustworthy.
         let stateFresh = daemonUp && !(state?.isStale(now: now) ?? true)
-        let authorization = state?.currentProviderAuthorization(coordinatorURL: coordinatorURL, now: now)
+        let authorization = state?.displayedProviderAuthorization(coordinatorURL: coordinatorURL, now: now)
+        let removalAuthorization = state?.currentProviderAuthorization(coordinatorURL: coordinatorURL, now: now)
         let appAttestAuthorized = authorization?.hasCurrentAppAttestAuthorization(now: now) == true
 
         // ---- Attestation key (read-only daemon state) ----
@@ -57,7 +75,8 @@ enum DoctorRunner {
         if let authorization {
             out.append(Diagnostic(section: .trust, name: "serving authorization",
                                   level: appAttestAuthorized || authorization.path == "legacy" ? .pass : .warn,
-                                  message: ProviderAuthorizationReadiness.summary(authorization, now: now),
+                                  message: ProviderAuthorizationReadiness.summary(
+                                      authorization, removalAuthorization: removalAuthorization, now: now),
                                   fix: nil))
         } else if let state, let trust = state.trust, daemonUp, !state.isStale(now: now) {
             let advice = TrustReasonCatalog.advice(level: trust.trustLevel, status: trust.status, reason: trust.reason)
@@ -95,6 +114,11 @@ enum DoctorRunner {
             if let diag = MDMTrustDiagnosis.diagnose(trustLevel: liveTrustLevel, status: liveStatus, enrollment: enrollment) {
                 out.append(diag)
             }
+        }
+
+        // ---- Coordinator traffic: is this connection routable, and if not, why? ----
+        if stateFresh, let state, let verdict = ServingReadiness.verdict(state, now: now) {
+            out.append(trafficDiagnostic(verdict))
         }
 
         // ---- Traffic readiness: does the assigned/configured model fit RAM? ----
@@ -185,7 +209,12 @@ enum DoctorRunner {
                     ? daemonBasis.map(\.id)
                     : daemonBasis.map(\.id).filter(enabled.contains)
             }
-            for target in targets {
+            // A Mac set up for a two-Mac cluster holds its share of the pair's
+            // model: one row says so instead of a single-Mac verdict
+            // (`ModelFitDiagnostic.clusterMember`).
+            let clusterMember = servesCluster(snapshot.config)
+            if clusterMember { out.append(ModelFitDiagnostic.clusterMember()) }
+            for target in targets where !clusterMember {
                 let targetID = target.id
                 out.append(ModelFitDiagnostic.diagnose(
                     modelID: targetID, weightGb: target.weightGb,
@@ -220,13 +249,16 @@ enum DoctorRunner {
                 let warm = WarmModelsFormat.warmModelsLine(warmModels: state.warmModels, currentModel: state.currentModel)
                 let mru = WarmModelsFormat.mostRecentlyUsedLine(currentModel: state.currentModel)
                 out.append(Diagnostic(section: .runtime, name: "daemon connected", level: .pass,
-                                      message: "up \(formatDuration(state.uptimeSeconds(now: now))), warm models: \(warm) (\(WarmModelsFormat.mostRecentlyUsedLabel.lowercased()): \(mru)), \(state.stats.requestsServed) requests served.",
+                                      message: "up \(formatDuration(state.uptimeSeconds(now: now))), warm models: \(warm) (\(WarmModelsFormat.mostRecentlyUsedLabel.lowercased()): \(mru)), \(state.stats.requestsServed) requests served since the daemon started.",
                                       fix: nil))
             }
             if let err = state.lastModelLoadError {
                 out.append(Diagnostic(section: .runtime, name: "recent model load", level: .warn,
                                       message: "FAILED for \(err.model): \(err.message)",
                                       fix: "see the model-fit check above; serve a model that fits this box's RAM."))
+            }
+            if !state.isStale(now: now) {
+                out.append(contentsOf: PrefixCacheDiagnosis.diagnostics(slots: state.slots))
             }
             // ---- Billing ----
             if state.stats.usageGaps > 0 {
@@ -235,7 +267,7 @@ enum DoctorRunner {
                                       fix: "run `\(BuildEnvironment.current.cliName) report --dry-run` to review the logs, then upload with `\(BuildEnvironment.current.cliName) report` if support needs them."))
             } else {
                 out.append(Diagnostic(section: .billing, name: "usage reporting", level: .pass,
-                                      message: "\(state.stats.requestsServed) requests / \(state.stats.tokensGenerated) tokens reported this session.",
+                                      message: "\(state.stats.requestsServed) requests / \(state.stats.tokensGenerated) output tokens completed since the daemon started, all with usage; the console's Earnings page lists the paid ones.",
                                       fix: nil))
             }
         }
@@ -272,6 +304,16 @@ enum DoctorRunner {
         }
 
         return out
+    }
+
+    /// Whether this Mac is set up for a two-Mac cluster: its provider config
+    /// names a saved cluster setup and it holds a pairing. The pairing store is
+    /// read only when the config names a setup, so a Mac without one is
+    /// diagnosed exactly as before.
+    static func servesCluster(
+        _ config: ProviderConfig, paired: @autoclosure () -> Bool = !ClusterService.holdsNoPairing()
+    ) -> Bool {
+        config.cluster != nil && paired()
     }
 
     private static func formatDuration(_ seconds: Double) -> String {

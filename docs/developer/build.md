@@ -1,11 +1,22 @@
-# Build The Provider, Retained Console And Landing
+# Build The Provider And Landing
 
-> Last updated: 2026-10-23
+> Last updated: 2026-11-04
 
 Build the provider, its source-matched native resources, and the independent
-landing site from this repository. The existing console snapshot and its build,
-lint, test and hosting configuration remain here; new console development belongs
-to the platform. Backend, sidecar and admin builds belong to that sibling repository.
+landing site from this repository. Backend, sidecar, console and admin builds
+belong to the sibling platform repository.
+
+
+For the Bonsai 9B request-generation regression, build the control-only
+`darkbloom-cluster-pair-check` product in `libs/darkbloom-cluster-worker` and run
+[the tokenizer metadata check](test.md) with the exact model metadata directory.
+This executable links the prompt tokenizer and qualification driver, without
+loading the native model runtime or requiring a Metal library.
+
+The model-free local HTTP parity suite uses the normal ProviderCore test build:
+`swift test --package-path provider-swift --filter ClusterAPIParityTests`.
+It binds only loopback listeners and scripted engines, without model downloads
+or GPU execution. See [test coverage and limits](test.md).
 
 ## Prerequisites
 
@@ -24,11 +35,36 @@ an arbitrary prebuilt metallib or infer GPU qualification from compilation.
 Keep separate worktrees/output directories for independent native builds;
 never share an active Swift scratch path or another suite's GPU reservation.
 
+After changing provider authorization summaries, rebuild the provider test
+product before running the [authorization guidance tests](test.md#provider-authorization-guidance).
+They exercise shared production decisions without invoking status/doctor's
+host probes or native Apple operations; signed-release qualification remains
+separate.
+
+## Cluster metadata check builds
+
+The worker capability and worker startup-argument checks link the actual
+`DarkbloomClusterRuntime` through `libs/darkbloom-cluster/Tests/Support/native-metadata.sh`.
+GLM catalog metadata uses MLXLLM types, so these checks need the pinned native
+dependencies and Xcode toolchain even though they execute only metadata and
+argument admission. They do not construct a model, initialize a GPU group or
+prove native inference.
+
+Their default build directory is a canonical temporary directory outside the
+checkout. To reuse this build between the two serial checks, set
+`DARKBLOOM_CLUSTER_METADATA_BUILD_ROOT` to a dedicated scratch directory outside
+file-sync folders. Never reuse an active provider or worker build directory.
+See [Two-Mac Cluster Checks](test.md#two-mac-cluster-checks) for execution scope.
+
 ## Build
+
+The Bonsai 9B cluster tests link the same pinned Runtime and MLX libraries as
+the worker. Use an isolated scratch directory and source-matched MLX resources
+even for CPU lazy-shell tests; compilation is not pair qualification. The
+focused suites and their scope are listed in [the test guide](test.md#prerequisites).
 
 ```bash
 make provider-build
-make ui-install ui-build
 make landing-install landing-build
 ```
 
@@ -37,6 +73,11 @@ make landing-install landing-build
 `libs/mlx-swift/Source/Cmlx/mlx`, matching the Cmlx target. Top-level `libs/mlx`
 is a separate dependency pin. Native resources must match the compiled host
 library; a warm cache cannot waive that requirement.
+
+The pinned core orders fast Metal fence waits after earlier kernels in the
+current concurrent pass as well as prior passes. Rebuild the Cmlx host object
+when changing this pin. This fence change has no shader or C-header delta;
+continue checking resource identity against the actual nested core.
 
 The SDK has independent test products under `libs/mlx-swift-lm`; rebuild and
 stage their resources as well as the provider test product when validating a
@@ -81,6 +122,23 @@ a new CLI alone does not update an old test binary or qualify a checkpoint forma
 Next.js server runtime, not static file hosting. Follow its [README](../../landing/README.md)
 for local development; keep production credentials out of builds and tests.
 
+### Cluster Packages
+
+`provider-swift/Package.swift` depends on the local package `libs/darkbloom-cluster`
+(protocol, process, security, remote and placement products linked into
+`ProviderCore`) and declares the test-only `cluster-member-fixture-child`
+executable target. The cluster worker is its own package,
+`libs/darkbloom-cluster-worker`, built natively for macOS 26.2 with the real
+JACCL backend by `libs/darkbloom-cluster-worker/build-native-worker.sh`, or for
+a release by `scripts/build-cluster-helpers.sh`
+([cluster helpers](../operations/provider-release.md#cluster-helpers)). Build
+the worker with the same source-matched metallib as the provider.
+
+The Qwen3.5/3.6 MoE tensor-parallel path uses these same native targets and pinned
+SDK; it introduces no alternate build flags. Run its
+[focused metadata and tensor checks](test.md#focused-qwen35-moe-tensor-parallel-checks)
+before installing a worker for paired hardware qualification.
+
 ## Electron Desktop App
 
 `make desktop-install`, `make desktop-build`, and `make desktop-package` build
@@ -109,7 +167,11 @@ and linking on that SDK. Ordinary development retains the package's Swift 6.3
 minimum; release evidence must use the selected release toolchain.
 
 Pinned Python 3.12.10 and checksum-verified CMake 3.31.12 provide missing build
-tools. `scripts/prepare-metal-toolchain.py` requires a working compiler probe,
+tools. `scripts/install-release-cmake.sh` uses the CMake 3.31.12 that Darkbloom macOS
+images unpack from the same checksum-verified archive into
+`$RUNNER_TOOL_CACHE/cmake/3.31.12/universal`, when its `universal.complete`
+marker exists and the binary reports that exact version; elsewhere it
+downloads and verifies the 80 MB archive. `scripts/prepare-metal-toolchain.py` requires a working compiler probe,
 not merely a completed component download. It clears stale discovery state,
 waits boundedly for registration, and uses Apple's component export/import
 fallback. The specific transient asset-catalog download error gets at most
@@ -123,12 +185,49 @@ provider tests and isolated native gates; restoring a cache never skips them.
 Signing verifies the source, version, SDK, inventory and entitlements before
 importing its certificate. See [release qualification](test.md#sdk-27-release-qualification).
 
+## The `dev` branch
+
+On the `dev` branch a plain `swift build` is a DevNet build:
+`DARKBLOOM_RELEASE_ENVIRONMENT` defaults to `dev`, so the provider talks to
+`https://api.dev.darkbloom.dev` and nothing else. On master the default is
+`prod`. Set `DARKBLOOM_RELEASE_ENVIRONMENT=prod` to build a production binary
+from the `dev` branch.
+
+CI enforces both defaults. The Release Integrity job runs
+`scripts/provider-build-default.py`: a pull request into master, or a push to
+master, fails unless the default is `prod`; one into or to `dev` fails unless
+it is `dev`. Every release of master runs the same check and stops before the
+build if the default is not `prod`.
+
+Use the `dev` branch to run a provider from source against the DevNet
+coordinator. A push to `dev` that changes the provider publishes the DevNet
+release through `.github/workflows/release-dev-branch.yml`
+(see `docs/operations/provider-release.md`).
+
+Rules for the branch:
+
+- Changes reach `dev` through pull requests into `dev`, which land as merge
+  commits, and through merges of master into `dev`.
+- `dev`'s changes reach master through pull requests into master.
+  [#1688](https://github.com/Layr-Labs/d-inference/pull/1688) merged a snapshot
+  branch of `dev` with a merge commit, for which an admin briefly allowed merge
+  commits on the squash-only master ruleset; 0.10.6's cluster changes reached
+  master as a squash-merged pull request of `dev` with master merged in.
+- Master keeps one commit of its own, `e9babca4`, which sets plain builds back
+  to `prod`. A merge of master into `dev` reverts that commit on its sync
+  branch, so `dev` keeps its DevNet default.
+- Never tag a commit on `dev`. Tags publish production, from master.
+
 `scripts/provider-release-cache.py` separates optimized and qualification Swift
 caches by compiler/SDK, architecture, absolute checkout/toolchain paths,
 dependency pins and build recipe. `DARKBLOOM_RELEASE_ENVIRONMENT` also separates
 dev and prod products. A source commit identifies an immutable generation;
 compatible restore prefixes never cross these boundaries. The Metal cache
 includes nested MLX source, compiler binary SHA and CMake recipe identity.
+The optimized cache also holds the scratch directory of the native cluster
+worker build (`libs/darkbloom-cluster-worker/build-native-worker.sh`), so
+unchanged MLX and cluster objects are not compiled again. Its Metal library is deleted on
+restore, and the worker's JACCL and macOS 26.2 checks run on every build.
 
 The cache's `snapshot-mtimes` and `restore-mtimes` commands restore timestamps
 only for tracked files whose contents are unchanged. They do not restore source
@@ -147,6 +246,153 @@ build and whole-job time rather than promising a fixed release duration.
 the selected product without treating an old build-directory layout as a
 resource authority. Keep its archive/path checks and source-matched staging;
 see [resource and release tooling checks](test.md#focused-tooling-checks).
+
+## CI Runner Routing
+
+`.github/workflows/darkbloom-route.yml` chooses where read-only CI jobs run: a
+Darkbloom Sandbox when its plane grants one, otherwise the job's Blacksmith
+fallback. It runs on GitHub-hosted `ubuntu-24.04` with no token permissions or
+checkout. Each routed job runs on `fromJSON(needs.route.outputs.routes)['<lane>']`,
+where the lane is the job's name; each shard of a sharded job reads its own
+lane, `format('<job>-{0}', matrix.shard)`.
+
+| Workflow | Routed jobs | Fallback |
+|---|---|---|
+| `ci.yml` | `release-integrity`, `docs` | `blacksmith-4vcpu-ubuntu-2404` |
+| `ci.yml` | `test-provider` (lanes `test-provider-1` to `test-provider-3`, one per shard), `test-provider-summary`, `test-provider-sdk`, `test-cluster-checks`, `test-cluster` (lanes `test-cluster-1` to `test-cluster-3`), `test-cluster-gpu` (lanes `test-cluster-gpu-1` and `test-cluster-gpu-2`), `test-cluster-focused` | `blacksmith-12vcpu-macos-27` |
+| `docs-impact.yml` | `commit-signatures`, `docs-impact` | `blacksmith-4vcpu-ubuntu-2404` |
+| `landing.yml`, `desktop.yml`, `nightly-linear-package.yml` | `check`, `frontend`, `test` | `blacksmith-4vcpu-ubuntu-2404` |
+| `provider-release-cache.yml` | `warm`, pull requests only | `blacksmith-12vcpu-macos-27` |
+
+Routing is off unless the repository variable `DARKBLOOM_ROUTING` is exactly
+`on`. While it is off, and for pull requests from forks, every job keeps its
+fallback and the plane is not contacted. When it is on, the route job sends one
+`POST /v1/ci/routes` to `DARKBLOOM_SANDBOX_URL` (default
+`https://api-sandbox.darkbloom.dev`) for the jobs that will run, retrying at
+most once after a transient failure. It uses a grant only when the grant
+repeats the exact Darkbloom labels for the job's profile. Errors, timeouts and
+malformed replies keep the fallback; the plane never fails the route job.
+Every job of a lane shares one `runs-on` value, so the plane grants a lane
+whole, for its requested job count, or not at all. Each shard is therefore a
+lane of its own and runs on a Darkbloom Mac whenever one is free,
+independently of the other shards. The plane grants only the lanes its
+approval names; any other lane keeps its fallback.
+
+```mermaid
+flowchart LR
+  C["changes<br/>(classifier)"] --> Q{"routing on, same-repo<br/>run, lane count > 0?"}
+  Q -- no --> F["Blacksmith fallback<br/>(macOS: blacksmith-12vcpu-macos-27)"]
+  Q -- yes --> R["one POST /v1/ci/routes<br/>for all requested lanes"]
+  R --> P{"plane grants the lane<br/>with the exact labels?"}
+  P -->|"no, error or timeout"| F
+  P -- yes --> D["Darkbloom Sandbox<br/>(darkbloom-macos-arm64)"]
+  classDef dark fill:#d4f7dc,stroke:#1a7f37,color:#0b2e13
+  classDef fallback fill:#fff4ce,stroke:#9a6700,color:#3b2300
+  class D dark
+  class F fallback
+```
+
+A push run asks exactly as a same-repository pull request does; the request
+names only the repository, run and lanes, and the plane's approval decides
+which pushed branches it admits. Other branches get `branch_not_admitted` and
+keep their fallback, so a push saves caches on Darkbloom only from an admitted
+branch and only in routed lanes ([CI Caching](#ci-caching)).
+Release, signing, publication, model registration, review automation and
+`master` or dispatched cache warming keep literal Blacksmith labels. The
+component classifier and the `Provider Tests` gate run on `ubuntu-24.04`.
+
+Jobs on Darkbloom Sandboxes use GitHub's Actions cache, not Blacksmith's
+colocated cache, so their first runs start without cached build products.
+Darkbloom Linux sandboxes are ARM64; the Blacksmith Linux fallback is x64. The
+decision is fixed for the run: **Re-run failed jobs** reuses it, so turn routing
+off and use **Re-run all jobs** to move a run back to Blacksmith. See the
+[routing checks](test.md#focused-tooling-checks).
+
+## CI Caching
+
+`.github/workflows/ci.yml` and `.github/actions/provider-ci-build/action.yml`
+restore caches in every run. Only pushes to `master` and `dev` save them, when
+the exact key missed: the workflow's `SAVE_CACHES` is
+`github.event_name == 'push' && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/dev')`,
+and `ci.yml` passes it to the composite action as `save-caches`. An entry saved
+by a pull request is scoped to its merge ref, so only that pull request could
+restore it, and it evicted its base branch's entries from the repository's
+10 GB quota. A pull request restores its base branch's newest compatible entry,
+then `master`'s. Blacksmith runners keep their own colocated cache, so an entry
+saved there never reaches a Darkbloom Sandbox, and the reverse: a push warms
+the caches of the runners it ran on.
+
+| Cache | Path | Key; restore prefixes | Saved by, on pushes to `master` and `dev` |
+|---|---|---|---|
+| Git objects | `.git` | `git-v1-<os>-<YYYY-MM-DD>`; `git-v1-<os>-<YYYY-MM>-`, then `git-v1-<os>-` | every job that checks out |
+| Full-history Git objects | `.git` | the same under `git-full-v1-`, so shallow jobs never restore it | `docs` |
+| SwiftPM repositories | `~/Library/Caches/org.swift.swiftpm/repositories` | `spm-repos-v1-<os>-<layout>-<lane>-<Package.resolved hash>`; `spm-repos-v1-<os>-<layout>-<lane>-` | each build lane |
+| Swift test build | each lane's `.build` directory | `swift-key`; `swift-prefix` from `scripts/provider-ci-cache.py` | each build lane |
+| Metal library | `$RUNNER_TEMP/metallib-cache` | `metallib-key`, exact only | each build lane |
+| MiMo audio codec | `$RUNNER_TEMP/mimo-audio-source` | `mimo-audio-source-v2-<sha256>`, exact only; fetched only when the audio gate runs ([test guide](test.md)) | the last provider shard |
+| Cluster metadata build | `$RUNNER_TEMP/cluster-native-metadata` | toolchain, submodule pins, manifests and paths, then the commit | `test-cluster-checks` |
+
+Every checkout uses the same five steps. The job computes the UTC day
+(`date -u +%F`) and restores `.git`. A step that cannot fail then deletes the
+restored `.git` unless `git rev-parse --verify HEAD` and
+`git fsck --connectivity-only` accept it. One ordinary `actions/checkout`
+follows: it fetches only the objects `.git` lacks and reuses the submodule
+repositories under `.git/modules`, and its failure fails the job. No step uses
+`continue-on-error`. A `.git` that passes fsck but still breaks the checkout
+fails the job; change the key version, such as `git-v1`, to start over. The
+`.git` key names the day, not the commit, so a branch saves `.git` once a day:
+later runs that day restore the exact key and save nothing. Checkouts set
+`persist-credentials: false`, so the saved `.git/config` holds no job token.
+
+Checkouts download only what their job reads. Every checkout but Docs Lint's
+skips the `.gz` tarballs under `docs/reports/evidence` and `landing/public/media`
+(`CHECKOUT_SPARSE`, 408 MB of evidence tarballs and landing videos): a sparse
+checkout fetches commits and trees without file contents (`blob:none`), then
+only the files it checks out. The reports and the rest of the evidence stay: a
+provider test hashes `docs/reports/2026-10-31-public-cluster-models.md`, and
+`scripts/provider-ci-cache.py` hashes every tracked `Package.swift`, including
+one under `docs/reports/evidence`. Docs Lint
+checks link targets on disk, so it checks out every file, but fetches history
+with `filter: blob:none`; the provenance check then fetches the old document
+versions it reads (about 29 MiB for its 12 checks). Docs Impact
+(`.github/workflows/docs-impact.yml`) needs commits, trees and the docs, so it
+uses both settings.
+
+```mermaid
+flowchart LR
+  W[UTC day] --> R["Restore .git<br/>(today, else newest)"]
+  R --> V{"git fsck<br/>accepts .git?"}
+  V -- no --> D[Delete .git] --> K
+  V -- yes --> K[actions/checkout]
+  K --> G{"master or dev push,<br/>no exact hit?"}
+  G -- yes --> S[Save .git]
+  G -- no --> B
+  S --> B["Restore SwiftPM, build<br/>and Metal caches; build; test"]
+  B --> M{"master or dev push,<br/>no exact hit?"}
+  M -- yes --> T[Save each cache]
+  classDef save fill:#d4f7dc,stroke:#1a7f37,color:#0b2e13
+  classDef fail fill:#ffe1e1,stroke:#cf222e,color:#3d0a0a
+  class S,T save
+  class D fail
+```
+
+- Swift build prefixes contain no pull-request data; the commit is only the
+  key's suffix. A pull request that changes a CI recipe file, a manifest, a
+  lockfile or a submodule pin has a new prefix and builds cold. On a pull
+  request, the provider summary job restores the base branch's build like the
+  shards and rebuilds what the commit changed; on a push it restores the
+  shards' own build.
+- `actions/cache` stores a path outside the workspace relative to the
+  workspace, so the SwiftPM key includes `<layout>`, a hash of `$HOME` and the
+  workspace path. The cluster key reads only each submodule's state, pin and
+  path from `git submodule status`, because its `git describe` text depends on
+  the refs a restored `.git` holds.
+- `actions/cache` compresses with zstd when `zstd` is on `PATH` and with gzip
+  otherwise, and the method is part of each entry's version: a runner without
+  zstd never restores an entry saved with it. Each job logs
+  `actions/cache compressor: zstd` or `gzip` before its first cache step.
+- Concurrent jobs of one push save the same key; one wins, and the others log a
+  `409 Conflict` warning.
 
 ## Dev Build Identity
 
@@ -242,21 +488,6 @@ to match the release environment, plus all four markers:
 installer/updater launches. Callback completion and expiry use no Apple service
 or Keychain item; this linked-binary smoke is not physical Apple qualification.
 
-## Retained Console
-
-`make ui-install` installs the console dependencies and `make ui-build` runs its
-Next.js production build. For local preview, run `npm run dev` in `console-ui/`.
-The existing `ui-lint`, `ui-test` and aggregate `ui` targets remain available,
-along with the console CI lane and console-only pre-commit lint hook.
-
-The console uses `console-ui/` as its hosting project root and requires a Next.js
-server for same-origin `/api/*` routes, not static export. Existing
-`console-ui/vercel.json` hosting configuration remains in place. Configure the
-build-time public variables in the [configuration reference](../reference/configuration.md#console-ui)
-and use a real Privy app for a hosted deployment; missing/placeholder Privy
-configuration selects mock authentication. See [console architecture](../architecture/components/console-ui.md).
-Retaining source or running a build does not authorize hosting or traffic changes.
-
 ## Verify
 
 For changes to the trusted PR reviewer, no provider build is required. Run the
@@ -304,7 +535,7 @@ That pinned reference is historical context, not current backend source authorit
 
 Use source-matched submodules, the documented Xcode SDK and fresh resources when
 diagnosing native failures. Preserve cache identity checks; do not bypass them
-to reuse incompatible artifacts. Run `make clean` only when its provider/console/landing
+to reuse incompatible artifacts. Run `make clean` only when its provider/landing
 artifact removal is intended. Never erase live provider state as build cleanup.
 
 Do not repair an old backend trigger by reintroducing backend build targets here.
@@ -347,3 +578,114 @@ passes do not qualify the shipping provider, MTP speed or full image support.
 - [Native ownership](navigation.md)
 - [Serving-performance qualification](serving-performance-qualification.md)
 - [Landing](../../landing/README.md)
+
+For background cluster qualification, stage the complete app and sign it with
+an available Apple-issued development identity. An ad-hoc binary's Terminal or
+SSH access does not establish background Local Network permission. Keep the
+bundle identifier and signing team consistent; record post-signing hashes.
+Development signing is separate from the Developer ID and notarization gates
+in [provider releases](../operations/provider-release.md).
+
+### Gemma batch arithmetic dependency
+
+Build the cluster runtime together with the matching MLXLLM Gemma decode-scope
+implementation; the stage calls `Gemma4BatchDecodeScope` directly. Both ranks
+include its arithmetic marker in their batch load agreement. Build and test
+against the pinned working SDK sources rather than an independently fetched
+SDK revision. See [Gemma checks](test.md#gemma-per-request-decode-equality)
+before running GPU and full-artifact qualification.
+
+### Bundle Gemma catalog alias qualifications
+
+Pass the original `darkbloom-cluster-pair-check record` JSONL files to
+`scripts/cluster-bundle-pair-qualifications.sh`. The registered plain and 8-bit
+Gemma 26B aliases may share their exact artifact digest; keep their separate
+runtime IDs and original record lines. Do not relabel an 8-bit run as a plain
+run. The script deduplicates identical lines and refuses unrelated identities
+sharing one aggregate. See [inference](../architecture/inference.md#qualification-records-for-identical-catalog-files)
+for the artifact and grant boundary.
+
+
+The GPT-OSS independent-history batch primitive requires the matching
+MLX-Swift-LM change that exports `GPTOSSPerRowAttentionCache`. Build both from a
+reviewed source snapshot; the ordinary pinned SDK does not expose that API.
+A concurrent GPT-OSS candidate must include the matching resident driver,
+worker facade and installed lane policy as well as the SDK hook. The default
+remains single-lane. Run the [native checks](test.md#gpt-oss-native-batch-prerequisite-checks)
+and [owner checks](test.md#gpt-oss-batch-owner-checks) before preparing that candidate.
+
+### Tensor-parallel qualification refusal regression
+
+After changing installed generation-mode or qualification handling, run
+`bash provider-swift/Tests/ClusterInstalledSessionChecks/run.sh` before building
+a candidate. It includes actual negative no-cut TP metadata and both installed
+rank checks, without loading weights or using a GPU. See [failed-shape tests](test.md#tensor-parallel-failed-shape-checks).
+
+
+### Building the demand-driven local generation host
+
+The optional `DistributedLocalBatchReplacement` factories live in ProviderCore and return fresh `DistributedInstalledSession` values; they must not start owners themselves. Rebuild both ProviderCore and the CLI wiring when integrating a planner/factory. Default construction supplies no replacement callback. Validate the host's lifecycle tests, then the separate planner/configuration/supervisor adoption path, before treating same-listener automatic mode switching as installed behavior. Keep previous-generation release proof and failed-candidate cleanup as hard barriers before every load.
+
+### Automatic cluster placement checks
+
+The automatic placement and setup transaction fixtures compile their actual
+Swift source closure with `swiftc`; they do not require native model resources
+or an installed provider. Run the [automatic batching CPU checks](test.md)
+before the full provider/helper build. Provider and helper builds must still
+use matching sources when verifying persisted lane activation on hardware.
+
+### Native batch quote helper matching
+
+Build the provider and placement helper from the same batch-quote sources.
+The helper obtains the native allocator's scalar upper bound without allocating
+model state or running a stream. Pure metadata checks inject an explicit bound
+and keep MLX/device execution absent. MiMo page/history helpers and the native
+owner must be integrated together; a zero or omitted page/workspace quote
+cannot enable automatic widening. See [native quote checks](test.md#native-family-batch-quote-checks).
+
+### Gemma request and paged restore checks
+
+Rebuild `darkbloom-cluster-pair-check` after changing
+`libs/darkbloom-cluster-worker/Sources/DarkbloomClusterPrompt/PromptTokenizer.swift`
+before generating qualification requests. The
+[Gemma prompt and prefix checks](test.md#gemma-paged-prefix-and-prompt-checks)
+require the current control binary and source-matched native metallib. Keep
+previous generated requests and their numerical evidence unchanged.
+
+### MiMo paged mode dependency closure
+
+Build the cluster runtime, worker and qualification tools against the same
+SDK that supplies paged target rollback, phase restore and explicit trained-head
+storage. Rebuild both MLXLLM and MLXVLM consumers after changing the assistant
+initializer; a cached object compiled against the former initializer is not a
+valid dependency. Run the [paged-mode checks](test.md#mimo-paged-speculative-and-phase-checks)
+before installing a source-matched candidate. No capability or reference record
+is generated by compilation alone.
+
+The metadata-only placement check compiles `QwenVisionResidentBudget` alongside
+the registered Qwen closure. This helper has no MLX dependency and performs no
+tensor loading. Run `libs/darkbloom-cluster/Tests/PlacementChecks/run.sh` to verify
+this source closure; native/media module and hardware checks remain separate.
+
+The Qwen native media source closure needs the matching SDK `Qwen3VLMediaProcessor`,
+`Qwen35VisionTower` and explicit-position Qwen language seams plus the
+`ClusterQwenMedia` protocol carrier. Build these together with Runtime and Worker;
+a worker gate without its protocol dependency does not compile. Preserve the
+regular-file source manifest when preparing isolated validation mirrors.
+
+Qwen27 TP batching needs the matching `MLXLLM` task-local row policy and projection
+protocol, media `MLXVLM` seams, Protocol/Placement, Runtime and Worker modules.
+Build that closure together; a worker lane setting alone does not install a
+native batch owner. The standalone tiny probe also needs the source-matched
+`mlx.metallib` and `pagedattention.metal` beside its binary. Preserve exact source
+and resource hashes for both machines; see the [TP batch checks](test.md#qwen27-tensor-parallel-native-batch-checks).
+
+The automatic Qwen27 TP-width change builds the Placement and Runtime targets
+and the actual ProviderCore source closure. The installed-session contract
+checks use a real sanitized child process without native weights or network;
+see [the focused tests](test.md#automatic-qwen27-tp-width-checks).
+
+Qwen27 TP batch prefix capture/restore changes the Runtime target only; it
+reuses the pinned SDK owned-state APIs. Rebuild the worker and planner together
+because the same complete LOAD budget prices the additional snapshot banks.
+See [warm-prefix validation](test.md#qwen27-tp-warm-prefix-checks).

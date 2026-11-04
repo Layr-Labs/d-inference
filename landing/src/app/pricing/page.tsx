@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { PublicPage } from "../../components/PublicPage";
 import { formatPrice, getPricingSnapshot, pricingExplanation, pricingSource } from "../../content/pricing";
+import { publicLinks } from "../../content/public-site";
 
 export const metadata: Metadata = { title: "Pricing", description: "Current public Darkbloom inference rates, with token units and retrieval time.", alternates: { canonical: "/pricing", types: { "text/markdown": "/pricing.md" } } };
 export const dynamic = "force-dynamic";
@@ -22,6 +23,6 @@ export default async function PricingPage() {
     </> : <p role="status">Current rates are unavailable. Check the public pricing source or try again later.</p>}
     <h2>Using the API</h2>
     <p>Model-specific pricing does not guarantee a model is available to serve a request. Use the authenticated model list to discover models, and check your account balance in the Console before sending paid inference requests.</p>
-    <p><a href="/developers">Developer guide</a> · <a href="https://console.darkbloom.dev/">Open Console</a></p>
+    <p><a href={publicLinks.docs}>Developer guide</a> · <a href="https://console.darkbloom.dev/">Open Console</a></p>
   </PublicPage>;
 }

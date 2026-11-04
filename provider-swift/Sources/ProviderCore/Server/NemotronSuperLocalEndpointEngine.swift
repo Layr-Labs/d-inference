@@ -18,6 +18,8 @@ struct NemotronSuperLocalEndpointEngine: MLXServerEngine {
     /// The local application's prefix-cache partition.
     let cacheScope: String
     let acquire: @Sendable () async throws -> Lease
+    /// Receives a `logprobs` request's entries (`LocalChatUploadResponder`).
+    var logprobs: EngineV2LogprobsChannel? = nil
 
     func availableModels() async throws -> [MLXServerModel] { [] }
     func tokenize(_ request: TokenizeRequest) async throws -> TokenizeResponse { throw unsupported() }
@@ -34,7 +36,7 @@ struct NemotronSuperLocalEndpointEngine: MLXServerEngine {
         do {
             // A local body has no authenticated boundary for schema metadata.
             inner = try await lease.owner.chatEngine(body: body, hasMedia: hasMedia, cacheScope: cacheScope,
-                                                     trustsSchemaMetadata: false)
+                                                     trustsSchemaMetadata: false, logprobs: logprobs)
                 .streamChatCompletion(request: request)
         } catch {
             await lease.release()

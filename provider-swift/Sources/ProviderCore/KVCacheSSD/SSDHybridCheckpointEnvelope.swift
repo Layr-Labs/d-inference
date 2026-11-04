@@ -14,11 +14,21 @@ struct SSDHybridCheckpointEnvelope {
         let bytes: Int
     }
 
+    /// The exact file a delta extends.
+    struct Parent {
+        let tag16: Data
+        let manifest: CBv2CompleteCheckpointManifest
+        let commitment: String
+    }
+
     let manifestBytes: Data
     let segments: [Segment]
     let plaintextBytes: Int
+    let parent: Parent?
+    /// Nil for a complete file; otherwise segments address stored bytes.
+    let delta: SSDCheckpointDeltaLayout?
 
-    init(manifest: CBv2CompleteCheckpointManifest, maximumPlaintextBytes: Int) throws {
+    init(manifest: CBv2CompleteCheckpointManifest, maximumPlaintextBytes: Int, parent: Parent? = nil) throws {
         let tensorBytes = try manifest.validateStructure()
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
@@ -26,11 +36,16 @@ struct SSDHybridCheckpointEnvelope {
         guard manifestBytes.count <= CBv2CompleteCheckpointManifest.maximumEncodedBytes else {
             throw EncodingError.sizeExceeded
         }
-        let (total, overflow) = tensorBytes.addingReportingOverflow(manifestBytes.count)
+        self.parent = parent
+        delta = parent.flatMap { SSDCheckpointDeltaLayout(parent: $0.manifest, child: manifest) }
+        guard (parent == nil) == (delta == nil) else { throw CBv2CompleteCheckpointError.incompatibleCheckpoint }
+        let storedBytes = delta?.tensors.reduce(0) { $0 + $1.storedBytes } ?? tensorBytes
+        let (total, overflow) = storedBytes.addingReportingOverflow(manifestBytes.count)
         guard !overflow, total <= maximumPlaintextBytes else {
             throw EncodingError.sizeExceeded
         }
         plaintextBytes = total
+        if let delta { segments = delta.segments(maximumBytes: CBv2CompleteCheckpointManifest.maximumSegmentBytes); return }
         var result: [Segment] = []
         for (index, tensor) in manifest.tensors.enumerated() {
             var offset = 0
@@ -43,6 +58,8 @@ struct SSDHybridCheckpointEnvelope {
         segments = result
     }
 
+    func completeOffset(of segment: Segment) -> Int { delta?.completeOffset(of: segment) ?? segment.offset }
+
     func metadata(
         tag: Data, identity: CBv2CompleteCheckpointIdentity, createdAt: Int64,
         backendLayout: String = CBv2CompleteCheckpointManifest.layout
@@ -54,7 +71,7 @@ struct SSDHybridCheckpointEnvelope {
             layerCount: 1,
             chunks: sizes.enumerated().map {
                 .init(layerIndex: 0, tensor: $0.offset, shape: [$0.element], dtype: "uint8")
-            }, chunkPlaintextSizes: sizes, createdAt: createdAt)
+            }, chunkPlaintextSizes: sizes, createdAt: createdAt, parentCommitment: parent?.commitment)
     }
 
     func matches(

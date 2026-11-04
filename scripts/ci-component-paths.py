@@ -10,13 +10,15 @@ import re
 import subprocess
 
 
-COMPONENTS = ("provider", "console")
+COMPONENTS = ("provider", "sdk", "cluster", "mimo_audio")
 COMMON = (
     "Makefile", "mise.toml", ".gitmodules", ".github/workflows/component-changes.yml",
+    ".github/workflows/darkbloom-route.yml",
     "scripts/ci-component-paths.py", "scripts/test-ci-component-paths.py",
 )
 PROVIDER = (
-    "provider-swift/**", "libs/**", "fixtures/**", ".github/actions/provider-ci-build/**",
+    "provider-swift/**", "libs/**", "fixtures/**",
+    ".github/workflows/ci.yml", ".github/actions/provider-ci-build/**",
     "scripts/provider-ci-cache.py", "scripts/provider_ci_cache/**",
     "scripts/provider-release-cache.py", "scripts/provider_release_cache/**",
     "scripts/provider-release-swift.sh", "scripts/prepare-provider-release-toolchain.sh",
@@ -24,17 +26,75 @@ PROVIDER = (
     "scripts/fetch-metallib.sh", "scripts/stage-test-metallib.sh",
     "scripts/run-provider-tests.sh", "scripts/run-nested-suite.sh",
     "scripts/run-paged-kernel-tests.sh", "scripts/run-provider-test-watchdog.py",
-    "scripts/run-exclusive-native-gpu-test.sh",
+    "scripts/run-exclusive-native-gpu-test.sh", "scripts/provider-test-shards.py",
+    "scripts/provider-test-shard-weights.json",
+    "scripts/cluster-test-plan.py", "scripts/cluster-stage-content-inventory.py",
     "scripts/prepare-mimo-*-fixtures.py", "scripts/verify-*-prompt-parity.sh",
     "scripts/prepare-prompt-fixtures.py", "scripts/test-prepare-prompt-fixtures.py",
     "scripts/verify-prompt-parity.sh", "scripts/test-qwen4-packaged-resources.py",
     "scripts/test-profile-inventory-auth.py", "scripts/test-desktop-api.py", "scripts/install.sh",
     "scripts/test-install-atomic.sh", "scripts/entitlements*.plist",
 )
-CONSOLE = (
-    "console-ui/**", ".githooks/**",
-    "coordinator/tests/protocol/testdata/paged_footprint_wire.json",
-    "coordinator/tests/protocol/testdata/process_memory_wire.json",
+
+
+# Inputs of the Provider SDK Tests lane: the SDK and MLX pins it builds, its
+# build recipe and its runner scripts. Its suites also run in the SDK fork's CI.
+SDK = (
+    "libs/mlx-swift-lm", "libs/mlx-swift-lm/**", "libs/mlx-swift", "libs/mlx-swift/**",
+    ".github/workflows/ci.yml", ".github/actions/provider-ci-build/**",
+    "scripts/provider-ci-cache.py", "scripts/provider_ci_cache/**",
+    "scripts/provider-release-cache.py", "scripts/provider_release_cache/**",
+    "scripts/provider-release-swift.sh", "scripts/prepare-provider-release-toolchain.sh",
+    "scripts/install-release-cmake.sh", "scripts/prepare-metal-toolchain.py",
+    "scripts/fetch-metallib.sh", "scripts/stage-test-metallib.sh",
+    "scripts/run-nested-suite.sh", "scripts/run-paged-kernel-tests.sh",
+    "scripts/run-exclusive-native-gpu-test.sh", "scripts/prepare-mimo-provider-fixtures.py",
+)
+
+
+# Inputs of the cluster jobs (Cluster Metadata Checks, Cluster Runtime Tests,
+# Cluster GPU Tests, Cluster Focused Checks): the cluster packages and the MLX
+# pins they build, the provider sources their runner scripts compile (every
+# Cluster, Distributed and NativePair source, and the files the runners name),
+# the cluster plan and the shared build recipe. Every cluster input is also a
+# provider input. A push that selects the provider lanes also selects these.
+CLUSTER = (
+    "libs/darkbloom-cluster/**", "libs/darkbloom-cluster-worker/**",
+    "libs/mlx", "libs/mlx/**", "libs/mlx-swift", "libs/mlx-swift/**", "libs/mlx-swift-lm", "libs/mlx-swift-lm/**",
+    "provider-swift/Package.swift", "provider-swift/Package.resolved",
+    "provider-swift/Sources/*Cluster*", "provider-swift/Sources/*Distributed*",
+    "provider-swift/Sources/*NativePair*",
+    "provider-swift/Sources/ProviderCore/Protocol/ProviderExecutionRole.swift",
+    "provider-swift/Sources/ProviderCore/Config/ProviderConfigFile.swift",
+    "provider-swift/Sources/ProviderCore/Models/StreamingFileDownloadDelegate.swift",
+    "provider-swift/Sources/ProviderCoreFoundation/Manifest.swift",
+    # The provider-side cluster runners and the fixture one of them reads; the
+    # provider unit tests of cluster code run in the provider lane.
+    "provider-swift/Tests/Cluster*Checks/**",
+    "provider-swift/Tests/ProviderCoreTests/Fixtures/coordinator-wire/cluster_registration_vector.json",
+    ".github/workflows/ci.yml", ".github/actions/provider-ci-build/**",
+    "scripts/provider-ci-cache.py", "scripts/provider_ci_cache/**",
+    "scripts/provider-release-cache.py", "scripts/provider_release_cache/**",
+    "scripts/provider-release-swift.sh", "scripts/prepare-provider-release-toolchain.sh",
+    "scripts/install-release-cmake.sh", "scripts/prepare-metal-toolchain.py",
+    "scripts/fetch-metallib.sh", "scripts/stage-test-metallib.sh", "scripts/run-nested-suite.sh",
+    "scripts/cluster-test-plan.py", "scripts/cluster-stage-content-inventory.py",
+)
+
+
+
+# Inputs of the MiMo audio gate in the last provider shard, which needs the
+# 1.87 GB pinned audio codec: the MiMo, audio and media provider code, the MiMo
+# tests, the MLX pins, the fixture scripts (the audio one runs the provider
+# fixture generator with --audio-source) and the gate's recipe. Every one is
+# also a provider input. Default-branch pushes run the gate regardless.
+MIMO_AUDIO = (
+    "provider-swift/Package.swift", "provider-swift/Package.resolved",
+    "provider-swift/Sources/*MiMo*", "provider-swift/Sources/*Audio*", "provider-swift/Sources/*Media*",
+    "provider-swift/Tests/ProviderCoreTests/MiMo/*",
+    "libs/mlx", "libs/mlx/**", "libs/mlx-swift", "libs/mlx-swift/**", "libs/mlx-swift-lm", "libs/mlx-swift-lm/**",
+    ".github/workflows/ci.yml", "scripts/prepare-mimo-audio-fixtures.py",
+    "scripts/prepare-mimo-provider-fixtures.py", "scripts/run-nested-suite.sh",
 )
 
 
@@ -51,10 +111,10 @@ def classify(paths):
             continue
         if matches(path, COMMON):
             return dict.fromkeys(COMPONENTS, True)
-        ci = path == ".github/workflows/ci.yml"
-        provider = matches(path, PROVIDER)
-        selected["provider"] |= ci or provider
-        selected["console"] |= ci or matches(path, CONSOLE)
+        selected["provider"] |= matches(path, PROVIDER)
+        selected["sdk"] |= matches(path, SDK)
+        selected["cluster"] |= matches(path, CLUSTER)
+        selected["mimo_audio"] |= matches(path, MIMO_AUDIO)
     return selected
 
 
@@ -100,6 +160,9 @@ def main():
     full = paths is None or (args.event_name == "push" and event.get("ref") in
                              ("refs/heads/master", "refs/heads/main"))
     selected = dict.fromkeys(COMPONENTS, True) if full else classify(paths)
+    # Pushes keep the cluster jobs wherever they run the provider lanes.
+    if args.event_name == "push":
+        selected["cluster"] = selected["cluster"] or selected["provider"]
     output = "".join(f"{name}={str(enabled).lower()}\n" for name, enabled in selected.items())
     if args.output:
         with open(args.output, "a") as destination:

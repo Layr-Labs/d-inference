@@ -2,6 +2,7 @@ import CoreImage
 import CoreMedia
 import CryptoKit
 import Foundation
+import Jinja
 import MLX
 import MLXLLM
 import MLXLMCommon
@@ -880,10 +881,27 @@ private final class GLM5NextEvaluationProbe: @unchecked Sendable {
         let normalized = try await EngineV2VisionPrefill.glm5NextUserInput(
             request: request, controls: .init())
         #expect(normalized.tools?.count == 1 && normalized.images.count == 1)
+        // Required and named tool choice are served beside the image, as on
+        // text: the forcing instruction leads the prompt and the declared tool
+        // stays declared.
         var required = request
         required.toolChoice = .mode(.required)
-        await #expect(throws: (any Error).self) {
-            try await EngineV2VisionPrefill.glm5NextUserInput(request: required, controls: .init())
+        var named = request
+        named.toolChoice = .function(name: "f")
+        for forced in [required, named] {
+            let choice = String(describing: forced.toolChoice)
+            let input = try await EngineV2VisionPrefill.glm5NextUserInput(request: forced, controls: .init())
+            #expect(input.tools?.count == 1 && input.images.count == 1, "\(choice)")
+            guard case .messages(let messages) = input.prompt else {
+                Issue.record("\(choice) did not render template messages")
+                continue
+            }
+            let system = messages.first
+            #expect(system?["role"] as? Jinja.Value == "system", "\(choice)")
+            #expect((system?["content"] as? Jinja.Value)?.description
+                .hasPrefix("Call the declared function 'f' now.") == true, "\(choice)")
+            #expect((messages.last?["content"] as? [[String: String]])?.map { $0["type"] } == ["text", "image"],
+                "\(choice)")
         }
         // The serving entry point dispatches GLM to its native media builder.
         let prepared = try await EngineV2VisionPrefill.prepare(container: container, request: request)

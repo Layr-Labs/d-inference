@@ -2,8 +2,11 @@ name: Provider CI Build
 description: Build full debug test products with lane-specific caches and source-matched Metal
 inputs:
   lane:
-    description: provider, sdk, or parity; each owns independent build outputs
+    description: provider, sdk or cluster; each owns independent build outputs
     required: true
+  save-caches:
+    description: "'true' to save this lane's caches; ci.yml passes true only for pushes to master and dev"
+    default: 'false'
 runs:
   using: composite
   steps:
@@ -13,7 +16,7 @@ runs:
         LANE: ${{ inputs.lane }}
       run: |
         case "$LANE" in
-          provider|sdk|parity) ;;
+          provider|sdk|cluster) ;;
           *) echo "Unknown provider CI lane: $LANE" >&2; exit 2 ;;
         esac
     - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -33,7 +36,21 @@ runs:
       shell: bash
       env:
         LANE: ${{ inputs.lane }}
-      run: python3 scripts/provider-ci-cache.py keys --lane "$LANE" >> "$GITHUB_OUTPUT"
+      run: |
+        python3 scripts/provider-ci-cache.py keys --lane "$LANE" >> "$GITHUB_OUTPUT"
+        # actions/cache stores a path outside the workspace relative to the
+        # workspace, so SwiftPM's cache is shared only between equal layouts.
+        echo "home-layout=$(printf '%s\n' "$HOME" "$GITHUB_WORKSPACE" | shasum -a 256 | cut -c1-12)" >> "$GITHUB_OUTPUT"
+        echo "actions/cache compressor: $(command -v zstd >/dev/null && echo zstd || echo gzip)"
+    # Dependency clones for a cold build; the lane's own build cache already
+    # holds them when it is restored.
+    - name: Restore SwiftPM repositories
+      id: spm-repos
+      uses: actions/cache/restore@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+      with:
+        path: ~/Library/Caches/org.swift.swiftpm/repositories
+        key: spm-repos-v1-${{ runner.os }}-${{ steps.keys.outputs.home-layout }}-${{ inputs.lane }}-${{ hashFiles('**/Package.resolved', '!**/.build/**') }}
+        restore-keys: spm-repos-v1-${{ runner.os }}-${{ steps.keys.outputs.home-layout }}-${{ inputs.lane }}-
     - name: Restore lane-specific Swift test build
       id: swift-cache
       uses: actions/cache/restore@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
@@ -41,35 +58,29 @@ runs:
         path: |
           provider-swift/.build
           libs/mlx-swift-lm/.build
+          libs/darkbloom-cluster/.build
         key: ${{ steps.keys.outputs.swift-key }}
         restore-keys: ${{ steps.keys.outputs.swift-prefix }}
     - name: Revalidate source timestamps and discard cached runtime resources
       shell: bash
       run: |
         python3 scripts/provider-release-cache.py restore-mtimes
-        for root in provider-swift/.build libs/mlx-swift-lm/.build; do
+        for root in provider-swift/.build libs/mlx-swift-lm/.build libs/darkbloom-cluster/.build; do
           [ -d "$root" ] || continue
           find "$root" -type f -name mlx.metallib -delete
           find "$root" -mindepth 3 -maxdepth 3 -type d \
             -path "$root/*-apple-macosx/*/*.bundle" -prune -exec rm -rf {} +
         done
     - name: Build all provider test products
-      if: inputs.lane != 'sdk'
+      if: inputs.lane == 'provider'
       id: provider-build
       shell: bash
       working-directory: provider-swift
-      env:
-        LANE: ${{ inputs.lane }}
-      # The provider lane instruments Swift code for the coverage report at the
-      # end of its job. Both builds use the same flags, so neither rebuilds the
-      # other. The parity lane has no coverage report and builds as before.
+      # Instrumented for the coverage report. Both builds use the same flags,
+      # so neither rebuilds the other.
       run: |
-        coverage=()
-        if [ "$LANE" = provider ]; then
-          coverage=(--enable-code-coverage)
-        fi
-        swift build --build-tests ${coverage[@]+"${coverage[@]}"}
-        swift build --product darkbloom-fan-helper ${coverage[@]+"${coverage[@]}"}
+        swift build --build-tests --enable-code-coverage
+        swift build --product darkbloom-fan-helper --enable-code-coverage
     - name: Build all SDK test products against local MLX
       if: inputs.lane == 'sdk'
       id: sdk-build
@@ -79,19 +90,34 @@ runs:
         swift package unedit --force mlx-swift >/dev/null 2>&1 || true
         swift package edit --path ../mlx-swift mlx-swift
         swift build --build-tests
+    - name: Build all cluster test products
+      if: inputs.lane == 'cluster'
+      id: cluster-build
+      shell: bash
+      working-directory: libs/darkbloom-cluster
+      run: swift build --build-tests
     - name: Record timestamps for successfully built sources
-      if: ${{ !cancelled() && (steps.provider-build.outcome == 'success' || steps.sdk-build.outcome == 'success') }}
+      if: ${{ !cancelled() && (steps.provider-build.outcome == 'success' || steps.sdk-build.outcome == 'success' || steps.cluster-build.outcome == 'success') }}
       id: timestamps
       shell: bash
       run: python3 scripts/provider-release-cache.py snapshot-mtimes
+    # Only callers' trusted pushes save (save-caches): a pull request's entry
+    # is scoped to its merge ref, where nothing else restores it.
     - name: Save lane-specific Swift test build
-      if: ${{ !cancelled() && steps.timestamps.outcome == 'success' && steps.swift-cache.outputs.cache-hit != 'true' }}
+      if: ${{ !cancelled() && inputs.save-caches == 'true' && steps.timestamps.outcome == 'success' && steps.swift-cache.outputs.cache-hit != 'true' }}
       uses: actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
       with:
         path: |
           provider-swift/.build
           libs/mlx-swift-lm/.build
+          libs/darkbloom-cluster/.build
         key: ${{ steps.keys.outputs.swift-key }}
+    - name: Save SwiftPM repositories
+      if: ${{ !cancelled() && inputs.save-caches == 'true' && steps.timestamps.outcome == 'success' && steps.spm-repos.outputs.cache-hit != 'true' }}
+      uses: actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+      with:
+        path: ~/Library/Caches/org.swift.swiftpm/repositories
+        key: ${{ steps.spm-repos.outputs.cache-primary-key }}
     - name: Restore source-matched Metal cache
       id: metallib-cache
       uses: actions/cache/restore@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
@@ -106,14 +132,15 @@ runs:
         METALLIB_CACHE_DIR: ${{ runner.temp }}/metallib-cache
       run: |
         cmake --version
-        if [ "$LANE" = sdk ]; then
-          bin=$(swift build --package-path libs/mlx-swift-lm --show-bin-path)
-        else
-          bin=$(swift build --package-path provider-swift --show-bin-path)
-        fi
+        case "$LANE" in
+          sdk) package=libs/mlx-swift-lm ;;
+          cluster) package=libs/darkbloom-cluster ;;
+          *) package=provider-swift ;;
+        esac
+        bin=$(swift build --package-path "$package" --show-bin-path)
         ./scripts/stage-test-metallib.sh "$bin"
     - name: Save validated source-matched Metal cache
-      if: ${{ !cancelled() && steps.metallib.outcome == 'success' && steps.metallib-cache.outputs.cache-hit != 'true' }}
+      if: ${{ !cancelled() && inputs.save-caches == 'true' && steps.metallib.outcome == 'success' && steps.metallib-cache.outputs.cache-hit != 'true' }}
       uses: actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
       with:
         path: ${{ runner.temp }}/metallib-cache

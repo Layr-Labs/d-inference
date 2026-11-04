@@ -64,12 +64,12 @@ extension NemotronSuperLocalHTTPTests {
             let streamed = SuperSSE(try await send(body(reasoning, stream: true)))
             #expect(streamed.reasoning == "Plan it.")
             #expect(streamed.content == "Hello there.")
-            #expect(streamed.finishReason == "length")
+            #expect(streamed.finishReason == "length" && streamed.logprobs.isEmpty)
             #expect(script.prompt.hasSuffix("<|im_start|>assistant\n<think>\n"))
             #expect(script.prompt.hasPrefix("<|im_start|>system\nBe brief.<|im_end|>\n"))
             let complete = try SuperJSON(try await send(body(reasoning, stream: false)))
             #expect(complete.reasoning == "Plan it.")
-            #expect(complete.content == "Hello there.")
+            #expect(complete.content == "Hello there." && complete.logprobs.isEmpty)
 
             let off = SuperSSE(try await send(body(["<think>", "x", "</think>", "y"], stream: true,
                 ["chat_template_kwargs": ["enable_thinking": false]])))
@@ -122,10 +122,37 @@ extension NemotronSuperLocalHTTPTests {
             }
             _ = try await send(body(["</think>", "Sunny."], stream: false, jsonTools), status: .unprocessableContent)
             for invalid in [["enable_thinking": false, "chat_template_kwargs": ["enable_thinking": true]],
-                            ["logprobs": true],
+                            ["logprobs": true, "top_logprobs": 21],
                             ["messages": [["role": "user", "content": "a <image> tag"]]]] as [[String: Any]] {
                 let text = try await send(body(["x"], stream: true, invalid), status: .badRequest)
                 #expect(text.contains("error"))
+            }
+            // Logprobs: one entry per generated token in generation order,
+            // reasoning tokens included, with the requested alternatives,
+            // greedy first; the visible output is unchanged. A stream's
+            // reasoning chunks carry entries; a complete response has one list.
+            for stream in [true, false] {
+                let text = try await send(body(reasoning, stream: stream, ["logprobs": true, "top_logprobs": 2]))
+                let served = stream ? (SuperSSE(text).content, SuperSSE(text).logprobs)
+                    : try (SuperJSON(text).content ?? "", SuperJSON(text).logprobs)
+                #expect(served.0 == "Hello there.", "stream \(stream)")
+                #expect(served.1.count == reasoning.count, "stream \(stream)")
+                for entry in served.1 {
+                    #expect(entry.top.count == 2 && entry.logprob <= 0)
+                    #expect(entry.top.first == entry.logprob && entry.top[0] >= entry.top[1])
+                }
+                if stream {
+                    #expect(SuperSSE(text).reasoningFrameLogprobs > 0 && SuperSSE(text).textlessFrameLogprobs == 0)
+                }
+            }
+            // A response that ends while reasoning still carries one entry
+            // per token, streamed (on its reasoning chunks) or complete.
+            for stream in [true, false] {
+                let text = try await send(body(["Plan", " it."], stream: stream, ["logprobs": true]))
+                let served = stream ? (SuperSSE(text).reasoning, SuperSSE(text).logprobs)
+                    : try (SuperJSON(text).reasoning ?? "", SuperJSON(text).logprobs)
+                #expect(served.0 == "Plan it." && served.1.count == 2, "stream \(stream)")
+                #expect(!stream || SuperSSE(text).reasoningFrameLogprobs == 2, "stream \(stream)")
             }
         }
         #expect(await budget.outstandingReservedBytes() == baseline)
@@ -183,18 +210,46 @@ struct SuperScriptedTokenizer: MLXLMCommon.Tokenizer {
     }
 }
 
+/// One `logprobs.content` entry: its logprob and its alternatives' logprobs.
+struct SuperLogprob: Sendable, Equatable {
+    let logprob: Double
+    let top: [Double]
+
+    static func entries(_ choice: [String: Any]?) -> [SuperLogprob] {
+        let content = (choice?["logprobs"] as? [String: Any])?["content"] as? [[String: Any]] ?? []
+        return content.map { entry in
+            SuperLogprob(logprob: entry["logprob"] as? Double ?? .nan,
+                         top: (entry["top_logprobs"] as? [[String: Any]] ?? []).map { $0["logprob"] as? Double ?? .nan })
+        }
+    }
+}
+
 struct SuperSSE {
     var reasoning = "", content = "", finishReason: String?
     var toolCalls: [(name: String, arguments: String)] = []
+    /// `logprobs.content` entries across all frames.
+    var logprobs: [SuperLogprob] = []
+    /// Entries on frames carrying reasoning, and on frames carrying neither
+    /// reasoning nor content.
+    var reasoningFrameLogprobs = 0, textlessFrameLogprobs = 0
     init(_ body: String) {
         for line in body.split(separator: "\n") where line.hasPrefix("data: {") {
             guard let data = line.dropFirst(6).data(using: .utf8),
                 let frame = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                 let choice = (frame["choices"] as? [[String: Any]])?.first else { continue }
             if let reason = choice["finish_reason"] as? String { finishReason = reason }
-            guard let delta = choice["delta"] as? [String: Any] else { continue }
-            reasoning += delta["reasoning_content"] as? String ?? ""
-            content += delta["content"] as? String ?? ""
+            let entries = SuperLogprob.entries(choice)
+            logprobs += entries
+            let delta = choice["delta"] as? [String: Any] ?? [:]
+            let frameReasoning = delta["reasoning_content"] as? String ?? ""
+            let frameContent = delta["content"] as? String ?? ""
+            if !frameReasoning.isEmpty {
+                reasoningFrameLogprobs += entries.count
+            } else if frameContent.isEmpty {
+                textlessFrameLogprobs += entries.count
+            }
+            reasoning += frameReasoning
+            content += frameContent
             for call in delta["tool_calls"] as? [[String: Any]] ?? [] {
                 let function = call["function"] as? [String: Any] ?? [:]
                 toolCalls.append((function["name"] as? String ?? "", function["arguments"] as? String ?? ""))
@@ -206,9 +261,12 @@ struct SuperSSE {
 struct SuperJSON {
     let reasoning: String?, content: String?
     let toolCalls: [(name: String, arguments: String)]
+    let logprobs: [SuperLogprob]
     init(_ body: String) throws {
         let root = try #require(try JSONSerialization.jsonObject(with: Data(body.utf8)) as? [String: Any])
-        let message = try #require(((root["choices"] as? [[String: Any]])?.first)?["message"] as? [String: Any])
+        let choice = (root["choices"] as? [[String: Any]])?.first
+        logprobs = SuperLogprob.entries(choice)
+        let message = try #require(choice?["message"] as? [String: Any])
         reasoning = message["reasoning_content"] as? String
         content = message["content"] as? String
         toolCalls = (message["tool_calls"] as? [[String: Any]] ?? []).map { call in

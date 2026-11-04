@@ -10,6 +10,39 @@ enum SSDOwnedEntryRetirement {
         var externalChange = false
     }
 
+    /// Try the linear LRU probe before copying the index into a fallback
+    /// snapshot. Retirement runs outside the index lock and keeps the owning
+    /// store's file/epoch checks and external-removal reconciliation.
+    ///
+    /// `isClosed` is read after each attempt that freed nothing. A closed
+    /// store refuses every later attempt without side effects and is never
+    /// reopened, so stopping there returns the 0 a full pass would. Other
+    /// refusals (an unsafe root, a lost or unreadable epoch record) can
+    /// clear, so the pass continues past them.
+    static func evictOldest(
+        index: SSDBlockIndex, isClosed: () -> Bool, retire: (Data) -> Result
+    ) -> Int {
+        guard let oldest = index.oldest() else { return 0 }
+        let first = retire(oldest.tag16)
+        // Reconciliation may already satisfy the global limit. Let the budget
+        // recheck it before selecting another physical victim.
+        if first.externalChange { return 0 }
+        if first.indexedBytesFreed > 0 { return first.indexedBytesFreed }
+        if isClosed() { return 0 }
+
+        // A busy or undeletable oldest entry must not pin newer victims. This
+        // snapshot observes touches/inserts during the first attempt; later
+        // changes cannot extend or reorder it. Never retry the first tag,
+        // even if it was touched or replaced. No index lock spans retirement.
+        for entry in index.oldestFirstSnapshot() where entry.tag16 != oldest.tag16 {
+            let result = retire(entry.tag16)
+            if result.externalChange { return 0 }
+            if result.indexedBytesFreed > 0 { return result.indexedBytesFreed }
+            if isClosed() { return 0 }
+        }
+        return 0
+    }
+
     /// Caller holds its index-publication/removal barrier. File leases also
     /// exclude a writer between rename and publication; busy entries wait for
     /// the next pass. Recheck status at removal, never from an earlier snapshot.
@@ -23,8 +56,37 @@ enum SSDOwnedEntryRetirement {
         }
     }
 
+    /// Files retired under one hold of a store's removal lock and the epoch
+    /// barrier. Lookups on the engine's submit thread read the epoch through
+    /// that barrier and a donor's index publication waits on the removal lock,
+    /// so a long TTL or budget sweep is retired in short holds. Each hold
+    /// rereads the epoch record, so smaller slices slow the sweep.
+    static let filesPerSlice = 16
+
+    /// Retires `urls` a slice at a time through `retire`, which takes the
+    /// locks and returns nil when the store refuses. Stops at the first
+    /// refusal and returns what the earlier slices removed.
+    static func removeInSlices(_ urls: [URL], retire: ([URL]) -> Result?) -> Result {
+        var total = Result()
+        var start = 0
+        repeat {
+            let end = min(start + filesPerSlice, urls.count)
+            guard let part = retire(Array(urls[start ..< end])) else { break }
+            total.removed.formUnion(part.removed)
+            total.indexedBytesFreed += part.indexedBytesFreed
+            total.externalChange = total.externalChange || part.externalChange
+            start = end
+        } while start < urls.count
+        return total
+    }
+
+    /// Maintenance chooses TTL victims by mtime, which can trail the index: a
+    /// complete-checkpoint reader rewrites it only while it holds the file
+    /// alone. With `unusedSince`, an entry the index saw hit after that time
+    /// stays, and its last hit is persisted for restart scans and later sweeps.
     static func remove(
-        urls: [URL], root: URL, index: SSDBlockIndex, epochStore: SSDCacheEpochStore?
+        urls: [URL], root: URL, index: SSDBlockIndex, epochStore: SSDCacheEpochStore?,
+        unusedSince: Int64? = nil
     ) -> Result? {
         let body = {
             var result = Result()
@@ -43,6 +105,10 @@ enum SSDOwnedEntryRetirement {
                     result.externalChange = result.externalChange || index.contains(tag16: tag)
                     continue
                 }
+                if let unusedSince, let lastAccess = index.lastAccess(tag16: tag), lastAccess > unusedSince {
+                    persistHit(lastAccess, at: url, under: root)
+                    continue
+                }
                 if SSDBlockStore.removeItemIfSafe(at: url, under: root) {
                     result.indexedBytesFreed += index.remove(tag16: tag)
                     result.removed.insert(url.standardizedFileURL.path)
@@ -54,5 +120,14 @@ enum SSDOwnedEntryRetirement {
         }
         if let epochStore { return epochStore.performOwnedRetirement(body) }
         return body()
+    }
+
+    /// Never moves an mtime back, and skips a rewrite that would only change
+    /// ctime and so the identity that authenticated receipts pin.
+    private static func persistHit(_ lastAccess: Int64, at url: URL, under root: URL) {
+        let modified = (try? FileManager.default.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date
+        guard modified.map({ Int64($0.timeIntervalSince1970) < lastAccess }) ?? true else { return }
+        SSDBlockStore.setAttributesIfSafe([.modificationDate: Date(timeIntervalSince1970: Double(lastAccess))],
+                                        at: url, under: root)
     }
 }

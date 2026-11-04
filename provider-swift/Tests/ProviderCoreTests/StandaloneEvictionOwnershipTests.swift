@@ -31,7 +31,8 @@ private final class EvictionStubModel: Module, LanguageModel, Qwen4ExpExternalPL
     private let onRelease: @Sendable () -> Void
 
     init(onRelease: @escaping @Sendable () -> Void) { self.onRelease = onRelease }
-    func prepare(_ input: LMInput, cache: [KVCache], state: LMOutput.State?, prefill: PrefillParameters) throws -> PrepareResult {
+    func prepare(_ input: LMInput, cache: [KVCache], state: LMOutput.State?, prefill: PrefillParameters) throws
+        -> PrepareResult {
         .tokens(input.text)
     }
     func newCache(parameters: GenerateParameters?) -> [KVCache] { [] }

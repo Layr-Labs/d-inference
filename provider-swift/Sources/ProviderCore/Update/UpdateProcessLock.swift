@@ -87,9 +87,17 @@ public final class UpdateProcessLock: @unchecked Sendable {
             throw LockError.openFailed(error.localizedDescription)
         }
 
-        let descriptor = open(path.path, O_RDWR | O_CREAT | O_CLOEXEC, 0o600)
+        let descriptor = open(path.path, O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK, 0o600)
         guard descriptor >= 0 else {
             throw LockError.openFailed(posixMessage())
+        }
+
+        var information = stat()
+        guard fstat(descriptor, &information) == 0,
+              information.st_mode & S_IFMT == S_IFREG, information.st_uid == geteuid(),
+              information.st_nlink == 1, information.st_mode & 0o077 == 0 else {
+            close(descriptor)
+            throw LockError.openFailed("lock is not a private owned regular file")
         }
 
         let deadline = Date().addingTimeInterval(max(0, timeout))
@@ -126,6 +134,41 @@ public final class UpdateProcessLock: @unchecked Sendable {
             throw LockError.lockFailed(error.localizedDescription)
         }
         return UpdateProcessLock(descriptor: descriptor, path: path, owner: owner)
+    }
+
+    /// One try at the lock: acquired, or busy with the owner the holder recorded.
+    public enum Attempt: Sendable {
+        case acquired(UpdateProcessLock)
+        case busy(Owner?)
+
+        /// The lock when acquired; nil when another process holds it.
+        public var lock: UpdateProcessLock? {
+            if case .acquired(let lock) = self { return lock }
+            return nil
+        }
+    }
+
+    /// One try: thrown only when the lock cannot be opened or taken for another reason than contention.
+    public static func attempt(at path: URL, operation: String) throws -> Attempt {
+        do {
+            return .acquired(try acquire(at: path, operation: operation))
+        } catch LockError.busy(let owner) {
+            return .busy(owner)
+        }
+    }
+
+    /// Owner-local check that this object's retained kernel lock still names
+    /// the canonical file. A path snapshot alone cannot prove descriptor custody.
+    func requireHeld() throws {
+        releaseMutex.lock()
+        defer { releaseMutex.unlock() }
+        var held = stat(), named = stat()
+        guard !released, fstat(descriptor, &held) == 0, lstat(path.path, &named) == 0,
+              held.st_dev == named.st_dev, held.st_ino == named.st_ino,
+              held.st_mode & S_IFMT == S_IFREG, held.st_uid == geteuid(),
+              held.st_nlink == 1, held.st_mode & 0o077 == 0 else {
+            throw LockError.lockFailed("held provider instance lock was replaced or retired")
+        }
     }
 
     public func release() {

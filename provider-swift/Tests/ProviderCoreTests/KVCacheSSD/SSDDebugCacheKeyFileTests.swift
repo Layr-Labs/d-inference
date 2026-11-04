@@ -141,8 +141,8 @@ struct SSDDebugCacheKeyFileTests {
         let identity = CBv2CompleteCheckpointIdentity(modelAggregateHash: "weights", promptContractID: "prompt",
             buildID: "build", numericsFingerprint: "numerics")
         func open(_ file: URL) async throws -> (persistent: Bool, epoch: String?) {
-            let store = try #require(await SSDHybridCheckpointStoreFactory.make(
-                modelId: "debug-key", identity: identity, kvBudget: nil, environment: environment(file)))
+            let store = try await SSDHybridCheckpointStoreFactory.build(
+                modelId: "debug-key", identity: identity, kvBudget: nil, environment: environment(file)).get()
             let observed = (!store.usesEphemeralKey, store.config.epochStore?.current)
             await store.closeAndWait()
             return observed

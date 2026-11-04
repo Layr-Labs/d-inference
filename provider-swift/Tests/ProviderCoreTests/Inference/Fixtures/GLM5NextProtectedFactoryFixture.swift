@@ -40,10 +40,11 @@ final class GLM5NextProtectedFactoryFixture: @unchecked Sendable {
         ]
     }
     var mtpConfig: CBv2MTPConfig {
-        // The provider's GLM default: rectangular, adaptive depth up to 3.
+        // The provider's GLM default: rectangular, adaptive depth up to 3, two speculating rows.
         .init(
             enabled: true, maxDraftTokens: 3,
-            maxSpeculativeBatch: 1, fixedDraftTokens: nil, verificationMode: .rectangular)
+            maxSpeculativeBatch: GLM5NextProtectedModel.rectangularSpeculativeBatch,
+            fixedDraftTokens: nil, verificationMode: .rectangular)
     }
     var mtpPreparation: SpecDecPreparation {
         .init(

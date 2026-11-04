@@ -154,7 +154,7 @@ extension ProviderLoop {
         case .upToDate:
             logger.info("Auto-update: already running latest version")
         case .quarantined(let version):
-            logger.warning("Auto-update: v\(version) is quarantined after failed starts")
+            logger.warning("Auto-update: v\(version) is quarantined on this Mac")
         case .checkFailed(let reason):
             logger.warning("Auto-update: check failed: \(reason)")
         case .stageFailed(let reason):

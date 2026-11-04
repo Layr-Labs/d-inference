@@ -318,10 +318,13 @@ struct CacheDirectoryResolutionTests {
 
     /// An unknown user cannot be expanded; falling through to the next source
     /// beats building a garbage relative path.
-    @Test("an unexpandable ~user falls through to the next source")
-    func unexpandableTildeUserFallsThrough() throws {
+    // Run this suite in fresh processes both with and without CFFIXED_USER_HOME.
+    // Foundation alone substitutes that override even for nonexistent users.
+    @Test("an unexpandable ~user falls through to the next source",
+        arguments: ["", "/x", "/link/../models"])
+    func unexpandableTildeUserFallsThrough(suffix: String) throws {
         let home = try fakeHome()
-        let raw = "~nosuchuser-\(UUID().uuidString)/x"
+        let raw = "~nosuchuser-\(UUID().uuidString)" + suffix
 
         #expect(ModelScanner.resolveEnvironmentCache(
             environment: ["HF_HOME": raw], homeDirectory: home) == nil)

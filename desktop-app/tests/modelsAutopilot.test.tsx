@@ -2,7 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import '@testing-library/jest-dom/vitest';
-import type { Action, Snapshot } from '../src/shared/contracts';
+import type { Action, NativeModel, Snapshot } from '../src/shared/contracts';
 import { Models } from '../src/renderer/features/models/Models';
 import { backendWith } from './onboardingFixtures';
 import { poolSnapshot, succeeded } from './modelsFixtures';
@@ -281,4 +281,25 @@ describe('Autopilot phases', () => {
     );
     await waitFor(() => expect(sent()).toEqual([{ action: 'autopilot_disable' }]));
   });
+});
+
+it('says which pool models the network has registered', () => {
+  const state = poolSnapshot();
+  const registration: Record<string, NativeModel['registration']> = {
+    'gpt-oss-20b': 'routable',
+    'gemma-4-26b': 'autopilot',
+    'qwen-3.5-9b': 'none',
+    'qwen-3.6-35b': 'none',
+  };
+  renderModels({
+    ...state,
+    models: state.models.map((model) => ({ ...model, registration: registration[model.id] })),
+  });
+  expect(row('GPT-OSS 20B')).toHaveTextContent('Registered with the network');
+  expect(row('Gemma 4 26B')).toHaveTextContent('Registered for Autopilot');
+  const warning = within(row('Qwen 3.5 9B')).getByText('Not registered with the network yet');
+  expect(warning).toHaveClass('warning-text');
+  // Not downloaded, so not expected to register; unknown shows nothing either.
+  expect(row('Qwen 3.6 35B A3B')).not.toHaveTextContent(/registered/i);
+  expect(row('Kimi K2.6')).not.toHaveTextContent(/registered/i);
 });

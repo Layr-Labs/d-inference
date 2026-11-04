@@ -96,12 +96,14 @@ extension ProviderLoop {
     /// load and every NON-shutdown unload (idle timeout, eviction,
     /// retirement); the shutdown teardown skips it so a stop/update/restart
     /// remembers what was being served — that persisted set is the default
-    /// startup preload plan.
+    /// startup preload plan. An add-on hold's unload is temporary too: while
+    /// any hold is active the plan on disk stays, whichever retirement path
+    /// (generic, native MiMo, Nemotron Super) removed the slot.
     internal func persistLoadedModelSet() {
         // Inert until run() (or the test seam) enables it: a ProviderLoop
         // that never serves — every unit test exercising load/unload — must
         // not write the operator's real loaded-models file.
-        guard loadedModelsPersistenceEnabled else { return }
+        guard loadedModelsPersistenceEnabled, !addonHoldActive else { return }
         let loaded = modelSlots.keys.filter { !modelsUnloading.contains($0) }.sorted()
         LoadedModelsStore.write(loaded, to: loadedModelsFileURL())
     }
@@ -192,6 +194,9 @@ extension ProviderLoop {
     /// the background (`startupPreloadTask`); shutdown cancels it.
     @discardableResult
     internal func runStartupPreloadGate() async -> StartupPreloadGateOutcome {
+        if servingDrain.owner == .addonHold {
+            logger.info("Startup preload skipped: an add-on holds this Mac; models load after it releases")
+        }
         guard !Task.isCancelled, !servingDrain.refusing else { return .cancelled }
         let backend = loopConfig.config.backend
         guard backend.startupPreload else {

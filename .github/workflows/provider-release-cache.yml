@@ -46,10 +46,20 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # Only pull-request warming may use Darkbloom Sandboxes. Master and dispatched
+  # runs warm the caches that release builds restore, so they keep Blacksmith.
+  route:
+    uses: ./.github/workflows/darkbloom-route.yml
+    permissions: {}
+    with:
+      lanes: |
+        warm macos_arm64 blacksmith-12vcpu-macos-27 ${{ github.event_name == 'pull_request' && 2 || 0 }}
+
   warm:
     if: github.event_name == 'pull_request' || github.ref == 'refs/heads/master'
     name: SDK 27 ${{ matrix.lane }}
-    runs-on: blacksmith-12vcpu-macos-27
+    needs: route
+    runs-on: ${{ github.event_name == 'pull_request' && fromJSON(needs.route.outputs.routes)['warm'] || 'blacksmith-12vcpu-macos-27' }}
     timeout-minutes: 60
     strategy:
       fail-fast: false
@@ -58,6 +68,8 @@ jobs:
         lane: [release, qualification]
     env:
       MLX_METALLIB_DEPLOYMENT_TARGET: '26.2'
+      # As in ci.yml: test and warm the production identity on the dev branch too.
+      DARKBLOOM_RELEASE_ENVIRONMENT: prod
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
@@ -76,6 +88,7 @@ jobs:
         env:
           BIN_DIR: ${{ steps.build.outputs.bin-dir }}
           METALLIB: ${{ steps.build.outputs.metallib }}
+          CLUSTER_HELPERS: ${{ steps.build.outputs.cluster-helpers-dir }}
         run: |
           set -euo pipefail
           REPORTED=$("$BIN_DIR/darkbloom" --version)
@@ -83,6 +96,7 @@ jobs:
           ./scripts/check-release-version.sh "$VERSION" "$REPORTED"
           python3 scripts/provider-signing-validation.py stage \
             --source "$GITHUB_WORKSPACE" --bin "$BIN_DIR" --metallib "$METALLIB" \
+            --cluster-helpers "$CLUSTER_HELPERS" \
             --output "$RUNNER_TEMP/unsigned-roundtrip" --version "$VERSION"
           COPYFILE_DISABLE=1 tar czf "$RUNNER_TEMP/unsigned-roundtrip.tar.gz" -C "$RUNNER_TEMP/unsigned-roundtrip" .
           python3 scripts/provider-signing-validation.py unpack \

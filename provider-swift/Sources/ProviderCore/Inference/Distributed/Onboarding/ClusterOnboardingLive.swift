@@ -67,6 +67,9 @@ extension ClusterOnboardingOperations {
         made.markRegistrationPending = { live.markRegistrationPending() }
         made.planScope = { live.usePlanningScope($0) }
         made.otherMacStartsAtLogin = { live.otherMacStartsAtLogin() }
+        made.leaderStatus = { live.leaderStatus() }
+        made.publishStep = { live.publishStep($0) }
+        made.thisVersion = ProviderCore.version
         return made
     }
 }
@@ -372,7 +375,7 @@ final class OnboardingLive: @unchecked Sendable {
             }
         }
         switch request.op {
-        case .status: return .init(lines: localStatus(), failed: false, leaderID: leaderID)
+        case .status: return .init(lines: localStatus(), failed: false, leaderID: leaderID, step: currentLeaderStep())
         case .reachMembers:
             switch localReachMembers({ _ in }) {
             case .success(let machines): return .init(lines: [], failed: false, leaderID: leaderID, machines: machines)
@@ -2090,16 +2093,39 @@ final class OnboardingLive: @unchecked Sendable {
         return .success([answer.firstTokenMilliseconds.map { "in \(String(format: "%.2f", Double($0) / 1000)) s" } ?? ""])
     }
 
-    func status() -> [String] {
+    func status() -> [String] { leaderStatus().lines }
+
+    /// The control leader's status with its setup step (`ClusterControlReply.step`; nil from an older leader).
+    func leaderStatus() -> ClusterOnboardingLeaderStatus {
         var forwarded = false
-        var lines: [String]
-        switch routed(.init(op: .status), seconds: 30, acting: false, forwarding: { forwarded = true }, local: { .success(localStatus()) }, remote: { $0.lines }) {
-        case .success(let value): lines = value
-        case .failure(let failure): lines = failure.lines
+        var look: ClusterOnboardingLeaderStatus
+        switch routed(.init(op: .status), seconds: 30, acting: false, forwarding: { forwarded = true },
+                      local: { .success(ClusterOnboardingLeaderStatus(lines: localStatus(), step: currentLeaderStep())) },
+                      remote: { ClusterOnboardingLeaderStatus(lines: $0.lines, step: $0.step) }) {
+        case .success(let value): look = value
+        case .failure(let failure): look = ClusterOnboardingLeaderStatus(lines: failure.lines, step: nil)
         }
         // This Mac's own state, when it adds something (a member that just follows already said where commands go).
-        if forwarded, let own = ClusterService.published()?.control, own.mode != "following" { lines.append("This Mac: " + own.line + ".") }
-        return lines
+        if forwarded, let own = ClusterService.published()?.control, own.mode != "following" { look.lines.append("This Mac: " + own.line + ".") }
+        return look
+    }
+
+    /// Records the setup step of this screen (nil clears it), on the Mac whose status both Macs read, with this process
+    /// so the step stops counting once the screen is gone (`ClusterOnboardingLeaderStepMark`).
+    func publishStep(_ step: ClusterOnboardingLeaderStep?) {
+        let pid = getpid()
+        guard !forwards, let started = Self.processStarted(pid) else { return }
+        let mark = step.map { step -> ClusterOnboardingLeaderStepMark in
+            var step = step
+            step.version = step.version ?? ProviderCore.version
+            return .init(step: step, pid: pid, started: started, at: Date().timeIntervalSince1970)
+        }
+        try? store.updateRecord { $0.onboardingStep = mark }
+    }
+
+    /// The setup step the status publishes, while it counts.
+    func currentLeaderStep() -> ClusterOnboardingLeaderStep? {
+        (try? store.readRecord())?.onboardingStep?.current(now: Date().timeIntervalSince1970, started: Self.processStarted)
     }
 
     /// A model id as the screens name it: its catalog name, when the last catalog this Mac read has one.

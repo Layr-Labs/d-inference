@@ -84,7 +84,8 @@ Network prompt still appears on the Mac's own screen, and its line says so
 
 The Mac that joins ends once paired ("✓ Paired. The other Mac leads.") with one
 line: what comes next and whether its window can close ("Done here: the other
-Mac chooses the model. You can close this window."; started with
+Mac chooses the model, and its screen shows whether the cluster serves. You can
+close this window."; started with
 `darkbloom cluster local`, "Done here: run `darkbloom cluster local` on the
 other Mac."). A signed Darkbloom.app's login agent keeps serving; without one,
 as for a development build, the line ends "Keep this window open." and the Mac
@@ -107,10 +108,9 @@ windows.") and "Run `darkbloom cluster` again to manage it.":
 
 Served on the local API only (asked for, or a coordinator without cluster
 support), the block says `✓ Serving <model> on this Mac's local API only`. It
-says Serving only once both Macs loaded the model and a request answered. The
-Mac that joined says where to look ("…, and its screen shows whether the
-cluster serves."); `darkbloom cluster` there shows the same outcome block once
-the cluster has one.
+says Serving only once both Macs loaded the model and a request answered.
+`darkbloom cluster` on the Mac that joined shows the same outcome block once the
+cluster has one.
 
 Serving through Darkbloom needs both Macs logged in (`darkbloom login`): the
 coordinator pairs only logged-in Macs. Before the Start step starts anything,
@@ -279,7 +279,7 @@ once; one planned with the one-chunk lookahead takes one at a time
    ([model approvals](../reference/configuration.md#model-approvals)). Each
    Mac checks it against its own files, and both Macs save it, or neither
    does. Both Macs then start their parts again as cluster members.
-2. Read the end of the setup screen. After the test response it says:
+2. Read the end of the setup screen. Once the test request answers, it says:
 
    ```
    Registered with the coordinator as a cluster member: approval <id>, until <date>.
@@ -288,12 +288,12 @@ once; one planned with the one-chunk lookahead takes one at a time
 
    Registered is not serving: the coordinator still has to pair both Macs, and
    both then load their share. The leader waits for that (at most 15 minutes,
-   its progress on the live line) and says `✓ Serving <model> through
+   its progress in the live rows) and says `✓ Serving <model> through
    Darkbloom on both Macs (<split>)` only once the plan's rank 0 reports that both ranks
    loaded the model and the pair answered its first request (the warm-up). A
    reason the Macs know ends the wait sooner (a missing login at once, others
-   after 90 s), with the choices [above](#the-steps-once). There is no local API
-   in this mode.
+   once the wait has run 90 s), with the choices [above](#the-steps-once). There
+   is no local API in this mode.
 
 An approval ends at its `not_after`, which the operator sets; one derived from
 a release ends 90 days after that release registered

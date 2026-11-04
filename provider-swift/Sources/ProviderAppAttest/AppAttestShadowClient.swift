@@ -17,8 +17,9 @@ public actor AppAttestShadowClient {
     /// Waits between retries of an unavailable Apple service; takes seconds.
     private let retrySleep: @Sendable (Double) async throws -> Void
     private var busy = false
-    /// From the moment an exchange hands Apple a one-time attestation until it
-    /// has persisted the answer, even when that exchange was cancelled.
+    /// The exchange holding `busy` has handed Apple a one-time attestation.
+    /// Cleared with `busy` when that exchange ends, after it records Apple's
+    /// answer, even if it was cancelled.
     private var attestationOutstanding = false
     private var session: String?
     private var record: ShadowKeyRecord?
@@ -254,7 +255,6 @@ public actor AppAttestShadowClient {
                             key.attestationStartedAt = nil
                             record = key
                             try storage.save(key, scope: keyScope)
-                            attestationOutstanding = false
                             try await retrySleep(attempt == 0 ? 2 : 8)
                         }
                     }

@@ -80,7 +80,7 @@ extension Unenroll {
 
     static func stopProviderBeforeUnenrollment() async throws {
         var stop = try stopCommand()
-        try await stop.run()
+        try await DarkbloomCommandLook.runNested { try await stop.run() }
         // `stop` disables launchd/watchdog restarts. A separately foregrounded
         // provider may still be running: never purge identity beneath it, nor
         // signal an arbitrary PID from a local file.

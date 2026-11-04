@@ -74,15 +74,19 @@ public final class DarkbloomCommandLook: @unchecked Sendable {
     /// Tests give the commands a look of their own.
     @TaskLocal public static var forTesting: DarkbloomCommandLook?
 
-    /// A command's look: this process's terminal, by the setup's rules.
+    /// A command's look: this process's terminal, by the setup's rules; plain for a command run inside another.
     public static func forCommand() -> DarkbloomCommandLook {
-        forTesting ?? DarkbloomCommandLook(mode: .standard())
+        if insideAnotherCommand { return DarkbloomCommandLook(mode: .plain) }
+        return forTesting ?? DarkbloomCommandLook(mode: .standard())
     }
 
-    /// Runs a command inside another command (`unenroll` runs `stop --solo`, `autopilot enable` runs `start`).
+    /// Runs a command inside another command (`unenroll` runs `stop --solo`, `autopilot enable` runs `start`) with a
+    /// plain look: the mark appears once, at the top of the command the person ran, never partway through.
     public static func runNested<T>(_ body: () async throws -> T) async rethrows -> T {
-        try await body()
+        try await $insideAnotherCommand.withValue(true) { try await body() }
     }
+
+    @TaskLocal private static var insideAnotherCommand = false
 
     // MARK: - The mark
 

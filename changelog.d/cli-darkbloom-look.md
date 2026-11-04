@@ -10,3 +10,5 @@
   isn't drawn twice.
 - A command that refuses before doing any work (an unreadable pairing record, nothing to restart, flags that can't go
   together), or finds nothing to do (`stop --solo` with no single-Mac serving), prints only its lines, with no mark.
+- The mark appears once, at the top of the command you ran: `unenroll` and `autopilot enable`, which run `stop --solo`
+  and `start` inside themselves, show none.

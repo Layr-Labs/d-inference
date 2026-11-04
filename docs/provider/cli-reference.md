@@ -158,7 +158,10 @@ paired Mac, `darkbloom start` opens the cluster's screen, which draws the mark
 itself. A command that refuses before doing any work (an unreadable pairing
 record, nothing to restart, flags that can't go together or an out-of-range
 `--idle-timeout`, `update --rollback` as root), or finds nothing to do (`stop
---solo` with no single-Mac serving), prints only its lines, with no mark.
+--solo` with no single-Mac serving), prints only its lines, with no mark. The
+mark appears once, at the top of the command you ran: `unenroll` and
+`autopilot enable`/`models`, which run `stop --solo` and `start` inside
+themselves, show none.
 
 ## Subcommands
 

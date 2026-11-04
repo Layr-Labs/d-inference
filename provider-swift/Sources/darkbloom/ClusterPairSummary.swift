@@ -108,16 +108,43 @@ struct ClusterPairSummary: Sendable, Equatable {
     var servesWords: String { localOnly ? "locally only" : "through Darkbloom" }
 
     /// The mode and each Mac's share, from the leader's deployment line ("pipeline", "M3 Ultra 40 layers / M5 Ultra 24
-    /// layers"). The mode is matched against the words `ClusterOnboardingDeployment.modeWords` says, longest first.
+    /// layers"); without a line that names them, the mode the ✓ line marks, with no split (`servingMarker`).
     var modeAndSplit: (mode: String, split: String?)? {
-        guard let deployment, let colon = deployment.range(of: ": ") else { return nil }
-        let rest = String(deployment[colon.upperBound...])
-        let modes = ["prefill_tensor_decode", "tensor", "pipeline_mtp", "pipeline", "phase_split", "unknown"]
-            .map(ClusterOnboardingDeployment.modeWords).sorted { $0.count > $1.count }
-        guard let mode = modes.first(where: { rest.hasPrefix($0) }) else { return nil }
-        let split = rest.dropFirst(mode.count).trimmingCharacters(in: CharacterSet(charactersIn: ", "))
-        return (mode, split.isEmpty ? nil : split)
+        Self.modeAndSplit(deployment: deployment) ?? servingMarker.map { ($0, nil) }
     }
+
+    /// One raw mode of each kind `ClusterOnboardingDeployment.modeWords` tells apart, the last one it doesn't know.
+    private static let rawModes = ["prefill_tensor_decode", "tensor", "pipeline_mtp", "pipeline", "phase_split", "unknown"]
+
+    /// The words `ClusterOnboardingDeployment.modeWords` says for every mode, longest first.
+    private static let modeWordsList = rawModes.map(ClusterOnboardingDeployment.modeWords).sorted { $0.count > $1.count }
+
+    /// A deployment line's mode and split ("Serving … across both Macs: pipeline, M3 Ultra 40 layers / …"): the mode's
+    /// words follow the line's ": ", and a model's own name may hold one first ("Z.ai: GLM-5.3-Flash").
+    static func modeAndSplit(deployment: String?) -> (mode: String, split: String?)? {
+        guard let deployment else { return nil }
+        var from = deployment.startIndex
+        while let colon = deployment.range(of: ": ", range: from..<deployment.endIndex) {
+            let rest = deployment[colon.upperBound...]
+            if let mode = modeWordsList.first(where: { rest.hasPrefix($0) }) {
+                let split = rest.dropFirst(mode.count).trimmingCharacters(in: CharacterSet(charactersIn: ", "))
+                return (mode, split.isEmpty ? nil : split)
+            }
+            from = colon.upperBound
+        }
+        return nil
+    }
+
+    /// The mode the ✓ line marks ("Serving Z.ai: GLM-5.3-Flash (pipeline) at http://…", `ClusterOnboardingReady.summary`
+    /// from the saved setup's mode), when it is a marker the serving line writes (`ClusterOnboardingDeployment.splitMarker`).
+    private var servingMarker: String? {
+        guard let first = lines.first, first.hasPrefix("Serving "), let at = first.range(of: ") at http"),
+              let open = first[..<at.lowerBound].range(of: " (", options: .backwards) else { return nil }
+        let marker = String(first[open.upperBound..<at.lowerBound])
+        return Self.servingMarkers.contains(marker) ? marker : nil
+    }
+
+    private static let servingMarkers = Set(rawModes.compactMap(ClusterOnboardingDeployment.splitMarker))
 
     // MARK: - The pair in one sentence (stop, start, restart)
 
@@ -418,6 +445,8 @@ extension ClusterPairSummary {
         localNetworkRefused = refused
         state = .notServing
         reason = localNetworkWords?.reason
+        // The lines say what the state says, as the plain output's ✗ line does in place of the first one ("Starting …").
+        if let reason { lines = [ClusterOnboardingNotServing.title(reason: reason)] + lines.dropFirst() }
     }
 
     /// The setup screens' words for `localNetworkRefused` (`ClusterLocalNetworkAccess.statusWords`).

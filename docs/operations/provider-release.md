@@ -1,6 +1,6 @@
 # Release A Provider Version
 
-> Last updated: 2026-11-03
+> Last updated: 2026-11-04
 
 Build, sign, notarize and publish an explicitly authorized provider artifact.
 The pipeline registers its exact official identity through the external platform
@@ -236,7 +236,10 @@ it to a short summary: the release API refuses registration bodies above
 64 KiB, and that refusal comes only after signing and notarization.
 `release_changelog` in `scripts/provider-release-publication.py` removes only
 Git's identified signature suffix and trims outer whitespace. Internal line
-breaks and paragraph spacing remain unchanged.
+breaks and paragraph spacing remain unchanged. The GitHub release page, unlike
+the registered `changelog`, shows the whole `CHANGELOG.md` section of the tag
+and every pull request of the release
+([GitHub release notes](#github-release-notes)).
 
 ### 3. Merge And Verify Release Preparation
 
@@ -641,7 +644,7 @@ staging and performs these operations in order:
 | 2 | Recheck signed tag, source/run/version/origin and bundle digest, then submit the retained `POST /v1/releases` payload |
 | 3 | Wait boundedly for `/v1/releases/latest` to report that committed official build or a newer release, not an older cached response |
 | 4 | Only if still latest, update both `releases/latest/darkbloom-bundle-macos-arm64.tar.gz` and the legacy `eigeninference-bundle` alias |
-| 5 | For prod/tag, create or resume a GitHub draft, upload a missing asset, verify downloaded bytes and publish |
+| 5 | For prod/tag, create or resume a GitHub draft with the [release notes](#github-release-notes), upload a missing asset, verify downloaded bytes and publish |
 
 The payload contains `version`, `platform=macos-arm64`, `backend=mlx-swift`,
 `binary_hash`, `bundle_hash`, `metallib_hash`, `code_directory_hash`,
@@ -669,6 +672,107 @@ Runtime Apple verification and matching official hashes remain required.
 After commit, the platform refreshes binary/runtime policy and release caches.
 Active releases retain their hashes during adoption; deactivation removes them
 from the catalog. See the [runtime manifest](../architecture/security/attestation.md#runtime-manifest).
+
+### GitHub Release Notes
+
+Only a prod (tag) publication creates a GitHub release; dev, DevNet dev-branch
+and staging publications register with their coordinator and create none.
+`publish_github_release` creates the draft with the body that
+`scripts/provider_release_notes.py` writes, not with GitHub's generated notes,
+which list only the pull requests merged into `master` between two tags. A
+squash promotion of `dev` into `master` (0.10.7's #1754) appears there as one
+pull request, and the `dev` pull requests it carried are missing.
+
+The body has four parts:
+
+1. The header that `prepare` retained: source, runs, hashes and install.
+2. **What's new in vX.Y.Z**: the version's `CHANGELOG.md` section at the tag,
+   with upgrade and rollout notes and every entry. The `— candidate
+   (unpublished)` heading and its "Prepared on" line are left out.
+3. **Pull requests in this release**: one line per pull request, with its title,
+   author and link, in merge order. They come in two groups: the pull requests
+   merged into `dev` that reached `master` with a promotion, then the ones merged
+   directly into `master`. Commits without a pull request are listed after them.
+   Release pull requests are named once on their own line, not listed: the
+   promotions, the release preparation and merges of `master` into `dev`.
+4. The compare link from the previous release tag.
+
+The script reads the release's contents from Git, not from a date window:
+
+- **The carried `dev` commit.** For a release tag, this is the newest commit of
+  `dev`'s first-parent chain that the release contains. The tag contains it
+  after a merge-commit promotion. After a squash promotion, the promotion's head
+  contains it: GitHub keeps `refs/pull/<N>/head` after the merge, and the script
+  fetches it read-only. A release with no promotion of its own, such as a
+  hotfix, carries what the release before it carried. The script looks back
+  four releases for it. After more than four releases in a row without a
+  promotion, it uses what the tag itself contains, and the next release can
+  list again pull requests that an earlier release listed.
+- **Promotions are found by their history, not their titles.** A pull request
+  on `master`'s first-parent chain is a promotion when its head (the merge
+  commit's second parent, or the squash's `refs/pull/<N>/head`) holds a `dev`
+  first-parent commit that `master` did not have. If GitHub no longer had a
+  squash promotion's head, the notes would list it as a pull request merged
+  directly into `master` and leave out its `dev` pull requests, with no
+  warning. A preparation whose head holds `dev` commits is named as the
+  preparation, and the `dev` pull requests are listed as reaching `master`
+  with it.
+- **The `dev` pull requests** are the first-parent commits of `dev` after the
+  commit that the previous release carried, up to the one this release carries.
+  They are `Merge pull request #N` merges and squashed `(#N)` subjects. A `dev`
+  pull request merged after the promoted snapshot was cut waits for the next
+  release, even if it merged before the tag.
+- **The preparation** is the commit that adds the version's `CHANGELOG.md`
+  heading. **A sync** is a merge into `dev` that brings `master`'s first-parent
+  commits and no commits of its own. A sync with its own fixes is listed as a
+  `dev` pull request.
+- **Titles and authors** come first from GitHub's GraphQL API, in one query per
+  100 pull requests. A `(#N)` that GitHub names an issue is listed as a commit
+  without a pull request. Titles and commit subjects show as typed: HTML, links
+  and emphasis in them are escaped, and a code span stays code.
+- **Without GitHub's API, titles come from git.** The `publish-release` token
+  has only `contents: write` and `actions: read`, so GitHub can refuse the
+  lookup ("Resource not accessible by integration"); any GraphQL error other
+  than an unknown number also counts. Every pull request is then still listed:
+  - **Titles.** GitHub writes a merge commit as `Merge pull request #N from
+    <branch>`, a blank line, then the title, so the first line of its body is
+    the title. A squash commit's subject is the title and ` (#N)`. Both are the
+    title when the pull request merged: a title edited later, or a commit
+    message edited at the merge, shows as git has it.
+  - **Authors are commit authors**, and are shown only where a GitHub noreply
+    address (`[<ID>+]<login>@users.noreply.github.com`) names the login. The
+    address is the author's of the pull request's oldest own commit, or for a
+    squash, the squash commit's. Other addresses name no GitHub account, so the
+    line has no author. The newest commit of a branch is not used: it is often
+    someone else's merge of `dev`.
+  - **The warning.** The job logs a warning that the titles came from git, with
+    GitHub's error. `--git-titles` produces the same body on request.
+  - **Measured on v0.10.7.** Git lists the same 48 pull requests. 47 titles equal
+    GitHub's; #1691's squash subject keeps a parenthetical that its title later
+    lost. 34 authors are shown, all equal to GitHub's, and 14 are left out. The
+    newest branch commit would have named the wrong author for 18 of the 45
+    `dev` pull requests.
+
+GitHub refuses a body over 125,000 characters. When the body is longer, it
+keeps the upgrade and rollout notes and links the entries in `CHANGELOG.md` at
+the tag. The pull request list is always kept. By then the registration and the
+latest aliases are published. A generation failure therefore does not stop the
+GitHub release: the job logs a warning with git's or GitHub's error, and the
+body says that the generated part is missing.
+
+To check the notes for a published release, or to preview them before the tag,
+run the script read-only. It prints what it excluded and why on standard error:
+
+```bash
+python3 scripts/provider_release_notes.py --tag vX.Y.Z --output notes.md
+# Before the promotion merges: a local squash of the snapshot onto master stands in for the tag.
+python3 scripts/provider_release_notes.py --tag vX.Y.Z --target <local squash commit> \
+  --previous <previous tag> --pull-head <promotion PR>=<snapshot head> --output notes.md
+```
+
+Publishing corrected notes for an existing release (`gh release edit vX.Y.Z
+--notes-file notes.md`) is a production change; it needs the release owner's
+approval.
 
 ### Cluster Helpers
 

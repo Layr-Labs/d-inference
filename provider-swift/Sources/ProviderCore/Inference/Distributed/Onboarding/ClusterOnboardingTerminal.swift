@@ -85,6 +85,8 @@ public final class ClusterOnboardingTerminal: ClusterOnboardingConsole {
                 var mode = ClusterOnboardingTerminal.restoreMode
                 if ClusterOnboardingTerminal.restoreInput >= 0 { _ = tcsetattr(ClusterOnboardingTerminal.restoreInput, TCSANOW, &mode) }
                 // Nothing is allocated here: a literal in the binary, and the bytes made before the handlers were set.
+                let wrap: StaticString = "\u{1B}[?7h"
+                _ = Darwin.write(STDOUT_FILENO, wrap.utf8Start, wrap.utf8CodeUnitCount)
                 if ClusterOnboardingTerminal.cursorHidden {
                     let show: StaticString = "\u{1B}[?25h"
                     _ = Darwin.write(STDOUT_FILENO, show.utf8Start, show.utf8CodeUnitCount)
@@ -206,17 +208,18 @@ public final class ClusterOnboardingTerminal: ClusterOnboardingConsole {
         let petal = animates ? ClusterOnboardingBrand.spin(now) : ClusterOnboardingBrand.spinner[0]
         // Each row fits one row of the window: the climb back to the first row counts rows, never wrapped lines.
         // Named for the running identity before it is fitted, so a renamed command never grows a fitted row (DevNet).
-        func fit(_ text: String) -> String {
-            let text = ClusterOnboardingCommand.named(text)
-            return text.count > liveRoom ? String(text.prefix(liveRoom)) : text
-        }
+        let room = liveRoom
+        func fit(_ text: String) -> String { ClusterOnboardingBrand.liveText(ClusterOnboardingCommand.named(text), room: room) }
         let drawn = rows.enumerated().map { index, text in
             index == 0 ? "  \u{1B}[\(brand)m\(petal)\u{1B}[0m \u{1B}[2m\(fit(text))\u{2026}\u{1B}[0m" : "    \u{1B}[2m\(fit(text))\u{1B}[0m"
         }
         let fittedRows = rows.map(fit)
-        write(climb() + "\r\u{1B}[J" + drawn.joined(separator: "\n"))
+        // Line wrap is off while the rows are written, so a row the terminal counts wider is cut, never wrapped.
+        write(climb() + "\r\u{1B}[J" + ClusterOnboardingBrand.noWrap + drawn.joined(separator: "\n") + ClusterOnboardingBrand.wrap)
         // The indent, petal, space and ellipsis of the first row; the indent of the others.
-        drawnWidths = fittedRows.enumerated().map { index, text in text.count + (index == 0 ? 5 : 4) }
+        drawnWidths = fittedRows.enumerated().map { index, text in
+            ClusterOnboardingBrand.textColumns(text) + (index == 0 ? 5 : 4)
+        }
     }
 
     static func supportsColor(inputIsTerminal: Bool, outputIsTerminal: Bool,

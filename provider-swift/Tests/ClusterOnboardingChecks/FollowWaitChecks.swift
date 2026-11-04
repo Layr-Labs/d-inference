@@ -256,3 +256,75 @@ extension OnboardingChecks {
         transcript("leader-different-builds", leader.text, keys: leader.keys)
     }
 }
+
+/// Every live row is one row of the window: the 0.10.8 leader's "Loading Gemma 4 26B on both Macs (starting; this
+/// Mac's part ended (exit 1: another update operation owns the lock (pid 952 …" repeated end to end, each petal turn
+/// leaving the wrapped start of the last one behind.
+extension OnboardingChecks {
+    static func liveLineChecks() {
+        aLongReasonIsShortenedNeverWrapped()
+        theUsersLoadingLineStaysOneRow()
+    }
+
+    /// The user's reason, as the leader's wait reports it (a part's error can carry a newline or a tab).
+    static let usersLoadingReport = "starting; this Mac's part ended (exit 1: another update operation owns the lock (pid 952)) and starts again "
+        + "by itself; the other Mac's part ended (exit 1: memory_gate_refused source=follower\nTensor-parallel shard load\tneeds 49.08 GiB) "
+        + "and starts again by itself"
+
+    static func aLongReasonIsShortenedNeverWrapped() {
+        let head = "Loading Gemma 4 26B on both Macs (" + usersLoadingReport + ") \u{00B7} 1 min 3 s"
+        for room in 1...140 {
+            let row = ClusterOnboardingBrand.liveText(head, room: room)
+            if ClusterOnboardingBrand.textColumns(row) > room || row.contains("\n") || row.contains("\t") {
+                expect(false, "live text at \(room): \(row)"); break
+            }
+        }
+        let at80 = ClusterOnboardingBrand.liveText(head, room: 74)
+        expect(at80.hasPrefix("Loading Gemma 4 26B on both Macs (starting; this Mac's part e") && at80.hasSuffix("\u{2026} \u{00B7} 1 min 3 s"),
+               "80 columns: the reason is shortened and the time kept: \(at80)")
+        expect(ClusterOnboardingBrand.liveText("a\n\tb   c\u{1B}[31m", room: 40) == "a  b   c [31m", "each control character becomes a space; spaces stay (a layout's columns)")
+        expect(ClusterOnboardingBrand.liveText("模型加载中模型加载中", room: 7) == "模型加", "a wide character counts two columns")
+    }
+
+    static func theUsersLoadingLineStaysOneRow() {
+        for columns: UInt16 in [80, 40] {
+            let recorder = Recorder()
+            let gemma = [ClusterOnboardingModelChoice(title: "Gemma 4 26B", lines: ["14.9 GB · tensor parallel"], blocker: nil,
+                                                      validated: true, split: "tensor parallel")]
+            let made = operations(recorder, resume: .init(role: .leader, peerName: "Apple M4 Max, 128 GB"), pairEvents: [], pairResult: .failed([]),
+                                  choices: gemma, readyReports: [usersLoadingReport], readyReportPause: 900_000)
+            // Animated, so the petal turns while the reason stays: each turn is a redraw.
+            let run = TerminalRun(made, environment: ["TERM": "xterm-256color", "LANG": "en_US.UTF-8"], columns: columns)
+            defer { run.release() }
+            expect(run.waitFor("enter select"), "\(columns) columns: the model list"); run.type("\r")
+            expect(run.finish(seconds: 20) == 0, "\(columns) columns: served")
+            let raw = run.text
+            let draws = raw.components(separatedBy: ClusterOnboardingBrand.noWrap).dropFirst()
+            let loading = draws.filter { $0.contains("Loading Gemma 4 26B") }
+            expect(loading.count >= 4, "\(columns) columns: the petal turned while the reason stayed: \(loading.count)")
+            expect(draws.allSatisfy { $0.contains(ClusterOnboardingBrand.wrap) }, "\(columns) columns: line wrap back on in the same write")
+            let rows = draws.flatMap { draw in
+                (draw.components(separatedBy: ClusterOnboardingBrand.wrap).first ?? "").components(separatedBy: "\n")
+                    .map { $0.replacingOccurrences(of: "\u{1B}\\[[0-9;?]*[A-Za-z]", with: "", options: .regularExpression) }
+            }
+            let wide = rows.filter { ClusterOnboardingBrand.textColumns($0) > Int(columns) - 1 }
+            expect(!rows.isEmpty && wide.isEmpty, "\(columns) columns: every live row fits the window: \(wide)")
+            expect(loading.allSatisfy { !$0.contains("\t") }, "\(columns) columns: no tab in a live row")
+            if columns == 80 {
+                expect(rows.contains { $0.contains("Loading Gemma 4 26B on both Macs (starting; this Mac's part") && $0.contains("\u{2026} \u{00B7} ") },
+                       "80 columns: the user's line, shortened, its time kept: \(rows.filter { $0.contains("Gemma") }.prefix(2))")
+            }
+        }
+        // Plain (NO_COLOR, TERM=dumb): nothing redrawn, so nothing repeats.
+        for environment in [["NO_COLOR": "1"], ["TERM": "dumb"]] {
+            let plain = TerminalRun(operations(Recorder(), resume: .init(role: .leader, peerName: "Apple M4 Max, 128 GB"), pairEvents: [],
+                                               pairResult: .failed([]), readyReports: [usersLoadingReport], readyReportPause: 300_000),
+                                    environment: environment, columns: 40)
+            defer { plain.release() }
+            expect(plain.waitFor(prompt(2)), "plain \(environment): the list"); plain.type("\r")
+            expect(plain.finish(seconds: 20) == 0, "plain \(environment): served")
+            expect(!plain.text.contains("\u{1B}") && !plain.text.contains("on both Macs (starting"),
+                   "plain \(environment): no live line at all: \(plain.text)")
+        }
+    }
+}

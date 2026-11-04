@@ -181,6 +181,8 @@ import Darwin
         eachStageOfTheStartHasItsOwnBound()
         // A user's report (2026-11-04): "an infinite loop of waiting for the other Mac, Apple M5 Max 128 GB".
         followWaitChecks()
+        // A 0.10.8 user's leader screen: its loading line repeated end to end in a narrow window.
+        liveLineChecks()
         print("onboarding checks: \(passed) passed, \(failures.count) failed")
         for failure in failures { print("FAIL " + failure) }
         exit(failures.isEmpty ? 0 : 1)
@@ -359,7 +361,7 @@ import Darwin
         let count = Darwin.read(primary, &bytes, bytes.count)
         let drawn = String(decoding: bytes.prefix(max(0, count)), as: UTF8.self)
         let rows = drawn.components(separatedBy: "\r")
-            .map { $0.replacingOccurrences(of: "\u{1B}\\[[0-9;]*[A-Za-z]", with: "", options: .regularExpression) }
+            .map { $0.replacingOccurrences(of: "\u{1B}\\[[0-9;?]*[A-Za-z]", with: "", options: .regularExpression) }
             .filter { !$0.isEmpty }
         expect(!rows.isEmpty && rows.allSatisfy { $0.count <= 43 }, "44 columns: the live line stays on one row: \(rows)")
         expect(rows.contains { $0.contains("Loading Gemma 4 26B") && $0.hasSuffix("\u{2026}") },
@@ -2877,7 +2879,8 @@ import Darwin
         expect(run.waitFor("darkbloom-dev"), "dev row: drawn")
         _ = run.finish()
         let dim = run.text.components(separatedBy: "\u{1B}[2m").dropFirst().compactMap { $0.components(separatedBy: "\u{1B}[0m").first }
-        let named = dim.filter { $0.contains("darkbloom-dev") }
+        // A row with its time keeps the time and shortens the text before it (`ClusterOnboardingBrand.liveText`).
+        let named = dim.filter { $0.contains("`darkbloom") }
         expect(!named.isEmpty && named.allSatisfy { $0.replacingOccurrences(of: "\u{2026}", with: "").count <= 45 - 6 },
                "dev row: named, then fitted to its room: \(named)")
     }

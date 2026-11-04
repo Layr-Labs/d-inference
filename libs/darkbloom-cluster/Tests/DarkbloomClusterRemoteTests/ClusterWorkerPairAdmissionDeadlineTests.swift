@@ -31,7 +31,7 @@ private final class ScriptedRank: ClusterWorkerEndpoint, @unchecked Sendable {
     private var events: [ClusterWorkerEventFrame] = []
     private var sequence: UInt64 = 0
     private var handler: (@Sendable () -> Void)?
-    private var ended = false, closed = false, holdNext = false, closeWhenAsked = false
+    private var ended = false, closed = false, holdNext = false, closeWhenAsked = false, holdStart = false
     private var held = Set<UUID>()
     private var requests: [UUID: (prompt: Int, output: Int)] = [:]
     private var sent: [(id: UUID, delivery: UInt64)] = []
@@ -58,6 +58,9 @@ private final class ScriptedRank: ClusterWorkerEndpoint, @unchecked Sendable {
     }
     /// The link to this rank closes for good when it is next asked anything.
     func closeLinkWhenAsked() { lock.withLock { closeWhenAsked = true } }
+    /// Rank 0 starts the next request but commits no token for it until it is
+    /// cancelled: a rank still inside that request's long prompt.
+    func holdNextStart() { lock.withLock { holdStart = true } }
 
     private func emit(_ requestID: UUID?, _ event: ClusterWorkerEvent) {
         lock.withLock {
@@ -88,7 +91,7 @@ private final class ScriptedRank: ClusterWorkerEndpoint, @unchecked Sendable {
             closed = true; return handler
         }
         if let lost { DispatchQueue.global().async(execute: lost) }
-        let admitLater = try lock.withLock { () -> Bool in
+        let answerLater = try lock.withLock { () -> Bool in
             guard fenceReasons.isEmpty, !closed, !ended, deadline > DispatchTime.now().uptimeNanoseconds else {
                 throw ClusterWorkerOwnerError.closed
             }
@@ -97,14 +100,16 @@ private final class ScriptedRank: ClusterWorkerEndpoint, @unchecked Sendable {
                 sent.append((requestID!, deadline))
                 requests[requestID!] = (value.promptTokenIDs.count, value.outputCount)
                 if holdNext { holdNext = false; held.insert(requestID!); return true }
+            case .start where rank == 0 && holdStart: holdStart = false; return true
             case .cancel: cancelled.append(requestID!)
             default: break
             }
             return false
         }
         switch command {
-        case .reserve where !admitLater: emit(requestID, .admitted(reservedBytes: 64))
-        case .start where rank == 0: emitToken(requestID!, ordinal: 0)
+        case .reserve where !answerLater: emit(requestID, .admitted(reservedBytes: 64))
+        case .start where rank == 0 && !answerLater: emitToken(requestID!, ordinal: 0)
+        case .start where rank == 0: break
         case .start: emit(requestID, .finished(.length)); emit(requestID, .retired(.clean))
         case .tokenDecision(let ordinal, _):
             if ordinal + 1 >= lock.withLock({ requests[requestID!]?.output ?? 0 }) {
@@ -310,6 +315,80 @@ final class ClusterWorkerPairAdmissionDeadlineTests: XCTestCase {
         XCTAssertNil(pair.readiness)
         XCTAssertEqual(pair.lastRequestFailure?.hasSuffix("failed on the pair: admission: a rank's command stream closed"), true,
             "\(pair.lastRequestFailure ?? "no failure noted")")
+        shutdown(pair)
+    }
+
+    // MARK: A consumer that goes away during its prompt
+
+    /// Production (DevNet, 2026-11-04, Qwen 3.8 27B on a tensor-parallel pair):
+    /// a client closed its connection 15 s into a 58–62K-token prompt. The
+    /// clean stop its going away asked for ends a request at its first token,
+    /// so the pair first finished the whole prompt (about 4 minutes). The pair
+    /// prefills one prompt at a time, so every newer request waited behind it
+    /// and failed at its own first-token deadline. On a lane pair a request
+    /// still in its prompt is cancelled instead: its lane alone ends, at once,
+    /// and the pair serves the next request.
+    func testAConsumerThatLeavesDuringItsPromptFreesItsLaneAtOnce() throws {
+        let ranks = [ScriptedRank(rank: 0), ScriptedRank(rank: 1)]
+        let pair = try lanePair(ranks)
+        ranks[0].holdNextStart()
+        let prompt = try pair.reserve(requestID: UUID(), reservation: reservation(output: 4))
+        let delivered = Delivered()
+        try prompt.start { event in delivered.record(event); return true }
+        Thread.sleep(forTimeInterval: 0.2)
+        // What the engine does when the consumer goes away: the lease's clean
+        // stop if it takes one, else a cancel.
+        if !prompt.requestCleanStop() { prompt.cancel() }
+        XCTAssertTrue(wait(seconds: 5) { prompt.isRetired },
+            "the request kept its lane after its consumer left: its whole prompt would run first")
+        prompt.releaseResources()
+        XCTAssertEqual(delivered.value.tokens, 0)
+        XCTAssertEqual(ranks[0].cancels, [prompt.requestID], "rank 0 was not told to end the prompt")
+        XCTAssertEqual(ranks[1].cancels, [prompt.requestID], "rank 1 was not told to end the prompt")
+        XCTAssertEqual(ranks.map(\.fences), [[], []], "a rank was fenced")
+        XCTAssertTrue(pair.admissionState.isValid && pair.readiness != nil,
+            "the pair ended: \(pair.lastRequestFailure ?? "no failure noted")")
+        XCTAssertNil(pair.lastRequestFailure)
+        try serve(pair)
+        shutdown(pair)
+        XCTAssertTrue(ranks.allSatisfy { $0.fences.isEmpty && $0.nativeCleanupObserved }, "a rank did not end by its shutdown")
+    }
+
+    /// A lane that has produced a token keeps the clean stop: no rank is told
+    /// to cancel it. The scripted ranks always finish `length`, so the request
+    /// asks for one token and its consumer leaves at it.
+    func testALaneThatProducedATokenKeepsTheCleanStop() throws {
+        let ranks = [ScriptedRank(rank: 0), ScriptedRank(rank: 1)]
+        let pair = try lanePair(ranks)
+        let lease = try pair.reserve(requestID: UUID(), reservation: reservation(output: 1))
+        let delivered = Delivered()
+        try lease.start { event in
+            delivered.record(event)
+            if case .token = event, !lease.requestCleanStop() { lease.cancel() }
+            return true
+        }
+        XCTAssertTrue(wait(seconds: 5) { lease.isRetired }, "the request did not retire")
+        lease.releaseResources()
+        XCTAssertTrue(lease.cleanStopWasRequested, "a lane that produced a token refused the clean stop")
+        XCTAssertEqual(ranks.map(\.cancels), [[], []], "a rank was told to cancel the request")
+        XCTAssertNil(delivered.value.failure)
+        XCTAssertNil(pair.lastRequestFailure)
+        shutdown(pair)
+    }
+
+    /// A pair whose workers do not retire a lane alone keeps the clean stop
+    /// before the first token: a cancel there ends the pair.
+    func testWithoutLanesARequestStillInItsPromptKeepsTheCleanStop() throws {
+        let ranks = [ScriptedRank(rank: 0), ScriptedRank(rank: 1)]
+        let pair = try ClusterWorkerPair(workers: ranks, startupDeadline: now() + 5_000_000_000)
+        ranks[0].holdNextStart()
+        let prompt = try pair.reserve(requestID: UUID(), reservation: reservation(output: 4))
+        try prompt.start { _ in true }
+        XCTAssertTrue(prompt.requestCleanStop(), "a pair without lanes refused the clean stop")
+        XCTAssertEqual(ranks.map(\.cancels), [[], []], "a rank was told to end the prompt")
+        prompt.cancel()
+        XCTAssertTrue(wait(seconds: 10) { prompt.isRetired }, "the request did not retire")
+        prompt.releaseResources()
         shutdown(pair)
     }
 }

@@ -1,6 +1,6 @@
 # Test Provider And Native Contracts
 
-> Last updated: 2026-11-03
+> Last updated: 2026-11-04
 
 Run isolated Swift, native-resource, public-fixture and landing tests here.
 Backend integration and cross-implementation qualification are platform-owned.
@@ -1240,7 +1240,8 @@ summary), or 5 when an SDK-lane input changes. A cluster pull request adds 7
 Macs (metadata checks, 3 runtime shards, 2 GPU shards and focused checks).
 
 CI runs the runtime test target (`DarkbloomClusterRuntimeTests`) on the
-provider's Blacksmith macOS runners, in selections that
+provider's macOS CI runners (see [CI runner routing](build.md#ci-runner-routing)),
+in selections that
 `scripts/cluster-test-plan.py` defines. Each selection runs in a process of its
 own through `scripts/run-nested-suite.sh`, which fails when the selection runs
 no test or skips a test. Every process starts with `MLX_QMV_BATCH_INVARIANT=1`,
@@ -1804,9 +1805,10 @@ removed first, its failure fatal only when `CLUSTER_RUNTIME_SEND` is true, and
 HTTPS plane with a throwaway certificate; the host needs Bash, Python, jq, curl
 and openssl. It covers the default-off switch, fork pull requests, exact label
 grants, HTTP errors, the single retry, timeouts, untrusted or plain-HTTP planes
-and hostile reply text. It also pins each routed job's fallback, timeout and
-read-only permissions, and keeps release workflows and the macOS jobs of
-`ci.yml` on literal Blacksmith runners. No check contacts the real plane.
+and hostile reply text. It also pins each routed job's lanes (one per provider
+or cluster shard, matching the job's matrix), fallback, timeout and read-only
+permissions, and keeps release workflows on literal Blacksmith runners. No check
+contacts the real plane.
 
 Docs-impact tests retain provider, protocol, privacy, native capacity, cache,
 release/model publication and fixture mappings. Historical links need exact

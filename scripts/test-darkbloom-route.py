@@ -39,12 +39,23 @@ FALLBACKS = {"release-integrity": LINUX_FALLBACK, "test-provider": MACOS_FALLBAC
              "warm": MACOS_FALLBACK, "docs": LINUX_FALLBACK}
 GRANTED = {"release-integrity": LINUX, "test-provider": MACOS,
            "warm": MACOS, "docs": LINUX_FALLBACK}
+PROVIDER = "${{ needs.changes.outputs.provider == 'true' && 1 || 0 }}"
+SDK = "${{ (github.event_name == 'push' || needs.changes.outputs.sdk == 'true') && 1 || 0 }}"
+CLUSTER = "${{ needs.changes.outputs.cluster == 'true' && 1 || 0 }}"
 PULL_REQUEST_WARM = "${{ github.event_name == 'pull_request' && 2 || 0 }}"
-# Every routed job: (profile, fallback label, count expression or None for 1).
+# Every routed job: (profile, fallback label, count expression or None for 1)
+# of each lane it reads.
 ROUTED = {
     "ci.yml": {
         "release-integrity": ("linux_arm64", LINUX_FALLBACK, None),
         "docs": ("linux_arm64", LINUX_FALLBACK, None),
+        "test-provider": ("macos_arm64", MACOS_FALLBACK, PROVIDER),
+        "test-provider-summary": ("macos_arm64", MACOS_FALLBACK, PROVIDER),
+        "test-provider-sdk": ("macos_arm64", MACOS_FALLBACK, SDK),
+        "test-cluster-checks": ("macos_arm64", MACOS_FALLBACK, CLUSTER),
+        "test-cluster": ("macos_arm64", MACOS_FALLBACK, CLUSTER),
+        "test-cluster-gpu": ("macos_arm64", MACOS_FALLBACK, CLUSTER),
+        "test-cluster-focused": ("macos_arm64", MACOS_FALLBACK, CLUSTER),
     },
     "docs-impact.yml": {
         "commit-signatures": ("linux_arm64", LINUX_FALLBACK, None),
@@ -59,9 +70,9 @@ ROUTED = {
 UNROUTED = ("release-swift.yml", "release-provider.yml", "release-dev-branch.yml",
             "release-desktop.yml", "provider-signing-validation.yml", "register-model.yml",
             "threat-model-review.yml", "bedrock-smoke.yml", "claude.yml", "codex.yml")
-# The CI macOS jobs keep their literal Blacksmith label (build.md, CI Runner Routing).
-CI_MACOS_JOBS = ("test-provider", "test-provider-summary", "test-provider-sdk", "test-cluster-checks",
-                 "test-cluster", "test-cluster-gpu", "test-cluster-focused")
+# The plane grants a lane whole, so each shard of these jobs reads a lane of its
+# own, `<job>-<shard>`, and gets a free sandbox even when the others fall back.
+SHARDED = {"test-provider", "test-cluster", "test-cluster-gpu"}
 # Master and dispatched warming feed release builds, so only PRs read the route.
 RUNS_ON = {"warm": "${{ github.event_name == 'pull_request' && "
                    "fromJSON(needs.route.outputs.routes)['warm'] || 'blacksmith-12vcpu-macos-27' }}"}
@@ -123,6 +134,16 @@ def matrix_shards(job):
     """Return the job's `shard` matrix entries, or [] when it has none."""
     matrix = re.search(r"(?m)^        shard: \[([0-9, ]+)\]$", job)
     return [shard.strip() for shard in matrix.group(1).split(",")] if matrix else []
+
+
+def job_lanes(name, job):
+    """Return the lanes a routed job reads: one per shard when SHARDED, else its own."""
+    return [f"{name}-{shard}" for shard in matrix_shards(job)] if name in SHARDED else [name]
+
+
+def requested_lanes(workflow, routed):
+    """Return {lane: (profile, fallback, count)} that the caller's route job must request."""
+    return {lane: lane_spec for name, lane_spec in routed.items() for lane in job_lanes(name, workflow[name])}
 
 
 def lane_lines(route_job):
@@ -476,19 +497,24 @@ class RouteWorkflowTests(unittest.TestCase):
                 self.assertIn("    uses: ./.github/workflows/darkbloom-route.yml\n", route)
                 self.assertEqual(job_field(route, "permissions"), "{}")
                 self.assertNotIn("secrets", route)
-                self.assertEqual(route_lanes(route), expected)
+                self.assertEqual(route_lanes(route), requested_lanes(workflow, expected))
             for name, (_, _, count) in expected.items():
                 job = workflow[name]
                 with self.subTest(workflow=filename, job=name):
                     self.assertIn("route", needs(job))
+                    if name in SHARDED:
+                        self.assertTrue(matrix_shards(job))
+                        lane = f"format('{name}-{{0}}', matrix.shard)"
+                    else:
+                        lane = f"'{name}'"
                     self.assertEqual(job_field(job, "runs-on"), RUNS_ON.get(
-                        name, f"${{{{ fromJSON(needs.route.outputs.routes)['{name}'] }}}}"))
+                        name, f"${{{{ fromJSON(needs.route.outputs.routes)[{lane}] }}}}"))
                     condition = job_field(job, "if")
                     if name != "warm":
                         # A lane is requested exactly when its job runs, once per
                         # matrix entry that reads it. `!cancelled()` cannot be
                         # evaluated in the route job and is true there.
-                        jobs_requested = len(matrix_shards(job)) or 1
+                        jobs_requested = 1 if name in SHARDED else len(matrix_shards(job)) or 1
                         expected_count = None
                         if condition is not None:
                             inner = condition.removeprefix("${{ ").removesuffix(" }}")
@@ -536,7 +562,7 @@ class RouteWorkflowTests(unittest.TestCase):
                         HEAD_REPOSITORY="", REPOSITORY="Layr-Labs/d-inference", RUN_ID="1", RUN_ATTEMPT="1")
                     self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                     self.assertEqual(routes, [{lane: fallback for lane, (_, fallback, _)
-                                               in ROUTED[filename].items()}])
+                                               in requested_lanes(workflow, ROUTED[filename]).items()}])
 
     def test_release_and_credentialed_workflows_keep_literal_runners(self):
         for filename in UNROUTED:
@@ -557,11 +583,6 @@ class RouteWorkflowTests(unittest.TestCase):
                 if name not in routed and not job_field(job, "uses"):
                     with self.subTest(workflow=filename, job=name):
                         self.assertRegex(job_field(job, "runs-on"), r"^(blacksmith-[a-z0-9-]+|ubuntu-24\.04)$")
-        ci = jobs(self.texts["ci.yml"])
-        for name in CI_MACOS_JOBS:
-            with self.subTest(workflow="ci.yml", job=name):
-                self.assertEqual(job_field(ci[name], "runs-on"), MACOS_FALLBACK)
-                self.assertNotIn("route", needs(ci[name]))
 
     def test_classifier_gate_and_route_need_no_routed_runner(self):
         ci = jobs(self.texts["ci.yml"])

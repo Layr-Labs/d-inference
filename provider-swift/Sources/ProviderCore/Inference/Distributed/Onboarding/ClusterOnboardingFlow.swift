@@ -1578,9 +1578,11 @@ public enum ClusterOnboardingDriver {
     }
 
     /// The pair's status: the outcome block when it says Serving or why not (`showOutcome`), else its lines (Stopped, …).
-    static func showStatus(_ operations: ClusterOnboardingOperations, _ console: ClusterOnboardingConsole) {
+    @discardableResult
+    static func showStatus(_ operations: ClusterOnboardingOperations, _ console: ClusterOnboardingConsole) -> [String] {
         let status = operations.status()
         if !showOutcome(status, console) { for line in status { console.say("  " + line) } }
+        return status
     }
 
     /// The cluster's status as the outcome block on the other Mac, when its first line tells it: "Serving …" (✓) or
@@ -1632,7 +1634,7 @@ public enum ClusterOnboardingDriver {
             }
             if wanted != resume.scope { return changeScope(to: wanted, resume, startOverRequest: request, operations, console) }
         }
-        showStatus(operations, console)
+        let status = showStatus(operations, console)
         if let port = resume.unsetCablePort {
             // A cable moved to a port that was never set up: the one thing to do first (2026-10-16, Thunderbolt 1).
             console.say(unsetPortLine(port))
@@ -1642,7 +1644,25 @@ public enum ClusterOnboardingDriver {
         // The list needs the other Mac: while it does not answer, the member's words and choices (UX audit P3).
         if let ended = untilOtherMacAnswers(!otherMacSilent, other: resume.peerName, operations, console, request: request) { return ended }
         return chooseAndServe(operations, console, scope: resume.scope, privateImage: request.privateImageQualification,
-                              startOverRequest: request, pair: resume, peer: resume.peerName, heading: modelHeading)
+                              startOverRequest: request, pair: resume, servingNow: status.first?.hasPrefix("Serving ") == true,
+                              peer: resume.peerName, heading: modelHeading)
+    }
+
+    /// A set-up pair with no list to show (no model can run here, or planning failed; said above): Start over or Quit,
+    /// as every resumed Mac offers (validator D, m4). Quit changes nothing.
+    static func noListChoices(startOverRequest: ClusterOnboardingRequest?, _ operations: ClusterOnboardingOperations,
+                              _ console: ClusterOnboardingConsole) -> Int32 {
+        console.say("")
+        guard console.choose([startOverItem, "Quit"], selected: 1) == 0 else { return 1 }
+        return startOver(operations, console, request: startOverRequest ?? .init())
+    }
+
+    /// The serving model chosen in another mode (the list may hold another mode: it was planned while the parts held
+    /// their memory): a mode change, said as one. Nil when either mode is unknown.
+    public static func modeSwitchQuestion(model: String, from: String?, to: String?) -> String? {
+        guard let from, let to else { return nil }
+        return "Switch \(model) from \(ClusterOnboardingDeployment.modeWords(from)) to \(ClusterOnboardingDeployment.modeWords(to))? "
+            + "It stops serving on both Macs while it loads again (a few minutes for a large model)."
     }
 
     /// The list's heading on a set-up pair.
@@ -1697,7 +1717,10 @@ public enum ClusterOnboardingDriver {
                 return 0
             case .failure(let failure):
                 switch notServing(failure.lines, operations, console) {
-                case .retry: continue
+                case .retry:
+                    // As the start's Retry: wait for both parts (and an offered pair for the coordinator), then test.
+                    return finishStart(title: title, scope: pair.scope, registers: false, startOverRequest: startOverRequest, peer: peer,
+                                       operations, console)
                 case .changeModel:
                     return chooseAndServe(operations, console, scope: pair.scope, startOverRequest: startOverRequest, peer: peer, heading: "Change model")
                 case .localOnly:
@@ -1818,7 +1841,7 @@ public enum ClusterOnboardingDriver {
     static func chooseAndServe(_ operations: ClusterOnboardingOperations, _ console: ClusterOnboardingConsole,
                                scope: ClusterServingScope = .publicServing, saveScope: Bool = false, model: String? = nil,
                                privateImage: Bool = false, startOverRequest: ClusterOnboardingRequest? = nil,
-                               pair: ClusterOnboardingResume? = nil, peer: String? = nil, keepMode: String? = nil,
+                               pair: ClusterOnboardingResume? = nil, servingNow: Bool? = nil, peer: String? = nil, keepMode: String? = nil,
                                heading: String? = nil) -> Int32 {
         let serving = pair?.serving == true ? pair : nil
         console.heading(heading ?? "3/4 Model")
@@ -1851,7 +1874,7 @@ public enum ClusterOnboardingDriver {
         case .success(let value): choices = value
         case .failure(let failure):
             for line in failure.lines { console.say(line) }
-            return 1
+            return pair == nil ? 1 : noListChoices(startOverRequest: startOverRequest, operations, console)
         }
         // Only models the owner approved for clusters that these Macs can serve, those that fit now first, so enter
         // picks one that fits (2026-11-02: the list showed the whole catalog); last, those a Mac has no room for on disk.
@@ -1867,7 +1890,7 @@ public enum ClusterOnboardingDriver {
                 let titles = held.filter { choices[$0].blocker == reason }.map { choices[$0].title }
                 console.say("  \(titles.joined(separator: ", ")): \(reason)")
             }
-            return 1
+            return pair == nil ? 1 : noListChoices(startOverRequest: startOverRequest, operations, console)
         }
         var chosen: Int?
         let names = { (index: Int, name: String) in
@@ -1892,7 +1915,13 @@ public enum ClusterOnboardingDriver {
             let titles = choices.map(\.title)
             let lines = open.map { index -> String in
                 let line = choices[index].listLine(sameTitleElsewhere: titles.filter { $0 == choices[index].title }.count > 1)
-                let marked = index == current ? line + (serving != nil ? " · serving now" : " · last used") : line
+                // "Serving now" only when the status above says it serves (a pair offered and not formed doesn't), with
+                // the mode it serves in when the list holds another (planned while the parts held their memory).
+                let servingIn = serving?.servingMode.flatMap { raw in
+                    choices[index].modes?.contains { $0.mode == raw } == false ? " in " + ClusterOnboardingDeployment.modeWords(raw) : nil
+                }
+                let marked = index == current ? line + ((servingNow ?? (serving != nil)) && serving != nil
+                    ? " · serving now" + (servingIn ?? "") : " · last used") : line
                 return marked + (choices[index].fitRemedy == nil ? "" : " · does not fit now")
                     + (choices[index].provision?.fitsOnDisk == false ? " · not enough free disk" : "")
             }
@@ -1936,10 +1965,12 @@ public enum ClusterOnboardingDriver {
         }
         // A pair that serves another model stops it for this one: said and confirmed first (No by default).
         if let serving, let currentTitle = serving.modelTitle ?? serving.modelName {
-            if chosen == current, mode == serving.servingMode, scope == serving.scope {
+            let sameModel = chosen == current && scope == serving.scope
+            if sameModel, mode == serving.servingMode {
                 return testServing(choice.title, mode: mode, pair: serving, peer: peer, startOverRequest: startOverRequest, operations, console)
             }
-            console.say("  " + switchQuestion(to: choice.title, from: currentTitle))
+            let modeChange = sameModel ? modeSwitchQuestion(model: choice.title, from: serving.servingMode, to: mode) : nil
+            console.say("  " + (modeChange ?? switchQuestion(to: choice.title, from: currentTitle)))
             guard console.choose(switchAnswers, selected: 1) == 0 else {
                 console.say("Nothing changed: \(currentTitle) keeps serving.")
                 return 0
@@ -2140,7 +2171,10 @@ public enum ClusterOnboardingDriver {
     /// saves the file and asks again; q leaves.
     static func notServing(_ lines: [String], _ operations: ClusterOnboardingOperations,
                            _ console: ClusterOnboardingConsole) -> NotServingChoice {
-        let first = lines.first ?? "the cluster did not report ready"
+        let said = lines.first ?? "the cluster did not report ready"
+        // A line that is already the title ("Not serving: …", a test's failure from the leading Mac) is said once.
+        let prefix = String(ClusterOnboardingNotServing.title(reason: "").dropLast())
+        let first = said.hasPrefix(prefix) ? String(said.dropFirst(prefix.count)) : said
         let reason = first.hasSuffix(".") ? String(first.dropLast()) : first
         console.result(false, ClusterOnboardingNotServing.title(reason: reason),
                        Array(lines.dropFirst()) + (ClusterOnboardingNotServing.remedy(forReason: reason).map { [$0] } ?? []))

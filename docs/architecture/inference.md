@@ -3796,6 +3796,9 @@ away; mixed pairs are first-class).
   assistant guard).
 - **Default:** the fastest measured family, else the planner's
   (`ClusterOnboardingMode.defaultIndex`).
+- **Forwarded choices:** a choice the other Mac forwards to the control leader
+  (`ClusterControlRequest`: op, index, model and scope) carries no mode, so it
+  is placed in the planner's family; the mode is chosen on the leading Mac.
 - **The person's choice:** `useMode` keeps the family for the next adopt of that
   model; `OnboardingLive.localAdopt` plans that model again with
   `ClusterPlacementFlow.decide(chosenMode:)`, which places only that family the

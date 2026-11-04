@@ -187,8 +187,12 @@ serving: <reason>`), or "Stopped; last model …".
 
 On the leader, the pair's model list follows, like `darkbloom start`'s picker:
 
-- The model serving now is marked "serving now" (or the last one "last used")
-  and preselected: Enter keeps it, or starts it again in the mode it served in.
+- The model serving now is marked "serving now" (with the mode it serves in when
+  the list shows another), or "last used" when the status above says the pair
+  isn't serving, and is preselected. Enter on the model the pair serves sends one
+  test request; in another mode it asks first ("Switch Gemma 4 26B from tensor
+  parallel to pipeline? It stops serving on both Macs while it loads again …").
+  A stopped pair's last model starts again in the mode it served in.
 - Each model shows its size, where it is (copied or downloaded first), and its
   modes with the decode speed this pair served it at (`ClusterServedModes`: at
   least 3 served requests on these Macs with this build), or "not measured on
@@ -209,6 +213,12 @@ first (else the planner's), the other one keypress away:
   (for example "this Mac 6 layers / the other Mac 46 layers").
 - **Speculative pipeline** (MiMo): a pipeline that drafts several tokens and
   checks them together.
+
+A mode is offered only if it keeps every feature of the model: Qwen 3.8 27B
+offers tensor parallel only, because pipeline would drop its image, video and
+logprob support. Change the mode on the leading Mac: a model chosen on the
+following Mac is passed to the leading Mac without its mode, so it starts in
+the planner's mode.
 
 Choosing the model that serves, in its mode, sends one test request, the same as
 a start's, and changes nothing else: "Already serving Qwen 3.8 27B; test response
@@ -291,8 +301,8 @@ coordinator never carries it. So, with the default `[backend] mtp_mode` of
 With `mtp_mode = "on"`, `darkbloom cluster` keeps the assistant too. That pair
 is then not offered to the coordinator: its plan says "not offered for public
 traffic", and it serves on the leader's local API. A serving cluster switched
-with **Serve locally only** or **Serve through Darkbloom** keeps the setup it
-has; choose **Change model** to plan the model again for the new way of serving. Public speculative decoding for Qwen pairs needs
+with **Switch to local only** or **Switch to serving through Darkbloom** keeps the setup it
+has; to plan the model again for the new way of serving, stop the pair (`darkbloom stop`) and start it again from the list. Public speculative decoding for Qwen pairs needs
 qualification evidence of its own, which no record holds yet. Rules:
 [Qwen27 TP assistant policy](../reference/configuration.md#qwen27-tp-assistant-policy).
 
@@ -491,9 +501,9 @@ Mac or reach it over a tailnet (encrypted). With the macOS firewall on, macOS
 may ask once to let Darkbloom accept incoming connections.
 
 The choice is kept: after a restart or reboot both Macs serve locally only
-again, until you switch back. In `darkbloom cluster` on the leader, **Serve
-through Darkbloom** serves through Darkbloom again and **Serve locally only**
-serves locally only; on a serving cluster the leading
+again, until you switch back. In `darkbloom cluster` on the leader, the list's
+**Switch to serving through Darkbloom** serves through Darkbloom again and
+**Switch to local only** serves locally only; on a serving cluster the leading
 Mac's part restarts that way and the screen waits for it as after a start: a
 test request on the leader's API, or, for a pair registered with the coordinator,
 until the coordinator paired both Macs and both loaded the model. It ends with
@@ -571,9 +581,9 @@ require a pipeline layer cut. An unsupported model or rank count falls back
 to pipeline when eligible and fitting, without requesting a link measurement.
 Where tensor parallel fits both Macs' memory as they are now, it is chosen,
 also on a new pair whose link no load has measured yet. A pipeline is chosen
-when only a pipeline fits now, and stays until the pair is planned again (**Change
-model** in `darkbloom cluster`, or after a Darkbloom update). Changing the model of a
-serving cluster (**Change model**, or `darkbloom cluster local <model>`) plans again once both
+when only a pipeline fits now, and stays until the pair is planned again (another
+model chosen in `darkbloom cluster`'s list, or after a Darkbloom update). Changing the model of a
+serving cluster (another model in the list, or `darkbloom cluster local <model>`) plans again once both
 Macs have stopped their parts and given back their memory, so the memory the
 running model held does not turn tensor parallel into a pipeline. Every load records the
 encrypted link's cost for later predictions; plans use the median of the

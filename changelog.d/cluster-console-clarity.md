@@ -34,3 +34,11 @@
 - Switching how a pair serves no longer announces the result before it is known.
 - Choosing tensor parallel plans for Qwen 3.8 27B as for any model; its pipeline modes stay out, as its features (images,
   video, committed-token logprobs) need tensor parallel, and a forced pipeline says so instead of an internal error.
+- The serving model chosen in another mode asks as a mode change ("Switch Gemma 4 26B from tensor parallel to pipeline?
+  It stops serving on both Macs while it loads again …"), and the list names the mode it serves in when it shows another
+  ("serving now in pipeline"); a set-up pair with no model to list (or whose planning fails)
+  still offers Start over and Quit; a pair that doesn't serve is never marked "serving now"; a failed test says "Not
+  serving" once, and its Retry waits for the pair as the start's Retry does.
+- A mode is offered only if it keeps every feature: Qwen 3.8 27B offers tensor parallel only (pipeline would drop its
+  image, video and logprob support). The mode is chosen on the leading Mac; a choice forwarded from the other Mac uses
+  the planner's mode.

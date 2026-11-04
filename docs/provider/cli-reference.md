@@ -588,8 +588,8 @@ darkbloom cluster local [<model>] [--bind <address>]
 
 Runs the onboarding asking for local-only serving (`ClusterOnboardingRequest`),
 saved in the leader's setup record (`ClusterOnboardingLeadership.localOnly`,
-`localBind`) until **Serve through Darkbloom** in `darkbloom cluster` serves
-through Darkbloom again.
+`localBind`) until **Switch to serving through Darkbloom** in `darkbloom cluster`'s list
+serves through Darkbloom again.
 The leader part then starts with `--no-coordinator`. Needs a terminal; exit 1
 otherwise. On the Mac that joins a waiting leader it pairs, says to continue on
 the leader with `darkbloom cluster local` (`ClusterOnboardingDriver.joinedLocalLine`) and, like

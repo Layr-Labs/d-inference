@@ -132,6 +132,9 @@ import Darwin
         memberScreenSaysWhoLeadsAndWhatToRun()
         switchAsksOnceThenEndsLikeStart()
         qAtTheListChangesNothing()
+        aModeChangeOfTheServingModelIsAskedAsOne()
+        aSetUpPairWithNoModelToListOffersStartOver()
+        aPairThatDoesNotServeIsNeitherMarkedNorTestedTwice()
         pairingSaysWhatToCheckWhenTheOtherMacIsNotFound()
         alreadyServingTestsAgainOrSaysWhyNot()
         aDeadPendingStartIsClearedOnlyWhileStillRecorded()
@@ -518,7 +521,8 @@ import Darwin
                            statusSequence: [[String]]? = nil,
                            followSeconds: Double = 900,
                            pairHintSeconds: Double = 900,
-                           pairWait: Double = 0) -> ClusterOnboardingOperations {
+                           pairWait: Double = 0,
+                           planFailure: [String]? = nil) -> ClusterOnboardingOperations {
         let answered = DispatchSemaphore(value: 0)
         let chosenPort = Recorder()
         // The n-th wait for the parts answers `readyResults[n]` (the last one again after it), else `readyResult`.
@@ -590,6 +594,7 @@ import Darwin
             },
             planModels: {
                 recorder.note("planModels")
+                if let planFailure { return .failure(.init(planFailure)) }
                 let again = recorder.all.filter { $0 == "planModels" }.count > 1
                 return .success(again ? (replanned ?? choices) : choices)
             },
@@ -3126,6 +3131,96 @@ import Darwin
         expect(quick.waitFor(prompt(2), count: 2), "found: the list"); quick.type("\r")
         _ = quick.finish()
         expect(!quick.text.contains(P.otherMacNotFoundLines[0]), "found: no hint")
+    }
+
+    /// Validator D's m3: the serving model, listed in another mode (planned while the parts held memory), read as a
+    /// switch to "another" model. The same model in another mode is a mode change, said as one.
+    static func aModeChangeOfTheServingModelIsAskedAsOne() {
+        var piped = qwenServing
+        piped.servingMode = "pipeline_v1"
+        let kept = Recorder()
+        let run = TerminalRun(operations(kept, resume: piped, pairEvents: [], pairResult: .failed([]), choices: switchChoices))
+        expect(run.waitFor(prompt(4)), "mode change: the list"); run.type("\r")
+        expect(run.text.contains("  1) Qwen 3.8 27B · 16.3 GB · tensor parallel 41 tok/s · serving now in pipeline\n"),
+               "mode change: the list names the mode it serves in: \(run.text)")
+        expect(run.waitFor("  Switch Qwen 3.8 27B from pipeline to tensor parallel? It stops serving on both Macs while it loads again "
+            + "(a few minutes for a large model).\n  1) Yes, switch\n  2) No\n"), "mode change: asked as one: \(run.text)")
+        run.type("\r")
+        expect(run.finish() == 0 && run.text.hasSuffix("Nothing changed: Qwen 3.8 27B keeps serving.\n") && !kept.all.contains("adopt 0"),
+               "mode change, no: nothing changed: \(run.text)")
+        transcript("leader-mode-change-question", run.text, keys: run.keys)
+        // The other mode picked at the mode question, for a model that runs both ways here: the same question.
+        var gemma = qwenServing
+        gemma.modelName = "gemma-4-26b-qat-4bit"
+        gemma.modelTitle = "Gemma 4 26B"
+        let picked = Recorder()
+        let other = TerminalRun(operations(picked, resume: gemma, pairEvents: [], pairResult: .failed([]), choices: switchChoices))
+        expect(other.waitFor(prompt(4, enter: 2)), "mode picked: the list, Gemma preselected: \(other.text)")
+        expect(other.text.contains(" · pipeline 46 tok/s or tensor parallel (not measured on these Macs yet) · serving now\n"),
+               "mode picked: serving now, its mode listed: \(other.text)")
+        other.type("\r")
+        expect(other.waitFor("  " + ClusterOnboardingDriver.modeQuestion(model: "Gemma 4 26B") + "\n"), "mode picked: how to split it")
+        other.type("2")
+        expect(other.waitFor("  Switch Gemma 4 26B from tensor parallel to pipeline? It stops serving on both Macs while it loads again "
+            + "(a few minutes for a large model).\n  1) Yes, switch\n  2) No\n"), "mode picked: asked as a mode change: \(other.text)")
+        other.type("\r")
+        expect(other.finish() == 0 && other.text.hasSuffix("Nothing changed: Gemma 4 26B keeps serving.\n")
+               && !picked.all.contains { $0.hasPrefix("adopt") }, "mode picked, no: nothing changed: \(other.text)")
+        transcript("leader-mode-change-picked", other.text, keys: other.keys)
+    }
+
+    /// Validator D's m4: a set-up pair whose list is empty (no model can run here) still offers Start over and Quit,
+    /// after the reason, as the old menu always did.
+    static func aSetUpPairWithNoModelToListOffersStartOver() {
+        let blocked = [ClusterOnboardingModelChoice(title: "GLM", lines: [], blocker: "too large for this pair", modelID: "glm-5.3-flash", validated: true)]
+        let recorder = Recorder()
+        let run = TerminalRun(operations(recorder, resume: qwenServing, pairEvents: [], pairResult: .failed([]), choices: blocked))
+        expect(run.waitFor("  1) " + ClusterOnboardingDriver.startOverItem + "\n  2) Quit\n  " + prompt(2, enter: 2)), "no model: Start over or Quit: \(run.text)")
+        expect(run.text.contains("No approved model can run on these Macs now.\n  GLM: too large for this pair\n"), "no model: the reason first: \(run.text)")
+        run.type("\r")
+        expect(run.finish() == 1 && !recorder.all.contains("unpair"), "no model: Quit changes nothing: \(recorder.all)")
+        transcript("leader-no-model-start-over", run.text, keys: run.keys)
+        // Planning that fails: its reason, then the same two choices; 1 reaches Start over's confirmation.
+        let failing = Recorder()
+        let failed = TerminalRun(operations(failing, resume: qwenServing, pairEvents: [], pairResult: .failed([]), choices: switchChoices,
+            planFailure: ["Planning failed (the other Mac's memory report is missing)."]))
+        expect(failed.waitFor("  1) " + ClusterOnboardingDriver.startOverItem + "\n  2) Quit\n  " + prompt(2, enter: 2)),
+               "planning failed: Start over or Quit: \(failed.text)")
+        expect(failed.text.contains("Planning failed (the other Mac's memory report is missing).\n"), "planning failed: the reason first: \(failed.text)")
+        failed.type("1")
+        expect(failed.waitFor("  " + ClusterOnboardingDriver.startOverQuestion + "\n  1) Yes, start over\n  2) No\n"),
+               "planning failed: 1 reaches Start over's confirmation: \(failed.text)")
+        failed.type("\r")
+        expect(failed.finish() == 0 && failed.text.contains("Nothing changed.\n") && !failing.all.contains("unpair"),
+               "planning failed: No at the confirmation changes nothing: \(failed.text)")
+        transcript("leader-planning-failed-start-over", failed.text, keys: failed.keys)
+    }
+
+    /// Validator D's m9: a pair whose status says it doesn't serve isn't listed "serving now"; a failed test of the
+    /// serving model says "Not serving" once; its Retry waits for the pair as the start's Retry does.
+    static func aPairThatDoesNotServeIsNeitherMarkedNorTestedTwice() {
+        let waiting = [ClusterOnboardingNotServing.statusLine(model: "Qwen 3.8 27B", reason: "waiting for the coordinator to pair both Macs")]
+        let marked = TerminalRun(operations(Recorder(), resume: qwenServing, pairEvents: [], pairResult: .failed([]), choices: switchChoices,
+            statusLines: waiting))
+        expect(marked.waitFor(prompt(4)), "not serving: the list")
+        expect(marked.text.contains("  1) Qwen 3.8 27B · 16.3 GB · tensor parallel 41 tok/s · last used\n") && !marked.text.contains("serving now"),
+               "not serving: last used, never serving now: \(marked.text)")
+        marked.type("q")
+        _ = marked.finish()
+        transcript("leader-not-serving-last-used", marked.text, keys: marked.keys)
+
+        let recorder = Recorder()
+        let run = TerminalRun(operations(recorder, resume: qwenServing, pairEvents: [], pairResult: .failed([]), choices: switchChoices,
+            testResult: .failure(.init(["Not serving: waiting for the coordinator to pair both Macs."]))))
+        expect(run.waitFor(prompt(4)), "test once: the list"); run.type("\r")
+        expect(run.waitFor(notServingChoices), "test once: the choices")
+        expect(run.text.contains("\u{2717} Not serving: waiting for the coordinator to pair both Macs.\n") && !run.text.contains("Not serving: Not serving"),
+               "test once: one title: \(run.text)")
+        run.type("1")
+        expect(run.finish() == 1, "retry: ends after its wait and test")
+        let tested = recorder.all.firstIndex(of: "testRequest"), waited = recorder.all.lastIndex(of: "waitReady")
+        expect(tested != nil && waited != nil && waited! > tested!, "retry: waits for the pair as the start's Retry does: \(recorder.all)")
+        transcript("leader-serving-test-fails-retry-waits", run.text, keys: run.keys)
     }
 
     /// q (or Esc) at the list changes nothing: the status block again and the commands; exit 0.

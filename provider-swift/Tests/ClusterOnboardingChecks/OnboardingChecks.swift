@@ -789,7 +789,8 @@ import Darwin
 
         // Both threads hold the run until they end, so the pseudo-terminal is free by then: a whole run of the checks
         // otherwise keeps one per flow, and the Mac's limit is shared with every other terminal.
-        deinit { Darwin.close(master); Darwin.close(slave) }
+        // `release()` may have closed them already: never twice, or a later run's terminal, reusing the numbers, closes.
+        deinit { closeTerminal() }
 
         func waitFor(_ needle: String, seconds: Double = 10, count: Int = 1) -> Bool {
             let deadline = Date().addingTimeInterval(seconds)
@@ -812,6 +813,12 @@ import Darwin
         /// Closes both ends once the run ended, so a long list of checks never runs out of pseudo-terminals.
         func release() {
             guard code != nil else { return }
+            closeTerminal()
+        }
+
+        private var closed = false
+        private func closeTerminal() {
+            guard lock.withLock({ defer { closed = true }; return !closed }) else { return }
             Darwin.close(master); Darwin.close(slave)
         }
     }

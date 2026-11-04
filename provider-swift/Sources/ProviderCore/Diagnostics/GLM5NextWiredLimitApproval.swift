@@ -104,3 +104,11 @@ public enum GLM5NextWiredLimitApproval {
         }
     }
 }
+
+extension ClusterLinkApproval {
+    /// The same prompt for a pair rank's GPU wired-memory limits. Kept beside the request, outside the link sources, so
+    /// the model-free link runners compile without the GLM memory closure.
+    static func request(wiredLimit request: GLM5NextWiredLimitRequest) -> ClusterLinkApprovalResult {
+        run(["-e", request.appleScript])
+    }
+}

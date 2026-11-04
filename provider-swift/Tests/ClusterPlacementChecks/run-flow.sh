@@ -66,6 +66,7 @@ build_module InstalledContract "$task_all" \
   "$task_sources/Inference/Distributed/Onboarding/ClusterControlLeadership.swift" \
   "$task_sources/Inference/Distributed/Onboarding/ClusterOnboardingFlow.swift" \
   "$task_sources/Inference/Distributed/Onboarding/ClusterOnboardingFollow.swift" "$task_sources/Inference/Distributed/Onboarding/ClusterOnboardingLeaderStep.swift" \
+  "$task_sources/Inference/Distributed/Onboarding/ClusterOnboardingSoloServing.swift" \
   "$task_sources/Inference/Distributed/Onboarding/ClusterOnboardingPairServing.swift" \
   "$task_sources/Inference/Distributed/Onboarding/ClusterAutomaticSetupHandoff.swift" \
   "$task_sources/Inference/Distributed/Onboarding/ClusterModelProvisioning.swift" \

@@ -9,7 +9,9 @@ public actor AppleAppAttestService: AppAttestService {
     private let operations: AppleOperationGate
     private let support: AppAttestSupport
     /// Set by the first unsupported answer, so a service re-registers its bundle
-    /// at most once. A provider process keeps one service.
+    /// at most once. A provider without an availability schedule keeps one
+    /// service per process. A scheduled provider makes a new one for each
+    /// availability window, so it can re-register once per window.
     private var registrationRefreshed = false
 
     public init() {
@@ -49,7 +51,7 @@ public actor AppleAppAttestService: AppAttestService {
         try AppAttestAvailabilityChecks.requireSupported(isSupportedRefreshingRegistration(app: Bundle.main.bundleURL))
     }
 
-    /// Apple's answer. The first unsupported answer in this process first
+    /// Apple's answer. On this service's first unsupported answer it
     /// re-registers `app` with LaunchServices and asks again, so a record left
     /// stale by a self-update does not fail the exchange (`AppAttestSupport`).
     func isSupportedRefreshingRegistration(app: URL) -> Bool {

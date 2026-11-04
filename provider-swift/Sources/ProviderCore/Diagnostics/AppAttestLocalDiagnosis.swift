@@ -62,7 +62,7 @@ public enum AppAttestLocalDiagnosis {
                               message: message + ", although it already runs in the logged-in GUI session, so a restart from "
                                   + "Screen Sharing will not change it. This usually follows a self-update: macOS LaunchServices still "
                                   + "describes the previous \(BuildEnvironment.current.appBundleName). The provider re-registers its app "
-                                  + "once per process when this happens.",
+                                  + "by itself when this happens.",
                               fix: isSupportedFalseInGUIFix)
         case .background:
             return Diagnostic(section: .appAttest, name: "app attest support", level: .fail,

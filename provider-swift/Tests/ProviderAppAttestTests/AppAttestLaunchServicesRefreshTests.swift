@@ -59,8 +59,8 @@ final class AppAttestLaunchServicesRefreshTests: XCTestCase {
     }
 
     /// A Mac that stays unsupported for another reason is re-registered once per
-    /// process, not on every coordinator exchange.
-    func testPersistentUnsupportedReRegistersOnlyOncePerProcess() async {
+    /// service, not on every coordinator exchange.
+    func testPersistentUnsupportedReRegistersOnlyOncePerService() async {
         let fake = FakeLaunchServices(supportedAfterRefreshes: nil)
         let service = service(fake)
         for _ in 0..<3 {

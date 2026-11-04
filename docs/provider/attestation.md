@@ -107,11 +107,12 @@ process reports unsupported, including restarted ones. Fleet data for the 0.10.6
 and 0.10.7 rollouts: 12–15% of updating macOS 27 Macs; it cleared on its own
 after minutes to hours. The updater registers the new bundle with
 LaunchServices (`LSRegisterURL`, as `lsregister -f` does) right after the swap
-(`SelfUpdater.commitStagedBundle`). The first unsupported answer in each process
-also re-registers the running bundle and asks Apple again before replying
-(`AppleAppAttestService.checkAvailability`,
-`provider-swift/Sources/ProviderAppAttest/AppAttestSupport.swift`). To do
-it by hand:
+(`SelfUpdater.commitStagedBundle`). When Apple answers unsupported, the
+provider also re-registers the running bundle and asks Apple again before
+replying (`AppleAppAttestService.checkAvailability`,
+`provider-swift/Sources/ProviderAppAttest/AppAttestSupport.swift`). It does
+this at most once per process, or once per scheduled window for a provider with
+an availability schedule. To do it by hand:
 
 ```bash
 /System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister -f "$HOME/.darkbloom/Darkbloom.app"

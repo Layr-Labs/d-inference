@@ -143,21 +143,23 @@ import CryptoKit
         expect(!model.artifact.sameArtifact(missing), "a missing file does not match")
         var changed = model.artifact; changed.files[0].sha256 = String(repeating: "0", count: 64)
         expect(!model.artifact.sameArtifact(changed), "a different digest does not match")
-        // Dropping a folder's cached pages: every regular file, nothing else, the bytes unchanged (2026-10-16).
+        // Dropping a folder's cached pages: every regular file in it and one folder down (MiMo's `audio_tokenizer/`),
+        // never through a link, nothing deeper, the bytes unchanged (2026-10-16, 2026-11-03).
         let cacheFolder = temporary("drop-cache")
         try! FileManager.default.createDirectory(at: cacheFolder, withIntermediateDirectories: true)
         try! Data(repeating: 7, count: 1 << 20).write(to: cacheFolder.appendingPathComponent("weights.safetensors"))
         try! Data("{}".utf8).write(to: cacheFolder.appendingPathComponent("config.json"))
-        try! FileManager.default.createDirectory(at: cacheFolder.appendingPathComponent("nested"), withIntermediateDirectories: true)
-        expect(ClusterModelStore.dropCachedPages(folder: cacheFolder) == Int64((1 << 20) + 2), "every regular file's pages dropped")
-        expect((try? Data(contentsOf: cacheFolder.appendingPathComponent("weights.safetensors")))?.count == 1 << 20, "the bytes unchanged")
-        expect(ClusterModelStore.dropCachedPages(folder: cacheFolder.appendingPathComponent("missing")) == 0, "a missing folder drops nothing")
-        // Reading a folder's pages into the cache before a part starts: every regular file once, no link, no folder.
+        let nested = cacheFolder.appendingPathComponent("nested")
+        try! FileManager.default.createDirectory(at: nested.appendingPathComponent("deeper"), withIntermediateDirectories: true)
+        try! Data(repeating: 5, count: 4096).write(to: nested.appendingPathComponent("model.safetensors"))
+        try! Data(repeating: 3, count: 512).write(to: nested.appendingPathComponent("deeper").appendingPathComponent("model.safetensors"))
         try! FileManager.default.createSymbolicLink(at: cacheFolder.appendingPathComponent("link.safetensors"),
             withDestinationURL: cacheFolder.appendingPathComponent("weights.safetensors"))
-        expect(ClusterModelStore.prefetchPages(folder: cacheFolder) == Int64((1 << 20) + 2), "every regular file's pages read once")
-        expect(ClusterModelStore.prefetchPages(folder: cacheFolder, readers: 1) == Int64((1 << 20) + 2), "one reader reads the same")
-        expect(ClusterModelStore.prefetchPages(folder: cacheFolder.appendingPathComponent("missing")) == 0, "a missing folder reads nothing")
+        try! FileManager.default.createSymbolicLink(at: cacheFolder.appendingPathComponent("linked-folder"), withDestinationURL: nested)
+        expect(ClusterModelStore.dropCachedPages(folder: cacheFolder) == Int64((1 << 20) + 2 + 4096),
+               "every regular file's pages dropped, one folder down too, no link followed: got \(ClusterModelStore.dropCachedPages(folder: cacheFolder))")
+        expect((try? Data(contentsOf: cacheFolder.appendingPathComponent("weights.safetensors")))?.count == 1 << 20, "the bytes unchanged")
+        expect(ClusterModelStore.dropCachedPages(folder: cacheFolder.appendingPathComponent("missing")) == 0, "a missing folder drops nothing")
         func mutated(_ change: (inout [String: Any]) -> Void) -> Data {
             var object = try! JSONSerialization.jsonObject(with: model.manifest) as! [String: Any]
             change(&object)

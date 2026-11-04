@@ -395,4 +395,40 @@ struct StageLoadFileCacheGuardTests {
         #expect(report.scopes.allSatisfy { $0.decisions == 2 } && report.troubled.isEmpty)
         #expect(report.policy == QwenDenseStageLoadPolicy.identifier)
     }
+
+    // MARK: the worker log's line
+
+    /// The 2026-11-03 refusal on a 128 GB MacBook Pro as the worker log now
+    /// records it: admitted on the cache at the first sample, refused once
+    /// 515 MiB was compressed. The line names the rule and the figures of the
+    /// decision it rests on.
+    @Test func theLogLineNamesTheRuleAndTheFiguresOfTheDecisionItRestsOn() throws {
+        let watch = QwenDenseStageLoadWatch("Tensor-parallel shard load", list: nil)
+        let required = 49 * Self.gib
+        #expect(try watch.admits(Mac.observation(), bytes: required, now: Mac.now))
+        #expect(watch.summary.logLine == "darkbloom-load-memory-v1 scope=Tensor-parallel_shard_load decisions=1 refused=0"
+            + " unjudged=0 rule=file_cache required=\(required) admissible=\(80 * Self.gib + 256 * Self.mib)"
+            + " free=\(256 * Self.mib) file_backed=\(80 * Self.gib) counted=\(80 * Self.gib) kernel_file_cache_minimum=unknown"
+            + " anonymous=\(27 * Self.gib) compressor=\(Self.gib) pressure=1 compressed_since_first=0 swapped_out_since_first=0")
+        #expect(throws: ProbeError.self) {
+            _ = try watch.admits(Mac.observation(compressedBytes: 515 * Self.mib), bytes: required, now: Mac.now)
+        }
+        #expect(watch.summary.logLine == "darkbloom-load-memory-v1 scope=Tensor-parallel_shard_load decisions=2 refused=1"
+            + " unjudged=0 rule=compression_or_swap required=\(required) admissible=\(256 * Self.mib)"
+            + " free=\(256 * Self.mib) file_backed=\(80 * Self.gib) counted=0 kernel_file_cache_minimum=unknown"
+            + " anonymous=\(27 * Self.gib) compressor=\(Self.gib) pressure=1 compressed_since_first=\(515 * Self.mib)"
+            + " swapped_out_since_first=0")
+        // Every other rule, in the order the policy applies them, and a scope with no judged sample.
+        func rule(_ observation: QwenDenseStageLoadOSObservation, _ bytes: Int) -> String? {
+            let watch = QwenDenseStageLoadWatch("Test load", list: nil)
+            _ = try? watch.admits(observation, bytes: bytes, now: Mac.now)
+            return watch.summary.logLine.split(separator: " ").first { $0.hasPrefix("rule=") }.map { String($0.dropFirst(5)) }
+        }
+        #expect(rule(Mac.observation(freeBytes: 20 * Self.gib, fileBackedGiB: 60), 16 * Self.gib) == "free_pages")
+        #expect(rule(Mac.observation(freeBytes: 8 * Self.mib), 0) == "truly_free_floor")
+        #expect(rule(Mac.observation(), 200 * Self.gib) == "more_than_physical")
+        #expect(rule(Mac.observation(pressure: 2), 16 * Self.gib) == "pressure")
+        #expect(rule(Mac.observation(), 100 * Self.gib) == "short")
+        #expect(rule(Mac.observation(pressure: 4), 0) == "not_judged")
+    }
 }

@@ -3145,7 +3145,35 @@ recorded with each decision, not applied. Pressure above normal, or more than
 512 MiB compressed or 64 MiB swapped out since a load's or request's first
 sample, withdraws all of it, and such a refusal stands on the gate's own
 sample: the room-making pass (`QwenDenseStageLoadReclaim`) runs only at normal
-pressure, for file cache the gate does not count.
+pressure, for file cache the gate does not count, and with every file-backed
+page counted there is none, so it does not run.
+
+The kernel gives most of that cache back one page at a time: up to two
+anonymous pages (compressed) for each file page, and only anonymous pages once
+the cache is below its minimum. A load into a cache that holds mostly its own
+model therefore compresses past the guard and is refused, and a restart that
+read the model back into the cache was refused again (MiMo on two 128 GB Macs,
+680 refused starts, 2026-11-01). So the model's own pages leave the cache
+before a load reads them:
+
+- Before this Mac's part starts, the cluster service drops the cached pages of
+  the model folder's regular files and of those one folder down (MiMo's
+  `audio_tokenizer/`), never through a link (`ClusterModelStore.dropCachedPages`,
+  called from `ClusterService.supervise`).
+- When a selected loader turns its payload reads uncached, it drops each weight
+  file's cached pages through the pinned descriptor
+  (`VerifiedCheckpoint.bypassTensorPayloadCache`). The MiMo, Qwen, Gemma and
+  GPT-OSS pipeline and tensor-parallel loads take this path. GLM's prepared
+  tensor-parallel load still reads through the cache on purpose.
+
+Both use `msync(MS_INVALIDATE)` over a read-only shared mapping: no privileges,
+and the files' bytes and identity are unchanged. After each load, or at the
+failure that ended it, the worker writes one `darkbloom-load-memory-v1` line per
+load gate (`QwenDenseStageLoadAdmissionSummary.logLine`): its decisions and
+refusals, the rule that settled it, the numbers of the decision it rests on
+(required, admissible, free, file-backed and counted bytes, the kernel's
+file-cache minimum) and what was compressed and swapped out since its first
+sample.
 
 Explicit placement requests may exceed a layout's default prompt or output
 reference while remaining inside the registered family profile. Both the native

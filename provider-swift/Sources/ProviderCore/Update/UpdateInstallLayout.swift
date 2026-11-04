@@ -61,6 +61,47 @@ extension UpdateRecoveryStore {
         return manifest
     }
 
+    /// The version an app is signed as: the `CFBundleShortVersionString` of its `Info.plist`, which the release lane
+    /// sets to the release version and the code signature seals. Nil when it names none.
+    func signedVersion(ofApp bundle: URL) -> String? {
+        guard let data = try? Data(contentsOf: bundle.appendingPathComponent("Contents/Info.plist")),
+              let info = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any],
+              let version = info["CFBundleShortVersionString"] as? String, !version.isEmpty
+        else { return nil }
+        return version
+    }
+
+    /// The version the installed app is signed as (`signedVersion(ofApp:)`).
+    func installedSignedVersion() -> String? {
+        signedVersion(ofApp: artifactPaths(root: installRoot).bundle)
+    }
+
+    /// The installed app recorded as the updater records an install it made, as release `version`.
+    func installedAppRecord(version: String, generation: UInt64, now: Double) throws -> InstalledReleaseRecord {
+        try requireLiveApp()
+        let paths = artifactPaths(root: installRoot)
+        return InstalledReleaseRecord(
+            version: version,
+            releaseBundleHash: nil,
+            installedBundleHash: try UpdateAtomicFilesystem.treeHash(root: paths.bundle),
+            binaryHash: try UpdateAtomicFilesystem.sha256(file: paths.binary),
+            enclaveHash: try UpdateAtomicFilesystem.sha256(file: paths.enclave),
+            metallibHash: try UpdateAtomicFilesystem.sha256(file: paths.metallib),
+            installGeneration: generation,
+            installedAt: stateInstallDateFallback(now)
+        )
+    }
+
+    /// Removes the rollback copy. Its tree leaves the predecessor path in one rename, so a death before the delete
+    /// finished leaves an orphan the next recovery removes, never a partial copy.
+    func removeRollbackCopy() throws {
+        guard fm.fileExists(atPath: predecessorRoot.path) else { return }
+        let retired = recoveryRoot.appendingPathComponent(
+            "\(Self.retiredPredecessorPrefix)\(UUID().uuidString)", isDirectory: true)
+        try UpdateAtomicFilesystem.replace(predecessorRoot, at: retired)
+        try UpdateAtomicFilesystem.removeDurably(retired)
+    }
+
     func recordForStagedBundle(
         _ staged: SelfUpdater.StagedBundle,
         generation: UInt64,

@@ -1,6 +1,6 @@
 # Install, update, and uninstall the provider
 
-> Last updated: 2026-11-02
+> Last updated: 2026-11-04
 
 How to put the `darkbloom` CLI on an Apple Silicon Mac with `scripts/install.sh`,
 what the script verifies before it touches an existing install, how the binary
@@ -220,8 +220,12 @@ that exact version is blocked; a newer release installs normally.
 
 When the updater installs a release, it keeps the signed release it replaced
 in `~/.darkbloom/recovery/predecessor/` (`provider-swift/Sources/ProviderCore/Update/UpdateInstallLayout.swift`,
-`snapshotLiveAsPredecessor`). A release that runs but regresses can be rolled
-back to it on one Mac, with automatic updates left on:
+`snapshotLiveAsPredecessor`). `install.sh` keeps none. On a `darkbloom cluster`
+Mac, the cluster service removes the kept release at its next start after an
+install outside the updater, so the next rollback needs the next update
+([an install outside the updater](./cluster-always-on.md#an-install-outside-the-updater)).
+A release that runs but regresses can be rolled back to the kept release on one
+Mac, with automatic updates left on:
 
 1. On a Mac that serves in a `darkbloom cluster` pair, first stop its cluster
    service with `darkbloom cluster stop`, roll it back, then start it again

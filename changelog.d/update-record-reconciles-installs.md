@@ -1,0 +1,6 @@
+### A pair Mac reinstalled with `install.sh` no longer acts on releases it does not run
+
+- `install.sh` (or a copied app) replaces Darkbloom without updating the record the updater keeps of what is installed. A pair Mac reinstalled this way could keep a release from weeks ago as "pending": it then tried to reinstall the release it already ran at every update slot, and three unrequested ends of its cluster service would have restored an old release that the other Mac cannot pair with.
+- Before each start of its cluster service, a pair Mac now checks that record against the installed app. When they differ, the installed release is recorded as installed, the stale pending release is dropped, and the copy kept for rollback is removed, because the other Mac does not have it. The Mac logs one line saying what changed. Rollback is possible again after the next update, which keeps a copy of the release that ran.
+- A kept copy whose app is a different release than its record is removed the same way, and an update over a reinstalled app now records that app as the release it is.
+- The release a Mac runs is never offered as an update: the update slot reports it up to date instead of downloading it, reinstalling it and restarting the cluster service.

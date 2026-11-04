@@ -171,9 +171,13 @@ struct UpdateRecoveryReconcileTests {
         let mac = try InstalledMac.reinstalledOverAStaleRecord()
         defer { mac.cleanUp() }
         let updater = mac.updater(running: "0.10.7")
+        let recovery = ClusterCandidateRecovery(updater: updater), lines = LogLines()
 
-        #expect(ClusterCandidateRecovery(updater: updater).noteLaunch(now: 1_793_749_383) == .notCandidate,
+        #expect(recovery.noteLaunch(now: 1_793_749_383, log: { lines.append($0) }) == .notCandidate,
                 "the service that starts runs 0.10.7, not the pending 0.10.6")
+        #expect(lines.all == ["v0.10.7 is installed, but the update record said v0.9.22 with v0.10.6 pending (installed "
+            + "outside the updater): it now records v0.10.7, v0.10.6 is no longer pending and the rollback copy (recorded "
+            + "as v0.9.22) is removed; nothing is rolled back until an update keeps a copy of v0.10.7"])
 
         let state = try mac.store.loadState()
         let installed = try InstalledMac.record(of: mac.app, version: "0.10.7", generation: 3)
@@ -185,6 +189,35 @@ struct UpdateRecoveryReconcileTests {
         #expect(!FileManager.default.fileExists(atPath: mac.rollbackCopy.path))
         #expect(throws: SelfUpdater.RollbackRefusal.noPredecessor) { try updater.rollbackPlan() }
         #expect(try mac.installedBinary() == "0.10.7-darkbloom")
+
+        // Reconciled once: the next start finds the record matching, changes nothing and says nothing.
+        #expect(recovery.noteLaunch(now: 1_793_749_443, log: { lines.append($0) }) == .notCandidate)
+        #expect(lines.all.count == 1)
+        #expect(try mac.store.loadState() == state)
+    }
+
+    /// A reconcile that died after the record stopped naming the copy, before the copy was gone (the copy's manifest
+    /// then names it again) and before the installed app was recorded: the next start finishes it.
+    @Test func reconcileThatDiedPartWayIsFinishedAtTheNextStart() throws {
+        let mac = try InstalledMac.reinstalledOverAStaleRecord()
+        defer { mac.cleanUp() }
+        var died = try mac.store.loadState()
+        died.candidate = nil
+        died.predecessor = nil
+        try mac.store.writeState(died)
+        let orphan = mac.installRoot.appendingPathComponent("recovery/\(UpdateRecoveryStore.retiredPredecessorPrefix)earlier")
+        try FileManager.default.createDirectory(at: orphan, withIntermediateDirectories: true)
+        #expect(try mac.store.loadState().predecessor?.release.version == "0.9.22", "the copy's manifest names it again")
+
+        let lines = LogLines()
+        #expect(ClusterCandidateRecovery(updater: mac.updater(running: "0.10.7")).noteLaunch(now: 1_793_749_383,
+                                                                                          log: { lines.append($0) }) == .notCandidate)
+
+        let state = try mac.store.loadState()
+        #expect(state.current?.version == "0.10.7" && state.candidate == nil && state.predecessor == nil)
+        #expect(!FileManager.default.fileExists(atPath: mac.rollbackCopy.path))
+        #expect(!FileManager.default.fileExists(atPath: orphan.path), "an earlier removal's leftover is cleaned up")
+        #expect(lines.all.count == 1 && lines.all[0].hasPrefix("v0.10.7 is installed, but the update record said v0.9.22 ("))
     }
 
     /// The update slot on that Mac, before anything reconciled it: the coordinator's latest release is the one it runs,
@@ -244,14 +277,16 @@ struct UpdateRecoveryReconcileTests {
                                               failureCount: 0)
         try mac.store.writeState(UpdateRecoveryState(installGeneration: 2,
             current: try mac.record(ofReleaseNotOnDisk: "0.9.22", generation: 1), candidate: pending, predecessor: copy))
-        let recovery = ClusterCandidateRecovery(updater: mac.updater(running: "0.10.6"))
+        let recovery = ClusterCandidateRecovery(updater: mac.updater(running: "0.10.6")), lines = LogLines()
 
         var ends: [ClusterCandidateRecovery.Failure] = []
         for start in 0..<3 {
             let now = 1_793_000_000 + Double(start) * 60
-            #expect(recovery.noteLaunch(now: now) == .candidate(version: "0.10.6", failedStarts: start))
-            ends.append(recovery.recordFailedStart(now: now + 5))
+            #expect(recovery.noteLaunch(now: now, log: { lines.append($0) }) == .candidate(version: "0.10.6", failedStarts: start))
+            ends.append(recovery.recordFailedStart(now: now + 5, log: { lines.append($0) }))
         }
+        #expect(lines.all == ["the rollback copy recorded as v0.9.22 is a v0.10.2 app, so it is removed; nothing is rolled "
+            + "back until an update keeps a copy of the installed release"])
 
         #expect(Array(ends.prefix(2)) == [.counted(version: "0.10.6", failures: 1), .counted(version: "0.10.6", failures: 2)])
         guard case .rollbackRefused(let version, _) = ends.last else {

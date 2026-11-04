@@ -1,6 +1,6 @@
 # Keep a cluster member always on
 
-> Last updated: 2026-10-31
+> Last updated: 2026-11-04
 
 `darkbloom cluster` on each Mac does all of this. Nothing below is needed: it
 explains what the onboarding sets up and how to check it.
@@ -131,7 +131,7 @@ supervisor starts (`Watchdog.settings`,
 | Drain | Accepted requests finish, at most 120 s; never cancelled | The part that serves the pair (rank 0) finishes its accepted requests, at most 120 s (`ClusterUpdateDrainRequest`, through its lifecycle mailbox); the other part serves none. A request still running reopens the pair on both Macs and defers to the next slot |
 | Install | Commit the staged bundle | Each Mac commits once both drained |
 | Restart | launchd restarts the provider | The supervisor stops its cluster service (the drained part stops with it), checks that the installed binary starts, and starts again from it |
-| Recovery | The watchdog promotes the candidate after 600 s of fresh heartbeats, rolls back after 3 failed starts | A binary that fails the start check is never restarted into: the supervisor restores the previous release and quarantines the new one at once, and starts its cluster service again. Otherwise the restarted supervisor does what the watchdog does, with its cluster service's heartbeat (`ClusterCandidateRecovery`) |
+| Recovery | The watchdog promotes the candidate after 600 s of fresh heartbeats, rolls back after 3 failed starts | A binary that fails the start check is never restarted into: the supervisor restores the previous release and quarantines the new one at once, and starts its cluster service again. Otherwise the restarted supervisor does what the watchdog does, with its cluster service's heartbeat (`ClusterCandidateRecovery`), on an update record checked against the installed app ([an install outside the updater](#an-install-outside-the-updater)) |
 
 The rules each Mac applies to the other's progress are in
 `provider-swift/Sources/ProviderCore/Service/ClusterSupervision/ClusterPairUpdate.swift`
@@ -178,6 +178,48 @@ failed starts checks the restored predecessor the same way; if that check fails
 too, the supervisor starts the cluster service itself instead of restarting
 into it. A binary that passes the check but whose supervisor fails before it
 starts the cluster service is still not rolled back.
+
+### An install outside the updater
+
+The update record (`~/.darkbloom/recovery/state.json`, `UpdateRecoveryState`)
+names the installed release, a release installed but not yet promoted, and the
+release kept for rollback. Only the updater writes it: `install.sh` and a copied
+app replace `Darkbloom.app` and leave it naming releases that are gone. Before
+each start of the cluster service, and before an end of it counts toward a
+rollback, the supervisor checks the record against the installed app under the
+update lease (`ClusterCandidateRecovery`, `noteLaunch` and `recordFailedStart`;
+`provider-swift/Sources/ProviderCore/Update/UpdateRecoveryStore.swift`,
+`reconcileWithInstalledApp`). A release's version is the one its signed
+`Info.plist` names (`CFBundleShortVersionString`); an app that names none counts
+as the release the supervisor runs.
+
+| The record | What the check does |
+|---|---|
+| Names the installed app: the hashes the updater recorded and its version | Nothing |
+| Names another release | Records the installed app as the installed release, drops the pending release without counting a failed start, and removes the rollback copy |
+| Keeps a rollback copy whose app names another version than its record | Removes the copy |
+
+A pair forms only between Macs on the same build
+(`ClusterConfiguration.peerBuildDiffers`), so a rollback keeps a pair only when
+it restores the release both Macs ran before the update, which the other Mac
+keeps too and follows to ([a rollback on one Mac](#a-rollback-on-one-mac)). A
+copy kept for an install that is gone is not that release, so nothing is rolled
+back until an update keeps a copy of the installed release. The supervisor logs
+one line, for example `cluster update: v0.10.7 is installed, but the update
+record said v0.9.22 with v0.10.6 pending (installed outside the updater): it now
+records v0.10.7, v0.10.6 is no longer pending and the rollback copy (recorded as
+v0.9.22) is removed; nothing is rolled back until an update keeps a copy of
+v0.10.7`. A record it cannot check counts no start toward a rollback.
+
+Two rules keep an update from acting on such a record too:
+
+- The release that runs is never an update target. A pending release older
+  than it is not pending, and a release is offered only when it is newer than
+  both the running and the installed release (`SelfUpdater.checkForUpdate`).
+- An update over an app installed outside the updater keeps a copy of that app,
+  also when the record names a pending release that is not installed, and
+  records the copy as the release the app's `Info.plist` names
+  (`UpdateRecoveryStore`, `preparePredecessor`).
 
 ### A rollback on one Mac
 

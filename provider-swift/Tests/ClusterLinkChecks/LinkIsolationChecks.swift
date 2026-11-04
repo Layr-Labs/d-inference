@@ -636,6 +636,69 @@ extension ClusterLinkCheck {
         expect(script.contains("printf '%s\\\\n' ") && !script.dropFirst(17).dropLast(80).contains("\"\""), "escaped: \(script.prefix(400))")
     }
 
+    /// Review of `bac9a58c4f`, finding 1: `scutil --prefs` exits 0 even when its `commit` fails, so the read-back is
+    /// what must stop the script. The generated restore line runs in `/bin/sh` with stubs in place of the system
+    /// tools (only the absolute paths are rewritten, in this copy): scutil exits 0 and removes nothing, PlistBuddy
+    /// still finds the service. The line must exit non-zero, and nothing after it may run: no bridge entry, no
+    /// service switched on, no bridge member. With the service gone, the same line runs on to the end.
+    static func isolationLastServiceStopsOnFailedCommit() {
+        guard let last = ClusterLinkLastService(serviceID: IsolationFixtures.serviceID("e6"), set: IsolationFixtures.networkSet,
+                                                serviceOrder: [IsolationFixtures.serviceID("b0"), IsolationFixtures.serviceID("e6")]),
+              let restore = ClusterLinkIsolationRestore(interface: "en6", removeClusterService: true, servicesToEnable: ["Thunderbolt 2"],
+                  bridge: .init(bridge: "bridge0", index: 1), addressToRemove: nil, keeperToRemove: false, lastService: last),
+              let request = ClusterLinkIsolationRequest(.restore([restore])) else { return expect(false, "fixture restore") }
+        func run(serviceStillThere: Bool) -> (status: Int32, log: String) {
+            let directory = FileManager.default.temporaryDirectory.appendingPathComponent("last-service-\(getpid())-\(serviceStillThere)")
+            try? FileManager.default.removeItem(at: directory)
+            try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: directory) }
+            let log = directory.appendingPathComponent("ran.log").path
+            let stubs = [
+                "PlistBuddy": """
+                    case "$2" in
+                      Add*) echo "PlistBuddy $2" >> \(log) ;;
+                      *:UserDefinedName) echo 'Darkbloom Cluster Link (en6)' ;;
+                      *:Interface:DeviceName) echo en6 ;;
+                      *) \(serviceStillThere ? "exit 0" : "exit 1") ;;
+                    esac
+                    """,
+                "scutil": "cat >/dev/null; exit 0",
+                "networksetup": "echo \"networksetup $*\" >> \(log)",
+                "ifconfig": "echo \"ifconfig $*\" >> \(log)",
+            ]
+            for (name, body) in stubs {
+                let path = directory.appendingPathComponent(name).path
+                FileManager.default.createFile(atPath: path, contents: Data(("#!/bin/sh\n" + body + "\n").utf8))
+                chmod(path, 0o755)
+            }
+            var line = request.shellCommand
+            for (real, name) in [("/usr/libexec/PlistBuddy", "PlistBuddy"), ("/usr/sbin/scutil", "scutil"),
+                                 ("/usr/sbin/networksetup", "networksetup"), ("/sbin/ifconfig", "ifconfig")] {
+                line = line.replacingOccurrences(of: real, with: directory.appendingPathComponent(name).path)
+            }
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/bin/sh")
+            process.arguments = ["-c", line]
+            process.standardOutput = FileHandle.nullDevice
+            process.standardError = FileHandle.nullDevice
+            guard (try? process.run()) != nil else { return (-1, "") }
+            process.waitUntilExit()
+            return (process.terminationStatus, (try? String(contentsOfFile: log, encoding: .utf8)) ?? "")
+        }
+        let failed = run(serviceStillThere: true)
+        expect(failed.status != 0, "a commit that removed nothing stops the restore (exit \(failed.status))")
+        expectEqual(failed.log, "", "and nothing after it ran: no bridge entry, no service switched on, no bridge member")
+        let removed = run(serviceStillThere: false)
+        expectEqual(removed.status, 0, "the service gone, the restore runs on")
+        expect(removed.log.contains("PlistBuddy Add :VirtualNetworkInterfaces:Bridge:bridge0:Interfaces:1 string en6")
+            && removed.log.contains("networksetup -setnetworkserviceenabled Thunderbolt 2 on") && removed.log.contains("ifconfig bridge0 addm en6"),
+            "every later step ran: \(removed.log)")
+        // Review finding 5: IDs are ASCII hexadecimal only; a fullwidth digit is refused.
+        expect(ClusterLinkLastService.isID(IsolationFixtures.serviceID("e6")), "an ASCII ID")
+        expect(!ClusterLinkLastService.isID("0000000\u{FF10}-0000-4000-8000-0000000000E6"), "a fullwidth digit is refused")
+        expect(!ClusterLinkLastService.isID("0000000G-0000-4000-8000-0000000000E6"), "a letter past F is refused")
+    }
+
     /// The exact removal of a port's only service through SCPreferences (`ClusterLinkLastService.removal`).
     static func lastServiceRemoval(id: String, interface: String, order: [String]) -> [String] {
         let preferences = "/Library/Preferences/SystemConfiguration/preferences.plist", set = IsolationFixtures.networkSet
@@ -644,7 +707,7 @@ extension ClusterLinkCheck {
             "/usr/libexec/PlistBuddy -c 'Print :NetworkServices:\(id):Interface:DeviceName' \(preferences) | /usr/bin/grep -qxF \(interface)",
             "/usr/bin/printf '%s\\n' 'remove /NetworkServices/\(id)' 'remove /Sets/\(set)/Network/Service/\(id)' 'get /Sets/\(set)/Network/Global/IPv4' "
                 + "'d.add ServiceOrder * \(order.joined(separator: " "))' 'set /Sets/\(set)/Network/Global/IPv4' 'commit' 'apply' | /usr/sbin/scutil --prefs",
-            "! /usr/libexec/PlistBuddy -c 'Print :NetworkServices:\(id)' \(preferences) >/dev/null 2>&1",
+            "if /usr/libexec/PlistBuddy -c 'Print :NetworkServices:\(id)' \(preferences) >/dev/null 2>&1; then exit 1; fi",
         ]
     }
 

@@ -274,9 +274,13 @@ struct ClusterLinkLastService: Equatable, Sendable {
         self.serviceID = serviceID; self.set = set; self.serviceOrder = serviceOrder
     }
 
-    /// A service or set ID as macOS writes them: 36 characters of hexadecimal digits and hyphens.
+    /// A service or set ID as macOS writes them: 36 characters of ASCII hexadecimal digits and hyphens (never a
+    /// fullwidth digit, which `Character.isHexDigit` accepts).
     static func isID(_ text: String) -> Bool {
-        text.count == 36 && text.allSatisfy { $0 == "-" || $0.isHexDigit } && text.filter { $0 == "-" }.count == 4
+        let scalars = text.unicodeScalars
+        return scalars.count == 36 && scalars.filter { $0 == "-" }.count == 4 && scalars.allSatisfy {
+            $0 == "-" || ("0"..."9").contains($0) || ("A"..."F").contains($0) || ("a"..."f").contains($0)
+        }
     }
 
     /// The ID of `service` on `interface` in `NetworkServices` (`plutil -extract NetworkServices json`): exactly one.
@@ -292,7 +296,7 @@ struct ClusterLinkLastService: Equatable, Sendable {
 
     /// The commands: the name and the device checked as an administrator, then one SCPreferences session (`scutil
     /// --prefs`) that removes the service and its link in the set, sets the order without `leavingOrder`, commits and
-    /// applies; then a read-back that the service is gone. Proven on pair-2's MacBook (macOS 27.0, 2026-11-04): the
+    /// applies; then a read-back that the service is gone, which stops the script when it is not. Proven on pair-2's MacBook (macOS 27.0, 2026-11-04): the
     /// port's last service went, and macOS put the port back in its saved bridge by itself.
     func removal(service: String, interface: String, leavingOrder: [String]) -> [String] {
         let preferences = ClusterLinkIsolationPlan.networkPreferences
@@ -309,7 +313,9 @@ struct ClusterLinkLastService: Equatable, Sendable {
             "/usr/libexec/PlistBuddy -c 'Print \(entry):UserDefinedName' \(preferences) | /usr/bin/grep -qxF '\(service)'",
             "/usr/libexec/PlistBuddy -c 'Print \(entry):Interface:DeviceName' \(preferences) | /usr/bin/grep -qxF \(interface)",
             "/usr/bin/printf '%s\\n' " + session.map { "'\($0)'" }.joined(separator: " ") + " | /usr/sbin/scutil --prefs",
-            "! /usr/libexec/PlistBuddy -c 'Print \(entry)' \(preferences) >/dev/null 2>&1",
+            // `scutil` exits 0 even when its `commit` fails, and a `!` command does not stop `set -e`: a service still
+            // there ends the script, so the port never goes back into its bridge beside it.
+            "if /usr/libexec/PlistBuddy -c 'Print \(entry)' \(preferences) >/dev/null 2>&1; then exit 1; fi",
         ]
     }
 }

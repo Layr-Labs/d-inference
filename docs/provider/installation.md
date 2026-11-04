@@ -320,9 +320,11 @@ Run it as yourself, not with `sudo`: it refuses to run as root, and macOS asks
 for the password when a step needs it.
 
 Both choices stop serving (the drain of `darkbloom stop`), stop this Mac's
-part of a two-Mac pair, remove every Darkbloom background service, revoke this
-Mac's account token, forget the pairing, undo the cable port setup (macOS asks
-for an administrator's password) and delete `~/.config/darkbloom`,
+part of a two-Mac pair (also when its cluster service runs without a login
+agent; while one it can't stop runs, nothing is deleted), remove every
+Darkbloom background service, revoke this Mac's account token, forget the
+pairing, undo the cable port setup (macOS asks for an administrator's password)
+and delete `~/.config/darkbloom`,
 `~/Library/Caches/darkbloom`, the `/usr/local/bin/darkbloom` link and
 `~/.darkbloom`, which holds the app, logs and pairing. **Remove everything** also
 deletes the models Darkbloom downloaded into `~/.cache/huggingface/hub` and the
@@ -343,8 +345,8 @@ darkbloom uninstall --everything --yes
 No choice deletes a models folder you chose or the cluster model store beside
 it, even inside `~/.darkbloom` (the rest of that folder goes), caches in a
 folder you chose, anything that resolves outside Darkbloom's folders, or
-Keychain keys (a new install replaces them). With both the production and the
-DevNet app on this Mac, uninstalling one keeps this Mac's pairing, cluster setup
+Keychain keys (a new install replaces them). With both the production Darkbloom
+and Darkbloom Dev on this Mac, uninstalling one keeps this Mac's pairing, cluster setup
 and cable port setup, which the other uses; uninstall that one too to remove
 them. Remove what it leaves first, if you
 use it:

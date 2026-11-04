@@ -1501,9 +1501,11 @@ Uninstall Darkbloom from this Mac
 
 The sizes are measured on this Mac. APFS clones (the cluster model store clones
 the downloaded models) count once, and blocks a clone outside Darkbloom's
-folders still uses are not counted. Lines under the choices appear only when
-this Mac has folders no choice deletes, or Darkbloom parts with their own
-uninstall.
+folders still uses are not counted. Each choice's line says what it removes on
+this Mac (`ProviderUninstall.everythingRemoves`): no pairing while another install
+shares it, and "all models" only when no model stays. Lines under the choices
+appear only when this Mac has folders no choice deletes, or Darkbloom parts with
+their own uninstall.
 
 **1** asks once more, and only `y` or `yes` goes on; anything else changes
 nothing (`ProviderUninstall.everythingQuestion`). **2** asks nothing more.
@@ -1548,13 +1550,13 @@ A failed step does not stop the safe steps after it.
 
 | # | Step | Through | Skipped when |
 |---|---|---|---|
-| 1 | Stop serving on this Mac | the [stop](#darkbloom-stop) drain (`ServiceDrain`) | the provider service was not running |
-| 2 | Stop this Mac's cluster part and remove its service | `darkbloom cluster stop --service`; when the other Mac does not answer, `cluster stop --local-only`. Beside another install that shares the pair (below), it is `Remove this install's cluster service` instead: only this install's own agent (`ClusterServiceAgentPlan.label` of its app) goes, through `ProviderUninstall.removeOwnClusterAgent`; the pair is not stopped and the other install's agent is not touched | no cluster service on this Mac (beside another install: this install has none). The dry run also names a cluster service running without a login agent (`ClusterService.running`), which this step stops |
+| 1 | Stop serving on this Mac | the [stop](#darkbloom-stop) drain (`ServiceDrain`) | the provider service was not running. When a cluster service serves here instead, the step says whose (step 2 handles it) |
+| 2 | Stop this Mac's cluster part and remove its service | **With no other install:** `darkbloom cluster stop --service`; when the other Mac does not answer, `cluster stop --local-only`. It stops a running cluster service whose command is `darkbloom cluster service`, launchd's or one a session started, wherever it runs from, even outside this install's app (`ClusterService.stopDetached`). A service under another command name is not stopped: this step fails with that stop's own message, and nothing is deleted. **Beside another install that shares the pair (below):** `Remove this install's cluster service` instead. Only this install's own agent (`ClusterServiceAgentPlan.label` of its app) goes, through `ProviderUninstall.removeOwnClusterService`; the pair is not stopped and the other install's agent is not touched. A cluster service running from this install's app is stopped: booting out its agent ends launchd's, and one a session started gets SIGTERM (only once its arguments show it is a cluster service), as `cluster stop --local-only` ends one. One from the other install's app is left running. Anything else holding the lock is refused, and nothing is deleted: a service from neither app, a pid that is no cluster service, or a lock or pid file that can't be read. Whose a service is follows its executable with links resolved (`ProviderUninstall.owner`) | no cluster service on this Mac (beside another install: this install has none). The dry run says what this step does to a cluster service running here (`ClusterService.running`) |
 | 3–5 | Remove the provider, watchdog and desktop API launch agents | what `stop --uninstall` runs (`LaunchAgent.uninstall`, `WatchdogAgent.uninstall`, `DesktopService.uninstall`) | not installed, or serving did not stop in step 1 |
 | 6 | Revoke this Mac's account token, best effort | what `darkbloom logout` does (`Logout.revokeSavedToken`) | no saved token, the coordinator did not confirm it, or serving did not stop. It never fails the uninstall; the token file goes with `~/.darkbloom` |
 | 7 | Forget the pairing with the other Mac | `darkbloom cluster pair --forget <pin>`, once per pairing | this Mac is not paired, or another install on this Mac uses the pairing (below) |
 | 8 | Undo the cable port setup | `darkbloom cluster link --remove` (macOS asks for an administrator's password) | nothing to undo, or another install on this Mac uses it (below) |
-| 9 | Delete Darkbloom's folders, one step each (table below) | | already gone, refused (`not removed: <why>`), or a service did not stop in steps 1–5. When step 8 did not complete, `~/.darkbloom` and the command link stay, so the command can run again |
+| 9 | Delete Darkbloom's folders, one step each (table below) | | already gone, refused (`not removed: <why>`), or a service did not stop in steps 1–5. Right before the first deletion, after steps 3–8, the run reads the cluster service lock again (its lock, its pid file, the process's executable and arguments): while a cluster service of this install, or one it can't tell apart, holds it, nothing is deleted, the summary says `Stop it first with darkbloom cluster stop --service, then run darkbloom uninstall again`, and the command exits 1. When step 8 did not complete, `~/.darkbloom` and the command link stay, so the command can run again |
 
 **What is deleted**, from `ProviderUninstallPaths` and `ProviderUninstall.inventory`
 in `provider-swift/Sources/ProviderCore/Service/Uninstall/ProviderUninstallPlan.swift`:
@@ -1593,7 +1595,7 @@ What no choice deletes (the summary lists them):
 - the models and the cluster model store while another Darkbloom install
   (`~/.darkbloom-dev`, `~/.darkbloom-staging`) shares them;
 - this Mac's pairing, cluster setup and cable port setup while another install
-  is on this Mac: the production app and the DevNet app (`darkbloom-dev`) use
+  is on this Mac: the production Darkbloom and Darkbloom Dev (`darkbloom-dev`) use
   the same ones. The other install counts when its app or `bin/` command is in
   its folder (`ProviderUninstallPaths.otherEnvironment`). Steps 7 and 8 are
   skipped (`kept: <the other install> on this Mac also uses it`), the files

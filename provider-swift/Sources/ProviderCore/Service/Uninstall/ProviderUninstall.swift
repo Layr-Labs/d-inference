@@ -46,17 +46,82 @@ public enum ProviderUninstall {
         public var delete: (URL) throws -> Void
         /// Free bytes on the home volume, to report the space freed.
         public var availableBytes: () -> Int64?
+        /// The cluster service holding this Mac's service lock, if one runs (launchd's or a session's), and whose.
+        public var runningClusterService: () -> RunningClusterService?
+        /// Ends that service (SIGTERM to its pid) and waits until it has released this Mac's part.
+        public var stopClusterService: (_ pid: Int32) throws -> Void
 
         public init(stopServing: @escaping () async throws -> Outcome, stopClusterPart: @escaping () async throws -> Outcome,
                     removeServices: [(name: String, remove: () throws -> Outcome)], servicesHandled: @escaping () -> Void = {},
                     revokeToken: @escaping () async -> Outcome,
                     forget: @escaping (String) throws -> Void, removeCableSetup: @escaping () throws -> Outcome,
                     delete: @escaping (URL) throws -> Void = { try FileManager.default.removeItem(at: $0) },
-                    availableBytes: @escaping () -> Int64? = { nil }) {
+                    availableBytes: @escaping () -> Int64? = { nil },
+                    runningClusterService: @escaping () -> RunningClusterService? = { nil },
+                    stopClusterService: @escaping (Int32) throws -> Void = { _ in }) {
             self.stopServing = stopServing; self.stopClusterPart = stopClusterPart; self.removeServices = removeServices
             self.servicesHandled = servicesHandled; self.revokeToken = revokeToken; self.forget = forget
             self.removeCableSetup = removeCableSetup; self.delete = delete; self.availableBytes = availableBytes
+            self.runningClusterService = runningClusterService; self.stopClusterService = stopClusterService
         }
+    }
+
+    /// A cluster service that holds this Mac's service lock: launchd's, or one a session started (`darkbloom cluster`
+    /// when launchd did not take the agent, development builds). Its files must not go while it runs.
+    public struct RunningClusterService: Sendable, Equatable {
+        public enum Owner: Sendable, Equatable {
+            case thisInstall
+            /// The other install on this Mac, by name ("the production Darkbloom").
+            case otherInstall(String)
+            /// Neither, or its executable could not be read.
+            case unknown
+        }
+        public let pid: Int32
+        public let executable: String?
+        public let owner: Owner
+        /// Its command is this build's `<cli> cluster service` (`ClusterService.isClusterService`), the one
+        /// `cluster stop --service` stops wherever it runs from.
+        public let isThisCLI: Bool
+        /// Why it is `unknown` when that is not "neither app's": its lock or pid can't be read, or the pid is no
+        /// cluster service.
+        public let note: String?
+        public init(pid: Int32, executable: String?, owner: Owner, isThisCLI: Bool = false, note: String? = nil) {
+            self.pid = pid; self.executable = executable; self.owner = owner; self.isThisCLI = isThisCLI; self.note = note
+        }
+
+        /// What the steps say about it.
+        var described: String {
+            switch owner {
+            case .thisInstall: return "this install's cluster service is running (pid \(pid))"
+            case .otherInstall(let name): return "the cluster service running here (pid \(pid)) is \(name)'s, and keeps running"
+            case .unknown: return note ?? "a cluster service is running (pid \(pid)) that is neither this install's nor the other's"
+            }
+        }
+    }
+
+    /// Whose `executable` is, by its install root (`ClusterServiceAgentPlan.installRoot`): this install's app, the
+    /// other install's, or neither.
+    public static func owner(ofExecutable executable: String?, paths: ProviderUninstallPaths) -> RunningClusterService.Owner {
+        guard let executable else { return .unknown }
+        // Both sides resolved, links included: the kernel records the path that was run (`bin/darkbloom` is a link
+        // into the app), and `installRoot` standardizes (`/private/var` reads `/var`).
+        let resolved = ProviderUninstallPaths.canonical(executable)
+        let root = ProviderUninstallPaths.canonical(ClusterServiceAgentPlan.installRoot(executablePath: resolved))
+        func app(_ folder: URL, _ bundle: String) -> String { ProviderUninstallPaths.canonical(folder.appendingPathComponent(bundle).path) }
+        if root == app(paths.installDirectory, paths.appBundleName) { return .thisInstall }
+        if let other = paths.otherEnvironment, root == app(other.installDirectory(home: paths.home), other.appBundleName) {
+            return .otherInstall(installName(other))
+        }
+        return .unknown
+    }
+
+    /// The step that refuses to delete anything while a cluster service of this install, or one that can't be told
+    /// apart, still runs from these files.
+    static let stillRunningStep = "Check that no cluster service of this install still runs"
+
+    static func stillRunningReason(_ running: RunningClusterService, cli: String = BuildEnvironment.current.cliName) -> String {
+        "\(running.described); nothing is deleted while it runs. Stop it first with `\(cli) cluster stop --service`, then run "
+            + "`\(cli) uninstall` again"
     }
 
     public struct Report: Sendable, Equatable {
@@ -105,10 +170,16 @@ public enum ProviderUninstall {
         }
         // Another install on this Mac uses the same pair, pairing and cable port setup: they all stay with it.
         let sharedWith = items.lazy.compactMap(\.sharedWith).first
-        let serving = await step(stopServingStep, operations.stopServing)
+        // A cluster part serving here is not the provider service: step 1 says so, step 2 stops it.
+        let running = operations.runningClusterService()
+        let serving = await step(stopServingStep) {
+            let outcome = try await operations.stopServing()
+            guard case .skipped(let reason) = outcome, let running else { return outcome }
+            return .skipped("\(reason); \(running.described)")
+        }
         let clusterHandled: Bool
         if let other = sharedWith, let own = items.lazy.compactMap(\.ownClusterAgent).first {
-            clusterHandled = await step(ownClusterStep) { try removeOwnClusterAgent(own, keptFor: other) }
+            clusterHandled = await step(ownClusterStep) { try removeOwnClusterService(own, keptFor: other, operations: operations) }
         } else {
             clusterHandled = await step(clusterStep, operations.stopClusterPart)
         }
@@ -145,6 +216,12 @@ public enum ProviderUninstall {
             cableUndone = true
         } else {
             cableUndone = await step(cableStep, operations.removeCableSetup)
+        }
+        // Never delete files from under a running cluster service of this install, or one that can't be told apart:
+        // looked up right before the first deletion, after the steps above (the cable step can wait for a password).
+        if servicesStopped, let still = operations.runningClusterService(), still.owner == .thisInstall || still.owner == .unknown {
+            steps.append(.init(name: stillRunningStep, status: .failed, detail: stillRunningReason(still)))
+            servicesStopped = false
         }
         let before = operations.availableBytes()
         for item in items where item.verdict != .keep && !mode.keeps(item) {
@@ -192,14 +269,25 @@ public enum ProviderUninstall {
 
     static func notRemoved(_ reason: String) -> String { "not removed: \(reason)" }
 
-    /// Step 2 beside another install that shares the pair: boots out and deletes only this install's own agent. The
-    /// pair is not stopped and the other install's agent is not touched.
-    static func removeOwnClusterAgent(_ label: String, keptFor other: String) throws -> Outcome {
-        let leftAlone = "the pair and \(other)'s cluster service are left as they are"
-        guard FileManager.default.fileExists(atPath: ClusterServiceAgent.plistPath(label: label).path)
-                || ClusterServiceAgent.isLoaded(label: label) else { return .skipped("this install has none; \(leftAlone)") }
-        try ClusterServiceAgent.remove(label: label)
-        return .done("removed \(label); \(leftAlone)")
+    /// Step 2 beside another install. This install's own agent goes first (booted out, launchd's service ends and is
+    /// not started again); a service of this install that still runs, a session's, is then stopped, ending this Mac's
+    /// part as `cluster stop --local-only` does. The other install's service and agent, the pairing and the cable port
+    /// setup stay. A service from neither install is left running, and the run deletes nothing.
+    static func removeOwnClusterService(_ label: String, keptFor other: String, operations: Operations) throws -> Outcome {
+        let running = operations.runningClusterService()
+        if let running, running.owner == .unknown { throw StepFailure(stillRunningReason(running)) }
+        let installed = FileManager.default.fileExists(atPath: ClusterServiceAgent.plistPath(label: label).path)
+            || ClusterServiceAgent.isLoaded(label: label)
+        if installed { try ClusterServiceAgent.remove(label: label) }
+        if let still = operations.runningClusterService(), still.owner == .thisInstall { try operations.stopClusterService(still.pid) }
+        let ownPid = running?.owner == .thisInstall ? running?.pid : nil
+        let detail = [ownPid.map { "stopped it (pid \($0)), so this Mac's part ended cleanly" } ?? running?.described,
+                      installed ? "removed \(label)" : nil,
+                      ownPid == nil && !installed ? "this install has none" : nil,
+                      ownPid == nil ? "the pair and \(other)'s cluster service are left as they are"
+                          : "the pairing and the cable port setup stay for \(other)"]
+            .compactMap { $0 }.joined(separator: "; ")
+        return ownPid != nil || installed ? .done(detail) : .skipped(detail)
     }
 
     static func isLink(_ path: String) -> Bool {

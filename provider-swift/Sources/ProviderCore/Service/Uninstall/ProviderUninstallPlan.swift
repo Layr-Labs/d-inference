@@ -204,6 +204,9 @@ extension ProviderUninstall {
         /// A cluster service holds this Mac's service lock without a login agent (`ClusterService.running`), as one
         /// `darkbloom cluster` started in a session does.
         public let clusterServiceRunning: Bool
+        /// That service, and whose it is (`Operations.runningClusterService`), when it could be read. Giving it sets
+        /// `clusterServiceRunning` too.
+        public let runningClusterService: RunningClusterService?
         public let services: [Service]
         public let items: [ProviderUninstallItem]
         public let pairing: ProviderUninstallPairing?
@@ -212,11 +215,13 @@ extension ProviderUninstall {
 
         public init(cli: String = BuildEnvironment.current.cliName,
                     installCommand: String = "curl -fsSL \(BuildEnvironment.current.coordinatorHTTPURL)/install.sh | bash",
-                    clusterService: [String] = [], clusterServiceRunning: Bool = false, services: [Service],
+                    clusterService: [String] = [], clusterServiceRunning: Bool = false,
+                    runningClusterService: RunningClusterService? = nil, services: [Service],
                     items: [ProviderUninstallItem],
                     pairing: ProviderUninstallPairing?, elsewhere: [String] = []) {
             self.cli = cli; self.installCommand = installCommand; self.clusterService = clusterService
-            self.clusterServiceRunning = clusterServiceRunning
+            self.clusterServiceRunning = clusterServiceRunning || runningClusterService != nil
+            self.runningClusterService = runningClusterService
             self.services = services; self.items = items; self.pairing = pairing; self.elsewhere = elsewhere
         }
 
@@ -239,6 +244,8 @@ extension ProviderUninstall {
     static let foreignLinkReason = "it is not the link Darkbloom's installer made"
     static let chosenStoreLabel = "Cluster model store beside the folder you chose"
     static let clusterStoreLabel = "Cluster model store"
+    /// The model cache when it is a link to a folder outside Darkbloom's: kept whole.
+    static let linkedModelsLabel = "Models"
     static let chosenInsideReason = "you chose this folder for models, so it stays, with the folders that lead to it"
     static let chosenWhat = "the models you chose"
     static let chosenFolderIsItReason = "it is the models folder you chose, which is never deleted"
@@ -349,7 +356,7 @@ extension ProviderUninstall {
         let cache = paths.modelCache
         guard FileManager.default.fileExists(atPath: cache.path) else { return [] }
         guard ProviderUninstallPaths.canonical(cache.path) == cache.path else {
-            return [placed("Models", cache, verdict: .keep,
+            return [placed(linkedModelsLabel, cache, verdict: .keep,
                            reason: "it links to \(ProviderUninstallPaths.canonical(cache.path)), outside Darkbloom's folders")]
         }
         var items: [ProviderUninstallItem] = []

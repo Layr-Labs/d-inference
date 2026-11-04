@@ -45,6 +45,26 @@ private final class Calls: @unchecked Sendable {
     func count(_ prefix: String) -> Int { all.filter { $0.hasPrefix(prefix) }.count }
 }
 
+/// The cluster service holding this Mac's lock, as the run reads it (`Operations.runningClusterService`). A stop is
+/// written to `log`, the same log the deletions go to, and ends it unless it is told not to.
+private final class FakeClusterService: @unchecked Sendable {
+    private let lock = NSLock()
+    private var current: ProviderUninstall.RunningClusterService?
+    private let log: Calls
+    private let stops: Bool
+
+    init(_ running: ProviderUninstall.RunningClusterService, log: Calls, stops: Bool = true) {
+        current = running; self.log = log; self.stops = stops
+    }
+
+    var running: ProviderUninstall.RunningClusterService? { lock.withLock { current } }
+
+    func stop(_ pid: Int32) {
+        log.add("stop cluster service \(pid)")
+        if stops { lock.withLock { current = nil } }
+    }
+}
+
 private struct Fixture {
     static let pin = String(repeating: "ab", count: 32)
     static let ours = ".cache/huggingface/hub/models--org--ours-mlx"
@@ -151,14 +171,15 @@ private struct Fixture {
     }
 
     func operations(drainFails: Bool = false, clusterFails: Bool = false, linkFails: Bool = false,
-                    tokenUnconfirmed: Bool = false) -> ProviderUninstall.Operations {
+                    tokenUnconfirmed: Bool = false, providerRunning: Bool = true,
+                    cluster: FakeClusterService? = nil) -> ProviderUninstall.Operations {
         let calls = calls, desktop = desktopPlist
         let free = Calls()
         return .init(
             stopServing: {
                 calls.add("drain")
                 if drainFails { throw ProviderUninstall.StepFailure("1 accepted request still running after 600 s") }
-                return .done()
+                return providerRunning ? .done() : .skipped("the provider service was not running")
             },
             stopClusterPart: {
                 calls.add("cluster stop")
@@ -198,7 +219,9 @@ private struct Fixture {
             availableBytes: {
                 free.add("measured")
                 return free.count("measured") == 1 ? 1_000_000_000 : 1_250_000_000
-            })
+            },
+            runningClusterService: { cluster?.running },
+            stopClusterService: { cluster?.stop($0) })
     }
 
     /// Runs with the fake home and the fake launchctl.
@@ -367,7 +390,7 @@ struct ProviderUninstallTests {
         let screen = ProviderUninstall.screen(plan)
         #expect(Array(screen.prefix(6)) == ["Uninstall Darkbloom from this Mac", "",
             "  1) Remove everything",
-            "     The app, settings, pairing, logs and all models · frees \(ProviderUninstall.formatBytes(plan.frees(.everything)))",
+            "     The app, settings, pairing, logs and the models not kept below · frees \(ProviderUninstall.formatBytes(plan.frees(.everything)))",
             "  2) Keep models",
             "     Removes everything else; a reinstall reuses the \(ProviderUninstall.formatBytes(plan.modelBytes)) of models"])
         #expect(ProviderUninstall.choicePrompt == "  Choose 1 or 2 (Esc cancels): ")
@@ -570,7 +593,8 @@ struct ProviderUninstallTests {
             let plan = ProviderUninstall.Plan(cli: "darkbloom", clusterServiceRunning: running, services: [], items: [], pairing: nil)
             #expect(ProviderUninstall.dryRun(plan, mode: .everything)[2] == "  2. Stop this Mac's cluster part and remove its service, "
                 + "as `darkbloom cluster stop --service`: "
-                + (running ? "no login agent, but a cluster service is running on this Mac; this stops it" : "no cluster service on this Mac"))
+                + (running ? "a cluster service is running on this Mac: this stops a `darkbloom cluster service`, and nothing is deleted "
+                    + "while any other runs" : "no cluster service on this Mac"))
         }
         let dev = ProviderUninstallPaths(home: FileManager.default.temporaryDirectory.appendingPathComponent("no-such-home"), environment: .dev)
         #expect(ProviderUninstall.installFolderLabel(dev) == "Darkbloom folder: the app and logs",
@@ -643,6 +667,221 @@ struct ProviderUninstallTests {
         #expect(summary.first == "Darkbloom is not fully removed from this Mac: its app folder is your models folder, so it was kept (see below).")
         #expect(summary.contains { $0.contains("skipped  Delete Darkbloom folder") && $0.contains("not removed: it is the models folder you chose")
             && $0.contains(advice) }, "the summary says what to do")
+    }
+
+    @Test("B16: beside the other install, this install's session cluster service is stopped before anything is deleted")
+    func runningSessionServiceIsStoppedBeforeDeleting() async throws {
+        for (this, other) in [(BuildEnvironment.dev, BuildEnvironment.prod), (.prod, .dev)] {
+            let fixture = try Fixture.make()
+            defer { fixture.remove() }
+            let shared = try installBoth(fixture)
+            let paths = ProviderUninstallPaths(home: fixture.home, environment: this,
+                                               commandLinkDirectory: fixture.paths.commandLink.deletingLastPathComponent())
+            // `darkbloom-dev cluster service` started from a session, with no launchd agent, as on the c3 member.
+            let binary = this.installDirectory(home: fixture.home).appendingPathComponent("\(this.appBundleName)/Contents/MacOS/\(this.cliName)")
+            let running = ProviderUninstall.RunningClusterService(
+                pid: 4242, executable: binary.path, owner: ProviderUninstall.owner(ofExecutable: binary.path, paths: paths))
+            #expect(running.owner == .thisInstall, "\(this)")
+            let service = FakeClusterService(running, log: fixture.deletes)
+            let plan = ProviderUninstall.Plan(cli: this.cliName, runningClusterService: running, services: [],
+                                              items: ProviderUninstall.inventory(paths), pairing: fixture.pairing)
+            let otherName = other == .prod ? "the production Darkbloom" : other.appDisplayName
+            let dryRun = ProviderUninstall.dryRun(plan, mode: .keepModels)
+            transcript("dry-run-\(this.rawValue)-beside-\(other.rawValue)-session-service", dryRun, fixture)
+            #expect(dryRun.contains("  2. Remove this install's cluster service: stop it first (pid 4242, running from this install); "
+                + "it has no login agent; the pairing and the cable port setup stay for \(otherName)"), "\(this)")
+
+            let report = await fixture.run(.keepModels, items: plan.items, pairing: fixture.pairing,
+                                           operations: fixture.operations(providerRunning: false, cluster: service))
+            let log = fixture.deletes.all
+            let stop = log.firstIndex(of: "stop cluster service 4242")
+            #expect(stop == 0 && log.count > 1, "\(this): the service is stopped before the first deletion: \(log)")
+            #expect(!fixture.calls.all.contains("cluster stop"), "\(this): the pair's stop is not asked for")
+            for file in shared { #expect(fixture.exists(file), "\(this): \(file.lastPathComponent) stays") }
+            #expect(fixture.exists(other.installDirectory(home: fixture.home).appendingPathComponent(other.appBundleName)))
+            #expect(!report.failed, "\(this): \(report.steps)")
+            let summary = ProviderUninstall.summary(report, plan: plan)
+            transcript("\(this.rawValue)-summary-beside-\(other.rawValue)-session-service", summary, fixture)
+            #expect(summary.contains("  skipped  Stop serving on this Mac: the provider service was not running; "
+                + "this install's cluster service is running (pid 4242)"), "\(this): step 1 says what serves here")
+            #expect(summary.contains("  done     Remove this install's cluster service: stopped it (pid 4242), so this Mac's part "
+                + "ended cleanly; the pairing and the cable port setup stay for \(otherName)"), "\(this)")
+        }
+    }
+
+    @Test("B16: the other install's running cluster service is left running, and said so")
+    func otherInstallsRunningServiceIsLeft() async throws {
+        let fixture = try Fixture.make()
+        defer { fixture.remove() }
+        _ = try installBoth(fixture)
+        let paths = ProviderUninstallPaths(home: fixture.home, environment: .dev,
+                                           commandLinkDirectory: fixture.paths.commandLink.deletingLastPathComponent())
+        let binary = BuildEnvironment.prod.installDirectory(home: fixture.home).appendingPathComponent("Darkbloom.app/Contents/MacOS/darkbloom")
+        let running = ProviderUninstall.RunningClusterService(
+            pid: 777, executable: binary.path, owner: ProviderUninstall.owner(ofExecutable: binary.path, paths: paths))
+        #expect(running.owner == .otherInstall("the production Darkbloom"))
+        let plan = ProviderUninstall.Plan(cli: "darkbloom-dev", runningClusterService: running, services: [],
+                                          items: ProviderUninstall.inventory(paths), pairing: fixture.pairing)
+        let report = await fixture.run(.keepModels, items: plan.items, pairing: fixture.pairing,
+                                       operations: fixture.operations(providerRunning: false, cluster: FakeClusterService(running, log: fixture.deletes)))
+        #expect(!fixture.deletes.all.contains { $0.hasPrefix("stop cluster service") }, "it is not stopped")
+        #expect(!fixture.exists(paths.installDirectory.appendingPathComponent(paths.appBundleName)), "this install's app goes")
+        #expect(!report.failed, "\(report.steps)")
+        #expect(ProviderUninstall.summary(report, plan: plan).contains {
+            $0.hasPrefix("  skipped  Remove this install's cluster service: the cluster service running here (pid 777) is the production "
+                + "Darkbloom's, and keeps running")
+        })
+    }
+
+    @Test("B16: a running cluster service that can't be told apart, or that did not stop, keeps every file; exit 1")
+    func unknownOrUnstoppedServiceRefusesToDelete() async throws {
+        // Beside the other install: a service from neither app.
+        let fixture = try Fixture.make()
+        defer { fixture.remove() }
+        _ = try installBoth(fixture)
+        let paths = ProviderUninstallPaths(home: fixture.home, environment: .dev,
+                                           commandLinkDirectory: fixture.paths.commandLink.deletingLastPathComponent())
+        let elsewhere = fixture.outside.appendingPathComponent("build/darkbloom-dev").path
+        let unknown = ProviderUninstall.RunningClusterService(
+            pid: 999, executable: elsewhere, owner: ProviderUninstall.owner(ofExecutable: elsewhere, paths: paths))
+        #expect(unknown.owner == .unknown)
+        #expect(ProviderUninstall.owner(ofExecutable: nil, paths: paths) == .unknown)
+        let plan = ProviderUninstall.Plan(cli: "darkbloom-dev", runningClusterService: unknown, services: [],
+                                          items: ProviderUninstall.inventory(paths), pairing: fixture.pairing)
+        let report = await fixture.run(.everything, items: plan.items, pairing: fixture.pairing,
+                                       operations: fixture.operations(cluster: FakeClusterService(unknown, log: fixture.deletes)))
+        #expect(fixture.deletes.all.isEmpty, "nothing is stopped or deleted: \(fixture.deletes.all)")
+        #expect(report.failed)
+        let refusal = "nothing is deleted while it runs. Stop it first with `darkbloom-dev cluster stop --service`, then run `darkbloom-dev uninstall` again"
+        #expect(ProviderUninstall.summary(report, plan: plan).contains { $0.contains("failed") && $0.contains("pid 999") }, "\(report.steps)")
+        #expect(ProviderUninstall.dryRun(plan, mode: .everything).contains { $0.contains("refused, deleting nothing") && $0.contains(refusal) })
+
+        // One install: `cluster stop --service` ran, but this install's service still holds the lock.
+        let single = try Fixture.make()
+        defer { single.remove() }
+        let binary = single.paths.installDirectory.appendingPathComponent("\(single.paths.appBundleName)/Contents/MacOS/\(single.paths.commandLink.lastPathComponent)")
+        let stuck = ProviderUninstall.RunningClusterService(
+            pid: 31, executable: binary.path, owner: ProviderUninstall.owner(ofExecutable: binary.path, paths: single.paths))
+        #expect(stuck.owner == .thisInstall)
+        let alone = await single.run(.everything, pairing: single.pairing,
+                                     operations: single.operations(cluster: FakeClusterService(stuck, log: single.deletes, stops: false)))
+        #expect(single.deletes.all.isEmpty, "nothing is deleted under it: \(single.deletes.all)")
+        #expect(alone.failed && status(alone, ProviderUninstall.stillRunningStep) == .failed, "\(alone.steps)")
+        #expect(single.exists(single.paths.installDirectory.appendingPathComponent(single.paths.appBundleName)))
+    }
+
+    @Test("m1: a cluster service started through a link is told apart by where the link leads")
+    func linkedExecutablesAreResolvedBeforeTellingWhose() throws {
+        let fixture = try Fixture.make()
+        defer { fixture.remove() }
+        _ = try installBoth(fixture)
+        for (this, other) in [(BuildEnvironment.dev, BuildEnvironment.prod), (.prod, .dev)] {
+            let paths = ProviderUninstallPaths(home: fixture.home, environment: this,
+                                               commandLinkDirectory: fixture.paths.commandLink.deletingLastPathComponent())
+            // `~/.darkbloom-dev/bin/darkbloom-dev cluster service`: the kernel records the link, not the app binary.
+            let ownLink = this.installDirectory(home: fixture.home).appendingPathComponent("bin/\(this.cliName)").path
+            let otherLink = other.installDirectory(home: fixture.home).appendingPathComponent("bin/\(other.cliName)").path
+            #expect(ProviderUninstall.owner(ofExecutable: ownLink, paths: paths) == .thisInstall, "\(this)")
+            #expect(ProviderUninstall.owner(ofExecutable: otherLink, paths: paths) == .otherInstall(ProviderUninstall.installName(other)),
+                    "\(this)")
+            // A link elsewhere that leads into the other install's app.
+            let elsewhere = fixture.outside.appendingPathComponent("links/\(other.cliName)")
+            try fixture.link(elsewhere, to: other.installDirectory(home: fixture.home)
+                .appendingPathComponent("\(other.appBundleName)/Contents/MacOS/\(other.cliName)").path)
+            #expect(ProviderUninstall.owner(ofExecutable: elsewhere.path, paths: paths) == .otherInstall(ProviderUninstall.installName(other)),
+                    "\(this)")
+            try FileManager.default.removeItem(at: elsewhere)
+        }
+    }
+
+    @Test("n2: a cluster service that starts again during the steps after step 2 still keeps every file")
+    func stillRunningCheckIsRightBeforeTheFirstDeletion() async throws {
+        let fixture = try Fixture.make()
+        defer { fixture.remove() }
+        let binary = fixture.paths.installDirectory
+            .appendingPathComponent("\(fixture.paths.appBundleName)/Contents/MacOS/\(fixture.paths.commandLink.lastPathComponent)")
+        let running = ProviderUninstall.RunningClusterService(pid: 51, executable: binary.path, owner: .thisInstall)
+        // It starts again while the cable step waits for its password.
+        let started = Calls()
+        var operations = fixture.operations()
+        let cable = operations.removeCableSetup
+        operations.removeCableSetup = { started.add("started"); return try cable() }
+        operations.runningClusterService = { started.all.isEmpty ? nil : running }
+        let report = await fixture.run(.everything, pairing: fixture.pairing, operations: operations)
+        #expect(fixture.deletes.all.isEmpty, "nothing is deleted under the service that started again: \(fixture.deletes.all)")
+        #expect(status(report, ProviderUninstall.stillRunningStep) == .failed, "\(report.steps)")
+    }
+
+    @Test("m2, m3, n1: the lock and the pid file are read three ways, and only a cluster service is anyone's")
+    func lockAndPidFileAreReadCarefully() throws {
+        let fixture = try Fixture.make()
+        defer { fixture.remove() }
+        _ = try installBoth(fixture)
+        let paths = ProviderUninstallPaths(home: fixture.home, environment: .dev,
+                                           commandLinkDirectory: fixture.paths.commandLink.deletingLastPathComponent())
+        let lock = fixture.outside.appendingPathComponent("cluster-setup/service.lock")
+        let pidFile = fixture.outside.appendingPathComponent("cluster-setup/service.pid")
+        func read(isService: Bool = true) -> ProviderUninstall.RunningClusterService? {
+            ProviderUninstall.runningClusterService(lock: lock, pidFile: pidFile, paths: paths, isClusterService: { _ in isService })
+        }
+        #expect(read() == nil, "no lock file: no service")
+        try fixture.write(lock)
+        #expect(read() == nil, "a lock nobody holds: no service")
+        // m3: a lock that can't be opened is not "no service".
+        chmod(lock.path, 0)
+        #expect(read()?.owner == .unknown && read()?.described == ProviderUninstall.unreadableLockNote)
+        chmod(lock.path, 0o600)
+        // Held, as a running service holds it (here through another open file of this test).
+        let holder = open(lock.path, O_RDONLY)
+        defer { close(holder) }
+        #expect(flock(holder, LOCK_EX | LOCK_NB) == 0)
+        // n1: no readable pid, and no claim about whose it is.
+        #expect(read()?.described == "a cluster service is running, and its pid can't be read")
+        // m2: a pid that is not a cluster service (a stale pid file) is nobody's.
+        try Data("\(getpid())\n".utf8).write(to: pidFile)
+        let stale = read(isService: false)
+        #expect(stale?.owner == .unknown && stale?.isThisCLI == false)
+        #expect(stale?.described == "the cluster service lock is held, but pid \(getpid()) from its pid file is not a cluster service")
+        let elsewhere = read(isService: true)
+        #expect(elsewhere?.owner == .unknown && elsewhere?.isThisCLI == true, "this CLI's service from outside both apps")
+        // m2: the stop itself signals only a cluster service; this test process is none, so it is refused unsignalled.
+        #expect(throws: ProviderUninstall.StepFailure.self) { try ProviderUninstall.liveStopClusterService(pid: getpid()) }
+    }
+
+    @Test("m4: with no other install, the dry run says what `cluster stop --service` does to the service running here")
+    func unsharedDryRunSaysWhatTheStopDoes() throws {
+        let fixture = try Fixture.make()
+        defer { fixture.remove() }
+        let cli = fixture.paths.commandLink.lastPathComponent
+        func step2(_ running: ProviderUninstall.RunningClusterService) -> String {
+            let plan = ProviderUninstall.Plan(cli: cli, runningClusterService: running, services: [],
+                                              items: ProviderUninstall.inventory(fixture.paths), pairing: nil)
+            return ProviderUninstall.dryRun(plan, mode: .everything)[2]
+        }
+        let prefix = "  2. Stop this Mac's cluster part and remove its service, as `\(cli) cluster stop --service`: "
+        #expect(step2(.init(pid: 5, executable: nil, owner: .thisInstall, isThisCLI: true))
+            == prefix + "this install's cluster service is running (pid 5); this stops it")
+        #expect(step2(.init(pid: 6, executable: "/elsewhere/\(cli)", owner: .unknown, isThisCLI: true))
+            == prefix + "a `\(cli) cluster service` from outside this install's app is running (pid 6); this stops it too")
+        #expect(step2(.init(pid: 7, executable: "/elsewhere/tool", owner: .unknown))
+            == prefix + "a cluster service from outside this install's app, under another name, is running (pid 7); "
+                + "this does not stop it, and nothing is deleted while it runs")
+        #expect(step2(.init(pid: 0, executable: nil, owner: .unknown, note: ProviderUninstall.unreadableLockNote))
+            == prefix + ProviderUninstall.unreadableLockNote + "; this does not stop it, and nothing is deleted while it runs")
+    }
+
+    @Test("B21: beside the other install, option 1 does not promise the pairing or models it keeps")
+    func optionLinesSayWhatEachChoiceDoesHere() throws {
+        let fixture = try Fixture.make()
+        defer { fixture.remove() }
+        _ = try installBoth(fixture)
+        let paths = ProviderUninstallPaths(home: fixture.home, environment: .dev,
+                                           commandLinkDirectory: fixture.paths.commandLink.deletingLastPathComponent())
+        let plan = ProviderUninstall.Plan(cli: "darkbloom-dev", services: [], items: ProviderUninstall.inventory(paths), pairing: fixture.pairing)
+        let screen = ProviderUninstall.screen(plan)
+        transcript("screen-dev-beside-prod-options", screen + [ProviderUninstall.choicePrompt], fixture)
+        #expect(screen[3] == "     The app, settings and logs · frees \(ProviderUninstall.formatBytes(plan.frees(.everything)))")
+        #expect(screen[5] == "     Removes everything else; the models stay either way (below)")
     }
 
     @Test("a disk mounted at a folder is told from one that is not")

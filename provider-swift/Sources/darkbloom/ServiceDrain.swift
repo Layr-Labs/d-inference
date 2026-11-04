@@ -21,8 +21,7 @@ enum ServiceDrain {
     /// `stop`, `restart` and `start` drain only the provider service (the cluster service would start its part again;
     /// `darkbloom cluster stop` stops the cluster).
     static func soloProviderState(_ state: DaemonState? = DaemonStateFile.read(),
-                                  clusterPart: Int32? = ClusterService.publishedLive().flatMap { $0.child.running ? $0.child.pid : nil })
-        -> DaemonState? {
+                                  clusterPart: Int32? = ClusterPairSummary.runningPartPID()) -> DaemonState? {
         guard let state, let clusterPart else { return state }
         let writtenByClusterPart = state.pid == clusterPart || state.processIdentity?.pid == clusterPart
         return writtenByClusterPart ? nil : state

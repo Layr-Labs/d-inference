@@ -18,9 +18,11 @@ extension Status {
             supervisor: supervisor, now: now, bootTime: now - ProcessInfo.processInfo.systemUptime)
     }
 
-    /// No provider state: on a Mac in a cluster single-Mac serving is off, which `darkbloom start` would not fix.
-    static func daemonNotRunningLine(paired: Bool) -> String {
-        paired ? ClusterPairSummary.singleMacServingOffLine : "Daemon: not running (run `\(BuildEnvironment.current.cliName) start`)"
+    /// No running provider (no state, or a stale one): on a Mac in a cluster single-Mac serving is off, which
+    /// `darkbloom start` would not fix. `unsure`: its pairing record couldn't be read.
+    static func daemonNotRunningLine(paired: Bool, unsure: Bool = false, staleStateFile: Bool = false) -> String {
+        if paired { return ClusterPairSummary.singleMacServingOffLine }
+        return staleStateFile ? "Daemon: not running (stale state file)" : "Daemon: not running (run `\(BuildEnvironment.current.cliName) start`)"
     }
 
     /// Under the daemon line when the running provider is the cluster's part on this Mac.

@@ -18,6 +18,16 @@ struct ClusterPairSummary: Sendable, Equatable {
         case otherMacAway = "other_mac_away"
         case notPaired = "not_paired"
         case unknown
+        /// This Mac's pairing record couldn't be read: it may be in a cluster, so the commands act as if it were.
+        case pairingUnreadable = "pairing_unreadable"
+    }
+
+    /// How this Mac's pairing record reads (`ClusterSetupLinkExchange.pairing()`).
+    enum PairingRead: Equatable {
+        case held
+        case none
+        /// The store or its secret couldn't be read; the reason in plain words, when it has some.
+        case unreadable(String?)
     }
 
     var paired: Bool
@@ -45,6 +55,22 @@ struct ClusterPairSummary: Sendable, Equatable {
     var lines: [String] = []
 
     static let notPaired = ClusterPairSummary(paired: false, state: .notPaired)
+
+    /// Where the summary starts from what this Mac holds: not in a cluster, or in one (it holds a pairing, or its
+    /// cluster service runs or has a login agent).
+    static func membership(_ pairing: PairingRead, serviceRunning: Bool, loginAgentInstalled: Bool,
+                           startsAtLogin: Bool) -> ClusterPairSummary {
+        guard pairing == .held || serviceRunning || loginAgentInstalled else { return .notPaired }
+        var summary = ClusterPairSummary(paired: true)
+        summary.serviceRunning = serviceRunning
+        summary.startsAtLogin = startsAtLogin
+        return summary
+    }
+
+    var pairingUnreadable: Bool { state == .pairingUnreadable }
+
+    /// Single-Mac serving beside the cluster needs `--solo` (`darkbloom start` and `restart`).
+    var singleMacServingNeedsSolo: Bool { serviceRunning }
 
     // MARK: - Names
 
@@ -120,6 +146,9 @@ struct ClusterPairSummary: Sendable, Equatable {
          "To restart the cluster: Stop, then start the model again in `darkbloom cluster` on \(leadingMac)."]
     }
 
+    /// After `darkbloom restart --solo` restarted single-Mac serving on a Mac in a cluster.
+    var restartAddendum: String { pairSentence + " The cluster was not restarted." }
+
     // MARK: - darkbloom status and doctor (no network)
 
     /// One line for `darkbloom status` and `darkbloom doctor`, from what this Mac knows by itself.
@@ -134,7 +163,7 @@ struct ClusterPairSummary: Sendable, Equatable {
         case .notServing: now = "not serving" + (reason.map { ": " + $0 } ?? "")
         case .stopped: now = "stopped"
         case .otherMacAway: now = reason ?? "the other Mac isn't answering"
-        case .notPaired, .unknown: now = started ? "started" : "stopped"
+        case .notPaired, .unknown, .pairingUnreadable: now = started ? "started" : "stopped"
         }
         parts.append(now)
         return "Cluster: " + parts.joined(separator: " · ") + " (details: `darkbloom cluster status`)"
@@ -152,7 +181,7 @@ extension ClusterPairSummary {
     var exitCode: Int32 {
         switch state {
         case .serving: return 0
-        case .loading, .notServing, .unknown: return 3
+        case .loading, .notServing, .unknown, .pairingUnreadable: return 3
         case .stopped: return 4
         case .otherMacAway: return 5
         case .notPaired: return 6
@@ -215,7 +244,20 @@ extension ClusterPairSummary {
                     + "`darkbloom cluster` on \(leadingMac)."
             }
             return "Both Macs keep trying by themselves; `darkbloom cluster` on \(leadingMac) shows more."
-        case .unknown: return "`darkbloom cluster` on \(leadingMac) shows more."
+        case .unknown, .pairingUnreadable: return "`darkbloom cluster` on \(leadingMac) shows more."
+        }
+    }
+
+    /// Reads the status lines `darkbloom cluster` shows (on the Mac that follows, the leading Mac's): the state, its
+    /// reason, and whether the other Mac answered.
+    mutating func read(status: [String], leaderMode: String?) {
+        lines = status.filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+        (state, reason) = Self.state(ofStatus: lines, started: started, leaderMode: leaderMode)
+        if role == .member {
+            // The lines came from the leading Mac when it answered.
+            otherMacAnswers = !(lines.first?.contains("did not answer over the cable") ?? true)
+        } else if state == .otherMacAway {
+            otherMacAnswers = false
         }
     }
 
@@ -255,7 +297,7 @@ extension ClusterPairSummary {
         case .stopped: return ["\u{25A0} " + (first ?? "Stopped" + (model.map { "; last model " + $0 } ?? "") + ".")] + rest
         case .loading: return ["\u{2026} " + (first ?? "Loading")] + rest
         case .otherMacAway: return [ClusterOnboardingDriver.failed + " " + (first ?? "\(ClusterOnboardingMacName.sentence(otherMac)) isn't answering.")] + rest
-        case .unknown, .notPaired: return lines
+        case .unknown, .notPaired, .pairingUnreadable: return lines
         }
     }
 }
@@ -293,7 +335,7 @@ extension ClusterPairSummary {
             enum CodingKeys: String, CodingKey { case running, startsAtLogin = "starts_at_login" }
         }
         let schema = 1
-        var paired: Bool
+        var paired: Bool?
         var role: String?
         var thisMac: String?
         var otherMac: OtherMac?

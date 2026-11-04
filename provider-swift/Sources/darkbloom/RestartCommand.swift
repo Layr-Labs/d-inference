@@ -36,7 +36,7 @@ struct Restart: AsyncParsableCommand {
     static func pairRefusal(_ pair: ClusterPairSummary, singleMacInstalled: Bool, solo: Bool) -> [String]? {
         guard pair.paired else { return nil }
         guard singleMacInstalled else { return pair.restartRefusal }
-        return pair.serviceRunning && !solo ? pair.startRefusal : nil
+        return pair.singleMacServingNeedsSolo && !solo ? pair.startRefusal : nil
     }
 
     mutating func run() async throws {
@@ -73,6 +73,6 @@ struct Restart: AsyncParsableCommand {
         session.release()
         try await ServiceDrain.waitForRestart(previous: previous, timeout: startupTimeout)
         print("  \(BuildEnvironment.current.cliName) status  Check status")
-        if pair.paired { print(pair.pairSentence + " The cluster was not restarted.") }
+        if pair.paired { print(pair.restartAddendum) }
     }
 }

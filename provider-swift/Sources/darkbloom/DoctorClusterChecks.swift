@@ -14,7 +14,7 @@ func buildClusterDoctorChecks(configPath: String?, paired: Bool = !ClusterServic
 extension Doctor {
     /// The header's daemon line: on a Mac in a cluster no single-Mac provider is expected, so nothing points at
     /// `darkbloom start` (which would start one beside the cluster).
-    static func daemonLine(running: Bool, paired: Bool) -> String {
+    static func daemonLine(running: Bool, paired: Bool, unsure: Bool = false) -> String {
         if running { return "Daemon: running" }
         return paired ? "Daemon: single-Mac serving off (this Mac serves in its two-Mac cluster)"
             : "Daemon: NOT running — run `\(BuildEnvironment.current.cliName) start`"

@@ -64,7 +64,7 @@ struct Doctor: AsyncParsableCommand {
         let daemonState = DaemonStateFile.read()
         let daemonRunning = doctorDaemonProcessMatches(daemonState: daemonState)
         let pair = ClusterPairSummary.local()
-        print(Self.daemonLine(running: daemonRunning, paired: pair.paired))
+        print(Self.daemonLine(running: daemonRunning, paired: pair.paired, unsure: pair.pairingUnreadable))
         if pair.paired { print(pair.statusLine) }
 
         // §16.5: did this box serve the KV backend it was configured for,

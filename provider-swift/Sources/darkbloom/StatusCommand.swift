@@ -118,12 +118,12 @@ struct Status: AsyncParsableCommand {
                                    pair: ClusterPairSummary) {
         let now = Date().timeIntervalSince1970
         guard let state = DaemonStateFile.read() else {
-            print(Self.daemonNotRunningLine(paired: pair.paired))
+            print(Self.daemonNotRunningLine(paired: pair.paired, unsure: pair.pairingUnreadable))
             return
         }
         let alive = daemonProcessAlive(pid: state.pid)
         if !alive {
-            print(pair.paired ? ClusterPairSummary.singleMacServingOffLine : "Daemon: not running (stale state file)")
+            print(Self.daemonNotRunningLine(paired: pair.paired, unsure: pair.pairingUnreadable, staleStateFile: true))
             return
         }
         print(daemonHealthLine(

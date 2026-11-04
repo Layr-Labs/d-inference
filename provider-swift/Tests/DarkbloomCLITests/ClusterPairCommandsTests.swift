@@ -392,3 +392,130 @@ struct ClusterPairClusterCommandsTests {
                 "This Mac's cluster service is stopped and will not start at login. Run `darkbloom cluster` to start it again."])
     }
 }
+
+private let unreadableReason = "pairings.json is malformed; nothing is trusted from it"
+private let unsureSentence = "This Mac's pairing record couldn't be read (\(unreadableReason)), so it may be in a two-Mac cluster."
+
+/// A Mac whose pairing record can't be read, with its cluster service off and no login agent.
+private func unreadable() -> ClusterPairSummary {
+    var summary = ClusterPairSummary.membership(.unreadable(unreadableReason), serviceRunning: false,
+                                                loginAgentInstalled: false, startsAtLogin: false)
+    summary.thisMacName = "Mac Studio"
+    return summary
+}
+
+private func jsonObject(_ summary: ClusterPairSummary) throws -> [String: Any] {
+    try #require(try JSONSerialization.jsonObject(with: JSONEncoder().encode(summary.json)) as? [String: Any])
+}
+
+private struct StoreError: Error, CustomStringConvertible { let description: String }
+
+@Suite("the paired-Mac commands when unsure, the member's silent leader, and command tests kept off this Mac's cluster")
+struct ClusterPairTruthTests {
+    @Test("a pairing record that can't be read is never 'not in a cluster'")
+    func unreadablePairingIsNeverNotPaired() {
+        let summary = unreadable()
+        #expect(summary.paired && summary.state == .pairingUnreadable && summary.reason == unreadableReason)
+        #expect(summary.exitCode == 7)
+        #expect(ClusterPairSummary.membership(.unreadable(nil), serviceRunning: false, loginAgentInstalled: false,
+                                              startsAtLogin: false).pairSentence
+            == "This Mac's pairing record couldn't be read, so it may be in a two-Mac cluster.")
+        // What this Mac holds otherwise is unchanged.
+        #expect(ClusterPairSummary.membership(.none, serviceRunning: false, loginAgentInstalled: false, startsAtLogin: false) == .notPaired)
+        #expect(ClusterPairSummary.membership(.none, serviceRunning: true, loginAgentInstalled: false, startsAtLogin: false).paired)
+        #expect(ClusterPairSummary.membership(.held, serviceRunning: false, loginAgentInstalled: false, startsAtLogin: false).state == .unknown)
+        #expect(ClusterPairSummary.shownReason(StoreError(description: "pairings.json could not be read.")) == "pairings.json could not be read")
+        #expect(ClusterPairSummary.shownReason(NSError(domain: "NSCocoaErrorDomain", code: 257)) == nil)
+    }
+
+    @Test("cluster status says the record couldn't be read and what to do, exit 7; --json says it with null unknowns")
+    func unreadableClusterStatus() throws {
+        #expect(unreadable().clusterStatusLines == [unsureSentence, "Next: Run `darkbloom cluster` on this Mac to check it."])
+        let object = try jsonObject(unreadable())
+        #expect(Set(object.keys) == ["schema", "paired", "role", "this_mac", "other_mac", "model", "mode", "split", "serves",
+                                     "state", "reason", "next", "lines", "service", "exit_code"])
+        #expect(object["paired"] is NSNull && object["role"] is NSNull && object["other_mac"] is NSNull)
+        #expect(object["serves"] is NSNull && object["model"] is NSNull && object["mode"] is NSNull)
+        #expect(object["state"] as? String == "pairing_unreadable" && object["exit_code"] as? Int == 7)
+        #expect(object["reason"] as? String == unreadableReason)
+        #expect(object["next"] as? String == "Run `darkbloom cluster` on this Mac to check it.")
+        #expect(object["this_mac"] as? String == "Mac Studio")
+        #expect((object["service"] as? [String: Any])?["running"] as? Bool == false)
+    }
+
+    @Test("`darkbloom cluster status --json` exits 7 when the pairing record can't be read")
+    func unreadableClusterStatusCommand() async throws {
+        let result = await #expect(processExitsWith: .exitCode(7), observing: [\.standardOutputContent]) {
+            try await exitWithPair(unreadable()) { try await runCLICommand(Cluster.Status.self, ["cluster", "status", "--json"]) }
+        }
+        let object = try #require(try JSONSerialization.jsonObject(with: Data((result?.standardOutputContent ?? []))) as? [String: Any])
+        #expect(object["state"] as? String == "pairing_unreadable" && object["paired"] is NSNull)
+    }
+
+    @Test("start and restart stay refused without --solo while unsure, and say why; stop, status, doctor and link say it too")
+    func unreadableHabitCommands() throws {
+        let startLine = "Single-Mac serving next to a cluster would compete for this Mac's memory. To serve on this Mac alone, run "
+            + "`darkbloom cluster` on this Mac to check the pairing first, or pass --solo."
+        let refusal = try #require(Start.pairGuard(unreadable(), solo: false))
+        #expect(refusal.refuse && refusal.lines == [unsureSentence, startLine])
+        let solo = try #require(Start.pairGuard(unreadable(), solo: true))
+        #expect(!solo.refuse && solo.lines == ["Starting single-Mac serving (--solo) although this Mac's pairing record couldn't "
+            + "be read: if it is in a two-Mac cluster, both use this Mac's memory."])
+        #expect(Restart.pairRefusal(unreadable(), singleMacInstalled: true, solo: false) == [unsureSentence, startLine])
+        #expect(Restart.pairRefusal(unreadable(), singleMacInstalled: false, solo: false) == [unsureSentence,
+            "`darkbloom restart` restarts single-Mac serving, and this Mac has none: nothing was restarted.",
+            "Run `darkbloom cluster` on this Mac to check it."])
+        #expect(Restart.pairRefusal(unreadable(), singleMacInstalled: true, solo: true) == nil)
+        #expect(unreadable().restartAddendum == unsureSentence + " No cluster was restarted.")
+        #expect(Stop.pairedStop(unreadable(), singleMacLoaded: false, uninstall: false) == .refuse(lines: [unsureSentence,
+            "`darkbloom stop` stops single-Mac serving, and none runs on this Mac: nothing was stopped.",
+            "Run `darkbloom cluster` on this Mac to check it; `darkbloom cluster stop` stops a cluster on both Macs."], exitCode: 1))
+        #expect(unreadable().statusLine == "Cluster: this Mac's pairing record couldn't be read (\(unreadableReason)) · run "
+            + "`darkbloom cluster` to check it (details: `darkbloom cluster status`)")
+        #expect(Status.daemonNotRunningLine(paired: true, unsure: true)
+            == "Single-Mac serving: off (this Mac may be in a two-Mac cluster: `darkbloom cluster status`)")
+        #expect(Status.daemonNotRunningLine(paired: true, unsure: true, staleStateFile: true)
+            == "Single-Mac serving: off (this Mac may be in a two-Mac cluster: `darkbloom cluster status`)")
+        #expect(Status.daemonNotRunningLine(paired: false, staleStateFile: true) == "Daemon: not running (stale state file)")
+        #expect(Doctor.daemonLine(running: false, paired: true, unsure: true)
+            == "Daemon: single-Mac serving off (this Mac may be in a two-Mac cluster)")
+        #expect(Cluster.Link.removalGate(unreadable(), yes: false, dryRun: false, json: false, terminal: true) == .ask([unsureSentence,
+            "--remove undoes this Mac's cable port setup: a cluster that uses it stops serving on both Macs until the port is set "
+                + "up again with `darkbloom cluster` (or `darkbloom cluster link --fix`)."]))
+    }
+
+    @Test("on the Mac that follows, a leading Mac that doesn't answer over the cable is away and not answering, in both outputs")
+    func memberSilentLeaderAgrees() throws {
+        let silent = "The other Mac (Apple M5 Max, 128 GB) doesn't answer over the cable (connection refused); it rejoins by itself."
+        var member = pair(role: .member)
+        member.read(status: [silent], leaderMode: nil)
+        #expect(member.state == .otherMacAway && member.otherMacAnswers == false)
+        #expect(member.clusterStatusLines.contains("✗ " + silent))
+        #expect(member.clusterStatusLines.last == "Next: The other Mac (Apple M5 Max, 128 GB) isn't answering over the cable. Its "
+            + "cluster service is probably off (it was stopped with `darkbloom cluster stop`), or that Mac is asleep, off, or "
+            + "waiting for someone to log in. On that Mac, run `darkbloom cluster`.")
+        let object = try jsonObject(member)
+        #expect((object["other_mac"] as? [String: Any])?["answers"] as? Bool == false)
+        #expect(object["state"] as? String == "other_mac_away" && object["exit_code"] as? Int == 5)
+        var timedOut = pair(role: .member)
+        timedOut.read(status: ["The other Mac (Apple M5 Max, 128 GB) did not answer over the cable: timed out"], leaderMode: nil)
+        #expect(timedOut.state == .otherMacAway && timedOut.otherMacAnswers == false)
+        var serving = pair(role: .member)
+        serving.read(status: ["Serving Qwen 3.8 27B through Darkbloom on both Macs (tensor parallel)."], leaderMode: nil)
+        #expect(serving.state == .serving && serving.otherMacAnswers == true)
+    }
+
+    @Test("a command test's child process never reads this Mac's own cluster: the sandbox says not in a cluster")
+    func sandboxKeepsCommandsOffThisMacsCluster() async {
+        await #expect(processExitsWith: .success) {
+            let sandbox = try CLICommandSandbox.enter()
+            // Without the sandbox's pair, each read below would be this Mac's real cluster: stop before any.
+            guard ClusterPairSummary.processReaderForTesting != nil else { sandbox.remove(); exit(1) }
+            let live = await ClusterPairSummary.live(config: nil)
+            let isolated = ClusterPairSummary.local() == .notPaired && live == .notPaired
+                && ClusterPairSummary.runningPartPID() == nil && !ClusterPairSummary.startedByClusterService()
+            sandbox.remove()
+            exit(isolated ? 0 : 2)
+        }
+    }
+}

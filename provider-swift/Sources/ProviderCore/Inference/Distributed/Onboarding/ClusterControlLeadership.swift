@@ -690,6 +690,10 @@ public struct ClusterControlReply: Codable, Sendable, Equatable {
         self.lines = lines; self.failed = failed; self.leaderID = leaderID; self.machines = machines; self.choices = choices
         self.ready = ready; self.progress = progress; self.notLeader = notLeader
     }
+
+    /// `status`: how far the leading Mac's start is (`ClusterOnboardingStartProgress`); nil when no start runs, and from
+    /// an older build.
+    public var start: ClusterOnboardingStartProgress? = nil
 }
 
 public enum ClusterControlRouting {

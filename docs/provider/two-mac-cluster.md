@@ -125,10 +125,23 @@ Darkbloom.app's login agent keeps serving; without one, as for a development
 build, the screen ends "Keep this window open." and the Mac serves only while
 the window stays open. The Start step opens with "Loading
 takes a few minutes for a large model; both Macs show progress here." On a color
-terminal the live rows then give the wait and one row per Mac (for a pair
-registered with the coordinator: registering, registered, loading its share),
-each with the time since loading began; no bar or percent, since no load
-fraction is reported. The leader ends with the outcome as its own block, between
+terminal the live rows then give the wait and one row per Mac, each with the
+time since loading began: "This Mac: ready (layers 0–46)", "The other Mac:
+loading its share (layers 47–93)", "starting its part", or "part ended (exit
+1); starts again in 5 s" (for a pair registered with the coordinator:
+registering, registered, loading its share). There is no bar or percent while
+the parts load, since no load fraction is reported. A row that doesn't fit the
+window drops its layers, then shortens to "Other Mac: loading". A plain
+transcript (`NO_COLOR`, `TERM=dumb`, a pipe) says each row once, when it changes.
+
+Both Macs show the same start. The leading Mac publishes how far it is in its
+status (`ClusterControlReply.start`, `ClusterOnboardingStartProgress`): the
+step (downloading, copying, stopping the model that served, loading, testing,
+registering with Darkbloom), a copy's or download's bytes as the sending Mac
+counts them, and which Mac's part is ready. The Mac that joined reads it and
+shows the step, a bar of the real bytes during a copy or download, and the same
+per-Mac rows. A leading Mac with an older Darkbloom publishes none, and the Mac
+that joined keeps its general words. The leader ends with the outcome as its own block, between
 two rules, then the pair's card, as `darkbloom start` ends, and the shell:
 
 ```

@@ -67,6 +67,7 @@ extension ClusterOnboardingOperations {
         made.markRegistrationPending = { live.markRegistrationPending() }
         made.planScope = { live.usePlanningScope($0) }
         made.otherMacStartsAtLogin = { live.otherMacStartsAtLogin() }
+        made.publishStart = { live.publishStart($0) }
         return made
     }
 }
@@ -130,6 +131,8 @@ final class OnboardingLive: @unchecked Sendable {
     var there: String { answering ? ClusterOnboardingMacName.this : ClusterOnboardingMacName.other(named: peerName) }
     var thereShort: String { answering ? ClusterOnboardingMacName.this : ClusterOnboardingMacName.other }
     private var answering: Bool { lock.withLock { answeringForward } }
+    /// The phase `publishStart` last recorded, and when.
+    private var startPublished: (phase: ClusterOnboardingStartProgress.Phase?, at: Double) = (nil, 0)
 
     /// `text` at the start of a sentence.
     static func sentence(_ text: String) -> String { ClusterOnboardingMacName.sentence(text) }
@@ -361,7 +364,40 @@ final class OnboardingLive: @unchecked Sendable {
 
     /// The leader's half: one forwarded command, run here as `darkbloom cluster` would run it on this Mac.
     func execute(_ request: ClusterControlRequest, leaderID: String) -> ClusterControlReply {
-        answeringForwarded { executeForwarded(request, leaderID: leaderID) }
+        var reply = answeringForwarded { executeForwarded(request, leaderID: leaderID) }
+        // The status carries how far the start is, for the Mac that joined (an older Mac ignores it).
+        if request.op == .status { reply.start = currentStart() }
+        return reply
+    }
+
+    /// Records how far this screen's start is (nil clears it) on the Mac whose status both Macs read, with this
+    /// process, so it stops counting once the screen is gone (`ClusterOnboardingStartProgressMark`). `every`: at most
+    /// once in that many seconds for the same phase (a copy's bytes, a load's parts); a new phase is always recorded.
+    func publishStart(_ progress: ClusterOnboardingStartProgress?, every seconds: Double = 0) {
+        let pid = getpid()
+        guard !forwards, let started = Self.processStarted(pid) else { return }
+        let now = Date().timeIntervalSince1970
+        let due = lock.withLock { () -> Bool in
+            guard progress?.phase != startPublished.phase || now - startPublished.at >= seconds else { return false }
+            startPublished = (progress?.phase, now)
+            return true
+        }
+        guard due else { return }
+        try? store.updateRecord { record in
+            record.startProgress = progress.map {
+                .init(progress: $0.continuing(record.startProgress?.progress, now: now), pid: pid, started: started, at: now)
+            }
+        }
+    }
+
+    /// The start's progress the status publishes, while it counts.
+    func currentStart() -> ClusterOnboardingStartProgress? {
+        (try? store.readRecord())?.startProgress?.current(now: Date().timeIntervalSince1970, started: Self.processStarted)
+    }
+
+    /// A copy's or download's bytes, published about once a second.
+    func publishingBytes(_ phase: ClusterOnboardingStartProgress.Phase, toLeader: Bool? = nil) -> @Sendable (Int64, Int64) -> Void {
+        { [self] done, total in publishStart(.init(phase, done: done, total: total, toLeader: toLeader), every: 1) }
     }
 
     private func executeForwarded(_ request: ClusterControlRequest, leaderID: String) -> ClusterControlReply {
@@ -388,6 +424,7 @@ final class OnboardingLive: @unchecked Sendable {
         case .stop: return lines(localStop())
         case .readiness:
             let once = readinessOnce()
+            if once.ready == nil { publishStart(.init(.loading, parts: once.parts), every: 1) }
             return .init(lines: [], failed: false, leaderID: leaderID, ready: once.ready, progress: once.line)
         case .test: return lines(localTestRequest())
         case .verifyTeardown: return lines(localVerifyTeardown())
@@ -1094,9 +1131,11 @@ final class OnboardingLive: @unchecked Sendable {
             guard let pairing = try ClusterSetupLinkExchange.pairing() else { throw ClusterSetupFailure("This Mac is not paired.") }
             let selection = try context.linkSelection()
             let reports = ClusterTransferReports(label: "Copying to \(thereShort)", send: progress)
+            let publish = publishingBytes(.copying)
             let outcome = try ClusterSetupLinkExchange.copyModel(pairing: pairing, selection: selection, peerAddress: nil, artifact: artifact,
                 source: store.appendingPathComponent(folder), folder: folder) { sent, total in
                     reports.report(done: sent, total: total)
+                    publish(sent, total)
                 }
             if outcome.alreadyThere {
                 lines.append("\(ClusterOnboardingDriver.done) \(Self.sentence(thereShort)) already has it")
@@ -1128,6 +1167,7 @@ final class OnboardingLive: @unchecked Sendable {
         let staging = store.appendingPathComponent(".darkbloom-incoming-" + String(model.artifactSHA256.prefix(32)))
         var lastCheck = Date.distantPast
         let reports = ClusterTransferReports(label: "Copying from \(thereShort)", send: progress)
+        let publish = publishingBytes(.copying, toLeader: true)
         while Date() < deadline {
             if let data = ClusterModelStore.readSmall(store.appendingPathComponent(model.folder).appendingPathComponent("manifest.json")),
                let artifact = try? ClusterCatalogArtifact.parse(manifest: data),
@@ -1145,7 +1185,7 @@ final class OnboardingLive: @unchecked Sendable {
                 if Date().timeIntervalSince(lastChange) > 90 {
                     throw ClusterSetupFailure("\(Self.sentence(sender)) stopped sending \(model.modelID) (nothing arrived for 90 s); run `\(Self.cli) cluster` here again (the copy resumes)")
                 }
-                if bytes > 0 { reports.report(done: bytes, total: model.totalBytes) }
+                if bytes > 0 { reports.report(done: bytes, total: model.totalBytes); publish(bytes, model.totalBytes) }
             }
             usleep(250_000)
         }
@@ -1180,8 +1220,10 @@ final class OnboardingLive: @unchecked Sendable {
         downloader.uncachedWrites = true
         let started = Date()
         let reports = ClusterTransferReports(label: "Downloading", send: progress)
+        let publish = publishingBytes(.downloading)
         let verifying = ClusterOnboardingMailbox<Bool>()
         downloader.byteProgress = { done, total in
+            publish(done, total)
             guard done >= total else { reports.report(done: done, total: total); return }
             // Every byte is here; the downloader checks each file and the aggregate digest before it publishes.
             if verifying.take().isEmpty {
@@ -1250,6 +1292,7 @@ final class OnboardingLive: @unchecked Sendable {
             if serving {
                 // A running part holds its Mac's setup and native device lease: a model change drains both Macs first
                 // (each part releases its memory), then changes the setup; `serve` starts the new one.
+                publishStart(.init(.stopping))
                 if case .failure(let failure) = localStop() { return .failure(failure) }
                 lines.append("Stopped both Macs' parts to change the model (each released its memory first).")
                 guard drained(seconds: 300) else {
@@ -1556,7 +1599,7 @@ final class OnboardingLive: @unchecked Sendable {
             let live = context.observe(link: false)
             let ranks = max(live.members.count, context.savedConfiguration().configuration?.peers.count ?? 2)
             return (true, .init(observed: live.observed, ready: live.ready, readyRanks: live.readyRanks, ranks: ranks, port: live.port,
-                detail: live.detail ?? live.sessionPhase), nil, nil)
+                detail: live.detail ?? live.sessionPhase, readyRankList: live.members.filter(\.ready).map(\.rank)), nil, nil)
         }
         do {
             let status = try JSONDecoder().decode(ClusterServiceStatus.self, from: try command(.init(op: .status), seconds: 15))
@@ -1572,17 +1615,20 @@ final class OnboardingLive: @unchecked Sendable {
         let began = Date()
         lock.withLock { waitBegan = began }
         let deadline = began.addingTimeInterval(Self.readyWaitSeconds)
-        var said: String?
+        var said: String?, shown: String?
         var seen = [String: Int](), previous: String?
+        let viewerRank = context.savedConfiguration().configuration?.localRank
         while Date() < deadline {
-            var once: (ready: ClusterOnboardingReady?, line: String)
+            var once: (ready: ClusterOnboardingReady?, line: String, parts: [ClusterOnboardingStartProgress.Part]?)
             if forwards {
                 switch forward(.init(op: .readiness), seconds: 30) {
-                case .success(let reply): once = (reply.ready, reply.progress ?? "starting")
-                case .failure(let failure): once = (nil, failure.lines.joined(separator: " "))
+                case .success(let reply): once = (reply.ready, reply.progress ?? "starting", nil)
+                case .failure(let failure): once = (nil, failure.lines.joined(separator: " "), nil)
                 }
             } else {
                 once = readinessOnce()
+                // The Mac that joined shows the same parts (`publishStart`).
+                if once.ready == nil { publishStart(.init(.loading, parts: once.parts), every: 1) }
             }
             if let ready = once.ready { return .success(ready) }
             if let refused = Self.localNetworkRefusalLines(line: once.line, otherMac: Self.sentence(there), app: ClusterService.appName) {
@@ -1598,7 +1644,18 @@ final class OnboardingLive: @unchecked Sendable {
                 return .failure(.init([Self.keepsEndingTitle(once.line, own: own.child, ownWorker: own.worker) + "."]
                     + lastErrors(fallback: nil, own: own)))
             }
-            if seen[once.line] == 1, once.line != said { progress(once.line); said = once.line }
+            if seen[once.line] == 1, once.line != said { said = once.line }
+            // The line, then one row per Mac (`ClusterOnboardingLoadRows`), its countdown left out so a row changes only
+            // when that Mac's part does.
+            let steady = (once.parts ?? []).map { part -> ClusterOnboardingStartProgress.Part in
+                var steady = part
+                steady.restartIn = nil
+                return steady
+            }
+            if let said {
+                let line = ([said] + ClusterOnboardingStartWords.partRows(steady, viewerRank: viewerRank, width: nil)).joined(separator: "\n")
+                if line != shown { progress(line); shown = line }
+            }
             usleep(Self.readinessPollMicroseconds)
         }
         return .failure(.init(["The cluster did not report ready within 15 minutes."] + lastErrors(fallback: said)))
@@ -1831,25 +1888,26 @@ final class OnboardingLive: @unchecked Sendable {
     }
 
     /// One look at the cluster from the control leader: ready (where the serving API listens) or a progress line.
-    func readinessOnce() -> (ready: ClusterOnboardingReady?, line: String) {
+    /// `parts`: each Mac's part while the parts load (the start's per-Mac rows), when the session is observed.
+    func readinessOnce() -> (ready: ClusterOnboardingReady?, line: String, parts: [ClusterOnboardingStartProgress.Part]?) {
         let published = ClusterService.published()
         if let control = published?.control, control.mode == "alone" {
             // Only THIS service's solo server counts as ready, never whatever answers on the port.
             switch ClusterService.soloReadiness(published) {
-            case .ready: return (.init(servedBy: here, port: ClusterService.soloPort, deployment: "Serving \(leadership?.modelName ?? "the model") on \(here) alone while \(thereShort) is away"), control.line)
-            case .loading: return (nil, control.line + " (loading)")
-            case .foreign: return (nil, control.line + " (another program answers on port \(ClusterService.soloPort), so \(hereShort)'s solo server cannot serve there)")
+            case .ready: return (.init(servedBy: here, port: ClusterService.soloPort, deployment: "Serving \(leadership?.modelName ?? "the model") on \(here) alone while \(thereShort) is away"), control.line, nil)
+            case .loading: return (nil, control.line + " (loading)", nil)
+            case .foreign: return (nil, control.line + " (another program answers on port \(ClusterService.soloPort), so \(hereShort)'s solo server cannot serve there)", nil)
             }
         }
-        if let updating = published?.updating { return (nil, updating) }
+        if let updating = published?.updating { return (nil, updating, nil) }
         // Inside the absence grace: not ready, and the line says how long until this Mac serves alone.
-        if let control = published?.control, control.mode == "waiting" { return (nil, control.line) }
-        if let offered = offeredLine() { return offeredReadiness(offered, own: published?.child) }
+        if let control = published?.control, control.mode == "waiting" { return (nil, control.line, nil) }
+        if let offered = offeredLine() { let once = offeredReadiness(offered, own: published?.child); return (once.ready, once.line, nil) }
         let now = session()
         var line: String
         if let session = now.session, session.observed {
             if session.ready, let port = session.port {
-                return (ready(now, port: port), "ready")
+                return (ready(now, port: port), "ready", nil)
             }
             line = "\(session.readyRanks) of \(session.ranks) parts ready" + (session.detail.map { " (\($0))" } ?? "")
         } else if let child = now.child, let end = child.lastEnd, !child.running, Self.endShown(child) {
@@ -1868,12 +1926,39 @@ final class OnboardingLive: @unchecked Sendable {
         // macOS keeps the other Mac's follower off the local network: nothing changes until someone allows it (P2-1).
         if Self.otherMacRefused(member?.child),
            Self.refusalIsCurrent(own: ClusterService.published()?.child, now: Date().timeIntervalSince1970) {
-            return (nil, Self.localNetworkLine(forwarded: answering))
+            return (nil, Self.localNetworkLine(forwarded: answering), nil)
         }
         if let member, !member.child.running, let end = member.child.lastEnd, Self.endShown(member.child) {
             line += "; \(thereShort)'s part ended (\(end)\(member.child.lastError.map { ": " + $0 } ?? "")) and starts again by itself"
         }
-        return (nil, line)
+        let parts = now.session.flatMap { session -> [ClusterOnboardingStartProgress.Part]? in
+            guard session.observed, let ready = session.readyRankList else { return nil }
+            let localRank = context.savedConfiguration().configuration?.localRank
+            let layers = shareLayers()
+            return (0..<session.ranks).map { rank in
+                let child = rank == localRank ? ClusterService.published()?.child : (now.local ? member?.child : now.child)
+                return Self.part(rank: rank, ready: ready.contains(rank), child: child, layers: layers[rank])
+            }
+        }
+        return (nil, line, parts)
+    }
+
+    /// One Mac's part while the parts load: ready, loading (its process runs), ended (and starts again), or starting.
+    static func part(rank: Int, ready: Bool, child: ClusterServiceStatus.Child?, layers: String?) -> ClusterOnboardingStartProgress.Part {
+        if ready { return .init(rank: rank, state: .ready, layers: layers) }
+        guard let child else { return .init(rank: rank, state: .starting, layers: layers) }
+        if child.running { return .init(rank: rank, state: .loading, layers: layers) }
+        if let end = child.lastEnd, endShown(child) { return .init(rank: rank, state: .ended, layers: layers, end: end, restartIn: child.restartInSeconds) }
+        return .init(rank: rank, state: .starting, layers: layers)
+    }
+
+    /// Each rank's share of the model's layers in the saved setup ("47–93"), by rank.
+    func shareLayers() -> [Int: String] {
+        guard case .success(let reference?) = context.savedConfiguration().reference,
+              let saved = try? ClusterConfigurationStore(paths: context.paths).load(reference: reference),
+              let stages = try? saved.capability.selection(planSHA256: saved.configuration.selectedPlanSHA256).stages else { return [:] }
+        return Dictionary(stages.filter { $0.sourceLayerEnd > $0.sourceLayerStart }
+            .map { ($0.rank, "\($0.sourceLayerStart)\u{2013}\($0.sourceLayerEnd - 1)") }, uniquingKeysWith: { first, _ in first })
     }
 
     /// Whether the other Mac's refusal says how its follower's dials go now: this Mac's part (rank 0, whose session hosts

@@ -960,6 +960,9 @@ public struct ClusterOnboardingOperations: Sendable {
     /// (`ClusterServiceStatus.startsAtLogin`); nil when it doesn't say (an older build, or no answer). The card says "on
     /// both Macs" only with this and `serviceOutlivesWindow` (P2-11). Not in `init`: only the live operations set it.
     public var otherMacStartsAtLogin: @Sendable () -> Bool? = { true }
+    /// Publishes how far the start is (`ClusterOnboardingStartProgress`) in the leading Mac's status, so the Mac that
+    /// joined shows the same step; nil clears it. Not in `init`: only the live operations set it.
+    public var publishStart: @Sendable (ClusterOnboardingStartProgress?) -> Void = { _ in }
 
     public init(resume: @escaping @Sendable () -> ClusterOnboardingResume,
                 checkLink: @escaping @Sendable (@escaping @Sendable (String) -> Void) -> ClusterOnboardingLinkResult,
@@ -1155,9 +1158,13 @@ public protocol ClusterOnboardingConsole: AnyObject {
     func suspended<T>(_ body: () -> T) -> T
     /// The input is closed: nothing more can be asked.
     var closed: Bool { get }
+    /// The room a live row has (the window's columns less its indent and marks); nil where no live rows show (a plain
+    /// transcript), which says each change once instead.
+    var liveWidth: Int? { get }
 }
 
 public extension ClusterOnboardingConsole {
+    var liveWidth: Int? { nil }
     /// The setup's outcome as its own block: a blank line, a rule, ✓ or ✗ with what serves (or why nothing does),
     /// its details, a rule.
     func result(_ succeeded: Bool, _ title: String, _ lines: [String]) {
@@ -2236,7 +2243,10 @@ public enum ClusterOnboardingDriver {
         // so the leading Mac publishes its outcome and the Mac that joined ends with the same.
         if registers { operations.markRegistrationPending() }
         while true {
-            switch startOutcome(title: title, scope: scope, mayRegister: &mayRegister, operations, console) {
+            let outcome = startOutcome(title: title, scope: scope, mayRegister: &mayRegister, operations, console)
+            // The start's steps are over (left: they go on by themselves, and the published figures age out).
+            if case .left = outcome {} else { operations.publishStart(nil) }
+            switch outcome {
             case .served(let served, let lines, let ready):
                 // 2026-11-03 call: "it should show whether it is success or not VERY clearly"; then the pair's card.
                 console.result(true, served, lines)
@@ -2310,6 +2320,7 @@ public enum ClusterOnboardingDriver {
             }
         } else {
             // The test's time is said in the outcome block; only a failure is said here.
+            operations.publishStart(.init(.testing))
             switch busy(console, "Sending a test request", operations.testRequest) {
             case .success(let lines): tested = lines.first.flatMap { $0.isEmpty ? nil : $0 }
             case .failure(let failure):
@@ -2375,6 +2386,7 @@ public enum ClusterOnboardingDriver {
     /// after the start; false, with nothing said or stopped, when the coordinator serves none. A registration is said in
     /// plain words for `title`, never as its log line with the approval's id and end.
     static func register(title: String, _ operations: ClusterOnboardingOperations, _ console: ClusterOnboardingConsole) -> Bool {
+        operations.publishStart(.init(.registering))
         let lines: [String]
         switch operations.register() {
         case .success(let said): lines = said
@@ -2415,10 +2427,16 @@ public enum ClusterOnboardingDriver {
         Thread.detachNewThread { finished.post(work { progress.post($0) }) }
         var latest: String?
         var clock = ClusterOnboardingLoadRows(started: Date())
+        // A plain window shows no live rows: each Mac's row is said once as it changes.
+        var said = Set<String>()
         while true {
-            if let line = progress.take().last { latest = line }
+            for line in progress.take() {
+                latest = line
+                guard console.liveWidth == nil else { continue }
+                for row in line.components(separatedBy: "\n").dropFirst() where !row.isEmpty && said.insert(row).inserted { console.say("  " + row) }
+            }
             if let value = finished.take().first { console.settle(); return value }
-            console.workingRows(clock.rows(title, report: latest, now: Date()))
+            console.workingRows(clock.rows(title, report: latest, now: Date(), width: console.liveWidth))
             if let key = console.key(milliseconds: 120), leaving(key) { console.settle(); return nil }
         }
     }

@@ -115,15 +115,31 @@ public struct ClusterOnboardingLoadRows: Sendable {
 
     public init(started: Date) { self.started = started }
 
-    public mutating func rows(_ title: String, report: String?, now: Date) -> [String] {
+    /// `width`: the room of a live row; a Mac's row that does not fit drops its layers, then its long words, before
+    /// the terminal would cut it.
+    public mutating func rows(_ title: String, report: String?, now: Date, width: Int? = nil) -> [String] {
         let parts = report?.components(separatedBy: "\n").filter { !$0.isEmpty } ?? []
         let head = (parts.first.map { "\(title) (\($0))" } ?? title) + " \u{00B7} " + Self.elapsed(now.timeIntervalSince(started))
         return [head] + parts.dropFirst().map { row in
             let mac = row.components(separatedBy: ": ").first ?? row
-            if row.hasSuffix(": ready"), readyAt[mac] == nil { readyAt[mac] = now }
-            let end = row.hasSuffix(": ready") ? readyAt[mac] ?? now : now
-            return row + " \u{00B7} " + Self.elapsed(end.timeIntervalSince(started))
+            let ready = row.hasSuffix(": ready") || row.contains(": ready (")
+            if ready, readyAt[mac] == nil { readyAt[mac] = now }
+            let end = ready ? readyAt[mac] ?? now : now
+            let time = " \u{00B7} " + Self.elapsed(end.timeIntervalSince(started))
+            return ClusterOnboardingStartWords.fitted(Self.shorter(row).map { $0 + time }, width: width)
         }
+    }
+
+    /// A Mac's row, then shorter forms of it: without its layers, "Other Mac", "loading".
+    static func shorter(_ row: String) -> [String] {
+        var forms = [row]
+        func add(_ text: String) { if text != forms.last { forms.append(text) } }
+        let bare = row.replacingOccurrences(of: #" \(layers [^)]*\)"#, with: "", options: .regularExpression)
+        add(bare)
+        add(bare.replacingOccurrences(of: "The other Mac", with: "Other Mac"))
+        add(forms.last!.replacingOccurrences(of: "loading its share", with: "loading")
+            .replacingOccurrences(of: "starting its part", with: "starting"))
+        return forms
     }
 
     /// "48 s", "1 min 15 s".

@@ -93,6 +93,9 @@ public struct ClusterSetupRecord: Codable, Sendable, Equatable {
     /// Why the pair serves on the leader's local API although its coordinator offers a cluster approval (one line,
     /// `ClusterApprovalSync`); nil when it is offered for pairing or the coordinator offers none.
     public var approvalNote: String? = nil
+    /// How far the leading Mac's start is (`ClusterOnboardingStartProgressMark`), published in its status for the Mac
+    /// that joined; nil when no start set it.
+    public var startProgress: ClusterOnboardingStartProgressMark? = nil
     /// The leading Mac's start that serves through Darkbloom and has not yet asked the coordinator whether to offer the
     /// pair (its process id; only the screen's start sets it, `OnboardingLive.markRegistrationPending`; `localRegister`,
     /// a failed test and a stop clear it): the status says the start is not over while that process runs, so the Mac

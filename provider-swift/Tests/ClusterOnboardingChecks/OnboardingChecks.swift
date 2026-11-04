@@ -20,6 +20,9 @@ import Darwin
         signal(SIGPIPE, SIG_IGN)
         privateMiMoSelectionRefusesBeforeAnyActionOnMemberOrUnpairedMac()
         terminalPresentationFallbacks()
+        // The start's progress on both Macs (2026-11-04).
+        startProgressFieldsAndComponents()
+        leaderShowsEachMacsPartFitted()
         colourSetupDrawsTheMarkAndKeepsTheTranscript()
         narrowOrPlainLocaleColourKeepsPlainLines()
         narrowColourWindowKeepsOneRowLines()

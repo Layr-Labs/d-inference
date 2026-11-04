@@ -49,6 +49,8 @@ public struct ClusterServiceStatus: Codable, Sendable, Equatable {
         public var ranks: Int
         public var port: Int?
         public var detail: String?
+        /// The ranks whose part is ready, when known (the start's per-Mac rows); nil from an older build.
+        public var readyRankList: [Int]? = nil
     }
     public var role: String?
     public var serving: Bool

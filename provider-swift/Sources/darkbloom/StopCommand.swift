@@ -23,7 +23,9 @@ struct Stop: AsyncParsableCommand {
     }
 
     static func pairedStop(_ pair: ClusterPairSummary, singleMacLoaded: Bool, uninstall: Bool) -> PairedStop {
-        .stopSingleMac
+        guard !singleMacLoaded, !uninstall else { return .stopSingleMac }
+        let refusal = pair.stopRefusal
+        return .refuse(lines: refusal.lines, exitCode: refusal.exitCode)
     }
 
     mutating func run() async throws {

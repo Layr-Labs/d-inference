@@ -34,7 +34,9 @@ struct Restart: AsyncParsableCommand {
     /// `darkbloom restart` on a Mac in a two-Mac cluster (UX audit P4c): nothing to restart without single-Mac serving;
     /// beside a running cluster service only with `--solo`, as `darkbloom start`. Nil: restart as on any Mac.
     static func pairRefusal(_ pair: ClusterPairSummary, singleMacInstalled: Bool, solo: Bool) -> [String]? {
-        nil
+        guard pair.paired else { return nil }
+        guard singleMacInstalled else { return pair.restartRefusal }
+        return pair.serviceRunning && !solo ? pair.startRefusal : nil
     }
 
     mutating func run() async throws {

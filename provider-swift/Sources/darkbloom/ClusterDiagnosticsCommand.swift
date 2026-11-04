@@ -22,7 +22,7 @@ extension Cluster {
         var details = false
         mutating func run() async throws {
             Darkbloom.ensureLogging()
-            guard details || true else {
+            guard details else {
                 let summary = await ClusterPairSummary.live(config: configOptions.config)
                 if json { try printJSON(summary.json) } else { for line in summary.clusterStatusLines { print(line) } }
                 if summary.exitCode != 0 { throw ExitCode(summary.exitCode) }

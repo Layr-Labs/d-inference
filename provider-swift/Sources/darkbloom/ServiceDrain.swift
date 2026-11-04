@@ -23,7 +23,8 @@ enum ServiceDrain {
     static func soloProviderState(_ state: DaemonState? = DaemonStateFile.read(),
                                   clusterPart: Int32? = ClusterService.publishedLive().flatMap { $0.child.running ? $0.child.pid : nil })
         -> DaemonState? {
-        state
+        guard let state, let clusterPart, state.pid == clusterPart || state.processIdentity?.pid == clusterPart else { return state }
+        return nil
     }
 
     static func prepare(options: DrainOptions, state: DaemonState? = DaemonStateFile.read(),

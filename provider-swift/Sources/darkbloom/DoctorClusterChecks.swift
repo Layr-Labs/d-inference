@@ -16,7 +16,8 @@ extension Doctor {
     /// `darkbloom start` (which would start one beside the cluster).
     static func daemonLine(running: Bool, paired: Bool) -> String {
         if running { return "Daemon: running" }
-        return "Daemon: NOT running — run `\(BuildEnvironment.current.cliName) start`"
+        return paired ? "Daemon: single-Mac serving off (this Mac serves in its two-Mac cluster)"
+            : "Daemon: NOT running — run `\(BuildEnvironment.current.cliName) start`"
     }
 }
 

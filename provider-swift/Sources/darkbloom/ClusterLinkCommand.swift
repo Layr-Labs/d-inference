@@ -70,7 +70,9 @@ extension Cluster {
         }
 
         static func removalGate(_ pair: ClusterPairSummary, yes: Bool, dryRun: Bool, json: Bool, terminal: Bool) -> RemovalGate {
-            .proceed
+            guard pair.paired, !yes, !dryRun else { return .proceed }
+            guard terminal, !json else { return .refuse(pair.linkRemoveWarning + [ClusterPairSummary.linkRemoveNeedsYes]) }
+            return .ask(pair.linkRemoveWarning)
         }
 
         static func confirmed(_ answer: String?) -> Bool {

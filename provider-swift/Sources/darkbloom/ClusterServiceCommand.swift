@@ -197,7 +197,7 @@ extension Cluster {
         static func pairStop(role: ClusterOnboardingRole?, serving: Bool) -> PairStop {
             switch role {
             case .leader: return .leaderStopsBoth
-            case .member: return .stopHere
+            case .member: return serving ? .askLeader : .stopHere
             case nil: return .stopHere
             }
         }
@@ -218,7 +218,7 @@ extension Cluster {
                 switch stopped {
                 case .success(let said): lines = said
                 case .failure(let failure):
-                    throw Failure(lines: failure.lines)
+                    throw Failure(lines: failure.lines + (forwarded ? [ClusterPairSummary.memberStopFailedLine] : []))
                 }
             }
             let removed = try removeFromLogin()

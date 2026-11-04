@@ -18,6 +18,8 @@ extension Cluster {
                 Nothing else is needed: no SSH, no address and no network setting is typed.
 
                 Run it again on any Mac to see the cluster, change the model or stop it.
+
+                \(Cluster.commandList)
                 """)
         @OptionGroup var configOptions: ConfigOptions
         @Flag(help: ArgumentHelp("Link setup only: print one JSON object at the end instead of a line per step.", visibility: .hidden))

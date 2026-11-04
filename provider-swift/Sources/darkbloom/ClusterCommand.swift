@@ -3,7 +3,7 @@ import ArgumentParser
 import ProviderCore
 
 struct Cluster: AsyncParsableCommand {
-    static let abstract = "Set up two or more Macs to serve one model together. Run it on each Mac and follow the screen."
+    static let abstract = "Set up two Macs to serve one model together. Run it on each Mac and follow the screen."
 
     /// The other cluster commands in plain words: `darkbloom cluster --help` shows the setup's help (it is the default
     /// subcommand), so its discussion ends with this list (UX audit P11).

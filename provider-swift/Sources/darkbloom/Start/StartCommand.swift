@@ -128,7 +128,9 @@ struct Start: AsyncParsableCommand {
     /// `--solo` asks for it by name; said in one line otherwise. Nil: not in a cluster, or a start that is the cluster's
     /// own (`--cluster-member`, `--distributed`, the cluster service's solo part) or launchd's (`--foreground`).
     static func pairGuard(_ pair: ClusterPairSummary, solo: Bool) -> (refuse: Bool, lines: [String])? {
-        nil
+        guard pair.paired else { return nil }
+        if pair.serviceRunning, !solo { return (true, pair.startRefusal) }
+        return (false, [pair.startNote])
     }
 
     var startsSingleMacServing: Bool { !foreground && !clusterMember && !distributed }

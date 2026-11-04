@@ -999,6 +999,13 @@ public final class ClusterService: @unchecked Sendable {
                 control: controlStatusLocked(model: record?.leadership?.modelName), servicePID: getpid())
             value.updating = updatingLine
             value.localOnly = record?.leadership.map { $0.scope.isLocalOnly }
+            value.loggedIn = AuthTokenStore.load() != nil
+            if child?.isRunning == true, childIsMember {
+                value.child.pair = Self.pairReport(in: serviceFiles.rankLog, from: childLogOffset).map(ClusterOnboardingPairReport.text)
+                let state = DaemonStateFile.read()
+                value.child.appAttest = Self.memberAppAttest(pid: child?.processIdentifier, state: state)
+                value.child.appAttestRetryAt = Self.memberAppAttestRetryAt(pid: child?.processIdentifier, state: state)
+            }
             value.memberQuickEnds = memberQuickEnds
             value.approvalID = configuration?.nativeMember?.clusterApproval?.id ?? ""
             value.pairUpdate = ClusterPairUpdate.readProgress(from: ClusterServiceAgent.updateProgressPath(serviceDirectory: store.paths.directory))
@@ -1228,6 +1235,31 @@ public final class ClusterService: @unchecked Sendable {
         let tail = String(decoding: handle.readDataToEndOfFile(), as: UTF8.self)
         guard let line = tail.split(whereSeparator: \.isNewline).last(where: { $0.hasPrefix("Error:") }) else { return nil }
         return ClusterConsoleText.plain(ClusterConsoleText.bounded(String(line.dropFirst(6)).trimmingCharacters(in: .whitespaces), maximum: 240))
+    }
+
+    /// The latest pair line (`ClusterOnboardingPairReport`) the running coordinator-paired part wrote in `log` since
+    /// `offset`, where it began writing: a line an earlier part wrote is never this part's.
+    static func pairReport(in log: URL, from offset: UInt64) -> ClusterOnboardingPairReport.State? {
+        guard let handle = FileHandle(forReadingAtPath: log.path) else { return nil }
+        defer { try? handle.close() }
+        let size = (try? handle.seekToEnd()) ?? 0
+        let window: UInt64 = size > 16_384 ? size - 16_384 : 0
+        try? handle.seek(toOffset: offset <= size ? max(offset, window) : window)
+        return ClusterOnboardingPairReport.latest(inLog: String(decoding: handle.readDataToEndOfFile(), as: UTF8.self))
+    }
+
+    /// Whether the coordinator's latest trust status for the running coordinator-paired part (`pid`, the process that
+    /// wrote the daemon state) carries a current App Attest serving authorization; nil when it has sent none yet.
+    static func memberAppAttest(pid: Int32?, state: DaemonState? = DaemonStateFile.read(), now: Double = Date().timeIntervalSince1970) -> Bool? {
+        guard let pid, let state, state.pid == pid, let trust = state.trust else { return nil }
+        return trust.authorization?.hasCurrentAppAttestAuthorization(now: now) ?? false
+    }
+
+    /// When the running coordinator-paired part (`pid`) may make a new App Attest key again: its local key-generation
+    /// safeguard as its daemon state last reported it (read only); nil when nothing blocks it or nothing is known.
+    static func memberAppAttestRetryAt(pid: Int32?, state: DaemonState?, now: Double = Date().timeIntervalSince1970) -> Double? {
+        guard let pid, let state, state.pid == pid, let until = state.appAttest?.key?.generationBlockedUntil, until > now else { return nil }
+        return until
     }
 
     /// `ClusterLocalServing.notice` when this Mac's running part (rank 0) said it serves on its local API only.

@@ -3,12 +3,15 @@ import Foundation
 /// Owned and updated only by the service's supervision thread. A saved serving
 /// deployment stays awake between requests and while waiting for a peer to return.
 final class ClusterServicePowerAssertions {
+    /// The name the service's assertions carry (`pmset -g assertions`).
+    static let servingReason = "Darkbloom cluster: serving deployment"
+
     private let inference: InferencePowerAssertion
     private let network: NetworkPowerAssertion
     private var serving = false
     private var held = false
 
-    convenience init(reason: String = "Darkbloom cluster: serving deployment") {
+    convenience init(reason: String = ClusterServicePowerAssertions.servingReason) {
         self.init(inference: InferencePowerAssertion(reason: reason), network: NetworkPowerAssertion(reason: reason))
     }
 

@@ -93,6 +93,27 @@ public struct ClusterSetupRecord: Codable, Sendable, Equatable {
     /// Why the pair serves on the leader's local API although its coordinator offers a cluster approval (one line,
     /// `ClusterApprovalSync`); nil when it is offered for pairing or the coordinator offers none.
     public var approvalNote: String? = nil
+    /// The leading Mac's start that serves through Darkbloom and has not yet asked the coordinator whether to offer the
+    /// pair (its process id; only the screen's start sets it, `OnboardingLive.markRegistrationPending`; `localRegister`,
+    /// a failed test and a stop clear it): the status says the start is not over while that process runs, so the Mac
+    /// that joined never shows an early ✓. A local-only start marks itself too, until its test is answered (its outcome
+    /// clears it): the status then says the leading Mac is testing it, never that it checks with Darkbloom.
+    public var registrationPendingPID: Int32? = nil
+    /// When the process `registrationPendingPID` names started (microseconds since 1970): the pid counts only while
+    /// the process that has it started then, so a pid the system gave to another process never does.
+    public var registrationPendingStarted: UInt64? = nil
+    /// The start's outcome when its test request failed (the failure's first line, without its period): the leading
+    /// Mac's status says it, so the Mac that joined ends with the same ✗. The next start or serve, a passing test and a
+    /// stop clear it.
+    public var startTestFailure: String? = nil
+    /// The start's outcome when its test request passed: the time its screen showed ("in 0.61 s"). The leading Mac's
+    /// status says it under the serving line, so the Mac that joined ends with the same ✓ and time, without a test of its
+    /// own. The next start or serve and a stop clear it.
+    public var startTestPassed: String? = nil
+    /// The leading Mac's latest test that was not a start's (the serving model's test, its Retry, the scope switch's, a
+    /// re-test), when it failed: its first line without the period. The status says it under the not-serving line with
+    /// `ClusterOnboardingReady.lastTestFailedNote`. A pass, the next start or serve, a scope switch and a stop clear it.
+    public var lastTestFailure: String? = nil
     /// The approval set aside while the pair serves locally (`ApprovalSetAside`); nil otherwise.
     public var approvalSetAside: ApprovalSetAside? = nil
 

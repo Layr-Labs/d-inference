@@ -168,6 +168,16 @@ public struct ClusterPlacementRank: Codable, Equatable, Sendable {
     /// `ClusterDeviceProfile.hardwareFits`: the hardware can hold this range.
     /// Nil in a result written before it was recorded (read as `fit.possible`).
     public var hardwareFits: Bool? = nil
+    /// What `withinGPUWorkingSet` compares with the Mac's GPU limit: weights,
+    /// request state, workspace and the attention transient (or the complete
+    /// native quote). Not encoded, so a written plan reads as before; nil in a
+    /// decoded one.
+    public var gpuResidentBytes: Int? = nil
+
+    private enum CodingKeys: String, CodingKey {
+        case rank, device, firstLayer, endLayer, weightsBytes, loadNeedBytes, requestNeedBytes, needBytes
+        case admissibleNowBytes, fit, withinGPUWorkingSet, transientBytes, hardwareFits
+    }
 }
 
 public struct ClusterPlacementPrediction: Codable, Equatable, Sendable {
@@ -193,11 +203,15 @@ public struct ClusterPlacementCandidate: Codable, Equatable, Sendable {
     /// a restart would do, 4 never.
     public let tier: Int
     /// Every rank's hardware can hold its range, or its load gate admits it
-    /// now: the at-rest ceiling assumes the kernel's file-cache minimum, which
-    /// can sit below what a Mac admits now, and a split that loads now is never
-    /// impossible (owner, 2026-10-19). `tier` reports what the Macs' memory
-    /// allows right now (the load gate still decides).
-    public var possible: Bool { ranks.allSatisfy { $0.fit.tier == 0 || ($0.hardwareFits ?? $0.fit.possible) } }
+    /// now and it stays within that Mac's GPU limit: a split that loads now is
+    /// never impossible (owner, 2026-10-19), but one whose GPU part exceeds the
+    /// wired limit fails its first command buffers however much is free, so it
+    /// is not offered (`ClusterPlacementMemoryVerdict` says when a raised limit
+    /// would hold it). `tier` reports what the Macs' memory allows right now
+    /// (the load gate still decides).
+    public var possible: Bool {
+        ranks.allSatisfy { ($0.fit.tier == 0 && $0.withinGPUWorkingSet) || ($0.hardwareFits ?? $0.fit.possible) }
+    }
     /// The planner's first ordering key, lower first: the hardware holds every range, then inside the GPU working
     /// set, then the load gate admits every rank now (`tier` 0).
     public var hardwareGroup: Int { (possible ? 0 : 4) + (withinGPUWorkingSet ? 0 : 2) + (tier == 0 ? 0 : 1) }
@@ -376,8 +390,9 @@ public enum ClusterPlacementPlanner {
             }
         }
         if policy.tensorParallelBatchQuote?.assistant != nil {
+            // A forced or chosen tensor parallel is the one family this quote prices (`ClusterForcedMode`).
             guard devices.count == 2, policy.modes == [.tensorParallel], policy.schedules == [.serial],
-                  policy.forcedMode == nil, !policy.handOffModes else {
+                  policy.forcedMode == nil || policy.forcedMode == .tensorParallel, !policy.handOffModes else {
                 throw ClusterPlacementError("Tensor assistant quotation requires its exact two-rank tensor placement")
             }
         }
@@ -872,13 +887,16 @@ public enum ClusterPlacementPlanner {
             }
             let requestNeed = max(memory.minimumAdmissibleBytes, state + work + extra + transient + (layout.allowanceEveryRankBytes ?? 0) + memory.loadingHeadroomBytes)
             let need = max(loadNeed, held + requestNeed)
+            let gpu = held + state + work + extra + transient
             return .init(rank: rank, device: device.label, firstLayer: own.layers.lowerBound, endLayer: own.layers.upperBound,
                 weightsBytes: held, loadNeedBytes: loadNeed, requestNeedBytes: requestNeed, needBytes: need,
                 admissibleNowBytes: memory.admissibleNowBytes,
                 fit: device.profile.fit(needBytes: need, weightsBytes: held, largestTensorBytes: largest),
-                withinGPUWorkingSet: held + state + work + extra + transient <= device.profile.residentCapacityBytes,
+                withinGPUWorkingSet: gpu <= device.profile.residentCapacityBytes,
                 transientBytes: transient,
-                hardwareFits: device.profile.hardwareFits(needBytes: need, weightsBytes: held, largestTensorBytes: largest))
+                hardwareFits: device.profile.hardwareFits(needBytes: need, weightsBytes: held, largestTensorBytes: largest,
+                    gpuResidentBytes: gpu),
+                gpuResidentBytes: gpu)
         }
 
         /// The load gate's largest ask while loading `parts` in turn (each
@@ -1025,15 +1043,17 @@ public enum ClusterPlacementPlanner {
             let assistantTransient = (assistant?.loadBytes ?? 0) - (assistant?.residentBytes ?? 0)
             let allocatorHeld = load.held + batchLoadReservation + assistantTransient
             let need = max(loadPeak, load.held + requestNeed)
+            let gpu = load.held + max(state + work + extra + transient, nativeFloor)
             return .init(rank: rank, device: device.label,
                 firstLayer: pipelined ? own.layers.lowerBound : 0, endLayer: pipelined ? own.layers.upperBound : layout.layerCount,
                 weightsBytes: load.held, loadNeedBytes: loadPeak, requestNeedBytes: requestNeed, needBytes: need,
                 admissibleNowBytes: memory.admissibleNowBytes,
                 fit: device.profile.fit(needBytes: need, weightsBytes: allocatorHeld, largestTensorBytes: load.largest),
-                withinGPUWorkingSet: load.held + max(state + work + extra + transient, nativeFloor) <= device.profile.residentCapacityBytes,
+                withinGPUWorkingSet: gpu <= device.profile.residentCapacityBytes,
                 transientBytes: transient,
                 hardwareFits: device.profile.hardwareFits(needBytes: need, weightsBytes: allocatorHeld,
-                    largestTensorBytes: load.largest))
+                    largestTensorBytes: load.largest, gpuResidentBytes: gpu),
+                gpuResidentBytes: gpu)
         }
 
         /// `policy.tensorParallelMargin`: a tensor-parallel candidate stays

@@ -79,6 +79,9 @@ public final class ClusterService: @unchecked Sendable {
     private let beforePartStart: (@Sendable () -> Void)?
     /// The environment this Mac's parts start from (`partEnvironment`); nil: this process's own at each start.
     private let environment: [String: String]?
+    /// The name of this service's power assertions. macOS lists a process's assertions together, so a check that
+    /// runs several services in one process gives each a name of its own.
+    private let powerAssertionReason: String
     /// Main supervision thread only; a pending stop cannot be acknowledged by
     /// a cycle that read the preceding serving intent.
     private var supervisedStopDrainID: UUID?
@@ -116,6 +119,10 @@ public final class ClusterService: @unchecked Sendable {
     // and whether the running part is one.
     private var memberQuickEnds = 0
     private var childIsMember = false
+    /// The running part is the link follower (`followerArguments`), the only part that writes a Local Network refusal.
+    private var childIsLinkFollower = false
+    /// The running follower's refusal as last read, by its log's size (`runningPartRefusal`).
+    private var followerRefusalRead: FollowerRefusalRead?
     // Where the running part began writing its log (`lastError(in:from:)`).
     private var childLogOffset: UInt64 = 0
     // Derived control (ClusterServiceControl.swift).
@@ -164,10 +171,12 @@ public final class ClusterService: @unchecked Sendable {
     }
 
     /// Internal composition of the service's existing stores. Public callers keep the canonical user namespace,
-    /// the normal recovery deadline, the one-second supervision interval and the cable's listeners.
+    /// the normal recovery deadline, the one-second supervision interval, the cable's listeners and the power
+    /// assertions' name.
     init(settings: Settings, paths: ClusterUserPaths, recoveryGraceSeconds: Double = 300,
          supervisionIntervalSeconds: Double = 1, beforePartStart: (@Sendable () -> Void)? = nil,
-         environment: [String: String]? = nil, listening: Listening = .init()) {
+         environment: [String: String]? = nil, listening: Listening = .init(),
+         powerAssertionReason: String = ClusterServicePowerAssertions.servingReason) {
         precondition(recoveryGraceSeconds.isFinite && recoveryGraceSeconds >= 0)
         precondition(supervisionIntervalSeconds.isFinite && supervisionIntervalSeconds > 0)
         self.recoveryGraceSeconds = recoveryGraceSeconds
@@ -175,6 +184,7 @@ public final class ClusterService: @unchecked Sendable {
         self.beforePartStart = beforePartStart
         self.environment = environment
         self.listening = listening
+        self.powerAssertionReason = powerAssertionReason
         pairingStore = .default(home: paths.homeDirectory)
         var wizard = settings.wizard
         wizard.derivedPlacement = true
@@ -265,7 +275,7 @@ public final class ClusterService: @unchecked Sendable {
 
     /// Runs until `stop` is signalled; returns false when a rank had to be left running.
     public func run(stop: DispatchSemaphore, say: @escaping @Sendable (String) -> Void) throws -> Bool {
-        let power = ClusterServicePowerAssertions()
+        let power = ClusterServicePowerAssertions(reason: powerAssertionReason)
         defer { power.release() }
         let files = serviceFiles
         try ClusterConfigurationFiles.ensureDirectory(files.lock.deletingLastPathComponent(), create: true, privateMode: true)
@@ -415,7 +425,7 @@ public final class ClusterService: @unchecked Sendable {
                 say("the cable is on \(moved.interface) now: answering the paired Mac there")
                 // A port that was never set up has no fixed address: the other Mac cannot find this one there.
                 if let port = OnboardingLive.unsetCablePort(ClusterLinkReadinessProbe.inspectLocalLink()) {
-                    say("\(port) is not set up for the cluster: run `darkbloom cluster` on this Mac and choose \(ClusterOnboardingDriver.fixPortItem) (macOS asks for your password once)")
+                    say("\(port) is not set up for the cluster: run `\(OnboardingLive.cli) cluster` on this Mac and choose \(ClusterOnboardingDriver.fixPortItem) (macOS asks for your password once)")
                 }
             case .pairingChanged(let current):
                 say("this Mac's pairing changed (\(current.clusterID)): answering the paired Mac with the new one")
@@ -489,7 +499,7 @@ public final class ClusterService: @unchecked Sendable {
     static let memoryReplanSeconds: Double = 600
 
     private func noteMemoryRefusal(key: String, since: Date, model: String, say: @escaping @Sendable (String) -> Void) {
-        let log = ClusterIncidentLog(file: ClusterIncidentLog.defaultFile(homeDirectory: FileManager.default.homeDirectoryForCurrentUser))
+        let log = ClusterIncidentLog.forThisInstall()
         let refused = log.feed().incidents.contains { $0.ts >= since.timeIntervalSince1970 && $0.guidanceCode == "memory_gate_refused" }
         let due = lock.withLock { () -> Bool in
             guard refused else { memoryRefusals = nil; return false }
@@ -933,8 +943,9 @@ public final class ClusterService: @unchecked Sendable {
             return "The other Mac reclaimed its pair cache: removed \(reply.removedPlans) plan\(reply.removedPlans == 1 ? "" : "s")"
                 + (reply.keptLive > 0 ? ", \(reply.keptLive) still in use (removed when its part stops)" : "") + "."
         } catch {
-            return "The other Mac was not reached (\(ClusterConsoleText.bounded(String(describing: error), maximum: 160))): "
-                + "its pair cache stays until it unpairs too (`darkbloom cluster pair --forget \(pairing.localPin)` there)."
+            let reason = (error as? ClusterSetupFailure)?.text ?? String(describing: error)
+            return "The other Mac was not reached (\(ClusterConsoleText.bounded(reason, maximum: 160))): "
+                + "its pair cache stays until it unpairs too (`\(OnboardingLive.cli) cluster pair --forget \(pairing.localPin)` there)."
         }
     }
 
@@ -983,12 +994,16 @@ public final class ClusterService: @unchecked Sendable {
                 setup: reference.map { String($0.sha256.prefix(12)) },
                 child: .init(running: child?.isRunning == true || oldPart != nil, starts: starts, lastEnd: lastEnd,
                     restartInSeconds: child == nil && oldPart == nil && wait > 0 ? Int(wait.rounded(.up)) : nil,
-                    lastError: child?.isRunning == true ? nil : Self.lastError(in: serviceFiles.rankLog),
+                    // A running part says only a refusal its follower got (it keeps retrying, P2-1); an ended one its error.
+                    lastError: child?.isRunning == true
+                        ? Self.runningPartRefusal(linkFollower: childIsLinkFollower, in: serviceFiles.rankLog, from: childLogOffset,
+                                                  remembered: &followerRefusalRead)
+                        : Self.lastError(in: serviceFiles.rankLog, from: childLogOffset),
                     pid: child?.isRunning == true ? child?.processIdentifier : oldPart?.pid,
                     startedAt: child?.isRunning == true ? childStartedAt : oldPart?.startedAt,
                     solo: child?.isRunning == true ? childSetup?.hasPrefix("solo:") == true : oldPart?.solo,
                     notice: oldPart != nil ? "the previous run's part is still releasing; waiting before starting another"
-                        : child?.isRunning == true && childSetup?.hasPrefix("solo:") != true ? Self.servingNotice(in: serviceFiles.rankLog) : nil,
+                        : child?.isRunning == true && childSetup?.hasPrefix("solo:") != true ? Self.servingNotice(in: serviceFiles.rankLog, from: childLogOffset) : nil,
                     configurationSHA256: child?.isRunning == true && childSetup?.hasPrefix("cluster:") == true
                         ? String(childSetup!.dropFirst("cluster:".count).prefix(64)) : nil),
                 session: session,
@@ -999,6 +1014,15 @@ public final class ClusterService: @unchecked Sendable {
                 control: controlStatusLocked(model: record?.leadership?.modelName), servicePID: getpid())
             value.updating = updatingLine
             value.localOnly = record?.leadership.map { $0.scope.isLocalOnly }
+            value.loggedIn = AuthTokenStore.load() != nil
+            value.startsAtLogin = ClusterServiceAgent.startsAtLogin(environment: ProcessInfo.processInfo.environment,
+                                                                    installedAgents: ClusterServiceAgent.installedLabels)
+            if child?.isRunning == true, childIsMember {
+                value.child.pair = Self.pairReport(in: serviceFiles.rankLog, from: childLogOffset).map(ClusterOnboardingPairReport.text)
+                let state = DaemonStateFile.read()
+                value.child.appAttest = Self.memberAppAttest(pid: child?.processIdentifier, state: state)
+                value.child.appAttestRetryAt = Self.memberAppAttestRetryAt(pid: child?.processIdentifier, state: state)
+            }
             value.memberQuickEnds = memberQuickEnds
             value.approvalID = configuration?.nativeMember?.clusterApproval?.id ?? ""
             value.pairUpdate = ClusterPairUpdate.readProgress(from: ClusterServiceAgent.updateProgressPath(serviceDirectory: store.paths.directory))
@@ -1219,7 +1243,95 @@ public final class ClusterService: @unchecked Sendable {
 
     /// The same in `log`, reading only from `offset` on (where the part that ended began writing), so an error an
     /// earlier part wrote is never taken for this part's. A log shorter than `offset` was replaced: it is read whole.
-    static func lastError(in log: URL, from offset: UInt64 = 0) -> String? {
+    /// The part's last error in `log` since `offset`, where it began: its last "Error:" line, or, when that is a generic
+    /// cancellation (or there is none), the reason the part stopped serving, which it says first ("Distributed serving
+    /// stops: <reason>."): the 0.10.8 candidate, 2026-11-04, showed "CancellationError()" where the part had said "the
+    /// coordinator reported this member's runtime as outdated". `preferStopReason` false: the raw error line, for counts
+    /// that read specific member errors (`ClusterApprovalCheck.memberQuickEnds`).
+    static func lastError(in log: URL, from offset: UInt64 = 0, preferStopReason: Bool = true) -> String? {
+        let error = lastErrorLine(in: log, from: offset)
+        guard preferStopReason, error.map(isCancellation) ?? true else { return error }
+        if let stop = ClusterLogScan.lastLine(in: log, from: offset, where: { $0.hasPrefix(stopReasonPrefix) }) {
+            var reason = stop.dropFirst(stopReasonPrefix.count).trimmingCharacters(in: .whitespaces)
+            if reason.hasSuffix(".") { reason.removeLast() }
+            if !reason.isEmpty { return ClusterConsoleText.plain(ClusterConsoleText.bounded(reason, maximum: 240)) }
+        }
+        // A link follower macOS kept off the local network says so and ends cleanly: that is its reason (A-3), unless a
+        // link it opened since says the dial worked (`followerRefusal`), so a planned stop after it is a clean stop.
+        if error == nil, let refusal = followerRefusal(in: log, from: offset) { return refusal }
+        return error
+    }
+
+    /// How a part's link follower says macOS kept it off the local network: `ClusterLinkFollowerCommand` writes this
+    /// phrase, and `lastError` finds it. The part then ends cleanly, with no "Error:" line, and the Mac that leads only
+    /// saw the other Mac not answering (the DevNet run, A-3).
+    public static let localNetworkRefusal = "may not reach the local network"
+
+    /// How a part's refusal reads in its Mac's status (`lastError`), which the other Mac's screens read.
+    public static let localNetworkReasonPrefix = "its part can't reach the local network"
+
+    /// The prefix of each line the link follower writes (`ClusterLinkFollowerCommand`), and the words after it that
+    /// `followerRefusal` reads: once it has opened its link to the other Mac, and when a dial fails. The follower writes
+    /// them from here, as it does `localNetworkRefusal`.
+    public static let followerLinePrefix = "link-follower: "
+    public static let followerConnected = "connected"
+    public static let followerSessionOpened = "session opened"
+    public static let followerLinkRefused = "link refused: "
+
+    /// What the link follower writes once it has opened its link to the other Mac. A refusal before them no longer holds
+    /// (`followerRefusal`), so turning Local Network on clears it.
+    public static let followerLinkOpenedLines = [followerConnected, followerSessionOpened].map { followerLinePrefix + $0 }
+
+    /// The app macOS names in Privacy & Security → Local Network: the build identity's `CFBundleName`. Every
+    /// line that names the app reads it here: the screens (`ClusterOnboardingCommand.app`) and the follower's refusal.
+    public static let appName = BuildEnvironment.current.appDisplayName
+
+    /// What the link follower writes when a dial fails, before the refusal line for macOS's own refusal. A later one
+    /// without that line says its last dial got further and failed another way (`followerRefusal`).
+    public static let followerLinkRefusedLine = followerLinePrefix + followerLinkRefused
+
+    /// A running part's `lastError`: only a link follower's refusal (another part never writes one, so its log isn't
+    /// read), remembered by the log's size since the part started, so a status read with nothing new written reads
+    /// nothing (the joining Mac's window asks every second; each read used to walk up to 8 MiB back under the lock).
+    static func runningPartRefusal(linkFollower: Bool, in log: URL, from offset: UInt64, remembered: inout FollowerRefusalRead?,
+                                   scan: (URL, UInt64) -> String? = { ClusterService.followerRefusal(in: $0, from: $1) }) -> String? {
+        guard linkFollower else { return nil }
+        let size = (try? FileManager.default.attributesOfItem(atPath: log.path)[.size] as? NSNumber)?.uint64Value ?? 0
+        if let read = remembered, read.offset == offset, read.size == size { return read.refusal }
+        let refusal = scan(log, offset)
+        remembered = .init(offset: offset, size: size, refusal: refusal)
+        return refusal
+    }
+
+    /// What `runningPartRefusal` last read: the part's start in its log, the log's size then, and the refusal.
+    struct FollowerRefusalRead: Equatable { var offset: UInt64; var size: UInt64; var refusal: String? }
+
+    /// The reason the follower this service runs can't dial the other Mac now, from its log since it started: its last
+    /// dial's outcome, the refusal macOS gave it ("this process may not reach the local network", P2-1, A-2), or a
+    /// link it opened since ("connected", "session opened"), or a dial that failed another way since. The follower is
+    /// the process that dials, so this is the truth the service's broadcast probe can't give; it keeps running and
+    /// retrying, so it never ends with an error.
+    static func followerRefusal(in log: URL, from offset: UInt64 = 0) -> String? {
+        guard let last = ClusterLogScan.lastLine(in: log, from: offset, where: { line in
+                  line.contains(localNetworkRefusal) || line.contains(followerLinkRefusedLine)
+                      || followerLinkOpenedLines.contains { line.contains($0) }
+              }), let at = last.range(of: localNetworkRefusal) else { return nil }
+        return refusalReason(String(last[at.upperBound...]))
+    }
+
+    static func refusalReason(_ rest: String) -> String {
+        var reason = localNetworkReasonPrefix + rest
+        if reason.hasSuffix(".") { reason.removeLast() }
+        return ClusterConsoleText.plain(ClusterConsoleText.bounded(reason, maximum: 300))
+    }
+
+    /// How a part says why it stops serving (`StartCommand+Distributed`, the member's stop reason).
+    static let stopReasonPrefix = "Distributed serving stops: "
+
+    /// A run that ended because it was cancelled, which says nothing of why.
+    static func isCancellation(_ error: String) -> Bool { error.contains("CancellationError") }
+
+    private static func lastErrorLine(in log: URL, from offset: UInt64) -> String? {
         guard let handle = FileHandle(forReadingAtPath: log.path) else { return nil }
         defer { try? handle.close() }
         let size = (try? handle.seekToEnd()) ?? 0
@@ -1230,17 +1342,38 @@ public final class ClusterService: @unchecked Sendable {
         return ClusterConsoleText.plain(ClusterConsoleText.bounded(String(line.dropFirst(6)).trimmingCharacters(in: .whitespaces), maximum: 240))
     }
 
+    /// The latest pair line (`ClusterOnboardingPairReport`) the running coordinator-paired part wrote in `log` since
+    /// `offset`, where it began writing: a line an earlier part wrote is never this part's.
+    /// The line is written once per change and every request adds a line after it, so it is read backwards from the end
+    /// (`ClusterLogScan`), not from a fixed tail.
+    static func pairReport(in log: URL, from offset: UInt64) -> ClusterOnboardingPairReport.State? {
+        ClusterOnboardingPairReport.latest(inLogFile: log, from: offset)
+    }
+
+    /// Whether the coordinator's latest trust status for the running coordinator-paired part (`pid`, the process that
+    /// wrote the daemon state) carries a current App Attest serving authorization; nil when it has sent none yet.
+    static func memberAppAttest(pid: Int32?, state: DaemonState? = DaemonStateFile.read(), now: Double = Date().timeIntervalSince1970) -> Bool? {
+        guard let pid, let state, state.pid == pid, let trust = state.trust else { return nil }
+        return trust.authorization?.hasCurrentAppAttestAuthorization(now: now) ?? false
+    }
+
+    /// When the running coordinator-paired part (`pid`) may make a new App Attest key again: its local key-generation
+    /// safeguard as its daemon state last reported it (read only); nil when nothing blocks it or nothing is known.
+    static func memberAppAttestRetryAt(pid: Int32?, state: DaemonState?, now: Double = Date().timeIntervalSince1970) -> Double? {
+        guard let pid, let state, state.pid == pid, let until = state.appAttest?.key?.generationBlockedUntil, until > now else { return nil }
+        return until
+    }
+
     /// `ClusterLocalServing.notice` when this Mac's running part (rank 0) said it serves on its local API only.
     public static func servingNotice() -> String? {
         (try? paths().rankLog).flatMap { servingNotice(in: $0) }
     }
 
-    private static func servingNotice(in log: URL) -> String? {
-        guard let handle = FileHandle(forReadingAtPath: log.path) else { return nil }
-        defer { try? handle.close() }
-        let size = (try? handle.seekToEnd()) ?? 0
-        try? handle.seek(toOffset: size > 16_384 ? size - 16_384 : 0)
-        return ClusterLocalServing.notice(inLog: String(decoding: handle.readDataToEndOfFile(), as: UTF8.self))
+    /// The same notice in `log` from `offset` on (where the running part began writing): a part writes it once its API
+    /// listens and every request adds a line after it, so it is read backwards from the end (`ClusterLogScan`).
+    static func servingNotice(in log: URL, from offset: UInt64 = 0) -> String? {
+        ClusterLogScan.lastLine(in: log, from: offset) { $0.hasPrefix(ClusterLocalServing.logPrefix) }
+            .flatMap { ClusterLocalServing.notice(inLog: String($0)) }
     }
 
     /// Private local acknowledgement; only the supervision loop can advance
@@ -1376,7 +1509,7 @@ public final class ClusterService: @unchecked Sendable {
             // (`ClusterApprovalCheck.step`); an end the coordinator decided (out of reach, or the member role not
             // accepted in time) is not counted.
             if lock.withLock({ childIsMember }) {
-                let lastError = Self.lastError(in: serviceFiles.rankLog, from: lock.withLock { childLogOffset })
+                let lastError = Self.lastError(in: serviceFiles.rankLog, from: lock.withLock { childLogOffset }, preferStopReason: false)
                 lock.withLock { memberQuickEnds = ClusterApprovalCheck.memberQuickEnds(after: memberQuickEnds, ranSeconds: ran, lastError: lastError) }
             }
             // F14: a solo server that keeps ending right after its start is not started again for this plan and model
@@ -1448,7 +1581,7 @@ public final class ClusterService: @unchecked Sendable {
         else { return }
         let arguments: [String]
         let what: String
-        var memberRoute = false
+        var memberRoute = false, linkFollower = false
         var port: Int?
         if case .solo(let model) = want {
             arguments = ClusterLocalServing.soloArguments(settings.soloArguments, scope: scope) + ["--model", model, "--port", String(Self.soloPort)]
@@ -1482,6 +1615,7 @@ public final class ClusterService: @unchecked Sendable {
                 arguments = ClusterLocalServing.leaderArguments(settings.leaderArguments, scope: scope) + ["--port", String(leaderPort)]
             } else {
                 arguments = settings.followerArguments
+                linkFollower = true
             }
             what = "this Mac's part: " + (offered
                 ? "rank \(configuration.localRank), registered with the coordinator as a cluster member"
@@ -1491,11 +1625,14 @@ public final class ClusterService: @unchecked Sendable {
         }
         // A cluster part starting again clears the solo record: the next time this Mac is left alone it may try again.
         if case .cluster = want { lock.withLock { soloQuickEnds = nil } }
-        // The model's own pages stay in, and are read into, the file cache while the part starts: the load gate
-        // counts all of it as available (58d7371a), and the rank's load reads cached pages at memory speed instead of
-        // from the SSD (GLM tensor parallel: 101 GB/s against 14 GB/s on an M5 Ultra), most of a restart's time.
+        // The model's own pages leave the file cache before the part starts, so its load reads them from the SSD into
+        // free pages. A load into a cache full of its own model makes macOS compress other memory to free that cache
+        // page by page; past the load gate's compression guard (512 MiB) the gate counts no cache and refuses, and a
+        // restart that read the model back in was refused again (MiMo on two 128 GB Macs, 680 of 680 starts,
+        // 2026-11-01). The worker's hashing and loads read uncached and add none back, except GLM's tensor-parallel
+        // load, which reads through the cache on purpose.
         if case .cluster = want, let configuration = saved.configuration, configuration.peers.indices.contains(configuration.localRank) {
-            ClusterModelStore.prefetchPagesInBackground(folder: URL(fileURLWithPath: configuration.peers[configuration.localRank].modelDirectory))
+            ClusterModelStore.dropCachedPages(folder: URL(fileURLWithPath: configuration.peers[configuration.localRank].modelDirectory))
         }
         let process = Process()
         process.executableURL = settings.wizard.darkbloomExecutable
@@ -1517,6 +1654,7 @@ public final class ClusterService: @unchecked Sendable {
         lock.withLock {
             child = process; childSetup = key; childPort = port; childStarted = Date(); childStartedAt = startedAt; starts += 1
             childIsMember = memberRoute; childLogOffset = logOffset
+            childIsLinkFollower = linkFollower; followerRefusalRead = nil
             if !memberRoute { memberQuickEnds = 0 }
         }
         say("started \(what) (pid \(process.processIdentifier))")

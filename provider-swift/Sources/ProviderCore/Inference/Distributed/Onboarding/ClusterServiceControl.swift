@@ -6,6 +6,17 @@ import DarkbloomClusterProtocol
 /// what this Mac runs for each mode (its part, degraded serving alone, or nothing), and `darkbloom cluster` commands
 /// forwarded from any member to the leader.
 extension ClusterService {
+    /// Whether a control request is logged: every command, but a following window's `status` (asked each second while
+    /// it follows a start) once a minute.
+    static func logsControl(_ op: ClusterControlRequest.Operation, lastStatusLog: Date?, now: Date) -> Bool {
+        guard op == .status, let lastStatusLog else { return true }
+        return now.timeIntervalSince(lastStatusLog) >= 60
+    }
+
+    /// When a `status` request was last logged (`logsControl`).
+    private static let statusLogLock = NSLock()
+    nonisolated(unsafe) private static var lastStatusLog: Date?
+
     typealias PartWant = ClusterControlPartChoice
 
     /// The rank lease's own cadence and time-to-live (S03): the control lease renews and expires with it.
@@ -409,10 +420,16 @@ extension ClusterService {
             return .init(lines: ["The command did not run: " + refusal + "."], failed: true, leaderID: current.claim.leaderID, notLeader: true)
         }
         if Self.actsAsLeader(request.op), !leadershipConfirmed() {
-            return .init(lines: ["The command did not run: the other Mac's leadership is not confirmed yet; run `darkbloom cluster` again."], failed: true,
-                         leaderID: current.claim.leaderID)
+            let line = "The command did not run: the other Mac's leadership is not confirmed yet; run `darkbloom cluster` again."
+            return .init(lines: [ClusterOnboardingCommand.named(line)], failed: true, leaderID: current.claim.leaderID)
         }
-        say("control: running `\(request.op.rawValue)` for \(ClusterOnboardingMacName.other(named: node.members[pairing.peerMemberID]?.name))")
+        let now = Date()
+        let logs = Self.statusLogLock.withLock {
+            guard Self.logsControl(request.op, lastStatusLog: Self.lastStatusLog, now: now) else { return false }
+            if request.op == .status { Self.lastStatusLog = now }
+            return true
+        }
+        if logs { say("control: running `\(request.op.rawValue)` for \(ClusterOnboardingMacName.other(named: node.members[pairing.peerMemberID]?.name))") }
         return controlLive.execute(request, leaderID: node.localID)
     }
 

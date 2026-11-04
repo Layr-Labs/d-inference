@@ -43,6 +43,110 @@ struct ClusterOnboardingPeerLabelTests {
         #expect(try fixture.store.readRecord().leadership?.peerPin == Fixture.peerPin)
     }
 
+    /// 2026-11-03: the pairing was the production app's and this Mac signed with the DevNet app's key; `darkbloom cluster`
+    /// showed the usual menu while every start failed "pair again". The resume says so; the part this Mac plays stays.
+    @Test func aPairingMadeWithAnotherKeyIsSaidSo() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let changed = fixture.live(peerPin: Fixture.peerPin, currentPin: String(repeating: "d", count: 64)).resume()
+        #expect(changed.pairingProblem == .keyChanged)
+        #expect(changed.role == .leader && changed.modelName == "saved-model")
+        #expect(fixture.live(peerPin: Fixture.peerPin).resume().pairingProblem == nil, "the key it paired with")
+        #expect(fixture.live(peerPin: Fixture.peerPin, currentPin: nil).resume().pairingProblem == nil, "no key read: nothing claimed")
+        #expect(fixture.live(peerPin: String(repeating: "c", count: 64), currentPin: String(repeating: "d", count: 64)).resume()
+            == ClusterOnboardingResume(), "a pairing the record does not name resumes nothing, as before")
+    }
+
+    /// Pair again on a Mac that holds no pairing removes nothing and goes on to pair.
+    /// Round 9 (validator D's delta check at f7e9619637): the status shows the leading Mac's latest test. A failed test
+    /// that isn't a start (the serving model's test, its Retry, the scope switch's, a re-test) after a passing start: the
+    /// ✗ with an accurate note, never the start's time under a ✓.
+    @Test func aFailedTestAfterAPassingStartIsShownNotTheStartsTime() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        try fixture.store.updateRecord { $0.startTestPassed = "in 0.61 s" }
+        let live = OnboardingLive(context: fixture.context, store: fixture.store, settings: fixture.settings, readPairing: { nil },
+                                  currentPin: { nil })
+        live.settleTest(.failure(.init(["The test request got an empty answer."])))
+        let serving = "Serving Qwen 3.8 27B (pipeline) at http://localhost:8000 (local only)."
+        let lines = OnboardingLive.outcomeLines(record: try fixture.store.readRecord(), pending: false, local: true,
+                                                model: "Qwen 3.8 27B", serving: serving)
+        #expect(lines == [ClusterOnboardingNotServing.statusLine(model: "Qwen 3.8 27B", reason: "The test request got an empty answer"),
+                          "The last test from the leading Mac failed."])
+        #expect(try fixture.store.readRecord().startTestPassed == nil)
+        #expect(ClusterOnboardingReady.lastTestFailedNote == "The last test from the leading Mac failed.")
+        // A pass afterwards is the latest test: its time again, no failure.
+        live.settleTest(.success(["in 0.58 s"]))
+        #expect(OnboardingLive.outcomeLines(record: try fixture.store.readRecord(), pending: false, local: true, model: "Qwen 3.8 27B",
+                                            serving: serving) == [serving, "Test response in 0.58 s (the leading Mac's test)"])
+    }
+
+    /// A running start publishes its own outcome: while its mark is live, another test writes nothing.
+    @Test func aRunningStartsOutcomeIsNeverOverwrittenByAnotherTest() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let other = getppid()
+        let started = try #require(OnboardingLive.processStarted(other))
+        try fixture.store.updateRecord { $0.registrationPending = .init(pid: other, started: started) }
+        let live = OnboardingLive(context: fixture.context, store: fixture.store, settings: fixture.settings, readPairing: { nil },
+                                  currentPin: { nil })
+        live.settleTest(.failure(.init(["The test request got an empty answer."])))
+        let record = try fixture.store.readRecord()
+        #expect(record.lastTestFailure == nil && record.startTestFailure == nil && record.registrationPending?.pid == other)
+    }
+
+    /// A scope switch clears both published results: the pair starts again another way, so neither holds any more.
+    @Test func aScopeSwitchClearsBothResults() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        var record = try fixture.store.readRecord()
+        record.startTestPassed = "in 0.61 s"
+        record.startTestFailure = "The test request got an empty answer"
+        OnboardingLive.savingScope(.localOnly(bind: "0.0.0.0"), &record)
+        #expect(record.startTestPassed == nil && record.startTestFailure == nil && record.leadership?.scope.isLocalOnly == true)
+    }
+
+    /// The DevNet run on the M5 Ultra pair (A-9): choosing Pipeline for GLM-5.3-Flash loaded tensor parallel again. Its
+    /// listing put Pipeline first while its plan was tensor parallel, so the choice was taken for the planner's own and
+    /// nothing was kept. The person's family is kept, and the adopt plans again in it.
+    @Test func aChosenPipelineIsKeptWhenTheListingPutsItFirst() {
+        let family = OnboardingLive.keptFamily("pipeline_v1")
+        #expect(family != nil && OnboardingLive.replansInFamily(family, listedPlanMode: "tensor_parallel_v1"),
+                "pipeline kept, and the tensor-parallel plan planned again in it")
+        #expect(!OnboardingLive.replansInFamily(OnboardingLive.keptFamily("tensor_parallel_v1"), listedPlanMode: "tensor_parallel_v1"),
+                "the listed plan's own mode: adopted as listed")
+    }
+
+    /// The same through `useMode` itself, on GLM's listing (Pipeline first, the plan tensor parallel): the family it
+    /// keeps for the adopt is the one chosen, either way.
+    @Test func useModeKeepsTheChosenFamilyWhateverTheListingsOrder() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let live = fixture.live(peerPin: Fixture.peerPin)
+        let modes = ["pipeline_v1", "tensor_parallel_v1"].map { ClusterOnboardingMode(mode: $0, split: nil, measuredTokensPerSecond: nil) }
+        let glm = "zai-org/GLM-5.3-Flash"
+        live.useListing([.init(title: "Z.ai: GLM-5.3-Flash", lines: [], blocker: nil, modelID: glm, split: "tensor parallel", modes: modes)])
+        live.useMode(0, "pipeline_v1")
+        let pipeline = live.keptFamily(forModel: glm)
+        #expect(pipeline == .pipeline && OnboardingLive.replansInFamily(pipeline, listedPlanMode: "tensor_parallel_v1"),
+                "Pipeline kept, and the tensor-parallel plan planned again in it")
+        live.useMode(0, "tensor_parallel_v1")
+        let tensor = live.keptFamily(forModel: glm)
+        #expect(tensor == .tensorParallel && !OnboardingLive.replansInFamily(tensor, listedPlanMode: "tensor_parallel_v1"),
+                "the plan's own family: adopted as listed")
+        live.useMode(1, "pipeline_v1")
+        #expect(live.keptFamily(forModel: glm) == .tensorParallel, "a choice the list doesn't have changes nothing")
+    }
+
+    @Test func unpairWithoutAPairingChangesNothing() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let live = OnboardingLive(context: fixture.context, store: fixture.store, settings: fixture.settings, readPairing: { nil },
+                                  currentPin: { nil })
+        #expect(try live.unpair().get().isEmpty)
+        #expect(try fixture.store.readRecord().leadership?.peerPin == Fixture.peerPin)
+    }
+
     @Test func peerDisplaySanitizesControlCharactersAndUsesRemoteMemory() throws {
         let fixture = try Fixture()
         defer { fixture.remove() }
@@ -165,15 +269,18 @@ struct ClusterOnboardingPeerLabelTests {
             _ = try store.updateRecord { $0.leadership = leadership }
         }
 
-        func live(peerPin: String) -> OnboardingLive {
+        /// `currentPin`: this Mac's key as the live lookup would read it (the pairing's own by default; never the keychain).
+        func live(peerPin: String, currentPin: String? = Self.localPin) -> OnboardingLive {
             let pairing = Self.pairing(peerPin: peerPin)
-            return OnboardingLive(context: context, store: store, settings: settings, readPairing: { pairing })
+            return OnboardingLive(context: context, store: store, settings: settings, readPairing: { pairing }, currentPin: { currentPin })
         }
+
+        static let localPin = String(repeating: "a", count: 64)
 
         func remove() { try? FileManager.default.removeItem(at: home) }
 
         private static func pairing(peerPin: String) -> ClusterSetupLinkExchange.Pairing {
-            .init(localPin: String(repeating: "a", count: 64), peerPin: peerPin, clusterID: "fixture",
+            .init(localPin: localPin, peerPin: peerPin, clusterID: "fixture",
                   linkEpoch: "fixture", edgeID: "fixture", secretFile: "/not-read", secret: Data(repeating: 0, count: 32))
         }
     }

@@ -64,7 +64,7 @@ struct ClusterServiceLoginAgentTests {
         let lines = try Cluster.Stop.finishStop(nil, localOnly: true) { removals += 1; return ["fixture"] }
         #expect(removals == 1)
         #expect(lines.contains { $0.contains("will not start at login") })
-        #expect(lines.last == "The other Mac was not asked to stop. If it comes back, run `darkbloom cluster stop` there too.")
+        #expect(lines.last == "The other Mac was not asked to stop. If it comes back, run `darkbloom cluster stop --service` there too.")
         let ordinary = try Cluster.Stop.finishStop(nil) { ["fixture"] }
         #expect(!ordinary.contains { $0.contains("not asked to stop") })
     }

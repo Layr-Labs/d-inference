@@ -56,22 +56,26 @@ extension Start {
         // Resolve selection before closing admission; a cancelled picker never
         // disturbs the existing provider. Keep the update lease through install.
         try Task.checkCancellation()
-        let replacement = try await ServiceDrain.prepare(options: drain, withConfigurationChange: { setup in
-            try ProviderModelSelection.withReplacement(selectedModelIDs, configPath: snapshot.configPath,
-                fallbackConfig: config, body: setup)
-        })
+        let look = DarkbloomCommandLook.forCommand()
+        let replacement = try await look.working("Draining accepted requests") {
+            try await ServiceDrain.prepare(options: drain, state: ServiceDrain.soloProviderState(), withConfigurationChange: { setup in
+                try ProviderModelSelection.withReplacement(selectedModelIDs, configPath: snapshot.configPath,
+                    fallbackConfig: config, body: setup)
+            })
+        }
         defer { replacement.release() }
-        try await Self.completeDaemonReplacement(autopilot: enableAutopilot,
-            models: selection.autopilotModels ?? selectedModelIDs,
-            configPath: configOptions.config) {
-            try LaunchAgent.installAndStart(
-                coordinatorURL: coordinatorURL,
-                models: selectedModelIDs,
-                configPath: configPath,
-                localEndpoint: LaunchAgent.LocalEndpointOptions(
-                    enabled: localEndpoint, port: port, bind: bind, noAuth: noAuth
+        let endpoint = LaunchAgent.LocalEndpointOptions(enabled: localEndpoint, port: port, bind: bind, noAuth: noAuth)
+        try await look.working("Starting the provider service") {
+            try await Self.completeDaemonReplacement(autopilot: enableAutopilot,
+                models: selection.autopilotModels ?? selectedModelIDs,
+                configPath: configOptions.config) {
+                try LaunchAgent.installAndStart(
+                    coordinatorURL: coordinatorURL,
+                    models: selectedModelIDs,
+                    configPath: configPath,
+                    localEndpoint: endpoint
                 )
-            )
+            }
         }
 
         // Arm the crash-recovery watchdog (relaunches ~5 min after a crash;

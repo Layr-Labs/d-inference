@@ -8,7 +8,9 @@ Thunderbolt 5 cable) serve through Darkbloom, and then proves that it serves.
 To use it, tell your agent: "Read
 https://github.com/Layr-Labs/d-inference/blob/master/docs/provider/agent-setup.md
 and set up Darkbloom on this Mac" (or "on these two Macs"). It describes
-provider 0.10.8. People can follow it too.
+provider 0.10.8. People can follow it too. Testers who set up DevNet,
+Darkbloom's testing network, use the same steps with the
+[DevNet names](#devnet-testers-only).
 
 ## How to use this page
 
@@ -26,7 +28,8 @@ You are the agent. Work from top to bottom:
 
 Run each command in a shell on the Mac it is for. Right after a fresh install,
 your shell may not find `darkbloom` yet. Run
-`export PATH="$HOME/.darkbloom/bin:$PATH"` first.
+`export PATH="$HOME/.darkbloom/bin:$PATH"` first (on DevNet,
+`export PATH="$HOME/.darkbloom-dev/bin:$PATH"`).
 
 Setting up a two-Mac pair needs a terminal and the human. Once the pair is
 set up, three commands work from your shell without a terminal:
@@ -41,7 +44,8 @@ set up, three commands work from your shell without a terminal:
    firewall or any other security setting, and never ask the human to.
 2. Never edit, move or delete Darkbloom's files by hand. They include
    `~/.darkbloom`, `~/.config/darkbloom`, `~/Library/LaunchAgents/io.darkbloom.*`
-   and the model folders. Use `darkbloom` commands. Reading logs is fine.
+   and the model folders, and on DevNet `~/.darkbloom-dev` and
+   `~/.config/darkbloom-dev`. Use `darkbloom` commands. Reading logs is fine.
 3. Never delete Keychain items. Darkbloom keeps its Secure Enclave and App
    Attest keys there, and deleting them breaks Apple's verification and the pairing.
 4. Never run `darkbloom cluster link --remove` or `darkbloom cluster pair
@@ -59,8 +63,10 @@ set up, three commands work from your shell without a terminal:
 8. While a Mac waits for Apple's verification ([App Attest](#troubleshooting)),
    don't restart it, kill a Darkbloom process, or run `darkbloom start`,
    `stop`, `restart` or `update`. On a pair, each of these acts on both Macs.
-9. Install only the official release ([step 1](#1-install-or-update-darkbloom-every-mac)).
-   Never install a local build, `darkbloom-dev`, or an app copied from another Mac.
+9. Install only a signed release from Darkbloom's installer: the production one
+   in [step 1](#1-install-or-update-darkbloom-every-mac), or the DevNet one when
+   the human asked for DevNet ([DevNet](#devnet-testers-only)). Never install a
+   local build or an app copied from another Mac.
 10. Use `sudo` only where a Darkbloom message asks for it, and let the human type the password.
 11. On a paired Mac, `darkbloom start`, `stop`, `restart` and `status` act on
     the pair, from either Mac, and say so in their first line. Single-Mac
@@ -70,17 +76,19 @@ set up, three commands work from your shell without a terminal:
 
 ### What only the human can do
 
-Tell the human about these at the start.
+You can't click a macOS prompt, change System Settings, type a password, sign
+in through a browser or see a Mac's screen. Tell the human about these at the
+start, then ask for each one when it comes up and wait.
 
 | Action | When | What the human does |
 |---|---|---|
 | Agree to the Darkbloom Terms of Service | Before the first start ([step 3](#3-one-mac-choose-a-model-and-start-serving) or [step 7](#7-two-macs-start-and-read-the-result)) | Reads https://darkbloom.dev/terms.html. Starting the provider counts as accepting them |
-| Darkbloom login | [Step 2](#2-log-in-and-check-the-mac-every-mac), on each Mac | Opens the URL that `darkbloom login` prints, signs in, and enters the code it prints |
+| Darkbloom login | [Step 2](#2-log-in-and-check-the-mac-every-mac), on each Mac | Opens the URL that `darkbloom login` prints in a browser, signs in, and enters the code it prints |
 | Turn on RDMA over Thunderbolt (two Macs) | [Step 4](#4-two-macs-connect-the-cable-and-check-the-link), once per Mac, as an administrator | On macOS 27: System Settings › Privacy & Security › RDMA over Thunderbolt, then restart. On macOS 26: starts the Mac in Recovery, runs `rdma_ctl enable` in Terminal, then restarts |
 | Plug in the cable (two Macs) | Step 4 | Connects one Thunderbolt 5 cable directly between a Thunderbolt 5 port on each Mac, with no dock or hub |
-| macOS administrator password for the cable port | [Step 5](#5-two-macs-pair-them), once per Mac | Types it into macOS's prompt. Over SSH, types it into `sudo` in that terminal |
+| macOS administrator password for the cable port | [Step 5](#5-two-macs-pair-them), once per Mac, only while the port isn't set up | Types it into macOS's prompt. Over SSH, types it into `sudo` in that terminal |
 | Confirm the pairing code | Step 5 | Checks that both screens show the same six digits, then chooses **Yes** on each Mac |
-| Local Network permission | Step 5, right after pairing, on each Mac | Clicks **Allow** on the macOS prompt for Darkbloom |
+| Local Network permission | Step 5, right after pairing, on each Mac | At the Mac's own screen (Screen Sharing on a Mac with no display): clicks **Allow** if macOS asks, and checks that Darkbloom (on DevNet, Darkbloom Dev) is turned on in System Settings › Privacy & Security › Local Network. macOS can block it without asking. If macOS's firewall is on, also lets Darkbloom accept incoming connections (System Settings › Network › Firewall) |
 | Choose the model | Step 3 or [step 6](#6-two-macs-choose-the-model-on-the-leader), and when changing it later | Picks from the list that you read out |
 | Screen Sharing (headless Macs) | Any macOS prompt, and the login session | macOS prompts appear only on the Mac's own screen, so the human opens it with Screen Sharing. Apple's App Attest also needs someone logged in to the Mac's desktop |
 | Log in to macOS after a restart or power cut | Any time | Logs in on that Mac. With FileVault on, the disk stays locked until then, and Darkbloom serves again only after that. A pair serves only once both Macs are logged in |
@@ -98,15 +106,56 @@ Tell the human about these at the start.
 | Cable | — | One Thunderbolt 5 cable, connected directly |
 | Account | A Darkbloom account | Both Macs logged in to the same account |
 | Network | Outbound HTTPS to `api.darkbloom.dev` (port 443). No inbound port | The same on both Macs |
-| Darkbloom | 0.10.8 or later, the signed release | The same version on both Macs |
+| Darkbloom | 0.10.8 or later, the signed release (DevNet: [its own numbering](#devnet-testers-only)) | The same version on both Macs |
 
 The full facts are in [hardware requirements](hardware-requirements.md),
 [what a pair needs](two-mac-cluster.md#what-you-need) and
 [free disk for a pair](two-mac-cluster.md#free-disk).
 
+### DevNet (testers only)
+
+Skip this unless the human asked you to set up DevNet, Darkbloom's testing
+network, which runs builds of the `dev` branch. A DevNet build is a separate
+signed app that installs beside the production one. Follow every step on this
+page with these names ([dev build identity](../operations/provider-release.md#dev-build-identity)):
+
+| On this page | On DevNet |
+|---|---|
+| `darkbloom` | `darkbloom-dev` |
+| `~/.darkbloom`, `~/.darkbloom/bin` | `~/.darkbloom-dev`, `~/.darkbloom-dev/bin` |
+| `~/.darkbloom/Darkbloom.app` | `~/.darkbloom-dev/Darkbloom Dev.app` |
+| `curl -fsSL https://api.darkbloom.dev/install.sh \| bash` | `curl -fsSL https://api.dev.darkbloom.dev/install.sh \| bash` |
+| `Installed: Darkbloom v<version> in <home>/.darkbloom` | `Installed: Darkbloom Dev v<version> in <home>/.darkbloom-dev` |
+| doctor: `Build: prod`, `Coordinator: wss://api.darkbloom.dev/ws/provider` | `Build: dev`, `Coordinator: wss://api.dev.darkbloom.dev/ws/provider` |
+| `https://api.darkbloom.dev/v1/chat/completions` | `https://api.dev.darkbloom.dev/v1/chat/completions` |
+| The local API at port `8000` | Port `8001` |
+| Version 0.10.8 or later | `X.Y.Z-dev.branch.N`, for example `0.10.6-dev.branch.76` |
+
+- **The version.** X.Y.Z is the `dev` branch's version number, which can lag
+  the release: `0.10.6-dev.branch.76` carries the 0.10.8 code. Don't compare it
+  with this page's release numbers; "0.10.8 or later" and
+  [older builds](#older-builds) are for production builds. Both Macs need the
+  same DevNet build (`darkbloom-dev update` brings the latest).
+- **Shared with the production app on the same Mac:** the pairing, the cable
+  port setup, the cluster setup and its logs (`~/.darkbloom/cluster-setup/`)
+  and the models. Each app has its own Secure Enclave key, login and settings.
+  So **Start over** on one app unpairs the Mac for both, and the production app
+  must pair again afterwards.
+- **The DevNet installer** adds a `PATH` line to `~/.zshrc` and, where
+  `/usr/local/bin` is writable, links `/usr/local/bin/darkbloom-dev`.
+  `darkbloom-dev login` prints DevNet's own URL. A test request needs an API
+  key from the same DevNet account.
+- **Some DevNet lines still say `darkbloom`** where `darkbloom-dev` is meant,
+  for example the commands under `darkbloom-dev start`'s result block, the
+  no-terminal line of `darkbloom-dev cluster` and doctor's `details:` hint.
+  Always type `darkbloom-dev`. The plain `darkbloom` command is the production
+  app.
+
 ## Steps
 
 ### 1. Install or update Darkbloom (every Mac)
+
+On DevNet, use the [DevNet names](#devnet-testers-only) in every command below.
 
 1. Check what is installed:
 
@@ -146,15 +195,22 @@ The full facts are in [hardware requirements](hardware-requirements.md),
      ~/.darkbloom/Darkbloom.app && echo signature OK
    ```
 
-   Success: version 0.10.8 or later, `Identifier=io.darkbloom.provider`,
+   Success: version 0.10.8 or later (on DevNet, the
+   [DevNet number](#devnet-testers-only)), `Identifier=io.darkbloom.provider`,
    `TeamIdentifier=SLDQ2GJ6TL` and `signature OK`. `Signature=adhoc` or
    `TeamIdentifier=not set` means a local build. A local build may not use
    Darkbloom's production service, and `darkbloom update` can still report it
    as up to date. **STOP**: tell the human. With their go, run the installer
-   from 1.2. The signed app has its own Secure Enclave key, so if this Mac was
-   paired before, `darkbloom cluster` offers **Pair again** and the two Macs
-   pair again in [step 5](#5-two-macs-pair-them).
-   On a version below 0.10.8, see [older builds](#older-builds).
+   from 1.2. On a production version below 0.10.8, see [older builds](#older-builds).
+
+   A newly installed app has its own Secure Enclave key, but it can take over
+   the pairing another app made on this Mac (a local build, or the production
+   app before DevNet). `darkbloom cluster` offers **Pair again** only when it
+   sees that the key changed, and it may not: then it shows the old pairing as
+   usual, or says the other Mac isn't answering. After installing another app
+   on a paired Mac, choose **Start over (unpair and set up again)** →
+   **Yes, start over** on both Macs in [step 5](#5-two-macs-pair-them), with the
+   human's go.
 
    With two Macs, both must show the same version. If `darkbloom update`
    can't bring them to the same version, **STOP** and ask.
@@ -192,10 +248,20 @@ The full facts are in [hardware requirements](hardware-requirements.md),
    - `[PASS] account link: auth token present` means the login worked.
      `[WARN] account link: not logged in` means 2.1 did not finish.
    - The top lines should read `Build: prod` and `Coordinator:
-     wss://api.darkbloom.dev/ws/provider`. If they say anything else, **STOP** and ask.
+     wss://api.darkbloom.dev/ws/provider` (on DevNet, `Build: dev` and
+     `Coordinator: wss://api.dev.darkbloom.dev/ws/provider`). If they say
+     anything else, **STOP** and ask.
    - A `[FAIL]` about SIP or boot security: **STOP**, tell the human what it
      says, and never change the setting yourself (rule 1).
    - A `[FAIL] cluster localLinkIsolation…` line: see [troubleshooting](#troubleshooting).
+   - ``[FAIL] cluster savedConfiguration: Configuration input is unsafe, empty or
+     oversized (details: `darkbloom cluster doctor`)``, on a Mac that is
+     already paired (for example by another Darkbloom app), means no model was
+     chosen with this app yet. doctor counts it as a blocking failure
+     (`READINESS: 1 blocking failure(s), …`, exit status 1), but before step 6
+     it is expected: go on. `darkbloom cluster doctor` then says
+     `Saved setup: invalid`. It passes after the first setup. A later build
+     stops reporting this as a failure.
 
 3. **STOP** for the Terms of Service, if the human has not agreed yet. Then
    go to step 3 (one Mac) or step 4 (two Macs).
@@ -251,9 +317,19 @@ The full facts are in [hardware requirements](hardware-requirements.md),
    darkbloom cluster link
    ```
 
-   It prints `Local link: <state>`, one line per Thunderbolt RDMA port and what to do:
+   It prints `Local link: <state>`, then one line per Thunderbolt RDMA port:
 
-   | State | Meaning | Do |
+   ```text
+   Local link: ready
+     rdma_en1 (en1): noActivePort · port down
+     rdma_en6 (en6): ready · port active · own IPv4 address · IPv4-mapped GID published · isolated: own network service, fixed address, no bridge, router or DNS
+     rdma_en2 (en2): noActivePort · port down
+   ```
+
+   Act on the state in the first line. A port without the cable says
+   `noActivePort · port down`, which is normal when the first line is `ready`.
+
+   | State in the first line | Meaning | Do |
    |---|---|---|
    | `ready` | The port is set up | Go on |
    | `portWithoutIPv4Address`, `portBridgedWithoutAddress` | The cable is seen, but the port is not set up for the cluster yet | Go on. Step 5 sets the port up after the password prompt |
@@ -263,11 +339,12 @@ The full facts are in [hardware requirements](hardware-requirements.md),
    | `gidNotPublished`, `probeFailed` | The cable is not ready | **STOP**: the human reconnects the cable or restarts the Mac. Then check again |
 
 3. Both Macs need free memory for the pair, and a model that single-Mac
-   serving has loaded uses memory. If `darkbloom status` on either Mac shows
-   `Daemon: running` and lists warm models, **STOP** and ask the human whether
-   to stop single-Mac serving there before the pair starts. On a Mac that
-   isn't paired yet that is `darkbloom stop`; on one that is paired already,
-   `darkbloom stop --solo`.
+   serving has loaded uses memory. Run `darkbloom status --solo` on each Mac
+   (on a paired Mac, plain `darkbloom status` shows the pair instead and has no
+   `Daemon:` line). If it shows `Daemon: running` and lists warm models,
+   **STOP** and ask the human whether to stop single-Mac serving there before
+   the pair starts. On a Mac that isn't paired yet that is `darkbloom stop`; on
+   one that is paired already, `darkbloom stop --solo`.
 
 ### 5. Two Macs: pair them
 
@@ -283,26 +360,37 @@ human will be asked and about how long it takes, then has four steps:
 ([details](two-mac-cluster.md#the-steps-once)).
 
 1. On the leader, run `darkbloom cluster`. It shows `1/4 Connect` and `Allow
-   macOS's password and Local Network prompts.`. macOS then asks once for the
-   administrator password to set up the cable port, and the human types it.
-   Next come `✓ Cable ready`, `2/4 Pair` and ``Run `darkbloom cluster` on the
-   other Mac.``. The leader then waits.
+   macOS's password and Local Network prompts.` (over SSH: `Allow macOS's
+   password prompt here and its Local Network prompt on this Mac's screen
+   (Screen Sharing if headless).`). If the cable port isn't set up yet, macOS
+   asks once for the administrator password, and the human types it; a port
+   set up before asks nothing. Next come `✓ Cable ready`, `2/4 Pair` and
+   ``Run `darkbloom cluster` on the other Mac.``. The leader then waits. If the
+   other Mac isn't found within about 30 seconds, the screen lists what to
+   check, starting with `The other Mac isn't found yet. Check that:`.
 2. On the other Mac, run `darkbloom cluster`. The same password prompt
    appears there. Then both screens show `Code 123 456. Same on the other
    Mac?`. **STOP**: the human compares the two codes and chooses **Yes** on
    each Mac only if they match, or **No** if they don't. Enter selects
    **Yes**, so never press Enter for the human.
-3. The screens say `✓ Paired. This Mac leads.` and `✓ Paired. The other Mac
-   leads.`. Both Macs then ask for Local Network access for Darkbloom ("Click
-   Allow on the Local Network prompt for Darkbloom. Allow it on the other Mac
-   too."). The human clicks **Allow** on each Mac, and each screen shows
-   `✓ Allowed`. Over SSH, the prompt appears on the Mac's own screen, so the
-   human uses Screen Sharing.
+3. The screens say ``✓ Paired. This Mac (…) leads.`` and `✓ Paired. The other
+   Mac leads.`. Each Mac's cluster service then starts, and it needs macOS's
+   Local Network access. The screen asks for it ("Click Allow on the Local
+   Network prompt for Darkbloom.", then `✓ Allowed`) only when the service's
+   own check finds it blocked, and that check can miss a block: macOS can
+   refuse the service's link to the other Mac while no step appears.
+   **STOP** on each Mac: the human, at that Mac's own screen (Screen Sharing on
+   a Mac with no display), clicks **Allow** if macOS asks, and checks that
+   Darkbloom (on DevNet, Darkbloom Dev) is turned on in System Settings ›
+   Privacy & Security › Local Network. You can't see or change this setting.
+   If it is blocked, the start in step 7 ends with ✗
+   ([Local Network blocked](#on-a-two-mac-pair)).
 4. The other Mac then says ``Waiting for the other Mac (…) to choose the model
-   and start…`` and follows the start. It ends with the same ✓ or ✗ block as
-   the leader. After ✓ it says `You can close this window.`; after ✗,
-   ``Choose Retry on the other Mac (…): its screen shows the choices.``.
-   Everything after this is chosen on the leader.
+   and start…`` and follows the start. It ends with the same ✓ block as the
+   leader, then `You can close this window.`. After a ✗ it says
+   ``Choose Retry on the other Mac (…): its screen shows the choices.``, but
+   only when its own 15-minute wait ends, so until then act on the leader's
+   screen. Everything after this is chosen on the leader.
 
 If ``Cable port not set up. Run `darkbloom cluster` again.`` appears, the
 password prompt was declined or failed. Run `darkbloom cluster` again with
@@ -312,14 +400,23 @@ Mac still holds an old pairing. See [troubleshooting](#troubleshooting).
 
 ### 6. Two Macs: choose the model (on the leader)
 
-`3/4 Model` shows `Reading both Macs over the cable` and `Planning each model
-for both Macs`, then a list. The list has only the models approved for
-clusters (GLM-5.3-Flash, Qwen3.8 27B, MiMo-V2.6-Flash and Gemma 4 26B QAT)
-that these two Macs can serve. Each line gives the name, size and split, for
-example `Qwen3.8-27B-4bit-mtp · 16.3 GB · pipeline`. A line ends with `copy`
-or `download` when one Mac lacks the model. Lines that end with
-`does not fit now` (apps hold the memory it needs) or `not enough free disk`
-come after the others.
+`3/4 Model` reads both Macs and plans each model (a colour screen says
+`Reading both Macs over the cable` and `Planning each model for both Macs`
+meanwhile; with `NO_COLOR=1` these working lines don't print), then shows a
+list. The list has only the models approved for clusters (GLM-5.3-Flash,
+Qwen3.8 27B, MiMo-V2.6-Flash and Gemma 4 26B QAT) that these two Macs can
+serve. Each line gives the name, the size, the mode or modes and their speed
+measured on these Macs:
+
+```text
+  1) gemma-4-26b-qat-4bit · 15.6 GB · pipeline or tensor parallel · not measured on these Macs yet
+  2) Qwen 3.8 27B · 16.3 GB · tensor parallel · not measured on these Macs yet
+  3) Z.ai: GLM-5.3-Flash · 181.8 GB · download · not enough free disk
+```
+
+A line ends with `copy` or `download` when one Mac lacks the model. Lines that
+end with `does not fit now` (apps hold the memory it needs) or
+`not enough free disk` come after the others.
 
 Tell the human how the split works. Never choose a mode for them:
 
@@ -363,16 +460,20 @@ Tell the human how the split works. Never choose a mode for them:
    `darkbloom login` on the other Mac, then choose it. Choose **Serve locally
    only** only if the human wants no Darkbloom traffic.
 2. `Loading takes a few minutes for a large model; both Macs show progress
-   here.` On a color terminal, one row per Mac (registering, registered,
-   loading its share) shows the time since loading began. The leader waits at
-   most 15 minutes for both Macs to load the model and answer a first request.
+   here.` On a colour terminal a live line shows the wait and the time so far,
+   for example `Loading Qwen 3.8 27B on both Macs · 0 s…`, with the parts'
+   state in brackets when one starts again. A pair offered to Darkbloom then
+   shows a row per Mac while Darkbloom pairs them. The leader waits at most
+   15 minutes for both Macs to load the model and answer a first request.
    Wait, and don't touch either Mac.
 3. The result appears as one block. Success is the `✓` block, then the
    pair's card: `Model:`, `Macs:`, `Serves:` (or `Local:` for a pair served
-   locally only), `Logs:`, `Starts by itself at login on both Macs.` and the
-   commands `darkbloom stop`, `restart` and `status`. The command then returns
-   to the shell. A failure looks like this, followed by the choices **Retry**,
-   **Change model**, **Serve locally only** and **Diagnostics**:
+   locally only), `Logs:`, `Starts by itself at login on both Macs.`, a line
+   about restarts, and the commands `darkbloom stop`, `restart` and `status`.
+   The command then returns to the shell. The login line speaks for this Mac's
+   service only: [verify](#two-macs) checks each Mac. A failure looks like
+   this, followed by the choices **Retry**, **Change model**, **Serve locally
+   only** and **Diagnostics**:
 
    ```text
    ────────────────────────────────────────────────
@@ -384,6 +485,13 @@ Tell the human how the split works. Never choose a mode for them:
    Act on the reason ([troubleshooting](#troubleshooting)), then choose
    **Retry**. Pressing q leaves with ``Not serving yet. Both Macs keep trying by
    themselves; run `darkbloom cluster` to check.`` and exit status 1.
+
+   **Retry** only waits for both parts again; it doesn't start a part that was
+   stopped. If one was (for example with `darkbloom cluster stop --service` on
+   the other Mac), Retry waits with nothing on the screen, and q doesn't leave.
+   Press Ctrl-C, which prints ``Stopped. Run `darkbloom cluster` again to
+   continue where it was.``. Then run `darkbloom cluster` on the other Mac,
+   then on the leader again.
 4. Go to [verify](#two-macs).
 
 ## Verify it really serves
@@ -428,7 +536,8 @@ Check all three:
    darkbloom cluster status --json; echo "exit status $?"
    ```
 
-   It only reads. On the Mac that follows, it asks the leader over the cable.
+   It only reads. On the Mac that follows, it asks the leader over the cable,
+   which can take up to half a minute.
    The pair serves when the exit status is `0` and `state` is `serving`: both
    Macs loaded the model and the pair answered its first request. On each
    Mac, `service.running` and `service.starts_at_login` should also be `true`.
@@ -522,6 +631,9 @@ This Mac is in a two-Mac cluster with the other Mac (Apple M5 Max, 128 GB): star
   darkbloom status   Check status
 ```
 
+A DevNet build prints the same three command lines with `darkbloom`; type
+`darkbloom-dev` ([DevNet](#devnet-testers-only)).
+
 ### The pair's model list
 
 On the leader, `darkbloom cluster` opens with both Macs and the cable, then
@@ -569,6 +681,12 @@ it as the logged-in user, never with `sudo`: it refuses `sudo` (exit status
 64) and asks for the password itself when a step needs it. In a terminal
 without flags, **Remove everything** asks once more before it starts.
 
+With both the production and the DevNet app on a Mac, uninstalling one
+(`darkbloom uninstall` or `darkbloom-dev uninstall`) keeps the pairing, the
+cluster setup and the cable port setup (`~/.darkbloom/cluster*`) and the shared
+models for the other, asks for no password, and leaves the other app's cluster
+service running ([details](cli-reference.md#darkbloom-uninstall)).
+
 1. **STOP**: ask the human which choice they want, and show them the plan
    first. `--dry-run` changes nothing and needs no `--yes`. Add `--json` for
    the plan as JSON:
@@ -610,6 +728,10 @@ yet"](troubleshooting.md#a-two-mac-cluster-says-not-serving-yet) and
 
 | Signal | Cause | Do |
 |---|---|---|
+| The ✗ says ``… The other Mac did not answer over the cable. Make sure it is on; it rejoins by itself. (The follower member did not connect over the link control channel.)`` and ``The other Mac (…): its part is running, no error reported.``. On that other Mac, `~/.darkbloom/cluster-setup/rank.log` shows `link-follower: link refused: connectFailed (unreachable)` and `this process may not reach the local network` | macOS blocks Local Network access for that Mac's cluster service, often without asking. The service's own check can still log `allowed` | **STOP**: the human, at that Mac's screen (Screen Sharing if it has no display), turns on Darkbloom (on DevNet, Darkbloom Dev) in System Settings › Privacy & Security › Local Network, or clicks **Allow** if macOS asks. Then choose **Retry** on the leader. Check it with `grep 'link-follower' ~/.darkbloom/cluster-setup/rank.log \| tail -n 3` on that Mac. Until it is allowed, `darkbloom start` there waits 10 minutes and exits with status 3, and `darkbloom cluster status` run there outside a Terminal or SSH session says `other_mac_away`. A later build names the Local Network block in the ✗ block itself |
+| doctor: ``[FAIL] cluster savedConfiguration: Configuration input is unsafe, empty or oversized (details: `darkbloom cluster doctor`)`` before the first setup with this app | No model was chosen with this app yet | Go on ([step 2](#2-log-in-and-check-the-mac-every-mac)). It passes after the first setup |
+| After installing another Darkbloom app on a paired Mac (DevNet beside production, or the signed release over a local build), `darkbloom cluster` shows the old pairing as usual, or says the other Mac isn't answering, and offers no **Pair again** | The apps share the pairing, and the new app may not notice that its key differs | With the human's go, choose **Start over (unpair and set up again)** → **Yes, start over** on both Macs, then pair as in step 5. It unpairs the Mac for both apps |
+| After **Retry**, nothing happens for minutes, and q does nothing | A part was stopped, and Retry only waits for it | Press Ctrl-C, then run `darkbloom cluster` on the other Mac, then on the leader ([step 7](#7-two-macs-start-and-read-the-result)) |
 | doctor: `[FAIL] cluster localLinkIsolation.rdma_enN: clusterSubnetInUse: The cluster port enN cannot be isolated yet (the cluster subnet 10.219/16 is already used on this Mac) …`, on a version below 0.10.8 | A known false alarm on paired Macs: macOS reaches the port's own address through a loopback route | Don't stop for it, and never run `darkbloom cluster link --remove` because of it. Verify serving instead, and update both Macs. 0.10.8 no longer reports it |
 | The same `[FAIL]` on 0.10.8 or later | Another interface or a VPN on this Mac uses 10.219/16 | **STOP**: show the human the line. They remove that address or VPN route, then run `darkbloom cluster` again |
 | `This Mac's Secure Enclave key changed after it paired …`, or one Mac waits at `2/4 Pair` while the other shows its status | An old pairing: a Mac was reinstalled, unpaired or replaced, or moved between apps | On the Mac with the old pairing, choose **Pair again** if it offers it, otherwise **Start over (unpair and set up again)** → **Yes, start over**. Then pair as in step 5 ([pairing again](two-mac-cluster.md#pairing-again)) |
@@ -638,8 +760,9 @@ human may run `sudo darkbloom report`.
 
 ### Older builds
 
-Below 0.10.8, update every Mac first with `darkbloom update`. If no newer
-release is offered yet:
+This section is for production builds below 0.10.8; a DevNet build's number
+doesn't place it here ([DevNet](#devnet-testers-only)). Update every Mac first
+with `darkbloom update`. If no newer release is offered yet:
 
 - The setup can say `✓ Serving … Done.` with nothing loaded. Always verify
   with a [test request](#a-test-request-through-darkbloom).
@@ -680,3 +803,6 @@ Code that prints the lines quoted here:
 | `darkbloom cluster status`, its exit statuses and `--json` | `provider-swift/Sources/darkbloom/ClusterDiagnosticsCommand.swift` (`Cluster.Status`), `ClusterPairSummary.JSON` |
 | `darkbloom cluster stop` and the `link --remove` question | `provider-swift/Sources/darkbloom/ClusterServiceCommand.swift` (`Cluster.Stop.mode`), `provider-swift/Sources/darkbloom/ClusterLinkCommand.swift` (`Cluster.Link.removalGate`) |
 | `darkbloom uninstall` | `Uninstall`, `ProviderUninstall.invocation` |
+| The Local Network check and the link's refusal | `provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/ClusterLocalNetworkAccess.swift` (`ClusterLocalNetworkAccess.probe`), `provider-swift/Sources/darkbloom/ClusterLinkFollowerCommand.swift` |
+| doctor's cluster checks | `provider-swift/Sources/darkbloom/DoctorClusterChecks.swift` |
+| DevNet names (`darkbloom-dev`, `Darkbloom Dev.app`, `~/.darkbloom-dev`, port `8001`) | `provider-swift/identity/provider-identity.json` |

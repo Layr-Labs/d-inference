@@ -364,7 +364,7 @@ public struct ClusterOnboardingMode: Codable, Sendable, Equatable {
 
     /// A mode's split while a model serves (`OnboardingLive.modeSplit`): planned with that model's memory taken, it is
     /// not the one that loads.
-    public static let decidedWhenItLoads = "decided when it loads"
+    static let decidedWhenItLoads = "decided when it loads"
 
     /// The default among `modes`: the fastest measured on this pair, else the planner's (the first).
     public static func defaultIndex(_ modes: [ClusterOnboardingMode]) -> Int {
@@ -482,7 +482,7 @@ public enum ClusterOnboardingDeployment {
     }
 
     /// "1 layer", "44 layers": a layer count as every split says it (c3's B19 read "1 layers").
-    public static func layers(_ count: Int) -> String { count == 1 ? "1 layer" : "\(count) layers" }
+    static func layers(_ count: Int) -> String { count == 1 ? "1 layer" : "\(count) layers" }
 
     /// "Serving Qwen3.8-27B across both Macs: pipeline, M3 Ultra 40 layers / M5 Ultra 24 layers".
     public static func line(model: String, mode: String, shares: [Share]) -> String {

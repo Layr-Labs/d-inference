@@ -113,9 +113,11 @@ struct ClusterPairSummary: Sendable, Equatable {
         Self.modeAndSplit(deployment: deployment) ?? servingMarker.map { ($0, nil) }
     }
 
+    /// One raw mode of each kind `ClusterOnboardingDeployment.modeWords` tells apart, the last one it doesn't know.
+    private static let rawModes = ["prefill_tensor_decode", "tensor", "pipeline_mtp", "pipeline", "phase_split", "unknown"]
+
     /// The words `ClusterOnboardingDeployment.modeWords` says for every mode, longest first.
-    private static let modeWordsList = ["prefill_tensor_decode", "tensor", "pipeline_mtp", "pipeline", "phase_split", "unknown"]
-        .map(ClusterOnboardingDeployment.modeWords).sorted { $0.count > $1.count }
+    private static let modeWordsList = rawModes.map(ClusterOnboardingDeployment.modeWords).sorted { $0.count > $1.count }
 
     /// A deployment line's mode and split ("Serving … across both Macs: pipeline, M3 Ultra 40 layers / …"): the mode's
     /// words follow the line's ": ", and a model's own name may hold one first ("Z.ai: GLM-5.3-Flash").
@@ -142,8 +144,7 @@ struct ClusterPairSummary: Sendable, Equatable {
         return Self.servingMarkers.contains(marker) ? marker : nil
     }
 
-    private static let servingMarkers = Set(["prefill_tensor_decode", "tensor", "pipeline_mtp", "pipeline", "phase_split"]
-        .compactMap(ClusterOnboardingDeployment.splitMarker))
+    private static let servingMarkers = Set(rawModes.compactMap(ClusterOnboardingDeployment.splitMarker))
 
     // MARK: - The pair in one sentence (stop, start, restart)
 

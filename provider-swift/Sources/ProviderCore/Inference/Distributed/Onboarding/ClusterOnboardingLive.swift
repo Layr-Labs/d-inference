@@ -801,6 +801,9 @@ final class OnboardingLive: @unchecked Sendable {
             let namesByArtifact = Dictionary(catalogAll.compactMap { model in model.aggregateSHA256.map { ($0, model.displayName) } },
                                              uniquingKeysWith: { first, _ in first })
             var keys = [ChoiceKey]()
+            // A running model is stopped (its memory released) before a new one starts, so its memory is no reason here,
+            // and the split planned with it taken is not the one that loads (`modeSplit`). Read once, for the whole list.
+            let serving = leadership?.serving == true
             let choices = options.map { option -> ClusterOnboardingModelChoice in
                 let gigabytes = String(format: "%.1f GB", Double(option.model.totalBytes) / 1e9)
                 let modelID = option.model.modelID
@@ -820,9 +823,6 @@ final class OnboardingLive: @unchecked Sendable {
                 let deployment = ClusterOnboardingDeployment.line(model: title, mode: plan.mode, shares: planShares(plan.ranks, localName: localName))
                 keys.append((option.model.folder, ClusterSetupState.planKey(option.model, plan), modelID, plan.alone.filter(\.holds).map(\.memberID),
                              deployment, plan))
-                // A running model is stopped (its memory released) before a new one starts, so its memory is no reason here,
-                // and the split planned with it taken is not the one that loads (`modeSplit`).
-                let serving = leadership?.serving == true
                 let remedy = serving || plan.fitsNow ? nil : Self.fitRemedy(plan, local: here, peer: there)
                 // Served for the owner either way. Once chosen: the planner's one-line reason for tensor parallel or
                 // a pipeline, and (serving through Darkbloom) whether public traffic may reach it yet. In the list,

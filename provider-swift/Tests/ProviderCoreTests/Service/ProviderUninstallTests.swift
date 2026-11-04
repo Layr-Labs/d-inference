@@ -769,6 +769,106 @@ struct ProviderUninstallTests {
         #expect(single.exists(single.paths.installDirectory.appendingPathComponent(single.paths.appBundleName)))
     }
 
+    @Test("m1: a cluster service started through a link is told apart by where the link leads")
+    func linkedExecutablesAreResolvedBeforeTellingWhose() throws {
+        let fixture = try Fixture.make()
+        defer { fixture.remove() }
+        _ = try installBoth(fixture)
+        for (this, other) in [(BuildEnvironment.dev, BuildEnvironment.prod), (.prod, .dev)] {
+            let paths = ProviderUninstallPaths(home: fixture.home, environment: this,
+                                               commandLinkDirectory: fixture.paths.commandLink.deletingLastPathComponent())
+            // `~/.darkbloom-dev/bin/darkbloom-dev cluster service`: the kernel records the link, not the app binary.
+            let ownLink = this.installDirectory(home: fixture.home).appendingPathComponent("bin/\(this.cliName)").path
+            let otherLink = other.installDirectory(home: fixture.home).appendingPathComponent("bin/\(other.cliName)").path
+            #expect(ProviderUninstall.owner(ofExecutable: ownLink, paths: paths) == .thisInstall, "\(this)")
+            #expect(ProviderUninstall.owner(ofExecutable: otherLink, paths: paths) == .otherInstall(ProviderUninstall.installName(other)),
+                    "\(this)")
+            // A link elsewhere that leads into the other install's app.
+            let elsewhere = fixture.outside.appendingPathComponent("links/\(other.cliName)")
+            try fixture.link(elsewhere, to: other.installDirectory(home: fixture.home)
+                .appendingPathComponent("\(other.appBundleName)/Contents/MacOS/\(other.cliName)").path)
+            #expect(ProviderUninstall.owner(ofExecutable: elsewhere.path, paths: paths) == .otherInstall(ProviderUninstall.installName(other)),
+                    "\(this)")
+            try FileManager.default.removeItem(at: elsewhere)
+        }
+    }
+
+    @Test("n2: a cluster service that starts again during the steps after step 2 still keeps every file")
+    func stillRunningCheckIsRightBeforeTheFirstDeletion() async throws {
+        let fixture = try Fixture.make()
+        defer { fixture.remove() }
+        let binary = fixture.paths.installDirectory
+            .appendingPathComponent("\(fixture.paths.appBundleName)/Contents/MacOS/\(fixture.paths.commandLink.lastPathComponent)")
+        let running = ProviderUninstall.RunningClusterService(pid: 51, executable: binary.path, owner: .thisInstall)
+        // It starts again while the cable step waits for its password.
+        let started = Calls()
+        var operations = fixture.operations()
+        let cable = operations.removeCableSetup
+        operations.removeCableSetup = { started.add("started"); return try cable() }
+        operations.runningClusterService = { started.all.isEmpty ? nil : running }
+        let report = await fixture.run(.everything, pairing: fixture.pairing, operations: operations)
+        #expect(fixture.deletes.all.isEmpty, "nothing is deleted under the service that started again: \(fixture.deletes.all)")
+        #expect(status(report, ProviderUninstall.stillRunningStep) == .failed, "\(report.steps)")
+    }
+
+    @Test("m2, m3, n1: the lock and the pid file are read three ways, and only a cluster service is anyone's")
+    func lockAndPidFileAreReadCarefully() throws {
+        let fixture = try Fixture.make()
+        defer { fixture.remove() }
+        _ = try installBoth(fixture)
+        let paths = ProviderUninstallPaths(home: fixture.home, environment: .dev,
+                                           commandLinkDirectory: fixture.paths.commandLink.deletingLastPathComponent())
+        let lock = fixture.outside.appendingPathComponent("cluster-setup/service.lock")
+        let pidFile = fixture.outside.appendingPathComponent("cluster-setup/service.pid")
+        func read(isService: Bool = true) -> ProviderUninstall.RunningClusterService? {
+            ProviderUninstall.runningClusterService(lock: lock, pidFile: pidFile, paths: paths, isClusterService: { _ in isService })
+        }
+        #expect(read() == nil, "no lock file: no service")
+        try fixture.write(lock)
+        #expect(read() == nil, "a lock nobody holds: no service")
+        // m3: a lock that can't be opened is not "no service".
+        chmod(lock.path, 0)
+        #expect(read()?.owner == .unknown && read()?.described == ProviderUninstall.unreadableLockNote)
+        chmod(lock.path, 0o600)
+        // Held, as a running service holds it (here through another open file of this test).
+        let holder = open(lock.path, O_RDONLY)
+        defer { close(holder) }
+        #expect(flock(holder, LOCK_EX | LOCK_NB) == 0)
+        // n1: no readable pid, and no claim about whose it is.
+        #expect(read()?.described == "a cluster service is running, and its pid can't be read")
+        // m2: a pid that is not a cluster service (a stale pid file) is nobody's.
+        try Data("\(getpid())\n".utf8).write(to: pidFile)
+        let stale = read(isService: false)
+        #expect(stale?.owner == .unknown && stale?.isThisCLI == false)
+        #expect(stale?.described == "the cluster service lock is held, but pid \(getpid()) from its pid file is not a cluster service")
+        let elsewhere = read(isService: true)
+        #expect(elsewhere?.owner == .unknown && elsewhere?.isThisCLI == true, "this CLI's service from outside both apps")
+        // m2: the stop itself signals only a cluster service; this test process is none, so it is refused unsignalled.
+        #expect(throws: ProviderUninstall.StepFailure.self) { try ProviderUninstall.liveStopClusterService(pid: getpid()) }
+    }
+
+    @Test("m4: with no other install, the dry run says what `cluster stop --service` does to the service running here")
+    func unsharedDryRunSaysWhatTheStopDoes() throws {
+        let fixture = try Fixture.make()
+        defer { fixture.remove() }
+        let cli = fixture.paths.commandLink.lastPathComponent
+        func step2(_ running: ProviderUninstall.RunningClusterService) -> String {
+            let plan = ProviderUninstall.Plan(cli: cli, runningClusterService: running, services: [],
+                                              items: ProviderUninstall.inventory(fixture.paths), pairing: nil)
+            return ProviderUninstall.dryRun(plan, mode: .everything)[2]
+        }
+        let prefix = "  2. Stop this Mac's cluster part and remove its service, as `\(cli) cluster stop --service`: "
+        #expect(step2(.init(pid: 5, executable: nil, owner: .thisInstall, isThisCLI: true))
+            == prefix + "this install's cluster service is running (pid 5); this stops it")
+        #expect(step2(.init(pid: 6, executable: "/elsewhere/\(cli)", owner: .unknown, isThisCLI: true))
+            == prefix + "a `\(cli) cluster service` from outside this install's app is running (pid 6); this stops it too")
+        #expect(step2(.init(pid: 7, executable: "/elsewhere/tool", owner: .unknown))
+            == prefix + "a cluster service from outside this install's app, under another name, is running (pid 7); "
+                + "this does not stop it, and nothing is deleted while it runs")
+        #expect(step2(.init(pid: 0, executable: nil, owner: .unknown, note: ProviderUninstall.unreadableLockNote))
+            == prefix + ProviderUninstall.unreadableLockNote + "; this does not stop it, and nothing is deleted while it runs")
+    }
+
     @Test("B21: beside the other install, option 1 does not promise the pairing or models it keeps")
     func optionLinesSayWhatEachChoiceDoesHere() throws {
         let fixture = try Fixture.make()

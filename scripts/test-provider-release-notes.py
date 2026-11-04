@@ -21,6 +21,7 @@ sys.path.insert(0, str(SCRIPTS))
 SPEC = importlib.util.spec_from_file_location('publication', SCRIPTS / 'provider-release-publication.py')
 PUB = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(PUB)
+import provider_release_notes as NOTES  # noqa: E402 - after the scripts directory is importable
 
 REPOSITORY = 'Layr-Labs/d-inference'
 INTRO = '# Changelog\n\nUnreleased changes live in `changelog.d/`.\n'
@@ -261,6 +262,139 @@ class ReleasePublicationListsTheReleaseContents(unittest.TestCase):
         self.assertIn('## What\'s new in v1.1.0', notes)
         self.assertIn('- Update both Macs of a pair to 1.1.0.', lines)
         self.assertIn(f'**Full Changelog**: https://github.com/{REPOSITORY}/compare/v1.0.0...v1.1.0', lines)
+
+    def test_a_failed_generation_still_publishes_the_release_and_says_so(self):
+        with patch.object(NOTES.Repository, 'carried', side_effect=RuntimeError('no history')), \
+                patch('sys.stderr') as stderr:
+            notes = self.published_notes('v1.1.0')['notes']
+        self.assertTrue(notes.startswith('## Provider v1.1.0 (Swift CLI)\n'))
+        self.assertIn('could not be generated', notes)
+        self.assertIn('scripts/provider_release_notes.py --tag v1.1.0', notes)
+        self.assertIn('::warning::', ''.join(call.args[0] for call in stderr.write.call_args_list))
+
+
+class ReleaseContents(unittest.TestCase):
+    """Each release of the synthetic history, against its own contents."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+        cls.history, cls.work = build_history(Path(cls.tmp.name))
+        env = git_environment()
+        cls.run_env = patch.dict(os.environ, env, clear=True)
+        cls.run_env.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.run_env.stop()
+        cls.tmp.cleanup()
+
+    def repository(self):
+        return NOTES.Repository(directory=self.work)
+
+    def contents(self, tag):
+        return NOTES.release_contents(self.repository(), tag, RELEASES[tag]['previous'], tag[1:])
+
+    def test_each_release_lists_its_own_pull_requests_once(self):
+        for tag, expected in RELEASES.items():
+            with self.subTest(tag=tag):
+                contents = self.contents(tag)
+                self.assertEqual([c.number for c in contents.dev], expected['dev'])
+                self.assertEqual([c.number for c in contents.master], expected['master'])
+                rollups = [c.number for c, _ in contents.promotions] + [c.number for c in contents.preparations]
+                rollups += [c.number for c in contents.syncs]
+                self.assertEqual(sorted(rollups), expected['release'])
+                self.assertEqual(contents.unreferenced, [])
+
+    def test_the_carried_commit_is_the_promoted_dev_commit_not_the_newest_in_the_window(self):
+        carried = self.contents('v1.1.0').carried
+        self.assertEqual(self.history.git('log', '-1', '--format=%s', carried), 'Add feature C (#14)')
+        # #15 merged into dev after that commit and before the promotion merged: inside
+        # the release's date window, it is not in the release and waits for the next one.
+        times = dict(line.split('\t', 1)[::-1] for line in
+                     self.history.git('log', '--all', '--format=%ct\t%s').splitlines())
+        self.assertLess(times['Merge pull request #15 from Layr-Labs/feature/15'],
+                        times['Release dev into master: provider 1.1.0 (#30)'])
+        self.assertNotIn(15, [c.number for c in self.contents('v1.1.0').dev])
+        self.assertIn(15, [c.number for c in self.contents('v1.2.0').dev])
+
+    def test_a_hotfix_release_carries_what_the_squash_release_before_it_carried(self):
+        hotfix = self.contents('v1.2.1')
+        self.assertEqual(hotfix.carried, self.contents('v1.2.0').carried)
+        self.assertEqual(hotfix.dev, [])
+        # Without that, the next release would list v1.1.0's and v1.2.0's dev pull requests again.
+        self.assertEqual([c.number for c in self.contents('v1.3.0').dev], [17, 18])
+
+    def test_a_merge_commit_promotion_is_a_release_pull_request(self):
+        contents = self.contents('v1.3.0')
+        self.assertEqual([c.number for c, _ in contents.promotions], [50])
+        self.assertEqual([c.number for c in contents.preparations], [51])
+
+    def test_an_unmerged_promotion_head_can_stand_in_for_a_dry_run(self):
+        # Before v1.2.0's promotion merged: a local squash of its snapshot onto master
+        # after #21, as pull request #99, which has no refs/pull head on the remote.
+        snapshot = self.history.git('rev-parse', 'release/dev-to-master-2')
+        squash = self.history.git('commit-tree', snapshot + '^{tree}', '-p', 'v1.2.0^{commit}~2', '-m',
+                                  'Release dev into master: provider 1.2.0 (#99)', cwd=self.work)
+        repository = NOTES.Repository(directory=self.work, pull_heads={99: snapshot})
+        contents = NOTES.release_contents(repository, squash, 'v1.1.0', '1.2.0')
+        self.assertEqual([c.number for c in contents.dev], [15, 16])
+        self.assertEqual([c.number for c in contents.master], [21])
+        self.assertEqual([c.number for c, _ in contents.promotions], [99])
+        self.assertEqual(contents.preparations, [])
+
+    def test_body_names_routes_rollups_and_the_compare_link(self):
+        pulls = {number: {'title': title, 'author': author, 'url': ''} for number, (title, author) in PULLS.items()}
+        contents, body = NOTES.release_body('## Provider v1.1.0 (Swift CLI)\n', 'v1.1.0', REPOSITORY,
+                                            self.repository(), lookup=lambda wanted: pulls)
+        self.assertIn('3 pull requests merged into `dev` reached `master` with #30, which promoted `dev` up to '
+                      f'`{contents.carried[:10]}`:', body)
+        self.assertIn('1 pull request merged directly into `master`:', body)
+        self.assertIn(f'Release pull requests, not listed above: #30 promoted `dev` up to `{contents.carried[:10]}`; '
+                      '#31 prepared the release; #13 merged `master` into `dev`.', body)
+        self.assertLess(body.index('## What\'s new in v1.1.0'), body.index('## Pull requests in this release'))
+
+    def test_a_number_that_names_no_pull_request_is_a_commit_without_one(self):
+        pulls = {number: {'title': title, 'author': author, 'url': ''} for number, (title, author) in PULLS.items()
+                 if number != 20}
+        _, body = NOTES.release_body('', 'v1.1.0', REPOSITORY, self.repository(), lookup=lambda wanted: pulls)
+        self.assertIn('1 commit without a pull request:', body)
+        self.assertIn('* Fix master directly (#20) (https://github.com/Layr-Labs/d-inference/commit/', body)
+        self.assertNotIn('merged directly into `master`', body)
+
+
+class ChangelogSection(unittest.TestCase):
+    TEXT = (INTRO + '\n## v1.1.0 — candidate (unpublished)\n\n'
+            'Prepared on 2026-02-01; tagging and publication are separate steps.\n\n'
+            '### Upgrade and rollout notes\n\n- Update both Macs.\n\n### Feature\n\n- A.\n\n'
+            '```text\n## v1.0.0 inside a fence\n```\n\n## v1.0.0\n\nPublished 2026-01-01.\n')
+
+    def test_the_candidate_heading_and_note_are_left_out_and_every_entry_kept(self):
+        section = NOTES.changelog_section(self.TEXT, '1.1.0')
+        self.assertEqual(section, '### Upgrade and rollout notes\n\n- Update both Macs.\n\n### Feature\n\n- A.\n\n'
+                                  '```text\n## v1.0.0 inside a fence\n```')
+        self.assertEqual(NOTES.changelog_section(self.TEXT, '1.0.0'), 'Published 2026-01-01.')
+        self.assertIsNone(NOTES.changelog_section(self.TEXT, '1.1'))
+        self.assertIsNone(NOTES.changelog_section(self.TEXT, '1.2.0'))
+
+    def test_a_body_over_githubs_limit_keeps_the_upgrade_notes_and_every_pull_request(self):
+        section = NOTES.changelog_section(self.TEXT.replace('- A.', '- A.\n' + 'x' * 500), '1.1.0')
+        commit = NOTES.Commit('a' * 40, ('b' * 40,), 'Fix (#20)')
+        contents = NOTES.Contents(master=[commit])
+        pulls = {20: {'title': 'Fix', 'author': 'frank', 'url': ''}}
+        render = lambda limit: NOTES.render('## Header\n', contents, pulls, section, tag='v1.1.0', previous='v1.0.0',
+                                            version='1.1.0', repository=REPOSITORY, limit=limit)
+        full = render(NOTES.GITHUB_BODY_LIMIT)
+        self.assertIn('x' * 500, full)
+        shorter = render(len(full) - 1)
+        self.assertNotIn('x' * 500, shorter)
+        self.assertIn('- Update both Macs.', shorter)
+        self.assertIn(f'The entries are in [CHANGELOG.md](https://github.com/{REPOSITORY}/blob/v1.1.0/CHANGELOG.md).',
+                      shorter)
+        self.assertIn(f'* Fix by @frank in https://github.com/{REPOSITORY}/pull/20', shorter)
+        self.assertLessEqual(len(shorter), len(full) - 1)
+        with self.assertRaisesRegex(ValueError, 'limit'):
+            render(10)
 
 
 if __name__ == '__main__':

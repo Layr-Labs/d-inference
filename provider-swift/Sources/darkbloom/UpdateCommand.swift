@@ -47,6 +47,12 @@ struct Update: AsyncParsableCommand {
     @Flag(name: .shortAndLong, help: "With --rollback: don't ask for confirmation.")
     var yes = false
 
+    /// Tests run `update` as root without being root.
+    @TaskLocal static var runsAsRootForTesting: Bool?
+
+    /// Whether this process runs as root: `--rollback` refuses it.
+    static var runsAsRoot: Bool { runsAsRootForTesting ?? (geteuid() == 0) }
+
     func validate() throws {
         if rollback, checkOnly || overrideQuarantine || coordinator != nil {
             throw ValidationError("--rollback cannot be combined with --check-only, --override-quarantine or --coordinator.")
@@ -71,7 +77,7 @@ struct Update: AsyncParsableCommand {
         if rollback {
             // Run as root, the locks it creates in this home would be root's, and the user's provider and cluster
             // service could no longer take them.
-            guard geteuid() != 0 else {
+            guard !Self.runsAsRoot else {
                 throw ValidationError("Run `\(BuildEnvironment.current.cliName) update --rollback` as the user the provider runs as, not as root.")
             }
             try await UpdateRollback(

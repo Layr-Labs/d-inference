@@ -797,6 +797,15 @@ private func terminalLook() -> DarkbloomCommandLook {
                          environment: ["TERM": "xterm-256color", "LANG": "en_US.UTF-8"], pause: { _ in })
 }
 
+/// Lines as a command prints them, each ended by a newline.
+private func transcript(_ lines: [String]) -> String { lines.map { $0 + "\n" }.joined() }
+
+/// Runs a command and ends it as the CLI does: an `ExitCode` as thrown, any other error by ArgumentParser's mapping
+/// (a `ValidationError` is exit 64).
+private func runAsCLI<Command: AsyncParsableCommand>(_ type: Command.Type, _ arguments: [String]) async throws {
+    do { try await runCLICommand(type, arguments) } catch let code as ExitCode { throw code } catch { throw type.exitCode(for: error) }
+}
+
 /// The decorated stream less the mark block and the live line: what a transcript would have had.
 private func withoutLook(_ stream: String, title: String) -> String {
     let mark = "\n" + DarkbloomCommandLook.mark(title, revealed: Int.max, colour: "38;5;27") + "\n"
@@ -895,6 +904,72 @@ struct DarkbloomCommandLookRunTests {
             }
         }
         #expect(text(unsure?.standardOutputContent) == unreadable().startRefusal.map { $0 + "\n" }.joined())
+    }
+
+    @Test("`darkbloom stop` and `restart` refused while unsure (exit 1) draw no mark")
+    func unsureStopAndRestartDrawNoMark() async {
+        let stop = await #expect(processExitsWith: .failure, observing: [\.standardOutputContent]) {
+            try await DarkbloomCommandLook.$forTesting.withValue(terminalLook()) {
+                try await exitWithPair(unreadable(), actions: pairActions()) { _ in try await runAsCLI(Stop.self, ["stop"]) }
+            }
+        }
+        #expect(text(stop?.standardOutputContent) == transcript(unreadable().unsureRefusal("stop", "stopped")))
+        let restart = await #expect(processExitsWith: .failure, observing: [\.standardOutputContent]) {
+            try await DarkbloomCommandLook.$forTesting.withValue(terminalLook()) {
+                try await exitWithPair(unreadable(), actions: pairActions()) { _ in try await runAsCLI(Restart.self, ["restart"]) }
+            }
+        }
+        #expect(text(restart?.standardOutputContent) == transcript(unreadable().unsureRefusal("restart", "restarted")))
+    }
+
+    @Test("`darkbloom restart` with nothing to restart draws no mark: --solo on a paired Mac (exit 1), nothing installed (exit 64)")
+    func restartWithNothingDrawsNoMark() async {
+        let solo = await #expect(processExitsWith: .failure, observing: [\.standardOutputContent]) {
+            try await DarkbloomCommandLook.$forTesting.withValue(terminalLook()) {
+                try await exitWithPair(servingPair(), actions: pairActions()) { _ in try await runAsCLI(Restart.self, ["restart", "--solo"]) }
+            }
+        }
+        #expect(text(solo?.standardOutputContent) == transcript(servingPair().restartRefusal))
+        let nothing = await #expect(processExitsWith: .exitCode(64), observing: [\.standardOutputContent]) {
+            try await DarkbloomCommandLook.$forTesting.withValue(terminalLook()) {
+                try await exitWithPair(.notPaired, actions: nil) { _ in try await runAsCLI(Restart.self, ["restart"]) }
+            }
+        }
+        #expect(text(nothing?.standardOutputContent) == "")
+    }
+
+    @Test("`darkbloom start` whose flags refuse it draws no mark: --local with --local-endpoint (exit 1), --schedule with --local (exit 64)")
+    func startFlagRefusalsDrawNoMark() async {
+        let terms = "By starting the provider, you agree to the Darkbloom Terms of Service:\n  \(Start.termsURL)\n\n"
+        let endpoints = await #expect(processExitsWith: .failure, observing: [\.standardOutputContent]) {
+            try await DarkbloomCommandLook.$forTesting.withValue(terminalLook()) {
+                try await exitWithPair(.notPaired, actions: nil) { _ in
+                    try await runAsCLI(Start.self, ["start", "--local", "--local-endpoint"])
+                }
+            }
+        }
+        #expect(text(endpoints?.standardOutputContent) == terms)
+        let schedule = await #expect(processExitsWith: .exitCode(64), observing: [\.standardOutputContent]) {
+            try await DarkbloomCommandLook.$forTesting.withValue(terminalLook()) {
+                try await exitWithPair(.notPaired, actions: nil) { _ in try await runAsCLI(Start.self, ["start", "--schedule", "--local"]) }
+            }
+        }
+        #expect(text(schedule?.standardOutputContent) == terms)
+    }
+
+    @Test("`darkbloom update --rollback` as root (exit 64) draws no mark; its first lines stay")
+    func rollbackAsRootDrawsNoMark() async {
+        let result = await #expect(processExitsWith: .exitCode(64), observing: [\.standardOutputContent]) {
+            try await DarkbloomCommandLook.$forTesting.withValue(terminalLook()) {
+                try await exitWithPair(.notPaired, actions: nil) { sandbox in
+                    try await Update.$runsAsRootForTesting.withValue(true) {
+                        try await runAsCLI(Update.self, ["update", "--rollback", "--config", sandbox.config.path])
+                    }
+                }
+            }
+        }
+        #expect(text(result?.standardOutputContent)
+            == "\(BuildEnvironment.current.cliName) update\nCurrent version: \(ProviderCore.version)\n\n")
     }
 
     @Test("NO_COLOR, TERM=dumb, CI, DARKBLOOM_NO_ANIMATION and a narrow window: plain or still; --json never decorated")

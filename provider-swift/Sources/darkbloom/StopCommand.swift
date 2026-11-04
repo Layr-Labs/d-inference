@@ -33,6 +33,13 @@ struct Stop: AsyncParsableCommand {
         return pair.pairingUnreadable ? .refuse(pair.unsureRefusal("stop", "stopped")) : .stopPair
     }
 
+    /// The command's look, opened with the mark: for a stop that goes ahead.
+    private static func openLook() -> DarkbloomCommandLook {
+        let look = DarkbloomCommandLook.forCommand()
+        look.open("Darkbloom stop")
+        return look
+    }
+
     mutating func run() async throws {
         let pair = ClusterPairSummary.local()
         let stop = Self.pairedStop(pair, solo: solo, uninstall: uninstall)
@@ -40,10 +47,9 @@ struct Stop: AsyncParsableCommand {
             for line in lines { print(line) }
             throw ExitCode.failure
         }
-        // Decided first: only a stop that goes ahead opens with the mark.
-        let look = DarkbloomCommandLook.forCommand()
-        look.open("Darkbloom stop")
+        // Decided first: only a stop that goes ahead opens with the mark, never a refusal or `--solo` with nothing to stop.
         if stop == .stopPair {
+            let look = Self.openLook()
             let actions = ClusterPairActions.live(config: nil)
             let teardown = ClusterPairCommands.teardownWait
             let say = look.saying(ClusterPairCommands.printLine)
@@ -58,6 +64,7 @@ struct Stop: AsyncParsableCommand {
             for line in pair.soloStopNothing { print(line) }
             return
         }
+        let look = Self.openLook()
         let session = try await look.working("Draining accepted requests") {
             try await ServiceDrain.prepare(options: drain, state: ServiceDrain.soloProviderState())
         }

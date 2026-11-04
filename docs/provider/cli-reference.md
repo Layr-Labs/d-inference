@@ -156,8 +156,9 @@ non-UTF-8 locale and windows under 40 columns get the plain bytes;
 `DARKBLOOM_NO_ANIMATION` or `CI` keeps the mark and the line still. On a
 paired Mac, `darkbloom start` opens the cluster's screen, which draws the mark
 itself. A command that refuses before doing any work (an unreadable pairing
-record, nothing to restart, flags that can't go together, `update --rollback`
-as root) prints only its reason, with no mark.
+record, nothing to restart, flags that can't go together or an out-of-range
+`--idle-timeout`, `update --rollback` as root), or finds nothing to do (`stop
+--solo` with no single-Mac serving), prints only its lines, with no mark.
 
 ## Subcommands
 

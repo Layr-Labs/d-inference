@@ -179,9 +179,12 @@ struct Start: AsyncParsableCommand {
     /// The title beside the mark as `darkbloom start` opens in a terminal (`DarkbloomCommandLook`).
     static let lookTitle = "Darkbloom start"
 
-    /// Flag combinations `run` refuses before any work: `--local` with `--local-endpoint`, and `--schedule` with
-    /// `--local` or `--foreground`.
-    var flagsRefuseStart: Bool { (local && localEndpoint) || (schedule && (local || foreground)) }
+    /// Flags `run` refuses before any work: `--local` with `--local-endpoint` or `--autopilot`, `--schedule` with
+    /// `--local` or `--foreground`, and an `--idle-timeout` out of range (unless `--schedule`, whose wizard runs first).
+    var flagsRefuseStart: Bool {
+        (local && (localEndpoint || autopilot == true)) || (schedule && (local || foreground))
+            || (!schedule && idleTimeout.map { IdleUnloadPolicy.validate(minutes: $0) != nil } == true)
+    }
 
     mutating func run() async throws {
         Darkbloom.ensureLogging()

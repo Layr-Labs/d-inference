@@ -1669,6 +1669,31 @@ struct ClusterStatusTruthTests {
         #expect(stopped.state == .stopped && stopped.reason == nil)
     }
 
+    @Test("R-1: a script start on the leading Mac ends its wait on the other Mac's refusal, with its steps, and exits 3")
+    func leaderStartEndsItsWaitOnTheRefusal() async {
+        let result = await #expect(processExitsWith: .exitCode(3), observing: [\.standardOutputContent]) {
+            var refused = observed(Self.starting[0])
+            refused.read(localNetworkRefused: .otherMac)
+            // A wait that went on would read the next look, which serves.
+            let looks = Looks([observed(Self.starting[0]), refused,
+                               observed("Serving Qwen 3.8 27B through Darkbloom on both Macs (tensor parallel).")])
+            try await exitWithPair(pair(), actions: pairActions()) { _ in
+                try await ClusterPairSummary.$readerForTesting.withValue({ live in live ? looks.next() : pair() }) {
+                    try await ClusterPairCommands.$waitForTesting.withValue(.init(seconds: 60, interval: 0)) {
+                        try await runCLICommand(Start.self, ["start"])
+                    }
+                }
+            }
+        }
+        let out = lines(result?.standardOutputContent)
+        let cli = ClusterPairSummary.cli
+        #expect(out.contains("✗ Not serving: The other Mac can't reach this Mac over the cable: macOS keeps \(Self.app) there off the "
+            + "local network."), "\(out)")
+        #expect(out.contains { $0.hasPrefix("  Next:    The other Mac (Apple M5 Max, 128 GB): System Settings → ")
+            && $0.hasSuffix(" Then run `\(cli) start` here, or choose Retry in `\(cli) cluster`.") }, "\(out)")
+        #expect(!out.contains { $0.contains("Serving Qwen") }, "the wait ended at the refusal: \(out)")
+    }
+
     @Test("R-1: the other Mac's refusal counts by the ✗'s rule: its running part reports it, and this Mac's part has run 20 s")
     func otherMacRefusalFollowsTheScreensRule() {
         let now = Date().timeIntervalSince1970

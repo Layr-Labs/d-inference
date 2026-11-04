@@ -55,3 +55,5 @@
 - `status` and `cluster status` no longer say "loading" while macOS keeps a Mac off the local network: both Macs say
   the pair is not serving and what to turn on, on which Mac. A stopped pair reads stopped even when the other Mac has
   gone.
+- `cluster status --json` gives the serving mode and each Mac's share, and the "Model:" line of `status` and `cluster
+  status` names the mode, for every mode. Before, a pair serving GLM-5.3-Flash in pipeline left them out.

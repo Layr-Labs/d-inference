@@ -752,8 +752,8 @@ present, `null` when unknown; keys are only ever added
 | `this_mac` | string? | This Mac's own name (System Settings) |
 | `other_mac` | object? | `name` (its hardware, as pairing showed it), `answers`: on the Mac that follows, whether the leading Mac answered; on the leading Mac, `true` while both run the cluster (or confirm its leader), `false` while the other Mac is away, `null` when not known |
 | `model` | object? | `id`, `name` (catalog name, `null` when none) |
-| `mode` | string? | `tensor parallel`, `pipeline`, `pipeline with speculative decoding`, … (`ClusterOnboardingDeployment.modeWords`) |
-| `split` | string? | Each Mac's share, such as `M3 Ultra 40 layers / M5 Ultra 24 layers` |
+| `mode` | string? | `tensor parallel`, `pipeline`, `pipeline with speculative decoding`, … (`ClusterOnboardingDeployment.modeWords`), from the deployment line the leading Mac recorded at the start, whatever the model's name; without one, the mode the ✓ line marks (`tensor parallel` or `pipeline`). The plain output's `Model:` line shows it |
+| `split` | string? | Each Mac's share, such as `M3 Ultra 40 layers / M5 Ultra 24 layers` (pipeline) or `M3 Ultra 50% / M5 Max 50%` (tensor parallel), from the same deployment line; `null` without one |
 | `serves` | string? | `darkbloom` or `local` |
 | `state` | string | `serving`, `loading`, `not_serving`, `stopped`, `other_mac_away`, `not_paired`, `unknown`, `pairing_unreadable` |
 | `reason` | string? | Why it does not serve, in the screens' words |

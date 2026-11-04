@@ -577,10 +577,10 @@ public struct ClusterOnboardingReady: Codable, Sendable, Equatable {
     /// The screens' one line (2026-11-03: less is better), "Serving Qwen3.8 27B (pipeline) at http://localhost:8000",
     /// with the split's marker the owner kept: when rank 0, which serves the API, is the other Mac the line says so
     /// (this Mac's own loopback serves nothing), and listening on the network too, it says that. Offered for pairing,
-    /// the offered line instead: there is no local API.
+    /// the registered line, which is not serving: `pairServingLine` says Serving once the pair serves.
     public func summary(model: String) -> String {
         let name = ClusterOnboardingDeployment.shownMarker(split).map { "\(model) (\($0))" } ?? model
-        if let offered { return "Serving \(name): \(offered)" }
+        if let offered { return "\(name): \(offered)" }
         return "Serving \(name) at http://localhost:\(port)" + (servesHere ? "" : " on the other Mac")
             + (network == true ? " and on the network" : "")
     }
@@ -1544,10 +1544,10 @@ public enum ClusterOnboardingDriver {
             console.say("Takes effect at the next start.")
             return 0
         }
-        let title = resume.modelName ?? "the model"
-        guard let ready = awaitReady(title: title, operations, console) else { return 1 }
-        console.say("  \(done) " + ready.summary(model: title) + servesWords(scope: wanted, ready: ready))
-        return 0
+        // The same truth as the start (2026-11-04: from the menu, a pair only registered with the coordinator was
+        // called serving): ✓ once the pair serves and a request answered, else ✗ with the reason and the choices.
+        // Registering with the coordinator stays the start's: the cluster service asks again by itself.
+        return finishStart(title: resume.modelName ?? "the model", scope: wanted, registers: false, operations, console)
     }
 
     /// Each reason once, where it first appears.
@@ -1738,10 +1738,12 @@ public enum ClusterOnboardingDriver {
     /// After the start. Serving and Done are said only once the model is loaded on both Macs and a request answered
     /// (2026-11-03: a pair offered for pairing said both while nothing was loaded). A pair that does not serve says why
     /// and stays open with the choices; leaving it never claims success.
-    static func finishStart(title: String, scope: ClusterServingScope, _ operations: ClusterOnboardingOperations,
+    /// `registers`: a pair on the leader's API is registered with the coordinator after its test (the start; the
+    /// menu's switch of scope leaves that to the cluster service).
+    static func finishStart(title: String, scope: ClusterServingScope, registers: Bool = true, _ operations: ClusterOnboardingOperations,
                             _ console: ClusterOnboardingConsole) -> Int32 {
         var scope = scope
-        var mayRegister = true
+        var mayRegister = registers
         while true {
             switch startOutcome(title: title, scope: scope, mayRegister: &mayRegister, operations, console) {
             case .served(let served, let lines):
@@ -1879,21 +1881,6 @@ public enum ClusterOnboardingDriver {
         return true
     }
 
-    /// Waits for the started cluster with its progress (the caller says where it serves); nil (with the last errors
-    /// and the diagnostics offer) when it did not become ready.
-    static func awaitReady(title: String, _ operations: ClusterOnboardingOperations, _ console: ClusterOnboardingConsole)
-        -> ClusterOnboardingReady? {
-        switch waitForParts(title: title, operations, console) {
-        case .success(let where_):
-            return where_
-        case .failure(let failure):
-            for line in failure.lines { console.say(line) }
-            offerDiagnostics(operations, console)
-            console.say("Both Macs keep trying. Run `darkbloom cluster` to check.")
-            return nil
-        }
-    }
-
     /// Waits for the started cluster's parts with their progress as the live rows.
     static func waitForParts(title: String, _ operations: ClusterOnboardingOperations, _ console: ClusterOnboardingConsole)
         -> Result<ClusterOnboardingReady, ClusterOnboardingFailure> {
@@ -1915,15 +1902,6 @@ public enum ClusterOnboardingDriver {
             if let value = finished.take().first { console.settle(); return value }
             console.workingRows(clock.rows(title, report: latest, now: Date()))
             _ = console.key(milliseconds: 120)
-        }
-    }
-
-    /// One choice to save a diagnostics file (redacted) after a start that did not finish.
-    static func offerDiagnostics(_ operations: ClusterOnboardingOperations, _ console: ClusterOnboardingConsole) {
-        guard console.choose(["Save diagnostics for Darkbloom", "Skip"], selected: 0) == 0 else { return }
-        switch operations.saveDiagnostics() {
-        case .success(let lines): for line in lines { console.say("  " + line) }
-        case .failure(let failure): for line in failure.lines { console.say("  " + line) }
         }
     }
 

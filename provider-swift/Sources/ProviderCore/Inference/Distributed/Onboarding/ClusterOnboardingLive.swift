@@ -1613,7 +1613,9 @@ final class OnboardingLive: @unchecked Sendable {
         let process = Process()
         process.executableURL = settings.service.wizard.darkbloomExecutable
         process.arguments = ["login"]
-        do { try process.run(); process.waitUntilExit() } catch { return false }
+        let childExit = ProcessExitObserver()
+        do { try childExit.run(process) } catch { return false }
+        childExit.wait()
         return AuthTokenStore.load() != nil
     }
 
@@ -1623,8 +1625,13 @@ final class OnboardingLive: @unchecked Sendable {
 
     func localTestRequest() -> Result<[String], ClusterOnboardingFailure> {
         let alone = ClusterService.published()?.control?.mode == "alone"
-        // A pair offered for pairing has no local API to send the test request to.
-        if !alone, offeredLine() != nil { return .failure(.init(ClusterOnboardingReady.offeredTestLine)) }
+        // A pair offered for pairing has no local API to send the test request to; one that does not serve says why.
+        if !alone, offeredLine() != nil {
+            let look = pairLook()
+            let wait = look.progress.components(separatedBy: "\n").first ?? look.progress
+            return .failure(.init(look.serving ? ClusterOnboardingReady.offeredTestLine
+                : ClusterOnboardingNotServing.title(reason: look.reason ?? wait)))
+        }
         let text = "Name three colors."
         let answer: ClusterServicePromptAnswer
         if alone {
@@ -1674,7 +1681,16 @@ final class OnboardingLive: @unchecked Sendable {
         if let updating = ClusterService.publishedLive()?.updating { lines.append(updating) }
         let answering = self.answering
         if let control = ClusterService.published()?.control, ["alone", "cannotServe", "waiting"].contains(control.mode) {
-            lines.append((answering ? Self.sentence(hereShort) + ": " : "") + control.line + ".")
+            // Serving alone is said only once this service's own solo server answers, as the setup's wait counts it.
+            var line = control.line
+            if control.mode == "alone" {
+                switch ClusterService.soloReadiness(ClusterService.published()) {
+                case .ready: break
+                case .loading: line += " (its solo server is still loading)"
+                case .foreign: line += " (another program answers on port \(ClusterService.soloPort), so its solo server cannot serve there)"
+                }
+            }
+            lines.append((answering ? Self.sentence(hereShort) + ": " : "") + line + ".")
             return lines
         }
         // One line for the screen (the banner above says which Mac leads): what serves and where, or why it does not.

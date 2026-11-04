@@ -126,6 +126,8 @@ import Darwin
         cableStepContinuesToTheNextStep()
         memberNamesItsLeaderAndTheNextStep()
         startOverIsAlwaysOfferedWithOneConfirmation()
+        // The refactor pass's finding: the menu's switch to Darkbloom claimed ✓ for a registered pair.
+        menuSwitchToDarkbloomWaitsForThePair()
         print("onboarding checks: \(passed) passed, \(failures.count) failed")
         for failure in failures { print("FAIL " + failure) }
         exit(failures.isEmpty ? 0 : 1)
@@ -1550,9 +1552,10 @@ import Darwin
         expect(run.finish() == 0, "local switch: exit 0")
         let text = run.text
         expect(text.contains(ClusterServingScope.localOnly(bind: "0.0.0.0").line + ".\n"), "local switch: how it serves now")
-        expect(text.contains("  \u{2713} Serving Qwen3.8-27B-4bit-mtp at http://localhost:8000 and on the network (local only)\n"),
-               "local switch: ready again, local only")
-        expect(recorder.all == ["ensureService", "setScope local 0.0.0.0", "waitReady"], "local switch: \(recorder.all)")
+        // The same truth as the start: tested, then the outcome block.
+        expect(text.contains(block("\u{2713}", "Serving Qwen3.8-27B-4bit-mtp on this Mac's local API only", [localReady.apiLine, "Test response in 0.61 s"])),
+               "local switch: ready again, local only: \(text)")
+        expect(recorder.all == ["ensureService", "setScope local 0.0.0.0", "waitReady", "testRequest"], "local switch: \(recorder.all)")
         expect(run.keys == 0, "local switch: no key")
     }
 
@@ -1577,7 +1580,7 @@ import Darwin
         expect(run.waitFor("  3) Serve locally\n"), "menu: local only is offered")
         run.type("3")
         expect(run.finish() == 0, "menu local: exit 0")
-        expect(recorder.all == ["ensureService", "status", "setScope local 0.0.0.0", "waitReady"], "menu local: \(recorder.all)")
+        expect(recorder.all == ["ensureService", "status", "setScope local 0.0.0.0", "waitReady", "testRequest"], "menu local: \(recorder.all)")
 
         let back = Recorder()
         var resume = ClusterOnboardingResume(role: .leader, peerName: "Apple M5 Ultra, 256 GB", serving: true, modelName: "Qwen3.8-27B-4bit-mtp")
@@ -1586,7 +1589,8 @@ import Darwin
         expect(again.waitFor("  3) Serve through Darkbloom\n"), "menu: through Darkbloom is offered when local only")
         again.type("3")
         expect(again.finish() == 0, "menu public: exit 0")
-        expect(back.all == ["ensureService", "status", "setScope public", "waitReady"], "menu public: \(back.all)")
+        expect(back.all == ["ensureService", "status", "setScope public", "waitReady", "testRequest"], "menu public: \(back.all)")
+        expect(again.text.contains("\u{2713} Serving Qwen3.8-27B-4bit-mtp through Darkbloom on both Macs (pipeline)\n"), "menu public: the outcome")
         expect(again.text.contains(ClusterServingScope.publicServing.line + ".\n"), "menu public: said")
 
         let stopped = Recorder()
@@ -1890,8 +1894,9 @@ import Darwin
         expect(ClusterOnboardingReady(servedBy: "this Mac", port: 8000).summary(model: "m") == "Serving m at http://localhost:8000", "ready: loopback unchanged")
         expect(ClusterOnboardingReady(servedBy: "this Mac", port: 8000, split: "tensor parallel").summary(model: "m")
                == "Serving m (tensor parallel) at http://localhost:8000", "ready: the split's marker after the model")
+        // Registered is not serving: the summary of an offered ready never says Serving (`pairServingLine` does, once it serves).
         expect(ClusterOnboardingReady(servedBy: "this Mac", port: 0, offered: "offered for pairing", split: "pipeline").summary(model: "m")
-               == "Serving m (pipeline): offered for pairing", "ready: offered, the marker too")
+               == "m (pipeline): offered for pairing", "ready: offered, the marker too, not Serving")
         expect(ClusterOnboardingReady(servedBy: "this Mac", port: 8000, split: "x\u{7}").summary(model: "m") == "Serving m at http://localhost:8000",
                "ready: a marker with control characters is left out")
         let older = try? JSONDecoder().decode(ClusterOnboardingReady.self, from: Data(#"{"servedBy":"this Mac","port":8000}"#.utf8))
@@ -2135,7 +2140,7 @@ import Darwin
         run.type("\r")
         expect(run.finish() == 0, "arrows: exit 0")
         expect(visible(run.text).contains("  \u{25B8} Serve locally"), "arrows: the list folds to the item taken")
-        expect(recorder.all == ["ensureService", "status", "setScope local 0.0.0.0", "waitReady"], "arrows: the third item ran: \(recorder.all)")
+        expect(recorder.all == ["ensureService", "status", "setScope local 0.0.0.0", "waitReady", "testRequest"], "arrows: the third item ran: \(recorder.all)")
         transcript("leader-again-arrows", run.text, keys: run.keys)
     }
 
@@ -2839,6 +2844,36 @@ import Darwin
             + "Don't restart either Mac until then", "apple: without a time")
         expect(ClusterOnboardingNotServing.words(reason: "liveness:private_text", mac: "this Mac") == ClusterOnboardingNotServing.notVerified("this Mac"),
                "apple: the coordinator's words map to the same line")
+    }
+
+    /// (i) The refactor pass's finding, and the end user's session 2 (he pressed p on the status screen; it said
+    /// Serving and nothing loaded): "Serve through Darkbloom" from the leader's menu printed "✓ Serving …: Registered
+    /// with the coordinator…" for a pair that was only registered. It now waits for the pair as the start does.
+    static func menuSwitchToDarkbloomWaitsForThePair() {
+        var resume = ClusterOnboardingResume(role: .leader, peerName: "Apple M4 Max, 128 GB", serving: true, modelName: "Qwen3.8-27B-4bit-mtp")
+        resume.scope = .localOnly(bind: "0.0.0.0")
+        let recorder = Recorder()
+        let refused = TerminalRun(operations(recorder, resume: resume, pairEvents: [], pairResult: .failed([]),
+            readyResult: .success(offeredReady), pairServingResults: [.failure(.init(notVerifiedTimed))]))
+        expect(refused.waitFor("  3) Serve through Darkbloom\n"), "menu, offered: the menu"); refused.type("3")
+        _ = refused.waitFor(notServingChoices, seconds: 5)
+        refused.type("q")
+        let code = refused.finish()
+        let text = refused.text
+        expect(code == 1, "menu, offered: not serving is not success, got \(String(describing: code))")
+        expect(!text.contains("\u{2713} Serving") && !text.contains(": " + ClusterOnboardingReady.registeredNotice),
+               "menu, offered: never ✓ for a pair that is only registered: \(text)")
+        expect(text.contains(block("\u{2717}", "Not serving: " + notVerifiedTimed + ".",
+            [ClusterOnboardingNotServing.remedy(forReason: notVerifiedTimed) ?? "-"]) + notServingChoices), "menu, offered: why and the choices: \(text)")
+        expect(recorder.all.contains("pairServing"), "menu, offered: the pair is awaited: \(recorder.all)")
+        transcript("menu-switch-offered-refused", text, keys: refused.keys)
+
+        let served = TerminalRun(operations(Recorder(), resume: resume, pairEvents: [], pairResult: .failed([]),
+            readyResult: .success(offeredReady), pairServingResults: [.success(["in 0.84 s"])]))
+        expect(served.waitFor("  3) Serve through Darkbloom\n"), "menu, served: the menu"); served.type("3")
+        expect(served.finish() == 0, "menu, served: exit 0")
+        expect(served.text.contains(block("\u{2713}", "Serving Qwen3.8-27B-4bit-mtp through Darkbloom on both Macs (pipeline)",
+            [ClusterOnboardingReady.offeredAPILine, "Test response in 0.84 s"])), "menu, served: the outcome block: \(served.text)")
     }
 
     /// (h) The other Mac's window: where to see the outcome once it joined, and the outcome itself when it can know it.

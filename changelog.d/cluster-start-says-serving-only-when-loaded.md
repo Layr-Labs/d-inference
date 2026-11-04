@@ -9,10 +9,13 @@
   by itself; don't restart either Mac until then), a Mac without free memory for its share, or a part that keeps
   ending. **Retry**, **Change model**, **Serve locally only** and **Diagnostics** follow; q exits with status 1 and
   never says Done.
+- **Serve through Darkbloom** and **Serve locally** in the leader's menu now end the same way: tested (or, for a pair
+  registered with the coordinator, awaited until it serves), then the outcome block. Before, from the menu, a registered
+  pair was called serving at once.
 - A missing login is named before the Start step starts anything, with **Log in on this Mac** (or **Check again**),
   **Serve locally only** and **Cancel**.
 - The Start step says loading takes a few minutes for a large model; a color terminal shows one live row per Mac with
   its time so far.
 - `darkbloom cluster` status calls a registered pair serving only while it serves, else
-  `<model> is not serving yet: <reason>.`; the other Mac shows it as the same outcome block, and its setup now ends by
+  `<model> is not serving yet: <reason>.`, and says a Mac serving alone is still loading until its solo server answers; the other Mac shows it as the same outcome block, and its setup now ends by
   pointing to the leader's screen.

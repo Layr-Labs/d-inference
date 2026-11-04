@@ -396,7 +396,11 @@ The choice is kept: after a restart or reboot both Macs serve locally only
 again, until you switch back. In `darkbloom cluster` on the leader, **Serve
 through Darkbloom** serves through Darkbloom again and **Serve locally**
 serves locally only; on a serving cluster the leading
-Mac's part restarts that way and the screen waits for it. The model list still
+Mac's part restarts that way and the screen waits for it as after a start: a
+test request on the leader's API, or, for a pair registered with the coordinator,
+until the coordinator paired both Macs and both loaded the model. It ends with
+the same outcome block (✓ only then; otherwise ✗ with the reason and the
+choices). The model list still
 reads Darkbloom's catalog when the network is up (to download a model neither
 Mac has); with no network, it lists the models already on the Macs. Only
 catalog models are served. Qualification records never gate local-only

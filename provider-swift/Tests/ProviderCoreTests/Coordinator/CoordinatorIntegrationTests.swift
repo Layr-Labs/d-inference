@@ -324,8 +324,6 @@ struct CoordinatorIntegrationTests {
         #expect(enc.ephemeralPublicKey == keys.publicKeyBase64)
     }
 
-    // MARK: 3. Reconnect after WS drop
-
     // MARK: 3b. Outbound delivery survives a reconnect (regression)
 
     /// Regression test for the outage where ~half the fleet got pinned

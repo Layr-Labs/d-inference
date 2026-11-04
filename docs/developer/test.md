@@ -404,8 +404,8 @@ fallback text or partial calls can escape.
 
 The SDK's `GLM5NextAlignedPayloadReaderTests`, `GLM5NextArtifactCachePolicyTests`
 and `GLM5NextArtifactLoaderTests` run in the Fork Tests workflow of
-Layr-Labs/mlx-swift-lm. The provider test host does not carry copies of them. Their inventory fixture,
-`GLM5NextArtifactCachePolicySDKFixtures.swift`, stays in
+Layr-Labs/mlx-swift-lm. The provider test host does not carry copies of them.
+Their inventory fixture, `GLM5NextArtifactCachePolicySDKFixtures.swift`, stays in
 `provider-swift/Tests/ProviderCoreTests/Inference/Models/GLM5Next/` because the
 provider's GLM cluster tests use it.
 

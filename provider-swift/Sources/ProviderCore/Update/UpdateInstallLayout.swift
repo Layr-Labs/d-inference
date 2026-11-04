@@ -73,6 +73,16 @@ extension UpdateRecoveryStore {
         signedVersion(ofApp: artifactPaths(root: installRoot).bundle)
     }
 
+    /// Whether the installed app is the app `record` names (the hashes `stagingContainsTarget` compares). Nil when it
+    /// cannot be read (a file it needs is missing or unreadable): a damaged install is no evidence of another one.
+    func installedApp(is record: InstalledReleaseRecord) -> Bool? {
+        let paths = artifactPaths(root: installRoot)
+        guard [paths.binary, paths.enclave, paths.metallib].allSatisfy({ fm.isReadableFile(atPath: $0.path) }) else {
+            return nil
+        }
+        return try? stagingContainsTarget(installRoot, target: record)
+    }
+
     /// The installed app recorded as the updater records an install it made, as release `version`.
     func installedAppRecord(version: String, generation: UInt64, now: Double) throws -> InstalledReleaseRecord {
         try requireLiveApp()

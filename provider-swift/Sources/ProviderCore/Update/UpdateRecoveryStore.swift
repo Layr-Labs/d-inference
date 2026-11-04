@@ -326,26 +326,48 @@ final class UpdateRecoveryStore: @unchecked Sendable {
     }
 
     /// The record's installed release (the pending candidate, else `current`) must be the installed app: the hashes
-    /// the updater recorded, and the version its signed `Info.plist` names when it names one. An install outside the
-    /// updater (`install.sh`, a copied app) breaks that: the installed app becomes `current`, as the release its
-    /// `Info.plist` names (else `runningVersion`), and the pending release and the rollback copy go. A pair forms only
-    /// between Macs on the same build (`ClusterConfiguration.peerBuildDiffers`), and that copy was kept for an install
-    /// that is gone, so no other Mac keeps it to follow a rollback to it. A copy whose app names another release than
-    /// its record goes too. Nothing is rolled back until the next update keeps a copy of the installed release. Nil when
-    /// the record already matched.
+    /// the updater recorded, and the version its signed `Info.plist` names when it names one. Evidence of an install
+    /// outside the updater (`install.sh`, a copied app), a signed version or hashes that differ, re-bases the record:
+    /// the installed app becomes `current`, as the release its `Info.plist` names (else `runningVersion`), and the
+    /// pending release and the rollback copy go. A pair forms only between Macs on the same build
+    /// (`ClusterConfiguration.peerBuildDiffers`), and that copy was kept for an install that is gone, so no other Mac
+    /// keeps it to follow a rollback to it. An installed app that cannot be read is no such evidence: the record stays,
+    /// so failed starts of a damaged release still count toward restoring the verified copy. Nil when nothing changed.
     func reconcileWithInstalledApp(runningVersion: String, now: Double) throws -> UpdateRecoveryReconciliation? {
         var state = try loadState()
+        let signed = installedSignedVersion()
         if let recorded = state.candidate?.release ?? state.current {
-            let signed = installedSignedVersion()
-            if try !stagingContainsTarget(installRoot, target: recorded) || (signed != nil && signed != recorded.version) {
+            if (signed != nil && signed != recorded.version) || installedApp(is: recorded) == false {
                 return try recordInstalledApp(as: signed ?? runningVersion, in: &state, now: now)
             }
         }
-        guard let copy = state.predecessor, let signed = try signedVersion(ofApp: resolvedRecoveryPath(copy.bundlePath)),
-              signed != copy.release.version
-        else { return nil }
+        // Checked only where apps name their version (every release does): an app that names none cannot vouch for one.
+        guard signed != nil, let copy = state.predecessor else { return nil }
+        return try reconcileRollbackCopy(copy, in: &state, now: now)
+    }
+
+    /// The rollback copy must be recorded as the release its app is signed as. A copy an earlier updater labelled from a
+    /// stale record holds the release that ran here before, the one the other Mac keeps and follows a rollback to: when
+    /// its files are the recorded ones and its signature holds (`verifyPredecessor`) it is relabelled and kept. A copy
+    /// that names no version, or does not verify, is removed (fail closed).
+    private func reconcileRollbackCopy(_ copy: VerifiedPredecessor, in state: inout UpdateRecoveryState,
+                                       now: Double) throws -> UpdateRecoveryReconciliation? {
+        let signed = try signedVersion(ofApp: resolvedRecoveryPath(copy.bundlePath))
+        guard signed != copy.release.version else { return nil }
+        if let signed, (try? verifyPredecessor(copy)) != nil {
+            var relabelled = copy
+            relabelled.release.version = signed
+            relabelled.release.releaseBundleHash = nil
+            relabelled.verifiedAt = now
+            // The manifest inside the copy first: `loadState` takes it over the record, so a death before the record is
+            // written still leaves the new label.
+            try UpdateAtomicFilesystem.writeJSON(relabelled, to: predecessorManifestPath)
+            state.predecessor = relabelled
+            try writeState(state)
+            return .rollbackCopyRelabelled(recordedAs: copy.release.version, signed: signed)
+        }
         try discardRollbackCopy(in: &state)
-        return .rollbackCopyIsAnotherRelease(recordedAs: copy.release.version, signed: signed)
+        return .unverifiedRollbackCopyRemoved(recordedAs: copy.release.version)
     }
 
     /// The installed app becomes `current`, as release `version`; the pending release and the rollback copy go.

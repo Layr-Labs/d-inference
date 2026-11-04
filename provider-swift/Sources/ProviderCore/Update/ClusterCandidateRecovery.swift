@@ -7,7 +7,7 @@ import Foundation
 /// restores the verified predecessor and quarantines the release (`UpdateRecoveryState.rollbackThreshold`).
 /// Every transition holds the cross-process update lease, as the watchdog's do. Before a start is noted or an end
 /// counted, the record is reconciled with the installed app (`reconcile`), so an install outside the updater never
-/// leaves a release pending that is not installed, or a rollback copy no other Mac keeps.
+/// leaves a release pending that is not installed, or a rollback copy recorded as another release than it holds.
 ///
 /// The supervisor restarts into a release by replacing itself (`execv`), so a release whose binary cannot start
 /// at all would leave no supervisor to count its failed starts. The start check (`startCheckFailure`) runs that
@@ -156,8 +156,9 @@ public struct ClusterCandidateRecovery: Sendable {
     /// Under the session's lease, before anything acts on the pending release: the record must name the installed app
     /// (`UpdateRecoveryStore.reconcileWithInstalledApp`, as the release this process runs when the app names none). An
     /// install outside the updater left it naming releases that are not installed, and acting on them would restart
-    /// into, count failed starts of and roll back a release that does not run. A record that cannot be checked throws:
-    /// nothing is counted or rolled back then.
+    /// into, count failed starts of and roll back a release that does not run. An installed app that cannot be read
+    /// changes nothing, so a damaged release is still rolled back. A record that cannot be checked throws: nothing is
+    /// counted or rolled back then.
     private func reconcile(_ session: SelfUpdater.UpdateSession, now: Double, log: (String) -> Void) throws {
         do {
             if let change = try session.reconcileWithInstalledApp(runningVersion: updater.currentVersion, now: now) {
@@ -179,9 +180,12 @@ public struct ClusterCandidateRecovery: Sendable {
             return "v\(installed) is installed, but the update record said \(said) (installed outside the updater): "
                 + changes.dropLast().joined(separator: ", ") + (changes.count > 1 ? " and " : "") + (changes.last ?? "")
                 + "; nothing is rolled back until an update keeps a copy of v\(installed)"
-        case .rollbackCopyIsAnotherRelease(let recordedAs, let signed):
-            return "the rollback copy recorded as v\(recordedAs) is a v\(signed) app, so it is removed; nothing is rolled "
-                + "back until an update keeps a copy of the installed release"
+        case .rollbackCopyRelabelled(let recordedAs, let signed):
+            return "the rollback copy recorded as v\(recordedAs) is a v\(signed) app: it is now recorded as v\(signed) and "
+                + "kept for rollback"
+        case .unverifiedRollbackCopyRemoved(let recordedAs):
+            return "the rollback copy recorded as v\(recordedAs) could not be verified as the release its app is signed as, "
+                + "so it is removed; nothing is rolled back until an update keeps a copy of the installed release"
         }
     }
 

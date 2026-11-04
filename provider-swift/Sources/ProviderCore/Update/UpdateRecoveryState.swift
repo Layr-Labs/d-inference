@@ -362,6 +362,9 @@ public enum UpdateRecoveryReconciliation: Equatable, Sendable {
     /// `installed`; the release it named (`recorded`), the pending one (`pending`) and the rollback copy, recorded as
     /// `removedCopy`, are gone from it.
     case installedOutsideTheUpdater(installed: String, recorded: String?, pending: String?, removedCopy: String?)
-    /// The rollback copy recorded as `recordedAs` is an app signed as `signed`: it was removed.
-    case rollbackCopyIsAnotherRelease(recordedAs: String, signed: String)
+    /// The rollback copy recorded as `recordedAs` is a verified app signed as `signed`: it is now recorded as `signed`.
+    case rollbackCopyRelabelled(recordedAs: String, signed: String)
+    /// The rollback copy recorded as `recordedAs` could not be verified as the release its app is signed as (its app
+    /// names no version, or its files are not the recorded ones): it was removed.
+    case unverifiedRollbackCopyRemoved(recordedAs: String)
 }

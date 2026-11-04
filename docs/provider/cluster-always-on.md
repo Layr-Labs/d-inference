@@ -196,20 +196,28 @@ as the release the supervisor runs.
 | The record | What the check does |
 |---|---|
 | Names the installed app: the hashes the updater recorded and its version | Nothing |
-| Names another release | Records the installed app as the installed release, drops the pending release without counting a failed start, and removes the rollback copy |
-| Keeps a rollback copy whose app names another version than its record | Removes the copy |
+| Names another release: the installed app's signed version or hashes differ | Records the installed app as the installed release, drops the pending release without counting a failed start, and removes the rollback copy |
+| Names the installed app, but the app cannot be read (a file it needs is missing or unreadable) | Nothing: failed starts still count, and the third restores the verified copy |
+| Keeps a rollback copy recorded as another release than its app names | Records the copy as the release its app names, when its files are the recorded ones and its signature holds (`verifyPredecessor`); otherwise removes it |
+| Keeps a rollback copy whose app names no version | Removes the copy |
 
 A pair forms only between Macs on the same build
-(`ClusterConfiguration.peerBuildDiffers`), so a rollback keeps a pair only when
-it restores the release both Macs ran before the update, which the other Mac
-keeps too and follows to ([a rollback on one Mac](#a-rollback-on-one-mac)). A
-copy kept for an install that is gone is not that release, so nothing is rolled
-back until an update keeps a copy of the installed release. The supervisor logs
+(`ClusterConfiguration.peerBuildDiffers`). A rollback restores the release this
+Mac ran before the installed one, recorded as the version its app names, and
+the pair forms again once the other Mac, which keeps the same release, follows
+([a rollback on one Mac](#a-rollback-on-one-mac)). A copy that an earlier
+updater recorded under a stale label is still that release, so it is relabelled
+and kept. A copy kept for an install that is gone is not, so it is removed, and
+nothing is rolled back until an update keeps a copy of the installed release.
+The supervisor logs
 one line, for example `cluster update: v0.10.7 is installed, but the update
 record said v0.9.22 with v0.10.6 pending (installed outside the updater): it now
 records v0.10.7, v0.10.6 is no longer pending and the rollback copy (recorded as
 v0.9.22) is removed; nothing is rolled back until an update keeps a copy of
-v0.10.7`. A record it cannot check counts no start toward a rollback.
+v0.10.7`. A relabelled copy logs `cluster update: the rollback copy recorded as
+v0.10.6 is a v0.10.7 app: it is now recorded as v0.10.7 and kept for rollback`.
+A record it cannot check otherwise (an unreadable record) counts no start
+toward a rollback.
 
 Two rules keep an update from acting on such a record too:
 

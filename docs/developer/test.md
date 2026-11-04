@@ -1140,10 +1140,14 @@ protocol answers the release check. It checks that the record is reconciled
 before the cluster service starts (nothing pending, no rollback copy) and that a
 reconcile that died part-way is finished at the next start; that the update slot
 finds the running release up to date and installs nothing; that three ends of
-the service never restore the copy; that a copy whose app names another release
-than its record is never restored; that an update over such an install keeps a
-copy of the installed app, recorded as the release that app names; and that the
-normal install, promotion and rollback are unchanged.
+the service never restore the copy; that a verified copy recorded as another
+release than its app names (0.10.7 recorded as 0.10.6) is relabelled, kept and
+restored by three failed starts, while a copy that names no version or whose
+files changed is removed; that a damaged install (its `mlx.metallib` gone) still
+counts failed starts and is rolled back to the verified copy; that an update
+over such an install keeps a copy of the installed app, recorded as the release
+that app names; and that the normal install, promotion and rollback are
+unchanged.
 `Tests/ClusterSupervisionChecks/run.sh` checks the progress rules
 (`ClusterPairUpdate.partnerState`) with plain `swiftc`.
 

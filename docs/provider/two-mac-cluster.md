@@ -135,7 +135,10 @@ memory is freed** and **Quit**, with **Set up the cable port** first when the
 cable moved to a port not set up yet. On the other Mac it shows the status and
 "Nothing to do here: manage it on the other Mac (`darkbloom cluster`).": its
 part runs by itself, and setting up such a port is the only choice it offers
-([below](#when-something-is-in-the-way)).
+([below](#when-something-is-in-the-way)). Either Mac first asks the other over
+the cable; when it does not answer, or when the saved pairing was made with
+another Secure Enclave key, the screen says so and offers **Pair again**
+([pairing again](#pairing-again)).
 
 The planner picks tensor parallel or pipeline for your Macs by itself. Phase
 split is off. A model whose artifact ships a speculative (MTP) head can also
@@ -815,7 +818,12 @@ drained for an update yet: its update waits while it serves (the log says
   and **Cancel**, since the other Mac's Darkbloom prompt may still be waiting
   for Allow. If you denied the Local Network prompt there,
   allow Darkbloom in System Settings → Privacy & Security → Local Network, then
-  run `darkbloom cluster` again.
+  run `darkbloom cluster` again. When `darkbloom cluster` is run again and the
+  other Mac does not answer, it offers **Pair again** ([pairing again](#pairing-again)).
+- **One Mac waits at "2/4 Pair" while the other shows its status and ends**:
+  the second Mac still holds an earlier pairing, so it never joins. Run
+  `darkbloom cluster` on it and choose **Pair again**
+  ([pairing again](#pairing-again)).
 - **A model is not offered**: the list leaves out every model that is not
   approved for clusters or that these Macs cannot serve, with no reason beside
   it. A model named on the command line says why ("… is not approved for
@@ -833,13 +841,47 @@ drained for an update yet: its update waits while it serves (the log says
   your home folder (no keys, addresses or names in it; nothing is written if any
   would remain).
 
+## Pairing again
+
+Pair the Macs again after either Mac moves between the Darkbloom and DevNet apps,
+after the official installer reinstalls Darkbloom ("Secure Enclave ✓ (P-256 key
+generated)"), or when one Mac was reset or replaced. Each app keeps its own
+Secure Enclave key, and the pair's roster names the keys the Macs paired with,
+so a pairing made with another key cannot register: every start of its part ends
+with "This Mac's Secure Enclave key is not the one it paired with; pair again."
+
+1. Run `darkbloom cluster` on either Mac. It says why its pairing cannot be used
+   and offers **Pair again**:
+   - "This Mac's Secure Enclave key changed after it paired (…), so the Macs
+     must pair again to serve through Darkbloom." (this Mac's key is not the one
+     its pairing names; offered with **Quit**);
+   - "The other Mac doesn't answer over the cable: if it is on and connected, it
+     no longer has this pairing (reinstalled, unpaired or replaced), so pair
+     again." (offered with **Try again** and **Quit**; on the leader, in its list
+     before **Quit**).
+2. Choose **Pair again**. This Mac unpairs as `darkbloom cluster pair --forget`
+   does ([undo](#undo)), says "✓ Unpaired this Mac.", then runs the ordinary
+   setup and waits at "2/4 Pair".
+3. Run `darkbloom cluster` on the other Mac. If it offers **Pair again** too,
+   choose it; a Mac with no pairing goes straight to Pair.
+4. Answer **Yes** on each Mac when both show the same code. The Mac that waited
+   leads and chooses the model again.
+
+**Quit** changes nothing. Asking the other Mac is one status request over the
+cable (`OnboardingLive.otherMacAnswers`); the key check reads this Mac's key
+without creating one (`ClusterPairingProvider.existingPin`). Both are in
+`provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/ClusterOnboardingFlow.swift`
+(`ClusterOnboardingPairingProblem`) and the driver's `pairAgain`.
+
 ## Undo
 
 `darkbloom cluster link --remove` on each Mac restores the cable port's earlier
 network settings (one approval). `darkbloom cluster pair --forget <pin>` removes
-a pairing. Run on the leader, it first tells the other Mac over the cable, which
-removes the pair's prompt-cache records (its own single-Mac cache stays) and
-stops its part; each Mac also removes its own pair records when it unpairs.
+a pairing; **Pair again** in `darkbloom cluster` takes the same steps
+(`ClusterUnpairing`). Run on the leader, it first tells the other Mac over the
+cable, which removes the pair's prompt-cache records (its own single-Mac cache
+stays) and stops its part; each Mac also removes its own pair records when it
+unpairs.
 `darkbloom cluster stop` stops a Mac's cluster service and keeps it from starting
 at login. On the leader it stops the pair first. When the other Mac is gone for
 good, `darkbloom cluster stop --local-only` stops only this one.

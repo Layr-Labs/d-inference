@@ -3783,6 +3783,31 @@ Sources: `provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/
 `provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/Link/ClusterLinkIsolationInspection.swift`
 (`ClusterLinkIsolationInspection.status`).
 
+## A saved pairing the onboarding cannot use
+
+`darkbloom cluster` resumes a paired Mac only when the pairing it would use can
+serve. Two facts end that (`ClusterOnboardingPairingProblem`):
+
+| Case | How it is found | What the screen offers |
+|---|---|---|
+| `keyChanged` | `OnboardingLive.resume` compares the pairing's local pin with this Mac's current key, read without creating, deleting or repairing one (`ClusterPairingProvider.existingPin`); no key read claims nothing. A roster names the key that paired, so the member start refuses another (`ProviderLoop.nativePairRosterNamesAnotherKey`) | **Pair again**, **Quit** (instead of the leader's list or the member's status) |
+| `otherMacSilent` | One status request over the cable (`OnboardingLive.otherMacAnswers`, `answerSeconds` = `8`), which only a Mac holding this pairing's edge secret answers. Not asked right after pairing, nor when the cable is on a port that is not set up | Member: **Try again**, **Pair again**, **Quit**; leader: **Pair again** before **Quit** in its list |
+
+**Pair again** runs `ClusterUnpairing.run`, the steps of `darkbloom cluster pair
+--forget` (a leader tells its member, the pairing store forgets the peer pin, the
+service leaves login with no pairing left, the pair prefix records are
+reclaimed), then the ordinary pairing ceremony, which stores a new record set
+for the current key (`ClusterPairingStore.commit`). Nothing on the other Mac is
+changed beyond what `--forget` already does: it offers the same item while it
+holds the old pairing.
+
+Sources: `provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/ClusterOnboardingFlow.swift`
+(`ClusterOnboardingDriver.pairAgain`, `member`, `menu`),
+`provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/ClusterOnboardingLive.swift`
+(`OnboardingLive.resume`, `otherMacAnswers`, `unpair`) and
+`provider-swift/Sources/ProviderCore/Inference/Distributed/Pairing/ClusterUnpairing.swift`
+(`ClusterUnpairing`).
+
 ## GLM tool-stream completion
 
 GLM tool output uses the SDK GLM parser to validate the complete tool suffix at

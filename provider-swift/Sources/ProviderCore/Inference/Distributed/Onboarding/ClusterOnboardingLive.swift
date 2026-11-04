@@ -60,7 +60,9 @@ extension ClusterOnboardingOperations {
             thisMacName: { ClusterLocalNetworkAccess.computerName() },
             pairServing: { progress in live.pairServing(progress) },
             missingLogins: { live.missingLogins() },
-            login: { live.login() })
+            login: { live.login() },
+            otherMacAnswers: { live.otherMacAnswers() },
+            unpair: { live.unpair() })
     }
 }
 
@@ -79,6 +81,8 @@ final class OnboardingLive: @unchecked Sendable {
     private var peerReportAt: Date?
     private var partsStoppedAt: Date?
     private let readPairing: @Sendable () throws -> ClusterSetupLinkExchange.Pairing?
+    /// This Mac's pin as a pairing made now would store it (nil: no key could be read).
+    private let currentPin: @Sendable () -> String?
     /// What adopting a listed choice needs: its folder, plan key, model id, the members that hold it alone, its
     /// deployment line and plan.
     typealias ChoiceKey = (folder: String, key: String, title: String, alone: [String], deployment: String?, plan: ClusterSetupPlanSummary?)
@@ -109,9 +113,10 @@ final class OnboardingLive: @unchecked Sendable {
     static func sentence(_ text: String) -> String { ClusterOnboardingMacName.sentence(text) }
 
     init(context: LiveContext, store: ClusterSetupStore, settings: ClusterOnboardingOperations.LiveSettings,
-         readPairing: @escaping @Sendable () throws -> ClusterSetupLinkExchange.Pairing? = { try ClusterSetupLinkExchange.pairing() }) {
+         readPairing: @escaping @Sendable () throws -> ClusterSetupLinkExchange.Pairing? = { try ClusterSetupLinkExchange.pairing() },
+         currentPin: @escaping @Sendable () -> String? = { ClusterPairingProvider.existingPin() }) {
         self.context = context; self.store = store; self.settings = settings
-        self.readPairing = readPairing
+        self.readPairing = readPairing; self.currentPin = currentPin
     }
 
     var leadership: ClusterOnboardingLeadership? { (try? store.readRecord())?.leadership }
@@ -138,11 +143,15 @@ final class OnboardingLive: @unchecked Sendable {
     func resume() -> ClusterOnboardingResume {
         guard let leadership, let role = ClusterOnboardingRole(rawValue: leadership.role),
               let pairing = try? readPairing(), pairing.peerPin == leadership.peerPin else { return .init() }
+        // A pairing made with another Secure Enclave key (the other app's, or the one before a reinstall) cannot
+        // register: its roster names that key (2026-11-03). Said only when this Mac's key could be read.
+        let problem: ClusterOnboardingPairingProblem? = currentPin().flatMap { $0 == pairing.localPin ? nil : .keyChanged }
         // After onboarding the role is the derived control leadership, not who drove the screens.
         let record = try? store.readRecord()
         guard let claim = record?.control?.claim(localID: pairing.localMemberID, peerID: pairing.peerMemberID) else {
             var resume = ClusterOnboardingResume(role: role, peerName: peerName, serving: leadership.serving, modelName: leadership.modelName)
             resume.scope = leadership.scope
+            resume.pairingProblem = problem
             return resume
         }
         let leads = claim.leaderID == pairing.localMemberID
@@ -154,7 +163,33 @@ final class OnboardingLive: @unchecked Sendable {
         resume.leaderReason = claim.reason
         resume.term = claim.term
         resume.localLine = ClusterService.published()?.control?.line
+        resume.pairingProblem = problem
         return resume
+    }
+
+    /// One status request over the cable, which only a Mac holding this pairing's link key can answer.
+    func otherMacAnswers() -> Bool {
+        (try? command(.init(op: .status), seconds: Self.answerSeconds)) != nil
+    }
+
+    static let answerSeconds: Double = 8
+
+    /// Pair again: this Mac's saved pairing removed as `darkbloom cluster pair --forget` removes it.
+    func unpair() -> Result<[String], ClusterOnboardingFailure> {
+        let pairing: ClusterSetupLinkExchange.Pairing?
+        do { pairing = try readPairing() } catch {
+            return .failure(.init("This Mac's pairing could not be read: \(ClusterConsoleText.bounded(String(describing: error), maximum: 200))"))
+        }
+        guard let pairing else { return .success([]) }
+        let wizard = settings.service.wizard
+        do {
+            let outcome = try ClusterUnpairing.run(peerPin: pairing.peerPin, executable: wizard.darkbloomExecutable,
+                                                   providerConfiguration: wizard.providerConfiguration)
+            return .success(["\(ClusterOnboardingDriver.done) Unpaired this Mac."]
+                + (outcome.serviceProblem.map { ["Its cluster service is still running: \(ClusterConsoleText.bounded($0, maximum: 200))"] } ?? []))
+        } catch {
+            return .failure(.init("This Mac could not unpair: \(ClusterConsoleText.bounded(String(describing: error), maximum: 200))"))
+        }
     }
 
     // MARK: - Where a command runs (the derived control leader)

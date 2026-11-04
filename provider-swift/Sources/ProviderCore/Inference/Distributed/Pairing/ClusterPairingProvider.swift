@@ -52,6 +52,19 @@ public enum ClusterPairingProvider {
         return try SignerIdentity(chosen.signer)
     }
 
+    /// The pin a pairing made now would store for this Mac, read without creating, deleting or repairing a key (as
+    /// `identity()` may); nil when no key can be read.
+    public static func existingPin() -> String? {
+        #if DEBUG
+        if let path = ProcessInfo.processInfo.environment["DARKBLOOM_DEBUG_SE_KEY_FILE"], path.hasPrefix("/"),
+           SecureEnclaveIdentity.isAvailable, let key = try? SecureEnclaveIdentity.debugLoadExisting(at: path) {
+            return (try? SignerIdentity(key)).map { ClusterPairingPin.of(identityKey: $0.identityPublicKey) }
+        }
+        #endif
+        guard PersistentEnclaveKey.isAvailable, let key = try? PersistentEnclaveKey.loadExisting() else { return nil }
+        return (try? SignerIdentity(key)).map { ClusterPairingPin.of(identityKey: $0.identityPublicKey) }
+    }
+
     /// "Apple M3 Ultra, 256 GB": what the other Mac shows. Never a host name.
     public static func displayName(chipName: String) -> String {
         let gigabytes = ProcessInfo.processInfo.physicalMemory / (1 << 30)

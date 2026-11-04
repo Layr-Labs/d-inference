@@ -31,6 +31,13 @@ public enum ClusterOnboardingPairReport {
         case stopped(String)
     }
 
+    /// The latest pair line the part that began writing `log` at `offset` wrote, however many lines follow it
+    /// (`ClusterLogScan`); nil when there is none.
+    public static func latest(inLogFile log: URL, from offset: UInt64 = 0, limit: UInt64 = ClusterLogScan.limitBytes) -> State? {
+        ClusterLogScan.lastLine(in: log, from: offset, limit: limit) { $0.hasPrefix(logPrefix) }
+            .flatMap { state(String($0.dropFirst(logPrefix.count))) }
+    }
+
     /// The latest pair line in `log`, nil when there is none.
     public static func latest(inLog log: String) -> State? {
         guard let line = log.split(whereSeparator: \.isNewline).last(where: { $0.hasPrefix(logPrefix) }) else { return nil }
@@ -60,6 +67,42 @@ public enum ClusterOnboardingPairReport {
             return String(servingLine(warmupSeconds: nil).dropFirst(logPrefix.count)) + (test.map { " (first request \($0))" } ?? "")
         case .stopped(let why): return String(stoppedLine(why).dropFirst(logPrefix.count))
         }
+    }
+}
+
+/// The last line of a log that `matches`, read backwards from its end in chunks. A line written once per change (a
+/// pair's progress, the serving notice) stays found however many request lines follow it; a fixed tail lost it (the
+/// production pair's last 16 KiB held about nine minutes of request lines, 2026-11-04). Never before `offset`, where
+/// the part that writes the log began: a line an earlier part wrote is never this part's (a log shorter than `offset`
+/// was replaced and is read from its start). At most `limit` bytes back from the end.
+public enum ClusterLogScan {
+    /// 8 MiB: tens of thousands of request lines (160–300 bytes each), days of a busy pair; a status read never scans
+    /// more, so a line written longer ago than that reads as absent.
+    public static let limitBytes: UInt64 = 8 * 1024 * 1024
+    public static let chunkBytes = 64 * 1024
+
+    public static func lastLine(in log: URL, from offset: UInt64 = 0, limit: UInt64 = limitBytes, chunk: Int = chunkBytes,
+                                where matches: (Substring) -> Bool) -> Substring? {
+        guard let handle = FileHandle(forReadingAtPath: log.path) else { return nil }
+        defer { try? handle.close() }
+        let size = (try? handle.seekToEnd()) ?? 0
+        let floor = max(offset <= size ? offset : 0, size > limit ? size - limit : 0)
+        var end = size
+        // The start of the line the chunk edge below cut, completed by the next chunk read.
+        var carry = Data()
+        while end > floor {
+            let begin = end - min(end - floor, UInt64(max(1, chunk)))
+            guard (try? handle.seek(toOffset: begin)) != nil, var data = try? handle.read(upToCount: Int(end - begin)) else { return nil }
+            data.append(carry)
+            var lines = data.split(separator: UInt8(ascii: "\n"), omittingEmptySubsequences: false)
+            carry = begin > floor ? Data(lines.removeFirst()) : Data()
+            for line in lines.reversed() {
+                let text = Substring(String(decoding: line, as: UTF8.self))
+                if matches(text) { return text }
+            }
+            end = begin
+        }
+        return nil
     }
 }
 

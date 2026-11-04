@@ -988,7 +988,7 @@ public final class ClusterService: @unchecked Sendable {
                     startedAt: child?.isRunning == true ? childStartedAt : oldPart?.startedAt,
                     solo: child?.isRunning == true ? childSetup?.hasPrefix("solo:") == true : oldPart?.solo,
                     notice: oldPart != nil ? "the previous run's part is still releasing; waiting before starting another"
-                        : child?.isRunning == true && childSetup?.hasPrefix("solo:") != true ? Self.servingNotice(in: serviceFiles.rankLog) : nil,
+                        : child?.isRunning == true && childSetup?.hasPrefix("solo:") != true ? Self.servingNotice(in: serviceFiles.rankLog, from: childLogOffset) : nil,
                     configurationSHA256: child?.isRunning == true && childSetup?.hasPrefix("cluster:") == true
                         ? String(childSetup!.dropFirst("cluster:".count).prefix(64)) : nil),
                 session: session,
@@ -1239,13 +1239,10 @@ public final class ClusterService: @unchecked Sendable {
 
     /// The latest pair line (`ClusterOnboardingPairReport`) the running coordinator-paired part wrote in `log` since
     /// `offset`, where it began writing: a line an earlier part wrote is never this part's.
+    /// The line is written once per change and every request adds a line after it, so it is read backwards from the end
+    /// (`ClusterLogScan`), not from a fixed tail.
     static func pairReport(in log: URL, from offset: UInt64) -> ClusterOnboardingPairReport.State? {
-        guard let handle = FileHandle(forReadingAtPath: log.path) else { return nil }
-        defer { try? handle.close() }
-        let size = (try? handle.seekToEnd()) ?? 0
-        let window: UInt64 = size > 16_384 ? size - 16_384 : 0
-        try? handle.seek(toOffset: offset <= size ? max(offset, window) : window)
-        return ClusterOnboardingPairReport.latest(inLog: String(decoding: handle.readDataToEndOfFile(), as: UTF8.self))
+        ClusterOnboardingPairReport.latest(inLogFile: log, from: offset)
     }
 
     /// Whether the coordinator's latest trust status for the running coordinator-paired part (`pid`, the process that
@@ -1267,12 +1264,11 @@ public final class ClusterService: @unchecked Sendable {
         (try? paths().rankLog).flatMap { servingNotice(in: $0) }
     }
 
-    private static func servingNotice(in log: URL) -> String? {
-        guard let handle = FileHandle(forReadingAtPath: log.path) else { return nil }
-        defer { try? handle.close() }
-        let size = (try? handle.seekToEnd()) ?? 0
-        try? handle.seek(toOffset: size > 16_384 ? size - 16_384 : 0)
-        return ClusterLocalServing.notice(inLog: String(decoding: handle.readDataToEndOfFile(), as: UTF8.self))
+    /// The same notice in `log` from `offset` on (where the running part began writing): a part writes it once its API
+    /// listens and every request adds a line after it, so it is read backwards from the end (`ClusterLogScan`).
+    static func servingNotice(in log: URL, from offset: UInt64 = 0) -> String? {
+        ClusterLogScan.lastLine(in: log, from: offset) { $0.hasPrefix(ClusterLocalServing.logPrefix) }
+            .flatMap { ClusterLocalServing.notice(inLog: String($0)) }
     }
 
     /// Private local acknowledgement; only the supervision loop can advance

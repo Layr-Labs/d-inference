@@ -3786,6 +3786,14 @@ away; mixed pairs are first-class).
   now (or the last one used); it keeps the mode the saved setup served in when
   the plan still lists it (`keepMode`, from `ClusterOnboardingResume.servingMode`),
   so Enter keeps it or starts it again.
+- **What a model's contract allows:** a family the model's features don't admit
+  is never offered, and a chosen or developer-forced one is refused in the
+  contract's words before any quote applies (`ClusterPlacementFlow.decide`):
+  Qwen3.8 27B keeps images, video and committed-token logprobs only in tensor
+  parallel (`ClusterModelFeaturePolicy`), so its list offers tensor parallel
+  alone. A chosen tensor parallel is the family a tensor quote prices, so the
+  singleton and assistant quotes accept it (`applySingleton`, the planner's
+  assistant guard).
 - **Default:** the fastest measured family, else the planner's
   (`ClusterOnboardingMode.defaultIndex`).
 - **The person's choice:** `useMode` keeps the family for the next adopt of that

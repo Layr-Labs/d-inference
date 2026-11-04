@@ -132,6 +132,7 @@ import Darwin
         memberScreenSaysWhoLeadsAndWhatToRun()
         switchAsksOnceThenEndsLikeStart()
         qAtTheListChangesNothing()
+        pairingSaysWhatToCheckWhenTheOtherMacIsNotFound()
         alreadyServingTestsAgainOrSaysWhyNot()
         aDeadPendingStartIsClearedOnlyWhileStillRecorded()
         modeChoiceOffersBothWithTheFastestMeasuredFirst()
@@ -515,7 +516,9 @@ import Darwin
                            readyReports: [String] = ["1 of 2 parts ready", "2 of 2 parts ready"],
                            readyReportPause: useconds_t = 50_000,
                            statusSequence: [[String]]? = nil,
-                           followSeconds: Double = 900) -> ClusterOnboardingOperations {
+                           followSeconds: Double = 900,
+                           pairHintSeconds: Double = 900,
+                           pairWait: Double = 0) -> ClusterOnboardingOperations {
         let answered = DispatchSemaphore(value: 0)
         let chosenPort = Recorder()
         // The n-th wait for the parts answers `readyResults[n]` (the last one again after it), else `readyResult`.
@@ -556,10 +559,12 @@ import Darwin
             pair: { events in
                 recorder.note("pair")
                 var asked = false
-                for event in pairEvents {
+                for (index, event) in pairEvents.enumerated() {
                     events(event)
                     if case .code = event { asked = true; _ = answered.wait(timeout: .now() + 10) }
                     usleep(20_000)
+                    // The other Mac not found yet: the pairing waits this long after it began listening.
+                    if index == 1, pairWait > 0 { usleep(useconds_t(pairWait * 1_000_000)) }
                 }
                 _ = asked
                 if case .failed = pairResult { return pairResult }
@@ -652,6 +657,7 @@ import Darwin
             useMode: { index, mode in recorder.note("useMode \(index) \(mode)") })
         // The Mac that joined follows the start at a check's pace.
         made.followTiming = .init(seconds: followSeconds, pollSeconds: 0.02)
+        made.pairHintSeconds = pairHintSeconds
         return made
     }
 
@@ -1625,7 +1631,8 @@ import Darwin
             pairEvents: [], pairResult: .failed([]), readyResult: .success(localReady)), request: localRequest)
         expect(run.finish() == 0, "local switch: exit 0")
         let text = run.text
-        expect(text.contains(ClusterServingScope.localOnly(bind: "0.0.0.0").line + ".\n"), "local switch: how it serves now")
+        expect(text.contains("  Switching to local only: the leading Mac's part starts again that way.\n")
+            && !text.contains(ClusterServingScope.localOnly(bind: "0.0.0.0").line + ".\n"), "local switch: what it does, not the result before the outcome")
         // The same truth as the start: tested, then the outcome block.
         expect(text.contains(block("\u{2713}", "Serving Qwen3.8-27B-4bit-mtp on this Mac's local API only", [localReady.apiLine, "Test response in 0.61 s"])),
                "local switch: ready again, local only: \(text)")
@@ -1665,7 +1672,9 @@ import Darwin
         expect(again.finish() == 0, "menu public: exit 0")
         expect(back.all == ["ensureService", "status", "reachMembers", "planModels", "setScope public", "waitReady", "testRequest"], "menu public: \(back.all)")
         expect(again.text.contains("\u{2713} Serving Qwen3.8-27B-4bit-mtp through Darkbloom on both Macs (pipeline)\n"), "menu public: the outcome")
-        expect(again.text.contains(ClusterServingScope.publicServing.line + ".\n"), "menu public: said")
+        expect(!again.text.contains(ClusterServingScope.publicServing.line + ".\n")
+            && again.text.contains("  Switching to serving through Darkbloom: the leading Mac's part starts again that way.\n"),
+               "menu public: what it does, never the result before the outcome: \(again.text)")
 
         let stopped = Recorder()
         let idle = TerminalRun(operations(stopped, resume: .init(role: .leader, peerName: "Apple M5 Ultra, 256 GB", serving: false, modelName: "Qwen3.8-27B-4bit-mtp"),
@@ -3089,6 +3098,34 @@ import Darwin
         expect(P.cleared(4242, dead: 4242) == nil, "pending pid: cleared while the record still holds it")
         expect(P.cleared(5151, dead: 4242) == 5151, "pending pid: a new start's pid is kept")
         expect(P.cleared(nil, dead: 4242) == nil, "pending pid: nothing to clear")
+    }
+
+    /// The candidate on pair 2 (2026-11-04, B2): a Mac whose firewall dropped the discovery probe left both Macs at
+    /// "2/4 Pair" with no hint. After a short wait without finding the other Mac, the screen says what to check and the
+    /// direct route, once, and keeps waiting; the pairing then goes on as usual.
+    static func pairingSaysWhatToCheckWhenTheOtherMacIsNotFound() {
+        typealias P = ClusterOnboardingPairing
+        let run = TerminalRun(operations(Recorder(), pairEvents: leaderEvents, pairResult: .paired(role: .leader, peerName: "Apple M3 Ultra, 256 GB"),
+            pairHintSeconds: 0.3, pairWait: 1.5))
+        expect(run.waitFor(codeQuestion, seconds: 20), "not found: the pairing goes on"); run.type("y")
+        expect(run.waitFor(prompt(2), count: 2), "not found: then the model list"); run.type("\r")
+        expect(run.finish() == 0, "not found: served")
+        let text = run.text
+        let hint = "  " + P.otherMacNotFoundLines.joined(separator: "\n  ") + "\n"
+        expect(P.otherMacNotFoundLines.joined(separator: " ").contains("System Settings → Network → Firewall")
+            && P.otherMacNotFoundLines.joined(separator: " ").contains("darkbloom cluster pair --connect <that address>")
+            && P.otherMacNotFoundLines.joined(separator: " ").contains("darkbloom cluster pair --listen"), "not found: what to check, word for word")
+        let order = [P.otherMacLine, hint, "Code 123 456"].compactMap { text.range(of: $0)?.lowerBound }
+        expect(order.count == 3 && order == order.sorted(), "not found: said while waiting, before the code: \(text)")
+        expect(text.components(separatedBy: P.otherMacNotFoundLines[0]).count == 2, "not found: said once")
+        transcript("leader-pairing-not-found-hint", text, keys: run.keys)
+        // Found at once: nothing extra.
+        let quick = TerminalRun(operations(Recorder(), pairEvents: leaderEvents, pairResult: .paired(role: .leader, peerName: "Apple M3 Ultra, 256 GB"),
+            pairHintSeconds: 30))
+        expect(quick.waitFor(codeQuestion), "found: the code"); quick.type("y")
+        expect(quick.waitFor(prompt(2), count: 2), "found: the list"); quick.type("\r")
+        _ = quick.finish()
+        expect(!quick.text.contains(P.otherMacNotFoundLines[0]), "found: no hint")
     }
 
     /// q (or Esc) at the list changes nothing: the status block again and the commands; exit 0.

@@ -26,3 +26,11 @@
   Mac offers the pair to Darkbloom late (its status says so until it has); q leaves and the
   pair keeps going. The registration now reads "Offered to Darkbloom as a pair for <model>; waiting for Darkbloom to
   accept this pair…" instead of the approval line.
+- When the other Mac isn't found within about 25 s at "2/4 Pair", the screen says what to check (the other Mac on this
+  screen, macOS's firewall, or pairing directly with `darkbloom cluster pair --listen` and `--connect <address>`) and
+  keeps waiting.
+- A part that stops serving is reported with its own reason ("the coordinator reported this member's runtime as
+  outdated", from its log), not "CancellationError()", on screen and in the diagnostics file.
+- Switching how a pair serves no longer announces the result before it is known.
+- Choosing tensor parallel plans for Qwen 3.8 27B as for any model; its pipeline modes stay out, as its features (images,
+  video, committed-token logprobs) need tensor parallel, and a forced pipeline says so instead of an internal error.

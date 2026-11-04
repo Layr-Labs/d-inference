@@ -868,6 +868,8 @@ public struct ClusterOnboardingOperations: Sendable {
     public var useMode: @Sendable (_ index: Int, _ mode: String) -> Void
     /// How the Mac that joined follows the start (`ClusterOnboardingDriver.followStart`).
     public var followTiming = ClusterOnboardingFollowTiming()
+    /// How long the pairing waits without finding the other Mac before it says what to check (`otherMacNotFoundLines`).
+    public var pairHintSeconds: Double = 25
 
     public init(resume: @escaping @Sendable () -> ClusterOnboardingResume,
                 checkLink: @escaping @Sendable (@escaping @Sendable (String) -> Void) -> ClusterOnboardingLinkResult,
@@ -941,6 +943,15 @@ public struct ClusterOnboardingPairing: Sendable, Equatable {
 
     /// The one thing to do on the other Mac while this one waits: said last, so it is the line the person reads.
     public static let otherMacLine = "Run `darkbloom cluster` on the other Mac."
+
+    /// Said once while the pairing still has not found the other Mac (2026-11-04, the candidate on pair 2: a firewall
+    /// that drops the discovery probe left both Macs waiting with no hint); the wait goes on.
+    public static let otherMacNotFoundLines = [
+        "The other Mac isn't found yet. Check that:",
+        "· the other Mac shows this screen too (run `darkbloom cluster` there);",
+        "· macOS's firewall lets Darkbloom in on both Macs (System Settings → Network → Firewall);",
+        "· or pair directly: press q, run `darkbloom cluster pair --listen` on this Mac (it prints its cable address),",
+        "  then `darkbloom cluster pair --connect <that address>` on the other Mac, and `darkbloom cluster` on both again."]
 
     /// The question after the code, and its two answers (a menu: arrows and enter, or 1 and 2). Each Mac answers for
     /// itself: a "yes" passed on from the other Mac could come from a Mac in between.
@@ -1472,6 +1483,8 @@ public enum ClusterOnboardingDriver {
         var pairing = ClusterOnboardingPairing()
         var result: ClusterOnboardingPairResult?
         func show() { for event in events.take() { for line in pairing.handle(event) { console.say("  " + line) } } }
+        let pairingBegan = Date()
+        var saidNotFound = false
         while result == nil {
             show()
             if let finished = outcome.take().first {
@@ -1494,6 +1507,13 @@ public enum ClusterOnboardingDriver {
                 for line in pairing.answered(accept) { console.say("  " + line) }
                 operations.answerCode(accept)
                 continue
+            }
+            // Not found after a while (a firewall may drop the discovery probe): what to check, once; the wait goes on.
+            if !saidNotFound, pairing.phase == .searching || pairing.phase == .waiting,
+               Date().timeIntervalSince(pairingBegan) >= operations.pairHintSeconds {
+                saidNotFound = true
+                console.settle()
+                for line in ClusterOnboardingPairing.otherMacNotFoundLines { console.say("  " + line) }
             }
             if let working = pairing.working { console.working(working) }
             guard let key = console.key(milliseconds: 100) else {
@@ -1763,15 +1783,17 @@ public enum ClusterOnboardingDriver {
         }
         guard resume.serving else {
             guard let model = resume.modelName else {
-                console.say(wanted.line + ".")
-                console.say("Takes effect at the next start.")
+                console.say("Saved: the pair serves " + (wanted.isLocalOnly ? "locally only" : "through Darkbloom") + " from its next start.")
                 return 0
             }
             // A stopped pair starts its last model that way, in the mode it served in (UX audit P1).
             return chooseAndServe(operations, console, scope: wanted, model: model, startOverRequest: startOverRequest,
                                   peer: resume.peerName, keepMode: resume.servingMode, heading: startHeading)
         }
-        console.say(wanted.line + ".")
+        // What it does, never the result before the outcome below (the candidate, 2026-11-04: it said "Serving through
+        // Darkbloom." and then ✗).
+        console.say("  " + (wanted.isLocalOnly ? "Switching to local only" : "Switching to serving through Darkbloom")
+            + ": the leading Mac's part starts again that way.")
         // The same truth as the start (2026-11-04: from the menu, a pair only registered with the coordinator was
         // called serving): ✓ once the pair serves and a request answered, else ✗ with the reason and the choices.
         // Registering with the coordinator stays the start's: the cluster service asks again by itself.

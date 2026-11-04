@@ -983,7 +983,7 @@ public final class ClusterService: @unchecked Sendable {
                 setup: reference.map { String($0.sha256.prefix(12)) },
                 child: .init(running: child?.isRunning == true || oldPart != nil, starts: starts, lastEnd: lastEnd,
                     restartInSeconds: child == nil && oldPart == nil && wait > 0 ? Int(wait.rounded(.up)) : nil,
-                    lastError: child?.isRunning == true ? nil : Self.lastError(in: serviceFiles.rankLog),
+                    lastError: child?.isRunning == true ? nil : Self.lastError(in: serviceFiles.rankLog, from: childLogOffset),
                     pid: child?.isRunning == true ? child?.processIdentifier : oldPart?.pid,
                     startedAt: child?.isRunning == true ? childStartedAt : oldPart?.startedAt,
                     solo: child?.isRunning == true ? childSetup?.hasPrefix("solo:") == true : oldPart?.solo,
@@ -1226,7 +1226,27 @@ public final class ClusterService: @unchecked Sendable {
 
     /// The same in `log`, reading only from `offset` on (where the part that ended began writing), so an error an
     /// earlier part wrote is never taken for this part's. A log shorter than `offset` was replaced: it is read whole.
-    static func lastError(in log: URL, from offset: UInt64 = 0) -> String? {
+    /// The part's last error in `log` since `offset`, where it began: its last "Error:" line, or, when that is a generic
+    /// cancellation (or there is none), the reason the part stopped serving, which it says first ("Distributed serving
+    /// stops: <reason>."): the 0.10.8 candidate, 2026-11-04, showed "CancellationError()" where the part had said "the
+    /// coordinator reported this member's runtime as outdated". `preferStopReason` false: the raw error line, for counts
+    /// that read specific member errors (`ClusterApprovalCheck.memberQuickEnds`).
+    static func lastError(in log: URL, from offset: UInt64 = 0, preferStopReason: Bool = true) -> String? {
+        let error = lastErrorLine(in: log, from: offset)
+        guard preferStopReason, error.map(isCancellation) ?? true,
+              let stop = ClusterLogScan.lastLine(in: log, from: offset, where: { $0.hasPrefix(stopReasonPrefix) }) else { return error }
+        var reason = stop.dropFirst(stopReasonPrefix.count).trimmingCharacters(in: .whitespaces)
+        if reason.hasSuffix(".") { reason.removeLast() }
+        return reason.isEmpty ? error : ClusterConsoleText.plain(ClusterConsoleText.bounded(reason, maximum: 240))
+    }
+
+    /// How a part says why it stops serving (`StartCommand+Distributed`, the member's stop reason).
+    static let stopReasonPrefix = "Distributed serving stops: "
+
+    /// A run that ended because it was cancelled, which says nothing of why.
+    static func isCancellation(_ error: String) -> Bool { error.contains("CancellationError") }
+
+    private static func lastErrorLine(in log: URL, from offset: UInt64) -> String? {
         guard let handle = FileHandle(forReadingAtPath: log.path) else { return nil }
         defer { try? handle.close() }
         let size = (try? handle.seekToEnd()) ?? 0
@@ -1404,7 +1424,7 @@ public final class ClusterService: @unchecked Sendable {
             // (`ClusterApprovalCheck.step`); an end the coordinator decided (out of reach, or the member role not
             // accepted in time) is not counted.
             if lock.withLock({ childIsMember }) {
-                let lastError = Self.lastError(in: serviceFiles.rankLog, from: lock.withLock { childLogOffset })
+                let lastError = Self.lastError(in: serviceFiles.rankLog, from: lock.withLock { childLogOffset }, preferStopReason: false)
                 lock.withLock { memberQuickEnds = ClusterApprovalCheck.memberQuickEnds(after: memberQuickEnds, ranSeconds: ran, lastError: lastError) }
             }
             // F14: a solo server that keeps ending right after its start is not started again for this plan and model

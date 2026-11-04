@@ -231,6 +231,14 @@ the test.
 **Set up the cable port** comes first when the cable moved to a port not set
 up yet ([below](#when-something-is-in-the-way)).
 
+Switching how a serving pair serves says what it does ("Switching to serving
+through Darkbloom: the leading Mac's part starts again that way."), never the
+result: the outcome block follows once the pair serves, or why it doesn't. A
+part that stops serving says why in its log ("Distributed serving stops: …",
+for example "the coordinator reported this member's runtime as outdated");
+the ✗ block and the diagnostics file give that reason, not the cancellation
+that ends the part.
+
 On the other Mac the opening says it follows, the status block, "This Mac runs
 its part by itself.", then "To change the model, run `darkbloom cluster` or
 `darkbloom start` on the other Mac (<its hardware name>). `darkbloom stop` here

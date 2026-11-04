@@ -141,6 +141,12 @@ public enum ClusterPlacementFlow {
         guard !admissibleModes.isEmpty else {
             throw ClusterConfigurationError.invalid(ClusterModelFeaturePolicy.unavailable)
         }
+        // A chosen (or developer-forced) family this model's features don't admit is refused in its contract's words
+        // (Qwen3.8 27B keeps images, video and committed-token logprobs only in tensor parallel), never a quote's error.
+        if let forced, !admissibleModes.contains(where: forced.admits) {
+            throw ClusterConfigurationError.invalid((forced == .pipeline ? "Pipeline modes" : "Tensor parallel")
+                + " can't serve this model: " + (ClusterModelFeaturePolicy.modesReason(capability) ?? "its features rule them out"))
+        }
         policy.modes = admissibleModes
         // Each restriction below says why, so a plan without a pipeline never reads as one where none fits; the
         // first said stands (the model's features before a quote that follows from them).

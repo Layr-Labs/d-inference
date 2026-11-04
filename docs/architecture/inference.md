@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-11-03
+> Last updated: 2026-11-04
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -80,18 +80,18 @@ reservation is unanswered past its delivery deadline
 pair's admission wait, at least `ClusterWorkerRequest.laneAdmissionWaitNanoseconds`
 (30 s) with lanes. A busy rank answers at its next step boundary. When the
 request's own deadline passes first, the pair throws
-`ClusterWorkerOwnerError.deadline` for that request only. A rank not yet asked
-is not asked; an answer still on its way is read and an admission given back
+`ClusterWorkerOwnerError.deadline` for that request only: no further rank is
+asked, an answer still on its way is read, every admission is given back
 (`retired(cancelled)`) within `ClusterWorkerRequest.laneRetirementWaitNanoseconds`
-(30 s); the other lanes run on. Only a rank that does not give the reservation
-back in time ends the pair. A rank never asked is never fenced for a request,
-whatever ended it: a failing pair's owner shuts it down. A relayed reservation
-that reaches the follower past its delivery deadline is that request's refusal
-(`commandRefused`, `deadline`), not a fence of the follower's session. A closed
-link, a lost rank, or a rank that does not answer within the pair's admission
-wait still ends the pair. Before, the deadline ended the whole pair: every lane
-in flight failed and the follower logged `leader fenced: the request was
-cancelled before it started`. Sources:
+(30 s), and the other lanes run on. A rank never asked is never fenced for a
+request, whatever ended it: a failing pair's owner shuts it down. A relayed
+reservation that reaches the follower past its delivery deadline is that
+request's refusal (`commandRefused`, `deadline`), not a fence of the follower's
+session. A closed link, a lost rank, a rank that does not answer within the
+pair's admission wait, or one that does not give a reservation back in time
+still ends the pair. Before, the deadline ended the whole pair: every lane in
+flight failed and the follower logged `leader fenced: the request was cancelled
+before it started`. Sources:
 `libs/darkbloom-cluster/Sources/DarkbloomClusterProcess/ClusterWorkerPair.swift`
 (`reserve`),
 `libs/darkbloom-cluster/Sources/DarkbloomClusterProcess/ClusterWorkerRequest.swift`

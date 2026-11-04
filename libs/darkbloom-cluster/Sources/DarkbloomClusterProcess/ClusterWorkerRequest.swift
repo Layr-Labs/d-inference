@@ -55,9 +55,9 @@ public final class ClusterWorkerRequest: @unchecked Sendable {
         }
         // A rank's owner fences a worker that has not answered a reservation
         // by its delivery deadline (`ClusterWorkerOwnerService`), so the
-        // reservation is delivered within the pair's admission wait, as any
-        // command is. The request's admission deadline, often nearly spent on
-        // arrival, bounds only how long this request waits for the answers.
+        // reservation is delivered within the pair's admission wait. The
+        // request's admission deadline, often nearly spent on arrival, bounds
+        // only how long this request waits for the answers.
         let delivery = min(baseReservation.deadlineUptimeNanoseconds, now + owner.admissionWaitNanoseconds)
         let deadline = min(delivery, admissionDeadline ?? UInt64.max)
         guard now < deadline else { throw ClusterWorkerOwnerError.deadline }
@@ -85,8 +85,8 @@ public final class ClusterWorkerRequest: @unchecked Sendable {
                     try worker.sendWorkerCommand(.reserve(local), requestID: requestID, deadline: delivery)
                 } catch ClusterWorkerOwnerError.closed
                             where DispatchTime.now().uptimeNanoseconds >= deadline && worker.readiness != nil {
-                    // A serving endpoint closes a send only once its deadline
-                    // passed: nothing reached the rank. The request's deadline.
+                    // A still-serving endpoint closes a send only once its
+                    // deadline passed: nothing reached the rank, no rank is lost.
                     throw ClusterWorkerOwnerError.deadline
                 } catch ClusterWorkerOwnerError.refused(let reason) where reason != .unavailable {
                     // The rank's endpoint could not take this reservation now
@@ -429,11 +429,10 @@ public final class ClusterWorkerRequest: @unchecked Sendable {
             // Never-submitted/refused ranks have no request to cancel. Pending
             // submission can race an unread refusal, so only confirmed admission
             // permits request cancel. All other ranks need actual native cleanup.
-            // A rank never asked holds nothing of the request, whatever ended
-            // it: nothing to give back and nothing to fence (a failing pair's
-            // owner shuts it down).
             if submitted[index] == .none || (alone && submitted[index] == .refused) {
                 // Never asked, or it refused: this rank holds nothing for the request.
+                // One never asked is not fenced whatever ended the request: a
+                // failing pair's owner shuts it down.
                 acknowledged[index] = true
                 continue
             }

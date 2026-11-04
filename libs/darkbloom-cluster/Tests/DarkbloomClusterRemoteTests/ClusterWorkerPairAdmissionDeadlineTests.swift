@@ -202,7 +202,7 @@ final class ClusterWorkerPairAdmissionDeadlineTests: XCTestCase {
         XCTAssertEqual(done.wait(timeout: .now() + 20), .success, "the pair did not shut down")
     }
 
-    /// (a) On a lane pair, rank 0 answers a reservation 600 ms after a request
+    /// On a lane pair, rank 0 answers a reservation 600 ms after a request
     /// arrived with 150 ms of its budget left. That request ends with a deadline
     /// outcome; nothing is fenced, the pair stays valid, the lane decoding
     /// meanwhile keeps running and finishes, and the pair serves the next request.
@@ -246,7 +246,7 @@ final class ClusterWorkerPairAdmissionDeadlineTests: XCTestCase {
         XCTAssertTrue(ranks.allSatisfy { $0.fences.isEmpty && $0.nativeCleanupObserved }, "a rank did not end by its shutdown")
     }
 
-    /// (c) A request that ends while rank 0's answer is still on its way, before
+    /// A request that ends while rank 0's answer is still on its way, before
     /// rank 1 was ever asked, never fences rank 1, whatever ended it. Here the
     /// pair fails for another reason (a lost peer, another lane's failure): the
     /// pair's owner shuts rank 1 down, it is not fenced for a request it never
@@ -272,7 +272,7 @@ final class ClusterWorkerPairAdmissionDeadlineTests: XCTestCase {
         XCTAssertTrue(ranks[1].nativeCleanupObserved && ranks[1].fences.isEmpty, "rank 1 did not end by its shutdown")
     }
 
-    /// (c) The same request ended by its caller (the pair's own shutdown) while
+    /// The same request ended by its caller (the pair's own shutdown) while
     /// rank 0's answer is on its way fences nothing at all: rank 0 gives back
     /// what it admitted, and rank 1 was never asked.
     func testARequestItsCallerEndsBeforeRankOneWasAskedFencesNothing() throws {

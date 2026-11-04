@@ -267,25 +267,25 @@ func shutdown(_ pair: ClusterWorkerPair, seconds: Int = 8, _ context: @autoclosu
             .reserve(.init(profileID: fixtureProfile.id, promptTokenIDs: [1, 2], stopTokenIDs: [], outputCount: 2, chunkSize: 1,
                 deadlineUptimeNanoseconds: now() + 8_000_000_000, capacityLimitBytes: 900, sampling: nil, prefixCache: nil))
         }
+        // The leader's next command on this session, with `deliveryNanoseconds` to reach the worker.
+        func relay(_ command: ClusterWorkerCommand, for requestID: UUID, sequence: UInt64, deliveryNanoseconds: UInt64) throws {
+            let at = now()
+            server.deliver(try ClusterLinkWorkerWire.command(command, requestID: requestID, epoch: epoch, session: session,
+                sequence: sequence, now: at, deliveryDeadline: at + deliveryNanoseconds).encoded())
+        }
         let expired = UUID(), next = UUID()
-        var at = now()
         // One nanosecond of delivery time left: past it before this Mac's owner can queue it.
-        server.deliver(try ClusterLinkWorkerWire.command(reservation(), requestID: expired, epoch: epoch, session: session,
-            sequence: 1, now: at, deliveryDeadline: at + 1).encoded())
+        try relay(reservation(), for: expired, sequence: 1, deliveryNanoseconds: 1)
         try require(wait(seconds: 5) { transport.refusals.contains { $0.requestID == expired } || reports.fenced },
             "Nothing came back for the expired reservation: \(reports.lines)")
         try require(!reports.fenced, "The follower fenced its session for one request's delivery deadline: \(reports.lines)")
         try require(transport.refusals.first { $0.requestID == expired }?.detail == ClusterWorkerRefusal.deadline.rawValue,
             "The refusal does not name the deadline: \(transport.refusals)")
         // The session serves on: the next reservation reaches the worker, which admits it and gives it back.
-        at = now()
-        server.deliver(try ClusterLinkWorkerWire.command(reservation(), requestID: next, epoch: epoch, session: session,
-            sequence: 2, now: at, deliveryDeadline: at + 5_000_000_000).encoded())
+        try relay(reservation(), for: next, sequence: 2, deliveryNanoseconds: 5_000_000_000)
         try require(wait(seconds: 5) { transport.events.contains { $0.requestID == next && $0.event.isAdmission } },
             "The next reservation was not admitted: \(reports.lines)")
-        at = now()
-        server.deliver(try ClusterLinkWorkerWire.command(.cancel(.callerCancelled), requestID: next, epoch: epoch, session: session,
-            sequence: 3, now: at, deliveryDeadline: at + 5_000_000_000).encoded())
+        try relay(.cancel(.callerCancelled), for: next, sequence: 3, deliveryNanoseconds: 5_000_000_000)
         try require(wait(seconds: 5) { transport.events.contains { $0.requestID == next && $0.event == .retired(.cancelled) } },
             "The next reservation was not given back: \(reports.lines)")
         try require(!reports.fenced && server.busy, "The follower's session did not serve on: \(reports.lines)")

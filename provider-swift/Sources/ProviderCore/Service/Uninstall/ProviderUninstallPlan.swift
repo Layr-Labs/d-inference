@@ -154,6 +154,48 @@ public struct ProviderUninstallPairing: Sendable, Equatable {
 }
 
 extension ProviderUninstall {
+    /// What `darkbloom uninstall` (or `--dry-run`) runs on this Mac, in order.
+    public struct Plan: Sendable, Equatable {
+        public struct Service: Sendable, Equatable {
+            public let name: String
+            /// The launch agent file, or nil when it is not installed.
+            public let path: String?
+            public init(name: String, path: String?) { self.name = name; self.path = path }
+        }
+        public let cli: String
+        /// The command that installs Darkbloom again, for the way back after `--keep-models`.
+        public let installCommand: String
+        /// The cluster service's launch agent files (`ClusterServiceAgent.installedLabels`); empty when it is not set up.
+        public let clusterService: [String]
+        public let services: [Service]
+        public let items: [ProviderUninstallItem]
+        public let pairing: ProviderUninstallPairing?
+        /// Darkbloom things this command never removes, each with how to remove it (the fan helper, …).
+        public let elsewhere: [String]
+
+        public init(cli: String = BuildEnvironment.current.cliName,
+                    installCommand: String = "curl -fsSL \(BuildEnvironment.current.coordinatorHTTPURL)/install.sh | bash",
+                    clusterService: [String] = [], services: [Service], items: [ProviderUninstallItem],
+                    pairing: ProviderUninstallPairing?, elsewhere: [String] = []) {
+            self.cli = cli; self.installCommand = installCommand; self.clusterService = clusterService
+            self.services = services; self.items = items; self.pairing = pairing; self.elsewhere = elsewhere
+        }
+
+        /// What `mode` deletes, in order.
+        func removed(_ mode: Mode) -> [ProviderUninstallItem] {
+            items.filter { $0.verdict == .remove && !(mode == .keepModels && $0.kind == .model) }
+        }
+        var models: [ProviderUninstallItem] { items.filter { $0.verdict == .remove && $0.kind == .model } }
+        var kept: [ProviderUninstallItem] { items.filter { $0.verdict == .keep } }
+        var refused: [ProviderUninstallItem] { items.filter { $0.verdict == .refused } }
+        /// Disk space deleting `mode`'s items frees, with APFS clones counted once.
+        func frees(_ mode: Mode) -> Int64 { uniqueBytes(removed(mode)) }
+        var modelBytes: Int64 { uniqueBytes(models) }
+    }
+
+    static let chosenModelsLabel = "Models in the folder you chose"
+    static let clusterStoreLabel = "Cluster model store"
+
     /// Everything `--everything` would delete or keep, in deletion order: the install folder (with the app this
     /// command runs from) comes last.
     public static func inventory(_ paths: ProviderUninstallPaths) -> [ProviderUninstallItem] {

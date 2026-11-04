@@ -32,22 +32,27 @@ extension ClusterPairSummary {
     }
 
     /// `darkbloom cluster status`: the local facts and the status `darkbloom cluster` shows, which on the Mac that
-    /// follows comes from the leading Mac over the cable.
-    /// `slow` hears when the leading Mac's answer is slow (`boundedStatus`).
-    static func live(config: String?, slow: ClusterPairCommands.Say? = nil) async -> ClusterPairSummary {
-        liveReadForTesting?(true)
+    /// follows comes from the leading Mac over the cable. `bounded`: a person's `cluster status` or `status`, which on
+    /// the Mac that follows waits for that answer at most `leaderAnswerSeconds` and tells `bounded` when it is slow
+    /// (`statusLines`); nil waits as long as the answer takes.
+    static func live(config: String?, bounded slow: ClusterPairCommands.Say? = nil) async -> ClusterPairSummary {
+        liveReadForTesting?(slow != nil)
         if let reader = testReader { return reader(true) }
         let noticeAfter = ClusterPairCommands.progressDelay
-        return await Task.detached { liveFacts(config: config, slow: slow, noticeAfter: noticeAfter) }.value
+        return await Task.detached { liveFacts(config: config, bounded: slow, noticeAfter: noticeAfter) }.value
     }
 
     /// Tests see each `live` read: whether it asks for the bounded wait (`statusLines`).
     @TaskLocal static var liveReadForTesting: (@Sendable (_ bounded: Bool) -> Void)?
 
-    /// The status lines `live` reads (`boundedStatus`).
+    /// The status lines `live` reads. Only a person's read (`slow`, which hears a slow answer) on the Mac that follows
+    /// waits for the leading Mac's answer at most `seconds` (`boundedStatus`). Everywhere else it waits as long as the
+    /// answer takes: on the leading Mac, whose status is its own, and in a script start's looks, whose wait has its own
+    /// bound and lines (a look cut short would leave its forward running beside the next one).
     static func statusLines(leads: Bool, slow: ClusterPairCommands.Say?, within seconds: Double = leaderAnswerSeconds,
                             noticeAfter: Double, _ status: @escaping @Sendable () -> [String]) -> [String]? {
-        boundedStatus(within: seconds, noticeAfter: noticeAfter, slow: slow, status)
+        guard !leads, let slow else { return status() }
+        return boundedStatus(within: seconds, noticeAfter: noticeAfter, slow: slow, status)
     }
 
     /// How long `cluster status` and `status` wait for the leading Mac's answer on the Mac that follows. The forward
@@ -127,13 +132,12 @@ extension ClusterPairSummary {
         }
     }
 
-    private static func liveFacts(config: String?, slow: ClusterPairCommands.Say?, noticeAfter: Double) -> ClusterPairSummary {
+    private static func liveFacts(config: String?, bounded slow: ClusterPairCommands.Say?, noticeAfter: Double) -> ClusterPairSummary {
         var summary = localFacts()
         guard summary.paired, summary.role != nil,
               let operations = try? ClusterOnboardingOperations.live(.clusterService(config: config, worker: nil)) else { return summary }
-        // On the Mac that follows the lines are the leading Mac's answer over the cable: waited for within a bound and
-        // said when slow; past it, this Mac's own view stands (the other Mac's answer unknown).
-        guard let status = boundedStatus(within: leaderAnswerSeconds, noticeAfter: noticeAfter, slow: slow, operations.status) else {
+        // A bounded wait that ran out: this Mac's own view stands (the other Mac's answer unknown).
+        guard let status = statusLines(leads: summary.leads, slow: slow, noticeAfter: noticeAfter, operations.status) else {
             return summary
         }
         summary.read(status: status, leaderMode: summary.leads ? ClusterService.publishedLive()?.control?.mode : nil)

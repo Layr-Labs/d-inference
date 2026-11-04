@@ -24,7 +24,7 @@ extension Cluster {
             Darkbloom.ensureLogging()
             guard details else {
                 let summary = await ClusterPairSummary.live(config: configOptions.config,
-                                                            slow: json ? ClusterPairSummary.sayOnStandardError : ClusterPairCommands.printLine)
+                                                            bounded: json ? ClusterPairSummary.sayOnStandardError : ClusterPairCommands.printLine)
                 if json { try printJSON(summary.json) } else { for line in summary.clusterStatusLines { print(line) } }
                 if summary.exitCode != 0 { throw ExitCode(summary.exitCode) }
                 return

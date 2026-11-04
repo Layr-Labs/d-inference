@@ -449,7 +449,8 @@ incident log, owned by `DarkbloomClusterRemote`
 (`ClusterIncidentLog.defaultFile(homeDirectory:install:)`): production's is
 `~/.darkbloom/cluster/incidents.json`, another install's its own file, such as
 `incidents.dev.json`, which a build from before installs had their own files
-never reads or rewrites. Every reader and writer opens this build's with
+never reads or rewrites; a corrupt one is kept beside it under its own name
+(`incidents.corrupt.json`, `incidents.dev.corrupt.json`). Every reader and writer opens this build's with
 `ClusterIncidentLog.forThisInstall`. Each record also names the install that
 wrote it (`ClusterIncident.install`), and a build reads only its own, counting
 records without one as production's (`ClusterIncidentLog.install`). The

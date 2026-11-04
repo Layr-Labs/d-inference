@@ -358,8 +358,9 @@ public final class ClusterIncidentLog: @unchecked Sendable {
             case .missing:
                 stored = .init(schemaVersion: ClusterIncidentFeed.schemaVersion, epoch: Self.newEpoch(), nextSeq: 1, incidents: [])
             case .corrupt:
-                // Kept for whoever investigates, never trusted, never blocking.
-                let aside = directory.appendingPathComponent("incidents.corrupt.json")
+                // Kept for whoever investigates, never trusted, never blocking; named after its file, so each install
+                // keeps its own (`incidents.corrupt.json`, `incidents.dev.corrupt.json`).
+                let aside = directory.appendingPathComponent(file.deletingPathExtension().lastPathComponent + ".corrupt.json")
                 _ = unlink(aside.path)
                 _ = rename(file.path, aside.path)
                 stored = .init(schemaVersion: ClusterIncidentFeed.schemaVersion, epoch: Self.newEpoch(), nextSeq: 1, incidents: [])

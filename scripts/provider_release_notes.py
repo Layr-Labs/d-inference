@@ -31,6 +31,9 @@ SQUASHED_PULL = re.compile(r'\(#([1-9][0-9]*)\)$')
 # The candidate note of an unpublished CHANGELOG.md section; the published section replaces it.
 CANDIDATE_NOTE = re.compile(r'Prepared on [0-9]{4}-[0-9]{2}-[0-9]{2}; tagging and publication are separate steps\.')
 UPGRADE_NOTES = 'Upgrade and rollout notes'
+# A code span (kept: markdown shows its text as typed), or a character escaped in titles and subjects
+# outside one: HTML, links and images, emphasis and stray backticks. "#N" and "@login" stay references.
+MARKDOWN_TEXT = re.compile(r'(?<!`)(`+)(?!`).*?(?<!`)\1(?!`)|([\\`*_\[\]<>])')
 GRAPHQL_BATCH = 100
 # Earlier releases searched for what a release without a promotion carries.
 HOTFIX_RELEASES = 4
@@ -84,7 +87,10 @@ class Repository:
         self.releases = {}
 
     def git(self, *args):
-        return subprocess.run(['git', *args], cwd=self.directory, check=True, capture_output=True, text=True).stdout
+        result = subprocess.run(['git', *args], cwd=self.directory, capture_output=True, text=True)
+        if result.returncode != 0:
+            raise RuntimeError(f'git {args[0]} failed: {result.stderr.strip()}')
+        return result.stdout
 
     def commits(self, *args):
         output = self.git('log', '--format=%H%x1f%P%x1f%s%x1e', *args)
@@ -253,13 +259,20 @@ def github_pull_requests(repository, numbers):
     for start in range(0, len(numbers), GRAPHQL_BATCH):
         fields = ' '.join(f'pr{n}: issueOrPullRequest(number: {n}) {{ __typename ... on PullRequest '
                           f'{{ number title url author {{ login }} }} }}' for n in numbers[start:start + GRAPHQL_BATCH])
-        query = f'query {{ repository(owner: "{owner}", name: "{name}") {{ {fields} }} }}'
-        # A number that is no issue or pull request answers null with an error, and gh exits 1.
-        result = subprocess.run(['gh', 'api', 'graphql', '-f', 'query=' + query], capture_output=True, text=True)
+        query = f'query($owner: String!, $name: String!) {{ repository(owner: $owner, name: $name) {{ {fields} }} }}'
+        result = subprocess.run(['gh', 'api', 'graphql', '-f', 'query=' + query, '-f', 'owner=' + owner,
+                                 '-f', 'name=' + name], capture_output=True, text=True)
         try:
-            data = json.loads(result.stdout)['data']['repository']
+            answer = json.loads(result.stdout)
+            data = answer['data']['repository']
         except (ValueError, KeyError, TypeError) as error:
             raise RuntimeError(f'GitHub pull request query failed: {result.stderr.strip()}') from error
+        # A number that is no issue or pull request answers null with a NOT_FOUND error, and gh exits 1.
+        # Any other error could hide a pull request, which would then be listed as a commit without one.
+        errors = [error for error in answer.get('errors') or [] if error.get('type') != 'NOT_FOUND']
+        if errors:
+            details = '; '.join(f"{error.get('type')}: {error.get('message')}" for error in errors)
+            raise RuntimeError(f'GitHub pull request query failed: {details}')
         for value in data.values():
             if value and value.get('__typename') == 'PullRequest':
                 found[value['number']] = {'title': value['title'], 'url': value['url'],
@@ -290,10 +303,15 @@ def upgrade_notes(section):
     return '\n'.join(lines[start - 1:end - 1]).strip('\n')
 
 
+def literal(value):
+    """Markdown that shows `value` as typed: a title or subject must not add links, HTML or formatting."""
+    return MARKDOWN_TEXT.sub(lambda match: match[0] if match[1] else '\\' + match[2], value)
+
+
 def pull_line(commit, pulls, repository):
     pull = pulls[commit.number]
     author = f" by @{pull['author']}" if pull['author'] else ''
-    return f"* {pull['title']}{author} in https://github.com/{repository}/pull/{commit.number}"
+    return f"* {literal(pull['title'])}{author} in https://github.com/{repository}/pull/{commit.number}"
 
 
 def short(sha):
@@ -330,7 +348,8 @@ def render(header, contents, pulls, section, *, tag, previous, version, reposito
         pulls_part += [pull_line(c, pulls, repository) for c in master] + ['']
     if unreferenced:
         pulls_part += [f'{count(len(unreferenced), "commit")} without a pull request:', '']
-        pulls_part += [f'* {c.subject} (https://github.com/{repository}/commit/{c.sha})' for c in unreferenced] + ['']
+        pulls_part += [f'* {literal(c.subject)} (https://github.com/{repository}/commit/{c.sha})' for c in unreferenced]
+        pulls_part += ['']
     rollups = [f'{name(c)} promoted `dev` up to {short(carried)}' for c, carried in contents.promotions]
     rollups += [f'{name(c)} prepared the release' for c in contents.preparations]
     rollups += [f'{name(c)} merged `master` into `dev`' for c in contents.syncs]
@@ -408,7 +427,8 @@ def main():
     parser.add_argument('--dev', default='origin/dev', help='the dev branch (default: origin/dev)')
     parser.add_argument('--pull-head', action='append', default=[], metavar='N=COMMIT',
                         help="a pull request's head, for a promotion that is not merged yet")
-    parser.add_argument('--no-fetch', action='store_true', help='read only local objects')
+    parser.add_argument('--no-fetch', action='store_true',
+                        help="read only local objects; a squash promotion is then found only through --pull-head")
     parser.add_argument('--repository', default='Layr-Labs/d-inference')
     parser.add_argument('--header-file', type=Path, help='retained header (default: none)')
     parser.add_argument('--output', type=Path, help='write the body here (default: standard output)')

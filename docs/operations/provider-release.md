@@ -765,11 +765,18 @@ The script reads the release's contents from Git, not from a date window:
   contains it: GitHub keeps `refs/pull/<N>/head` after the merge, and the script
   fetches it read-only. A release with no promotion of its own, such as a
   hotfix, carries what the release before it carried. The script looks back
-  four releases for it.
+  four releases for it. After more than four releases in a row without a
+  promotion, it uses what the tag itself contains, and the next release can
+  list again pull requests that an earlier release listed.
 - **Promotions are found by their history, not their titles.** A pull request
   on `master`'s first-parent chain is a promotion when its head (the merge
   commit's second parent, or the squash's `refs/pull/<N>/head`) holds a `dev`
-  first-parent commit that `master` did not have.
+  first-parent commit that `master` did not have. If GitHub no longer had a
+  squash promotion's head, the notes would list it as a pull request merged
+  directly into `master` and leave out its `dev` pull requests, with no
+  warning. A preparation whose head holds `dev` commits is named as the
+  preparation, and the `dev` pull requests are listed as reaching `master`
+  with it.
 - **The `dev` pull requests** are the first-parent commits of `dev` after the
   commit that the previous release carried, up to the one this release carries.
   They are `Merge pull request #N` merges and squashed `(#N)` subjects. A `dev`
@@ -781,14 +788,16 @@ The script reads the release's contents from Git, not from a date window:
   `dev` pull request.
 - **Titles and authors** come from GitHub's GraphQL API, in one query per 100
   pull requests. A `(#N)` that names an issue is listed as a commit without a
-  pull request.
+  pull request. Any other GraphQL error fails the notes. Titles and commit
+  subjects show as typed: HTML, links and emphasis in them are escaped, and a
+  code span stays code.
 
 GitHub refuses a body over 125,000 characters. When the body is longer, it
 keeps the upgrade and rollout notes and links the entries in `CHANGELOG.md` at
 the tag. The pull request list is always kept. By then the registration and the
 latest aliases are published. A generation failure therefore does not stop the
-GitHub release: the job logs a warning, and the body says that the generated
-part is missing.
+GitHub release: the job logs a warning with git's or GitHub's error, and the
+body says that the generated part is missing.
 
 To check the notes for a published release, or to preview them before the tag,
 run the script read-only. It prints what it excluded and why on standard error:

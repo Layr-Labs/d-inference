@@ -183,7 +183,7 @@ extension ProviderUninstall {
 
         /// What `mode` deletes, in order.
         func removed(_ mode: Mode) -> [ProviderUninstallItem] {
-            items.filter { $0.verdict == .remove && !(mode == .keepModels && $0.kind == .model) }
+            items.filter { $0.verdict == .remove && !mode.keeps($0) }
         }
         var models: [ProviderUninstallItem] { items.filter { $0.verdict == .remove && $0.kind == .model } }
         var kept: [ProviderUninstallItem] { items.filter { $0.verdict == .keep } }

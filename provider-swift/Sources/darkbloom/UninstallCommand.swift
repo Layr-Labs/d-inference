@@ -89,8 +89,7 @@ struct Uninstall: AsyncParsableCommand {
             elsewhere.append("Darkbloom Sandbox stays (\(sandbox.root.path)); to remove it, run `\(cli) sandbox uninstall` "
                 + "before removing everything.")
         }
-        return .init(installCommand: "curl -fsSL \(BuildEnvironment.current.coordinatorHTTPURL)/install.sh | bash",
-                     clusterService: ClusterServiceAgent.installedLabels().map { ClusterServiceAgent.plistPath(label: $0).path },
+        return .init(clusterService: ClusterServiceAgent.installedLabels().map { ClusterServiceAgent.plistPath(label: $0).path },
                      services: agents.map { .init(name: $0.0, path: FileManager.default.fileExists(atPath: $0.1.path) ? $0.1.path : nil) },
                      items: ProviderUninstall.inventory(.live(config: config, configPath: configPath)),
                      pairing: ProviderUninstallPairing.read(),

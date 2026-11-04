@@ -9,6 +9,9 @@ public enum ProviderUninstall {
     public enum Mode: String, Codable, Sendable, CaseIterable {
         case everything
         case keepModels = "keep-models"
+
+        /// The one difference between the two: `keepModels` keeps every `.model` item in place.
+        func keeps(_ item: ProviderUninstallItem) -> Bool { self == .keepModels && item.kind == .model }
     }
 
     /// How a step ended when it did not throw.
@@ -17,8 +20,8 @@ public enum ProviderUninstall {
         case skipped(String)
     }
 
-    public struct Step: Codable, Sendable, Equatable {
-        public enum Status: String, Codable, Sendable { case done, skipped, failed }
+    public struct Step: Sendable, Equatable {
+        public enum Status: String, Sendable { case done, skipped, failed }
         public let name: String
         public let status: Status
         public let detail: String?
@@ -117,7 +120,7 @@ public enum ProviderUninstall {
         // After the pairing, which tells the other Mac over the cable; this takes the cable's address away.
         let cableUndone = await step(cableStep, operations.removeCableSetup)
         let before = operations.availableBytes()
-        for item in items where item.verdict != .keep && !(mode == .keepModels && item.kind == .model) {
+        for item in items where item.verdict != .keep && !mode.keeps(item) {
             let name = "Delete \(item.label)"
             guard item.verdict == .remove else {
                 steps.append(.init(name: name, status: .skipped, detail: "refused: \(item.reason ?? "outside Darkbloom's folders")"))

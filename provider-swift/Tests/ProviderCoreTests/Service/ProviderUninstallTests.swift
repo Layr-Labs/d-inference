@@ -10,7 +10,6 @@ private final class FakeLaunchd: @unchecked Sendable {
     private let lock = NSLock()
     private var loaded: Set<String>
     private var calls: [[String]] = []
-    var failBootout: Set<String> = []
 
     init(loaded: Set<String>) { self.loaded = loaded }
 
@@ -23,9 +22,6 @@ private final class FakeLaunchd: @unchecked Sendable {
                 return loaded.contains(label) ? .init(status: 0, stdout: "", stderr: "")
                     : .init(status: 113, stdout: "", stderr: "Could not find service \"\(label)\" in domain for user gui: 501\n")
             case "bootout":
-                if failBootout.contains(label) {
-                    return .init(status: 5, stdout: "", stderr: "Boot-out failed: 5: Input/output error\n")
-                }
                 loaded.remove(label)
                 return .init(status: 0, stdout: "", stderr: "")
             case "disable", "enable":
@@ -346,7 +342,7 @@ struct ProviderUninstallTests {
         #expect((document["modes"] as? [[String: Any]])?.map { $0["mode"] as? String } == ["everything", "keep-models"])
     }
 
-    @Test("(e) sizes count an APFS clone once, and not at all while a clone outside stays")
+    @Test("sizes count an APFS clone once, and not at all while a clone outside stays")
     func clonedModelIsCountedOnce() throws {
         let fixture = try Fixture.make()
         defer { fixture.remove() }
@@ -503,7 +499,7 @@ struct ProviderUninstallTests {
                 "a setup saved for another pairing says nothing about this one")
     }
 
-    @Test("(f) the account token is revoked once, best effort: an unconfirmed revocation is reported and blocks nothing")
+    @Test("the account token is revoked once, best effort: an unconfirmed revocation is reported and blocks nothing")
     func tokenRevocationIsBestEffort() async throws {
         let fixture = try Fixture.make()
         defer { fixture.remove() }

@@ -1,0 +1,7 @@
+### `darkbloom cluster` says Serving and Done only once the model is loaded
+
+- A pair registered with the coordinator as a cluster member is no longer called serving: `darkbloom cluster` now waits (at most 15 minutes, its progress on the live line) until the coordinator paired both Macs, both loaded the model and the pair answered its first request, then says `✓ Serving <model> (<split>) through Darkbloom on both Macs` and Done. Before, both Macs said Serving and Done while nothing was loaded, as when the coordinator refused a pair without App Attest trust.
+- A start that does not come to serve, including the parts' restart after the registration, now says why in one line (a Mac without a Darkbloom login, a Mac Darkbloom has not verified for private serving yet (App Attest), a Mac without free memory for its share, a part that keeps ending) and stays open with **Retry**, **Change model**, **Serve locally only** and **Diagnostics**. Leaving with q says the pair does not serve yet and exits 1; it never says Done.
+- Before the Start step starts anything for serving through Darkbloom, a Mac without a Darkbloom login is named, with **Log in on this Mac** (or **Check again** after `darkbloom login` on the other Mac) and **Serve locally only**.
+- The cluster's status line for such a pair says `Serving <model> (<split>) through Darkbloom on both Macs.` only while it serves, else `<model> is not serving yet: <reason>.` with what to do.
+- The leader's last lines now give the test response first, then what serves.

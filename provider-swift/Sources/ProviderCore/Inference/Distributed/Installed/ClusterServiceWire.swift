@@ -28,6 +28,13 @@ public struct ClusterServiceStatus: Codable, Sendable, Equatable {
         /// the service's selected setup, it changes only after restart or an
         /// acknowledged same-listener handoff. Used to fence automatic replans.
         public var configurationSHA256: String? = nil
+        /// While a coordinator-paired part runs: its pair's latest progress line without its prefix
+        /// (`ClusterOnboardingPairReport.text`: "starting", "serving …", "stopped (…)"); nil before any, for any other
+        /// part, and from an older build.
+        public var pair: String? = nil
+        /// While a coordinator-paired part runs: whether the coordinator's latest trust status for it carries a current
+        /// App Attest serving authorization, which pair membership requires; nil when it has sent none yet.
+        public var appAttest: Bool? = nil
     }
     public struct Session: Codable, Sendable, Equatable {
         public var observed: Bool
@@ -75,6 +82,9 @@ public struct ClusterServiceStatus: Codable, Sendable, Equatable {
     /// This Mac's part in the pair's coordinated update, as its cluster service supervisor writes it. Nil from an
     /// older build, which cannot coordinate one.
     public var pairUpdate: ClusterPairUpdateProgress? = nil
+    /// This Mac has a Darkbloom login (`darkbloom login`): the coordinator pairs only logged-in Macs. Nil from an
+    /// older build, which the leader never reads as "not logged in".
+    public var loggedIn: Bool? = nil
     public struct Control: Codable, Sendable, Equatable {
         public var leaderID: String
         public var leaderName: String

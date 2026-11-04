@@ -283,9 +283,21 @@ the test response succeeds, the control leader registers the pair with the
 coordinator when the coordinator serves a cluster approval for this pair
 (`ClusterOnboardingDriver.register`, control operation `register`). Both parts
 then run as coordinator-paired members
-(`ClusterService.Settings.memberArguments`), which have no local API, and the
-ready screen shows the registered line (`ClusterOnboardingReady.offered`,
-`OnboardingLive.offeredReadiness`). How the approval is fetched, matched,
+(`ClusterService.Settings.memberArguments`), which have no local API. Both
+members registered (`ClusterOnboardingReady.offered`,
+`OnboardingLive.offeredReadiness`) is not serving: the driver then waits
+(`ClusterOnboardingDriver.awaitPairServing`, operation `pairServing`) until the
+plan's rank 0 part reports its pair slot published, which needs both ranks
+loaded and the warm-up request answered. That part writes its pair's progress
+to its log (`ClusterOnboardingPairReport`, written by
+`ProviderLoop.reportPair`); its cluster service publishes the latest line with
+the member's App Attest authorization and this Mac's Darkbloom login
+(`ClusterServiceStatus.Child.pair`, `Child.appAttest`, `loggedIn`). A start that
+does not serve, the restart after the registration included, ends on its reason
+(`ClusterOnboardingNotServing`, `OnboardingLive.pairLook`) and the driver's
+choices (`ClusterOnboardingDriver.finishStart`); it never says Done. A Mac
+without a login is named before the Start step (`ClusterOnboardingDriver.checkLogins`).
+How the approval is fetched, matched,
 checked on each Mac and saved:
 [coordinator-paired member](../reference/configuration.md#coordinator-paired-member).
 The control leader checks the approval again under the command lock

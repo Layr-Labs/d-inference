@@ -102,6 +102,12 @@ import Darwin
         eachMacNamesItselfBesideItsPart()
         modelOnTheOtherMacIsCopiedNotDownloaded()
         modelThatDoesNotFitSaysSoOnce()
+        // 2026-11-03, the owner's second pair and an end user's: "Serving" and "Done" while nothing was loaded.
+        offeredPairThatTheCoordinatorRefusesSaysWhy()
+        failedRestartAfterTheRegistrationIsNotDone()
+        missingLoginIsSaidBeforeTheStart()
+        offeredPairServesOnceLoaded()
+        pairReportsAndReasonsInPlainWords()
         print("onboarding checks: \(passed) passed, \(failures.count) failed")
         for failure in failures { print("FAIL " + failure) }
         exit(failures.isEmpty ? 0 : 1)
@@ -442,9 +448,20 @@ import Darwin
                            reachFailures: Int = 0,
                            readyResult: Result<ClusterOnboardingReady, ClusterOnboardingFailure> = .success(.init(servedBy: "this Mac", port: 8000,
                                deployment: "Serving Qwen3.8-27B-4bit-mtp across both Macs: pipeline, this Mac 32 layers / the other Mac 32 layers",
-                               split: "pipeline"))) -> ClusterOnboardingOperations {
+                               split: "pipeline")),
+                           readyResults: [Result<ClusterOnboardingReady, ClusterOnboardingFailure>]? = nil,
+                           pairServingResults: [Result<[String], ClusterOnboardingFailure>] = [.failure(.init("not asked in this check"))],
+                           missingLogins: [String] = [],
+                           loginSucceeds: Bool = true) -> ClusterOnboardingOperations {
         let answered = DispatchSemaphore(value: 0)
         let chosenPort = Recorder()
+        // The n-th wait for the parts answers `readyResults[n]` (the last one again after it), else `readyResult`.
+        @Sendable func ready(_ call: Int) -> Result<ClusterOnboardingReady, ClusterOnboardingFailure> {
+            guard let readyResults, !readyResults.isEmpty else { return readyResult }
+            return readyResults[min(call, readyResults.count - 1)]
+        }
+        let loggedOut = Recorder()
+        for mac in missingLogins { loggedOut.note(mac) }
         return ClusterOnboardingOperations(
             resume: { resume },
             checkLink: { say in
@@ -505,8 +522,9 @@ import Darwin
             adopt: { index in recorder.note("adopt \(index)"); return .success(["Saved this Mac's setup.", "Sent the setup to the other Mac over the cable; its cluster service applied it."]) },
             serve: { recorder.note("serve"); return .success(["Started the other Mac's part over the cable (its cluster service runs it); this Mac's service runs its own."]) },
             waitReady: { progress in
+                let call = recorder.all.filter { $0 == "waitReady" }.count
                 recorder.note("waitReady"); progress("1 of 2 parts ready"); usleep(50_000); progress("2 of 2 parts ready")
-                return readyResult
+                return ready(call)
             },
             testRequest: { recorder.note("testRequest"); return testResult },
             // Rank 0, which serves the API, is the Mac that leads: this Mac on the leader, the other Mac on a member.
@@ -539,7 +557,21 @@ import Darwin
             runAsAdministrator: { script in recorder.note("runAsAdministrator"); return sudoSucceeds && script == linkScript },
             serviceOutlivesWindow: { outlivesWindow },
             remote: { remote },
-            thisMacName: { thisMacName })
+            thisMacName: { thisMacName },
+            pairServing: { progress in
+                let call = recorder.all.filter { $0 == "pairServing" }.count
+                recorder.note("pairServing")
+                progress("waiting for the coordinator to pair both Macs"); usleep(30_000)
+                progress("the coordinator paired them: loading the model on both Macs"); usleep(30_000)
+                return pairServingResults[min(call, pairServingResults.count - 1)]
+            },
+            missingLogins: { loggedOut.all },
+            login: {
+                recorder.note("login")
+                guard loginSucceeds else { return false }
+                loggedOut.lock.withLock { loggedOut.calls.removeAll { $0 == ClusterOnboardingMacName.this } }
+                return true
+            })
     }
 
     static func privateMiMoSelectionRefusesBeforeAnyActionOnMemberOrUnpairedMac() {
@@ -758,7 +790,8 @@ import Darwin
             _ = run.finish()
             let text = run.text
             expect(text.contains(restart), "\(label): the restart line: \(text)")
-            expect(Array(recorder.all.suffix(3)) == ["testRequest", "register", "waitReady"],
+            // The restarted parts are awaited and tested again: the serving line is about the parts that run now.
+            expect(Array(recorder.all.suffix(4)) == ["testRequest", "register", "waitReady", "testRequest"],
                    "\(label): the parts are awaited after the registration: \(recorder.all)")
             let done = text.range(of: "Done.")?.lowerBound, restarted = text.range(of: restart)?.lowerBound
             expect(done != nil && restarted != nil && restarted! < done!, "\(label): Done comes after the parts serve again")
@@ -1275,9 +1308,14 @@ import Darwin
             readyResult: .failure(.init(["The cluster did not report ready within 15 minutes.", "The other Mac (Apple M3 Ultra, 256 GB): its part ended: out of memory.",
                                          "This Mac: loading layers 16-31."]))))
         expect(run.waitFor(prompt(2)), "timeout: choice"); run.type("\r")
-        expect(run.waitFor("  1) Save diagnostics for Darkbloom\n  2) Skip\n"), "timeout: one choice for diagnostics")
-        run.type("1")
+        // A start that did not finish stays open with the choices; Diagnostics is one of them.
+        expect(run.waitFor(notServingChoices), "timeout: the choices, diagnostics among them: \(run.text)")
+        run.type("4")
+        expect(run.waitFor(notServingChoices, count: 2), "timeout: the choices again after the file")
+        run.type("q")
         expect(run.finish() == 1, "timeout: exit 1")
+        expect(run.text.contains("Not serving yet: The cluster did not report ready within 15 minutes.\n"), "timeout: why, first")
+        expect(!run.text.contains("Done."), "timeout: never Done")
         expect(run.text.contains("The other Mac (Apple M3 Ultra, 256 GB): its part ended: out of memory."), "timeout: each Mac's last error on screen")
         expect(run.text.contains("Saved a diagnostics file"), "timeout: the file is saved")
         expect(!run.text.contains("rank.log"), "timeout: no log path")
@@ -2171,4 +2209,161 @@ import Darwin
         run.type("1")
         expect(run.finish() == 0, "fit: the model that fits is served")
     }
+
+    // MARK: - A pair the coordinator forms serves only once loaded (2026-11-03)
+
+    /// Both Macs' members registered with the coordinator: offered for pairing, nothing loaded yet.
+    static let offeredReady = ClusterOnboardingReady(servedBy: "this Mac", port: 0,
+        deployment: "Serving Qwen3.8-27B-4bit-mtp across both Macs: pipeline, this Mac 32 layers / the other Mac 32 layers",
+        offered: ClusterOnboardingReady.registeredNotice + ": approval release/0.10.7/EigenLabs/Qwen3.8-27B-4bit-mtp/s1, until 2027-02-01T22:53:02Z",
+        split: "pipeline")
+
+    static let registeredLine = ClusterOnboardingReady.registeredNotice
+        + ": approval release/0.10.7/EigenLabs/Qwen3.8-27B-4bit-mtp/s1, until 2027-02-01T22:53:02Z."
+
+    /// The coordinator's refusal of the owner's pair (`liveness:private_text` on rank 0), as the screen words it.
+    static let notVerified = ClusterOnboardingNotServing.notVerified("the other Mac (Apple M3 Ultra, 256 GB)")
+
+    static let notServingChoices = "  1) Retry\n  2) Change model\n  3) Serve locally only\n  4) Diagnostics\n"
+
+    /// (a) 2026-11-03, the owner's M3 Ultra + M5 Max and an end user's 2x M4 Max: a pair offered for pairing said
+    /// "Serving" and "Done" while the coordinator refused it and nothing was loaded. Now the screen says why, in one
+    /// line, and stays open with the choices; leaving it never claims success.
+    static func offeredPairThatTheCoordinatorRefusesSaysWhy() {
+        let recorder = Recorder()
+        let run = TerminalRun(operations(recorder, resume: .init(role: .leader, peerName: "Apple M3 Ultra, 256 GB"), pairEvents: [],
+            pairResult: .failed([]), readyResult: .success(offeredReady), pairServingResults: [.failure(.init(notVerified))]))
+        expect(run.waitFor(prompt(2)), "refused: the list"); run.type("\r")
+        expect(run.waitFor(notServingChoices), "refused: the choices: \(run.text)")
+        let shown = run.text
+        expect(shown.contains("Not serving yet: " + notVerified + ".\n"), "refused: why, in one line: \(shown)")
+        expect(!shown.contains("\u{2713} Serving") && !shown.contains("Done.") && !shown.contains(ClusterOnboardingReady.offeredTestLine),
+               "refused: no Serving, no Done, no test claimed: \(shown)")
+        run.type("4")
+        expect(run.waitFor("Saved a diagnostics file"), "refused: Diagnostics saves the file")
+        expect(run.waitFor(notServingChoices, count: 2), "refused: the choices again after the file")
+        run.type("q")
+        let code = run.finish()
+        expect(code == 1, "refused: leaving is not success, got \(String(describing: code))")
+        let text = run.text
+        expect(!text.contains("\u{2713} Serving") && !text.contains("Done."), "refused: never Serving or Done: \(text)")
+        expect(text.hasSuffix("Not serving yet. Both Macs keep trying by themselves; run `darkbloom cluster` to check.\n"),
+               "refused: the last line says it does not serve: \(text)")
+        expect(recorder.all.contains("pairServing") && !recorder.all.contains("testRequest"),
+               "refused: the pair's own serving is awaited (no local API to test): \(recorder.all)")
+        transcript("offered-pair-refused", text, keys: run.keys)
+
+        // Retry, once the coordinator paired them meanwhile: served, then Done.
+        let retried = Recorder()
+        let again = TerminalRun(operations(retried, resume: .init(role: .leader, peerName: "Apple M3 Ultra, 256 GB"), pairEvents: [],
+            pairResult: .failed([]), readyResult: .success(offeredReady),
+            pairServingResults: [.failure(.init(notVerified)), .success(["in 0.84 s"])]))
+        expect(again.waitFor(prompt(2)), "retry: the list"); again.type("\r")
+        expect(again.waitFor(notServingChoices), "retry: the choices"); again.type("1")
+        expect(again.finish() == 0, "retry: served")
+        expect(again.text.contains("  \u{2713} Serving Qwen3.8-27B-4bit-mtp (pipeline) through Darkbloom on both Macs\n")
+            && again.text.contains("Done."), "retry: Serving and Done only after the pair served: \(again.text)")
+        expect(retried.all.filter { $0 == "pairServing" }.count == 2, "retry: waited again: \(retried.all)")
+    }
+
+    /// (b) The registration after the Test stage restarts both parts as cluster members; a restart that does not
+    /// come back is said with its reason and the choices, and the screen never says Done.
+    static func failedRestartAfterTheRegistrationIsNotDone() {
+        let recorder = Recorder()
+        let ended = "A part keeps ending the same way: rank 0 on the other Mac ended (exit 1); it starts again by itself."
+        let run = TerminalRun(operations(recorder, resume: .init(role: .leader, peerName: "Apple M3 Ultra, 256 GB"), pairEvents: [],
+            pairResult: .failed([]), registerResult: .success([registeredLine]),
+            readyResults: [.success(.init(servedBy: "this Mac", port: 8000, split: "pipeline")), .failure(.init([ended]))]))
+        expect(run.waitFor(prompt(2)), "restart: the list"); run.type("\r")
+        expect(run.waitFor("Starting both Macs' parts again as cluster members…"), "restart: the restart line")
+        _ = run.waitFor(notServingChoices, seconds: 5)
+        run.type("q")
+        let code = run.finish()
+        let text = run.text
+        expect(code == 1, "restart: a failed restart is not success, got \(String(describing: code))")
+        expect(!text.contains("Done."), "restart: never Done: \(text)")
+        expect(text.contains("Not serving yet: " + ended + "\n"), "restart: why: \(text)")
+        expect(text.contains(notServingChoices), "restart: the choices: \(text)")
+        expect(Array(recorder.all.prefix { $0 != "register" }.suffix(2)) == ["waitReady", "testRequest"]
+            && recorder.all.filter { $0 == "waitReady" }.count == 2, "restart: tested, registered, then the parts awaited: \(recorder.all)")
+        transcript("restart-after-registration-fails", text, keys: run.keys)
+    }
+
+    /// (c) Serving through Darkbloom needs both Macs logged in: a Mac without a login is named before the Start step
+    /// starts anything, with `darkbloom login` or local-only serving offered.
+    static func missingLoginIsSaidBeforeTheStart() {
+        let both = [ClusterOnboardingMacName.this, ClusterOnboardingMacName.other(named: "Apple M3 Ultra, 256 GB")]
+        let recorder = Recorder()
+        let run = TerminalRun(operations(recorder, resume: .init(role: .leader, peerName: "Apple M3 Ultra, 256 GB"), pairEvents: [],
+            pairResult: .failed([]), missingLogins: both))
+        expect(run.waitFor(prompt(2)), "login: the list"); run.type("\r")
+        expect(run.waitFor("  1) Log in on this Mac\n  2) Serve locally only\n  3) Cancel\n"), "login: the choices: \(run.text)")
+        let shown = run.text
+        let said = shown.range(of: ClusterOnboardingNotServing.notLoggedIn(both) + ".")
+        expect(said != nil, "login: which Macs, in one line: \(shown)")
+        let start = shown.range(of: "4/4 Start")
+        expect(said != nil && (start == nil || said!.lowerBound < start!.lowerBound), "login: before the Start step: \(shown)")
+        expect(!recorder.all.contains { $0.hasPrefix("adopt") || $0 == "serve" }, "login: nothing started yet: \(recorder.all)")
+        run.type("3")
+        expect(run.finish() == 0, "login: cancel")
+        expect(run.text.hasSuffix("Nothing changed.\n"), "login: nothing changed: \(run.text)")
+
+        // Log in here: the other Mac still has none, so its own `darkbloom login` is asked for; then local only.
+        let switched = Recorder()
+        let local = TerminalRun(operations(switched, resume: .init(role: .leader, peerName: "Apple M3 Ultra, 256 GB"), pairEvents: [],
+            pairResult: .failed([]), readyResult: .success(localReady), missingLogins: both))
+        expect(local.waitFor(prompt(2)), "login, local: the list"); local.type("\r")
+        expect(local.waitFor("  1) Log in on this Mac\n"), "login, local: the choices"); local.type("1")
+        expect(local.waitFor("Run `darkbloom login` on the other Mac, then Check again.\n"), "login, local: the other Mac's turn: \(local.text)")
+        expect(local.waitFor("  1) Check again\n  2) Serve locally only\n  3) Cancel\n"), "login, local: check again")
+        local.type("2")
+        expect(local.finish() == 0, "login, local: served locally")
+        expect(switched.all.contains("login") && switched.all.contains("setScope local 0.0.0.0"),
+               "login, local: logged in here, then local only saved: \(switched.all)")
+        let setScope = switched.all.firstIndex(of: "setScope local 0.0.0.0"), serve = switched.all.firstIndex(of: "serve")
+        expect(setScope != nil && serve != nil && setScope! < serve!, "login, local: saved before the start: \(switched.all)")
+        expect(local.text.contains("(local only)\n") && local.text.contains("Done."), "login, local: serving locally: \(local.text)")
+        expect(!switched.all.contains("register"), "login, local: no registration with a coordinator: \(switched.all)")
+    }
+
+    /// (d) Offered for pairing, then the coordinator committed the pair, both Macs loaded it and it answered its first
+    /// request: Serving and Done, as before, now said only then.
+    static func offeredPairServesOnceLoaded() {
+        let recorder = Recorder()
+        let run = TerminalRun(operations(recorder, resume: .init(role: .leader, peerName: "Apple M3 Ultra, 256 GB"), pairEvents: [],
+            pairResult: .failed([]), readyResult: .success(offeredReady), pairServingResults: [.success(["in 0.84 s"])]))
+        expect(run.waitFor(prompt(2)), "served: the list"); run.type("\r")
+        let code = run.finish()
+        expect(code == 0, "served: exit 0, got \(String(describing: code))")
+        let text = run.text
+        expect(text.contains("  \u{2713} Test response in 0.84 s\n"), "served: the pair's first request: \(text)")
+        expect(text.contains("  \u{2713} Serving Qwen3.8-27B-4bit-mtp (pipeline) through Darkbloom on both Macs\n"), "served: the line: \(text)")
+        expect(text.hasSuffix("Done. You can close both windows.\n" + ClusterOnboardingDriver.againLine + "\n"), "served: Done: \(text)")
+        expect(Array(recorder.all.suffix(3)) == ["serve", "waitReady", "pairServing"], "served: loaded before it is said: \(recorder.all)")
+        transcript("offered-pair-served", text, keys: run.keys)
+    }
+
+    /// The pair's progress lines a coordinator-paired part writes, and the plain words of the reasons the Macs know.
+    static func pairReportsAndReasonsInPlainWords() {
+        typealias R = ClusterOnboardingPairReport
+        let log = "darkbloom 0.10.7 (registered cluster member; solo inference disabled)\n" + offeredLogLine + "\n"
+            + R.startingLine + "\n" + R.servingLine(warmupSeconds: 0.8412) + "\n"
+        expect(R.latest(inLog: log) == .serving(test: "in 0.84 s"), "report: serving with the first request's time")
+        expect(R.latest(inLog: log + R.stoppedLine("memory_gate_refused") + "\n") == .stopped("memory_gate_refused"), "report: stopped")
+        expect(R.latest(inLog: "no pair line\n") == nil, "report: none")
+        expect(R.state("serving") == .serving(test: nil) && R.state("starting") == .starting && R.state("other") == nil, "report: states")
+        expect(R.state(R.text(.serving(test: "in 0.84 s"))) == .serving(test: "in 0.84 s"), "report: the status's text reads back")
+        typealias N = ClusterOnboardingNotServing
+        let other = "the other Mac (Apple M3 Ultra, 256 GB)"
+        for reason in ["liveness:trust_floor", "member rank 0 provider p: liveness:private_text", "app_attest_required (app_attest:lease)"] {
+            expect(N.words(reason: reason, mac: other) == "Darkbloom hasn't verified the other Mac (Apple M3 Ultra, 256 GB) for private serving yet (App Attest)",
+                   "words: \(reason)")
+        }
+        expect(N.words(reason: "memory_gate_refused", mac: other) == "The other Mac (Apple M3 Ultra, 256 GB) lacks free memory for its share", "words: memory")
+        expect(N.words(reason: "x\u{1B}[2J", mac: other) == "The coordinator didn't accept the pair (no reason given)", "words: never control characters")
+        expect(N.notLoggedIn(["this Mac"]) == "This Mac isn't logged in to Darkbloom, so the coordinator won't pair it", "words: one Mac")
+        expect(N.remedy(forReason: notVerified)?.contains("Retry") == true && N.remedy(forReason: "anything") == nil, "remedy")
+    }
+
+    static let offeredLogLine = "Notice: " + ClusterOnboardingReady.registeredNotice + " with an installed cluster approval"
 }

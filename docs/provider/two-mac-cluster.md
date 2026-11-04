@@ -1,6 +1,6 @@
 # Two Macs as one provider (guided setup)
 
-> Last updated: 2026-11-03
+> Last updated: 2026-11-04
 
 Two Apple Silicon Macs joined by one Thunderbolt 5 cable serve a model together:
 each Mac holds part of its layers, and the pair serves as one provider. Setting
@@ -88,11 +88,27 @@ Mac chooses the model. You can close this window."; started with
 `darkbloom cluster local`, "Done here: run `darkbloom cluster local` on the
 other Mac."). A signed Darkbloom.app's login agent keeps serving; without one,
 as for a development build, the line ends "Keep this window open." and the Mac
-serves only while the window stays open. The leader ends with what serves and
-how ("✓ Serving Qwen3.8-27B-4bit-mtp (pipeline) at http://localhost:8000 (earning
-through Darkbloom)", or "(local only)"), the test ("✓ Test response in 0.61 s"),
-whether the windows can close ("Done. You can close both windows.") and, last,
-"Run `darkbloom cluster` again to manage it."
+serves only while the window stays open. The leader ends with the test ("✓ Test
+response in 0.61 s"), then what serves and how ("✓ Serving Qwen3.8-27B-4bit-mtp
+(pipeline) at http://localhost:8000 (earning through Darkbloom)", or "(local
+only)"), whether the windows can close ("Done. You can close both windows.")
+and, last, "Run `darkbloom cluster` again to manage it." It says Serving and
+Done only once both Macs loaded the model and a request answered.
+
+Serving through Darkbloom needs both Macs logged in (`darkbloom login`): the
+coordinator pairs only logged-in Macs. Before the Start step starts anything,
+the leader names each Mac without a login ("This Mac and the other Mac (…)
+aren't logged in to Darkbloom, so the coordinator won't pair them.") and offers
+**Log in on this Mac** (or **Check again** after `darkbloom login` on the other
+Mac), **Serve locally only** or **Cancel**.
+
+A start that does not come to serve says why in one line ("Not serving yet:
+Darkbloom hasn't verified the other Mac (…) for private serving yet (App
+Attest).", "… lacks free memory for its share", "A part keeps ending the same
+way: …"), what to do, and stays open with **Retry**, **Change model**, **Serve
+locally only** and **Diagnostics** (a redacted file in the home folder). q
+leaves with "Not serving yet. Both Macs keep trying by themselves; run
+`darkbloom cluster` to check." and exit status 1, never Done.
 
 On a color terminal with a UTF-8 locale and at least 40 columns, setup opens
 with the Darkbloom mark, which blooms in pixel by pixel. Each step's heading
@@ -241,10 +257,17 @@ once; one planned with the one-chunk lookahead takes one at a time
 
    ```
    Registered with the coordinator as a cluster member: approval <id>, until <date>.
+   Starting both Macs' parts again as cluster members…
    ```
 
-   There is no local API in this mode. `darkbloom cluster` status says it after
-   the model: `Serving <model>: Registered with the coordinator as a cluster member: approval <id>, until <date>.`
+   Registered is not serving: the coordinator still has to pair both Macs, and
+   both then load their share. The leader waits for that (at most 15 minutes,
+   its progress on the live line) and says `✓ Serving <model> (<split>) through
+   Darkbloom on both Macs` only once the plan's rank 0 reports that both ranks
+   loaded the model and the pair answered its first request (the warm-up). A
+   reason the Macs know ends the wait sooner (a missing login at once, others
+   after 90 s), with the choices [above](#the-steps-once). There is no local API
+   in this mode.
 
 An approval ends at its `not_after`, which the operator sets; one derived from
 a release ends 90 days after that release registered
@@ -275,7 +298,8 @@ What `darkbloom cluster` status says in each mode:
 
 | Mode | Status line |
 |---|---|
-| Registered | `Serving <model>: Registered with the coordinator as a cluster member: approval <id>, until <date>.` |
+| Registered, paired and loaded | `Serving <model> (<split>) through Darkbloom on both Macs.` |
+| Registered, not serving yet | `<model> is not serving yet: <reason or progress>.`, then what to do (a missing login, App Attest, memory) |
 | Coordinator gave no answer for the grace | The serving line, then `The coordinator has not answered for 10 minutes: the pair serves on the leader's local API until it answers again, then it is offered again with approval <id>.` |
 | Approval no longer listed | The serving line, then `The coordinator no longer lists cluster approval <id>: the pair serves on the leader's local API until it lists a matching one again.` |
 | Parts kept ending | The serving line, then `The coordinator-paired parts ended 3 times in a row right after starting with cluster approval <id>: the pair serves on the leader's local API for 60 minutes, then it is offered again with it, or sooner with a later one the coordinator lists.` |

@@ -1038,8 +1038,13 @@ dials the other Mac, off the cable even when the cluster service's own check
 passed. The follower's own refusal decides:
 - the joining Mac's window says "This Mac can't reach the other Mac over the
   cable: macOS keeps Darkbloom off the local network" and what to do there:
-  System Settings → Privacy & Security → Local Network → turn on "Darkbloom"
-  (or "Darkbloom Dev"); on a Mac with no display, through Screen Sharing;
+  System Settings → Privacy & Security → Local Network → turn on "Darkbloom".
+  The DevNet app (Darkbloom Dev) is listed as "Darkbloom" too, because both
+  apps share one bundle ID (`ClusterService.localNetworkRow`). Where macOS
+  never recorded an answer for the app, the list has no such row: macOS asks
+  on that Mac's own screen the next time the app dials over the cable, and
+  someone must click Allow there. On a Mac with no display, do either through
+  Screen Sharing;
 - the leading Mac's ✗ says the same of the other Mac without waiting for the
   start to give up, once the leading Mac's part has run about 20 seconds (long
   enough for the follower to dial it again, so a setting just turned on shows
@@ -1094,9 +1099,9 @@ of the leading Mac's start, and where to choose Retry when a part keeps ending.
 - **The leader cannot reach the other Mac**: make sure the other Mac is on and
   logged in; it rejoins by itself. During setup the leader offers **Try again**
   and **Cancel**, since the other Mac's Darkbloom prompt may still be waiting
-  for Allow. If you denied the Local Network prompt there,
-  allow Darkbloom in System Settings → Privacy & Security → Local Network, then
-  run `darkbloom cluster` again. When `darkbloom cluster` is run again and the
+  for Allow. If you denied the Local Network prompt there, turn on "Darkbloom"
+  (the DevNet app's row has that name too) in System Settings → Privacy &
+  Security → Local Network, then run `darkbloom cluster` again. When `darkbloom cluster` is run again and the
   other Mac does not answer, it says why that may be and what to run on that Mac,
   and offers **Start over**, which asks first: a Mac that is away is
   not a broken pairing ([pairing again](#pairing-again)).

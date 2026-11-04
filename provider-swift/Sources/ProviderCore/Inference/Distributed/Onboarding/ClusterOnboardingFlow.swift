@@ -304,11 +304,14 @@ public enum ClusterOnboardingCommand {
     private static let lock = NSLock()
     #if SWIFT_PACKAGE
     nonisolated(unsafe) private static var current = BuildEnvironment.current.cliName
-    /// The app macOS names in Privacy & Security → Local Network, from the build identity: `ClusterService.appName`.
+    /// The app's own name, from the build identity: `ClusterService.appName`.
     nonisolated(unsafe) private static var currentApp = ClusterService.appName
+    /// The row Privacy & Security → Local Network shows for the app, in every build: `ClusterService.localNetworkRow`.
+    public static let localNetworkRow = ClusterService.localNetworkRow
     #else
     nonisolated(unsafe) private static var current = "darkbloom"
     nonisolated(unsafe) private static var currentApp = "Darkbloom"
+    public static let localNetworkRow = "Darkbloom"
     #endif
     public static var name: String { lock.withLock { current } }
     public static func use(_ name: String) { lock.withLock { current = name } }
@@ -1430,11 +1433,22 @@ public enum ClusterOnboardingDriver {
     }
 
     /// What to do on this Mac when macOS keeps its cluster service's follower off the local network (P2-1): plainly,
-    /// with the app to turn on and the way in on a Mac with no display. `then`: what follows once it's on.
-    public static func localNetworkBlockedLines(app: String, then: String = "the start goes on by itself once it's on") -> [String] {
+    /// with the row to turn on, what to do where there is none, and the way in on a Mac with no display. `then`: what
+    /// follows once it's on.
+    public static func localNetworkBlockedLines(app: String, row: String = ClusterOnboardingCommand.localNetworkRow,
+                                                then: String = "the start goes on by itself once it's on") -> [String] {
         ["This Mac can't reach the other Mac over the cable: macOS keeps \(app) off the local network.",
-         "On this Mac: System Settings → Privacy & Security → Local Network → turn on “\(app)” (on a Mac with no display, through "
-            + "Screen Sharing); \(then)."]
+         "On this Mac: " + localNetworkSteps(app: app, row: row, screen: "this Mac's screen")
+            + " (on a Mac with no display, through Screen Sharing); \(then)."]
+    }
+
+    /// Where Local Network is turned on for `app`, on the Mac whose screen `screen` names: the row System Settings shows
+    /// for it (`row`; R4-4: both apps share one bundle ID, so the DevNet app's row reads "Darkbloom"), and where macOS
+    /// never recorded an answer for the app, and lists no row, the prompt it shows on that Mac's screen at the next dial.
+    public static func localNetworkSteps(app: String, row: String, screen: String) -> String {
+        "System Settings → Privacy & Security → Local Network → turn on “\(row)”"
+            + (row == app ? "" : " (macOS lists \(app) as “\(row)”)")
+            + "; if it isn't listed, click Allow when macOS asks on \(screen), the next time \(app) dials over the cable"
     }
 
     private static func onScreen(_ remote: Bool) -> String {

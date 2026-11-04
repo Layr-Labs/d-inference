@@ -1448,11 +1448,14 @@ struct ClusterDevNetFindingsTests {
         }
         let out = text(result?.standardOutputContent)
         let lines = out.split(separator: "\n").map { String($0.drop { $0 != " " }.dropFirst()) }
-        // Production's names the app as the ✗ does ("Darkbloom"), not the command; the DevNet app's "Darkbloom Dev".
+        // R4-4: the row macOS lists for either app is "Darkbloom" (one bundle ID); the DevNet app says that row is its own.
+        let app = BuildEnvironment.current.appDisplayName
         #expect(lines == ["link-follower: link refused: connectFailed (unreachable)",
                           "link-follower: this process may not reach the local network: macOS refused the dial before the cable was tried. "
-                              + "Allow \(BuildEnvironment.current.appDisplayName) under System Settings > Privacy & Security > Local Network "
-                              + "(once), or start the follower from a session that has that access.",
+                              + "Turn on “Darkbloom” under System Settings > Privacy & Security > Local Network"
+                              + (app == "Darkbloom" ? "" : " (macOS lists \(app) as “Darkbloom”)")
+                              + "; if it isn't listed, click Allow when macOS asks on this Mac's screen at the next dial. "
+                              + "Or start the follower from a session that has that access.",
                           "link-follower: connected", "link-follower: session opened"], "\(out)")
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("follower-words-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -1546,8 +1549,10 @@ struct ClusterPairTwoFindingsTests {
             print("cli " + OnboardingLive.cli)
         }
         let out = text(result?.standardOutputContent)
-        #expect(out.contains("If you denied the Local Network prompt on the other Mac, allow \(BuildEnvironment.current.appDisplayName) in "
-            + "System Settings → Privacy & Security → Local Network there, then run `darkbloom-dev cluster` again.\n"), "\(out)")
+        let app = BuildEnvironment.current.appDisplayName
+        #expect(out.contains("If you denied the Local Network prompt on the other Mac, turn on “Darkbloom”"
+            + (app == "Darkbloom" ? "" : " (macOS lists \(app) as “Darkbloom”)")
+            + " in System Settings → Privacy & Security → Local Network there, then run `darkbloom-dev cluster` again.\n"), "\(out)")
         #expect(out.hasSuffix("cli darkbloom-dev\n"), "every command the live operations name: \(out)")
         #expect(!out.contains("`darkbloom "), "\(out)")
     }
@@ -1655,8 +1660,9 @@ struct ClusterStatusTruthTests {
         #expect(leader.state == .notServing && leader.exitCode == 3)
         #expect(leader.reason == "The other Mac can't reach this Mac over the cable: macOS keeps \(Self.app) there off the local network")
         #expect(leader.next == "The other Mac (Apple M5 Max, 128 GB): System Settings → Privacy & Security → Local Network → "
-            + "turn on “\(Self.app)” (on a Mac with no display, through Screen Sharing). Then run `\(cli) start` here, or choose "
-            + "Retry in `\(cli) cluster`.")
+            + "turn on “Darkbloom”" + (Self.app == "Darkbloom" ? "" : " (macOS lists \(Self.app) as “Darkbloom”)")
+            + "; if it isn't listed, click Allow when macOS asks on that Mac's screen, the next time \(Self.app) dials over the cable "
+            + "(on a Mac with no display, through Screen Sharing). Then run `\(cli) start` here, or choose Retry in `\(cli) cluster`.")
         #expect(leader.clusterStatusLines.contains("✗ Not serving: \(leader.reason ?? "")."), "\(leader.clusterStatusLines)")
         // Never over a pair that serves, or one that stopped.
         var serving = pair(role: .leader)
@@ -1802,8 +1808,21 @@ struct ClusterStatusTruthTests {
         let app = BuildEnvironment.current.appDisplayName, cli = BuildEnvironment.current.cliName
         #expect(out.count == 4, "\(out)")
         #expect(out.allSatisfy { $0.contains(app) }, "\(out)")
-        #expect(out.count == 4 && out[1].contains("turn on “\(app)”") && out[1].contains("`\(cli) start`") && out[3].contains("`\(cli) cluster`"),
+        // R4-4: the row macOS shows, "Darkbloom" in both identities, and what to do where there is none.
+        #expect(out.count == 4 && [out[1], out[3]].allSatisfy { $0.contains("turn on “Darkbloom”") && $0.contains("if it isn't listed, click Allow") }
+                && out[1].contains("`\(cli) start`") && out[3].contains("`\(cli) cluster`"), "\(out)")
+        #expect(app == "Darkbloom" || [out[1], out[3]].allSatisfy { $0.contains("(macOS lists \(app) as “Darkbloom”)") && !$0.contains("turn on “\(app)”") },
                 "\(out)")
+    }
+
+    @Test("R4-4: the follower's refusal names the row macOS shows in both identities, and the prompt where there is none")
+    func followerRefusalNamesTheRowMacOSShows() {
+        let tail = "; if it isn't listed, click Allow when macOS asks on this Mac's screen at the next dial. "
+            + "Or start the follower from a session that has that access."
+        let head = "this process may not reach the local network: macOS refused the dial before the cable was tried. "
+            + "Turn on “Darkbloom” under System Settings > Privacy & Security > Local Network"
+        #expect(Cluster.LinkFollower.refusalLine(app: "Darkbloom", row: "Darkbloom") == head + tail)
+        #expect(Cluster.LinkFollower.refusalLine(app: "Darkbloom Dev", row: "Darkbloom") == head + " (macOS lists Darkbloom Dev as “Darkbloom”)" + tail)
     }
 }
 

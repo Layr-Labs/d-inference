@@ -1284,9 +1284,14 @@ public final class ClusterService: @unchecked Sendable {
     /// (`followerRefusal`), so turning Local Network on clears it.
     public static let followerLinkOpenedLines = [followerConnected, followerSessionOpened].map { followerLinePrefix + $0 }
 
-    /// The app macOS names in Privacy & Security → Local Network: the build identity's `CFBundleName`. Every
-    /// line that names the app reads it here: the screens (`ClusterOnboardingCommand.app`) and the follower's refusal.
+    /// The app's own name: the build identity's `CFBundleName`. Every line that names the app reads it here: the
+    /// screens (`ClusterOnboardingCommand.app`) and the follower's refusal.
     public static let appName = BuildEnvironment.current.appDisplayName
+
+    /// The row System Settings → Privacy & Security → Local Network shows for this app: the production app's name in
+    /// every build. Both apps share the bundle ID `io.darkbloom.provider`, so macOS lists the DevNet app as "Darkbloom",
+    /// never "Darkbloom Dev" (R4-4). A Mac where macOS never recorded an answer for the app lists no row at all.
+    public static let localNetworkRow = BuildEnvironment.prod.appDisplayName
 
     /// What the link follower writes when a dial fails, before the refusal line for macOS's own refusal. A later one
     /// without that line says its last dial got further and failed another way (`followerRefusal`).

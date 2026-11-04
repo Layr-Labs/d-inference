@@ -3884,8 +3884,10 @@ import Darwin
                                                        [localServingLine, leadersTestLine]], localNetwork: { flip.state($0) })
         expect(run.waitFor(codeQuestion), "P2-1, joining: the code"); run.type("y")
         expect(run.finish(seconds: 20) == 0, "P2-1, joining: the start still ends with the leader's")
+        // R4-4: the row macOS lists, and what to do where it lists none.
         let said = "  This Mac can't reach the other Mac over the cable: macOS keeps Darkbloom off the local network.\n"
-            + "  On this Mac: System Settings → Privacy & Security → Local Network → turn on “Darkbloom” (on a Mac with no display, "
+            + "  On this Mac: System Settings → Privacy & Security → Local Network → turn on “Darkbloom”; if it isn't listed, click "
+            + "Allow when macOS asks on this Mac's screen, the next time Darkbloom dials over the cable (on a Mac with no display, "
             + "through Screen Sharing); the start goes on by itself once it's on.\n"
         expect(run.text.contains(said) && run.text.components(separatedBy: said).count == 2, "P2-1, joining: said once, plainly: \(run.text)")
     }

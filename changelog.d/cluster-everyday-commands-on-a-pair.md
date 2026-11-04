@@ -34,7 +34,7 @@
 - `darkbloom update --rollback`'s advice turns the cluster service off with `darkbloom cluster stop --service`.
 - The DevNet app names `darkbloom-dev` in every command it suggests for a pair: the card after `start` and
   `restart`, `cluster stop --service`, `cluster local`, `cluster pair --forget` and the hints. Its Local Network hint
-  names the app to allow, Darkbloom Dev.
+  names the row macOS lists for it, "Darkbloom".
 - `stop`, `restart`, `cluster stop --service` and a script `start` say what they are waiting for and for how long at
   most, instead of going quiet for minutes.
 - With Darkbloom and Darkbloom Dev on one Mac, each lists only its own cluster incidents. Incidents recorded before

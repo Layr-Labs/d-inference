@@ -662,7 +662,10 @@ final class OnboardingLive: @unchecked Sendable {
     /// Said when the other Mac's service does not answer: a denied Local Network prompt there is the usual cause on a
     /// fresh pair, and nothing else would tell the person where to undo it.
     static func localNetworkHint(_ mac: String) -> String {
-        "If you denied the Local Network prompt on \(mac), allow \(ClusterService.appName) in System Settings → Privacy & Security → Local Network there, then run `\(Self.cli) cluster` again."
+        let row = ClusterService.localNetworkRow, app = ClusterService.appName
+        return "If you denied the Local Network prompt on \(mac), turn on “\(row)”"
+            + (row == app ? "" : " (macOS lists \(app) as “\(row)”)")
+            + " in System Settings → Privacy & Security → Local Network there, then run `\(Self.cli) cluster` again."
     }
 
     static func reason(_ error: Error) -> String {
@@ -1961,10 +1964,11 @@ final class OnboardingLive: @unchecked Sendable {
     /// The ✗ when the other Mac can't reach this one over the cable for that reason: why, and what to do there. It can't
     /// clear until someone turns the setting on, so the wait ends at once. `then`: the step once it's on (`cluster status`
     /// names its command instead: `ClusterLocalNetworkAccess.statusWords`).
-    static func localNetworkRefusalLines(otherMac: String, app: String, then: String = "Then choose Retry here") -> [String] {
+    static func localNetworkRefusalLines(otherMac: String, app: String, row: String = ClusterOnboardingCommand.localNetworkRow,
+                                         then: String = "Then choose Retry here") -> [String] {
         ["The other Mac can't reach this Mac over the cable: macOS keeps \(app) there off the local network",
-         "\(otherMac): System Settings → Privacy & Security → Local Network → turn on “\(app)” (on a Mac with no display, "
-            + "through Screen Sharing). \(then)."]
+         "\(otherMac): " + ClusterOnboardingDriver.localNetworkSteps(app: app, row: row, screen: "that Mac's screen")
+            + " (on a Mac with no display, through Screen Sharing). \(then)."]
     }
 
     /// The live row's line once the other Mac's part reports that refusal (`readinessOnce`).

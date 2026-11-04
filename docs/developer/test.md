@@ -1794,9 +1794,13 @@ promotion is its Prepare pull request, cut from `dev`. They include a `dev` pull
 request merged after the promoted snapshot, a sync of `master` into `dev` and
 Prepare pull requests. The tests check each release's pull requests through
 `dev` and directly on `master`, and that release pull requests are named once.
-They publish v1.1.0 through `publish_github_release` with a fake `gh`, and
-check the `CHANGELOG.md` section, the 125,000-character fallback and a failed
-generation. Titles and authors are fixture data, and no test uses the network.
+They publish v1.1.0 through `publish_github_release` with a fake `gh`, once
+with GitHub's answer and once with the `FORBIDDEN` answer a token without pull
+request access gets. The second still lists every pull request, with its title
+from git, escaped as on the first, and an author only where a noreply address
+names one. They also check the `CHANGELOG.md` section, the 125,000-character
+fallback and a failed generation. Titles and authors are fixture data, and no
+test uses the network.
 The test needs git 2.31 or newer, as the release notes do, and stops with that
 message on an older git.
 `scripts/test-provider-cluster-runtime-models.py` runs the release's

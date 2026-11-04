@@ -786,11 +786,32 @@ The script reads the release's contents from Git, not from a date window:
   heading. **A sync** is a merge into `dev` that brings `master`'s first-parent
   commits and no commits of its own. A sync with its own fixes is listed as a
   `dev` pull request.
-- **Titles and authors** come from GitHub's GraphQL API, in one query per 100
-  pull requests. A `(#N)` that names an issue is listed as a commit without a
-  pull request. Any other GraphQL error fails the notes. Titles and commit
-  subjects show as typed: HTML, links and emphasis in them are escaped, and a
-  code span stays code.
+- **Titles and authors** come first from GitHub's GraphQL API, in one query per
+  100 pull requests. A `(#N)` that GitHub names an issue is listed as a commit
+  without a pull request. Titles and commit subjects show as typed: HTML, links
+  and emphasis in them are escaped, and a code span stays code.
+- **Without GitHub's API, titles come from git.** The `publish-release` token
+  has only `contents: write` and `actions: read`, so GitHub can refuse the
+  lookup ("Resource not accessible by integration"); any GraphQL error other
+  than an unknown number also counts. Every pull request is then still listed:
+  - **Titles.** GitHub writes a merge commit as `Merge pull request #N from
+    <branch>`, a blank line, then the title, so the first line of its body is
+    the title. A squash commit's subject is the title and ` (#N)`. Both are the
+    title when the pull request merged: a title edited later, or a commit
+    message edited at the merge, shows as git has it.
+  - **Authors are commit authors**, and are shown only where a GitHub noreply
+    address (`[<ID>+]<login>@users.noreply.github.com`) names the login. The
+    address is the author's of the pull request's oldest own commit, or for a
+    squash, the squash commit's. Other addresses name no GitHub account, so the
+    line has no author. The newest commit of a branch is not used: it is often
+    someone else's merge of `dev`.
+  - **The warning.** The job logs a warning that the titles came from git, with
+    GitHub's error. `--git-titles` produces the same body on request.
+  - **Measured on v0.10.7.** Git lists the same 48 pull requests. 47 titles equal
+    GitHub's; #1691's squash subject keeps a parenthetical that its title later
+    lost. 34 authors are shown, all equal to GitHub's, and 14 are left out. The
+    newest branch commit would have named the wrong author for 18 of the 45
+    `dev` pull requests.
 
 GitHub refuses a body over 125,000 characters. When the body is longer, it
 keeps the upgrade and rollout notes and links the entries in `CHANGELOG.md` at

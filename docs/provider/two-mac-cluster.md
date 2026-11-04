@@ -835,7 +835,9 @@ altogether, see [Uninstall](#uninstall).
 
 **Keep models** keeps the models and the cluster model store, so after a
 reinstall `darkbloom cluster` pairs again and uses them without copying or
-downloading. **Remove everything** deletes them too.
+downloading. **Remove everything** deletes them too, after asking once more. A
+models folder you chose, and the cluster model store beside it, stay with either
+choice. Run it as yourself, not with `sudo`.
 
 When the other Mac does not answer, this Mac stops only its own part, as
 `darkbloom cluster stop --local-only`. The other Mac keeps its own pairing, so

@@ -426,6 +426,10 @@ struct ProviderUninstallTests {
         transcript("everything-summary-settings-link", summary, fixture)
         #expect(summary.first == "Darkbloom is not fully removed from this Mac: some of its folders were not removed (see below).")
         #expect(summary.contains("  skipped  Delete Settings: not removed: it resolves to \(movedSettings.path), outside Darkbloom's folders"))
+        // A command link the installer did not make is not Darkbloom's: leaving only that leaves nothing of Darkbloom's.
+        let linkOnly = ProviderUninstall.Report(mode: .everything, steps: report.steps.filter { $0.name.hasPrefix("Delete The ") },
+                                                availableBefore: nil, availableAfter: nil)
+        #expect(linkOnly.steps.count == 1 && !linkOnly.incomplete)
     }
 
     @Test("blocker: a model folder the person chose inside ~/.darkbloom is kept in both modes, named, and the rest goes")
@@ -451,6 +455,11 @@ struct ProviderUninstallTests {
                 #expect(lines.contains { $0.contains("Kept: Cluster model store beside the folder you chose") }, "\(mode)")
             }
             #expect(dryRun.contains { $0.contains("Delete Darkbloom folder") && $0.contains("except the models you chose") }, "\(mode)")
+            let document = ProviderUninstall.dryRunDocument(plan, modes: [mode]).modes[0]
+            #expect(document.actions.contains {
+                $0.action.hasSuffix(", except the models you chose") && $0.path == fixture.paths.installDirectory.path
+            }, "\(mode): the JSON names the exception too")
+            #expect(document.kept.contains { $0.path == chosen.path }, "\(mode)")
 
             let report = await fixture.run(mode, items: plan.items, pairing: nil)
             #expect(fixture.exists(model) && fixture.exists(store), "\(mode): the chosen folder and the store beside it stay")

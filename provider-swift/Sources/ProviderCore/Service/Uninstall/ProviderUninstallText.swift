@@ -6,6 +6,23 @@ extension ProviderUninstall {
     public static let keychainLine = "Never touched: Keychain keys (Secure Enclave and App Attest); a new install replaces them."
     public static let choicePrompt = "  Choose 1 or 2 (Esc cancels): "
 
+    /// Asked once after 1 on the screen, which deletes the models too.
+    public static func everythingQuestion(_ plan: Plan) -> String {
+        plan.models.isEmpty ? "  Remove everything? This can't be undone. [y/N]: "
+            : "  Remove everything, including \(formatBytes(plan.modelBytes)) of models? This can't be undone. [y/N]: "
+    }
+
+    /// y or yes; anything else, nothing included, is no.
+    public static func confirmed(_ answer: String?) -> Bool {
+        ["y", "yes"].contains(answer?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? "")
+    }
+
+    /// Run as root, it would read root's home, find nothing of the person's Darkbloom and still undo the Mac's cable setup.
+    public static func rootRefusal(cli: String = BuildEnvironment.current.cliName) -> String {
+        "Run `\(cli) uninstall` as yourself, not with sudo: it removes your own Darkbloom, and asks for your password when a "
+            + "step needs it."
+    }
+
     public static func usage(cli: String = BuildEnvironment.current.cliName) -> String {
         "Usage: \(cli) uninstall --everything|--keep-models [--yes] [--dry-run [--json]] (no terminal to ask which)"
     }
@@ -51,6 +68,7 @@ extension ProviderUninstall {
     /// The summary after a run: each step with its status, what was kept and where, then the way back and the other Mac.
     public static func summary(_ report: Report, plan: Plan) -> [String] {
         let headline = report.failed ? "Darkbloom is not fully removed from this Mac (see the failed step)."
+            : report.incomplete ? "Darkbloom is not fully removed from this Mac: some of its folders were not removed (see below)."
             : report.mode == .keepModels ? "Darkbloom is removed from this Mac; its models are kept."
             : "Darkbloom is removed from this Mac."
         var lines = [headline]
@@ -87,10 +105,11 @@ extension ProviderUninstall {
             + "\(formatBytes(plan.modelBytes)), in \(folders.joined(separator: " and "))."
     }
 
-    /// What no option deletes: folders outside Darkbloom's, Keychain keys, and what has its own uninstall.
+    /// What no option deletes: folders the person chose or outside Darkbloom's, Keychain keys, and what has its own
+    /// uninstall. A chosen models folder inside Darkbloom's own is named as kept.
     static func neverTouched(_ plan: Plan) -> [String] {
-        plan.kept.map { "Never touched: \($0.label) (\(formatBytes($0.bytes)), \($0.path)): \($0.reason ?? "")" }
-            + [keychainLine] + plan.elsewhere
+        plan.kept.map { "\($0.keptInDarkbloomFolder ? "Kept" : "Never touched"): \($0.label) (\(formatBytes($0.bytes)), \($0.path)): "
+            + ($0.reason ?? "") } + [keychainLine] + plan.elsewhere
     }
 
     /// The last line on a paired Mac, about the other one.
@@ -106,7 +125,13 @@ extension ProviderUninstall {
     }
 
     static func row(_ item: ProviderUninstallItem) -> String {
-        item.bytes > 0 ? "\(item.label)  \(formatBytes(item.bytes))  \(item.path)" : "\(item.label)  \(item.path)"
+        let label = deletedLabel(item)
+        return item.bytes > 0 ? "\(label)  \(formatBytes(item.bytes))  \(item.path)" : "\(label)  \(item.path)"
+    }
+
+    /// What deleting `item` takes: all of it, or all but the models folder the person chose inside it.
+    static func deletedLabel(_ item: ProviderUninstallItem) -> String {
+        item.keeping.isEmpty ? item.label : item.label + ", except the models you chose"
     }
 
     static func formatBytes(_ bytes: Int64) -> String {
@@ -148,7 +173,8 @@ extension ProviderUninstall {
     }
 
     public static func invocation(everything: Bool, keepModels: Bool, yes: Bool, dryRun: Bool, interactive: Bool,
-                                  cli: String = BuildEnvironment.current.cliName) -> Invocation {
+                                  userID: uid_t = geteuid(), cli: String = BuildEnvironment.current.cliName) -> Invocation {
+        guard userID != 0 else { return .refuse(rootRefusal(cli: cli)) }
         let mode: Mode? = everything ? .everything : keepModels ? .keepModels : nil
         if dryRun { return .dryRun(mode.map { [$0] } ?? Mode.allCases) }
         guard let mode else { return interactive ? .ask : .refuse(usage(cli: cli)) }
@@ -186,7 +212,7 @@ extension ProviderUninstall {
             actions.append(.init(action: tokenStep, path: nil, bytes: nil))
             actions += (plan.pairing?.peers ?? []).map { .init(action: "Forget the pairing with \($0.name)", path: nil, bytes: nil) }
             actions.append(.init(action: cableStep, path: nil, bytes: nil))
-            actions += plan.removed(mode).map { .init(action: "Delete \($0.label)", path: $0.path, bytes: $0.bytes) }
+            actions += plan.removed(mode).map { .init(action: "Delete \(deletedLabel($0))", path: $0.path, bytes: $0.bytes) }
             let keptModels = mode == .keepModels ? plan.models : []
             return .init(mode: mode, actions: actions, frees: plan.frees(mode), kept: keptModels + plan.kept, refused: plan.refused)
         }

@@ -97,6 +97,10 @@ public struct ProviderUninstallItem: Codable, Sendable, Equatable {
     public var kind: Kind = .data
     /// Its files' blocks, for counting APFS clones once (`ProviderUninstall.uniqueBytes`).
     var files: [ProviderUninstallFile] = []
+    /// Folders inside it that stay (resolved paths): the models folder the person chose, and the store beside it.
+    var keeping: [String] = []
+    /// Kept although it lies inside one of Darkbloom's folders, because the person chose it for models.
+    var keptInDarkbloomFolder = false
 
     private enum CodingKeys: String, CodingKey { case label, path, bytes, verdict, reason, kind }
 }
@@ -194,7 +198,11 @@ extension ProviderUninstall {
     }
 
     static let chosenModelsLabel = "Models in the folder you chose"
+    static let foreignLinkReason = "it is not the link Darkbloom's installer made"
+    static let chosenStoreLabel = "Cluster model store beside the folder you chose"
     static let clusterStoreLabel = "Cluster model store"
+    static let chosenInsideReason = "you chose this folder for models, so it stays, with the folders that lead to it"
+    static let chosenStoreInsideReason = "it holds the cluster's copies of the models you chose, so it stays too"
 
     /// Everything `--everything` would delete or keep, in deletion order: the install folder (with the app this
     /// command runs from) comes last.
@@ -205,25 +213,48 @@ extension ProviderUninstall {
             item.kind = kind
             items.append(item)
         }
-        // A chosen folder inside Darkbloom's own goes with it, so only one outside them is listed as kept.
-        func chosen(_ url: URL?) -> URL? {
-            guard let url else { return nil }
-            let resolved = ProviderUninstallPaths.canonical(url.path)
-            return paths.roots.contains { resolved == $0 || resolved.hasPrefix($0 + "/") } ? nil : url
+        func inRoots(_ resolved: String) -> Bool { paths.roots.contains { resolved == $0 || resolved.hasPrefix($0 + "/") } }
+        // A chosen cache folder inside Darkbloom's own goes with it, so only one outside them is listed as kept.
+        if let saved = paths.savedCacheDirectory, !inRoots(ProviderUninstallPaths.canonical(saved.path)) {
+            add("Encrypted prompt caches in the folder you chose", saved, keep: "outside Darkbloom's folders")
+        }
+        // A models folder the person chose is never deleted, in either mode and wherever it is; nor is the cluster
+        // store the provider keeps beside it (`ClusterModelStoreLocation`). Inside one of Darkbloom's folders, that
+        // folder is deleted around them.
+        let chosenModels = paths.savedModelCache.map { URL(fileURLWithPath: ProviderUninstallPaths.canonical($0.path)) }
+            .flatMap { $0.path == ProviderUninstallPaths.canonical(paths.modelCache.path) ? nil : $0 }
+        let chosenStore = chosenModels.map { $0.deletingLastPathComponent().appendingPathComponent("darkbloom-cluster-models") }
+        var protected: [String] = []
+        for (label, folder, insideReason) in [(chosenModelsLabel, chosenModels, chosenInsideReason),
+                                              (chosenStoreLabel, chosenStore, chosenStoreInsideReason)] {
+            guard let folder else { continue }
+            let inside = inRoots(folder.path)
+            guard var kept = item(label, folder, paths: paths, keep: inside ? insideReason : "outside Darkbloom's folders") else { continue }
+            kept.keptInDarkbloomFolder = inside
+            items.append(kept)
+            protected.append(folder.path)
         }
         add("Settings", paths.configDirectory)
         add("Encrypted prompt caches", paths.cacheDirectory)
-        if let saved = chosen(paths.savedCacheDirectory) {
-            add("Encrypted prompt caches in the folder you chose", saved, keep: "outside Darkbloom's folders")
-        }
         items += models(paths)
-        if let saved = chosen(paths.savedModelCache) {
-            add(chosenModelsLabel, saved, keep: "outside Darkbloom's folders")
-        }
         add(clusterStoreLabel, paths.clusterModelStore, keep: paths.otherInstall.map(sharedReason), kind: .model)
         add("The `\(paths.commandLink.lastPathComponent)` command link", paths.commandLink, kind: .command)
         add("Darkbloom folder: the app, logs, pairing and cluster setup", paths.installDirectory, kind: .command)
-        return items
+        return items.compactMap { around($0, protected) }
+    }
+
+    /// `item` with the protected folders inside it left out (and measured without them); nil when it lies inside one.
+    private static func around(_ item: ProviderUninstallItem, _ protected: [String]) -> ProviderUninstallItem? {
+        guard item.verdict == .remove, !protected.isEmpty else { return item }
+        let resolved = ProviderUninstallPaths.canonical(item.path)
+        if protected.contains(where: { resolved == $0 || resolved.hasPrefix($0 + "/") }) { return nil }
+        let inside = protected.filter { $0.hasPrefix(resolved + "/") }
+        guard !inside.isEmpty else { return item }
+        let measured = measure(URL(fileURLWithPath: resolved), excluding: inside)
+        var kept = ProviderUninstallItem(label: item.label, path: item.path, bytes: measured.bytes, verdict: item.verdict,
+                                         reason: item.reason, kind: item.kind, files: measured.files)
+        kept.keeping = inside
+        return kept
     }
 
     private static func sharedReason(_ other: URL) -> String { "\(other.lastPathComponent) on this Mac uses it too" }
@@ -276,14 +307,17 @@ extension ProviderUninstall {
             guard info.st_mode & S_IFMT == S_IFLNK, let destination, destination.lastPathComponent == url.lastPathComponent,
                   ProviderUninstallPaths.canonical(destination.deletingLastPathComponent().path)
                     == paths.installDirectory.appendingPathComponent("bin").path else {
-                return .init(label: label, path: url.path, bytes: 0, verdict: .refused,
-                             reason: "it is not the link Darkbloom's installer made")
+                return .init(label: label, path: url.path, bytes: 0, verdict: .refused, reason: foreignLinkReason)
             }
             return .init(label: label, path: url.path, bytes: 0, verdict: .remove, reason: nil)
         }
         let resolved = ProviderUninstallPaths.canonical(url.path)
         guard paths.roots.contains(where: { resolved == $0 || resolved.hasPrefix($0 + "/") }) else {
             return placed(label, url, verdict: .refused, reason: "it resolves to \(resolved), outside Darkbloom's folders")
+        }
+        if isMountPoint(url) {
+            return .init(label: label, path: url.path, bytes: measure(url).bytes, verdict: .refused,
+                         reason: "another disk is mounted here")
         }
         let measured = measure(url)
         if measured.otherVolume {
@@ -306,7 +340,7 @@ extension ProviderUninstall {
 
     /// Allocated bytes under `url`, never following a link and each hard-linked file once; whether a folder inside
     /// it is on another volume; and each file's blocks, which `uniqueBytes` counts with APFS clones once.
-    static func measure(_ url: URL) -> (bytes: Int64, otherVolume: Bool, files: [ProviderUninstallFile]) {
+    static func measure(_ url: URL, excluding: [String] = []) -> (bytes: Int64, otherVolume: Bool, files: [ProviderUninstallFile]) {
         var root = stat()
         guard stat(url.path, &root) == 0 else { return (0, false, []) }
         guard root.st_mode & S_IFMT == S_IFDIR, lstat(url.path, &root) == 0, root.st_mode & S_IFMT == S_IFDIR,
@@ -319,7 +353,8 @@ extension ProviderUninstall {
             var info = stat()
             guard lstat(path, &info) == 0 else { continue }
             if info.st_mode & S_IFMT == S_IFDIR {
-                if info.st_dev != root.st_dev { otherVolume = true; walker.skipDescendants() }
+                if excluding.contains(path) { walker.skipDescendants() }
+                else if info.st_dev != root.st_dev { otherVolume = true; walker.skipDescendants() }
                 continue
             }
             if info.st_nlink > 1, !seen.insert([UInt64(UInt32(bitPattern: info.st_dev)), info.st_ino]).inserted { continue }
@@ -328,6 +363,13 @@ extension ProviderUninstall {
             files.append(file)
         }
         return (files.reduce(0) { $0 + $1.allocated }, otherVolume, files)
+    }
+
+    /// Whether another volume is mounted at `url`: its device differs from its parent folder's.
+    public static func isMountPoint(_ url: URL) -> Bool {
+        var own = stat(), parent = stat()
+        guard lstat(url.path, &own) == 0, stat(url.deletingLastPathComponent().path, &parent) == 0 else { return false }
+        return own.st_dev != parent.st_dev
     }
 
     /// Bytes deleting all of `files` frees: a pure-clone family's shared blocks count once, and only when every

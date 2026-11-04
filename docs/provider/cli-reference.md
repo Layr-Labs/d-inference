@@ -1317,6 +1317,21 @@ folders still uses are not counted. Lines under the choices appear only when
 this Mac has folders no choice deletes, or Darkbloom parts with their own
 uninstall.
 
+**1** asks once more, and only `y` or `yes` goes on; anything else changes
+nothing (`ProviderUninstall.everythingQuestion`). **2** asks nothing more.
+
+```text
+  Remove everything, including 410 GB of models? This can't be undone. [y/N]:
+```
+
+Run as root (`sudo`), every form of the command, `--dry-run` included, prints
+this and exits 64 before it lists or changes anything
+(`ProviderUninstall.rootRefusal`):
+
+```text
+Run `darkbloom uninstall` as yourself, not with sudo: it removes your own Darkbloom, and asks for your password when a step needs it.
+```
+
 ```bash
 darkbloom uninstall                            # the screen: 1, 2 or Esc
 darkbloom uninstall --keep-models --dry-run    # every action and path, with sizes; changes nothing
@@ -1340,8 +1355,8 @@ flag are refused with the usage before anything runs.
 
 **The steps, in order, the same for both choices.** Each is idempotent; the
 summary lists each one as `done`, `skipped` or `failed`, with the reason, and the
-command exits 1 when one failed. A failed step does not stop the safe steps
-after it.
+command exits 1 when one failed or when a folder of Darkbloom's was not removed.
+A failed step does not stop the safe steps after it.
 
 | # | Step | Through | Skipped when |
 |---|---|---|---|
@@ -1351,7 +1366,7 @@ after it.
 | 6 | Revoke this Mac's account token, best effort | what `darkbloom logout` does (`Logout.revokeSavedToken`) | no saved token, the coordinator did not confirm it, or serving did not stop. It never fails the uninstall; the token file goes with `~/.darkbloom` |
 | 7 | Forget the pairing with the other Mac | `darkbloom cluster pair --forget <pin>`, once per pairing | this Mac is not paired |
 | 8 | Undo the cable port setup | `darkbloom cluster link --remove` (macOS asks for an administrator's password) | nothing to undo |
-| 9 | Delete Darkbloom's folders, one step each (table below) | | already gone, refused, or a service did not stop in steps 1–5. When step 8 did not complete, `~/.darkbloom` and the command link stay, so the command can run again |
+| 9 | Delete Darkbloom's folders, one step each (table below) | | already gone, refused (`not removed: <why>`), or a service did not stop in steps 1–5. When step 8 did not complete, `~/.darkbloom` and the command link stay, so the command can run again |
 
 **What is deleted**, from `ProviderUninstallPaths` and `ProviderUninstall.inventory`
 in `provider-swift/Sources/ProviderCore/Service/Uninstall/ProviderUninstallPlan.swift`:
@@ -1363,17 +1378,25 @@ in `provider-swift/Sources/ProviderCore/Service/Uninstall/ProviderUninstallPlan.
 | Each model Darkbloom downloaded | `~/.cache/huggingface/hub/models--<org>--<name>`, only folders holding Darkbloom's receipt (`.darkbloom-manifest.json`) or its unfinished download (`.local-staging-*`), and `.artifact-writer-locks` | deleted | kept, with their `refs/` and receipts, so a reinstall's scan finds them |
 | Cluster model store | `~/.cache/huggingface/darkbloom-cluster-models` | deleted | kept |
 | The command link | `/usr/local/bin/darkbloom`, only while it links to `~/.darkbloom/bin/darkbloom` | deleted | deleted |
-| Darkbloom folder | `~/.darkbloom`: the app, `bin/`, logs, pairing, account token, cluster setup and service state. Last, since the command runs from the app in it | deleted | deleted |
+| Darkbloom folder | `~/.darkbloom`: the app, `bin/`, logs, pairing, account token, cluster setup and service state. Last, since the command runs from the app in it. When a models folder you chose is inside it, everything else in it is deleted, the app last | deleted | deleted |
 
 What no choice deletes (the summary lists them):
 
 - anything that resolves outside those folders. A target that is a link, or
   whose resolved path is elsewhere, is refused and reported, and a link inside a
-  deleted folder is removed without following it;
-- models and caches in a folder you chose (`[backend] model_cache_directory`,
-  `darkbloom cache set --directory`), the default model cache when it is a link,
-  and other tools' models. After a reinstall, `darkbloom models location <folder>`
-  uses a chosen model folder again;
+  deleted folder is removed without following it. A folder that is another
+  disk's mount point, or holds one, is refused too;
+- a models folder you chose (`[backend] model_cache_directory`, set by
+  `darkbloom models location`) and the cluster model store beside it
+  (`darkbloom-cluster-models` in the same parent folder), in both choices and
+  wherever they are. Inside Darkbloom's folders (for example
+  `~/.darkbloom/models`) they stay with the folders that lead to them, and the
+  screen, the dry run and the summary list them as `Kept:`; elsewhere, as
+  `Never touched:`. After a reinstall, `darkbloom models location <folder>` uses
+  the chosen folder again;
+- caches in a folder you chose outside Darkbloom's folders
+  (`darkbloom cache set --directory`), the default model cache when it is a
+  link, and other tools' models;
 - the models and the cluster model store while another Darkbloom install
   (`~/.darkbloom-dev`, `~/.darkbloom-staging`) shares them. Cluster pairing and
   setup files under `~/.darkbloom` are shared by every install on the Mac, so
@@ -1384,7 +1407,11 @@ What no choice deletes (the summary lists them):
   the shell `PATH` line the installer added.
 
 The summary says what was removed, what was kept and where, and the space freed
-(the change in the home volume's free space). After **Keep models** it ends with
+(the change in the home volume's free space). When a folder of Darkbloom's was
+refused, its step reads `not removed: <why>`, the first line is `Darkbloom is not
+fully removed from this Mac: some of its folders were not removed (see below).`
+and the command exits 1. A command link the installer did not make is reported
+the same way but is not Darkbloom's, so it alone does not count. After **Keep models** it ends with
 the way back: the install command, then `darkbloom start` or `darkbloom cluster`;
 the models are found automatically. On a paired Mac its last line names the other
 Mac: run `darkbloom uninstall` there too, or `darkbloom cluster` on it to pair it

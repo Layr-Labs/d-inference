@@ -14,7 +14,9 @@ struct Uninstall: AsyncParsableCommand {
             remove every Darkbloom background service, revoke this Mac's account token, unpair, undo the cable port \
             setup (macOS asks for an administrator's password) and delete Darkbloom's settings, logs, caches, the \
             app and the command link. --everything also deletes the models Darkbloom downloaded; --keep-models keeps \
-            them, so a reinstall finds them. Models in a folder you chose and Keychain keys are never deleted.
+            them, so a reinstall finds them. Choosing 1 on the screen asks once more before deleting the models. A \
+            models folder you chose, and the cluster model store beside it, are never deleted, even inside \
+            Darkbloom's own folder; nor are Keychain keys. Run it as yourself, not with sudo.
             """)
 
     @Flag(help: "Remove everything: the app, settings, pairing, logs and all models.")
@@ -38,7 +40,7 @@ struct Uninstall: AsyncParsableCommand {
         Darkbloom.ensureLogging()
         let interactive = isatty(STDIN_FILENO) != 0 && isatty(STDOUT_FILENO) != 0
         let invocation = ProviderUninstall.invocation(everything: everything, keepModels: keepModels, yes: yes,
-                                                      dryRun: dryRun, interactive: interactive)
+                                                      dryRun: dryRun, interactive: interactive, userID: geteuid())
         if case .refuse(let line) = invocation {
             printError(line)
             throw ExitCode.validationFailure
@@ -57,6 +59,11 @@ struct Uninstall: AsyncParsableCommand {
         case .ask:
             ProviderUninstall.screen(plan).forEach { print($0) }
             guard let chosen = Self.choose() else { print("Nothing changed."); return }
+            if chosen == .everything {
+                print(ProviderUninstall.everythingQuestion(plan), terminator: "")
+                fflush(stdout)
+                guard ProviderUninstall.confirmed(readLine()) else { print("Nothing changed."); return }
+            }
             mode = chosen
         case .run(let given, let confirm):
             mode = given
@@ -69,7 +76,7 @@ struct Uninstall: AsyncParsableCommand {
                                                  operations: Self.operations(drain: drain)) { print("→ \($0)") }
         print("")
         ProviderUninstall.summary(report, plan: plan).forEach { print($0) }
-        if report.failed { throw ExitCode.failure }
+        if report.failed || report.incomplete { throw ExitCode.failure }
     }
 
     /// What this Mac has, read before anything changes.
@@ -195,7 +202,6 @@ struct Uninstall: AsyncParsableCommand {
     static func confirm(readInput: () -> String? = { readLine() }) -> Bool {
         print("Continue? [y/N]: ", terminator: "")
         fflush(stdout)
-        let answer = readInput()?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
-        return ["y", "yes"].contains(answer)
+        return ProviderUninstall.confirmed(readInput())
     }
 }

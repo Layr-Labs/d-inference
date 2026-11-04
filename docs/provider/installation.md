@@ -296,8 +296,12 @@ with this Mac's sizes and reads one key (Esc cancels):
 darkbloom uninstall
 ```
 
-1. **Remove everything.** The app, settings, pairing, logs and all models.
+1. **Remove everything.** The app, settings, pairing, logs and all models. It
+   asks once more, with the size of the models it deletes; only `y` goes on.
 2. **Keep models.** Removes everything else; a reinstall reuses the models.
+
+Run it as yourself, not with `sudo`: it refuses to run as root, and macOS asks
+for the password when a step needs it.
 
 Both choices stop serving (the drain of `darkbloom stop`), stop this Mac's
 part of a two-Mac pair, remove every Darkbloom background service, revoke this
@@ -320,9 +324,11 @@ darkbloom uninstall --keep-models --yes
 darkbloom uninstall --everything --yes
 ```
 
-No choice deletes models or caches in a folder you chose, anything that
-resolves outside Darkbloom's folders, or Keychain keys (a new install replaces
-them). Remove what it leaves first, if you use it:
+No choice deletes a models folder you chose or the cluster model store beside
+it, even inside `~/.darkbloom` (the rest of that folder goes), caches in a
+folder you chose, anything that resolves outside Darkbloom's folders, or
+Keychain keys (a new install replaces them). Remove what it leaves first, if you
+use it:
 
 ```bash
 sudo darkbloom fan uninstall   # fan control: restores macOS automatic control

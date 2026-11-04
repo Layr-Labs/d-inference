@@ -65,6 +65,14 @@ public enum ProviderUninstall {
         public let availableBefore: Int64?
         public let availableAfter: Int64?
         public var failed: Bool { steps.contains { $0.status == .failed } }
+        /// Something of Darkbloom's that was to go is still here: refused, or kept because an earlier step failed.
+        /// A command link the installer did not make is not Darkbloom's, so leaving it leaves nothing of Darkbloom's.
+        public var incomplete: Bool {
+            steps.contains {
+                $0.status == .skipped && $0.name.hasPrefix("Delete ") && $0.detail != "already gone"
+                    && $0.detail != notRemoved(foreignLinkReason)
+            }
+        }
     }
 
     static let stopServingStep = "Stop serving on this Mac"
@@ -123,7 +131,7 @@ public enum ProviderUninstall {
         for item in items where item.verdict != .keep && !mode.keeps(item) {
             let name = "Delete \(item.label)"
             guard item.verdict == .remove else {
-                steps.append(.init(name: name, status: .skipped, detail: "refused: \(item.reason ?? "outside Darkbloom's folders")"))
+                steps.append(.init(name: name, status: .skipped, detail: notRemoved(item.reason ?? "outside Darkbloom's folders")))
                 continue
             }
             guard servicesStopped else {
@@ -138,12 +146,32 @@ public enum ProviderUninstall {
                 // The install folder holds the app this command runs from; it is deleted last. macOS keeps a
                 // running executable's image after its file is unlinked, and nothing after this loads from it.
                 guard FileManager.default.fileExists(atPath: item.path) || isLink(item.path) else { return .skipped("already gone") }
-                try operations.delete(URL(fileURLWithPath: item.path))
+                if item.keeping.isEmpty {
+                    try operations.delete(URL(fileURLWithPath: item.path))
+                } else {
+                    try deleteAround(URL(fileURLWithPath: ProviderUninstallPaths.canonical(item.path)), keeping: item.keeping,
+                                     operations.delete)
+                }
                 return .done(item.bytes > 0 ? formatBytes(item.bytes) : nil)
             }
         }
         return Report(mode: mode, steps: steps, availableBefore: before, availableAfter: operations.availableBytes())
     }
+
+    /// Deletes everything in `folder` except `keeping` (resolved paths inside it) and the folders that lead to them.
+    /// An app bundle goes last, as the install folder's app does when the folder goes whole.
+    static func deleteAround(_ folder: URL, keeping: [String], _ delete: (URL) throws -> Void) throws {
+        let names = try FileManager.default.contentsOfDirectory(atPath: folder.path)
+            .sorted { ($0.hasSuffix(".app") ? 1 : 0, $0) < ($1.hasSuffix(".app") ? 1 : 0, $1) }
+        for name in names {
+            let child = folder.appendingPathComponent(name)
+            guard !keeping.contains(child.path) else { continue }
+            let inside = keeping.filter { $0.hasPrefix(child.path + "/") }
+            if inside.isEmpty { try delete(child) } else { try deleteAround(child, keeping: inside, delete) }
+        }
+    }
+
+    static func notRemoved(_ reason: String) -> String { "not removed: \(reason)" }
 
     static func isLink(_ path: String) -> Bool {
         (try? FileManager.default.destinationOfSymbolicLink(atPath: path)) != nil

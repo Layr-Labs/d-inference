@@ -235,6 +235,8 @@ public actor ProviderLoop {
     internal var appAttestEvidenceLog: @Sendable (_ context: String) -> Void = {
         ProviderProcessRun.logAppAttestEntitlementEvidence(context: $0)
     }
+    /// How long a planned stop waits for an attestation already with Apple.
+    internal var appAttestStopWaitSeconds = AppAttestShadowClient.outstandingAttestationWaitSeconds
     internal let loopConfig: ProviderLoopConfig
     internal var ordinaryServingModelIDs: Set<String>
     /// The operator's explicit selection: `enabled_models` with the start

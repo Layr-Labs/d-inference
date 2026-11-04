@@ -33,7 +33,7 @@ extension ClusterOnboardingOperations {
             pair: { events in live.pair(events) },
             answerCode: { live.answer($0) },
             ensureService: { live.ensureService() },
-            reachMembers: { live.reachMembers() },
+            reachMembers: { waiting in live.reachMembers(waiting) },
             planModels: { live.planModels() },
             adopt: { live.adopt($0) },
             serve: { live.serve() },
@@ -578,9 +578,10 @@ final class OnboardingLive: @unchecked Sendable {
 
     // MARK: - The leader
 
-    func reachMembers() -> Result<[ClusterOnboardingMachine], ClusterOnboardingFailure> {
+    /// `waiting`: each new reason the other Mac has not answered yet, said on screen while the reading keeps asking.
+    func reachMembers(_ waiting: @escaping @Sendable (String) -> Void) -> Result<[ClusterOnboardingMachine], ClusterOnboardingFailure> {
         let local = (try? ClusterSetupLinkExchange.pairing())?.localMemberID
-        return routed(.init(op: .reachMembers), seconds: 150, acting: true, local: { localReachMembers { _ in } }) { reply in
+        return routed(.init(op: .reachMembers), seconds: 150, acting: true, local: { localReachMembers(waiting) }) { reply in
             (reply.machines ?? []).map { machine in
                 var machine = machine
                 machine.here = machine.memberID != nil && machine.memberID == local
@@ -589,24 +590,24 @@ final class OnboardingLive: @unchecked Sendable {
         }
     }
 
-    func localReachMembers(_ say: @escaping @Sendable (String) -> Void) -> Result<[ClusterOnboardingMachine], ClusterOnboardingFailure> {
+    /// `waiting`: each new reason the other Mac has not answered yet (`reachMembers` says them on screen).
+    func localReachMembers(_ waiting: @escaping @Sendable (String) -> Void) -> Result<[ClusterOnboardingMachine], ClusterOnboardingFailure> {
         let deadline = Date().addingTimeInterval(120)
         var lastReason: String?
-        var reached: (ClusterSetupReport, Double)?
+        var reached: ClusterSetupReport?
         while reached == nil {
             switch context.reachPeer() {
-            case .reached(let report, let seconds): reached = (report, seconds)
+            case .reached(let report, _): reached = report
             case .failed(let reason):
-                if reason != lastReason { say("Waiting for \(thereShort)'s cluster service: \(reason)"); lastReason = reason }
+                if reason != lastReason { waiting("Waiting for \(thereShort)'s cluster service: \(reason)"); lastReason = reason }
                 guard Date() < deadline else {
                     return .failure(.init(["\(Self.sentence(there)) did not answer over the cable within 2 minutes: \(reason)", Self.localNetworkHint(there)]))
                 }
                 sleep(3)
             }
         }
-        let (peer, seconds) = reached!
+        let peer = reached!
         rememberPeerReport(peer, memberID: context.peerFacts?.memberID)
-        say("\(Self.sentence(there)) answered over the cable in \(String(format: "%.1f", seconds)) s.")
         let local = context.snapshot().local
         func machine(_ report: ClusterSetupReport, name: String, leads: Bool, memberID: String?, here: Bool) -> ClusterOnboardingMachine {
             .init(name: name, memoryGB: report.mac.physicalMemoryBytes >> 30, gpuCores: report.mac.profile?.gpuCores, leads: leads,

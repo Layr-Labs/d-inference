@@ -23,7 +23,7 @@ public enum WatchdogAgent: Sendable {
     public static let checkIntervalSeconds = 60
 
     public static func plistPath() -> URL {
-        FileManager.default.homeDirectoryForCurrentUser
+        LaunchctlControl.homeDirectory()
             .appendingPathComponent("Library/LaunchAgents")
             .appendingPathComponent("\(label).plist")
     }

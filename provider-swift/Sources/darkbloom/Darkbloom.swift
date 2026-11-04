@@ -32,6 +32,7 @@ struct Darkbloom: AsyncParsableCommand {
             Addon.self,
             Sandbox.self,
             Stop.self,
+            Uninstall.self,
             Restart.self,
             Status.self,
             Doctor.self,

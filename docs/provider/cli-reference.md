@@ -708,11 +708,28 @@ Next: Leave both Macs running: Darkbloom retries by itself. Or serve locally onl
 | Exit status | `state` | Meaning |
 |---|---|---|
 | `0` | `serving` | The pair serves (through Darkbloom, or on the leading Mac's local API) |
-| `3` | `loading`, `not_serving`, `unknown` | Not serving yet: loading, or a reason in `reason` |
-| `4` | `stopped` | Stopped (Stop in `darkbloom cluster`, or `darkbloom cluster stop`) |
-| `5` | `other_mac_away` | The other Mac isn't answering over the cable (its cluster service is off, it sleeps, or waits for a login) |
+| `3` | `loading`, `not_serving`, `unknown` | Not serving yet: loading, or a reason in `reason` (such as macOS keeping a Mac off the local network, below) |
+| `4` | `stopped` | Stopped (Stop in `darkbloom cluster`, or `darkbloom cluster stop`), also while the other Mac isn't answering |
+| `5` | `other_mac_away` | The pair is started and the other Mac isn't answering over the cable (its cluster service is off, it sleeps, or waits for a login) |
 | `6` | `not_paired` | This Mac isn't in a cluster |
 | `7` | `pairing_unreadable` | This Mac's pairing record couldn't be read, so it may be in a cluster; `reason` says why when known |
+
+While macOS's Local Network setting keeps a Mac's link follower off the cable, both Macs read `not_serving` (exit 3)
+by the setup screens' rule and in their words (`ClusterLocalNetworkAccess.statusWords`), instead of a load that never
+ends. The DevNet app names "Darkbloom Dev" and `darkbloom-dev`.
+- On the Mac that is kept off (its own cluster service's refusal), `reason` is "This Mac can't reach the other Mac over
+  the cable: macOS keeps Darkbloom off the local network" and `next` is "On this Mac: System Settings → Privacy &
+  Security → Local Network → turn on “Darkbloom” (on a Mac with no display, through Screen Sharing); then run
+  `darkbloom start` here, or choose Retry in `darkbloom cluster` on the other Mac."
+- On the leading Mac, once its part has run about 20 seconds (the ✗'s rule; it then asks the other Mac's status),
+  `reason` is "The other Mac can't reach this Mac over the cable: macOS keeps Darkbloom there off the local network"
+  and `next` names that Mac: "The other Mac (Apple M5 Max, 128 GB): System Settings → Privacy & Security → Local
+  Network → turn on “Darkbloom” (on a Mac with no display, through Screen Sharing). Then run `darkbloom start` here,
+  or choose Retry in `darkbloom cluster`."
+
+A stopped pair reads `stopped` (exit 4) even while the other Mac isn't answering, as after a stop the other Mac asked
+for before it left (its uninstall does): `lines` are "Stopped; last model …" and "The other Mac (…) isn't answering
+over the cable.", with `other_mac.answers` `false`.
 
 When the pairing record can't be read, the plain output is the reason and what
 to do, and `--json` gives `paired`, `role`, `other_mac`, `model` and `serves` as
@@ -1626,7 +1643,12 @@ What no choice deletes (the summary lists them):
   skipped (`kept: <the other install> on this Mac also uses it`), the files
   every install shares stay (`~/.darkbloom/cluster*` and
   `~/.config/darkbloom/clusters`; the rest of those folders goes), and step 2
-  removes only this install's own cluster service. The screen,
+  removes only this install's own cluster service. One exception in the shared
+  folder goes: Darkbloom Dev's own incident log, with its lock and corrupt copy
+  (`ClusterIncidentLog.defaultFile(homeDirectory:install:)`, listed as `This
+  install's incident log`), which no other install reads. Production's log there
+  is the shared `incidents.json`, which an older build of the other install still
+  writes, so it stays with the folder. The screen,
   the dry run, `--json` and the summary list it, here for `darkbloom-dev
   uninstall`, and the summary's first line names the install it removed
   (`Darkbloom Dev is removed from this Mac.`):

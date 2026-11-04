@@ -1,3 +1,4 @@
+import DarkbloomClusterRemote
 import DarkbloomClusterSecurity
 import Darwin
 import Foundation
@@ -7,6 +8,8 @@ import Foundation
 public struct ProviderUninstallPaths: Sendable, Equatable {
     /// The home directory with its own links resolved (`/var` → `/private/var`), so every root is canonical.
     public let home: URL
+    /// The install these paths are for.
+    public let environment: BuildEnvironment
     /// `~/.darkbloom`: the app, the `bin/` links, logs, pairing, cluster setup and service state.
     public let installDirectory: URL
     public let appBundleName: String
@@ -33,6 +36,7 @@ public struct ProviderUninstallPaths: Sendable, Equatable {
     public init(home: URL, environment: BuildEnvironment = .current, commandLinkDirectory: URL = URL(fileURLWithPath: "/usr/local/bin")) {
         let home = URL(fileURLWithPath: Self.canonical(home.path), isDirectory: true)
         self.home = home
+        self.environment = environment
         installDirectory = environment.installDirectory(home: home)
         appBundleName = environment.appBundleName
         configDirectory = environment.configDirectory(home: home)
@@ -289,6 +293,7 @@ extension ProviderUninstall {
         add("The `\(paths.commandLink.lastPathComponent)` command link", paths.commandLink, kind: .command)
         add(installFolderLabel(paths), paths.installDirectory, kind: .command)
         // Another install on this Mac reads the same pairing, cluster setup and cable port setup: they stay with it.
+        var ownIncidents: [ProviderUninstallItem] = []
         if let other = paths.otherEnvironment {
             let files = paths.sharedClusterFiles
             var shared = ProviderUninstallItem(label: sharedClusterLabel,
@@ -305,12 +310,34 @@ extension ProviderUninstall {
             shared.ownClusterAgentPlist = FileManager.default.fileExists(atPath: ownPlist.path) ? ownPlist.path : nil
             items.append(shared)
             protected += files.map { (ProviderUninstallPaths.canonical($0.path), "the cluster files \(installName(other)) uses") }
+            ownIncidents = ownIncidentLog(paths)
         }
         // What finishes the uninstall once the models are out: the settings that named the folder are gone by then.
         let again = "\(paths.installDirectory.path)/bin/\(paths.commandLink.lastPathComponent) uninstall"
         let advice = ". To finish, move the models you want to keep out of it, then run `\(again)` again, which deletes the rest of it"
-        return items.compactMap { around($0, protected, advice: advice) }
+        var listed = items.compactMap { around($0, protected, advice: advice) }
+        // Before the install folder, so the app still goes last.
+        listed.insert(contentsOf: ownIncidents, at: listed.firstIndex { $0.path == paths.installDirectory.path } ?? listed.endIndex)
+        return listed
     }
+
+    /// This install's own incident log in the shared cluster folder (`ClusterIncidentLog.forThisInstall`): its log,
+    /// lock and corrupt copy, which no other install reads, so they go while the folder stays. Production's log is the
+    /// folder's shared `incidents.json`, which a build of the other install from before installs had their own logs
+    /// still writes: it stays with the folder.
+    static func ownIncidentLog(_ paths: ProviderUninstallPaths) -> [ProviderUninstallItem] {
+        let install = paths.environment.rawValue
+        let file = ClusterIncidentLog.defaultFile(homeDirectory: paths.home, install: install)
+        guard file != ClusterIncidentLog.defaultFile(homeDirectory: paths.home) else { return [] }
+        let labels = [ownIncidentsLabel, "This install's incident log lock", "This install's incident log, set aside as corrupt"]
+        return zip(labels, ClusterIncidentLog(file: file, install: install).files).compactMap { label, url in
+            var info = stat()
+            guard lstat(url.path, &info) == 0 else { return nil }
+            return ProviderUninstallItem(label: label, path: url.path, bytes: measure(url).bytes, verdict: .remove, reason: nil)
+        }
+    }
+
+    static let ownIncidentsLabel = "This install's incident log"
 
     /// `item` with the protected folders inside it left out (and measured without them); nil when it lies inside one.
     private static func around(_ item: ProviderUninstallItem, _ protected: [(path: String, what: String)],

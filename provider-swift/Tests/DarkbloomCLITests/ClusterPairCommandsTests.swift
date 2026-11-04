@@ -1623,3 +1623,128 @@ struct ClusterBoundedWaitScopeTests {
         #expect(status.contains("live read: bounded") && !status.contains("live read: unbounded"), "\(status)")
     }
 }
+
+@Suite("Status truths: a Local Network refusal is said, and a stopped pair reads stopped")
+struct ClusterStatusTruthTests {
+    private static let app = ClusterService.appName
+    private static let starting = ["Starting Qwen 3.8 27B."]
+
+    @Test("R-1: the Mac macOS keeps off the local network reads not serving, in the joining screen's words")
+    func refusedFollowerIsNotServingOnTheMember() {
+        var member = pair(role: .member)
+        member.read(status: Self.starting, leaderMode: nil)
+        #expect(member.state == .loading)
+        member.read(localNetworkRefused: .thisMac)
+        let cli = ClusterPairSummary.cli
+        let blocked = ClusterOnboardingDriver.localNetworkBlockedLines(app: Self.app,
+            then: "then run `\(cli) start` here, or choose Retry in `\(cli) cluster` on the other Mac")
+        #expect(member.state == .notServing && member.exitCode == 3)
+        #expect(member.reason == "This Mac can't reach the other Mac over the cable: macOS keeps \(Self.app) off the local network")
+        #expect(member.reason.map { $0 + "." } == blocked[0])
+        #expect(member.next == blocked[1])
+        let json = member.json
+        #expect(json.state == "not_serving" && json.reason == member.reason && json.next == member.next && json.exitCode == 3)
+    }
+
+    @Test("R-1: the leading Mac reads not serving once the other Mac's refusal counts, in the ✗'s words")
+    func refusedFollowerIsNotServingOnTheLeader() {
+        var leader = pair(role: .leader)
+        leader.read(status: Self.starting, leaderMode: "cluster")
+        leader.read(localNetworkRefused: .otherMac)
+        let cli = ClusterPairSummary.cli
+        #expect(leader.state == .notServing && leader.exitCode == 3)
+        #expect(leader.reason == "The other Mac can't reach this Mac over the cable: macOS keeps \(Self.app) there off the local network")
+        #expect(leader.next == "The other Mac (Apple M5 Max, 128 GB): System Settings → Privacy & Security → Local Network → "
+            + "turn on “\(Self.app)” (on a Mac with no display, through Screen Sharing). Then run `\(cli) start` here, or choose "
+            + "Retry in `\(cli) cluster`.")
+        #expect(leader.clusterStatusLines.contains("✗ Not serving: \(leader.reason ?? "")."), "\(leader.clusterStatusLines)")
+        // Never over a pair that serves, or one that stopped.
+        var serving = pair(role: .leader)
+        serving.read(status: ["Serving Qwen 3.8 27B through Darkbloom on both Macs (tensor parallel)."], leaderMode: "cluster")
+        serving.read(localNetworkRefused: .otherMac)
+        #expect(serving.state == .serving && serving.reason == nil)
+        var stopped = pair(role: .member, started: false)
+        stopped.read(status: ["Stopped; last model Qwen 3.8 27B."], leaderMode: nil)
+        stopped.read(localNetworkRefused: .thisMac)
+        #expect(stopped.state == .stopped && stopped.reason == nil)
+    }
+
+    @Test("R-1: a script start on the leading Mac ends its wait on the other Mac's refusal, with its steps, and exits 3")
+    func leaderStartEndsItsWaitOnTheRefusal() async {
+        let result = await #expect(processExitsWith: .exitCode(3), observing: [\.standardOutputContent]) {
+            var refused = observed(Self.starting[0])
+            refused.read(localNetworkRefused: .otherMac)
+            // A wait that went on would read the next look, which serves.
+            let looks = Looks([observed(Self.starting[0]), refused,
+                               observed("Serving Qwen 3.8 27B through Darkbloom on both Macs (tensor parallel).")])
+            try await exitWithPair(pair(), actions: pairActions()) { _ in
+                try await ClusterPairSummary.$readerForTesting.withValue({ live in live ? looks.next() : pair() }) {
+                    try await ClusterPairCommands.$waitForTesting.withValue(.init(seconds: 60, interval: 0)) {
+                        try await runCLICommand(Start.self, ["start"])
+                    }
+                }
+            }
+        }
+        let out = lines(result?.standardOutputContent)
+        let cli = ClusterPairSummary.cli
+        #expect(out.contains("✗ Not serving: The other Mac can't reach this Mac over the cable: macOS keeps \(Self.app) there off the "
+            + "local network."), "\(out)")
+        #expect(out.contains { $0.hasPrefix("  Next:    The other Mac (Apple M5 Max, 128 GB): System Settings → ")
+            && $0.hasSuffix(" Then run `\(cli) start` here, or choose Retry in `\(cli) cluster`.") }, "\(out)")
+        #expect(!out.contains { $0.contains("Serving Qwen") }, "the wait ended at the refusal: \(out)")
+    }
+
+    @Test("R-1: the other Mac's refusal counts by the ✗'s rule: its running part reports it, and this Mac's part has run 20 s")
+    func otherMacRefusalFollowsTheScreensRule() {
+        let now = Date().timeIntervalSince1970
+        let refused = ClusterServiceStatus.Child(running: true, starts: 1,
+                                                 lastError: ClusterService.localNetworkReasonPrefix + ": macOS refused the dial")
+        let own = ClusterServiceStatus.Child(running: true, starts: 1, startedAt: now - 25)
+        #expect(OnboardingLive.refusalIsCurrent(own: own, now: now))
+        #expect(ClusterLocalNetworkAccess.otherMacRefused(member: refused, own: own, now: now))
+        let young = ClusterServiceStatus.Child(running: true, starts: 1, startedAt: now - 5)
+        #expect(!OnboardingLive.refusalIsCurrent(own: young, now: now))
+        #expect(!ClusterLocalNetworkAccess.otherMacRefused(member: refused, own: young, now: now), "before one more dial it may be stale")
+        var ended = refused
+        ended.running = false
+        #expect(!ClusterLocalNetworkAccess.otherMacRefused(member: ended, own: own, now: now), "an ended part's refusal is history")
+    }
+
+    @Test("R-5: a stopped pair reads stopped whatever the other Mac's presence, and says it isn't answering")
+    func stoppedPairStaysStopped() {
+        var leader = pair(role: .leader, started: false)
+        leader.read(status: ["The other Mac (Apple M5 Max, 128 GB) is gone; this Mac cannot serve Qwen 3.8 27B alone, so nothing "
+                             + "of it runs after 9 min 58 s unless it returns first."], leaderMode: "cannotServe")
+        #expect(leader.state == .stopped && leader.exitCode == 4)
+        #expect(leader.otherMacAnswers == false)
+        #expect(leader.lines == ["Stopped; last model Qwen 3.8 27B.", "The other Mac (Apple M5 Max, 128 GB) isn't answering over the cable."])
+        var member = pair(role: .member, started: false)
+        member.read(status: ["The other Mac (Apple M5 Max, 128 GB) did not answer over the cable: timed out"], leaderMode: nil)
+        #expect(member.state == .stopped && member.exitCode == 4 && member.otherMacAnswers == false)
+        // A pair that was started and lost the other Mac still reads away.
+        var away = pair(role: .leader)
+        away.read(status: ["The other Mac (Apple M5 Max, 128 GB) is gone; this Mac serves alone."], leaderMode: "waiting")
+        #expect(away.state == .otherMacAway && away.exitCode == 5)
+    }
+
+    @Test("R-1: the refusal's words name this build's app and command (a dev-identity build shows the DevNet wording)")
+    func refusalWordsNameThisBuild() async {
+        let result = await #expect(processExitsWith: .success, observing: [\.standardOutputContent]) {
+            ClusterOnboardingCommand.use(BuildEnvironment.current.cliName)
+            var member = pair(role: .member)
+            member.read(status: Self.starting, leaderMode: nil)
+            member.read(localNetworkRefused: .thisMac)
+            var leader = pair(role: .leader)
+            leader.read(status: Self.starting, leaderMode: "cluster")
+            leader.read(localNetworkRefused: .otherMac)
+            for line in [member.reason, member.next, leader.reason, leader.next] { print(line ?? "none") }
+        }
+        let out = lines(result?.standardOutputContent).filter { !$0.isEmpty }
+        for line in out { print("refusal words (\(BuildEnvironment.current.rawValue)): " + line) }
+        let app = BuildEnvironment.current.appDisplayName, cli = BuildEnvironment.current.cliName
+        #expect(out.count == 4, "\(out)")
+        #expect(out.allSatisfy { $0.contains(app) }, "\(out)")
+        #expect(out.count == 4 && out[1].contains("turn on “\(app)”") && out[1].contains("`\(cli) start`") && out[3].contains("`\(cli) cluster`"),
+                "\(out)")
+    }
+}

@@ -421,7 +421,7 @@ public final class ClusterService: @unchecked Sendable {
                 say("the cable is on \(moved.interface) now: answering the paired Mac there")
                 // A port that was never set up has no fixed address: the other Mac cannot find this one there.
                 if let port = OnboardingLive.unsetCablePort(ClusterLinkReadinessProbe.inspectLocalLink()) {
-                    say("\(port) is not set up for the cluster: run `\(ClusterService.cli) cluster` on this Mac and choose \(ClusterOnboardingDriver.fixPortItem) (macOS asks for your password once)")
+                    say("\(port) is not set up for the cluster: run `\(OnboardingLive.cli) cluster` on this Mac and choose \(ClusterOnboardingDriver.fixPortItem) (macOS asks for your password once)")
                 }
             case .pairingChanged(let current):
                 say("this Mac's pairing changed (\(current.clusterID)): answering the paired Mac with the new one")
@@ -940,7 +940,7 @@ public final class ClusterService: @unchecked Sendable {
                 + (reply.keptLive > 0 ? ", \(reply.keptLive) still in use (removed when its part stops)" : "") + "."
         } catch {
             return "The other Mac was not reached (\(ClusterConsoleText.bounded(String(describing: error), maximum: 160))): "
-                + "its pair cache stays until it unpairs too (`\(ClusterService.cli) cluster pair --forget \(pairing.localPin)` there)."
+                + "its pair cache stays until it unpairs too (`\(OnboardingLive.cli) cluster pair --forget \(pairing.localPin)` there)."
         }
     }
 
@@ -1255,15 +1255,18 @@ public final class ClusterService: @unchecked Sendable {
         return error
     }
 
-    /// The command this build answers to (`BuildEnvironment.current.cliName`), in the lines the service writes (A-1).
-    static let cli = BuildEnvironment.current.cliName
-
-    /// How a part's link follower says macOS kept it off the local network (`ClusterLinkFollowerCommand`): it then ends
-    /// cleanly, with no "Error:" line, and the Mac that leads only saw the other Mac not answering (the DevNet run, A-3).
-    static let localNetworkRefusal = "may not reach the local network"
+    /// How a part's link follower says macOS kept it off the local network: `ClusterLinkFollowerCommand` writes this
+    /// phrase, and `lastError` finds it. The part then ends cleanly, with no "Error:" line, and the Mac that leads only
+    /// saw the other Mac not answering (the DevNet run, A-3).
+    public static let localNetworkRefusal = "may not reach the local network"
 
     /// How a part's refusal reads in its Mac's status (`lastError`), which the other Mac's screens read.
     public static let localNetworkReasonPrefix = "its part can't reach the local network"
+
+    /// What the link follower writes once it has opened its link to the other Mac: `ClusterLinkFollowerCommand`'s
+    /// `line("connected")` and `line("session opened")`, under its "link-follower: " prefix. A refusal before them no
+    /// longer holds (`followerRefusal`), so turning Local Network on clears it. Shared the way `localNetworkRefusal` is.
+    public static let followerLinkOpenedLines = ["link-follower: connected", "link-follower: session opened"]
 
     /// The app macOS names in Privacy & Security → Local Network ("Darkbloom", "Darkbloom Dev").
     public static let appName: String = {
@@ -1277,7 +1280,7 @@ public final class ClusterService: @unchecked Sendable {
     /// service's broadcast probe can't give; it keeps running and retrying, so it never ends with an error.
     static func followerRefusal(in log: URL, from offset: UInt64 = 0) -> String? {
         guard let last = ClusterLogScan.lastLine(in: log, from: offset, where: {
-                  $0.contains(localNetworkRefusal) || $0.contains("link-follower: connected") || $0.contains("link-follower: session opened")
+                  line in line.contains(localNetworkRefusal) || followerLinkOpenedLines.contains { line.contains($0) }
               }), let at = last.range(of: localNetworkRefusal) else { return nil }
         return refusalReason(String(last[at.upperBound...]))
     }

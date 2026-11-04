@@ -2868,7 +2868,11 @@ The `cluster` setup installs its background service with the enclosing app's
 Local Network identity. A signed app keeps serving after the setup terminal
 closes. A development fallback names its session lifetime limitation on screen;
 keep that Terminal or SSH session open. See [cluster service
-permissions](cluster-always-on.md#permissions-asked-once).
+permissions](cluster-always-on.md#permissions-asked-once). When macOS keeps a
+Mac's link follower off the local network, its log says `this process may not
+reach the local network: macOS refused the dial before the cable was tried…`,
+and the leading Mac's ✗ gives that as the other Mac's reason instead of asking
+whether it is on.
 
 ## GPT-OSS native pair batch qualification
 

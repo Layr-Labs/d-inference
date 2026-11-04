@@ -94,6 +94,8 @@ final class OnboardingLive: @unchecked Sendable {
     /// (`ClusterOnboardingUpdate.reportPricesPlan`).
     private var peerReportAt: Date?
     private var partsStoppedAt: Date?
+    /// When the last start's wait for ready began (`waitReady`): `lastErrors` reads this Mac's incidents since then.
+    private var waitBegan: Date?
     private let readPairing: @Sendable () throws -> ClusterSetupLinkExchange.Pairing?
     /// This Mac's pin as a pairing made now would store it (nil: no key could be read).
     private let currentPin: @Sendable () -> String?
@@ -107,13 +109,13 @@ final class OnboardingLive: @unchecked Sendable {
     private var peerChoices: [Int: ClusterSetupLocalModel] = [:]
     private var chosenTitle: String?
     /// The command this build answers to (`BuildEnvironment.current.cliName`; "darkbloom-dev" in the DevNet app), in every
-    /// command these operations write, including the lines `darkbloom cluster stop --service` prints (the DevNet run, A-1).
+    /// command these operations and the cluster service write, including the lines `darkbloom cluster stop --service` prints.
     static let cli = BuildEnvironment.current.cliName
     /// The way of serving the screen's coming plan and adopt are for (`ClusterOnboardingOperations.planScope`).
     private var plannedScope: ClusterServingScope?
     /// The list `planModels` last returned on this Mac (from the leader when forwarded), so a choice names its model.
     private var listedChoices: [ClusterOnboardingModelChoice] = []
-    /// The mode family the person chose per model id, when it is not the planner's (`useMode`).
+    /// The mode family the person chose per model id (`useMode`), for the next adopt of that model.
     private var chosenFamilies: [String: ClusterForcedMode] = [:]
     /// Set while this (leader) Mac answers a command forwarded from the other Mac: its lines are shown on that Mac, so
     /// they name the two Macs the other way round (`here`, `there`).
@@ -203,6 +205,11 @@ final class OnboardingLive: @unchecked Sendable {
         }
     }
 
+    /// The family `useMode` kept for the next adopt of `model` (a choice's model id, else its title).
+    func keptFamily(forModel model: String) -> ClusterForcedMode? {
+        lock.withLock { chosenFamilies[model] }
+    }
+
     /// The family kept for the next adopt of a model the person chose `mode` for: always the person's, never inferred
     /// from the listing's order, which says nothing of the plan (the DevNet run, A-9: GLM listed Pipeline first while its
     /// plan was tensor parallel, so choosing Pipeline kept nothing and tensor parallel loaded again). `localAdopt` plans
@@ -214,7 +221,8 @@ final class OnboardingLive: @unchecked Sendable {
 
     /// Whether the adopt plans again in the kept `family`: the listed plan's mode isn't in it (`localAdopt`).
     static func replansInFamily(_ family: ClusterForcedMode?, listedPlanMode: String?) -> Bool {
-        family.map { family in listedPlanMode.flatMap { ClusterGenerationMode(rawValue: $0) }.map(family.admits) != true } ?? false
+        guard let family else { return false }
+        return listedPlanMode.flatMap { ClusterGenerationMode(rawValue: $0) }.map(family.admits) != true
     }
 
     /// One status request over the cable, which only a Mac holding this pairing's link key can answer.
@@ -275,7 +283,7 @@ final class OnboardingLive: @unchecked Sendable {
                   currentClaim(try? store.readRecord())?.leaderID == pairing.localMemberID else { return nil }
             if let control = ClusterService.publishedLive()?.control, control.leads, control.confirmed == true { return nil }
             guard Date() < deadline else {
-                return .init("This Mac's leadership is not confirmed yet (its cluster service has not heard from \(there) and the \(Int(ClusterService.leaseTTLSeconds)) s window has not passed); run `\(OnboardingLive.cli) cluster` again in a moment.")
+                return .init("This Mac's leadership is not confirmed yet (its cluster service has not heard from \(there) and the \(Int(ClusterService.leaseTTLSeconds)) s window has not passed); run `\(Self.cli) cluster` again in a moment.")
             }
             usleep(250_000)
         }
@@ -301,7 +309,7 @@ final class OnboardingLive: @unchecked Sendable {
                 // Acting here: hold this Mac's command lock (the service never hands leadership over meanwhile), and
                 // run only if this Mac still leads once it is held (a hand-over may have finished while it waited).
                 guard let held = ClusterControlCommandLock.acquire(seconds: 600) else {
-                    return .failure(.init("Another cluster command is still running on this Mac; run `\(OnboardingLive.cli) cluster` again."))
+                    return .failure(.init("Another cluster command is still running on this Mac; run `\(Self.cli) cluster` again."))
                 }
                 defer { held.release() }
                 if !forwards { return local() }
@@ -317,7 +325,7 @@ final class OnboardingLive: @unchecked Sendable {
             case .failure(let failure): return .failure(failure)
             }
         }
-        return .failure(moved ?? .init("The control leader kept changing; run `\(OnboardingLive.cli) cluster` again."))
+        return .failure(moved ?? .init("The control leader kept changing; run `\(Self.cli) cluster` again."))
     }
 
     /// The leader's reply as it came, failed or not.
@@ -465,8 +473,8 @@ final class OnboardingLive: @unchecked Sendable {
             if interface == nil { sleep(1) }
         } while interface == nil && Date() < deadline
         guard let interface else {
-            return .failed(["The cable has no address on this Mac yet. Run `\(OnboardingLive.cli) cluster` again in a moment;"
-                + " if this repeats, run `\(OnboardingLive.cli) cluster doctor` and check the cable on both Macs."])
+            return .failed(["The cable has no address on this Mac yet. Run `\(Self.cli) cluster` again in a moment;"
+                + " if this repeats, run `\(Self.cli) cluster doctor` and check the cable on both Macs."])
         }
         let chipName = (try? HardwareDetector.detect().chipName) ?? "Mac"
         let participant = ClusterPairingProvider.participant(identity: identity, chipName: chipName, interface: interface,
@@ -610,7 +618,7 @@ final class OnboardingLive: @unchecked Sendable {
     /// Said when the other Mac's service does not answer: a denied Local Network prompt there is the usual cause on a
     /// fresh pair, and nothing else would tell the person where to undo it.
     static func localNetworkHint(_ mac: String) -> String {
-        "If you denied the Local Network prompt on \(mac), allow Darkbloom in System Settings → Privacy & Security → Local Network there, then run `\(OnboardingLive.cli) cluster` again."
+        "If you denied the Local Network prompt on \(mac), allow Darkbloom in System Settings → Privacy & Security → Local Network there, then run `\(Self.cli) cluster` again."
     }
 
     static func reason(_ error: Error) -> String {
@@ -696,8 +704,13 @@ final class OnboardingLive: @unchecked Sendable {
     func planModels() -> Result<[ClusterOnboardingModelChoice], ClusterOnboardingFailure> {
         let request = ClusterControlRequest(op: .planModels, scope: runScope)
         let result = routed(request, seconds: 240, acting: false, local: { localPlanModels() }) { $0.choices ?? [] }
-        if case .success(let listed) = result { lock.withLock { listedChoices = listed } }
+        if case .success(let listed) = result { useListing(listed) }
         return result
+    }
+
+    /// The list a choice's index refers to (`useMode`, the adopt), as `planModels` last returned it.
+    func useListing(_ listed: [ClusterOnboardingModelChoice]) {
+        lock.withLock { listedChoices = listed }
     }
 
     /// How the cluster will serve the setup being planned: the way a forwarded command names, else this run's
@@ -1020,7 +1033,7 @@ final class OnboardingLive: @unchecked Sendable {
             if case .failure(let failure) = localReachMembers({ _ in }) { return .failure(failure) }
             if case .failure(let failure) = localPlanModels() { return .failure(failure) }
             guard let found = lock.withLock({ choices.firstIndex { $0.title == listed } }) else {
-                return .failure(.init("\(listed) is not offered on these Macs any more; run `\(OnboardingLive.cli) cluster` again to choose."))
+                return .failure(.init("\(listed) is not offered on these Macs any more; run `\(Self.cli) cluster` again to choose."))
             }
             index = found
         }
@@ -1101,13 +1114,13 @@ final class OnboardingLive: @unchecked Sendable {
                 if bytes != lastBytes { lastBytes = bytes; lastChange = Date() }
                 // Nothing new staged for 90 s: the other Mac stopped sending (its `darkbloom cluster` service says why).
                 if Date().timeIntervalSince(lastChange) > 90 {
-                    throw ClusterSetupFailure("\(Self.sentence(sender)) stopped sending \(model.modelID) (nothing arrived for 90 s); run `\(OnboardingLive.cli) cluster` here again (the copy resumes)")
+                    throw ClusterSetupFailure("\(Self.sentence(sender)) stopped sending \(model.modelID) (nothing arrived for 90 s); run `\(Self.cli) cluster` here again (the copy resumes)")
                 }
                 if bytes > 0 { reports.report(done: bytes, total: model.totalBytes) }
             }
             usleep(250_000)
         }
-        throw ClusterSetupFailure("\(model.modelID) did not arrive from \(sender) in time; run `\(OnboardingLive.cli) cluster` here again (the copy resumes)")
+        throw ClusterSetupFailure("\(model.modelID) did not arrive from \(sender) in time; run `\(Self.cli) cluster` here again (the copy resumes)")
     }
 
     static func stagedBytes(_ directory: URL) -> Int64 {
@@ -1192,16 +1205,16 @@ final class OnboardingLive: @unchecked Sendable {
             if case .failure(let failure) = localReachMembers({ _ in }) { return .failure(failure) }
             if case .failure(let failure) = localPlanModels(scope: scope) { return .failure(failure) }
             guard let found = lock.withLock({ choices.firstIndex { $0.title == model } }) else {
-                return .failure(.init("\(model) is not offered on these Macs any more; run `\(OnboardingLive.cli) cluster` again to choose."))
+                return .failure(.init("\(model) is not offered on these Macs any more; run `\(Self.cli) cluster` again to choose."))
             }
             index = found
         }
         guard var peer = lock.withLock({ peerReport }), var choice = lock.withLock({ choices.indices.contains(index) ? choices[index] : nil }) else {
-            return .failure(.init("The list of models is out of date; run `\(OnboardingLive.cli) cluster` again to choose."))
+            return .failure(.init("The list of models is out of date; run `\(Self.cli) cluster` again to choose."))
         }
         var lines = [String]()
-        // The person chose another mode family than the one listed (`useMode`): planned again in it before adopting.
-        let family = lock.withLock { chosenFamilies[choice.title] }
+        // The person chose another mode family than the listed plan's (`useMode`): planned again in it before adopting.
+        let family = keptFamily(forModel: choice.title)
         let modeDiffers = Self.replansInFamily(family, listedPlanMode: choice.plan?.mode)
         let serving = leadership?.serving == true || (try? store.readRecord().stopDrain) != nil
         if serving || modeDiffers {
@@ -1211,7 +1224,7 @@ final class OnboardingLive: @unchecked Sendable {
                 if case .failure(let failure) = localStop() { return .failure(failure) }
                 lines.append("Stopped both Macs' parts to change the model (each released its memory first).")
                 guard drained(seconds: 300) else {
-                    return .failure(.init(lines + ["A part did not stop within 5 minutes, so the setup was not changed; run `\(OnboardingLive.cli) cluster` again."]))
+                    return .failure(.init(lines + ["A part did not stop within 5 minutes, so the setup was not changed; run `\(Self.cli) cluster` again."]))
                 }
             }
             // The list was planned while the parts held their memory, where a tensor-parallel split may not fit "now"
@@ -1237,7 +1250,7 @@ final class OnboardingLive: @unchecked Sendable {
                 }
                 guard let picked else {
                     let reason = replanned.first { ($0.modelID ?? $0.title) == choice.title }?.blocker ?? "not found"
-                    return .failure(.init(lines + ["\(choice.title) is not offered on these Macs now (\(reason)); run `\(OnboardingLive.cli) cluster` again to choose."]))
+                    return .failure(.init(lines + ["\(choice.title) is not offered on these Macs now (\(reason)); run `\(Self.cli) cluster` again to choose."]))
                 }
                 if picked.again.key != choice.key, let line = replanned[picked.index].lines.first {
                     lines.append((serving ? "Planned again with both Macs' memory given back: " : "Planned in the mode chosen: ") + "\(line).")
@@ -1486,7 +1499,7 @@ final class OnboardingLive: @unchecked Sendable {
 
     func localServe() -> Result<[String], ClusterOnboardingFailure> {
         guard (try? store.readRecord().stopDrain) == nil else {
-            return .failure(.init("\(Self.sentence(hereShort)) is still finishing a stop. Run `\(OnboardingLive.cli) cluster stop` again before serving."))
+            return .failure(.init("\(Self.sentence(hereShort)) is still finishing a stop. Run `\(Self.cli) cluster stop` again before serving."))
         }
         let title = lock.withLock { chosenTitle } ?? context.savedConfiguration().configuration?.publicModelID
         do {
@@ -1505,7 +1518,7 @@ final class OnboardingLive: @unchecked Sendable {
     }
 
     var startsWhenItAnswers: String {
-        "\(Self.sentence(hereShort))'s cluster service starts \(thereShort)'s part as soon as it answers; run `\(OnboardingLive.cli) cluster` here to see how it is going."
+        "\(Self.sentence(hereShort))'s cluster service starts \(thereShort)'s part as soon as it answers; run `\(Self.cli) cluster` here to see how it is going."
     }
 
     /// The Mac that runs rank 0 and the serving API, and its session.
@@ -1528,7 +1541,8 @@ final class OnboardingLive: @unchecked Sendable {
 
     func waitReady(_ progress: @escaping @Sendable (String) -> Void) -> Result<ClusterOnboardingReady, ClusterOnboardingFailure> {
         let began = Date()
-        let deadline = Date().addingTimeInterval(900)
+        lock.withLock { waitBegan = began }
+        let deadline = began.addingTimeInterval(Self.readyWaitSeconds)
         var said: String?
         var seen = [String: Int](), previous: String?
         while Date() < deadline {
@@ -1544,7 +1558,7 @@ final class OnboardingLive: @unchecked Sendable {
             if let ready = once.ready { return .success(ready) }
             if once.line == Self.otherMacLocalNetworkLine {
                 return .failure(.init(Self.localNetworkRefusalLines(otherMac: Self.sentence(there), app: ClusterService.appName)
-                    + lastErrors(fallback: nil)))
+                    + lastErrors(fallback: nil, own: ownPart(since: began))))
             }
             // Each line once (a part that keeps restarting alternated two lines every 2 s); a part that ends the
             // same way again and again is said and the wait ends: both Macs keep trying by themselves. An end is
@@ -1552,10 +1566,9 @@ final class OnboardingLive: @unchecked Sendable {
             if once.line != previous { seen[once.line, default: 0] += 1 }
             previous = once.line
             if once.line.contains("part ended"), seen[once.line, default: 0] >= Self.sameEndsBeforeSaying {
-                let own = ClusterService.published()?.child
-                let worker = ownWorker(own, since: began)
-                return .failure(.init([Self.keepsEndingTitle(once.line, own: own, ownWorker: worker) + "."]
-                    + lastErrors(fallback: nil, own: (own, worker))))
+                let own = ownPart(since: began)
+                return .failure(.init([Self.keepsEndingTitle(once.line, own: own.child, ownWorker: own.worker) + "."]
+                    + lastErrors(fallback: nil, own: own)))
             }
             if seen[once.line] == 1, once.line != said { progress(once.line); said = once.line }
             usleep(Self.readinessPollMicroseconds)
@@ -1563,29 +1576,59 @@ final class OnboardingLive: @unchecked Sendable {
         return .failure(.init(["The cluster did not report ready within 15 minutes."] + lastErrors(fallback: said)))
     }
 
+    /// How long a start waits for the cluster to report ready ("within 15 minutes").
+    static let readyWaitSeconds: TimeInterval = 900
     /// The same part end seen this many times stops the wait on screen (the service keeps restarting it).
     static let sameEndsBeforeSaying = 3
     /// Between readiness polls: a ready pair is reported within this (plus one poll, ~0.7 s over the cable), not up
     /// to 2 s later, in a start that now takes about 10 s.
     static let readinessPollMicroseconds: useconds_t = 500_000
 
-    /// The last error each Mac's part reported, one line per Mac, also for parts still running (shown on screen after a
-    /// start that did not finish, instead of a log path).
-    /// Whether this Mac's own worker ended since `since`, when its part ended "closed" (`OwnWorker`): `worker_crashed`
-    /// recorded in this Mac's incident log by the part it leads (`source` "leader"); unknown when it can't be read, or
-    /// when this Mac doesn't lead.
-    func ownWorker(_ own: ClusterServiceStatus.Child?, since: Date) -> OwnWorker {
-        guard own?.lastError == Self.linkClosedError else { return .notSeen }
-        let file = ClusterIncidentLog.defaultFile(homeDirectory: FileManager.default.homeDirectoryForCurrentUser)
-        guard context.savedConfiguration().configuration?.role == .leader, FileManager.default.isReadableFile(atPath: file.path)
-        else { return .unknown }
-        let crashed = ClusterIncidentLog(file: file).feed().incidents.contains {
-            $0.ts >= since.timeIntervalSince1970 && $0.source == "leader"
-                && ($0.reasonCode == "worker_crashed" || $0.guidanceCode == "worker_crashed")
-        }
-        return crashed ? .ended : .notSeen
+    /// This Mac's part, read once, and whether its own worker ended since `since` (`ownWorker`): the ✗ title and the
+    /// per-Mac lines are given the same read.
+    func ownPart(since: Date) -> (child: ClusterServiceStatus.Child?, worker: OwnWorker) {
+        let child = ClusterService.published()?.child
+        return (child, ownWorker(child, since: since))
     }
 
+    /// Which Mac's worker ended since `since`, when this Mac's part ended "closed" (`OwnWorker`), from this Mac's
+    /// incident log; unknown when this Mac doesn't lead.
+    func ownWorker(_ own: ClusterServiceStatus.Child?, since: Date) -> OwnWorker {
+        guard own?.lastError == Self.linkClosedError else { return .notSeen }
+        guard let configuration = context.savedConfiguration().configuration, configuration.role == .leader else { return .unknown }
+        let rank = configuration.localRank
+        return Self.ownWorker(inIncidentLog: ClusterIncidentLog.defaultFile(homeDirectory: FileManager.default.homeDirectoryForCurrentUser),
+                              since: since, rank: rank, otherRanks: configuration.peers.indices.filter { $0 != rank })
+    }
+
+    /// Whose worker the `worker_crashed` records this Mac's part made since `since` name (`source` "leader", in the
+    /// incident log `file`). The leader records the other Mac's worker ending with that same source and reason, so only
+    /// the message tells (the DevNet run, A-4: the member's kills read "…closed | rank 1 follower said: …", the leader's
+    /// own "…closed | <user>-worker-exit-v1 rank=0 termination=signalled(9)"):
+    /// - `.ended`: this Mac's rank's own worker exit (`ClusterWorkerOwnerService.workerExitMarker`, whatever its prefix);
+    /// - `.notSeen`: what the other Mac's follower said (`DistributedInstalledSession.followerSaid`): B17's words;
+    /// - `.unknown`, so neither Mac is blamed: no record says, both do, or the log is missing or can't be read (its
+    ///   `loadError`: unreadable, too large, malformed, another schema). A field this build doesn't know is ignored.
+    static func ownWorker(inIncidentLog file: URL, since: Date, rank: Int, otherRanks: [Int]) -> OwnWorker {
+        let feed = ClusterIncidentLog(file: file).feed()
+        guard feed.loadError == nil, !feed.epoch.isEmpty else { return .unknown }
+        let crashes = feed.incidents.filter {
+            $0.ts >= since.timeIntervalSince1970 && $0.source == "leader"
+                && ($0.reasonCode == "worker_crashed" || $0.guidanceCode == "worker_crashed")
+        }.map(\.message)
+        let ownExit = ClusterWorkerOwnerService.workerExitMarker + "\(rank) termination="
+        let otherSaid = otherRanks.map(DistributedInstalledSession.followerSaid(rank:))
+        let here = crashes.contains { $0.contains(ownExit) }
+        let there = crashes.contains { message in otherSaid.contains { message.contains($0) } }
+        switch (here, there) {
+        case (true, false): return .ended
+        case (false, true): return .notSeen
+        default: return .unknown
+        }
+    }
+
+    /// The last error each Mac's part reported, one line per Mac, also for parts still running (shown on screen after a
+    /// start that did not finish, instead of a log path). `own`: this Mac's part as the caller already read it.
     func lastErrors(fallback: String?, own snapshot: (child: ClusterServiceStatus.Child?, worker: OwnWorker)? = nil) -> [String] {
         let other: (child: ClusterServiceStatus.Child?, unreachable: String?)
         do {
@@ -1594,42 +1637,43 @@ final class OnboardingLive: @unchecked Sendable {
         } catch {
             other = (nil, (error as? ClusterSetupFailure)?.text ?? "\(error)")
         }
-        let own = snapshot?.child ?? ClusterService.published()?.child
-        let worker = snapshot?.worker ?? ownWorker(own, since: Date().addingTimeInterval(-900))
-        var lines = Self.errorLines(here: Self.sentence(here), there: Self.sentence(there), own: own,
-                                    other: other.child, otherUnreachable: other.unreachable, ownWorker: worker)
+        // This start's: since its wait began (the ✗'s diagnostics file too), else no longer ago than a wait lasts.
+        let own = snapshot ?? ownPart(since: lock.withLock { waitBegan } ?? Date().addingTimeInterval(-Self.readyWaitSeconds))
+        var lines = Self.errorLines(here: Self.sentence(here), there: Self.sentence(there), own: own.child,
+                                    other: other.child, otherUnreachable: other.unreachable, ownWorker: own.worker)
         if let fallback { lines.append("Last progress: \(fallback).") }
         return lines.map { ClusterConsoleText.bounded(context.clean($0), maximum: 300) }
     }
 
     /// A part's last error when its link to the other Mac closed (`ClusterLinkControlChannel.closed`): its end follows
-    /// the other Mac's side ending (its worker, which that Mac's service restarts without a report) or the cable dropping.
+    /// the other Mac's side ending (its worker, which that Mac's service restarts without a report) or the cable
+    /// dropping, or this Mac's own worker ending (its pipe closes the same way; `OwnWorker`).
     static let linkClosedError = "closed"
 
-    /// The ✗ title once a part keeps ending the same way (`waitReady`): the ends the live row says, without its progress
-    /// word ("starting; "). When this Mac's part ends only because its link to the other Mac closed, the title names the
-    /// other Mac's side (the candidate on pair-2, c3 B17: the member's worker was killed three times, and the ✗ blamed
-    /// the leader, whose part only lost its link).
-    /// Whether this Mac's own worker ended while the start waited (`worker_crashed` recorded in this Mac's incident log):
-    /// a part whose worker dies ends "closed" too (the worker's pipe), so "closed" alone doesn't say which side ended.
+    /// Which Mac's worker ended while the start waited, when this Mac's part ended "closed" (`ownWorker`): a part whose
+    /// own worker dies ends "closed" too (the worker's pipe), so "closed" alone doesn't say which side ended. `ended`:
+    /// this Mac's; `notSeen`: not this Mac's, the other Mac's (B17's words; also when the link didn't close); `unknown`:
+    /// neither Mac is named.
     enum OwnWorker: Sendable, Equatable { case ended, notSeen, unknown }
 
+    /// The ✗ title once a part keeps ending the same way (`waitReady`): the ends the live row says, without its progress
+    /// word ("starting; "). When this Mac's part ends only because its link closed, the title names the other Mac's side
+    /// (the candidate on pair-2, c3 B17: the member's worker was killed three times, and the ✗ blamed the leader, whose
+    /// part only lost its link), this Mac when its own worker ended, and neither when that can't be told (`OwnWorker`).
     static func keepsEndingTitle(_ line: String, own: ClusterServiceStatus.Child?, ownWorker: OwnWorker = .notSeen) -> String {
-        if own?.lastError == linkClosedError {
-            let end = "(" + (own?.lastEnd.map { $0 + ": " } ?? "") + "closed)"
-            switch ownWorker {
-            case .ended:
-                return "A part keeps ending the same way: this Mac's worker keeps ending, so this Mac's part ends with it \(end) and "
-                    + "starts again by itself"
-            case .unknown:
-                return "A part keeps ending the same way: this Mac's part ends when its link closes \(end) and starts again by itself; "
-                    + "whether this Mac's worker or the other Mac's side closed it can't be told from here"
-            case .notSeen:
-                return "A part keeps ending the same way: the link to the other Mac keeps closing, so this Mac's part ends with it \(end) "
-                    + "and starts again by itself; the other Mac's worker ended or the cable dropped"
-            }
+        let title = "A part keeps ending the same way: "
+        guard own?.lastError == linkClosedError else { return title + endsClause(line) }
+        let end = "(" + (own?.lastEnd.map { $0 + ": " } ?? "") + "closed)"
+        switch ownWorker {
+        case .ended:
+            return title + "this Mac's worker keeps ending, so this Mac's part ends with it \(end) and starts again by itself"
+        case .unknown:
+            return title + "this Mac's part ends when its link closes \(end) and starts again by itself; "
+                + "whether this Mac's worker or the other Mac's side closed it can't be told from here"
+        case .notSeen:
+            return title + "the link to the other Mac keeps closing, so this Mac's part ends with it \(end) "
+                + "and starts again by itself; the other Mac's worker ended or the cable dropped"
         }
-        return "A part keeps ending the same way: " + endsClause(line)
     }
 
     /// The live row from the clause that names an end, so the title reads as a whole sentence: the whole row when its
@@ -1653,9 +1697,9 @@ final class OnboardingLive: @unchecked Sendable {
             if let end = child.lastEnd, !child.running { return "\(mac): its part ended (\(end))." }
             return "\(mac): " + (child.running ? "its part is running, no error reported." : "its part is not running.")
         }
-        // This Mac's part ended because its link to the other Mac closed: the cause is on that side (or the cable). A
-        // member whose service kept its part running and reported no error doesn't report its worker restarting, so it
-        // isn't cleared, and the line says what can't be known from here.
+        // This Mac's part ended because its link closed: the cause is on the other Mac's side (or the cable) unless this
+        // Mac's own worker ended (`OwnWorker`). A member whose service kept its part running and reported no error
+        // doesn't report its worker restarting, so it isn't cleared, and the line says what can't be known from here.
         guard own?.lastError == linkClosedError, otherUnreachable == nil else {
             return [line(here, own), line(there, other, unreachable: otherUnreachable)]
         }
@@ -1772,7 +1816,7 @@ final class OnboardingLive: @unchecked Sendable {
                 return (ready(now, port: port), "ready")
             }
             line = "\(session.readyRanks) of \(session.ranks) parts ready" + (session.detail.map { " (\($0))" } ?? "")
-        } else if let child = now.child, let end = child.lastEnd, !child.running {
+        } else if let child = now.child, let end = child.lastEnd, !child.running, Self.endShown(child) {
             line = "rank 0 on \(there) ended (\(end)\(child.lastError.map { ": " + $0 } ?? "")); it starts again by itself"
         } else if let error = now.error {
             line = "waiting for \(there): \(error)"
@@ -1780,14 +1824,14 @@ final class OnboardingLive: @unchecked Sendable {
             line = "starting"
         }
         // This Mac's own part, when it is the one that keeps ending.
-        if let own = ClusterService.published()?.child, !own.running, let end = own.lastEnd, Self.endShown(own, own: true) {
+        if let own = ClusterService.published()?.child, !own.running, let end = own.lastEnd, Self.endShown(own) {
             line += "; \(hereShort)'s part ended (\(end)\(own.lastError.map { ": " + $0 } ?? "")) and starts again by itself"
         }
         // Members are asked for their own part only when rank 0 is here.
         let member = now.local ? try? JSONDecoder().decode(ClusterServiceStatus.self, from: try command(.init(op: .status), seconds: 10)) : nil
         // macOS keeps the other Mac's follower off the local network: nothing changes until someone allows it (P2-1).
         if Self.otherMacRefused(member?.child) { return (nil, Self.otherMacLocalNetworkLine) }
-        if let member, !member.child.running, let end = member.child.lastEnd, Self.endShown(member.child, own: false) {
+        if let member, !member.child.running, let end = member.child.lastEnd, Self.endShown(member.child) {
             line += "; \(thereShort)'s part ended (\(end)\(member.child.lastError.map { ": " + $0 } ?? "")) and starts again by itself"
         }
         return (nil, line)
@@ -1809,10 +1853,10 @@ final class OnboardingLive: @unchecked Sendable {
     /// The live row's line once the other Mac's part reports that refusal (`readinessOnce`).
     static let otherMacLocalNetworkLine = "the other Mac can't reach this Mac over the cable (Local Network privacy)"
 
-    /// Whether a part's end is said in the live row as an end that starts again by itself: not a clean stop ("stopped", or
-    /// exit 0 with no reason), which a planned switch makes on both Macs (the DevNet run, A-10, B18); an exit 0 that says
-    /// why (a refused dial, A-3) is still said. `own`: this Mac's part or the other Mac's, read the same way.
-    static func endShown(_ child: ClusterServiceStatus.Child, own: Bool) -> Bool {
+    /// Whether a part's end is said in the live rows (`readinessOnce`, `offeredReadiness`) as an end that starts again by
+    /// itself, on either Mac: not a clean stop ("stopped", or exit 0 with no reason), which a planned switch makes on both
+    /// Macs (the DevNet run, A-10, B18); an exit 0 that says why (a refused dial, A-3) is still said.
+    static func endShown(_ child: ClusterServiceStatus.Child) -> Bool {
         guard let end = child.lastEnd else { return false }
         return !(end == "stopped" || (end == "exit 0" && child.lastError == nil))
     }
@@ -1838,7 +1882,9 @@ final class OnboardingLive: @unchecked Sendable {
         }
         var line = "registering both Macs with the coordinator for pairing"
         for (mac, child) in [(hereShort, own), (thereShort, peer)] where child?.running == false {
-            if let end = child?.lastEnd { line += "; \(mac)'s part ended (\(end)\(child?.lastError.map { ": " + $0 } ?? "")) and starts again by itself" }
+            if let child, let end = child.lastEnd, Self.endShown(child) {
+                line += "; \(mac)'s part ended (\(end)\(child.lastError.map { ": " + $0 } ?? "")) and starts again by itself"
+            }
         }
         return (nil, line)
     }
@@ -2097,7 +2143,7 @@ final class OnboardingLive: @unchecked Sendable {
             return .failure(.init("\(mac) could not save the stop request: \((error as? ClusterSetupFailure)?.text ?? "\(error)")"))
         }
         guard ClusterService.stopLocalPart(in: store.paths.directory, seconds: seconds) else {
-            return .failure(.init("\(mac)'s part has not finished releasing its memory, so \(other) was not asked to stop yet. The stop request is saved; run `\(OnboardingLive.cli) cluster stop` again to check it."))
+            return .failure(.init("\(mac)'s part has not finished releasing its memory, so \(other) was not asked to stop yet. The stop request is saved; run `\(Self.cli) cluster stop` again to check it."))
         }
         do {
             // The service normally clears this after its matching cycle. A
@@ -2117,6 +2163,6 @@ final class OnboardingLive: @unchecked Sendable {
             let reason = (error as? ClusterSetupFailure)?.text ?? "\(error)"
             return .failure(.init("\(mac) stopped serving; \(there) did not answer (\(reason)). \(mac)'s cluster service tells it to stop as soon as it answers again."))
         }
-        return .success(["Stopping both Macs. Run `\(OnboardingLive.cli) cluster` to serve again."])
+        return .success(["Stopping both Macs. Run `\(Self.cli) cluster` to serve again."])
     }
 }

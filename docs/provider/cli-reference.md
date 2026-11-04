@@ -149,7 +149,12 @@ set to any value skips it. Logging goes to stderr so launchd captures it in
 In a terminal, `start`, `stop`, `restart`, `status` and `update` open with the
 Darkbloom mark beside the command's name and show a one-row live line while
 they wait (a drain, a restart, an update's download). It is look only: every
-line they print is the same, in the same order. The cluster setup's rules
+line they print is the same, in the same order. The live line, here and on the
+cluster's screens, is always one row:
+- It is fitted to the window's width at each redraw, minus 6 columns.
+- Control characters in a reason become spaces, and a wide character counts as two columns.
+- A long reason is shortened, keeping its time at the end.
+- Line wrap is off while the row is drawn, so it is cut at the window's edge, never wrapped. The cluster setup's rules
 apply (`DarkbloomCommandLook`, `provider-swift/Sources/ProviderCore/Terminal/DarkbloomCommandLook.swift`):
 pipes, logs, the LaunchAgent's files, `NO_COLOR`, `CLICOLOR=0`, `TERM=dumb`, a
 non-UTF-8 locale and windows under 40 columns get the plain bytes;

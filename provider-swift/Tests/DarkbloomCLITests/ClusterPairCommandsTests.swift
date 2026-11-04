@@ -1502,8 +1502,8 @@ struct ClusterPairTwoFindingsTests {
             var lines = [Cluster.Setup.needsTerminalLine, ClusterOnboardingTerminal.stoppedLine]
             let cases: [([(label: String, loaded: Bool)], Bool)] = [([], true), ([], false), ([("agent", false), ("old", true)], true)]
             for (agents, running) in cases {
-                lines += ClusterServiceAgentPlan.statusLines(agents: agents, serviceRunning: running, paired: true,
-                                                             supervisor: nil, now: 0, bootTime: 0)
+                lines += Status.clusterServiceLines(agents: agents, serviceRunning: running, paired: true,
+                                                    supervisor: nil, now: 0, bootTime: 0)
             }
             for line in lines { print(line) }
         }

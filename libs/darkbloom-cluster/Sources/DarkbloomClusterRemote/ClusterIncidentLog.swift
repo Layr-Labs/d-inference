@@ -188,19 +188,25 @@ public final class ClusterIncidentLog: @unchecked Sendable {
     /// The install of records written before records named theirs: production, the only install then.
     public static let unstampedInstall = "prod"
 
-    /// `~/.darkbloom/cluster/incidents.json` for this home directory.
+    /// `~/.darkbloom/cluster/incidents.json` for this home directory: production's (another install's:
+    /// `defaultFile(homeDirectory:install:)`).
     public static func defaultFile(homeDirectory: URL) -> URL {
         homeDirectory.appendingPathComponent(".darkbloom/cluster/incidents.json")
     }
 
-    /// This install's incident log under `homeDirectory` (`install`: "prod", "dev", …).
+    /// This install's incident log under `homeDirectory`: production's (`install` nil or `unstampedInstall`) is
+    /// `incidents.json`; another install keeps its own, e.g. `incidents.dev.json`. A build from before installs had
+    /// their own files never reads or rewrites it (its rewrite of the shared file drops fields it doesn't know).
     public static func defaultFile(homeDirectory: URL, install: String?) -> URL {
-        defaultFile(homeDirectory: homeDirectory)
+        guard let install, install != unstampedInstall else { return defaultFile(homeDirectory: homeDirectory) }
+        let name = String(install.map { $0.isASCII && ($0.isLetter || $0.isNumber) ? $0 : "_" })
+        return homeDirectory.appendingPathComponent(".darkbloom/cluster/incidents.\(name).json")
     }
 
     public let file: URL
     /// This install, stamped on each record it adds; its feed holds its own records and the older unstamped ones
-    /// (`unstampedInstall`). Nil: every record, and the records it adds stay unstamped.
+    /// (`unstampedInstall`). Nil: every record, and the records it adds stay unstamped. Each install also keeps its own
+    /// file (`defaultFile(homeDirectory:install:)`); the stamp is the second check.
     public let install: String?
     private let lockFile: URL
     private let redact: @Sendable (String) -> String

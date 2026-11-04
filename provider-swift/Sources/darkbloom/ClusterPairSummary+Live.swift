@@ -33,10 +33,20 @@ extension ClusterPairSummary {
 
     /// `darkbloom cluster status`: the local facts and the status `darkbloom cluster` shows, which on the Mac that
     /// follows comes from the leading Mac over the cable.
-    static func live(config: String?) async -> ClusterPairSummary {
+    /// `slow` hears when the leading Mac's answer is slow (`boundedStatus`).
+    static func live(config: String?, slow: ClusterPairCommands.Say? = nil) async -> ClusterPairSummary {
         if let reader = testReader { return reader(true) }
-        return await Task.detached { liveFacts(config: config) }.value
+        let noticeAfter = ClusterPairCommands.progressDelay
+        return await Task.detached { liveFacts(config: config, slow: slow, noticeAfter: noticeAfter) }.value
     }
+
+    /// How long `cluster status` and `status` wait for the leading Mac's answer on the Mac that follows. The forward
+    /// itself gives up only after 30 s, and is sent again while leadership moves (`ClusterOnboardingLive.status`); the
+    /// leading Mac answers its own in about a second.
+    static let leaderAnswerSeconds: Double = 10
+
+    /// For `--json`: a line on standard error, so standard output stays one JSON object.
+    static let sayOnStandardError: ClusterPairCommands.Say = { line in FileHandle.standardError.write(Data((line + "\n").utf8)) }
 
     /// The provider pid of the cluster's running part on this Mac, which writes the same daemon state as single-Mac
     /// serving (`ServiceDrain.soloProviderState`). Nil while a test gives the pair.
@@ -81,18 +91,42 @@ extension ClusterPairSummary {
         return summary
     }
 
-    /// `status`'s lines (on the Mac that follows, the leading Mac's answer over the cable) within `seconds`.
+    /// `status`'s lines (on the Mac that follows, the leading Mac's answer over the cable) within `seconds`; nil when
+    /// they haven't come by then. A wait past `noticeAfter` is said to `slow`, and so is a wait that ran out.
     static func boundedStatus(within seconds: Double, noticeAfter: Double, slow: ClusterPairCommands.Say?,
                               _ status: @escaping @Sendable () -> [String]) -> [String]? {
-        status()
+        let answer = Answer()
+        Thread.detachNewThread { answer.set(status()) }
+        if let lines = answer.wait(noticeAfter) { return lines }
+        slow?("  Waiting for the leading Mac's answer (\(ClusterPairCommands.upTo(seconds))).")
+        if let lines = answer.wait(max(0, seconds - noticeAfter)) { return lines }
+        slow?("  The leading Mac didn't answer in \(Int(seconds.rounded())) s; this is this Mac's own view.")
+        return nil
     }
 
-    private static func liveFacts(config: String?) -> ClusterPairSummary {
+    /// One answer from another thread, waited for within a bound.
+    private final class Answer: @unchecked Sendable {
+        private let done = DispatchSemaphore(value: 0)
+        private let lock = NSLock()
+        private var lines: [String]?
+        func set(_ value: [String]) { lock.withLock { lines = value }; done.signal() }
+        func wait(_ seconds: Double) -> [String]? {
+            guard done.wait(timeout: .now() + seconds) == .success else { return nil }
+            done.signal()
+            return lock.withLock { lines }
+        }
+    }
+
+    private static func liveFacts(config: String?, slow: ClusterPairCommands.Say?, noticeAfter: Double) -> ClusterPairSummary {
         var summary = localFacts()
         guard summary.paired, summary.role != nil,
               let operations = try? ClusterOnboardingOperations.live(.clusterService(config: config, worker: nil)) else { return summary }
-        summary.read(status: operations.status(),
-                     leaderMode: summary.leads ? ClusterService.publishedLive()?.control?.mode : nil)
+        // On the Mac that follows the lines are the leading Mac's answer over the cable: waited for within a bound and
+        // said when slow; past it, this Mac's own view stands (the other Mac's answer unknown).
+        guard let status = boundedStatus(within: leaderAnswerSeconds, noticeAfter: noticeAfter, slow: slow, operations.status) else {
+            return summary
+        }
+        summary.read(status: status, leaderMode: summary.leads ? ClusterService.publishedLive()?.control?.mode : nil)
         return summary
     }
 

@@ -726,7 +726,7 @@ present, `null` when unknown; keys are only ever added
 | `paired` | bool? | This Mac holds a pairing (a leftover cluster service without one is `false`); `null` when its pairing record couldn't be read |
 | `role` | string? | `leader` or `member` |
 | `this_mac` | string? | This Mac's own name (System Settings) |
-| `other_mac` | object? | `name` (its hardware, as pairing showed it), `answers` (bool, `null` when not asked) |
+| `other_mac` | object? | `name` (its hardware, as pairing showed it), `answers`: on the Mac that follows, whether the leading Mac answered; on the leading Mac, `true` while both run the cluster (or confirm its leader), `false` while the other Mac is away, `null` when not known |
 | `model` | object? | `id`, `name` (catalog name, `null` when none) |
 | `mode` | string? | `tensor parallel`, `pipeline`, `pipeline with speculative decoding`, … (`ClusterOnboardingDeployment.modeWords`) |
 | `split` | string? | Each Mac's share, such as `M3 Ultra 40 layers / M5 Ultra 24 layers` |
@@ -737,6 +737,13 @@ present, `null` when unknown; keys are only ever added
 | `lines` | [string] | The status lines `darkbloom cluster` shows |
 | `service` | object | `running`, `starts_at_login` (this Mac's cluster service) |
 | `exit_code` | integer | The exit status above |
+
+On the Mac that follows, the status lines are the leading Mac's answer over the
+cable. `cluster status` and `status` wait at most 10 seconds for it: after 3
+seconds they say `Waiting for the leading Mac's answer (up to 10 s).`, and past
+10 seconds they show this Mac's own view (`The leading Mac didn't answer in
+10 s; this is this Mac's own view.`), with `other_mac.answers` `null`. With
+`--json` these lines go to standard error (`ClusterPairSummary.boundedStatus`).
 
 `--details` prints the saved setup and the leading Mac's session for support, as
 earlier versions printed by default; with `--json`, that report. It prints
@@ -1869,7 +1876,12 @@ ProviderCore checks and the explicit `--clear-backend-guard` action
 On a Mac paired for a two-Mac cluster, the detailed checks also list the
 checks `darkbloom cluster doctor` runs (installed metadata, trust files, the
 Thunderbolt RDMA link, the saved setup), each named `cluster <check>`; a failed
-one fails the run and points to `darkbloom cluster doctor` for its details. A
+one fails the run and points to `darkbloom cluster doctor` for its details. The
+saved-setup check counts a provider configuration that other users can open
+(the installer writes it so for a coordinator other than production's) as no
+saved setup until a setup is saved, which makes the file private; one that
+saves a setup fails with the fix, `chmod 600 <file>`
+(`ClusterConfigurationStore.optionalInstalledReference`). A
 Mac that is not paired gets none of them, and its link is not inspected
 (`provider-swift/Sources/darkbloom/DoctorClusterChecks.swift`,
 `buildClusterDoctorChecks`). On a Mac that serves its share of a cluster's

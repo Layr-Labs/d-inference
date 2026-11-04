@@ -35,7 +35,9 @@ struct Status: AsyncParsableCommand {
         let pair = ClusterPairSummary.local()
         let showsPair = pair.paired && !solo
         if showsPair {
-            for line in await ClusterPairSummary.live(config: configOptions.config).clusterStatusLines { print(line) }
+            for line in await ClusterPairSummary.live(config: configOptions.config, slow: ClusterPairCommands.printLine).clusterStatusLines {
+                print(line)
+            }
             print("")
         }
 

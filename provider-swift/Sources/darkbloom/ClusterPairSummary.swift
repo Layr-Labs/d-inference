@@ -308,6 +308,10 @@ extension ClusterPairSummary {
     /// to serve alone (`ClusterServiceStatus.control.mode`).
     static let otherMacAwayModes: Set<String> = ["waiting", "alone", "cannotServe"]
 
+    /// The leading Mac's control modes in which every other Mac of the plan answered within its time-to-live
+    /// (`ClusterControlNode.mode`: running the cluster, or confirming its claim).
+    static let otherMacPresentModes: Set<String> = ["cluster", "confirming"]
+
     /// The coordinator's pairing, in the status line's reason place: progress, not a reason (`pairLook`'s wait).
     static let pairingProgress: Set<String> = ["the coordinator paired both Macs", "waiting for the coordinator to pair both Macs"]
 
@@ -388,6 +392,8 @@ extension ClusterPairSummary {
             otherMacAnswers = state != .otherMacAway
         } else if state == .otherMacAway {
             otherMacAnswers = false
+        } else if let leaderMode, Self.otherMacPresentModes.contains(leaderMode) {
+            otherMacAnswers = true
         }
     }
 

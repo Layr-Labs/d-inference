@@ -495,8 +495,7 @@ public final class ClusterService: @unchecked Sendable {
     static let memoryReplanSeconds: Double = 600
 
     private func noteMemoryRefusal(key: String, since: Date, model: String, say: @escaping @Sendable (String) -> Void) {
-        let log = ClusterIncidentLog(file: ClusterIncidentLog.defaultFile(homeDirectory: FileManager.default.homeDirectoryForCurrentUser),
-                                     install: BuildEnvironment.current.rawValue)
+        let log = ClusterIncidentLog.forThisInstall()
         let refused = log.feed().incidents.contains { $0.ts >= since.timeIntervalSince1970 && $0.guidanceCode == "memory_gate_refused" }
         let due = lock.withLock { () -> Bool in
             guard refused else { memoryRefusals = nil; return false }
@@ -1008,6 +1007,8 @@ public final class ClusterService: @unchecked Sendable {
             value.updating = updatingLine
             value.localOnly = record?.leadership.map { $0.scope.isLocalOnly }
             value.loggedIn = AuthTokenStore.load() != nil
+            value.startsAtLogin = ClusterServiceAgent.startsAtLogin(environment: ProcessInfo.processInfo.environment,
+                                                                    installedAgents: ClusterServiceAgent.installedLabels)
             if child?.isRunning == true, childIsMember {
                 value.child.pair = Self.pairReport(in: serviceFiles.rankLog, from: childLogOffset).map(ClusterOnboardingPairReport.text)
                 let state = DaemonStateFile.read()

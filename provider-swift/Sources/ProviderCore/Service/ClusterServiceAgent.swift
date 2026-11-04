@@ -203,8 +203,12 @@ public enum ClusterServiceAgent {
         public let loaded: Bool
     }
 
-    /// Whether the cluster service running with `environment` starts by itself at login.
-    public static func startsAtLogin(environment: [String: String], installedAgents: () -> [String]) -> Bool { false }
+    /// Whether the cluster service running with `environment` starts by itself at login, as that process can tell
+    /// without launchctl: it runs under its login agent's supervisor, which launchd starts at login
+    /// (`ClusterSupervisionFiles.healthPathEnvironmentKey`), and that agent is still installed.
+    public static func startsAtLogin(environment: [String: String], installedAgents: () -> [String]) -> Bool {
+        environment[ClusterSupervisionFiles.healthPathEnvironmentKey] != nil && !installedAgents().isEmpty
+    }
 
     public static func status() -> [Status] {
         installedLabels().map { Status(label: $0, installed: true, loaded: isLoaded(label: $0)) }

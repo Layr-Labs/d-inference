@@ -38,7 +38,9 @@ public final class ClusterOnboardingTerminal: ClusterOnboardingConsole {
     public private(set) var closed = false
 
     /// What a signal (Ctrl-C) says before the command ends.
-    static var stoppedLine: String { "Stopped. Run `darkbloom cluster` again to continue where it was." }
+    static var stoppedLine: String { ClusterOnboardingCommand.named("Stopped. Run `darkbloom cluster` again to continue where it was.") }
+    /// `stoppedLine`'s bytes, made before the handlers are set: a signal handler only writes them.
+    nonisolated(unsafe) private static var stoppedBytes: [UInt8] = []
 
     /// The mode to put back from a signal handler (one terminal per process).
     nonisolated(unsafe) private static var restoreInput: Int32 = -1
@@ -69,6 +71,7 @@ public final class ClusterOnboardingTerminal: ClusterOnboardingConsole {
         configured = true
         Self.restoreInput = input
         Self.restoreMode = saved
+        Self.stoppedBytes = Array("\r\n\(Self.stoppedLine)\r\n".utf8)
         for number in [SIGINT, SIGTERM, SIGHUP] {
             signal(number) { received in
                 var mode = ClusterOnboardingTerminal.restoreMode
@@ -77,7 +80,7 @@ public final class ClusterOnboardingTerminal: ClusterOnboardingConsole {
                     let show = Array("\u{1B}[?25h".utf8)
                     _ = show.withUnsafeBytes { Darwin.write(STDOUT_FILENO, $0.baseAddress, $0.count) }
                 }
-                let text = Array("\r\nStopped. Run `darkbloom cluster` again to continue where it was.\r\n".utf8)
+                let text = ClusterOnboardingTerminal.stoppedBytes
                 _ = text.withUnsafeBytes { Darwin.write(STDOUT_FILENO, $0.baseAddress, $0.count) }
                 Darwin._exit(128 + received)
             }

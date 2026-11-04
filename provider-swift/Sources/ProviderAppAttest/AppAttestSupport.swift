@@ -9,18 +9,13 @@ import Foundation
 /// answers unsupported (`is_supported_false`) in every process, including one
 /// that launchd restarts. Re-registering the bundle, which is what
 /// `lsregister -f` does, brings the record up to date.
-struct AppAttestSupportProbe: Sendable {
-    var isSupported: @Sendable () -> Bool
-    /// Registers the app bundle at the URL again; returns the `OSStatus`.
-    var refreshRegistration: @Sendable (URL) -> Int32
+struct AppAttestSupport: Sendable {
+    let isSupported: @Sendable () -> Bool
+    /// Registers the app bundle at the URL again. Best effort: asking Apple
+    /// again afterwards is the only check of whether it helped.
+    let refreshRegistration: @Sendable (URL) -> Void
 
-    init(isSupported: @escaping @Sendable () -> Bool,
-                refreshRegistration: @escaping @Sendable (URL) -> Int32) {
-        self.isSupported = isSupported
-        self.refreshRegistration = refreshRegistration
-    }
-
-    static let system = AppAttestSupportProbe(
+    static let system = AppAttestSupport(
         isSupported: { DCAppAttestService.shared.isSupported },
         refreshRegistration: { LaunchServicesRegistration.refresh($0) })
 }

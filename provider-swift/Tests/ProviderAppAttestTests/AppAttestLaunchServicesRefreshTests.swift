@@ -13,14 +13,13 @@ private final class FakeLaunchServices: @unchecked Sendable {
 
     var refreshed: [URL] { lock.withLock { refreshes } }
 
-    var probe: AppAttestSupportProbe {
-        AppAttestSupportProbe(
+    var support: AppAttestSupport {
+        AppAttestSupport(
             isSupported: { [self] in
                 lock.withLock { supportedAfterRefreshes.map { refreshes.count >= $0 } ?? false }
             },
             refreshRegistration: { [self] url in
                 lock.withLock { refreshes.append(url) }
-                return 0
             })
     }
 }
@@ -35,7 +34,7 @@ final class AppAttestLaunchServicesRefreshTests: XCTestCase {
     private let app = URL(fileURLWithPath: "/Users/someone/.darkbloom/Darkbloom.app")
 
     private func service(_ fake: FakeLaunchServices) -> AppleAppAttestService {
-        AppleAppAttestService(callbacks: NoCallbacks(), operationTimeout: 1, support: fake.probe)
+        AppleAppAttestService(callbacks: NoCallbacks(), operationTimeout: 1, support: fake.support)
     }
 
     /// After a self-update swaps `Darkbloom.app` in place, LaunchServices can

@@ -7,8 +7,9 @@ public actor AppleAppAttestService: AppAttestService {
     private let callbacks: any AppAttestCallbacks
     private let operationTimeout: Double
     private let operations: AppleOperationGate
-    private let support: AppAttestSupportProbe
-    /// Set once this process has re-registered its bundle for an unsupported answer.
+    private let support: AppAttestSupport
+    /// Set by the first unsupported answer, so a service re-registers its bundle
+    /// at most once. A provider process keeps one service.
     private var registrationRefreshed = false
 
     public init() {
@@ -18,7 +19,7 @@ public actor AppleAppAttestService: AppAttestService {
         support = .system
     }
 
-    init(callbacks: any AppAttestCallbacks, operationTimeout: Double, support: AppAttestSupportProbe = .system,
+    init(callbacks: any AppAttestCallbacks, operationTimeout: Double, support: AppAttestSupport = .system,
          now: @escaping @Sendable () -> Date = Date.init) {
         self.callbacks = callbacks
         self.operationTimeout = operationTimeout
@@ -50,12 +51,12 @@ public actor AppleAppAttestService: AppAttestService {
 
     /// Apple's answer. The first unsupported answer in this process first
     /// re-registers `app` with LaunchServices and asks again, so a record left
-    /// stale by a self-update does not fail the exchange (`AppAttestSupportProbe`).
+    /// stale by a self-update does not fail the exchange (`AppAttestSupport`).
     func isSupportedRefreshingRegistration(app: URL) -> Bool {
         if support.isSupported() { return true }
         guard !registrationRefreshed else { return false }
         registrationRefreshed = true
-        _ = support.refreshRegistration(app)
+        support.refreshRegistration(app)
         return support.isSupported()
     }
 

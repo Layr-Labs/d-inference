@@ -305,8 +305,8 @@ extension ClusterPairSummary {
         case .serving: return "To stop or change it: `darkbloom cluster` on \(leadingMac)."
         case .loading: return "Loading takes a few minutes for a large model; check again with `darkbloom cluster status`."
         case .stopped:
-            return "To start it again: `darkbloom cluster` on \(leadingMac), then choose the model."
-                + (serviceRunning ? "" : " This Mac's cluster service is off; `darkbloom cluster` starts it again.")
+            return "`darkbloom start` on either Mac starts the pair again."
+                + (serviceRunning ? "" : " This Mac's cluster service is off; `darkbloom start` here turns it back on.")
         case .otherMacAway:
             return "\(ClusterOnboardingMacName.sentence(otherMac)) isn't answering over the cable. Its cluster service may "
                 + "have been turned off with `darkbloom cluster stop --service`, or that Mac is asleep, off, or waiting for "

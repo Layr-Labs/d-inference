@@ -3,8 +3,10 @@ import Foundation
 import ProviderCore
 
 struct DrainOptions: ParsableArguments {
+    static let defaultTimeout = 600
+
     @Option(help: "Seconds to wait for accepted requests and coordinator acknowledgement (0...3600). Timeout leaves the service draining.")
-    var timeout: Int = 600
+    var timeout: Int = DrainOptions.defaultTimeout
     @Flag(help: "Explicitly permit cancellation and interruption of unfinished requests.")
     var force = false
 

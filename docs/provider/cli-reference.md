@@ -238,6 +238,16 @@ service's solo part) and launchd's `--foreground` child are never redirected,
 and a replacement drains only the provider service's process, never the
 cluster's part (`ServiceDrain.soloProviderState`).
 
+Options on a paired Mac (`Start.singleMacOptions`, `ClusterPairSummary.singleMacOptionsRefusal`):
+
+| Options | Without `--solo` on a paired Mac |
+|---|---|
+| `--config` | Applies to the pair (its cluster service settings) |
+| `--model`, `--all`, `--idle-timeout`, `--schedule`, `--autopilot`/`--no-autopilot`, `--coordinator-url`, `--timeout`, `--force`, `--local-endpoint`, `--port`, `--bind`, `--no-auth` | Refused by name, nothing starts, exit 64: ``This Mac is in a two-Mac cluster with the other Mac (…): `--model` is for single-Mac serving, so nothing was started.`` then ``To choose the pair's model, run `darkbloom start` in a terminal; to serve this Mac alone with it, add --solo.`` |
+| `--local` | Refused the same way, plus ``To serve the pair on the leading Mac's own API only: `darkbloom cluster local`.`` (also said for `--local-endpoint`) |
+| `--cluster-member`, `--distributed`, `--foreground` | The cluster's own starts and launchd's child: never redirected to the pair |
+| `--always-on`, `--supervise`, `--no-coordinator` | Valid only with `--cluster-member` or `--distributed` (refused at parse otherwise) |
+
 A Mac whose pairing record can't be read is never taken for "not in a cluster"
 (as `ClusterService.holdsNoPairing`): `start`, `stop` and `restart` change
 nothing without `--solo` (`cluster stop`: without `--service` or

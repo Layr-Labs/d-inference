@@ -10,7 +10,8 @@
   `darkbloom cluster stop --service`.
 - `darkbloom start` opens the same screen as `darkbloom cluster` in a terminal. In a script it starts the pair's saved
   model, waits until it serves, and ends with a short summary, as single-Mac start does; the exit status says whether
-  it serves.
+  it serves. Single-Mac options such as `--model` need `--solo` there; without it, `start` names them and
+  starts nothing.
 - `darkbloom restart` restarts the pair with its current model. `darkbloom status` starts with the pair: who leads,
   the model, whether it serves now and what to do.
 - `darkbloom stop` no longer says "Provider service is not running" on a paired Mac, and never stops the cluster's own

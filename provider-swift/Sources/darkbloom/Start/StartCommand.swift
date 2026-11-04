@@ -142,13 +142,30 @@ struct Start: AsyncParsableCommand {
     }
 
     /// The single-Mac options given, by name. On a Mac in a cluster each needs `--solo`; `--config` applies to the pair.
-    var singleMacOptions: [String] { [] }
+    var singleMacOptions: [String] {
+        var given: [String] = []
+        if coordinatorURL != nil { given.append("--coordinator-url") }
+        if !model.isEmpty { given.append("--model") }
+        if let autopilot { given.append(autopilot ? "--autopilot" : "--no-autopilot") }
+        if all { given.append("--all") }
+        if idleTimeout != nil { given.append("--idle-timeout") }
+        if schedule { given.append("--schedule") }
+        if local { given.append("--local") }
+        if localEndpoint { given.append("--local-endpoint") }
+        if port != BuildEnvironment.current.defaultLocalPort { given.append("--port") }
+        if bind != "127.0.0.1" { given.append("--bind") }
+        if noAuth { given.append("--no-auth") }
+        if drain.timeout != DrainOptions.defaultTimeout { given.append("--timeout") }
+        if drain.force { given.append("--force") }
+        return given
+    }
 
     static func pairStart(_ pair: ClusterPairSummary, solo: Bool, terminal: Bool,
                           singleMacOptions: [String] = []) -> PairStart {
         guard pair.paired else { return .single(note: nil) }
         if solo { return .single(note: pair.startNote) }
         if pair.pairingUnreadable { return .refuse(pair.startRefusal) }
+        if !singleMacOptions.isEmpty { return .refuseOptions(pair.singleMacOptionsRefusal(singleMacOptions)) }
         return terminal ? .openScreen : .startPair
     }
 

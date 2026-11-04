@@ -236,7 +236,9 @@ without one is a leftover, which `darkbloom cluster status` names), `start` star
 - Without a terminal (scripts) it starts the pair's saved model on both Macs
   (on the Mac that follows, through the leading Mac), waits up to 10 minutes
   until it serves or says why not, and ends with a result block shaped like
-  single-Mac start's. The exit status is `darkbloom cluster status`'s (`0`
+  single-Mac start's. While it waits it says so (`Waiting until the pair serves
+  (up to 10 min).`), and a status that stays the same is said again once a
+  minute (`Still waiting (up to 10 min in all): …`). The exit status is `darkbloom cluster status`'s (`0`
   serving, `3` not serving yet, `4` stopped, `5` the other Mac isn't
   answering); `1` when no model was chosen yet (`run darkbloom start in a
   terminal to choose one`) or the cluster can't be reached.
@@ -1460,6 +1462,12 @@ This Mac is in a two-Mac cluster with the other Mac (Apple M5 Max, 128 GB): stop
 Stopped on both Macs. They stay stopped after a restart; `darkbloom start` on either Mac starts the pair again.
 Memory freed on both Macs ✓
 ```
+
+A wait that runs on says what it waits for and how long at most: `Waiting for
+both Macs to stop; accepted requests finish first (up to about 6 min).` while
+the leading Mac drains (after 3 seconds; `cluster stop --service` too), and
+`Waiting for both Macs' parts to end (up to 1 min).` while the parts end
+(`restart`: up to 5 minutes).
 
 If a part hasn't ended by then, it says ``Asked both Macs to stop; they stay stopped after a restart, and `darkbloom start` on either Mac starts the pair again.``
 and what each Mac has left (or `Memory: not checked (…)` when the check didn't

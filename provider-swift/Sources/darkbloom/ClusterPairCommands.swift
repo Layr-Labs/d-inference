@@ -61,6 +61,9 @@ enum ClusterPairCommands {
     @TaskLocal static var waitForTesting: Wait?
     /// How long a blocking request may run before the command says what it waits for (tests make it short).
     @TaskLocal static var progressAfterForTesting: Double?
+    /// How long a blocking request runs before the command says what it waits for: 3 s, or the test's, read where a
+    /// test binds it (detached tasks don't inherit it).
+    static var progressDelay: Double { progressAfterForTesting ?? 3 }
 
     /// Whether a person is at a terminal (standard input and output): `darkbloom start` then opens the screen.
     static func isTerminal() -> Bool {
@@ -81,15 +84,15 @@ enum ClusterPairCommands {
     /// Macs" is said only once both report nothing left running (the member stops its part after acknowledging), else
     /// "Asked both Macs to stop" with what is left, exit 1.
     static func stop(_ pair: ClusterPairSummary, actions: ClusterPairActions?, teardown: Wait = .teardown,
-                     say: Say = printLine) -> Int32 {
+                     progressAfter: Double = progressDelay, say: @escaping Say = printLine) -> Int32 {
         say(pair.actingLine("stopping both Macs"))
         guard let actions else { say(ClusterPairSummary.unreachableLine); return 1 }
         let role = actions.resume().role
-        if case .failure(let failure) = actions.stop() {
+        if case .failure(let failure) = saying(stopWaitLine, after: progressAfter, say: say, actions.stop) {
             sayStopFailed(failure, role: role, say: say)
             return 1
         }
-        switch awaitTeardown(actions, wait: teardown) {
+        switch awaitTeardown(actions, wait: teardown, say: say) {
         case .success(let lines) where ClusterPairSummary.bothFreed(lines):
             say(ClusterPairSummary.stoppedLine)
             say(ClusterPairSummary.memoryFreedLine)
@@ -105,15 +108,43 @@ enum ClusterPairCommands {
         }
     }
 
-    /// Asks each Mac what it has left running (`cluster verify-teardown`) until both have ended or `seconds` pass.
-    private static func awaitTeardown(_ actions: ClusterPairActions, wait: Wait) -> Result<[String], ClusterOnboardingFailure> {
+    /// Asks each Mac what it has left running (`cluster verify-teardown`) until both have ended or `seconds` pass; a wait
+    /// past the first answer says so, with its bound.
+    private static func awaitTeardown(_ actions: ClusterPairActions, wait: Wait, say: Say) -> Result<[String], ClusterOnboardingFailure> {
         let deadline = Date().addingTimeInterval(wait.seconds)
+        var said = false
         while true {
             let result = actions.verifyTeardown()
             if case .success(let lines) = result, ClusterPairSummary.bothFreed(lines) { return result }
             if Date() >= deadline { return result }
+            if !said { say("  Waiting for both Macs' parts to end (\(upTo(wait.seconds)))."); said = true }
             Thread.sleep(forTimeInterval: wait.interval)
         }
+    }
+
+    /// Said when the stop request has not answered after `progressDelay`: the leading Mac answers once both Macs have
+    /// stopped, after their accepted requests (the routed stop gives up after 330 s, `ClusterOnboardingLive.stop`).
+    static let stopWaitLine = "  Waiting for both Macs to stop; accepted requests finish first (up to about 6 min)."
+
+    /// A wait's bound in words: "up to 30 s" under a minute, else in minutes ("up to 10 min").
+    static func upTo(_ seconds: Double) -> String {
+        "up to " + (seconds < 60 ? "\(Int(seconds.rounded())) s" : "\(Int((seconds / 60).rounded())) min")
+    }
+
+    /// `request`, a blocking call to the pair, with `line` said once if it has not answered after `seconds`, so a long
+    /// wait is never silent. The line is never said after the answer.
+    static func saying<T>(_ line: String, after seconds: Double, say: @escaping Say, _ request: () -> T) -> T {
+        let pending = Pending()
+        DispatchQueue.global().asyncAfter(deadline: .now() + seconds) { pending.unlessAnswered { say(line) } }
+        defer { pending.answered() }
+        return request()
+    }
+
+    private final class Pending: @unchecked Sendable {
+        private let lock = NSLock()
+        private var done = false
+        func unlessAnswered(_ body: () -> Void) { lock.withLock { if !done { body() } } }
+        func answered() { lock.withLock { done = true } }
     }
 
     /// `stop`'s wait for both parts to end, read where a test's wait is bound (detached tasks don't inherit it).
@@ -132,17 +163,20 @@ enum ClusterPairCommands {
     /// `darkbloom restart`: the pair stops serving on both Macs, then starts again with its current model. What a start
     /// needs is checked before the stop, so a pair that couldn't start again is not stopped.
     static func restart(_ pair: ClusterPairSummary, actions: ClusterPairActions?, config: String?,
-                        say: Say = printLine) async -> Int32 {
+                        say: @escaping Say = printLine) async -> Int32 {
         say(pair.actingLine("restarting both Macs"))
         guard let actions = startable(pair, actions: actions, say: say) else { return 1 }
         let role = actions.resume().role
-        if case .failure(let failure) = await Task.detached(operation: { actions.stop() }).value {
+        let progressAfter = progressDelay
+        if case .failure(let failure) = await Task.detached(operation: {
+            saying(stopWaitLine, after: progressAfter, say: say, actions.stop)
+        }).value {
             sayStopFailed(failure, role: role, say: say)
             return 1
         }
         // As the screen's model change: both parts release their memory before the pair starts again.
         let wait = waitForTesting ?? .restartTeardown
-        let teardown = await Task.detached { awaitTeardown(actions, wait: wait) }.value
+        let teardown = await Task.detached { awaitTeardown(actions, wait: wait, say: say) }.value
         guard case .success(let left) = teardown, ClusterPairSummary.bothFreed(left) else {
             switch teardown {
             case .success(let lines): for line in ClusterPairSummary.memoryLines(lines) { say("  " + line) }
@@ -192,29 +226,39 @@ enum ClusterPairCommands {
     }
 
     /// Asks the status `darkbloom cluster status` reads until the pair serves, says why it doesn't, or the wait runs out
-    /// (`Wait.standard`); each new status line is said once. A stop that has not reached the status yet is waited out
-    /// briefly.
+    /// (`Wait.standard`); each new status line is said once, and again with the bound when it stays the same for
+    /// `Wait.heartbeat`. A wait past the first look says so, with its bound. A stop that has not reached the status yet
+    /// is waited out briefly.
     private static func waitUntilServing(config: String?, say: Say) async -> ClusterPairSummary {
         let wait = waitForTesting ?? .standard
         let deadline = Date().addingTimeInterval(wait.seconds)
         var said: String?
+        var saidAt = Date()
+        var waiting = false
         var stoppedLooks = 0
         while true {
             let summary = await ClusterPairSummary.live(config: config)
+            var status: String?
             switch summary.state {
             case .serving, .notPaired, .pairingUnreadable: return summary
             case .notServing:
                 // A reason the Macs mend by themselves (an Apple verification retry, memory freeing, the coordinator
                 // retrying) is waited through, as the setup screen does; a final one ends the wait.
                 if ClusterPairSummary.isFinalReason(summary.reason) { return summary }
-                if let line = summary.lines.first, line != said { say("  " + line); said = line }
+                status = summary.lines.first
             case .stopped:
                 stoppedLooks += 1
                 if stoppedLooks > 3 { return summary }
             case .loading, .unknown, .otherMacAway:
-                if let line = summary.lines.first, line != said { say("  " + line); said = line }
+                status = summary.lines.first
+            }
+            if let status, status != said {
+                say("  " + status); said = status; saidAt = Date()
+            } else if let status, Date().timeIntervalSince(saidAt) >= wait.heartbeat {
+                say("  Still waiting (\(upTo(wait.seconds)) in all): " + status); saidAt = Date()
             }
             if Date() >= deadline { return summary }
+            if !waiting { say("  Waiting until the pair serves (\(upTo(wait.seconds)))."); waiting = true }
             try? await Task.sleep(nanoseconds: UInt64(wait.interval * 1_000_000_000))
         }
     }

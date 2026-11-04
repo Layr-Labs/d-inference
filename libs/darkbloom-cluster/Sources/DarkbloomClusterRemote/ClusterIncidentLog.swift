@@ -55,6 +55,9 @@ public struct ClusterIncident: Codable, Sendable, Equatable {
     public let origin: String?
     public internal(set) var dismissedAt: Double?
     public internal(set) var supersededBy: String?
+    /// The install that recorded it (`BuildEnvironment.rawValue`: "prod", "dev"): the installs on one Mac share this
+    /// file. Older records have none and count as production's (`ClusterIncidentLog.install`).
+    public internal(set) var install: String? = nil
 
     enum CodingKeys: String, CodingKey {
         case seq, id, ts, severity, source, message, rank
@@ -62,6 +65,7 @@ public struct ClusterIncident: Codable, Sendable, Equatable {
         case jobID = "job_id", deploymentID = "deployment_id", modelID = "model_id", bundleRef = "bundle_ref"
         case origin
         case dismissedAt = "dismissed_at", supersededBy = "superseded_by"
+        case install
     }
 
     public var isDismissed: Bool { dismissedAt != nil }
@@ -181,6 +185,8 @@ public final class ClusterIncidentLog: @unchecked Sendable {
     public static let maximumMessageBytes = 512
     static let maximumFileBytes = 2 * 1024 * 1024
     static let maximumFieldBytes = 128
+    /// The install of records written before records named theirs: production, the only install then.
+    public static let unstampedInstall = "prod"
 
     /// `~/.darkbloom/cluster/incidents.json` for this home directory.
     public static func defaultFile(homeDirectory: URL) -> URL {
@@ -188,6 +194,9 @@ public final class ClusterIncidentLog: @unchecked Sendable {
     }
 
     public let file: URL
+    /// This install, stamped on each record it adds; its feed holds its own records and the older unstamped ones
+    /// (`unstampedInstall`). Nil: every record, and the records it adds stay unstamped.
+    public let install: String?
     private let lockFile: URL
     private let redact: @Sendable (String) -> String
     private let clock: @Sendable () -> Double
@@ -199,6 +208,7 @@ public final class ClusterIncidentLog: @unchecked Sendable {
     public init(file: URL, redact: @escaping @Sendable (String) -> String = { $0 },
                 clock: @escaping @Sendable () -> Double = { Date().timeIntervalSince1970 }, install: String? = nil) {
         self.file = file
+        self.install = install
         lockFile = file.deletingLastPathComponent().appendingPathComponent(file.lastPathComponent + ".lock")
         self.redact = redact
         self.clock = clock
@@ -220,9 +230,15 @@ public final class ClusterIncidentLog: @unchecked Sendable {
             case .loaded(let stored):
                 return .init(schemaVersion: ClusterIncidentFeed.schemaVersion, epoch: stored.epoch,
                              latestSeq: stored.incidents.last?.seq ?? 0, loadError: nil,
-                             incidents: stored.incidents.filter { $0.seq > cursor })
+                             incidents: stored.incidents.filter { $0.seq > cursor && owns($0) })
             }
         }
+    }
+
+    /// Whether the feed holds `incident`: this install's own, and production's older unstamped ones.
+    private func owns(_ incident: ClusterIncident) -> Bool {
+        guard let install else { return true }
+        return (incident.install ?? Self.unstampedInstall) == install
     }
 
     // MARK: Writing
@@ -246,7 +262,7 @@ public final class ClusterIncidentLog: @unchecked Sendable {
                 source: draft.source, stateCode: draft.stateCode, reasonCode: draft.reasonCode,
                 guidanceCode: draft.guidanceCode, message: message, jobID: draft.jobID,
                 deploymentID: draft.deploymentID, modelID: model, rank: draft.rank, bundleRef: nil,
-                origin: draft.origin, dismissedAt: nil, supersededBy: nil)
+                origin: draft.origin, dismissedAt: nil, supersededBy: nil, install: install)
             stored.incidents.append(incident)
             if stored.incidents.count > Self.maximumIncidents {
                 stored.incidents.removeFirst(stored.incidents.count - Self.maximumIncidents)

@@ -869,7 +869,7 @@ struct ClusterPairValidatorFindingsTests {
             }
         }
         #expect(lines(result?.standardOutputContent) == ["This Mac is in a two-Mac cluster with \(otherMac): stopping both Macs.",
-            ClusterPairSummary.stoppedLine, "Memory freed on both Macs ✓", ""])
+            "  Waiting for both Macs' parts to end (up to 30 s).", ClusterPairSummary.stoppedLine, "Memory freed on both Macs ✓", ""])
         #expect(pairActionCalls(text(result?.standardErrorContent)) == ["stop", "verifyTeardown", "verifyTeardown"])
     }
 

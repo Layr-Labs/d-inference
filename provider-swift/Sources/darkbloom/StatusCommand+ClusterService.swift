@@ -27,5 +27,5 @@ extension Status {
     }
 
     /// Under the daemon line when the running provider is the cluster's part on this Mac.
-    static let clusterPartLine = "  This is the cluster's part on this Mac, not single-Mac serving (`darkbloom cluster status`)."
+    static let clusterPartLine = "  This is the cluster's part on this Mac, not single-Mac serving (`\(ClusterPairSummary.cli) cluster status`)."
 }

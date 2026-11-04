@@ -32,5 +32,13 @@
   names it and how to remove it. `--solo` refuses while this Mac's part of the pair serves (they share one serving
   lock). The app's local mode says plainly that it isn't available on a paired Mac.
 - `darkbloom update --rollback`'s advice turns the cluster service off with `darkbloom cluster stop --service`.
+- The DevNet app names `darkbloom-dev` in every command it suggests for a pair: the card after `start` and
+  `restart`, `cluster stop --service`, `cluster local`, `cluster pair --forget` and the hints. Its Local Network hint
+  names the app to allow, Darkbloom Dev.
+- `stop`, `restart`, `cluster stop --service` and a script `start` say what they are waiting for and for how long at
+  most, instead of going quiet for minutes.
+- With Darkbloom and Darkbloom Dev on one Mac, each lists only its own cluster incidents. Incidents recorded before
+  this count as Darkbloom's.
+- The leading Mac's service log notes the other Mac's status checks once a minute, not every second.
 - `darkbloom unenroll` (leaving fully) and the app's local mode no longer stop with an internal error when they stop or
   drain the provider first.

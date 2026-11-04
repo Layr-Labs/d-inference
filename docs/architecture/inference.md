@@ -440,6 +440,16 @@ A DevNet build is installed as `Darkbloom Dev.app`, and its CLI is
 check and `cancel-all` know an owner by the CLI name of each build environment
 (`ClusterOrphanReaper.ownerExecutableNames`). The cluster service stop knows
 the service by this build's CLI name (`ClusterService.isClusterService`).
+Every command a build prints for a pair names its CLI: `main.swift` sets the
+name once at startup (`ClusterOnboardingCommand.use`), the pair commands read it
+(`ClusterPairSummary.cli`), and ProviderCore's texts are named with it
+(`ClusterOnboardingCommand.named`). Both apps serve a pair's API on port 8000,
+so one of them serves a pair on a Mac at a time. They share the cluster incident
+log (`~/.darkbloom/cluster/incidents.json`, owned by `DarkbloomClusterRemote`):
+each record names the install that wrote it (`ClusterIncident.install`), and
+each build reads its own, counting records without one as production's
+(`ClusterIncidentLog.install`). The leader's service log notes a following
+window's `status` requests once a minute (`ClusterService.logsControl`).
 
 ## Context
 

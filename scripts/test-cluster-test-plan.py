@@ -192,6 +192,16 @@ class HostGPUArchitectureTests(unittest.TestCase):
                 else:
                     self.assertEqual(printed, "")
 
+    def test_a_vm_on_an_m5_keeps_metals_name_because_the_hosts_would_turn_on_nax(self):
+        for chip, name in plan.HOST_GPU_ARCHITECTURES.items():
+            with self.subTest(chip=chip):
+                environment, printed, _ = self.architecture("nonblocking", "air64_v27", f"Apple {chip} (Virtual)")
+                if chip.startswith("M5"):
+                    self.assertEqual(environment, {})
+                    self.assertIn("NAX kernels", printed)
+                else:
+                    self.assertEqual(environment, {"MLX_METAL_GPU_ARCH": name})
+
     def test_a_callers_value_and_the_other_lanes_keep_mlxs_own_reading(self):
         for value in ("applegpu_g17s", ""):
             with self.subTest(MLX_METAL_GPU_ARCH=value):

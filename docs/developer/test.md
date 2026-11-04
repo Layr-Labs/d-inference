@@ -1269,9 +1269,11 @@ the guest's `machdep.cpu.brand_string` (`Apple M3 Ultra (Virtual)`) and its
 name from `HOST_GPU_ARCHITECTURES` (`applegpu_g15d`). A value that the caller
 sets wins; an empty value keeps Metal's name. On a Mac, in a VM whose GPU
 Metal names `applegpu_*`, for a chip that the table does not name (a warning)
-and in the other lanes, the processes keep Metal's name. d-inference's own
-layouts (`AffineQuantizedVectors.architecture`) read the device's name, which
-the variable does not change.
+and in the other lanes, the processes keep Metal's name. So does a VM on an
+M5: from generation 17 (`NAX_GENERATION`) MLX turns on its NAX kernels, which a
+VM's GPU cannot load. d-inference's own layouts
+(`AffineQuantizedVectors.architecture`) read the device's name, which the
+variable does not change.
 
 Build the runtime tests once (`swift build --package-path libs/darkbloom-cluster
 -c release --build-tests --triple arm64-apple-macosx26.2 -Xcc -target -Xcc

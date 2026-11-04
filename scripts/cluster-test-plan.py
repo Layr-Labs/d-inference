@@ -13,8 +13,9 @@ runner under libs/darkbloom-cluster/Tests.
 
 Lanes: `blocking` (Cluster Runtime Tests), `nonblocking` (Cluster GPU Tests,
 reported but not failing the workflow) and `focused` (Cluster Focused Checks,
-the model-free runner scripts). In a macOS VM, the `nonblocking` processes get
-the host GPU's architecture name for MLX (`architecture_environment`).
+the model-free runner scripts). In a macOS VM on an M1 to M4 host, the
+`nonblocking` processes get the host GPU's architecture name for MLX
+(`architecture_environment`).
 
 Subcommands:
   run LANE SHARD     run the selections of one shard, each in its own process
@@ -306,6 +307,11 @@ HOST_GPU_ARCHITECTURES = {
 }
 # A VM guest's `machdep.cpu.brand_string` names the host's chip: `Apple M3 Ultra (Virtual)`.
 VIRTUAL_CPU_BRAND = re.compile(r"Apple (M\d+(?: Pro| Max| Ultra)?) \(Virtual\)")
+# From generation 17 (the M5), MLX turns on its NAX kernels (Metal 4 tensor
+# operations; `is_nax_available` in device.cpp). A VM's GPU cannot load them
+# (`Unable to load kernel steel_gemm_fused_nax_...`), so a VM on an M5 keeps
+# Metal's name.
+NAX_GENERATION = 17
 
 
 def host_gpu_architecture(brand):
@@ -335,7 +341,8 @@ def cpu_brand():
 def architecture_environment(lane):
     """MLX_METAL_GPU_ARCH for a lane's processes: the host GPU's name in a VM
     whose GPU Metal names generically, unless the caller set the variable (an
-    empty value keeps Metal's name). Nothing on a Mac or for an unknown chip."""
+    empty value keeps Metal's name). Nothing on a Mac, for an unknown chip or
+    for a host whose name would turn on MLX's NAX kernels."""
     if lane not in HOST_ARCHITECTURE_LANES or "MLX_METAL_GPU_ARCH" in os.environ:
         return {}
     metal = metal_architecture()
@@ -350,6 +357,10 @@ def architecture_environment(lane):
     if host is None:
         print(f"::warning title=MLX GPU architecture::Metal names this VM's GPU {metal}, and the CPU brand "
               f"{brand!r} names no chip in HOST_GPU_ARCHITECTURES; MLX keeps {metal}", flush=True)
+        return {}
+    if int(host[-3:-1]) >= NAX_GENERATION:
+        print(f"::notice title=MLX GPU architecture::MLX keeps {metal}: {host}, the host GPU of {brand!r}, "
+              "would turn on MLX's NAX kernels, which this VM's GPU cannot load", flush=True)
         return {}
     print(f"::notice title=MLX GPU architecture::MLX_METAL_GPU_ARCH={host} (the host GPU of {brand!r}); "
           f"Metal names this VM's GPU {metal}", flush=True)

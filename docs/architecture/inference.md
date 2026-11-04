@@ -78,8 +78,9 @@ reservation may take to reach a rank: each rank's owner fences a worker whose
 reservation is unanswered past its delivery deadline
 (`ClusterWorkerOwnerService`), so every reservation is delivered within the
 pair's admission wait, at least `ClusterWorkerRequest.laneAdmissionWaitNanoseconds`
-(30 s) with lanes. A busy rank answers at its next step boundary. When the
-request's own deadline passes first, the pair throws
+(30 s) with lanes, or by the request's generation deadline if that comes
+first. A busy rank answers at its next step boundary. When the request's own
+deadline passes first, the pair throws
 `ClusterWorkerOwnerError.deadline` for that request only: no further rank is
 asked, an answer still on its way is read, every admission is given back
 (`retired(cancelled)`) within `ClusterWorkerRequest.laneRetirementWaitNanoseconds`
@@ -89,15 +90,23 @@ reservation that reaches the follower past its delivery deadline is that
 request's refusal (`commandRefused`, `deadline`), not a fence of the follower's
 session. A closed link, a lost rank, a rank that does not answer within the
 pair's admission wait, or one that does not give a reservation back in time
-still ends the pair. Before, the deadline ended the whole pair: every lane in
-flight failed and the follower logged `leader fenced: the request was cancelled
-before it started`. Sources:
+still ends the pair. So does a rank that still holds a request when the
+request's generation deadline passes: each rank's owner holds every request to
+that deadline (`ClusterOwnerLeaseState`). The generation deadline is the setup's
+request deadline counted from the request's arrival
+(`DistributedCBv2Engine.deadlineContext`); the coordinator's
+`first_content_budget_ms` sets only the admission deadline, and nothing the
+coordinator sends sets the generation deadline. Before, the admission deadline
+ended the whole pair: every lane in flight failed and the follower logged
+`leader fenced: the request was cancelled before it started`. Sources:
 `libs/darkbloom-cluster/Sources/DarkbloomClusterProcess/ClusterWorkerPair.swift`
 (`reserve`),
 `libs/darkbloom-cluster/Sources/DarkbloomClusterProcess/ClusterWorkerRequest.swift`
-(`admit`, `cleanup`) and
+(`admit`, `cleanup`),
 `libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterLinkWorkerEndpoint.swift`
-(`ClusterLinkWorkerWire.requestRefusal`).
+(`ClusterLinkWorkerWire.requestRefusal`) and
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterOwnerLeaseState.swift`
+(`clock`).
 
 The cluster setup liveness probe uses the same request validation as ordinary
 chat completions. `ClusterSetupProbeRequest` sends no family-specific thinking

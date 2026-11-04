@@ -996,6 +996,15 @@ Mac's service restarts its worker without reporting it, so its line says what
 can't be read from here instead of "running, no error". In the DevNet app, the
 screens and `status` name its own command (`darkbloom-dev …`).
 
+The mode chosen at "How should both Macs split <model>?" is the one that loads,
+for every model that runs both ways (GLM-5.3-Flash included). When this Mac's
+own worker is the one that keeps ending (its incident log says
+`worker_crashed`), the ✗ names this Mac instead; when that log can't be read,
+it says it can't tell which side closed the link and blames neither. When the
+other Mac can't dial because macOS keeps it off the local network, the ✗ gives
+that reason instead of "make sure it is on". A planned switch's stops (a part
+that stopped, or ended with exit 0 and no reason) aren't shown as ends.
+
 - **No macOS prompt can be shown** (for example with no one logged in to the desktop):
   the check writes the exact commands the prompt would run to an owner-only
   script, and the setup runs it with `sudo` in the same terminal (type this

@@ -106,6 +106,18 @@ struct ClusterOnboardingPeerLabelTests {
         #expect(record.startTestPassed == nil && record.startTestFailure == nil && record.leadership?.scope.isLocalOnly == true)
     }
 
+    /// The DevNet run on the M5 Ultra pair (A-9): choosing Pipeline for GLM-5.3-Flash loaded tensor parallel again. Its
+    /// listing put Pipeline first while its plan was tensor parallel, so the choice was taken for the planner's own and
+    /// nothing was kept. The person's family is kept, and the adopt plans again in it.
+    @Test func aChosenPipelineIsKeptWhenTheListingPutsItFirst() {
+        let glm = ["pipeline_v1", "tensor_parallel_v1"]
+        let family = OnboardingLive.keptFamily("pipeline_v1")
+        #expect(family != nil && OnboardingLive.replansInFamily(family, listedPlanMode: "tensor_parallel_v1"),
+                "pipeline kept, and the tensor-parallel plan planned again in it")
+        #expect(!glm.isEmpty && !OnboardingLive.replansInFamily(OnboardingLive.keptFamily("tensor_parallel_v1"),
+                                                listedPlanMode: "tensor_parallel_v1"), "the listed plan's own mode: adopted as listed")
+    }
+
     @Test func unpairWithoutAPairingChangesNothing() throws {
         let fixture = try Fixture()
         defer { fixture.remove() }

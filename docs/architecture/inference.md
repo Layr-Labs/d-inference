@@ -3876,6 +3876,10 @@ away; mixed pairs are first-class).
   assistant guard).
 - **Default:** the fastest measured family, else the planner's
   (`ClusterOnboardingMode.defaultIndex`).
+- **The person's family:** `useMode` keeps the chosen family for every model
+  (`OnboardingLive.keptFamily`), never inferred from the listing's order, which
+  says nothing of the plan; `localAdopt` plans again in it only when the listed
+  plan's mode isn't in it (`OnboardingLive.replansInFamily`).
 - **The scope a plan is for:** `chooseAndServe` names the scope before it plans
   the list (`ClusterOnboardingOperations.planScope`, `OnboardingLive.usePlanningScope`,
   carried in `ClusterControlRequest.scope`); a start whose scope changes before

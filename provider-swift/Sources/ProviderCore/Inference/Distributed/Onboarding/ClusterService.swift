@@ -421,7 +421,7 @@ public final class ClusterService: @unchecked Sendable {
                 say("the cable is on \(moved.interface) now: answering the paired Mac there")
                 // A port that was never set up has no fixed address: the other Mac cannot find this one there.
                 if let port = OnboardingLive.unsetCablePort(ClusterLinkReadinessProbe.inspectLocalLink()) {
-                    say("\(port) is not set up for the cluster: run `darkbloom cluster` on this Mac and choose \(ClusterOnboardingDriver.fixPortItem) (macOS asks for your password once)")
+                    say("\(port) is not set up for the cluster: run `\(ClusterService.cli) cluster` on this Mac and choose \(ClusterOnboardingDriver.fixPortItem) (macOS asks for your password once)")
                 }
             case .pairingChanged(let current):
                 say("this Mac's pairing changed (\(current.clusterID)): answering the paired Mac with the new one")
@@ -940,7 +940,7 @@ public final class ClusterService: @unchecked Sendable {
                 + (reply.keptLive > 0 ? ", \(reply.keptLive) still in use (removed when its part stops)" : "") + "."
         } catch {
             return "The other Mac was not reached (\(ClusterConsoleText.bounded(String(describing: error), maximum: 160))): "
-                + "its pair cache stays until it unpairs too (`darkbloom cluster pair --forget \(pairing.localPin)` there)."
+                + "its pair cache stays until it unpairs too (`\(ClusterService.cli) cluster pair --forget \(pairing.localPin)` there)."
         }
     }
 
@@ -1239,12 +1239,28 @@ public final class ClusterService: @unchecked Sendable {
     /// that read specific member errors (`ClusterApprovalCheck.memberQuickEnds`).
     static func lastError(in log: URL, from offset: UInt64 = 0, preferStopReason: Bool = true) -> String? {
         let error = lastErrorLine(in: log, from: offset)
-        guard preferStopReason, error.map(isCancellation) ?? true,
-              let stop = ClusterLogScan.lastLine(in: log, from: offset, where: { $0.hasPrefix(stopReasonPrefix) }) else { return error }
-        var reason = stop.dropFirst(stopReasonPrefix.count).trimmingCharacters(in: .whitespaces)
-        if reason.hasSuffix(".") { reason.removeLast() }
-        return reason.isEmpty ? error : ClusterConsoleText.plain(ClusterConsoleText.bounded(reason, maximum: 240))
+        guard preferStopReason, error.map(isCancellation) ?? true else { return error }
+        if let stop = ClusterLogScan.lastLine(in: log, from: offset, where: { $0.hasPrefix(stopReasonPrefix) }) {
+            var reason = stop.dropFirst(stopReasonPrefix.count).trimmingCharacters(in: .whitespaces)
+            if reason.hasSuffix(".") { reason.removeLast() }
+            if !reason.isEmpty { return ClusterConsoleText.plain(ClusterConsoleText.bounded(reason, maximum: 240)) }
+        }
+        // A link follower macOS kept off the local network says so and ends cleanly: that is its reason (A-3).
+        if error == nil, let refused = ClusterLogScan.lastLine(in: log, from: offset, where: { $0.contains(localNetworkRefusal) }),
+           let at = refused.range(of: localNetworkRefusal) {
+            var reason = "its part can't reach the local network" + String(refused[at.upperBound...])
+            if reason.hasSuffix(".") { reason.removeLast() }
+            return ClusterConsoleText.plain(ClusterConsoleText.bounded(reason, maximum: 300))
+        }
+        return error
     }
+
+    /// The command this build answers to (`BuildEnvironment.current.cliName`), in the lines the service writes (A-1).
+    static let cli = BuildEnvironment.current.cliName
+
+    /// How a part's link follower says macOS kept it off the local network (`ClusterLinkFollowerCommand`): it then ends
+    /// cleanly, with no "Error:" line, and the Mac that leads only saw the other Mac not answering (the DevNet run, A-3).
+    static let localNetworkRefusal = "may not reach the local network"
 
     /// How a part says why it stops serving (`StartCommand+Distributed`, the member's stop reason).
     static let stopReasonPrefix = "Distributed serving stops: "

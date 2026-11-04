@@ -89,4 +89,49 @@ struct ClusterServiceStopReasonTests {
             #expect(OnboardingLive.keepsEndingTitle(head + "; " + ownEnd, own: own) == "A part keeps ending the same way: " + ownEnd, "\(head)")
         }
     }
+
+    /// The DevNet run on the M5 Ultra pair (A-4), B17's mirror: a part whose own worker dies ends "closed" too (the
+    /// worker's pipe), and the ✗ blamed the other Mac. This Mac's incident log said `worker_crashed` (source leader)
+    /// for its own worker each time: the ✗ names this Mac then, and blames neither when it can't be told.
+    @Test func aWorkerThatEndsHereIsNamedHere() {
+        let line = "starting; this Mac's part ended (exit 1: closed) and starts again by itself"
+        let own = ClusterServiceStatus.Child(running: false, starts: 4, lastEnd: "exit 1", restartInSeconds: 2, lastError: "closed")
+        let other = ClusterServiceStatus.Child(running: true, starts: 1, lastEnd: nil, restartInSeconds: nil, lastError: nil)
+        let here = OnboardingLive.keepsEndingTitle(line, own: own, ownWorker: .ended)
+        #expect(here.contains("this Mac's worker keeps ending") && !here.contains("the other Mac's worker"), "names this Mac: \(here)")
+        let lines = OnboardingLive.errorLines(here: "This Mac", there: "The other Mac (Apple M5 Ultra, 256 GB)", own: own, other: other,
+                                              otherUnreachable: nil, ownWorker: .ended)
+        #expect(lines[0].contains("its worker ended") && !lines[1].contains("can't be read from here"), "the other Mac isn't blamed: \(lines)")
+        let unknown = OnboardingLive.keepsEndingTitle(line, own: own, ownWorker: .unknown)
+        #expect(unknown.contains("can't be told") && !unknown.contains("the other Mac's worker ended")
+                && !unknown.contains("this Mac's worker keeps ending"), "blames neither: \(unknown)")
+    }
+
+    /// The DevNet run (A-3): the member couldn't dial, because macOS kept its link follower off the local network. Its
+    /// part said so in its log and ended cleanly (exit 0), so its status carried no reason and the leader's ✗ said "Make
+    /// sure it is on". The part's last error now carries that reason.
+    @Test func aLocalNetworkRefusalIsThePartsReason() throws {
+        let url = try log(banner + "link refused: connect failed (unreachable)\n"
+            + "this process may not reach the local network: macOS refused the dial before the cable was tried. Allow darkbloom under "
+            + "System Settings > Privacy & Security > Local Network (once), or start the follower from a session that has that access.\n")
+        defer { try? FileManager.default.removeItem(at: url) }
+        #expect(ClusterService.lastError(in: url) == "its part can't reach the local network: macOS refused the dial before the cable was "
+            + "tried. Allow darkbloom under System Settings > Privacy & Security > Local Network (once), or start the follower from a session that has that access")
+    }
+
+    /// The DevNet run (A-10, B18): a planned switch showed the old model's clean stop as a crash, "this Mac's part ended
+    /// (exit 0) and starts again by itself; the other Mac's part ended (stopped) and s…". A clean stop (stopped, or exit 0
+    /// with no reason) is a stop on either Mac; an exit 0 that says why (a refused dial) is still said.
+    @Test func aCleanStopIsNotAnEnd() {
+        for own in [true, false] {
+            for end in ["stopped", "exit 0"] {
+                let stopped = ClusterServiceStatus.Child(running: false, starts: 2, lastEnd: end, restartInSeconds: nil, lastError: nil)
+                #expect(!OnboardingLive.endShown(stopped, own: own), "\(own ? "this Mac" : "the other Mac"), \(end): a stop")
+            }
+            let refused = ClusterServiceStatus.Child(running: false, starts: 2, lastEnd: "exit 0", restartInSeconds: 2,
+                                                     lastError: "its part can't reach the local network")
+            let crashed = ClusterServiceStatus.Child(running: false, starts: 3, lastEnd: "exit 1", restartInSeconds: 2, lastError: "closed")
+            #expect(OnboardingLive.endShown(refused, own: own) && OnboardingLive.endShown(crashed, own: own), "ends with a reason are said")
+        }
+    }
 }

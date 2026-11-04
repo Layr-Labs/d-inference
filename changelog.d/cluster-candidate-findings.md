@@ -8,3 +8,7 @@
   error reported"; the title no longer shows the internal "starting; " word.
 - The DevNet app's cluster screens and `status` name its own command (`darkbloom-dev …`), not the production
   `darkbloom`.
+- The mode you choose for a model is now the one that loads, also for GLM-5.3-Flash. When a part keeps ending, the
+  message names the Mac whose worker actually stopped (or says it can't tell), gives the other Mac's own reason when it
+  can't connect (for example, macOS blocking its local network access), and no longer shows a planned model switch as
+  a crash. The DevNet app names its own command in more messages.

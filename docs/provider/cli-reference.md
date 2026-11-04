@@ -1281,7 +1281,7 @@ add-on older than `status --json` run a command and wait for it. Foundation
 starts that command in a process group of its own, which the terminal's Ctrl-C
 does not reach, so the CLI passes Ctrl-C on: SIGINT goes to the command's
 process group, as the terminal would send it, and the CLI reports how the
-command ended (`logs -f` exits `0`, `setup` exits `130`). A second Ctrl-C while
+command ended (`logs -f` and `setup` exit `130`). A second Ctrl-C while
 the command still runs sends SIGKILL to that group, so a command that ignores
 Ctrl-C cannot hold the terminal; the CLI reports that as a stop by Ctrl-C too.
 SIGTERM sent to the CLI goes to the command

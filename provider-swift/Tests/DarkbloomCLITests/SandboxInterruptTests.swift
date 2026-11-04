@@ -30,7 +30,7 @@ struct SandboxInterruptTests {
         job.typeInterrupt()
 
         let status = try #require(job.exitStatus(within: 10), "still running 10 s after Ctrl-C: \(job.text)")
-        #expect(TerminalJob.describe(status) == "exit 0")
+        #expect(TerminalJob.describe(status) == "exit 130")
         #expect(job.allEnded(started, within: 5), "tail outlived the command")
     }
 

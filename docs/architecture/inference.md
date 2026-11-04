@@ -468,9 +468,11 @@ checks that compile the screens without the package set theirs with `use`), the
 pair commands and the live operations read it (`ClusterPairSummary.cli`,
 `OnboardingLive.cli`), and ProviderCore's texts are named with it
 (`ClusterOnboardingCommand.named`). Every line that names the app as macOS
-lists it under Local Network reads `ClusterService.appName`
-(`BuildEnvironment.current.appDisplayName`): the screens and the link
-follower's refusal. Both apps serve a pair's API on port 8000,
+lists it under Local Network or in its firewall reads `ClusterService.appName`
+(`BuildEnvironment.current.appDisplayName`): the screens (through
+`ClusterOnboardingCommand.app`, including the pairing hint's firewall line and
+the line that asks to pair again after a reinstall) and the link follower's
+refusal. Both apps serve a pair's API on port 8000,
 so one of them serves a pair on a Mac at a time. Each keeps its own cluster
 incident log, owned by `DarkbloomClusterRemote`
 (`ClusterIncidentLog.defaultFile(homeDirectory:install:)`): production's is
@@ -3939,7 +3941,10 @@ away; mixed pairs are first-class).
   logs only a change, so a setting just turned on clears first;
   `refusalIsCurrent`). The ✗ is worded for the screen that shows it
   (`OnboardingLive.localNetworkLine`): a wait the joining Mac forwarded names
-  that Mac.
+  that Mac. Its line for the refused part says only that the part can't reach
+  the local network (`errorLines`' `refusalSaid`), and every ✗ line too long
+  for its bound is cut at a word, never inside a parenthesis, and marked
+  (`ClusterConsoleText.boundedAtWord`).
 - **The person's family:** `useMode` keeps the chosen family for every model
   (`OnboardingLive.keptFamily`), never inferred from the listing's order, which
   says nothing of the plan; `localAdopt` plans again in it only when the listed

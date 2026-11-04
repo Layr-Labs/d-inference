@@ -76,7 +76,7 @@ extension Unenroll {
     }
 
     /// The stop unenrollment runs first: single-Mac serving, as `darkbloom stop --solo` (it never stops a pair).
-    static func stopCommand() throws -> Stop { Stop() }
+    static func stopCommand() throws -> Stop { try Stop.parse(["--solo"]) }
 
     static func stopProviderBeforeUnenrollment() async throws {
         var stop = try stopCommand()

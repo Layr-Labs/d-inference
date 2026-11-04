@@ -80,7 +80,7 @@ struct Desktop: AsyncParsableCommand {
     @Option var model: [String] = []
 
     /// The drain's options, as `darkbloom stop` would take them with none given.
-    static func drainOptions() throws -> DrainOptions { DrainOptions() }
+    static func drainOptions() throws -> DrainOptions { try DrainOptions.parse([]) }
 
     /// On a Mac in a two-Mac cluster: why local mode starts nothing; nil elsewhere.
     static func pairRefusal(_ pair: ClusterPairSummary) -> [String]? {

@@ -32,3 +32,5 @@
   names it and how to remove it. `--solo` refuses while this Mac's part of the pair serves (they share one serving
   lock). The app's local mode says plainly that it isn't available on a paired Mac.
 - `darkbloom update --rollback`'s advice turns the cluster service off with `darkbloom cluster stop --service`.
+- `darkbloom unenroll` (leaving fully) and the app's local mode no longer stop with an internal error when they stop or
+  drain the provider first.

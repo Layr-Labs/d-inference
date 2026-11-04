@@ -34,6 +34,7 @@ struct DistributedCBv2CleanStopTests {
         #expect(lease.send(.token(4)))
         engine.cancel(.init(1))
         engine.cancel(.init(1))
+        engine.onQueue {} // a cancel is applied in queue order, after it returns
         #expect(lease.cleanStopCount == 1)
         #expect(lease.cancelCount == 0) // the pair's failure path is not taken
         #expect(!lease.send(.token(5))) // the token the stop answers is not delivered
@@ -83,6 +84,7 @@ struct DistributedCBv2CleanStopTests {
             Issue.record("expected admission"); return
         }
         engine.cancel(.init(1))
+        engine.onQueue {}
         #expect(owner.last.cleanStopCount == 1)
         clock.advance(.seconds(2))
         #expect(!owner.last.send(.token(4))) // the first token answers the stop
@@ -110,6 +112,7 @@ struct DistributedCBv2CleanStopTests {
             }
             if !beforeFirstToken { #expect(owner.last.send(.token(4))) }
             engine.cancel(.init(1))
+            engine.onQueue {}
             #expect(owner.last.cleanStopCount == 1)
             #expect(owner.last.cancelCount == 0)
             // The stalled pair never answers; the deadline timer fires.

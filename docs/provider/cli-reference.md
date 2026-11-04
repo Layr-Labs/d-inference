@@ -149,7 +149,12 @@ set to any value skips it. Logging goes to stderr so launchd captures it in
 In a terminal, `start`, `stop`, `restart`, `status` and `update` open with the
 Darkbloom mark beside the command's name and show a one-row live line while
 they wait (a drain, a restart, an update's download). It is look only: every
-line they print is the same, in the same order. The cluster setup's rules
+line they print is the same, in the same order. The live line, here and on the
+cluster's screens, is always one row:
+- It is fitted to the window's width at each redraw, minus 6 columns.
+- Control characters in a reason become spaces, and a wide character counts as two columns.
+- A long reason is shortened, keeping its time at the end.
+- Line wrap is off while the row is drawn, so it is cut at the window's edge, never wrapped. The cluster setup's rules
 apply (`DarkbloomCommandLook`, `provider-swift/Sources/ProviderCore/Terminal/DarkbloomCommandLook.swift`):
 pipes, logs, the LaunchAgent's files, `NO_COLOR`, `CLICOLOR=0`, `TERM=dumb`, a
 non-UTF-8 locale and windows under 40 columns get the plain bytes;
@@ -268,8 +273,9 @@ On a paired Mac, `darkbloom start` says first when it replaces a cluster service
 running from a terminal session with the login agent. When macOS's Local Network
 setting keeps this Mac's link follower off the cable, it ends its wait at once
 with where to turn it on (System Settings → Privacy & Security → Local Network →
-"Darkbloom", or "Darkbloom Dev"; through Screen Sharing on a Mac with no
-display), and exits 1.
+"Darkbloom", the row macOS lists for the DevNet app too; with no such row, Allow
+on macOS's prompt on that Mac's screen at the next dial; through Screen Sharing
+on a Mac with no display), and exits 1.
 
 Options on a paired Mac (`Start.singleMacOptions`, `ClusterPairSummary.singleMacOptionsRefusal`):
 
@@ -658,6 +664,26 @@ per share of this model within 30 days, by member ID), or from
 any every share is predicted as before. A named file that is not a share probe
 history stops the command.
 
+### `darkbloom cluster gpu-limit`
+
+```bash
+darkbloom cluster gpu-limit [--undo]
+```
+
+| Flag | Type | Default | Effect |
+|---|---|---|---|
+| `--undo` | flag | `false` | Remove the job that keeps the limit raised and return `iogpu.wired_limit_mb` to the macOS default |
+
+Lets this Mac's GPU keep its memory less 16 GiB resident, so GLM-5.3-Flash runs
+on two 128 GB Macs with room for long requests (M5 Macs of 128 or 256 GB only;
+exit 2 elsewhere). It prints the current and the new limit, asks once (`y`), and
+then macOS asks an administrator to approve. Where the limits are already met,
+it installs the boot job that keeps them if that job is missing or differs, and
+changes nothing if it is in place. It needs a terminal; without one it prints
+the commands an administrator can run and exits 2. Values, persistence and
+undo: [GPU memory limit for a GLM pair](../reference/configuration.md#gpu-memory-limit-for-a-glm-pair)
+(`provider-swift/Sources/darkbloom/ClusterGPULimitCommand.swift`).
+
 ### `darkbloom cluster local`
 
 The setup response check uses the model's default reasoning controls. It does not send a binary thinking override; if its token budget ends during reasoning, it reports that the model is still thinking. This is a liveness check, not an answer-quality benchmark. Source: `provider-swift/Sources/ProviderCore/Inference/Distributed/Console/ClusterSetupProbeRequest.swift` and `ClusterSetupWizardLiveOperations.prompt`.
@@ -707,8 +733,8 @@ Next: Leave both Macs running: Darkbloom retries by itself. Or serve locally onl
 
 | Exit status | `state` | Meaning |
 |---|---|---|
-| `0` | `serving` | The pair serves (through Darkbloom, or on the leading Mac's local API) |
-| `3` | `loading`, `not_serving`, `unknown` | Not serving yet: loading, or a reason in `reason` (such as macOS keeping a Mac off the local network, below) |
+| `0` | `serving` | The pair serves: through Darkbloom once the coordinator has it, or on the leading Mac's local API when it serves locally only |
+| `3` | `loading`, `not_serving`, `unknown` | Not serving yet: loading, or a reason in `reason` (such as macOS keeping a Mac off the local network, or a pair not offered to Darkbloom, below) |
 | `4` | `stopped` | Stopped (Stop in `darkbloom cluster`, or `darkbloom cluster stop`), also while the other Mac isn't answering |
 | `5` | `other_mac_away` | The pair is started and the other Mac isn't answering over the cable (its cluster service is off, it sleeps, or waits for a login) |
 | `6` | `not_paired` | This Mac isn't in a cluster |
@@ -716,18 +742,40 @@ Next: Leave both Macs running: Darkbloom retries by itself. Or serve locally onl
 
 While macOS's Local Network setting keeps a Mac's link follower off the cable, both Macs read `not_serving` (exit 3)
 by the setup screens' rule and in their words (`ClusterLocalNetworkAccess.statusWords`), instead of a load that never
-ends. The DevNet app names "Darkbloom Dev" and `darkbloom-dev`.
+ends. The DevNet app names "Darkbloom Dev" and `darkbloom-dev`, and says that macOS lists it as "Darkbloom"
+(`ClusterService.localNetworkRow`: both apps share one bundle ID).
 - On the Mac that is kept off (its own cluster service's refusal), `reason` is "This Mac can't reach the other Mac over
   the cable: macOS keeps Darkbloom off the local network" and `next` is "On this Mac: System Settings → Privacy &
-  Security → Local Network → turn on “Darkbloom” (on a Mac with no display, through Screen Sharing); then run
+  Security → Local Network → turn on “Darkbloom”; if it isn't listed, click Allow when macOS asks on this Mac's
+  screen, the next time Darkbloom dials over the cable (on a Mac with no display, through Screen Sharing); then run
   `darkbloom start` here, or choose Retry in `darkbloom cluster` on the other Mac."
 - On the leading Mac, from about 20 seconds into its part (the ✗'s rule; it then asks the other Mac's status), and
   then steadily while the other Mac stays refused, also while its part ends on the missing link and starts again,
   `reason` is "The other Mac can't reach this Mac over the cable: macOS keeps Darkbloom there off the local network"
   and `next` names that Mac: "The other Mac (Apple M5 Max, 128 GB): System Settings → Privacy & Security → Local
-  Network → turn on “Darkbloom” (on a Mac with no display, through Screen Sharing). Then run `darkbloom start` here,
+  Network → turn on “Darkbloom”; if it isn't listed, click Allow when macOS asks on that Mac's screen, the next time
+  Darkbloom dials over the cable (on a Mac with no display, through Screen Sharing). Then run `darkbloom start` here,
   or choose Retry in `darkbloom cluster`." Once the setting is on, it clears when that Mac's follower gets through.
 - On both Macs, `lines` then holds that state's line, "Not serving: <reason>.", as the plain output's ✗ line does.
+
+A pair set to serve through Darkbloom that serves on the leading Mac's local API has no cluster approval attached, so
+the coordinator can't form it and it earns nothing. Both Macs read `not_serving` (exit 3), never `serving` or "earning
+through Darkbloom" (`OnboardingLive.notOfferedLines`):
+- `reason` is `not offered to Darkbloom (<why>)`: the leading Mac's latest approval check (for example `this Mac's
+  check refused it: Unequal tensor-parallel shares serve local clusters only …`), `no cluster approval is attached to
+  its setup`, or `the coordinator could not be reached or has no cluster support`.
+- `lines` add where it answers meanwhile: `Meanwhile it answers only on the local API at http://localhost:<port> (no
+  Darkbloom traffic).`
+- The plain output says `Serves: through Darkbloom (not offered)`; `serves` stays `darkbloom`, the way it is set to
+  serve.
+- `next` is "To offer it to Darkbloom: `darkbloom cluster` on <the leading Mac>, then choose the model again (it is
+  planned for Darkbloom). Or serve locally only: `darkbloom cluster local` on <the leading Mac>."
+- `darkbloom start` without a terminal stops waiting at once on this reason (exit 3).
+
+During a model or mode change, or while the pair updates Darkbloom, `status` and `cluster status` can read `stopped`
+(exit 4) or `unknown` for a minute or two while the pair is actually reloading. If such a change happened recently,
+or the status showed "Updating…", wait about a minute and check again before acting. Run `darkbloom start` only if it
+still reads `stopped`.
 
 A stopped pair reads `stopped` (exit 4) even while the other Mac isn't answering, as after a stop the other Mac asked
 for before it left (its uninstall does): `lines` are "Stopped; last model …" and "The other Mac (…) isn't answering
@@ -785,7 +833,7 @@ resident assistant, GLM-5.3-Flash in tensor parallel), otherwise
 | Command | On a Mac in a cluster |
 |---|---|
 | `darkbloom cluster stop` | The same as `darkbloom stop` on a paired Mac: stops the pair on both Macs, which stay stopped after a restart while both cluster services stay up, idle (`Cluster.Stop.mode`). `--service` also stops this Mac's cluster service and keeps it from starting at login, the earlier `cluster stop`: on the Mac that follows a started cluster it asks the leading Mac to stop both Macs first (`This Mac follows the other Mac (…), which leads: \`darkbloom cluster stop\` stops the cluster on both Macs.`, `Cluster.Stop.pairStop`). `--local-only` stops only this Mac's service, without asking the other Mac |
-| `darkbloom cluster link --remove` | Says first that it undoes the cable port setup that works now and that the cluster stops serving on both Macs until `darkbloom cluster` (or `link --fix`) sets it up again, then asks `Remove it? [y/N]`. `--yes` (`-y`) removes without asking; without a terminal, or with `--json`, it needs `--yes` (exit 1, nothing changed). `--dry-run` never asks (`Cluster.Link.removalGate`) |
+| `darkbloom cluster link --remove` | Says first that it undoes the cable port setup that works now and that the cluster stops serving on both Macs until `darkbloom cluster` (or `link --fix`) sets it up again, then asks `Remove it? [y/N]`. `--yes` (`-y`) removes without asking; without a terminal, or with `--json`, it needs `--yes` (exit 1, nothing changed). `--dry-run` never asks (`Cluster.Link.removalGate`). Without `--device` it undoes every port Darkbloom set up under one macOS approval, naming them (`Thunderbolt ports en2, en1 and en6`); `--device` undoes that one (`ClusterLinkRepair.removeIsolation`). Each port's service goes before the port goes back in its bridge (a port's only service through `scutil --prefs`, which `networksetup` refuses to remove), and the approval stops at the first command that fails: the message then says the commands after it did not run and which ports are still to undo (`--json`: `remaining`), exit 4 |
 
 `darkbloom cluster --help` ends with these commands and what each is for
 (`Cluster.commandList`).
@@ -2309,7 +2357,11 @@ replacing the running binary (`provider-swift/Sources/ProviderCore/Update/SelfUp
 On a Mac whose `darkbloom cluster` service runs, the command then asks that
 service's supervisor to restart into the installed release together with the
 other Mac, after the pair drained, and prints its progress until the restart
-(at most `--timeout` seconds); a deferral exits 1
+(at most `--timeout` seconds); a deferral exits 1. It also ends as soon as this
+Mac's cluster service runs the installed release (`This Mac's cluster service now
+runs v<version>; the cluster sets itself up again once both Macs run it.`): the
+restarted service may report that no update runs before the command reads the
+restart
 (`provider-swift/Sources/darkbloom/UpdateCommand.swift`, `ClusterServiceUpdateRequest`;
 [updating Darkbloom on the pair](two-mac-cluster.md#updating-darkbloom-on-the-pair)).
 
@@ -2982,11 +3034,20 @@ Code: `libs/darkbloom-cluster-worker/Sources/DarkbloomClusterWorker/Startup/Work
 
 On a paired leader, `darkbloom cluster stop --service` waits for its owned part to retire
 before asking the member to stop and removing the local login service. A local
-retirement timeout or missing peer acknowledgement exits with status 1 and prints
-the pair's reason (a runtime failure, not a usage error, so no usage text follows),
-and retains the login service and saved stopped intent. Run the command again after the
-reported condition clears; retries repeat the drain/acknowledgement path. An
-already stopped local part does not require another model load.
+retirement timeout exits with status 1 and prints the pair's reason (a runtime
+failure, not a usage error, so no usage text follows), and retains the login service
+and saved stopped intent. Run the command again after the reported condition clears;
+retries repeat the drain/acknowledgement path. An already stopped local part does not
+require another model load.
+
+When this Mac has stopped serving but the other Mac does not answer (its cluster
+service is already off, or the cable is down), this Mac's service still stops and
+leaves login, and the command exits 0. It says what happened on each Mac:
+`This Mac stopped serving.`, `The other Mac (…) did not answer (…), so it was not
+asked to stop (its cluster service may already be off).`, the service line, and
+a last line to run `darkbloom cluster stop --service` on the other Mac if its
+service is still on. A stop forwarded from the Mac that follows to the leading
+Mac that cannot finish still exits 1 and keeps this Mac's service.
 
 When the other Mac is gone for good (wiped, sold, or no longer cabled),
 `darkbloom cluster stop --local-only` stops only this Mac. It skips the drain and

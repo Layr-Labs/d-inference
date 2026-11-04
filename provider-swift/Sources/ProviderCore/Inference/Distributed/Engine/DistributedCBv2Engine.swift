@@ -24,6 +24,9 @@ public final class DistributedCBv2Engine: CBv2Engine, @unchecked Sendable {
     var invalidated = false
     var stopping = false
     var shutdownTask: Task<Void, Never>?
+    /// The capacity the queue last computed, which `capacity()` answers from
+    /// off the queue (`DistributedCBv2Engine+Capacity.swift`).
+    let capacityPublication = DistributedCapacityPublication()
     /// The seed of every sampled request that names none (see `resolvingSeed`).
     let fallbackSeed = UInt64.random(in: .min ... .max)
     /// The pair's MTP counts over every request that reported them
@@ -62,11 +65,12 @@ public final class DistributedCBv2Engine: CBv2Engine, @unchecked Sendable {
         queue.setSpecific(key: queueKey, value: 1)
         owner.setReadinessInvalidationHandler { [weak self] in
             guard let self else { return }
-            self.onQueue { self.invalidate() }
+            self.onQueue { self.invalidate(); self.publishCapacity() }
         }
         guard onQueue({ readyCapacity() != nil }) else {
             throw DistributedEngineError.unavailable
         }
+        onQueue { _ = publishCapacity() }
     }
 
     func onQueue<T>(_ body: () throws -> T) rethrows -> T {
@@ -82,26 +86,14 @@ public final class DistributedCBv2Engine: CBv2Engine, @unchecked Sendable {
         if DispatchQueue.getSpecific(key: queueKey) != nil { body() } else { queue.async(execute: body) }
     }
 
+    /// Returns at once. A reservation can hold the queue until both ranks
+    /// answer at their next step boundary (up to the lane admission wait, 30 s),
+    /// so the stop is queued behind it and applied in queue order: a request
+    /// whose reservation is in flight is stopped as soon as it is admitted.
     public func cancel(_ id: CBv2RequestID) {
-        onQueue {
+        onQueueWithoutWaiting { [self] in
             guard let state = actives.values.first(where: { $0.request.id == id }) else { return }
             stop(state, reason: .cancelled)
-        }
-    }
-
-    public func capacity() -> CBv2CapacitySnapshot {
-        onQueue {
-            let capacity = readyCapacity() ?? 0
-            let states = Array(actives.values)
-            let reserved = states.reduce(0) { $0 + max(0, $1.lease.reservedBytes) }
-            let inUse = states.reduce(0) { $0 + $1.lease.bytesInUse }
-            if inUse < 0 || inUse > reserved { invalidate() }
-            return CBv2CapacitySnapshot(
-                activeRequests: states.count, waitingRequests: 0,
-                kvBytesInUse: max(0, inUse), kvBytesCapacity: invalidated ? 0 : capacity,
-                kvBytesBackendCapacity: invalidated ? 0 : capacity,
-                kvBytesReserved: reserved,
-                activeTokens: states.reduce(0) { $0 + $1.request.promptTokens.count + $1.completionTokens })
         }
     }
 
@@ -109,7 +101,7 @@ public final class DistributedCBv2Engine: CBv2Engine, @unchecked Sendable {
     public func mtpTotalsSnapshot() -> DistributedMTPTotals { onQueue { mtpTotals } }
 
     public func updateKVBytesCapacity(_ bytes: Int) {
-        onQueue { capacityLimit = max(0, bytes) }
+        onQueue { capacityLimit = max(0, bytes); publishCapacity() }
     }
 
     public func shutdown() async {
@@ -128,6 +120,7 @@ public final class DistributedCBv2Engine: CBv2Engine, @unchecked Sendable {
             await owner.shutdown()
         }
         shutdownTask = task
+        publishCapacity()
         return task
     }
 

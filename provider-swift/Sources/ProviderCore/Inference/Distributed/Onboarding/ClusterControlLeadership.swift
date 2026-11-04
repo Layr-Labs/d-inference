@@ -662,8 +662,12 @@ public struct ClusterControlRequest: Codable, Sendable, Equatable {
     public var model: String?
     public var localOnly: Bool?
     public var bind: String?
-    public init(op: Operation, index: Int? = nil, model: String? = nil, scope: ClusterServingScope? = nil) {
+    /// `adopt`: the mode family chosen on the forwarding Mac's screen (a `ClusterForcedMode` raw value); nil keeps the
+    /// listed plan's, and from an older build.
+    public var mode: String?
+    public init(op: Operation, index: Int? = nil, model: String? = nil, scope: ClusterServingScope? = nil, mode: String? = nil) {
         self.op = op; self.index = index; self.model = model; self.localOnly = scope.map(\.isLocalOnly); self.bind = scope?.bind
+        self.mode = mode
     }
 
     /// `scope`'s value; nil when it names none or an address the local API does not take.
@@ -683,13 +687,19 @@ public struct ClusterControlReply: Codable, Sendable, Equatable {
     public var progress: String?
     /// The Mac asked does not lead (any more): nothing ran there, and the asking Mac routes the command again.
     public var notLeader: Bool?
+    /// `status`: what the leading Mac's setup screen waits on now; nil when it waits on nothing, and from an older build.
+    public var step: ClusterOnboardingLeaderStep?
 
     public init(lines: [String], failed: Bool, leaderID: String? = nil, machines: [ClusterOnboardingMachine]? = nil,
                 choices: [ClusterOnboardingModelChoice]? = nil, ready: ClusterOnboardingReady? = nil, progress: String? = nil,
-                notLeader: Bool? = nil) {
+                notLeader: Bool? = nil, step: ClusterOnboardingLeaderStep? = nil) {
         self.lines = lines; self.failed = failed; self.leaderID = leaderID; self.machines = machines; self.choices = choices
-        self.ready = ready; self.progress = progress; self.notLeader = notLeader
+        self.ready = ready; self.progress = progress; self.notLeader = notLeader; self.step = step
     }
+
+    /// `status`: how far the leading Mac's start is (`ClusterOnboardingStartProgress`); nil when no start runs, and from
+    /// an older build.
+    public var start: ClusterOnboardingStartProgress? = nil
 }
 
 public enum ClusterControlRouting {

@@ -65,11 +65,36 @@ request stream's `onTermination` and the admission cancellation hop onto the
 queue without waiting, or run in place when already on it. The retirement task
 never blocks a cooperative thread. Waiting there deadlocked a pair slot's
 retirement: `EngineV2Bridge.shutdown` cancelled a pump while the queue
-published that request's peer loss. Lease events, the owner's invalidation and
-the public calls keep their synchronous queue order. Source:
+published that request's peer loss. Lease events, the owner's invalidation,
+submissions and shutdown keep their synchronous queue order.
+
+A reservation runs on that queue and waits there until both ranks answer at
+their next step boundary, up to the lane admission wait (30 s) per
+reservation, one reservation after another. So nothing that only reads the
+engine or stops a request waits for the queue. `cancel` hops onto it without
+waiting: the stop runs in queue order, so a request whose reservation is in
+flight is stopped as soon as it is admitted. A submission whose caller went
+away while it waited for the queue (`DistributedAdmissionCancellation`) is
+refused before it asks the ranks. The first-token and request deadline timers
+hop the same way. `capacity()` called off the queue answers at once from the
+snapshot the queue publishes after every change, with the owner's readiness
+read live, and queues one refresh that runs the readiness and accounting
+checks once the queue is free. A pair measures no prefill rate, so the bridge
+submits its requests without a projected admission. It awaits that admission
+(`submitAwaitingQueue`) instead of waiting for the queue on its actor, so the
+actor stays free for cancels and capacity reads. Before, the bridge actor
+waited for the whole reservation, and with it the heartbeat's capacity,
+cancellation and every other request's submission; on DevNet's pair-2 a cancel
+during a 15K-token prompt landed 20–29 s late. The reservation itself still
+holds the queue, and with it token delivery to the other lanes, until it
+returns. Sources:
 `provider-swift/Sources/ProviderCore/Inference/Distributed/Engine/DistributedCBv2Engine.swift`
-(`onQueueWithoutWaiting`) and
-`provider-swift/Sources/ProviderCore/Inference/Distributed/Engine/DistributedCBv2Engine+Admission.swift`.
+(`onQueueWithoutWaiting`, `cancel`),
+`provider-swift/Sources/ProviderCore/Inference/Distributed/Engine/DistributedCBv2Engine+Capacity.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Distributed/Engine/DistributedCBv2Engine+Admission.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Distributed/Engine/DistributedCBv2Engine+Submission.swift`
+(`submitAwaitingQueue`) and
+`provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Submission.swift`.
 
 A pair request's admission deadline (the first-content budget left when it
 arrived, `DistributedRequestDeadlineContext`) is that request's alone. It bounds
@@ -367,7 +392,24 @@ with hardware names, is no longer on the screens, which say one serving line
 nothing more once paired, also for `darkbloom cluster local`
 (`ClusterOnboardingDriver.joinedLocalLine`): it follows the leader's start from the cluster status
 over the cable and ends with the same ✓/✗ block, bounded like the leader's start
-(`ClusterOnboardingDriver.followStart`, `ClusterOnboardingFollowTiming`). Serving through Darkbloom, the
+(`ClusterOnboardingDriver.followStart`, `ClusterOnboardingFollowTiming`).
+
+- **What it waits on.** The leading Mac's screen records each step it waits on in its setup record
+  (`OnboardingLive.publishStep`, `ClusterSetupRecord.onboardingStep`, `ClusterOnboardingLeaderStepMark`). Its status
+  reply carries that step (`ClusterControlReply.step`, `ClusterOnboardingLeaderStep`). A step counts only while that
+  screen's process runs; a refusal counts for 30 minutes after it was set, because the screen ends with it. A reply
+  from an older build has no step, and the Mac that joins keeps the general words.
+- **The live line.** The Mac that joins says each step once and shows a live line fitted to the window's current
+  width (`ClusterOnboardingDriver.followWaitingLine`). The terminal reads that width at each redraw and climbs back
+  over the rows a reflowed window shows (`ClusterOnboardingTerminal.climb`), so a redraw never leaves a wrapped copy
+  behind.
+- **How the wait ends.** A refusal ends the wait at once with the leader's ✗ (`followRefused`; different builds:
+  `differentBuildsLines`). Running out of time ends it with a ✗ and next steps (`notStartedReason`,
+  `notStartedLines`).
+- **The leader's own Local Network wait** has a bound too (`ClusterOnboardingOperations.localNetworkWaitSeconds`,
+  `localNetworkOffLines`).
+
+Serving through Darkbloom, the
 leader's start asks the coordinator after its test whether to offer the pair; until it has, the setup record
 says so (`ClusterSetupRecord.registrationPendingPID` and `registrationPendingStarted`, set only by the screen's
 start, `OnboardingLive.markRegistrationPending`, never by `serve` alone as `darkbloom start` and `restart` run
@@ -418,8 +460,10 @@ at …", `ClusterOnboardingReady.summary`, from the setup each Mac saved). Every
 of a missing model is a list as well, a short one with its predicted time
 (`ClusterOnboardingDriver.provision`). The public-traffic line
 (`ClusterOnboardingModelChoice.publicTraffic`) is said only for a private image
-candidate; the serving line ends "(earning through Darkbloom)" or "(local
-only)" (`ClusterOnboardingDriver.servesWords`). When the other Mac does not
+candidate; a serving line on the leader's API ends "(local only)"
+(`ClusterOnboardingDriver.servesWords`): such a pair is never offered, so no line
+says it earns through Darkbloom, and one set to serve through Darkbloom says
+`not offered to Darkbloom (<why>)` instead (`OnboardingLive.notOfferedLines`). When the other Mac does not
 answer over the cable, the leader asks **Try again** or **Cancel**
 (`chooseAndServe`).
 
@@ -2159,7 +2203,22 @@ and `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/DeadlineAdmiss
 
 `WedgeMonitor.suspectStallSeconds =
 10` flags a stalled slot
-(`provider-swift/Sources/ProviderCore/Inference/Engine/WedgeMonitor.swift`).
+(`provider-swift/Sources/ProviderCore/Inference/Engine/WedgeMonitor.swift`):
+three requests without a first token for 10 s while the engine's step counter
+stands still. A two-Mac pair's engine has no step counter, and its ranks
+prefill one prompt at a time and send nothing until a prompt's first token, so
+that rule would report every burst of long prompts as a wedge. The bridge
+(`EngineV2Bridge+Capacity.swift`, `WedgeMonitor.marksCrashed`) therefore marks a
+pair's slot `crashed` only when a waiting request is still without a first
+token `pastAllowanceGraceSeconds` (40 s) after its own first-token allowance.
+That allowance is the one the pair's engine arms (its first-token deadline, or
+its request deadline when the coordinator sent no budget), tracked by request
+id: it leaves with its own request's first token or end, and an entry whose
+request left the bridge never counts. The `step_wedge` telemetry still reports
+the plain rule. A hung pair is ended
+first by the engine's first-token and request deadlines, which fail the request
+and cancel its lease, and by the cluster's fencing of a rank that does not
+retire a cancelled lane within 30 s, which withdraws the pair's capacity.
 
 ### Multi-token prediction
 
@@ -3547,7 +3606,7 @@ evidence, not a change to the normal final-row contract or the near-tie rule
 | Load refused: `pagedUnavailable` (503) | Explicit `engine_v2_kv_backend = paged` and the paged pool/kernels failed | `EngineV2Factory+BackendPreparation.swift` — see [`prefix-cache.md`](prefix-cache.md) |
 | Cold load refused with the ordinary slot (503) or insufficient-memory error although an idle model is resident | That slot holds an unexpired Autopilot placement hold: held slots are excluded from eviction (`ProviderLoop.evictableModelSlots`, `autopilotHoldsModel`) and their weights get no `free_for_load_gb` reclaim credit (`autopilotHeldWeightBytes`); the refusal's `Not evictable:` list names it with the hold's UTC expiry; see [Autopilot placements](model-autopilot.md#placements-after-an-operation) | `provider-swift/Sources/ProviderCore/Autopilot/ProviderLoop+AutopilotPlacement.swift`, `provider-swift/Sources/ProviderCore/ProviderLoop+EvictionExclusions.swift` |
 | Load refused (503), or a running load ends before it installs a slot | An [add-on hold](addon-hold.md) is active: no load takes the load gate, and one already running stops at its next check (after hashing, after the weight load or before install; the managed Super and native MiMo loads before their weights and at publication) | `provider-swift/Sources/ProviderCore/Addon/ProviderLoop+AddonHold.swift` (`addonHoldLoadRefusal`), `provider-swift/Sources/ProviderCore/ProviderLoop+ModelLoading.swift` (`ensureModelLoaded`), `provider-swift/Sources/ProviderCore/MiMo/ProviderLoop+NativeMiMo.swift` (`requireNativeMiMoPublication`) |
-| Slot flagged wedged | No engine progress for `suspectStallSeconds = 10` | `WedgeMonitor.swift` |
+| Slot flagged wedged | No engine progress for `suspectStallSeconds = 10`; a two-Mac pair only once a request is 40 s past its own first-token allowance | `WedgeMonitor.swift` |
 | Provider exits with `Trace/BPT trap: 5`; its log shows `[metal::Device] Unable to build metal library from source` | MLX compiled a Metal kernel at runtime and the compile failed. mlx-swift builds MLX's JIT kernel path, and the release metallib holds no NAX attention kernels, so on M5 GPUs fused attention compiles on the Mac when a shape is first used; MLX throws on a failed compile and the Swift error handler stops the process. 0.10.2 failed this way for full attention with head dim 256 or 512 and at least 1,024 query tokens (`attention_nax_dsplit`), fixed in 0.10.3. Check an MLX pin change that touches `jit_kernels.cpp` or the NAX kernels on an M5 with a long Gemma 4 or Qwen prompt | `libs/mlx-swift/Source/Cmlx/mlx/mlx/backend/metal/jit_kernels.cpp`, `device.cpp` (`build_library_`) |
 
 ## Code map
@@ -3964,35 +4023,45 @@ away; mixed pairs are first-class).
   reads stopped whatever the other Mac's presence
   (`ClusterPairSummary.state(ofStatus:started:leaderMode:)`).
 - **The split shown:** each mode's share names the Mac that runs it
-  (`OnboardingLive.modeSplit`, "1 layer" for one). While a model serves it reads
-  "decided when it loads": the list's plan counts that model's memory as taken,
-  and the adopt stops it and plans again with its memory free.
+  (`OnboardingLive.modeSplit`, "1 layer" for one), with the requests it serves
+  at once (`ClusterSetupPlanSummary.Mode.concurrentRequests`, from the setup's
+  `DistributedInstalledPlan.batchLanes`). It is the plan that loads when that
+  mode is chosen (`ClusterSetupPlanning.offered`): the listed plan for its own
+  family, and for each other family the plan `ClusterPlacementFlow.decide(chosenMode:)`
+  makes from the same samples, kept with its setup
+  (`ClusterSetupModelOption.familyPlans`, `Decision.familySetups`). A family
+  that can't be planned shows no split. Planning a family again at the start
+  would measure this Mac's speed index again, and on two Macs of one speed a
+  pipeline's layers follow whichever measured faster (offered 1 / 44, loaded
+  44 / 1). While a model serves it reads "decided when it loads": the list's
+  plan counts that model's memory as taken, and the adopt stops it and plans
+  again with its memory free.
 - **The person's family:** `useMode` keeps the chosen family for every model
   (`OnboardingLive.keptFamily`), never inferred from the listing's order, which
-  says nothing of the plan; `localAdopt` plans again in it only when the listed
-  plan's mode isn't in it (`OnboardingLive.replansInFamily`).
+  says nothing of the plan. `localAdopt` adopts the listed plan when it is in
+  that family, else the family's own plan the list showed, and plans again only
+  while a model serves or when no plan was made for it (`OnboardingLive.adoption`).
 - **The scope a plan is for:** `chooseAndServe` names the scope before it plans
   the list (`ClusterOnboardingOperations.planScope`, `OnboardingLive.usePlanningScope`,
   carried in `ClusterControlRequest.scope`); a start whose scope changes before
   it adopts (the login check's "Serve locally only") is planned again for that
   scope, and the same model is adopted from the new plan.
 - **Forwarded choices:** a choice the other Mac forwards to the control leader
-  (`ClusterControlRequest`: op, index, model and scope) carries no mode, so it
-  is placed in the planner's family; the mode is chosen on the leading Mac.
-- **The person's choice:** `useMode` keeps the family for the next adopt of that
-  model; `OnboardingLive.localAdopt` plans that model again with
-  `ClusterPlacementFlow.decide(chosenMode:)`, which places only that family the
-  way the developer setting does (`policy.forcedMode`), while memory fit,
-  qualification records and feature parity still decide, and adopts that plan.
+  (`ClusterControlRequest`: op, index, model, scope and the mode family chosen
+  on that Mac's screen, `OnboardingLive.adoptRequest`) is adopted in that family;
+  a request without a mode, from an earlier build, keeps the leader's own.
+- **The person's choice:** `chosenMode` places only that family the way the
+  developer setting does (`policy.forcedMode`), while memory fit,
+  qualification records and feature parity still decide.
   A re-plan after an update keeps the served mode unless the planner and the
   pair's served requests both find another faster (`ClusterServedModes.hold`).
 
 Sources: `provider-swift/Sources/ProviderCore/Inference/Distributed/Console/ClusterSetupWizardPlanning.swift`
-(`ClusterSetupPlanning.modes`),
+(`ClusterSetupPlanning.modes`, `ClusterSetupPlanning.offered`),
 `provider-swift/Sources/ProviderCore/Inference/Distributed/Placement/ClusterPlacementFlow.swift`
 (`ClusterPlacementFlow.decide`), and
 `provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/ClusterOnboardingLive.swift`
-(`useMode`, `localAdopt`, `screenMode`).
+(`useMode`, `localAdopt`, `adoption`, `screenMode`).
 
 ## A saved pairing the onboarding cannot use
 
@@ -5240,7 +5309,7 @@ See [focused MiMo V2.6 tensor-parallel checks](../developer/test.md#focused-mimo
 
 ## Exact-quote placement
 
-`ClusterPlacementPlanner.rankQuoted` is the model-independent decision seam for adapters that provide exact simultaneous native/host peaks and current bounds. It filters infeasible shapes and unsupported modes, then uses the same hardware-only ordering as `plan`: candidates whose every range fits its Mac's hardware (`ClusterDeviceProfile.hardwareFits`: buffer and allocator limits, the GPU-resident part (`ClusterPlacementRank.gpuResidentBytes`, the `withinGPUWorkingSet` figure) within the GPU limit, and the whole need within the at-rest admissible memory `atRestAdmissibleBytes`, physical memory less what macOS wires, because the load gate counts every file-backed page), then predicted request time, ties and the tensor-parallel margin. Live free memory and file cache never order candidates; each rank's live fit is reported and the load gate still decides each load. A supported TP adapter must supply TP layout facts and keyed reduction measurements. Neither resource balance nor chip-name rules replace request-time scoring; balance only breaks ties. Candidates whose predicted times differ only by rounding (relative 1e-9, as every serial pipeline cut does on identical Macs) are ordered by `capacityBalance`, the smallest share of a rank's hardware capacity (`min(residentCapacityBytes, atRestAdmissibleBytes)`) left beyond its need, before the lower cut, so identical Macs split evenly and live free memory cannot pick the cut. Every structural boundary, including one layer on a slower member, remains available when its adapter quotes fit. A candidate is `possible` when every rank fits the hardware, or the live gate admits it now and its GPU part is within the limit: a split the GPU cannot keep resident is never offered because memory happens to be free. `ClusterPlacementMemoryVerdict.assess` runs the caller's planning step on the Macs as they are and, when nothing fits, with each GPU limit raised to `ClusterGPUMemoryLimit.ceilingBytes` (physical memory less 16 GiB, or a sixteenth from 512 GB): `fits`, `needsGPULimitRaise` (each Mac's GPU need, limit now and ceiling, with `ClusterGPULimitRaise.question`) or `doesNotFit`. It is data only: no setup screen calls it yet, and nothing in Darkbloom raises the limit. `ClusterDeviceMemory.fit` reports `gateCountsLess` only on a sample whose gate counts file cache; above normal pressure, where the gate counts none, the answer is `afterApplicationsRelease`. A rank's live fit is the gate's decision on one sample, so it cannot foresee the gate withdrawing the file cache during the load once compression or swap-out since the load's first sample passes its limits (`QwenDenseStageLoadPolicy.maximumCompressedSinceFirstSampleBytes`, described above); the at-rest ceiling assumes the share loads into free pages, not into a file cache full of the model's own files.
+`ClusterPlacementPlanner.rankQuoted` is the model-independent decision seam for adapters that provide exact simultaneous native/host peaks and current bounds. It filters infeasible shapes and unsupported modes, then uses the same hardware-only ordering as `plan`: candidates whose every range fits its Mac's hardware (`ClusterDeviceProfile.hardwareFits`: buffer and allocator limits, the GPU-resident part (`ClusterPlacementRank.gpuResidentBytes`, the `withinGPUWorkingSet` figure) within the GPU limit, and the whole need within the at-rest admissible memory `atRestAdmissibleBytes`, physical memory less what macOS wires, because the load gate counts every file-backed page), then predicted request time, ties and the tensor-parallel margin. Live free memory and file cache never order candidates; each rank's live fit is reported and the load gate still decides each load. A supported TP adapter must supply TP layout facts and keyed reduction measurements. Neither resource balance nor chip-name rules replace request-time scoring; balance only breaks ties. Candidates whose predicted times differ only by rounding (relative 1e-9, as every serial pipeline cut does on identical Macs) are ordered by `capacityBalance`, the smallest share of a rank's hardware capacity (`min(residentCapacityBytes, atRestAdmissibleBytes)`) left beyond its need, before the lower cut, so identical Macs split evenly and live free memory cannot pick the cut. Every structural boundary, including one layer on a slower member, remains available when its adapter quotes fit. A candidate is `possible` when every rank fits the hardware, or the live gate admits it now and its GPU part is within the limit: a split the GPU cannot keep resident is never offered because memory happens to be free. `ClusterPlacementMemoryVerdict.assess` runs the caller's planning step on the Macs as they are and, when nothing fits, with each GPU limit raised to `ClusterGPUMemoryLimit.ceilingBytes` (physical memory less 16 GiB, or a sixteenth from 512 GB): `fits`, `needsGPULimitRaise` (each Mac's GPU need, limit now and ceiling, with `ClusterGPULimitRaise.question`) or `doesNotFit`. It is data only: no setup screen calls it yet, and `darkbloom cluster` never raises the limit itself. The one command that does is `darkbloom cluster gpu-limit`, which its owner runs on an M5 Mac with 128 or 256 GB, with consent and macOS's administrator prompt, to the same ceiling (`GLM5NextGPULimitEligibility`; see [GLM pair admission](#glm-pair-admission)). `ClusterDeviceMemory.fit` reports `gateCountsLess` only on a sample whose gate counts file cache; above normal pressure, where the gate counts none, the answer is `afterApplicationsRelease`. A rank's live fit is the gate's decision on one sample, so it cannot foresee the gate withdrawing the file cache during the load once compression or swap-out since the load's first sample passes its limits (`QwenDenseStageLoadPolicy.maximumCompressedSinceFirstSampleBytes`, described above); the at-rest ceiling assumes the share loads into free pages, not into a file cache full of the model's own files.
 
 GLM's placement family (`GLM5NextPlacementFamily`, `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/GLM5Next/Metadata/GLM5NextServingMetadata.swift`) offers the two-rank plan `glm5_next_heads_and_expert_channels_v1` whenever the registered row lists `tensor_parallel_v1` and the geometry halves. Each text-layer tensor is divided or replicated exactly as the SDK's `GLM5NextTensorShard.splitAxis` loads it; the embedding, final norm and head are replicated, and the NextN layer and vision tower belong to no text range. Every rank decodes in speculative rounds with the NextN layer, which it holds whole beside its share, so the plan states it (`ClusterTensorParallelFamilyPlan.speculativeHead`, `GLM5NextPlacementFamily.tensorParallelSpeculativeHead`): the planner charges each tensor-parallel rank the layout's `speculativeHead` part (4,183,320,576 stored bytes, each tensor in whole pages, as `mtp_bytes` on the worker's load line) and the request memory the rounds add at the memory plan's context (the larger of the contiguous and the paged NextN charge of `GLM5NextTensorParallelRequestCharge`), and divides a token's predicted decode step by the speed-up the pair measured at the runtime's depth over one token per step (76.0 against 62.6 tok/s at depth 2, `GLM5NextPlacementFamily.measuredTensorParallelDecode`). Served tensor-parallel requests are taken back to one-token steps by the same speed-up before they correct the shares (`ClusterServedCalibration`), so the next plan predicts what was served. Without it the plan priced no NextN bytes and one token per step: it could admit a pair the load gate then refused, and it predicted decode too slow. Three terms of the load gate are not in the plan yet: the vision tower rank 0 holds for media (1.13 GB), the freed-buffer cache (`GLM5NextTensorParallelResidentRuntime.freedBufferCacheBytes`) and the bulk prefill's further workspaces and sealed sums' buffers (`bulkPrefillChunkTokens`). On two M5 Ultra 256 GB, adding them to the planner's estimate as it stands would put each rank's need above the at-rest ceiling (`ClusterDeviceProfile.atRestAdmissibleBytes`), so the pair would no longer plan tensor parallel; they wait for the gate's own charge to replace the estimate rather than be added to it. The plan sums two partials of the 4096-wide residual per layer and one per step (91 per decode step); the partials are the row-parallel projections' bfloat16 outputs, sent as they are and added in float32 with one rounding (`GLM5NextTensorParallelResidentRuntime.partialsTransport`, bound into the load agreement). That is bit-identical to widening them to float32 before the link, as `ClusterTensorParallelTerms.current` (`partialsDType` float32) describes, with half the bytes: GLM's projections never kept float32 partials (flagged for platform review) and holds request state whole on each rank, since the DSA latent cache is replicated. The pipeline's private image profile stays pipeline-only, in both the layout and the capability; tensor parallel serves media under the text profile (below). The hardware prior (`ClusterHardwarePrior.decodeBytesPerToken`) counts a mixture of experts' routed experts at the fraction a token is routed to (`ClusterRoutedExperts`; 8 of GLM's 288), not every expert byte. Of the bytes a step reads, a tensor-parallel share divides only the plan's divided bytes (`dividedDecodeFraction`), because every rank reads its replicated bytes whole. On two identical M5 Ultra 256 GB with GLM measured alone the product's rule (tensor parallel first wherever it fits) places tensor parallel on equal shares with the NextN layer priced, both on a new pair before any load measured the link and after the first load's keyed probe; the planner's own speed comparison (the plan tool without `--tensor-parallel-first`) chooses tensor parallel once the keyed link is measured and a pipeline before (`GLMTensorParallelChecks`; through `ClusterPlacementFlow.decide` in `PlacementSetupCheck.glmTensorParallelPair`). The pair serves it with eight lanes (`DistributedInstalledPlan.tensorParallelBatchLanes`).
 
@@ -5343,6 +5412,50 @@ pages), a decode step held 16 MB above its baseline at a 20-token context and
 whole step in one buffer (131 MB under the rank's guard), against 6.0 and
 11.1 GB charged at those contexts. The decode speed effect and peak memory on
 registered models are not measured yet.
+
+## GLM pair admission
+
+A serving GLM pipeline rank reserves no request at LOAD
+(`GLM5NextResidentResourceEnvelope.admitsRequestsOnArrival`, which only
+`GLM5NextResidentRuntime.serving` asks `GLM5NextServingResources.envelope` for).
+
+1. **LOAD** holds, and is gated on, the stage's weights at their allocator
+   bounds plus what only loading holds: construction copies, host read buffers
+   and metadata (`GLM5NextResidentResourceEnvelope.quote`). That sum must fit the
+   rank's load capacity, the GPU's recommended working set, and the live host
+   gate with its floor and loading headroom. The stage gate reserves no request
+   state or workspace (`GLM5NextStageLoadGate`, `reservesRequest: false`).
+2. **Each request** is charged at its own context: the memory plan's scope cut
+   to it (`GLM5NextResidentResourceEnvelope.budget(descriptor:contextTokens:)`).
+   The existing reservation gate admits it (`GLM5NextResidentRuntime.reserve`):
+   - the host memory gate with its floor and loading headroom;
+   - the allocator limit;
+   - the GPU's working set beside the loaded stage (`requireMemory`).
+
+   The activation floor is part of every charge. Kept prompt prefixes give way
+   first. A request that still does not fit is refused cleanly, and the running
+   request is rechecked as it runs.
+3. **READY and every keep-warm answer** report the longest context that fits
+   now (`GLM5NextResidentRuntime.servingContext`, `refreshServingContext`). The
+   pair refuses a longer request before asking either rank. The value is 1 when
+   nothing fits, until memory frees.
+
+The planner places such a rank on what loading needs. It requires the GPU to
+hold the weights with the memory plan's whole request, and reports each rank's
+serving context (`ClusterModelLayout.requestsOnArrival`,
+`ClusterPlacementRank.servingContextTokens`). Its estimate of one Mac holding
+the whole model alone keeps the full quote, as that Mac's own engine loads it. When a GPU limit binds, the plan
+names it, and the command that raises it on the Macs that command runs on
+(`ClusterPlacementRank.gpuWorkingSetShortBytes`, `ClusterPlacementFlow.gpuLimitLines`,
+`GLM5NextGPULimitEligibility`).
+
+A quote above a capacity refuses with the rank, the cut, and each term against
+that capacity (`GLM5NextResidentResourceEnvelope.capacityRefusal`).
+
+Tensor parallel's quotes of the two stages, the staged reference and
+calibration envelopes still reserve the whole request at LOAD.
+[GLM-5.3-Flash pairs on 128 GB Macs](hardware-support.md#glm-53-flash-pairs-on-128-gb-macs)
+has the figures for two M5 Max.
 
 ## GLM cluster prefill bounds
 
@@ -7158,8 +7271,12 @@ also waits while the leader still owns a running part.
 This ordering lets the leader send native shutdown commands over the live pair
 before the follower ends its owner stream. Local retirement failure and missing
 peer acknowledgement remain failures with stopped intent retained. The CLI
-keeps its login service on those failures so bounded recovery/reconciliation can
-continue; model-change and update callers already refuse to continue on failure.
+keeps its login service on a local retirement failure so bounded
+recovery/reconciliation can continue. After a completed local retirement, a peer
+that does not answer (`ClusterOnboardingFailure.otherMacUnanswered`, set only by
+`localStop`) no longer keeps `cluster stop --service` from removing this Mac's
+service: the command says the other Mac was not asked to stop. Model-change and
+update callers still refuse to continue on either failure.
 A forwarded stop allows 330 seconds for the local retirement and peer command.
 
 Sources: `provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/ClusterOnboardingLive.swift`

@@ -49,6 +49,8 @@ public struct ClusterServiceStatus: Codable, Sendable, Equatable {
         public var ranks: Int
         public var port: Int?
         public var detail: String?
+        /// The ranks whose part is ready, when known (the start's per-Mac rows); nil from an older build.
+        public var readyRankList: [Int]? = nil
     }
     public var role: String?
     public var serving: Bool
@@ -94,6 +96,15 @@ public struct ClusterServiceStatus: Codable, Sendable, Equatable {
     /// This Mac's cluster service starts by itself at login (`ClusterServiceAgent.startsAtLogin`): what the other Mac
     /// reads before it says the pair starts at login on both Macs. Nil from an older build: unknown.
     public var startsAtLogin: Bool? = nil
+    /// A single-Mac provider serving on this Mac (`ProviderInstanceHolder`): it holds this Mac's one serving lock and
+    /// never ends by itself, so this Mac's part doesn't start beside it and the other Mac's start names it. Nil when
+    /// none, and from an older build.
+    public var soloServing: SoloServing? = nil
+    public struct SoloServing: Codable, Sendable, Equatable {
+        /// Its process, nil when its lock record names none.
+        public var pid: Int32?
+        public init(pid: Int32?) { self.pid = pid }
+    }
     public struct Control: Codable, Sendable, Equatable {
         public var leaderID: String
         public var leaderName: String
@@ -123,10 +134,13 @@ public struct ClusterServiceCommand: Codable, Sendable, Equatable {
     /// this Mac's verify-teardown summary. `approval`: the cluster approval the
     /// leader fetched for the saved setup (`approval`, nil: save the setup
     /// without one), which the member checks against its own files before it
-    /// saves it. A member whose build predates an operation refuses the command
+    /// saves it. `stopSolo`: stop this Mac's single-Mac serving, which blocks the pair.
+    /// A member whose build predates an operation refuses the command
     /// (it cannot decode it).
     public enum Operation: String, Codable, Sendable {
         case serve, stop, status, prompt, cacheSettings, unpair, sendModel, lease, control, teardown, batchSetup, approval
+        /// Stop single-Mac serving on this Mac (`darkbloom stop --solo`), as the person chose on the other Mac's screen.
+        case stopSolo
     }
     public var op: Operation
     public var model: String?

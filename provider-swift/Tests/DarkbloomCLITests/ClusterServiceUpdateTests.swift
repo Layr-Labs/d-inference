@@ -241,6 +241,49 @@ struct ClusterServiceUpdateTests {
         #expect(await run.value == 0)
     }
 
+    /// R5-3 (M5 Ultra pair, 0.10.7 → 0.10.8): the restarted service published `idle` running the new release before
+    /// the command saw its own request reach `restarting`, and the command waited out its whole timeout. This Mac
+    /// running the release it asked for is the restart done, and the command says so.
+    @Test func darkbloomUpdateEndsOnceThisMacRunsTheRelease() async throws {
+        let directory = try temporaryDirectory("cluster-update-restarted")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let progressPath = ClusterServiceAgent.updateProgressPath(serviceDirectory: directory)
+        ClusterPairUpdate.writeProgress(.init(phase: .idle, running: "1.0.0", writtenAt: Date().timeIntervalSince1970 - 30),
+                                        to: progressPath)
+        let request = ClusterPairUpdate.Request(createdAt: Date().timeIntervalSince1970)
+        let restarted = Task {
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            ClusterPairUpdate.writeProgress(.init(phase: .drained, target: "2.0.0", running: "1.0.0", cycleStartedAt: 1,
+                request: request.id, writtenAt: Date().timeIntervalSince1970), to: progressPath)
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            // The new service's first word: no cycle, no request, the new release.
+            ClusterPairUpdate.writeProgress(.init(phase: .idle, running: "2.0.0", writtenAt: Date().timeIntervalSince1970,
+                                                  detail: "up to date"), to: progressPath)
+        }
+        let said = Recorder(), started = Date()
+        let outcome = try await ClusterServiceUpdateRequest.restart(into: "2.0.0", request: request, serviceDirectory: directory,
+                                                                   timeoutSeconds: 10, pollSeconds: 0.1, say: { said.add($0) })
+        await restarted.value
+        #expect(outcome == .restarted, "\(said.all)")
+        #expect(Date().timeIntervalSince(started) < 5, "ended once the new release ran, not at the timeout")
+        #expect(said.all.last == "This Mac's cluster service now runs v2.0.0; the cluster sets itself up again once both Macs run it.",
+                "\(said.all)")
+        #expect(!said.all.contains { $0.contains("Still waiting") }, "\(said.all)")
+    }
+
+    /// The old service still running the old release, with no word on the request, is no restart: the command waits.
+    @Test func darkbloomUpdateKeepsWaitingWhileThisMacRunsTheOldRelease() async throws {
+        let directory = try temporaryDirectory("cluster-update-old")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        ClusterPairUpdate.writeProgress(.init(phase: .idle, running: "1.0.0", writtenAt: Date().timeIntervalSince1970),
+                                        to: ClusterServiceAgent.updateProgressPath(serviceDirectory: directory))
+        let said = Recorder()
+        let outcome = try await ClusterServiceUpdateRequest.restart(into: "2.0.0", request: .init(createdAt: Date().timeIntervalSince1970),
+            serviceDirectory: directory, timeoutSeconds: 1, pollSeconds: 0.1, say: { said.add($0) })
+        #expect(outcome == .waiting)
+        #expect(said.all.last?.hasPrefix("Still waiting after 1 s") == true, "\(said.all)")
+    }
+
     /// A supervisor of an earlier build publishes no progress: the command says how to restart instead of waiting.
     @Test func darkbloomUpdateWithAnEarlierServiceSaysToLogOutAndIn() async throws {
         let directory = try temporaryDirectory("cluster-update-earlier")

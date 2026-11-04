@@ -389,24 +389,10 @@ extension ProviderLoop {
                         )
                     }
 
-                case .cancel(let requestId):
-                    if !deferCancelForReleasedAdmission(requestId) {
-                        await handleCancellation(requestId: requestId)
-                    }
-
-                case .attestationChallenge(let nonce, let timestamp):
-                    await handleAttestationChallenge(
-                        nonce: nonce,
-                        timestamp: timestamp,
-                        send: send
-                    )
-
-                case .appAttestShadow, .trustStatus:
+                case .cancel, .attestationChallenge, .codeAttestationResumeChallenge,
+                    .appAttestShadow, .trustStatus:
                     // Consumed by the connection-control reader below.
                     break
-
-                case .codeAttestationResumeChallenge(let challenge):
-                    handleCodeChallenge(challenge, send: send)
 
                 case .runtimeOutdated(let mismatches):
                     logger.warning("Runtime outdated: \(mismatches.count) mismatch(es)")
@@ -444,6 +430,8 @@ extension ProviderLoop {
             // so a healthy socket can renew trust while that work is parked.
             // All fast handlers are synchronous on this actor; connection
             // invalidation therefore precedes the next session's challenge.
+            // Challenges and cancels are read here too: work ahead of them in
+            // the FIFO can wait as long as a pair's rank reservation (30 s).
             for await event in events {
                 // Member-mode events are consumed first: ordinary dispatch
                 // paths never see them, and direct work handlers refuse
@@ -463,14 +451,24 @@ extension ProviderLoop {
                     handleTrustStatus(trustLevel: level, status: status, reason: reason,
                                       authorization: authorization)
                     continue
+                case .attestationChallenge(let nonce, let timestamp):
+                    handleAttestationChallenge(nonce: nonce, timestamp: timestamp, send: send)
+                    continue
+                case .codeAttestationResumeChallenge(let challenge):
+                    handleCodeChallenge(challenge, send: send)
+                    continue
+                case .cancel(let requestId):
+                    routeCoordinatorCancel(requestId)
+                    continue
                 case .connected, .disconnected:
                     noteCoordinatorConnection(connected: event.isConnected)
                     clearConnectionAuthorization()
                     cancelAppAttestShadow()
-                case .inferenceRequest:
+                case .inferenceRequest(let requestId, _, _, _, _, _, _, _, _, _, _, _, _, _):
                     // Here, not in the work reader: on arrival, in order with
                     // the trust statuses `ServingReadiness` compares it to.
                     noteCoordinatorRequest()
+                    noteCoordinatorAdmissionQueued(requestId)
                 default:
                     break
                 }

@@ -1,3 +1,5 @@
+import DarkbloomClusterPlacement
+import DarkbloomClusterProtocol
 import Foundation
 import Testing
 @testable import ProviderCore
@@ -22,6 +24,99 @@ struct ClusterOnboardingPeerLabelTests {
         #expect(split([], serving: true) == nil)
         #expect(ClusterOnboardingDeployment.sharesWords(mode: "pipeline_v1", shares: [.init(name: "Apple M5 Ultra", layers: 44, label: "this Mac"),
             .init(name: "Apple M5 Ultra", layers: 1, label: "the other Mac")]) == "this Mac 44 layers / the other Mac 1 layer", "the card's line")
+    }
+
+    /// R4-13 (the M5 Ultra pair's DevNet run, branch.80): with nothing serving, GLM-5.3-Flash's mode question offered
+    /// Pipeline as "this Mac 1 layer / the other Mac 44 layers", and 44 / 1 loaded. The question showed the pipeline in
+    /// the listed tensor-parallel plan's assessment, and the start planned the pipeline again, with this Mac's speed
+    /// measured again: on two Macs of one speed, a pipeline's layers follow whichever measured faster. Each mode now shows
+    /// what loads when it is chosen: the listed plan's split for its own mode, another mode's own plan for that mode.
+    @Test func eachModeShowsThePlanThatLoadsWhenItIsChosen() {
+        typealias Share = ClusterSetupPlanSummary.Mode.Share
+        let tensor = [Share(local: true, firstLayer: 0, endLayer: 45, share: 0.5), Share(local: false, firstLayer: 0, endLayer: 45, share: 0.5)]
+        let assessed = [Share(local: true, firstLayer: 0, endLayer: 1, share: nil), Share(local: false, firstLayer: 1, endLayer: 45, share: nil)]
+        let loads = [Share(local: true, firstLayer: 0, endLayer: 44, share: nil), Share(local: false, firstLayer: 44, endLayer: 45, share: nil)]
+        let listed = [ClusterSetupPlanSummary.Mode(mode: ClusterGenerationMode.tensorParallel.rawValue, shares: tensor, servedDecodeTokensPerSecond: nil),
+                      ClusterSetupPlanSummary.Mode(mode: ClusterGenerationMode.pipeline.rawValue, shares: assessed, servedDecodeTokensPerSecond: 41)]
+        let listedPlan = ClusterSetupPlanning.Loads(shares: tensor, concurrentRequests: 8)
+        let offered = ClusterSetupPlanning.offered(listed, listed: listedPlan, listedMode: .tensorParallel,
+                                                   families: [ClusterForcedMode.pipeline: .init(shares: loads, concurrentRequests: 1)])
+        #expect(offered.map(\.shares) == [tensor, loads], "each mode shows its own plan's split")
+        #expect(offered.map(\.concurrentRequests) == [8, 1], "and how many requests that plan serves at once")
+        #expect(offered.map(\.servedDecodeTokensPerSecond) == [nil, 41], "the measured speeds stay")
+        func split(_ mode: ClusterSetupPlanSummary.Mode, serving: Bool = false) -> String? {
+            OnboardingLive.modeSplit(mode.shares, here: "this Mac", there: "the other Mac", serving: serving)
+        }
+        #expect(split(offered[1]) == "this Mac 44 layers / the other Mac 1 layer", "the split that loads")
+        // A mode that could not be planned on its own shows no split, rather than one that won't load.
+        let unplanned = ClusterSetupPlanning.offered(listed, listed: listedPlan, listedMode: .tensorParallel, families: [:])
+        #expect(unplanned[0].shares == tensor && unplanned[1].shares.isEmpty && unplanned[1].concurrentRequests == nil && split(unplanned[1]) == nil)
+        // Round 4's R3-3: while a model serves, the start plans again once its memory is back, and the question says so.
+        #expect(split(offered[1], serving: true) == ClusterOnboardingMode.decidedWhenItLoads)
+    }
+
+    /// R4-13: the start adopts the plan the question showed for the mode chosen when nothing serves, instead of planning
+    /// that mode again. While a model serves, it plans again once that memory is back ("decided when it loads").
+    @Test func aChosenModeAdoptsThePlanItWasShown() {
+        #expect(OnboardingLive.adoption(modeDiffers: true, serving: false, shown: true) == .shown, "the plan whose split was shown")
+        #expect(OnboardingLive.adoption(modeDiffers: false, serving: false, shown: false) == .listed)
+        #expect(OnboardingLive.adoption(modeDiffers: true, serving: false, shown: false) == .planAgain, "no plan was made for it")
+        #expect(OnboardingLive.adoption(modeDiffers: true, serving: true, shown: true) == .planAgain, "decided when it loads")
+        #expect(OnboardingLive.adoption(modeDiffers: false, serving: true, shown: false) == .planAgain, "a model change frees memory first")
+    }
+
+    /// R4-13, on both Macs: a choice made on the joining Mac's screen is adopted on the leader, which planned the list. The
+    /// mode chosen there goes with the adopt, so the leader adopts that mode's plan, not its own list's default.
+    @Test func aForwardedAdoptCarriesTheModeChosen() throws {
+        let request = OnboardingLive.adoptRequest(index: 1, model: "glm-5.3-flash", scope: nil, family: .pipeline)
+        let decoded = try JSONDecoder().decode(ClusterControlRequest.self, from: JSONEncoder().encode(request))
+        #expect(decoded.op == .adopt && decoded.index == 1 && decoded.model == "glm-5.3-flash")
+        #expect(decoded.mode == ClusterForcedMode.pipeline.rawValue, "the mode chosen on the joining Mac's screen")
+        // From an older build, with no mode: the leader keeps the one chosen on its own screen, as before.
+        let older = try JSONDecoder().decode(ClusterControlRequest.self, from: Data(#"{"op":"adopt","index":1,"model":"glm-5.3-flash"}"#.utf8))
+        #expect(older.mode == nil && older.op == .adopt)
+    }
+
+    /// The owner (2026-11-04): the mode question recommends one mode for these Macs. The leading Mac reads it from the
+    /// plans the list made: each mode's own plan (the listed one for its family, else its family plan) for whether it
+    /// fits now and its predicted speed, and the mode for its measured speed, requests at once and public traffic.
+    @Test func theRecommendationComesFromEachModesOwnPlan() {
+        typealias Share = ClusterSetupPlanSummary.Mode.Share
+        func plan(_ mode: String, fitsNow: Bool, decode: Double, absolute: Bool = true) -> ClusterSetupPlanSummary {
+            .init(cut: 0, mode: mode, prefillSchedule: "serial", leaderID: "local", ranks: Self.ranks(peerID: "peer"), promptTokens: 1024,
+                  outputTokens: 256, firstTokenSeconds: 1, decodeTokensPerSecond: decode, absolute: absolute, measured: false, alone: [],
+                  aloneAsFast: [], fitsNow: fitsNow, needsBytes: nil, explanation: [])
+        }
+        let shares = [Share(local: true, firstLayer: 0, endLayer: 45, share: 0.5), Share(local: false, firstLayer: 0, endLayer: 45, share: 0.5)]
+        func mode(_ raw: String, lanes: Int, measured: Double? = nil, planned: Bool = true) -> ClusterSetupPlanSummary.Mode {
+            var mode = ClusterSetupPlanSummary.Mode(mode: raw, shares: planned ? shares : [], servedDecodeTokensPerSecond: measured)
+            mode.concurrentRequests = lanes; mode.publicTraffic = true
+            return mode
+        }
+        let tp = ClusterGenerationMode.tensorParallel.rawValue, pp = ClusterGenerationMode.pipeline.rawValue
+        let modes = [mode(tp, lanes: 8), mode(pp, lanes: 1)]
+        // Two M5 Ultras, nothing measured yet: the planner's predictions, then the requests at once.
+        let advice = OnboardingLive.modeAdvice(modes, listed: plan(tp, fitsNow: true, decode: 92),
+                                               families: [plan(pp, fitsNow: true, decode: 38)], throughDarkbloom: true, serving: false)
+        #expect(advice == ClusterOnboardingModeAdvice(mode: tp, reason: "faster here (about 92 against 38 tokens/s, predicted) and serves up to 8 requests at once"))
+        // A memory-tight pair: the pipeline's own plan fits now, tensor parallel's doesn't.
+        let tight = OnboardingLive.modeAdvice(modes, listed: plan(pp, fitsNow: true, decode: 20),
+                                              families: [plan(tp, fitsNow: false, decode: 30)], throughDarkbloom: true, serving: false)
+        #expect(tight == ClusterOnboardingModeAdvice(mode: pp, reason: "the only one that fits these Macs now"))
+        // Only relative figures and one lane each: no evidence, no guess.
+        let equal = [mode(tp, lanes: 1), mode(pp, lanes: 1)]
+        let unknown = OnboardingLive.modeAdvice(equal, listed: plan(tp, fitsNow: true, decode: 1, absolute: false),
+                                                families: [plan(pp, fitsNow: true, decode: 1, absolute: false)], throughDarkbloom: false, serving: false)
+        #expect(unknown == ClusterOnboardingModeAdvice(mode: nil, reason: "no speed is measured or predicted for these Macs yet"))
+        // A mode with no plan of its own (its split is empty) is not recommended.
+        let lone = OnboardingLive.modeAdvice([mode(tp, lanes: 8, planned: false), mode(pp, lanes: 1)], listed: plan(pp, fitsNow: true, decode: 20),
+                                             families: [], throughDarkbloom: true, serving: false)
+        #expect(lone?.mode == pp)
+        // While a model serves, the split still reads "decided when it loads" (round 4); the recommendation stands.
+        #expect(OnboardingLive.modeSplit(shares, here: "this Mac", there: "the other Mac", serving: true) == ClusterOnboardingMode.decidedWhenItLoads)
+        let serving = OnboardingLive.modeAdvice(modes, listed: plan(tp, fitsNow: false, decode: 92),
+                                                families: [plan(pp, fitsNow: false, decode: 38)], throughDarkbloom: true, serving: true)
+        #expect(serving?.mode == tp)
     }
 
     /// R3-2 (the round-3 re-test): the joining Mac's window ended "After a restart, this Mac serves again by itself"
@@ -110,6 +205,73 @@ struct ClusterOnboardingPeerLabelTests {
         live.settleTest(.success(["in 0.58 s"]))
         #expect(OnboardingLive.outcomeLines(record: try fixture.store.readRecord(), pending: false, local: true, model: "Qwen 3.8 27B",
                                             serving: serving) == [serving, "Test response in 0.58 s (the leading Mac's test)"])
+    }
+
+    /// The DevNet traffic run (2026-11-04): a pair set to serve through Darkbloom whose start is over and that serves on
+    /// the leading Mac's API has no cluster approval attached, so the coordinator never has it. Its status said "Serving …
+    /// (earning through Darkbloom)."; it says it isn't serving through Darkbloom and why, where it answers meanwhile, then
+    /// the test.
+    @Test func aPairThatIsNotOfferedSaysSoAndWhy() {
+        let ready = ClusterOnboardingReady(servedBy: ClusterOnboardingMacName.this, port: 8001, split: "tensor parallel")
+        let test = "Test response in 0.23 s (the leading Mac's test)"
+        let outcome = [ready.summary(model: "Qwen 3.8 27B") + ClusterOnboardingDriver.servesWords(ready: ready) + ".", test]
+        let note = "Not offered for pairing: this Mac's check refused it: " + ClusterApprovalAttachment.unequalTensorSharesServeLocally
+        let lines = OnboardingLive.notOfferedLines(model: "Qwen 3.8 27B", ready: ready, note: note, outcome: outcome)
+        #expect(lines == [
+            "Qwen 3.8 27B is not serving yet: not offered to Darkbloom (this Mac's check refused it: "
+                + ClusterApprovalAttachment.unequalTensorSharesServeLocally + ").",
+            "Meanwhile it answers only on the local API at http://localhost:8001 (no Darkbloom traffic).",
+            test])
+        #expect(!lines.joined().contains("earning") && !lines.joined().contains("Serving "))
+        // The other Mac reads it as not serving, with that reason (`ClusterOnboardingNotServing.reason(inStatusLine:)`).
+        #expect(ClusterOnboardingReady.isNotOffered(ClusterOnboardingNotServing.reason(inStatusLine: lines[0])))
+        // No note: none attached. A coordinator that can't take a cluster member: said so, whatever the note.
+        #expect(OnboardingLive.notOfferedLines(model: "m", ready: ready, note: nil, outcome: ["x"]).first
+            == "m is not serving yet: not offered to Darkbloom (no cluster approval is attached to its setup).")
+        var unsupported = ready
+        unsupported.notice = ClusterLocalServing.notice
+        #expect(OnboardingLive.notOfferedLines(model: "m", ready: unsupported, note: note, outcome: ["x"]).first
+            == "m is not serving yet: not offered to Darkbloom (the coordinator could not be reached or has no cluster support).")
+    }
+
+    /// The DevNet traffic run (2026-11-04): `cluster status` repeated the setup screen's "Then choose Retry, or serve
+    /// locally only now." under an offered pair's reason, but it has no Retry, and neither has the other Mac's window.
+    @Test func anOfferedPairsWaitNamesNoScreenChoice() {
+        let reason = ClusterOnboardingNotServing.notVerified(ClusterOnboardingMacName.this)
+        let wait = "waiting for the coordinator to pair both Macs"
+        let lines = OnboardingLive.offeredWaitLines(model: "Qwen 3.8 27B", reason: reason, wait: wait)
+        #expect(lines == [ClusterOnboardingNotServing.statusLine(model: "Qwen 3.8 27B", reason: reason)])
+        #expect(!lines.joined().contains("Retry") && ClusterOnboardingNotServing.remedy(forReason: reason)?.contains("Retry") == true)
+        #expect(OnboardingLive.offeredWaitLines(model: "m", reason: nil, wait: wait) == ["m is not serving yet: \(wait)."])
+    }
+
+    /// The leading Mac's setup step reaches the Mac that joined in its status reply (a user's report, 2026-11-04: the
+    /// joined Mac said only "waiting for the other Mac" while the leader waited at its own screen): with this build's
+    /// version, only while the screen that set it runs, a refusal after its screen ended, and nothing from an older
+    /// leader's reply.
+    @Test func theLeadersSetupStepIsPublishedInItsStatus() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let live = fixture.live(peerPin: Fixture.peerPin)
+        #expect(live.currentLeaderStep() == nil, "nothing set: no step")
+        live.publishStep(.init(.localNetwork))
+        let reply = live.execute(.init(op: .status), leaderID: "leader")
+        #expect(reply.step == .init(.localNetwork, version: ProviderCore.version))
+        let decoded = try JSONDecoder().decode(ClusterControlReply.self, from: JSONEncoder().encode(reply))
+        #expect(decoded.step?.words == "it's waiting for Allow on its Local Network prompt", "the step crosses the cable")
+        let older = try JSONDecoder().decode(ClusterControlReply.self, from: Data(#"{"lines":["Stopped."],"failed":false}"#.utf8))
+        #expect(older.step == nil && older.lines == ["Stopped."], "an older leader's reply reads as no step")
+
+        // A screen that is gone (its process no longer runs) leaves a step that no longer counts; its refusal still does.
+        let gone = ClusterOnboardingLeaderStepMark(step: .init(.modelList), pid: Int32.max, started: 1, at: Date().timeIntervalSince1970)
+        try fixture.store.updateRecord { $0.onboardingStep = gone }
+        #expect(live.currentLeaderStep() == nil)
+        let refused = ClusterOnboardingLeaderStepMark(step: .init(.refused, reason: ClusterSetupPlanning.differentBuilds), pid: Int32.max,
+                                                      started: 1, at: Date().timeIntervalSince1970)
+        try fixture.store.updateRecord { $0.onboardingStep = refused }
+        #expect(live.currentLeaderStep()?.differentBuilds == true, "the planner's different-builds blocker is the refusal the joined Mac reads")
+        live.publishStep(nil)
+        #expect(try fixture.store.readRecord().onboardingStep == nil)
     }
 
     /// A running start publishes its own outcome: while its mark is live, another test writes nothing.

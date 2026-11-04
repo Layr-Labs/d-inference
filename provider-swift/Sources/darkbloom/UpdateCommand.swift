@@ -144,7 +144,10 @@ struct Update: AsyncParsableCommand {
 
         case .updated(let from, let to):
             print("Updated: v\(from) -> v\(to)")
-            if LaunchAgent.isLoaded() {
+            if Self.soloJobBesidePair() {
+                for line in Self.soloJobLeftLines { print(line) }
+                try await restartClusterService(into: to, look: look)
+            } else if LaunchAgent.isLoaded() {
                 try await restartInstalledProvider(updater, operation: "manual-update-restart", look: look)
             } else if ClusterService.running() {
                 try await restartClusterService(into: to, look: look)
@@ -154,7 +157,10 @@ struct Update: AsyncParsableCommand {
 
         case .restartRequired(let from, let to):
             print("v\(to) is already installed (current process: v\(from)).")
-            if LaunchAgent.isLoaded() {
+            if Self.soloJobBesidePair() {
+                for line in Self.soloJobLeftLines { print(line) }
+                try await restartClusterService(into: to, look: look)
+            } else if LaunchAgent.isLoaded() {
                 try await restartInstalledProvider(updater, operation: "manual-candidate-restart", look: look)
             } else if ClusterService.running() {
                 try await restartClusterService(into: to, look: look)
@@ -191,6 +197,20 @@ struct Update: AsyncParsableCommand {
             printError("failed to replace binary: \(reason)")
             throw ExitCode.failure
         }
+    }
+
+    /// A single-Mac provider job is loaded on a Mac whose pair is started: the update restarts the pair, never that job
+    /// (0.10.7 restarted it first, and it took the serving lock the pair's parts need: the pair could not start again).
+    static func soloJobBesidePair(soloJobLoaded: Bool = LaunchAgent.isLoaded() && !LaunchAgent.installedJobIsClusterMember(),
+                                  pairServes: Bool = ClusterService.pairServesHere()) -> Bool {
+        soloJobLoaded && pairServes
+    }
+
+    static var soloJobLeftLines: [String] {
+        let cli = BuildEnvironment.current.cliName
+        return ["Single-Mac serving is also set up on this Mac, which serves in a two-Mac pair: the update leaves it as it is and "
+                + "restarts the pair.",
+                "It can't run beside the pair (both need this Mac's one serving lock). Run `\(cli) stop --solo` to remove it."]
     }
 
     private func restartInstalledProvider(_ updater: SelfUpdater, operation: String, look: DarkbloomCommandLook) async throws {
@@ -239,7 +259,7 @@ struct Update: AsyncParsableCommand {
 /// `darkbloom update` asks the cluster service supervisor for the pair's restart into the installed release
 /// (`ClusterPairUpdate.Request`) and follows its progress.
 enum ClusterServiceUpdateRequest {
-    enum Outcome: Equatable { case restarting, waiting, failed }
+    enum Outcome: Equatable { case restarting, restarted, waiting, failed }
 
     static func restart(into version: String, request: ClusterPairUpdate.Request, serviceDirectory: URL, timeoutSeconds: Int,
                         pollSeconds: Double = 1, say: (String) -> Void) async throws -> Outcome {
@@ -258,6 +278,12 @@ enum ClusterServiceUpdateRequest {
         let deadline = Date().addingTimeInterval(Double(timeoutSeconds))
         var said: String?
         while Date() < deadline {
+            // The restarted service publishes `idle` for the release it now runs, without the request; it may do so
+            // before this command reads `restarting` (R5-3: the command waited out its whole timeout).
+            if let progress = ClusterPairUpdate.readProgress(from: progressPath), Self.runs(version, progress.running) {
+                say("This Mac's cluster service now runs v\(version); the cluster sets itself up again once both Macs run it.")
+                return .restarted
+            }
             if let progress = ClusterPairUpdate.readProgress(from: progressPath), progress.request == request.id {
                 if progress.line != said {
                     said = progress.line
@@ -278,5 +304,11 @@ enum ClusterServiceUpdateRequest {
         }
         say("Still waiting after \(timeoutSeconds) s; the cluster service goes on by itself. Its log: ~/.darkbloom/cluster-setup/service.log")
         return .waiting
+    }
+
+    /// Whether the service's running version is the release asked for (either may carry a leading "v").
+    static func runs(_ version: String, _ running: String) -> Bool {
+        func bare(_ text: String) -> Substring { text.hasPrefix("v") ? text.dropFirst() : Substring(text) }
+        return !version.isEmpty && bare(version) == bare(running)
     }
 }

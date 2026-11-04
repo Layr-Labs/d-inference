@@ -28,7 +28,8 @@ struct ClusterLinkIsolationPlan: Equatable, Sendable {
     let bridge: BridgeSlot?
     /// Enabled services on the port that are switched off, by name.
     let servicesToDisable: [String]
-    /// Darkbloom's service exists already and is made afresh.
+    /// Darkbloom's service exists already: it is reconfigured in place, never removed and made again (macOS refuses
+    /// to remove a port's only service, which Darkbloom's is on a Mac whose ports start in the Thunderbolt Bridge).
     let replaceClusterService: Bool
     /// The first version's link-local address, taken off the port.
     let linkLocalToRemove: ClusterLinkLocalAddress?
@@ -80,10 +81,12 @@ struct ClusterLinkIsolationPlan: Equatable, Sendable {
             commands.append("/sbin/ifconfig \(bridge.bridge) deletem \(interface) 2>/dev/null || true")
         }
         if replaceClusterService {
-            commands.append("/usr/sbin/networksetup -removenetworkservice \(quotedService)")
+            // Switched on again, in case an earlier removal switched it off; then set as below.
+            commands.append("/usr/sbin/networksetup -setnetworkserviceenabled \(quotedService) on")
+        } else {
+            commands.append("/usr/sbin/networksetup -createnetworkservice \(quotedService) '\(hardwarePort)'")
         }
         commands += [
-            "/usr/sbin/networksetup -createnetworkservice \(quotedService) '\(hardwarePort)'",
             // No router: no default route through the cable.
             "/usr/sbin/networksetup -setmanual \(quotedService) \(address.dottedDecimal) \(ClusterLinkClusterAddress.netmask)",
             "/usr/sbin/networksetup -setdnsservers \(quotedService) Empty",
@@ -110,9 +113,13 @@ struct ClusterLinkIsolationRestore: Equatable, Sendable {
     let addressToRemove: ClusterLinkClusterAddress?
     /// A first-version keeper is still installed.
     let keeperToRemove: Bool
+    /// Darkbloom's service is the port's only one, which `networksetup -removenetworkservice` refuses ("there aren't
+    /// any other network services on Thunderbolt 2", pair-2's MacBook): it is removed through SCPreferences instead.
+    let lastService: ClusterLinkLastService?
 
     init?(interface: String, removeClusterService: Bool, servicesToEnable: [String],
-          bridge: ClusterLinkIsolationPlan.BridgeSlot?, addressToRemove: ClusterLinkClusterAddress?, keeperToRemove: Bool) {
+          bridge: ClusterLinkIsolationPlan.BridgeSlot?, addressToRemove: ClusterLinkClusterAddress?, keeperToRemove: Bool,
+          lastService: ClusterLinkLastService? = nil) {
         guard ClusterLinkName.isInterface(interface), servicesToEnable.allSatisfy(ClusterLinkServiceName.isSafe),
               bridge.map({ ClusterLinkName.isInterface($0.bridge) && $0.index >= 0 }) ?? true else { return nil }
         self.interface = interface
@@ -121,33 +128,45 @@ struct ClusterLinkIsolationRestore: Equatable, Sendable {
         self.bridge = bridge
         self.addressToRemove = addressToRemove
         self.keeperToRemove = keeperToRemove
+        self.lastService = removeClusterService ? lastService : nil
     }
 
     var isEmpty: Bool {
         !removeClusterService && servicesToEnable.isEmpty && bridge == nil && addressToRemove == nil && !keeperToRemove
     }
 
-    /// In order. Every command runs, because each undoes one thing on its
-    /// own; what is left afterwards decides how the removal ended.
-    var commands: [String] {
+    /// In order, and the shell stops at the first that fails
+    /// (`ClusterLinkIsolationRequest.shellCommand`); what is left afterwards
+    /// decides how the removal ended. Darkbloom's service goes first, then
+    /// its address, and only then does the port go back into its bridge: a
+    /// bridge entry written while the service still held the port left it in
+    /// both (pair-2's MacBook, R5-2: "not isolated: member of bridge0"). The
+    /// services switched on after the entry make macOS apply it.
+    var commands: [String] { commands(leavingOrder: lastService.map { [$0.serviceID] } ?? []) }
+
+    /// The commands, with `leavingOrder` the service IDs every removal of the same approval takes out of the service
+    /// order (each port's commands set the whole order, so each must leave out all of them).
+    func commands(leavingOrder: [String]) -> [String] {
         var commands = [String]()
         if keeperToRemove {
-            commands.append("/bin/launchctl bootout system/\(ClusterLinkAddressKeeper.label(forInterface: interface))")
+            // A keeper whose file is there but whose job is not loaded has nothing to boot out; what is left is read afterwards.
+            commands.append("/bin/launchctl bootout system/\(ClusterLinkAddressKeeper.label(forInterface: interface)) 2>/dev/null || true")
             commands.append("/bin/rm -f \(ClusterLinkAddressKeeper.plistPath(forInterface: interface))")
         }
-        if let bridge {
-            // Written before the service changes below, which make the
-            // settings take effect.
-            let entry = ":VirtualNetworkInterfaces:Bridge:\(bridge.bridge):Interfaces:\(bridge.index)"
-            commands.append("/usr/libexec/PlistBuddy -c 'Add \(entry) string \(interface)' \(ClusterLinkIsolationPlan.networkPreferences)")
-        }
-        if removeClusterService {
+        if let lastService {
+            commands += lastService.removal(service: ClusterLinkServiceName.cluster(interface: interface), interface: interface,
+                                            leavingOrder: leavingOrder)
+        } else if removeClusterService {
             commands.append("/usr/sbin/networksetup -removenetworkservice '\(ClusterLinkServiceName.cluster(interface: interface))'")
         }
-        commands += servicesToEnable.map { "/usr/sbin/networksetup -setnetworkserviceenabled '\($0)' on" }
         if let addressToRemove {
             commands.append("/sbin/ifconfig \(interface) inet \(addressToRemove.dottedDecimal) -alias")
         }
+        if let bridge {
+            let entry = ":VirtualNetworkInterfaces:Bridge:\(bridge.bridge):Interfaces:\(bridge.index)"
+            commands.append("/usr/libexec/PlistBuddy -c 'Add \(entry) string \(interface)' \(ClusterLinkIsolationPlan.networkPreferences)")
+        }
+        commands += servicesToEnable.map { "/usr/sbin/networksetup -setnetworkserviceenabled '\($0)' on" }
         if let bridge {
             commands.append("/sbin/ifconfig \(bridge.bridge) addm \(interface)")
         }
@@ -161,39 +180,52 @@ struct ClusterLinkIsolationRestore: Equatable, Sendable {
 struct ClusterLinkIsolationRequest: Equatable, Sendable {
     enum Purpose: Equatable, Sendable {
         case isolate(ClusterLinkIsolationPlan)
-        case restore(ClusterLinkIsolationRestore)
+        /// Every port in one approval (R5-2: an uninstall undoes all the ports Darkbloom set up, never one of them).
+        case restore([ClusterLinkIsolationRestore])
     }
 
     let purpose: Purpose
 
     /// Nil for a restore with nothing to do.
     init?(_ purpose: Purpose) {
-        if case .restore(let restore) = purpose, restore.isEmpty { return nil }
+        if case .restore(let restores) = purpose {
+            let pending = restores.filter { !$0.isEmpty }
+            guard !pending.isEmpty else { return nil }
+            self.purpose = .restore(pending)
+            return
+        }
         self.purpose = purpose
     }
 
+    /// The single port: the isolation's, or the first restored.
     var interface: String {
         switch purpose {
         case .isolate(let plan): return plan.interface
-        case .restore(let restore): return restore.interface
+        case .restore(let restores): return restores[0].interface
+        }
+    }
+
+    /// Every port the approval changes.
+    var interfaces: [String] {
+        switch purpose {
+        case .isolate(let plan): return [plan.interface]
+        case .restore(let restores): return restores.map(\.interface)
         }
     }
 
     var commands: [String] {
         switch purpose {
         case .isolate(let plan): return plan.commands
-        case .restore(let restore): return restore.commands
+        case .restore(let restores):
+            let removed = restores.compactMap { $0.lastService?.serviceID }
+            return restores.flatMap { $0.commands(leavingOrder: removed) }
         }
     }
 
-    /// One shell line: the isolation stops at the first failing command, the
-    /// restore runs every command.
-    var shellCommand: String {
-        switch purpose {
-        case .isolate: return "set -e; " + commands.joined(separator: "; ")
-        case .restore: return commands.joined(separator: "; ")
-        }
-    }
+    /// One shell line that stops at the first failing command, for an
+    /// isolation and a restore alike: a failure is then exactly where it
+    /// says, and nothing after it ran.
+    var shellCommand: String { "set -e; " + commands.joined(separator: "; ") }
 
     var prompt: String {
         switch purpose {
@@ -203,19 +235,95 @@ struct ClusterLinkIsolationRequest: Equatable, Sendable {
             if let bridge = plan.bridge { actions.append("take the port out of \(bridge.bridge)") }
             let sentence = actions.count == 1 ? actions[0] : actions.dropLast().joined(separator: ", ") + " and " + actions[actions.count - 1]
             return "Darkbloom wants to \(sentence), so RDMA can use it."
-        case .restore(let restore):
-            return "Darkbloom wants to restore the network settings of Thunderbolt port \(restore.interface) to how they were before it set the port up."
+        case .restore(let restores):
+            guard restores.count > 1 else {
+                return "Darkbloom wants to restore the network settings of Thunderbolt port \(restores[0].interface) to how they were before it set the port up."
+            }
+            return "Darkbloom wants to restore the network settings of Thunderbolt ports \(ClusterLinkIsolationRequest.list(restores.map(\.interface))) to how they were before it set them up."
         }
     }
 
-    /// Nothing here needs AppleScript escaping: interface and bridge names are
-    /// letters and digits, addresses digits and dots, service and hardware
-    /// port names pass `ClusterLinkServiceName.isSafe`, and the fixed text has
-    /// no double quote and no backslash.
+    /// Interface and bridge names are letters and digits, addresses digits and dots, service IDs hexadecimal and
+    /// hyphens, service and hardware port names pass `ClusterLinkServiceName.isSafe`; the fixed text has no double
+    /// quote. A removal through SCPreferences carries the shell's double quotes and `\n`, escaped for AppleScript.
     var appleScript: String {
-        "do shell script \"\(shellCommand)\" with prompt \"\(prompt)\" with administrator privileges"
+        let escaped = shellCommand.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
+        return "do shell script \"\(escaped)\" with prompt \"\(prompt)\" with administrator privileges"
     }
 
-    /// For an administrator to run by hand where no prompt can be shown.
-    var manualCommands: [String] { commands.map { "sudo " + $0 } }
+    /// For an administrator to paste where no prompt can be shown and no script could be written: the same commands,
+    /// one per line, in one root shell under `set -e` (a line each behind `sudo` would break on `if …; fi` and give
+    /// root to `printf` alone in `printf … | scutil`). No generated line can be the delimiter: each starts with a path
+    /// or a shell keyword.
+    var manualCommands: [String] {
+        ["sudo /bin/sh -e <<'\(Self.manualDelimiter)'"] + commands + [Self.manualDelimiter]
+    }
+
+    static let manualDelimiter = "DARKBLOOM_CLUSTER_LINK"
+
+    /// "en6", "en6 and en1", "en6, en1 and en2".
+    static func list(_ names: [String]) -> String {
+        names.count < 2 ? names.joined() : names.dropLast().joined(separator: ", ") + " and " + names[names.count - 1]
+    }
+}
+
+/// Darkbloom's service when it is its port's only one, as macOS keeps it in its preferences: its ID, the current
+/// network set and that set's IPv4 service order, read before the approval (the file is world-readable). The removal
+/// is checked again as an administrator: the ID must still name Darkbloom's service on that port.
+struct ClusterLinkLastService: Equatable, Sendable {
+    let serviceID: String
+    let set: String
+    /// Nil when the set keeps no IPv4 service order.
+    let serviceOrder: [String]?
+
+    init?(serviceID: String, set: String, serviceOrder: [String]?) {
+        guard Self.isID(serviceID), Self.isID(set), serviceOrder?.allSatisfy(Self.isID) ?? true else { return nil }
+        self.serviceID = serviceID; self.set = set; self.serviceOrder = serviceOrder
+    }
+
+    /// A service or set ID as macOS writes them: 36 characters of ASCII hexadecimal digits and hyphens (never a
+    /// fullwidth digit, which `Character.isHexDigit` accepts).
+    static func isID(_ text: String) -> Bool {
+        let scalars = text.unicodeScalars
+        return scalars.count == 36 && scalars.filter { $0 == "-" }.count == 4 && scalars.allSatisfy {
+            $0 == "-" || ("0"..."9").contains($0) || ("A"..."F").contains($0) || ("a"..."f").contains($0)
+        }
+    }
+
+    /// The ID of `service` on `interface` in `NetworkServices` (`plutil -extract NetworkServices json`): exactly one.
+    static func serviceID(of service: String, on interface: String, inPreferences json: String) -> String? {
+        guard let object = try? JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any] else { return nil }
+        let matches = object.compactMap { id, value -> String? in
+            guard let entry = value as? [String: Any], entry["UserDefinedName"] as? String == service,
+                  (entry["Interface"] as? [String: Any])?["DeviceName"] as? String == interface else { return nil }
+            return id
+        }
+        return matches.count == 1 ? matches[0] : nil
+    }
+
+    /// The commands: the name and the device checked as an administrator, then one SCPreferences session (`scutil
+    /// --prefs`) that removes the service and its link in the set, sets the order without `leavingOrder`, commits and
+    /// applies; then a read-back that the service is gone, which stops the script when it is not. Proven on pair-2's
+    /// MacBook (macOS 27.0, 2026-11-04): the port's last service went, and macOS put the port back in its saved
+    /// bridge by itself.
+    func removal(service: String, interface: String, leavingOrder: [String]) -> [String] {
+        let preferences = ClusterLinkIsolationPlan.networkPreferences
+        let entry = ":NetworkServices:\(serviceID)"
+        var session = ["remove /NetworkServices/\(serviceID)", "remove /Sets/\(set)/Network/Service/\(serviceID)"]
+        if let serviceOrder {
+            let order = serviceOrder.filter { !leavingOrder.contains($0) && $0 != serviceID }
+            session += ["get /Sets/\(set)/Network/Global/IPv4",
+                        order.isEmpty ? "d.remove ServiceOrder" : "d.add ServiceOrder * " + order.joined(separator: " "),
+                        "set /Sets/\(set)/Network/Global/IPv4"]
+        }
+        session += ["commit", "apply"]
+        return [
+            "/usr/libexec/PlistBuddy -c 'Print \(entry):UserDefinedName' \(preferences) | /usr/bin/grep -qxF '\(service)'",
+            "/usr/libexec/PlistBuddy -c 'Print \(entry):Interface:DeviceName' \(preferences) | /usr/bin/grep -qxF \(interface)",
+            "/usr/bin/printf '%s\\n' " + session.map { "'\($0)'" }.joined(separator: " ") + " | /usr/sbin/scutil --prefs",
+            // `scutil` exits 0 even when its `commit` fails, and a `!` command does not stop `set -e`: a service still
+            // there ends the script, so the port never goes back into its bridge beside it.
+            "if /usr/libexec/PlistBuddy -c 'Print \(entry)' \(preferences) >/dev/null 2>&1; then exit 1; fi",
+        ]
+    }
 }

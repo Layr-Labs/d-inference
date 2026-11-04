@@ -34,7 +34,7 @@
 - `darkbloom update --rollback`'s advice turns the cluster service off with `darkbloom cluster stop --service`.
 - The DevNet app names `darkbloom-dev` in every command it suggests for a pair: the card after `start` and
   `restart`, `cluster stop --service`, `cluster local`, `cluster pair --forget` and the hints. Its Local Network hint
-  names the app to allow, Darkbloom Dev.
+  names the row macOS lists for it, "Darkbloom".
 - `stop`, `restart`, `cluster stop --service` and a script `start` say what they are waiting for and for how long at
   most, instead of going quiet for minutes.
 - With Darkbloom and Darkbloom Dev on one Mac, each lists only its own cluster incidents. Incidents recorded before
@@ -55,8 +55,9 @@
 - `status` and `cluster status` no longer say "loading" while macOS keeps a Mac off the local network: both Macs say
   the pair is not serving and what to turn on, on which Mac. A stopped pair reads stopped even when the other Mac has
   gone.
-- On the leading Mac, that "not serving" now holds while the other Mac stays refused, also while the leading Mac's
-  part restarts; `cluster status --json` then lists the same "Not serving" line as the plain output. The DevNet app's
+- On the leading Mac, that "not serving" now stays as long as macOS keeps the other Mac off the local network, also
+  while the leading Mac's part restarts, instead of going back to "loading"; `cluster status --json` then lists the
+  same "Not serving" line as the plain output. The DevNet app's
   stopped pair names its own `local` command.
 - `cluster status --json` gives the serving mode and each Mac's share, and the "Model:" line of `status` and `cluster
   status` names the mode, for every mode. Before, a pair serving GLM-5.3-Flash in pipeline left them out.

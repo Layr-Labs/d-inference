@@ -254,9 +254,16 @@ extension Cluster {
         static func finishStop(_ stopped: Result<[String], ClusterOnboardingFailure>?, localOnly: Bool = false,
                                forwarded: Bool = false, removeFromLogin: () throws -> [String]) throws -> [String] {
             var lines: [String] = []
+            var otherMacNotAsked = false
             if let stopped {
                 switch stopped {
                 case .success(let said): lines = said
+                case .failure(let failure) where !forwarded && failure.otherMacUnanswered != nil:
+                    // R5-1: this Mac stopped serving and the other Mac did not answer (its service already off, or
+                    // out of reach): this Mac's service still stops, and each Mac's state is said.
+                    lines = ["This Mac stopped serving.",
+                             failure.otherMacUnanswered! + ", so it was not asked to stop (its cluster service may already be off)."]
+                    otherMacNotAsked = true
                 case .failure(let failure):
                     throw Failure(lines: failure.lines + (forwarded ? ClusterPairSummary.memberStopFailureLines(failure.lines) : []))
                 }
@@ -265,6 +272,9 @@ extension Cluster {
             lines.append(removed.isEmpty
                 ? "This Mac's cluster service is stopped (it was not set to start at login)."
                 : "This Mac's cluster service is stopped and will not start at login. Run `\(ClusterPairSummary.cli) cluster` to start it again.")
+            if otherMacNotAsked {
+                lines.append("If the other Mac's cluster service is still on, run `\(ClusterPairSummary.cli) cluster stop --service` there too.")
+            }
             if localOnly {
                 lines.append("The other Mac was not asked to stop. If it comes back, run `\(ClusterPairSummary.cli) cluster stop --service` there too.")
             }

@@ -50,6 +50,8 @@ public final class DarkbloomCommandLook: @unchecked Sendable {
     private let colour: String
     private let output: @Sendable (String) -> Void
     private let pause: @Sendable (UInt32) -> Void
+    /// The window's width now: a window made narrower while the live line shows must not wrap it.
+    private let width: @Sendable () -> Int
     private let lock = NSLock()
     private var opened = false
     private var live: String?
@@ -63,10 +65,19 @@ public final class DarkbloomCommandLook: @unchecked Sendable {
     /// `output` writes decorations (raw, after the command's buffered lines); `pause` spaces the bloom's frames.
     public init(mode: Mode, environment: [String: String] = ProcessInfo.processInfo.environment,
                 output: @escaping @Sendable (String) -> Void = DarkbloomCommandLook.writeToStandardOutput,
-                pause: @escaping @Sendable (UInt32) -> Void = { usleep($0) }) {
+                pause: @escaping @Sendable (UInt32) -> Void = { usleep($0) },
+                width: (@Sendable () -> Int)? = nil) {
         self.mode = mode
         colour = ClusterOnboardingBrand.colour(environment)
         self.output = output; self.pause = pause
+        let columns = mode.columns
+        self.width = width ?? { columns }
+    }
+
+    /// Standard output's width now, or `fallback` when it can't be read.
+    public static func standardOutputColumns(fallback: Int) -> Int {
+        var window = winsize()
+        return ioctl(STDOUT_FILENO, TIOCGWINSZ, &window) == 0 && window.ws_col > 0 ? Int(window.ws_col) : fallback
     }
 
     deinit { ticker?.cancel() }
@@ -77,7 +88,9 @@ public final class DarkbloomCommandLook: @unchecked Sendable {
     /// A command's look: this process's terminal, by the setup's rules; plain for a command run inside another.
     public static func forCommand() -> DarkbloomCommandLook {
         if insideAnotherCommand { return DarkbloomCommandLook(mode: .plain) }
-        return forTesting ?? DarkbloomCommandLook(mode: .standard())
+        if let forTesting { return forTesting }
+        let mode = Mode.standard()
+        return DarkbloomCommandLook(mode: mode, width: { standardOutputColumns(fallback: mode.columns) })
     }
 
     /// Runs a command inside another command (`unenroll` runs `stop --solo`, `autopilot enable` runs `start`) with a
@@ -191,14 +204,15 @@ public final class DarkbloomCommandLook: @unchecked Sendable {
         let frame = mode.animates ? Int((now / 125_000_000) % UInt64(ClusterOnboardingBrand.spinner.count)) : 0
         guard force || frame != drawnFrame else { return }
         drawnFrame = frame
-        output("\r\u{1B}[J" + Self.liveRow(text, petal: ClusterOnboardingBrand.spinner[frame], colour: colour, columns: mode.columns))
+        // Line wrap is off while the row is written (`ClusterOnboardingBrand.noWrap`), in the same write as the row.
+        output("\r\u{1B}[J" + ClusterOnboardingBrand.noWrap
+            + Self.liveRow(text, petal: ClusterOnboardingBrand.spinner[frame], colour: colour, columns: width()) + ClusterOnboardingBrand.wrap)
     }
 
     /// One row only, as the setup's live line: the return and erase that replace it reach just the cursor's row, so a
     /// wrapped line would leave its start behind. Room: the indent, petal and space, the ellipsis and the last column.
     static func liveRow(_ text: String, petal: String, colour: String, columns: Int) -> String {
-        let room = max(1, columns - 6)
-        let fitted = text.count > room ? String(text.prefix(room)) : text
+        let fitted = ClusterOnboardingBrand.liveText(text, room: max(1, columns - 6))
         return "  \u{1B}[\(colour)m\(petal)\u{1B}[0m \u{1B}[2m\(fitted)\u{2026}\u{1B}[0m"
     }
 

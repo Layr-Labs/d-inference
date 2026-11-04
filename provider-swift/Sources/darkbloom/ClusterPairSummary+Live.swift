@@ -103,7 +103,7 @@ extension ClusterPairSummary {
         summary.modelName = leadership.modelName.flatMap { modelName($0, directory: store.paths.directory) }
         summary.deployment = leadership.deployment
         let own = ClusterService.publishedLive()
-        (summary.state, summary.reason) = ownState(started: summary.started, own: own)
+        (summary.state, summary.reason) = ownState(started: summary.started, own: own, localOnly: summary.localOnly)
         return summary
     }
 
@@ -160,7 +160,9 @@ extension ClusterPairSummary {
 
     /// This Mac's own view of the cluster, from its cluster service's last status (no other Mac is asked): stopped, the
     /// other Mac away, or what this Mac's part says (a coordinator-paired part's pair line, the leader's local session).
-    static func ownState(started: Bool, own: ClusterServiceStatus?) -> (State, String?) {
+    /// `localOnly`: the pair serves locally only as asked. Otherwise a ready local session is a pair set to serve through
+    /// Darkbloom that isn't offered (an offered pair's part reports its pair line instead), never serving.
+    static func ownState(started: Bool, own: ClusterServiceStatus?, localOnly: Bool = false) -> (State, String?) {
         guard started else { return (.stopped, nil) }
         if let control = own?.control, otherMacAwayModes.contains(control.mode) { return (.otherMacAway, control.line) }
         if let text = own?.child.pair, let pair = ClusterOnboardingPairReport.state(text) {
@@ -170,7 +172,12 @@ extension ClusterPairSummary {
             case .stopped(let why): return (.notServing, ClusterOnboardingNotServing.words(reason: why, mac: "one of the Macs"))
             }
         }
-        if let session = own?.session, session.observed { return (session.ready ? .serving : .loading, nil) }
+        // A part registered with the coordinator as a pair member, before its pair line: the coordinator may still pair it.
+        if own?.child.notice == ClusterLocalServing.offeredNotice { return (.loading, nil) }
+        if let session = own?.session, session.observed {
+            guard session.ready else { return (.loading, nil) }
+            return localOnly ? (.serving, nil) : (.notServing, ClusterOnboardingReady.notOfferedReason(nil))
+        }
         return (.unknown, nil)
     }
 

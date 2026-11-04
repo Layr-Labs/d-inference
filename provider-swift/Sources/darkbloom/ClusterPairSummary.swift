@@ -105,7 +105,10 @@ struct ClusterPairSummary: Sendable, Equatable {
     /// "this Mac" or "the other Mac (…)": where the cluster is started, stopped and changed.
     var leadingMac: String { role == .member ? otherMac : ClusterOnboardingMacName.this }
 
-    var servesWords: String { localOnly ? "locally only" : "through Darkbloom" }
+    /// How the pair is set to serve; "not offered" while Darkbloom can't have it (never read as serving through it).
+    var servesWords: String {
+        localOnly ? "locally only" : "through Darkbloom" + (ClusterOnboardingReady.isNotOffered(reason) ? " (not offered)" : "")
+    }
 
     /// The mode and each Mac's share, from the leader's deployment line ("pipeline", "M3 Ultra 40 layers / M5 Ultra 24
     /// layers"); without a line that names them, the mode the ✓ line marks, with no split (`servingMarker`).
@@ -345,12 +348,14 @@ extension ClusterPairSummary {
     static let pairingProgress: Set<String> = ["the coordinator paired both Macs", "waiting for the coordinator to pair both Macs"]
 
     /// A reason that ends a start's wait: one that needs a person (a login, the clock, a coordinator rule, matching
-    /// builds). Others (Apple verification retrying, memory freeing, a busy or reconnecting Mac, the coordinator
-    /// retrying) are waited through, as the setup screen does, within the bounded wait.
+    /// builds, a pair not offered to Darkbloom, which only a new plan or approval changes). Others (Apple verification
+    /// retrying, memory freeing, a busy or reconnecting Mac, the coordinator retrying) are waited through, as the setup
+    /// screen does, within the bounded wait.
     static func isFinalReason(_ reason: String?) -> Bool {
         guard let reason else { return true }
         return ClusterOnboardingNotServing.isMissingLogin(reason) || reason.contains("The clock of")
             || reason.contains("doesn't let") || reason.contains("run different Darkbloom builds")
+            || ClusterOnboardingReady.isNotOffered(reason)
     }
 
     /// The state the status lines of `darkbloom cluster` say, read as the other Mac's window reads them
@@ -407,6 +412,10 @@ extension ClusterPairSummary {
             if reason.contains("lacks free memory") {
                 return "Quit apps on that Mac; the cluster starts again by itself. Or choose a smaller model: "
                     + "`\(Self.cli) cluster` on \(leadingMac)."
+            }
+            if ClusterOnboardingReady.isNotOffered(reason) {
+                return "To offer it to Darkbloom: `\(Self.cli) cluster` on \(leadingMac), then choose the model again (it is "
+                    + "planned for Darkbloom). Or serve locally only: `\(Self.cli) cluster local` on \(leadingMac)."
             }
             return "Both Macs keep trying by themselves; `\(Self.cli) cluster` on \(leadingMac) shows more."
         case .unknown: return "`\(Self.cli) cluster` on \(leadingMac) shows more."

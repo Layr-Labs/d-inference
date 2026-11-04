@@ -47,16 +47,22 @@ class ComponentPathsTests(unittest.TestCase):
             "provider-swift/Sources/ProviderCoreFoundation/Manifest.swift": {"provider", "cluster"},
             "provider-swift/Tests/ClusterOnboardingChecks/run.sh": {"provider", "cluster"},
             "provider-swift/Tests/ProviderCoreTests/Inference/DistributedServeLoopTests.swift": {"provider"},
-            "provider-swift/Package.swift": {"provider", "cluster"},
-            "libs/mlx-swift-lm": {"provider", "sdk", "cluster"},
-            "libs/mlx-swift-lm/Libraries/MLXLMCommon/Generate.swift": {"provider", "sdk", "cluster"},
-            "libs/mlx-swift": {"provider", "sdk", "cluster"},
-            "libs/mlx": {"provider", "cluster"},
+            "provider-swift/Package.swift": {"provider", "cluster", "mimo_audio"},
+            "provider-swift/Sources/ProviderCore/Inference/Engine/Factory/MiMo/MiMoV26ManagedMediaForwarding.swift":
+                {"provider", "mimo_audio"},
+            "provider-swift/Tests/ProviderCoreTests/MiMo/MiMoV26ManagedAudioProviderTests.swift": {"provider", "mimo_audio"},
+            "scripts/prepare-mimo-audio-fixtures.py": {"provider", "mimo_audio"},
+            # The audio fixture script runs this generator with --audio-source.
+            "scripts/prepare-mimo-provider-fixtures.py": {"provider", "sdk", "mimo_audio"},
+            "libs/mlx-swift-lm": {"provider", "sdk", "cluster", "mimo_audio"},
+            "libs/mlx-swift-lm/Libraries/MLXLMCommon/Generate.swift": {"provider", "sdk", "cluster", "mimo_audio"},
+            "libs/mlx-swift": {"provider", "sdk", "cluster", "mimo_audio"},
+            "libs/mlx": {"provider", "cluster", "mimo_audio"},
             "libs/darkbloom-cluster/Package.swift": {"provider", "cluster"},
             "libs/darkbloom-cluster-worker/Tests/CapabilityChecks/run.sh": {"provider", "cluster"},
             "fixtures/prompt-contract/v1/corpus.json": {"provider"},
             ".github/actions/provider-ci-build/action.yml": {"provider", "sdk", "cluster"},
-            ".github/workflows/ci.yml": {"provider", "sdk", "cluster"},
+            ".github/workflows/ci.yml": {"provider", "sdk", "cluster", "mimo_audio"},
             "scripts/run-paged-kernel-tests.sh": {"provider", "sdk"},
             "scripts/run-provider-tests.sh": {"provider"},
             "scripts/provider-test-shards.py": {"provider"},
@@ -74,12 +80,13 @@ class ComponentPathsTests(unittest.TestCase):
                 self.assertEqual({name for name, value in routing.classify([path]).items() if value}, expected)
         for path in routing.COMMON:
             self.assertTrue(all(routing.classify([path]).values()), path)
-        # Every SDK-lane and cluster input is also a provider input.
-        for pattern in (*routing.SDK, *routing.CLUSTER):
-            path = pattern.replace("**", "x").replace("*", "Cluster")
-            self.assertTrue(routing.classify([path])[
-                "sdk" if pattern in routing.SDK else "cluster"], path)
-            self.assertTrue(routing.classify([path])["provider"], path)
+        # Every SDK-lane, cluster and MiMo audio input is also a provider input.
+        for component, patterns in (("sdk", routing.SDK), ("cluster", routing.CLUSTER),
+                                    ("mimo_audio", routing.MIMO_AUDIO)):
+            for pattern in patterns:
+                path = pattern.replace("**", "x").replace("*", "Cluster" if component == "cluster" else "MiMo")
+                self.assertTrue(routing.classify([path])[component], path)
+                self.assertTrue(routing.classify([path])["provider"], path)
 
     def test_swift_prompt_corpora_select_provider(self):
         for filename in ("nemotron-prompt-edge-corpus.json", "nemotron-reference-corpus.json"):
@@ -219,12 +226,18 @@ class GitDiffTests(unittest.TestCase):
         # push that runs the provider lanes runs them too.
         self.write("provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2.swift")
         provider_only = self.commit()
-        self.assertEqual(self.pr(head, provider_only), {"provider": True, "sdk": False, "cluster": False})
+        self.assertEqual(self.pr(head, provider_only),
+                         {"provider": True, "sdk": False, "cluster": False, "mimo_audio": False})
         self.assertEqual(self.run_detector("push", {"before": head, "after": provider_only, "ref": "refs/heads/dev"}),
-                         {"provider": True, "sdk": False, "cluster": True})
+                         {"provider": True, "sdk": False, "cluster": True, "mimo_audio": False})
         self.write("libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/New.swift")
         cluster = self.commit()
-        self.assertEqual(self.pr(provider_only, cluster), {"provider": True, "sdk": False, "cluster": True})
+        self.assertEqual(self.pr(provider_only, cluster),
+                         {"provider": True, "sdk": False, "cluster": True, "mimo_audio": False})
+        # The MiMo audio gate and its 1.87 GB codec run only for their inputs.
+        self.write("provider-swift/Tests/ProviderCoreTests/MiMo/MiMoV26ManagedAudioProviderTests.swift")
+        audio = self.commit()
+        self.assertEqual(self.pr(cluster, audio), {"provider": True, "sdk": False, "cluster": False, "mimo_audio": True})
         for ref in ("refs/heads/master", "refs/heads/main"):
             self.assertTrue(all(self.run_detector("push", {**event, "ref": ref}).values()))
         self.assertTrue(all(self.run_detector("push", {**event, "before": "0" * 40}).values()))
@@ -285,7 +298,7 @@ class WorkflowRoutingTests(unittest.TestCase):
                       ci["test-provider-summary"])
         self.assertNotIn("continue-on-error:", ci["test-provider-summary"])
         for policy in ("release-integrity", "docs"):
-            self.assertNotIn("    if:", ci[policy])
+            self.assertNotRegex(ci[policy], r"(?m)^    if:")
         self.assertIn("python3 scripts/test-ci-component-paths.py", ci["release-integrity"])
         self.assertNotIn("cache-swift", ci)
 

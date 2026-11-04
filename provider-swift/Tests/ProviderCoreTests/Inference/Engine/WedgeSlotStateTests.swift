@@ -38,6 +38,27 @@ struct WedgeSlotStateTests {
         await bridge.shutdown()
     }
 
+    @Test("a pair request without a coordinator budget is tracked by the allowance its engine arms")
+    func pairRequestWithoutABudgetIsTracked() async throws {
+        let owner = DistributedTestOwner()
+        let bridge = try DistributedEngineFactory.makeBridge(
+            owner: owner, expectedIdentity: owner.identity, profile: distributedTestProfile(),
+            tokenizer: TokenizerHandle(DistributedTestTokenizer()), eosTokenIDs: [99])
+        let before = ContinuousClock.now
+        let stream = await bridge.submitTokenized(
+            promptTokens: [1, 2, 3],
+            request: ChatCompletionRequest(model: owner.identity.modelID, messages: [], temperature: 0, max_tokens: 1),
+            requestId: "unbudgeted", cacheEnabled: false)
+        #expect(owner.reserveCount == 1)
+        let allowance = try #require(await bridge.wedgeMonitor.firstTokenAllowance(for: "unbudgeted"))
+        #expect(allowance > before)
+        owner.last.send(.token(4))
+        owner.last.acknowledge()
+        for await _ in stream {}
+        #expect(await bridge.wedgeMonitor.firstTokenAllowance(for: "unbudgeted") == nil, "its first token clears it")
+        await bridge.shutdown()
+    }
+
     @Test("a single-Mac engine whose steps stop under three waiting requests still reads as crashed")
     func singleMacWedgeIsStillCaught() async throws {
         let engine = PrefillScriptEngine()

@@ -2191,8 +2191,12 @@ prefill one prompt at a time and send nothing until a prompt's first token, so
 that rule would report every burst of long prompts as a wedge. The bridge
 (`EngineV2Bridge+Capacity.swift`, `WedgeMonitor.marksCrashed`) therefore marks a
 pair's slot `crashed` only when a waiting request is still without a first
-token `pastAllowanceGraceSeconds` (40 s) after its own first-token allowance;
-the `step_wedge` telemetry still reports the plain rule. A hung pair is ended
+token `pastAllowanceGraceSeconds` (40 s) after its own first-token allowance.
+That allowance is the one the pair's engine arms (its first-token deadline, or
+its request deadline when the coordinator sent no budget), tracked by request
+id: it leaves with its own request's first token or end, and an entry whose
+request left the bridge never counts. The `step_wedge` telemetry still reports
+the plain rule. A hung pair is ended
 first by the engine's first-token and request deadlines, which fail the request
 and cancel its lease, and by the cluster's fencing of a rank that does not
 retire a cancelled lane within 30 s, which withdraws the pair's capacity.

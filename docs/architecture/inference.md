@@ -3741,6 +3741,52 @@ Sources: `provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/C
 `provider-swift/Sources/ProviderCore/Inference/Distributed/Console/ClusterSetupLinkExchange.swift`
 (`ClusterSetupLinkExchange.Responder`).
 
+## A saved pairing the onboarding cannot use
+
+`darkbloom cluster` resumes a paired Mac only when the pairing it would use can
+serve. One fact ends that (`ClusterOnboardingPairingProblem`):
+
+| Case | How it is found | What the screen offers |
+|---|---|---|
+| `keyChanged` | `OnboardingLive.resume` compares the pairing's local pin with this Mac's current key, read without creating, deleting or repairing one (`ClusterPairingProvider.existingPin`); no key read claims nothing. A roster names the key that paired, so the member start refuses another (`ProviderLoop.nativePairRosterNamesAnotherKey`) | **Pair again**, **Quit** (instead of the leader's list or the member's status) |
+
+A silent other Mac is not one. Each resumed run asks the other Mac once over the
+cable (`OnboardingLive.otherMacAnswers`, `answerSeconds` = `8`), which only a
+Mac holding this pairing's edge secret answers; it is not asked right after
+pairing, nor when the cable is on a port that is not set up. Silence cannot
+tell a Mac that is only away (asleep, at its login window after a restart, its
+cluster service stopped) from one that no longer holds the pairing. So the
+screen names that Mac, its likely reasons and the command to run there
+(`ClusterOnboardingDriver.otherMacSilentLine`), and keeps **Start over (pair
+again)** with its question: the member offers **Try again**, **Start over (pair
+again)** and **Quit**; the leader keeps its list. It never offers **Pair
+again**, which does not ask.
+
+**Start over (pair again)** is in every resumed Mac's list, after one
+confirmation whose default is No (`ClusterOnboardingDriver.startOver`). Reading
+both Macs for the model list says each new reason the other Mac has not answered
+(`reachMembers`'s `waiting`, from `OnboardingLive.localReachMembers`); on a Mac
+paired before the run it ends with **Try again**, **Start over (pair again)** and
+**Quit**, also when it follows **Change model** in a ✗ outcome
+(`ClusterOnboardingDriver.finishStart` keeps the run's `startOverRequest`).
+
+**Pair again**, and **Start over** once confirmed, run `ClusterUnpairing.run`,
+the steps of `darkbloom cluster pair --forget` (a leader tells its member, the
+pairing store forgets the peer pin, the service leaves login with no pairing
+left, the pair prefix records are reclaimed), then the ordinary pairing
+ceremony, which stores a new record set for the current key
+(`ClusterPairingStore.commit`). Nothing on the other Mac is changed beyond what
+`--forget` already does: while it holds the old pairing, this Mac no longer
+answers it, so it offers **Start over (pair again)** (or **Pair again** when its
+own key changed too).
+
+Sources: `provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/ClusterOnboardingFlow.swift`
+(`ClusterOnboardingDriver.pairAgain`, `startOver`, `otherMacSilentLine`, `member`, `menu`),
+`provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/ClusterOnboardingLive.swift`
+(`OnboardingLive.resume`, `otherMacAnswers`, `unpair`) and
+`provider-swift/Sources/ProviderCore/Inference/Distributed/Pairing/ClusterUnpairing.swift`
+(`ClusterUnpairing`).
+
 ## GLM tool-stream completion
 
 GLM tool output uses the SDK GLM parser to validate the complete tool suffix at

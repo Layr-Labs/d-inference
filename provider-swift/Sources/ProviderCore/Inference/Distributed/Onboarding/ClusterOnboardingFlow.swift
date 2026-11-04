@@ -361,6 +361,8 @@ public struct ClusterOnboardingMode: Codable, Sendable, Equatable {
         self.mode = mode; self.split = split; self.measuredTokensPerSecond = measuredTokensPerSecond
     }
 
+    public static let decidedWhenItLoads = "decided when it loads"
+
     /// The default among `modes`: the fastest measured on this pair, else the planner's (the first).
     public static func defaultIndex(_ modes: [ClusterOnboardingMode]) -> Int {
         modes.indices.filter { modes[$0].measuredTokensPerSecond != nil }

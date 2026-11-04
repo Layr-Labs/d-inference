@@ -734,6 +734,17 @@ final class OnboardingLive: @unchecked Sendable {
     /// was planned (the login check's "Serve locally only") is planned and adopted for that way (B14).
     func usePlanningScope(_ scope: ClusterServingScope) { lock.withLock { plannedScope = scope } }
 
+    static func modeSplit(_ shares: [ClusterSetupPlanSummary.Mode.Share], here: String, there: String, serving: Bool) -> String? {
+        let words = shares.map { share -> String in
+            let mac = share.local ? here : there
+            if let fraction = share.share { return "\(mac) \(Int((fraction * 100).rounded()))%" }
+            return "\(mac) \(share.endLayer - share.firstLayer) layers"
+        }
+        return words.isEmpty ? nil : words.joined(separator: " / ")
+    }
+
+    static func startsAtLogin(now: Bool?, setUp: Bool?) -> Bool? { setUp }
+
     /// A planned mode as the screen shows it: each Mac's share in the screen's words ("this Mac 6 layers / the other
     /// Mac 24 layers", "this Mac 40% / the other Mac 60%") and the decode rate this pair served it at.
     func screenMode(_ mode: ClusterSetupPlanSummary.Mode) -> ClusterOnboardingMode {

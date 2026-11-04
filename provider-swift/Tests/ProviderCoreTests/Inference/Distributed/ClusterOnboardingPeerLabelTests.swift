@@ -3,6 +3,37 @@ import Testing
 @testable import ProviderCore
 
 struct ClusterOnboardingPeerLabelTests {
+    /// R3-3 (the M5 Ultra pair's round-3 re-test): GLM's mode question offered "this Mac 1 layers / the other Mac 44
+    /// layers" while Qwen served (and 26 / 19 while GLM's tensor parallel served); 44 / 1 loaded both times. Each share
+    /// is named for the Mac that runs it, in either order, a count of one is "1 layer", and while a model serves the
+    /// list's split isn't the one that loads (the adopt stops it and plans again with its memory free), so no number.
+    @Test func theModeSplitIsTheOneThatLoads() {
+        typealias Share = ClusterSetupPlanSummary.Mode.Share
+        let thisFirst = [Share(local: true, firstLayer: 0, endLayer: 44, share: nil), Share(local: false, firstLayer: 44, endLayer: 45, share: nil)]
+        let otherFirst = [Share(local: false, firstLayer: 0, endLayer: 44, share: nil), Share(local: true, firstLayer: 44, endLayer: 45, share: nil)]
+        func split(_ shares: [Share], serving: Bool = false) -> String? {
+            OnboardingLive.modeSplit(shares, here: "this Mac", there: "the other Mac", serving: serving)
+        }
+        #expect(split(thisFirst) == "this Mac 44 layers / the other Mac 1 layer")
+        #expect(split(otherFirst) == "the other Mac 44 layers / this Mac 1 layer", "named by the Mac that runs it")
+        #expect(split(thisFirst, serving: true) == ClusterOnboardingMode.decidedWhenItLoads, "no number while a model serves")
+        let tensor = [Share(local: true, firstLayer: 0, endLayer: 45, share: 0.5), Share(local: false, firstLayer: 0, endLayer: 45, share: 0.5)]
+        #expect(split(tensor) == "this Mac 50% / the other Mac 50%")
+        #expect(split([], serving: true) == nil)
+        #expect(ClusterOnboardingDeployment.sharesWords(mode: "pipeline_v1", shares: [.init(name: "Apple M5 Ultra", layers: 44, label: "this Mac"),
+            .init(name: "Apple M5 Ultra", layers: 1, label: "the other Mac")]) == "this Mac 44 layers / the other Mac 1 layer", "the card's line")
+    }
+
+    /// R3-2 (the round-3 re-test): the joining Mac's window ended "After a restart, this Mac serves again by itself"
+    /// while its service ran from an SSH session (`starts_at_login: false`): the ending read what this run's service
+    /// setup left at its start. The running service's own word, read when the line is said, decides.
+    @Test func theLoginStateIsReadWhenTheLineIsSaid() {
+        #expect(OnboardingLive.startsAtLogin(now: false, setUp: true) == false, "a service replaced since: the running one decides")
+        #expect(OnboardingLive.startsAtLogin(now: true, setUp: false) == true)
+        #expect(OnboardingLive.startsAtLogin(now: nil, setUp: true) == true, "no running service's word: this run's setup")
+        #expect(OnboardingLive.startsAtLogin(now: nil, setUp: nil) == nil)
+    }
+
     @Test func freshPeerFactsReplaceSavedMachineAndPlanLabelsWithoutChangingIntent() throws {
         let fixture = try Fixture()
         defer { fixture.remove() }

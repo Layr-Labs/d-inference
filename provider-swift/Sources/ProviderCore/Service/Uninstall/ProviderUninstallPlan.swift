@@ -108,16 +108,21 @@ public struct ProviderUninstallPairing: Sendable, Equatable {
     public static func read(home: URL = FileManager.default.homeDirectoryForCurrentUser) -> Self? {
         guard let records = try? ClusterPairingStore.default(home: home).load(), !records.pairings.isEmpty else { return nil }
         let latest = records.pairings.max { $0.pairedAt < $1.pairedAt }
-        var pairing = Self(peers: records.pairings.map { Peer(pin: $0.peerPin, name: $0.peerName) },
-                           otherMacName: latest?.peerName, role: nil)
-        guard let paths = try? ClusterUserPaths(homeDirectory: home),
+        return describing(peers: records.pairings.map { Peer(pin: $0.peerPin, name: $0.peerName) },
+                          latest: latest.map { Peer(pin: $0.peerPin, name: $0.peerName) }, home: home,
+                          local: try? ClusterSetupLinkExchange.pairing(store: .default(home: home)))
+    }
+
+    /// The other Mac's name and this Mac's role in the latest pairing, from the setup `darkbloom cluster` saved for it.
+    static func describing(peers: [Peer], latest: Peer?, home: URL, local: ClusterSetupLinkExchange.Pairing?) -> Self {
+        var pairing = Self(peers: peers, otherMacName: latest?.name, role: nil)
+        guard let latest, let paths = try? ClusterUserPaths(homeDirectory: home),
               let record = try? ClusterSetupStore(paths: .init(paths: paths)).readRecord(),
-              let leadership = record.leadership, leadership.peerPin == latest?.peerPin else { return pairing }
-        pairing.otherMacName = leadership.peerName.isEmpty ? pairing.otherMacName : leadership.peerName
+              let leadership = record.leadership, leadership.peerPin == latest.pin else { return pairing }
+        if !leadership.peerName.isEmpty { pairing.otherMacName = leadership.peerName }
         pairing.role = ClusterOnboardingRole(rawValue: leadership.role)
         // After onboarding the derived control leadership decides who leads, as `darkbloom cluster` shows it.
-        if let local = try? ClusterSetupLinkExchange.pairing(store: .default(home: home)),
-           let claim = record.control?.claim(localID: local.localMemberID, peerID: local.peerMemberID) {
+        if let local, let claim = record.control?.claim(localID: local.localMemberID, peerID: local.peerMemberID) {
             pairing.role = claim.leaderID == local.localMemberID ? .leader : .member
         }
         return pairing

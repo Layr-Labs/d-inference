@@ -59,6 +59,7 @@ struct DistributedHTTPRetirementTests {
         }
         continuation.yield(try httpDeliveryFrame(role: "assistant"))
         do { try await writing.value; Issue.record("Disconnected writer succeeded") } catch {}
+        engine.onQueue {} // a cancel is applied in queue order, after it returns
         #expect(owner.last.cancelCount == 1 && owner.last.releaseCount == 0 && control.terminal == nil)
         #expect(capture.values.isEmpty && capture.finishCount == 0)
         owner.last.acknowledge(); _ = await distributedCollect(stream)

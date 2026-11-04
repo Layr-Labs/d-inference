@@ -76,20 +76,25 @@ waiting: the stop runs in queue order, so a request whose reservation is in
 flight is stopped as soon as it is admitted. A submission whose caller went
 away while it waited for the queue (`DistributedAdmissionCancellation`) is
 refused before it asks the ranks. The first-token and request deadline timers
-hop the same way. `capacity()` called off the queue answers at
-once from the snapshot the queue publishes after every change, with the owner's
-readiness read live, and queues one refresh that runs the readiness and
-accounting checks once the queue is free. Before, a capacity read parked the
-bridge actor for the whole reservation, and with it the heartbeat's capacity,
+hop the same way. `capacity()` called off the queue answers at once from the
+snapshot the queue publishes after every change, with the owner's readiness
+read live, and queues one refresh that runs the readiness and accounting
+checks once the queue is free. A pair measures no prefill rate, so the bridge
+submits its requests without a projected admission. It awaits that admission
+(`submitAwaitingQueue`) instead of waiting for the queue on its actor, so the
+actor stays free for cancels and capacity reads. Before, the bridge actor
+waited for the whole reservation, and with it the heartbeat's capacity,
 cancellation and every other request's submission; on DevNet's pair-2 a cancel
 during a 15K-token prompt landed 20–29 s late. The reservation itself still
 holds the queue, and with it token delivery to the other lanes, until it
 returns. Sources:
 `provider-swift/Sources/ProviderCore/Inference/Distributed/Engine/DistributedCBv2Engine.swift`
 (`onQueueWithoutWaiting`, `cancel`),
-`provider-swift/Sources/ProviderCore/Inference/Distributed/Engine/DistributedCBv2Engine+Capacity.swift`
-and
-`provider-swift/Sources/ProviderCore/Inference/Distributed/Engine/DistributedCBv2Engine+Admission.swift`.
+`provider-swift/Sources/ProviderCore/Inference/Distributed/Engine/DistributedCBv2Engine+Capacity.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Distributed/Engine/DistributedCBv2Engine+Admission.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Distributed/Engine/DistributedCBv2Engine+Submission.swift`
+(`submitAwaitingQueue`) and
+`provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Submission.swift`.
 
 A pair request's admission deadline (the first-content budget left when it
 arrived, `DistributedRequestDeadlineContext`) is that request's alone. It bounds

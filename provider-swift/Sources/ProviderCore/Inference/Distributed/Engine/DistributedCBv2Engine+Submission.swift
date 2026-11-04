@@ -13,15 +13,29 @@ extension DistributedCBv2Engine {
         return try onQueue { try admit(request, deadlineContext: bounded).stream }
     }
 
-    /// Opaque media buffers need the definitive generation acknowledgement,
-    /// even when no timing projection is used for the media request.
-    func submitWithRetirement(_ request: CBv2Request,
+    /// The submission without a timing projection, for a caller that must not
+    /// wait for the queue itself: the bridge's actor, which cancels and
+    /// capacity reads need while another reservation holds the queue. The
+    /// admission still runs on the queue, in order. A caller that goes away
+    /// while this waits for the queue never reserves; one that goes away during
+    /// its reservation is stopped before its prompt starts. Opaque media
+    /// buffers need the returned generation acknowledgement.
+    func submitAwaitingQueue(_ request: CBv2Request,
         deadlineContext context: DistributedRequestDeadlineContext
-    ) throws -> (events: AsyncStream<CBv2Event>, retirement: CBv2RequestRetirement) {
+    ) async throws -> (events: AsyncStream<CBv2Event>, retirement: CBv2RequestRetirement) {
         let bounded = context.restricted(to: deadlineContext(receivedAt: clock.now()))
-        return try onQueue {
-            let value = try admit(request, deadlineContext: bounded)
-            return (value.stream, value.state.retirement)
+        let cancellation = DistributedAdmissionCancellation()
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                queue.async { [self] in
+                    continuation.resume(with: Result {
+                        let value = try admit(request, deadlineContext: bounded, cancellation: cancellation)
+                        return (value.stream, value.state.retirement)
+                    })
+                }
+            }
+        } onCancel: {
+            cancellation.cancel()
         }
     }
 

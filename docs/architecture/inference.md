@@ -315,12 +315,17 @@ start, `OnboardingLive.markRegistrationPending`, never by `serve` alone as `dark
 it; cleared by `localRegister`, a failed test or a stop; honoured only while that start's process runs, the same
 process by its start time) and the leader's status says a start line, "checking with Darkbloom before it offers
 the pair" (`ClusterOnboardingReady.offerPendingLine`), which the Mac that joins follows as a start not yet over
-and no screen shows as ✓. A failed test publishes the start's outcome instead (`ClusterSetupRecord.startTestFailure`,
-under the status's not-serving line `ClusterOnboardingReady.testFailedNote`), so the Mac that joins ends with the
-same ✗ and sends no test of its own. Each stage of the start has the whole bound
+and no screen shows as ✓. Every screen start, local only too, marks itself
+the same way until its test is answered (locally the status says `ClusterOnboardingReady.testingLine`, never
+"checking with Darkbloom") and publishes that test's outcome, compare-and-set on the mark's pid and start time
+(`OnboardingLive.settleTest`): a pass as `ClusterSetupRecord.startTestPassed`, the time under the serving line
+(`ClusterOnboardingReady.startTestPassedLine`); a failure as `startTestFailure`, under the not-serving line
+(`testFailedNote`, or `localTestFailedNote` locally). The Mac that joins ends with that outcome and sends no test
+of its own (`ClusterOnboardingDriver.followServed`, `followTestFailed`). The next start or serve and a stop clear
+both, and a pass clears a failure. Each stage of the start has the whole bound
 (`ClusterOnboardingDriver.followStage`). So with both Macs on this build a late offer never gives it an early ✓:
 offered, it waits on the pair as the leader does (`pairServing`). With a leader on an older build, the joining Mac
-may show ✓ before Darkbloom accepts the pair. The model list keeps one line per
+may show ✓ before Darkbloom accepts the pair, and it tests the pair itself. The model list keeps one line per
 artifact and name (`OnboardingLive.presentedChoices`): a choice that cannot be
 served is left out when another offers the same digests under the same name,
 and an artifact this build serves is never called unsupported for a copy the

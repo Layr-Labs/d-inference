@@ -42,3 +42,6 @@
 - A mode is offered only if it keeps every feature: Qwen 3.8 27B offers tensor parallel only (pipeline would drop its
   image, video and logprob support). The mode is chosen on the leading Mac; a choice forwarded from the other Mac uses
   the planner's mode.
+- The Mac that joins ends with the leading Mac's own test outcome for the start, serving locally only too: ✓ with the
+  leader's response time, or ✗ with its reason, and no test of its own, so both windows tell the same story. Only a
+  leader on an older build leaves it to test the pair itself.

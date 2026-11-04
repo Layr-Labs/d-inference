@@ -737,6 +737,23 @@ public struct ClusterOnboardingReady: Codable, Sendable, Equatable {
     /// .startTestFailure`): the start's outcome, so the Mac that joined ends with the same ✗.
     public static let testFailedNote = "Setup saved, but the test failed: the pair was not offered to Darkbloom."
 
+    /// The same under a local-only start's not-serving line (a local start offers nothing to Darkbloom).
+    public static let localTestFailedNote = "Setup saved, but the test failed."
+
+    /// Whether `line` is a start's failed-test note (`testFailedNote`, `localTestFailedNote`).
+    public static func isTestFailedNote(_ line: String) -> Bool { line == testFailedNote || line == localTestFailedNote }
+
+    /// The leading Mac's status line while a local-only start's test is not answered yet: a start, not its outcome (no
+    /// ✓, and never "checking with Darkbloom", which a local start doesn't do).
+    public static func testingLine(model: String) -> String { "Starting \(model): loaded on both Macs; the leading Mac is testing it." }
+
+    /// Under the serving line once the start's test passed (`ClusterSetupRecord.startTestPassed`): the Mac that joined
+    /// ends with the same ✓ and this time, without a test of its own.
+    public static func startTestPassedLine(_ passed: String) -> String {
+        "Test response" + (passed.isEmpty ? "" : " " + passed) + startTestPassedMarker
+    }
+    public static let startTestPassedMarker = " (the leading Mac's test)"
+
     /// How the line of a pair registered with the coordinator as a cluster member starts (`ClusterLocalServing`). It is
     /// a log line and a prefix matcher, never shown: the screen says `offeredLine(model:)`.
     public static let registeredNotice = "Registered with the coordinator as a cluster member"
@@ -889,9 +906,10 @@ public struct ClusterOnboardingOperations: Sendable {
     public var followTiming = ClusterOnboardingFollowTiming()
     /// How long the pairing waits without finding the other Mac before it says what to check (`otherMacNotFoundLines`).
     public var pairHintSeconds: Double = 25
-    /// Marks the start that asks the coordinator after its test (`finishStart` with `registers`) until it decides, so
-    /// the leading Mac's status says it is not over (`OnboardingLive.markRegistrationPending`). `serve` alone never
-    /// marks. Not in `init`: only the live operations set it.
+    /// Marks the screen's start (`finishStart` with `registers`, local only or through Darkbloom) until its test is
+    /// answered, and through Darkbloom until the coordinator decides, so the leading Mac's status says it is not over and
+    /// then publishes its outcome (`OnboardingLive.markRegistrationPending`). `serve` alone never marks. Not in `init`:
+    /// only the live operations set it.
     public var markRegistrationPending: @Sendable () -> Void = {}
 
     public init(resume: @escaping @Sendable () -> ClusterOnboardingResume,
@@ -2121,8 +2139,9 @@ public enum ClusterOnboardingDriver {
                             _ operations: ClusterOnboardingOperations, _ console: ClusterOnboardingConsole) -> Int32 {
         var scope = scope
         var mayRegister = registers
-        // Only this start asks the coordinator after its test: the leading Mac's status says so until it decides.
-        if registers, !scope.isLocalOnly { operations.markRegistrationPending() }
+        // The screen's start marks itself until its test is answered (through Darkbloom, until the coordinator decides),
+        // so the leading Mac publishes its outcome and the Mac that joined ends with the same.
+        if registers { operations.markRegistrationPending() }
         while true {
             switch startOutcome(title: title, scope: scope, mayRegister: &mayRegister, operations, console) {
             case .served(let served, let lines, let ready):

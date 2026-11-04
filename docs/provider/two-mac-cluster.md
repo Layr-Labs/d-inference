@@ -98,11 +98,15 @@ follows the start from the cluster's status the two Macs exchange over the cable
    in `darkbloom cluster` on either Mac) and this Mac keeps following. Offered,
    it says "Offered to Darkbloom as a pair for <model>; waiting for Darkbloom to
    accept this pair…" and waits as the leader does, so both screens end the
-   same way. When the leader's test request fails, its status says so ("Setup
-   saved, but the test failed: the pair was not offered to Darkbloom.") and this
-   Mac ends with the same ✗ and reason, without a test of its own. With a leader
-   on an older build, which says none of this, this Mac may show ✓ before
-   Darkbloom accepts the pair.
+   same way. Every start the leader's screen makes publishes its test's outcome,
+   and this Mac ends with it, without a test of its own: a pass with the leader's
+   response time ("Test response in 0.61 s (the leading Mac's test)"), a failure
+   with the same ✗, reason and note ("Setup saved, but the test failed."; through
+   Darkbloom "… the pair was not offered to Darkbloom."). Serving locally only,
+   the leader's status says "Starting <model>: loaded on both Macs; the leading
+   Mac is testing it." until its test is answered. With a leader on an older
+   build, which publishes none of this, this Mac sends its own test request and
+   may show ✓ before Darkbloom accepts the pair.
 3. It ends with the same ✓ or ✗ block as the leader's screen. After ✓: "You can
    close this window." After ✗: the reason, then "Choose Retry on the other Mac
    (…): its screen shows the choices."; after a failed test, "To test again, run

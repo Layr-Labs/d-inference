@@ -162,6 +162,8 @@ import Darwin
         // Validator D on PR #1778: both windows end alike, only the start that registers marks itself, the pending check
         // is no ✓, each stage of the start has its own bound. Failing first on a148285f70.
         aFailedStartTestEndsTheJoinedMacTheSame()
+        theJoiningMacMirrorsALocalStartsFailedTest()
+        theJoiningMacMirrorsTheLeadersPass()
         onlyTheStartThatRegistersMarksItself()
         thePendingCheckIsNoTickOnAnyScreen()
         eachStageOfTheStartHasItsOwnBound()
@@ -3170,7 +3172,7 @@ import Darwin
 
     /// Validator D's M3 meets rounds 5 and 6: Enter on the serving model (its test) and that test's Retry never mark a
     /// pending registration, so their failure is never published as a start's outcome; a mode switch is a start and
-    /// marks once, from `finishStart`, only when it registers.
+    /// marks once, from `finishStart`, local only or through Darkbloom (round 8: every screen start publishes its outcome).
     static func theServingModelsTestNeverMarksAStart() {
         let tested = Recorder()
         var test = operations(tested, resume: qwenServing, pairEvents: [], pairResult: .failed([]), choices: switchChoices,
@@ -3192,7 +3194,17 @@ import Darwin
         expect(change.waitFor("  1) Yes, switch\n  2) No\n"), "mode switch: asked"); change.type("1")
         _ = change.finish()
         let marks = switched.all.filter { $0 == "markRegistrationPending" }.count
-        expect(switched.all.contains("adopt 0") && marks == (piped.scope.isLocalOnly ? 0 : 1), "mode switch: one mark, a start's: \(switched.all)")
+        expect(switched.all.contains("adopt 0") && marks == 1, "mode switch: one mark, a start's: \(switched.all)")
+        var localPiped = piped
+        localPiped.scope = .localOnly(bind: "0.0.0.0")
+        let local = Recorder()
+        var localMode = operations(local, resume: localPiped, pairEvents: [], pairResult: .failed([]), choices: switchChoices)
+        localMode.markRegistrationPending = { local.note("markRegistrationPending") }
+        let localChange = TerminalRun(localMode)
+        expect(localChange.waitFor(prompt(4)), "local mode switch: the list"); localChange.type("\r")
+        expect(localChange.waitFor("  1) Yes, switch\n  2) No\n"), "local mode switch: asked"); localChange.type("1")
+        _ = localChange.finish()
+        expect(local.all.filter { $0 == "markRegistrationPending" }.count == 1, "local start: marks once, to publish its outcome: \(local.all)")
     }
 
     /// Validator D's m3: the serving model, listed in another mode (planned while the parts held memory), read as a
@@ -3574,9 +3586,11 @@ import Darwin
     /// A Mac that joins, its window kept open through the start as `statusSequence` tells it.
     static func joining(_ recorder: Recorder, statusSequence: [[String]],
                         pairServingResults: [Result<[String], ClusterOnboardingFailure>] = [.failure(.init("not asked in this check"))],
-                        followSeconds: Double = 900) -> TerminalRun {
+                        followSeconds: Double = 900,
+                        testResult: Result<[String], ClusterOnboardingFailure> = .success(["in 0.61 s"])) -> TerminalRun {
         TerminalRun(operations(recorder, pairEvents: memberEvents, pairResult: .paired(role: .member, peerName: leaderName),
-                               pairServingResults: pairServingResults, statusSequence: statusSequence, followSeconds: followSeconds))
+                               testResult: testResult, pairServingResults: pairServingResults, statusSequence: statusSequence,
+                               followSeconds: followSeconds))
     }
 
     /// The leader's status line while its start still asks Darkbloom whether to offer the pair (`registrationPendingPID`
@@ -3700,6 +3714,51 @@ import Darwin
     /// its pending mark, so the Mac that joined shows the same ✗ and reason, sends no test of its own, and says where to
     /// test again (the leader's own ending: "Setup saved, but the test failed. To test again, …"). Exit 1 on both.
     /// Failing first on a148285f70 (the mark cleared, then ✓ from the joined Mac's own test).
+    /// Validator D's re-check at 7a0e398921 (the owner's rule: both windows tell the same truth). P3c: a local-only
+    /// leader's start was not marked, so its failed test was not published, and the joining Mac's own test passed: ✓
+    /// here, "the test failed" there. P3d: the leader passed, the joining Mac's own test failed: ✗ here. The joining Mac
+    /// now ends with the leader's published outcome for the start, ✓ with the leader's response time or ✗ with its
+    /// reason, and sends no test of its own.
+    static let localTestingLine = "Starting Qwen 3.8 27B: loaded on both Macs; the leading Mac is testing it."
+    static let localServingLine = "Serving Qwen 3.8 27B (pipeline) at http://localhost:8000 (local only)."
+    static let leadersTestLine = "Test response in 0.61 s (the leading Mac's test)"
+
+    static func theJoiningMacMirrorsALocalStartsFailedTest() {
+        let reason = "The test request got an empty answer"
+        let recorder = Recorder()
+        let run = joining(recorder, statusSequence: [["Stopped."], ["Loading Qwen 3.8 27B: 1 of 2 parts ready."], [localTestingLine],
+                                                     [localTestingLine],
+                                                     [ClusterOnboardingNotServing.statusLine(model: "Qwen 3.8 27B", reason: reason),
+                                                      "Setup saved, but the test failed."]],
+                          testResult: .success(["in 0.61 s"]))
+        expect(run.waitFor(codeQuestion), "P3c: the code"); run.type("y")
+        expect(run.finish(seconds: 20) == 1, "P3c: not success, as the leader's exit 1")
+        let text = run.text
+        expect(text.hasSuffix(block("\u{2717}", "Not serving: " + reason + ".", ["Setup saved, but the test failed."])
+            + ClusterOnboardingDriver.testAgainOnLeaderLine(leaderName) + "\n"), "P3c: the leader's ✗ and reason: \(text)")
+        expect(!text.contains("\u{2713} Serving") && !recorder.all.contains("testRequest"), "P3c: no ✓, no test of its own: \(recorder.all)")
+        transcript("member-mirrors-local-failed-test", text, keys: run.keys)
+    }
+
+    static func theJoiningMacMirrorsTheLeadersPass() {
+        let recorder = Recorder()
+        let run = joining(recorder, statusSequence: [["Stopped."], ["Loading Qwen 3.8 27B: 1 of 2 parts ready."], [localTestingLine],
+                                                     [localServingLine, leadersTestLine]],
+                          testResult: .failure(.init("The test request got an empty answer.")))
+        expect(run.waitFor(codeQuestion), "P3d: the code"); run.type("y")
+        expect(run.finish(seconds: 20) == 0, "P3d: success, as the leader's exit 0")
+        let text = run.text
+        expect(text.contains("\u{2713} Serving Qwen 3.8 27B (pipeline) at http://localhost:8000") && text.contains("  " + leadersTestLine + "\n")
+               && !text.contains("\u{2717}"), "P3d: the leader's ✓ and response time: \(text)")
+        expect(!recorder.all.contains("testRequest"), "P3d: no test of its own: \(recorder.all)")
+        transcript("member-mirrors-leaders-pass", text, keys: run.keys)
+        // A leader on an older build publishes no outcome: the joining Mac tests the pair itself, as before.
+        let older = Recorder()
+        let fallback = joining(older, statusSequence: [["Stopped."], ["Loading Qwen 3.8 27B: 1 of 2 parts ready."], [localServingLine]])
+        expect(fallback.waitFor(codeQuestion), "older leader: the code"); fallback.type("y")
+        expect(fallback.finish(seconds: 20) == 0 && older.all.contains("testRequest"), "older leader: its own test, as before: \(older.all)")
+    }
+
     static func aFailedStartTestEndsTheJoinedMacTheSame() {
         let reason = "The test request got an empty answer"
         let recorder = Recorder()

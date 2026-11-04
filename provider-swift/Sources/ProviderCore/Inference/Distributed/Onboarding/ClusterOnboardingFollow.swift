@@ -62,7 +62,7 @@ extension ClusterOnboardingDriver {
         guard let first = status.first else { return .notStarted }
         if first.hasPrefix("Serving ") { return first.contains(ClusterOnboardingReady.offerPendingWords) ? .starting : .serving }
         if ClusterOnboardingNotServing.reason(inStatusLine: first) != nil {
-            return status.dropFirst().contains(ClusterOnboardingReady.testFailedNote) ? .testFailed : .offered
+            return status.dropFirst().contains(where: ClusterOnboardingReady.isTestFailedNote) ? .testFailed : .offered
         }
         let starting = first.hasPrefix("Loading ") || first.hasPrefix("Starting ") || first.contains(": registering both Macs")
         return starting ? .starting : .notStarted
@@ -154,7 +154,10 @@ extension ClusterOnboardingDriver {
     static func followServed(_ status: [String], leader: String?, _ operations: ClusterOnboardingOperations,
                              _ console: ClusterOnboardingConsole) -> Int32 {
         var shown = status
-        if status.first?.contains(pairServedMarker) != true {
+        // The leading Mac published its start's passing test: the same ✓ and time, and no test of this Mac's own, which
+        // could fail where the leader's passed. Only a leader that publishes nothing (an older build) leaves it to this Mac.
+        let published = status.dropFirst().contains { $0.hasSuffix(ClusterOnboardingReady.startTestPassedMarker) }
+        if !published, status.first?.contains(pairServedMarker) != true {
             switch busy(console, "Sending a test request", operations.testRequest) {
             case .success(let lines): shown.append("Test response" + (lines.first.flatMap { $0.isEmpty ? nil : " " + $0 } ?? ""))
             case .failure(let failure):
@@ -173,7 +176,8 @@ extension ClusterOnboardingDriver {
     /// as its screen, and no test of this Mac's own, which could pass and claim the ✓ the leader did not.
     static func followTestFailed(_ status: [String], leader: String?, _ console: ClusterOnboardingConsole) -> Int32 {
         let reason = status.first.flatMap(ClusterOnboardingNotServing.reason(inStatusLine:)) ?? "The test request failed"
-        console.result(false, ClusterOnboardingNotServing.title(reason: reason), [ClusterOnboardingReady.testFailedNote])
+        let note = status.dropFirst().first(where: ClusterOnboardingReady.isTestFailedNote) ?? ClusterOnboardingReady.testFailedNote
+        console.result(false, ClusterOnboardingNotServing.title(reason: reason), [note])
         console.say(testAgainOnLeaderLine(leader))
         return 1
     }

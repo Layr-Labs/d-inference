@@ -1313,8 +1313,10 @@ final class OnboardingLive: @unchecked Sendable {
     /// alone never marks: `darkbloom start` and `restart` serve without registering, so nothing would clear the mark.
     func markRegistrationPending() {
         let pid = getpid()
-        guard !forwards, leadership?.scope.isLocalOnly != true, let started = Self.processStarted(pid) else { return }
-        try? store.updateRecord { $0.registrationPending = .init(pid: pid, started: started); $0.startTestFailure = nil }
+        guard !forwards, let started = Self.processStarted(pid) else { return }
+        try? store.updateRecord {
+            $0.registrationPending = .init(pid: pid, started: started); $0.startTestFailure = nil; $0.startTestPassed = nil
+        }
     }
 
     /// The start's question to the coordinator is answered (or will not be asked).
@@ -1344,16 +1346,33 @@ final class OnboardingLive: @unchecked Sendable {
     /// (the status says it until the next start, a passing test or a stop), so the Mac that joined ends with the same ✗
     /// instead of passing a test of its own. A passing test clears an earlier start's failure.
     func settleTest(_ tested: Result<[String], ClusterOnboardingFailure>) {
+        // Compare-and-set against the start's mark, its pid and start time: only that start's process publishes.
+        let pid = getpid()
+        let mine = Self.processStarted(pid).map { ClusterOnboardingPendingRegistration.Mark(pid: pid, started: $0) }
+        let record = try? store.readRecord()
+        let marked = mine != nil && record?.registrationPending == mine
         switch tested {
-        case .success:
-            if (try? store.readRecord())?.startTestFailure != nil { try? store.updateRecord { $0.startTestFailure = nil } }
+        case .success(let lines):
+            guard marked else {
+                if record?.startTestFailure != nil { try? store.updateRecord { $0.startTestFailure = nil } }
+                return
+            }
+            // The marked start's test passed: its outcome, with the time its screen shows. A local start is over; through
+            // Darkbloom the mark stays until the coordinator decides.
+            let local = record?.leadership?.scope.isLocalOnly == true
+            try? store.updateRecord { record in
+                guard record.registrationPending == mine else { return }
+                record.startTestFailure = nil
+                record.startTestPassed = lines.first ?? ""
+                if local { record.registrationPending = nil }
+            }
         case .failure(let failure):
-            let pid = getpid()
-            guard (try? store.readRecord())?.registrationPendingPID == pid else { return }
+            guard marked else { return }
             let first = failure.lines.first ?? "The test request failed"
             try? store.updateRecord { record in
-                guard record.registrationPendingPID == pid else { return }
+                guard record.registrationPending == mine else { return }
                 record.registrationPending = nil
+                record.startTestPassed = nil
                 record.startTestFailure = first.hasSuffix(".") ? String(first.dropLast()) : first
             }
         }
@@ -1408,7 +1427,7 @@ final class OnboardingLive: @unchecked Sendable {
         let title = lock.withLock { chosenTitle } ?? context.savedConfiguration().configuration?.publicModelID
         do {
             // A new start: an earlier start's failed test is no longer the pair's outcome.
-            try store.updateRecord { $0.leadership?.serving = true; if let title { $0.leadership?.modelName = title }; $0.startTestFailure = nil }
+            try store.updateRecord { $0.leadership?.serving = true; if let title { $0.leadership?.modelName = title }; $0.startTestFailure = nil; $0.startTestPassed = nil }
             // The line of the setup that runs, so the member shows the same one when it leads.
             let deployment = savedDeployment() ?? leadership?.deployment
             try store.updateRecord { $0.leadership?.deployment = deployment }
@@ -1828,18 +1847,24 @@ final class OnboardingLive: @unchecked Sendable {
         } else if let session = now.session, session.observed {
             if session.ready {
                 let ready = ready(now, port: session.port ?? 0)
-                if leadership?.scope.isLocalOnly != true, registrationPending {
-                    // The start still asks the coordinator whether to offer the pair: a start, not its outcome.
-                    lines.append(ClusterOnboardingReady.offerPendingLine(model: model))
+                let local = leadership?.scope.isLocalOnly == true
+                if registrationPending {
+                    // The screen's start is not over, a start and not its outcome: through Darkbloom it still asks the
+                    // coordinator whether to offer the pair; locally its test is not answered yet.
+                    lines.append(local ? ClusterOnboardingReady.testingLine(model: model) : ClusterOnboardingReady.offerPendingLine(model: model))
                     return lines
                 }
-                if let failure = (try? store.readRecord())?.startTestFailure {
-                    // The start's outcome: its test request failed, and the pair was not offered to Darkbloom.
-                    lines += [ClusterOnboardingNotServing.statusLine(model: model, reason: failure), ClusterOnboardingReady.testFailedNote]
+                let record = try? store.readRecord()
+                if let failure = record?.startTestFailure {
+                    // The start's outcome: its test request failed (through Darkbloom, the pair was not offered).
+                    lines += [ClusterOnboardingNotServing.statusLine(model: model, reason: failure),
+                              local ? ClusterOnboardingReady.localTestFailedNote : ClusterOnboardingReady.testFailedNote]
                     return lines
                 }
                 lines.append(ready.summary(model: model)
                     + ClusterOnboardingDriver.servesWords(scope: leadership?.scope ?? .publicServing, ready: ready) + ".")
+                // The start's outcome: its test passed, with the time its screen showed (the Mac that joined ends with it).
+                if let passed = record?.startTestPassed { lines.append(ClusterOnboardingReady.startTestPassedLine(passed)) }
                 // Why the pair serves locally although its coordinator offers a cluster approval (one line).
                 if leadership?.scope.isLocalOnly != true, let note = (try? store.readRecord())?.approvalNote { lines.append(note + ".") }
             } else {
@@ -1898,6 +1923,7 @@ final class OnboardingLive: @unchecked Sendable {
                 record.leadership?.serving = false
                 record.registrationPending = nil
                 record.startTestFailure = nil
+                record.startTestPassed = nil
             }
             lock.withLock { partsStoppedAt = Date() }
         } catch {

@@ -11,6 +11,11 @@ import unittest
 ROOT = Path(__file__).resolve().parent.parent
 
 
+def read_github_env(path):
+    """The KEY=value lines the toolchain step wrote to GITHUB_ENV."""
+    return dict(line.split("=", 1) for line in path.read_text().splitlines())
+
+
 class ReleaseToolchainTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="release toolchain ")
@@ -38,7 +43,7 @@ class ReleaseToolchainTests(unittest.TestCase):
     def test_selects_exact_sdk_and_preserves_spaced_arguments(self):
         selected = self.select()
         self.assertEqual(selected.returncode, 0, selected.stderr)
-        selected_env = dict(line.split("=", 1) for line in (self.root / "env").read_text().splitlines())
+        selected_env = self.selected_env()
         wrapper = Path((self.root / "path").read_text().strip()) / "swift"
         result = subprocess.run([str(wrapper), "test", "--skip-build", "--filter", "test with spaces"],
                                 env={**self.env, **selected_env}, text=True, capture_output=True, check=True)
@@ -51,7 +56,7 @@ class ReleaseToolchainTests(unittest.TestCase):
         self.assertNotIn("DEVELOPER_DIR", selected_env)
 
     def selected_env(self):
-        return dict(line.split("=", 1) for line in (self.root / "env").read_text().splitlines())
+        return read_github_env(self.root / "env")
 
     def write_swift(self, compiler, version):
         compiler.parent.mkdir(parents=True, exist_ok=True)
@@ -169,9 +174,7 @@ class XcodeSelectionTests(unittest.TestCase):
             env["DEVELOPER_DIR"] = str(explicit)
         result = subprocess.run([str(ROOT / "scripts/prepare-provider-release-toolchain.sh")],
                                 env=env, text=True, capture_output=True)
-        selected = {}
-        if (self.root / "env").exists():
-            selected = dict(line.split("=", 1) for line in (self.root / "env").read_text().splitlines())
+        selected = read_github_env(self.root / "env") if (self.root / "env").exists() else {}
         return result, selected
 
     def test_prefers_an_installed_xcode_27_2_over_the_image_xcode(self):

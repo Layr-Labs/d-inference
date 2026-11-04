@@ -174,9 +174,9 @@ the only candidate. When it selects another Xcode than the image's, it exports
 | `qualification` (default) | `ci.yml`, pull-request SDK 27 release preparation, the Darkbloom Sandbox macOS CI base check | 27.2, or 27.0 (Xcode 27.1) | 6.4 or 6.4.x |
 
 SDK 27.0 stays accepted in `qualification` only while the Darkbloom Sandbox
-production macOS CI base is on Xcode 27.1.
-[Issue 1790](https://github.com/Layr-Labs/d-inference/issues/1790) removes it. Darkbloom
-Sandbox's `images/macos/pins.env` mirrors the `qualification` values.
+production macOS CI base is on Xcode 27.1. Remove it when that base is on
+Xcode 27.2. Darkbloom Sandbox's `images/macos/pins.env` mirrors the
+`qualification` values.
 
 The `scripts/provider-release-swift.sh` wrapper keeps native SwiftPM
 compilation and linking on the selected SDK. Ordinary development retains the

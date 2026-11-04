@@ -11,7 +11,7 @@
 #   qualification (default: provider CI, and the Darkbloom macOS CI base check
 #     that runs this script): SDK 27.2 or 27.0 and Swift 6.4.x. SDK 27.0
 #     (Xcode 27.1) stays accepted only while the production CI base is on
-#     Xcode 27.1; remove it with issue #1790.
+#     Xcode 27.1.
 # Darkbloom Sandbox's images/macos/pins.env mirrors the qualification values.
 set -euo pipefail
 : "${GITHUB_ENV:?}"
@@ -90,53 +90,58 @@ clt_sdk() {
   echo "$1/SDKs/MacOSX.sdk"
 }
 
+# Tries the image's Xcode, then every installed Xcode, newest first. An
+# explicit DEVELOPER_DIR is the only candidate. Selects the first one with the
+# preferred SDK, else the first one with another accepted SDK; sets
+# $selected_developer, $toolchain and $sdk, or clears $toolchain.
+select_xcode() {
+  local candidates=("$image_developer") app candidate fallback=""
+  if [[ -z "${DEVELOPER_DIR:-}" ]]; then
+    while IFS= read -r app; do
+      [[ -n "$app" ]] && candidates+=("$app/Contents/Developer")
+    done < <(find "$xcode_applications" -maxdepth 1 -name 'Xcode*.app' -type d 2>/dev/null | sort -rV)
+  fi
+  for candidate in "${candidates[@]}"; do
+    use_xcode "$candidate" && ready || continue
+    if [[ "$selected_sdk_version" == "${sdk_versions[0]}" ]]; then
+      selected_developer="$candidate"
+      break
+    fi
+    [[ -n "$fallback" ]] || fallback="$candidate"
+  done
+  [[ -n "$selected_developer" ]] || selected_developer="$fallback"
+  toolchain=""
+  [[ -n "$selected_developer" ]] || return 0
+  # Later candidates replaced $toolchain and $sdk: point them at the selection again.
+  use_xcode "$selected_developer"
+  ready
+  DEVELOPER_DIR="$selected_developer" xcodebuild -version
+}
+
+xcode_applications="${DARKBLOOM_XCODE_APPLICATIONS:-/Applications}"
 image_developer=""
 selected_developer=""
 selected_sdk_version=""
-if [[ -n "${DARKBLOOM_RELEASE_TOOLCHAIN_ROOT:-}" ]]; then
-  toolchain="$DARKBLOOM_RELEASE_TOOLCHAIN_ROOT"
-  sdk="${DARKBLOOM_RELEASE_SDK_ROOT:-$(clt_sdk "$toolchain")}"
-  ready || toolchain=""
-else
+toolchain_root="${DARKBLOOM_RELEASE_TOOLCHAIN_ROOT:-}"
+if [[ -z "$toolchain_root" ]]; then
   # Do not set DEVELOPER_DIR before checkout: a runner image may select Xcode
   # through a different app path, and /usr/bin/git itself uses xcrun.
   image_developer="${DEVELOPER_DIR:-$(xcode-select -p)}"
   if [[ "$image_developer" == /Library/Developer/CommandLineTools ]]; then
-    toolchain="$image_developer"
-    sdk="${DARKBLOOM_RELEASE_SDK_ROOT:-$(clt_sdk "$toolchain")}"
-    ready || toolchain=""
-  else
-    # The image's Xcode first, then every installed Xcode, newest first. An
-    # explicit DEVELOPER_DIR is the only candidate. The first one with the
-    # preferred SDK wins; else the first one with another accepted SDK.
-    candidates=("$image_developer")
-    if [[ -z "${DEVELOPER_DIR:-}" ]]; then
-      while IFS= read -r app; do
-        [[ -n "$app" ]] && candidates+=("$app/Contents/Developer")
-      done < <(find "${DARKBLOOM_XCODE_APPLICATIONS:-/Applications}" -maxdepth 1 -name 'Xcode*.app' -type d 2>/dev/null | sort -rV)
-    fi
-    fallback=""
-    for candidate in "${candidates[@]}"; do
-      use_xcode "$candidate" && ready || continue
-      if [[ "$selected_sdk_version" == "${sdk_versions[0]}" ]]; then
-        selected_developer="$candidate"
-        break
-      fi
-      [[ -n "$fallback" ]] || fallback="$candidate"
-    done
-    [[ -n "$selected_developer" ]] || selected_developer="$fallback"
-    toolchain=""
-    if [[ -n "$selected_developer" ]]; then
-      use_xcode "$selected_developer"
-      ready
-      DEVELOPER_DIR="$selected_developer" xcodebuild -version
-    fi
+    toolchain_root="$image_developer"
   fi
+fi
+if [[ -n "$toolchain_root" ]]; then
+  toolchain="$toolchain_root"
+  sdk="${DARKBLOOM_RELEASE_SDK_ROOT:-$(clt_sdk "$toolchain")}"
+  ready || toolchain=""
+else
+  select_xcode
 fi
 
 if [[ -z "$toolchain" ]]; then
   echo "Provider release requires preinstalled $requirement; select an Xcode 27 image or SDK 27 CLT" >&2
-  for app in "${DARKBLOOM_XCODE_APPLICATIONS:-/Applications}"/Xcode*.app; do
+  for app in "$xcode_applications"/Xcode*.app; do
     [[ -d "$app" ]] && echo "installed: $app" >&2
   done
   exit 1

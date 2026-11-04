@@ -306,15 +306,50 @@ public enum ClusterModelStore {
         return count == Int(info.st_size) ? data : nil
     }
 
-    /// Free bytes on the volume that holds `url` (or its nearest existing parent), as macOS offers them to an app.
-    public static func freeBytes(at url: URL) -> Int64? {
+    /// The room on the volume that holds `url` (or its nearest existing parent), from macOS's figures for it.
+    public static func diskSpace(at url: URL) -> ClusterDiskSpace? {
         var probe = url
         while !FileManager.default.fileExists(atPath: probe.path), probe.path != "/" { probe.deleteLastPathComponent() }
-        if let values = try? probe.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]),
-           let important = values.volumeAvailableCapacityForImportantUsage, important > 0 { return important }
+        let values = try? probe.resourceValues(forKeys: [.volumeAvailableCapacityKey, .volumeAvailableCapacityForImportantUsageKey])
         var info = statfs()
-        guard statfs(probe.path, &info) == 0 else { return nil }
-        return Int64(info.f_bavail) * Int64(info.f_bsize)
+        let blocks = statfs(probe.path, &info) == 0 ? Int64(info.f_bavail) * Int64(info.f_bsize) : nil
+        return ClusterDiskSpace(available: values?.volumeAvailableCapacity.map(Int64.init),
+                                importantUsage: values?.volumeAvailableCapacityForImportantUsage, statfs: blocks)
+    }
+}
+
+/// Room on a volume for a model. A copy or download counts only the bytes free now. macOS's "important usage"
+/// capacity adds what it could purge (local snapshots, files iCloud keeps elsewhere), which it may never free: on the
+/// owner's M3 Ultra it read 256.6 GB with 54.1 GB free, and the setup offered a 172.9 GB download (2026-11-03). That
+/// space is said when it alone would make room, never counted.
+public struct ClusterDiskSpace: Sendable, Equatable {
+    /// Free now: the volume's available capacity, else `statfs`'s blocks available to this user.
+    public var freeBytes: Int64
+    /// What macOS could free beyond `freeBytes` for important use; 0 when it says nothing more.
+    public var purgeableBytes: Int64
+
+    public init(freeBytes: Int64, purgeableBytes: Int64 = 0) {
+        self.freeBytes = max(0, freeBytes); self.purgeableBytes = max(0, purgeableBytes)
+    }
+
+    /// From macOS's figures, each nil when not read: `available` (`volumeAvailableCapacity`), `importantUsage`
+    /// (`volumeAvailableCapacityForImportantUsage`) and `statfs` (`f_bavail` × `f_bsize`). Nil when no free figure was read.
+    public init?(available: Int64?, importantUsage: Int64?, statfs: Int64?) {
+        guard let free = available.flatMap({ $0 > 0 ? $0 : nil }) ?? statfs else { return nil }
+        self.init(freeBytes: free, purgeableBytes: importantUsage.map { $0 > free ? $0 - free : 0 } ?? 0)
+    }
+
+    /// Whether `bytes` fit with `reserve` kept free.
+    public func holds(_ bytes: Int64, keeping reserve: Int64) -> Bool {
+        let (need, overflow) = bytes.addingReportingOverflow(reserve)
+        return !overflow && freeBytes >= need
+    }
+
+    /// Whether `bytes` and `reserve` do not fit now but what macOS could purge alone would make room: only then is that
+    /// space said (`ClusterModelProvisioning.diskShortWords`).
+    func purgingWouldMakeRoom(_ bytes: Int64, keeping reserve: Int64) -> Bool {
+        let (need, overflow) = bytes.addingReportingOverflow(reserve)
+        return !overflow && freeBytes < need && purgeableBytes >= need - freeBytes
     }
 }
 
@@ -339,19 +374,27 @@ public struct ClusterModelProvisioningPlan: Sendable, Equatable {
         public var seconds: Double?
         /// Why it cannot start (not enough free disk), nil when it can.
         public var blocker: String?
+        /// Its Mac lacks the room on disk for the bytes it receives.
+        public var diskShort = false
     }
     public var steps: [Step]
     /// Nothing to move: every Mac has it.
     public var ready: Bool { steps.allSatisfy { $0.source == .present } }
     public var blocker: String? { steps.compactMap(\.blocker).first }
+    /// Every Mac that receives the model has room for it on disk (or its disk was not read).
+    public var fitsOnDisk: Bool { !steps.contains(where: \.diskShort) }
 }
 
 /// One Mac as the decision sees it.
 public struct ClusterModelProvisioningMac: Sendable, Equatable {
     public var name: String
     public var holding: ClusterModelHolding
-    public var freeBytes: Int64?
-    public init(name: String, holding: ClusterModelHolding, freeBytes: Int64?) { self.name = name; self.holding = holding; self.freeBytes = freeBytes }
+    /// Its model store's disk; nil when not read (nothing is refused on a guess).
+    public var disk: ClusterDiskSpace?
+    public init(name: String, holding: ClusterModelHolding, disk: ClusterDiskSpace?) { self.name = name; self.holding = holding; self.disk = disk }
+    public init(name: String, holding: ClusterModelHolding, freeBytes: Int64?) {
+        self.init(name: name, holding: holding, disk: freeBytes.map { ClusterDiskSpace(freeBytes: $0) })
+    }
 }
 
 public enum ClusterModelProvisioning {
@@ -374,13 +417,14 @@ public enum ClusterModelProvisioning {
         }
         func step(_ mac: ClusterModelProvisioningMac, _ source: ClusterModelSource, rate: Double?) -> ClusterModelProvisioningPlan.Step {
             let bytes = source == .present ? 0 : remaining(mac.holding)
-            var blocker: String?
-            if source != .present, let free = mac.freeBytes, free < bytes + reserveBytes {
-                blocker = "\(mac.name) has \(gigabytes(free)) free; the model needs \(gigabytes(bytes)) and \(gigabytes(reserveBytes)) to spare"
+            var blocker: String?, diskShort = false
+            if source != .present, let disk = mac.disk, !disk.holds(bytes, keeping: reserveBytes) {
+                blocker = diskShortWords(mac: mac.name, disk: disk, needs: "the model", bytes: bytes)
+                diskShort = true
             }
             if source == .download, !catalogHasIt { blocker = blocker ?? "no Mac has it and the catalog does not offer it" }
             let seconds = rate.flatMap { $0 > 0 && bytes > 0 ? Double(bytes) / $0 : nil }
-            return .init(mac: mac.name, source: source, bytes: bytes, seconds: seconds, blocker: blocker)
+            return .init(mac: mac.name, source: source, bytes: bytes, seconds: seconds, blocker: blocker, diskShort: diskShort)
         }
         let leaderHas = leader.holding.complete
         let holder = leaderHas ? leader.name : members.first(where: { $0.holding.complete })?.name
@@ -399,6 +443,14 @@ public enum ClusterModelProvisioning {
     }
 
     public static func gigabytes(_ bytes: Int64) -> String { String(format: "%.1f GB", Double(bytes) / 1e9) }
+
+    /// "this Mac has 54.1 GB free; the model needs 172.9 GB and 2.1 GB to spare", then what macOS could purge when that
+    /// alone would make room (`ClusterDiskSpace.purgingWouldMakeRoom`). `what` is "the model" or "the copy".
+    static func diskShortWords(mac: String, disk: ClusterDiskSpace, needs what: String, bytes: Int64) -> String {
+        let words = "\(mac) has \(gigabytes(disk.freeBytes)) free; \(what) needs \(gigabytes(bytes)) and \(gigabytes(reserveBytes)) to spare"
+        guard disk.purgingWouldMakeRoom(bytes, keeping: reserveBytes) else { return words }
+        return words + ". macOS could free up to \(gigabytes(disk.purgeableBytes)) more (purgeable files such as local snapshots), but Darkbloom doesn't count on it"
+    }
 
     /// "about 4 s", "about 3 min".
     public static func duration(_ seconds: Double) -> String {
@@ -482,7 +534,7 @@ public final class ClusterModelReceiver: @unchecked Sendable {
     public let store: URL
     public let folder: String
     let staging: URL
-    let freeBytes: @Sendable (URL) -> Int64?
+    let diskSpace: @Sendable (URL) -> ClusterDiskSpace?
     let stagedCheck: ((URL) -> String?)?
     private var current: (index: Int, fd: Int32, hasher: SHA256, written: Int64)?
     private var verified = Set<Int>()
@@ -502,13 +554,13 @@ public final class ClusterModelReceiver: @unchecked Sendable {
     public init(artifact: ClusterCatalogArtifact, store: URL, folder: String, expectedAggregate: String?,
                 trust: ((ClusterCatalogArtifact) -> String?)? = nil,
                 stagedCheck: ((URL) -> String?)? = nil, diskCheckBytes: Int64 = 256 << 20,
-                freeBytes: @escaping @Sendable (URL) -> Int64? = { ClusterModelStore.freeBytes(at: $0) }) throws {
+                diskSpace: @escaping @Sendable (URL) -> ClusterDiskSpace? = { ClusterModelStore.diskSpace(at: $0) }) throws {
         guard let safe = ClusterCatalogArtifact.safeFolder(folder) else { throw ClusterModelProvisioningError("the model folder name is not safe") }
         if let expectedAggregate, expectedAggregate != artifact.aggregateSHA256 {
             throw ClusterModelProvisioningError("the model offered is not the catalog's \(artifact.modelID) \(artifact.version) (its digest differs)")
         }
         if let refusal = trust?(artifact) { throw ClusterModelProvisioningError(refusal) }
-        self.artifact = artifact; self.store = store; self.folder = safe; self.freeBytes = freeBytes; self.stagedCheck = stagedCheck
+        self.artifact = artifact; self.store = store; self.folder = safe; self.diskSpace = diskSpace; self.stagedCheck = stagedCheck
         self.diskCheckBytes = max(1, diskCheckBytes)
         staging = store.appendingPathComponent(ClusterModelStore.stagingName(artifact))
     }
@@ -521,7 +573,7 @@ public final class ClusterModelReceiver: @unchecked Sendable {
     public func begin() throws -> ClusterModelReceiveState {
         try makeDirectory(store)
         if case .complete(let existing) = ClusterModelStore.holding(store: store, artifact: artifact), existing == folder {
-            return .init(complete: true, offsets: artifact.files.map(\.sizeBytes), freeBytes: freeBytes(store), refusal: nil)
+            return .init(complete: true, offsets: artifact.files.map(\.sizeBytes), freeBytes: diskSpace(store)?.freeBytes, refusal: nil)
         }
         var info = stat()
         if lstat(destination.path, &info) == 0 {
@@ -548,15 +600,16 @@ public final class ClusterModelReceiver: @unchecked Sendable {
             } else { offsets.append(0) }
         }
         let left = zip(artifact.files, offsets).reduce(Int64(0)) { $0 + $1.0.sizeBytes - $1.1 }
-        var free = freeBytes(store)
-        if let short = free, short < left + ClusterModelProvisioning.reserveBytes, reclaimAbandonedStaging() {
-            free = freeBytes(store)
+        let reserve = ClusterModelProvisioning.reserveBytes
+        var disk = diskSpace(store)
+        if let short = disk, !short.holds(left, keeping: reserve), reclaimAbandonedStaging() {
+            disk = diskSpace(store)
         }
-        if let free, free < left + ClusterModelProvisioning.reserveBytes {
-            throw ClusterModelProvisioningError("this Mac has \(ClusterModelProvisioning.gigabytes(free)) free; the copy needs \(ClusterModelProvisioning.gigabytes(left)) and \(ClusterModelProvisioning.gigabytes(ClusterModelProvisioning.reserveBytes)) to spare")
+        if let disk, !disk.holds(left, keeping: reserve) {
+            throw ClusterModelProvisioningError(ClusterModelProvisioning.diskShortWords(mac: "this Mac", disk: disk, needs: "the copy", bytes: left))
         }
         remaining = left; sinceDiskCheck = 0
-        return .init(complete: false, offsets: offsets, freeBytes: free, refusal: nil)
+        return .init(complete: false, offsets: offsets, freeBytes: disk?.freeBytes, refusal: nil)
     }
 
     /// Bytes of file `index` at `offset`. Files arrive in order, each from its resume offset to its end.
@@ -594,12 +647,11 @@ public final class ClusterModelReceiver: @unchecked Sendable {
     /// Something else filled the disk during the copy: stop before it is full (half the reserve is kept for macOS),
     /// with what is staged kept for the resume and the reason in words.
     private func checkFreeDisk() throws {
-        guard let free = freeBytes(store) else { return }
         let keep = ClusterModelProvisioning.reserveBytes / 2
-        guard free < remaining + keep else { return }
+        guard let disk = diskSpace(store), !disk.holds(remaining, keeping: keep) else { return }
         if let open = current { _ = fsync(open.fd); close(open.fd); current = nil }
         let staged = max(0, artifact.totalBytes - remaining)
-        throw ClusterModelProvisioningError("this Mac's free disk fell to \(ClusterModelProvisioning.gigabytes(free)) during the copy (something else is writing to it); the copy needs \(ClusterModelProvisioning.gigabytes(remaining)) more and \(ClusterModelProvisioning.gigabytes(keep)) to spare, so it stopped with \(ClusterModelProvisioning.gigabytes(staged)) staged and kept for the resume. Free some space and run `darkbloom cluster` again")
+        throw ClusterModelProvisioningError("this Mac's free disk fell to \(ClusterModelProvisioning.gigabytes(disk.freeBytes)) during the copy (something else is writing to it); the copy needs \(ClusterModelProvisioning.gigabytes(remaining)) more and \(ClusterModelProvisioning.gigabytes(keep)) to spare, so it stopped with \(ClusterModelProvisioning.gigabytes(staged)) staged and kept for the resume. Free some space and run `darkbloom cluster` again")
     }
 
     /// The last byte of file `index` arrived: verify its size and digest, then move it to its name.

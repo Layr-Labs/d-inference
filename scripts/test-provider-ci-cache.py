@@ -240,7 +240,7 @@ class CacheIdentityTests(unittest.TestCase):
         metadata["sdk"]["version"] += "different Swift SDK"
         metadata["swift"]["version"] += "different Swift toolchain"
         self.assertEqual(before, self.keys(metadata=metadata)["metallib-key"])
-        self.write(".github/workflows/ci.yml", "# changed CI\n")
+        self.write(".github/workflows/provider-tests.yml", "# changed CI\n")
         self.assertEqual(before, self.keys()["metallib-key"])
 
     def test_native_recursive_gitlink_not_top_level_mlx_keys_metallib(self):

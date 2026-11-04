@@ -1,0 +1,27 @@
+name: CI (dev)
+
+# Pull requests into dev and pushes to dev run the provider, SDK and cluster
+# tests (.github/workflows/provider-tests.yml) and nothing else: Release
+# Integrity, Docs Lint and the contribution gates run only for master
+# (.github/workflows/ci-master.yml, docs-impact.yml).
+on:
+  push:
+    # Pushes to dev save the caches that pull requests into dev restore.
+    branches: [dev]
+  pull_request:
+    branches: [dev]
+
+permissions:
+  contents: read
+
+# Only revisions of the same PR supersede each other; pushes stay independent.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  tests:
+    name: Tests
+    uses: ./.github/workflows/provider-tests.yml
+    permissions:
+      contents: read

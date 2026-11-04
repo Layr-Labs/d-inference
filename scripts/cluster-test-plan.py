@@ -34,7 +34,7 @@ import time
 ROOT = Path(__file__).resolve().parent.parent
 PACKAGE = ROOT / "libs/darkbloom-cluster"
 RUNTIME_TESTS = PACKAGE / "Tests/DarkbloomClusterRuntimeTests"
-WORKFLOW = ROOT / ".github/workflows/ci.yml"
+WORKFLOW = ROOT / ".github/workflows/provider-tests.yml"
 NESTED_SUITE = ROOT / "scripts/run-nested-suite.sh"
 MODULE = "DarkbloomClusterRuntimeTests"
 LANES = ("blocking", "nonblocking", "focused")

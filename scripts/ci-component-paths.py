@@ -13,12 +13,12 @@ import subprocess
 COMPONENTS = ("provider", "sdk", "cluster", "mimo_audio")
 COMMON = (
     "Makefile", "mise.toml", ".gitmodules", ".github/workflows/component-changes.yml",
-    ".github/workflows/darkbloom-route.yml",
+    ".github/workflows/darkbloom-route.yml", ".github/workflows/ci-dev.yml", ".github/workflows/ci-master.yml",
     "scripts/ci-component-paths.py", "scripts/test-ci-component-paths.py",
 )
 PROVIDER = (
     "provider-swift/**", "libs/**", "fixtures/**",
-    ".github/workflows/ci.yml", ".github/actions/provider-ci-build/**",
+    ".github/workflows/provider-tests.yml", ".github/actions/provider-ci-build/**",
     "scripts/provider-ci-cache.py", "scripts/provider_ci_cache/**",
     "scripts/provider-release-cache.py", "scripts/provider_release_cache/**",
     "scripts/provider-release-swift.sh", "scripts/prepare-provider-release-toolchain.sh",
@@ -41,7 +41,7 @@ PROVIDER = (
 # build recipe and its runner scripts. Its suites also run in the SDK fork's CI.
 SDK = (
     "libs/mlx-swift-lm", "libs/mlx-swift-lm/**", "libs/mlx-swift", "libs/mlx-swift/**",
-    ".github/workflows/ci.yml", ".github/actions/provider-ci-build/**",
+    ".github/workflows/provider-tests.yml", ".github/actions/provider-ci-build/**",
     "scripts/provider-ci-cache.py", "scripts/provider_ci_cache/**",
     "scripts/provider-release-cache.py", "scripts/provider_release_cache/**",
     "scripts/provider-release-swift.sh", "scripts/prepare-provider-release-toolchain.sh",
@@ -72,7 +72,7 @@ CLUSTER = (
     # provider unit tests of cluster code run in the provider lane.
     "provider-swift/Tests/Cluster*Checks/**",
     "provider-swift/Tests/ProviderCoreTests/Fixtures/coordinator-wire/cluster_registration_vector.json",
-    ".github/workflows/ci.yml", ".github/actions/provider-ci-build/**",
+    ".github/workflows/provider-tests.yml", ".github/actions/provider-ci-build/**",
     "scripts/provider-ci-cache.py", "scripts/provider_ci_cache/**",
     "scripts/provider-release-cache.py", "scripts/provider_release_cache/**",
     "scripts/provider-release-swift.sh", "scripts/prepare-provider-release-toolchain.sh",
@@ -93,7 +93,7 @@ MIMO_AUDIO = (
     "provider-swift/Sources/*MiMo*", "provider-swift/Sources/*Audio*", "provider-swift/Sources/*Media*",
     "provider-swift/Tests/ProviderCoreTests/MiMo/*",
     "libs/mlx", "libs/mlx/**", "libs/mlx-swift", "libs/mlx-swift/**", "libs/mlx-swift-lm", "libs/mlx-swift-lm/**",
-    ".github/workflows/ci.yml", "scripts/prepare-mimo-audio-fixtures.py",
+    ".github/workflows/provider-tests.yml", "scripts/prepare-mimo-audio-fixtures.py",
     "scripts/prepare-mimo-provider-fixtures.py", "scripts/run-nested-suite.sh",
 )
 

@@ -29,7 +29,7 @@ SWIFT_WRAPPER = Path(__file__).resolve().with_name("provider-release-swift.sh")
 METALLIB_RECIPE_PATHS = ("scripts/fetch-metallib.sh", "scripts/stage-test-metallib.sh",
                          "scripts/install-release-cmake.sh")
 RECIPE_PATHS = (
-    ".github/workflows/ci.yml",
+    ".github/workflows/provider-tests.yml",
     ".github/actions/provider-ci-build/action.yml",
     "scripts/provider-ci-cache.py",
     "scripts/test-provider-ci-cache.py",

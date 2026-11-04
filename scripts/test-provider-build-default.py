@@ -79,7 +79,8 @@ class ProviderBuildDefaultTests(unittest.TestCase):
             self.assertIn("provider-build-default:", missing.stderr)
 
     def test_ci_checks_the_target_branch_in_release_integrity(self):
-        ci = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        # Release Integrity runs only in CI (master) (David, 2026-11-04).
+        ci = (ROOT / ".github/workflows/ci-master.yml").read_text(encoding="utf-8")
         job = re.search(r"(?ms)^  release-integrity:\n(.*?)(?=^  [a-z][a-z0-9_-]*:\n)", ci).group(1)
         self.assertNotIn("\n    if:", job)
         self.assertIn("TARGET_BRANCH: ${{ github.base_ref || github.ref_name }}", job)

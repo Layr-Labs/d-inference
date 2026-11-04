@@ -247,6 +247,24 @@ the selected product without treating an old build-directory layout as a
 resource authority. Keep its archive/path checks and source-matched staging;
 see [resource and release tooling checks](test.md#focused-tooling-checks).
 
+## CI Workflows
+
+Two workflows run CI. Both call the same reusable test workflow,
+`.github/workflows/provider-tests.yml`: the component classifier, the route
+job, the provider shards and their summary, the SDK lane, the cluster jobs and
+the `Provider Tests` gate.
+
+| Workflow | Runs for | Jobs |
+|---|---|---|
+| `ci-dev.yml` (CI (dev)) | pull requests into `dev`, pushes to `dev` | the tests only |
+| `ci-master.yml` (CI (master)) | pull requests into `master`, pushes to `master` | the tests, `Release Integrity` and `Docs Lint` |
+
+Release Integrity and Docs Lint are CI (master)'s own jobs, so their checks keep
+their plain names (`master`'s ruleset requires `Release Integrity`). The test
+jobs' checks carry the caller's job name: `Tests / Provider Tests`. The
+contribution gates in `docs-impact.yml` (Commit Signatures, Docs Impact) run
+only for pull requests into `master`.
+
 ## CI Runner Routing
 
 `.github/workflows/darkbloom-route.yml` chooses where read-only CI jobs run: a
@@ -258,8 +276,7 @@ lane, `format('<job>-{0}', matrix.shard)`.
 
 | Workflow | Routed jobs | Fallback |
 |---|---|---|
-| `ci.yml` | `release-integrity`, `docs` | `blacksmith-4vcpu-ubuntu-2404` |
-| `ci.yml` | `test-provider` (lanes `test-provider-1` to `test-provider-3`, one per shard), `test-provider-summary`, `test-provider-sdk`, `test-cluster-checks`, `test-cluster` (lanes `test-cluster-1` to `test-cluster-3`), `test-cluster-gpu` (lanes `test-cluster-gpu-1` and `test-cluster-gpu-2`), `test-cluster-focused` | `blacksmith-12vcpu-macos-27` |
+| `provider-tests.yml` | `test-provider` (lanes `test-provider-1` to `test-provider-3`, one per shard), `test-provider-summary`, `test-provider-sdk`, `test-cluster-checks`, `test-cluster` (lanes `test-cluster-1` to `test-cluster-3`), `test-cluster-gpu` (lanes `test-cluster-gpu-1` and `test-cluster-gpu-2`), `test-cluster-focused` | `blacksmith-12vcpu-macos-27` |
 | `docs-impact.yml` | `commit-signatures`, `docs-impact` | `blacksmith-4vcpu-ubuntu-2404` |
 | `landing.yml`, `desktop.yml`, `nightly-linear-package.yml` | `check`, `frontend`, `test` | `blacksmith-4vcpu-ubuntu-2404` |
 | `provider-release-cache.yml` | `warm`, pull requests only | `blacksmith-12vcpu-macos-27` |
@@ -298,7 +315,9 @@ which pushed branches it admits. Other branches get `branch_not_admitted` and
 keep their fallback, so a push saves caches on Darkbloom only from an admitted
 branch and only in routed lanes ([CI Caching](#ci-caching)).
 Release, signing, publication, model registration, review automation and
-`master` or dispatched cache warming keep literal Blacksmith labels. The
+`master` or dispatched cache warming keep literal Blacksmith labels. So do
+Release Integrity and Docs Lint in CI (master): the plane routes a run attempt
+once, and that request belongs to the test jobs. The
 component classifier and the `Provider Tests` gate run on `ubuntu-24.04`.
 
 Jobs on Darkbloom Sandboxes use GitHub's Actions cache, not Blacksmith's
@@ -310,11 +329,12 @@ off and use **Re-run all jobs** to move a run back to Blacksmith. See the
 
 ## CI Caching
 
-`.github/workflows/ci.yml` and `.github/actions/provider-ci-build/action.yml`
-restore caches in every run. Only pushes to `master` and `dev` save them, when
+`.github/workflows/provider-tests.yml`, `.github/workflows/ci-master.yml` and
+`.github/actions/provider-ci-build/action.yml` restore caches in every run. Only pushes to `master` and `dev` save them, when
 the exact key missed: the workflow's `SAVE_CACHES` is
 `github.event_name == 'push' && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/dev')`,
-and `ci.yml` passes it to the composite action as `save-caches`. An entry saved
+and `provider-tests.yml` passes it to the composite action as `save-caches`
+(CI (master)'s own jobs save only on `master` pushes). An entry saved
 by a pull request is scoped to its merge ref, so only that pull request could
 restore it, and it evicted its base branch's entries from the repository's
 10 GB quota. A pull request restores its base branch's newest compatible entry,

@@ -46,9 +46,7 @@ PULL_REQUEST_WARM = "${{ github.event_name == 'pull_request' && 2 || 0 }}"
 # Every routed job: (profile, fallback label, count expression or None for 1)
 # of each lane it reads.
 ROUTED = {
-    "ci.yml": {
-        "release-integrity": ("linux_arm64", LINUX_FALLBACK, None),
-        "docs": ("linux_arm64", LINUX_FALLBACK, None),
+    "provider-tests.yml": {
         "test-provider": ("macos_arm64", MACOS_FALLBACK, PROVIDER),
         "test-provider-summary": ("macos_arm64", MACOS_FALLBACK, PROVIDER),
         "test-provider-sdk": ("macos_arm64", MACOS_FALLBACK, SDK),
@@ -66,6 +64,10 @@ ROUTED = {
     "nightly-linear-package.yml": {"test": ("linux_arm64", LINUX_FALLBACK, None)},
     "provider-release-cache.yml": {"warm": ("macos_arm64", MACOS_FALLBACK, PULL_REQUEST_WARM)},
 }
+# CI's callers of provider-tests.yml. They hold the run's only route request in
+# their `tests` job (the plane routes a run attempt once), so their own jobs,
+# Release Integrity and Docs Lint in CI (master), keep literal runners.
+CALLERS = ("ci-dev.yml", "ci-master.yml")
 # Credentialed, release, review or publication workflows keep literal runners.
 UNROUTED = ("release-swift.yml", "release-provider.yml", "release-dev-branch.yml",
             "release-desktop.yml", "provider-signing-validation.yml", "register-model.yml",
@@ -456,7 +458,7 @@ class RouteWorkflowTests(unittest.TestCase):
         self.texts = {path.name: path.read_text() for path in WORKFLOWS.glob("*.yml")}
 
     def test_every_workflow_is_classified(self):
-        self.assertEqual(set(self.texts), set(ROUTED) | set(UNROUTED) |
+        self.assertEqual(set(self.texts), set(ROUTED) | set(UNROUTED) | set(CALLERS) |
                          {"darkbloom-route.yml", "component-changes.yml"})
 
     def test_router_is_isolated_and_defaults_to_the_sandbox_plane(self):
@@ -564,6 +566,20 @@ class RouteWorkflowTests(unittest.TestCase):
                     self.assertEqual(routes, [{lane: fallback for lane, (_, fallback, _)
                                                in requested_lanes(workflow, ROUTED[filename]).items()}])
 
+    def test_ci_callers_run_the_shared_tests_and_keep_literal_runners(self):
+        for filename in CALLERS:
+            text = self.texts[filename]
+            with self.subTest(workflow=filename):
+                workflow = jobs(text)
+                self.assertEqual(job_field(workflow["tests"], "uses"), "./.github/workflows/provider-tests.yml")
+                self.assertNotIn("darkbloom-route.yml", text)
+                self.assertNotIn("needs.route", text)
+                for name, job in workflow.items():
+                    if name != "tests":
+                        self.assertEqual(job_field(job, "runs-on"), LINUX_FALLBACK)
+        self.assertEqual(set(jobs(self.texts["ci-dev.yml"])), {"tests"})
+        self.assertEqual(set(jobs(self.texts["ci-master.yml"])), {"tests", "release-integrity", "docs"})
+
     def test_release_and_credentialed_workflows_keep_literal_runners(self):
         for filename in UNROUTED:
             text = self.texts[filename]
@@ -585,14 +601,14 @@ class RouteWorkflowTests(unittest.TestCase):
                         self.assertRegex(job_field(job, "runs-on"), r"^(blacksmith-[a-z0-9-]+|ubuntu-24\.04)$")
 
     def test_classifier_gate_and_route_need_no_routed_runner(self):
-        ci = jobs(self.texts["ci.yml"])
+        ci = jobs(self.texts["provider-tests.yml"])
         self.assertEqual(needs(ci["route"]), ["changes"])
         self.assertEqual(job_field(ci["route"], "if"), "${{ !cancelled() }}")
         self.assertEqual(job_field(ci["provider-test-gate"], "runs-on"), "ubuntu-24.04")
         self.assertNotIn("route", needs(ci["provider-test-gate"]))
         changes = jobs(self.texts["component-changes.yml"])["changes"]
         self.assertEqual(job_field(changes, "runs-on"), "ubuntu-24.04")
-        self.assertIn("python3 scripts/test-darkbloom-route.py", ci["release-integrity"])
+        self.assertIn("python3 scripts/test-darkbloom-route.py", jobs(self.texts["ci-master.yml"])["release-integrity"])
         self.assertEqual(permissions(self.texts["docs-impact.yml"].split("\njobs:\n", 1)[0], 0),
                          {"contents": "read"})
 

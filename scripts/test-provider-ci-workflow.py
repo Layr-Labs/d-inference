@@ -19,7 +19,17 @@ ROOT = Path(__file__).resolve().parent.parent
 _SPEC = importlib.util.spec_from_file_location("provider_test_shards", ROOT / "scripts/provider-test-shards.py")
 shards = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(shards)
-WORKFLOW = ROOT / ".github/workflows/ci.yml"
+# The test jobs live in the reusable provider-tests.yml; Release Integrity and
+# Docs Lint are CI (master)'s own jobs. CI (dev) runs only the test jobs.
+WORKFLOW = ROOT / ".github/workflows/provider-tests.yml"
+MASTER_WORKFLOW = ROOT / ".github/workflows/ci-master.yml"
+DEV_WORKFLOW = ROOT / ".github/workflows/ci-dev.yml"
+
+
+def workflow_text():
+    """The test workflow, then CI (master): every job CI runs, each once."""
+    return WORKFLOW.read_text() + "\n" + MASTER_WORKFLOW.read_text()
+
 ACTION = ROOT / ".github/actions/provider-ci-build/action.yml"
 BUILD_ACTION = "./.github/actions/provider-ci-build"
 PROVIDER_TEST_COMMAND = ('python3 ../scripts/run-provider-test-watchdog.py \\\n'
@@ -187,8 +197,9 @@ def work_steps(job):
 
 class ProviderCIWorkflowTests(unittest.TestCase):
     def setUp(self):
-        self.workflow = WORKFLOW.read_text()
-        self.jobs = job_blocks(self.workflow)
+        self.workflow = workflow_text()
+        self.jobs = {**job_blocks(WORKFLOW.read_text().split("\njobs:\n", 1)[1]),
+                     **job_blocks(MASTER_WORKFLOW.read_text().split("\njobs:\n", 1)[1])}
 
     def test_nested_wrapper_preserves_long_filters_and_failure_gates(self):
         selector = "NativeSuite/" + "VeryLongTestName" * 30 + "|OtherSuite/testCase"
@@ -599,7 +610,7 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         commands = Counter(run_command(step) for job in self.jobs.values() for step in step_blocks(job))
         self.assertEqual(commands["../../scripts/run-paged-kernel-tests.sh"], 1)
         self.assertEqual(commands[PROVIDER_TEST_COMMAND], 1)
-        workflow = WORKFLOW.read_text()
+        workflow = workflow_text()
         for script, _, _ in PARITY_STEPS.values():
             self.assertEqual(workflow.count(script), 1, script)
 
@@ -779,14 +790,14 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         saves = [step for step in steps if "actions/cache/save@" in step]
         self.assertEqual([field(step, "name", indent=6) for step in saves],
                          ["Save .git for later runs", "Cache verified MiMo audio codec"])
-        self.assertNotIn("test-provider-parity", WORKFLOW.read_text())
+        self.assertNotIn("test-provider-parity", workflow_text())
         for forbidden in ("coordinator/", "cargo ", "rust-key", "secrets.", "darkbloom-platform"):
             self.assertNotIn(forbidden, self.jobs["test-provider"])
 
     def test_obsolete_self_consuming_cache_warmer_is_absent(self):
         # cache-swift saved a release build that only its own next run restored.
         self.assertNotIn("cache-swift", self.jobs)
-        self.assertNotIn("spm-v4-blacksmith-macos27-native-", WORKFLOW.read_text())
+        self.assertNotIn("spm-v4-blacksmith-macos27-native-", workflow_text())
 
     def test_offline_workflow_test_runs_in_release_integrity(self):
         self.assertIn("python3 provider-swift/Tests/test_protocol_fixture_resources.py", self.jobs["release-integrity"])
@@ -798,8 +809,12 @@ class ProviderCIWorkflowTests(unittest.TestCase):
     def test_only_pushes_to_master_and_dev_save_caches(self):
         # A pull request's entry is scoped to its merge ref, where nothing else
         # restores it, and evicts its base branch's entries from the quota.
-        self.assertIn("\nenv:\n  DARKBLOOM_RELEASE_ENVIRONMENT: prod\n", self.workflow)
-        self.assertIn(SAVE_POLICY, self.workflow.split("\njobs:\n", 1)[0])
+        tests = WORKFLOW.read_text()
+        self.assertIn("\nenv:\n  DARKBLOOM_RELEASE_ENVIRONMENT: prod\n", tests)
+        self.assertIn(SAVE_POLICY, tests.split("\njobs:\n", 1)[0])
+        # CI (master)'s own jobs run only for master, so only master pushes save theirs.
+        self.assertIn("  SAVE_CACHES: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}\n",
+                      MASTER_WORKFLOW.read_text().split("\njobs:\n", 1)[0])
         saves = [(job_id, field(step, "name", indent=6), field(step, "if"))
                  for job_id, job in self.jobs.items() for step in step_blocks(job) if "actions/cache/save@" in step]
         self.assertTrue(saves)
@@ -897,8 +912,11 @@ class ProviderCIWorkflowTests(unittest.TestCase):
             self.assertTrue(tree)
 
     def test_sparse_checkouts_skip_only_evidence_tarballs_and_landing_media(self):
-        env = self.workflow.split("\njobs:\n", 1)[0]
-        self.assertIn("  CHECKOUT_SPARSE: |\n" + "".join(f"    {pattern}\n" for pattern in SPARSE_PATTERNS), env)
+        for path in (WORKFLOW, MASTER_WORKFLOW):
+            with self.subTest(workflow=path.name):
+                env = path.read_text().split("\njobs:\n", 1)[0]
+                self.assertIn("  CHECKOUT_SPARSE: |\n" + "".join(f"    {pattern}\n" for pattern in SPARSE_PATTERNS),
+                              env)
         self.assertEqual(self.workflow.count("sparse-checkout: ${{ env.CHECKOUT_SPARSE }}"), 8)
         docs_impact = (ROOT / ".github/workflows/docs-impact.yml").read_text()
         self.assertIn("          filter: blob:none\n          sparse-checkout: |\n"

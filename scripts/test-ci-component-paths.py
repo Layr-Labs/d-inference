@@ -22,10 +22,15 @@ spec.loader.exec_module(workflow)
 
 class ComponentPathsTests(unittest.TestCase):
     def test_only_same_workflow_pr_revisions_share_cancellation_group(self):
-        source = (ROOT / ".github/workflows/ci.yml").read_text()
-        concurrency = source.split("\nconcurrency:\n", 1)[1].split("\njobs:\n", 1)[0]
-        self.assertIn("  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}\n", concurrency)
-        self.assertIn("  cancel-in-progress: ${{ github.event_name == 'pull_request' }}\n", concurrency)
+        for filename in ("ci-dev.yml", "ci-master.yml"):
+            with self.subTest(workflow=filename):
+                source = (ROOT / ".github/workflows" / filename).read_text()
+                concurrency = source.split("\nconcurrency:\n", 1)[1].split("\njobs:\n", 1)[0]
+                self.assertIn("  group: ${{ github.workflow }}-${{ github.event_name }}-"
+                              "${{ github.event.pull_request.number || github.run_id }}\n", concurrency)
+                self.assertIn("  cancel-in-progress: ${{ github.event_name == 'pull_request' }}\n", concurrency)
+        # The shared test workflow takes its callers' concurrency.
+        self.assertNotIn("\nconcurrency:", (ROOT / ".github/workflows/provider-tests.yml").read_text())
 
     def test_instructions_and_docs_never_select_expensive_lanes(self):
         paths = ["AGENTS.md", "docs/AGENTS.md", "docs/developer/test.md",
@@ -62,7 +67,9 @@ class ComponentPathsTests(unittest.TestCase):
             "libs/darkbloom-cluster-worker/Tests/CapabilityChecks/run.sh": {"provider", "cluster"},
             "fixtures/prompt-contract/v1/corpus.json": {"provider"},
             ".github/actions/provider-ci-build/action.yml": {"provider", "sdk", "cluster"},
-            ".github/workflows/ci.yml": {"provider", "sdk", "cluster", "mimo_audio"},
+            ".github/workflows/provider-tests.yml": {"provider", "sdk", "cluster", "mimo_audio"},
+            ".github/workflows/ci-dev.yml": {"provider", "sdk", "cluster", "mimo_audio"},
+            ".github/workflows/ci-master.yml": {"provider", "sdk", "cluster", "mimo_audio"},
             "scripts/run-paged-kernel-tests.sh": {"provider", "sdk"},
             "scripts/run-provider-tests.sh": {"provider"},
             "scripts/provider-test-shards.py": {"provider"},
@@ -252,7 +259,8 @@ class GitDiffTests(unittest.TestCase):
 
 class WorkflowRoutingTests(unittest.TestCase):
     def test_public_provider_workflows_have_no_backend_execution_or_private_access(self):
-        for filename in ("ci.yml", "component-changes.yml", "provider-release-cache.yml",
+        for filename in ("ci-dev.yml", "ci-master.yml", "provider-tests.yml", "component-changes.yml",
+                         "provider-release-cache.yml",
                          "provider-signing-validation.yml", "release-swift.yml",
                          "release-provider.yml"):
             text = (ROOT / ".github/workflows" / filename).read_text()
@@ -261,16 +269,17 @@ class WorkflowRoutingTests(unittest.TestCase):
                                   "console-ui/", "e2e/", "install-release-rust.sh", "cargo "):
                     self.assertNotIn(forbidden, text)
                 self.assertNotRegex(text, r"(?m)^\s+repository:")
-        for filename in ("integration.yml", "benchmarks.yml", "telemetry-archive.yml"):
+        for filename in ("integration.yml", "benchmarks.yml", "telemetry-archive.yml", "ci.yml"):
             self.assertFalse((ROOT / ".github/workflows" / filename).exists())
-        for filename in ("ci.yml", "provider-release-cache.yml", "component-changes.yml"):
+        for filename in ("ci-dev.yml", "ci-master.yml", "provider-tests.yml", "provider-release-cache.yml",
+                         "component-changes.yml"):
             text = (ROOT / ".github/workflows" / filename).read_text()
             self.assertNotIn("secrets.", text)
             self.assertNotRegex(text, r"(?m)^\s+(environment:|id-token:|repository:)")
 
     def test_expensive_jobs_depend_on_successful_classifier(self):
         expected = {
-            "ci.yml": {"test-provider": "provider", "test-cluster-checks": "cluster", "test-cluster": "cluster",
+            "provider-tests.yml": {"test-provider": "provider", "test-cluster-checks": "cluster", "test-cluster": "cluster",
                        "test-cluster-focused": "cluster"},
         }
         for name, lanes in expected.items():
@@ -283,7 +292,7 @@ class WorkflowRoutingTests(unittest.TestCase):
                 self.assertIn("    needs: [changes, route]\n", jobs[lane])
                 self.assertIn("    if: ${{ needs.changes.outputs." + component + " == 'true' }}\n", jobs[lane])
                 self.assertNotIn("continue-on-error:", jobs[lane])
-        ci = workflow.job_blocks((ROOT / ".github/workflows/ci.yml").read_text())
+        ci = workflow.job_blocks((ROOT / ".github/workflows/provider-tests.yml").read_text())
         # The GPU job's test step continues on error (scripts/test-cluster-test-plan.py).
         self.assertIn("    needs: [changes, route]\n", ci["test-cluster-gpu"])
         self.assertIn("    if: ${{ needs.changes.outputs.cluster == 'true' }}\n", ci["test-cluster-gpu"])
@@ -297,10 +306,15 @@ class WorkflowRoutingTests(unittest.TestCase):
         self.assertIn("    if: ${{ !cancelled() && needs.changes.outputs.provider == 'true' }}\n",
                       ci["test-provider-summary"])
         self.assertNotIn("continue-on-error:", ci["test-provider-summary"])
-        for policy in ("release-integrity", "docs"):
-            self.assertNotRegex(ci[policy], r"(?m)^    if:")
-        self.assertIn("python3 scripts/test-ci-component-paths.py", ci["release-integrity"])
         self.assertNotIn("cache-swift", ci)
+        # Release Integrity and Docs Lint run unconditionally, and only for master.
+        master = workflow.job_blocks((ROOT / ".github/workflows/ci-master.yml").read_text())
+        for policy in ("release-integrity", "docs"):
+            self.assertNotRegex(master[policy], r"(?m)^    if:")
+        self.assertIn("python3 scripts/test-ci-component-paths.py", master["release-integrity"])
+        dev = (ROOT / ".github/workflows/ci-dev.yml").read_text()
+        self.assertEqual(set(workflow.job_blocks(dev.split("\njobs:\n", 1)[1])), {"tests"})
+        self.assertIn("    uses: ./.github/workflows/provider-tests.yml\n", dev)
 
     def test_detector_has_full_history_no_credentials_or_api_truncation(self):
         text = (ROOT / ".github/workflows/component-changes.yml").read_text()
@@ -317,7 +331,7 @@ class WorkflowRoutingTests(unittest.TestCase):
             self.assertIn(name + ": ${{ steps.paths.outputs." + name + " }}", text)
 
     def test_provider_aggregate_exhaustive_truth_table(self):
-        jobs = workflow.job_blocks((ROOT / ".github/workflows/ci.yml").read_text())
+        jobs = workflow.job_blocks((ROOT / ".github/workflows/provider-tests.yml").read_text())
         gate = jobs["provider-test-gate"]
         self.assertIn("needs: [changes, test-provider, test-provider-summary, test-cluster, test-cluster-focused]", gate)
         self.assertNotIn("test-provider-sdk", gate)

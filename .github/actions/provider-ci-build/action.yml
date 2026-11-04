@@ -5,7 +5,7 @@ inputs:
     description: provider, sdk or cluster; each owns independent build outputs
     required: true
   save-caches:
-    description: "'true' to save this lane's caches; ci.yml passes true only for pushes to master and dev"
+    description: "'true' to save this lane's caches; provider-tests.yml passes true only for pushes to master and dev"
     default: 'false'
 runs:
   using: composite

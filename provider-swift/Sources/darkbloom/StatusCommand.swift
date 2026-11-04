@@ -5,7 +5,7 @@ import ProviderCore
 struct Status: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         abstract: "Show local provider configuration and hardware status.",
-        discussion: "On a Mac in a two-Mac cluster it starts with the pair, in the words of `darkbloom cluster status` "
+        discussion: "On a Mac in a two-Mac cluster it starts with the pair, in the words of `\(ClusterPairSummary.cli) cluster status` "
             + "(who leads, the model, whether it serves now and what to do), then this Mac's configuration and hardware. "
             + "With --solo it shows single-Mac serving on this Mac instead."
     )
@@ -35,7 +35,9 @@ struct Status: AsyncParsableCommand {
         let pair = ClusterPairSummary.local()
         let showsPair = pair.paired && !solo
         if showsPair {
-            for line in await ClusterPairSummary.live(config: configOptions.config).clusterStatusLines { print(line) }
+            for line in await ClusterPairSummary.live(config: configOptions.config, bounded: ClusterPairCommands.printLine).clusterStatusLines {
+                print(line)
+            }
             print("")
         }
 
@@ -117,7 +119,7 @@ struct Status: AsyncParsableCommand {
         return Self.soloBesidePairLine
     }
 
-    static let soloBesidePairLine = "Single-Mac serving: running beside the pair (`darkbloom status --solo` shows it)"
+    static let soloBesidePairLine = "Single-Mac serving: running beside the pair (`\(ClusterPairSummary.cli) status --solo` shows it)"
 
     /// One-line summary of crash-recovery state: the config opt-out plus whether
     /// the launchd watchdog agent is actually armed.

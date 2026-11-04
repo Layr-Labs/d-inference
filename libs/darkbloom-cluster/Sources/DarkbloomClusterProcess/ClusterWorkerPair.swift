@@ -57,9 +57,10 @@ public struct ClusterWorkerPairTiming: Sendable, Equatable {
     public let shutdownAcknowledgementNanoseconds: UInt64
     /// Longest `shutdown` waits for a request that is still running to stop at
     /// its next committed token before it cancels the request. A request that
-    /// stops this way leaves both ranks able to answer `shutdown`; a cancelled
+    /// stops this way leaves both ranks able to answer `shutdown`. A cancelled
     /// one ends them, and a rank still inside a collective then needs its
-    /// progress limit. Zero cancels at once.
+    /// progress limit; on a pair whose lanes retire alone it ends only its lane.
+    /// Zero cancels at once.
     public let cleanStopWaitNanoseconds: UInt64
 
     public init(admissionWaitNanoseconds: UInt64, shutdownAcknowledgementNanoseconds: UInt64,
@@ -478,8 +479,10 @@ public final class ClusterWorkerPair: @unchecked Sendable {
         awaitKeepWarmIdle(until: DispatchTime.now().uptimeNanoseconds + keepWarm.answerNanoseconds)
         // A request that is still running is first asked to stop at its next
         // committed token, which leaves both ranks retired and able to answer
-        // the shutdown below. Cancelling ends the ranks instead, and is what
-        // remains for a request that does not get there in time.
+        // the shutdown below. Cancelling is what remains for a request that
+        // does not get there in time. It ends the ranks, except on a pair whose
+        // lanes retire alone: there it ends only that lane, and a lane still in
+        // its prompt takes no clean stop, so it is cancelled without a wait.
         if timing.cleanStopWaitNanoseconds > 0 {
             let limit = DispatchTime.now().uptimeNanoseconds + timing.cleanStopWaitNanoseconds
             for lease in first.1 where lease.isRunning && lease.requestCleanStop() {

@@ -53,6 +53,8 @@ build_module InstalledContract "$task_all" \
   "$task_sources/Coordinator/NativePairMemberPolicy.swift" "$task_sources/Coordinator/NativePairMemberServing.swift" \
   "$task_sources/Coordinator/NativePairMemberPolicy+NativeStart.swift" \
   "$task_sources/Inference/Distributed/Observability/ClusterObservability.swift" \
+  "$task_sources/Inference/Distributed/Observability/ClusterIncidentLog+Install.swift" \
+  "$task_provider"/Sources/ProviderBuildEnvironment/*.swift \
   "$task_sources/Inference/Distributed/Observability/ClusterLinkObservability.swift" \
   "$task_sources/Inference/Distributed/Console/ClusterDiagnosticRedaction.swift" \
   "$task_sources/Inference/Distributed/Requests/DistributedRequestDeadlineContext.swift" \

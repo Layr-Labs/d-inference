@@ -37,6 +37,11 @@ public final class ClusterOnboardingTerminal: ClusterOnboardingConsole {
     private var configured = false
     public private(set) var closed = false
 
+    /// What a signal (Ctrl-C) says before the command ends.
+    static var stoppedLine: String { ClusterOnboardingCommand.named("Stopped. Run `darkbloom cluster` again to continue where it was.") }
+    /// `stoppedLine`'s bytes, made before the handlers are set: a signal handler only writes them.
+    nonisolated(unsafe) private static var stoppedBytes: [UInt8] = []
+
     /// The mode to put back from a signal handler (one terminal per process).
     nonisolated(unsafe) private static var restoreInput: Int32 = -1
     nonisolated(unsafe) private static var restoreMode = termios()
@@ -66,15 +71,17 @@ public final class ClusterOnboardingTerminal: ClusterOnboardingConsole {
         configured = true
         Self.restoreInput = input
         Self.restoreMode = saved
+        Self.stoppedBytes = Array("\r\n\(Self.stoppedLine)\r\n".utf8)
         for number in [SIGINT, SIGTERM, SIGHUP] {
             signal(number) { received in
                 var mode = ClusterOnboardingTerminal.restoreMode
                 if ClusterOnboardingTerminal.restoreInput >= 0 { _ = tcsetattr(ClusterOnboardingTerminal.restoreInput, TCSANOW, &mode) }
+                // Nothing is allocated here: a literal in the binary, and the bytes made before the handlers were set.
                 if ClusterOnboardingTerminal.cursorHidden {
-                    let show = Array("\u{1B}[?25h".utf8)
-                    _ = show.withUnsafeBytes { Darwin.write(STDOUT_FILENO, $0.baseAddress, $0.count) }
+                    let show: StaticString = "\u{1B}[?25h"
+                    _ = Darwin.write(STDOUT_FILENO, show.utf8Start, show.utf8CodeUnitCount)
                 }
-                let text = Array("\r\nStopped. Run `darkbloom cluster` again to continue where it was.\r\n".utf8)
+                let text = ClusterOnboardingTerminal.stoppedBytes
                 _ = text.withUnsafeBytes { Darwin.write(STDOUT_FILENO, $0.baseAddress, $0.count) }
                 Darwin._exit(128 + received)
             }

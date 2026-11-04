@@ -90,6 +90,8 @@ import Darwin
         cablePortSetUpWithSudoWhereNoPromptShows()
         codeListEndsWhenThePairingDoes()
         developmentBuildKeepsTheWindowsOpen()
+        // P2-11 (pair-2, 2026-11-04): the card said "on both Macs" from this Mac's service alone.
+        theLoginLineNamesTheMacThatDoesNot()
         // The audit of that change: keys during waits, q, SSH, a probe that tells nothing, a slow Allow on the other
         // Mac, and how the pair serves.
         arrowKeysDoNotStopAWait()
@@ -166,6 +168,9 @@ import Darwin
         // is no ✓, each stage of the start has its own bound. Failing first on a148285f70.
         aFailedStartTestEndsTheJoinedMacTheSame()
         theJoiningMacMirrorsALocalStartsFailedTest()
+        theJoiningMacSaysWhenItsServiceIsKeptOffTheLocalNetwork()
+        theJoiningMacShowsTheLeadersStateWhileItWaits()
+        retryStartsAStoppedPairAndQLeavesTheWait()
         theJoiningMacMirrorsTheLeadersPass()
         onlyTheStartThatRegistersMarksItself()
         thePendingCheckIsNoTickOnAnyScreen()
@@ -2157,11 +2162,41 @@ import Darwin
         expect(joined.finish() == 0, "dev member: exit 0")
         expect(joined.text.hasSuffix(ClusterOnboardingDriver.resultRule + "\n" + ClusterOnboardingDriver.keepWindowLine + "\n"), "dev member: keep the window open")
         let leader = Recorder()
-        let led = TerminalRun(operations(leader, resume: .init(role: .leader, peerName: "Apple M3 Ultra, 256 GB"), pairEvents: [],
-            pairResult: .failed([]), outlivesWindow: false))
+        var developmentLeader = operations(leader, resume: .init(role: .leader, peerName: "Apple M3 Ultra, 256 GB"), pairEvents: [],
+            pairResult: .failed([]), outlivesWindow: false)
+        // The other Mac runs the same build: its service doesn't start at login either (P2-11).
+        developmentLeader.otherMacStartsAtLogin = { false }
+        let led = TerminalRun(developmentLeader)
         expect(led.waitFor(prompt(2)), "dev leader: the list"); led.type("\r")
         expect(led.finish() == 0, "dev leader: exit 0")
         expect(led.text.contains("  Keep both windows open: this build's cluster service stops with them.\n"), "dev leader: keep both windows open")
+    }
+
+    /// The card's login line (P2-11): "on both Macs" only when this Mac's service outlives its window and the other Mac's
+    /// status says its service starts at login; otherwise it names the Mac whose service doesn't, or says the other Mac
+    /// doesn't say (an older build, or no answer). Pair-2's member, started from its window, reported false.
+    static func theLoginLineNamesTheMacThatDoesNot() {
+        let cases: [(outlives: Bool, other: Bool?, line: String)] = [
+            (true, true, "Starts by itself at login on both Macs."),
+            (true, false, "Starts by itself at login on this Mac, not on the other Mac."),
+            (true, nil, "Starts by itself at login on this Mac; the other Mac doesn't say whether it does."),
+            (false, true, "Keep this window open: this Mac's cluster service stops with it. On the other Mac it starts by itself at login."),
+            (false, false, "Keep both windows open: this build's cluster service stops with them."),
+            (false, nil, "Keep this window open: this Mac's cluster service stops with it. The other Mac doesn't say whether its service "
+                + "starts at login."),
+        ]
+        for (outlives, other, line) in cases {
+            let name = "login line (this Mac \(outlives), the other Mac \(other.map { "\($0)" } ?? "nil"))"
+            let recorder = Recorder()
+            var made = operations(recorder, resume: .init(role: .leader, peerName: "Apple M3 Ultra, 256 GB"), pairEvents: [],
+                                  pairResult: .failed([]), outlivesWindow: outlives)
+            made.otherMacStartsAtLogin = { other }
+            let run = TerminalRun(made)
+            expect(run.waitFor(prompt(2)), "\(name): the list"); run.type("\r")
+            expect(run.finish() == 0, "\(name): served")
+            expect(run.text.contains("\n  " + line + "\n"), "\(name): the card says \(line)")
+            expect(outlives && other == true || !run.text.contains("at login on both Macs"), "\(name): never at login on both Macs")
+        }
     }
 
     /// The code's list ends by itself when the pairing does meanwhile (the other Mac declined): no answer is waited for.
@@ -2221,8 +2256,9 @@ import Darwin
         expect(blocked.waitFor("Click Allow"), "refused: the prompt line")
         blocked.type("q")
         expect(blocked.finish() == 1, "refused: stops")
-        expect(blocked.text.hasSuffix("Turn it on in System Settings → Privacy & Security → Local Network, then run `darkbloom cluster` again.\n"),
-               "refused: where to turn it on, last")
+        expect(blocked.text.hasSuffix("(on a Mac with no display, through Screen Sharing), then run `darkbloom cluster` again.\n")
+               && blocked.text.contains("On this Mac: System Settings → Privacy & Security → Local Network → turn on “"),
+               "refused: where to turn it on, plainly, last")
     }
 
     /// `darkbloom cluster local` on a member: it takes effect on the Mac that leads, so the screen says so and nothing runs.
@@ -3646,10 +3682,12 @@ import Darwin
     static func joining(_ recorder: Recorder, statusSequence: [[String]],
                         pairServingResults: [Result<[String], ClusterOnboardingFailure>] = [.failure(.init("not asked in this check"))],
                         followSeconds: Double = 900,
-                        testResult: Result<[String], ClusterOnboardingFailure> = .success(["in 0.61 s"])) -> TerminalRun {
+                        testResult: Result<[String], ClusterOnboardingFailure> = .success(["in 0.61 s"]),
+                        localNetwork: @escaping @Sendable (ClusterOnboardingLocalNetworkSubject) -> ClusterOnboardingLocalNetwork = { _ in .allowed })
+        -> TerminalRun {
         TerminalRun(operations(recorder, pairEvents: memberEvents, pairResult: .paired(role: .member, peerName: leaderName),
-                               testResult: testResult, pairServingResults: pairServingResults, statusSequence: statusSequence,
-                               followSeconds: followSeconds))
+                               testResult: testResult, localNetwork: localNetwork, pairServingResults: pairServingResults,
+                               statusSequence: statusSequence, followSeconds: followSeconds))
     }
 
     /// The leader's status line while its start still asks Darkbloom whether to offer the pair (`registrationPendingPID`
@@ -3781,6 +3819,58 @@ import Darwin
     static let localTestingLine = "Starting Qwen 3.8 27B: loaded on both Macs; the leading Mac is testing it."
     static let localServingLine = "Serving Qwen 3.8 27B (pipeline) at http://localhost:8000 (local only)."
     static let leadersTestLine = "Test response in 0.61 s (the leading Mac's test)"
+
+    /// The pair-2 DevNet run (P2-1): the joining Mac's Local Network step passed (its service's broadcast probe said
+    /// allowed), then macOS refused its follower's dial once the leader started, and its window said nothing. It now says
+    /// so, and what to do on that Mac.
+    static func theJoiningMacSaysWhenItsServiceIsKeptOffTheLocalNetwork() {
+        let flip = LocalNetworkFlip(allowedCalls: 1)
+        let run = joining(Recorder(), statusSequence: [["Stopped."], ["Loading Qwen 3.8 27B: 1 of 2 parts ready."],
+                                                       ["Loading Qwen 3.8 27B: 1 of 2 parts ready."], ["Loading Qwen 3.8 27B: 1 of 2 parts ready."],
+                                                       [localServingLine, leadersTestLine]], localNetwork: { flip.state($0) })
+        expect(run.waitFor(codeQuestion), "P2-1, joining: the code"); run.type("y")
+        expect(run.finish(seconds: 20) == 0, "P2-1, joining: the start still ends with the leader's")
+        let said = "  This Mac can't reach the other Mac over the cable: macOS keeps Darkbloom off the local network.\n"
+            + "  On this Mac: System Settings → Privacy & Security → Local Network → turn on “Darkbloom” (on a Mac with no display, "
+            + "through Screen Sharing); the start goes on by itself once it's on.\n"
+        expect(run.text.contains(said) && run.text.components(separatedBy: said).count == 2, "P2-1, joining: said once, plainly: \(run.text)")
+    }
+
+    /// The pair-2 DevNet run (P2-7): the joining Mac's window showed nothing while the leader sat at ✗. It says each new
+    /// state of the leader's start, and where to choose Retry when a part keeps ending there.
+    static func theJoiningMacShowsTheLeadersStateWhileItWaits() {
+        let ending = "Loading Qwen 3.8 27B: 1 of 2 parts ready (this Mac's part ended (exit 1: boom) and starts again by itself)."
+        let run = joining(Recorder(), statusSequence: [["Stopped."], ["Loading Qwen 3.8 27B: 1 of 2 parts ready."], [ending], [ending],
+                                                       [localServingLine, leadersTestLine]])
+        expect(run.waitFor(codeQuestion), "P2-7: the code"); run.type("y")
+        expect(run.finish(seconds: 20) == 0, "P2-7: ends with the leader's ✓")
+        expect(run.text.contains("  The other Mac: " + String(ending.dropLast()) + ".\n")
+               && run.text.contains(ClusterOnboardingDriver.retryOnLeaderLine(leaderName)), "P2-7: the leader's state, and where to Retry: \(run.text)")
+    }
+
+    /// The pair-2 DevNet run (P2-4): after the pair was stopped (`cluster stop --service` on the member), Retry in the ✗
+    /// only waited for parts nothing would start, silently, for 5+ minutes, and q was ignored. Retry starts a stopped pair
+    /// again and says so; q leaves the wait at once, with a line.
+    static func retryStartsAStoppedPairAndQLeavesTheWait() {
+        let recorder = Recorder()
+        let run = TerminalRun(operations(recorder, resume: .init(role: .leader, peerName: "Apple M3 Ultra, 256 GB"), pairEvents: [],
+            pairResult: .failed([]), statusLines: ["Stopped."],
+            readyResults: [.failure(.init(["A part keeps ending the same way: this Mac's part ended (exit 1: boom) and starts again by itself."])),
+                           .success(localReady)]))
+        expect(run.waitFor(prompt(2)), "P2-4: the list"); run.type("\r")
+        expect(run.waitFor(notServingChoices), "P2-4: the ✗ and its choices"); run.type("1")
+        expect(run.finish(seconds: 20) == 0, "P2-4: Retry served")
+        expect(run.text.contains("  The pair is stopped: starting both Macs again.\n"), "P2-4: says it starts the pair: \(run.text)")
+        expect(recorder.all.filter { $0 == "serve" }.count == 2, "P2-4: started again: \(recorder.all)")
+        let waiting = TerminalRun(operations(Recorder(), resume: .init(role: .leader, peerName: "Apple M3 Ultra, 256 GB"), pairEvents: [],
+            pairResult: .failed([]), readyReports: ["1 of 2 parts ready"], readyReportPause: 20_000_000), environment: colourTerminal)
+        expect(waiting.waitFor(arrowHint), "P2-4, q: the list"); waiting.type("\r")
+        expect(waiting.waitFor("1 of 2 parts ready"), "P2-4, q: the wait")
+        waiting.type("q")
+        expect(waiting.finish(seconds: 5) == 1, "P2-4, q: left at once")
+        expect(waiting.text.contains("Left the start: the pair keeps starting by itself; run `darkbloom cluster` again to see how it is going.\n"),
+               "P2-4, q: the line: \(waiting.text)")
+    }
 
     static func theJoiningMacMirrorsALocalStartsFailedTest() {
         let reason = "The test request got an empty answer"
@@ -3938,5 +4028,19 @@ import Darwin
             && offeredLogLine == "Notice: Registered with the coordinator as a cluster member with an installed cluster approval",
                "offered: the log line and the matcher are unchanged")
         transcript("leader-registration-offered", text, keys: run.keys)
+    }
+}
+
+/// A service's Local Network state that turns blocked after the first `allowedCalls` checks (its follower refused later).
+final class LocalNetworkFlip: @unchecked Sendable {
+    private let lock = NSLock()
+    private var calls = 0
+    let allowedCalls: Int
+    init(allowedCalls: Int) { self.allowedCalls = allowedCalls }
+    func state(_ subject: ClusterOnboardingLocalNetworkSubject) -> ClusterOnboardingLocalNetwork {
+        guard subject == .service else { return .allowed }
+        lock.lock(); defer { lock.unlock() }
+        calls += 1
+        return calls <= allowedCalls ? .allowed : .blocked
     }
 }

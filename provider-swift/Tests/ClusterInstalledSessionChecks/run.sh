@@ -90,6 +90,8 @@ build_module InstalledContract \
   "${task_placement[@]}" \
   "$task_sources"/Inference/Distributed/LinkControl/*.swift \
   "$task_sources/Inference/Distributed/Observability/ClusterObservability.swift" \
+  "$task_sources/Inference/Distributed/Observability/ClusterIncidentLog+Install.swift" \
+  "$task_provider"/Sources/ProviderBuildEnvironment/*.swift \
   "$task_sources/Inference/Distributed/Observability/ClusterLinkObservability.swift" \
   "$task_sources/Inference/Distributed/Console/ClusterDiagnosticRedaction.swift" \
   "$task_sources"/Inference/Distributed/Diagnostics/ClusterStatusValues.swift \

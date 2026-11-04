@@ -1,3 +1,4 @@
+import DarkbloomClusterRemote
 import Foundation
 import Testing
 @testable import ProviderCore
@@ -599,6 +600,42 @@ struct ProviderUninstallTests {
         let dev = ProviderUninstallPaths(home: FileManager.default.temporaryDirectory.appendingPathComponent("no-such-home"), environment: .dev)
         #expect(ProviderUninstall.installFolderLabel(dev) == "Darkbloom folder: the app and logs",
                 "the pairing and cluster setup are in ~/.darkbloom, not in ~/.darkbloom-dev")
+    }
+
+    @Test("R-6: beside the other install, this install's own incident log goes; the shared one and the other's stay")
+    func ownIncidentLogGoesBesideTheOtherInstall() async throws {
+        for (this, other) in [(BuildEnvironment.dev, BuildEnvironment.prod), (.prod, .dev)] {
+            let fixture = try Fixture.make()
+            defer { fixture.remove() }
+            let shared = try installBoth(fixture)
+            // Each install's incident log as the log itself names it (`ClusterIncidentLog.defaultFile`), with its lock
+            // and the copy a corrupt log is moved aside to.
+            func incidentFiles(_ install: BuildEnvironment) -> [URL] {
+                let log = ClusterIncidentLog.defaultFile(homeDirectory: fixture.home, install: install.rawValue)
+                let folder = log.deletingLastPathComponent()
+                return [log, folder.appendingPathComponent(log.lastPathComponent + ".lock"),
+                        folder.appendingPathComponent(log.deletingPathExtension().lastPathComponent + ".corrupt.json")]
+            }
+            for file in incidentFiles(this) + incidentFiles(other) { try fixture.write(file) }
+            let paths = ProviderUninstallPaths(home: fixture.home, environment: this,
+                                               commandLinkDirectory: fixture.paths.commandLink.deletingLastPathComponent())
+            let plan = ProviderUninstall.Plan(cli: this.cliName, services: [], items: ProviderUninstall.inventory(paths),
+                                              pairing: fixture.pairing)
+            let report = await fixture.run(.keepModels, items: plan.items, pairing: fixture.pairing)
+            let summary = ProviderUninstall.summary(report, plan: plan)
+            transcript("\(this.rawValue)-summary-beside-\(other.rawValue)-incidents", summary, fixture)
+            for file in shared { #expect(fixture.exists(file), "\(this): \(file.lastPathComponent) stays") }
+            for file in incidentFiles(other) { #expect(fixture.exists(file), "\(this): the other install's \(file.lastPathComponent) stays") }
+            #expect(!report.failed && !report.incomplete, "\(this): \(report.steps)")
+            if this == .prod {
+                // Production's own log is the shared folder's `incidents.json`, which an older build of the other install
+                // still writes: it stays with the shared folder.
+                for file in incidentFiles(this) { #expect(fixture.exists(file), "prod: \(file.lastPathComponent) stays") }
+            } else {
+                for file in incidentFiles(this) { #expect(!fixture.exists(file), "\(this): its own \(file.lastPathComponent) goes") }
+                #expect(summary.contains { $0.hasPrefix("  done     Delete This install's incident log") }, "\(this): named")
+            }
+        }
     }
 
     @Test("B12 step 2: beside the other install, only this install's cluster agent goes; the pair and the other's agent stay")

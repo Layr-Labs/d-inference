@@ -142,7 +142,7 @@ public struct ClusterPlacementSetup: Sendable, Equatable {
         let layers = capability.partitions.first?.stages.last?.sourceLayerEnd ?? 0
         let cut = tensorParallel ? (described.min { abs(2 * $0 - layers) < abs(2 * $1 - layers) } ?? 0) : chosen.cut
         guard let partition = capability.partitions.first(where: { $0.stages.first?.sourceLayerEnd == cut }) else {
-            throw ClusterConfigurationError.invalid("The placement cuts after \(cut) layers, and the worker's capability record describes "
+            throw ClusterConfigurationError.invalid("The placement cuts after \(cut == 1 ? "1 layer" : "\(cut) layers"), and the worker's capability record describes "
                 + "cuts \(described.map(String.init).joined(separator: ", ")) only. The layout and the record must come from one worker build.")
         }
         try capability.requireSupport(for: chosen.mode)
@@ -192,7 +192,7 @@ public struct ClusterPlacementSetup: Sendable, Equatable {
     /// screen: who leads and where the session is started from.
     public func narration(localMemberID: String) -> [String] {
         let local = leaderID == localMemberID
-        return ["Rank order and Plan were chosen by the placement above, not typed: the cut is after \(cut) layers (Plan \(planSHA256.prefix(12))).",
+        return ["Rank order and Plan were chosen by the placement above, not typed: the cut is after \(cut == 1 ? "1 layer" : "\(cut) layers") (Plan \(planSHA256.prefix(12))).",
                 local ? "This Mac holds the first range, so it leads: the session is started from this Mac."
                       : "The other Mac (\(leaderID)) holds the first range, so it leads: the session is started from that Mac, and this Mac follows.",
                 "Each Mac approves its own setup, as before. Nothing has been saved or started."]

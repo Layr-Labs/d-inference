@@ -491,7 +491,8 @@ leader's service log notes a following window's `status` requests once a minute
 (`ClusterService.logsControl`). Each Mac's cluster service tells the other
 whether it starts at login (`ClusterServiceStatus.startsAtLogin`: it runs under
 its login agent's supervisor and that agent is installed,
-`ClusterServiceAgent.startsAtLogin`).
+`ClusterServiceAgent.startsAtLogin`). This Mac's own lines read it from its
+running service when they are said, else from this run's service setup.
 
 ## Context
 
@@ -3962,6 +3963,10 @@ away; mixed pairs are first-class).
   `localNetworkRefusalLines` and `localNetworkBlockedLines`). A stopped pair
   reads stopped whatever the other Mac's presence
   (`ClusterPairSummary.state(ofStatus:started:leaderMode:)`).
+- **The split shown:** each mode's share names the Mac that runs it
+  (`OnboardingLive.modeSplit`, "1 layer" for one). While a model serves it reads
+  "decided when it loads": the list's plan counts that model's memory as taken,
+  and the adopt stops it and plans again with its memory free.
 - **The person's family:** `useMode` keeps the chosen family for every model
   (`OnboardingLive.keptFamily`), never inferred from the listing's order, which
   says nothing of the plan; `localAdopt` plans again in it only when the listed

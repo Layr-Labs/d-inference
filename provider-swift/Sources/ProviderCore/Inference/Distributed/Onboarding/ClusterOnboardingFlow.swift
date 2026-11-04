@@ -362,6 +362,10 @@ public struct ClusterOnboardingMode: Codable, Sendable, Equatable {
         self.mode = mode; self.split = split; self.measuredTokensPerSecond = measuredTokensPerSecond
     }
 
+    /// A mode's split while a model serves (`OnboardingLive.modeSplit`): planned with that model's memory taken, it is
+    /// not the one that loads.
+    public static let decidedWhenItLoads = "decided when it loads"
+
     /// The default among `modes`: the fastest measured on this pair, else the planner's (the first).
     public static func defaultIndex(_ modes: [ClusterOnboardingMode]) -> Int {
         modes.indices.filter { modes[$0].measuredTokensPerSecond != nil }
@@ -474,8 +478,11 @@ public enum ClusterOnboardingDeployment {
             guard total > 0, shares.allSatisfy({ $0.weightsBytes != nil }) else { return labels.joined(separator: " / ") }
             return zip(labels, shares).map { "\($0) \(Int((Double($1.weightsBytes!) * 100 / Double(total)).rounded()))%" }.joined(separator: " / ")
         }
-        return zip(labels, shares).map { label, share in share.layers.map { "\(label) \($0) layers" } ?? label }.joined(separator: " / ")
+        return zip(labels, shares).map { label, share in share.layers.map { "\(label) \(layers($0))" } ?? label }.joined(separator: " / ")
     }
+
+    /// "1 layer", "44 layers": a layer count as every split says it (c3's B19 read "1 layers").
+    public static func layers(_ count: Int) -> String { count == 1 ? "1 layer" : "\(count) layers" }
 
     /// "Serving Qwen3.8-27B across both Macs: pipeline, M3 Ultra 40 layers / M5 Ultra 24 layers".
     public static func line(model: String, mode: String, shares: [Share]) -> String {

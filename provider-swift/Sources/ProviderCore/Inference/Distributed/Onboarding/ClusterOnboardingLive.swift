@@ -572,13 +572,20 @@ final class OnboardingLive: @unchecked Sendable {
     }
 
     func afterRestart() -> String? {
-        lock.withLock { serviceAtLogin } == true ? restartLine() : nil
+        startsAtLoginNow() == true ? restartLine() : nil
     }
 
-    /// The service started in this run is a login agent (it keeps serving once the window closes), not a development
-    /// build's session service.
+    /// This Mac's cluster service keeps serving once the window closes (a login agent of the signed app), not a
+    /// development build's session service.
     func serviceOutlivesWindow() -> Bool {
-        lock.withLock { serviceAtLogin } != false
+        startsAtLoginNow() != false
+    }
+
+    /// One look when a line says it: the running service's own word, else this run's service setup. The joining Mac's
+    /// window ended "After a restart, this Mac serves again by itself" with a session service put in place while it
+    /// followed (R3-2): that was this run's setup, read at its start.
+    private func startsAtLoginNow() -> Bool? {
+        Self.startsAtLogin(now: ClusterService.publishedLive()?.startsAtLogin, setUp: lock.withLock { serviceAtLogin })
     }
 
     /// Installs this Mac's cluster service as its login agent (it starts at login, and its supervisor restarts it
@@ -734,15 +741,29 @@ final class OnboardingLive: @unchecked Sendable {
     /// was planned (the login check's "Serve locally only") is planned and adopted for that way (B14).
     func usePlanningScope(_ scope: ClusterServingScope) { lock.withLock { plannedScope = scope } }
 
-    /// A planned mode as the screen shows it: each Mac's share in the screen's words ("this Mac 6 layers / the other
-    /// Mac 24 layers", "this Mac 40% / the other Mac 60%") and the decode rate this pair served it at.
-    func screenMode(_ mode: ClusterSetupPlanSummary.Mode) -> ClusterOnboardingMode {
-        let words = mode.shares.map { share -> String in
-            let mac = share.local ? hereShort : thereShort
+    /// Each Mac's share in the screen's words ("this Mac 44 layers / the other Mac 1 layer", "this Mac 40% / the other
+    /// Mac 60%"), each named for the Mac that runs it (`local`); nil without shares. While a model serves, the list's plan
+    /// counts that model's memory as taken, but the start stops it and plans again with its memory free (A-8), so the
+    /// split offered then is not the one that loads (R3-3: 1 / 44 and 26 / 19 offered, 44 / 1 loaded): it says so.
+    static func modeSplit(_ shares: [ClusterSetupPlanSummary.Mode.Share], here: String, there: String, serving: Bool) -> String? {
+        guard !shares.isEmpty else { return nil }
+        if serving { return ClusterOnboardingMode.decidedWhenItLoads }
+        return shares.map { share in
+            let mac = share.local ? here : there
             if let fraction = share.share { return "\(mac) \(Int((fraction * 100).rounded()))%" }
-            return "\(mac) \(share.endLayer - share.firstLayer) layers"
-        }
-        return .init(mode: mode.mode, split: words.isEmpty ? nil : words.joined(separator: " / "), measuredTokensPerSecond: mode.servedDecodeTokensPerSecond)
+            return "\(mac) \(ClusterOnboardingDeployment.layers(share.endLayer - share.firstLayer))"
+        }.joined(separator: " / ")
+    }
+
+    /// Whether this Mac's cluster service starts by itself at login: as the running service says (`now`,
+    /// `ClusterServiceStatus.startsAtLogin`), else as this run's own service setup left it (`setUp`).
+    static func startsAtLogin(now: Bool?, setUp: Bool?) -> Bool? { now ?? setUp }
+
+    /// A planned mode as the screen shows it: each Mac's share (`modeSplit`; `serving`: a model serves now) and the
+    /// decode rate this pair served it at.
+    func screenMode(_ mode: ClusterSetupPlanSummary.Mode, serving: Bool) -> ClusterOnboardingMode {
+        .init(mode: mode.mode, split: Self.modeSplit(mode.shares, here: hereShort, there: thereShort, serving: serving),
+              measuredTokensPerSecond: mode.servedDecodeTokensPerSecond)
     }
 
     /// `keeping`: the mode each model id keeps (`LiveContext.plan`); the service's re-plan after an update passes the
@@ -799,8 +820,10 @@ final class OnboardingLive: @unchecked Sendable {
                 let deployment = ClusterOnboardingDeployment.line(model: title, mode: plan.mode, shares: planShares(plan.ranks, localName: localName))
                 keys.append((option.model.folder, ClusterSetupState.planKey(option.model, plan), modelID, plan.alone.filter(\.holds).map(\.memberID),
                              deployment, plan))
-                // A running model is stopped (its memory released) before a new one starts, so its memory is no reason here.
-                let remedy = leadership?.serving == true || plan.fitsNow ? nil : Self.fitRemedy(plan, local: here, peer: there)
+                // A running model is stopped (its memory released) before a new one starts, so its memory is no reason here,
+                // and the split planned with it taken is not the one that loads (`modeSplit`).
+                let serving = leadership?.serving == true
+                let remedy = serving || plan.fitsNow ? nil : Self.fitRemedy(plan, local: here, peer: there)
                 // Served for the owner either way. Once chosen: the planner's one-line reason for tensor parallel or
                 // a pipeline, and (serving through Darkbloom) whether public traffic may reach it yet. In the list,
                 // under the line: why not tensor parallel, for a model that has it and was split otherwise.
@@ -810,7 +833,7 @@ final class OnboardingLive: @unchecked Sendable {
                                 ? "Private unqualified image candidate; public traffic is prohibited." : plan.publicTraffic,
                              tensorParallelNote: plan.tensorParallelNote, validated: approved(option.model.artifactSHA256),
                              split: ClusterOnboardingDeployment.splitMarker(plan.mode),
-                             modes: plan.modes.map { $0.map(screenMode) })
+                             modes: plan.modes.map { $0.map { screenMode($0, serving: serving) } })
             }
             // Open choices first (the models this Mac has), then catalog models no Mac has yet, then the blocked ones.
             typealias Listed = (choice: ClusterOnboardingModelChoice, key: ChoiceKey, artifact: ListedArtifact?)

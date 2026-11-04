@@ -14,3 +14,6 @@
 - The question recommends one way for these two Macs and says why: the only one that fits now, the one that serves
   more requests at once through Darkbloom, or the clearly faster one. It is the same on both Macs' screens, and Enter
   takes it. When nothing fits or nothing is known yet, it recommends none and says why.
+- That recommendation is the question's first line and names the model, for example "Recommended for Gemma 4 26B on
+  these two Macs: Tensor parallel", with the mode in bold in a colour terminal; in a narrow window the reason is
+  shortened, never the names.

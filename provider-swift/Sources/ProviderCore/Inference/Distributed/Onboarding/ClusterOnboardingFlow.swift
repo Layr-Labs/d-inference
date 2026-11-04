@@ -523,11 +523,38 @@ public struct ClusterOnboardingModeAdvice: Codable, Sendable, Equatable {
         return .init(mode: nil, reason: "no speed is measured or predicted for these Macs yet")
     }
 
-    /// The question's line under its title: the recommendation and why, or why there is none.
-    public var line: String {
-        guard let mode else { return "No recommendation for these Macs: \(reason)." }
-        return "Recommended for these Macs: \(ClusterOnboardingMode(mode: mode, split: nil, measuredTokensPerSecond: nil).label), "
-            + "\(reason)."
+    /// The reason in a few words, for a narrow window (`line`): "faster, up to 8 at once", "the only one that fits".
+    var brief: String {
+        let atOnce = reason.range(of: #"up to (\d+) requests at once"#, options: .regularExpression)
+            .map { String(reason[$0]).replacingOccurrences(of: " requests", with: "") }
+        if reason.hasPrefix("faster here") { return atOnce.map { "faster, \($0)" } ?? "faster here" }
+        if let atOnce, reason.hasPrefix("serves") { return atOnce }
+        if reason.hasPrefix("the only one that fits") { return "the only one that fits" }
+        if reason.hasPrefix("the only one Darkbloom") { return "the only one served publicly" }
+        if reason.hasPrefix("none of them fits") { return "none fits now" }
+        if reason.hasPrefix("none of them could") { return "none could be planned" }
+        if reason.hasPrefix("they are about as fast") { return "about as fast" }
+        if reason.hasPrefix("no speed") { return "no speed known yet" }
+        return reason
+    }
+
+    /// The question's first line, naming the model (owner, 2026-11-04: "say which is recommended for the model
+    /// selected"): the recommended mode apart, so a colour terminal can stress it. `width`: the window's columns (nil
+    /// when unknown); the line keeps two columns of indent. Too wide, the reason is shortened (`brief`), then left out;
+    /// the model's and the mode's names never are.
+    public func line(model: String, width: Int? = nil) -> (lead: String, mode: String, tail: String) {
+        let name = mode.map { ClusterOnboardingMode(mode: $0, split: nil, measuredTokensPerSecond: nil).label } ?? ""
+        let lead = mode == nil ? "No recommendation for \(model) on these two Macs: " : "Recommended for \(model) on these two Macs: "
+        let tails = mode == nil ? [reason + ".", brief + "."] : [", \(reason).", ", \(brief).", "."]
+        let room = width.map { $0 - 2 } ?? .max
+        let tail = tails.first { lead.count + name.count + $0.count <= room } ?? tails[tails.count - 1]
+        return (lead, name, tail)
+    }
+
+    /// The same line as plain text.
+    public func plainLine(model: String, width: Int? = nil) -> String {
+        let parts = line(model: model, width: width)
+        return parts.lead + parts.mode + parts.tail
     }
 
     /// The marker on the recommended option's line.
@@ -1251,6 +1278,11 @@ public struct ClusterOnboardingPairing: Sendable, Equatable {
 /// The keys and lines the onboarding reads, and where it writes.
 public protocol ClusterOnboardingConsole: AnyObject {
     func say(_ line: String)
+    /// One line whose middle part is stressed where the console can (bold in a colour terminal); the same plain text
+    /// elsewhere.
+    func sayStressed(_ lead: String, _ stressed: String, _ tail: String)
+    /// The window's width in columns; nil when not known.
+    var width: Int? { get }
     func heading(_ title: String)
     /// The setup's opening: its name and the steps ahead.
     func banner(_ title: String, _ subtitle: String)
@@ -1280,6 +1312,9 @@ public protocol ClusterOnboardingConsole: AnyObject {
 }
 
 public extension ClusterOnboardingConsole {
+    func sayStressed(_ lead: String, _ stressed: String, _ tail: String) { say(lead + stressed + tail) }
+    var width: Int? { nil }
+
     /// The setup's outcome as its own block: a blank line, a rule, ✓ or ✗ with what serves (or why nothing does),
     /// its details, a rule.
     func result(_ succeeded: Bool, _ title: String, _ lines: [String]) {
@@ -2222,7 +2257,10 @@ public enum ClusterOnboardingDriver {
             console.say("  " + modeQuestion(model: choice.title))
             // The recommendation for these Macs, the same on both Macs' screens (the leading Mac made it), and the cursor on it.
             let advice = choice.modeAdvice
-            if let advice { console.say("  " + advice.line) }
+            if let advice {
+                let parts = advice.line(model: choice.title, width: console.width)
+                console.sayStressed("  " + parts.lead, parts.mode, parts.tail)
+            }
             let recommended = advice?.mode.flatMap { mode in modes.firstIndex { $0.mode == mode } }
             let preferred = recommended ?? modes.firstIndex { $0.mode == keep } ?? ClusterOnboardingMode.defaultIndex(modes)
             guard let picked = console.choose(modes.indices.map { modeLine(modes[$0], recommended: $0 == recommended) },

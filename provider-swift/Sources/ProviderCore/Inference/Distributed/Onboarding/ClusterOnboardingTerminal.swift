@@ -105,6 +105,13 @@ public final class ClusterOnboardingTerminal: ClusterOnboardingConsole {
         drawWorking(live, force: true)
     }
 
+    /// Bold for the stressed part in a colour terminal, as the outcome's title; plain text otherwise.
+    public func sayStressed(_ lead: String, _ stressed: String, _ tail: String) {
+        say(usesColor && !stressed.isEmpty ? lead + "\u{1B}[1m" + stressed + "\u{1B}[0m" + tail : lead + stressed + tail)
+    }
+
+    public var width: Int? { columns > 0 ? columns : nil }
+
     /// From the last live row back to the first.
     private static func up(_ rows: Int) -> String { rows > 1 ? "\u{1B}[\(rows - 1)A" : "" }
 

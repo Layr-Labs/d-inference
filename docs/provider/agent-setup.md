@@ -449,12 +449,13 @@ mode, take the one the screen recommends (step 2):
 1. **STOP**: read the list to the human and ask which model to serve. Enter
    selects the first line. Rule 5 applies: a `download` model is downloaded on
    the leader and then copied, so it takes its full size on each Mac.
-2. If the screen then asks ``How should both Macs split <model>?``, the next
-   line is ``Recommended for these Macs: <mode>, <why>.`` and that mode's line
+2. If the screen then asks ``How should both Macs split <model>?``, its first
+   line is ``Recommended for <model> on these two Macs: <mode>, <why>.`` (the
+   why is shorter, or left out, in a narrow window) and that mode's line
    ends with `· recommended for these Macs`; Enter selects it. Pick the
    recommended mode unless the human wants the other: it is the one that fits,
    serves more requests at once through Darkbloom, or is faster on these Macs.
-   When the line is ``No recommendation for these Macs: <why>.``, read the why
+   When the line is ``No recommendation for <model> on these two Macs: <why>.``, read the why
    to the human and keep the selected line unless they choose otherwise.
 3. If the model still has to reach a Mac, a second list offers `Download`,
    `Copy to the other Mac (about N s)` or `Copy from the other Mac`, and

@@ -3604,14 +3604,29 @@ import Darwin
         }
         var stopped = qwenServing
         stopped.serving = false
+        // The first line under the question names the model, the mode apart; too wide for the window, the reason is
+        // shortened, then left out, never the model's or the mode's name.
+        let glmTitle = "Z.ai: GLM-5.3-Flash"
+        let full = "Recommended for Z.ai: GLM-5.3-Flash on these two Macs: Tensor parallel, faster here (about 106 against 41 tokens/s, "
+            + "measured) and serves up to 8 requests at once."
+        expect(measured?.plainLine(model: glmTitle) == full, "line: the model and the mode named")
+        expect(measured?.plainLine(model: glmTitle, width: 132)
+               == "Recommended for Z.ai: GLM-5.3-Flash on these two Macs: Tensor parallel, faster, up to 8 at once.", "line: a shorter reason")
+        expect(measured?.plainLine(model: glmTitle, width: 40) == "Recommended for Z.ai: GLM-5.3-Flash on these two Macs: Tensor parallel.",
+               "line: 40 columns: no reason, every name whole")
+        expect(measured?.line(model: glmTitle).mode == "Tensor parallel", "line: the mode apart, to stress it")
+        expect(A(mode: nil, reason: "no speed is measured or predicted for these Macs yet").plainLine(model: "Gemma 4 26B", width: 60)
+               == "No recommendation for Gemma 4 26B on these two Macs: no speed known yet.", "line: none, shortened")
+        expect(A.advise(tight, throughDarkbloom: true, serving: false)?.plainLine(model: "Gemma 4 26B", width: 120)
+               == "Recommended for Gemma 4 26B on these two Macs: Pipeline, the only one that fits these Macs now.", "line: the only one that fits")
         var screens: [String] = []
         for (label, glmChoice) in [("leading Mac", choice("this Mac", "the other Mac")), ("other Mac", choice("the other Mac", "this Mac"))] {
             let recorder = Recorder()
             let run = TerminalRun(operations(recorder, resume: stopped, pairEvents: [], pairResult: .failed([]), choices: [switchChoices[0], glmChoice],
-                statusLines: ["Stopped; last model Qwen 3.8 27B."]))
+                statusLines: ["Stopped; last model Qwen 3.8 27B."]), columns: 200)
             expect(run.waitFor(prompt(4)), "recommended, \(label): the list"); run.type("2")
             let modes = glmChoice.modes!
-            let question = "  " + D.modeQuestion(model: "Z.ai: GLM-5.3-Flash") + "\n  " + (measured?.line ?? "") + "\n  1) " + D.modeLine(modes[0], recommended: true)
+            let question = "  " + D.modeQuestion(model: glmTitle) + "\n  " + full + "\n  1) " + D.modeLine(modes[0], recommended: true)
                 + "\n  2) " + D.modeLine(modes[1]) + "\n  " + prompt(2)
             expect(run.waitFor(question), "recommended, \(label): marked, said and preselected: \(run.text)")
             run.type("\r")
@@ -3620,8 +3635,17 @@ import Darwin
             transcript("mode-recommended-\(label == "leading Mac" ? "leader" : "other")", run.text, keys: run.keys)
         }
         expect(D.modeLine(choice("this Mac", "the other Mac").modes![0], recommended: true).hasSuffix(" · recommended for these Macs"), "recommended: the marker")
-        expect(screens.allSatisfy { $0.contains("  Recommended for these Macs: Tensor parallel, faster here (about 106 against 41 tokens/s, measured) "
-            + "and serves up to 8 requests at once.\n") }, "recommended: the same words on both Macs")
+        expect(screens.count == 2 && screens.allSatisfy { $0.contains("\n  " + full + "\n") }, "recommended: the same words on both Macs")
+        // A colour terminal stresses the mode, as it does the outcome's title; a 40-column window keeps every name.
+        let colour = TerminalRun(operations(Recorder(), resume: stopped, pairEvents: [], pairResult: .failed([]),
+            choices: [switchChoices[0], choice("this Mac", "the other Mac")], statusLines: ["Stopped; last model Qwen 3.8 27B."]),
+            environment: ["TERM": "xterm-256color"], columns: 40)
+        expect(colour.waitFor("Qwen 3.8 27B"), "colour: the list")
+        colour.type("2")
+        expect(colour.waitFor("  Recommended for Z.ai: GLM-5.3-Flash on these two Macs: \u{1B}[1mTensor parallel\u{1B}[0m."),
+               "colour, 40 columns: the mode in bold, the reason left out: \(colour.text.suffix(800))")
+        colour.type("q")
+        _ = colour.finish()
         // None recommended: said, nothing marked, and the cursor where it was (the fastest measured, else the planner's).
         var unsure = choice("this Mac", "the other Mac")
         unsure.modeAdvice = A(mode: nil, reason: "no speed is measured or predicted for these Macs yet")
@@ -3629,7 +3653,7 @@ import Darwin
         let run = TerminalRun(operations(Recorder(), resume: stopped, pairEvents: [], pairResult: .failed([]), choices: [switchChoices[0], unsure],
             statusLines: ["Stopped; last model Qwen 3.8 27B."]))
         expect(run.waitFor(prompt(4)), "no recommendation: the list"); run.type("2")
-        expect(run.waitFor("  No recommendation for these Macs: no speed is measured or predicted for these Macs yet.\n  1) " + D.modeLine(unsure.modes![0])
+        expect(run.waitFor("  No recommendation for Z.ai: GLM-5.3-Flash on these two Macs: no speed is measured or predicted for these Macs yet.\n  1) " + D.modeLine(unsure.modes![0])
             + "\n  2) " + D.modeLine(unsure.modes![1]) + "\n  " + prompt(2)), "no recommendation: why, nothing marked: \(run.text)")
         run.type("q")
         _ = run.finish()

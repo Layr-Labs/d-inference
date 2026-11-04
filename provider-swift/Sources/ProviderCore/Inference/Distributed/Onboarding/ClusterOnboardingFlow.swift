@@ -747,6 +747,15 @@ public struct ClusterOnboardingReady: Codable, Sendable, Equatable {
         return [reason] + status.dropFirst()
     }
 
+    /// A start's not-offered reason when the leading Mac's status doesn't give one: no approval attached, or a
+    /// coordinator that can't take a cluster member (`ClusterLocalServing.notice`, by its words), then where the pair
+    /// answers meanwhile and the test's time (`notServing`'s lines: the reason first).
+    public func notOfferedLines(model: String, test: String?) -> [String] {
+        let unsupported = notice.map { $0.hasSuffix("public serving needs a coordinator with cluster support") } == true
+        return [Self.notOfferedReason(unsupported ? "the coordinator could not be reached or has no cluster support" : nil), meanwhileLine]
+            + (test.map { ["Test response " + $0] } ?? [])
+    }
+
     /// Under that status line: where the pair answers meanwhile, the serving Mac's local API only.
     public var meanwhileLine: String {
         "Meanwhile it answers only on the local API at http://localhost:\(port)" + (servesHere ? "" : " on the other Mac")
@@ -2380,10 +2389,14 @@ public enum ClusterOnboardingDriver {
                 mayRegister = false
                 if register(title: title, operations, console) { return startOutcome(title: title, scope: scope, mayRegister: &mayRegister, operations, console) }
             }
-            // Set to serve through Darkbloom, but not offered (the coordinator serves no approval for it, or the check
-            // refused it): the leading Mac's status says so and why, and this screen ends with that ✗, as the other
-            // Mac's window does from the same status, never with ✓ (DevNet, 2026-11-04).
-            if !scope.isLocalOnly, let lines = operations.notOfferedStatus() { return .notServing(lines) }
+            // Set to serve through Darkbloom, but not offered after the registration (the coordinator serves no approval
+            // for it, or the check refused it): a pair on the leading Mac's API never earns, so this ends with ✗, never
+            // ✓ (owner: no ✓ without proof; DevNet, 2026-11-04). Only `awaitPairServing` proves the coordinator has the
+            // pair. The leading Mac's status gives the reason, as the other Mac's window shows it; when it doesn't say,
+            // the reason is the one this screen knows.
+            if !scope.isLocalOnly {
+                return .notServing(operations.notOfferedStatus() ?? ready.notOfferedLines(model: title, test: tested))
+            }
         }
         let outcome = ready.outcome(model: title, scope: scope, test: tested)
         return .served(title: outcome.title, lines: outcome.lines, ready: ready)

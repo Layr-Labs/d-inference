@@ -172,6 +172,8 @@ extension ClusterPairSummary {
             case .stopped(let why): return (.notServing, ClusterOnboardingNotServing.words(reason: why, mac: "one of the Macs"))
             }
         }
+        // A part registered with the coordinator as a pair member, before its pair line: the coordinator may still pair it.
+        if own?.child.notice == ClusterLocalServing.offeredNotice { return (.loading, nil) }
         if let session = own?.session, session.observed {
             guard session.ready else { return (.loading, nil) }
             return localOnly ? (.serving, nil) : (.notServing, ClusterOnboardingReady.notOfferedReason(nil))

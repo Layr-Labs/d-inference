@@ -188,6 +188,11 @@ struct ClusterPairHabitCommandsTests {
         let (state, reason) = ClusterPairSummary.ownState(started: true, own: own)
         #expect(state == .notServing)
         #expect(reason == "not offered to Darkbloom (no cluster approval is attached to its setup)")
+        // The refactor pass's B2: a part registered as the pair's member before its pair line may still be paired.
+        let offered = #"{"serving":true,"sessionLeader":true,"child":{"running":true,"starts":1,"#
+            + #""notice":"\#(ClusterLocalServing.offeredNotice)"},"session":{"observed":true,"ready":true,"readyRanks":2,"ranks":2}}"#
+        let member = try JSONDecoder().decode(ClusterServiceStatus.self, from: Data(offered.utf8))
+        #expect(ClusterPairSummary.ownState(started: true, own: member) == (.loading, nil))
     }
 }
 

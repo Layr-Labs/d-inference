@@ -63,9 +63,12 @@ extension ProviderUninstall {
                     + "cluster service are left as they are")
             }
         } else {
+            let said = [plan.clusterService.isEmpty ? nil : plan.clusterService.joined(separator: ", "),
+                        plan.runningClusterService.map { unsharedStop($0, cli: plan.cli) }].compactMap { $0 }
             action("\(clusterStep), as `\(plan.cli) cluster stop --service`: "
-                + (!plan.clusterService.isEmpty ? plan.clusterService.joined(separator: ", ")
-                    : plan.clusterServiceRunning ? "no login agent, but a cluster service is running on this Mac; this stops it"
+                + (!said.isEmpty ? said.joined(separator: "; ")
+                    : plan.clusterServiceRunning
+                        ? "a cluster service is running on this Mac: this stops a `\(plan.cli) cluster service`, and nothing is deleted while any other runs"
                     : "no cluster service on this Mac"))
         }
         for service in plan.services {
@@ -116,6 +119,20 @@ extension ProviderUninstall {
         }
         if let pairing = plan.pairing, !plan.sharesCluster { lines.append(otherMacLine(pairing, cli: plan.cli)) }
         return lines
+    }
+
+    /// What `cluster stop --service` does to the cluster service running here, with no other install on this Mac: it
+    /// stops one whose command is `<cli> cluster service`, wherever that runs from; anything else stays, and nothing
+    /// is deleted while it runs.
+    static func unsharedStop(_ running: RunningClusterService, cli: String) -> String {
+        switch running.owner {
+        case .thisInstall: return "\(running.described); this stops it"
+        case .unknown where running.isThisCLI:
+            return "a `\(cli) cluster service` from outside this install's app is running (pid \(running.pid)); this stops it too"
+        default:
+            let what = running.note ?? "a cluster service from outside this install's app, under another name, is running (pid \(running.pid))"
+            return "\(what); this does not stop it, and nothing is deleted while it runs"
+        }
     }
 
     /// What option 1 removes on this Mac: no pairing while another install shares it, and no "all models" while some stay.

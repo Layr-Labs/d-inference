@@ -79,14 +79,22 @@ public enum ProviderUninstall {
         public let pid: Int32
         public let executable: String?
         public let owner: Owner
-        public init(pid: Int32, executable: String?, owner: Owner) { self.pid = pid; self.executable = executable; self.owner = owner }
+        /// Its command is this build's `<cli> cluster service` (`ClusterService.isClusterService`), the one
+        /// `cluster stop --service` stops wherever it runs from.
+        public let isThisCLI: Bool
+        /// Why it is `unknown` when that is not "neither app's": its lock or pid can't be read, or the pid is no
+        /// cluster service.
+        public let note: String?
+        public init(pid: Int32, executable: String?, owner: Owner, isThisCLI: Bool = false, note: String? = nil) {
+            self.pid = pid; self.executable = executable; self.owner = owner; self.isThisCLI = isThisCLI; self.note = note
+        }
 
         /// What the steps say about it.
         var described: String {
             switch owner {
             case .thisInstall: return "this install's cluster service is running (pid \(pid))"
             case .otherInstall(let name): return "the cluster service running here (pid \(pid)) is \(name)'s, and keeps running"
-            case .unknown: return "a cluster service is running (pid \(pid)) that is neither this install's nor the other's"
+            case .unknown: return note ?? "a cluster service is running (pid \(pid)) that is neither this install's nor the other's"
             }
         }
     }
@@ -95,8 +103,10 @@ public enum ProviderUninstall {
     /// other install's, or neither.
     public static func owner(ofExecutable executable: String?, paths: ProviderUninstallPaths) -> RunningClusterService.Owner {
         guard let executable else { return .unknown }
-        // Both sides resolved: `installRoot` standardizes (`/private/var` reads `/var`), the paths do not.
-        let root = ProviderUninstallPaths.canonical(ClusterServiceAgentPlan.installRoot(executablePath: executable))
+        // Both sides resolved, links included: the kernel records the path that was run (`bin/darkbloom` is a link
+        // into the app), and `installRoot` standardizes (`/private/var` reads `/var`).
+        let resolved = ProviderUninstallPaths.canonical(executable)
+        let root = ProviderUninstallPaths.canonical(ClusterServiceAgentPlan.installRoot(executablePath: resolved))
         func app(_ folder: URL, _ bundle: String) -> String { ProviderUninstallPaths.canonical(folder.appendingPathComponent(bundle).path) }
         if root == app(paths.installDirectory, paths.appBundleName) { return .thisInstall }
         if let other = paths.otherEnvironment, root == app(other.installDirectory(home: paths.home), other.appBundleName) {
@@ -174,11 +184,6 @@ public enum ProviderUninstall {
             clusterHandled = await step(clusterStep, operations.stopClusterPart)
         }
         var servicesStopped = clusterHandled && serving
-        // Never delete files from under a running cluster service of this install, or one that can't be told apart.
-        if clusterHandled, let still = operations.runningClusterService(), still.owner == .thisInstall || still.owner == .unknown {
-            steps.append(.init(name: stillRunningStep, status: .failed, detail: stillRunningReason(still)))
-            servicesStopped = false
-        }
         for service in operations.removeServices {
             // As `stop --uninstall`: a provider that did not drain keeps its agents, so nothing interrupts it.
             guard serving else {
@@ -211,6 +216,12 @@ public enum ProviderUninstall {
             cableUndone = true
         } else {
             cableUndone = await step(cableStep, operations.removeCableSetup)
+        }
+        // Never delete files from under a running cluster service of this install, or one that can't be told apart:
+        // looked up right before the first deletion, after the steps above (the cable step can wait for a password).
+        if servicesStopped, let still = operations.runningClusterService(), still.owner == .thisInstall || still.owner == .unknown {
+            steps.append(.init(name: stillRunningStep, status: .failed, detail: stillRunningReason(still)))
+            servicesStopped = false
         }
         let before = operations.availableBytes()
         for item in items where item.verdict != .keep && !mode.keeps(item) {

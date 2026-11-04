@@ -593,7 +593,8 @@ struct ProviderUninstallTests {
             let plan = ProviderUninstall.Plan(cli: "darkbloom", clusterServiceRunning: running, services: [], items: [], pairing: nil)
             #expect(ProviderUninstall.dryRun(plan, mode: .everything)[2] == "  2. Stop this Mac's cluster part and remove its service, "
                 + "as `darkbloom cluster stop --service`: "
-                + (running ? "no login agent, but a cluster service is running on this Mac; this stops it" : "no cluster service on this Mac"))
+                + (running ? "a cluster service is running on this Mac: this stops a `darkbloom cluster service`, and nothing is deleted "
+                    + "while any other runs" : "no cluster service on this Mac"))
         }
         let dev = ProviderUninstallPaths(home: FileManager.default.temporaryDirectory.appendingPathComponent("no-such-home"), environment: .dev)
         #expect(ProviderUninstall.installFolderLabel(dev) == "Darkbloom folder: the app and logs",

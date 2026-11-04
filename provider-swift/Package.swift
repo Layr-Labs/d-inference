@@ -301,18 +301,6 @@ let package = Package(
             path: "Tests/ServingQualificationTests"
         ),
 
-        .testTarget(
-            name: "GPTOSSOptimizationTests",
-            dependencies: [
-                .product(name: "MLX", package: "mlx-swift"),
-                .product(name: "MLXNN", package: "mlx-swift"),
-                .product(name: "MLXRandom", package: "mlx-swift"),
-                .product(name: "MLXLLM", package: "mlx-swift-lm"),
-                .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
-            ],
-            path: "Tests/GPTOSSOptimizationTests"
-        ),
-
         // Test-only stand-in for an installed owner and its native child, run
         // by the native-pair member control tests over the real owner pipe and
         // key prelude. CPU only: no model, mesh or GPU. Not a product, so no

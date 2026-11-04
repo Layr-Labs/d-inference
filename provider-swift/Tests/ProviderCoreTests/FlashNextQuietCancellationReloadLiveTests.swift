@@ -18,14 +18,10 @@ struct FlashNextQuietCancellationReloadLiveTests {
             && ProcessInfo.processInfo.environment["DARKBLOOM_EXCLUSIVE_NATIVE_GPU_TEST"] == "1",
         "Requires the explicit owned Flash-Next artifact and exclusive model lane"))
     func cancelsActualPrefillBeforeContentThenReleasesAndReloads() async throws {
-        // The qualification path never adds an observation delay or changes
-        // the ordinary admission requirement before its second load.
         try await runReloadLifecycle()
     }
 
-    func runReloadLifecycle(
-        beforeReload: (@Sendable (ProviderLoop) async throws -> Void)? = nil
-    ) async throws {
+    func runReloadLifecycle() async throws {
         let env = ProcessInfo.processInfo.environment
         try #require(env["DARKBLOOM_PREFIX_CACHE"] == "0")
         try #require(env["DARKBLOOM_CBV2_MTP"] != "0", "This fixture requires active embedded MTP")
@@ -115,7 +111,6 @@ struct FlashNextQuietCancellationReloadLiveTests {
             try await requireReleased(loop: loop, bridge: firstBridge, owners: firstOwners, expectedPLE: initialPLE)
 
             await loop.recordFlashNextLifecycleMemory("after_unload_before_reload")
-            if let beforeReload { try await beforeReload(loop) }
             try await loop.ensureModelLoaded(modelId: modelID, allowEviction: false)
             await loop.recordFlashNextLifecycleMemory("after_reload")
             let reloadedBridge = try #require(await loop.slotBridgeForTesting(modelId: modelID))

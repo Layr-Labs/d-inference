@@ -56,6 +56,7 @@ import Darwin
             ("isolation command set", isolationCommandSet),
             ("isolation Mac A findings", isolationMacAFindings),
             ("isolation Mac B findings", isolationMacBFindings),
+            ("isolation after pairing", isolationPairedMacs),
             ("isolation plans", isolationPlans),
             ("isolation fix outcomes", isolationFixOutcomes),
             ("isolation remove outcomes", isolationRemoveOutcomes),

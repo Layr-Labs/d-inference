@@ -44,9 +44,23 @@ extension ClusterLinkCheck {
         expectEqual(Facts.defaultRouteInterfaces(IsolationFixtures.macBRoutes), ["en0", "bridge0", "utun2"], "Mac B: none via en6")
         expectEqual(Facts.defaultRouteInterfaces(IsolationFixtures.macAIsolatedRoutes(address: "10.219.1.2")), ["en1", "utun4"],
             "isolated Mac A: no default route via the cable")
-        expectEqual(Facts.clusterSubnetRouteInterfaces(IsolationFixtures.macAIsolatedRoutes(address: "10.219.1.2")), ["en7", "en7"],
-            "the cluster subnet routes through the port")
-        expectEqual(Facts.clusterSubnetRouteInterfaces(IsolationFixtures.macARoutes), [], "no cluster subnet before")
+        expectEqual(Facts.clusterSubnetRouteInterfaces(IsolationFixtures.macAIsolatedRoutes(address: "10.219.1.2"),
+            interfaceListing: IsolationFixtures.macAInterfaces(en7: ["10.219.1.2"])), ["en7", "en7"], "the cluster subnet routes through the port")
+        expectEqual(Facts.clusterSubnetRouteInterfaces(IsolationFixtures.macARoutes,
+            interfaceListing: IsolationFixtures.macAInterfaces(en7: [IsolationFixtures.macALeaseIPv4])), [], "no cluster subnet before")
+        // macOS reaches an address of its own through lo0: the route counts on
+        // the interface that carries the address, and only there.
+        let paired = IsolationFixtures.pairedMacA, pairedRoutes = IsolationFixtures.routeTable(paired.routes)
+        expectEqual(Facts.clusterSubnetRouteInterfaces(pairedRoutes, interfaceListing: paired.interfaceListing),
+            ["en3", "en3", "en3", "en3", "en3"], "paired Mac A: its own address through lo0 counts on en3")
+        expectEqual(Facts.clusterSubnetRouteInterfaces(pairedRoutes, interfaceListing: ""), ["en3", "en3", "lo0", "en3", "en3"],
+            "without a listing it counts on the loopback")
+        let loopbackRoute = "10.219.77.1        0:0:5e:0:53:99     UHLWIi                lo0       "
+        expectEqual(Facts.clusterSubnetRouteInterfaces(IsolationFixtures.routeTable(paired.routes + [loopbackRoute]),
+            interfaceListing: paired.interfaceListing + IsolationFixtures.tunnel("utun4", address: "10.219.77.1"))?.last, "utun4",
+            "another interface's own address counts on that interface")
+        expectEqual(Facts.clusterSubnetRouteInterfaces(IsolationFixtures.routeTable(paired.routes + [loopbackRoute]),
+            interfaceListing: paired.interfaceListing)?.last, "lo0", "an address no interface carries stays on the loopback")
         expectEqual(Facts.defaultRouteInterfaces("default 192.0.2.1 UGScg en1\n"), nil, "rows without the header are not a table")
 
         expectEqual(Facts.dnsInterfaces(IsolationFixtures.macADNS()), ["en1", "en7", "utun4"], "Mac A: a resolver through en7")
@@ -221,6 +235,47 @@ extension ClusterLinkCheck {
             + IsolationFixtures.service(1, "x'; rm -rf / #", port: "Thunderbolt 6", device: "en7"))
         expect(FakeIsolationWorld(hostile).report().devices.first { $0.device == "rdma_en7" }?.isolation?.blockers == [.serviceNameUnsafe],
             "a hostile service name on the port blocks it")
+    }
+
+    /// Three isolated Macs after pairing: macOS's loopback route to the port's
+    /// own address is not the cluster subnet used elsewhere, and everything
+    /// that is still blocks.
+    static func isolationPairedMacs() {
+        for mac in IsolationFixtures.pairedMacs {
+            let world = FakeIsolationWorld(mac.tools())
+            let report = world.report()
+            let port = report.devices.first { $0.device == mac.device }
+            expectEqual(port?.verdict, .ready, "\(mac.name): ready")
+            expectEqual(port?.isolation?.findings, [], "\(mac.name): isolated with its own address routed through lo0")
+            expect(report.summaryLines.contains("  \(mac.device) (\(mac.port)): ready · port active · own IPv4 address · "
+                + "IPv4-mapped GID published · isolated: own network service, fixed address, no bridge, router or DNS"),
+                "\(mac.name): the probe says isolated: \(report.summaryLines)")
+            expectEqual(report.guidance, nil, "\(mac.name): nothing to do")
+            expect(compactJSON(report).contains("\"isolation\":{\"findings\":[],\"isolated\":true}"), "\(mac.name): JSON says isolated")
+            expectEqual(world.fix(dryRun: true).outcome, .alreadyReady, "\(mac.name): a dry run of the fix is not refused")
+            var flow = ClusterLinkSetupFlow(mayPrompt: true)
+            let step = flow.observed(report)
+            expectEqual(step.action, .finish(exitCode: 0), "\(mac.name): the guided flow is done")
+            expect(step.lines.contains { $0.hasPrefix("Isolated: Thunderbolt port \(mac.port) has its own network service") },
+                "\(mac.name): and says so: \(step.lines)")
+
+            func findings(routes: [String] = [], interfaces: String = "") -> [ClusterLinkIsolationFinding]? {
+                FakeIsolationWorld(mac.tools(extraRoutes: routes, extraInterfaces: interfaces)).report()
+                    .devices.first { $0.device == mac.device }?.isolation?.findings
+            }
+            let vpn = IsolationFixtures.tunnel("utun4", address: "10.219.77.1")
+            expectEqual(findings(interfaces: vpn), [.clusterSubnetInUse], "\(mac.name): a VPN address in the cluster subnet")
+            expectEqual(findings(routes: ["10.219.77.1        0:0:5e:0:53:99     UHLWIi                lo0       "], interfaces: vpn),
+                [.clusterSubnetInUse], "\(mac.name): the VPN address and its loopback route")
+            for route in ["10.219/16          link#40            UCS                 utun4       ",
+                          "10.219.77/24       link#13            UCS               bridge0      !",
+                          "10.219.77.7        0:0:5e:0:53:99     UHLWIi                en9   1200",
+                          "\(mac.address)     \(mac.address)     UH                  utun4       "] {
+                expectEqual(findings(routes: [route]), [.clusterSubnetInUse], "\(mac.name): a route elsewhere: \(route)")
+            }
+            expectEqual(findings(routes: ["10.219.77.77       0:0:5e:0:53:99     UHLWIi                lo0       "]),
+                [.clusterSubnetInUse], "\(mac.name): a loopback route for an address the port does not carry")
+        }
     }
 
     static func isolationPlans() {

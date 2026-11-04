@@ -572,6 +572,22 @@ public enum ClusterOnboardingUpdate {
     /// The longest the re-plan waits for both Macs to give back the stopped parts' memory (a part's forced exit
     /// releases it within 93 s): the placement must price the memory the model will have, not what the old parts hold.
     public static let releaseWaitSeconds: Double = 120
+    /// While the two Macs do not answer with one build yet (they restart into an update seconds apart), the control
+    /// leader asks again this soon instead of after `checkEverySeconds`.
+    public static let recheckWhileWaitingSeconds: Double = 5
+
+    /// Whether a member waits for the control leader's setup instead of starting its part: its worker no longer is
+    /// the build its saved setup pins, so the part would refuse the installed inputs at once (R5-4: six failed
+    /// starts after 0.10.8's restart). An unreadable worker is no reason: the part's own strict check says why.
+    public static func memberWaitsForLeaderSetup(pinned: String, installed: String?) -> Bool {
+        installed.map { $0 != pinned } ?? false
+    }
+
+    /// The member's log and status line while it waits for the leader's setup after an update.
+    public static func memberWaitLine(version: String) -> String {
+        "this Mac runs Darkbloom v\(version), but its saved setup is for an earlier build: "
+            + "waiting for the other Mac's setup for v\(version) (the old setup is not started)"
+    }
 
     /// Both Macs' teardown summaries (`ClusterService.teardownLines`, one per Mac) say nothing is left running.
     public static func released(_ lines: [String]) -> Bool {

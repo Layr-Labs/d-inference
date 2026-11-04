@@ -960,7 +960,12 @@ cluster service asks the coordinator for its latest release:
 4. The leader plans the same model again for the new release once both Macs
    answer with it, and the pair registers again under that release's cluster
    approval. The log says `Darkbloom changed on both Macs: setting the cluster
-   up again for <model>`.
+   up again for <model>`. Until both Macs answer with the release, the leader
+   checks again every 5 seconds. The other Mac does not start its part from
+   the setup saved for the previous release, which names that release's files:
+   it waits for the leader's setup, and its log says `this Mac runs Darkbloom
+   v<version>, but its saved setup is for an earlier build: waiting for the
+   other Mac's setup for v<version> (the old setup is not started)`.
 
 A pair still running a request after 120 seconds takes requests again and tries
 at the next slot. A release that one Mac cannot download or verify is installed

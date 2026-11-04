@@ -158,8 +158,12 @@ status (`ClusterControlReply.start`, `ClusterOnboardingStartProgress`): the
 step (downloading, copying, stopping the model that served, loading, testing,
 registering with Darkbloom), a copy's or download's bytes as the sending Mac
 counts them, and which Mac's part is ready. The Mac that joined reads it and
-shows the step, a bar of the real bytes during a copy or download, and the same
-per-Mac rows. A leading Mac with an older Darkbloom publishes none, and the Mac
+opens its own `4/4 Start` heading. Under that heading it shows the step and its
+time, a bar of the real bytes during a copy or download, the same per-Mac rows
+(its own row first), and what comes next ("Next: test, Darkbloom"). Each step
+it finishes is said once ("✓ Files (9 min 12 s)"). Each new step gets the
+follow's whole bound again, and a copy whose bytes still move never counts as
+silence. A leading Mac with an older Darkbloom publishes none, and the Mac
 that joined keeps its general words. The leader ends with the outcome as its own block, between
 two rules, then the pair's card, as `darkbloom start` ends, and the shell:
 

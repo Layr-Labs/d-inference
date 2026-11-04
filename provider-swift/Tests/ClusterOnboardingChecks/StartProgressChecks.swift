@@ -108,4 +108,60 @@ extension OnboardingChecks {
             expect(plain.text.components(separatedBy: row).count == 2, "plain: said once: \(row) in \(plain.text)")
         }
     }
+
+    /// The Mac that joined an M5 Max leader whose status publishes the start: a copy of 68.2 GB, then the load.
+    static func followingTheStart(followSeconds: Double = 900) -> ClusterOnboardingOperations {
+        typealias P = ClusterOnboardingStartProgress
+        let parts: [P.Part] = [.init(rank: 0, state: .ready, layers: "0–46"), .init(rank: 1, state: .loading, layers: "47–93")]
+        let starts: [P?] = [nil, nil] + (0..<15).map { P(.copying, done: Int64(25 + $0) * 1_000_000_000, total: 68_200_000_000) }
+            + [P(.loading, parts: [.init(rank: 0, state: .loading, layers: "0–46"), .init(rank: 1, state: .starting, layers: "47–93")])]
+            + Array(repeating: P(.loading, parts: parts), count: 400)
+        var made = operations(Recorder(), pairEvents: memberEvents, pairResult: .paired(role: .member, peerName: m5Max),
+                              statusSequence: [["Stopped."], ["Loading Qwen 3.6 235B: 1 of 2 parts ready."]], followSeconds: followSeconds)
+        let looks = Recorder(), status = made.status
+        made.leaderStatus = {
+            looks.note("look")
+            return .init(lines: status(), step: .init(.starting), start: starts[min(looks.all.count, starts.count) - 1])
+        }
+        made.thisRank = { 1 }
+        return made
+    }
+
+    /// The Mac that joined shows the start under its own heading: the step and its time, a bar of the real bytes during
+    /// the copy, then each Mac's part, this Mac first; every live row fits at 80 and 40 columns; plain says each change once.
+    static func theJoinedMacShowsTheStartsProgress() {
+        for columns: UInt16 in [80, 40] {
+            let run = TerminalRun(followingTheStart(), environment: colourTerminal, columns: columns)
+            defer { run.release() }
+            expect(run.waitFor(codeQuestion), "joined, \(columns) columns: the code"); run.type("y")
+            expect(run.waitFor("4/4 Start"), "joined, \(columns) columns: the start's heading")
+            expect(run.waitFor("%"), "joined, \(columns) columns: the copy's bar")
+            expect(run.waitFor(columns == 80 ? "This Mac: loading its share (layers 47–93)" : "This Mac: loading its share", seconds: 20),
+                   "joined, \(columns) columns: this Mac's part")
+            _ = run.waitFor("never shown", seconds: 0.4)
+            run.type("q")
+            _ = run.finish()
+            let rows = visible(run.text)
+            let live = liveRows(run.text)
+            expect(!live.isEmpty && live.allSatisfy { $0.count <= Int(columns) - 1 }, "joined, \(columns) columns: every live row fits: \(live.filter { $0.count > Int(columns) - 1 })")
+            let text = run.text.replacingOccurrences(of: "\u{1B}\\[[0-9;?]*[A-Za-z]", with: "", options: .regularExpression)
+            expect(text.contains("Files: copying from the other Mac") || text.contains("Files: copying"), "joined, \(columns) columns: the copy's step")
+            expect(text.contains("[\u{2588}"), "joined, \(columns) columns: a bar of the bytes")
+            expect(rows.contains { $0.hasPrefix("  \u{2713} Files (") }, "joined, \(columns) columns: the copy done, said once: \(rows)")
+            expect(text.contains("The other Mac: ready") || text.contains("Other Mac: ready"), "joined, \(columns) columns: the other Mac's part")
+            transcript("joined-start-\(columns)-columns", rows.joined(separator: "\n"), keys: run.keys)
+        }
+        let plain = PipeRun(followingTheStart(followSeconds: 4), environment: ["TERM": "dumb"])
+        plain.type("y")
+        _ = plain.finish(seconds: 30)
+        let lines = plain.text.components(separatedBy: "\n")
+        for line in ["4/4 Start", "  Files: copying from the other Mac", "  \u{2713} Files", "  This Mac: loading its share (layers 47–93)",
+                     "  The other Mac: ready (layers 0–46)"] {
+            expect(lines.filter { $0.hasPrefix(line) }.count == 1, "joined, plain: said once: \(line) in \(plain.text)")
+        }
+        expect(lines.contains { $0.hasPrefix("  Copying  ") && $0.contains("/68.2 GB") }, "joined, plain: the copy's bytes")
+        expect(!plain.text.contains("\u{1B}") && !plain.text.contains("\u{2588}"), "joined, plain: no live rows, no bar")
+        transcript("joined-start-plain", plain.text, keys: 1)
+    }
 }
+

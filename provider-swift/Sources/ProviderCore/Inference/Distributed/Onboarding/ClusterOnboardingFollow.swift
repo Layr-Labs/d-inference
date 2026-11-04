@@ -155,10 +155,16 @@ extension ClusterOnboardingDriver {
         console.say("  " + waitingForStartLine(leader))
         let looks = ClusterOnboardingMailbox<ClusterOnboardingLeaderStatus>()
         var asking = false, asked = Date.distantPast
-        let begun = Date()
+        var begun = Date()
         var started: Date?, latest: String?, stage = 0, step: ClusterOnboardingLeaderStep?, lastStatus: String?
         // Each line once: a status that goes back and forth between two lines never repeats them.
         var said = Set<String>(), saidRetry = false, saidBlocked = false
+        // The start's progress as the leading Mac publishes it (`ClusterOnboardingStartProgress`): its own heading, then
+        // its step, a bar of the real bytes and each Mac's part as the live rows; each step done said once. Its time
+        // counts from when this Mac first saw the step (the two Macs' clocks may differ).
+        var start: ClusterOnboardingStartProgress?, startHeading = false, stepSeen = Date(), lastBytes: Int64?
+        var startLog = ClusterOnboardingStartLog(viewerLeads: false, viewerRank: operations.thisRank())
+        let darkbloom = operations.servesThroughDarkbloom()
         func sayOnce(_ line: String) {
             guard said.insert(line).inserted else { return }
             console.settle()
@@ -174,6 +180,21 @@ extension ClusterOnboardingDriver {
                 asking = false
                 let status = look.lines
                 step = look.step
+                if let published = look.start, published.phase != .unknown {
+                    if !startHeading {
+                        startHeading = true
+                        console.settle()
+                        console.heading("4/4 Start")
+                    }
+                    // A new step has the whole bound again, and a copy that moves is no silence.
+                    if published.phase != start?.phase { stepSeen = Date(); if started != nil { started = Date() } else { begun = Date() } }
+                    if let done = published.done, done != lastBytes { lastBytes = done; if started == nil { begun = Date() } }
+                    start = published
+                    for line in startLog.update(published, now: Date().timeIntervalSince1970, plain: console.liveWidth == nil) {
+                        console.settle()
+                        console.say("  " + line)
+                    }
+                }
                 if let first = status.first { lastStatus = first.hasSuffix(".") ? String(first.dropLast()) : first }
                 // The leading Mac refused every model and its window ended: nothing will start, so the same ✗ now.
                 if let refused = step, refused.kind == .refused {
@@ -199,7 +220,8 @@ extension ClusterOnboardingDriver {
                 }
                 // Each new state of the leader's start, as lines a plain window shows too, and where to choose Retry when a
                 // part keeps ending there (P2-7: this window showed nothing while the leader sat at ✗).
-                if let latest, seen == .starting {
+                // The start's own rows say it where the leading Mac publishes them.
+                if let latest, seen == .starting, start == nil || console.liveWidth == nil {
                     sayOnce("  The other Mac: " + latest + ".")
                     if !saidRetry, latest.contains("part ended") { saidRetry = true; console.say(retryOnLeaderLine(leader)) }
                 }
@@ -231,7 +253,10 @@ extension ClusterOnboardingDriver {
                 console.say(notStartedAfterLine)
                 return 1
             }
-            if let started, let latest {
+            if let start, let width = console.liveWidth {
+                console.workingRows(ClusterOnboardingStartWords.liveRows(start, viewerLeads: false, viewerRank: operations.thisRank(),
+                    darkbloom: darkbloom, elapsed: Date().timeIntervalSince(stepSeen), width: width))
+            } else if let started, let latest {
                 let waited = ClusterOnboardingLoadRows.elapsed(Date().timeIntervalSince(started))
                 console.progress({ width in fitted([latest + " \u{00B7} " + waited + " (q leaves)", latest + " \u{00B7} " + waited], width: width) },
                                  logged: false)

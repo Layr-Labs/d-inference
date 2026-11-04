@@ -23,6 +23,7 @@ import Darwin
         // The start's progress on both Macs (2026-11-04).
         startProgressFieldsAndComponents()
         leaderShowsEachMacsPartFitted()
+        theJoinedMacShowsTheStartsProgress()
         colourSetupDrawsTheMarkAndKeepsTheTranscript()
         narrowOrPlainLocaleColourKeepsPlainLines()
         narrowColourWindowKeepsOneRowLines()

@@ -71,6 +71,8 @@ extension ClusterOnboardingOperations {
         made.publishStep = { live.publishStep($0) }
         made.thisVersion = ProviderCore.version
         made.publishStart = { live.publishStart($0) }
+        made.thisRank = { live.context.savedConfiguration().configuration?.localRank }
+        made.servesThroughDarkbloom = { live.leadership?.scope.isLocalOnly != true }
         return made
     }
 }
@@ -2185,8 +2187,8 @@ final class OnboardingLive: @unchecked Sendable {
         var forwarded = false
         var look: ClusterOnboardingLeaderStatus
         switch routed(.init(op: .status), seconds: 30, acting: false, forwarding: { forwarded = true },
-                      local: { .success(ClusterOnboardingLeaderStatus(lines: localStatus(), step: currentLeaderStep())) },
-                      remote: { ClusterOnboardingLeaderStatus(lines: $0.lines, step: $0.step) }) {
+                      local: { .success(ClusterOnboardingLeaderStatus(lines: localStatus(), step: currentLeaderStep(), start: currentStart())) },
+                      remote: { ClusterOnboardingLeaderStatus(lines: $0.lines, step: $0.step, start: $0.start) }) {
         case .success(let value): look = value
         case .failure(let failure): look = ClusterOnboardingLeaderStatus(lines: failure.lines, step: nil)
         }

@@ -972,6 +972,12 @@ public struct ClusterOnboardingOperations: Sendable {
     /// Publishes how far the start is (`ClusterOnboardingStartProgress`) in the leading Mac's status, so the Mac that
     /// joined shows the same step; nil clears it. Not in `init`: only the live operations set it.
     public var publishStart: @Sendable (ClusterOnboardingStartProgress?) -> Void = { _ in }
+    /// The rank this Mac's part runs in the saved setup (each screen names its own part "This Mac"); nil when unknown.
+    /// Not in `init`: only the live operations set it.
+    public var thisRank: @Sendable () -> Int? = { nil }
+    /// The pair serves through Darkbloom (its start ends with the coordinator's step), not locally only. Not in
+    /// `init`: only the live operations set it.
+    public var servesThroughDarkbloom: @Sendable () -> Bool = { true }
 
     public init(resume: @escaping @Sendable () -> ClusterOnboardingResume,
                 checkLink: @escaping @Sendable (@escaping @Sendable (String) -> Void) -> ClusterOnboardingLinkResult,

@@ -58,11 +58,11 @@ extension ClusterOnboardingOperations {
             serviceOutlivesWindow: { live.serviceOutlivesWindow() },
             remote: { ClusterLocalNetworkAccess.overSSH() },
             thisMacName: { ClusterLocalNetworkAccess.computerName() },
+            otherMacAnswers: { live.otherMacAnswers() },
+            unpair: { live.unpair() },
             pairServing: { progress in live.pairServing(progress) },
             missingLogins: { live.missingLogins() },
-            login: { live.login() },
-            otherMacAnswers: { live.otherMacAnswers() },
-            unpair: { live.unpair() })
+            login: { live.login() })
     }
 }
 

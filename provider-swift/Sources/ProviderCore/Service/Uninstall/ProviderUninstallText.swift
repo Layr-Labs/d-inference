@@ -50,13 +50,17 @@ extension ProviderUninstall {
         func action(_ text: String) { number += 1; lines.append("  \(number). \(text)") }
         action("\(stopServingStep): drain accepted requests, as `\(plan.cli) stop`")
         action("\(clusterStep), as `\(plan.cli) cluster stop`: "
-            + (plan.clusterService.isEmpty ? "no cluster service on this Mac" : plan.clusterService.joined(separator: ", ")))
+            + (!plan.clusterService.isEmpty ? plan.clusterService.joined(separator: ", ")
+                : plan.clusterServiceRunning ? "no login agent, but a cluster service is running on this Mac; this stops it"
+                : "no cluster service on this Mac"))
         for service in plan.services {
             action("Remove the \(service.name): \(service.path ?? "not installed")")
         }
         action("\(tokenStep), as `\(plan.cli) logout` does (best effort)")
-        for peer in plan.pairing?.peers ?? [] { action("Forget the pairing with \(peer.name), as `\(plan.cli) cluster pair --forget`") }
-        action("\(cableStep), as `\(plan.cli) cluster link --remove` (macOS asks for an administrator's password)")
+        if !plan.sharesCluster {
+            for peer in plan.pairing?.peers ?? [] { action("Forget the pairing with \(peer.name), as `\(plan.cli) cluster pair --forget`") }
+            action("\(cableStep), as `\(plan.cli) cluster link --remove` (macOS asks for an administrator's password)")
+        }
         for item in plan.removed(mode) { action("Delete \(row(item))") }
         lines.append("  Frees \(formatBytes(plan.frees(mode))) (APFS clones counted once).")
         if mode == .keepModels, !plan.models.isEmpty { lines.append("  " + keptModelsLine(plan)) }
@@ -67,10 +71,15 @@ extension ProviderUninstall {
 
     /// The summary after a run: each step with its status, what was kept and where, then the way back and the other Mac.
     public static func summary(_ report: Report, plan: Plan) -> [String] {
-        let headline = report.failed ? "Darkbloom is not fully removed from this Mac (see the failed step)."
-            : report.incomplete ? "Darkbloom is not fully removed from this Mac: some of its folders were not removed (see below)."
-            : report.mode == .keepModels ? "Darkbloom is removed from this Mac; its models are kept."
-            : "Darkbloom is removed from this Mac."
+        var name = "Darkbloom"
+        if plan.sharesCluster, let this = BuildEnvironment.allCases.first(where: { $0.cliName == plan.cli }) {
+            // Beside another install, "Darkbloom" alone would also mean the one that stays.
+            name = installName(this).prefix(1).uppercased() + installName(this).dropFirst()
+        }
+        let headline = report.failed ? "\(name) is not fully removed from this Mac (see the failed step)."
+            : report.incomplete ? "\(name) is not fully removed from this Mac: some of its folders were not removed (see below)."
+            : report.mode == .keepModels ? "\(name) is removed from this Mac; its models are kept."
+            : "\(name) is removed from this Mac."
         var lines = [headline]
         lines += report.steps.map { step in
             let status = step.status.rawValue.padding(toLength: 8, withPad: " ", startingAt: 0)
@@ -90,7 +99,7 @@ extension ProviderUninstall {
                     + "`\(plan.cli) models location <folder>`.")
             }
         }
-        if let pairing = plan.pairing { lines.append(otherMacLine(pairing, cli: plan.cli)) }
+        if let pairing = plan.pairing, !plan.sharesCluster { lines.append(otherMacLine(pairing, cli: plan.cli)) }
         return lines
     }
 
@@ -131,7 +140,7 @@ extension ProviderUninstall {
 
     /// What deleting `item` takes: all of it, or all but the models folder the person chose inside it.
     static func deletedLabel(_ item: ProviderUninstallItem) -> String {
-        item.keeping.isEmpty ? item.label : item.label + ", except the models you chose"
+        item.keeping.isEmpty ? item.label : item.label + ", except " + item.keepingWhat
     }
 
     static func formatBytes(_ bytes: Int64) -> String {
@@ -210,13 +219,15 @@ extension ProviderUninstall {
             actions += clusterAgents.map { .init(action: clusterStep, path: $0, bytes: nil) }
             actions += plan.services.map { .init(action: "Remove the \($0.name)", path: $0.path, bytes: nil) }
             actions.append(.init(action: tokenStep, path: nil, bytes: nil))
-            actions += (plan.pairing?.peers ?? []).map { .init(action: "Forget the pairing with \($0.name)", path: nil, bytes: nil) }
-            actions.append(.init(action: cableStep, path: nil, bytes: nil))
+            if !plan.sharesCluster {
+                actions += (plan.pairing?.peers ?? []).map { .init(action: "Forget the pairing with \($0.name)", path: nil, bytes: nil) }
+                actions.append(.init(action: cableStep, path: nil, bytes: nil))
+            }
             actions += plan.removed(mode).map { .init(action: "Delete \(deletedLabel($0))", path: $0.path, bytes: $0.bytes) }
             let keptModels = mode == .keepModels ? plan.models : []
             return .init(mode: mode, actions: actions, frees: plan.frees(mode), kept: keptModels + plan.kept, refused: plan.refused)
         }
         return .init(modes: modePlans, neverTouched: [keychainLine] + plan.elsewhere,
-                     otherMac: plan.pairing.map { otherMacLine($0, cli: plan.cli) })
+                     otherMac: plan.sharesCluster ? nil : plan.pairing.map { otherMacLine($0, cli: plan.cli) })
     }
 }

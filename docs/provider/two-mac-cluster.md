@@ -837,7 +837,9 @@ altogether, see [Uninstall](#uninstall).
 reinstall `darkbloom cluster` pairs again and uses them without copying or
 downloading. **Remove everything** deletes them too, after asking once more. A
 models folder you chose, and the cluster model store beside it, stay with either
-choice. Run it as yourself, not with `sudo`.
+choice. Run it as yourself, not with `sudo`. On a Mac with both the production
+and the DevNet app, uninstalling one keeps the pairing, cluster setup and cable
+port setup the other uses.
 
 When the other Mac does not answer, this Mac stops only its own part, as
 `darkbloom cluster stop --local-only`. The other Mac keeps its own pairing, so

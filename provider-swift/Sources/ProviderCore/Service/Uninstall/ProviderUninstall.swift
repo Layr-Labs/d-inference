@@ -79,6 +79,7 @@ public enum ProviderUninstall {
     static let clusterStep = "Stop this Mac's cluster part and remove its service"
     static let tokenStep = "Revoke this Mac's account token"
     static let cableStep = "Undo the cable port setup"
+    static let forgetStep = "Forget this Mac's pairing"
     static let stillServingReason = "serving did not stop (see the failed step above)"
     static let servicesRunningReason = "a Darkbloom service may still be running (see the failed step above)"
     static let cableRetryReason =
@@ -118,15 +119,26 @@ public enum ProviderUninstall {
         } else {
             steps.append(.init(name: tokenStep, status: .skipped, detail: stillServingReason))
         }
-        if let pairing {
+        // Another install on this Mac uses the same pairing and cable port setup: both stay with it.
+        let sharedWith = items.lazy.compactMap(\.sharedWith).first
+        let keptForOther = sharedWith.map { "kept: \($0) on this Mac also uses it" }
+        if pairing != nil, let keptForOther {
+            steps.append(.init(name: forgetStep, status: .skipped, detail: keptForOther))
+        } else if let pairing {
             for peer in pairing.peers {
                 _ = await step("Forget the pairing with \(peer.name)") { try operations.forget(peer.pin); return .done() }
             }
         } else {
-            steps.append(.init(name: "Forget this Mac's pairing", status: .skipped, detail: "this Mac is not paired"))
+            steps.append(.init(name: forgetStep, status: .skipped, detail: "this Mac is not paired"))
         }
         // After the pairing, which tells the other Mac over the cable; this takes the cable's address away.
-        let cableUndone = await step(cableStep, operations.removeCableSetup)
+        let cableUndone: Bool
+        if let keptForOther {
+            steps.append(.init(name: cableStep, status: .skipped, detail: keptForOther))
+            cableUndone = true
+        } else {
+            cableUndone = await step(cableStep, operations.removeCableSetup)
+        }
         let before = operations.availableBytes()
         for item in items where item.verdict != .keep && !mode.keeps(item) {
             let name = "Delete \(item.label)"

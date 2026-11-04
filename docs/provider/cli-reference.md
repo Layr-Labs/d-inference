@@ -1361,11 +1361,11 @@ A failed step does not stop the safe steps after it.
 | # | Step | Through | Skipped when |
 |---|---|---|---|
 | 1 | Stop serving on this Mac | the [stop](#darkbloom-stop) drain (`ServiceDrain`) | the provider service was not running |
-| 2 | Stop this Mac's cluster part and remove its service | `darkbloom cluster stop`; when the other Mac does not answer, `cluster stop --local-only` | no cluster service on this Mac |
+| 2 | Stop this Mac's cluster part and remove its service | `darkbloom cluster stop`; when the other Mac does not answer, `cluster stop --local-only` | no cluster service on this Mac. The dry run also names a cluster service running without a login agent (`ClusterService.running`), which this step stops |
 | 3–5 | Remove the provider, watchdog and desktop API launch agents | what `stop --uninstall` runs (`LaunchAgent.uninstall`, `WatchdogAgent.uninstall`, `DesktopService.uninstall`) | not installed, or serving did not stop in step 1 |
 | 6 | Revoke this Mac's account token, best effort | what `darkbloom logout` does (`Logout.revokeSavedToken`) | no saved token, the coordinator did not confirm it, or serving did not stop. It never fails the uninstall; the token file goes with `~/.darkbloom` |
-| 7 | Forget the pairing with the other Mac | `darkbloom cluster pair --forget <pin>`, once per pairing | this Mac is not paired |
-| 8 | Undo the cable port setup | `darkbloom cluster link --remove` (macOS asks for an administrator's password) | nothing to undo |
+| 7 | Forget the pairing with the other Mac | `darkbloom cluster pair --forget <pin>`, once per pairing | this Mac is not paired, or another install on this Mac uses the pairing (below) |
+| 8 | Undo the cable port setup | `darkbloom cluster link --remove` (macOS asks for an administrator's password) | nothing to undo, or another install on this Mac uses it (below) |
 | 9 | Delete Darkbloom's folders, one step each (table below) | | already gone, refused (`not removed: <why>`), or a service did not stop in steps 1–5. When step 8 did not complete, `~/.darkbloom` and the command link stay, so the command can run again |
 
 **What is deleted**, from `ProviderUninstallPaths` and `ProviderUninstall.inventory`
@@ -1398,9 +1398,22 @@ What no choice deletes (the summary lists them):
   (`darkbloom cache set --directory`), the default model cache when it is a
   link, and other tools' models;
 - the models and the cluster model store while another Darkbloom install
-  (`~/.darkbloom-dev`, `~/.darkbloom-staging`) shares them. Cluster pairing and
-  setup files under `~/.darkbloom` are shared by every install on the Mac, so
-  removing the production install removes them for a development install too;
+  (`~/.darkbloom-dev`, `~/.darkbloom-staging`) shares them;
+- this Mac's pairing, cluster setup and cable port setup while another install
+  is on this Mac: the production app and the DevNet app (`darkbloom-dev`) use
+  the same ones. The other install counts when its app or `bin/` command is in
+  its folder (`ProviderUninstallPaths.otherEnvironment`). Steps 7 and 8 are
+  skipped (`kept: <the other install> on this Mac also uses it`), the files
+  every install shares stay (`~/.darkbloom/cluster*` and
+  `~/.config/darkbloom/clusters`; the rest of those folders goes). The screen,
+  the dry run, `--json` and the summary list it, here for `darkbloom-dev
+  uninstall`, and the summary's first line names the install it removed
+  (`Darkbloom Dev is removed from this Mac.`):
+
+  ```text
+  Kept: This Mac's pairing, cluster setup and cable port setup (40 KB, ~/.darkbloom/cluster*): the production Darkbloom on this Mac also uses them. Run `darkbloom uninstall` there to remove them
+  ```
+
 - Keychain items (Secure Enclave and App Attest keys); a new install replaces them;
 - the fan helper (`sudo darkbloom fan uninstall`), Darkbloom Sandbox
   (`darkbloom sandbox uninstall`), a legacy MDM profile (`darkbloom unenroll`) and

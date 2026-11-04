@@ -264,6 +264,7 @@ SSD caching remains enabled by default with no resident retention; use
 | `Run \`darkbloom uninstall\` as yourself, not with sudo: …` (exit 64) | It was run with `sudo`. As root it would read root's home folder, not yours | Run `darkbloom uninstall` without `sudo`; macOS asks for the password when the cable port step needs it |
 | `skipped  Delete …: not removed: …`, and the first line says Darkbloom is not fully removed (exit 1) | The path is a link, resolves outside Darkbloom's folders, or another disk is mounted at it or inside it | Nothing outside Darkbloom's folders is deleted. Remove it yourself if you don't need it, or eject the disk and run `darkbloom uninstall` again |
 | `~/.darkbloom` is still there after the uninstall, holding your models | You chose a models folder inside it (`darkbloom models location ~/.darkbloom/models`); a folder you chose is never deleted, and the summary lists it as `Kept:` | Move the folder, or delete it yourself if you don't need the models |
+| After uninstalling the DevNet app (or the production one), the pairing and cable port setup are still there | The other install on this Mac uses them, so the summary lists them as `Kept:` | Run the other install's uninstall too (`darkbloom uninstall` or `darkbloom-dev uninstall`) to remove them |
 | The other Mac still shows the pair | Each Mac keeps its own pairing | Run `darkbloom uninstall` on it too, or `darkbloom cluster` on it to pair it with another Mac |
 
 Steps, paths and safety rules: [`darkbloom uninstall`](./cli-reference.md#darkbloom-uninstall).

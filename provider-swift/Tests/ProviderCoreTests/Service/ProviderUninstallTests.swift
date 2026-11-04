@@ -544,6 +544,8 @@ struct ProviderUninstallTests {
             let thisName = this == .prod ? "The production Darkbloom" : this.appDisplayName
             #expect(summary.first == "\(thisName) is removed from this Mac.", "\(this)")
             #expect(summary.contains { $0.hasPrefix(kept) }, "\(this)")
+            #expect(!summary.contains { $0.hasPrefix("The other Mac") }, "\(this): the pair still works, through the other install")
+            #expect(document.kept.count > 0 && ProviderUninstall.dryRunDocument(plan, modes: [.everything]).otherMac == nil, "\(this)")
             for step in ["Forget this Mac's pairing", ProviderUninstall.cableStep] {
                 #expect(summary.contains("  skipped  \(step): kept: \(otherName) on this Mac also uses it"), "\(this): \(step)")
             }

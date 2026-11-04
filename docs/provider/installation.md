@@ -327,7 +327,10 @@ darkbloom uninstall --everything --yes
 No choice deletes a models folder you chose or the cluster model store beside
 it, even inside `~/.darkbloom` (the rest of that folder goes), caches in a
 folder you chose, anything that resolves outside Darkbloom's folders, or
-Keychain keys (a new install replaces them). Remove what it leaves first, if you
+Keychain keys (a new install replaces them). With both the production and the
+DevNet app on this Mac, uninstalling one keeps this Mac's pairing, cluster setup
+and cable port setup, which the other uses; uninstall that one too to remove
+them. Remove what it leaves first, if you
 use it:
 
 ```bash

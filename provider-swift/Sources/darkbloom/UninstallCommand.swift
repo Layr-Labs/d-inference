@@ -16,7 +16,9 @@ struct Uninstall: AsyncParsableCommand {
             app and the command link. --everything also deletes the models Darkbloom downloaded; --keep-models keeps \
             them, so a reinstall finds them. Choosing 1 on the screen asks once more before deleting the models. A \
             models folder you chose, and the cluster model store beside it, are never deleted, even inside \
-            Darkbloom's own folder; nor are Keychain keys. Run it as yourself, not with sudo.
+            Darkbloom's own folder; nor are Keychain keys. Run it as yourself, not with sudo. With both the \
+            production and the DevNet app on this Mac, the pairing, cluster setup and cable port setup stay for the \
+            other one.
             """)
 
     @Flag(help: "Remove everything: the app, settings, pairing, logs and all models.")
@@ -97,6 +99,7 @@ struct Uninstall: AsyncParsableCommand {
                 + "before removing everything.")
         }
         return .init(clusterService: ClusterServiceAgent.installedLabels().map { ClusterServiceAgent.plistPath(label: $0).path },
+                     clusterServiceRunning: ClusterService.running(),
                      services: agents.map { .init(name: $0.0, path: FileManager.default.fileExists(atPath: $0.1.path) ? $0.1.path : nil) },
                      items: ProviderUninstall.inventory(.live(config: config, configPath: configPath)),
                      pairing: ProviderUninstallPairing.read(),

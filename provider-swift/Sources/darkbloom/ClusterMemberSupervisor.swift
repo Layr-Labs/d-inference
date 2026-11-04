@@ -65,7 +65,7 @@ final class ClusterMemberSupervisor: @unchecked Sendable {
         /// How its log lines start: the member's supervisor, or the cluster service's (login agent).
         var logName: String = "cluster-member supervisor"
         /// What the operator runs to start again after the budget is spent.
-        var restartHint: String = "`darkbloom restart` (or `darkbloom stop` then start)"
+        var restartHint: String = "`\(ClusterPairSummary.cli) restart` (or `\(ClusterPairSummary.cli) stop` then start)"
         /// How often a running member is checked for its end and its next probe.
         var childPollSeconds: Double = 0.5
         /// The cluster service route's coordinated update; nil on the member route, which uses the slot above.
@@ -592,11 +592,13 @@ final class ClusterMemberSupervisor: @unchecked Sendable {
         pairCycle = nil
     }
 
-    /// Before each start of the service: a release installed and not yet promoted is a candidate (`ClusterCandidateRecovery`).
+    /// Before each start of the service: a release installed and not yet promoted is a candidate (`ClusterCandidateRecovery`),
+    /// once the update record is reconciled with the installed app.
     private func noteCandidateLaunch(now: Double) {
         candidate = nil
         guard let recovery = configuration.pairUpdate?.recovery,
-              case .candidate(let version, let failed) = recovery.noteLaunch(now: now) else { return }
+              case .candidate(let version, let failed) = recovery.noteLaunch(now: now, log: { log("cluster update: \($0)") })
+        else { return }
         candidate = version
         updatedServiceServes = false
         log("cluster update: starting the cluster service on candidate v\(version)"
@@ -633,7 +635,7 @@ final class ClusterMemberSupervisor: @unchecked Sendable {
     private func recordCandidateEnd(detail: String) -> String? {
         guard candidate != nil, let recovery = configuration.pairUpdate?.recovery else { return nil }
         candidate = nil
-        switch recovery.recordFailedStart(now: Date().timeIntervalSince1970) {
+        switch recovery.recordFailedStart(now: Date().timeIntervalSince1970, log: { log("cluster update: \($0)") }) {
         case .counted(let version, let failures):
             log("cluster update: v\(version) failed start \(failures)/\(UpdateRecoveryState.rollbackThreshold) (\(detail))")
             return nil

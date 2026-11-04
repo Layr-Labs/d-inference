@@ -469,8 +469,11 @@ extension ClusterWorkerOwnerService {
     /// public end-to-end track added for the same purpose).
     static func workerExitEcho(rank: Int, termination: ClusterWorkerProcessTermination, diagnosticTail: Data) -> String? {
         if case .exited(0) = termination { return nil }
-        return workerDiagnosticEcho(header: "darkbloom-worker-exit-v1 rank=\(rank) termination=\(termination)", diagnosticTail: diagnosticTail)
+        return workerDiagnosticEcho(header: "darkbloom-\(workerExitMarker)\(rank) termination=\(termination)", diagnosticTail: diagnosticTail)
     }
+    /// The exit line's marker after its `darkbloom-` prefix, which an incident's redaction can replace (a Mac whose
+    /// user is named so reads `<user>-worker-exit-v1`): how a reader finds which rank's own worker ended abnormally.
+    public static let workerExitMarker = "worker-exit-v1 rank="
     static func workerFailureEcho(rank: Int, label: String, diagnosticTail: Data) -> String {
         workerDiagnosticEcho(header: "darkbloom-worker-fail-v1 rank=\(rank) \(label)", diagnosticTail: diagnosticTail)
     }

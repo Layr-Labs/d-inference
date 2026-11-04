@@ -67,8 +67,10 @@ func checkRequestRoutes(_ inputs: RetainedQwenInputs, _ checks: PlacementChecks)
         let capacity = try plan([big, other], huge)
         let route = try ClusterRequestRouter.decide(capacity.setup, promptTokens: 32, outputTokens: 16)
         let always = try ClusterRequestRouter.crossoverPromptTokens(capacity.setup, outputTokens: 16, maximumPrompt: 8_192)
-        checks.require("a capacity model (no Mac holds it alone at rest) always goes to the pair, whatever the prompt",
-            capacity.result.alone.allSatisfy { a in a.needBytes > [big, other].first { $0.label == a.device }!.profile.atRestAdmissibleBytes }
+        checks.require("a capacity model (no Mac holds it alone at rest and within its GPU limit) always goes to the pair, whatever the prompt",
+            capacity.result.alone.allSatisfy { a in
+                a.needBytes > [big, other].first { $0.label == a.device }!.profile.atRestAdmissibleBytes || !a.withinGPUWorkingSet
+            }
                 && route.path == .pair && route.aloneCandidate == nil && always == 1)
     }
 

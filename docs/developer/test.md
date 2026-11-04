@@ -409,19 +409,12 @@ a runtime prohibition. `GLM5ToolFailureTests` separately exercises streaming
 suffix rejection, including a valid call followed by malformed output, before
 fallback text or partial calls can escape.
 
-The provider test host also carries the SDK's `GLM5NextAlignedPayloadReaderTests`
-(eight filesystem/resource tests), `GLM5NextArtifactCachePolicyTests` (three
-filesystem policy/cleanup tests), their inventory fixture and suite namespaces,
-and `GLM5NextArtifactLoaderTests` (eight native tiny-artifact tests). The first
-two suites exercise real files without creating MLX arrays. The loader suite
-creates arrays and belongs in an authorized native test window. Sources live in
-`provider-swift/Tests/ProviderCoreTests/Inference/Models/GLM5Next/`.
-Use an immutable SDK revision containing `GLM5NextAlignedPayloadReader`,
-`verificationHostBytes`, `payloadReadScratchAllowanceBytes` and the internal
-descriptor-policy test initializer. An older SDK pin cannot compile this host;
-resolve the dependency in the SDK rather than weakening the tests or importing
-cluster-stage APIs. These tests retain full-artifact verification, aligned
-windows, mutation/truncation refusal, cancellation and resource charges.
+The SDK's `GLM5NextAlignedPayloadReaderTests`, `GLM5NextArtifactCachePolicyTests`
+and `GLM5NextArtifactLoaderTests` run in the Fork Tests workflow of
+Layr-Labs/mlx-swift-lm. The provider test host does not carry copies of them.
+Their inventory fixture, `GLM5NextArtifactCachePolicySDKFixtures.swift`, stays in
+`provider-swift/Tests/ProviderCoreTests/Inference/Models/GLM5Next/` because the
+provider's GLM cluster tests use it.
 
 The metadata-only `GLM5NextDiscoveryLoadFootprintTests`,
 `GLM5NextDiscoveryTests` and `rawDiscoveryQuotationMatchesManagedTinyFixture`
@@ -1137,12 +1130,30 @@ start is not re-executed into. A supervisor with automatic updates off still
 checks for a rollback of the other Mac to follow, reports its own quarantine in
 its progress, and restarts into the restored release. The re-exec is observed,
 never performed.
+`UpdateRecoveryReconcileTests`
+(`provider-swift/Tests/ProviderCoreTests/Update/UpdateRecoveryReconcileTests.swift`)
+rebuilds a Mac whose app was installed outside the updater over a stale update
+record (0.10.7 installed; the record says 0.9.22 installed, 0.10.6 pending, and
+a rollback copy recorded as 0.9.22 that is a 0.10.2 app) in a temporary install
+root, with apps whose `Info.plist` names their version; an in-process URL
+protocol answers the release check. It checks that the record is reconciled
+before the cluster service starts (nothing pending, no rollback copy) and that a
+reconcile that died part-way is finished at the next start; that the update slot
+finds the running release up to date and installs nothing; that three ends of
+the service never restore the copy; that a verified copy recorded as another
+release than its app names (0.10.7 recorded as 0.10.6) is relabelled, kept and
+restored by three failed starts, while a copy that names no version or whose
+files changed is removed; that a damaged install (its `mlx.metallib` gone) still
+counts failed starts and is rolled back to the verified copy; that an update
+over such an install keeps a copy of the installed app, recorded as the release
+that app names; and that the normal install, promotion and rollback are
+unchanged.
 `Tests/ClusterSupervisionChecks/run.sh` checks the progress rules
 (`ClusterPairUpdate.partnerState`) with plain `swiftc`.
 
 ```bash
 CFFIXED_USER_HOME="$(mktemp -d)" swift test --skip-build --no-parallel \
-  --filter 'ClusterPairUpdateTests|ClusterServiceUpdateTests'
+  --filter 'ClusterPairUpdateTests|ClusterServiceUpdateTests|UpdateRecoveryReconcileTests'
 ```
 
 Keep `CFFIXED_USER_HOME` (or an isolated user) on a Mac that serves: the member
@@ -1727,6 +1738,7 @@ make changelog-check
 python3 scripts/test-provider-release-resolution.py
 python3 scripts/test-provider-release-resume.py
 python3 scripts/test-provider-release-publication.py
+python3 scripts/test-provider-release-notes.py
 python3 scripts/test-provider-cluster-runtime-models.py
 python3 scripts/test-release-dev-branch.py
 python3 scripts/test-provider-release-pipeline.py
@@ -1774,6 +1786,23 @@ app (its digests are that app's; its grant and parity qualifications are this
 build's declaration, so its evidence digest and `qualified_at` follow
 `ClusterPublicModels`), and check that registration sends the block in its
 canonical form.
+`scripts/test-provider-release-notes.py` builds a local origin repository with
+GitHub's shapes: merge-commit and squash pull requests, `refs/pull/<N>/head`
+refs and release tags. Its five releases are two squash promotions, a hotfix
+without a promotion, a merge-commit promotion and a release whose only
+promotion is its Prepare pull request, cut from `dev`. They include a `dev` pull
+request merged after the promoted snapshot, a sync of `master` into `dev` and
+Prepare pull requests. The tests check each release's pull requests through
+`dev` and directly on `master`, and that release pull requests are named once.
+They publish v1.1.0 through `publish_github_release` with a fake `gh`, once
+with GitHub's answer and once with the `FORBIDDEN` answer a token without pull
+request access gets. The second still lists every pull request, with its title
+from git, escaped as on the first, and an author only where a noreply address
+names one. They also check the `CHANGELOG.md` section, the 125,000-character
+fallback and a failed generation. Titles and authors are fixture data, and no
+test uses the network.
+The test needs git 2.31 or newer, as the release notes do, and stops with that
+message on an older git.
 `scripts/test-provider-cluster-runtime-models.py` runs the release's
 model-metadata fetch against a local HTTP registry: the environment's catalog and
 CDN, candidate selection, the manifest and `config.json` checks, each candidate's
@@ -2793,6 +2822,26 @@ bytes, cancellation before start, early-release refusal and idempotent release
 after retirement. It runs no model or MLX code; it does not replace the full
 provider contract or hardware suites.
 
+A pair request whose admission deadline passes while a rank is still answering
+ends alone. `ClusterWorkerPairAdmissionDeadlineTests` (in
+`bash libs/darkbloom-cluster/Tests/RemoteChecks/run.sh`) drives a lane pair over
+scripted ranks: rank 0 answers after the request's deadline while another lane
+decodes, a request ends before rank 1 was asked, and a link closes during
+admission. `bash libs/darkbloom-cluster/Tests/LinkWorkerChecks/run.sh` runs the
+same deadline through both stand-in owners (the actual owner service) and the
+loopback link, and relays a reservation past its delivery deadline to an
+in-process follower. `PartialAdmissionTests` and `ProviderDeadlinePipeCheck` in
+`bash libs/darkbloom-cluster/Tests/ProcessChecks/run.sh` run it with actual
+children, the latter through the provider's own deadline and owner sources.
+None of these is a hardware pass.
+
+The same class checks a consumer that goes away during its prompt: on a lane
+pair, a started request whose rank 0 has committed no token takes no clean
+stop and is cancelled, both ranks are told at once, its lane retires alone and
+the next request is served. A lane that has produced a token, and a pair
+without lanes, keep the clean stop. `CleanStopTests` in `ProcessChecks` keeps
+the single-lane clean stop before the first token with actual children.
+
 ### Qwen27 tensor-parallel native batch checks
 
 Run `QwenTensorParallelBatchDriverTests`, `QwenTensorParallelBatchBudgetTests`
@@ -2990,6 +3039,36 @@ and `provider-swift/Tests/DarkbloomCLITests/ClusterServiceLoginAgentTests.swift`
 The planned-stop lifecycle suite also pauses the actual service immediately before Process.run, then requests stop against its stale idle publication. Rewriting ordinary status with a fresh inode must not release the peer. Only a subsequent real supervision-cycle acknowledgement after child retirement permits success. The private initializer callback is nil in production.
 
 Planned-stop lifecycle checks exercise the actual peerLeaseState projection, accepted ClusterControlNode follower lease, ClusterControlIntent recording and follower part selection while the real owned child is retained after TERM, while start is paused, and after retirement. A held outbound lease custody flag must block final peer stop after local child exit. Optional-record compatibility and an already-idle peer are checked separately. No physical peer transport or installed native shutdown is claimed by these CPU cases.
+
+### Cluster model file cache before a load
+
+These checks measure the page cache with `mincore` on temporary files they
+create, on the Mac that runs them. A file just read must be in the cache first,
+or the check fails rather than passing on a host that caches nothing.
+
+- `ClusterServicePartStartCacheTests` runs the actual service loop for the
+  follower's part of a saved pair setup (pairing moved away, so nothing
+  listens; the part is `/usr/bin/true`). The model folder holds a 64 MiB weight
+  file and a 32 MiB file one folder down, both read into the cache. When the
+  part starts (`beforePartStart`), each must be under 10 % resident, and their
+  bytes unchanged afterwards. Run it from `provider-swift` with
+  `swift test --filter ClusterServicePartStartCacheTests`. Like
+  `ClusterServiceRecoveryTests`, it gives its service a power-assertion name of
+  its own (`powerAssertionReason`). macOS lists a process's assertions
+  together, so suites that run services in one test process, in parallel, must
+  not share the production name.
+- `provider-swift/Tests/ClusterModelProvisioningChecks/run.sh provisioning`
+  checks which files `ClusterModelStore.dropCachedPages` drops: regular files in
+  the folder and one folder down, no symbolic link, nothing deeper.
+- `libs/darkbloom-cluster/Tests/CheckpointChecks/run.sh` (and
+  `CheckpointPayloadCacheTests` in the runtime tests) run
+  `CheckpointPayloadCacheCheck`: after `bypassTensorPayloadCache`, a 32 MiB
+  weight file read into the cache is under 10 % resident, `config.json` keeps
+  its cached page, `checkUnchanged` passes, and the uncached aligned read
+  returns the original bytes.
+
+Sources: `provider-swift/Tests/ProviderCoreTests/Inference/Distributed/ClusterServicePartStartCacheTests.swift`
+and `libs/darkbloom-cluster/Tests/DarkbloomClusterRuntimeTests/CheckpointPayloadCacheCheck.swift`.
 
 ### Cluster service listeners after pairing again
 

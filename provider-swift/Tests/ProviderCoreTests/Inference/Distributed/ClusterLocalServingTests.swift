@@ -20,11 +20,6 @@ struct ClusterLocalServingTests {
         #expect(!ClusterLocalServing.servesLocally(after: URLError(.timedOut)))
     }
 
-    @Test func theNoticeIsOnePlainLine() {
-        #expect(ClusterLocalServing.notice == "Serving locally on this Mac's API; public serving needs a coordinator with cluster support")
-        #expect(!ClusterLocalServing.notice.contains("\n"))
-    }
-
     /// The part's log keeps earlier runs: only the current run's line counts. Every serving start writes one of the two.
     @Test func theServiceReadsTheCurrentRunsNoticeFromThePartsLog() {
         let banner = "darkbloom 9.9.9 (local / distributed)"

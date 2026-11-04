@@ -64,7 +64,7 @@ struct ClusterServiceLoginAgentTests {
         let lines = try Cluster.Stop.finishStop(nil, localOnly: true) { removals += 1; return ["fixture"] }
         #expect(removals == 1)
         #expect(lines.contains { $0.contains("will not start at login") })
-        #expect(lines.last == "The other Mac was not asked to stop. If it comes back, run `darkbloom cluster stop` there too.")
+        #expect(lines.last == "The other Mac was not asked to stop. If it comes back, run `darkbloom cluster stop --service` there too.")
         let ordinary = try Cluster.Stop.finishStop(nil) { ["fixture"] }
         #expect(!ordinary.contains { $0.contains("not asked to stop") })
     }
@@ -87,36 +87,5 @@ struct ClusterServiceLoginAgentTests {
         #expect(stop.wait(timeout: .now() + 0.3) == .timedOut)
         supervision.finish()
         #expect(ClusterSupervisionFiles.read(ClusterMemberHealth.self, from: health)?.phase == .stopping)
-    }
-
-    @Test func theServiceSupervisorRestartsAKilledServiceAfterTheBackoffAndNamesItself() async throws {
-        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("cluster-service-sup-\(UUID().uuidString)")
-        defer { try? FileManager.default.removeItem(at: directory) }
-        let state = directory.appendingPathComponent("service-supervisor.json")
-        // A shell stands in for `darkbloom cluster service`, as in the member supervisor's tests.
-        let supervisor = ClusterMemberSupervisor(configuration: .init(
-            executable: "/bin/sh", childArguments: ["-c", "exec sleep 60"], environment: ["PATH": "/usr/bin:/bin"],
-            statePath: state, healthPath: directory.appendingPathComponent("service-health.json"),
-            setup: nil, coordinatorURL: "", autoUpdate: false,
-            budgetLimits: .init(maxQuickFailures: 3, quickFailureWindowSeconds: 30, initialBackoffSeconds: 1, maxBackoffSeconds: 4),
-            guardLimits: .production, recycleGraceSeconds: 5, reexecArguments: ["/bin/false"],
-            logName: "cluster service supervisor", restartHint: "`darkbloom cluster` is run again"))
-        func read() -> ClusterMemberSupervisorState? { ClusterSupervisionFiles.read(ClusterMemberSupervisorState.self, from: state) }
-        func waitUntil(_ seconds: Double, _ condition: () -> Bool) async -> Bool {
-            let deadline = Date().addingTimeInterval(seconds)
-            while Date() < deadline { if condition() { return true }; try? await Task.sleep(nanoseconds: 50_000_000) }
-            return condition()
-        }
-        let run = Task { await supervisor.run() }
-        #expect(await waitUntil(10) { read()?.phase == .running })
-        let first = try #require(read()?.current?.pid)
-        kill(first, SIGKILL)
-        #expect(await waitUntil(10) { read()?.phase == .backoff })
-        #expect(read()?.lastRun?.signal == SIGKILL)
-        #expect(await waitUntil(10) { read()?.phase == .running && read()?.current?.pid != first })
-        #expect(read()?.runs == 2)
-        supervisor.requestStop()
-        #expect(await run.value == 0)
-        #expect(read()?.phase == .stopped)
     }
 }

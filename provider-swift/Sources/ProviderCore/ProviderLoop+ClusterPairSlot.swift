@@ -235,6 +235,8 @@ extension ProviderLoop {
         startClusterPairCapacityRefresh()
         await refreshClusterPairCapacity()
         logger.info("Cluster pair slot published (\(handle.id.uuidString.prefix(8)))")
+        // Both ranks loaded and, with the canary on, the pair answered its first request: it serves now.
+        Self.reportPair(ClusterOnboardingPairReport.servingLine(warmupSeconds: clusterPairWarmup.flatMap { $0.succeeded ? $0.seconds : nil }))
         if let client = coordinatorClient { await client.sendEventHeartbeat() }
         return id
     }
@@ -272,6 +274,8 @@ extension ProviderLoop {
         }
         modelsUnloading.insert(modelID)
         logger.info("Cluster pair slot retiring (\(handle.id.uuidString.prefix(8))): \(reason)")
+        // Fixed words only: a warm-up failure's detail is the engine's own text.
+        Self.reportPair(ClusterOnboardingPairReport.stoppedLine(reason.hasPrefix("warmup canary failed") ? "its first request failed" : reason))
         if reason == Self.readinessLostReason {
             // S24: serving ended without being asked to. A planned stop
             // retires the slot first with its own reason and records nothing.

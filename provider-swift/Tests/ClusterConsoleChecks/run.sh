@@ -49,7 +49,9 @@ for task_source in "$task_sources"/Inference/Distributed/Console/*.swift; do
 done
 # The setup record keeps the derived control leader (pure, Foundation only).
 task_console+=("$task_sources/Inference/Distributed/Onboarding/ClusterControlLeadership.swift"
-  "$task_sources/Inference/Distributed/Onboarding/ClusterOnboardingFlow.swift")
+  "$task_sources/Inference/Distributed/Onboarding/ClusterOnboardingFlow.swift"
+  "$task_sources/Inference/Distributed/Onboarding/ClusterOnboardingFollow.swift"
+  "$task_sources/Inference/Distributed/Onboarding/ClusterOnboardingPairServing.swift")
 # The automatic batch setup's adoption transaction checks its replacement with
 # the supervisor handoff, which the console never adopts; the installed-session
 # checks build both and exercise them.
@@ -101,6 +103,8 @@ build_module InstalledContract \
   "$task_sources/Protocol/ProviderExecutionRole.swift" \
   "$task_sources"/Inference/Distributed/LinkControl/*.swift \
   "$task_sources/Inference/Distributed/Observability/ClusterObservability.swift" \
+  "$task_sources/Inference/Distributed/Observability/ClusterIncidentLog+Install.swift" \
+  "$task_provider"/Sources/ProviderBuildEnvironment/*.swift \
   "$task_sources/Inference/Distributed/Observability/ClusterLinkObservability.swift" \
   "${task_placement[@]}" \
   "$task_sources"/Inference/Distributed/Diagnostics/ClusterStatusValues.swift \

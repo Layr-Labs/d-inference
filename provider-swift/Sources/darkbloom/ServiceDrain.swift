@@ -3,8 +3,10 @@ import Foundation
 import ProviderCore
 
 struct DrainOptions: ParsableArguments {
+    static let defaultTimeout = 600
+
     @Option(help: "Seconds to wait for accepted requests and coordinator acknowledgement (0...3600). Timeout leaves the service draining.")
-    var timeout: Int = 600
+    var timeout: Int = DrainOptions.defaultTimeout
     @Flag(help: "Explicitly permit cancellation and interruption of unfinished requests.")
     var force = false
 
@@ -16,9 +18,19 @@ struct DrainOptions: ParsableArguments {
 /// The CLI never initiates graceful stop with bootout/kickstart. The signed
 /// daemon owns admission, accepted requests, terminal delivery and the barrier.
 enum ServiceDrain {
-    static func prepare(options: DrainOptions,
+    /// The daemon state of single-Mac serving, never of the cluster's part: on a Mac in a two-Mac cluster the cluster
+    /// service runs a provider of its own (`start --foreground --cluster-member`) that writes the same state file.
+    /// `stop`, `restart` and `start` drain only the provider service (the cluster service would start its part again;
+    /// on a Mac in a cluster, `darkbloom stop` without `--solo` stops the pair instead).
+    static func soloProviderState(_ state: DaemonState? = DaemonStateFile.read(),
+                                  clusterPart: Int32? = ClusterPairSummary.runningPartPID()) -> DaemonState? {
+        guard let state, let clusterPart else { return state }
+        let writtenByClusterPart = state.pid == clusterPart || state.processIdentity?.pid == clusterPart
+        return writtenByClusterPart ? nil : state
+    }
+
+    static func prepare(options: DrainOptions, state: DaemonState? = DaemonStateFile.read(),
                         withConfigurationChange: (_ setup: () throws -> Void) throws -> Void = { try $0() }) async throws -> SelfUpdater.UpdateSession {
-        let state = DaemonStateFile.read()
         let updater = SelfUpdater(coordinatorBaseURL: state?.coordinatorUrl ?? BuildEnvironment.current.coordinatorHTTPURL)
         let session = try updater.beginUpdateSession(operation: "provider-lifecycle", timeout: 0)
         do {
@@ -64,17 +76,17 @@ enum ServiceDrain {
         try? FileManager.default.removeItem(at: WatchdogStateStore.path())
 
         if let request, let mailbox {
-            print("Draining accepted requests (deadline: \(options.timeout)s). New work is refused by the running provider.")
+            sayLine("Draining accepted requests (deadline: \(options.timeout)s). New work is refused by the running provider.")
             do {
                 let result = try await wait(request: request, mailbox: mailbox)
                 let confirmation = result.coordinatorAcknowledged ? "received" : (result.outcome == .drained ? "not needed (no coordinator connection)" : "unconfirmed")
-                print("Drain \(result.outcome.rawValue): \(result.remaining) unfinished request(s); coordinator acknowledgement: \(confirmation).")
+                sayLine("Drain \(result.outcome.rawValue): \(result.remaining) unfinished request(s); coordinator acknowledgement: \(confirmation).")
             } catch {
                 guard options.force else { throw error }
-                print("Forced stop: drain acknowledgement unavailable; unfinished work will be interrupted.")
+                sayLine("Forced stop: drain acknowledgement unavailable; unfinished work will be interrupted.")
             }
         } else if options.force {
-            print("Forced lifecycle requested: unfinished work may be interrupted; completion is unconfirmed.")
+            sayLine("Forced lifecycle requested: unfinished work may be interrupted; completion is unconfirmed.")
 
         }
         if options.force, let identity, identity.isCurrent() {
@@ -87,10 +99,10 @@ enum ServiceDrain {
     /// Stop only a confirmed drained owner. A PID file alone never authorizes
     /// signalling a process, and ordinary replacement never escalates to SIGKILL.
     /// `accepts`: as for `drain`; any other running provider is refused before it is signalled.
-    static func stopDrainedProvider(unloadService: Bool = true,
+    static func stopDrainedProvider(unloadService: Bool = true, daemonState: DaemonState? = DaemonStateFile.read(),
                                     accepts: (ProcessIdentity) -> Bool = { _ in true }) async throws {
         let launchIdentity = LaunchAgent.launchSnapshot()?.process
-        let identity = WatchdogProbe.providerIdentity(daemonState: DaemonStateFile.read(),
+        let identity = WatchdogProbe.providerIdentity(daemonState: daemonState,
                                                       launchSnapshotProcess: LaunchAgent.launchSnapshot()?.process)
         try requireAccepted(identity, accepts)
         // Restart must keep the service loaded until restartAfterDrain reloads
@@ -140,9 +152,9 @@ enum ServiceDrain {
             if let status = mailbox.readStatus(), status.requestID == request.id {
                 if lastRemaining != status.remaining {
                     if status.outcome == .draining && status.remaining == 0 && !status.coordinatorAcknowledged {
-                        print("  Requests finished; waiting for coordinator usage acknowledgement")
+                        sayLine("  Requests finished; waiting for coordinator usage acknowledgement")
                     } else {
-                        print("  \(status.remaining) accepted request(s) remaining")
+                        sayLine("  \(status.remaining) accepted request(s) remaining")
                     }
                     lastRemaining = status.remaining
                 }
@@ -167,7 +179,7 @@ enum ServiceDrain {
             try Task.checkCancellation()
             if let state = DaemonStateFile.read(),
                restartReady(state: state, previous: previous, now: Date().timeIntervalSince1970) {
-                print("Provider restarted and freshly authorized (\(state.trust?.authorization?.path ?? "unknown")).")
+                sayLine("Provider restarted and freshly authorized (\(state.trust?.authorization?.path ?? "unknown")).")
                 return
             }
             try await Task.sleep(nanoseconds: 500_000_000)

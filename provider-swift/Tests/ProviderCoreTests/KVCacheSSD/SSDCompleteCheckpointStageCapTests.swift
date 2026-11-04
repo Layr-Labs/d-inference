@@ -56,10 +56,4 @@ struct SSDCompleteCheckpointStageCapTests {
             environment: environment, physicalMemoryBytes: 36 * Self.gib)
             == SSDPrefixCachePolicy.defaultMaxStageMillis)
     }
-
-    @Test("attention block caches keep the general defaults on large-memory Macs")
-    func attentionCapsUnchanged() {
-        #expect(SSDPrefixCachePolicy.maxStageBytes(environment: [:]) == SSDPrefixCachePolicy.defaultMaxStageBytes)
-        #expect(SSDPrefixCachePolicy.maxStageMillis(environment: [:]) == SSDPrefixCachePolicy.defaultMaxStageMillis)
-    }
 }

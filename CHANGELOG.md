@@ -102,7 +102,7 @@ Prepared on 2026-11-03; tagging and publication are separate steps.
 - The other Mac checks at its start and every minute while no update runs, also with automatic updates off. It finishes the accepted requests of its part first, as for an update, restores the release it kept from before its last update, quarantines the rolled-back release and restarts. Both Macs then skip that release, and the next newer release updates both.
 - A Mac that keeps another earlier release, or none, or whose part serves on the leader's local API or alone, does not follow (yet) and says so once in `~/.darkbloom/cluster-setup/service.log`. While a pair runs on it, a Mac whose partner stops answering during the follow waits at most a minute, then changes nothing and tries again at the pair's next update slot. A Mac whose partner quarantined a release does not install that release either.
 - Both Macs need this release or a later one, and the release a Mac rolls back to must have it too: the Mac that rolled back reports the rollback from the restored release. A rollback of this release itself is therefore not followed; rollbacks of later releases are.
-- To roll back a pair by hand, stop one Mac's cluster service with `darkbloom cluster stop`, run `darkbloom update --rollback` there, and start it again with `darkbloom cluster`; the other Mac follows.
+- To roll back a pair by hand, stop one Mac's cluster service with `darkbloom cluster stop --service`, run `darkbloom update --rollback` there, and start it again with `darkbloom cluster`; the other Mac follows.
 
 ### Two-Mac pairs recover after losing a rank during a stop
 
@@ -131,7 +131,7 @@ Prepared on 2026-11-03; tagging and publication are separate steps.
 - When the two Macs pair again while their cluster services run (`darkbloom cluster` or `darkbloom cluster pair`), each service starts its setup and control-lease listeners again with the new pairing within about 5 seconds. They used to keep the earlier pairing's key until the service restarted, so the other Mac's leases and its "Reading both Macs over the cable" step were refused (`refused (handshakeRejected)`). The service log says `this Mac's pairing changed (<cluster label>): answering the paired Mac with the new one`.
 - A Mac left with no pairing stops answering over the cable. A pairing store that cannot be read leaves the listeners as they are.
 - A Mac that paired again under a new Secure Enclave key of its own drops its earlier control state, as it already did when the other Mac's key changed.
-- A cluster service started by an earlier release keeps the earlier behavior until it restarts (log out and back in, or `darkbloom cluster stop` and then `darkbloom cluster`).
+- A cluster service started by an earlier release keeps the earlier behavior until it restarts (log out and back in, or `darkbloom cluster stop --service` and then `darkbloom cluster`).
 
 ### Tensor parallel for Gemma 4 and MiMo only on measured speed
 

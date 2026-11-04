@@ -27,8 +27,8 @@ public final class ClusterOnboardingTerminal: ClusterOnboardingConsole {
     /// The window's width in columns when the setup started (0 when unknown).
     private let columns: Int
     private let brand: String
-    /// The live work line on screen, if any; the next said line replaces it.
-    private var working: String?
+    /// The live work rows on screen (one, or one per Mac while the parts load), if any; the next said line replaces them.
+    private var working: [String]?
     private var drawnFrame = -1
     private let echoesInput: Bool
     private var saved = termios()
@@ -36,6 +36,11 @@ public final class ClusterOnboardingTerminal: ClusterOnboardingConsole {
     private var reading = termios()
     private var configured = false
     public private(set) var closed = false
+
+    /// What a signal (Ctrl-C) says before the command ends.
+    static var stoppedLine: String { ClusterOnboardingCommand.named("Stopped. Run `darkbloom cluster` again to continue where it was.") }
+    /// `stoppedLine`'s bytes, made before the handlers are set: a signal handler only writes them.
+    nonisolated(unsafe) private static var stoppedBytes: [UInt8] = []
 
     /// The mode to put back from a signal handler (one terminal per process).
     nonisolated(unsafe) private static var restoreInput: Int32 = -1
@@ -66,15 +71,17 @@ public final class ClusterOnboardingTerminal: ClusterOnboardingConsole {
         configured = true
         Self.restoreInput = input
         Self.restoreMode = saved
+        Self.stoppedBytes = Array("\r\n\(Self.stoppedLine)\r\n".utf8)
         for number in [SIGINT, SIGTERM, SIGHUP] {
             signal(number) { received in
                 var mode = ClusterOnboardingTerminal.restoreMode
                 if ClusterOnboardingTerminal.restoreInput >= 0 { _ = tcsetattr(ClusterOnboardingTerminal.restoreInput, TCSANOW, &mode) }
+                // Nothing is allocated here: a literal in the binary, and the bytes made before the handlers were set.
                 if ClusterOnboardingTerminal.cursorHidden {
-                    let show = Array("\u{1B}[?25h".utf8)
-                    _ = show.withUnsafeBytes { Darwin.write(STDOUT_FILENO, $0.baseAddress, $0.count) }
+                    let show: StaticString = "\u{1B}[?25h"
+                    _ = Darwin.write(STDOUT_FILENO, show.utf8Start, show.utf8CodeUnitCount)
                 }
-                let text = Array("\r\nStopped. Run `darkbloom cluster` again to continue where it was.\r\n".utf8)
+                let text = ClusterOnboardingTerminal.stoppedBytes
                 _ = text.withUnsafeBytes { Darwin.write(STDOUT_FILENO, $0.baseAddress, $0.count) }
                 Darwin._exit(128 + received)
             }
@@ -92,9 +99,24 @@ public final class ClusterOnboardingTerminal: ClusterOnboardingConsole {
 
     public func say(_ line: String) {
         guard let live = working else { write(line + "\n"); return }
-        // The said line takes the live line's row; the live line moves below it.
-        write("\r\u{1B}[K" + line + "\n")
+        // The said line takes the live rows' place; the live rows move below it.
+        write(Self.up(live.count) + "\r\u{1B}[J" + line + "\n")
+        working = nil
         drawWorking(live, force: true)
+    }
+
+    /// From the last live row back to the first.
+    private static func up(_ rows: Int) -> String { rows > 1 ? "\u{1B}[\(rows - 1)A" : "" }
+
+    /// The outcome block: the rules dim, the outcome bold, green for ✓ and red for ✗ (the mark carries it too).
+    public func result(_ succeeded: Bool, _ title: String, _ lines: [String]) {
+        let rule = usesColor ? "\u{1B}[2m" + ClusterOnboardingDriver.resultRule + "\u{1B}[0m" : ClusterOnboardingDriver.resultRule
+        let mark = succeeded ? ClusterOnboardingDriver.done : ClusterOnboardingDriver.failed
+        say("")
+        say(rule)
+        say(usesColor ? "\u{1B}[1;\(succeeded ? "32" : "31")m\(mark) \(title)\u{1B}[0m" : "\(mark) \(title)")
+        for line in lines { say("  " + line) }
+        say(rule)
     }
 
     /// The setup's opening: the mark beside its name where the terminal can
@@ -124,16 +146,19 @@ public final class ClusterOnboardingTerminal: ClusterOnboardingConsole {
 
     /// Live work under the last said line: a turning petal and what runs.
     /// Plain transcripts show nothing extra.
-    public func working(_ text: String) {
-        guard decorates else { return }
-        drawWorking(text, force: text != working)
+    public func working(_ text: String) { workingRows([text]) }
+
+    /// Live rows, one per row of the window (the first with the turning petal); plain transcripts show nothing extra.
+    public func workingRows(_ rows: [String]) {
+        guard decorates, !rows.isEmpty else { return }
+        drawWorking(rows, force: rows != working)
     }
 
-    /// Clears the live work line, leaving the cursor where it was.
+    /// Clears the live work rows, leaving the cursor at the start of the first.
     public func settle() {
-        guard working != nil else { return }
+        guard let live = working else { return }
         working = nil; drawnFrame = -1
-        write("\r\u{1B}[K")
+        write(Self.up(live.count) + "\r\u{1B}[J")
     }
 
     /// A copy's or download's report: the live line, laid out for its room, where
@@ -144,7 +169,7 @@ public final class ClusterOnboardingTerminal: ClusterOnboardingConsole {
         let now = DispatchTime.now().uptimeNanoseconds
         let due = now &- progressDrawn >= 125_000_000
         if due { progressDrawn = now }
-        drawWorking(text(liveRoom), force: due)
+        drawWorking([text(liveRoom)], force: due)
     }
 
     /// When the progress line was last redrawn (uptime, nanoseconds).
@@ -155,15 +180,24 @@ public final class ClusterOnboardingTerminal: ClusterOnboardingConsole {
     /// Room: the indent, petal and space, the ellipsis and the last column.
     private var liveRoom: Int { max(1, columns - 6) }
 
-    private func drawWorking(_ text: String, force: Bool) {
+    private func drawWorking(_ rows: [String], force: Bool) {
         let now = DispatchTime.now().uptimeNanoseconds
         let frame = animates ? Int((now / 125_000_000) % 4) : 0
-        working = text
+        let shownRows = working?.count ?? 0
+        working = rows
         guard force || frame != drawnFrame else { return }
         drawnFrame = frame
         let petal = animates ? ClusterOnboardingBrand.spin(now) : ClusterOnboardingBrand.spinner[0]
-        let shown = text.count > liveRoom ? String(text.prefix(liveRoom)) : text
-        write("\r\u{1B}[K  \u{1B}[\(brand)m\(petal)\u{1B}[0m \u{1B}[2m\(shown)\u{2026}\u{1B}[0m")
+        // Each row fits one row of the window: the climb back to the first row counts rows, never wrapped lines.
+        // Named for the running identity before it is fitted, so a renamed command never grows a fitted row (DevNet).
+        func fit(_ text: String) -> String {
+            let text = ClusterOnboardingCommand.named(text)
+            return text.count > liveRoom ? String(text.prefix(liveRoom)) : text
+        }
+        let drawn = rows.enumerated().map { index, text in
+            index == 0 ? "  \u{1B}[\(brand)m\(petal)\u{1B}[0m \u{1B}[2m\(fit(text))\u{2026}\u{1B}[0m" : "    \u{1B}[2m\(fit(text))\u{1B}[0m"
+        }
+        write(Self.up(shownRows) + "\r\u{1B}[J" + drawn.joined(separator: "\n"))
     }
 
     static func supportsColor(inputIsTerminal: Bool, outputIsTerminal: Bool,
@@ -184,7 +218,7 @@ public final class ClusterOnboardingTerminal: ClusterOnboardingConsole {
     }
 
     private func write(_ text: String) {
-        let bytes = Array(text.utf8)
+        let bytes = Array(ClusterOnboardingCommand.named(text).utf8)
         var offset = 0
         while offset < bytes.count {
             let count = bytes[offset...].withUnsafeBytes { Darwin.write(output, $0.baseAddress, $0.count) }
@@ -241,7 +275,10 @@ public final class ClusterOnboardingTerminal: ClusterOnboardingConsole {
         let marker = decorates ? "\u{25B8}" : ">"
         let room = columns > 10 ? columns - 6 : Int.max
         let rows = options.count + 1
-        func fit(_ text: String) -> String { text.count > room ? String(text.prefix(room - 1)) + "\u{2026}" : text }
+        func fit(_ text: String) -> String {
+            let text = ClusterOnboardingCommand.named(text)
+            return text.count > room ? String(text.prefix(room - 1)) + "\u{2026}" : text
+        }
         let hints = decorates ? ["\u{2191}\u{2193} move \u{00B7} enter select \u{00B7} q cancel", "\u{2191}\u{2193} \u{00B7} enter \u{00B7} q"]
             : ["up/down move, enter select, q cancel", "up/down, enter, q"]
         let hint = fit(hints.first { $0.count <= room } ?? hints[hints.count - 1])

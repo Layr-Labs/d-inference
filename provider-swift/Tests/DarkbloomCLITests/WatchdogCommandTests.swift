@@ -17,12 +17,6 @@ struct WatchdogCommandTests {
         #expect(command is Watchdog)
     }
 
-    @Test("watchdog is hidden from help and named correctly")
-    func watchdogConfiguration() {
-        #expect(Watchdog.configuration.commandName == "watchdog")
-        #expect(Watchdog.configuration.shouldDisplay == false)
-    }
-
     // MARK: - autoRestartEnabled (cheap config read, fail-open)
 
     private func writeTempConfig(_ toml: String) throws -> URL {

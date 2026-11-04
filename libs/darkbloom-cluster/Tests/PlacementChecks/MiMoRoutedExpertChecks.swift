@@ -59,8 +59,8 @@ func checkMiMoRoutedExperts(golden: URL, _ checks: PlacementChecks) throws {
     let recordedPlans = [
         "Golden": ["b8e47f8ec25b077706df9be8516a679cf4503960491729e6915e47c6b70e3d1a",
                    "b5ad60578a8438482ea406eac34caf0a4083237335d0a94c6214bfe33d7d0454"],
-        "m3ultra-m5ultra": ["9bf6bb39b3917dce07b56d9bf9e2fb8fdc07349d6a0adec635c8a61c3393e7fc",
-                            "77fc561ea09ba714c48901e1347f6e9145ab7dd97002207b0574874577f96cde"],
+        "m3ultra-m5ultra": ["e22581c407f9ff352298b646a20f439690e13aa77d98537f1bdbf635009194a7",
+                            "e9b228091f6e6ba2204bf938a0ca8b5bf392b1162fc485f1ede5bb3cb708b2ff"],
     ]
     for pair in [golden, golden.appendingPathComponent("pairs/m3ultra-m5ultra", isDirectory: true)] {
         let peers = ["mac-a", "mac-b"].flatMap { ["--peer", "\($0)=" + pair.appendingPathComponent("profile-\($0).json").path] }
@@ -75,7 +75,7 @@ func checkMiMoRoutedExperts(golden: URL, _ checks: PlacementChecks) throws {
             let echoedRouting = layout.removeValue(forKey: "routedExperts") != nil
             echoed["layout"] = layout
             let plain = try JSONSerialization.jsonObject(with: Data(unroutedPlan.utf8)) as? [String: Any] ?? [:]
-            checks.require("MiMo on \(pair.lastPathComponent)\(extra.isEmpty ? "" : " (hand-off opt-in)"): the routed experts change only the echoed layout, and without them the plan is the recorded golden",
+            checks.require("MiMo on \(pair.lastPathComponent)\(extra.isEmpty ? "" : " (hand-off opt-in)"): the routed experts change only the echoed layout, and without them the plan is the recorded golden (printed \(sha256(Data((unroutedPlan + "\n").utf8))))",
                 echoedRouting && NSDictionary(dictionary: echoed).isEqual(to: plain)
                     && sha256(Data((unroutedPlan + "\n").utf8)) == recordedPlans[pair.lastPathComponent]?[index])
         }

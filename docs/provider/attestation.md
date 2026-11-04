@@ -1,6 +1,6 @@
 # Reaching and keeping `hardware` trust
 
-> Last updated: 2026-11-02
+> Last updated: 2026-11-04
 
 How to check provider verification and retain legacy `hardware` trust where
 eligible. New providers require macOS 27 or later and current qualified App
@@ -68,7 +68,7 @@ and the [wire contract](https://github.com/Layr-Labs/darkbloom-platform/blob/48a
 
 ## App Attest without Darkbloom MDM
 
-A failed initial enrollment can leave an Apple key unusable even when its identifier is still in Keychain. Darkbloom replaces that identifier after non-service-unavailable failures or interrupted attempts, subject to the persisted one-hour replacement cooldown and shared hourly generation budget. Service-unavailable failures keep the same key, and already saved enrollment proofs are retained for retry. Do not delete account, machine, Keychain or employer-management state to force retries. This recovery is not proof that the Mac is authorized; check the coordinator verdict before removing Darkbloom MDM. See the [key lifecycle](../reference/app-attest-shadow.md#bounds-and-credential-lifecycle).
+A failed initial enrollment can leave an Apple key unusable even when its identifier is still in Keychain. Darkbloom replaces that identifier after non-service-unavailable failures, or after an attempt whose answer was lost because the provider ended during the Apple call, subject to the persisted one-hour replacement cooldown and shared hourly generation budget. A crash or forced kill can lose that answer; a disconnect, `darkbloom stop` or a cluster restart lets Apple answer first. Service-unavailable failures keep the same key, and already saved enrollment proofs are retained for retry. Do not delete account, machine, Keychain or employer-management state to force retries. This recovery is not proof that the Mac is authorized; check the coordinator verdict before removing Darkbloom MDM. See the [key lifecycle](../reference/app-attest-shadow.md#bounds-and-credential-lifecycle).
 
 After a macOS upgrade, the running signed app checks App Attest again on its next coordinator connection. If a completed Apple callback reports key-generation failure without a usable ID, Darkbloom can retry after one minute within its persisted hourly budget; timeout, cancellation and busy admission retain the safer one-hour cooldown. A definite Apple service-unavailable assertion gets one local retry using the same key and challenge. These attempts cannot grant access without Apple's verified proof and the coordinator's applicable authorization, build and security checks.
 
@@ -79,7 +79,7 @@ is historical evidence, not the current retry schedule.
 
 When the coordinator asks the provider to enroll a key that this Mac already enrolled, the provider clears that key and answers `key_unregistered`; the next exchange generates a replacement within the one-hour cooldown and shared hourly generation budget. The replacement goes through the full enrollment checks. Do not delete the Keychain item yourself.
 
-`darkbloom doctor` shows the provider's local App Attest state in the `APP ATTEST` section: whether a key is stored and enrolled, any remaining local key-generation safeguard, whether the provider runs in the logged-in GUI session, and a stalled Apple call. The countdown is calculated by the provider; it is not an Apple-supplied deadline or the coordinator's retry time. The coordinator may retry later under its [configured recovery schedule](https://github.com/Layr-Labs/darkbloom-platform/blob/20b821646acfbf0968d1c30239cb583eeb0fa2bc/docs/reference/provider-authorization.md#controls), independently of this local safeguard. The daemon records local state on each coordinator App Attest exchange (`provider-swift/Sources/ProviderCore/Diagnostics/AppAttestLocalDiagnosis.swift`). If Apple reports App Attest as unsupported (`is_supported_false`), log in at the console and run `darkbloom restart` so the provider runs inside the GUI session, and confirm SIP is enabled and Startup Security Utility is set to Full Security.
+`darkbloom doctor` shows the provider's local App Attest state in the `APP ATTEST` section: whether a key is stored and enrolled, any remaining local key-generation safeguard, whether the provider runs in the logged-in GUI session, and a stalled Apple call. The countdown is calculated by the provider; it is not an Apple-supplied deadline or the coordinator's retry time. The coordinator may retry later under its [configured recovery schedule](https://github.com/Layr-Labs/darkbloom-platform/blob/20b821646acfbf0968d1c30239cb583eeb0fa2bc/docs/reference/provider-authorization.md#controls), independently of this local safeguard. The daemon records local state on each coordinator App Attest exchange (`provider-swift/Sources/ProviderCore/Diagnostics/AppAttestLocalDiagnosis.swift`). If Apple reports App Attest as unsupported (`is_supported_false`) for a provider outside the GUI session, log in at the console and run `darkbloom restart` so the provider runs inside the GUI session. For a provider already in the GUI session a restart does not help: re-register the app with LaunchServices instead (see the self-update paragraph below). In both cases, confirm SIP is enabled and Startup Security Utility is set to Full Security.
 
 Local key/history observations refresh after every proof exchange, including repeated assertions without another `prepare`. `doctor` and `report` advance displayed ages between exchanges while retaining the original observation metadata.
 
@@ -100,7 +100,27 @@ The log line starts with `App Attest: Apple operation stalled`. An explicit
 that Apple will accept the next call.
 
 After a self-update, some macOS 27 Macs report App Attest as unsupported
-(`is_supported_false`) although it worked before. If the coordinator granted
+(`is_supported_false`) although it worked before. Apple's answer also depends on
+macOS LaunchServices' record of the running app, and the update swaps
+`Darkbloom.app` in place. Until LaunchServices registers the new bundle, every
+process reports unsupported, including restarted ones. Fleet data for the 0.10.6
+and 0.10.7 rollouts: 12–15% of updating macOS 27 Macs; it cleared on its own
+after minutes to hours. The updater registers the new bundle with
+LaunchServices (`LSRegisterURL`, as `lsregister -f` does) right after the swap
+(`SelfUpdater.commitStagedBundle`). When Apple answers unsupported, the
+provider also re-registers the running bundle and asks Apple again before
+replying (`AppleAppAttestService.checkAvailability`,
+`provider-swift/Sources/ProviderAppAttest/AppAttestSupport.swift`). It does
+this at most once per process, or once per scheduled window for a provider with
+an availability schedule. To do it by hand:
+
+```bash
+/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister -f "$HOME/.darkbloom/Darkbloom.app"
+```
+
+Then wait for the next App Attest check (up to 10 minutes) or run
+`darkbloom restart`. The command only refreshes macOS's record of the app; it
+changes no Darkbloom file or key. If the coordinator granted
 this Mac App Attest in the last 7 days and launchd runs the provider, the
 provider restarts once through launchd when the state lasts 5 minutes and the
 provider is idle. It restarts once per verified episode: if the new process

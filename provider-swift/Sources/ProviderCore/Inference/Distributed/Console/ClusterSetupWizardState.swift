@@ -148,6 +148,24 @@ public struct ClusterSetupPlanSummary: Codable, Sendable, Equatable {
     /// (`ClusterPlacementExplanation.tensorParallelNote`): nil when it is, when the model has no tensor-parallel
     /// plan, and in a summary written before it.
     public var tensorParallelNote: String? = nil
+    /// Each mode family the planner could place for these Macs (`ClusterShardAssessment`), the chosen first, with each
+    /// Mac's share and the decode rate this pair served it at (`ClusterServedModes`); nil before it existed.
+    public var modes: [Mode]? = nil
+
+    public struct Mode: Codable, Sendable, Equatable {
+        public struct Share: Codable, Sendable, Equatable {
+            public var local: Bool
+            public var firstLayer: Int
+            public var endLayer: Int
+            /// Its share of every layer under tensor parallel; nil for a pipeline range.
+            public var share: Double?
+        }
+        /// A `ClusterGenerationMode` raw value.
+        public var mode: String
+        public var shares: [Share]
+        /// Nil: this pair has not served it in this mode yet (never a prediction).
+        public var servedDecodeTokensPerSecond: Double?
+    }
 }
 
 /// What reaching the other Mac gave.

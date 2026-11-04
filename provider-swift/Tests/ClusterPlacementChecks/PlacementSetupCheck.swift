@@ -791,11 +791,14 @@ import Foundation
             object["publicModelID"] = "fixture/" + id
             return (layout, capability, try ClusterPairDescription.decode(JSONSerialization.data(withJSONObject: object)))
         }
+        // The GPU working set macOS reports on a 128 GB Mac (107.52 GiB, as the recorded M5 Max's profile), not the
+        // constructed three quarters: the planner holds each rank's GPU part to it.
         func m4Max(_ label: String, _ physical: Int, free: Int) throws -> ClusterDeviceProfile {
             let p = try device(label, physicalGiB: physical, freeGiB: free, prefill: 1200, decode: 45).profile
             return try .init(chip: "Apple M4 Max", performanceCores: p.performanceCores, efficiencyCores: p.efficiencyCores, gpuCores: p.gpuCores,
                 osVersion: p.osVersion, osBuild: p.osBuild, physicalMemoryBytes: p.physicalMemoryBytes,
-                gpuRecommendedWorkingSetBytes: p.gpuRecommendedWorkingSetBytes, gpuMaximumBufferBytes: p.gpuMaximumBufferBytes,
+                gpuRecommendedWorkingSetBytes: physical == 128 ? 115_448_725_504 : p.gpuRecommendedWorkingSetBytes,
+                gpuMaximumBufferBytes: p.gpuMaximumBufferBytes,
                 allocatorLimitBytes: p.allocatorLimitBytes, memory: p.memory, power: p.power)
         }
         let pairs = [("2x M4 Max 64 GB", try m4Max("mac-one", 64, free: 52), try m4Max("mac-two", 64, free: 52)),

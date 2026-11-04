@@ -7,10 +7,8 @@ import Foundation
 /// key); with no pairing left, this Mac's cluster service no longer starts at login; then this Mac's pair prefix records
 /// are reclaimed (a live rank's are kept).
 public enum ClusterUnpairing {
+    /// What followed the unpairing.
     public struct Outcome: Sendable {
-        /// The member's answer when this Mac led it (`ClusterService.tellMemberOfUnpair`), else nil.
-        public var memberLine: String?
-        public var removed: ClusterPairingRecord
         /// The cluster service was stopped and no longer starts at login.
         public var serviceRemoved = false
         /// Why the service could not be removed from login, when it could not.
@@ -25,12 +23,17 @@ public enum ClusterUnpairing {
         public var description: String
     }
 
-    public static func run(peerPin: String, executable: URL, providerConfiguration: URL?) throws -> Outcome {
+    /// `unpaired` gets the removed pairing and the member's answer when this Mac led it
+    /// (`ClusterService.tellMemberOfUnpair`) as soon as the pairing is removed: removing the service from login next can
+    /// wait minutes while this Mac's part releases its model.
+    public static func run(peerPin: String, executable: URL, providerConfiguration: URL?,
+                           unpaired: (_ removed: ClusterPairingRecord, _ memberLine: String?) -> Void = { _, _ in }) throws -> Outcome {
         let store = ClusterPairingStore.default()
         let memberLine = ClusterService.tellMemberOfUnpair(peerPin: peerPin)
         let removed: ClusterPairingRecord
         do { removed = try store.forget(peerPin: peerPin) } catch { throw Failure(memberLine: memberLine, description: "\(error)") }
-        var outcome = Outcome(memberLine: memberLine, removed: removed)
+        unpaired(removed, memberLine)
+        var outcome = Outcome()
         if ClusterService.holdsNoPairing(store: store) {
             do { outcome.serviceRemoved = !(try ClusterService.removeFromLogin(executable: executable)).isEmpty }
             catch { outcome.serviceProblem = "\(error)" }

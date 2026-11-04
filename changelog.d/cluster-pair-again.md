@@ -12,10 +12,8 @@
 - Choosing a model no longer spins on "Reading both Macs over the cable" with no
   reason: the screen says why it is still waiting and, on a Mac paired before,
   ends with **Try again**, **Pair again** and **Quit**.
-- The Mac that follows names the Mac it follows and the command to run there
-  ("This Mac follows the other Mac (Apple M3 Ultra, 256 GB): to choose or change
-  the model, run `darkbloom cluster` on that Mac.") instead of "Nothing to do
-  here".
+- The Mac that follows names the Mac it follows and the command to run there,
+  instead of "Nothing to do here".
 - Setting up a cable port from `darkbloom cluster` continues to the Mac's usual
   screen instead of ending there.
 - Every paired Mac offers **Start over (pair again)**, which asks once (No by

@@ -384,9 +384,10 @@ Mac, "This Mac (Studio A) leads", so two identical Macs each say which they
 are), then shows the cluster's state in one line ("Serving
 Qwen3.8-27B-4bit-mtp at http://localhost:8000 (earning through Darkbloom).",
 or "Stopped; last model …") and, on the leader, the list
-[above](#the-steps-once). The other Mac ends with "Nothing to do here: manage
-it on the other Mac (`darkbloom cluster`).", or, when the cable moved to a port
-not set up yet, offers to set it up ([below](#when-something-is-in-the-way)).
+[above](#the-steps-once). The other Mac then names the Mac it follows and the
+command to run there, and offers **Start over (pair again)** or **Quit**; when
+the cable moved to a port not set up yet, it offers to set that up first
+([below](#when-something-is-in-the-way)).
 
 If both Macs start waiting at the same moment, the pairing's own rule picks one
 to keep waiting (it leads) and the other joins it ("✓ Paired. The other Mac
@@ -435,7 +436,11 @@ The choice is kept: after a restart or reboot both Macs serve locally only
 again, until you switch back. In `darkbloom cluster` on the leader, **Serve
 through Darkbloom** serves through Darkbloom again and **Serve locally**
 serves locally only; on a serving cluster the leading
-Mac's part restarts that way and the screen waits for it. The model list still
+Mac's part restarts that way and the screen waits for it as after a start: a
+test request on the leader's API, or, for a pair registered with the coordinator,
+until the coordinator paired both Macs and both loaded the model. It ends with
+the same outcome block (✓ only then; otherwise ✗ with the reason and the
+choices). The model list still
 reads Darkbloom's catalog when the network is up (to download a model neither
 Mac has); with no network, it lists the models already on the Macs. Only
 catalog models are served. Qualification records never gate local-only
@@ -883,8 +888,9 @@ drained for an update yet: its update waits while it serves (the log says
   allow Darkbloom in System Settings → Privacy & Security → Local Network, then
   run `darkbloom cluster` again. When `darkbloom cluster` is run again and the
   other Mac does not answer, it offers **Pair again** ([pairing again](#pairing-again)).
-- **One Mac waits at "2/4 Pair" while the other shows its status and ends**:
-  the second Mac still holds an earlier pairing, so it never joins. Run
+- **One Mac waits at "2/4 Pair" while the other shows its status and ends, or
+  says "The other Mac doesn't answer over the cable"**: the second Mac still
+  holds an earlier pairing, so it never joins. Run
   `darkbloom cluster` on it and choose **Pair again**
   ([pairing again](#pairing-again)).
 - **A model is not offered**: the list leaves out every model that is not
@@ -936,9 +942,8 @@ with "This Mac's Secure Enclave key is not the one it paired with; pair again."
 
 **Quit** changes nothing. Asking the other Mac is one status request over the
 cable (`OnboardingLive.otherMacAnswers`); the key check reads this Mac's key
-without creating one (`ClusterPairingProvider.existingPin`). Both are in
-`provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/ClusterOnboardingFlow.swift`
-(`ClusterOnboardingPairingProblem`) and the driver's `pairAgain`.
+without creating one (`ClusterPairingProvider.existingPin`). Both are explained
+in [a saved pairing the onboarding cannot use](../architecture/inference.md#a-saved-pairing-the-onboarding-cannot-use).
 
 ## Undo
 

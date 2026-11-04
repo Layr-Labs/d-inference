@@ -58,19 +58,19 @@ extension Cluster {
             do {
                 if status { print(try ClusterPairCommandLine.status(json: json)); return }
                 if let forget {
-                    // The steps `darkbloom cluster`'s Pair again takes too (`ClusterUnpairing`): the leader tells its
-                    // member first, unpaired the service no longer starts at login, and the pair's prefix records are
-                    // reclaimed here (the peer reclaims its own when it unpairs; a live rank's plan is left alone).
+                    // `ClusterUnpairing` takes the steps, in their order, shared with `darkbloom cluster`'s Pair
+                    // again; this command prints what each step did, the unpairing before the service leaves login.
                     let outcome: ClusterUnpairing.Outcome
                     do {
                         outcome = try ClusterUnpairing.run(peerPin: forget, executable: URL(fileURLWithPath: Start.currentExecutablePath()),
-                                                           providerConfiguration: try? ConfigManager.defaultConfigPath())
+                                                           providerConfiguration: try? ConfigManager.defaultConfigPath()) { removed, memberLine in
+                            if let memberLine { print(memberLine) }
+                            print(ClusterPairCommandLine.forgotten(removed))
+                        }
                     } catch let failure as ClusterUnpairing.Failure {
                         if let line = failure.memberLine { print(line) }
                         throw ValidationError(failure.description)
                     }
-                    if let line = outcome.memberLine { print(line) }
-                    print(ClusterPairCommandLine.forgotten(outcome.removed))
                     if outcome.serviceRemoved { print("This Mac's cluster service is stopped and no longer starts at login.") }
                     if let problem = outcome.serviceProblem { printError("note: this Mac's cluster service could not be removed from login: \(problem)") }
                     if let report = outcome.reclaim, report.removedPlans > 0 || report.keptLive > 0 || !report.problems.isEmpty {

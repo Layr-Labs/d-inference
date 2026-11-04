@@ -33,30 +33,46 @@ struct Stop: AsyncParsableCommand {
         return pair.pairingUnreadable ? .refuse(pair.unsureRefusal("stop", "stopped")) : .stopPair
     }
 
+    /// The command's look, opened with the mark: for a stop that goes ahead.
+    private static func openLook() -> DarkbloomCommandLook {
+        let look = DarkbloomCommandLook.forCommand()
+        look.open("Darkbloom stop")
+        return look
+    }
+
     mutating func run() async throws {
         let pair = ClusterPairSummary.local()
-        switch Self.pairedStop(pair, solo: solo, uninstall: uninstall) {
-        case .stopPair:
-            let actions = ClusterPairActions.live(config: nil)
-            let teardown = ClusterPairCommands.teardownWait
-            let code = await Task.detached { ClusterPairCommands.stop(pair, actions: actions, teardown: teardown) }.value
-            if code != 0 { throw ExitCode(code) }
-            return
-        case .refuse(let lines):
+        let stop = Self.pairedStop(pair, solo: solo, uninstall: uninstall)
+        if case .refuse(let lines) = stop {
             for line in lines { print(line) }
             throw ExitCode.failure
-        case .stopSingleMac:
-            break
+        }
+        // Decided first: only a stop that goes ahead opens with the mark, never a refusal or `--solo` with nothing to stop.
+        if stop == .stopPair {
+            let look = Self.openLook()
+            let actions = ClusterPairActions.live(config: nil)
+            let teardown = ClusterPairCommands.teardownWait
+            let say = look.saying(ClusterPairCommands.printLine)
+            let code = await look.working("Stopping both Macs") {
+                await Task.detached { ClusterPairCommands.stop(pair, actions: actions, teardown: teardown, say: say) }.value
+            }
+            if code != 0 { throw ExitCode(code) }
+            return
         }
         let wasLoaded = LaunchAgent.isLoaded()
         if pair.paired, !wasLoaded, !uninstall {
             for line in pair.soloStopNothing { print(line) }
             return
         }
-        let session = try await ServiceDrain.prepare(options: drain, state: ServiceDrain.soloProviderState())
+        let look = Self.openLook()
+        let session = try await look.working("Draining accepted requests") {
+            try await ServiceDrain.prepare(options: drain, state: ServiceDrain.soloProviderState())
+        }
         defer { session.release() }
 
-        try await ServiceDrain.stopDrainedProvider(daemonState: ServiceDrain.soloProviderState())
+        try await look.working("Stopping the provider") {
+            try await ServiceDrain.stopDrainedProvider(daemonState: ServiceDrain.soloProviderState())
+        }
         if uninstall {
             try? WatchdogAgent.uninstall()
             // The desktop API agent is KeepAlive; leaving it would keep it running

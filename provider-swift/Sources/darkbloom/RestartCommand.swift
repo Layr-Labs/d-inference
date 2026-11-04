@@ -51,28 +51,37 @@ struct Restart: AsyncParsableCommand {
         let pair = ClusterPairSummary.local()
         let wasLoaded = LaunchAgent.isLoaded()
         let installed = LaunchAgent.isInstalled() || wasLoaded
-        switch Self.pairRestart(pair, singleMacInstalled: installed, solo: solo) {
-        case .restartPair:
-            let code = await ClusterPairCommands.restart(pair, actions: ClusterPairActions.live(config: configOptions.config),
-                                                         config: configOptions.config)
-            if code != 0 { throw ExitCode(code) }
-            return
-        case .refuse(let lines):
+        let restart = Self.pairRestart(pair, singleMacInstalled: installed, solo: solo)
+        if case .refuse(let lines) = restart {
             for line in lines { print(line) }
             throw ExitCode.failure
-        case .restartSingleMac:
-            break
         }
-        guard installed else {
+        guard restart == .restartPair || installed else {
             throw ValidationError("No launchd configuration is installed. Use \(BuildEnvironment.current.cliName) start to select the replacement configuration; the foreground provider was left running.")
+        }
+        // Decided first: only a restart that goes ahead opens with the mark.
+        let look = DarkbloomCommandLook.forCommand()
+        look.open("Darkbloom restart")
+        if restart == .restartPair {
+            let config = configOptions.config
+            let code = await look.working("Restarting both Macs") {
+                await ClusterPairCommands.restart(pair, actions: ClusterPairActions.live(config: config), config: config,
+                                                  say: look.saying(ClusterPairCommands.printLine))
+            }
+            if code != 0 { throw ExitCode(code) }
+            return
         }
         let soloState = ServiceDrain.soloProviderState()
         let previous = soloState?.processIdentity ?? LaunchAgent.launchSnapshot()?.process
-        let session = try await ServiceDrain.prepare(options: drain, state: soloState)
+        let session = try await look.working("Draining accepted requests") {
+            try await ServiceDrain.prepare(options: drain, state: soloState)
+        }
         defer { session.release() }
         do {
-            try await ServiceDrain.stopDrainedProvider(unloadService: false, daemonState: ServiceDrain.soloProviderState())
-            try LaunchAgent.restartAfterDrain()
+            try await look.working("Restarting the provider") {
+                try await ServiceDrain.stopDrainedProvider(unloadService: false, daemonState: ServiceDrain.soloProviderState())
+                try LaunchAgent.restartAfterDrain()
+            }
         } catch LaunchAgentError.notInstalled {
             printError("Provider is not running. Start it with `\(BuildEnvironment.current.cliName) start`.")
             throw ExitCode.failure
@@ -87,7 +96,9 @@ struct Restart: AsyncParsableCommand {
 
         // Let startup/update confirmation acquire its own process lease.
         session.release()
-        try await ServiceDrain.waitForRestart(previous: previous, timeout: startupTimeout)
+        try await look.working("Waiting for the restarted provider's fresh authorization") {
+            try await ServiceDrain.waitForRestart(previous: previous, timeout: startupTimeout)
+        }
         print("  \(BuildEnvironment.current.cliName) status  Check status")
         if pair.paired { print(pair.restartAddendum) }
     }

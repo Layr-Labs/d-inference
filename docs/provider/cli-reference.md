@@ -146,6 +146,23 @@ with a 2 s hard timeout and prints a one-line banner; `DARKBLOOM_NO_UPDATE_CHECK
 set to any value skips it. Logging goes to stderr so launchd captures it in
 `~/.darkbloom/provider.log`.
 
+In a terminal, `start`, `stop`, `restart`, `status` and `update` open with the
+Darkbloom mark beside the command's name and show a one-row live line while
+they wait (a drain, a restart, an update's download). It is look only: every
+line they print is the same, in the same order. The cluster setup's rules
+apply (`DarkbloomCommandLook`, `provider-swift/Sources/ProviderCore/Terminal/DarkbloomCommandLook.swift`):
+pipes, logs, the LaunchAgent's files, `NO_COLOR`, `CLICOLOR=0`, `TERM=dumb`, a
+non-UTF-8 locale and windows under 40 columns get the plain bytes;
+`DARKBLOOM_NO_ANIMATION` or `CI` keeps the mark and the line still. On a
+paired Mac, `darkbloom start` opens the cluster's screen, which draws the mark
+itself. A command that refuses before doing any work (an unreadable pairing
+record, nothing to restart, flags that can't go together or an out-of-range
+`--idle-timeout`, `update --rollback` as root), or finds nothing to do (`stop
+--solo` with no single-Mac serving), prints only its lines, with no mark. The
+mark appears once, at the top of the command you ran: `unenroll` and
+`autopilot enable`/`models`, which run `stop --solo` and `start` inside
+themselves, show none.
+
 ## Subcommands
 
 Subcommands declared by `Darkbloom.configuration.subcommands`:

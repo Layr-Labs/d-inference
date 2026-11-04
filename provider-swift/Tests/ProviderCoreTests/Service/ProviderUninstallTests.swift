@@ -33,6 +33,7 @@ private final class FakeLaunchd: @unchecked Sendable {
     }
 
     var bootedOut: [String] { lock.withLock { calls.filter { $0.first == "bootout" }.map { String($0[1].split(separator: "/").last ?? "") } } }
+    func load(_ label: String) { lock.withLock { _ = loaded.insert(label) } }
     var callCount: Int { lock.withLock { calls.count } }
 }
 
@@ -222,6 +223,30 @@ private func transcript(_ name: String, _ lines: [String], _ fixture: Fixture) {
     let text = lines.joined(separator: "\n").replacingOccurrences(of: fixture.home.path, with: "~")
         .replacingOccurrences(of: fixture.root.path, with: "<root>") + "\n"
     try? text.write(toFile: directory + "/" + name + ".txt", atomically: true, encoding: .utf8)
+}
+
+/// The owner's Mac: the production and the DevNet app, each with its command, and the cluster files every install reads
+/// (`ClusterUserPaths`, the pairing store, the setup wizard) in ~/.darkbloom and ~/.config/darkbloom. Returns those files.
+private func installBoth(_ fixture: Fixture) throws -> [URL] {
+    for install in [BuildEnvironment.prod, .dev] {
+        let folder = install.installDirectory(home: fixture.home)
+        let binary = folder.appendingPathComponent("\(install.appBundleName)/Contents/MacOS/\(install.cliName)")
+        if !fixture.exists(binary) { try fixture.write(binary) }
+        let bin = folder.appendingPathComponent("bin/\(install.cliName)")
+        if !fixture.exists(bin) { try fixture.link(bin, to: "../\(install.appBundleName)/Contents/MacOS/\(install.cliName)") }
+        try fixture.write(folder.appendingPathComponent("provider.log"))
+    }
+    let shared = [".darkbloom/cluster-pairing/pairings.json", ".darkbloom/cluster-setup/wizard.json",
+                  ".darkbloom/cluster-device/link-alias.json", ".darkbloom/cluster/device-index.json",
+                  ".config/darkbloom/clusters/0123.cluster.json"].map { fixture.home.appendingPathComponent($0) }
+    for file in shared { try fixture.write(file) }
+    return shared
+}
+
+/// The cluster service agent `install`'s app installs (`ClusterServiceAgentPlan.label` of its app).
+private func clusterAgent(_ install: BuildEnvironment, _ fixture: Fixture) -> String {
+    ClusterServiceAgentPlan.label(executablePath: install.installDirectory(home: fixture.home)
+        .appendingPathComponent("\(install.appBundleName)/Contents/MacOS/\(install.cliName)").path)
 }
 
 @Suite("darkbloom uninstall")
@@ -498,20 +523,7 @@ struct ProviderUninstallTests {
         for (this, other) in [(BuildEnvironment.dev, BuildEnvironment.prod), (.prod, .dev)] {
             let fixture = try Fixture.make()
             defer { fixture.remove() }
-            // The owner's Mac: the production and the DevNet app, each with its command, and the cluster files every
-            // install reads (`ClusterUserPaths`, the pairing store, the setup wizard) in ~/.darkbloom and ~/.config/darkbloom.
-            for install in [this, other] {
-                let folder = install.installDirectory(home: fixture.home)
-                let binary = folder.appendingPathComponent("\(install.appBundleName)/Contents/MacOS/\(install.cliName)")
-                if !fixture.exists(binary) { try fixture.write(binary) }
-                let bin = folder.appendingPathComponent("bin/\(install.cliName)")
-                if !fixture.exists(bin) { try fixture.link(bin, to: "../\(install.appBundleName)/Contents/MacOS/\(install.cliName)") }
-                try fixture.write(folder.appendingPathComponent("provider.log"))
-            }
-            let shared = [".darkbloom/cluster-pairing/pairings.json", ".darkbloom/cluster-setup/wizard.json",
-                          ".darkbloom/cluster-device/link-alias.json", ".darkbloom/cluster/device-index.json",
-                          ".config/darkbloom/clusters/0123.cluster.json"].map { fixture.home.appendingPathComponent($0) }
-            for file in shared { try fixture.write(file) }
+            let shared = try installBoth(fixture)
             let paths = ProviderUninstallPaths(home: fixture.home, environment: this,
                                                commandLinkDirectory: fixture.paths.commandLink.deletingLastPathComponent())
             let plan = ProviderUninstall.Plan(cli: this.cliName, services: [], items: ProviderUninstall.inventory(paths),
@@ -563,6 +575,72 @@ struct ProviderUninstallTests {
         let dev = ProviderUninstallPaths(home: FileManager.default.temporaryDirectory.appendingPathComponent("no-such-home"), environment: .dev)
         #expect(ProviderUninstall.installFolderLabel(dev) == "Darkbloom folder: the app and logs",
                 "the pairing and cluster setup are in ~/.darkbloom, not in ~/.darkbloom-dev")
+    }
+
+    @Test("B12 step 2: beside the other install, only this install's cluster agent goes; the pair and the other's agent stay")
+    func stepTwoRemovesOnlyThisInstallsClusterAgent() async throws {
+        for (this, other) in [(BuildEnvironment.dev, BuildEnvironment.prod), (.prod, .dev)] {
+            let fixture = try Fixture.make()
+            defer { fixture.remove() }
+            _ = try installBoth(fixture)
+            let own = clusterAgent(this, fixture), theirs = clusterAgent(other, fixture)
+            for label in [own, theirs] {
+                try fixture.write(fixture.agents.appendingPathComponent("\(label).plist"))
+                fixture.launchd.load(label)
+            }
+            let paths = ProviderUninstallPaths(home: fixture.home, environment: this,
+                                               commandLinkDirectory: fixture.paths.commandLink.deletingLastPathComponent())
+            let plan = ProviderUninstall.Plan(cli: this.cliName, services: [], items: ProviderUninstall.inventory(paths),
+                                              pairing: fixture.pairing)
+            let otherName = other == .prod ? "the production Darkbloom" : other.appDisplayName
+            let ownPlist = fixture.agents.appendingPathComponent("\(own).plist")
+            let dryRun = ProviderUninstall.dryRun(plan, mode: .everything)
+            transcript("dry-run-\(this.rawValue)-beside-\(other.rawValue)-step2", dryRun, fixture)
+            #expect(dryRun.contains("  2. Remove this install's cluster service: \(ownPlist.path); the pair and \(otherName)'s "
+                + "cluster service are left as they are"), "\(this)")
+            #expect(!dryRun.contains { $0.contains(ProviderUninstall.clusterStep) }, "\(this): the pair is not stopped")
+            let actions = ProviderUninstall.dryRunDocument(plan, modes: [.everything]).modes[0].actions
+            #expect(actions.contains { $0.action == "Remove this install's cluster service" && $0.path == ownPlist.path }, "\(this)")
+            #expect(!actions.contains { $0.action == ProviderUninstall.clusterStep }, "\(this)")
+
+            let report = await fixture.run(.everything, items: plan.items, pairing: fixture.pairing)
+            #expect(!fixture.calls.all.contains("cluster stop"), "\(this): the pair is never stopped")
+            #expect(fixture.launchd.bootedOut.contains(own) && !fixture.exists(ownPlist), "\(this): its own agent goes")
+            for kept in [theirs, Fixture.clusterLabel] {
+                #expect(!fixture.launchd.bootedOut.contains(kept), "\(this): \(kept) is not booted out")
+                #expect(fixture.exists(fixture.agents.appendingPathComponent("\(kept).plist")), "\(this): \(kept) stays installed")
+            }
+            #expect(!report.failed && !report.incomplete, "\(this): \(report.steps)")
+            let summary = ProviderUninstall.summary(report, plan: plan)
+            transcript("\(this.rawValue)-summary-beside-\(other.rawValue)-step2", summary, fixture)
+            #expect(summary.contains("  done     Remove this install's cluster service: removed \(own); the pair and \(otherName)'s "
+                + "cluster service are left as they are"), "\(this)")
+            #expect(summary.contains { $0.hasPrefix("Kept: This Mac's pairing") && $0.contains("the pair and its cluster service are left as they are") },
+                    "\(this)")
+        }
+    }
+
+    @Test("F3: a models folder that is ~/.darkbloom itself keeps the app, and the summary says Darkbloom is not fully removed")
+    func modelsFolderThatIsTheAppFolderIsNotCalledRemoved() async throws {
+        let base = try Fixture.make()
+        defer { base.remove() }
+        let install = base.paths.installDirectory
+        try base.write(install.appendingPathComponent("models--org--chosen/snapshots/rev1/.darkbloom-manifest.json"))
+        let fixture = base.choosingModels(install)
+        let plan = fixture.plan(pairing: nil)
+        let cli = fixture.paths.commandLink.lastPathComponent
+        let advice = "run `\(install.path)/bin/\(cli) uninstall` again"
+        let dryRun = ProviderUninstall.dryRun(plan, mode: .everything)
+        transcript("dry-run-everything-models-in-app-folder", dryRun, fixture)
+        #expect(dryRun.contains { $0.hasPrefix("  Not deleted: Darkbloom folder") && $0.contains("it is the models folder you chose") })
+        let report = await fixture.run(.everything, items: plan.items, pairing: nil)
+        #expect(fixture.exists(install.appendingPathComponent(fixture.paths.appBundleName)), "the folder you chose stays, app included")
+        #expect(report.incomplete && !report.failed, "\(report.steps)")
+        let summary = ProviderUninstall.summary(report, plan: plan)
+        transcript("everything-summary-models-in-app-folder", summary, fixture)
+        #expect(summary.first == "Darkbloom is not fully removed from this Mac: its app folder is your models folder, so it was kept (see below).")
+        #expect(summary.contains { $0.contains("skipped  Delete Darkbloom folder") && $0.contains("not removed: it is the models folder you chose")
+            && $0.contains(advice) }, "the summary says what to do")
     }
 
     @Test("a disk mounted at a folder is told from one that is not")

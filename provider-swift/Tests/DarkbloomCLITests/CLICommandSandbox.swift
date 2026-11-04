@@ -184,9 +184,9 @@ enum CLICommandSandboxError: Error {
     case unexpectedCommand(String)
 }
 
-/// Keeps a test's child process off the Mac that runs the tests: every command reads "not in a cluster", and no
-/// pairing, cluster service, login agent or cluster part of this Mac is read, unless the test binds a pair of its
-/// own (`ClusterPairSummary.readerForTesting`). Process-wide, so only inside an exit test's body.
+/// Keeps a test's child process off the Mac that runs the tests: no pairing, cluster service, login agent or cluster
+/// part of this Mac is read, and every command reads "not in a cluster" unless the test binds a pair of its own
+/// (`ClusterPairSummary.readerForTesting`). Process-wide, so only inside an exit test's body.
 func keepCommandsOffThisMacsCluster() {
     ClusterPairSummary.processReaderForTesting = { _ in .notPaired }
 }

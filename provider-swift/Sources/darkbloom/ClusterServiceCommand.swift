@@ -184,10 +184,7 @@ extension Cluster {
                 var forwarded = false
                 // The leader stops serving first, so its members stop their parts too
                 // (unless asked to stop only this Mac: the other one is gone).
-                if !localOnly, let settings = try? Cluster.Setup.serviceSettings(config: config, modelDir: nil, worker: worker),
-                   let operations = try? ClusterOnboardingOperations.live(.init(service: settings,
-                       serviceArguments: ClusterServiceAgentPlan.childArguments(
-                           serviceOptions: ClusterServiceAgentPlan.serviceOptions(config: config, worker: worker)))) {
+                if !localOnly, let operations = try? ClusterOnboardingOperations.live(.clusterService(config: config, worker: worker)) {
                     let resume = operations.resume()
                     switch Self.pairStop(role: resume.role, serving: resume.serving) {
                     case .stopHere: break

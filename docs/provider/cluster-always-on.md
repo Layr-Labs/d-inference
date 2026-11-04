@@ -66,7 +66,7 @@ the cluster comes back by itself, with no command run on either Mac (see
   without that identity uses a session-only fallback. Keep its originating
   Terminal or SSH session open: detaching does not preserve that session's
   Local Network access. Use a signed app for background qualification.
-- `darkbloom cluster stop --service` (on the leader, the cluster stops serving first)
+- `darkbloom cluster stop --service` (from either Mac, the pair stops serving first)
   and unpairing (`darkbloom cluster pair --forget`, once no pairing is left)
   remove the agent; the service stops this Mac's part first (SIGTERM, up to
   300 s for a rank to release its model; launchd's exit allowance is 360 s).

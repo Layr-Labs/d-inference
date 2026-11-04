@@ -239,9 +239,9 @@ and a replacement drains only the provider service's process, never the
 cluster's part (`ServiceDrain.soloProviderState`).
 
 A Mac whose pairing record can't be read is never taken for "not in a cluster"
-(as `ClusterService.holdsNoPairing`): `start` and `restart` refuse without
-`--solo` whether or not the cluster service runs, and say why
-(`ClusterPairSummary.membership`):
+(as `ClusterService.holdsNoPairing`): `start`, `stop` and `restart` change
+nothing without `--solo` (`cluster stop`: without `--service` or
+`--local-only`), and say why (`ClusterPairSummary.membership`):
 
 ```text
 This Mac's pairing record couldn't be read (pairings.json is malformed; nothing is trusted from it), so it may be in a two-Mac cluster.

@@ -77,10 +77,6 @@ struct ClusterPairSummary: Sendable, Equatable {
 
     var pairingUnreadable: Bool { state == .pairingUnreadable }
 
-    /// Single-Mac serving here needs `--solo` (`darkbloom start` and `restart`): the cluster service runs, or this Mac
-    /// may be in a cluster (its pairing record couldn't be read).
-    var singleMacServingNeedsSolo: Bool { serviceRunning || pairingUnreadable }
-
     /// What to do when the pairing record couldn't be read.
     static let checkPairingLine = "Run `darkbloom cluster` on this Mac to check it."
 
@@ -142,8 +138,9 @@ struct ClusterPairSummary: Sendable, Equatable {
         return ["Memory:"] + lines.map { "  " + $0 }
     }
 
-    /// `darkbloom stop` or `restart` without `--solo` while this Mac's pairing record can't be read: it can't tell which
-    /// pair to act on, so nothing changes, and `--solo` acts on single-Mac serving alone.
+    /// `darkbloom stop` or `restart` without `--solo` (and `cluster stop` without `--service`) while this Mac's pairing
+    /// record can't be read: it can't tell which pair to act on, so nothing changes, and `--solo` acts on single-Mac
+    /// serving alone.
     func unsureRefusal(_ command: String, _ done: String) -> [String] {
         [pairSentence, "`darkbloom \(command)` can't tell which pair to \(command), so nothing was \(done).",
          "To \(command) single-Mac serving on this Mac only: `darkbloom \(command) --solo`. " + Self.checkPairingLine]
@@ -174,7 +171,7 @@ struct ClusterPairSummary: Sendable, Equatable {
         ["`darkbloom stop --solo` stops single-Mac serving, and none runs on this Mac: nothing was stopped.", soloLeftPair("stop")]
     }
 
-    /// After `darkbloom stop --solo` stopped single-Mac serving on a Mac in a cluster.
+    /// After `darkbloom stop --solo` (or `--uninstall`) stopped single-Mac serving on a Mac in a cluster.
     var stopAddendum: [String] { [pairSentence, soloLeftPair("stop")] }
 
     /// `darkbloom restart --solo` where no single-Mac serving is installed.
@@ -209,7 +206,7 @@ struct ClusterPairSummary: Sendable, Equatable {
 
     // MARK: - darkbloom status and doctor (no network)
 
-    /// One line for `darkbloom status` and `darkbloom doctor`, from what this Mac knows by itself.
+    /// One line for `darkbloom status --solo` and `darkbloom doctor`, from what this Mac knows by itself.
     var statusLine: String {
         guard paired else { return "Cluster: not in a cluster" }
         if pairingUnreadable {
@@ -231,7 +228,7 @@ struct ClusterPairSummary: Sendable, Equatable {
         return "Cluster: " + parts.joined(separator: " · ") + " (details: `darkbloom cluster status`)"
     }
 
-    /// `darkbloom status` instead of "Daemon: not running (run `darkbloom start`)" on a Mac in a cluster.
+    /// `darkbloom status --solo` instead of "Daemon: not running (run `darkbloom start`)" on a Mac in a cluster.
     static let singleMacServingOffLine =
         "Single-Mac serving: off (this Mac serves in its two-Mac cluster: `darkbloom cluster status`)"
     /// The same when this Mac's pairing record couldn't be read.

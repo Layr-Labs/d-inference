@@ -882,7 +882,7 @@ a pairing. Run on the leader, it first tells the other Mac over the cable, which
 removes the pair's prompt-cache records (its own single-Mac cache stays) and
 stops its part; each Mac also removes its own pair records when it unpairs.
 `darkbloom cluster stop --service` stops a Mac's cluster service and keeps it
-from starting at login. On the leader it stops the pair first. When the other
+from starting at login. It stops the pair first, from either Mac. When the other
 Mac is gone for good, `darkbloom cluster stop --local-only` stops only this one.
 
 ## Cache settings

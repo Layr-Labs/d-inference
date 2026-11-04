@@ -19,17 +19,25 @@ struct ClusterPairActions: Sendable {
     static func live(config: String?, worker: String? = nil) -> ClusterPairActions? {
         if let actions = forTesting { return actions }
         guard ClusterPairSummary.readsThisMacsCluster,
-              let settings = try? Cluster.Setup.serviceSettings(config: config, modelDir: nil, worker: worker),
-              let operations = try? ClusterOnboardingOperations.live(.init(service: settings,
-                  serviceArguments: ClusterServiceAgentPlan.childArguments(
-                      serviceOptions: ClusterServiceAgentPlan.serviceOptions(config: config, worker: worker)))) else { return nil }
+              let operations = try? ClusterOnboardingOperations.live(.clusterService(config: config, worker: worker)) else { return nil }
         return ClusterPairActions(resume: operations.resume, ensureService: operations.ensureService, serve: operations.serve,
                                   stop: operations.stop, verifyTeardown: operations.verifyTeardown)
     }
 }
 
+extension ClusterOnboardingOperations.LiveSettings {
+    /// This Mac's cluster as its cluster service runs it (`darkbloom cluster service`, without an onboarding request):
+    /// what the paired-Mac commands act on or ask (`darkbloom stop`, `start`, `restart` and `status`, `cluster stop`
+    /// and `cluster status`).
+    static func clusterService(config: String?, worker: String?) throws -> Self {
+        .init(service: try Cluster.Setup.serviceSettings(config: config, modelDir: nil, worker: worker),
+              serviceArguments: ClusterServiceAgentPlan.childArguments(
+                  serviceOptions: ClusterServiceAgentPlan.serviceOptions(config: config, worker: worker)))
+    }
+}
+
 /// `darkbloom start`, `stop`, `restart` and `status` on a Mac in a two-Mac cluster control the pair, as the same
-/// commands control single-Mac serving on one Mac (owner, 2026-11-04); `--solo` keeps single-Mac serving on this Mac.
+/// commands control single-Mac serving on one Mac; `--solo` keeps single-Mac serving on this Mac.
 enum ClusterPairCommands {
     typealias Say = @Sendable (String) -> Void
     static let printLine: Say = { line in print(line); fflush(stdout) }
@@ -70,8 +78,7 @@ enum ClusterPairCommands {
             return 0
         }
         if case .failure(let failure) = actions.stop() {
-            for line in failure.lines { say("  " + line) }
-            if resume.role == .member { say(ClusterPairSummary.memberStopFailedLine) }
+            sayStopFailed(failure, role: resume.role, say: say)
             return 1
         }
         say(ClusterPairSummary.stoppedLine)
@@ -84,34 +91,45 @@ enum ClusterPairCommands {
     /// `darkbloom start` without a terminal (scripts): the pair starts with its saved model on both Macs; then the command
     /// waits until it serves, or says why not, and ends with a result block like single-Mac start's. The exit status is
     /// `darkbloom cluster status`'s.
-    static func start(_ pair: ClusterPairSummary, actions: ClusterPairActions?, config: String?, wait: Wait = .standard,
+    static func start(_ pair: ClusterPairSummary, actions: ClusterPairActions?, config: String?,
                       say: Say = printLine) async -> Int32 {
         say(pair.actingLine("starting the pair"))
-        return await serve(pair, actions: actions, config: config, wait: wait, say: say)
+        guard let actions = startable(pair, actions: actions, say: say) else { return 1 }
+        return await serve(actions, config: config, say: say)
     }
 
-    /// `darkbloom restart`: the pair stops serving on both Macs, then starts again with its current model.
-    static func restart(_ pair: ClusterPairSummary, actions: ClusterPairActions?, config: String?, wait: Wait = .standard,
+    /// `darkbloom restart`: the pair stops serving on both Macs, then starts again with its current model. What a start
+    /// needs is checked before the stop, so a pair that couldn't start again is not stopped.
+    static func restart(_ pair: ClusterPairSummary, actions: ClusterPairActions?, config: String?,
                         say: Say = printLine) async -> Int32 {
         say(pair.actingLine("restarting both Macs"))
-        guard let actions else { say(ClusterPairSummary.unreachableLine); return 1 }
-        guard pair.model != nil else { say(ClusterPairSummary.noModelLine); return 1 }
+        guard let actions = startable(pair, actions: actions, say: say) else { return 1 }
         let role = actions.resume().role
         if case .failure(let failure) = await Task.detached(operation: { actions.stop() }).value {
-            for line in failure.lines { say("  " + line) }
-            if role == .member { say(ClusterPairSummary.memberStopFailedLine) }
+            sayStopFailed(failure, role: role, say: say)
             return 1
         }
         say("  Stopped on both Macs; starting it again.")
-        return await serve(pair, actions: actions, config: config, wait: wait, say: say)
+        return await serve(actions, config: config, say: say)
+    }
+
+    /// The actions when the pair can start: nil, after saying why, when this Mac's cluster can't be reached or no model
+    /// was ever chosen.
+    private static func startable(_ pair: ClusterPairSummary, actions: ClusterPairActions?, say: Say) -> ClusterPairActions? {
+        guard let actions else { say(ClusterPairSummary.unreachableLine); return nil }
+        guard pair.model != nil else { say(ClusterPairSummary.noModelLine); return nil }
+        return actions
+    }
+
+    /// A pair stop that failed: its reasons and, on the Mac that follows, how to stop this Mac alone.
+    private static func sayStopFailed(_ failure: ClusterOnboardingFailure, role: ClusterOnboardingRole?, say: Say) {
+        for line in failure.lines { say("  " + line) }
+        if role == .member { say(ClusterPairSummary.memberStopFailedLine) }
     }
 
     private enum Started: Sendable { case asked, serviceFailed([String]), notEverywhere([String]) }
 
-    private static func serve(_ pair: ClusterPairSummary, actions: ClusterPairActions?, config: String?, wait: Wait,
-                              say: Say) async -> Int32 {
-        guard let actions else { say(ClusterPairSummary.unreachableLine); return 1 }
-        guard pair.model != nil else { say(ClusterPairSummary.noModelLine); return 1 }
+    private static func serve(_ actions: ClusterPairActions, config: String?, say: Say) async -> Int32 {
         let started = await Task.detached { () -> Started in
             if case .failure(let failure) = actions.ensureService() { return .serviceFailed(failure.lines) }
             if case .failure(let failure) = actions.serve() { return .notEverywhere(failure.lines) }
@@ -126,15 +144,16 @@ enum ClusterPairCommands {
             for line in lines { say("  " + line) }
         case .asked: break
         }
-        let summary = await waitUntilServing(config: config, wait: wait, say: say)
+        let summary = await waitUntilServing(config: config, say: say)
         for line in summary.resultLines { say(line) }
         return summary.exitCode
     }
 
-    /// Asks the status `darkbloom cluster status` reads until the pair serves, says why it doesn't, or `wait` runs out;
-    /// each new status line is said once. A stop that has not reached the status yet is waited out briefly.
-    static func waitUntilServing(config: String?, wait: Wait, say: Say) async -> ClusterPairSummary {
-        let wait = waitForTesting ?? wait
+    /// Asks the status `darkbloom cluster status` reads until the pair serves, says why it doesn't, or the wait runs out
+    /// (`Wait.standard`); each new status line is said once. A stop that has not reached the status yet is waited out
+    /// briefly.
+    private static func waitUntilServing(config: String?, say: Say) async -> ClusterPairSummary {
+        let wait = waitForTesting ?? .standard
         let deadline = Date().addingTimeInterval(wait.seconds)
         var said: String?
         var stoppedLooks = 0

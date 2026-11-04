@@ -3767,7 +3767,8 @@ confirmation whose default is No (`ClusterOnboardingDriver.startOver`). Reading
 both Macs for the model list says each new reason the other Mac has not answered
 (`reachMembers`'s `waiting`, from `OnboardingLive.localReachMembers`); on a Mac
 paired before the run it ends with **Try again**, **Start over (pair again)** and
-**Quit**.
+**Quit**, also when it follows **Change model** in a ✗ outcome
+(`ClusterOnboardingDriver.finishStart` keeps the run's `startOverRequest`).
 
 **Pair again**, and **Start over** once confirmed, run `ClusterUnpairing.run`,
 the steps of `darkbloom cluster pair --forget` (a leader tells its member, the

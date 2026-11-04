@@ -130,6 +130,9 @@ import Darwin
         menuSwitchToDarkbloomWaitsForThePair()
         // UX audit P3 (2026-11-04): silence is not a broken pairing. Failing first on a91d5d51d7.
         silenceIsNotABrokenPairing()
+        // The seam the stack's merge left: Change model after ✗ keeps a Mac paired before this run's choices. Failing
+        // first on 1ec3a927ce.
+        changeModelAfterNotServingKeepsTheChoices()
         print("onboarding checks: \(passed) passed, \(failures.count) failed")
         for failure in failures { print("FAIL " + failure) }
         exit(failures.isEmpty ? 0 : 1)
@@ -481,6 +484,7 @@ import Darwin
                            reachFailures: Int = 0,
                            reachWaiting: [String] = [],
                            reachFailure: [String] = ["The other Mac did not answer over the cable."],
+                           reachAnswers: [Bool] = [],
                            readyResult: Result<ClusterOnboardingReady, ClusterOnboardingFailure> = .success(.init(servedBy: "this Mac", port: 8000,
                                deployment: "Serving Qwen3.8-27B-4bit-mtp across both Macs: pipeline, this Mac 32 layers / the other Mac 32 layers",
                                split: "pipeline")),
@@ -546,7 +550,10 @@ import Darwin
             ensureService: { recorder.note("ensureService"); return .success(()) },
             reachMembers: { waiting in
                 recorder.note("reachMembers")
-                if recorder.all.filter({ $0 == "reachMembers" }).count <= reachFailures {
+                // The n-th reading answers when `reachAnswers[n]` says so (the last one repeats); none scripted: the
+                // first `reachFailures` fail.
+                let call = recorder.all.filter { $0 == "reachMembers" }.count
+                if reachAnswers.isEmpty ? call <= reachFailures : !reachAnswers[min(call, reachAnswers.count) - 1] {
                     for line in reachWaiting { waiting(line); usleep(20_000) }
                     return .failure(.init(reachFailure))
                 }
@@ -2965,5 +2972,28 @@ import Darwin
             run.type("2")
             _ = run.finish()
         }
+    }
+
+    /// Change model in a ✗ outcome's choices reads both Macs again with the choices of a Mac paired before this run:
+    /// when the other Mac stops answering, Try again, Start over (which asks first) or Quit, as the next `darkbloom
+    /// cluster` run offers; never only Try again or Cancel, which belongs right after pairing. Failing first on
+    /// 1ec3a927ce.
+    static func changeModelAfterNotServingKeepsTheChoices() {
+        let failed = ["The other Mac (Apple M3 Ultra, 256 GB) did not answer over the cable within 2 minutes: the other Mac's cluster service did not answer on the cable"]
+        let recorder = Recorder()
+        let run = TerminalRun(operations(recorder, resume: .init(role: .leader, peerName: "Apple M3 Ultra, 256 GB", serving: false,
+            modelName: "Qwen3.8-27B-4bit-mtp"), pairEvents: [], pairResult: .failed([]), reachFailure: failed, reachAnswers: [true, false],
+            readyResult: .success(offeredReady), pairServingResults: [.failure(.init(notVerified))]))
+        expect(run.waitFor(prompt(5)), "change model after ✗: the menu"); run.type("1")
+        expect(run.waitFor(prompt(2)), "change model after ✗: the model list"); run.type("\r")
+        expect(run.waitFor(notServingChoices), "change model after ✗: the outcome's choices"); run.type("2")
+        expect(run.waitFor(failed[0] + "\n  1) Try again\n  2) " + ClusterOnboardingDriver.startOverItem + "\n  3) Quit\n"),
+               "change model after ✗: Try again, Start over or Quit once the other Mac stops answering: \(run.text)")
+        expect(!run.text.contains(") Cancel\n") && !run.text.contains(") " + ClusterOnboardingDriver.pairAgainItem + "\n"),
+               "change model after ✗: neither Cancel only nor Pair again")
+        run.type("3")
+        expect(run.finish() == 1, "change model after ✗: Quit changes nothing")
+        expect(recorder.all.filter { $0 == "reachMembers" }.count == 2 && !recorder.all.contains("unpair"), "change model after ✗: \(recorder.all)")
+        transcript("leader-change-model-after-not-serving", run.text, keys: run.keys)
     }
 }

@@ -1451,7 +1451,7 @@ public enum ClusterOnboardingDriver {
                 return chooseAndServe(operations, console, scope: wanted, saveScope: true, model: request.model,
                                       privateImage: request.privateImageQualification, startOverRequest: request)
             }
-            if wanted != resume.scope { return changeScope(to: wanted, resume, operations, console) }
+            if wanted != resume.scope { return changeScope(to: wanted, resume, startOverRequest: request, operations, console) }
         }
         for line in operations.status() { console.say("  " + line) }
         var items = [(MenuItem, String)]()
@@ -1479,7 +1479,7 @@ public enum ClusterOnboardingDriver {
                                            startOverRequest: request)
         case .scope:
             return changeScope(to: resume.scope.isLocalOnly ? .publicServing : .localOnly(bind: ClusterServingScope.localOnlyDefaultBind),
-                               resume, operations, console)
+                               resume, startOverRequest: request, operations, console)
         case .stop:
             switch busy(console, "Stopping both Macs", operations.stop) {
             case .success(let lines):
@@ -1533,8 +1533,9 @@ public enum ClusterOnboardingDriver {
     }
 
     /// Saves the other way to serve on the control leader. A serving cluster starts its leading part again that way
-    /// (the setup and the model stay), so the screen waits for it as it does after a start.
-    static func changeScope(to wanted: ClusterServingScope, _ resume: ClusterOnboardingResume,
+    /// (the setup and the model stay), so the screen waits for it as it does after a start. `startOverRequest`: the
+    /// menu's (its Mac was paired before this run), for the outcome's Change model.
+    static func changeScope(to wanted: ClusterServingScope, _ resume: ClusterOnboardingResume, startOverRequest: ClusterOnboardingRequest?,
                             _ operations: ClusterOnboardingOperations, _ console: ClusterOnboardingConsole) -> Int32 {
         switch busy(console, wanted.isLocalOnly ? "Switching to local only" : "Switching to serving through Darkbloom", { operations.setScope(wanted) }) {
         case .success: break
@@ -1551,7 +1552,8 @@ public enum ClusterOnboardingDriver {
         // The same truth as the start (2026-11-04: from the menu, a pair only registered with the coordinator was
         // called serving): ✓ once the pair serves and a request answered, else ✗ with the reason and the choices.
         // Registering with the coordinator stays the start's: the cluster service asks again by itself.
-        return finishStart(title: resume.modelName ?? "the model", scope: wanted, registers: false, operations, console)
+        return finishStart(title: resume.modelName ?? "the model", scope: wanted, registers: false, startOverRequest: startOverRequest,
+                           operations, console)
     }
 
     /// Each reason once, where it first appears.
@@ -1713,7 +1715,7 @@ public enum ClusterOnboardingDriver {
             for line in failure.lines { console.say("  " + line) }
             return 1
         }
-        return finishStart(title: choice.title, scope: startScope, operations, console)
+        return finishStart(title: choice.title, scope: startScope, startOverRequest: startOverRequest, operations, console)
     }
 
     /// Serving through Darkbloom needs every Mac logged in: the coordinator pairs only Macs logged in to one account.
@@ -1744,8 +1746,10 @@ public enum ClusterOnboardingDriver {
     /// (2026-11-03: a pair offered for pairing said both while nothing was loaded). A pair that does not serve says why
     /// and stays open with the choices; leaving it never claims success.
     /// `registers`: a pair on the leader's API is registered with the coordinator after its test (the start; the
-    /// menu's switch of scope leaves that to the cluster service).
-    static func finishStart(title: String, scope: ClusterServingScope, registers: Bool = true, _ operations: ClusterOnboardingOperations,
+    /// menu's switch of scope leaves that to the cluster service). `startOverRequest`: as `chooseAndServe`'s, kept for
+    /// Change model, so a Mac paired before this run keeps its choices when the other Mac stops answering.
+    static func finishStart(title: String, scope: ClusterServingScope, registers: Bool = true,
+                            startOverRequest: ClusterOnboardingRequest? = nil, _ operations: ClusterOnboardingOperations,
                             _ console: ClusterOnboardingConsole) -> Int32 {
         var scope = scope
         var mayRegister = registers
@@ -1765,7 +1769,7 @@ public enum ClusterOnboardingDriver {
             case .notServing(let lines):
                 switch notServing(lines, operations, console) {
                 case .retry: continue
-                case .changeModel: return chooseAndServe(operations, console, scope: scope)
+                case .changeModel: return chooseAndServe(operations, console, scope: scope, startOverRequest: startOverRequest)
                 case .localOnly:
                     let local = ClusterServingScope.localOnly(bind: ClusterServingScope.localOnlyDefaultBind)
                     switch busy(console, "Switching to local only", { operations.setScope(local) }) {

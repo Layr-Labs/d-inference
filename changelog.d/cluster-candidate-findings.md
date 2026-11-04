@@ -16,7 +16,8 @@
   and what to do on that Mac (turn on Darkbloom under Privacy & Security → Local Network, through Screen Sharing on a Mac
   with no display), instead of "the other Mac did not answer". Retry starts a stopped pair again, q leaves a start's wait
   at once, and the joining Mac's window shows how the leading Mac's start is going.
-- In the DevNet app, the pairing screen's firewall hint and its line about a reinstall name Darkbloom Dev, and the
-  Local Network ✗ no longer repeats its instruction in a line cut off mid-sentence.
+- The Local Network ✗ no longer ends with a line that repeated its instruction and was cut off mid-sentence, and a ✗
+  line too long for the screen is cut at a word and marked with "…". In the DevNet app, the pairing screen's firewall
+  hint and its line about a reinstall name Darkbloom Dev.
 - The card after a start says "Starts by itself at login on both Macs." only when the cluster service on both Macs
   does; otherwise it names the Mac where it doesn't, or says the other Mac doesn't say (an older Darkbloom there).

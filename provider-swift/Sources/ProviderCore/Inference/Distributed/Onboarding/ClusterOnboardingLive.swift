@@ -59,7 +59,10 @@ extension ClusterOnboardingOperations {
             remote: { ClusterLocalNetworkAccess.overSSH() },
             thisMacName: { ClusterLocalNetworkAccess.computerName() },
             otherMacAnswers: { live.otherMacAnswers() },
-            unpair: { live.unpair() })
+            unpair: { live.unpair() },
+            pairServing: { progress in live.pairServing(progress) },
+            missingLogins: { live.missingLogins() },
+            login: { live.login() })
     }
 }
 
@@ -1535,6 +1538,85 @@ final class OnboardingLive: @unchecked Sendable {
         return (nil, line)
     }
 
+    /// How long the setup waits for the coordinator to pair both Macs and both to load the model (MiMo's load takes
+    /// minutes); a reason the Macs know ends it sooner.
+    static let pairServingSeconds: Double = 900
+    /// The wait ends on a reason other than a missing login only once it has run this long: a new key's App Attest
+    /// authorization lands about a minute after its registration, and the coordinator retries a start that failed.
+    static let pairReasonSettleSeconds: Double = 90
+
+    /// A pair offered for pairing: waits until the coordinator paired both Macs, both loaded the model and the pair
+    /// answered its first request (rank 0's part says so), or a reason the Macs know held (`pairLook`).
+    func pairServing(_ progress: @escaping @Sendable (String) -> Void) -> Result<[String], ClusterOnboardingFailure> {
+        let started = Date()
+        var said: String?, last: String?
+        while Date().timeIntervalSince(started) < Self.pairServingSeconds {
+            let look = pairLook()
+            if look.serving { return .success([look.test ?? ""]) }
+            if let reason = look.reason {
+                last = reason
+                let settle = ClusterOnboardingNotServing.isMissingLogin(reason) ? 0 : Self.pairReasonSettleSeconds
+                if Date().timeIntervalSince(started) >= settle { return .failure(.init(reason)) }
+            }
+            if look.progress != said { progress(look.progress); said = look.progress }
+            sleep(2)
+        }
+        return .failure(.init(last ?? "The coordinator has not paired both Macs within 15 minutes"))
+    }
+
+    /// One look at a pair offered for pairing, from both Macs' reports: whether it serves (rank 0's part runs the pair's
+    /// slot and says so, with its first request's time), what it is doing, and why it does not serve when the Macs know
+    /// (a Mac without a Darkbloom login, which the coordinator never pairs; a member the coordinator's trust status gives
+    /// no App Attest authorization, which pair membership requires; a committed start that stopped).
+    func pairLook() -> (serving: Bool, test: String?, progress: String, reason: String?) {
+        let own = ClusterService.published()
+        let peer = try? JSONDecoder().decode(ClusterServiceStatus.self, from: command(.init(op: .status), seconds: 10))
+        let localRankZero = context.savedConfiguration().configuration?.localRank == 0
+        let rankZero = (localRankZero ? own : peer)?.child.pair.flatMap(ClusterOnboardingPairReport.state)
+        if case .serving(let test)? = rankZero { return (true, test, "serving", nil) }
+        // The wait, then one row per Mac (`ClusterOnboardingLoadRows`): registered, then loading once the coordinator
+        // committed the start (rank 0's part says so for both).
+        func row(_ mac: String, _ child: ClusterServiceStatus.Child?) -> String {
+            let registered = child?.running == true && child?.notice == ClusterLocalServing.offeredNotice
+            let state = rankZero == .starting ? "loading its share"
+                : registered ? "registered; waiting for the coordinator" : "registering with the coordinator"
+            return ClusterOnboardingMacName.sentence(mac) + ": " + state
+        }
+        let progress = (rankZero == .starting ? "the coordinator paired both Macs" : "waiting for the coordinator to pair both Macs")
+            + "\n" + row(here, own?.child) + "\n" + row(there, peer?.child)
+        let missing = missingLogins(peer: peer)
+        if !missing.isEmpty { return (false, nil, progress, ClusterOnboardingNotServing.notLoggedIn(missing)) }
+        // Not verified by Apple yet: with when this Mac's key-generation safeguard lets it try again, when it says.
+        for (mac, child) in [(here, own?.child), (there, peer?.child)] where child?.appAttest == false {
+            return (false, nil, progress,
+                    ClusterOnboardingNotServing.notVerified(mac, retryAt: child?.appAttestRetryAt.map { Date(timeIntervalSince1970: $0) }))
+        }
+        if case .stopped(let why)? = rankZero {
+            return (false, nil, progress, ClusterOnboardingNotServing.words(reason: why, mac: "one of the Macs"))
+        }
+        return (false, nil, progress, nil)
+    }
+
+    /// The Macs without a Darkbloom login, as this screen names them.
+    func missingLogins() -> [String] {
+        missingLogins(peer: try? JSONDecoder().decode(ClusterServiceStatus.self, from: command(.init(op: .status), seconds: 10)))
+    }
+
+    /// This Mac without a login, and the other Mac when its own status says so (an older build that does not say is
+    /// not counted).
+    func missingLogins(peer: ClusterServiceStatus?) -> [String] {
+        (AuthTokenStore.load() == nil ? [here] : []) + (peer?.loggedIn == false ? [there] : [])
+    }
+
+    /// `darkbloom login` in this terminal (the console is suspended): true when this Mac is logged in afterwards.
+    func login() -> Bool {
+        let process = Process()
+        process.executableURL = settings.service.wizard.darkbloomExecutable
+        process.arguments = ["login"]
+        do { try process.run(); process.waitUntilExit() } catch { return false }
+        return AuthTokenStore.load() != nil
+    }
+
     func testRequest() -> Result<[String], ClusterOnboardingFailure> {
         routed(.init(op: .test), seconds: 240, acting: false, local: { localTestRequest() }) { $0.lines }
     }
@@ -1603,7 +1685,19 @@ final class OnboardingLive: @unchecked Sendable {
             if let scope = leadership?.scope, scope.isLocalOnly { lines.append("When it starts: " + scope.line + ".") }
         } else if let offered = offeredLine() {
             let ready = offeredReadiness(offered, own: ClusterService.published()?.child)
-            lines.append((ready.ready?.summary(model: model) ?? "\(model): \(ready.line)") + ".")
+            if let registered = ready.ready {
+                // Registered is not serving: the pair serves once the coordinator paired both Macs and both loaded it.
+                let look = pairLook()
+                if look.serving {
+                    lines.append(registered.pairServingLine(model: model) + ".")
+                } else {
+                    let wait = look.progress.components(separatedBy: "\n").first ?? look.progress
+                    lines.append(ClusterOnboardingNotServing.statusLine(model: model, reason: look.reason ?? wait))
+                    if let remedy = look.reason.flatMap(ClusterOnboardingNotServing.remedy(forReason:)) { lines.append(remedy) }
+                }
+            } else {
+                lines.append("\(model): \(ready.line).")
+            }
         } else if let session = now.session, session.observed {
             if session.ready {
                 let ready = ready(now, port: session.port ?? 0)

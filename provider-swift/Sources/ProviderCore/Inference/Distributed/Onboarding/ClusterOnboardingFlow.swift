@@ -606,8 +606,36 @@ public struct ClusterOnboardingReady: Codable, Sendable, Equatable {
         return servesHere ? notice : notice.replacingOccurrences(of: "this Mac's API", with: "that Mac's API")
     }
 
+    /// A pair that serves through Darkbloom: "Serving Qwen3.8 27B through Darkbloom on both Macs (pipeline)". A pair
+    /// offered for pairing says it only once the coordinator paired both Macs, both loaded the model and it answered its
+    /// first request: registered alone is not serving.
+    public func pairServingLine(model: String) -> String { "Serving \(model) through Darkbloom on both Macs" + splitMarker }
+
+    /// The outcome block once the pair serves and a request answered (`test`: "in 0.61 s"): through Darkbloom on both
+    /// Macs, or on the serving Mac's local API only (asked for, or a coordinator without cluster support).
+    public func outcome(model: String, scope: ClusterServingScope, test: String?) -> (title: String, lines: [String]) {
+        let tested = "Test response" + (test.map { " " + $0 } ?? "")
+        if offered != nil { return (pairServingLine(model: model), [Self.offeredAPILine, tested]) }
+        guard servesLocallyOnly(scope: scope) else { return (pairServingLine(model: model), [apiLine, tested]) }
+        let whose = servesHere ? "this Mac's" : servedBy + "'s"
+        return ("Serving \(model) on \(whose) local API only" + splitMarker,
+                [apiLine] + (scope.isLocalOnly ? [] : noticeLine.map { [$0] } ?? []) + [tested])
+    }
+
+    /// Serving on the local API only: asked for, or a coordinator without cluster support (its local-serving notice;
+    /// the registered member's notice is not one).
+    func servesLocallyOnly(scope: ClusterServingScope) -> Bool {
+        scope.isLocalOnly || notice.map { !$0.hasPrefix(Self.registeredNotice) } == true
+    }
+
+    /// " (pipeline)" after the outcome's title; empty when the split is unknown or not shown plainly.
+    private var splitMarker: String { ClusterOnboardingDeployment.shownMarker(split).map { " (\($0))" } ?? "" }
+
     /// How the line of a pair registered with the coordinator as a cluster member starts (`ClusterLocalServing`).
     public static let registeredNotice = "Registered with the coordinator as a cluster member"
+
+    /// Where a pair offered for pairing takes requests, in the outcome block.
+    public static let offeredAPILine = "No local API: requests reach the pair through Darkbloom"
 
     /// Said instead of the test request when the pair is offered for pairing (and the answer of `t` then).
     public static let offeredTestLine = "This pair has no local API while it is offered for pairing: requests from your own account reach it through Darkbloom."
@@ -733,6 +761,15 @@ public struct ClusterOnboardingOperations: Sendable {
     /// Forgets this Mac's saved pairing as `darkbloom cluster pair --forget` does (a leader tells its member first), so
     /// the Macs can pair again; its lines say what was done.
     public var unpair: @Sendable () -> Result<[String], ClusterOnboardingFailure>
+    /// A pair offered for pairing (both members registered): waits, bounded, until the coordinator committed it and
+    /// both Macs loaded their share and the pair answered its first request; its line is that request's time ("in
+    /// 0.84 s"). A failure's first line says why it does not serve, in plain words (`ClusterOnboardingNotServing`).
+    public var pairServing: @Sendable (_ progress: @escaping @Sendable (String) -> Void) -> Result<[String], ClusterOnboardingFailure>
+    /// The Macs of the cluster without a Darkbloom login, as this screen names them ("this Mac", "the other Mac
+    /// (…)"): the coordinator pairs only logged-in Macs. Empty when every Mac is logged in, or it cannot be told.
+    public var missingLogins: @Sendable () -> [String]
+    /// Runs `darkbloom login` in this terminal (the person approves it in the browser); true when it ended logged in.
+    public var login: @Sendable () -> Bool
 
     public init(resume: @escaping @Sendable () -> ClusterOnboardingResume,
                 checkLink: @escaping @Sendable (@escaping @Sendable (String) -> Void) -> ClusterOnboardingLinkResult,
@@ -766,7 +803,11 @@ public struct ClusterOnboardingOperations: Sendable {
                 thisMacName: @escaping @Sendable () -> String? = { nil },
                 otherMacAnswers: @escaping @Sendable () -> Bool = { true },
                 unpair: @escaping @Sendable () -> Result<[String], ClusterOnboardingFailure>
-                    = { .failure(.init("This build cannot pair again from here.")) }) {
+                    = { .failure(.init("This build cannot pair again from here.")) },
+                pairServing: @escaping @Sendable (@escaping @Sendable (String) -> Void) -> Result<[String], ClusterOnboardingFailure>
+                    = { _ in .failure(.init("This build cannot tell whether the coordinator formed the pair.")) },
+                missingLogins: @escaping @Sendable () -> [String] = { [] },
+                login: @escaping @Sendable () -> Bool = { false }) {
         self.resume = resume; self.checkLink = checkLink; self.pair = pair; self.answerCode = answerCode
         self.ensureService = ensureService; self.reachMembers = reachMembers; self.planModels = planModels
         self.adopt = adopt; self.serve = serve; self.waitReady = waitReady; self.testRequest = testRequest
@@ -776,6 +817,7 @@ public struct ClusterOnboardingOperations: Sendable {
         self.localNetwork = localNetwork; self.commandApp = commandApp; self.runAsAdministrator = runAsAdministrator
         self.serviceOutlivesWindow = serviceOutlivesWindow; self.remote = remote; self.thisMacName = thisMacName
         self.otherMacAnswers = otherMacAnswers; self.unpair = unpair
+        self.pairServing = pairServing; self.missingLogins = missingLogins; self.login = login
     }
 }
 
@@ -891,6 +933,10 @@ public protocol ClusterOnboardingConsole: AnyObject {
     /// Work that is still running, said again while it runs; the next said
     /// line replaces it. A transcript shows nothing extra.
     func working(_ text: String)
+    /// Live work of several rows (one per Mac), replaced as `working` is.
+    func workingRows(_ rows: [String])
+    /// The setup's outcome as its own block (`ClusterOnboardingDriver.resultRule` above and below).
+    func result(_ succeeded: Bool, _ title: String, _ lines: [String])
     /// The work said by `working` finished.
     func settle()
     /// A copy's or download's live report (`ClusterOnboardingProgress.live`): redrawn in place where `working`
@@ -910,6 +956,19 @@ public protocol ClusterOnboardingConsole: AnyObject {
 }
 
 public extension ClusterOnboardingConsole {
+    /// The setup's outcome as its own block: a blank line, a rule, ✓ or ✗ with what serves (or why nothing does),
+    /// its details, a rule.
+    func result(_ succeeded: Bool, _ title: String, _ lines: [String]) {
+        say("")
+        say(ClusterOnboardingDriver.resultRule)
+        say((succeeded ? ClusterOnboardingDriver.done : ClusterOnboardingDriver.failed) + " " + title)
+        for line in lines { say("  " + line) }
+        say(ClusterOnboardingDriver.resultRule)
+    }
+
+    /// Live work of several rows (one per Mac); a console with one live row shows the first.
+    func workingRows(_ rows: [String]) { working(rows.first ?? "") }
+
     /// Scrollable sections also work in transcripts and non-terminal consoles.
     func heading(_ title: String) { say(""); say(title) }
     func banner(_ title: String, _ subtitle: String) { heading(title); if !subtitle.isEmpty { say(subtitle) } }
@@ -1072,6 +1131,8 @@ public enum ClusterOnboardingDriver {
 
     /// A step that is done, at the start of its line.
     public static let done = "\u{2713}"
+    /// An outcome that is not what was asked for, at the start of its block's line.
+    public static let failed = "\u{2717}"
 
     /// What to answer, for the program macOS names. `remote` (over SSH): the prompt is on this Mac's own screen, not in
     /// this terminal.
@@ -1100,7 +1161,7 @@ public enum ClusterOnboardingDriver {
 
     /// The Mac that joined ends its onboarding once paired; the last thing it says (the one thing to do next), with
     /// whether its window may close.
-    public static let joinedLine = "Done here: the other Mac chooses the model."
+    public static let joinedLine = "Done here: the other Mac chooses the model, and its screen shows whether the cluster serves."
 
     /// The same, for a Mac that joined when it was asked for `darkbloom cluster local`.
     public static let joinedLocalContinueLine = "Done here: run `darkbloom cluster local` on the other Mac."
@@ -1327,7 +1388,8 @@ public enum ClusterOnboardingDriver {
             default: return 0
             }
         }
-        for line in operations.status() { console.say("  " + line) }
+        let status = operations.status()
+        if !showOutcome(status, console) { for line in status { console.say("  " + line) } }
         console.say("")
         if request.scope != nil || request.model != nil {
             console.say(joinedLocalLine)
@@ -1336,6 +1398,20 @@ public enum ClusterOnboardingDriver {
         console.say(memberLeaderLine(resume.leaderName ?? resume.peerName))
         guard console.choose([startOverItem, "Quit"], selected: 1) == 0 else { return 0 }
         return startOver(operations, console, request: request)
+    }
+
+    /// The cluster's status as the outcome block on the other Mac, when its first line tells it: "Serving …" (✓) or
+    /// "<model> is not serving yet: <reason>." (✗, `ClusterOnboardingNotServing.statusLine`); false (nothing said) for
+    /// any other status.
+    static func showOutcome(_ status: [String], _ console: ClusterOnboardingConsole) -> Bool {
+        guard let first = status.first else { return false }
+        if first.hasPrefix("Serving ") {
+            console.result(true, first.hasSuffix(".") ? String(first.dropLast()) : first, Array(status.dropFirst()))
+            return true
+        }
+        guard let reason = ClusterOnboardingNotServing.reason(inStatusLine: first) else { return false }
+        console.result(false, ClusterOnboardingNotServing.title(reason: reason), Array(status.dropFirst()))
+        return true
     }
 
     /// The leader: the model and options, the sync, the start, serving.
@@ -1562,7 +1638,7 @@ public enum ClusterOnboardingDriver {
         }
         var choice = choices[chosen!]
         // A private image candidate says at the choice that it never takes public traffic; whether the pair earns is
-        // said once it serves (`servesWords`).
+        // said once it serves (`ClusterOnboardingReady.outcome`).
         if privateImage, let line = choice.publicTraffic {
             console.say("  " + ClusterOnboardingMacName.sentence(line) + (line.hasSuffix(".") ? "" : "."))
         }
@@ -1595,7 +1671,15 @@ public enum ClusterOnboardingDriver {
                 }
             }
         }
+        // Serving through Darkbloom needs both Macs logged in: said before anything starts (2026-11-03: neither Mac of the
+        // owner's second pair had a login, and both screens said Done while the coordinator never paired them).
+        guard let startScope = checkLogins(scope: scope, operations, console) else {
+            console.say("Nothing changed.")
+            return 0
+        }
+        let savesScope = saveScope || startScope != scope
         console.heading("4/4 Start")
+        console.say("  " + startNotice)
         // Memory moves while the person reads: the fit is checked again right before anything starts.
         if let remedy = operations.recheckFit(chosen!) {
             console.say("\(choice.title) doesn't fit in free memory now: \(remedy)")
@@ -1610,8 +1694,8 @@ public enum ClusterOnboardingDriver {
             return 1
         }
         // After the adopt (which stopped a running model first), so the scope never restarts the old model.
-        if saveScope {
-            switch operations.setScope(scope) {
+        if savesScope {
+            switch operations.setScope(startScope) {
             case .success: break
             case .failure(let failure):
                 for line in failure.lines { console.say("  " + line) }
@@ -1624,21 +1708,149 @@ public enum ClusterOnboardingDriver {
             for line in failure.lines { console.say("  " + line) }
             return 1
         }
-        guard let ready = awaitReady(title: choice.title, operations, console) else { return 1 }
-        console.say("  \(done) " + ready.summary(model: choice.title) + servesWords(scope: scope, ready: ready))
-        // A pair offered for pairing has no local API to test: its requests come through Darkbloom.
-        if ready.offered != nil { console.say(ClusterOnboardingReady.offeredTestLine) }
-        let tested = ready.offered != nil || test(operations, console)
-        if tested, ready.offered == nil, !scope.isLocalOnly { register(title: choice.title, operations, console) }
-        console.say("")
-        guard tested else {
-            console.say("Setup saved, but the test failed. Run `darkbloom cluster` to test again.")
-            return 1
+        return finishStart(title: choice.title, scope: startScope, operations, console)
+    }
+
+    /// Serving through Darkbloom needs every Mac logged in: the coordinator pairs only Macs logged in to one account.
+    /// Names the Macs without a login before anything starts, and offers `darkbloom login` here (the other Mac's own
+    /// login is asked for) or serving locally only. The scope to start with; nil when the person cancelled.
+    static func checkLogins(scope: ClusterServingScope, _ operations: ClusterOnboardingOperations,
+                            _ console: ClusterOnboardingConsole) -> ClusterServingScope? {
+        guard !scope.isLocalOnly else { return scope }
+        while true {
+            let missing = operations.missingLogins()
+            guard !missing.isEmpty else { return scope }
+            console.say("  " + ClusterOnboardingNotServing.notLoggedIn(missing) + ".")
+            let here = missing.contains(ClusterOnboardingMacName.this)
+            if !here { console.say("  Run `darkbloom login` on the other Mac, then Check again.") }
+            switch console.choose([here ? "Log in on this Mac" : "Check again", "Serve locally only", "Cancel"], selected: 0) {
+            case 0:
+                if here, !console.suspended({ operations.login() }) { console.say("  This Mac is still not logged in.") }
+            case 1: return .localOnly(bind: ClusterServingScope.localOnlyDefaultBind)
+            default: return nil
+            }
         }
-        if let restart = operations.afterRestart() { console.say(restart) }
-        console.say("Done. " + (operations.serviceOutlivesWindow() ? "You can close both windows." : "Keep both windows open."))
-        console.say(againLine)
-        return 0
+    }
+
+    /// How a start ended up: serving (the outcome block's title and lines), its test failed, or not serving (why, first).
+    enum StartOutcome { case served(title: String, lines: [String]), testFailed, notServing([String]) }
+
+    /// After the start. Serving and Done are said only once the model is loaded on both Macs and a request answered
+    /// (2026-11-03: a pair offered for pairing said both while nothing was loaded). A pair that does not serve says why
+    /// and stays open with the choices; leaving it never claims success.
+    static func finishStart(title: String, scope: ClusterServingScope, _ operations: ClusterOnboardingOperations,
+                            _ console: ClusterOnboardingConsole) -> Int32 {
+        var scope = scope
+        var mayRegister = true
+        while true {
+            switch startOutcome(title: title, scope: scope, mayRegister: &mayRegister, operations, console) {
+            case .served(let served, let lines):
+                // 2026-11-03 call: "it should show whether it is success or not VERY clearly".
+                console.result(true, served, lines)
+                if let restart = operations.afterRestart() { console.say(restart) }
+                console.say("Done. " + (operations.serviceOutlivesWindow() ? "You can close both windows." : "Keep both windows open."))
+                console.say(againLine)
+                return 0
+            case .testFailed:
+                console.say("")
+                console.say("Setup saved, but the test failed. Run `darkbloom cluster` to test again.")
+                return 1
+            case .notServing(let lines):
+                switch notServing(lines, operations, console) {
+                case .retry: continue
+                case .changeModel: return chooseAndServe(operations, console, scope: scope)
+                case .localOnly:
+                    let local = ClusterServingScope.localOnly(bind: ClusterServingScope.localOnlyDefaultBind)
+                    switch busy(console, "Switching to local only", { operations.setScope(local) }) {
+                    case .success(let said):
+                        for line in said { console.say("  " + line) }
+                        scope = local
+                    case .failure(let failure):
+                        for line in failure.lines { console.say("  " + line) }
+                    }
+                case .leave:
+                    console.say(notServingLastLine)
+                    return 1
+                }
+            }
+        }
+    }
+
+    /// The last line when the person leaves a pair that does not serve.
+    public static let notServingLastLine = "Not serving yet. Both Macs keep trying by themselves; run `darkbloom cluster` to check."
+
+    /// Said as the Start step begins (2026-11-03 call: no sense of how long it takes).
+    public static let startNotice = "Loading takes a few minutes for a large model; both Macs show progress here."
+
+    /// The rule above and below the outcome block.
+    public static let resultRule = String(repeating: "\u{2500}", count: 48)
+
+    /// Waits for the started parts; a pair offered for pairing then for the coordinator to pair both Macs and load the
+    /// model there (registered is not serving); a pair on the leader's API is tested, then registered with the
+    /// coordinator when it serves a cluster approval (once per start: both parts then start again and are awaited).
+    static func startOutcome(title: String, scope: ClusterServingScope, mayRegister: inout Bool,
+                             _ operations: ClusterOnboardingOperations, _ console: ClusterOnboardingConsole) -> StartOutcome {
+        let ready: ClusterOnboardingReady
+        switch waitForParts(title: title, operations, console) {
+        case .success(let value): ready = value
+        case .failure(let failure): return .notServing(failure.lines)
+        }
+        let tested: String?
+        if ready.offered != nil {
+            switch awaitPairServing(title: title, operations, console) {
+            case .success(let test): tested = test
+            case .failure(let failure): return .notServing(failure.lines)
+            }
+        } else {
+            // The test's time is said in the outcome block; only a failure is said here.
+            switch busy(console, "Sending a test request", operations.testRequest) {
+            case .success(let lines): tested = lines.first.flatMap { $0.isEmpty ? nil : $0 }
+            case .failure(let failure):
+                for line in failure.lines { console.say("  " + line) }
+                return .testFailed
+            }
+            if mayRegister, !scope.isLocalOnly {
+                mayRegister = false
+                if register(operations, console) { return startOutcome(title: title, scope: scope, mayRegister: &mayRegister, operations, console) }
+            }
+        }
+        let outcome = ready.outcome(model: title, scope: scope, test: tested)
+        return .served(title: outcome.title, lines: outcome.lines)
+    }
+
+    enum NotServingChoice { case retry, changeModel, localOnly, leave }
+
+    public static let notServingItems = ["Retry", "Change model", "Serve locally only", "Diagnostics"]
+
+    /// Why the pair does not serve in one plain line (details under it), what to do, then the choices. Diagnostics
+    /// saves the file and asks again; q leaves.
+    static func notServing(_ lines: [String], _ operations: ClusterOnboardingOperations,
+                           _ console: ClusterOnboardingConsole) -> NotServingChoice {
+        let first = lines.first ?? "the cluster did not report ready"
+        let reason = first.hasSuffix(".") ? String(first.dropLast()) : first
+        console.result(false, ClusterOnboardingNotServing.title(reason: reason),
+                       Array(lines.dropFirst()) + (ClusterOnboardingNotServing.remedy(forReason: reason).map { [$0] } ?? []))
+        while true {
+            switch console.choose(notServingItems, selected: 0) {
+            case 0: return .retry
+            case 1: return .changeModel
+            case 2: return .localOnly
+            case 3:
+                switch busy(console, "Saving diagnostics", operations.saveDiagnostics) {
+                case .success(let said): for line in said { console.say("  " + line) }
+                case .failure(let failure): for line in failure.lines { console.say("  " + line) }
+                }
+            default: return .leave
+            }
+        }
+    }
+
+    /// A pair offered for pairing: waits for the coordinator to pair both Macs and both to load the model, its progress
+    /// live; the pair's first request's time ("in 0.84 s"), or why it does not serve.
+    static func awaitPairServing(title: String, _ operations: ClusterOnboardingOperations,
+                                 _ console: ClusterOnboardingConsole) -> Result<String?, ClusterOnboardingFailure> {
+        waitWithRows("Serving \(title) through Darkbloom", console, operations.pairServing)
+            .map { $0.first.flatMap { $0.isEmpty ? nil : $0 } }
     }
 
     /// The leader's last line: `darkbloom cluster` again manages the cluster (its menu tests, changes the model, stops).
@@ -1648,45 +1860,30 @@ public enum ClusterOnboardingDriver {
     /// coordinator without cluster support, which leaves its local-serving notice).
     public static func servesWords(scope: ClusterServingScope, ready: ClusterOnboardingReady) -> String {
         guard ready.offered == nil else { return "" }
-        if scope.isLocalOnly { return " (local only)" }
-        if let notice = ready.notice, !notice.hasPrefix(ClusterOnboardingReady.registeredNotice) { return " (local only)" }
-        return " (earning through Darkbloom)"
+        return ready.servesLocallyOnly(scope: scope) ? " (local only)" : " (earning through Darkbloom)"
     }
 
-    /// After the Test stage: registers the pair with the coordinator when it serves a cluster approval for this pair,
-    /// then waits until both Macs serve again. Nothing is said, and nothing stopped, when the coordinator serves none.
-    /// A registration that stopped the parts and was then refused also waits: both parts start again as before.
-    static func register(title: String, _ operations: ClusterOnboardingOperations, _ console: ClusterOnboardingConsole) {
+    /// After the Test stage: registers the pair with the coordinator when it serves a cluster approval for this pair.
+    /// True when both parts start again (as cluster members, or as before after a refusal), which the caller awaits as
+    /// after the start; false, with nothing said or stopped, when the coordinator serves none.
+    static func register(_ operations: ClusterOnboardingOperations, _ console: ClusterOnboardingConsole) -> Bool {
         let lines: [String]
         switch operations.register() {
         case .success(let said): lines = said
         case .failure(let failure): lines = failure.lines
         }
-        guard !lines.isEmpty else { return }
+        guard !lines.isEmpty else { return false }
         for line in lines { console.say("  " + line) }
         console.say(lines.first?.hasPrefix(ClusterOnboardingReady.registeredNotice) == true
             ? "Starting both Macs' parts again as cluster members…" : "Starting both Macs' parts again…")
-        _ = awaitReady(title: title, operations, console)
+        return true
     }
 
     /// Waits for the started cluster with its progress (the caller says where it serves); nil (with the last errors
     /// and the diagnostics offer) when it did not become ready.
     static func awaitReady(title: String, _ operations: ClusterOnboardingOperations, _ console: ClusterOnboardingConsole)
         -> ClusterOnboardingReady? {
-        let progress = ClusterOnboardingMailbox<String>()
-        let finished = ClusterOnboardingMailbox<Result<ClusterOnboardingReady, ClusterOnboardingFailure>>()
-        Thread.detachNewThread { finished.post(operations.waitReady { progress.post($0) }) }
-        var ready: Result<ClusterOnboardingReady, ClusterOnboardingFailure>?
-        // The parts' progress ("1 of 2 parts ready") is the live line only: the screen keeps the result.
-        var latest: String?
-        while ready == nil {
-            if let line = progress.take().last { latest = line }
-            if let value = finished.take().first { ready = value; break }
-            console.working("Loading \(title) on both Macs" + (latest.map { " (\($0))" } ?? ""))
-            _ = console.key(milliseconds: 120)
-        }
-        console.settle()
-        switch ready! {
+        switch waitForParts(title: title, operations, console) {
         case .success(let where_):
             return where_
         case .failure(let failure):
@@ -1694,6 +1891,30 @@ public enum ClusterOnboardingDriver {
             offerDiagnostics(operations, console)
             console.say("Both Macs keep trying. Run `darkbloom cluster` to check.")
             return nil
+        }
+    }
+
+    /// Waits for the started cluster's parts with their progress as the live rows.
+    static func waitForParts(title: String, _ operations: ClusterOnboardingOperations, _ console: ClusterOnboardingConsole)
+        -> Result<ClusterOnboardingReady, ClusterOnboardingFailure> {
+        waitWithRows("Loading \(title) on both Macs", console, operations.waitReady)
+    }
+
+    /// Runs `work` off the console's thread with its progress ("1 of 2 parts ready", then a row per Mac) as live rows
+    /// under `title` (`ClusterOnboardingLoadRows`), until it ends. The rows are live only: the screen keeps the result.
+    static func waitWithRows<Value: Sendable>(_ title: String, _ console: ClusterOnboardingConsole,
+                                              _ work: @escaping @Sendable (_ progress: @escaping @Sendable (String) -> Void) -> Value)
+        -> Value {
+        let progress = ClusterOnboardingMailbox<String>()
+        let finished = ClusterOnboardingMailbox<Value>()
+        Thread.detachNewThread { finished.post(work { progress.post($0) }) }
+        var latest: String?
+        var clock = ClusterOnboardingLoadRows(started: Date())
+        while true {
+            if let line = progress.take().last { latest = line }
+            if let value = finished.take().first { console.settle(); return value }
+            console.workingRows(clock.rows(title, report: latest, now: Date()))
+            _ = console.key(milliseconds: 120)
         }
     }
 

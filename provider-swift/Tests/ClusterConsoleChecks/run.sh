@@ -49,7 +49,8 @@ for task_source in "$task_sources"/Inference/Distributed/Console/*.swift; do
 done
 # The setup record keeps the derived control leader (pure, Foundation only).
 task_console+=("$task_sources/Inference/Distributed/Onboarding/ClusterControlLeadership.swift"
-  "$task_sources/Inference/Distributed/Onboarding/ClusterOnboardingFlow.swift")
+  "$task_sources/Inference/Distributed/Onboarding/ClusterOnboardingFlow.swift"
+  "$task_sources/Inference/Distributed/Onboarding/ClusterOnboardingPairServing.swift")
 # The automatic batch setup's adoption transaction checks its replacement with
 # the supervisor handoff, which the console never adopts; the installed-session
 # checks build both and exercise them.

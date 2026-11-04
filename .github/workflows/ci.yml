@@ -222,12 +222,12 @@ jobs:
   test-provider:
     # The provider suite runs in shards on separate Macs
     # (scripts/provider-test-shards.py), each routed through its own
-    # test-provider-K lane above. Each shard runs its suites serially in
+    # test-provider-<shard> lane above. Each shard runs its suites serially in
     # one process. Shard 1 also runs the MLX-free test targets in one parallel
     # process; shard 2 also runs Prompt Parity. The last shard runs every suite
     # that no other shard selects, the isolated processes and the native gates
-    # below. Provider Unit Tests Summary
-    # checks that the shards together executed the full suite and reports coverage.
+    # below. Provider Unit Tests Summary checks that the shards together
+    # executed the full suite and reports coverage.
     name: Provider Unit Tests (shard ${{ matrix.shard }})
     needs: [changes, route]
     if: ${{ needs.changes.outputs.provider == 'true' }}

@@ -79,6 +79,9 @@ struct Desktop: AsyncParsableCommand {
     @OptionGroup var configOptions: ConfigOptions
     @Option var model: [String] = []
 
+    /// The drain's options, as `darkbloom stop` would take them with none given.
+    static func drainOptions() throws -> DrainOptions { DrainOptions() }
+
     /// On a Mac in a two-Mac cluster: why local mode starts nothing; nil elsewhere.
     static func pairRefusal(_ pair: ClusterPairSummary) -> [String]? {
       guard pair.paired else { return nil }
@@ -97,7 +100,7 @@ struct Desktop: AsyncParsableCommand {
       if DesktopLocalLifecycle.isActive {
         try await DesktopLocalLifecycle.stop(configPath: configOptions.config)
       }
-      let session = try await ServiceDrain.prepare(options: DrainOptions())
+      let session = try await ServiceDrain.prepare(options: try Self.drainOptions())
       defer { session.release() }
       try await ServiceDrain.stopDrainedProvider()
       try LaunchAgent.installLocalAndStart(

@@ -967,3 +967,24 @@ struct ClusterPairValidatorFindingsTests {
         #expect(Desktop.StartLocal.pairRefusal(.notPaired) == nil)
     }
 }
+
+@Suite("commands built in code are parsed: their options read without ArgumentParser's fatal error")
+struct ParsedInCodeTests {
+    @Test("`desktop start-local`'s drain options read as `darkbloom stop`'s defaults")
+    func desktopLocalStartDrainOptionsAreParsed() async {
+        let result = await #expect(processExitsWith: .success, observing: [\.standardOutputContent]) {
+            let options = try Desktop.StartLocal.drainOptions()
+            print("timeout \(options.timeout) force \(options.force)")
+        }
+        #expect(text(result?.standardOutputContent) == "timeout \(DrainOptions.defaultTimeout) force false\n")
+    }
+
+    @Test("unenrollment's stop is `darkbloom stop --solo`, parsed")
+    func unenrollStopIsParsed() async {
+        let result = await #expect(processExitsWith: .success, observing: [\.standardOutputContent]) {
+            let stop = try Unenroll.stopCommand()
+            print("solo \(stop.solo) uninstall \(stop.uninstall) timeout \(stop.drain.timeout)")
+        }
+        #expect(text(result?.standardOutputContent) == "solo true uninstall false timeout \(DrainOptions.defaultTimeout)\n")
+    }
+}

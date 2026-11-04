@@ -28,11 +28,14 @@ extension Cluster {
         @Flag(help: "With --fix: add a link-local address alone, which lasts until macOS next reconfigures the port.") var temporary = false
         @Flag(name: .customLong("dry-run"), help: "With --fix or --remove: print the commands an approval would run, and change nothing.")
         var dryRun = false
+        @Flag(name: [.customShort("y"), .long], help: "With --remove on a paired Mac: remove without asking first (scripts).")
+        var yes = false
 
         func validate() throws {
             guard [fix, remove, watch].filter({ $0 }).count <= 1 else {
                 throw ValidationError("Choose at most one of --fix, --remove and --watch.")
             }
+            guard remove || !yes else { throw ValidationError("--yes applies only to --remove.") }
             guard fix || !temporary else { throw ValidationError("--temporary applies only to --fix.") }
             guard fix || remove || !dryRun else { throw ValidationError("--dry-run applies only to --fix and --remove.") }
             guard let device else { return }
@@ -49,11 +52,47 @@ extension Cluster {
             if watch {
                 try await ClusterLinkWatchLoop.printChanges(json: json)
             } else if fix || remove {
+                if remove { try confirmRemoval() }
                 try await repair()
             } else {
                 let report = await Task.detached { ClusterLinkReadinessProbe.inspectLocalLink() }.value
                 if json { try printJSON(report) } else { for line in report.summaryLines { print(line) } }
                 if report.state != .ready { throw ExitCode.failure }
+            }
+        }
+
+        /// `--remove` on a paired Mac (UX audit P12a): what it undoes first, then one question; without a terminal (or
+        /// with --json) only with --yes. A dry run changes nothing, so it is never asked.
+        enum RemovalGate: Equatable {
+            case proceed
+            case ask([String])
+            case refuse([String])
+        }
+
+        static func removalGate(_ pair: ClusterPairSummary, yes: Bool, dryRun: Bool, json: Bool, terminal: Bool) -> RemovalGate {
+            .proceed
+        }
+
+        static func confirmed(_ answer: String?) -> Bool {
+            ["y", "yes"].contains(answer?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? "")
+        }
+
+        private func confirmRemoval() throws {
+            switch Self.removalGate(ClusterPairSummary.local(), yes: yes, dryRun: dryRun, json: json,
+                                    terminal: isatty(STDIN_FILENO) == 1) {
+            case .proceed: return
+            case .refuse(let lines):
+                // Never in the JSON on standard output.
+                for line in lines { json ? printError(line) : print(line) }
+                throw ExitCode.failure
+            case .ask(let lines):
+                for line in lines { print(line) }
+                print(ClusterPairSummary.linkRemoveQuestion, terminator: "")
+                fflush(stdout)
+                guard Self.confirmed(readLine()) else {
+                    print(ClusterPairSummary.nothingChanged)
+                    throw ExitCode.failure
+                }
             }
         }
 

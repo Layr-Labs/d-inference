@@ -132,7 +132,9 @@ extension Cluster {
     /// `darkbloom cluster` starts it again.
     struct Stop: AsyncParsableCommand {
         static let configuration = CommandConfiguration(commandName: "stop",
-            abstract: "Stop this Mac's cluster service and keep it from starting at login (`darkbloom cluster` starts it again).")
+            abstract: "Stop the cluster on both Macs, and this Mac's cluster service with it (`darkbloom cluster` starts it again).",
+            discussion: "On either Mac: the leading Mac stops both Macs' parts, as Stop in `darkbloom cluster` does. This Mac's "
+                + "cluster service then stops and no longer starts at login.")
         @OptionGroup var configOptions: ConfigOptions
         @Option(help: "Absolute path of this Mac's cluster worker, when it is not installed beside darkbloom.")
         var worker: String?
@@ -152,6 +154,7 @@ extension Cluster {
             let executable = URL(fileURLWithPath: Start.currentExecutablePath())
             let lines: [String] = try await Task.detached {
                 var stopped: Result<[String], ClusterOnboardingFailure>?
+                var forwarded = false
                 // The leader stops serving first, so its members stop their parts too
                 // (unless asked to stop only this Mac: the other one is gone).
                 if !localOnly, let settings = try? Cluster.Setup.serviceSettings(config: config, modelDir: nil, worker: worker),
@@ -159,17 +162,44 @@ extension Cluster {
                        serviceArguments: ClusterServiceAgentPlan.childArguments(
                            serviceOptions: ClusterServiceAgentPlan.serviceOptions(config: config, worker: worker)))) {
                     let resume = operations.resume()
+                    switch Self.pairStop(role: resume.role, serving: resume.serving) {
+                    case .stopHere: break
                     // A previous bounded failure already saved serving=false;
                     // retry must still finish its drain/peer acknowledgement.
-                    if resume.role == .leader {
+                    case .leaderStopsBoth: stopped = operations.stop()
+                    case .askLeader:
+                        // The menu's Stop, sent to the leading Mac: both Macs stop, instead of the leader waiting
+                        // for this one and then serving alone or nothing (UX audit P12b).
+                        print(ClusterPairSummary.memberStopNote(
+                            leader: ClusterOnboardingMacName.other(named: resume.leaderName ?? resume.peerName)))
+                        fflush(stdout)
+                        forwarded = true
                         stopped = operations.stop()
                     }
                 }
-                return try Self.finishStop(stopped, localOnly: localOnly) {
+                return try Self.finishStop(stopped, localOnly: localOnly, forwarded: forwarded) {
                     try ClusterService.removeFromLogin(executable: executable)
                 }
             }.value
             for line in lines { print(line) }
+        }
+
+        /// Who stops the cluster's serving when `cluster stop` runs here.
+        enum PairStop: Equatable {
+            /// Nothing serves that this Mac's stop would break: only this Mac's service stops.
+            case stopHere
+            /// This Mac leads: it stops both Macs.
+            case leaderStopsBoth
+            /// This Mac follows a started cluster: the leading Mac is asked to stop both Macs.
+            case askLeader
+        }
+
+        static func pairStop(role: ClusterOnboardingRole?, serving: Bool) -> PairStop {
+            switch role {
+            case .leader: return .leaderStopsBoth
+            case .member: return .stopHere
+            case nil: return .stopHere
+            }
         }
 
         /// A pair stop that could not finish: the pair's own reason lines, as a
@@ -182,12 +212,13 @@ extension Cluster {
         /// Keep the supervisor and its custody intact when the pair could not
         /// drain or the member did not acknowledge the saved stop request.
         static func finishStop(_ stopped: Result<[String], ClusterOnboardingFailure>?, localOnly: Bool = false,
-                               removeFromLogin: () throws -> [String]) throws -> [String] {
+                               forwarded: Bool = false, removeFromLogin: () throws -> [String]) throws -> [String] {
             var lines: [String] = []
             if let stopped {
                 switch stopped {
                 case .success(let said): lines = said
-                case .failure(let failure): throw Failure(lines: failure.lines)
+                case .failure(let failure):
+                    throw Failure(lines: failure.lines)
                 }
             }
             let removed = try removeFromLogin()

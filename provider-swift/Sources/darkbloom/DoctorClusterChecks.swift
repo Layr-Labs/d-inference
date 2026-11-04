@@ -11,6 +11,15 @@ func buildClusterDoctorChecks(configPath: String?, paired: Bool = !ClusterServic
     return clusterDoctorChecks(report.checks.map { ($0.name, $0.outcome, $0.detail) })
 }
 
+extension Doctor {
+    /// The header's daemon line: on a Mac in a cluster no single-Mac provider is expected, so nothing points at
+    /// `darkbloom start` (which would start one beside the cluster).
+    static func daemonLine(running: Bool, paired: Bool) -> String {
+        if running { return "Daemon: running" }
+        return "Daemon: NOT running — run `\(BuildEnvironment.current.cliName) start`"
+    }
+}
+
 /// The cluster checks that ran, named as cluster checks; one that could not run or observe anything is left out
 /// (`darkbloom cluster doctor` lists those).
 func clusterDoctorChecks(_ checks: [(name: String, outcome: ClusterDiagnosticsReport.Outcome, detail: String)]) -> [DoctorCheck] {

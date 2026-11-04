@@ -74,7 +74,9 @@ struct Status: AsyncParsableCommand {
             print(supervisor.summary(now: Date().timeIntervalSince1970))
         }
         for line in Self.clusterServiceLines() { print(line) }
-        printDaemonStatus(config: config, models: snapshot.models, hardware: snapshot.hardware)
+        let pair = ClusterPairSummary.local(config: configOptions.config)
+        if pair.paired { print(pair.statusLine) }
+        printDaemonStatus(config: config, models: snapshot.models, hardware: snapshot.hardware, pair: pair)
 
         // Crash-loop KV-backend guard — printed whether or not the daemon is
         // up, because the guard's whole story happens while the daemon is
@@ -112,21 +114,24 @@ struct Status: AsyncParsableCommand {
 
     /// Prints the running daemon's live state, including the coordinator's last
     /// trust reason — the answer to "am I earning, and if not, why?".
-    private func printDaemonStatus(config: ProviderConfig, models: [ModelInfo], hardware: HardwareInfo?) {
+    private func printDaemonStatus(config: ProviderConfig, models: [ModelInfo], hardware: HardwareInfo?,
+                                   pair: ClusterPairSummary) {
         let now = Date().timeIntervalSince1970
         guard let state = DaemonStateFile.read() else {
-            print("Daemon: not running (run `\(BuildEnvironment.current.cliName) start`)")
+            print(Self.daemonNotRunningLine(paired: pair.paired))
             return
         }
         let alive = daemonProcessAlive(pid: state.pid)
         if !alive {
-            print("Daemon: not running (stale state file)")
+            print(pair.paired ? ClusterPairSummary.singleMacServingOffLine : "Daemon: not running (stale state file)")
             return
         }
         print(daemonHealthLine(
             state: state,
             now: now,
             heartbeatIntervalSecs: config.coordinator.heartbeatIntervalSecs))
+        // The cluster's part writes this state too: say so, so its lines are not read as single-Mac serving.
+        if pair.paired, ServiceDrain.soloProviderState(state) == nil { print(Self.clusterPartLine) }
         if let drain = Self.lifecycleDrainLine(state.lifecycle) { print(drain) }
         if let hold = Self.addonHoldLine(state.addonHold) { print(hold) }
         if state.autopilotPhase != nil {

@@ -7,7 +7,7 @@ extension Cluster {
     /// setup only with the options that ask for it.
     struct Setup: AsyncParsableCommand {
         static let configuration = CommandConfiguration(commandName: "setup",
-            abstract: "Set up two or more Macs to serve one model together. Run it on each Mac and follow the screen.",
+            abstract: Cluster.abstract,
             discussion: """
                 Run `darkbloom cluster` in Terminal on each Mac (`darkbloom cluster setup` is the same). The first Mac \
                 checks its Thunderbolt cable, has you allow macOS's password and Local Network prompts, then says \

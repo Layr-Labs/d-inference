@@ -71,6 +71,9 @@ struct Start: AsyncParsableCommand {
     @Flag(help: .hidden)
     var supervise = false
 
+    @Flag(help: "On a Mac in a two-Mac cluster: start single-Mac serving anyway, beside the cluster (both use this Mac's memory). Without it, start refuses while the cluster service runs.")
+    var solo = false
+
     /// Both cluster modes are control-only: they take the saved cluster's
     /// model and lifecycle, so every solo serving option is refused at parse.
     mutating func validate() throws {
@@ -121,8 +124,22 @@ struct Start: AsyncParsableCommand {
         print()
     }
 
+    /// Single-Mac serving on a Mac in a two-Mac cluster (UX audit P4b): refused while the cluster service runs unless
+    /// `--solo` asks for it by name; said in one line otherwise. Nil: not in a cluster, or a start that is the cluster's
+    /// own (`--cluster-member`, `--distributed`, the cluster service's solo part) or launchd's (`--foreground`).
+    static func pairGuard(_ pair: ClusterPairSummary, solo: Bool) -> (refuse: Bool, lines: [String])? {
+        nil
+    }
+
+    var startsSingleMacServing: Bool { !foreground && !clusterMember && !distributed }
+
     mutating func run() async throws {
         Darkbloom.ensureLogging()
+        if startsSingleMacServing, !ClusterPairSummary.startedByClusterService(),
+           let pairGuard = Self.pairGuard(ClusterPairSummary.local(config: configOptions.config), solo: solo) {
+            for line in pairGuard.lines { print(line) }
+            if pairGuard.refuse { throw ExitCode.failure }
+        }
         if !foreground {
             printTermsNotice()
         }

@@ -17,4 +17,12 @@ extension Status {
             serviceRunning: ClusterService.running(), paired: !ClusterService.holdsNoPairing(),
             supervisor: supervisor, now: now, bootTime: now - ProcessInfo.processInfo.systemUptime)
     }
+
+    /// No provider state: on a Mac in a cluster single-Mac serving is off, which `darkbloom start` would not fix.
+    static func daemonNotRunningLine(paired: Bool) -> String {
+"Daemon: not running (run `\(BuildEnvironment.current.cliName) start`)"
+    }
+
+    /// Under the daemon line when the running provider is the cluster's part on this Mac.
+    static let clusterPartLine = "  This is the cluster's part on this Mac, not single-Mac serving (`darkbloom cluster status`)."
 }

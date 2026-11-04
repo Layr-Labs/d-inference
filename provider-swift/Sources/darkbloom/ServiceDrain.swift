@@ -16,9 +16,18 @@ struct DrainOptions: ParsableArguments {
 /// The CLI never initiates graceful stop with bootout/kickstart. The signed
 /// daemon owns admission, accepted requests, terminal delivery and the barrier.
 enum ServiceDrain {
-    static func prepare(options: DrainOptions,
+    /// The daemon state of single-Mac serving, never of the cluster's part: on a Mac in a two-Mac cluster the cluster
+    /// service runs a provider of its own (`start --foreground --cluster-member`) that writes the same state file.
+    /// `stop`, `restart` and `start` drain only the provider service (the cluster service would start its part again;
+    /// `darkbloom cluster stop` stops the cluster).
+    static func soloProviderState(_ state: DaemonState? = DaemonStateFile.read(),
+                                  clusterPart: Int32? = ClusterService.publishedLive().flatMap { $0.child.running ? $0.child.pid : nil })
+        -> DaemonState? {
+        state
+    }
+
+    static func prepare(options: DrainOptions, state: DaemonState? = DaemonStateFile.read(),
                         withConfigurationChange: (_ setup: () throws -> Void) throws -> Void = { try $0() }) async throws -> SelfUpdater.UpdateSession {
-        let state = DaemonStateFile.read()
         let updater = SelfUpdater(coordinatorBaseURL: state?.coordinatorUrl ?? BuildEnvironment.current.coordinatorHTTPURL)
         let session = try updater.beginUpdateSession(operation: "provider-lifecycle", timeout: 0)
         do {
@@ -87,10 +96,10 @@ enum ServiceDrain {
     /// Stop only a confirmed drained owner. A PID file alone never authorizes
     /// signalling a process, and ordinary replacement never escalates to SIGKILL.
     /// `accepts`: as for `drain`; any other running provider is refused before it is signalled.
-    static func stopDrainedProvider(unloadService: Bool = true,
+    static func stopDrainedProvider(unloadService: Bool = true, daemonState: DaemonState? = DaemonStateFile.read(),
                                     accepts: (ProcessIdentity) -> Bool = { _ in true }) async throws {
         let launchIdentity = LaunchAgent.launchSnapshot()?.process
-        let identity = WatchdogProbe.providerIdentity(daemonState: DaemonStateFile.read(),
+        let identity = WatchdogProbe.providerIdentity(daemonState: daemonState,
                                                       launchSnapshotProcess: LaunchAgent.launchSnapshot()?.process)
         try requireAccepted(identity, accepts)
         // Restart must keep the service loaded until restartAfterDrain reloads

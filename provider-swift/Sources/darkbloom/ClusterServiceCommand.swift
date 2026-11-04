@@ -157,7 +157,8 @@ extension Cluster {
         enum Mode: Equatable { case pair, refuse, serviceOff }
 
         static func mode(_ pair: ClusterPairSummary, localOnly: Bool, service: Bool) -> Mode {
-            return .serviceOff
+            guard pair.paired, !localOnly, !service else { return .serviceOff }
+            return pair.pairingUnreadable ? .refuse : .pair
         }
 
         mutating func run() async throws {

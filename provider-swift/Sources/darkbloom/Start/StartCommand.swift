@@ -143,7 +143,7 @@ struct Start: AsyncParsableCommand {
         guard pair.paired else { return .single(note: nil) }
         if solo { return .single(note: pair.startNote) }
         if pair.pairingUnreadable { return .refuse(pair.startRefusal) }
-        return pair.serviceRunning ? .refuse([pair.pairSentence, "Single-Mac serving next to it would compete for this Mac's memory. To serve on this Mac alone, stop the cluster first (`darkbloom cluster stop`), or pass --solo."]) : .single(note: pair.startNote)
+        return terminal ? .openScreen : .startPair
     }
 
     var startsSingleMacServing: Bool { !foreground && !clusterMember && !distributed }

@@ -32,7 +32,7 @@ struct Status: AsyncParsableCommand {
 
         // On a Mac in a cluster the pair comes first, as `darkbloom cluster status` says it.
         let pair = ClusterPairSummary.local()
-        let showsPair = false
+        let showsPair = pair.paired && !solo
         if showsPair {
             for line in await ClusterPairSummary.live(config: configOptions.config).clusterStatusLines { print(line) }
             print("")

@@ -30,7 +30,7 @@ struct Stop: AsyncParsableCommand {
 
     static func pairedStop(_ pair: ClusterPairSummary, solo: Bool, uninstall: Bool) -> PairedStop {
         guard pair.paired, !solo, !uninstall else { return .stopSingleMac }
-        return .refuse(pair.pairingUnreadable ? pair.unsureRefusal("stop", "stopped") : [pair.pairSentence, "`darkbloom stop` stops single-Mac serving, and none runs on this Mac: nothing was stopped."])
+        return pair.pairingUnreadable ? .refuse(pair.unsureRefusal("stop", "stopped")) : .stopPair
     }
 
     mutating func run() async throws {

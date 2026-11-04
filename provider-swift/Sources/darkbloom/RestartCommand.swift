@@ -43,7 +43,7 @@ struct Restart: AsyncParsableCommand {
 
     static func pairRestart(_ pair: ClusterPairSummary, singleMacInstalled: Bool, solo: Bool) -> PairRestart {
         guard pair.paired else { return .restartSingleMac }
-        guard solo else { return .refuse(pair.pairingUnreadable ? pair.unsureRefusal("restart", "restarted") : pair.restartRefusal) }
+        guard solo else { return pair.pairingUnreadable ? .refuse(pair.unsureRefusal("restart", "restarted")) : .restartPair }
         return singleMacInstalled ? .restartSingleMac : .refuse(pair.restartRefusal)
     }
 

@@ -75,8 +75,11 @@ extension Unenroll {
         }
     }
 
+    /// The stop unenrollment runs first: single-Mac serving, as `darkbloom stop --solo` (it never stops a pair).
+    static func stopCommand() throws -> Stop { try Stop.parse(["--solo"]) }
+
     static func stopProviderBeforeUnenrollment() async throws {
-        var stop = Stop()
+        var stop = try stopCommand()
         try await stop.run()
         // `stop` disables launchd/watchdog restarts. A separately foregrounded
         // provider may still be running: never purge identity beneath it, nor

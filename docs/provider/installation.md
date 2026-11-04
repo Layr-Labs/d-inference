@@ -240,7 +240,7 @@ A release that runs but regresses can be rolled back to the kept release on one
 Mac, with automatic updates left on:
 
 1. On a Mac that serves in a `darkbloom cluster` pair, first stop its cluster
-   service with `darkbloom cluster stop`, roll it back, then start it again
+   service with `darkbloom cluster stop --service`, roll it back, then start it again
    with `darkbloom cluster`. The other Mac follows the rollback to the same
    release by itself ([the pair's coordinated update](./cluster-always-on.md#a-rollback-on-one-mac)).
    For a cluster-member provider service, stop it with `darkbloom stop` and

@@ -31,7 +31,7 @@ public enum ProviderUninstall {
     public struct Operations {
         /// Drains and stops the provider, as `darkbloom stop` does.
         public var stopServing: () async throws -> Outcome
-        /// Stops this Mac's part of a pair and removes the cluster service, as `darkbloom cluster stop` does.
+        /// Stops this Mac's part of a pair and removes the cluster service, as `darkbloom cluster stop --service` does.
         public var stopClusterPart: () async throws -> Outcome
         /// The provider, watchdog and desktop API launch agents, by name, as `darkbloom stop --uninstall` removes them.
         public var removeServices: [(name: String, remove: () throws -> Outcome)]

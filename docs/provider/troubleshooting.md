@@ -265,6 +265,21 @@ request answered. Otherwise its line names why
 | `<Mac> lacks free memory for its share` | Quit apps on that Mac, then **Retry**; or **Change model**. |
 | `A part keeps ending the same way: …` | **Diagnostics** saves a redacted file in the home folder to send with a report. |
 
+## Everyday commands on a Mac in a two-Mac cluster
+
+On a paired Mac `darkbloom stop`, `start`, `restart` and `status` control the pair;
+`--solo` manages single-Mac serving on this Mac
+([CLI reference](cli-reference.md#darkbloom-cluster-status)).
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `darkbloom stop` says `stopping both Macs` on a Mac in a cluster | On a paired Mac `stop` controls the pair, as on one Mac it controls single-Mac serving (`Stop.pairedStop`) | Expected: both Macs stop and stay stopped; `darkbloom start` on either Mac starts the pair again. `darkbloom stop --solo` stops single-Mac serving only |
+| `darkbloom start` opens the cluster's screen, or in a script ends with `✗ Not serving: …` | On a paired Mac `start` starts the pair (`Start.pairStart`); a script gets `darkbloom cluster status`'s exit status | Follow the result block's `Next:` line. `darkbloom start --solo` serves this Mac alone |
+| Is the pair serving? Why not? | `darkbloom cluster` needs a terminal | `darkbloom cluster status` (or `--json`; exit 0 only while it serves) |
+| `This Mac's pairing record couldn't be read (…), so it may be in a two-Mac cluster.` (`cluster status` exit 7) | The pairing store can't be read (a damaged or unsafe file); the commands treat the Mac as maybe in a cluster, so `start`, `stop` and `restart` need `--solo` (`ClusterPairSummary.membership`) | `darkbloom cluster` on this Mac checks the pairing |
+| `darkbloom cluster link --remove` asks `Remove it? [y/N]` | The Mac is paired; removing the port setup stops the cluster on both Macs until it is set up again | Answer `n` unless the cable port must go; never remove it because of a doctor line alone. `--yes` for scripts |
+| `darkbloom stop` on the Mac that follows says the other Mac didn't answer, and `Nothing was stopped on this Mac.` | The leading Mac stops both Macs, and it isn't answering (`ClusterPairCommands.stop`) | Wake or log in to the leading Mac and run it again, or `darkbloom cluster stop --local-only` to stop this Mac alone |
+
 ## Missing base reward
 
 `doctor` billing is local usage reporting, not a coordinator

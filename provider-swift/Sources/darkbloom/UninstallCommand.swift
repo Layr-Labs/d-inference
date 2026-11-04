@@ -4,7 +4,7 @@ import Foundation
 import ProviderCore
 
 /// `darkbloom uninstall`: remove everything, or everything but the models. `ProviderUninstall` owns the steps, their
-/// order and every path rule; this command asks, and wires the commands it reuses: `stop`'s drain, `cluster stop`,
+/// order and every path rule; this command asks, and wires the commands it reuses: `stop`'s drain, `cluster stop --service`,
 /// `stop --uninstall`'s agents, `logout`'s token revocation, `cluster pair --forget` and `cluster link --remove`.
 struct Uninstall: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
@@ -113,8 +113,9 @@ struct Uninstall: AsyncParsableCommand {
         return .init(
             stopServing: {
                 let wasLoaded = LaunchAgent.isLoaded()
-                lifecycle.session = try await ServiceDrain.prepare(options: drain)
-                try await ServiceDrain.stopDrainedProvider()
+                // Single-Mac serving only: a daemon state the cluster's part wrote is the cluster step's.
+                lifecycle.session = try await ServiceDrain.prepare(options: drain, state: ServiceDrain.soloProviderState())
+                try await ServiceDrain.stopDrainedProvider(daemonState: ServiceDrain.soloProviderState())
                 return wasLoaded ? .done() : .skipped("the provider service was not running")
             },
             stopClusterPart: {
@@ -122,7 +123,7 @@ struct Uninstall: AsyncParsableCommand {
                 guard !ClusterServiceAgent.installedLabels().isEmpty || ClusterServiceAgent.isLoaded(label: current)
                         || ClusterService.running() else { return .skipped("no cluster service on this Mac") }
                 do {
-                    var stop = try Cluster.Stop.parse([])
+                    var stop = try Cluster.Stop.parse(["--service"])
                     try await stop.run()
                     return .done()
                 } catch {

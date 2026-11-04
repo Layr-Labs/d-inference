@@ -63,7 +63,9 @@ struct Doctor: AsyncParsableCommand {
         print("Model CDN: \(ModelDownloader.resolveCDNURL())")
         let daemonState = DaemonStateFile.read()
         let daemonRunning = doctorDaemonProcessMatches(daemonState: daemonState)
-        print("Daemon: \(daemonRunning ? "running" : "NOT running — run `\(BuildEnvironment.current.cliName) start`")")
+        let pair = ClusterPairSummary.local()
+        print(Self.daemonLine(running: daemonRunning, paired: pair.paired, unsure: pair.pairingUnreadable))
+        if pair.paired { print(pair.statusLine) }
 
         // §16.5: did this box serve the KV backend it was configured for,
         // and is the snapshot that answer comes from still being refreshed?

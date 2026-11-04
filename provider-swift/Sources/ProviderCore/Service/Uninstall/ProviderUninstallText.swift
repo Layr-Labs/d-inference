@@ -178,6 +178,10 @@ extension ProviderUninstall {
             + ($0.reason ?? "") } + [keychainLine] + plan.elsewhere
     }
 
+    /// Said before the pair's stop (`Operations.stopBothMacs`), which answers once both Macs have stopped, after their
+    /// accepted requests: the stop over the cable gives up after 330 s (`OnboardingLive.stop`).
+    public static let pairStopWaitLine = "Asking the pair to stop; accepted requests finish first (up to about 6 min)."
+
     /// The last line when the other Mac did not answer the pair's stop: it may keep restarting its part.
     static func otherMacNoAnswerLine(_ name: String?, cli: String) -> String {
         "The other Mac\(name.map { " (\($0))" } ?? "") did not answer, so its part may keep restarting: run `\(cli) cluster stop` on it."

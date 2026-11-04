@@ -527,7 +527,11 @@ and [mode explanation](../../libs/darkbloom-cluster/Sources/DarkbloomClusterPlac
 
 Chips never decide. Each Mac's memory gate still decides every load; its margins
 scale with the Mac's memory below 96 GB, so a smaller Mac takes the share it can
-hold (one layer is a share).
+hold (one layer is a share). Before a Mac's part starts, it clears the model's
+own files from macOS's file cache, so the load reads its share from the SSD
+into free memory. Nothing in the files changes and no password is asked for; a
+start can take a few seconds longer. The worker log records each load's memory
+check in a `darkbloom-load-memory-v1` line.
 
 Qualification records (cross-cable runs compared with single-Mac references
 under the near-tie rule) do two things only:
@@ -725,7 +729,12 @@ MiMo V2.6 Flash is granted by its qualification records (pipeline, run on an
 M5 Ultra + M3 Ultra pair), on any pair the planner can place it on, at the
 planner's cut and in either order. Each start hashes the 172 GB of weights with the file
 cache off, so the hash does not fill the Mac's memory before the memory gate
-decides; the gate itself is unchanged. Both Macs keep MiMo's prompt prefixes,
+decides; the gate itself is unchanged. Before each start, each Mac also clears
+MiMo's files from macOS's file cache, and the load clears the cached pages of
+the weight files it reads, so a Mac's share loads into free memory. Before
+this, a start on two 128 GB Macs was refused every time: loading a share into
+a cache full of MiMo made macOS compress other memory, and the gate then
+counted no cache. Both Macs keep MiMo's prompt prefixes,
 in memory and in the encrypted SSD tier, like the Qwen models. MiMo has no paged
 KV on the pair yet, and the pair decodes slower than the M5 Ultra alone. Its
 phase split (one Mac decodes alone) is kept off like every hand-off mode.

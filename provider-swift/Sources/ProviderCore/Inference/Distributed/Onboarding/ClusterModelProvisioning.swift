@@ -195,92 +195,42 @@ public enum ClusterModelStore {
         return bytes > 0 ? .partial(bytes: bytes) : .missing
     }
 
-    /// Drops the pages macOS keeps in its file cache for every regular file directly in `folder` (a model's weights),
-    /// as a shared mapping invalidated with `msync(MS_INVALIDATE)`: no privileges, the files are untouched. A load
-    /// gate counts only the file cache the kernel can take before applications' memory; right after a download the
-    /// model's own pages sat in the active cache on a 36 GB M4 Max (23 GB file-backed, 0.09 GB counted) and its share
-    /// of the next start was refused (2026-10-16). Returns the bytes asked to drop; best effort.
+    /// Drops the pages macOS keeps in its file cache for a model folder's regular files, directly in `folder` and one
+    /// folder down (MiMo's `audio_tokenizer/`), never through a symbolic link: a shared mapping invalidated with
+    /// `msync(MS_INVALIDATE)`, so no privileges, and the files are untouched. The load gate counts that cache as
+    /// available, but while a load fills memory macOS frees it page by page by compressing other memory, and past the
+    /// gate's compression guard the gate counts none: a share that loads against a cache full of its own model is
+    /// refused (MiMo on two 128 GB Macs, 2026-11-01). Returns the bytes asked to drop; best effort.
     @discardableResult
     public static func dropCachedPages(folder: URL) -> Int64 {
         guard let names = try? FileManager.default.contentsOfDirectory(atPath: folder.path) else { return 0 }
         var dropped: Int64 = 0
         for name in names where !name.hasPrefix(".") {
             let path = folder.appendingPathComponent(name).path
-            // Non-blocking (a FIFO swapped in must not hang the caller), then judged by what was opened.
-            let fd = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
-            guard fd >= 0 else { continue }
-            defer { close(fd) }
-            var information = stat()
-            guard fstat(fd, &information) == 0, information.st_mode & S_IFMT == S_IFREG, information.st_size > 0 else { continue }
-            let length = Int(information.st_size)
-            guard let mapping = mmap(nil, length, PROT_READ, MAP_SHARED, fd, 0), mapping != MAP_FAILED else { continue }
-            if msync(mapping, length, MS_INVALIDATE) == 0 { dropped += Int64(length) }
-            munmap(mapping, length)
+            // A folder of the model's (not a link to one): its files are opened through this descriptor.
+            let inner = open(path, O_RDONLY | O_NOFOLLOW | O_DIRECTORY | O_CLOEXEC | O_NONBLOCK)
+            guard inner >= 0 else { dropped += dropCachedPages(ofFile: path, in: AT_FDCWD); continue }
+            defer { close(inner) }
+            for innerName in (try? FileManager.default.contentsOfDirectory(atPath: path)) ?? [] where !innerName.hasPrefix(".") {
+                dropped += dropCachedPages(ofFile: innerName, in: inner)
+            }
         }
         return dropped
     }
 
-    /// Reads every regular file directly in `folder` (a model's weights) once through the file cache, largest first,
-    /// on `readers` threads, so a part starting beside it finds them cached: its load hashes every file and reads the
-    /// cached pages at memory speed (101 GB/s against 14 GB/s from the SSD on an M5 Ultra, 2026-10-21), and this runs
-    /// while the provider, the owners and the worker start, before the load reads anything. The pages are clean file
-    /// cache the load gate counts as available and the kernel drops on demand. Returns the bytes read; best effort (a
-    /// file that does not open or read is skipped).
-    @discardableResult
-    public static func prefetchPages(folder: URL, readers: Int = 4) -> Int64 {
-        guard let names = try? FileManager.default.contentsOfDirectory(atPath: folder.path) else { return 0 }
-        var files: [(path: String, bytes: Int)] = []
-        for name in names where !name.hasPrefix(".") {
-            var information = stat()
-            let path = folder.appendingPathComponent(name).path
-            guard lstat(path, &information) == 0, information.st_mode & S_IFMT == S_IFREG, information.st_size > 0 else { continue }
-            files.append((path, Int(information.st_size)))
-        }
-        files.sort { ($0.bytes, $1.path) > ($1.bytes, $0.path) }
-        final class Work: @unchecked Sendable {
-            let files: [(path: String, bytes: Int)]
-            let lock = NSLock()
-            var next = 0, read: Int64 = 0
-            init(_ files: [(path: String, bytes: Int)]) { self.files = files }
-        }
-        let work = Work(files)
-        let chunk = 8 << 20
-        DispatchQueue.concurrentPerform(iterations: max(1, min(readers, files.count))) { _ in
-            let buffer = UnsafeMutableRawPointer.allocate(byteCount: chunk, alignment: 16_384)
-            defer { buffer.deallocate() }
-            while true {
-                let index: Int = work.lock.withLock { defer { work.next += 1 }; return work.next }
-                guard index < work.files.count else { return }
-                // Non-blocking (a FIFO swapped in must not hang the caller), then judged by what was opened.
-                let fd = open(work.files[index].path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
-                guard fd >= 0 else { continue }
-                defer { close(fd) }
-                var information = stat()
-                guard fstat(fd, &information) == 0, information.st_mode & S_IFMT == S_IFREG else { continue }
-                var offset = 0
-                while offset < Int(information.st_size) {
-                    let n = pread(fd, buffer, chunk, off_t(offset))
-                    if n < 0 && errno == EINTR { continue }
-                    guard n > 0 else { break }
-                    offset += n
-                }
-                work.lock.withLock { work.read += Int64(offset) }
-            }
-        }
-        return work.read
+    /// One regular file's cached pages, `name` opened relative to `directory` without following a link.
+    private static func dropCachedPages(ofFile name: String, in directory: Int32) -> Int64 {
+        // Non-blocking (a FIFO swapped in must not hang the caller), then judged by what was opened.
+        let fd = openat(directory, name, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
+        guard fd >= 0 else { return 0 }
+        defer { close(fd) }
+        var information = stat()
+        guard fstat(fd, &information) == 0, information.st_mode & S_IFMT == S_IFREG, information.st_size > 0 else { return 0 }
+        let length = Int(information.st_size)
+        guard let mapping = mmap(nil, length, PROT_READ, MAP_SHARED, fd, 0), mapping != MAP_FAILED else { return 0 }
+        defer { munmap(mapping, length) }
+        return msync(mapping, length, MS_INVALIDATE) == 0 ? Int64(length) : 0
     }
-
-    /// `prefetchPages` on a thread of its own, at most one per folder at a time (a part that keeps restarting does not
-    /// stack them).
-    public static func prefetchPagesInBackground(folder: URL) {
-        let key = folder.standardizedFileURL.path
-        guard prefetching.withLock({ $0.insert(key).inserted }) else { return }
-        Thread.detachNewThread {
-            prefetchPages(folder: folder)
-            _ = prefetching.withLock { $0.remove(key) }
-        }
-    }
-    private static let prefetching = ClusterModelPrefetchFolders()
 
     /// The snapshot a model folder's refs select, read in `refNames` order (this install's ref, then production's:
     /// `ModelScanner.revisionRefNames`). The first ref that exists decides; one that names no plain folder selects none.
@@ -933,11 +883,4 @@ extension ClusterModelStore {
             try? FileManager.default.removeItem(at: url)
         }
     }
-}
-
-/// The folders `ClusterModelStore.prefetchPagesInBackground` is reading now.
-final class ClusterModelPrefetchFolders: @unchecked Sendable {
-    private let lock = NSLock()
-    private var folders = Set<String>()
-    func withLock<T>(_ body: (inout Set<String>) -> T) -> T { lock.withLock { body(&folders) } }
 }

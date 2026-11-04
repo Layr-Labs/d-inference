@@ -6,6 +6,7 @@ import Foundation
 
 @main enum WorkerMain {
     static func main() {
+        var loaded = false
         do {
             let arguments = Array(CommandLine.arguments.dropFirst())
             if arguments.first == "--glm-calibration-quote" {
@@ -149,6 +150,8 @@ import Foundation
                         qualification: qualification, dataPlane: dataPlane, prefixSSDKey: prefixSSDKey,
                         tensorShares: configuration.tensorShares)
             }
+            WorkerLoadMemory.write()
+            loaded = true
             // Qualification only: a standing wired limit for the loaded stage.
             // Every exit below resets it to zero.
             let residency: ProcessStageResidency? = stageResidency
@@ -159,9 +162,20 @@ import Foundation
             withExtendedLifetime(residency) {}
             ProcessForcedExit.finish(status: 0, reason: "shutdown-complete")
         } catch {
+            if !loaded { WorkerLoadMemory.write() }
             let message = Data(("darkbloom-cluster-worker: \(error)\n").utf8.prefix(4096))
             _ = message.withUnsafeBytes { Darwin.write(STDERR_FILENO, $0.baseAddress, $0.count) }
             ProcessForcedExit.finish(status: 1, reason: "worker-error")
+        }
+    }
+}
+
+/// Each load gate's record (`QwenDenseStageLoadAdmissionSummary.logLine`), one `darkbloom-load-memory-v1` line per
+/// gate, after the load or before the failure that ended it, so a refusal names the figures behind it.
+enum WorkerLoadMemory {
+    static func write() {
+        for line in QwenResidentResourceAdmissionReport.current.scopes.map(\.logLine) {
+            FileHandle.standardError.write(Data((line + "\n").utf8))
         }
     }
 }

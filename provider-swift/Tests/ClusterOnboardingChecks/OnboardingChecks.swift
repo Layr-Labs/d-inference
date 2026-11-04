@@ -135,6 +135,8 @@ import Darwin
         aModeChangeOfTheServingModelIsAskedAsOne()
         aSetUpPairWithNoModelToListOffersStartOver()
         aPairThatDoesNotServeIsNeitherMarkedNorTestedTwice()
+        theServingMarkerFollowsOnlyASettledServingLine()
+        theServingModelsTestNeverMarksAStart()
         pairingSaysWhatToCheckWhenTheOtherMacIsNotFound()
         alreadyServingTestsAgainOrSaysWhyNot()
         aDeadPendingStartIsClearedOnlyWhileStillRecorded()
@@ -157,6 +159,12 @@ import Darwin
         joinedMacFollowsTheStartToNotServing()
         joinedMacLeavesOrStopsFollowingSaying()
         registrationIsSaidAsOfferedNotAccepted()
+        // Validator D on PR #1778: both windows end alike, only the start that registers marks itself, the pending check
+        // is no ✓, each stage of the start has its own bound. Failing first on a148285f70.
+        aFailedStartTestEndsTheJoinedMacTheSame()
+        onlyTheStartThatRegistersMarksItself()
+        thePendingCheckIsNoTickOnAnyScreen()
+        eachStageOfTheStartHasItsOwnBound()
         print("onboarding checks: \(passed) passed, \(failures.count) failed")
         for failure in failures { print("FAIL " + failure) }
         exit(failures.isEmpty ? 0 : 1)
@@ -3090,19 +3098,27 @@ import Darwin
         transcript("leader-already-serving-no-local-api", pair.text, keys: pair.keys)
     }
 
-    /// A start that died before it asked Darkbloom leaves its pid in the record: the status clears it once its process
-    /// is gone, and only while the record still holds that pid (a new start's pid is never wiped).
+    /// A start that died before it asked Darkbloom leaves its mark in the record: the status clears it once its process
+    /// is gone, and only while the record still holds that mark (a new start's is never wiped). The mark is the pid and
+    /// when its process started, so a pid the system gave to another process never counts, even before the clear.
     static func aDeadPendingStartIsClearedOnlyWhileStillRecorded() {
         typealias P = ClusterOnboardingPendingRegistration
-        let dead = P.look(4242, alive: { _ in false })
-        expect(!dead.pending && dead.clear == 4242, "pending pid: a dead start's pid is not pending and is cleared")
-        let running = P.look(5151, alive: { _ in true })
-        expect(running.pending && running.clear == nil, "pending pid: a running start's pid stays pending")
-        let none = P.look(nil, alive: { _ in true })
-        expect(!none.pending && none.clear == nil, "pending pid: none recorded")
-        expect(P.cleared(4242, dead: 4242) == nil, "pending pid: cleared while the record still holds it")
-        expect(P.cleared(5151, dead: 4242) == 5151, "pending pid: a new start's pid is kept")
-        expect(P.cleared(nil, dead: 4242) == nil, "pending pid: nothing to clear")
+        let start = P.Mark(pid: 4242, started: 1_762_000_000_000_001)
+        let dead = P.look(start, started: { _ in nil })
+        expect(!dead.pending && dead.clear == start, "pending mark: a dead start's mark is not pending and is cleared")
+        let running = P.look(start, started: { $0 == 4242 ? 1_762_000_000_000_001 : nil })
+        expect(running.pending && running.clear == nil, "pending mark: the running start stays pending")
+        let reused = P.look(start, started: { $0 == 4242 ? 1_762_000_900_000_000 : nil })
+        expect(!reused.pending && reused.clear == start, "pending mark: its pid, reused by a later process, is not pending and is cleared")
+        let unknown = P.look(P.Mark(pid: 4242, started: nil), started: { _ in 1_762_000_000_000_001 })
+        expect(!unknown.pending, "pending mark: a pid without its start time never counts")
+        let none = P.look(nil, started: { _ in 1 })
+        expect(!none.pending && none.clear == nil, "pending mark: none recorded")
+        let newer = P.Mark(pid: 5151, started: 1_762_000_500_000_000)
+        expect(P.cleared(start, gone: start) == nil, "pending mark: cleared while the record still holds it")
+        expect(P.cleared(newer, gone: start) == newer, "pending mark: a new start's mark is kept")
+        expect(P.cleared(P.Mark(pid: 4242, started: 1_762_000_900_000_000), gone: start) != nil, "pending mark: the same pid of a newer start is kept")
+        expect(P.cleared(nil, gone: start) == nil, "pending mark: nothing to clear")
     }
 
     /// The candidate on pair 2 (2026-11-04, B2): a Mac whose firewall dropped the discovery probe left both Macs at
@@ -3131,6 +3147,52 @@ import Darwin
         expect(quick.waitFor(prompt(2), count: 2), "found: the list"); quick.type("\r")
         _ = quick.finish()
         expect(!quick.text.contains(P.otherMacNotFoundLines[0]), "found: no hint")
+    }
+
+    /// Validator D's m1 meets m9: the list says "serving now" only beside a settled serving line, the one shown as ✓. A
+    /// start still checking with Darkbloom (its line now, and an older leader's "Serving … (checking …)") and a
+    /// published failed test read "last used", with no ✓.
+    static func theServingMarkerFollowsOnlyASettledServingLine() {
+        let olderLeader = "Serving Qwen3.8-27B-4bit-mtp at http://localhost:8000 (" + ClusterOnboardingReady.offerPendingWords + ")"
+        let failed = [ClusterOnboardingNotServing.statusLine(model: "Qwen 3.8 27B", reason: "the test request timed out"),
+                      ClusterOnboardingReady.testFailedNote]
+        for (name, lines) in [("pending", [offerPendingLine]), ("older leader's pending", [olderLeader]), ("failed test", failed)] {
+            let run = TerminalRun(operations(Recorder(), resume: qwenServing, pairEvents: [], pairResult: .failed([]), choices: switchChoices,
+                statusLines: lines))
+            expect(run.waitFor(prompt(4)), "\(name): the list")
+            expect(run.text.contains("  1) Qwen 3.8 27B · 16.3 GB · tensor parallel 41 tok/s · last used\n")
+                   && !run.text.contains("serving now") && !run.text.contains("\u{2713}"), "\(name): last used, no ✓: \(run.text)")
+            run.type("q")
+            _ = run.finish()
+            if name == "older leader's pending" { transcript("leader-pending-older-leader-last-used", run.text, keys: run.keys) }
+        }
+    }
+
+    /// Validator D's M3 meets rounds 5 and 6: Enter on the serving model (its test) and that test's Retry never mark a
+    /// pending registration, so their failure is never published as a start's outcome; a mode switch is a start and
+    /// marks once, from `finishStart`, only when it registers.
+    static func theServingModelsTestNeverMarksAStart() {
+        let tested = Recorder()
+        var test = operations(tested, resume: qwenServing, pairEvents: [], pairResult: .failed([]), choices: switchChoices,
+            testResult: .failure(.init(["Not serving: waiting for the coordinator to pair both Macs."])))
+        test.markRegistrationPending = { tested.note("markRegistrationPending") }
+        let run = TerminalRun(test)
+        expect(run.waitFor(prompt(4)), "no mark: the list"); run.type("\r")
+        expect(run.waitFor(notServingChoices), "no mark: the test failed"); run.type("1")
+        expect(run.finish() == 1, "no mark: the Retry ends")
+        expect(tested.all.contains("testRequest") && tested.all.contains("waitReady") && !tested.all.contains("markRegistrationPending"),
+               "no mark: the test and its Retry: \(tested.all)")
+        var piped = qwenServing
+        piped.servingMode = "pipeline_v1"
+        let switched = Recorder()
+        var mode = operations(switched, resume: piped, pairEvents: [], pairResult: .failed([]), choices: switchChoices)
+        mode.markRegistrationPending = { switched.note("markRegistrationPending") }
+        let change = TerminalRun(mode)
+        expect(change.waitFor(prompt(4)), "mode switch: the list"); change.type("\r")
+        expect(change.waitFor("  1) Yes, switch\n  2) No\n"), "mode switch: asked"); change.type("1")
+        _ = change.finish()
+        let marks = switched.all.filter { $0 == "markRegistrationPending" }.count
+        expect(switched.all.contains("adopt 0") && marks == (piped.scope.isLocalOnly ? 0 : 1), "mode switch: one mark, a start's: \(switched.all)")
     }
 
     /// Validator D's m3: the serving model, listed in another mode (planned while the parts held memory), read as a
@@ -3517,9 +3579,9 @@ import Darwin
                                pairServingResults: pairServingResults, statusSequence: statusSequence, followSeconds: followSeconds))
     }
 
-    /// The leader's serving line while its start still asks Darkbloom whether to offer the pair (`registrationPendingPID`
-    /// in the record the leader publishes): a pair served on the leader's API through Darkbloom, said with what is pending.
-    static let offerPendingLine = "Serving Qwen 3.8 27B (pipeline) at http://localhost:8000 on the other Mac (checking with Darkbloom before it offers the pair)."
+    /// The leader's status line while its start still asks Darkbloom whether to offer the pair (`registrationPendingPID`
+    /// in the record the leader publishes): a start, not its outcome.
+    static let offerPendingLine = ClusterOnboardingReady.offerPendingLine(model: "Qwen 3.8 27B")
 
     /// Both windows tell the same truth: a leader that offers the pair late (its start's check with Darkbloom outlasting
     /// any wait) never gives the Mac that joined an early ✓. It follows until the pair's own wait settles, then shows the
@@ -3627,6 +3689,115 @@ import Darwin
         expect(stuck.finish() == 1, "follow bound, started: not success")
         expect(stuck.text.contains("\u{2717} Not serving: The pair didn't report serving within 0 minutes.\n  Last: Loading Qwen 3.8 27B: 1 of 2 parts ready.\n")
             && stuck.text.hasSuffix(ClusterOnboardingDriver.retryOnLeaderLine(leaderName) + "\n"), "follow bound, started: ✗ with the last state: \(stuck.text)")
+    }
+
+    /// The leader's status once its start's test request failed (`startTestFailure`): that start's outcome.
+    static func testFailedStatus(_ reason: String) -> [String] {
+        [ClusterOnboardingNotServing.statusLine(model: "Qwen 3.8 27B", reason: reason), ClusterOnboardingReady.testFailedNote]
+    }
+
+    /// Both windows end alike when the leader's start test fails: the leader publishes that outcome instead of clearing
+    /// its pending mark, so the Mac that joined shows the same ✗ and reason, sends no test of its own, and says where to
+    /// test again (the leader's own ending: "Setup saved, but the test failed. To test again, …"). Exit 1 on both.
+    /// Failing first on a148285f70 (the mark cleared, then ✓ from the joined Mac's own test).
+    static func aFailedStartTestEndsTheJoinedMacTheSame() {
+        let reason = "The test request got an empty answer"
+        let recorder = Recorder()
+        let run = joining(recorder, statusSequence: [["Stopped."], ["Loading Qwen 3.8 27B: 1 of 2 parts ready."], [offerPendingLine],
+                                                      [offerPendingLine], testFailedStatus(reason)])
+        expect(run.waitFor(codeQuestion), "failed test, joined: the code"); run.type("y")
+        expect(run.finish(seconds: 20) == 1, "failed test, joined: not success, as the leader's exit 1")
+        let text = run.text
+        expect(text.hasSuffix(block("\u{2717}", "Not serving: " + reason + ".", [ClusterOnboardingReady.testFailedNote])
+            + ClusterOnboardingDriver.testAgainOnLeaderLine(leaderName) + "\n"), "failed test, joined: the leader's reason, then where to test again: \(text)")
+        expect(!text.contains("\u{2713} Serving") && !recorder.all.contains("testRequest") && !recorder.all.contains("pairServing"),
+               "failed test, joined: no ✓, no test of its own: \(recorder.all)")
+        expect(ClusterOnboardingDriver.followed(testFailedStatus(reason)) == .testFailed
+               && ClusterOnboardingDriver.followed([ClusterOnboardingNotServing.statusLine(model: "Qwen 3.8 27B", reason: reason)]) == .offered,
+               "failed test: only the leader's note makes a not-serving line the start's outcome")
+        transcript("member-start-test-failed", text, keys: run.keys)
+
+        // The leader's own window, the same start: the reason, then "Setup saved, but the test failed", exit 1.
+        let leader = TerminalRun(operations(Recorder(), pairEvents: leaderEvents, pairResult: .paired(role: .leader, peerName: "Apple M3 Ultra, 256 GB"),
+                                            testResult: .failure(.init(reason + "."))))
+        expect(leader.waitFor(codeQuestion), "failed test, leader: the code"); leader.type("y")
+        expect(leader.waitFor(prompt(2), count: 2), "failed test, leader: the list"); leader.type("\r")
+        expect(leader.finish(seconds: 20) == 1, "failed test, leader: exit 1")
+        expect(leader.text.contains("  " + reason + ".\n") && leader.text.contains("Setup saved, but the test failed.")
+               && !leader.text.contains("\u{2713} Serving"), "failed test, leader: the same reason, no ✓: \(leader.text)")
+    }
+
+    /// Only the screen's start through Darkbloom, which asks the coordinator after its test (`register`), marks itself
+    /// pending, after its serve and before its wait. `serve` alone (as `darkbloom start` and `restart` run it) never
+    /// does, nor does the switch of scope, which never registers. Failing first on a148285f70 (the serve itself marked).
+    static func onlyTheStartThatRegistersMarksItself() {
+        let recorder = Recorder()
+        var start = operations(recorder, pairEvents: leaderEvents, pairResult: .paired(role: .leader, peerName: "Apple M3 Ultra, 256 GB"))
+        start.markRegistrationPending = { recorder.note("markRegistrationPending") }
+        let run = TerminalRun(start)
+        expect(run.waitFor(codeQuestion), "mark: the code"); run.type("y")
+        expect(run.waitFor(prompt(2), count: 2), "mark: the list"); run.type("\r")
+        expect(run.finish(seconds: 20) == 0, "mark: the start serves")
+        let calls = recorder.all
+        let at = { (name: String) in calls.firstIndex(of: name) ?? -1 }
+        expect(calls.filter { $0 == "markRegistrationPending" }.count == 1 && at("serve") < at("markRegistrationPending")
+               && at("markRegistrationPending") < at("waitReady") && at("waitReady") < at("register"),
+               "mark: once, between the serve and the wait, before the registration: \(calls)")
+
+        var resume = ClusterOnboardingResume(role: .leader, peerName: "Apple M4 Max, 128 GB", serving: true, modelName: "Qwen3.8-27B-4bit-mtp")
+        resume.scope = .localOnly(bind: "0.0.0.0")
+        let switched = Recorder()
+        var scope = operations(switched, resume: resume, pairEvents: [], pairResult: .failed([]))
+        scope.markRegistrationPending = { switched.note("markRegistrationPending") }
+        let toDarkbloom = TerminalRun(scope)
+        expect(toDarkbloom.waitFor("  3) Switch to serving through Darkbloom (both Macs logged in)\n"), "mark, scope: the list"); toDarkbloom.type("3")
+        expect(toDarkbloom.finish(seconds: 20) == 0, "mark, scope: switched")
+        expect(!switched.all.contains("markRegistrationPending") && switched.all.contains("testRequest"),
+               "mark, scope: the switch tests and never marks a registration: \(switched.all)")
+    }
+
+    /// While the leader's start checks with Darkbloom, `darkbloom cluster` on either Mac shows that as a start, never ✓
+    /// (the follow already treated it as unfinished). Failing first on a148285f70 (✓ from readiness alone).
+    static func thePendingCheckIsNoTickOnAnyScreen() {
+        let recorder = Recorder()
+        let member = TerminalRun(operations(recorder, resume: memberResume(), pairEvents: [], pairResult: .failed([]), statusLines: [offerPendingLine]))
+        expect(member.waitFor(prompt(2)), "pending, member: the screen"); member.type("\r")
+        expect(member.finish() == 0, "pending, member: closes")
+        expect(!member.text.contains("\u{2713}") && member.text.contains("  " + offerPendingLine + "\n"),
+               "pending, member: the start's line, no ✓: \(member.text)")
+        expect(ClusterOnboardingDriver.followed([offerPendingLine]) == .starting, "pending: the follow keeps following")
+        // A leader on the first build with the mark said it inside a serving line: no ✓ for that either.
+        let older = "Serving Qwen 3.8 27B (pipeline) at http://localhost:8000 on the other Mac (" + ClusterOnboardingReady.offerPendingWords + ")."
+        let screen = TerminalRun(operations(Recorder(), resume: memberResume(), pairEvents: [], pairResult: .failed([]), statusLines: [older]))
+        expect(screen.waitFor(prompt(2)), "pending, serving line: the screen"); screen.type("\r")
+        expect(screen.finish() == 0 && !screen.text.contains("\u{2713}"), "pending, serving line: no ✓: \(screen.text)")
+        transcript("member-status-while-the-start-checks", member.text, keys: member.keys)
+    }
+
+    /// The Mac that joined bounds each stage of the leader's start as the leader does (loading, then the test and the
+    /// check with Darkbloom, then the registration's restart), not the whole start at once. A stage that never moves on
+    /// still ends at the bound, and a status going back and forth inside one stage never starts it again.
+    /// Failing first on a148285f70 (one bound across all stages).
+    static func eachStageOfTheStartHasItsOwnBound() {
+        let served = "Serving Qwen 3.8 27B through Darkbloom on both Macs (pipeline)."
+        let stage = 10
+        let stages = [["Stopped."]] + Array(repeating: ["Loading Qwen 3.8 27B: 1 of 2 parts ready."], count: stage)
+            + Array(repeating: [offerPendingLine], count: stage)
+            + Array(repeating: ["Qwen 3.8 27B: registering both Macs with the coordinator for pairing."], count: stage)
+            + [[ClusterOnboardingNotServing.statusLine(model: "Qwen 3.8 27B", reason: "waiting for the coordinator to pair both Macs")], [served]]
+        let recorder = Recorder()
+        let run = joining(recorder, statusSequence: stages, pairServingResults: [.success(["in 0.84 s"])], followSeconds: 2.5)
+        expect(run.waitFor(codeQuestion), "stages: the code"); run.type("y")
+        expect(run.finish(seconds: 30) == 0, "stages: each within its bound, the whole start longer: serves: \(run.text)")
+        expect(recorder.all.filter { $0 == "status" }.count > 3 * stage && recorder.all.contains("pairServing"),
+               "stages: followed through every stage to the pair's own wait: \(recorder.all.count)")
+
+        var flapping = [["Stopped."]]
+        for _ in 0..<60 { flapping += [["Loading Qwen 3.8 27B: 1 of 2 parts ready."], ["Stopped."]] }
+        let stuck = joining(Recorder(), statusSequence: flapping, followSeconds: 0.6)
+        expect(stuck.waitFor(codeQuestion), "stages, back and forth: the code"); stuck.type("y")
+        expect(stuck.finish(seconds: 30) == 1 && stuck.text.contains("\u{2717} Not serving: The pair didn't report serving within 0 minutes."),
+               "stages, back and forth: one stage, so its bound ends it: \(stuck.text)")
     }
 
     /// A1: the registration reads as offered, not accepted; the log line and the matcher stay as they were.

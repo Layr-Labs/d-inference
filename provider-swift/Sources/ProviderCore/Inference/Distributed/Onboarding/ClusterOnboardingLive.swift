@@ -27,7 +27,7 @@ extension ClusterOnboardingOperations {
         if let given = wizard.modelsDirectory { _ = try? store.updateRecord { $0.modelsDirectory = given } }
         let context = LiveContext(paths: paths, store: store, settings: wizard, clean: ClusterConsoleFreeText(homeDirectory: paths.homeDirectory.path))
         let live = OnboardingLive(context: context, store: store, settings: settings)
-        return ClusterOnboardingOperations(
+        var made = ClusterOnboardingOperations(
             resume: { live.resume() },
             checkLink: { say in live.checkLink(say) },
             pair: { events in live.pair(events) },
@@ -64,6 +64,16 @@ extension ClusterOnboardingOperations {
             missingLogins: { live.missingLogins() },
             login: { live.login() },
             useMode: { index, mode in live.useMode(index, mode) })
+        made.markRegistrationPending = { live.markRegistrationPending() }
+        return made
+    }
+}
+
+extension ClusterSetupRecord {
+    /// The start's pending mark as one value (`registrationPendingPID` with `registrationPendingStarted`).
+    var registrationPending: ClusterOnboardingPendingRegistration.Mark? {
+        get { registrationPendingPID.map { .init(pid: $0, started: registrationPendingStarted) } }
+        set { registrationPendingPID = newValue?.pid; registrationPendingStarted = newValue?.started }
     }
 }
 
@@ -1295,26 +1305,58 @@ final class OnboardingLive: @unchecked Sendable {
     }
 
     func serve() -> Result<[String], ClusterOnboardingFailure> {
-        routed(.init(op: .serve), acting: true, local: {
-            // Through Darkbloom, this start asks the coordinator after its test whether to offer the pair (`register`).
-            if leadership?.scope.isLocalOnly != true { try? store.updateRecord { $0.registrationPendingPID = getpid() } }
-            return localServe()
-        }) { $0.lines }
+        routed(.init(op: .serve), acting: true, local: { localServe() }) { $0.lines }
+    }
+
+    /// The screen's start through Darkbloom, which asks the coordinator after its test whether to offer the pair
+    /// (`register`), marks the record with its process until it decides, on the Mac whose status both Macs read. `serve`
+    /// alone never marks: `darkbloom start` and `restart` serve without registering, so nothing would clear the mark.
+    func markRegistrationPending() {
+        let pid = getpid()
+        guard !forwards, leadership?.scope.isLocalOnly != true, let started = Self.processStarted(pid) else { return }
+        try? store.updateRecord { $0.registrationPending = .init(pid: pid, started: started); $0.startTestFailure = nil }
     }
 
     /// The start's question to the coordinator is answered (or will not be asked).
     func clearRegistrationPending() {
-        if (try? store.readRecord())?.registrationPendingPID != nil { try? store.updateRecord { $0.registrationPendingPID = nil } }
+        if (try? store.readRecord())?.registrationPending != nil { try? store.updateRecord { $0.registrationPending = nil } }
     }
 
-    /// The record's pending registration, while the start that set it runs.
+    /// The record's pending registration, while the start that set it runs (the same process: its start time matches).
     var registrationPending: Bool {
-        let seen = ClusterOnboardingPendingRegistration.look((try? store.readRecord())?.registrationPendingPID) { kill($0, 0) == 0 || errno == EPERM }
-        if let dead = seen.clear {
-            // That start ended before it asked the coordinator: compare-and-clear, so a new start's pid stays.
-            try? store.updateRecord { $0.registrationPendingPID = ClusterOnboardingPendingRegistration.cleared($0.registrationPendingPID, dead: dead) }
+        let seen = ClusterOnboardingPendingRegistration.look((try? store.readRecord())?.registrationPending, started: Self.processStarted)
+        if let gone = seen.clear {
+            // That start ended before it asked the coordinator: compare-and-clear, so a new start's mark stays.
+            try? store.updateRecord { $0.registrationPending = ClusterOnboardingPendingRegistration.cleared($0.registrationPending, gone: gone) }
         }
         return seen.pending
+    }
+
+    /// When the process `pid` started (microseconds since 1970); nil when none runs or it can't be read.
+    static func processStarted(_ pid: Int32) -> UInt64? {
+        var info = proc_bsdinfo()
+        let size = Int32(MemoryLayout<proc_bsdinfo>.size)
+        guard pid > 0, proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, size) == size else { return nil }
+        return info.pbi_start_tvsec * 1_000_000 + info.pbi_start_tvusec
+    }
+
+    /// A failed test ends the start without asking the coordinator: the start that marked itself publishes that outcome
+    /// (the status says it until the next start, a passing test or a stop), so the Mac that joined ends with the same ✗
+    /// instead of passing a test of its own. A passing test clears an earlier start's failure.
+    func settleTest(_ tested: Result<[String], ClusterOnboardingFailure>) {
+        switch tested {
+        case .success:
+            if (try? store.readRecord())?.startTestFailure != nil { try? store.updateRecord { $0.startTestFailure = nil } }
+        case .failure(let failure):
+            let pid = getpid()
+            guard (try? store.readRecord())?.registrationPendingPID == pid else { return }
+            let first = failure.lines.first ?? "The test request failed"
+            try? store.updateRecord { record in
+                guard record.registrationPendingPID == pid else { return }
+                record.registrationPending = nil
+                record.startTestFailure = first.hasSuffix(".") ? String(first.dropLast()) : first
+            }
+        }
     }
 
     func setScope(_ scope: ClusterServingScope) -> Result<[String], ClusterOnboardingFailure> {
@@ -1365,7 +1407,8 @@ final class OnboardingLive: @unchecked Sendable {
         }
         let title = lock.withLock { chosenTitle } ?? context.savedConfiguration().configuration?.publicModelID
         do {
-            try store.updateRecord { $0.leadership?.serving = true; if let title { $0.leadership?.modelName = title } }
+            // A new start: an earlier start's failed test is no longer the pair's outcome.
+            try store.updateRecord { $0.leadership?.serving = true; if let title { $0.leadership?.modelName = title }; $0.startTestFailure = nil }
             // The line of the setup that runs, so the member shows the same one when it leads.
             let deployment = savedDeployment() ?? leadership?.deployment
             try store.updateRecord { $0.leadership?.deployment = deployment }
@@ -1686,8 +1729,7 @@ final class OnboardingLive: @unchecked Sendable {
     func testRequest() -> Result<[String], ClusterOnboardingFailure> {
         routed(.init(op: .test), seconds: 240, acting: false, local: {
             let tested = localTestRequest()
-            // A failed test ends the start without asking the coordinator.
-            if case .failure = tested { clearRegistrationPending() }
+            settleTest(tested)
             return tested
         }) { $0.lines }
     }
@@ -1787,8 +1829,13 @@ final class OnboardingLive: @unchecked Sendable {
             if session.ready {
                 let ready = ready(now, port: session.port ?? 0)
                 if leadership?.scope.isLocalOnly != true, registrationPending {
-                    // The start still asks the coordinator whether to offer the pair: serving, but not the start's outcome.
-                    lines.append(ready.summary(model: model) + " (" + ClusterOnboardingReady.offerPendingWords + ").")
+                    // The start still asks the coordinator whether to offer the pair: a start, not its outcome.
+                    lines.append(ClusterOnboardingReady.offerPendingLine(model: model))
+                    return lines
+                }
+                if let failure = (try? store.readRecord())?.startTestFailure {
+                    // The start's outcome: its test request failed, and the pair was not offered to Darkbloom.
+                    lines += [ClusterOnboardingNotServing.statusLine(model: model, reason: failure), ClusterOnboardingReady.testFailedNote]
                     return lines
                 }
                 lines.append(ready.summary(model: model)
@@ -1849,7 +1896,8 @@ final class OnboardingLive: @unchecked Sendable {
                 record.stopDrain = .init(id: stopID,
                     keepPeerRunning: record.leadership?.serving == true || record.stopDrain?.keepPeerRunning == true)
                 record.leadership?.serving = false
-                record.registrationPendingPID = nil
+                record.registrationPending = nil
+                record.startTestFailure = nil
             }
             lock.withLock { partsStoppedAt = Date() }
         } catch {

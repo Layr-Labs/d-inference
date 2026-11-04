@@ -310,11 +310,17 @@ nothing more once paired, also for `darkbloom cluster local`
 over the cable and ends with the same ✓/✗ block, bounded like the leader's start
 (`ClusterOnboardingDriver.followStart`, `ClusterOnboardingFollowTiming`). Serving through Darkbloom, the
 leader's start asks the coordinator after its test whether to offer the pair; until it has, the setup record
-says so (`ClusterSetupRecord.registrationPendingPID`, set by `OnboardingLive.serve`, cleared by
-`localRegister`, a failed test or a stop, honoured only while that start's process runs) and the leader's
-status says the serving line "checking with Darkbloom before it offers the pair"
-(`ClusterOnboardingReady.offerPendingWords`), which the Mac that joins follows as a start not yet over. So a
-late offer never gives it an early ✓: offered, it waits on the pair as the leader does (`pairServing`). The model list keeps one line per
+says so (`ClusterSetupRecord.registrationPendingPID` and `registrationPendingStarted`, set only by the screen's
+start, `OnboardingLive.markRegistrationPending`, never by `serve` alone as `darkbloom start` and `restart` run
+it; cleared by `localRegister`, a failed test or a stop; honoured only while that start's process runs, the same
+process by its start time) and the leader's status says a start line, "checking with Darkbloom before it offers
+the pair" (`ClusterOnboardingReady.offerPendingLine`), which the Mac that joins follows as a start not yet over
+and no screen shows as ✓. A failed test publishes the start's outcome instead (`ClusterSetupRecord.startTestFailure`,
+under the status's not-serving line `ClusterOnboardingReady.testFailedNote`), so the Mac that joins ends with the
+same ✗ and sends no test of its own. Each stage of the start has the whole bound
+(`ClusterOnboardingDriver.followStage`). So with both Macs on this build a late offer never gives it an early ✓:
+offered, it waits on the pair as the leader does (`pairServing`). With a leader on an older build, the joining Mac
+may show ✓ before Darkbloom accepts the pair. The model list keeps one line per
 artifact and name (`OnboardingLive.presentedChoices`): a choice that cannot be
 served is left out when another offers the same digests under the same name,
 and an artifact this build serves is never called unsupported for a copy the

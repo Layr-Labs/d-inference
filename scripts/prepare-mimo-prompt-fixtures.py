@@ -3,6 +3,7 @@
 
 import argparse
 import hashlib
+import os
 from pathlib import Path
 import stat
 import urllib.parse
@@ -38,6 +39,30 @@ def public_metadata(name):
         return response.read(MAXIMUM + 1)
 
 
+def cached(fetch, cache, pin):
+    """Wrap `fetch(name)` with a content-addressed cache directory.
+
+    An entry is named by the SHA-256 that `pin(name)` returns and is used only
+    when its bytes still have that digest; otherwise `fetch` runs and its
+    verified bytes replace the entry. The caller still checks every result.
+    """
+    def fetch_cached(name):
+        digest = pin(name)
+        entry = cache / digest
+        if entry.is_file() and not entry.is_symlink():
+            data = entry.read_bytes()
+            if hashlib.sha256(data).hexdigest() == digest:
+                return data
+        data = fetch(name)
+        if hashlib.sha256(data).hexdigest() == digest:
+            cache.mkdir(parents=True, exist_ok=True)
+            temporary = cache / f".{digest}.{os.getpid()}"
+            temporary.write_bytes(data)
+            temporary.replace(entry)
+        return data
+    return fetch_cached
+
+
 def prepare(output, corpus, download=public_metadata):
     if corpus.is_symlink() or not stat.S_ISREG(corpus.stat().st_mode):
         raise ValueError("corpus must be an ordinary file")
@@ -61,10 +86,12 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--github-env", type=Path)
+    parser.add_argument("--cache", type=Path, help="content-addressed directory of verified downloads")
     args = parser.parse_args()
     root = Path(__file__).resolve().parent.parent
     corpus = root / "fixtures/prompt-contract/mimo-v26-additional20.json"
-    output = prepare(args.output, corpus)
+    download = public_metadata if args.cache is None else cached(public_metadata, args.cache, PINS.__getitem__)
+    output = prepare(args.output, corpus, download)
     lines = [f"MIMO_PROMPT_ARTIFACT_DIRECTORY={output}",
              f"MIMO_PROMPT_REFERENCE_VECTORS={corpus}"]
     if any("\n" in line or "\r" in line for line in lines):

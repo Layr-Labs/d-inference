@@ -22,12 +22,17 @@ spec.loader.exec_module(workflow)
 
 class ComponentPathsTests(unittest.TestCase):
     def test_only_same_workflow_pr_revisions_share_cancellation_group(self):
-        for filename in ("ci-dev.yml", "ci-master.yml"):
+        # Pull request revisions cancel each other. In CI (dev), pushes share one
+        # group per branch without cancelling: one run in progress, the newest
+        # push waiting. In CI (master) every push has a group of its own.
+        groups = {"ci-dev.yml": "github.event.pull_request.number || github.ref",
+                  "ci-master.yml": "github.event.pull_request.number || github.run_id"}
+        for filename, key in groups.items():
             with self.subTest(workflow=filename):
                 source = (ROOT / ".github/workflows" / filename).read_text()
                 concurrency = source.split("\nconcurrency:\n", 1)[1].split("\njobs:\n", 1)[0]
-                self.assertIn("  group: ${{ github.workflow }}-${{ github.event_name }}-"
-                              "${{ github.event.pull_request.number || github.run_id }}\n", concurrency)
+                self.assertIn("  group: ${{ github.workflow }}-${{ github.event_name }}-${{ %s }}\n" % key,
+                              concurrency)
                 self.assertIn("  cancel-in-progress: ${{ github.event_name == 'pull_request' }}\n", concurrency)
         # The shared test workflow takes its callers' concurrency.
         self.assertNotIn("\nconcurrency:", (ROOT / ".github/workflows/provider-tests.yml").read_text())
@@ -72,6 +77,7 @@ class ComponentPathsTests(unittest.TestCase):
             ".github/workflows/ci-master.yml": {"provider", "sdk", "cluster", "mimo_audio"},
             "scripts/run-paged-kernel-tests.sh": {"provider", "sdk"},
             "scripts/run-provider-tests.sh": {"provider"},
+            "scripts/provider-ci-cold-retry.sh": {"provider", "sdk", "cluster"},
             "scripts/provider-test-shards.py": {"provider"},
             "scripts/cluster-test-plan.py": {"provider", "cluster"},
             "coordinator/store/postgres/users.go": set(),
@@ -295,7 +301,8 @@ class WorkflowRoutingTests(unittest.TestCase):
         ci = workflow.job_blocks((ROOT / ".github/workflows/provider-tests.yml").read_text())
         # The GPU job's test step continues on error (scripts/test-cluster-test-plan.py).
         self.assertIn("    needs: [changes, route]\n", ci["test-cluster-gpu"])
-        self.assertIn("    if: ${{ needs.changes.outputs.cluster == 'true' }}\n", ci["test-cluster-gpu"])
+        self.assertIn("    if: ${{ github.event_name == 'push' && needs.changes.outputs.cluster == 'true' }}\n",
+                      ci["test-cluster-gpu"])
         # The SDK lane runs on every push and on pull requests that change its inputs.
         self.assertIn("    needs: [changes, route]\n", ci["test-provider-sdk"])
         self.assertIn("    if: ${{ github.event_name == 'push' || needs.changes.outputs.sdk == 'true' }}\n",

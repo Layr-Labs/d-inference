@@ -266,28 +266,38 @@ class CountAndAuditTests(unittest.TestCase):
 class RunnerTests(unittest.TestCase):
     """run-provider-tests.sh with a recording `swift` in place of the toolchain."""
 
-    def run_tests(self, shard=None):
+    def run_tests(self, shard=None, processes=None, status=0):
         temporary = tempfile.TemporaryDirectory(prefix="provider-shard-runner-")
         self.addCleanup(temporary.cleanup)
         root = Path(temporary.name)
-        calls = root / "calls.jsonl"
+        calls, environments = root / "calls.jsonl", root / "environments.jsonl"
         swift = root / "swift"
         swift.write_text(textwrap.dedent("""\
             #!/usr/bin/env python3
             import json, os, sys
             with open(os.environ["STUB_CALLS"], "a") as calls:
                 calls.write(json.dumps(sys.argv[1:]) + "\\n")
+            with open(os.environ["STUB_ENVIRONMENTS"], "a") as environments:
+                environments.write(json.dumps({name: os.environ.get(name) for name in (
+                    "TMPDIR", "DARKBLOOM_STATE_FILE", "DARKBLOOM_LOADED_MODELS_FILE",
+                    "DARKBLOOM_VERIFIED_WEIGHTS_FILE")}) + "\\n")
             print("Test run with 2 tests in 1 suite passed after 0.1 seconds.")
             """))
         swift.chmod(0o755)
         environment = {**os.environ, "PATH": f"{root}{os.pathsep}{os.environ['PATH']}",
-                       "STUB_CALLS": str(calls), "TMPDIR": str(root)}
+                       "STUB_CALLS": str(calls), "STUB_ENVIRONMENTS": str(environments), "TMPDIR": str(root)}
         environment.pop("PROVIDER_TEST_SHARD", None)
+        environment.pop("PROVIDER_TEST_PROCESSES", None)
         if shard:
             environment.update(PROVIDER_TEST_SHARD=shard, PROVIDER_TEST_REPORT_DIR=str(root / "reports"))
+        if processes is not None:
+            environment["PROVIDER_TEST_PROCESSES"] = processes
         result = subprocess.run(["bash", str(ROOT / "scripts/run-provider-tests.sh")], cwd=root,
                                 env=environment, text=True, capture_output=True, timeout=60)
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(result.returncode, status, result.stdout + result.stderr)
+        if status:
+            return result
+        self.environments = [json.loads(line) for line in environments.read_text().splitlines()]
         return [json.loads(line) for line in calls.read_text().splitlines()], root / "reports"
 
     def test_unsharded_run_is_one_serial_suite_and_every_isolated_process(self):
@@ -319,6 +329,53 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(len(calls), 10)
         self.assertEqual(calls[0][:4], ["test", "--skip-build", "--no-parallel", "--skip"])
         self.assertNotIn("--filter", calls[0])
+
+
+    def selection_of(self, call):
+        """The selection a recorded `swift test` call ran, from its xUnit report name."""
+        return call[call.index("--xunit-output") + 1].rsplit("/shard-", 1)[1].removesuffix(".xml")
+
+    def test_one_process_keeps_the_single_selection_command_line(self):
+        calls, _ = self.run_tests("2/4", processes="1")
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][:4], ["test", "--skip-build", "--no-parallel", "--filter"])
+
+    def test_processes_run_their_selections_beside_each_other_with_their_own_files(self):
+        calls, reports = self.run_tests("1/2", processes="3")
+        # Job 1 of 2 with 3 processes runs selections 1 to 3 of 6, and selection
+        # 1's process also runs the parallel class; no isolated process runs.
+        self.assertEqual(sorted(self.selection_of(call) for call in calls),
+                         ["1-of-6", "2-of-6", "3-of-6", "parallel"])
+        for call in calls:
+            self.assertEqual(call[:3], ["test", "--skip-build", "--ignore-lock"])
+        for name in ("1-of-6", "2-of-6", "3-of-6", "parallel"):
+            self.assertTrue((reports / f"shard-{name}.json").is_file(), name)
+        # Each process has its own TMPDIR and state files; the parallel class
+        # shares selection 1's, as it runs after it in the same slot.
+        directories = {environment["TMPDIR"] for environment in self.environments}
+        states = {environment["DARKBLOOM_STATE_FILE"] for environment in self.environments}
+        self.assertEqual(len(directories), 3)
+        self.assertEqual(len(states), 3)
+        for environment in self.environments:
+            self.assertTrue(environment["DARKBLOOM_STATE_FILE"].startswith(str(Path(environment["TMPDIR"]).parent)))
+
+    def test_last_job_runs_its_selections_then_every_isolated_process_alone(self):
+        calls, reports = self.run_tests("2/2", processes="3")
+        self.assertEqual(sorted(self.selection_of(call) for call in calls[:3]), ["4-of-6", "5-of-6", "6-of-6"])
+        catch_all = next(call for call in calls[:3] if self.selection_of(call) == "6-of-6")
+        self.assertNotIn("--filter", catch_all)
+        # The isolated processes and the exclusive GPU test run after all
+        # selections, one at a time, without the lock override.
+        self.assertEqual(len(calls), 3 + 9)
+        for call in calls[3:]:
+            self.assertNotIn("--ignore-lock", call)
+        self.assertEqual(len({environment["TMPDIR"] for environment in self.environments[3:]}), 1)
+
+    def test_invalid_job_or_process_count_refuses_before_any_test(self):
+        for shard, processes in (("3/2", "3"), ("0/2", "3"), ("1/2", "0"), ("1/2", "10"), ("1/2", "x"), ("x", "1")):
+            with self.subTest(shard=shard, processes=processes):
+                result = self.run_tests(shard, processes=processes, status=2)
+                self.assertIn("PROVIDER_TEST_SHARD must be K/N", result.stderr)
 
 
 if __name__ == "__main__":

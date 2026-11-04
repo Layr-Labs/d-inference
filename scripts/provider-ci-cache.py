@@ -19,6 +19,8 @@ from provider_release_cache import identity, tracked
 
 
 CACHE_VERSION = "v1"
+# Swift build keys have two tiers since v2 (see keys()).
+SWIFT_CACHE_VERSION = "v2"
 LANE_PURPOSES = {
     "provider": "provider-debug-tests",
     "sdk": "sdk-nested-debug-tests",
@@ -38,6 +40,7 @@ RECIPE_PATHS = (
     "scripts/prepare-provider-release-toolchain.sh",
     "scripts/provider-release-swift.sh",
     "scripts/run-provider-tests.sh",
+    "scripts/provider-ci-cold-retry.sh",
     "scripts/run-provider-test-watchdog.py",
     "scripts/run-nested-suite.sh",
     "scripts/run-paged-kernel-tests.sh",
@@ -124,14 +127,22 @@ def keys(root: Path, lane: str, metadata: dict | None = None) -> dict[str, str]:
                         for path in (root / "scripts/provider_release_cache").glob("*.py"))
     recipe = {path: tracked.file_hash(root, path) if (root / path).exists() else "absent"
               for path in sorted(recipe_paths)}
-    compatibility_hash = identity.digest({
-        "version": CACHE_VERSION, "purpose": LANE_PURPOSES[lane],
+    # Two tiers. The loose prefix binds what the compiled objects depend on:
+    # the toolchain, the dependency manifests and pins, and the checkout path.
+    # The strict prefix adds the CI recipe (workflows, scripts), which changes
+    # often and rarely changes an object. A build restored from the loose tier
+    # rebuilds what changed (restore-mtimes) and, if it fails, builds once
+    # from nothing (scripts/provider-ci-cold-retry.sh).
+    loose_hash = identity.digest({
+        "version": SWIFT_CACHE_VERSION, "purpose": LANE_PURPOSES[lane],
         "checkout": checkout_path, "resolved_checkout": str(root),
-        "toolchain": metadata, "dependencies": dependencies, "recipe": recipe,
+        "toolchain": metadata, "dependencies": dependencies,
     })
+    recipe_hash = identity.digest({"version": SWIFT_CACHE_VERSION, "recipe": recipe})
     commit = tracked.git(root, "rev-parse", "HEAD").decode("ascii").strip()
-    prefix = f"provider-ci-swift-{CACHE_VERSION}-{LANE_PURPOSES[lane]}-{compatibility_hash}-"
-    result = {"swift-prefix": prefix, "swift-key": prefix + commit}
+    loose_prefix = f"provider-ci-swift-{SWIFT_CACHE_VERSION}-{LANE_PURPOSES[lane]}-{loose_hash}-"
+    prefix = f"{loose_prefix}{recipe_hash[:32]}-"
+    result = {"swift-loose-prefix": loose_prefix, "swift-prefix": prefix, "swift-key": prefix + commit}
 
     mlx_commit = sources.gitlinks.get(MLX_SOURCE)
     if mlx_commit is None:

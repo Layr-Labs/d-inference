@@ -14,9 +14,11 @@ on:
 permissions:
   contents: read
 
-# Only revisions of the same PR supersede each other; pushes stay independent.
+# Revisions of the same PR supersede each other. Pushes to dev share one group:
+# one run is in progress and the newest push waits (GitHub cancels an older
+# waiting run), so a burst of merges runs twice, not once per merge.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:

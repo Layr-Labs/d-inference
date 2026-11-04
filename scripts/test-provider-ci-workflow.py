@@ -12,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 import textwrap
+import time
 import unittest
 
 
@@ -44,12 +45,13 @@ LAST_SHARD = "matrix.shard == strategy.job-total"
 LAST_SHARD_READY = READY.replace("!cancelled() && ", f"!cancelled() && {LAST_SHARD} && ")
 LAST_SHARD_MIMO_READY = MIMO_READY.replace("!cancelled() && ", f"!cancelled() && {LAST_SHARD} && ")
 PROVIDER_MIMO_READY = "${{ !cancelled() && steps.provider-ci-build.outcome == 'success' && steps.mimo-prompt-fixtures.outcome == 'success' && steps.mimo-fixtures.outcome == 'success' }}"
+MIMO_METADATA_CACHE = '--cache "$RUNNER_TEMP/mimo-metadata-cache"'
 MIMO_PREPARE = ('python3 scripts/prepare-mimo-prompt-fixtures.py '
-                '--output "$RUNNER_TEMP/mimo-prompt-fixtures" --github-env "$GITHUB_ENV"')
+                '--output "$RUNNER_TEMP/mimo-prompt-fixtures" --github-env "$GITHUB_ENV" ' + MIMO_METADATA_CACHE)
 MIMO_HTTP_PREPARE = ('python3 scripts/test-prepare-mimo-image-http-fixtures.py\n'
                      + MIMO_PREPARE + '\n'
                      + 'python3 scripts/prepare-mimo-image-http-fixtures.py '
-                     '--output "$RUNNER_TEMP/mimo-image-http-fixtures" --github-env "$GITHUB_ENV"')
+                     '--output "$RUNNER_TEMP/mimo-image-http-fixtures" --github-env "$GITHUB_ENV" ' + MIMO_METADATA_CACHE)
 MIMO_PROVIDER_PREPARE = ('python3 scripts/prepare-mimo-provider-fixtures.py '
                          '--output "$RUNNER_TEMP/mimo-provider-fixtures" --github-env "$GITHUB_ENV"\n'
                          'python3 scripts/prepare-mimo-provider-fixtures.py '
@@ -88,8 +90,12 @@ LANES = {
     "test-provider": "provider",
     "test-provider-sdk": "sdk",
 }
-PROVIDER_SHARDS = [1, 2, 3]
-# Prompt Parity runs in a provider shard (scripts/provider-test-shards.py PARITY_SHARD).
+PROVIDER_SHARDS = [1, 2]
+# Each shard runs this many selections at the same time (scripts/run-provider-tests.sh),
+# so the planner splits the suite into len(PROVIDER_SHARDS) * PROVIDER_PROCESSES selections.
+PROVIDER_PROCESSES = 3
+# Prompt Parity runs in the provider shard that holds selection
+# PARITY_SHARD (scripts/provider-test-shards.py).
 PARITY_STEPS = {
     "Verify public prompt golden vectors": ("./scripts/verify-prompt-parity.sh", "ProductionPromptParityTests", "prompt"),
     "Verify pinned Nemotron prompts and numeric cache plans":
@@ -388,8 +394,11 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         build_step = next(step for step in step_blocks(ACTION.read_text(), indent=4)
                           if field(step, "id", indent=6) == "provider-build")
         self.assertEqual(textwrap.dedent(build_step.split("run: |\n", 1)[1]).strip(),
-                         "swift build --build-tests --enable-code-coverage\n"
-                         "swift build --product darkbloom-fan-helper --enable-code-coverage")
+                         "build() {\n"
+                         "  swift build --build-tests --enable-code-coverage &&\n"
+                         "    swift build --product darkbloom-fan-helper --enable-code-coverage\n"
+                         "}\n"
+                         "build || { ../scripts/provider-ci-cold-retry.sh && build; }")
 
     def test_provider_entrypoint_and_resource_installer_checks_are_retained(self):
         steps = work_steps(self.jobs["test-provider"])
@@ -414,6 +423,7 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         self.assertEqual(field(test_step, "timeout-minutes"), "35")
         self.assertEqual(field(test_step, "PROVIDER_TEST_SHARD", indent=10),
                          "${{ matrix.shard }}/${{ strategy.job-total }}")
+        self.assertEqual(field(test_step, "PROVIDER_TEST_PROCESSES", indent=10), f"'{PROVIDER_PROCESSES}'")
         self.assertEqual(field(test_step, "PROVIDER_TEST_REPORT_DIR", indent=10),
                          "${{ runner.temp }}/provider-unit-shard")
         # Every shard prepares the fixtures its suites read; every other check
@@ -619,7 +629,7 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         self.assertEqual([step for step in steps if "actions/setup-go@" in step], [])
         names = [field(step, "name", indent=6) for step in steps]
         tests = names.index("Run Swift tests")
-        shard = f"matrix.shard == {shards.PARITY_SHARD}"
+        shard = f"matrix.shard == {(shards.PARITY_SHARD - 1) // PROVIDER_PROCESSES + 1}"
         conditions = {
             "Verify public prompt golden vectors":
                 "${{ !cancelled() && %s && steps.provider-ci-build.outcome == 'success' && "
@@ -785,11 +795,12 @@ class ProviderCIWorkflowTests(unittest.TestCase):
 
     def test_parity_has_no_backend_caches_or_credentials(self):
         # Prompt Parity now runs in the provider shards; besides .git, the only
-        # cache that job saves directly is the verified MiMo audio codec.
+        # caches that job saves directly are the verified MiMo downloads.
         steps = step_blocks(self.jobs["test-provider"])
         saves = [step for step in steps if "actions/cache/save@" in step]
         self.assertEqual([field(step, "name", indent=6) for step in saves],
-                         ["Save .git for later runs", "Cache verified MiMo audio codec"])
+                         ["Save .git for later runs", "Save verified MiMo metadata downloads",
+                          "Cache verified MiMo audio codec"])
         self.assertNotIn("test-provider-parity", workflow_text())
         for forbidden in ("coordinator/", "cargo ", "rust-key", "secrets.", "darkbloom-platform"):
             self.assertNotIn(forbidden, self.jobs["test-provider"])
@@ -989,8 +1000,23 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         steps = step_blocks(action, indent=4)
         by_id = {field(step, "id", indent=6): step for step in steps if field(step, "id", indent=6)}
         swift_cache = by_id["swift-cache"]
-        self.assertIn("key: ${{ steps.keys.outputs.swift-key }}", swift_cache)
-        self.assertIn("restore-keys: ${{ steps.keys.outputs.swift-prefix }}", swift_cache)
+        self.assertIn("key: ${{ steps.build-key.outputs.key }}", swift_cache)
+        # This recipe's entries first, then any recipe's with the same toolchain,
+        # dependencies and checkout path.
+        self.assertIn("restore-keys: |\n          ${{ steps.keys.outputs.swift-prefix }}\n"
+                      "          ${{ steps.keys.outputs.swift-loose-prefix }}\n", swift_cache)
+        save = next(step for step in steps if field(step, "name", indent=4) == "Save lane-specific Swift test build")
+        self.assertIn("key: ${{ steps.build-key.outputs.key }}", save)
+        # Every build step builds once more from nothing only through the retry
+        # helper, which reads the matched key and this recipe's prefix.
+        for step_id in ("provider-build", "sdk-build", "cluster-build"):
+            with self.subTest(step=step_id):
+                step = by_id[step_id]
+                self.assertIn("provider-ci-cold-retry.sh && ", step)
+                self.assertEqual(field(step, "PROVIDER_CI_MATCHED_KEY", indent=8),
+                                 "${{ steps.swift-cache.outputs.cache-matched-key }}")
+                self.assertEqual(field(step, "PROVIDER_CI_STRICT_PREFIX", indent=8),
+                                 "${{ steps.keys.outputs.swift-prefix }}")
         metal_cache = by_id["metallib-cache"]
         self.assertIn("key: ${{ steps.keys.outputs.metallib-key }}", metal_cache)
         self.assertNotIn("restore-keys:", metal_cache)
@@ -1000,6 +1026,38 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         self.assertNotIn("rust-key:", action)
         self.assertNotIn("rust-cache-hit:", action)
         self.assertEqual(sum("actions/cache/save@" in step for step in steps), 3)
+
+    def test_darkbloom_hosts_save_one_build_per_lane_and_day(self):
+        steps = step_blocks(ACTION.read_text(), indent=4)
+        step = next(step for step in steps if field(step, "id", indent=6) == "build-key")
+        script = textwrap.dedent(step.split("run: |\n", 1)[1])
+        day = time.strftime("%Y-%m-%d", time.gmtime())
+        for runner, expected in (("darkbloom-5ab1e68d", f"prefix-day-{day}"), ("blacksmith-12vcpu-macos-27-x", "prefix-commit"),
+                                 ("", "prefix-commit")):
+            with self.subTest(runner=runner), tempfile.TemporaryDirectory() as work:
+                output = Path(work) / "output"
+                result = subprocess.run(["bash", "-eo", "pipefail", "-c", script], text=True, capture_output=True,
+                                        env={"PATH": os.environ["PATH"], "RUNNER_NAME": runner,
+                                             "PREFIX": "prefix-", "COMMIT_KEY": "prefix-commit",
+                                             "GITHUB_OUTPUT": str(output)}, timeout=30)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(output.read_text(), f"key={expected}\n")
+
+    def test_cold_retry_deletes_only_a_loose_tier_build(self):
+        helper = ROOT / "scripts/provider-ci-cold-retry.sh"
+        builds = ("provider-swift/.build", "libs/mlx-swift-lm/.build", "libs/darkbloom-cluster/.build")
+        for matched, retries in (("", False), ("strict-abc-commit", False), ("strict-abc-day-2026-11-04", False),
+                                 ("strict-other-commit", True)):
+            with self.subTest(matched=matched), tempfile.TemporaryDirectory() as work:
+                for build in builds:
+                    Path(work, build).mkdir(parents=True)
+                result = subprocess.run(["bash", str(helper)], text=True, capture_output=True, timeout=30,
+                                        env={"PATH": os.environ["PATH"], "GITHUB_WORKSPACE": work,
+                                             "PROVIDER_CI_MATCHED_KEY": matched,
+                                             "PROVIDER_CI_STRICT_PREFIX": "strict-abc-"})
+                self.assertEqual(result.returncode, 0 if retries else 1, result.stdout + result.stderr)
+                self.assertEqual([Path(work, build).exists() for build in builds], [not retries] * 3)
+                self.assertEqual("::warning title=Build cache::" in result.stdout, retries)
 
     def test_composite_restores_swiftpm_repositories_per_lane_and_runner_layout(self):
         steps = step_blocks(ACTION.read_text(), indent=4)

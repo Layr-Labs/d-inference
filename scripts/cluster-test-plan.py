@@ -16,11 +16,13 @@ reported but not failing the workflow) and `focused` (Cluster Focused Checks,
 the model-free runner scripts).
 
 Subcommands:
-  run LANE SHARD     run the selections of one shard, each in its own process
+  run LANE SHARD     run the selections of one shard, each in its own process:
+                     the shard's groups at the same time, then the others alone
   audit              check the plan against the sources and the workflow
 """
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 import os
 from pathlib import Path
@@ -55,6 +57,10 @@ class Selection:
     suites: tuple | None = None
     # Focused: a runner script under libs/darkbloom-cluster/Tests.
     runner: str | None = None
+    # The shard runs its groups at the same time, each group's selections one
+    # after another in plan order; the selections with no group then run one
+    # at a time, alone on the Mac.
+    group: int | None = None
 
     @property
     def base(self):
@@ -100,10 +106,14 @@ QWEN_TP_MTP_GPU_TESTS = (
 )
 
 SELECTIONS = (
-    # Its CPU path is the longest suite, so it has a shard of its own.
-    Selection("base-batch-session", "blocking", 1, suites=("QwenTensorParallelBatchSessionTests",)),
-    Selection("base", "blocking", 2),
-    Selection("qwen-tp-batch-gpu", "blocking", 3, {"QWEN_TP_BATCH_GPU": "1"}, tests=(
+    # Blocking shard 1 runs `base`, the longest selection, alone. Shard 2 runs
+    # group 1 (the CPU batch-session suite, then the GLM, TF32 and Gemma
+    # selections) beside group 2 (the Qwen GPU chain), then the share probe
+    # alone: its 1.5 s budget includes the first use of the Qwen TP kernels on
+    # the Mac, after qwen-tp-batch-gpu, with no other process beside it.
+    Selection("base-batch-session", "blocking", 2, suites=("QwenTensorParallelBatchSessionTests",), group=1),
+    Selection("base", "blocking", 1),
+    Selection("qwen-tp-batch-gpu", "blocking", 2, {"QWEN_TP_BATCH_GPU": "1"}, tests=(
         "bothTilesGiveTheSameBytes",
         "actualHybridShardsPreserveAttentionConvAndSSMRows",
         "nineBRatioDenseShardsBatchExactly",
@@ -115,16 +125,16 @@ SELECTIONS = (
         "mergedStepTemporariesStayWithinTheirCharge",
         "mergedFramesKeepEveryBit",
         "executorRunsThePlannedMergedStep",
-    )),
-    Selection("qwen-tp-batch-gpu-paged", "blocking", 3, {"QWEN_TP_BATCH_GPU": "1", "QWEN_TP_BATCH_KV": "paged"}, tests=(
+    ), group=2),
+    Selection("qwen-tp-batch-gpu-paged", "blocking", 2, {"QWEN_TP_BATCH_GPU": "1", "QWEN_TP_BATCH_KV": "paged"}, tests=(
         "cohortSurvivorKeepsOnlyItsOwnRows",
         "routedExpertCapacityOneAndTwoKeepExactPagedLogitsAndHistory",
         "capacityOneAndTwoKeepExactPagedLogitsAndHistory",
         "pagesGrowMidDecodeWithoutChangingAByte",
         "promptLayerSubmissionKeepsEveryBit",
-    )),
-    Selection("qwen-tp-mtp-gpu", "blocking", 3, {"QWEN_TP_MTP_GPU": "1"}, tests=QWEN_TP_MTP_GPU_TESTS),
-    Selection("qwen-tp-aqv-gpu", "blocking", 3, {"QWEN_TP_AQV_GPU": "1"}, tests=(
+    ), group=2),
+    Selection("qwen-tp-mtp-gpu", "blocking", 2, {"QWEN_TP_MTP_GPU": "1"}, tests=QWEN_TP_MTP_GPU_TESTS, group=2),
+    Selection("qwen-tp-aqv-gpu", "blocking", 2, {"QWEN_TP_AQV_GPU": "1"}, tests=(
         "declinesWhatItDoesNotCover",
         "agreesWithTheDequantizedProduct",
         "everyVectorEqualsItsOwnSingleVectorCall",
@@ -134,40 +144,40 @@ SELECTIONS = (
         "siluMultiplyEqualsTheUnfusedChain",
         "sigmoidGateEqualsTheUnfusedChain",
         "cachedGatedDeltaScalesEqualFreshOnes",
-    )),
-    Selection("qwen-tp-moe-gpu", "blocking", 3, {"QWEN_TP_MOE_GPU": "1", "QWEN_TP_MOE_GPU_DIAG": "1"}, tests=(
+    ), group=2),
+    Selection("qwen-tp-moe-gpu", "blocking", 2, {"QWEN_TP_MOE_GPU": "1", "QWEN_TP_MOE_GPU_DIAG": "1"}, tests=(
         "packedSharedExpertCollectiveIsBitIdenticalOnTwoGPURanks",
         "packedRunsRepeatAndShortPromptsOnTwoGPURanks",
-    )),
-    Selection("qwen-tp-share-probe-gpu", "blocking", 3, {"QWEN_TP_SHARE_PROBE_GPU": "1"}, tests=(
+    ), group=2),
+    Selection("qwen-tp-share-probe-gpu", "blocking", 2, {"QWEN_TP_SHARE_PROBE_GPU": "1"}, tests=(
         "eachRankTimesItsShareAloneAndReleasesItsRequest",
         "aRefusalOrAFailureGivesNoProbeAndKeepsNothing",
     )),
-    Selection("glm53-prefix-ssd", "blocking", 3, {"GLM53_PREFIX_SSD": "1"}, tests=(
+    Selection("glm53-prefix-ssd", "blocking", 2, {"GLM53_PREFIX_SSD": "1"}, tests=(
         "aServingStageRestoresFromTheSSDExactly",
         "aServingStageRestoresFromABalancedRecord",
-    )),
+    ), group=2),
     Selection("glm53-paged-kv", "blocking", 2, {"GLM53_PAGED_KV": "1"}, tests=(
         "pagedRequestsDecideAndHoldWhatContiguousOnesDo",
         "pagedMediaRequestsDecideAndHoldWhatContiguousOnesDo",
-    )),
+    ), group=1),
     Selection("glm53-row-invariance", "blocking", 2, {"GLM53_ROW_INVARIANCE": "1"}, tests=(
         "roundsAreEachRequestsOwnRound",
-    )),
+    ), group=1),
     Selection("glm53-depth-invariance", "blocking", 2, {"GLM53_DEPTH_INVARIANCE": "1"}, tests=(
         "prefillIsTheSameWithAndWithoutTheSwitch",
         "unpaddedLastRoundsStayOneRowWindows",
-    )),
+    ), group=1),
     Selection("glm53-window-census", "blocking", 2, {"GLM53_WINDOW_CENSUS": "1"}, tests=(
         "sublayerCensus",
         "projectionRowCensus",
-    )),
+    ), group=1),
     Selection("tf32-off", "blocking", 2, {"MLX_ENABLE_TF32": "0"}, tests=(
         "receiverCommitPrecedesProducerPublicationAndMatchesFullCachedForward",
-    )),
+    ), group=1),
     Selection("gemma-tp-diag", "blocking", 2, {"GEMMA_TP_DIAG": "1"}, tests=(
         "diagnosticShardOperationsEqualWholeOperations",
-    )),
+    ), group=1),
     Selection("qwen-tp-real-geometry-gpu", "nonblocking", 1, {"QWEN_TP_REAL_GEOMETRY_GPU": "1"}, tests=(
         "rowsEqualTheirSoloStepsAndWindowPositionsAtRealWidths",
     )),
@@ -287,23 +297,62 @@ def shards(lane):
     return sorted({selection.shard for selection in SELECTIONS if selection.lane == lane})
 
 
+def execute(selection, output, log=None, temporary=None):
+    """Run one selection in its own process; return (exit status, seconds)."""
+    cwd, argv = command(selection, output)
+    env = environment(selection)
+    if temporary is not None:
+        env["TMPDIR"] = str(temporary)
+    started = time.monotonic()
+    status = subprocess.run(argv, cwd=cwd, env=env, stdout=log,
+                            stderr=subprocess.STDOUT if log is not None else None).returncode
+    return status, time.monotonic() - started
+
+
+def run_group(number, selections, output):
+    """Run one group's selections in plan order, each logging to its own file."""
+    temporary = output / f"group-{number}-tmp"
+    temporary.mkdir()
+    results = []
+    for selection in selections:
+        path = output / f"{selection.name}.log"
+        with path.open("wb") as log:
+            status, seconds = execute(selection, output, log, temporary)
+        results.append((selection, status, seconds, path))
+    return results
+
+
 def run(lane, shard):
     selected = [selection for selection in SELECTIONS if selection.lane == lane and selection.shard == shard]
     if not selected:
         raise ValueError(f"No selections in {lane} shard {shard}")
     output = Path(tempfile.mkdtemp(prefix="cluster-runner-output-"))
-    rows = []
+    groups = {}
     for selection in selected:
-        cwd, argv = command(selection, output)
-        print(f"::group::{selection.name}", flush=True)
-        started = time.monotonic()
-        status = subprocess.run(argv, cwd=cwd, env=environment(selection)).returncode
-        seconds = time.monotonic() - started
-        print("::endgroup::", flush=True)
-        rows.append((selection.name, status, seconds))
+        if selection.group is not None:
+            groups.setdefault(selection.group, []).append(selection)
+    results = {}
+    if groups:
+        # The groups run at the same time; their logs print afterwards, whole.
+        with ThreadPoolExecutor(max_workers=len(groups)) as pool:
+            futures = [pool.submit(run_group, number, members, output) for number, members in sorted(groups.items())]
+            finished = [result for future in futures for result in future.result()]
+        for selection, status, seconds, path in finished:
+            print(f"::group::{selection.name} (group {selection.group})", flush=True)
+            sys.stdout.buffer.write(path.read_bytes())
+            sys.stdout.flush()
+            print("::endgroup::", flush=True)
+            results[selection.name] = (status, seconds)
+    for selection in selected:
+        if selection.group is None:
+            print(f"::group::{selection.name}", flush=True)
+            results[selection.name] = execute(selection, output)
+            print("::endgroup::", flush=True)
+    rows = [(selection.name, *results[selection.name]) for selection in selected]
+    for name, status, _ in rows:
         if status:
             level = "warning" if lane == "nonblocking" else "error"
-            print(f"::{level}::{selection.name} failed with exit status {status}", flush=True)
+            print(f"::{level}::{name} failed with exit status {status}", flush=True)
     summary = os.environ.get("GITHUB_STEP_SUMMARY")
     if summary:
         with open(summary, "a") as handle:

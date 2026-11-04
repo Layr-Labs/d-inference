@@ -51,6 +51,23 @@ runs:
         path: ~/Library/Caches/org.swift.swiftpm/repositories
         key: spm-repos-v1-${{ runner.os }}-${{ steps.keys.outputs.home-layout }}-${{ inputs.lane }}-${{ hashFiles('**/Package.resolved', '!**/.build/**') }}
         restore-keys: spm-repos-v1-${{ runner.os }}-${{ steps.keys.outputs.home-layout }}-${{ inputs.lane }}-
+    # A Darkbloom host keeps the entries it saved, 10 GiB per repository, so a
+    # push saves at most one build per lane and UTC day there; every other
+    # runner keys the build by commit.
+    - name: Choose the Swift test build's cache key
+      id: build-key
+      shell: bash
+      env:
+        PREFIX: ${{ steps.keys.outputs.swift-prefix }}
+        COMMIT_KEY: ${{ steps.keys.outputs.swift-key }}
+      run: |
+        case "${RUNNER_NAME:-}" in
+          darkbloom-*) echo "key=${PREFIX}day-$(date -u +%F)" >> "$GITHUB_OUTPUT" ;;
+          *) echo "key=$COMMIT_KEY" >> "$GITHUB_OUTPUT" ;;
+        esac
+    # Restore tiers: this recipe's newest entry, then the newest entry of any
+    # recipe with the same toolchain, dependencies and checkout path. The build
+    # steps build once more from nothing if a loose-tier entry fails to build.
     - name: Restore lane-specific Swift test build
       id: swift-cache
       uses: actions/cache/restore@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
@@ -59,8 +76,10 @@ runs:
           provider-swift/.build
           libs/mlx-swift-lm/.build
           libs/darkbloom-cluster/.build
-        key: ${{ steps.keys.outputs.swift-key }}
-        restore-keys: ${{ steps.keys.outputs.swift-prefix }}
+        key: ${{ steps.build-key.outputs.key }}
+        restore-keys: |
+          ${{ steps.keys.outputs.swift-prefix }}
+          ${{ steps.keys.outputs.swift-loose-prefix }}
     - name: Revalidate source timestamps and discard cached runtime resources
       shell: bash
       run: |
@@ -76,26 +95,41 @@ runs:
       id: provider-build
       shell: bash
       working-directory: provider-swift
+      env:
+        PROVIDER_CI_MATCHED_KEY: ${{ steps.swift-cache.outputs.cache-matched-key }}
+        PROVIDER_CI_STRICT_PREFIX: ${{ steps.keys.outputs.swift-prefix }}
       # Instrumented for the coverage report. Both builds use the same flags,
       # so neither rebuilds the other.
       run: |
-        swift build --build-tests --enable-code-coverage
-        swift build --product darkbloom-fan-helper --enable-code-coverage
+        build() {
+          swift build --build-tests --enable-code-coverage &&
+            swift build --product darkbloom-fan-helper --enable-code-coverage
+        }
+        build || { ../scripts/provider-ci-cold-retry.sh && build; }
     - name: Build all SDK test products against local MLX
       if: inputs.lane == 'sdk'
       id: sdk-build
       shell: bash
       working-directory: libs/mlx-swift-lm
+      env:
+        PROVIDER_CI_MATCHED_KEY: ${{ steps.swift-cache.outputs.cache-matched-key }}
+        PROVIDER_CI_STRICT_PREFIX: ${{ steps.keys.outputs.swift-prefix }}
       run: |
-        swift package unedit --force mlx-swift >/dev/null 2>&1 || true
-        swift package edit --path ../mlx-swift mlx-swift
-        swift build --build-tests
+        build() {
+          { swift package unedit --force mlx-swift >/dev/null 2>&1 || true; } &&
+            swift package edit --path ../mlx-swift mlx-swift &&
+            swift build --build-tests
+        }
+        build || { ../../scripts/provider-ci-cold-retry.sh && build; }
     - name: Build all cluster test products
       if: inputs.lane == 'cluster'
       id: cluster-build
       shell: bash
       working-directory: libs/darkbloom-cluster
-      run: swift build --build-tests
+      env:
+        PROVIDER_CI_MATCHED_KEY: ${{ steps.swift-cache.outputs.cache-matched-key }}
+        PROVIDER_CI_STRICT_PREFIX: ${{ steps.keys.outputs.swift-prefix }}
+      run: swift build --build-tests || { ../../scripts/provider-ci-cold-retry.sh && swift build --build-tests; }
     - name: Record timestamps for successfully built sources
       if: ${{ !cancelled() && (steps.provider-build.outcome == 'success' || steps.sdk-build.outcome == 'success' || steps.cluster-build.outcome == 'success') }}
       id: timestamps
@@ -111,7 +145,7 @@ runs:
           provider-swift/.build
           libs/mlx-swift-lm/.build
           libs/darkbloom-cluster/.build
-        key: ${{ steps.keys.outputs.swift-key }}
+        key: ${{ steps.build-key.outputs.key }}
     - name: Save SwiftPM repositories
       if: ${{ !cancelled() && inputs.save-caches == 'true' && steps.timestamps.outcome == 'success' && steps.spm-repos.outputs.cache-hit != 'true' }}
       uses: actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0

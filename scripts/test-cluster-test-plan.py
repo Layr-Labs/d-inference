@@ -5,6 +5,8 @@ import importlib.util
 import os
 from pathlib import Path
 import re
+import sys
+import tempfile
 import unittest
 from unittest import mock
 
@@ -82,6 +84,52 @@ class ClusterTestPlanTests(unittest.TestCase):
         batch = next(selection for selection in plan.SELECTIONS if selection.name == "qwen-tp-batch-gpu")
         self.assertEqual((probe.lane, probe.shard), (batch.lane, batch.shard))
         self.assertGreater(order.index(probe.name), order.index(batch.name))
+        # It also runs alone: after the shard's groups (batch-gpu's among them)
+        # finish, with no other process beside it.
+        self.assertIsNone(probe.group)
+        self.assertIsNotNone(batch.group)
+        # `base`, the longest selection, has its shard and the Mac to itself.
+        base_selection = next(selection for selection in plan.SELECTIONS if selection.name == "base")
+        self.assertIsNone(base_selection.group)
+        self.assertEqual([selection.name for selection in plan.SELECTIONS
+                          if (selection.lane, selection.shard) == ("blocking", base_selection.shard)], ["base"])
+        # Groups exist only where the plan puts them: the focused and GPU lanes
+        # still run one selection at a time.
+        self.assertEqual({selection.lane for selection in plan.SELECTIONS if selection.group is not None},
+                         {"blocking"})
+
+    def test_a_shard_runs_its_groups_together_then_its_other_selections_alone(self):
+        marks = Path(self.enterContext(tempfile.TemporaryDirectory())) / "marks"
+        script = ("import os, sys, time; name = sys.argv[1]; path = sys.argv[2]\n"
+                  "open(path, 'a').write(f'start {name} {time.monotonic()} {os.environ.get(\"TMPDIR\", \"-\")}\\n')\n"
+                  "time.sleep(0.4)\n"
+                  "open(path, 'a').write(f'end {name} {time.monotonic()}\\n')\n"
+                  "sys.exit(3 if name == 'b2' else 0)\n")
+        selections = (
+            plan.Selection("a1", "blocking", 1, group=1), plan.Selection("a2", "blocking", 1, group=1),
+            plan.Selection("b1", "blocking", 1, group=2), plan.Selection("b2", "blocking", 1, group=2),
+            plan.Selection("alone", "blocking", 1), plan.Selection("other-shard", "blocking", 2),
+        )
+        command = lambda selection, output: (ROOT, [sys.executable, "-c", script, selection.name, str(marks)])
+        with mock.patch.object(plan, "SELECTIONS", selections), mock.patch.object(plan, "command", command), \
+                mock.patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": ""}):
+            self.assertEqual(plan.run("blocking", 1), 1)
+        events = {}
+        for line in marks.read_text().splitlines():
+            kind, name, moment, *rest = line.split()
+            events[(kind, name)] = float(moment)
+            if kind == "start":
+                events[("tmp", name)] = rest[0] if rest else None
+        names = ("a1", "a2", "b1", "b2", "alone")
+        self.assertEqual({name for kind, name in events if kind == "start"}, set(names))
+        # Each group keeps its order; the two groups overlap.
+        self.assertLessEqual(events[("end", "a1")], events[("start", "a2")])
+        self.assertLessEqual(events[("end", "b1")], events[("start", "b2")])
+        self.assertLess(events[("start", "b1")], events[("end", "a1")])
+        # Each group has its own TMPDIR; the alone selection starts after all of them.
+        self.assertEqual(events[("tmp", "a1")], events[("tmp", "a2")])
+        self.assertNotEqual(events[("tmp", "a1")], events[("tmp", "b1")])
+        self.assertGreaterEqual(events[("start", "alone")], max(events[("end", name)] for name in names[:4]))
 
     def test_each_process_has_only_its_own_switches(self):
         switches = {name: "1" for selection in plan.SELECTIONS for name in selection.environment}

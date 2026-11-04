@@ -42,6 +42,7 @@ GRANTED = {"release-integrity": LINUX, "test-provider": MACOS,
 PROVIDER = "${{ needs.changes.outputs.provider == 'true' && 1 || 0 }}"
 SDK = "${{ (github.event_name == 'push' || needs.changes.outputs.sdk == 'true') && 1 || 0 }}"
 CLUSTER = "${{ needs.changes.outputs.cluster == 'true' && 1 || 0 }}"
+CLUSTER_PUSH = "${{ github.event_name == 'push' && needs.changes.outputs.cluster == 'true' && 1 || 0 }}"
 PULL_REQUEST_WARM = "${{ github.event_name == 'pull_request' && 2 || 0 }}"
 # Every routed job: (profile, fallback label, count expression or None for 1)
 # of each lane it reads.
@@ -52,7 +53,7 @@ ROUTED = {
         "test-provider-sdk": ("macos_arm64", MACOS_FALLBACK, SDK),
         "test-cluster-checks": ("macos_arm64", MACOS_FALLBACK, CLUSTER),
         "test-cluster": ("macos_arm64", MACOS_FALLBACK, CLUSTER),
-        "test-cluster-gpu": ("macos_arm64", MACOS_FALLBACK, CLUSTER),
+        "test-cluster-gpu": ("macos_arm64", MACOS_FALLBACK, CLUSTER_PUSH),
         "test-cluster-focused": ("macos_arm64", MACOS_FALLBACK, CLUSTER),
     },
     "docs-impact.yml": {
@@ -259,7 +260,8 @@ class RouteStepTests(unittest.TestCase):
         if routing == "on" and not plane_url:
             raise AssertionError("Tests must never fall through to the production plane")
         variables = dict(LANES=lanes, ROUTING=routing, PLANE_URL=plane_url, REPOSITORY="Layr-Labs/d-inference",
-                         EVENT_NAME="push", HEAD_REPOSITORY="", RUN_ID="40408691758", RUN_ATTEMPT="2")
+                         EVENT_NAME="push", HEAD_REPOSITORY="", RUN_ID="40408691758", RUN_ATTEMPT="2",
+                         MACOS_LANES="")
         variables.update(context)
         if trust:
             variables["CURL_CA_BUNDLE"] = str(self.certificate)
@@ -411,6 +413,36 @@ class RouteStepTests(unittest.TestCase):
         self.assertRoutes(result, routes, GRANTED)
         self.assertEqual(len(plane.requests), 1)
 
+    def test_macos_lane_cap_keeps_lanes_in_order_and_asks_for_none_past_it(self):
+        # LANES asks for test-provider (1 macOS job), then warm (2 macOS jobs).
+        none = {**GRANTED, "test-provider": MACOS_FALLBACK, "warm": MACOS_FALLBACK}
+        cases = {"": (["release-integrity", "test-provider", "warm"], GRANTED),
+                 "3": (["release-integrity", "test-provider", "warm"], GRANTED),
+                 "2": (["release-integrity", "test-provider"], {**GRANTED, "warm": MACOS_FALLBACK}),
+                 "1": (["release-integrity", "test-provider"], {**GRANTED, "warm": MACOS_FALLBACK}),
+                 "0": (["release-integrity"], none),
+                 # A malformed cap is a repository setting: it asks for no
+                 # macOS lane and never fails the route job.
+                 "two": (["release-integrity"], none), "-1": (["release-integrity"], none),
+                 "100": (["release-integrity"], none)}
+        for value, (requested, expected) in cases.items():
+            with self.subTest(cap=value), self.plane() as plane:
+                result, routes, summary = self.route(plane.url, MACOS_LANES=value)
+                self.assertRoutes(result, routes, expected)
+                request, = plane.requests
+                self.assertEqual([lane["lane"] for lane in json.loads(request["body"])["lanes"]], requested)
+                if expected["warm"] == MACOS_FALLBACK:
+                    self.assertIn("| `warm` | macos_arm64 | 2 | `blacksmith-12vcpu-macos-27` | fallback: over the "
+                                  "macOS lane cap (DARKBLOOM_MACOS_LANES) |", summary)
+                if value in ("two", "-1", "100"):
+                    self.assertIn("DARKBLOOM_MACOS_LANES is not a number from 0 to 99", summary)
+        # Routing off still names its own reason, and capped lanes never reach a plane.
+        with self.plane() as plane:
+            result, routes, summary = self.route(plane.url, routing="off", MACOS_LANES="0")
+            self.assertRoutes(result, routes)
+            self.assertIn("fallback: routing is off |", summary)
+        self.assertEqual(plane.requests, [])
+
     def test_lanes_without_jobs_or_run_identity_send_nothing(self):
         with self.plane() as plane:
             result, routes, summary = self.route(plane.url, lanes=f"docs linux_arm64 {LINUX_FALLBACK} 0\n")
@@ -477,6 +509,7 @@ class RouteWorkflowTests(unittest.TestCase):
         self.assertIn("value: ${{ jobs.select.outputs.routes }}", header)
         self.assertIn("      routes: ${{ steps.route.outputs.routes }}\n", select)
         for name, expression in {"LANES": "inputs.lanes", "ROUTING": "vars.DARKBLOOM_ROUTING",
+                                 "MACOS_LANES": "vars.DARKBLOOM_MACOS_LANES",
                                  "PLANE_URL": "vars.DARKBLOOM_SANDBOX_URL", "REPOSITORY": "github.repository",
                                  "EVENT_NAME": "github.event_name",
                                  "HEAD_REPOSITORY": "github.event.pull_request.head.repo.full_name",

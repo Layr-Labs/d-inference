@@ -37,7 +37,8 @@ jobs:
   # A lane is granted whole or falls back whole, so each shard has a lane of
   # its own and gets a free Mac even when there is not one per shard. This is
   # the run's only route request: the plane routes a run attempt once, so the
-  # callers' own jobs keep literal runners.
+  # callers' own jobs keep literal runners. The lanes are listed in the order
+  # the DARKBLOOM_MACOS_LANES cap keeps them: the critical-path shards first.
   route:
     needs: changes
     if: ${{ !cancelled() }}
@@ -45,28 +46,28 @@ jobs:
     permissions: {}
     with:
       lanes: |
+        test-cluster-1 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.changes.outputs.cluster == 'true' && 1 || 0 }}
         test-provider-1 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.changes.outputs.provider == 'true' && 1 || 0 }}
         test-provider-2 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.changes.outputs.provider == 'true' && 1 || 0 }}
-        test-provider-3 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.changes.outputs.provider == 'true' && 1 || 0 }}
+        test-cluster-2 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.changes.outputs.cluster == 'true' && 1 || 0 }}
+        test-cluster-checks macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.changes.outputs.cluster == 'true' && 1 || 0 }}
+        test-cluster-focused macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.changes.outputs.cluster == 'true' && 1 || 0 }}
         test-provider-summary macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.changes.outputs.provider == 'true' && 1 || 0 }}
         test-provider-sdk macos_arm64 blacksmith-12vcpu-macos-27 ${{ (github.event_name == 'push' || needs.changes.outputs.sdk == 'true') && 1 || 0 }}
-        test-cluster-checks macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.changes.outputs.cluster == 'true' && 1 || 0 }}
-        test-cluster-1 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.changes.outputs.cluster == 'true' && 1 || 0 }}
-        test-cluster-2 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.changes.outputs.cluster == 'true' && 1 || 0 }}
-        test-cluster-3 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.changes.outputs.cluster == 'true' && 1 || 0 }}
-        test-cluster-gpu-1 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.changes.outputs.cluster == 'true' && 1 || 0 }}
-        test-cluster-gpu-2 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.changes.outputs.cluster == 'true' && 1 || 0 }}
-        test-cluster-focused macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.changes.outputs.cluster == 'true' && 1 || 0 }}
+        test-cluster-gpu-1 macos_arm64 blacksmith-12vcpu-macos-27 ${{ github.event_name == 'push' && needs.changes.outputs.cluster == 'true' && 1 || 0 }}
+        test-cluster-gpu-2 macos_arm64 blacksmith-12vcpu-macos-27 ${{ github.event_name == 'push' && needs.changes.outputs.cluster == 'true' && 1 || 0 }}
 
   test-provider:
     # The provider suite runs in shards on separate Macs
     # (scripts/provider-test-shards.py), each routed through its own
-    # test-provider-<shard> lane above. Each shard runs its suites serially in
-    # one process. Shard 1 also runs the MLX-free test targets in one parallel
-    # process; shard 2 also runs Prompt Parity. The last shard runs every suite
-    # that no other shard selects, the isolated processes and the native gates
-    # below. Provider Unit Tests Summary checks that the shards together
-    # executed the full suite and reports coverage.
+    # test-provider-<shard> lane above. Each shard builds once and runs
+    # PROVIDER_TEST_PROCESSES selections at the same time, each serially in its
+    # own process (scripts/run-provider-tests.sh). Selection 1 also runs the
+    # MLX-free test targets in one parallel process; shard 1 also runs Prompt
+    # Parity. The last selection runs every suite that no other selection
+    # picks; the last shard then runs the isolated processes and the native
+    # gates below, alone. Provider Unit Tests Summary checks that the
+    # selections together executed the full suite and reports coverage.
     name: Provider Unit Tests (shard ${{ matrix.shard }})
     needs: [changes, route]
     if: ${{ needs.changes.outputs.provider == 'true' }}
@@ -76,7 +77,7 @@ jobs:
       # A failed shard does not cancel the other shards.
       fail-fast: false
       matrix:
-        shard: [1, 2, 3]
+        shard: [1, 2]
     steps:
       - name: Select today's .git cache
         id: git-day
@@ -137,13 +138,28 @@ jobs:
       - name: Test profile inventory authentication in a terminal
         if: ${{ matrix.shard == strategy.job-total }}
         run: python3 scripts/test-profile-inventory-auth.py
+      # The pinned metadata downloads, named by their SHA-256; each script
+      # uses an entry only if its bytes still have the pinned digest.
+      - name: Restore verified MiMo metadata downloads
+        id: mimo-metadata-cache
+        if: ${{ !cancelled() && steps.provider-ci-build.outcome == 'success' }}
+        uses: actions/cache/restore@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: ${{ runner.temp }}/mimo-metadata-cache
+          key: mimo-metadata-v1-${{ hashFiles('scripts/prepare-mimo-prompt-fixtures.py', 'scripts/prepare-mimo-audio-fixtures.py') }}
       - name: Prepare pinned public MiMo metadata and original corpus
         id: mimo-prompt-fixtures
         if: ${{ !cancelled() && steps.provider-ci-build.outcome == 'success' }}
         run: |
           python3 scripts/test-prepare-mimo-image-http-fixtures.py
-          python3 scripts/prepare-mimo-prompt-fixtures.py --output "$RUNNER_TEMP/mimo-prompt-fixtures" --github-env "$GITHUB_ENV"
-          python3 scripts/prepare-mimo-image-http-fixtures.py --output "$RUNNER_TEMP/mimo-image-http-fixtures" --github-env "$GITHUB_ENV"
+          python3 scripts/prepare-mimo-prompt-fixtures.py --output "$RUNNER_TEMP/mimo-prompt-fixtures" --github-env "$GITHUB_ENV" --cache "$RUNNER_TEMP/mimo-metadata-cache"
+          python3 scripts/prepare-mimo-image-http-fixtures.py --output "$RUNNER_TEMP/mimo-image-http-fixtures" --github-env "$GITHUB_ENV" --cache "$RUNNER_TEMP/mimo-metadata-cache"
+      - name: Save verified MiMo metadata downloads
+        if: ${{ !cancelled() && env.SAVE_CACHES == 'true' && steps.mimo-prompt-fixtures.outcome == 'success' && steps.mimo-metadata-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: ${{ runner.temp }}/mimo-metadata-cache
+          key: ${{ steps.mimo-metadata-cache.outputs.cache-primary-key }}
       - name: Prepare bounded synthetic MiMo provider fixtures offline
         id: mimo-fixtures
         if: ${{ !cancelled() && steps.provider-ci-build.outcome == 'success' }}
@@ -157,6 +173,8 @@ jobs:
         env:
           MIMO_V26_PROVIDER_LIFETIME_METADATA_TESTS: '1'
           PROVIDER_TEST_SHARD: ${{ matrix.shard }}/${{ strategy.job-total }}
+          # Selections per shard, at the same time: 3 on a 12-vCPU runner.
+          PROVIDER_TEST_PROCESSES: '3'
           PROVIDER_TEST_REPORT_DIR: ${{ runner.temp }}/provider-unit-shard
         working-directory: provider-swift
         # Reuse the built bundle and matched metallib. The exact allocator
@@ -174,12 +192,13 @@ jobs:
           path: ${{ runner.temp }}/provider-test-diagnostics
           if-no-files-found: warn
           retention-days: 7
-      # Prompt Parity runs once, in shard 2, against this shard's build. A
-      # failure fails the shard, and with it the Provider Tests gate. The
-      # summary checks each run's executed count against the suite list.
+      # Prompt Parity runs once, in shard 1 (the shard of selection
+      # PARITY_SHARD), against this shard's build. A failure fails the shard,
+      # and with it the Provider Tests gate. The summary checks each run's
+      # executed count against the suite list.
       - name: Verify public prompt golden vectors
         id: prompt-parity
-        if: ${{ !cancelled() && matrix.shard == 2 && steps.provider-ci-build.outcome == 'success' && steps.mimo-prompt-fixtures.outcome == 'success' }}
+        if: ${{ !cancelled() && matrix.shard == 1 && steps.provider-ci-build.outcome == 'success' && steps.mimo-prompt-fixtures.outcome == 'success' }}
         env:
           PROMPT_PARITY_SKIP_BUILD: '1'
         run: |
@@ -190,7 +209,7 @@ jobs:
           python3 scripts/provider-test-shards.py counts parity ProductionPromptParityTests \
             "$report/parity-prompt.log" "$report/shard-parity-prompt.json"
       - name: Verify pinned Nemotron prompts and numeric cache plans
-        if: ${{ !cancelled() && matrix.shard == 2 && steps.provider-ci-build.outcome == 'success' }}
+        if: ${{ !cancelled() && matrix.shard == 1 && steps.provider-ci-build.outcome == 'success' }}
         run: |
           set -o pipefail
           report="$RUNNER_TEMP/provider-unit-shard"
@@ -844,7 +863,9 @@ jobs:
   test-cluster:
     # DarkbloomClusterRuntimeTests in selections, each in its own process, on
     # separate Macs (scripts/cluster-test-plan.py): every test without a
-    # switch, and the switched tests that pass on these runners.
+    # switch, and the switched tests that pass on these runners. Shard 1 runs
+    # the base selection alone; shard 2 runs its ordered groups of selections
+    # at the same time.
     name: Cluster Runtime Tests (shard ${{ matrix.shard }})
     needs: [changes, route]
     if: ${{ needs.changes.outputs.cluster == 'true' }}
@@ -853,7 +874,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3]
+        shard: [1, 2]
     steps:
       - name: Select today's .git cache
         id: git-day
@@ -906,10 +927,11 @@ jobs:
   test-cluster-gpu:
     # The switched cluster runtime tests these runners cannot pass, the long
     # ones and the benchmarks (scripts/cluster-test-plan.py). They run and
-    # report on every pull request; a failure does not fail the workflow.
+    # report on pushes that change cluster inputs (every master push), not on
+    # pull requests; a failure does not fail the workflow.
     name: Cluster GPU Tests (non-blocking, shard ${{ matrix.shard }})
     needs: [changes, route]
-    if: ${{ needs.changes.outputs.cluster == 'true' }}
+    if: ${{ github.event_name == 'push' && needs.changes.outputs.cluster == 'true' }}
     runs-on: ${{ fromJSON(needs.route.outputs.routes)[format('test-cluster-gpu-{0}', matrix.shard)] }}
     timeout-minutes: 60
     strategy:

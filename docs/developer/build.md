@@ -276,13 +276,18 @@ lane, `format('<job>-{0}', matrix.shard)`.
 
 | Workflow | Routed jobs | Fallback |
 |---|---|---|
-| `provider-tests.yml` | `test-provider` (lanes `test-provider-1` to `test-provider-3`, one per shard), `test-provider-summary`, `test-provider-sdk`, `test-cluster-checks`, `test-cluster` (lanes `test-cluster-1` to `test-cluster-3`), `test-cluster-gpu` (lanes `test-cluster-gpu-1` and `test-cluster-gpu-2`), `test-cluster-focused` | `blacksmith-12vcpu-macos-27` |
+| `provider-tests.yml` | `test-provider` (lanes `test-provider-1` and `test-provider-2`, one per shard), `test-provider-summary`, `test-provider-sdk`, `test-cluster-checks`, `test-cluster` (lanes `test-cluster-1` and `test-cluster-2`), `test-cluster-gpu` (lanes `test-cluster-gpu-1` and `test-cluster-gpu-2`, pushes only), `test-cluster-focused` | `blacksmith-12vcpu-macos-27` |
 | `docs-impact.yml` | `commit-signatures`, `docs-impact` | `blacksmith-4vcpu-ubuntu-2404` |
 | `landing.yml`, `desktop.yml`, `nightly-linear-package.yml` | `check`, `frontend`, `test` | `blacksmith-4vcpu-ubuntu-2404` |
 | `provider-release-cache.yml` | `warm`, pull requests only | `blacksmith-12vcpu-macos-27` |
 
 Routing is off unless the repository variable `DARKBLOOM_ROUTING` is exactly
-`on`. While it is off, and for pull requests from forks, every job keeps its
+`on`. The repository variable `DARKBLOOM_MACOS_LANES`, when set to a number
+from 0 to 99, caps the macOS jobs one run asks for: the route keeps the lanes
+in the caller's order while they fit, and the others keep their fallback
+without asking (any other value asks for no macOS lane). `provider-tests.yml`
+lists its lanes critical path first: `test-cluster-1` (the cluster `base`
+selection), then the provider shards. While it is off, and for pull requests from forks, every job keeps its
 fallback and the plane is not contacted. When it is on, the route job sends one
 `POST /v1/ci/routes` to `DARKBLOOM_SANDBOX_URL` (default
 `https://api-sandbox.darkbloom.dev`) for the jobs that will run, retrying at
@@ -330,7 +335,8 @@ off and use **Re-run all jobs** to move a run back to Blacksmith. See the
 ## CI Caching
 
 `.github/workflows/provider-tests.yml`, `.github/workflows/ci-master.yml` and
-`.github/actions/provider-ci-build/action.yml` restore caches in every run. Only pushes to `master` and `dev` save them, when
+`.github/actions/provider-ci-build/action.yml` restore caches in every run.
+Only pushes to `master` and `dev` save them, when
 the exact key missed: the workflow's `SAVE_CACHES` is
 `github.event_name == 'push' && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/dev')`,
 and `provider-tests.yml` passes it to the composite action as `save-caches`
@@ -347,10 +353,23 @@ the caches of the runners it ran on.
 | Git objects | `.git` | `git-v1-<os>-<YYYY-MM-DD>`; `git-v1-<os>-<YYYY-MM>-`, then `git-v1-<os>-` | every job that checks out |
 | Full-history Git objects | `.git` | the same under `git-full-v1-`, so shallow jobs never restore it | `docs` |
 | SwiftPM repositories | `~/Library/Caches/org.swift.swiftpm/repositories` | `spm-repos-v1-<os>-<layout>-<lane>-<Package.resolved hash>`; `spm-repos-v1-<os>-<layout>-<lane>-` | each build lane |
-| Swift test build | each lane's `.build` directory | `swift-key`; `swift-prefix` from `scripts/provider-ci-cache.py` | each build lane |
+| Swift test build | each lane's `.build` directory | `swift-key` (`swift-prefix` and the commit), or on a Darkbloom host `swift-prefix` and `day-<YYYY-MM-DD>`; `swift-prefix`, then `swift-loose-prefix`, from `scripts/provider-ci-cache.py` | each build lane |
 | Metal library | `$RUNNER_TEMP/metallib-cache` | `metallib-key`, exact only | each build lane |
+| MiMo metadata downloads | `$RUNNER_TEMP/mimo-metadata-cache`, one file per pinned SHA-256 | `mimo-metadata-v1-<hash of the pin scripts>`, exact only | each provider shard |
 | MiMo audio codec | `$RUNNER_TEMP/mimo-audio-source` | `mimo-audio-source-v2-<sha256>`, exact only; fetched only when the audio gate runs ([test guide](test.md)) | the last provider shard |
 | Cluster metadata build | `$RUNNER_TEMP/cluster-native-metadata` | toolchain, submodule pins, manifests and paths, then the commit | `test-cluster-checks` |
+
+The Swift test build has two restore tiers. `swift-prefix` binds the toolchain,
+the dependency manifests and pins, the checkout path and the CI recipe (the
+workflows and scripts in `RECIPE_PATHS`). `swift-loose-prefix` leaves out the
+recipe, which changes often and rarely changes an object, so an edit to a
+workflow or a CI script no longer makes every build cold. Source timestamps are
+restored only for unchanged files, so SwiftPM rebuilds what changed. If a build
+restored from the loose tier fails, `scripts/provider-ci-cold-retry.sh` deletes
+the restored builds and the step builds once more from nothing; a failure over
+an entry of the job's own recipe fails the step at once. A Darkbloom host keeps
+the entries it saved (10 GiB per repository), so there a push saves at most one
+build per lane and UTC day; other runners key the build by commit.
 
 Every checkout uses the same five steps. The job computes the UTC day
 (`date -u +%F`) and restores `.git`. A step that cannot fail then deletes the

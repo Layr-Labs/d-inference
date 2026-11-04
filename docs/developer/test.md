@@ -112,26 +112,32 @@ snapshots. Preserve its watchdog, cleanup and state isolation when using a focus
 selector. Use `scripts/run-nested-suite.sh` for documented nested Swift Testing
 cases and `scripts/run-exclusive-native-gpu-test.sh` for exclusive native work.
 
-CI runs the provider suite in three shards (`Provider Unit Tests (shard K)`), one
-Mac each. `PROVIDER_TEST_SHARD=K/N` selects a shard in `scripts/run-provider-tests.sh`,
-and `scripts/provider-test-shards.py` chooses its suites:
+CI runs the provider suite in two shards (`Provider Unit Tests (shard K)`), one
+Mac each, and each shard builds once and runs three selections at the same
+time. `PROVIDER_TEST_SHARD=K/N` and `PROVIDER_TEST_PROCESSES=P` make
+`scripts/run-provider-tests.sh` run selections `(K-1)*P+1` to `K*P` of `N*P`,
+each in its own `--no-parallel` process with its own `TMPDIR` and provider
+state files; `scripts/provider-test-shards.py` chooses each selection's suites.
+Without `PROVIDER_TEST_PROCESSES` (the release qualification lane), a shard
+runs one selection, as before:
 
 | Class | Process | Suites |
 |---|---|---|
-| Parallel | Shard 1, one process with Swift Testing's default parallelism | The test targets whose dependency closure has no MLX, Metal or cluster runtime (`PARALLEL_MODULES`) |
-| Serial | One `--no-parallel` process per shard | All other suites. Shards 1 to N-1 take suites by measured seconds (`scripts/provider-test-shard-weights.json`). The last shard runs every suite that no other shard selects, so a new suite always runs |
+| Parallel | After selection 1, in its process slot, with Swift Testing's default parallelism | The test targets whose dependency closure has no MLX, Metal or cluster runtime (`PARALLEL_MODULES`) |
+| Serial | One `--no-parallel` process per selection | All other suites. Selections 1 to N-1 take suites by measured seconds (`scripts/provider-test-shard-weights.json`). The last selection runs every suite that no other selection picks, so a new suite always runs |
 
-Shard 2 also runs Prompt Parity (`scripts/verify-prompt-parity.sh` with
+Shard 1 (the shard of selection 2) also runs Prompt Parity (`scripts/verify-prompt-parity.sh` with
 `PROMPT_PARITY_SKIP_BUILD=1`, and `scripts/verify-nemotron-prompt-parity.sh`)
 against its own build; a parity failure fails that shard and the
 `Provider Tests` gate. The last shard also runs the isolated processes and the
-native MiMo, desktop and installer gates. `Provider Unit Tests Summary` lists the suite with
+native MiMo, desktop and installer gates, after its selections finish, one at
+a time. `Provider Unit Tests Summary` lists the suite with
 `swift test list`, fails unless each shard executed exactly its selection and
 the shards together executed the full list, checks that each Prompt Parity run
 executed every listed test of its suite, merges the shards' coverage
 profiles and uploads measured seconds per suite (`provider-test-shard-weights`).
 When the shards drift apart, replace the weights file with that artifact.
-The suites in `KEPT_APART` never share a shard: a process that ran
+The suites in `KEPT_APART` never share a selection: a process that ran
 `NemotronSuperManagedSlotTests` and then `Qwen4PagingPrefixIntegrationTests`
 crashed with SIGBUS, and each passes alone. The pair stays apart until the
 Nemotron fixture cleanup is fixed. A
@@ -139,7 +145,9 @@ suite moves from the parallel class to the serial class when it fails or flakes
 in parallel; when in doubt, a suite stays serial.
 
 The jobs that use the `provider-ci-build` action and Cluster Metadata Checks
-restore their build cache by the exact key first, then by the key prefix. Only
+restore their build cache by the exact key first, then by the key prefix; the
+action then tries the loose prefix, which ignores the CI recipe, and builds
+once more from nothing if that build fails. Only
 a push to `dev` or `master` saves a build; a pull request restores its base
 branch's entry and saves nothing ([CI caching](build.md#ci-caching)). CI has
 no separate push-only Swift cache job.
@@ -1229,21 +1237,27 @@ two-Mac hardware pass.
 
 The cluster jobs (Cluster Metadata Checks, Cluster Runtime Tests, Cluster GPU
 Tests and Cluster Focused Checks) run when the classifier selects `cluster`
+(Cluster GPU Tests only on pushes)
 (`CLUSTER` in `scripts/ci-component-paths.py`): the cluster packages, the MLX
 pins, the provider's Cluster, Distributed and NativePair sources, the
 provider-side cluster runners (`provider-swift/Tests/Cluster*Checks`), the
 other provider files the cluster runners compile, the cluster plan and the
 shared build recipe. A push that runs the provider lanes also runs them. The
 `Provider Tests` gate accepts a skipped cluster job only when `cluster` was not
-selected. A provider-only pull request runs 4 Macs (3 provider shards and the
-summary), or 5 when an SDK-lane input changes. A cluster pull request adds 7
-Macs (metadata checks, 3 runtime shards, 2 GPU shards and focused checks).
+selected. A provider-only pull request runs 3 Macs (2 provider shards and the
+summary), or 4 when an SDK-lane input changes. A cluster pull request adds 4
+Macs (metadata checks, 2 runtime shards and focused checks); a push adds the
+2 GPU shards as well.
 
 CI runs the runtime test target (`DarkbloomClusterRuntimeTests`) on the
 provider's macOS CI runners (see [CI runner routing](build.md#ci-runner-routing)),
 in selections that `scripts/cluster-test-plan.py` defines. Each selection runs
 in a process of its own through `scripts/run-nested-suite.sh`, which fails when
-the selection runs no test or skips a test. Every process starts with
+the selection runs no test or skips a test. Runtime shard 1 runs `base`, the
+longest selection, alone. Shard 2 runs two groups at the same time, each in
+plan order with its own `TMPDIR` (the CPU batch-session suite and the GLM,
+TF32 and Gemma selections; the Qwen GPU chain), then the share probe alone,
+whose 1.5 s budget includes the first use of the Qwen TP kernels on the Mac. Every process starts with
 `MLX_QMV_BATCH_INVARIANT=1`, as every cluster process does.
 
 | Selection | Job | Tests |

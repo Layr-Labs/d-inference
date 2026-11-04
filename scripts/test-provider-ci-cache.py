@@ -116,6 +116,40 @@ class CacheIdentityTests(unittest.TestCase):
                 self.assertTrue(all("\n" not in value for name, value in outputs.items()
                                     if name.endswith(("-key", "-prefix", "-digest"))))
 
+    def test_loose_tier_ignores_only_the_recipe(self):
+        sources = cache.tracked.inventory(self.root)
+        for lane in cache.LANE_PURPOSES:
+            with self.subTest(lane=lane):
+                before = self.keys(lane)
+                self.assertTrue(before["swift-prefix"].startswith(before["swift-loose-prefix"]))
+                self.assertTrue(before["swift-loose-prefix"].startswith(
+                    f"provider-ci-swift-{cache.SWIFT_CACHE_VERSION}-{cache.LANE_PURPOSES[lane]}-"))
+                # A recipe edit keeps the loose tier and changes the strict one.
+                for relative in cache.RECIPE_PATHS:
+                    path = self.root / relative
+                    original = path.read_text()
+                    path.write_text(original + "changed\n")
+                    with patch.object(cache.tracked, "inventory", return_value=sources):
+                        after = self.keys(lane)
+                    path.write_text(original)
+                    self.assertEqual(before["swift-loose-prefix"], after["swift-loose-prefix"], relative)
+                    self.assertNotEqual(before["swift-prefix"], after["swift-prefix"], relative)
+                # A manifest, a toolchain or a checkout path changes both tiers.
+                manifest = self.root / "provider-swift/Package.resolved"
+                original = manifest.read_text()
+                manifest.write_text(original + "changed\n")
+                with patch.object(cache.tracked, "inventory", return_value=sources):
+                    self.assertNotEqual(before["swift-loose-prefix"], self.keys(lane)["swift-loose-prefix"])
+                manifest.write_text(original)
+                metadata = deepcopy(self.metadata)
+                metadata["swift"]["version"] += "changed"
+                self.assertNotEqual(before["swift-loose-prefix"], self.keys(lane, metadata=metadata)["swift-loose-prefix"])
+        other = self.temporary / "loose other checkout"
+        shutil.copytree(self.root, other)
+        self.assertNotEqual(self.keys()["swift-loose-prefix"], self.keys(root=other)["swift-loose-prefix"])
+        # The metallib key keeps its own version.
+        self.assertTrue(self.keys()["metallib-key"].startswith(f"provider-ci-metallib-{cache.CACHE_VERSION}-"))
+
     def test_source_commits_change_generations_not_prefixes_or_metallib(self):
         before = {lane: self.keys(lane) for lane in cache.LANE_PURPOSES}
         self.write("provider-swift/Sources/main.swift", 'print("after")\n')

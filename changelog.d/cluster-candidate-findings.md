@@ -19,5 +19,8 @@
 - The Local Network ✗ no longer ends with a line that repeated its instruction and was cut off mid-sentence, and a ✗
   line too long for the screen is cut at a word and marked with "…". In the DevNet app, the pairing screen's firewall
   hint and its line about a reinstall name Darkbloom Dev.
+- While a model serves, the question of how both Macs split a model says the split is decided when it loads, instead
+  of offering one that wouldn't load; one layer reads "1 layer". The joining Mac's last lines say whether it serves
+  again after a restart as its cluster service stands when they're shown.
 - The card after a start says "Starts by itself at login on both Macs." only when the cluster service on both Macs
   does; otherwise it names the Mac where it doesn't, or says the other Mac doesn't say (an older Darkbloom there).

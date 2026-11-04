@@ -421,7 +421,7 @@ public final class ClusterService: @unchecked Sendable {
                 say("the cable is on \(moved.interface) now: answering the paired Mac there")
                 // A port that was never set up has no fixed address: the other Mac cannot find this one there.
                 if let port = OnboardingLive.unsetCablePort(ClusterLinkReadinessProbe.inspectLocalLink()) {
-                    say("\(port) is not set up for the cluster: run `\(ClusterService.cli) cluster` on this Mac and choose \(ClusterOnboardingDriver.fixPortItem) (macOS asks for your password once)")
+                    say("\(port) is not set up for the cluster: run `\(OnboardingLive.cli) cluster` on this Mac and choose \(ClusterOnboardingDriver.fixPortItem) (macOS asks for your password once)")
                 }
             case .pairingChanged(let current):
                 say("this Mac's pairing changed (\(current.clusterID)): answering the paired Mac with the new one")
@@ -940,7 +940,7 @@ public final class ClusterService: @unchecked Sendable {
                 + (reply.keptLive > 0 ? ", \(reply.keptLive) still in use (removed when its part stops)" : "") + "."
         } catch {
             return "The other Mac was not reached (\(ClusterConsoleText.bounded(String(describing: error), maximum: 160))): "
-                + "its pair cache stays until it unpairs too (`\(ClusterService.cli) cluster pair --forget \(pairing.localPin)` there)."
+                + "its pair cache stays until it unpairs too (`\(OnboardingLive.cli) cluster pair --forget \(pairing.localPin)` there)."
         }
     }
 
@@ -1254,9 +1254,6 @@ public final class ClusterService: @unchecked Sendable {
         }
         return error
     }
-
-    /// The command this build answers to (`BuildEnvironment.current.cliName`), in the lines the service writes (A-1).
-    static let cli = BuildEnvironment.current.cliName
 
     /// How a part's link follower says macOS kept it off the local network (`ClusterLinkFollowerCommand`): it then ends
     /// cleanly, with no "Error:" line, and the Mac that leads only saw the other Mac not answering (the DevNet run, A-3).

@@ -1,3 +1,4 @@
+import DarkbloomClusterRemote
 import Foundation
 import Testing
 @testable import ProviderCore
@@ -123,15 +124,41 @@ struct ClusterServiceStopReasonTests {
     /// (exit 0) and starts again by itself; the other Mac's part ended (stopped) and s…". A clean stop (stopped, or exit 0
     /// with no reason) is a stop on either Mac; an exit 0 that says why (a refused dial) is still said.
     @Test func aCleanStopIsNotAnEnd() {
-        for own in [true, false] {
-            for end in ["stopped", "exit 0"] {
-                let stopped = ClusterServiceStatus.Child(running: false, starts: 2, lastEnd: end, restartInSeconds: nil, lastError: nil)
-                #expect(!OnboardingLive.endShown(stopped, own: own), "\(own ? "this Mac" : "the other Mac"), \(end): a stop")
-            }
-            let refused = ClusterServiceStatus.Child(running: false, starts: 2, lastEnd: "exit 0", restartInSeconds: 2,
-                                                     lastError: "its part can't reach the local network")
-            let crashed = ClusterServiceStatus.Child(running: false, starts: 3, lastEnd: "exit 1", restartInSeconds: 2, lastError: "closed")
-            #expect(OnboardingLive.endShown(refused, own: own) && OnboardingLive.endShown(crashed, own: own), "ends with a reason are said")
+        for end in ["stopped", "exit 0"] {
+            let stopped = ClusterServiceStatus.Child(running: false, starts: 2, lastEnd: end, restartInSeconds: nil, lastError: nil)
+            #expect(!OnboardingLive.endShown(stopped), "\(end): a stop")
         }
+        let refused = ClusterServiceStatus.Child(running: false, starts: 2, lastEnd: "exit 0", restartInSeconds: 2,
+                                                 lastError: "its part can't reach the local network")
+        let crashed = ClusterServiceStatus.Child(running: false, starts: 3, lastEnd: "exit 1", restartInSeconds: 2, lastError: "closed")
+        #expect(OnboardingLive.endShown(refused) && OnboardingLive.endShown(crashed), "ends with a reason are said")
+    }
+
+    /// A-4's signal is this Mac's incident log: a `worker_crashed` its part recorded (source leader) since the wait began
+    /// names this Mac. A log that is missing or can't be read blames neither Mac, and a record carrying a field this build
+    /// doesn't know (the shared log, written by another install) is still read.
+    @Test func thisMacsIncidentLogNamesItsOwnWorker() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("incidents-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let file = directory.appendingPathComponent("incidents.json")
+        let at = Date(timeIntervalSince1970: 1_000)
+        #expect(OnboardingLive.ownWorker(inIncidentLog: file, since: at) == .unknown, "no log: neither Mac")
+
+        let log = ClusterIncidentLog(file: file, clock: { 1_000 })
+        try log.record(.init(severity: .error, source: "follower", stateCode: .peerLost, reason: .workerCrashed, message: "rank 1"))
+        #expect(OnboardingLive.ownWorker(inIncidentLog: file, since: at) == .notSeen, "the other Mac's record isn't this Mac's")
+        try log.record(.init(severity: .error, source: "leader", stateCode: .activationLaunchFailed, reason: .workerCrashed,
+                             message: "rank 0"))
+        #expect(OnboardingLive.ownWorker(inIncidentLog: file, since: at) == .ended, "this Mac's worker ended")
+        #expect(OnboardingLive.ownWorker(inIncidentLog: file, since: at.addingTimeInterval(1)) == .notSeen, "before the wait")
+
+        var stored = try #require(try JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any])
+        let incidents = try #require(stored["incidents"] as? [[String: Any]])
+        stored["incidents"] = incidents.map { $0.merging(["build": "0.10.6-dev"]) { $1 } }
+        try JSONSerialization.data(withJSONObject: stored).write(to: file)
+        #expect(OnboardingLive.ownWorker(inIncidentLog: file, since: at) == .ended, "a field this build doesn't know is ignored")
+
+        try Data("{\"schema_version\": 1, \"incidents\": [{\"seq\": 1}]}".utf8).write(to: file)
+        #expect(OnboardingLive.ownWorker(inIncidentLog: file, since: at) == .unknown, "a malformed log: neither Mac")
     }
 }

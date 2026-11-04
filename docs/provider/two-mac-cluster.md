@@ -999,8 +999,9 @@ screens and `status` name its own command (`darkbloom-dev …`).
 The mode chosen at "How should both Macs split <model>?" is the one that loads,
 for every model that runs both ways (GLM-5.3-Flash included). When this Mac's
 own worker is the one that keeps ending (its incident log says
-`worker_crashed`), the ✗ names this Mac instead; when that log can't be read,
-it says it can't tell which side closed the link and blames neither. When the
+`worker_crashed`), the ✗ names this Mac instead; when that log is missing or
+can't be read, or on the Mac that doesn't lead, it says it can't tell which side
+closed the link and blames neither. When the
 other Mac can't dial because macOS keeps it off the local network, the ✗ gives
 that reason instead of "make sure it is on". A planned switch's stops (a part
 that stopped, or ended with exit 0 and no reason) aren't shown as ends.

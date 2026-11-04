@@ -1029,10 +1029,15 @@ passed. The follower's own refusal decides:
 - the leading Mac's ✗ says the same of the other Mac without waiting for the
   start to give up, once the leading Mac's part has run about 20 seconds (long
   enough for the follower to dial it again, so a setting just turned on shows
-  first); a start run from the joining Mac's own window says it of that Mac;
+  first); a start run from the joining Mac's own window says it of that Mac.
+  Its line for that Mac then says only that its part can't reach the local
+  network, and a line too long for the ✗ is cut at a word, marked with "…";
 - once the follower has connected, or a later dial failed another way, an
   earlier refusal no longer counts, and a part that has stopped counts as not
   blocked until its new follower dials;
+- `darkbloom status` and `darkbloom cluster status` say the same on both Macs,
+  by the same rule: `not_serving`, with the steps on the Mac that is kept off,
+  instead of a load that never ends (the CLI reference quotes their words);
 - `darkbloom start` ends its wait with the same instruction, and says first
   when it replaces a cluster service running from a terminal session with the
   login agent.

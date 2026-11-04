@@ -322,12 +322,59 @@ struct ClusterServiceStopReasonTests {
         let app = "Darkbloom Dev", leader = "The other Mac (Apple M5 Ultra, 256 GB)"
         let own = OnboardingLive.localNetworkRefusalLines(line: OnboardingLive.localNetworkLine(forwarded: false), otherMac: leader, app: app)
         #expect(own?.first == "The other Mac can't reach this Mac over the cable: macOS keeps Darkbloom Dev there off the local network")
+        #expect(own?.last == "\(leader): System Settings → Privacy & Security → Local Network → turn on “Darkbloom Dev” (on a Mac with no "
+                + "display, through Screen Sharing). Then choose Retry here.", "the screen's own step: \(String(describing: own))")
         let forwarded = OnboardingLive.localNetworkRefusalLines(line: OnboardingLive.localNetworkLine(forwarded: true), otherMac: leader,
                                                                 app: app)
         #expect(forwarded?.first == "This Mac can't reach the other Mac over the cable: macOS keeps Darkbloom Dev off the local network."
                 && forwarded?.last?.hasPrefix("On this Mac: System Settings → Privacy & Security → Local Network") == true
                 && forwarded?.last?.contains("choose Retry here") == true, "the member's own screen: \(String(describing: forwarded))")
         #expect(OnboardingLive.localNetworkRefusalLines(line: "starting", otherMac: leader, app: app) == nil)
+    }
+
+    /// The pair-2 re-test (R-4): the leader's Local Network ✗ said the refusal three times, the last in the follower's own
+    /// words. That ✗'s own lines already say it plainly, so each Mac's line there only says that its part can't reach the
+    /// local network; any other ✗ keeps the part's own reason (A-3).
+    @Test func theLocalNetworkCrossSaysTheRefusalOnce() {
+        let reason = ClusterService.refusalReason(": macOS refused the dial before the cable was tried. Allow Darkbloom under System "
+            + "Settings > Privacy & Security > Local Network (once), or start the follower from a session that has that access.")
+        let refused = ClusterServiceStatus.Child(running: true, starts: 1, lastEnd: nil, restartInSeconds: nil, lastError: reason)
+        let running = ClusterServiceStatus.Child(running: true, starts: 1, lastEnd: nil, restartInSeconds: nil, lastError: nil)
+        let ended = ClusterServiceStatus.Child(running: false, starts: 1, lastEnd: "exit 0", restartInSeconds: nil, lastError: reason)
+        let there = "The other Mac (Apple M5 Max, 128 GB)"
+        let cross = OnboardingLive.errorLines(here: "This Mac", there: there, own: running, other: refused, otherUnreachable: nil,
+                                              refusalSaid: true)
+        #expect(cross == ["This Mac: its part is running, no error reported.",
+                          "\(there): its part is running and can't reach the local network."], "\(cross)")
+        let forwarded = OnboardingLive.errorLines(here: "This Mac", there: there, own: ended, other: running, otherUnreachable: nil,
+                                                  refusalSaid: true)
+        #expect(forwarded[0] == "This Mac: its part can't reach the local network.", "the joining Mac's own: \(forwarded)")
+        let other = OnboardingLive.errorLines(here: "This Mac", there: there, own: running, other: refused, otherUnreachable: nil)
+        #expect(other[1] == "\(there): \(reason) (its part is still running).", "any other ✗ keeps A-3's reason: \(other)")
+    }
+
+    /// R-4: a line too long for the ✗ (300 characters) is cut at a word, never inside a parenthesis, and says it was cut.
+    @Test func aLongLineIsCutAtAWordOutsideAnyParenthesis() {
+        // The leader's fourth line on the re-test, 302 characters; it was cut at "(its part is still running".
+        let line = "The other Mac (Apple M5 Max, 128 GB): its part can't reach the local network: macOS refused the dial before the "
+            + "cable was tried. Allow Darkbloom Dev under System Settings > Privacy & Security > Local Network (once), or start the "
+            + "follower from a session that has that access (its part is still running)."
+        let cut = ClusterConsoleText.boundedAtWord(line, maximum: 300)
+        #expect(cut.count <= 300 && cut.hasSuffix(" from a session that has that access…"), "\(cut)")
+        #expect(cut.filter { $0 == "(" }.count == cut.filter { $0 == ")" }.count, "never inside a parenthesis: \(cut)")
+        #expect(ClusterConsoleText.boundedAtWord("one two three four", maximum: 12) == "one two…", "at a word")
+        #expect(ClusterConsoleText.boundedAtWord("This Mac: its part is running, no error reported.", maximum: 300)
+                == "This Mac: its part is running, no error reported.", "a short line is kept whole")
+    }
+
+    /// R-3 (the pair-2 re-test): the pairing hint's firewall line and the line that asks to pair again after a reinstall
+    /// name this build's app, as macOS lists it (its firewall entry), not production's in the DevNet app.
+    @Test func thePairingLinesNameThisBuildsApp() {
+        let app = BuildEnvironment.current.appDisplayName
+        #expect(ClusterOnboardingPairing.otherMacNotFoundLines
+            .contains("· macOS's firewall lets \(app) in on both Macs (System Settings → Network → Firewall);"))
+        #expect(ClusterOnboardingPairingProblem.keyChanged.line
+            .contains("(\(app) was reinstalled, or this Mac moved between the Darkbloom and DevNet apps)"))
     }
 
     private static let refusedLines = "2026-11-04T07:32:14Z link-follower: link refused: connectFailed (unreachable)\n"

@@ -48,6 +48,8 @@ struct ClusterPairSummary: Sendable, Equatable {
     var started: Bool = false
     var serviceRunning: Bool = false
     var startsAtLogin: Bool = false
+    /// Which Mac's link follower macOS keeps off the local network, when that keeps the pair from serving.
+    var localNetworkRefused: ClusterLocalNetworkAccess.Refused?
     var state: State = .unknown
     /// Why it does not serve, in the screens' words.
     var reason: String?
@@ -340,10 +342,12 @@ extension ClusterPairSummary {
             || first.contains("registering both Macs with the coordinator") {
             return (.loading, nil)
         }
+        // A stopped pair reads stopped whatever the other Mac's presence: a stop it asked for before it left.
         if let leaderMode, otherMacAwayModes.contains(leaderMode) {
+            guard started else { return (.stopped, nil) }
             return (.otherMacAway, first.hasSuffix(".") ? String(first.dropLast()) : first)
         }
-        if saysOtherMacSilent(first) { return (.otherMacAway, nil) }
+        if saysOtherMacSilent(first) { return (started ? .otherMacAway : .stopped, nil) }
         return (started ? .unknown : .stopped, nil)
     }
 
@@ -363,6 +367,7 @@ extension ClusterPairSummary {
                 + "have been turned off with `\(Self.cli) cluster stop --service`, or that Mac is asleep, off, or waiting for "
                 + "someone to log in. On that Mac, run `\(Self.cli) start` (or `\(Self.cli) cluster`)."
         case .notServing:
+            if let words = localNetworkWords { return words.next }
             let reason = reason ?? ""
             if ClusterOnboardingNotServing.isMissingLogin(reason) {
                 return "Run `\(Self.cli) login` on each Mac named, then `\(Self.cli) cluster` on \(leadingMac). Or serve "
@@ -387,13 +392,39 @@ extension ClusterPairSummary {
     mutating func read(status: [String], leaderMode: String?) {
         lines = status.filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
         (state, reason) = Self.state(ofStatus: lines, started: started, leaderMode: leaderMode)
+        let away = leaderMode.map(Self.otherMacAwayModes.contains) == true || lines.first.map(Self.saysOtherMacSilent) == true
+        if state == .stopped, away {
+            // Stopped, then the other Mac's absence: not its countdown to serving alone, which a stopped pair never does.
+            lines = [stoppedLine, "\(ClusterOnboardingMacName.sentence(otherMac)) isn't answering over the cable."]
+        }
         if role == .member {
             // The lines came from the leading Mac unless they say it didn't answer (`saysOtherMacSilent`).
-            otherMacAnswers = state != .otherMacAway
-        } else if state == .otherMacAway {
+            otherMacAnswers = !away
+        } else if away {
             otherMacAnswers = false
         } else if let leaderMode, Self.otherMacPresentModes.contains(leaderMode) {
             otherMacAnswers = true
+        }
+    }
+
+    /// "Stopped; last model Qwen 3.8 27B.", as the leading Mac's status says a stopped pair.
+    var stoppedLine: String { "Stopped" + (model.map { "; last model " + $0 } ?? "") + "." }
+
+    /// Reads a Local Network refusal over the status lines: a start that can't go on until someone turns the setting on
+    /// reads not serving, in the setup screens' words (`localNetworkWords`), instead of a load that never ends. A pair
+    /// that serves or stopped reads as it did.
+    mutating func read(localNetworkRefused refused: ClusterLocalNetworkAccess.Refused?) {
+        guard let refused, started, [.loading, .unknown, .otherMacAway].contains(state) else { return }
+        localNetworkRefused = refused
+        state = .notServing
+        reason = localNetworkWords?.reason
+    }
+
+    /// The setup screens' words for `localNetworkRefused` (`ClusterLocalNetworkAccess.statusWords`).
+    var localNetworkWords: (reason: String, next: String)? {
+        localNetworkRefused.map {
+            ClusterLocalNetworkAccess.statusWords($0, otherMac: ClusterOnboardingMacName.sentence(otherMac), app: ClusterService.appName,
+                                                  cli: Self.cli)
         }
     }
 
@@ -437,7 +468,7 @@ extension ClusterPairSummary {
         case .notServing:
             return ["\(ClusterOnboardingDriver.failed) " + ClusterOnboardingNotServing.title(reason: reason ?? "no reason known")]
                 + rest.filter { $0.trimmingCharacters(in: .whitespaces) != ClusterOnboardingNotServing.remedy(forReason: reason ?? "") }
-        case .stopped: return ["\u{25A0} " + (first ?? "Stopped" + (model.map { "; last model " + $0 } ?? "") + ".")] + rest
+        case .stopped: return ["\u{25A0} " + (first ?? stoppedLine)] + rest
         case .loading: return ["\u{2026} " + (first ?? "Loading")] + rest
         case .otherMacAway: return [ClusterOnboardingDriver.failed + " " + (first ?? "\(ClusterOnboardingMacName.sentence(otherMac)) isn't answering.")] + rest
         case .unknown, .notPaired, .pairingUnreadable: return lines

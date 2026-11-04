@@ -184,8 +184,8 @@ public enum ClusterOnboardingPairingProblem: Sendable, Equatable {
     public var line: String {
         switch self {
         case .keyChanged:
-            return "This Mac's Secure Enclave key changed after it paired (Darkbloom was reinstalled, or this Mac moved between "
-                + "the Darkbloom and DevNet apps), so the Macs must pair again to serve through Darkbloom."
+            return "This Mac's Secure Enclave key changed after it paired (\(ClusterOnboardingCommand.app) was reinstalled, or "
+                + "this Mac moved between the Darkbloom and DevNet apps), so the Macs must pair again to serve through Darkbloom."
         }
     }
 }
@@ -1027,13 +1027,14 @@ public struct ClusterOnboardingPairing: Sendable, Equatable {
     public static let otherMacLine = "Run `darkbloom cluster` on the other Mac."
 
     /// Said once while the pairing still has not found the other Mac (2026-11-04, the candidate on pair 2: a firewall
-    /// that drops the discovery probe left both Macs waiting with no hint); the wait goes on.
-    public static let otherMacNotFoundLines = [
+    /// that drops the discovery probe left both Macs waiting with no hint); the wait goes on. The firewall lists the app
+    /// by its own name (`ClusterOnboardingCommand.app`), as Local Network does.
+    public static var otherMacNotFoundLines: [String] { [
         "The other Mac isn't found yet. Check that:",
         "· the other Mac shows this screen too (run `darkbloom cluster` there);",
-        "· macOS's firewall lets Darkbloom in on both Macs (System Settings → Network → Firewall);",
+        "· macOS's firewall lets \(ClusterOnboardingCommand.app) in on both Macs (System Settings → Network → Firewall);",
         "· or pair directly: press q, run `darkbloom cluster pair --listen` on this Mac (it prints its cable address),",
-        "  then `darkbloom cluster pair --connect <that address>` on the other Mac, and `darkbloom cluster` on both again."]
+        "  then `darkbloom cluster pair --connect <that address>` on the other Mac, and `darkbloom cluster` on both again."] }
 
     /// The question after the code, and its two answers (a menu: arrows and enter, or 1 and 2). Each Mac answers for
     /// itself: a "yes" passed on from the other Mac could come from a Mac in between.

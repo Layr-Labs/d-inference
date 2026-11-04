@@ -468,16 +468,22 @@ checks that compile the screens without the package set theirs with `use`), the
 pair commands and the live operations read it (`ClusterPairSummary.cli`,
 `OnboardingLive.cli`), and ProviderCore's texts are named with it
 (`ClusterOnboardingCommand.named`). Every line that names the app as macOS
-lists it under Local Network reads `ClusterService.appName`
-(`BuildEnvironment.current.appDisplayName`): the screens and the link
-follower's refusal. Both apps serve a pair's API on port 8000,
+lists it under Local Network or in its firewall reads `ClusterService.appName`
+(`BuildEnvironment.current.appDisplayName`): the screens (through
+`ClusterOnboardingCommand.app`, including the pairing hint's firewall line and
+the line that asks to pair again after a reinstall) and the link follower's
+refusal. Both apps serve a pair's API on port 8000,
 so one of them serves a pair on a Mac at a time. Each keeps its own cluster
 incident log, owned by `DarkbloomClusterRemote`
 (`ClusterIncidentLog.defaultFile(homeDirectory:install:)`): production's is
 `~/.darkbloom/cluster/incidents.json`, another install's its own file, such as
 `incidents.dev.json`, which a build from before installs had their own files
 never reads or rewrites; a corrupt one is kept beside it under its own name
-(`incidents.corrupt.json`, `incidents.dev.corrupt.json`). Every reader and writer opens this build's with
+(`incidents.corrupt.json`, `incidents.dev.corrupt.json`). `ClusterIncidentLog.files`
+names a log's files: the log, its lock sidecar and that corrupt copy.
+`darkbloom uninstall` removes an install's own with it while the shared folder
+stays for the other install; production's shared `incidents.json` stays. Every
+reader and writer opens this build's with
 `ClusterIncidentLog.forThisInstall`. Each record also names the install that
 wrote it (`ClusterIncident.install`), and a build reads only its own, counting
 records without one as production's (`ClusterIncidentLog.install`). The
@@ -3939,7 +3945,19 @@ away; mixed pairs are first-class).
   logs only a change, so a setting just turned on clears first;
   `refusalIsCurrent`). The ✗ is worded for the screen that shows it
   (`OnboardingLive.localNetworkLine`): a wait the joining Mac forwarded names
-  that Mac.
+  that Mac. Its line for the refused part says only that the part can't reach
+  the local network (`errorLines`' `refusalSaid`), and every ✗ line too long for
+  its bound is cut at a word, never inside a parenthesis, and marked
+  (`ClusterConsoleText.boundedAtWord`). `status` and `cluster status` read the
+  same refusal by the same rule (`ClusterLocalNetworkAccess.Refused`): on the
+  refused Mac its own service's state, on the leading Mac the other Mac's
+  status, asked (`otherMacStatus`) only while the pair has been starting past
+  the settle time (`otherMacRefused`). They say `not_serving` in the screens'
+  words, ending with the command that starts the pair again instead of the
+  screen's Retry (`statusWords`, through the `then` of
+  `localNetworkRefusalLines` and `localNetworkBlockedLines`). A stopped pair
+  reads stopped whatever the other Mac's presence
+  (`ClusterPairSummary.state(ofStatus:started:leaderMode:)`).
 - **The person's family:** `useMode` keeps the chosen family for every model
   (`OnboardingLive.keptFamily`), never inferred from the listing's order, which
   says nothing of the plan; `localAdopt` plans again in it only when the listed

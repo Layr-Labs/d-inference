@@ -118,11 +118,13 @@ instead: a clean stop would first finish its whole prompt, and a
 tensor-parallel pair prefills one prompt at a time, oldest first
 (`QwenTensorParallelBatchDriver`), so every newer request would wait behind it
 and fail at its own first-token deadline. The cancel ends only that lane, at
-both ranks' next step boundary, and the next request is served at once. A
-pair without such lanes keeps the clean stop, since a cancel there ends the
-pair. Before, a client that closed its connection 15 s into a 60K-token prompt
-on a Qwen 3.8 27B tensor-parallel pair kept both Macs prefilling it for about
-4 minutes, and every other request failed meanwhile. Sources:
+both ranks' next step boundary, and the next request is served at once. The
+pair's own shutdown (`ClusterWorkerPair.shutdown`) likewise cancels such a lane
+without waiting for a clean stop. A pair without such lanes keeps the clean
+stop, since a cancel there ends the pair. Before, a client that closed its
+connection 15 s into a 60K-token prompt on a Qwen 3.8 27B tensor-parallel pair
+kept both Macs prefilling it for about 4 minutes, and every other request
+failed meanwhile. Sources:
 `libs/darkbloom-cluster/Sources/DarkbloomClusterProcess/ClusterWorkerRequest.swift`
 (`requestCleanStop`) and
 `provider-swift/Sources/ProviderCore/Inference/Distributed/Engine/DistributedCBv2Engine+Events.swift`

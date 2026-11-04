@@ -253,12 +253,13 @@ public final class ClusterWorkerRequest: @unchecked Sendable {
     /// time limit is set here: the request's own deadline still applies, and a
     /// caller that cannot wait calls `cancel`, which ends the ranks.
     ///
-    /// A request that has produced no token yet stops at its first one. False
-    /// when the request can no longer stop this way (cancelled, or retired),
-    /// and for a lane that has produced no token yet: its clean stop would
-    /// first finish its whole prompt, and the ranks prefill one prompt at a
-    /// time, so every newer request would wait behind it. Its `cancel` ends
-    /// only that lane, at the ranks' next step boundary.
+    /// A request that has produced no token yet stops at its first one, except
+    /// a lane on a pair whose lanes retire alone (`ClusterWorkerPair.lanesRetireAlone`):
+    /// its clean stop would first finish its whole prompt while the ranks
+    /// prefill one prompt at a time, so every newer request would wait behind
+    /// it. Such a lane gets false, and its `cancel` ends only that lane at the
+    /// ranks' next step boundary. False also when the request can no longer
+    /// stop this way (cancelled, or retired).
     @discardableResult public func requestCleanStop() -> Bool {
         lock.withLock {
             guard cancellation == nil, !retired.isComplete, !owner.lanesRetireAlone || producedToken else { return false }

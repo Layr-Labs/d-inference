@@ -354,6 +354,28 @@ final class ClusterWorkerPairAdmissionDeadlineTests: XCTestCase {
         XCTAssertTrue(ranks.allSatisfy { $0.fences.isEmpty && $0.nativeCleanupObserved }, "a rank did not end by its shutdown")
     }
 
+    /// A lane that has produced a token keeps the clean stop: no rank is told
+    /// to cancel it. The scripted ranks always finish `length`, so the request
+    /// asks for one token and its consumer leaves at it.
+    func testALaneThatProducedATokenKeepsTheCleanStop() throws {
+        let ranks = [ScriptedRank(rank: 0), ScriptedRank(rank: 1)]
+        let pair = try lanePair(ranks)
+        let lease = try pair.reserve(requestID: UUID(), reservation: reservation(output: 1))
+        let delivered = Delivered()
+        try lease.start { event in
+            delivered.record(event)
+            if case .token = event, !lease.requestCleanStop() { lease.cancel() }
+            return true
+        }
+        XCTAssertTrue(wait(seconds: 5) { lease.isRetired }, "the request did not retire")
+        lease.releaseResources()
+        XCTAssertTrue(lease.cleanStopWasRequested, "a lane that produced a token refused the clean stop")
+        XCTAssertEqual(ranks.map(\.cancels), [[], []], "a rank was told to cancel the request")
+        XCTAssertNil(delivered.value.failure)
+        XCTAssertNil(pair.lastRequestFailure)
+        shutdown(pair)
+    }
+
     /// A pair whose workers do not retire a lane alone keeps the clean stop
     /// before the first token: a cancel there ends the pair.
     func testWithoutLanesARequestStillInItsPromptKeepsTheCleanStop() throws {

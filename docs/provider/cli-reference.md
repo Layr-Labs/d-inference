@@ -155,7 +155,8 @@ Subcommands declared by `Darkbloom.configuration.subcommands`:
 | `switch` | Gracefully replace hosted models in the running coordinator-connected provider, without restart or reconnect | | `SwitchCommand.swift` (`Switch`) |
 | `addon` | Debug add-on holds on the running provider: `status` (default), `hold`, `release` | | `AddonCommand.swift` (`Addon`) |
 | `sandbox` | Set up and manage [Darkbloom Sandbox](./sandboxes.md) CI jobs through its add-on: status (bare), `setup`, `pause`, `resume`, `logs`, `uninstall` | | `Sandbox/SandboxCommand.swift` (`Sandbox`) |
-| `stop` | Drain accepted requests, then stop the LaunchAgent; `--uninstall` removes the provider, watchdog and desktop API agents | | `StopCommand.swift` (`Stop`) |
+| `stop` | Drain accepted requests, then stop the LaunchAgent; `--uninstall` removes the provider, watchdog and desktop API agents and keeps every file | | `StopCommand.swift` (`Stop`) |
+| `uninstall` | Take Darkbloom off this Mac: remove everything, or everything but the models ([below](#darkbloom-uninstall)) | | `UninstallCommand.swift` (`Uninstall`) |
 | `restart` | Drain, restart with recorded configuration, and confirm fresh authorization | ✓ | `RestartCommand.swift` (`Restart`) |
 | `status` | Config, hardware, schedule, live daemon state (including the coordinator's last `Trust: <level> / <status>` message), per-slot KV/MTP posture | ✓ | `StatusCommand.swift` (`Status`) |
 | `doctor` | Diagnostics (see [troubleshooting](./troubleshooting.md#doctor-checks)) | ✓ | `DoctorCommand.swift` (`Doctor`) |
@@ -1279,7 +1280,7 @@ darkbloom stop [--timeout <seconds>] [--force] [--uninstall]
 |---|---|---|---|
 | `--timeout <seconds>` | integer, 0–3600 | `600` | Wait for accepted coordinator requests, local response writes and the coordinator acknowledgement |
 | `--force` | flag | `false` | Explicitly permit bounded cancellation and termination of unfinished work |
-| `--uninstall` | flag | `false` | After draining or explicit force, remove the provider and watchdog plists and boot out and remove the desktop API agent (`io.darkbloom.desktop-api`, best effort) |
+| `--uninstall` | flag | `false` | After draining or explicit force, remove the provider and watchdog plists and boot out and remove the desktop API agent (`io.darkbloom.desktop-api`, best effort). Every file, the cluster service and the pairing stay; [`darkbloom uninstall`](#darkbloom-uninstall) takes Darkbloom off the Mac |
 
 The command disarms the watchdog and disables login/reboot startup before
 requesting the drain. If setup fails before the mailbox request is published,
@@ -1293,6 +1294,151 @@ Code: `provider-swift/Sources/darkbloom/ServiceDrain.swift` (`DrainOptions`,
 `ServiceDrain.prepare`) and `provider-swift/Sources/darkbloom/StopCommand.swift`
 (`Stop`). See [graceful lifecycle behavior](#graceful-stop-and-restart) for signal
 handling and launchd's termination allowance.
+
+## `darkbloom uninstall`
+
+Take Darkbloom off this Mac. In a terminal with no flags it shows two choices
+with this Mac's sizes and reads one key:
+
+```text
+Uninstall Darkbloom from this Mac
+
+  1) Remove everything
+     The app, settings, pairing, logs and all models · frees 412 GB
+  2) Keep models
+     Removes everything else; a reinstall reuses the 410 GB of models
+
+  Choose 1 or 2 (Esc cancels):
+```
+
+The sizes are measured on this Mac. APFS clones (the cluster model store clones
+the downloaded models) count once, and blocks a clone outside Darkbloom's
+folders still uses are not counted. Lines under the choices appear only when
+this Mac has folders no choice deletes, or Darkbloom parts with their own
+uninstall.
+
+**1** asks once more, and only `y` or `yes` goes on; anything else changes
+nothing (`ProviderUninstall.everythingQuestion`). **2** asks nothing more.
+
+```text
+  Remove everything, including 410 GB of models? This can't be undone. [y/N]:
+```
+
+Run as root (`sudo`), every form of the command, `--dry-run` included, prints
+this and exits 64 before it lists or changes anything
+(`ProviderUninstall.rootRefusal`):
+
+```text
+Run `darkbloom uninstall` as yourself, not with sudo: it removes your own Darkbloom, and asks for your password when a step needs it.
+```
+
+```bash
+darkbloom uninstall                            # the screen: 1, 2 or Esc
+darkbloom uninstall --keep-models --dry-run    # every action and path, with sizes; changes nothing
+darkbloom uninstall --keep-models --yes        # a reinstall reuses the models
+darkbloom uninstall --everything --yes         # nothing left behind
+```
+
+| Flag | Type | Default | Effect |
+|---|---|---|---|
+| `--everything` | flag | `false` | Remove everything: the app, settings, pairing, logs and all models |
+| `--keep-models` | flag | `false` | Remove everything but the models, so a reinstall reuses them |
+| `--yes`, `-y` | flag | `false` | Don't ask for confirmation |
+| `--dry-run` | flag | `false` | List every action and path with sizes, and change nothing. Without a mode it lists both |
+| `--json` | flag | `false` | With `--dry-run`: the plan as JSON (`darkbloom_uninstall_plan_v1`) |
+| `--timeout`, `--force` | | | The [stop](#darkbloom-stop) drain options |
+
+Without a terminal, a mode and `--yes` are required; otherwise the command
+prints `Usage: darkbloom uninstall --everything|--keep-models [--yes] [--dry-run [--json]] (no terminal to ask which)`
+and exits 64. Both modes together, `--json` without `--dry-run`, or an unknown
+flag are refused with the usage before anything runs.
+
+**The steps, in order, the same for both choices.** Each is idempotent; the
+summary lists each one as `done`, `skipped` or `failed`, with the reason, and the
+command exits 1 when one failed or when a folder of Darkbloom's was not removed.
+A failed step does not stop the safe steps after it.
+
+| # | Step | Through | Skipped when |
+|---|---|---|---|
+| 1 | Stop serving on this Mac | the [stop](#darkbloom-stop) drain (`ServiceDrain`) | the provider service was not running |
+| 2 | Stop this Mac's cluster part and remove its service | `darkbloom cluster stop`; when the other Mac does not answer, `cluster stop --local-only`. Beside another install that shares the pair (below), it is `Remove this install's cluster service` instead: only this install's own agent (`ClusterServiceAgentPlan.label` of its app) goes, through `ProviderUninstall.removeOwnClusterAgent`; the pair is not stopped and the other install's agent is not touched | no cluster service on this Mac (beside another install: this install has none). The dry run also names a cluster service running without a login agent (`ClusterService.running`), which this step stops |
+| 3–5 | Remove the provider, watchdog and desktop API launch agents | what `stop --uninstall` runs (`LaunchAgent.uninstall`, `WatchdogAgent.uninstall`, `DesktopService.uninstall`) | not installed, or serving did not stop in step 1 |
+| 6 | Revoke this Mac's account token, best effort | what `darkbloom logout` does (`Logout.revokeSavedToken`) | no saved token, the coordinator did not confirm it, or serving did not stop. It never fails the uninstall; the token file goes with `~/.darkbloom` |
+| 7 | Forget the pairing with the other Mac | `darkbloom cluster pair --forget <pin>`, once per pairing | this Mac is not paired, or another install on this Mac uses the pairing (below) |
+| 8 | Undo the cable port setup | `darkbloom cluster link --remove` (macOS asks for an administrator's password) | nothing to undo, or another install on this Mac uses it (below) |
+| 9 | Delete Darkbloom's folders, one step each (table below) | | already gone, refused (`not removed: <why>`), or a service did not stop in steps 1–5. When step 8 did not complete, `~/.darkbloom` and the command link stay, so the command can run again |
+
+**What is deleted**, from `ProviderUninstallPaths` and `ProviderUninstall.inventory`
+in `provider-swift/Sources/ProviderCore/Service/Uninstall/ProviderUninstallPlan.swift`:
+
+| Item | Path | 1) Remove everything | 2) Keep models |
+|---|---|---|---|
+| Settings | `~/.config/darkbloom` (`provider.toml`, saved cluster setups) | deleted | deleted |
+| Encrypted prompt caches | `~/Library/Caches/darkbloom` | deleted | deleted |
+| Each model Darkbloom downloaded | `~/.cache/huggingface/hub/models--<org>--<name>`, only folders holding Darkbloom's receipt (`.darkbloom-manifest.json`) or its unfinished download (`.local-staging-*`), and `.artifact-writer-locks` | deleted | kept, with their `refs/` and receipts, so a reinstall's scan finds them |
+| Cluster model store | `~/.cache/huggingface/darkbloom-cluster-models` | deleted | kept |
+| The command link | `/usr/local/bin/darkbloom`, only while it links to `~/.darkbloom/bin/darkbloom` | deleted | deleted |
+| Darkbloom folder | `~/.darkbloom`: the app, `bin/`, logs, pairing, account token, cluster setup and service state. Last, since the command runs from the app in it. When a models folder you chose is inside it, everything else in it is deleted, the app last | deleted | deleted |
+
+What no choice deletes (the summary lists them):
+
+- anything that resolves outside those folders. A target that is a link, or
+  whose resolved path is elsewhere, is refused and reported, and a link inside a
+  deleted folder is removed without following it. A folder that is another
+  disk's mount point, or holds one, is refused too;
+- a models folder you chose (`[backend] model_cache_directory`, set by
+  `darkbloom models location`) and the cluster model store beside it
+  (`darkbloom-cluster-models` in the same parent folder), in both choices and
+  wherever they are. Inside Darkbloom's folders (for example
+  `~/.darkbloom/models`) they stay with the folders that lead to them, and the
+  screen, the dry run and the summary list them as `Kept:`; elsewhere, as
+  `Never touched:`. After a reinstall, `darkbloom models location <folder>` uses
+  the chosen folder again. When the chosen folder is `~/.darkbloom` itself (or
+  holds it), the app folder stays with it: the summary's first line says
+  Darkbloom is not fully removed because its app folder is your models folder,
+  the step says to move the models out and run `~/.darkbloom/bin/darkbloom
+  uninstall` again (the settings naming the folder are gone by then, so that run
+  deletes the rest), and the command exits 1;
+- caches in a folder you chose outside Darkbloom's folders
+  (`darkbloom cache set --directory`), the default model cache when it is a
+  link, and other tools' models;
+- the models and the cluster model store while another Darkbloom install
+  (`~/.darkbloom-dev`, `~/.darkbloom-staging`) shares them;
+- this Mac's pairing, cluster setup and cable port setup while another install
+  is on this Mac: the production app and the DevNet app (`darkbloom-dev`) use
+  the same ones. The other install counts when its app or `bin/` command is in
+  its folder (`ProviderUninstallPaths.otherEnvironment`). Steps 7 and 8 are
+  skipped (`kept: <the other install> on this Mac also uses it`), the files
+  every install shares stay (`~/.darkbloom/cluster*` and
+  `~/.config/darkbloom/clusters`; the rest of those folders goes), and step 2
+  removes only this install's own cluster service. The screen,
+  the dry run, `--json` and the summary list it, here for `darkbloom-dev
+  uninstall`, and the summary's first line names the install it removed
+  (`Darkbloom Dev is removed from this Mac.`):
+
+  ```text
+  Kept: This Mac's pairing, cluster setup and cable port setup (40 KB, ~/.darkbloom/cluster*): the production Darkbloom on this Mac also uses them. Run `darkbloom uninstall` there to remove them
+  ```
+
+- Keychain items (Secure Enclave and App Attest keys); a new install replaces them;
+- the fan helper (`sudo darkbloom fan uninstall`), Darkbloom Sandbox
+  (`darkbloom sandbox uninstall`), a legacy MDM profile (`darkbloom unenroll`) and
+  the shell `PATH` line the installer added.
+
+The summary says what was removed, what was kept and where, and the space freed
+(the change in the home volume's free space). When a folder of Darkbloom's was
+refused, its step reads `not removed: <why>`, the first line is `Darkbloom is not
+fully removed from this Mac: some of its folders were not removed (see below).`
+and the command exits 1. A command link the installer did not make is reported
+the same way but is not Darkbloom's, so it alone does not count. After **Keep models** it ends with
+the way back: the install command, then `darkbloom start` or `darkbloom cluster`;
+the models are found automatically. On a paired Mac its last line names the other
+Mac: run `darkbloom uninstall` there too, or `darkbloom cluster` on it to pair it
+with another Mac.
+
+Code: `provider-swift/Sources/darkbloom/UninstallCommand.swift` (`Uninstall`) and
+`provider-swift/Sources/ProviderCore/Service/Uninstall/ProviderUninstall.swift`
+(`ProviderUninstall.run`).
 
 ## `darkbloom restart`
 

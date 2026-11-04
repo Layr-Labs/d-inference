@@ -3,8 +3,8 @@
 > Last updated: 2026-11-04
 
 Symptom → check → fix for the `darkbloom` provider: installer exits, `doctor`
-check names, service lifecycle, coordinator connection, updates, models and the
-KV-backend guard. For operators; every fix is a command you run on the Mac.
+check names, service lifecycle, coordinator connection, updates, models, the
+KV-backend guard and uninstalling. For operators; every fix is a command you run on the Mac.
 
 ## Prerequisites
 
@@ -271,6 +271,27 @@ request answered. Otherwise its line names why
 `model=base_reward` grant. If last-1000 earnings show no `base_reward` rows
 (or amounts that match a smaller RAM class) while `doctor` is green, follow
 [Check a missing base reward](base-rewards.md).
+
+## Uninstall and start over
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| After `darkbloom stop --uninstall`, the cluster setup, pairing and settings are still there | `stop --uninstall` removes only the provider, watchdog and desktop API agents and keeps every file | `darkbloom uninstall`: choose **Remove everything**, or **Keep models** to reuse the models after a reinstall ([installation](./installation.md#uninstall)) |
+| You want to start from scratch | Saved settings, the pairing and the cluster setup bring the old setup back | `darkbloom uninstall --keep-models` (or `--everything`), then install again: settings, pairing and cable setup start fresh and the kept models are found. Deleting `~/.darkbloom` by hand leaves the cluster service, the pairing on the other Mac and the cable port setup behind |
+| `Usage: darkbloom uninstall --everything\|--keep-models [--yes] [--dry-run [--json]] (no terminal to ask which)` | No terminal to ask in (an agent or a script), and no mode with `--yes` | Pass `--everything` or `--keep-models` with `--yes`; check first with `--dry-run` |
+| `failed   Stop serving on this Mac: …` | The provider did not finish its accepted requests in time, or cannot drain | Run it again with a longer `--timeout`, or `--force` to interrupt them. Its services are kept until it stops |
+| `skipped  Delete …: a Darkbloom service may still be running` | A step that stops a service failed (it is listed above) | Fix that step, then run `darkbloom uninstall` again with the same choice; every step is idempotent |
+| `skipped  Revoke this Mac's account token: …` | No saved token, the coordinator was not reached, or it could not confirm the token | Nothing to do: the token file is deleted with `~/.darkbloom` |
+| After **Keep models** and a reinstall, models in a folder you chose are not listed | That location was saved in the deleted `provider.toml` | `darkbloom models location <folder>` |
+| `failed   Undo the cable port setup: …` | The macOS prompt was declined, or could not show (no screen, over SSH) | `~/.darkbloom` and the `darkbloom` command stay for this. Run `darkbloom uninstall` again at the Mac's screen with the same choice; without a screen, run the printed `sudo sh …` line as an administrator, then run it again |
+| `Run \`darkbloom uninstall\` as yourself, not with sudo: …` (exit 64) | It was run with `sudo`. As root it would read root's home folder, not yours | Run `darkbloom uninstall` without `sudo`; macOS asks for the password when the cable port step needs it |
+| `skipped  Delete …: not removed: …`, and the first line says Darkbloom is not fully removed (exit 1) | The path is a link, resolves outside Darkbloom's folders, or another disk is mounted at it or inside it | Nothing outside Darkbloom's folders is deleted. Remove it yourself if you don't need it, or eject the disk and run `darkbloom uninstall` again |
+| `Darkbloom is not fully removed from this Mac: its app folder is your models folder, so it was kept (see below).` (exit 1) | `darkbloom models location ~/.darkbloom` made the app folder your models folder, and a folder you chose is never deleted | Move the models you want to keep out of `~/.darkbloom`, then run `~/.darkbloom/bin/darkbloom uninstall` again: the settings naming that folder are gone, so it deletes the rest |
+| `~/.darkbloom` is still there after the uninstall, holding your models | You chose a models folder inside it (`darkbloom models location ~/.darkbloom/models`); a folder you chose is never deleted, and the summary lists it as `Kept:` | Move the folder, or delete it yourself if you don't need the models |
+| After uninstalling the DevNet app (or the production one), the pairing and cable port setup are still there | The other install on this Mac uses them, so the summary lists them as `Kept:` | Run the other install's uninstall too (`darkbloom uninstall` or `darkbloom-dev uninstall`) to remove them |
+| The other Mac still shows the pair | Each Mac keeps its own pairing | Run `darkbloom uninstall` on it too, or `darkbloom cluster` on it to pair it with another Mac |
+
+Steps, paths and safety rules: [`darkbloom uninstall`](./cli-reference.md#darkbloom-uninstall).
 
 ## Collect a report
 

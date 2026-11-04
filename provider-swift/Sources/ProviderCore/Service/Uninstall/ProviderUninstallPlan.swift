@@ -85,6 +85,11 @@ public struct ProviderUninstallItem: Codable, Sendable, Equatable {
     public let bytes: Int64
     public let verdict: Verdict
     public let reason: String?
+    /// Deleting it takes away the `darkbloom` command: the install folder (the app, and the cable records
+    /// `cluster link --remove` reads) and the command link.
+    var removesTheCommand = false
+
+    private enum CodingKeys: String, CodingKey { case label, path, bytes, verdict, reason }
 }
 
 /// The other Mac this one is paired with, from the saved records only (no cable, no key).
@@ -134,8 +139,9 @@ extension ProviderUninstall {
     /// command runs from) comes last.
     public static func inventory(_ paths: ProviderUninstallPaths) -> [ProviderUninstallItem] {
         var items: [ProviderUninstallItem] = []
-        func add(_ label: String, _ url: URL, keep reason: String? = nil) {
-            guard let item = item(label, url, paths: paths, keep: reason) else { return }
+        func add(_ label: String, _ url: URL, keep reason: String? = nil, removesTheCommand: Bool = false) {
+            guard var item = item(label, url, paths: paths, keep: reason) else { return }
+            item.removesTheCommand = removesTheCommand
             items.append(item)
         }
         // A chosen folder inside Darkbloom's own goes with it, so only one outside them is listed as kept.
@@ -154,8 +160,8 @@ extension ProviderUninstall {
             add("Models in the folder you chose", saved, keep: "outside Darkbloom's folders")
         }
         add("Cluster model store", paths.clusterModelStore, keep: paths.otherInstall.map(sharedReason))
-        add("The `\(paths.commandLink.lastPathComponent)` command link", paths.commandLink)
-        add("Darkbloom folder: the app, logs, pairing and cluster setup", paths.installDirectory)
+        add("The `\(paths.commandLink.lastPathComponent)` command link", paths.commandLink, removesTheCommand: true)
+        add("Darkbloom folder: the app, logs, pairing and cluster setup", paths.installDirectory, removesTheCommand: true)
         return items
     }
 

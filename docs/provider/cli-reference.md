@@ -1333,7 +1333,7 @@ failed. A failed step does not stop the safe steps after it.
 | 3–5 | Remove the provider, watchdog and desktop API launch agents | both | what `stop --uninstall` runs (`LaunchAgent.uninstall`, `WatchdogAgent.uninstall`, `DesktopService.uninstall`) | not installed, or serving did not stop in step 1 |
 | 6 | Forget the pairing with the other Mac | everything | `darkbloom cluster pair --forget <pin>`, once per pairing | this Mac is not paired |
 | 7 | Undo the cable port setup | everything | `darkbloom cluster link --remove` (macOS asks for an administrator's password) | nothing to undo |
-| 8 | Delete Darkbloom's folders, one step each (table below) | everything | | already gone, refused, or a service did not stop in steps 1–5 |
+| 8 | Delete Darkbloom's folders, one step each (table below) | everything | | already gone, refused, or a service did not stop in steps 1–5. When step 7 did not complete, `~/.darkbloom` and the command link stay, so the command can run again |
 
 **What `--everything` deletes**, from `ProviderUninstallPaths` and
 `ProviderUninstall.inventory` in

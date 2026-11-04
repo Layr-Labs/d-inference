@@ -258,7 +258,7 @@ SSD caching remains enabled by default with no resident retention; use
 | `Usage: darkbloom uninstall --keep-data\|--everything [--yes] [--dry-run [--json]] (no terminal to ask which)` | No terminal to ask in (an agent or a script), and no mode with `--yes` | Pass `--keep-data` or `--everything` with `--yes`; check first with `--dry-run` |
 | `failed   Stop serving on this Mac: …` | The provider did not finish its accepted requests in time, or cannot drain | Run it again with a longer `--timeout`, or `--force` to interrupt them. Its services are kept until it stops |
 | `skipped  Delete …: a Darkbloom service may still be running` | A step that stops a service failed (it is listed above) | Fix that step, then run `darkbloom uninstall --everything` again; every step is idempotent |
-| `failed   Undo the cable port setup: …` | The macOS prompt was declined, or could not show (no screen, over SSH) | Run `darkbloom uninstall --everything` again at the Mac's screen; without a screen, run the printed `sudo sh …` line as an administrator |
+| `failed   Undo the cable port setup: …` | The macOS prompt was declined, or could not show (no screen, over SSH) | `~/.darkbloom` and the `darkbloom` command stay for this. Run `darkbloom uninstall --everything` again at the Mac's screen; without a screen, run the printed `sudo sh …` line as an administrator, then run it again |
 | `skipped  Delete …: refused: …` | The path is a link, or resolves outside Darkbloom's folders | Nothing outside Darkbloom's folders is deleted; remove it yourself if you don't need it |
 | The other Mac still shows the pair | Each Mac keeps its own pairing | Run `darkbloom uninstall` on it too, or `darkbloom cluster` on it to pair it with another Mac |
 

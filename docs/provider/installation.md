@@ -308,7 +308,9 @@ darkbloom uninstall
    `~/.config/darkbloom`, `~/Library/Caches/darkbloom`, the models Darkbloom
    downloaded into `~/.cache/huggingface/hub`, the cluster model store and the
    `/usr/local/bin/darkbloom` link. Removing everything asks for the word `yes`,
-   then lists each step as done, skipped or failed, and the space freed.
+   then lists each step as done, skipped or failed, and the space freed. If the
+   cable port setup could not be undone, `~/.darkbloom` stays so you can run it
+   again.
 3. **Cancel.**
 
 For scripts and agents:

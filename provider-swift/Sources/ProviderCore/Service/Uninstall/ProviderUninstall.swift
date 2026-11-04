@@ -65,6 +65,8 @@ public enum ProviderUninstall {
     static let clusterStep = "Stop this Mac's cluster part and remove its service"
     static let cableStep = "Undo the cable port setup"
     static let servicesRunningReason = "a Darkbloom service may still be running (see the failed step above)"
+    static let cableRetryReason =
+        "kept, so the uninstall can run again and undo the cable port setup (it holds the app and the cable records)"
 
     /// Runs `mode`. `items` is `inventory(_:)`, read before anything changed; `announce` prints each step as it starts.
     public static func run(_ mode: Mode, items: [ProviderUninstallItem], pairing: ProviderUninstallPairing?,
@@ -105,7 +107,7 @@ public enum ProviderUninstall {
             steps.append(.init(name: "Forget this Mac's pairing", status: .skipped, detail: "this Mac is not paired"))
         }
         // After the pairing, which tells the other Mac over the cable; this takes the cable's address away.
-        _ = await step(cableStep, operations.removeCableSetup)
+        let cableUndone = await step(cableStep, operations.removeCableSetup)
         let before = operations.availableBytes()
         for item in items where item.verdict != .keep {
             let name = "Delete \(item.label)"
@@ -115,6 +117,10 @@ public enum ProviderUninstall {
             }
             guard servicesStopped else {
                 steps.append(.init(name: name, status: .skipped, detail: servicesRunningReason))
+                continue
+            }
+            guard cableUndone || !item.removesTheCommand else {
+                steps.append(.init(name: name, status: .skipped, detail: cableRetryReason))
                 continue
             }
             _ = await step(name) {

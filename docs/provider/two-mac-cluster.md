@@ -106,7 +106,11 @@ follows the start from the cluster's status the two Macs exchange over the cable
    the leader's status says "Starting <model>: loaded on both Macs; the leading
    Mac is testing it." until its test is answered. With a leader on an older
    build, which publishes none of this, this Mac sends its own test request and
-   may show ✓ before Darkbloom accepts the pair.
+   may show ✓ before Darkbloom accepts the pair. Later tests from the leading
+   Mac's screen (choosing the serving model, its Retry, a scope switch's test)
+   replace that result in the status: a failure reads "The last test from the
+   leading Mac failed." under the not-serving line. A scope switch, the next
+   start or serve, and a stop clear it.
 3. It ends with the same ✓ or ✗ block as the leader's screen. After ✓: "You can
    close this window." After ✗: the reason, then "Choose Retry on the other Mac
    (…): its screen shows the choices."; after a failed test, "To test again, run

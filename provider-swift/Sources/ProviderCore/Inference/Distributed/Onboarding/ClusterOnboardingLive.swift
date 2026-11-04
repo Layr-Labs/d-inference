@@ -1314,9 +1314,7 @@ final class OnboardingLive: @unchecked Sendable {
     func markRegistrationPending() {
         let pid = getpid()
         guard !forwards, let started = Self.processStarted(pid) else { return }
-        try? store.updateRecord {
-            $0.registrationPending = .init(pid: pid, started: started); $0.startTestFailure = nil; $0.startTestPassed = nil
-        }
+        try? store.updateRecord { $0.registrationPending = .init(pid: pid, started: started); Self.clearTestResults(&$0) }
     }
 
     /// The start's question to the coordinator is answered (or will not be asked).
@@ -1351,28 +1349,39 @@ final class OnboardingLive: @unchecked Sendable {
         let mine = Self.processStarted(pid).map { ClusterOnboardingPendingRegistration.Mark(pid: pid, started: $0) }
         let record = try? store.readRecord()
         let marked = mine != nil && record?.registrationPending == mine
+        guard marked else {
+            // Not a start's test (the serving model's test, its Retry, the scope switch's, a re-test): the status shows the
+            // latest test too, through the record's normal update, unless a running start's mark is live (it publishes its
+            // own outcome, which this never overwrites).
+            try? store.updateRecord { record in
+                guard !ClusterOnboardingPendingRegistration.look(record.registrationPending, started: Self.processStarted).pending else { return }
+                Self.clearTestResults(&record)
+                switch tested {
+                case .success(let lines): record.startTestPassed = lines.first ?? ""
+                case .failure(let failure):
+                    let first = failure.lines.first ?? "The test request failed"
+                    record.lastTestFailure = first.hasSuffix(".") ? String(first.dropLast()) : first
+                }
+            }
+            return
+        }
         switch tested {
         case .success(let lines):
-            guard marked else {
-                if record?.startTestFailure != nil { try? store.updateRecord { $0.startTestFailure = nil } }
-                return
-            }
             // The marked start's test passed: its outcome, with the time its screen shows. A local start is over; through
             // Darkbloom the mark stays until the coordinator decides.
             let local = record?.leadership?.scope.isLocalOnly == true
             try? store.updateRecord { record in
                 guard record.registrationPending == mine else { return }
-                record.startTestFailure = nil
+                Self.clearTestResults(&record)
                 record.startTestPassed = lines.first ?? ""
                 if local { record.registrationPending = nil }
             }
         case .failure(let failure):
-            guard marked else { return }
             let first = failure.lines.first ?? "The test request failed"
             try? store.updateRecord { record in
                 guard record.registrationPending == mine else { return }
                 record.registrationPending = nil
-                record.startTestPassed = nil
+                Self.clearTestResults(&record)
                 record.startTestFailure = first.hasSuffix(".") ? String(first.dropLast()) : first
             }
         }
@@ -1388,6 +1397,34 @@ final class OnboardingLive: @unchecked Sendable {
     /// Saves how the cluster serves on this (control leader) Mac and gives the member the same scope. While the
     /// cluster serves, the Mac that runs rank 0 starts its part again that way (its service keys the part by the
     /// scope); this waits until that part started again, so the readiness asked next is the new part's.
+    /// What a ready pair's status says of its start and its latest test: the start not over (through Darkbloom it still
+    /// asks the coordinator whether to offer the pair; locally its test is not answered yet), a failed test with its note,
+    /// or `serving` with the time of the test that passed (the Mac that joined ends with it).
+    static func outcomeLines(record: ClusterSetupRecord?, pending: Bool, local: Bool, model: String, serving: String) -> [String] {
+        if pending { return [local ? ClusterOnboardingReady.testingLine(model: model) : ClusterOnboardingReady.offerPendingLine(model: model)] }
+        if let failure = record?.startTestFailure {
+            return [ClusterOnboardingNotServing.statusLine(model: model, reason: failure),
+                    local ? ClusterOnboardingReady.localTestFailedNote : ClusterOnboardingReady.testFailedNote]
+        }
+        if let failure = record?.lastTestFailure {
+            return [ClusterOnboardingNotServing.statusLine(model: model, reason: failure), ClusterOnboardingReady.lastTestFailedNote]
+        }
+        return [serving] + (record?.startTestPassed.map { [ClusterOnboardingReady.startTestPassedLine($0)] } ?? [])
+    }
+
+    /// The record with the pair's new way of serving (`localSetScope`): no earlier test's result holds for it.
+    static func savingScope(_ scope: ClusterServingScope, _ record: inout ClusterSetupRecord) {
+        record.leadership?.scope = scope
+        clearTestResults(&record)
+    }
+
+    /// No published test result: the next start or serve, a scope switch and a stop.
+    static func clearTestResults(_ record: inout ClusterSetupRecord) {
+        record.startTestFailure = nil
+        record.startTestPassed = nil
+        record.lastTestFailure = nil
+    }
+
     func localSetScope(_ scope: ClusterServingScope) -> Result<[String], ClusterOnboardingFailure> {
         guard let current = leadership else { return .failure(.init("\(Self.sentence(hereShort)) is not paired with a cluster.")) }
         let saved = scope.isLocalOnly ? "Saved on \(here): the cluster serves locally only and never contacts a coordinator."
@@ -1395,7 +1432,7 @@ final class OnboardingLive: @unchecked Sendable {
         if current.scope == scope { return .success([saved]) }
         let startsBefore = rankZeroStarts()
         do {
-            try store.updateRecord { $0.leadership?.scope = scope }
+            try store.updateRecord { Self.savingScope(scope, &$0) }
         } catch {
             return .failure(.init("\(Self.sentence(hereShort))'s setup record could not be saved: \(ClusterConsoleText.bounded(String(describing: error), maximum: 200))"))
         }
@@ -1427,7 +1464,7 @@ final class OnboardingLive: @unchecked Sendable {
         let title = lock.withLock { chosenTitle } ?? context.savedConfiguration().configuration?.publicModelID
         do {
             // A new start: an earlier start's failed test is no longer the pair's outcome.
-            try store.updateRecord { $0.leadership?.serving = true; if let title { $0.leadership?.modelName = title }; $0.startTestFailure = nil; $0.startTestPassed = nil }
+            try store.updateRecord { $0.leadership?.serving = true; if let title { $0.leadership?.modelName = title }; Self.clearTestResults(&$0) }
             // The line of the setup that runs, so the member shows the same one when it leads.
             let deployment = savedDeployment() ?? leadership?.deployment
             try store.updateRecord { $0.leadership?.deployment = deployment }
@@ -1847,24 +1884,13 @@ final class OnboardingLive: @unchecked Sendable {
         } else if let session = now.session, session.observed {
             if session.ready {
                 let ready = ready(now, port: session.port ?? 0)
-                let local = leadership?.scope.isLocalOnly == true
-                if registrationPending {
-                    // The screen's start is not over, a start and not its outcome: through Darkbloom it still asks the
-                    // coordinator whether to offer the pair; locally its test is not answered yet.
-                    lines.append(local ? ClusterOnboardingReady.testingLine(model: model) : ClusterOnboardingReady.offerPendingLine(model: model))
-                    return lines
-                }
-                let record = try? store.readRecord()
-                if let failure = record?.startTestFailure {
-                    // The start's outcome: its test request failed (through Darkbloom, the pair was not offered).
-                    lines += [ClusterOnboardingNotServing.statusLine(model: model, reason: failure),
-                              local ? ClusterOnboardingReady.localTestFailedNote : ClusterOnboardingReady.testFailedNote]
-                    return lines
-                }
-                lines.append(ready.summary(model: model)
-                    + ClusterOnboardingDriver.servesWords(scope: leadership?.scope ?? .publicServing, ready: ready) + ".")
-                // The start's outcome: its test passed, with the time its screen showed (the Mac that joined ends with it).
-                if let passed = record?.startTestPassed { lines.append(ClusterOnboardingReady.startTestPassedLine(passed)) }
+                let serving = ready.summary(model: model)
+                    + ClusterOnboardingDriver.servesWords(scope: leadership?.scope ?? .publicServing, ready: ready) + "."
+                let outcome = Self.outcomeLines(record: try? store.readRecord(), pending: registrationPending,
+                                                local: leadership?.scope.isLocalOnly == true, model: model, serving: serving)
+                lines += outcome
+                // A start not over, or a failed test: that alone.
+                if outcome.first != serving { return lines }
                 // Why the pair serves locally although its coordinator offers a cluster approval (one line).
                 if leadership?.scope.isLocalOnly != true, let note = (try? store.readRecord())?.approvalNote { lines.append(note + ".") }
             } else {
@@ -1922,8 +1948,7 @@ final class OnboardingLive: @unchecked Sendable {
                     keepPeerRunning: record.leadership?.serving == true || record.stopDrain?.keepPeerRunning == true)
                 record.leadership?.serving = false
                 record.registrationPending = nil
-                record.startTestFailure = nil
-                record.startTestPassed = nil
+                Self.clearTestResults(&record)
             }
             lock.withLock { partsStoppedAt = Date() }
         } catch {

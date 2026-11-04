@@ -110,6 +110,10 @@ public struct ClusterSetupRecord: Codable, Sendable, Equatable {
     /// status says it under the serving line, so the Mac that joined ends with the same ✓ and time, without a test of its
     /// own. The next start or serve and a stop clear it.
     public var startTestPassed: String? = nil
+    /// The leading Mac's latest test that was not a start's (the serving model's test, its Retry, the scope switch's, a
+    /// re-test), when it failed: its first line without the period. The status says it under the not-serving line with
+    /// `ClusterOnboardingReady.lastTestFailedNote`. A pass, the next start or serve, a scope switch and a stop clear it.
+    public var lastTestFailure: String? = nil
     /// The approval set aside while the pair serves locally (`ApprovalSetAside`); nil otherwise.
     public var approvalSetAside: ApprovalSetAside? = nil
 

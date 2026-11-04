@@ -740,8 +740,14 @@ public struct ClusterOnboardingReady: Codable, Sendable, Equatable {
     /// The same under a local-only start's not-serving line (a local start offers nothing to Darkbloom).
     public static let localTestFailedNote = "Setup saved, but the test failed."
 
-    /// Whether `line` is a start's failed-test note (`testFailedNote`, `localTestFailedNote`).
-    public static func isTestFailedNote(_ line: String) -> Bool { line == testFailedNote || line == localTestFailedNote }
+    /// Under the not-serving line when the leading Mac's latest test was not a start's and failed
+    /// (`ClusterSetupRecord.lastTestFailure`): no start's "Setup saved" or "not offered", which would not be true of it.
+    public static let lastTestFailedNote = "The last test from the leading Mac failed."
+
+    /// Whether `line` is a failed test's note under the not-serving line (a start's, or the latest test's).
+    public static func isTestFailedNote(_ line: String) -> Bool {
+        line == testFailedNote || line == localTestFailedNote || line == lastTestFailedNote
+    }
 
     /// The leading Mac's status line while a local-only start's test is not answered yet: a start, not its outcome (no
     /// ✓, and never "checking with Darkbloom", which a local start doesn't do).

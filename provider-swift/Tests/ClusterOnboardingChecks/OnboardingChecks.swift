@@ -3738,6 +3738,9 @@ import Darwin
             + ClusterOnboardingDriver.testAgainOnLeaderLine(leaderName) + "\n"), "P3c: the leader's ✗ and reason: \(text)")
         expect(!text.contains("\u{2713} Serving") && !recorder.all.contains("testRequest"), "P3c: no ✓, no test of its own: \(recorder.all)")
         transcript("member-mirrors-local-failed-test", text, keys: run.keys)
+        expect(ClusterOnboardingDriver.followed([ClusterOnboardingNotServing.statusLine(model: "Qwen 3.8 27B", reason: reason),
+                                                 ClusterOnboardingReady.lastTestFailedNote]) == .testFailed,
+               "the latest test's failure is a published outcome too")
     }
 
     static func theJoiningMacMirrorsTheLeadersPass() {

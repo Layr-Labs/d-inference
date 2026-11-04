@@ -321,8 +321,12 @@ the same way until its test is answered (locally the status says `ClusterOnboard
 (`OnboardingLive.settleTest`): a pass as `ClusterSetupRecord.startTestPassed`, the time under the serving line
 (`ClusterOnboardingReady.startTestPassedLine`); a failure as `startTestFailure`, under the not-serving line
 (`testFailedNote`, or `localTestFailedNote` locally). The Mac that joins ends with that outcome and sends no test
-of its own (`ClusterOnboardingDriver.followServed`, `followTestFailed`). The next start or serve and a stop clear
-both, and a pass clears a failure. Each stage of the start has the whole bound
+of its own (`ClusterOnboardingDriver.followServed`, `followTestFailed`). Tests that aren't a start's (the serving
+model's test, its Retry, the scope switch's, a re-test) publish too, through the record's normal update and never
+while a start's mark is live: a pass as `startTestPassed`, a failure as `ClusterSetupRecord.lastTestFailure` under
+`ClusterOnboardingReady.lastTestFailedNote`, so the status shows the leading Mac's latest test
+(`OnboardingLive.outcomeLines`). The next start or serve, a scope switch (`OnboardingLive.savingScope`) and a stop
+clear all three, and a pass clears a failure. Each stage of the start has the whole bound
 (`ClusterOnboardingDriver.followStage`). So with both Macs on this build a late offer never gives it an early ✓:
 offered, it waits on the pair as the leader does (`pairServing`). With a leader on an older build, the joining Mac
 may show ✓ before Darkbloom accepts the pair, and it tests the pair itself. The model list keeps one line per

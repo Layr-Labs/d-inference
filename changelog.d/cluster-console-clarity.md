@@ -45,3 +45,6 @@
 - The Mac that joins ends with the leading Mac's own test outcome for the start, serving locally only too: ✓ with the
   leader's response time, or ✗ with its reason, and no test of its own, so both windows tell the same story. Only a
   leader on an older build leaves it to test the pair itself.
+- The status shows the leading Mac's latest test: a failed test of the serving model (or its Retry, or a scope switch's
+  test) after a passing start shows ✗ with "The last test from the leading Mac failed." instead of the start's time
+  under ✓, and a scope switch clears both results.

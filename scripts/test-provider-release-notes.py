@@ -383,6 +383,11 @@ class ReleaseContents(unittest.TestCase):
         self.assertIn('1 release pull request, not listed above: #60 prepared the release.', lines)
         self.assertNotIn(pull_line(60), lines)
 
+    def test_a_git_failure_says_what_git_said(self):
+        # The release job's warning carries the message, so it must say why git failed.
+        with patch.dict(os.environ, {'LC_ALL': 'C'}), self.assertRaisesRegex(RuntimeError, 'unknown revision'):
+            NOTES.Repository(directory=self.work, dev='no-such-branch', fetch=False)
+
     def test_a_number_that_names_no_pull_request_is_a_commit_without_one(self):
         pulls = {number: {'title': title, 'author': author, 'url': ''} for number, (title, author) in PULLS.items()
                  if number != 20}
@@ -424,6 +429,37 @@ class ChangelogSection(unittest.TestCase):
         self.assertLessEqual(len(shorter), len(full) - 1)
         with self.assertRaisesRegex(ValueError, 'limit'):
             render(10)
+
+
+class UntrustedText(unittest.TestCase):
+    """Titles and commit subjects are plain text on the release page, and GitHub's answer is checked."""
+
+    def test_titles_and_subjects_render_as_literal_text(self):
+        # v0.10.7's page shows #1650 "Gemma 4 and <think> models: …" as "Gemma 4 and  models: …".
+        # A code span already shows its text as typed, so `--rollback` in #1729's title stays code.
+        contents = NOTES.Contents(master=[NOTES.Commit('a' * 40, ('b' * 40,), 'Fix (#20)')],
+                                  unreferenced=[NOTES.Commit('c' * 40, ('d' * 40,), 'Revert <b>[x](y)</b> ``z`')])
+        pulls = {20: {'title': '<!-- hide [link](https://example.com) *a* _b_ `<think>` <think> \\d',
+                      'author': 'frank', 'url': ''}}
+        lines = NOTES.render('', contents, pulls, None, tag='v1.1.0', previous='v1.0.0', version='1.1.0',
+                             repository=REPOSITORY).splitlines()
+        self.assertIn('* \\<!-- hide \\[link\\](https://example.com) \\*a\\* \\_b\\_ `<think>` \\<think\\> \\\\d '
+                      f'by @frank in https://github.com/{REPOSITORY}/pull/20', lines)
+        self.assertIn(f'* Revert \\<b\\>\\[x\\](y)\\</b\\> \\`\\`z\\` (https://github.com/{REPOSITORY}/commit/{"c" * 40})',
+                      lines)
+
+    def test_a_github_error_other_than_an_unknown_number_fails_the_lookup(self):
+        def answer(error_type):
+            data = {'pr20': {'__typename': 'PullRequest', 'number': 20, 'title': 'Fix', 'url': '',
+                             'author': {'login': 'frank'}}, 'pr99': None}
+            errors = [{'type': error_type, 'path': ['repository', 'pr99'], 'message': 'pr99 failed'}]
+            stdout = json.dumps({'data': {'repository': data}, 'errors': errors})
+            return SimpleNamespace(returncode=1, stdout=stdout, stderr='')
+        with patch('subprocess.run', return_value=answer('NOT_FOUND')):
+            self.assertEqual(list(NOTES.github_pull_requests(REPOSITORY, [20, 99])), [20])
+        # Otherwise a pull request would be listed as a commit without one.
+        with patch('subprocess.run', return_value=answer('FORBIDDEN')), self.assertRaisesRegex(RuntimeError, 'FORBIDDEN'):
+            NOTES.github_pull_requests(REPOSITORY, [20, 99])
 
 
 if __name__ == '__main__':

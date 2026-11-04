@@ -79,6 +79,9 @@ public final class ClusterService: @unchecked Sendable {
     private let beforePartStart: (@Sendable () -> Void)?
     /// The environment this Mac's parts start from (`partEnvironment`); nil: this process's own at each start.
     private let environment: [String: String]?
+    /// The name of this service's power assertions. macOS lists a process's assertions together, so a check that
+    /// runs several services in one process gives each a name of its own.
+    private let powerAssertionReason: String
     /// Main supervision thread only; a pending stop cannot be acknowledged by
     /// a cycle that read the preceding serving intent.
     private var supervisedStopDrainID: UUID?
@@ -164,10 +167,12 @@ public final class ClusterService: @unchecked Sendable {
     }
 
     /// Internal composition of the service's existing stores. Public callers keep the canonical user namespace,
-    /// the normal recovery deadline, the one-second supervision interval and the cable's listeners.
+    /// the normal recovery deadline, the one-second supervision interval, the cable's listeners and the power
+    /// assertions' name.
     init(settings: Settings, paths: ClusterUserPaths, recoveryGraceSeconds: Double = 300,
          supervisionIntervalSeconds: Double = 1, beforePartStart: (@Sendable () -> Void)? = nil,
-         environment: [String: String]? = nil, listening: Listening = .init()) {
+         environment: [String: String]? = nil, listening: Listening = .init(),
+         powerAssertionReason: String = ClusterServicePowerAssertions.servingReason) {
         precondition(recoveryGraceSeconds.isFinite && recoveryGraceSeconds >= 0)
         precondition(supervisionIntervalSeconds.isFinite && supervisionIntervalSeconds > 0)
         self.recoveryGraceSeconds = recoveryGraceSeconds
@@ -175,6 +180,7 @@ public final class ClusterService: @unchecked Sendable {
         self.beforePartStart = beforePartStart
         self.environment = environment
         self.listening = listening
+        self.powerAssertionReason = powerAssertionReason
         pairingStore = .default(home: paths.homeDirectory)
         var wizard = settings.wizard
         wizard.derivedPlacement = true
@@ -265,7 +271,7 @@ public final class ClusterService: @unchecked Sendable {
 
     /// Runs until `stop` is signalled; returns false when a rank had to be left running.
     public func run(stop: DispatchSemaphore, say: @escaping @Sendable (String) -> Void) throws -> Bool {
-        let power = ClusterServicePowerAssertions()
+        let power = ClusterServicePowerAssertions(reason: powerAssertionReason)
         defer { power.release() }
         let files = serviceFiles
         try ClusterConfigurationFiles.ensureDirectory(files.lock.deletingLastPathComponent(), create: true, privateMode: true)
@@ -1539,11 +1545,14 @@ public final class ClusterService: @unchecked Sendable {
         }
         // A cluster part starting again clears the solo record: the next time this Mac is left alone it may try again.
         if case .cluster = want { lock.withLock { soloQuickEnds = nil } }
-        // The model's own pages stay in, and are read into, the file cache while the part starts: the load gate
-        // counts all of it as available (58d7371a), and the rank's load reads cached pages at memory speed instead of
-        // from the SSD (GLM tensor parallel: 101 GB/s against 14 GB/s on an M5 Ultra), most of a restart's time.
+        // The model's own pages leave the file cache before the part starts, so its load reads them from the SSD into
+        // free pages. A load into a cache full of its own model makes macOS compress other memory to free that cache
+        // page by page; past the load gate's compression guard (512 MiB) the gate counts no cache and refuses, and a
+        // restart that read the model back in was refused again (MiMo on two 128 GB Macs, 680 of 680 starts,
+        // 2026-11-01). The worker's hashing and loads read uncached and add none back, except GLM's tensor-parallel
+        // load, which reads through the cache on purpose.
         if case .cluster = want, let configuration = saved.configuration, configuration.peers.indices.contains(configuration.localRank) {
-            ClusterModelStore.prefetchPagesInBackground(folder: URL(fileURLWithPath: configuration.peers[configuration.localRank].modelDirectory))
+            ClusterModelStore.dropCachedPages(folder: URL(fileURLWithPath: configuration.peers[configuration.localRank].modelDirectory))
         }
         let process = Process()
         process.executableURL = settings.wizard.darkbloomExecutable

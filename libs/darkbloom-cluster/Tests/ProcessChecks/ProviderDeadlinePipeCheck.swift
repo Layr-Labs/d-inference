@@ -50,7 +50,13 @@ private func require(_ condition: Bool, _ message: String) throws { if !conditio
                     throw Failure(message: "slow reserve ignored first-token admission cap")
                 } catch ClusterWorkerOwnerError.deadline { }
                 try require(began.duration(to: .now) < .seconds(4), "admission cleanup exceeded bound")
-                try require(workers.allSatisfy(\.observedExit), "reserve threw before actual fences")
+                // That request alone (production, 2026-11-03): rank 0 gave back its
+                // late admission, nothing was fenced, and the pair takes the next request.
+                try require(!workers.contains(where: \.observedExit) && owner.readiness() != nil,
+                    "one request's first-token deadline ended the pair")
+                let next = try owner.reserve(request, identity: identity, profileID: profile.id, capacityLimit: 1800,
+                    deadlineContext: .init(generationDeadline: ContinuousClock.now.advanced(by: .seconds(20))))
+                next.cancel(); await next.waitUntilRetired(); next.releaseResources()
             } else {
                 let lease = try owner.reserve(request, identity: identity, profileID: profile.id,
                                               capacityLimit: 1800, deadlineContext: context)

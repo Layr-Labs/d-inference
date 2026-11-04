@@ -26,13 +26,10 @@ extension UpdateRecoveryStore {
             to: copied.bundle)
 
         try verifySignature(bundle: copied.bundle, binary: copied.binary)
-        let release = InstalledReleaseRecord(
+        let release = try releaseRecord(
+            ofAppIn: nextRoot,
             version: version,
             releaseBundleHash: releaseBundleHash,
-            installedBundleHash: try UpdateAtomicFilesystem.treeHash(root: copied.bundle),
-            binaryHash: try UpdateAtomicFilesystem.sha256(file: copied.binary),
-            enclaveHash: try UpdateAtomicFilesystem.sha256(file: copied.enclave),
-            metallibHash: try UpdateAtomicFilesystem.sha256(file: copied.metallib),
             installGeneration: installGeneration,
             installedAt: stateInstallDateFallback(now)
         )
@@ -61,19 +58,62 @@ extension UpdateRecoveryStore {
         return manifest
     }
 
+    /// The version an app is signed as: the `CFBundleShortVersionString` of its `Info.plist`, which the release lane
+    /// sets to the release version and the code signature seals. Nil when it names none.
+    func signedVersion(ofApp bundle: URL) -> String? {
+        guard let data = try? Data(contentsOf: bundle.appendingPathComponent("Contents/Info.plist")),
+              let info = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any],
+              let version = info["CFBundleShortVersionString"] as? String, !version.isEmpty
+        else { return nil }
+        return version
+    }
+
+    /// The version the installed app is signed as (`signedVersion(ofApp:)`).
+    func installedSignedVersion() -> String? {
+        signedVersion(ofApp: artifactPaths(root: installRoot).bundle)
+    }
+
+    /// Whether the installed app is the app `record` names (the hashes `stagingContainsTarget` compares). Nil when it
+    /// cannot be read (a file it needs is missing or unreadable): a damaged install is no evidence of another one.
+    func installedApp(is record: InstalledReleaseRecord) -> Bool? {
+        let paths = artifactPaths(root: installRoot)
+        guard [paths.binary, paths.enclave, paths.metallib].allSatisfy({ fm.isReadableFile(atPath: $0.path) }) else {
+            return nil
+        }
+        return try? stagingContainsTarget(installRoot, target: record)
+    }
+
+    /// The installed app recorded as the updater records an install it made, as release `version`.
+    func installedAppRecord(version: String, generation: UInt64, now: Double) throws -> InstalledReleaseRecord {
+        try requireLiveApp()
+        return try releaseRecord(
+            ofAppIn: installRoot,
+            version: version,
+            releaseBundleHash: nil,
+            installGeneration: generation,
+            installedAt: stateInstallDateFallback(now)
+        )
+    }
+
+    /// Removes the rollback copy. Its tree leaves the predecessor path in one rename, so a death before the delete
+    /// finished leaves an orphan the next recovery removes, never a partial copy.
+    func removeRollbackCopy() throws {
+        guard fm.fileExists(atPath: predecessorRoot.path) else { return }
+        let retired = recoveryRoot.appendingPathComponent(
+            "\(Self.retiredPredecessorPrefix)\(UUID().uuidString)", isDirectory: true)
+        try UpdateAtomicFilesystem.replace(predecessorRoot, at: retired)
+        try UpdateAtomicFilesystem.removeDurably(retired)
+    }
+
     func recordForStagedBundle(
         _ staged: SelfUpdater.StagedBundle,
         generation: UInt64,
         now: Double
     ) throws -> InstalledReleaseRecord {
-        let paths = artifactPaths(root: staged.extractedApp.deletingLastPathComponent())
-        return InstalledReleaseRecord(
+        try releaseRecord(
+            ofAppIn: staged.extractedApp.deletingLastPathComponent(),
             version: staged.release.version,
             releaseBundleHash: staged.release.bundleHash,
-            installedBundleHash: try UpdateAtomicFilesystem.treeHash(root: paths.bundle),
-            binaryHash: try UpdateAtomicFilesystem.sha256(file: paths.binary),
-            enclaveHash: try UpdateAtomicFilesystem.sha256(file: paths.enclave),
-            metallibHash: try UpdateAtomicFilesystem.sha256(file: paths.metallib),
             installGeneration: generation,
             installedAt: now
         )
@@ -237,6 +277,28 @@ extension UpdateRecoveryStore {
         else {
             throw StoreError.missingLiveInstall
         }
+    }
+
+    /// The record of the app in `root`: the tree hash of the bundle and the hashes of the files
+    /// `stagingContainsTarget` and `verifyPredecessor` check.
+    private func releaseRecord(
+        ofAppIn root: URL,
+        version: String,
+        releaseBundleHash: String?,
+        installGeneration: UInt64,
+        installedAt: Double
+    ) throws -> InstalledReleaseRecord {
+        let paths = artifactPaths(root: root)
+        return InstalledReleaseRecord(
+            version: version,
+            releaseBundleHash: releaseBundleHash,
+            installedBundleHash: try UpdateAtomicFilesystem.treeHash(root: paths.bundle),
+            binaryHash: try UpdateAtomicFilesystem.sha256(file: paths.binary),
+            enclaveHash: try UpdateAtomicFilesystem.sha256(file: paths.enclave),
+            metallibHash: try UpdateAtomicFilesystem.sha256(file: paths.metallib),
+            installGeneration: installGeneration,
+            installedAt: installedAt
+        )
     }
 
     private func artifactPaths(

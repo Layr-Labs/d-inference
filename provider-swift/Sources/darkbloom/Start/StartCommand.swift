@@ -11,6 +11,11 @@ struct Start: AsyncParsableCommand {
         discussion: """
         Scans local MLX models, lets you pick which to serve, then launches
         a launchd background service. Use --model to skip the interactive picker.
+
+        On a Mac in a two-Mac cluster it starts the pair instead: in a terminal the
+        `darkbloom cluster` screen; without one the pair's saved model, waiting until
+        it serves (exit 0 serving, 3 not serving yet, 5 the other Mac isn't answering).
+        Single-Mac options there need --solo, which works only while the pair is stopped.
         """
     )
 
@@ -71,6 +76,9 @@ struct Start: AsyncParsableCommand {
     @Flag(help: .hidden)
     var supervise = false
 
+    @Flag(help: "On a Mac in a two-Mac cluster: start single-Mac serving on this Mac instead of the pair (only while the pair is stopped: both take this Mac's one serving lock).")
+    var solo = false
+
     /// Both cluster modes are control-only: they take the saved cluster's
     /// model and lifecycle, so every solo serving option is refused at parse.
     mutating func validate() throws {
@@ -121,9 +129,97 @@ struct Start: AsyncParsableCommand {
         print()
     }
 
+    /// What `darkbloom start` does on a Mac in a two-Mac cluster: it starts the pair, as `darkbloom cluster` does (the
+    /// same screen in a terminal; the saved model for a script), unless `--solo` asks for single-Mac serving. `run`
+    /// never asks the cluster's own starts (`--cluster-member`, `--distributed`, the cluster service's solo part) or
+    /// launchd's (`--foreground`).
+    enum PairStart: Equatable {
+        /// Single-Mac serving as on any Mac, after the one line (nil: not in a cluster).
+        case single(note: String?)
+        /// This Mac's pairing record can't be read: refused without `--solo`, and why.
+        case refuse([String])
+        /// A terminal: the screen `darkbloom cluster` shows on this Mac.
+        case openScreen
+        /// No terminal: the pair starts with its saved model.
+        case startPair
+        /// Single-Mac options without `--solo`: nothing starts, and why (never ignored).
+        case refuseOptions([String])
+    }
+
+    /// The single-Mac options given, by name. On a Mac in a cluster each needs `--solo`; `--config` applies to the pair.
+    var singleMacOptions: [String] {
+        var given: [String] = []
+        if coordinatorURL != nil { given.append("--coordinator-url") }
+        if !model.isEmpty { given.append("--model") }
+        if let autopilot { given.append(autopilot ? "--autopilot" : "--no-autopilot") }
+        if all { given.append("--all") }
+        if idleTimeout != nil { given.append("--idle-timeout") }
+        if schedule { given.append("--schedule") }
+        if local { given.append("--local") }
+        if localEndpoint { given.append("--local-endpoint") }
+        if port != BuildEnvironment.current.defaultLocalPort { given.append("--port") }
+        if bind != "127.0.0.1" { given.append("--bind") }
+        if noAuth { given.append("--no-auth") }
+        if drain.timeout != DrainOptions.defaultTimeout { given.append("--timeout") }
+        if drain.force { given.append("--force") }
+        return given
+    }
+
+    static func pairStart(_ pair: ClusterPairSummary, solo: Bool, terminal: Bool,
+                          singleMacOptions: [String] = []) -> PairStart {
+        guard pair.paired else { return .single(note: nil) }
+        if solo { return pair.partServes ? .refuse(pair.soloBesideServingRefusal) : .single(note: pair.startNote) }
+        if pair.pairingUnreadable { return .refuse(pair.startRefusal) }
+        if !singleMacOptions.isEmpty { return .refuseOptions(pair.singleMacOptionsRefusal(singleMacOptions)) }
+        return terminal ? .openScreen : .startPair
+    }
+
+    var startsSingleMacServing: Bool { !foreground && !clusterMember && !distributed }
+
+    /// The title beside the mark as `darkbloom start` opens in a terminal (`DarkbloomCommandLook`).
+    static let lookTitle = "Darkbloom start"
+
+    /// Flags `run` refuses before any work: `--local` with `--local-endpoint` or `--autopilot`, `--schedule` with
+    /// `--local` or `--foreground`, and an `--idle-timeout` out of range (unless `--schedule`, whose wizard runs first).
+    var flagsRefuseStart: Bool {
+        (local && (localEndpoint || autopilot == true)) || (schedule && (local || foreground))
+            || (!schedule && idleTimeout.map { IdleUnloadPolicy.validate(minutes: $0) != nil } == true)
+    }
+
     mutating func run() async throws {
         Darkbloom.ensureLogging()
+        let look = DarkbloomCommandLook.forCommand()
+        // Decided first: only a start that goes ahead opens with the mark, never one its flags refuse.
+        let opensLook = !flagsRefuseStart
+        if startsSingleMacServing, !ClusterPairSummary.startedByClusterService() {
+            let pair = ClusterPairSummary.local()
+            let pairStart = Self.pairStart(pair, solo: solo, terminal: ClusterPairCommands.isTerminal(),
+                                           singleMacOptions: singleMacOptions)
+            // Only single-Mac serving opens with the mark here: a refusal starts nothing, and the cluster's screen
+            // draws the mark itself.
+            if case .single = pairStart, opensLook { look.open(Self.lookTitle) }
+            switch pairStart {
+            case .single(let note):
+                if let note { print(note) }
+            case .refuse(let lines):
+                for line in lines { print(line) }
+                throw ExitCode.failure
+            case .refuseOptions(let lines):
+                for line in lines { print(line) }
+                throw ExitCode.validationFailure
+            case .openScreen:
+                print(pair.actingLine("starting the pair"))
+                try await ClusterPairCommands.openScreen(config: configOptions.config)
+                return
+            case .startPair:
+                let code = await ClusterPairCommands.start(pair, actions: ClusterPairActions.live(config: configOptions.config),
+                                                           config: configOptions.config)
+                if code != 0 { throw ExitCode(code) }
+                return
+            }
+        }
         if !foreground {
+            if opensLook { look.open(Self.lookTitle) }
             printTermsNotice()
         }
 

@@ -127,6 +127,11 @@ func incidentChecks() throws {
 // MARK: B. Classifier and guidance
 
 func classifierChecks() {
+    // A worker's `darkbloom-load-memory-v1` line (`QwenDenseStageLoadAdmissionSummary.logLine`) for a refused load.
+    let loadMemoryLine = "darkbloom-load-memory-v1 scope=Tensor-parallel_shard_load decisions=2 refused=1 unjudged=0"
+        + " rule=compression_or_swap required=52613349376 admissible=268435456 free=268435456 file_backed=85899345920"
+        + " counted=0 kernel_file_cache_minimum=unknown anonymous=28991029248 compressor=1073741824 pressure=1"
+        + " compressed_since_first=540016640 swapped_out_since_first=0"
     let cases: [(String, [String], ClusterFailureReason)] = [
         ("Owner refused: darkbloom-orphan-wired-v1 role=owner decision=refused", [], .orphanedWiredMemory),
         ("Unresolved native ownership journal: an earlier cluster session's owner ended before its worker was seen to exit.", [], .deviceBusy),
@@ -183,6 +188,10 @@ func classifierChecks() {
          ["request 1c3269d9 failed on the pair: Rank 0 reported failure: runtimeError"], .requestFailed),
         ("The serving session stopped without being asked to (session quarantined)",
          ["darkbloom-worker-fail-v1 rank=1 event=failed:runtimeError\ndarkbloom-worker-tail-v1 Speculative window produced non-finite logits"], .requestFailed),
+        // A load's memory record in a worker's tail is never itself read as a failure.
+        ("The serving session stopped without being asked to",
+         ["darkbloom-worker-tail-v1 " + loadMemoryLine + "\nrank 1 ended: its owner exited with status 1"], .peerLost),
+        (loadMemoryLine, [], .unclassified),
     ]
     for (index, item) in cases.enumerated() {
         let result = ClusterFailureClassifier.classify(.init(error: item.0, diagnostics: item.1))

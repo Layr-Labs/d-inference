@@ -672,7 +672,11 @@ and [mode explanation](../../libs/darkbloom-cluster/Sources/DarkbloomClusterPlac
 
 Chips never decide. Each Mac's memory gate still decides every load; its margins
 scale with the Mac's memory below 96 GB, so a smaller Mac takes the share it can
-hold (one layer is a share).
+hold (one layer is a share). Before a Mac's part starts, it clears the model's
+own files from macOS's file cache, so the load reads its share from the SSD
+into free memory. Nothing in the files changes and no password is asked for; a
+start can take a few seconds longer. The worker log records each load's memory
+check in a `darkbloom-load-memory-v1` line.
 
 Qualification records (cross-cable runs compared with single-Mac references
 under the near-tie rule) do two things only:
@@ -870,7 +874,12 @@ MiMo V2.6 Flash is granted by its qualification records (pipeline, run on an
 M5 Ultra + M3 Ultra pair), on any pair the planner can place it on, at the
 planner's cut and in either order. Each start hashes the 172 GB of weights with the file
 cache off, so the hash does not fill the Mac's memory before the memory gate
-decides; the gate itself is unchanged. Both Macs keep MiMo's prompt prefixes,
+decides; the gate itself is unchanged. Before each start, each Mac also clears
+MiMo's files from macOS's file cache, and the load clears the cached pages of
+the weight files it reads, so a Mac's share loads into free memory. Before
+this, a start on two 128 GB Macs was refused every time: loading a share into
+a cache full of MiMo made macOS compress other memory, and the gate then
+counted no cache. Both Macs keep MiMo's prompt prefixes,
 in memory and in the encrypted SSD tier, like the Qwen models. MiMo has no paged
 KV on the pair yet, and the pair decodes slower than the M5 Ultra alone. Its
 phase split (one Mac decodes alone) is kept off like every hand-off mode.
@@ -1002,7 +1011,7 @@ drained for an update yet: its update waits while it serves (the log says
   ([listeners](../architecture/inference.md#cluster-service-listeners-follow-the-cable-and-the-pairing)).
   If the other Mac still refuses the connection (`refused (handshakeRejected)`),
   restart its service, since one an earlier release started keeps the earlier
-  pairing: on that Mac, run `darkbloom cluster stop`, then `darkbloom cluster`.
+  pairing: on that Mac, run `darkbloom cluster stop --service`, then `darkbloom cluster`.
 - **A part keeps ending the same way**: after three identical ends the screen
   says it and offers **Save diagnostics for Darkbloom**; both Macs
   keep trying by themselves.
@@ -1036,6 +1045,24 @@ drained for an update yet: its update waits while it serves (the log says
   offers **Save diagnostics for Darkbloom**, which writes a file to
   your home folder (no keys, addresses or names in it; nothing is written if any
   would remain).
+
+## Stopping and starting again
+
+Once the pair is set up, the everyday commands control it, on either Mac, as
+they control single-Mac serving on one Mac
+([CLI reference](cli-reference.md#darkbloom-cluster-status)):
+
+| Command | On a Mac in the pair |
+|---|---|
+| `darkbloom stop` (or `darkbloom cluster stop`) | Stops serving on both Macs. They stay stopped after a restart, and both cluster services stay up, idle, so the next start needs no visit to the other Mac. It waits until both Macs' parts have ended and says so (`Memory freed on both Macs ✓`) |
+| `darkbloom start` | In a terminal, the same screen as `darkbloom cluster`. In a script, starts the saved model on both Macs and waits until it serves |
+| `darkbloom restart` | Stops and starts the pair with its current model |
+| `darkbloom status` | The pair first (who leads, the model, whether it serves now and what to do), then this Mac's fields; `darkbloom cluster status` gives the pair alone, with `--json` and exit codes |
+
+Each says first that it acts on the pair. `--solo` on any of them acts on
+single-Mac serving on this Mac only and never touches the pair. If the leading
+Mac doesn't answer, `darkbloom stop` says so and that
+`darkbloom cluster stop --local-only` stops this Mac alone.
 
 ## Pairing again
 
@@ -1084,9 +1111,36 @@ take the same steps (`ClusterUnpairing`). Run on the leader, it first tells the 
 cable, which removes the pair's prompt-cache records (its own single-Mac cache
 stays) and stops its part; each Mac also removes its own pair records when it
 unpairs.
-`darkbloom cluster stop` stops a Mac's cluster service and keeps it from starting
-at login. On the leader it stops the pair first. When the other Mac is gone for
-good, `darkbloom cluster stop --local-only` stops only this one.
+`darkbloom cluster stop --service` stops a Mac's cluster service and keeps it
+from starting at login. It stops the pair first, from either Mac. When the other
+Mac is gone for good, `darkbloom cluster stop --local-only` stops only this one.
+To take Darkbloom off a Mac altogether, see [Uninstall](#uninstall).
+
+## Uninstall
+
+`darkbloom uninstall` takes Darkbloom off one Mac of the pair. It offers
+**Remove everything** or **Keep models**, and both do the same for the pair:
+
+- this Mac stops its part, as `darkbloom cluster stop --service` does (the pair
+  stops first, from either Mac), and no Darkbloom service starts at login any more;
+- it forgets the pairing, as `darkbloom cluster pair --forget` (a leader tells
+  the other Mac first, over the cable);
+- it undoes the cable port setup, as `darkbloom cluster link --remove` (one
+  approval).
+
+**Keep models** keeps the models and the cluster model store, so after a
+reinstall `darkbloom cluster` pairs again and uses them without copying or
+downloading. **Remove everything** deletes them too, after asking once more. A
+models folder you chose, and the cluster model store beside it, stay with either
+choice. Run it as yourself, not with `sudo`. On a Mac with both the production
+and the DevNet app, uninstalling one keeps the pairing, cluster setup and cable
+port setup the other uses.
+
+When the other Mac does not answer, this Mac stops only its own part, as
+`darkbloom cluster stop --local-only`. The other Mac keeps its own pairing, so
+the command ends with one line about it, by name: run `darkbloom uninstall`
+there too, or `darkbloom cluster` on it to pair it with another Mac. Every step
+and path: [CLI reference](./cli-reference.md#darkbloom-uninstall).
 
 ## Cache settings
 

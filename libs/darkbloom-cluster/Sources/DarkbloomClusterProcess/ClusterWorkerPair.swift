@@ -404,6 +404,18 @@ public final class ClusterWorkerPair: @unchecked Sendable {
             if lease.withdrewBeforeStart { lease.releaseResources(); throw ClusterWorkerOwnerError.cancelled }
             noteRequestFailure(lease, "admission: the request was cancelled and a rank did not give it back")
             invalidate(); lease.releaseResources(); throw ClusterWorkerOwnerError.cancelled
+        } catch ClusterWorkerOwnerError.deadline where DispatchTime.now().uptimeNanoseconds
+                    >= min(reservation.deadlineUptimeNanoseconds, admissionDeadline ?? UInt64.max) {
+            // The request's own deadline passed while its ranks were asked (a
+            // busy rank answers at its next step boundary): this request ends,
+            // not the pair. Its cleanup reads an answer still on its way and
+            // gives back every admission within the lane wait; a rank that
+            // does not give it back in time ends the pair there.
+            lease.cancel(reason: .deadline)
+            lease.waitForRetirement()
+            if lease.withdrewBeforeStart { lease.releaseResources(); throw ClusterWorkerOwnerError.deadline }
+            noteRequestFailure(lease, "admission: the request's deadline passed and a rank did not give it back")
+            invalidate(); lease.releaseResources(); throw ClusterWorkerOwnerError.deadline
         } catch {
             // Named for the pair's incident (S24), as a started request's failure is.
             noteRequestFailure(lease, "admission: " + ClusterWorkerRequest.failureText(error))

@@ -3,8 +3,8 @@
 > Last updated: 2026-11-04
 
 Symptom → check → fix for the `darkbloom` provider: installer exits, `doctor`
-check names, service lifecycle, coordinator connection, updates, models and the
-KV-backend guard. For operators; every fix is a command you run on the Mac.
+check names, service lifecycle, coordinator connection, updates, models, the
+KV-backend guard and uninstalling. For operators; every fix is a command you run on the Mac.
 
 ## Prerequisites
 
@@ -69,7 +69,7 @@ App Attest, attestation readiness, trust, model fit, runtime, billing, version;
 | `mdm enrollment`, `mdm verification` | Profile installed; coordinator has cross-checked `SecurityInfo` | `darkbloom enroll`; the steps and what to expect: [Reaching and keeping `hardware` trust](./attestation.md#steps) |
 | `console session`, `automatic login`, `auto-logout on idle`, `sleep prevention` | Attestation readiness (`provider-swift/Sources/ProviderCore/Diagnostics/AttestationReadiness.swift`) | A real console user must be logged in; enable automatic login; disable auto-logout; the daemon self-caffeinates while serving |
 | `active se key` | Secure Enclave signing key self-test | `darkbloom-enclave info`; hardware without SE runs at reduced trust |
-| `launch session`, `app attest support`, `apple operation`, `app attest key` | macOS 27+ only: the daemon's last local App Attest observation (`provider-swift/Sources/ProviderCore/Diagnostics/AppAttestLocalDiagnosis.swift`) — GUI session, `is_supported_false`, a stalled DeviceCheck call, stored/enrolled key and local generation safeguard | The coordinator may retry after the displayed local countdown expires. Run the provider inside the logged-in GUI session (`darkbloom restart` after logging in) and keep SIP and Full Security; a stall clears when the provider restarts ([attestation](./attestation.md#app-attest-without-darkbloom-mdm)); never delete the Keychain item |
+| `launch session`, `app attest support`, `apple operation`, `app attest key` | macOS 27+ only: the daemon's last local App Attest observation (`provider-swift/Sources/ProviderCore/Diagnostics/AppAttestLocalDiagnosis.swift`) — GUI session, `is_supported_false`, a stalled DeviceCheck call, stored/enrolled key and local generation safeguard | The coordinator may retry after the displayed local countdown expires. Run the provider inside the logged-in GUI session (`darkbloom restart` after logging in) and keep SIP and Full Security. For `is_supported_false` in the GUI session, typically after a self-update, re-register the app with the `lsregister -f` command that `doctor` prints instead of restarting; a stall clears when the provider restarts ([attestation](./attestation.md#app-attest-without-darkbloom-mdm)); never delete the Keychain item |
 | `gui session` | macOS 27+: the provider runs outside the GUI session. Either a user is logged in at the console but the provider was launched elsewhere (SSH, system daemon), or nobody is logged in (`AppAttestDeepDiagnosis.swift`) | Run `darkbloom restart` from the logged-in desktop (Terminal or Screen Sharing). If nobody is logged in, log in and enable automatic login |
 | `boot security` | SIP or authenticated root is not confirmed enabled. Apple requires Full Security for App Attest | In Recovery: `csrutil enable`, `csrutil authenticated-root enable`, Startup Security Utility → Full Security, restart |
 | `app signing` | A known missing opt-in, invalid environment entitlement, or missing/expired profile fails. Unavailable signing data or unknown expiry warns instead of passing; an explicitly absent environment entitlement can be legitimate | Reinstall a known-bad release (`curl -fsSL https://api.darkbloom.dev/install.sh \| bash`), then restart; for indeterminate evidence, collect a report |
@@ -266,12 +266,48 @@ request answered. Otherwise its line names why
 | `<Mac> lacks free memory for its share` | Quit apps on that Mac, then **Retry**; or **Change model**. |
 | `A part keeps ending the same way: …` | **Diagnostics** saves a redacted file in the home folder to send with a report. |
 
+## Everyday commands on a Mac in a two-Mac cluster
+
+On a paired Mac `darkbloom stop`, `start`, `restart` and `status` control the pair;
+`--solo` manages single-Mac serving on this Mac
+([CLI reference](cli-reference.md#darkbloom-cluster-status)).
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `darkbloom stop` says `stopping both Macs` on a Mac in a cluster | On a paired Mac `stop` controls the pair, as on one Mac it controls single-Mac serving (`Stop.pairedStop`) | Expected: both Macs stop and stay stopped; `darkbloom start` on either Mac starts the pair again. `darkbloom stop --solo` stops single-Mac serving only |
+| `darkbloom start` opens the cluster's screen, or in a script ends with `✗ Not serving: …` | On a paired Mac `start` starts the pair (`Start.pairStart`); a script gets `darkbloom cluster status`'s exit status | Follow the result block's `Next:` line. `darkbloom start --solo` serves this Mac alone |
+| Is the pair serving? Why not? | `darkbloom cluster` needs a terminal | `darkbloom cluster status` (or `--json`; exit 0 only while it serves) |
+| `This Mac's pairing record couldn't be read (…), so it may be in a two-Mac cluster.` (`cluster status` exit 7) | The pairing store can't be read (a damaged or unsafe file); the commands treat the Mac as maybe in a cluster, so `start`, `stop` and `restart` need `--solo` (`ClusterPairSummary.membership`) | `darkbloom cluster` on this Mac checks the pairing |
+| `darkbloom cluster link --remove` asks `Remove it? [y/N]` | The Mac is paired; removing the port setup stops the cluster on both Macs until it is set up again | Answer `n` unless the cable port must go; never remove it because of a doctor line alone. `--yes` for scripts |
+| `darkbloom stop` on the Mac that follows says the other Mac didn't answer, and `Nothing was stopped on this Mac.` | The leading Mac stops both Macs, and it isn't answering (`ClusterPairCommands.stop`) | Wake or log in to the leading Mac and run it again, or `darkbloom cluster stop --local-only` to stop this Mac alone |
+
 ## Missing base reward
 
 `doctor` billing is local usage reporting, not a coordinator
 `model=base_reward` grant. If last-1000 earnings show no `base_reward` rows
 (or amounts that match a smaller RAM class) while `doctor` is green, follow
 [Check a missing base reward](base-rewards.md).
+
+## Uninstall and start over
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| After `darkbloom stop --uninstall`, the cluster setup, pairing and settings are still there | `stop --uninstall` removes only the provider, watchdog and desktop API agents and keeps every file | `darkbloom uninstall`: choose **Remove everything**, or **Keep models** to reuse the models after a reinstall ([installation](./installation.md#uninstall)) |
+| You want to start from scratch | Saved settings, the pairing and the cluster setup bring the old setup back | `darkbloom uninstall --keep-models` (or `--everything`), then install again: settings, pairing and cable setup start fresh and the kept models are found. Deleting `~/.darkbloom` by hand leaves the cluster service, the pairing on the other Mac and the cable port setup behind |
+| `Usage: darkbloom uninstall --everything\|--keep-models [--yes] [--dry-run [--json]] (no terminal to ask which)` | No terminal to ask in (an agent or a script), and no mode with `--yes` | Pass `--everything` or `--keep-models` with `--yes`; check first with `--dry-run` |
+| `failed   Stop serving on this Mac: …` | The provider did not finish its accepted requests in time, or cannot drain | Run it again with a longer `--timeout`, or `--force` to interrupt them. Its services are kept until it stops |
+| `skipped  Delete …: a Darkbloom service may still be running` | A step that stops a service failed (it is listed above) | Fix that step, then run `darkbloom uninstall` again with the same choice; every step is idempotent |
+| `skipped  Revoke this Mac's account token: …` | No saved token, the coordinator was not reached, or it could not confirm the token | Nothing to do: the token file is deleted with `~/.darkbloom` |
+| After **Keep models** and a reinstall, models in a folder you chose are not listed | That location was saved in the deleted `provider.toml` | `darkbloom models location <folder>` |
+| `failed   Undo the cable port setup: …` | The macOS prompt was declined, or could not show (no screen, over SSH) | `~/.darkbloom` and the `darkbloom` command stay for this. Run `darkbloom uninstall` again at the Mac's screen with the same choice; without a screen, run the printed `sudo sh …` line as an administrator, then run it again |
+| `Run \`darkbloom uninstall\` as yourself, not with sudo: …` (exit 64) | It was run with `sudo`. As root it would read root's home folder, not yours | Run `darkbloom uninstall` without `sudo`; macOS asks for the password when the cable port step needs it |
+| `skipped  Delete …: not removed: …`, and the first line says Darkbloom is not fully removed (exit 1) | The path is a link, resolves outside Darkbloom's folders, or another disk is mounted at it or inside it | Nothing outside Darkbloom's folders is deleted. Remove it yourself if you don't need it, or eject the disk and run `darkbloom uninstall` again |
+| `Darkbloom is not fully removed from this Mac: its app folder is your models folder, so it was kept (see below).` (exit 1) | `darkbloom models location ~/.darkbloom` made the app folder your models folder, and a folder you chose is never deleted | Move the models you want to keep out of `~/.darkbloom`, then run `~/.darkbloom/bin/darkbloom uninstall` again: the settings naming that folder are gone, so it deletes the rest |
+| `~/.darkbloom` is still there after the uninstall, holding your models | You chose a models folder inside it (`darkbloom models location ~/.darkbloom/models`); a folder you chose is never deleted, and the summary lists it as `Kept:` | Move the folder, or delete it yourself if you don't need the models |
+| After uninstalling the DevNet app (or the production one), the pairing and cable port setup are still there | The other install on this Mac uses them, so the summary lists them as `Kept:` | Run the other install's uninstall too (`darkbloom uninstall` or `darkbloom-dev uninstall`) to remove them |
+| The other Mac still shows the pair | Each Mac keeps its own pairing | Run `darkbloom uninstall` on it too, or `darkbloom cluster` on it to pair it with another Mac |
+
+Steps, paths and safety rules: [`darkbloom uninstall`](./cli-reference.md#darkbloom-uninstall).
 
 ## Collect a report
 

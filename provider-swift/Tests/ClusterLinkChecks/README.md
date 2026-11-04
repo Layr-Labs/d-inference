@@ -83,9 +83,17 @@ Checks cover:
   part-way, applied without effect, unreadable record, a service without a
   record); the record file on real files; the guided flow's v2 transcripts;
   and the bounded wait before a rank starts, over a fake clock.
+- Three isolated Macs after pairing, from route tables captured read-only on
+  2026-11-03 (cluster addresses as captured; MAC addresses, the Wi-Fi gateway
+  and the Wi-Fi address replaced): macOS's loopback route to the port's own
+  address leaves the port isolated in the report, the summary, the guided flow
+  and a dry run of the fix, while a VPN address in the cluster subnet, a route
+  into it through utun, bridge0 or another port, and a loopback route to an
+  address the port does not carry still block.
 
 Fixture addresses are documentation placeholders or derived from made-up
-machine values. No RDMA or network tool, `launchctl`, `plutil`, `osascript` or
+machine values, apart from the cluster addresses captured after pairing.
+No RDMA or network tool, `launchctl`, `plutil`, `osascript` or
 approval prompt is started, no setting is read or changed, and no peer is
 contacted. How a report
 appears among the doctor's checks is covered by `ClusterDiagnosticsChecks`;

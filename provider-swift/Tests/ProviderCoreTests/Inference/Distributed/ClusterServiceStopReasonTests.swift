@@ -74,4 +74,19 @@ struct ClusterServiceStopReasonTests {
         #expect(OnboardingLive.keepsEndingTitle(line, own: own)
                 == "A part keeps ending the same way: this Mac's part ended (exit 1: Tensor-parallel shard load needs 49.08 GiB) and starts again by itself")
     }
+
+    /// The refactor pass on the c3 fix: the title cut the live row at its first "; ", so a head with its own "; " lost
+    /// its opening clause ("A part keeps ending the same way: it starts again by itself; …"). The title reads as a
+    /// whole sentence that names what ends, for each such head.
+    @Test func theTitleNeverStartsMidSentence() {
+        let own = ClusterServiceStatus.Child(running: false, starts: 3, lastEnd: "exit 1", restartInSeconds: 2, lastError: "boom")
+        let ownEnd = "this Mac's part ended (exit 1: boom) and starts again by itself"
+        // A rank-0 end seen from a Mac that isn't rank 0: the head names an end itself, so the whole row stays.
+        let rankZero = "rank 0 on the other Mac (Apple M3 Ultra, 256 GB) ended (exit 1: closed); it starts again by itself; " + ownEnd
+        #expect(OnboardingLive.keepsEndingTitle(rankZero, own: own) == "A part keeps ending the same way: " + rankZero)
+        // A failure text with its own "; ", and a session detail with one: from the clause that names the end.
+        for head in ["waiting for the other Mac (Apple M3 Ultra, 256 GB): connection refused; retrying", "1 of 2 parts ready (loading; 40%)"] {
+            #expect(OnboardingLive.keepsEndingTitle(head + "; " + ownEnd, own: own) == "A part keeps ending the same way: " + ownEnd, "\(head)")
+        }
+    }
 }

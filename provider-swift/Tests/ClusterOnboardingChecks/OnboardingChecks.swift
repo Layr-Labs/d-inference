@@ -121,6 +121,7 @@ import Darwin
         failedRestartAfterTheRegistrationIsNotDone()
         missingLoginIsSaidBeforeTheStart()
         theDevNetAppNamesItsOwnCommand()
+        aDevNetLiveRowNamingACommandStillFitsTheWindow()
         aLoginCheckThatTurnsLocalAdoptsTheLocalPlan()
         offeredPairServesOnceLoaded()
         pairReportsAndReasonsInPlainWords()
@@ -2816,6 +2817,23 @@ import Darwin
     /// The 0.10.8 candidate on pair-2 (c3, B13): the DevNet app's cluster screens told the person to run `darkbloom …`,
     /// which on a Mac with both apps is the production command. Every command the screens print names the running
     /// identity's command.
+    /// The refactor pass on the c3 fix (DevNet only): the command rename ran after a live row was fitted to the window, so a
+    /// fitted row naming a command grew 4 columns and wrapped, leaving a stale row. Rows are named, then fitted.
+    static func aDevNetLiveRowNamingACommandStillFitsTheWindow() {
+        ClusterOnboardingCommand.use("darkbloom-dev")
+        defer { ClusterOnboardingCommand.use("darkbloom") }
+        let report = "1 of 2 parts ready\nThe other Mac: run `darkbloom cluster` again there once it answers"
+        let run = TerminalRun(operations(Recorder(), resume: .init(role: .leader, peerName: "Apple M3 Ultra, 256 GB"), pairEvents: [],
+            pairResult: .failed([]), readyReports: [report], readyReportPause: 900_000), environment: colourTerminal, columns: 45)
+        expect(run.waitFor(arrowHint), "dev row: the list"); run.type("\r")
+        expect(run.waitFor("darkbloom-dev"), "dev row: drawn")
+        _ = run.finish()
+        let dim = run.text.components(separatedBy: "\u{1B}[2m").dropFirst().compactMap { $0.components(separatedBy: "\u{1B}[0m").first }
+        let named = dim.filter { $0.contains("darkbloom-dev") }
+        expect(!named.isEmpty && named.allSatisfy { $0.replacingOccurrences(of: "\u{2026}", with: "").count <= 45 - 6 },
+               "dev row: named, then fitted to its room: \(named)")
+    }
+
     static func theDevNetAppNamesItsOwnCommand() {
         ClusterOnboardingCommand.use("darkbloom-dev")
         defer { ClusterOnboardingCommand.use("darkbloom") }

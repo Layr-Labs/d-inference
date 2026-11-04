@@ -1575,9 +1575,18 @@ final class OnboardingLive: @unchecked Sendable {
             return "A part keeps ending the same way: the link to the other Mac keeps closing, so this Mac's part ends with it ("
                 + (own?.lastEnd.map { $0 + ": " } ?? "") + "closed) and starts again by itself; the other Mac's worker ended or the cable dropped"
         }
-        var ends = line
-        if let cut = ends.range(of: "; "), !ends[..<cut.lowerBound].contains("part ended") { ends = String(ends[cut.upperBound...]) }
-        return "A part keeps ending the same way: \(ends)"
+        return "A part keeps ending the same way: " + endsClause(line)
+    }
+
+    /// The live row from the clause that names an end, so the title reads as a whole sentence: the whole row when its
+    /// first part names an end itself ("rank 0 on … ended (…); it starts again by itself; …"), else from the last "; "
+    /// before the first "'s part ended", which drops only a progress head ("starting", "1 of 2 parts ready (…; …)",
+    /// "waiting for …: <a failure with its own "; ">") and never an opening clause.
+    static func endsClause(_ line: String) -> String {
+        let head = line.range(of: "; ").map { line[..<$0.lowerBound] } ?? Substring(line)
+        guard !head.contains("ended"), let end = line.range(of: "'s part ended"),
+              let cut = line.range(of: "; ", options: .backwards, range: line.startIndex..<end.lowerBound) else { return line }
+        return String(line[cut.upperBound...])
     }
 
     /// One line per Mac: the last error each Mac's part reported (`lastErrors`).

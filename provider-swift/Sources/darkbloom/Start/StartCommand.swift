@@ -11,6 +11,11 @@ struct Start: AsyncParsableCommand {
         discussion: """
         Scans local MLX models, lets you pick which to serve, then launches
         a launchd background service. Use --model to skip the interactive picker.
+
+        On a Mac in a two-Mac cluster it starts the pair instead: in a terminal the
+        `darkbloom cluster` screen; without one the pair's saved model, waiting until
+        it serves (exit 0 serving, 3 not serving yet, 5 the other Mac isn't answering).
+        Single-Mac options there need --solo, which works only while the pair is stopped.
         """
     )
 
@@ -71,7 +76,7 @@ struct Start: AsyncParsableCommand {
     @Flag(help: .hidden)
     var supervise = false
 
-    @Flag(help: "On a Mac in a two-Mac cluster: start single-Mac serving on this Mac instead of the pair (both use this Mac's memory while the pair serves).")
+    @Flag(help: "On a Mac in a two-Mac cluster: start single-Mac serving on this Mac instead of the pair (only while the pair is stopped: both take this Mac's one serving lock).")
     var solo = false
 
     /// Both cluster modes are control-only: they take the saved cluster's
@@ -163,7 +168,7 @@ struct Start: AsyncParsableCommand {
     static func pairStart(_ pair: ClusterPairSummary, solo: Bool, terminal: Bool,
                           singleMacOptions: [String] = []) -> PairStart {
         guard pair.paired else { return .single(note: nil) }
-        if solo { return .single(note: pair.startNote) }
+        if solo { return pair.partServes ? .refuse(pair.soloBesideServingRefusal) : .single(note: pair.startNote) }
         if pair.pairingUnreadable { return .refuse(pair.startRefusal) }
         if !singleMacOptions.isEmpty { return .refuseOptions(pair.singleMacOptionsRefusal(singleMacOptions)) }
         return terminal ? .openScreen : .startPair

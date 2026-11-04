@@ -38,7 +38,8 @@ struct Stop: AsyncParsableCommand {
         switch Self.pairedStop(pair, solo: solo, uninstall: uninstall) {
         case .stopPair:
             let actions = ClusterPairActions.live(config: nil)
-            let code = await Task.detached { ClusterPairCommands.stop(pair, actions: actions) }.value
+            let teardown = ClusterPairCommands.teardownWait
+            let code = await Task.detached { ClusterPairCommands.stop(pair, actions: actions, teardown: teardown) }.value
             if code != 0 { throw ExitCode(code) }
             return
         case .refuse(let lines):

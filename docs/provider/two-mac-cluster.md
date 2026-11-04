@@ -864,10 +864,10 @@ they control single-Mac serving on one Mac
 
 | Command | On a Mac in the pair |
 |---|---|
-| `darkbloom stop` (or `darkbloom cluster stop`) | Stops serving on both Macs. They stay stopped after a restart, and both cluster services stay up, idle, so the next start needs no visit to the other Mac. It ends with `Memory freed on both Macs ✓` |
+| `darkbloom stop` (or `darkbloom cluster stop`) | Stops serving on both Macs. They stay stopped after a restart, and both cluster services stay up, idle, so the next start needs no visit to the other Mac. It waits until both Macs' parts have ended and says so (`Memory freed on both Macs ✓`) |
 | `darkbloom start` | In a terminal, the same screen as `darkbloom cluster`. In a script, starts the saved model on both Macs and waits until it serves |
 | `darkbloom restart` | Stops and starts the pair with its current model |
-| `darkbloom status` (or `darkbloom cluster status`) | The pair first: who leads, the model, whether it serves now and what to do |
+| `darkbloom status` | The pair first (who leads, the model, whether it serves now and what to do), then this Mac's fields; `darkbloom cluster status` gives the pair alone, with `--json` and exit codes |
 
 Each says first that it acts on the pair. `--solo` on any of them acts on
 single-Mac serving on this Mac only and never touches the pair. If the leading

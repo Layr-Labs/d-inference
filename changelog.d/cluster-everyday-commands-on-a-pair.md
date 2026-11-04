@@ -24,3 +24,11 @@
 - `darkbloom cluster --help` lists the other cluster commands and what each is for.
 - `darkbloom cluster link --remove` on a paired Mac warns first that it undoes the working cable setup and stops the
   cluster on both Macs, and asks once (`--yes` for scripts).
+- `darkbloom stop` says the pair stopped only once both Macs' parts have ended (it waits up to a minute); otherwise it
+  says it asked both Macs and what is still running. A failed stop on the Mac that follows says what is known.
+  `darkbloom restart` starts the pair again only once both parts have ended. A script `start` waits through the
+  coordinator's pairing and an Apple verification retry instead of reporting "not serving".
+- A cluster service left from an earlier pairing no longer makes a Mac count as paired; `darkbloom cluster status`
+  names it and how to remove it. `--solo` refuses while this Mac's part of the pair serves (they share one serving
+  lock). The app's local mode says plainly that it isn't available on a paired Mac.
+- `darkbloom update --rollback`'s advice turns the cluster service off with `darkbloom cluster stop --service`.

@@ -80,10 +80,20 @@ struct Desktop: AsyncParsableCommand {
     @Option var model: [String] = []
 
     /// On a Mac in a two-Mac cluster: why local mode starts nothing; nil elsewhere.
-    static func pairRefusal(_ pair: ClusterPairSummary) -> [String]? { nil }
+    static func pairRefusal(_ pair: ClusterPairSummary) -> [String]? {
+      guard pair.paired else { return nil }
+      return ["This Mac is in a two-Mac cluster with \(pair.otherMac): the app's local mode serves this Mac alone, so nothing was started.",
+              "To serve the pair locally: `darkbloom cluster local` on the leading Mac. To serve this Mac alone: stop the pair "
+                + "(`darkbloom stop`), then `darkbloom start --solo --local --model <id>`."]
+    }
     mutating func run() async throws {
       guard !model.isEmpty else { throw ValidationError("Select a model") }
       try model.forEach(DesktopAction.validateModel)
+      // Its launchd job runs `start --local --model …`, which a paired Mac refuses: say so now, never "started".
+      if let refusal = Self.pairRefusal(ClusterPairSummary.local()) {
+        for line in refusal { printError(line) }
+        throw ExitCode.failure
+      }
       if DesktopLocalLifecycle.isActive {
         try await DesktopLocalLifecycle.stop(configPath: configOptions.config)
       }

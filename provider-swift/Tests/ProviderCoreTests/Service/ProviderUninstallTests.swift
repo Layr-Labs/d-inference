@@ -396,6 +396,30 @@ struct ProviderUninstallTests {
         #expect(ProviderUninstallPairing.read(home: fixture.home) == nil, "an unreadable or absent pairing is not a pair")
     }
 
+    @Test("(f) the other Mac's name and this Mac's role come from the saved setup, as `darkbloom cluster` shows them")
+    func pairedRoleComesFromTheSavedSetup() throws {
+        let home = try NativePairMemberFixture.privateRoot()
+        defer { try? FileManager.default.removeItem(at: home) }
+        let store = ClusterSetupStore(paths: .init(paths: try ClusterUserPaths(homeDirectory: home)))
+        let pin = Fixture.pin
+        let peers = [ProviderUninstallPairing.Peer(pin: pin, name: "Apple M3 Ultra, 512 GB")]
+        #expect(ProviderUninstallPairing.describing(peers: peers, latest: peers[0], home: home, local: nil)
+                == .init(peers: peers, otherMacName: "Apple M3 Ultra, 512 GB", role: nil), "no saved setup: the pairing's name")
+        for (role, relation) in [("leader", "followed this one"), ("member", "led this pair")] {
+            _ = try store.updateRecord {
+                $0.leadership = ClusterOnboardingLeadership(role: role, leaderPin: String(repeating: "a", count: 64), peerPin: pin,
+                                                            peerName: "Apple M4 Max, 128 GB", since: "2026-11-03T00:00:00Z")
+            }
+            let pairing = ProviderUninstallPairing.describing(peers: peers, latest: peers[0], home: home, local: nil)
+            #expect(pairing.role == ClusterOnboardingRole(rawValue: role))
+            #expect(ProviderUninstall.otherMacLine(pairing, cli: "darkbloom") == "The other Mac (Apple M4 Max, 128 GB) \(relation): "
+                + "run `darkbloom uninstall` there too, or `darkbloom cluster` on it to pair it with another Mac.")
+        }
+        _ = try store.updateRecord { $0.leadership?.peerPin = String(repeating: "c", count: 64) }
+        #expect(ProviderUninstallPairing.describing(peers: peers, latest: peers[0], home: home, local: nil).role == nil,
+                "a setup saved for another pairing says nothing about this one")
+    }
+
     @Test("(g) one failing step: the others run, and the summary says which failed and why")
     func failedStepIsReportedAndTheRestRun() async throws {
         let fixture = try Fixture.make()

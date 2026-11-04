@@ -82,7 +82,7 @@ struct ClusterPairSummary: Sendable, Equatable {
 
     var pairingUnreadable: Bool { state == .pairingUnreadable }
 
-    /// The command this build answers to (`BuildEnvironment.current.cliName`: "darkbloom-dev" in the DevNet app), in every
+    /// The command this build answers to (`BuildEnvironment.current.cliName`: `darkbloom-dev` in the DevNet app), in every
     /// command the summary prints (the candidate on pair-2, c3 B13).
     static let cli = BuildEnvironment.current.cliName
 

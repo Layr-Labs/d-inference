@@ -295,7 +295,7 @@ public struct ClusterOnboardingModelChoice: Codable, Sendable, Equatable {
 }
 
 /// The command the cluster screens tell the person to run: the running identity's CLI name (the live operations set it
-/// from `BuildEnvironment.current.cliName`; "darkbloom-dev" in the DevNet app), so a Mac with both apps is never told to
+/// from `BuildEnvironment.current.cliName`; `darkbloom-dev` in the DevNet app), so a Mac with both apps is never told to
 /// run the production command (the candidate on pair-2, c3 B13). The console names every command in backticks with it.
 public enum ClusterOnboardingCommand {
     private static let lock = NSLock()

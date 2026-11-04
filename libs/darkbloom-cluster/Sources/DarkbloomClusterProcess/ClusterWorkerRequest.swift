@@ -53,8 +53,13 @@ public final class ClusterWorkerRequest: @unchecked Sendable {
               baseReservation.deadlineUptimeNanoseconds - now <= ClusterWorkerLimits.deadlineNanoseconds else {
             throw ClusterWorkerOwnerError.deadline
         }
-        let deadline = min(baseReservation.deadlineUptimeNanoseconds, admissionDeadline ?? UInt64.max,
-                           now + owner.admissionWaitNanoseconds)
+        // A rank's owner fences a worker that has not answered a reservation
+        // by its delivery deadline (`ClusterWorkerOwnerService`), so the
+        // reservation is delivered within the pair's admission wait. The
+        // request's admission deadline, often nearly spent on arrival, bounds
+        // only how long this request waits for the answers.
+        let delivery = min(baseReservation.deadlineUptimeNanoseconds, now + owner.admissionWaitNanoseconds)
+        let deadline = min(delivery, admissionDeadline ?? UInt64.max)
         guard now < deadline else { throw ClusterWorkerOwnerError.deadline }
         let qwenMedia = lock.withLock { self.qwenMedia }
         var bytes = 0
@@ -74,8 +79,15 @@ public final class ClusterWorkerRequest: @unchecked Sendable {
                 qwenMedia: index == 0 ? qwenMedia : qwenMedia?.withoutEncodedBytes)
             try lock.withLock {
                 guard cancellation == nil else { throw ClusterWorkerOwnerError.cancelled }
+                // Past the request's admission deadline the next rank is not asked.
+                guard DispatchTime.now().uptimeNanoseconds < deadline else { throw ClusterWorkerOwnerError.deadline }
                 do {
-                    try worker.sendWorkerCommand(.reserve(local), requestID: requestID, deadline: deadline)
+                    try worker.sendWorkerCommand(.reserve(local), requestID: requestID, deadline: delivery)
+                } catch ClusterWorkerOwnerError.closed
+                            where DispatchTime.now().uptimeNanoseconds >= deadline && worker.readiness != nil {
+                    // A still-serving endpoint closes a send only once its
+                    // deadline passed: nothing reached the rank, no rank is lost.
+                    throw ClusterWorkerOwnerError.deadline
                 } catch ClusterWorkerOwnerError.refused(let reason) where reason != .unavailable {
                     // The rank's endpoint could not take this reservation now
                     // (its command queue) or carry it: nothing reached the
@@ -417,8 +429,10 @@ public final class ClusterWorkerRequest: @unchecked Sendable {
             // Never-submitted/refused ranks have no request to cancel. Pending
             // submission can race an unread refusal, so only confirmed admission
             // permits request cancel. All other ranks need actual native cleanup.
-            if alone && (submitted[index] == .none || submitted[index] == .refused) {
+            if submitted[index] == .none || (alone && submitted[index] == .refused) {
                 // Never asked, or it refused: this rank holds nothing for the request.
+                // One never asked is not fenced whatever ended the request: a
+                // failing pair's owner shuts it down.
                 acknowledged[index] = true
                 continue
             }

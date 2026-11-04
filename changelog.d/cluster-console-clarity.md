@@ -1,21 +1,21 @@
-### `darkbloom cluster` on a set-up pair says what is what
+### `darkbloom cluster` after setup works like `darkbloom start`
 
-- The opening names both Macs and the cable ("This Mac (Studio A) leads · the
-  other Mac (Apple M3 Ultra, 256 GB) follows · cable ready"), then the status
-  as the ✓/✗ outcome block, on the leader and on the Mac that follows.
-- The leader says how the pair works and gives one line per item saying what
-  it does: Change model, Test a response, Stop serving, Serve locally only or
-  through Darkbloom, Start over, Quit (and Check memory is freed once stopped).
-- Change model marks the model serving now, gives each mode with the speed
-  this pair served it at or "not measured on these Macs yet", asks how both
-  Macs split a model that runs more than one way (the fastest measured first,
-  tensor parallel or pipeline one keypress away, on mixed Macs too), then asks
-  once before the running model stops, and says when it stopped.
-- The Mac that follows says that its part runs by itself and which command to
-  run on the leading Mac.
+- Run again on a set-up pair, `darkbloom cluster` (and `darkbloom start` on a paired Mac) opens with both Macs and the
+  cable ("This Mac (Studio A) leads · the other Mac (Apple M3 Ultra, 256 GB) follows · cable ready") and the pair's
+  status, then the pair's model list instead of a menu. The model serving now ("serving now", or "last used" when
+  stopped) is preselected: Enter keeps it, or starts it again in the mode it served in.
+- Each model shows its modes with the speed this pair served it at, or "not measured on these Macs yet". A model that
+  runs more than one way asks how both Macs split it (the fastest measured first, tensor parallel or pipeline one
+  keypress away, on mixed Macs too).
+- A line under the models switches between local only and serving through Darkbloom (both logins are checked first,
+  before the local API stops); another starts over after one question.
+- Choosing another model while one serves asks once, then says "✓ Stopped … on both Macs" and shows each Mac's load.
+  The serving model in its mode says "Already serving …; nothing changed."
+- Every start ends like `darkbloom start`: the outcome block, then the model in its mode and split, the Macs, where it
+  serves, the log, "Starts by itself at login on both Macs.", and `darkbloom stop` / `restart` / `status`. A pair that
+  does not serve keeps its ✗ block with Retry, Change model, Serve locally only and Diagnostics.
+- The Mac that follows says that its part runs by itself, where to change the model, and that `darkbloom stop` there
+  stops both Macs; Enter closes it.
+- When the other Mac does not answer, the screen no longer says `darkbloom cluster stop` turned its service off, and
+  says to run `darkbloom start` or `darkbloom cluster` there.
 - A fresh setup opens with what it will ask and how long it takes.
-- A stopped pair offers **Start <model> again** first: the last model, in the mode it served in, without the list.
-  Switching how a stopped pair serves offers to start it that way.
-- **Serve through Darkbloom** checks both Macs' logins before the local API stops; **Stop serving** asks once on a pair
-  served through Darkbloom.
-- Outside the first setup the steps say **Change model** (or **Choose a model**) and **Start**, not "3/4" and "4/4".

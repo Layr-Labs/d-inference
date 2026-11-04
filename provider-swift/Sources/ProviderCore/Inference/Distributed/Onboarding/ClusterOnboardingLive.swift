@@ -741,7 +741,6 @@ final class OnboardingLive: @unchecked Sendable {
                                 ? "Private unqualified image candidate; public traffic is prohibited." : plan.publicTraffic,
                              tensorParallelNote: plan.tensorParallelNote, validated: approved(option.model.artifactSHA256),
                              split: ClusterOnboardingDeployment.splitMarker(plan.mode),
-                             current: leadership?.serving == true && leadership?.modelName == modelID,
                              modes: plan.modes.map { $0.map(screenMode) })
             }
             // Open choices first (the models this Mac has), then catalog models no Mac has yet, then the blocked ones.

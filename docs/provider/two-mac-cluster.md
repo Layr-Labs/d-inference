@@ -95,8 +95,7 @@ terminal the live rows then give the wait and one row per Mac (for a pair
 registered with the coordinator: registering, registered, loading its share),
 each with the time since loading began; no bar or percent, since no load
 fraction is reported. The leader ends with the outcome as its own block, between
-two rules, then whether the windows can close ("Done. You can close both
-windows.") and "Run `darkbloom cluster` again to manage it.":
+two rules, then the pair's card, as `darkbloom start` ends, and the shell:
 
 ```
 ────────────────────────────────────────────────
@@ -104,7 +103,21 @@ windows.") and "Run `darkbloom cluster` again to manage it.":
   API at http://localhost:8000 on this Mac
   Test response in 0.61 s
 ────────────────────────────────────────────────
+Cluster started on both Macs.
+  Model:   Qwen3.8-27B-4bit-mtp · pipeline (Apple M3 Ultra 32 layers / Apple M5 Max 32 layers)
+  Macs:    This Mac leads · the other Mac (Apple M5 Max, 128 GB) follows
+  Serves:  through Darkbloom
+  Logs:    ~/.darkbloom/cluster-setup/service.log
+  Starts by itself at login on both Macs.
+
+  darkbloom stop     Stop both Macs
+  darkbloom restart  Restart with the current model
+  darkbloom status   Check status
 ```
+
+A pair served on the local API only says `Local:   http://localhost:8000`
+instead of `Serves:`. With a build whose cluster service lives only as long as
+its window, the card says to keep both windows open instead of the login line.
 
 Served on the local API only (asked for, or a coordinator without cluster
 support), the block says `✓ Serving <model> on this Mac's local API only`. It
@@ -145,41 +158,33 @@ names `darkbloom local`, which shows it.
 
 Setup reports completion only after the test response succeeds. If that request
 fails, the saved setup remains available: run `darkbloom cluster` on the leader,
-check its status, and choose **Test a response** to try again.
+press Enter on the model it lists first: the start sends its test request again.
 
-`darkbloom cluster` run again opens with both Macs and the cable ("This Mac
+After setup, `darkbloom cluster` works like `darkbloom start`; on a paired Mac,
+`darkbloom start` opens the same screen, and `darkbloom stop`, `restart` and
+`status` act on both Macs. It opens with both Macs and the cable ("This Mac
 (Studio A) leads · the other Mac (Apple M3 Ultra, 256 GB) follows · cable
 ready"; the other Mac by its hardware name, since no computer name crosses the
-cable), then the cluster's status as the outcome block (`✓ Serving …` or `✗ Not
-serving: <reason>`; "Stopped; last model …" when stopped).
+cable), then the pair's status: the outcome block (`✓ Serving …` or `✗ Not
+serving: <reason>`), or "Stopped; last model …".
 
-On the leader it says how the pair works ("this Mac runs the setup, and both
-Macs run their part by themselves") and offers one line per item, each saying
-what it does:
+On the leader, the pair's model list follows, like `darkbloom start`'s picker:
 
-| Item | What it does |
-|---|---|
-| **Start <model> again** (stopped, after a model served) | Loads the last model on both Macs again, in the mode it served in, without the list |
-| **Change model** (**Choose a model** when stopped) | Stops the model that serves and loads another, after one question ("Switch to Gemma 4 26B? Qwen 3.8 27B stops serving on both Macs while Gemma 4 26B loads …", **No** by default) |
-| **Test a response** (serving) | One request through both Macs |
-| **Stop serving** (serving) | Both Macs free their memory; a pair served through Darkbloom asks first ("Stop serving Qwen 3.8 27B on both Macs?", **No** by default) |
-| **Serve locally only** or **Serve through Darkbloom** | Switches how the pair serves. Serving through Darkbloom checks both Macs' logins first, before the local API stops. On a stopped pair it saves the choice and asks "Start Qwen 3.8 27B now, locally only?" (**Yes, start now** or **Not now**) |
-| **Check memory is freed** (stopped) | Confirms both Macs released the model's memory |
-| **Start over** | Unpairs this Mac and pairs again, after one question ([pairing again](#pairing-again)) |
-| **Quit** | Changes nothing |
+- The model serving now is marked "serving now" (or the last one "last used")
+  and preselected: Enter keeps it, or starts it again in the mode it served in.
+- Each model shows its size, where it is (copied or downloaded first), and its
+  modes with the decode speed this pair served it at (`ClusterServedModes`: at
+  least 3 served requests on these Macs with this build), or "not measured on
+  these Macs yet". Models these Macs cannot serve are not listed.
+- Under the models, **Switch to local only** (or **Switch to serving through
+  Darkbloom**) serves the current model the other way; serving through Darkbloom
+  checks both Macs' logins first, before the local API stops. **Start over
+  (unpair and set up again)** asks once ([pairing again](#pairing-again)).
+- q or Esc changes nothing; the screen shows the status again and the commands.
 
-**Set up the cable port** comes first when the cable moved to a port not set
-up yet; set up, the same run goes on to the list
-([below](#when-something-is-in-the-way)). Outside the first setup the steps
-are headed by the item chosen (**Change model** or **Choose a model**) and
-**Start**; the numbered "1/4 … 4/4" steps are the first setup's only.
-
-The model list marks the model serving now, and gives each model's modes with
-the decode speed this pair served it at (`ClusterServedModes`: at least 3 served
-requests on these Macs with this build), or "not measured on these Macs yet";
-models these Macs cannot serve are not listed. A model that runs more than one
-way here asks how both Macs split it, the fastest measured mode first (else
-the planner's), the other one keypress away:
+A model that runs more than one way here asks how both Macs split it: the model
+serving now keeps its mode by default, any other offers the fastest measured mode
+first (else the planner's), the other one keypress away:
 
 - **Tensor parallel**: both Macs work on every layer, each holding a share of it
   (half each through Darkbloom; local serving balances the shares by speed).
@@ -188,21 +193,32 @@ the planner's), the other one keypress away:
 - **Speculative pipeline** (MiMo): a pipeline that drafts several tokens and
   checks them together.
 
-After **Yes, switch** the screen says "✓ Stopped <old model> on both Macs",
-then the start's progress and its outcome block.
+Choosing the model that serves, in its mode, says "Already serving Qwen 3.8
+27B; nothing changed." Choosing another while one serves asks once ("Switch to
+Gemma 4 26B? Qwen 3.8 27B stops serving on both Macs while Gemma 4 26B loads …",
+**No** by default), then says "✓ Stopped Qwen 3.8 27B on both Macs" and shows
+each Mac's load. The steps are headed **Model** and **Start**; the numbered "1/4
+… 4/4" steps are the first setup's only. Every start ends with the outcome block
+and the pair's card ([above](#the-steps-once)), then returns to the shell; a pair
+that does not serve ends with the ✗ block and **Retry**, **Change model**,
+**Serve locally only** and **Diagnostics** instead. To stop, run `darkbloom
+stop`: both Macs stop and free their memory. The start's own test request is
+the test.
+
+**Set up the cable port** comes first when the cable moved to a port not set
+up yet ([below](#when-something-is-in-the-way)).
 
 On the other Mac the opening says it follows, the status block, "This Mac runs
-its part by itself.", then "To change the model or stop serving, run `darkbloom
-cluster` on the other Mac (<its hardware name>).", and offers **Start over
-(unpair and set up again)** or **Quit** (enter quits). **Start over** asks once
-("Unpair this Mac and pair the two Macs again?", **No** by default), then
-unpairs this Mac and pairs again ([pairing again](#pairing-again)). Either Mac
-first asks the other over the cable. When it does not answer, the screen names
-that Mac, its likely reasons (its cluster service is off, or it is asleep, off,
-or waiting for someone to log in) and the command to run on it, and keeps
-**Start over** with its question; the Mac that follows also offers **Try
-again**. Only a saved pairing made with another Secure Enclave key offers
-**Pair again** without the question.
+its part by itself.", then "To change the model, run `darkbloom cluster` or
+`darkbloom start` on the other Mac (<its hardware name>). `darkbloom stop` here
+stops both Macs." Enter closes; **Start over (unpair and set up again)** is the
+other choice, and asks once ("Unpair this Mac and pair the two Macs again?",
+**No** by default). Either Mac first asks the other over the cable. When it
+does not answer, the screen names that Mac, its likely reasons (its cluster
+service is off, or it is asleep, off, or waiting for someone to log in) and what
+to run on it (`darkbloom start` or `darkbloom cluster`), and offers **Try
+again**, **Start over** (with its question) or **Quit**. Only a saved pairing
+made with another Secure Enclave key offers **Pair again** without the question.
 
 A fresh setup opens with what it will ask (this Mac's password on each Mac for
 the cable port, Local Network access, Yes when both screens show the same code,
@@ -392,11 +408,11 @@ ready"; with the name System Settings gives this Mac, "This Mac (Studio A)
 leads · …", so two identical Macs each say which they are), then shows the
 cluster's state as the outcome block ("✓ Serving Qwen3.8-27B-4bit-mtp at
 http://localhost:8000 (earning through Darkbloom)", or "Stopped; last model …")
-and, on the leader, the list [above](#the-steps-once). The other Mac then says
-its part runs by itself, names the Mac it follows and the command to run there,
-and offers **Start over (unpair and set up again)** or **Quit**; when the cable
-moved to a port not set up yet, it offers to set that up first
-([below](#when-something-is-in-the-way)).
+and, on the leader, the pair's model list [above](#the-steps-once). The other
+Mac then says its part runs by itself, names the Mac it follows and the command
+to run there; Enter closes it, and **Start over (unpair and set up again)** is
+the other choice. When the cable moved to a port not set up yet, it offers to
+set that up first ([below](#when-something-is-in-the-way)).
 
 If both Macs start waiting at the same moment, the pairing's own rule picks one
 to keep waiting (it leads) and the other joins it ("✓ Paired. The other Mac

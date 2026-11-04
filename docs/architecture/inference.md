@@ -325,7 +325,7 @@ against `ClusterPublicModels.declared`); an older leader's choices carry no
 such field and are listed as they come. A member's `darkbloom cluster` shows
 the status and where to manage the cluster, with a list only to set up a cable
 port that is not set up yet (`ClusterOnboardingDriver.member`, `fixPortItem`);
-the leader's is a list of the control operations (`ClusterOnboardingDriver.menu`).
+the leader's is the pair's model list, as `darkbloom start`'s picker, with a line to switch how it serves and one to start over (`ClusterOnboardingDriver.pairScreen`).
 A model's list line is its name, its size and the split's marker ("tensor
 parallel" or "pipeline", `ClusterOnboardingDeployment.splitMarker`), then
 "copy" or "download" when it must reach a Mac first
@@ -3759,10 +3759,10 @@ away; mixed pairs are first-class).
   records of this model on these Macs (`ClusterServedSpeedRecords.servedBy`), as
   the planner reads them: a figure from 3 served requests on. Never a
   prediction; without one the screen says "not measured on these Macs yet".
-- **Start again:** a stopped pair's **Start <model> again** names its last model
-  (`chooseAndServe`'s named path, no list) and keeps the mode the saved setup
-  served in when the plan still lists it (`keepMode`, from
-  `ClusterOnboardingResume.servingMode`).
+- **The current model:** on a set-up pair the list preselects the model serving
+  now (or the last one used); it keeps the mode the saved setup served in when
+  the plan still lists it (`keepMode`, from `ClusterOnboardingResume.servingMode`),
+  so Enter keeps it or starts it again.
 - **Default:** the fastest measured family, else the planner's
   (`ClusterOnboardingMode.defaultIndex`).
 - **The person's choice:** `useMode` keeps the family for the next adopt of that
@@ -3796,7 +3796,7 @@ pairing, nor when the cable is on a port that is not set up. Silence cannot
 tell a Mac that is only away (asleep, at its login window after a restart, its
 cluster service stopped) from one that no longer holds the pairing. So the
 screen names that Mac, its likely reasons and the command to run there
-(`ClusterOnboardingDriver.otherMacSilentLine`), and keeps **Start over** with its question: the member offers **Try again**, **Start over** and **Quit**; the leader keeps its list. It never offers **Pair
+(`ClusterOnboardingDriver.otherMacSilentLine`), and keeps **Start over** with its question: both Macs offer **Try again**, **Start over** and **Quit** (the leader's list needs the other Mac). It never offers **Pair
 again**, which does not ask.
 
 **Start over** is in every resumed Mac's list, after one
@@ -3818,7 +3818,7 @@ answers it, so it offers **Start over** (or **Pair again** when its
 own key changed too).
 
 Sources: `provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/ClusterOnboardingFlow.swift`
-(`ClusterOnboardingDriver.pairAgain`, `startOver`, `otherMacSilentLine`, `member`, `menu`),
+(`ClusterOnboardingDriver.pairAgain`, `startOver`, `otherMacSilentLine`, `member`, `pairScreen`),
 `provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/ClusterOnboardingLive.swift`
 (`OnboardingLive.resume`, `otherMacAnswers`, `unpair`) and
 `provider-swift/Sources/ProviderCore/Inference/Distributed/Pairing/ClusterUnpairing.swift`

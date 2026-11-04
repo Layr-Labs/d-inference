@@ -2489,8 +2489,9 @@ import Darwin
         run.type("\r")
         expect(run.finish() == 0, "cable (member): enter leaves")
         let text = run.text
+        // The status is the member's outcome block (`showOutcome`).
         let order = ["The cable is on Thunderbolt 3 (en2), which isn't set up.", "\u{2713} Cable port set up. The Macs reconnect by themselves.",
-                     "  Serving Qwen3.8-27B-4bit-mtp", ClusterOnboardingDriver.memberLeaderLine("Apple M3 Ultra, 256 GB")].compactMap { text.range(of: $0)?.lowerBound }
+                     "\u{2713} Serving Qwen3.8-27B-4bit-mtp", ClusterOnboardingDriver.memberLeaderLine("Apple M3 Ultra, 256 GB")].compactMap { text.range(of: $0)?.lowerBound }
         expect(order.count == 4 && order == order.sorted(), "cable (member): the port, then the status and the next step: \(text)")
         expect(recorder.all == ["ensureService", "checkLink", "status"] && recorder.probes == 1,
                "cable (member): set up, then asked the other Mac: \(recorder.all), \(recorder.probes)")
@@ -2882,6 +2883,8 @@ import Darwin
         // The status lines as the leader's status writes them (`OnboardingLive.localStatus`).
         let serving = TerminalRun(operations(Recorder(), resume: .init(role: .member, peerName: "Apple M5 Ultra, 256 GB", serving: true),
             pairEvents: [], pairResult: .failed([]), statusLines: [offeredReady.pairServingLine(model: "Qwen3.8-27B-4bit-mtp") + "."]))
+        // Under the block, the member's list (`memberAgain`): enter leaves.
+        expect(serving.waitFor(prompt(2, enter: 2)), "member: the list under the outcome"); serving.type("\r")
         expect(serving.finish() == 0, "member: served")
         expect(serving.text.contains(block("\u{2713}", "Serving Qwen3.8-27B-4bit-mtp through Darkbloom on both Macs (pipeline)", [])),
                "member: the outcome block: \(serving.text)")
@@ -2889,6 +2892,7 @@ import Darwin
             pairEvents: [], pairResult: .failed([]),
             statusLines: [ClusterOnboardingNotServing.statusLine(model: "Qwen3.8-27B-4bit-mtp", reason: notVerifiedTimed),
                           ClusterOnboardingNotServing.remedy(forReason: notVerifiedTimed) ?? "-"]))
+        expect(notServing.waitFor(prompt(2, enter: 2)), "member, not serving: the list under the outcome"); notServing.type("\r")
         _ = notServing.finish()
         expect(notServing.text.contains(block("\u{2717}", "Not serving: " + notVerifiedTimed + ".",
             [ClusterOnboardingNotServing.remedy(forReason: notVerifiedTimed) ?? "-"])), "member: the not-serving block: \(notServing.text)")

@@ -293,9 +293,9 @@ extension ClusterPairSummary {
             return "To start it again: `darkbloom cluster` on \(leadingMac), then choose the model."
                 + (serviceRunning ? "" : " This Mac's cluster service is off; `darkbloom cluster` starts it again.")
         case .otherMacAway:
-            return "\(ClusterOnboardingMacName.sentence(otherMac)) isn't answering over the cable. Its cluster service is "
-                + "probably off (it was stopped with `darkbloom cluster stop`), or that Mac is asleep, off, or waiting for "
-                + "someone to log in. On that Mac, run `darkbloom cluster`."
+            return "\(ClusterOnboardingMacName.sentence(otherMac)) isn't answering over the cable. Its cluster service may "
+                + "have been turned off with `darkbloom cluster stop --service`, or that Mac is asleep, off, or waiting for "
+                + "someone to log in. On that Mac, run `darkbloom start` (or `darkbloom cluster`)."
         case .notServing:
             let reason = reason ?? ""
             if ClusterOnboardingNotServing.isMissingLogin(reason) {

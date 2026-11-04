@@ -141,7 +141,7 @@ extension Cluster {
         @Option(help: "Absolute path of this Mac's cluster worker, when it is not installed beside darkbloom.")
         var worker: String?
         @Flag(name: .customLong("local-only"),
-              help: "Stop only this Mac's cluster service, without asking the other Mac (when it is gone for good). Run `darkbloom cluster stop` there too if it comes back.")
+              help: "Stop only this Mac's cluster service, without asking the other Mac (when it is gone for good). Run `darkbloom cluster stop --service` there too if it comes back.")
         var localOnly = false
         @Flag(help: "Also stop this Mac's cluster service and keep it from starting at login (`darkbloom cluster` starts it again).")
         var service = false
@@ -163,7 +163,8 @@ extension Cluster {
 
         /// `cluster stop` while this Mac's pairing record can't be read: nothing changes, and why.
         static func refusal(_ pair: ClusterPairSummary) -> [String] {
-            pair.unsureRefusal("stop", "stopped") + ["To stop this Mac's cluster service anyway: `darkbloom cluster stop --service`."]
+            [pair.pairSentence, "`darkbloom cluster stop` can't tell which pair to stop, so nothing was stopped.",
+             "To stop this Mac's cluster service anyway: `darkbloom cluster stop --service`. " + ClusterPairSummary.checkPairingLine]
         }
 
         mutating func run() async throws {
@@ -254,7 +255,7 @@ extension Cluster {
                 ? "This Mac's cluster service is stopped (it was not set to start at login)."
                 : "This Mac's cluster service is stopped and will not start at login. Run `darkbloom cluster` to start it again.")
             if localOnly {
-                lines.append("The other Mac was not asked to stop. If it comes back, run `darkbloom cluster stop` there too.")
+                lines.append("The other Mac was not asked to stop. If it comes back, run `darkbloom cluster stop --service` there too.")
             }
             return lines
         }

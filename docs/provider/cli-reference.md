@@ -1421,6 +1421,15 @@ Memory freed on both Macs ✓
 
 When the leading Mac doesn't answer, nothing is stopped; it names the Mac and
 says how to stop this Mac alone (`darkbloom cluster stop --local-only`), exit 1.
+Two rarer endings: on the Mac that follows, a pair that is already stopped gives
+``The pair is already stopped; `darkbloom start` on either Mac starts it again.``
+(exit 0); when this Mac's cluster can't be reached from the command, it says
+``This Mac's cluster can't be reached from this command; run `darkbloom cluster` on this Mac to see it.``
+(exit 1). `darkbloom cluster stop` refuses the same way as `stop` when this
+Mac's pairing record can't be read, and points to `--service` to stop this
+Mac's cluster service anyway (`Cluster.Stop.refusal`). After
+`darkbloom cluster stop --local-only` it says to run
+`darkbloom cluster stop --service` on the other Mac if it comes back.
 `stop --solo` (and `--uninstall`) stops single-Mac serving on this Mac only and
 never touches the pair; a daemon state the cluster's part wrote is never drained
 (`ServiceDrain.soloProviderState`).

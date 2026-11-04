@@ -430,8 +430,16 @@ struct ProviderUninstallTests {
 
         #expect(report.failed)
         #expect(report.steps.filter { $0.status == .failed }.map(\.name) == ["Undo the cable port setup"])
-        #expect(!fixture.exists(fixture.paths.installDirectory) && !fixture.exists(fixture.paths.configDirectory),
-                "deleting files does not need the cable")
+        #expect(!fixture.exists(fixture.paths.configDirectory) && !fixture.exists(fixture.paths.clusterModelStore),
+                "deleting settings and models does not need the cable")
+        // The app, the cable records and an administrator's script are in ~/.darkbloom: it stays, with the command
+        // link, so `darkbloom uninstall --everything` can run again and undo the cable port setup.
+        #expect(fixture.exists(fixture.paths.installDirectory.appendingPathComponent("cluster-pairing/pairings.json")))
+        #expect(fixture.exists(fixture.paths.commandLink))
+        let retry = "kept, so the uninstall can run again and undo the cable port setup (it holds the app and the cable records)"
+        let kept = report.steps.filter { $0.status == .skipped && $0.detail == retry }.map(\.name)
+        #expect(kept == ["Delete The `\(fixture.paths.commandLink.lastPathComponent)` command link",
+                         "Delete Darkbloom folder: the app, logs, pairing and cluster setup"])
         let summary = ProviderUninstall.summary(report, plan: plan)
         transcript("everything-summary-link-declined", summary, fixture)
         #expect(summary.contains("  failed   Undo the cable port setup: the macOS prompt was declined; nothing was changed"))

@@ -1829,16 +1829,34 @@ final class OnboardingLive: @unchecked Sendable {
         // Members are asked for their own part only when rank 0 is here.
         let member = now.local ? try? JSONDecoder().decode(ClusterServiceStatus.self, from: try command(.init(op: .status), seconds: 10)) : nil
         // macOS keeps the other Mac's follower off the local network: nothing changes until someone allows it (P2-1).
-        if Self.otherMacRefused(member?.child) { return (nil, Self.localNetworkLine(forwarded: answering)) }
+        if Self.otherMacRefused(member?.child),
+           Self.refusalIsCurrent(own: ClusterService.published()?.child, now: Date().timeIntervalSince1970) {
+            return (nil, Self.localNetworkLine(forwarded: answering))
+        }
         if let member, !member.child.running, let end = member.child.lastEnd, Self.endShown(member.child) {
             line += "; \(thereShort)'s part ended (\(end)\(member.child.lastError.map { ": " + $0 } ?? "")) and starts again by itself"
         }
         return (nil, line)
     }
 
-    /// Whether the other Mac's part reports that macOS keeps it off the local network (its follower's refusal).
+    /// Whether the other Mac's refusal says how its follower's dials go now: this Mac's part (rank 0, whose session hosts
+    /// the listener the follower dials) has run long enough for one more dial to reach it. The follower redials at most
+    /// about 1.25 s apart (`ClusterLinkControlClient.connectLoop`: 20 ms doubling to 1 s, plus up to a quarter's jitter)
+    /// and logs only a change, so before that, Local Network turned on meanwhile would not show yet.
+    static func refusalIsCurrent(own: ClusterServiceStatus.Child?, now: Double) -> Bool {
+        guard let own, own.running, let started = own.startedAt else { return false }
+        return now - started >= refusalSettleSeconds
+    }
+
+    /// How long this Mac's part runs before a refusal counts (`refusalIsCurrent`): its start up to its listener, plus a
+    /// dial and its handshake.
+    static let refusalSettleSeconds: Double = 20
+
+    /// Whether the other Mac's part reports that macOS keeps it off the local network: its follower's refusal while it
+    /// runs and dials. An ended part's refusal is history (a Retry that starts a stopped pair again reads it before that
+    /// Mac's new follower has dialled).
     static func otherMacRefused(_ child: ClusterServiceStatus.Child?) -> Bool {
-        child?.lastError?.hasPrefix(ClusterService.localNetworkReasonPrefix) == true
+        child?.running == true && child?.lastError?.hasPrefix(ClusterService.localNetworkReasonPrefix) == true
     }
 
     /// The ✗ when the other Mac can't reach this one over the cable for that reason: why, and what to do there. It can't

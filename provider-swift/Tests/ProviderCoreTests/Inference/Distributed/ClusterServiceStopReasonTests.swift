@@ -304,4 +304,58 @@ struct ClusterServiceStopReasonTests {
                 && forwarded?.last?.contains("choose Retry here") == true, "the member's own screen: \(String(describing: forwarded))")
         #expect(OnboardingLive.localNetworkRefusalLines(line: "starting", otherMac: leader, app: app) == nil)
     }
+
+    private static let refusedLines = "2026-11-04T07:32:14Z link-follower: link refused: connectFailed (unreachable)\n"
+        + "2026-11-04T07:32:14Z link-follower: this process may not reach the local network: macOS refused the dial before the cable "
+        + "was tried. Allow darkbloom under System Settings > Privacy & Security > Local Network (once), or start the follower from a "
+        + "session that has that access.\n"
+
+    /// A running part's status reads its log for a refusal only when the part is the link follower (no other part writes
+    /// one), and only when the log grew since the last read: the joining Mac's window asks every second, and each read
+    /// walked up to 8 MiB back under the service's lock (P2-8, a member's status took up to 29 s).
+    @Test func onlyALinkFollowersLogIsReadAndOnlyOnceItGrew() throws {
+        let url = try log(banner)
+        defer { try? FileManager.default.removeItem(at: url) }
+        var scans = 0
+        let scan: (URL, UInt64) -> String? = { url, offset in scans += 1; return ClusterService.followerRefusal(in: url, from: offset) }
+        var read: ClusterService.FollowerRefusalRead?
+        #expect(ClusterService.runningPartRefusal(linkFollower: false, in: url, from: 0, remembered: &read, scan: scan) == nil
+                && scans == 0, "rank 0, a member or a solo server: its log isn't read")
+        _ = ClusterService.runningPartRefusal(linkFollower: true, in: url, from: 0, remembered: &read, scan: scan)
+        #expect(ClusterService.runningPartRefusal(linkFollower: true, in: url, from: 0, remembered: &read, scan: scan) == nil
+                && scans == 1, "nothing written since: read once")
+        let handle = try FileHandle(forWritingTo: url)
+        handle.seekToEndOfFile(); handle.write(Data(Self.refusedLines.utf8)); try handle.close()
+        let refusal = ClusterService.runningPartRefusal(linkFollower: true, in: url, from: 0, remembered: &read, scan: scan)
+        #expect(refusal?.hasPrefix(ClusterService.localNetworkReasonPrefix) == true && scans == 2, "it grew: read again")
+        #expect(ClusterService.runningPartRefusal(linkFollower: true, in: url, from: 0, remembered: &read, scan: scan) == refusal
+                && scans == 2, "the same refusal, remembered")
+    }
+
+    /// A member allowed just now: its follower logs a refusal only when it changes, so the old one stays in its log until
+    /// it connects, which needs this Mac's part listening. The refusal ends the leader's wait only once this Mac's part has
+    /// run long enough for one more dial (20 ms doubling to 1 s between dials), only from a follower that runs (an ended
+    /// one's is history: Retry starting a stopped pair must not end at once on it), and not after a later dial failed
+    /// another way.
+    @Test func aRefusalCountsOnlyWhileTheFollowerCouldStillBeRefused() throws {
+        let now = 1_000_000.0
+        func own(running: Bool, since: Double?) -> ClusterServiceStatus.Child {
+            .init(running: running, starts: 1, lastEnd: nil, restartInSeconds: nil, lastError: nil, startedAt: since)
+        }
+        #expect(OnboardingLive.refusalIsCurrent(own: own(running: true, since: now - 60), now: now), "this Mac's part ran a minute")
+        #expect(!OnboardingLive.refusalIsCurrent(own: own(running: true, since: now - 3), now: now), "just started: no dial reached it yet")
+        #expect(!OnboardingLive.refusalIsCurrent(own: own(running: false, since: nil), now: now)
+                && !OnboardingLive.refusalIsCurrent(own: nil, now: now), "nothing listens here")
+
+        let url = try log(banner + Self.refusedLines)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let reason = try #require(ClusterService.followerRefusal(in: url))
+        let ended = ClusterServiceStatus.Child(running: false, starts: 2, lastEnd: "exit 0", restartInSeconds: 2, lastError: reason)
+        #expect(!OnboardingLive.otherMacRefused(ended), "an ended part's refusal is history")
+        #expect(ClusterLocalNetworkAccess.state(report: .allowed, published: ended) == .allowed, "nor does it block this Mac")
+
+        let later = try log(banner + Self.refusedLines + "2026-11-04T07:40:02Z link-follower: link refused: handshakeRejected\n")
+        defer { try? FileManager.default.removeItem(at: later) }
+        #expect(ClusterService.followerRefusal(in: later) == nil, "its last dial reached the other Mac and failed another way")
+    }
 }

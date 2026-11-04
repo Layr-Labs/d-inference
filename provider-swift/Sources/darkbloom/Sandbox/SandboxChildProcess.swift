@@ -106,7 +106,15 @@ enum SandboxChildProcess {
 
     private static func read(_ handle: FileHandle, into output: Output) {
         var splitter = SandboxLineSplitter()
-        while let chunk = try? handle.read(upToCount: 16 * 1024), !chunk.isEmpty {
+        var buffer = [UInt8](repeating: 0, count: 16 * 1024)
+        // read(2) returns what has arrived; `FileHandle.read(upToCount:)` waits
+        // on a pipe for the whole count or end of file, which would hold back
+        // a line such as the approval link while the installer waits.
+        while true {
+            let count = Darwin.read(handle.fileDescriptor, &buffer, buffer.count)
+            if count < 0, errno == EINTR { continue }
+            guard count > 0 else { break }
+            let chunk = Data(buffer[..<count])
             switch output {
             case .inherit: return
             case .tail(let tail): tail.append(chunk)

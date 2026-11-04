@@ -122,6 +122,24 @@ struct SandboxAddonTests {
         }
     }
 
+    @Test("a captured line arrives as the child prints it, not when it exits")
+    func capturedLineArrivesAtOnce() async throws {
+        let start = ContinuousClock.now
+        let arrival = LockedValue<Duration?>(nil)
+        // The approval link, then the installer waits for approval.
+        let exit = try await SandboxChildProcess.run(
+            URL(fileURLWithPath: "/bin/sh"), ["-c", "echo 'https://example.test/approve'; sleep 3"],
+            closeStandardInput: true,
+            standardOutput: .lines { line in
+                if line == "https://example.test/approve" { arrival.set(ContinuousClock.now - start) }
+            })
+        let ended = ContinuousClock.now - start
+        let arrived = try #require(arrival.get(), "the line never arrived")
+        #expect(exit.succeeded)
+        #expect(arrived < .seconds(1), "arrived after \(arrived), the child ran \(ended)")
+        #expect(ended >= .seconds(2))
+    }
+
     @Test("a second Ctrl-C ends a child whose own child holds its captured output")
     func secondInterruptEndsCapturedChild() async {
         await #expect(processExitsWith: .success) {
@@ -343,4 +361,13 @@ final class LineCollector: @unchecked Sendable {
     private var lines: [String] = []
     func append(_ line: String) { lock.withLock { lines.append(line) } }
     var all: [String] { lock.withLock { lines } }
+}
+
+/// A value written from a reader thread and read by the test.
+private final class LockedValue<Value>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: Value
+    init(_ value: Value) { self.value = value }
+    func set(_ newValue: Value) { lock.withLock { value = newValue } }
+    func get() -> Value { lock.withLock { value } }
 }

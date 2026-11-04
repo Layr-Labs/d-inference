@@ -743,6 +743,11 @@ through Darkbloom" (`OnboardingLive.notOfferedLines`):
   planned for Darkbloom). Or serve locally only: `darkbloom cluster local` on <the leading Mac>."
 - `darkbloom start` without a terminal stops waiting at once on this reason (exit 3).
 
+During a model or mode change, or while the pair updates Darkbloom, `status` and `cluster status` can read `stopped`
+(exit 4) or `unknown` for a minute or two while the pair is actually reloading. If such a change happened recently,
+or the status showed "Updating…", wait about a minute and check again before acting. Run `darkbloom start` only if it
+still reads `stopped`.
+
 A stopped pair reads `stopped` (exit 4) even while the other Mac isn't answering, as after a stop the other Mac asked
 for before it left (its uninstall does): `lines` are "Stopped; last model …" and "The other Mac (…) isn't answering
 over the cable.", with `other_mac.answers` `false`.

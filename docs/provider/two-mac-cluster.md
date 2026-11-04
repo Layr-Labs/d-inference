@@ -482,7 +482,9 @@ What `darkbloom cluster` status says in each mode:
 | … no approval (staging, production before its coordinator derives approvals from releases, no matching entry) | `no cluster approval is attached to its setup` |
 
 `darkbloom cluster status` reads the first row as `serving` (exit 0) and a pair that isn't offered as `not_serving`
-(exit 3), on both Macs.
+(exit 3), on both Macs. During a model or mode change, or while the pair updates Darkbloom, it can read `stopped`
+(exit 4) or `unknown` for a minute or two while the pair is actually reloading: wait about a minute and check again
+before running `darkbloom start`.
 
 Approval sources, checks and saved fields:
 [coordinator-paired member](../reference/configuration.md#coordinator-paired-member).

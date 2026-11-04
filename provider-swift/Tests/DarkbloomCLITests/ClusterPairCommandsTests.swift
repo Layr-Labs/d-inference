@@ -1157,6 +1157,67 @@ struct DarkbloomCommandLookRunTests {
         #expect(text(schedule?.standardOutputContent) == terms)
     }
 
+    @Test("`darkbloom stop --solo` with no single-Mac serving did nothing, so it draws no mark; exit 0")
+    func soloStopWithNothingDrawsNoMark() async {
+        let result = await #expect(processExitsWith: .success, observing: [\.standardOutputContent]) {
+            try await DarkbloomCommandLook.$forTesting.withValue(terminalLook()) {
+                try await exitWithPair(servingPair(), actions: pairActions()) { _ in try await runAsCLI(Stop.self, ["stop", "--solo"]) }
+            }
+        }
+        #expect(text(result?.standardOutputContent) == transcript(servingPair().soloStopNothing))
+    }
+
+    @Test("`darkbloom start --local --autopilot` (exit 64) and an --idle-timeout out of range (exit 1) draw no mark")
+    func startLaterFlagRefusalsDrawNoMark() async throws {
+        let terms = "By starting the provider, you agree to the Darkbloom Terms of Service:\n  \(Start.termsURL)\n\n"
+        let autopilot = await #expect(processExitsWith: .exitCode(64), observing: [\.standardOutputContent]) {
+            try await DarkbloomCommandLook.$forTesting.withValue(terminalLook()) {
+                try await exitWithPair(.notPaired, actions: nil) { sandbox in
+                    try await runAsCLI(Start.self, ["start", "--local", "--autopilot", "--config", sandbox.config.path])
+                }
+            }
+        }
+        #expect(text(autopilot?.standardOutputContent) == terms)
+        let idle = await #expect(processExitsWith: .failure, observing: [\.standardOutputContent]) {
+            try await DarkbloomCommandLook.$forTesting.withValue(terminalLook()) {
+                try await exitWithPair(.notPaired, actions: nil) { sandbox in
+                    try await runAsCLI(Start.self, ["start", "--idle-timeout", "\(IdleUnloadPolicy.maxMinutes + 1)",
+                                                    "--config", sandbox.config.path])
+                }
+            }
+        }
+        #expect(text(idle?.standardOutputContent) == terms)
+        #expect(try Start.parse(["--schedule", "--idle-timeout", "\(IdleUnloadPolicy.maxMinutes + 1)"]).flagsRefuseStart == false,
+                "with --schedule the wizard runs before the idle check")
+    }
+
+    @Test("#1774's later refusals draw no mark: start --solo beside the pair's part, the app's local mode, a leftover service")
+    func laterPairRefusalsDrawNoMark() async {
+        let solo = await #expect(processExitsWith: .failure, observing: [\.standardOutputContent]) {
+            try await DarkbloomCommandLook.$forTesting.withValue(terminalLook()) {
+                try await exitWithPair(servingPair(), actions: pairActions()) { _ in try await runAsCLI(Start.self, ["start", "--solo"]) }
+            }
+        }
+        #expect(text(solo?.standardOutputContent) == transcript(servingPair().soloBesideServingRefusal))
+        let desktop = await #expect(processExitsWith: .failure, observing: [\.standardOutputContent, \.standardErrorContent]) {
+            try await DarkbloomCommandLook.$forTesting.withValue(terminalLook()) {
+                try await exitWithPair(servingPair(), actions: pairActions()) { _ in
+                    try await runAsCLI(Desktop.StartLocal.self, ["desktop", "start-local", "--model", "acme/Alpha-4bit"])
+                }
+            }
+        }
+        #expect(text(desktop?.standardOutputContent) == "")
+        let desktopError = text(desktop?.standardErrorContent)
+        #expect(desktopError.contains("the app's local mode serves this Mac alone, so nothing was started."))
+        let leftover = await #expect(processExitsWith: .exitCode(64), observing: [\.standardOutputContent]) {
+            try await DarkbloomCommandLook.$forTesting.withValue(terminalLook()) {
+                let summary = ClusterPairSummary.membership(.none, serviceRunning: true, loginAgentInstalled: true, startsAtLogin: true)
+                try await exitWithPair(summary, actions: nil) { _ in try await runAsCLI(Restart.self, ["restart"]) }
+            }
+        }
+        #expect(text(leftover?.standardOutputContent) == "")
+    }
+
     @Test("`darkbloom update --rollback` as root (exit 64) draws no mark; its first lines stay")
     func rollbackAsRootDrawsNoMark() async {
         let result = await #expect(processExitsWith: .exitCode(64), observing: [\.standardOutputContent]) {

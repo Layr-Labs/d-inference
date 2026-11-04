@@ -3088,6 +3088,21 @@ live line (`ClusterOnboardingDriver.move`, `ClusterOnboardingProgress.live`),
 laid out by `TransferProgressLine` through `ClusterTransferReports`; a
 transcript without a live line keeps only the reports
 `TransferProgressLine.takeLogLine` marks and the lines for the record.
+Each Mac that receives a model is judged by its disk as `ClusterDiskSpace`
+counts it (`ClusterModelStore.diskSpace` in `Onboarding/ClusterModelProvisioning.swift`):
+the volume's available capacity, or `statfs`'s free blocks when that is not
+read, with `ClusterModelProvisioning.reserveBytes` kept free. macOS's
+important-usage capacity adds space it could purge (local snapshots, files
+iCloud keeps elsewhere) and may never free: on an M3 Ultra it read 256.6 GB
+with 54.1 GB free, and the list offered a 172.9 GB download (2026-11-03). That
+space is never counted. The refusal names it only when it alone would make room
+(`ClusterModelProvisioning.diskShortWords`). The plan (`ClusterModelProvisioning.plan`),
+the receiving Mac's cluster service (`ClusterModelReceiver.begin`) and the
+setup report each Mac sends (`ClusterSetupReport.modelStoreFreeBytes`,
+`modelStorePurgeableBytes`) use these figures. A choice a Mac has no room for
+carries `ClusterOnboardingProvisionOffer.fitsOnDisk` false and is listed last,
+ending "not enough free disk". A clone from the product's store takes no new
+blocks and is not checked.
 Its restart line reads FileVault with `fdesetup isactive`
 (`OnboardingLive.fileVaultOn`): five seconds, then SIGTERM and two more, and no
 answer reads as unknown. The exit comes from `ProcessExitObserver`, which does not run the calling thread's run loop.

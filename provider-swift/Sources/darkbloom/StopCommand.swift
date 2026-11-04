@@ -5,8 +5,9 @@ import ProviderCore
 struct Stop: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         abstract: "Drain accepted requests, then persistently stop the provider service.",
-        discussion: "On a Mac in a two-Mac cluster it stops single-Mac serving only, never the cluster's part: "
-            + "`darkbloom cluster stop` stops the cluster on both Macs."
+        discussion: "On a Mac in a two-Mac cluster it stops the pair on both Macs, as `darkbloom cluster stop` does: they "
+            + "stay stopped after a restart, and `darkbloom start` on either Mac starts the pair again. With --solo it "
+            + "stops single-Mac serving on this Mac only and never touches the pair."
     )
 
     @OptionGroup var drain: DrainOptions
@@ -14,26 +15,41 @@ struct Stop: AsyncParsableCommand {
     @Flag(help: "Also remove the provider, watchdog and desktop API launchd agents (full uninstall).")
     var uninstall = false
 
+    @Flag(help: "On a Mac in a two-Mac cluster: stop single-Mac serving on this Mac only; the pair keeps running.")
+    var solo = false
+
     /// What `darkbloom stop` does on a Mac in a two-Mac cluster.
     enum PairedStop: Equatable {
-        /// No single-Mac serving runs: say so and where the cluster is stopped; nothing is drained or disabled.
-        case refuse(lines: [String], exitCode: Int32)
-        /// Stop single-Mac serving as on any Mac (its process only), then say the cluster keeps serving.
+        /// Stop the pair on both Macs (`ClusterPairCommands.stop`).
+        case stopPair
+        /// This Mac's pairing record can't be read: nothing changes, and why.
+        case refuse([String])
+        /// Single-Mac serving only (`--solo`, `--uninstall`, or not in a cluster): as on any Mac, its process only.
         case stopSingleMac
     }
 
-    static func pairedStop(_ pair: ClusterPairSummary, singleMacLoaded: Bool, uninstall: Bool) -> PairedStop {
-        guard !singleMacLoaded, !uninstall else { return .stopSingleMac }
-        let refusal = pair.stopRefusal
-        return .refuse(lines: refusal.lines, exitCode: refusal.exitCode)
+    static func pairedStop(_ pair: ClusterPairSummary, solo: Bool, uninstall: Bool) -> PairedStop {
+        guard pair.paired, !solo, !uninstall else { return .stopSingleMac }
+        return .refuse(pair.pairingUnreadable ? pair.unsureRefusal("stop", "stopped") : [pair.pairSentence, "`darkbloom stop` stops single-Mac serving, and none runs on this Mac: nothing was stopped."])
     }
 
     mutating func run() async throws {
         let pair = ClusterPairSummary.local()
-        let wasLoaded = LaunchAgent.isLoaded()
-        if pair.paired, case .refuse(let lines, let exitCode) = Self.pairedStop(pair, singleMacLoaded: wasLoaded, uninstall: uninstall) {
+        switch Self.pairedStop(pair, solo: solo, uninstall: uninstall) {
+        case .stopPair:
+            let actions = ClusterPairActions.live(config: nil)
+            let code = await Task.detached { ClusterPairCommands.stop(pair, actions: actions) }.value
+            if code != 0 { throw ExitCode(code) }
+            return
+        case .refuse(let lines):
             for line in lines { print(line) }
-            if exitCode != 0 { throw ExitCode(exitCode) }
+            throw ExitCode.failure
+        case .stopSingleMac:
+            break
+        }
+        let wasLoaded = LaunchAgent.isLoaded()
+        if pair.paired, !wasLoaded, !uninstall {
+            for line in pair.soloStopNothing { print(line) }
             return
         }
         let session = try await ServiceDrain.prepare(options: drain, state: ServiceDrain.soloProviderState())

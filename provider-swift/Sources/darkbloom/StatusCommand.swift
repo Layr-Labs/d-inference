@@ -4,10 +4,16 @@ import ProviderCore
 
 struct Status: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
-        abstract: "Show local provider configuration and hardware status."
+        abstract: "Show local provider configuration and hardware status.",
+        discussion: "On a Mac in a two-Mac cluster it starts with the pair, in the words of `darkbloom cluster status` "
+            + "(who leads, the model, whether it serves now and what to do), then this Mac's configuration and hardware. "
+            + "With --solo it shows single-Mac serving on this Mac instead."
     )
 
     @OptionGroup var configOptions: ConfigOptions
+
+    @Flag(help: "On a Mac in a two-Mac cluster: show single-Mac serving on this Mac (the provider service) instead of the pair.")
+    var solo = false
 
     mutating func run() async throws {
         // Asked first, so the add-on answers while the banner and the config
@@ -23,6 +29,14 @@ struct Status: AsyncParsableCommand {
         let snapshot = try loadRuntimeSnapshot(configOptions: configOptions)
         let config = snapshot.config
         let models = advertisedModels(from: snapshot.models, config: config)
+
+        // On a Mac in a cluster the pair comes first, as `darkbloom cluster status` says it.
+        let pair = ClusterPairSummary.local()
+        let showsPair = false
+        if showsPair {
+            for line in await ClusterPairSummary.live(config: configOptions.config).clusterStatusLines { print(line) }
+            print("")
+        }
 
         print("\(BuildEnvironment.current.cliName) \(ProviderCore.version)")
         print("Provider: \(config.provider.name)")
@@ -74,9 +88,14 @@ struct Status: AsyncParsableCommand {
             print(supervisor.summary(now: Date().timeIntervalSince1970))
         }
         for line in Self.clusterServiceLines() { print(line) }
-        let pair = ClusterPairSummary.local()
-        if pair.paired { print(pair.statusLine) }
-        printDaemonStatus(config: config, models: snapshot.models, hardware: snapshot.hardware, pair: pair)
+        if showsPair {
+            // The daemon lines would be the cluster's own part's, read as single-Mac serving: only say whether
+            // single-Mac serving runs beside the pair.
+            if let line = soloBesidePairLine() { print(line) }
+        } else {
+            if pair.paired { print(pair.statusLine) }
+            printDaemonStatus(config: config, models: snapshot.models, hardware: snapshot.hardware, pair: pair)
+        }
 
         // Crash-loop KV-backend guard — printed whether or not the daemon is
         // up, because the guard's whole story happens while the daemon is
@@ -90,6 +109,14 @@ struct Status: AsyncParsableCommand {
             print(line)
         }
     }
+
+    /// On a Mac in a cluster: single-Mac serving that runs beside the pair (`start --solo`), in one line; nil when none.
+    private func soloBesidePairLine() -> String? {
+        guard let state = ServiceDrain.soloProviderState(), daemonProcessAlive(pid: state.pid) else { return nil }
+        return Self.soloBesidePairLine
+    }
+
+    static let soloBesidePairLine = "Single-Mac serving: running beside the pair (`darkbloom status --solo` shows it)"
 
     /// One-line summary of crash-recovery state: the config opt-out plus whether
     /// the launchd watchdog agent is actually armed.

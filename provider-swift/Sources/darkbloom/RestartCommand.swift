@@ -13,8 +13,8 @@ struct Restart: AsyncParsableCommand {
 
         If the service is installed but not running, it is started.
 
-        On a Mac in a two-Mac cluster it restarts single-Mac serving only, and only with --solo
-        while the cluster service runs; the cluster is restarted in `darkbloom cluster`.
+        On a Mac in a two-Mac cluster it restarts the pair on both Macs with its current model, then
+        waits until it serves. With --solo it restarts single-Mac serving on this Mac only.
         """
     )
 
@@ -22,7 +22,7 @@ struct Restart: AsyncParsableCommand {
     @Option(help: "Seconds to confirm a new, freshly authorized connection after restart.")
     var startupTimeout: Int = 180
 
-    @Flag(help: "On a Mac in a two-Mac cluster: restart single-Mac serving anyway, beside the cluster.")
+    @Flag(help: "On a Mac in a two-Mac cluster: restart single-Mac serving on this Mac only; the pair keeps running.")
     var solo = false
 
     mutating func validate() throws {
@@ -31,21 +31,37 @@ struct Restart: AsyncParsableCommand {
 
     @OptionGroup var configOptions: ConfigOptions
 
-    /// `darkbloom restart` on a Mac in a two-Mac cluster: nothing to restart without single-Mac serving; beside a
-    /// running cluster service only with `--solo`, as `darkbloom start`. Nil: restart as on any Mac.
-    static func pairRefusal(_ pair: ClusterPairSummary, singleMacInstalled: Bool, solo: Bool) -> [String]? {
-        guard pair.paired else { return nil }
-        guard singleMacInstalled else { return pair.restartRefusal }
-        return pair.singleMacServingNeedsSolo && !solo ? pair.startRefusal : nil
+    /// What `darkbloom restart` does on a Mac in a two-Mac cluster.
+    enum PairRestart: Equatable {
+        /// Restart the pair on both Macs (`ClusterPairCommands.restart`).
+        case restartPair
+        /// Nothing restarts, and why: the pairing record can't be read, or `--solo` without single-Mac serving.
+        case refuse([String])
+        /// Single-Mac serving as on any Mac (`--solo`, or not in a cluster).
+        case restartSingleMac
+    }
+
+    static func pairRestart(_ pair: ClusterPairSummary, singleMacInstalled: Bool, solo: Bool) -> PairRestart {
+        guard pair.paired else { return .restartSingleMac }
+        guard solo else { return .refuse(pair.pairingUnreadable ? pair.unsureRefusal("restart", "restarted") : pair.restartRefusal) }
+        return singleMacInstalled ? .restartSingleMac : .refuse(pair.restartRefusal)
     }
 
     mutating func run() async throws {
         let pair = ClusterPairSummary.local()
         let wasLoaded = LaunchAgent.isLoaded()
         let installed = LaunchAgent.isInstalled() || wasLoaded
-        if let refusal = Self.pairRefusal(pair, singleMacInstalled: installed, solo: solo) {
-            for line in refusal { print(line) }
+        switch Self.pairRestart(pair, singleMacInstalled: installed, solo: solo) {
+        case .restartPair:
+            let code = await ClusterPairCommands.restart(pair, actions: ClusterPairActions.live(config: configOptions.config),
+                                                         config: configOptions.config)
+            if code != 0 { throw ExitCode(code) }
+            return
+        case .refuse(let lines):
+            for line in lines { print(line) }
             throw ExitCode.failure
+        case .restartSingleMac:
+            break
         }
         guard installed else {
             throw ValidationError("No launchd configuration is installed. Use \(BuildEnvironment.current.cliName) start to select the replacement configuration; the foreground provider was left running.")

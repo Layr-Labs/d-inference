@@ -10,10 +10,11 @@ struct Cluster: AsyncParsableCommand {
     static let commandList = """
         Other commands:
           darkbloom cluster status   Is the cluster serving now? If not, why and what to do (--json for scripts).
-          darkbloom cluster stop     Stop the cluster on both Macs (`darkbloom cluster` starts it again).
+          darkbloom cluster stop     Stop the cluster on both Macs, the same as `darkbloom stop`.
           darkbloom cluster local    Serve on the leading Mac's own API only, without Darkbloom.
           darkbloom cluster link     Check the Thunderbolt cable and this Mac's port setup.
           darkbloom cluster doctor   Check this Mac's cluster files, keys and cable.
+        On a Mac in a cluster, `darkbloom start`, `stop`, `restart` and `status` control the pair (--solo: this Mac alone).
         Details: `darkbloom help cluster <command>`.
         """
 

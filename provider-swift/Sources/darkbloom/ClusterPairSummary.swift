@@ -124,60 +124,87 @@ struct ClusterPairSummary: Sendable, Equatable {
         return "This Mac is in a two-Mac cluster with \(otherMac): \(part); stopped (last model \(model))."
     }
 
-    /// How to stop the cluster, or that it is stopped.
-    var stopClusterLine: String {
-        if pairingUnreadable { return "Run `darkbloom cluster` on this Mac to check it; `darkbloom cluster stop` stops a cluster on both Macs." }
-        return started ? "To stop the cluster: `darkbloom cluster stop` (both Macs stop), or Stop in `darkbloom cluster` on \(leadingMac)."
-            : "The cluster is stopped; `darkbloom cluster` on \(leadingMac) starts it again."
+    // MARK: - darkbloom stop, start and restart control the pair
+
+    /// The line `darkbloom stop`, `start` and `restart` say first on a Mac in a cluster: they act on the pair.
+    /// "This Mac is in a two-Mac cluster with the other Mac (Apple M5 Max, 128 GB): stopping both Macs."
+    func actingLine(_ action: String) -> String { "This Mac is in a two-Mac cluster with \(otherMac): \(action)." }
+
+    static let stoppedLine =
+        "Stopped on both Macs. They stay stopped after a restart; `darkbloom start` on either Mac starts the pair again."
+    static let alreadyStoppedLine = "The pair is already stopped; `darkbloom start` on either Mac starts it again."
+    static let unreachableLine = "This Mac's cluster can't be reached from this command; run `darkbloom cluster` on this Mac to see it."
+    static let noModelLine = "No model was chosen for the pair yet: run `darkbloom start` in a terminal to choose one."
+
+    /// After a stop, what each Mac has left running (`cluster verify-teardown`'s lines): one line when nothing is.
+    static func memoryLines(_ lines: [String]) -> [String] {
+        if lines.count >= 2, lines.allSatisfy({ $0.hasSuffix(": nothing left running") }) { return ["Memory freed on both Macs \u{2713}"] }
+        return ["Memory:"] + lines.map { "  " + $0 }
     }
 
-    /// `darkbloom stop` where no single-Mac serving runs: nothing is drained or disabled (the end user's session 2:
-    /// "Provider service is not running" while his pair kept serving). Exit 1 while the cluster is started, or may be.
-    var stopRefusal: (lines: [String], exitCode: Int32) {
-        ([pairSentence, "`darkbloom stop` stops single-Mac serving, and none runs on this Mac: nothing was stopped.", stopClusterLine],
-         started || pairingUnreadable ? 1 : 0)
+    /// `darkbloom stop` or `restart` without `--solo` while this Mac's pairing record can't be read: it can't tell which
+    /// pair to act on, so nothing changes, and `--solo` acts on single-Mac serving alone.
+    func unsureRefusal(_ command: String, _ done: String) -> [String] {
+        [pairSentence, "`darkbloom \(command)` can't tell which pair to \(command), so nothing was \(done).",
+         "To \(command) single-Mac serving on this Mac only: `darkbloom \(command) --solo`. " + Self.checkPairingLine]
     }
 
-    /// After `darkbloom stop` stopped single-Mac serving on a Mac that is also in a cluster.
-    var stopAddendum: [String] {
-        [pairSentence, started ? "The cluster was not stopped. " + stopClusterLine : stopClusterLine]
-    }
-
-    /// `darkbloom start` (and `restart`) while this Mac's cluster service runs: refused unless `--solo` asks for
-    /// single-Mac serving beside it by name.
+    /// `darkbloom start` without `--solo` while this Mac's pairing record can't be read: refused, since single-Mac
+    /// serving would compete with a cluster this Mac may be in.
     var startRefusal: [String] {
-        if pairingUnreadable {
-            return [pairSentence,
-                    "Single-Mac serving next to a cluster would compete for this Mac's memory. To serve on this Mac alone, run "
-                        + "`darkbloom cluster` on this Mac to check the pairing first, or pass --solo."]
-        }
-        return [pairSentence,
-                "Single-Mac serving next to it would compete for this Mac's memory. To serve on this Mac alone, stop the cluster "
-                    + "first (`darkbloom cluster stop`), or pass --solo."]
+        [pairSentence,
+         "Single-Mac serving next to a cluster would compete for this Mac's memory. To serve on this Mac alone, run "
+            + "`darkbloom cluster` on this Mac to check the pairing first, or pass --solo."]
     }
 
-    /// `darkbloom start --solo`, or a start while the cluster service is off: one line, and the start goes on.
+    /// `darkbloom start --solo` on a Mac in a cluster: one line, and single-Mac serving starts.
     var startNote: String {
         if pairingUnreadable {
             return "Starting single-Mac serving (--solo) although this Mac's pairing record couldn't be read: if it is in a "
                 + "two-Mac cluster, both use this Mac's memory."
         }
-        return serviceRunning
+        return started
             ? "Starting single-Mac serving beside the two-Mac cluster with \(otherMac) (--solo): both use this Mac's memory."
-            : "This Mac is in a two-Mac cluster with \(otherMac), which is stopped. Stop single-Mac serving (`darkbloom stop`) "
-                + "before you start the cluster again."
+            : "This Mac is in a two-Mac cluster with \(otherMac), which is stopped. Stop single-Mac serving (`darkbloom stop "
+                + "--solo`) before you start the pair again (`darkbloom start`)."
     }
 
-    /// `darkbloom restart` where no single-Mac serving is installed.
+    /// `darkbloom stop --solo` where no single-Mac serving runs on a Mac in a cluster.
+    var soloStopNothing: [String] {
+        ["`darkbloom stop --solo` stops single-Mac serving, and none runs on this Mac: nothing was stopped.", soloLeftPair("stop")]
+    }
+
+    /// After `darkbloom stop --solo` stopped single-Mac serving on a Mac in a cluster.
+    var stopAddendum: [String] { [pairSentence, soloLeftPair("stop")] }
+
+    /// `darkbloom restart --solo` where no single-Mac serving is installed.
     var restartRefusal: [String] {
-        [pairSentence, "`darkbloom restart` restarts single-Mac serving, and this Mac has none: nothing was restarted.",
-         pairingUnreadable ? Self.checkPairingLine
-            : "To restart the cluster: Stop, then start the model again in `darkbloom cluster` on \(leadingMac)."]
+        [pairSentence, "`darkbloom restart --solo` restarts single-Mac serving, and this Mac has none: nothing was restarted.",
+         soloLeftPair("restart")]
     }
 
     /// After `darkbloom restart --solo` restarted single-Mac serving on a Mac in a cluster.
     var restartAddendum: String {
-        pairSentence + (pairingUnreadable ? " No cluster was restarted." : " The cluster was not restarted.")
+        pairSentence + (pairingUnreadable ? " No cluster was restarted." : " " + soloLeftPair("restart"))
+    }
+
+    /// `--solo` left the pair alone: "The pair was not stopped; `darkbloom stop` stops both Macs."
+    private func soloLeftPair(_ command: String) -> String {
+        if pairingUnreadable { return Self.checkPairingLine }
+        return "The pair was not \(command == "stop" ? "stopped" : "restarted"); `darkbloom \(command)` \(command)s both Macs."
+    }
+
+    /// The end of `darkbloom start` and `restart` on a Mac in a cluster, shaped like single-Mac start's block.
+    var resultLines: [String] {
+        var out = stateLines
+        if out.isEmpty { out = ["\u{2026} Not serving yet."] }
+        out.append("  Model:   " + modelWords)
+        out.append("  Macs:    " + rolesWords)
+        out.append("  Serves:  " + servesWords)
+        if state != .serving, let next { out.append("  Next:    " + next) }
+        out += ["", "  darkbloom stop     Stop both Macs", "  darkbloom restart  Restart with the current model",
+                "  darkbloom status   Check status"]
+        return out
     }
 
     // MARK: - darkbloom status and doctor (no network)
@@ -310,24 +337,27 @@ extension ClusterPairSummary {
     var clusterStatusLines: [String] {
         if pairingUnreadable { return [pairSentence, "Next: " + Self.checkPairingLine] }
         guard paired else { return ["This Mac isn't in a cluster.", "Next: " + (next ?? "")] }
-        let this = thisMacName.map { "this Mac (\($0))" } ?? ClusterOnboardingMacName.this
-        let roles: String
-        switch role {
-        case .leader: roles = "\(this) leads · \(otherMac) follows"
-        case .member: roles = "\(this) follows · \(otherMac) leads"
-        case nil: roles = "\(this) is paired with \(otherMac)"
-        }
-        var out = ["Cluster: " + roles]
-        if let model {
-            let split = modeAndSplit.map { " · " + $0.mode + ($0.split.map { " · " + $0 } ?? "") } ?? ""
-            out.append("Model: " + model + split)
-        } else {
-            out.append("Model: none chosen yet")
-        }
+        var out = ["Cluster: " + rolesWords, "Model: " + modelWords]
         out.append("Serves: " + servesWords + (localOnly ? " (API key: `darkbloom local` on the Mac that serves it)" : ""))
         out.append(contentsOf: stateLines)
         if let next { out.append("Next: " + next) }
         return out
+    }
+
+    /// "this Mac (Mac Studio) leads · the other Mac (Apple M5 Max, 128 GB) follows"
+    private var rolesWords: String {
+        let this = thisMacName.map { "this Mac (\($0))" } ?? ClusterOnboardingMacName.this
+        switch role {
+        case .leader: return "\(this) leads · \(otherMac) follows"
+        case .member: return "\(this) follows · \(otherMac) leads"
+        case nil: return "\(this) is paired with \(otherMac)"
+        }
+    }
+
+    /// "Qwen 3.8 27B · tensor parallel · M3 Ultra 50% / M5 Max 50%"
+    private var modelWords: String {
+        guard let model else { return "none chosen yet" }
+        return model + (modeAndSplit.map { " · " + $0.mode + ($0.split.map { " · " + $0 } ?? "") } ?? "")
     }
 
     /// The state as the outcome block marks it (✓ serving, ✗ not serving, ■ stopped), then the remaining status lines.

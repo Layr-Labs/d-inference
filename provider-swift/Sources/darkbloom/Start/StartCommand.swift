@@ -71,7 +71,7 @@ struct Start: AsyncParsableCommand {
     @Flag(help: .hidden)
     var supervise = false
 
-    @Flag(help: "On a Mac in a two-Mac cluster: start single-Mac serving anyway, beside the cluster (both use this Mac's memory). Without it, start refuses while the cluster service runs.")
+    @Flag(help: "On a Mac in a two-Mac cluster: start single-Mac serving on this Mac instead of the pair (both use this Mac's memory while the pair serves).")
     var solo = false
 
     /// Both cluster modes are control-only: they take the saved cluster's
@@ -124,23 +124,50 @@ struct Start: AsyncParsableCommand {
         print()
     }
 
-    /// Single-Mac serving on a Mac in a two-Mac cluster: refused while the cluster service runs unless `--solo` asks
-    /// for it by name; said in one line otherwise. Nil: not in a cluster. `run` never asks the cluster's own starts
-    /// (`--cluster-member`, `--distributed`, the cluster service's solo part) or launchd's (`--foreground`).
-    static func pairGuard(_ pair: ClusterPairSummary, solo: Bool) -> (refuse: Bool, lines: [String])? {
-        guard pair.paired else { return nil }
-        if pair.singleMacServingNeedsSolo, !solo { return (true, pair.startRefusal) }
-        return (false, [pair.startNote])
+    /// What `darkbloom start` does on a Mac in a two-Mac cluster: it starts the pair, as `darkbloom cluster` does (the
+    /// same screen in a terminal; the saved model for a script), unless `--solo` asks for single-Mac serving. `run`
+    /// never asks the cluster's own starts (`--cluster-member`, `--distributed`, the cluster service's solo part) or
+    /// launchd's (`--foreground`).
+    enum PairStart: Equatable {
+        /// Single-Mac serving as on any Mac, after the one line (nil: not in a cluster).
+        case single(note: String?)
+        /// This Mac's pairing record can't be read: refused without `--solo`, and why.
+        case refuse([String])
+        /// A terminal: the screen `darkbloom cluster` shows on this Mac.
+        case openScreen
+        /// No terminal: the pair starts with its saved model.
+        case startPair
+    }
+
+    static func pairStart(_ pair: ClusterPairSummary, solo: Bool, terminal: Bool) -> PairStart {
+        guard pair.paired else { return .single(note: nil) }
+        if solo { return .single(note: pair.startNote) }
+        if pair.pairingUnreadable { return .refuse(pair.startRefusal) }
+        return pair.serviceRunning ? .refuse([pair.pairSentence, "Single-Mac serving next to it would compete for this Mac's memory. To serve on this Mac alone, stop the cluster first (`darkbloom cluster stop`), or pass --solo."]) : .single(note: pair.startNote)
     }
 
     var startsSingleMacServing: Bool { !foreground && !clusterMember && !distributed }
 
     mutating func run() async throws {
         Darkbloom.ensureLogging()
-        if startsSingleMacServing, !ClusterPairSummary.startedByClusterService(),
-           let pairGuard = Self.pairGuard(ClusterPairSummary.local(), solo: solo) {
-            for line in pairGuard.lines { print(line) }
-            if pairGuard.refuse { throw ExitCode.failure }
+        if startsSingleMacServing, !ClusterPairSummary.startedByClusterService() {
+            let pair = ClusterPairSummary.local()
+            switch Self.pairStart(pair, solo: solo, terminal: ClusterPairCommands.isTerminal()) {
+            case .single(let note):
+                if let note { print(note) }
+            case .refuse(let lines):
+                for line in lines { print(line) }
+                throw ExitCode.failure
+            case .openScreen:
+                print(pair.actingLine("starting the pair"))
+                try await ClusterPairCommands.openScreen(config: configOptions.config)
+                return
+            case .startPair:
+                let code = await ClusterPairCommands.start(pair, actions: ClusterPairActions.live(config: configOptions.config),
+                                                           config: configOptions.config)
+                if code != 0 { throw ExitCode(code) }
+                return
+            }
         }
         if !foreground {
             printTermsNotice()

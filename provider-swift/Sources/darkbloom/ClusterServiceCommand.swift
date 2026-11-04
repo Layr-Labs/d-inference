@@ -126,22 +126,25 @@ extension Cluster {
         }
     }
 
-    /// `darkbloom cluster stop`: stops this Mac's cluster service and keeps it
-    /// stopped across restarts of this Mac (its login agent is removed). The
-    /// leader stops the cluster's serving first (the members stop their parts);
-    /// a member of a started cluster asks the leader to (`pairStop`).
-    /// `darkbloom cluster` starts it again.
+    /// `darkbloom cluster stop`: the same as `darkbloom stop` on a Mac in a cluster. The pair stops on both Macs and
+    /// stays stopped; both cluster services stay up, idle. `--service` also stops this Mac's cluster service and keeps
+    /// it stopped across restarts (its login agent is removed): the leader stops the cluster's serving first (the
+    /// members stop their parts), and a member of a started cluster asks the leader to (`pairStop`). `--local-only`
+    /// stops only this Mac's service, without asking the other Mac. `darkbloom cluster` starts it again.
     struct Stop: AsyncParsableCommand {
         static let configuration = CommandConfiguration(commandName: "stop",
-            abstract: "Stop the cluster on both Macs, and this Mac's cluster service with it (`darkbloom cluster` starts it again).",
-            discussion: "On either Mac: the leading Mac stops both Macs' parts, as Stop in `darkbloom cluster` does. This Mac's "
-                + "cluster service then stops and no longer starts at login.")
+            abstract: "Stop the cluster on both Macs, the same as `darkbloom stop` (`darkbloom start` starts it again).",
+            discussion: "On either Mac: the leading Mac stops both Macs' parts, as Stop in `darkbloom cluster` does. Both Macs "
+                + "stay stopped after a restart, and their cluster services stay up, idle, so `darkbloom start` on either Mac "
+                + "starts the pair again. --service also stops this Mac's cluster service and keeps it from starting at login.")
         @OptionGroup var configOptions: ConfigOptions
         @Option(help: "Absolute path of this Mac's cluster worker, when it is not installed beside darkbloom.")
         var worker: String?
         @Flag(name: .customLong("local-only"),
-              help: "Stop only this Mac, without asking the other Mac (when it is gone for good). Run `darkbloom cluster stop` there too if it comes back.")
+              help: "Stop only this Mac's cluster service, without asking the other Mac (when it is gone for good). Run `darkbloom cluster stop` there too if it comes back.")
         var localOnly = false
+        @Flag(help: "Also stop this Mac's cluster service and keep it from starting at login (`darkbloom cluster` starts it again).")
+        var service = false
 
         func validate() throws {
             for path in [configOptions.config, worker].compactMap({ $0 }) where !path.hasPrefix("/") {
@@ -149,8 +152,30 @@ extension Cluster {
             }
         }
 
+        /// What `cluster stop` does: the pair stop `darkbloom stop` does, or the stop that also turns this Mac's cluster
+        /// service off (`--service`, `--local-only`, or a Mac in no cluster, whose leftover service it removes).
+        enum Mode: Equatable { case pair, refuse, serviceOff }
+
+        static func mode(_ pair: ClusterPairSummary, localOnly: Bool, service: Bool) -> Mode {
+            return .serviceOff
+        }
+
         mutating func run() async throws {
             Darkbloom.ensureLogging()
+            let pair = ClusterPairSummary.local()
+            switch Self.mode(pair, localOnly: localOnly, service: service) {
+            case .pair:
+                let actions = ClusterPairActions.live(config: configOptions.config, worker: worker)
+                let code = await Task.detached { ClusterPairCommands.stop(pair, actions: actions) }.value
+                if code != 0 { throw ExitCode(code) }
+                return
+            case .refuse:
+                for line in pair.unsureRefusal("stop", "stopped") { print(line) }
+                print("To stop this Mac's cluster service anyway: `darkbloom cluster stop --service`.")
+                throw ExitCode.failure
+            case .serviceOff:
+                break
+            }
             let config = configOptions.config, worker = worker, localOnly = localOnly
             let executable = URL(fileURLWithPath: Start.currentExecutablePath())
             let lines: [String] = try await Task.detached {

@@ -74,7 +74,7 @@ struct Status: AsyncParsableCommand {
             print(supervisor.summary(now: Date().timeIntervalSince1970))
         }
         for line in Self.clusterServiceLines() { print(line) }
-        let pair = ClusterPairSummary.local(config: configOptions.config)
+        let pair = ClusterPairSummary.local()
         if pair.paired { print(pair.statusLine) }
         printDaemonStatus(config: config, models: snapshot.models, hardware: snapshot.hardware, pair: pair)
 

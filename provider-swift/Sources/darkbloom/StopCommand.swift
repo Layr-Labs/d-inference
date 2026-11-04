@@ -14,7 +14,7 @@ struct Stop: AsyncParsableCommand {
     @Flag(help: "Also remove the provider, watchdog and desktop API launchd agents (full uninstall).")
     var uninstall = false
 
-    /// What `darkbloom stop` does on a Mac in a two-Mac cluster (UX audit P4a).
+    /// What `darkbloom stop` does on a Mac in a two-Mac cluster.
     enum PairedStop: Equatable {
         /// No single-Mac serving runs: say so and where the cluster is stopped; nothing is drained or disabled.
         case refuse(lines: [String], exitCode: Int32)

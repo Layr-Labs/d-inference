@@ -1379,8 +1379,9 @@ This Mac serves in a two-Mac cluster with the other Mac (Apple M5 Max, 128 GB): 
 To stop the cluster: `darkbloom cluster stop` (both Macs stop), or Stop in `darkbloom cluster` on this Mac.
 ```
 
-With single-Mac serving it stops that as on any Mac, then adds the pair's line
-and `The cluster was not stopped.` (`Stop.pairedStop`).
+With single-Mac serving (or `--uninstall`) it stops that as on any Mac, then
+adds the pair's line and the cluster's state: while the cluster is started,
+`The cluster was not stopped.` and how to stop it (`Stop.pairedStop`).
 
 Code: `provider-swift/Sources/darkbloom/ServiceDrain.swift` (`DrainOptions`,
 `ServiceDrain.prepare`) and `provider-swift/Sources/darkbloom/StopCommand.swift`
@@ -1440,12 +1441,12 @@ On a Mac in a two-Mac cluster, a `Cluster:` line follows the `Cluster service:`
 lines, from what this Mac knows without asking the other Mac
 (`ClusterPairSummary.statusLine`), for example
 `Cluster: this Mac leads · the other Mac (Apple M5 Max, 128 GB) · Qwen 3.8 27B through Darkbloom · serving (details: \`darkbloom cluster status\`)`.
-Without provider state it prints `Single-Mac serving: off (this Mac serves in its two-Mac cluster: \`darkbloom cluster status\`)`
+Without provider state, or with a stale state file, it prints `Single-Mac serving: off (this Mac serves in its two-Mac cluster: \`darkbloom cluster status\`)`
 instead of `Daemon: not running (run \`darkbloom start\`)`, and when the running
 provider is the cluster's part it says so under the `Daemon:` line.
 `darkbloom doctor` prints the same `Cluster:` line under its `Daemon:` line,
 which reads `Daemon: single-Mac serving off (this Mac serves in its two-Mac cluster)`
-there (`Doctor.daemonLine`).
+when no provider runs (`Doctor.daemonLine`).
 
 Output includes:
 

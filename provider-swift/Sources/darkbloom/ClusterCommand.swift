@@ -6,7 +6,7 @@ struct Cluster: AsyncParsableCommand {
     static let abstract = "Set up two Macs to serve one model together. Run it on each Mac and follow the screen."
 
     /// The other cluster commands in plain words: `darkbloom cluster --help` shows the setup's help (it is the default
-    /// subcommand), so its discussion ends with this list (UX audit P11).
+    /// subcommand), so its discussion ends with this list.
     static let commandList = """
         Other commands:
           darkbloom cluster status   Is the cluster serving now? If not, why and what to do (--json for scripts).

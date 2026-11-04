@@ -61,8 +61,8 @@ extension Cluster {
             }
         }
 
-        /// `--remove` on a paired Mac (UX audit P12a): what it undoes first, then one question; without a terminal (or
-        /// with --json) only with --yes. A dry run changes nothing, so it is never asked.
+        /// `--remove` on a paired Mac: what it undoes first, then one question; without a terminal (or with --json)
+        /// only with --yes. A dry run changes nothing, so it is never asked.
         enum RemovalGate: Equatable {
             case proceed
             case ask([String])

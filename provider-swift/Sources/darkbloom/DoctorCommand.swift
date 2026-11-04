@@ -63,7 +63,7 @@ struct Doctor: AsyncParsableCommand {
         print("Model CDN: \(ModelDownloader.resolveCDNURL())")
         let daemonState = DaemonStateFile.read()
         let daemonRunning = doctorDaemonProcessMatches(daemonState: daemonState)
-        let pair = ClusterPairSummary.local(config: configOptions.config)
+        let pair = ClusterPairSummary.local()
         print(Self.daemonLine(running: daemonRunning, paired: pair.paired))
         if pair.paired { print(pair.statusLine) }
 

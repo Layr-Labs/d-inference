@@ -2,10 +2,10 @@ import Foundation
 import ProviderCore
 
 /// What a Mac's everyday commands know and say about the two-Mac cluster it is in: `darkbloom stop`, `start`,
-/// `restart`, `status` and `doctor`, and `darkbloom cluster status`, `cluster link --remove` and `cluster stop` (UX audit
-/// 2026-11-04, P4, P5, P11, P12). The words are the onboarding screens' own: the Macs as `ClusterOnboardingMacName`
-/// names them, the reasons as `ClusterOnboardingNotServing` says them and, for `cluster status`, the status lines
-/// `darkbloom cluster` shows. Built by `ClusterPairSummary.local` / `.live` (`ClusterPairSummary+Live.swift`).
+/// `restart`, `status` and `doctor`, and `darkbloom cluster status`, `cluster link --remove` and `cluster stop`. The
+/// words are the onboarding screens' own: the Macs as `ClusterOnboardingMacName` names them, the reasons as
+/// `ClusterOnboardingNotServing` says them and, for `cluster status`, the status lines `darkbloom cluster` shows.
+/// Built by `ClusterPairSummary.local` / `.live` (`ClusterPairSummary+Live.swift`).
 struct ClusterPairSummary: Sendable, Equatable {
     enum Role: String, Sendable, Codable { case leader, member }
 
@@ -159,6 +159,10 @@ extension ClusterPairSummary {
         }
     }
 
+    /// The leading Mac's control modes while the other Mac isn't answering: waiting for it, serving alone, or unable
+    /// to serve alone (`ClusterServiceStatus.control.mode`).
+    static let otherMacAwayModes: Set<String> = ["waiting", "alone", "cannotServe"]
+
     /// The state the status lines of `darkbloom cluster` say, read as the other Mac's window reads them
     /// (`ClusterOnboardingDriver.showOutcome`): "Serving …" serves, "<model> is not serving yet: <reason>." does not.
     /// `leaderMode`: this Mac's own control mode when it leads (the lines are its own then).
@@ -166,7 +170,6 @@ extension ClusterPairSummary {
         guard let first = lines.first.map({ $0.trimmingCharacters(in: .whitespaces) }), !first.isEmpty else {
             return (started ? .unknown : .stopped, nil)
         }
-        let plain = first.hasSuffix(".") ? String(first.dropLast()) : first
         if first.hasPrefix("Serving ") { return (.serving, nil) }
         if let reason = ClusterOnboardingNotServing.reason(inStatusLine: first) {
             return (reason == "the coordinator paired both Macs" ? .loading : .notServing, reason)
@@ -175,7 +178,9 @@ extension ClusterPairSummary {
         if first.hasPrefix("Loading ") || first.hasPrefix("Starting ") || first == ClusterOnboardingUpdate.statusLine {
             return (.loading, nil)
         }
-        if let leaderMode, ["waiting", "alone", "cannotServe"].contains(leaderMode) { return (.otherMacAway, plain) }
+        if let leaderMode, otherMacAwayModes.contains(leaderMode) {
+            return (.otherMacAway, first.hasSuffix(".") ? String(first.dropLast()) : first)
+        }
         if first.contains("did not answer over the cable") || first.contains("doesn't answer over the cable") {
             return (.otherMacAway, nil)
         }
@@ -232,7 +237,7 @@ extension ClusterPairSummary {
         } else {
             out.append("Model: none chosen yet")
         }
-        out.append("Serves: " + (localOnly ? "locally only (API key: `darkbloom local` on the Mac that serves it)" : "through Darkbloom"))
+        out.append("Serves: " + servesWords + (localOnly ? " (API key: `darkbloom local` on the Mac that serves it)" : ""))
         out.append(contentsOf: stateLines)
         if let next { out.append("Next: " + next) }
         return out
@@ -259,6 +264,8 @@ extension ClusterPairSummary {
 
 extension ClusterPairSummary {
     /// `darkbloom cluster status --json`. Stable: fields are only ever added; documented in docs/provider/cli-reference.md.
+    /// Every key, nested ones too, is written (null when unknown), so a reader never has to tell a missing key from an
+    /// unknown value: hence the hand-written `encode(to:)`s, as the synthesized ones leave nil keys out.
     struct JSON: Encodable, Equatable {
         struct OtherMac: Encodable, Equatable {
             var name: String?
@@ -285,7 +292,7 @@ extension ClusterPairSummary {
             var startsAtLogin: Bool
             enum CodingKeys: String, CodingKey { case running, startsAtLogin = "starts_at_login" }
         }
-        var schema = 1
+        let schema = 1
         var paired: Bool
         var role: String?
         var thisMac: String?
@@ -306,7 +313,6 @@ extension ClusterPairSummary {
                  next, lines, service, exitCode = "exit_code"
         }
 
-        /// Every key is written, null when unknown, so a reader never has to tell a missing key from an unknown value.
         func encode(to encoder: Encoder) throws {
             var container = encoder.container(keyedBy: CodingKeys.self)
             try container.encode(schema, forKey: .schema)
@@ -328,11 +334,21 @@ extension ClusterPairSummary {
     }
 
     var json: JSON {
-        JSON(paired: paired, role: role?.rawValue, thisMac: thisMacName,
-             otherMac: paired ? .init(name: otherMacName, answers: otherMacAnswers) : nil,
-             model: modelID.map { .init(id: $0, name: modelName) }, mode: modeAndSplit?.mode, split: modeAndSplit?.split,
-             serves: paired ? (localOnly ? "local" : "darkbloom") : nil, state: state.rawValue, reason: reason, next: next,
-             lines: lines, service: .init(running: serviceRunning, startsAtLogin: startsAtLogin), exitCode: exitCode)
+        let modeAndSplit = self.modeAndSplit
+        return JSON(paired: paired,
+                    role: role?.rawValue,
+                    thisMac: thisMacName,
+                    otherMac: paired ? .init(name: otherMacName, answers: otherMacAnswers) : nil,
+                    model: modelID.map { .init(id: $0, name: modelName) },
+                    mode: modeAndSplit?.mode,
+                    split: modeAndSplit?.split,
+                    serves: paired ? (localOnly ? "local" : "darkbloom") : nil,
+                    state: state.rawValue,
+                    reason: reason,
+                    next: next,
+                    lines: lines,
+                    service: .init(running: serviceRunning, startsAtLogin: startsAtLogin),
+                    exitCode: exitCode)
     }
 }
 

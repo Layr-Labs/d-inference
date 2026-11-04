@@ -31,8 +31,8 @@ struct Restart: AsyncParsableCommand {
 
     @OptionGroup var configOptions: ConfigOptions
 
-    /// `darkbloom restart` on a Mac in a two-Mac cluster (UX audit P4c): nothing to restart without single-Mac serving;
-    /// beside a running cluster service only with `--solo`, as `darkbloom start`. Nil: restart as on any Mac.
+    /// `darkbloom restart` on a Mac in a two-Mac cluster: nothing to restart without single-Mac serving; beside a
+    /// running cluster service only with `--solo`, as `darkbloom start`. Nil: restart as on any Mac.
     static func pairRefusal(_ pair: ClusterPairSummary, singleMacInstalled: Bool, solo: Bool) -> [String]? {
         guard pair.paired else { return nil }
         guard singleMacInstalled else { return pair.restartRefusal }
@@ -40,13 +40,14 @@ struct Restart: AsyncParsableCommand {
     }
 
     mutating func run() async throws {
-        let pair = ClusterPairSummary.local(config: configOptions.config)
+        let pair = ClusterPairSummary.local()
         let wasLoaded = LaunchAgent.isLoaded()
-        if let refusal = Self.pairRefusal(pair, singleMacInstalled: LaunchAgent.isInstalled() || wasLoaded, solo: solo) {
+        let installed = LaunchAgent.isInstalled() || wasLoaded
+        if let refusal = Self.pairRefusal(pair, singleMacInstalled: installed, solo: solo) {
             for line in refusal { print(line) }
             throw ExitCode.failure
         }
-        guard LaunchAgent.isInstalled() || wasLoaded else {
+        guard installed else {
             throw ValidationError("No launchd configuration is installed. Use \(BuildEnvironment.current.cliName) start to select the replacement configuration; the foreground provider was left running.")
         }
         let soloState = ServiceDrain.soloProviderState()

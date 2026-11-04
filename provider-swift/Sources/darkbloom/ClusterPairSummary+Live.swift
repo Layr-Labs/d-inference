@@ -7,7 +7,7 @@ extension ClusterPairSummary {
 
     /// What this Mac knows by itself, without asking the other Mac: the pairing, the leader's saved choice (model,
     /// split, how it serves, started or stopped), this Mac's cluster service and its own view of its part.
-    static func local(config: String? = nil) -> ClusterPairSummary {
+    static func local() -> ClusterPairSummary {
         if let reader = readerForTesting { return reader(false) }
         return localFacts()
     }
@@ -19,8 +19,8 @@ extension ClusterPairSummary {
         return await Task.detached { liveFacts(config: config) }.value
     }
 
-    /// A Mac is in a cluster when it holds a pairing, or its cluster service runs or is set to start at login (UX audit
-    /// P4: `ClusterService.holdsNoPairing`, `ClusterServiceAgent.status`).
+    /// A Mac is in a cluster when it holds a pairing, or its cluster service runs or is set to start at login
+    /// (`ClusterServiceAgent.status`).
     private static func localFacts() -> ClusterPairSummary {
         let agents = ClusterServiceAgent.status()
         let running = ClusterService.running()
@@ -74,7 +74,7 @@ extension ClusterPairSummary {
     /// other Mac away, or what this Mac's part says (a coordinator-paired part's pair line, the leader's local session).
     static func ownState(started: Bool, own: ClusterServiceStatus?) -> (State, String?) {
         guard started else { return (.stopped, nil) }
-        if let control = own?.control, ["waiting", "alone", "cannotServe"].contains(control.mode) { return (.otherMacAway, control.line) }
+        if let control = own?.control, otherMacAwayModes.contains(control.mode) { return (.otherMacAway, control.line) }
         if let text = own?.child.pair, let pair = ClusterOnboardingPairReport.state(text) {
             switch pair {
             case .serving: return (.serving, nil)

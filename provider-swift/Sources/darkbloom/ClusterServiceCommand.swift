@@ -127,8 +127,9 @@ extension Cluster {
     }
 
     /// `darkbloom cluster stop`: stops this Mac's cluster service and keeps it
-    /// stopped across restarts of this Mac (its login agent is removed). On the
-    /// leader the cluster stops serving first (the members stop their parts).
+    /// stopped across restarts of this Mac (its login agent is removed). The
+    /// leader stops the cluster's serving first (the members stop their parts);
+    /// a member of a started cluster asks the leader to (`pairStop`).
     /// `darkbloom cluster` starts it again.
     struct Stop: AsyncParsableCommand {
         static let configuration = CommandConfiguration(commandName: "stop",
@@ -164,12 +165,10 @@ extension Cluster {
                     let resume = operations.resume()
                     switch Self.pairStop(role: resume.role, serving: resume.serving) {
                     case .stopHere: break
-                    // A previous bounded failure already saved serving=false;
-                    // retry must still finish its drain/peer acknowledgement.
                     case .leaderStopsBoth: stopped = operations.stop()
                     case .askLeader:
                         // The menu's Stop, sent to the leading Mac: both Macs stop, instead of the leader waiting
-                        // for this one and then serving alone or nothing (UX audit P12b).
+                        // for this one and then serving alone or nothing.
                         print(ClusterPairSummary.memberStopNote(
                             leader: ClusterOnboardingMacName.other(named: resume.leaderName ?? resume.peerName)))
                         fflush(stdout)
@@ -196,6 +195,8 @@ extension Cluster {
 
         static func pairStop(role: ClusterOnboardingRole?, serving: Bool) -> PairStop {
             switch role {
+            // Even when not serving: a previous bounded failure already saved serving=false;
+            // retry must still finish its drain/peer acknowledgement.
             case .leader: return .leaderStopsBoth
             case .member: return serving ? .askLeader : .stopHere
             case nil: return .stopHere

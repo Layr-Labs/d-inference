@@ -124,9 +124,9 @@ struct Start: AsyncParsableCommand {
         print()
     }
 
-    /// Single-Mac serving on a Mac in a two-Mac cluster (UX audit P4b): refused while the cluster service runs unless
-    /// `--solo` asks for it by name; said in one line otherwise. Nil: not in a cluster, or a start that is the cluster's
-    /// own (`--cluster-member`, `--distributed`, the cluster service's solo part) or launchd's (`--foreground`).
+    /// Single-Mac serving on a Mac in a two-Mac cluster: refused while the cluster service runs unless `--solo` asks
+    /// for it by name; said in one line otherwise. Nil: not in a cluster. `run` never asks the cluster's own starts
+    /// (`--cluster-member`, `--distributed`, the cluster service's solo part) or launchd's (`--foreground`).
     static func pairGuard(_ pair: ClusterPairSummary, solo: Bool) -> (refuse: Bool, lines: [String])? {
         guard pair.paired else { return nil }
         if pair.serviceRunning, !solo { return (true, pair.startRefusal) }
@@ -138,7 +138,7 @@ struct Start: AsyncParsableCommand {
     mutating func run() async throws {
         Darkbloom.ensureLogging()
         if startsSingleMacServing, !ClusterPairSummary.startedByClusterService(),
-           let pairGuard = Self.pairGuard(ClusterPairSummary.local(config: configOptions.config), solo: solo) {
+           let pairGuard = Self.pairGuard(ClusterPairSummary.local(), solo: solo) {
             for line in pairGuard.lines { print(line) }
             if pairGuard.refuse { throw ExitCode.failure }
         }

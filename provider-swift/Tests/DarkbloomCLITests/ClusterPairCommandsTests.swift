@@ -5,9 +5,9 @@ import Testing
 @testable import ProviderCore
 @testable import darkbloom
 
-// The everyday commands on a Mac in a two-Mac cluster (UX audit 2026-11-04, P4/P5/P11/P12). The pair is a fixture
-// (`ClusterPairSummary.readerForTesting`); no pairing, cluster service, launchd or ~/.darkbloom is read. Command runs
-// happen in a child process (an exit test) with launchctl recorded and never run.
+// The everyday commands on a Mac in a two-Mac cluster. The pair is a fixture (`ClusterPairSummary.readerForTesting`);
+// no pairing, cluster service, launchd or ~/.darkbloom is read. Command runs happen in a child process (an exit test)
+// with launchctl recorded and never run.
 
 private let otherMac = "the other Mac (Apple M5 Max, 128 GB)"
 

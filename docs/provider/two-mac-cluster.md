@@ -82,14 +82,26 @@ not set up. Run `darkbloom cluster` again." Over SSH, Darkbloom's Local
 Network prompt still appears on the Mac's own screen, and its line says so
 ("on this Mac's screen (Screen Sharing if headless)").
 
-The Mac that joins ends once paired ("✓ Paired. The other Mac leads.") with one
-line: what comes next and whether its window can close ("Done here: the other
-Mac chooses the model, and its screen shows whether the cluster serves. You can
-close this window."; started with
-`darkbloom cluster local`, "Done here: run `darkbloom cluster local` on the
-other Mac."). A signed Darkbloom.app's login agent keeps serving; without one,
-as for a development build, the line ends "Keep this window open." and the Mac
-serves only while the window stays open. The Start step opens with "Loading
+The Mac that joins stays open once paired ("✓ Paired. The other Mac leads.") and
+follows the start from the cluster's status the two Macs exchange over the cable
+(`ClusterOnboardingDriver.followStart`):
+
+1. It says "Waiting for the other Mac (<its hardware name>) to choose the model
+   and start…" while the leader's person chooses (started with
+   `darkbloom cluster local`, it first says "Run `darkbloom cluster local` on the
+   other Mac: it leads.").
+2. Once the leader starts, its live line follows the start (loading, offered to
+   Darkbloom, then one row per Mac while Darkbloom pairs them).
+3. It ends with the same ✓ or ✗ block as the leader's screen. After ✓: "You can
+   close this window." After ✗: the reason, then "Choose Retry on the other Mac
+   (…): its screen shows the choices."
+
+q leaves at any time: "The pair keeps going; run `darkbloom cluster` here to see
+it." The follow is bounded like the leader's start (15 minutes for the start to
+begin, then 15 minutes for its outcome), and its end always says why. A signed
+Darkbloom.app's login agent keeps serving; without one, as for a development
+build, the screen ends "Keep this window open." and the Mac serves only while
+the window stays open. The Start step opens with "Loading
 takes a few minutes for a large model; both Macs show progress here." On a color
 terminal the live rows then give the wait and one row per Mac (for a pair
 registered with the coordinator: registering, registered, loading its share),
@@ -263,7 +275,7 @@ format instruction only, as on one Mac
 |---|---|---|---|
 | 1 | the first Mac | Run `darkbloom cluster`. Its first line is "Allow macOS's password and Local Network prompts." It checks the Thunderbolt cable ("✓ Cable ready") and Local Network access. Nobody waits on the cable yet, so this Mac leads; its last line is **"Run `darkbloom cluster` on the other Mac."**, and it waits (q cancels). With two cables it asks "Which cable goes to the other Mac?" | the cable's port, once (your password; sudo in this terminal where macOS shows no window); Local Network access for the terminal app only where macOS blocks it |
 | 2 | the other Mac | Run `darkbloom cluster`. The same checks; then it finds the waiting Mac on the cable by itself (no address, no host name). Both screens show the same six-digit code ("Code 123 456. Same on the other Mac?"); a Mac that answered first says "Now confirm on the other Mac." | the same as the first Mac; **Yes** on each Mac when the codes match |
-| 3 | both Macs | Each says it is paired ("✓ Paired. This Mac leads." on the leader, "✓ Paired. The other Mac leads." on the other Mac). Both cluster services now run, and macOS asks on both Macs at the same moment to let Darkbloom find devices on your local network: click Allow on each; each screen waits for its own ("✓ Allowed"). Nothing else is ever asked on the other Mac; its last line is "Done here: the other Mac chooses the model. You can close this window." | Local Network access for Darkbloom, once on each Mac |
+| 3 | both Macs | Each says it is paired ("✓ Paired. This Mac leads." on the leader, "✓ Paired. The other Mac leads." on the other Mac). Both cluster services now run, and macOS asks on both Macs at the same moment to let Darkbloom find devices on your local network: click Allow on each; each screen waits for its own ("✓ Allowed"). Nothing else is ever asked on the other Mac; it says "Waiting for the other Mac (…) to choose the model and start…" and follows the start to the same ✓/✗ block. | Local Network access for Darkbloom, once on each Mac |
 | 4 | the leader | It lists every model approved for clusters that the pair can serve (held by both Macs, by one of them, or in Darkbloom's catalog), one line each with its size and how the planner splits it, "tensor parallel" or "pipeline" ("Qwen3.8-27B-4bit-mtp · 16.3 GB · pipeline"), ending "copy" or "download" when the model must reach a Mac first (a model no Mac holds yet is split once it arrives, so its line has no split). A model a Mac holds twice (a catalog download beside the cluster's own copy) is listed once. The planner records why a model that has tensor parallel is split otherwise (for example "tensor parallel: slower here", "tensor parallel: not measured yet" or "tensor parallel: link unmeasured"); `darkbloom cluster plan` gives the full reason under "Tensor parallel or pipeline". Models that fit in the Macs' free memory now come first; one that does not ends with "does not fit now". Choose the model with ↑↓ and enter (enter takes the first). If the other Mac does not answer over the cable (its Darkbloom prompt may still wait for Allow), it offers **Try again** or **Cancel**. | the copy first in a list; a short one says its time ("Copy to the other Mac (about 7 s)") |
 | 5 | — | Choosing is starting: the leader saves the setup, sends it to the other Mac over the cable and starts both Macs; once both are loaded it says where and how the pair serves ("✓ Serving Qwen3.8-27B-4bit-mtp (pipeline) at http://localhost:8000 (earning through Darkbloom)", or "(local only)") and answers one test request ("✓ Test response in 0.61 s"). | nothing |
 
@@ -329,11 +341,13 @@ once; one planned with the one-chunk lookahead takes one at a time
 2. Read the end of the setup screen. Once the test request answers, it says:
 
    ```
-   Registered with the coordinator as a cluster member: approval <id>, until <date>.
+   Offered to Darkbloom as a pair for <model>; waiting for Darkbloom to accept this pair…
    Starting both Macs' parts again as cluster members…
    ```
 
-   Registered is not serving: the coordinator still has to pair both Macs, and
+   The Mac that joined says the same first line. The logs keep the registration
+   line with the approval's id and end (`ClusterApprovalLifetime.offeredLine`).
+   Offered is not serving: the coordinator still has to pair both Macs, and
    both then load their share. The leader waits for that (at most 15 minutes,
    its progress in the live rows) and says `✓ Serving <model> through
    Darkbloom on both Macs (<split>)` only once the plan's rank 0 reports that both ranks
@@ -422,8 +436,8 @@ decodes with its speculative assistant under the default `mtp_mode`
    model to skip the list: `darkbloom cluster local glm-5.3-flash` (its id or the
    name the list shows). On a cluster that already serves, it switches the
    cluster to local only and waits until it serves again. On the Mac that joins
-   a waiting leader, it pairs and stops there like `darkbloom cluster`; its last
-   line says to continue on the leader with `darkbloom cluster local`.
+   a waiting leader, it pairs like `darkbloom cluster`, says to continue on the
+   leader with `darkbloom cluster local`, and then follows the start there.
 2. Read the API's place from the ready screen:
 
    ```

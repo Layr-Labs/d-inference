@@ -304,9 +304,11 @@ answer to a command the other Mac forwarded for that Mac's screen
 service names members the same way in its control lines and refusals
 (`ClusterOnboardingMacName.names`). The deployment line, recorded for both Macs
 with hardware names, is no longer on the screens, which say one serving line
-(`ClusterOnboardingReady.summary`, `ClusterOnboardingDriver.servesWords`). The Mac that joins ends its
-onboarding once paired, also for `darkbloom cluster local`
-(`ClusterOnboardingDriver.joinedLocalContinueLine`). The model list keeps one line per
+(`ClusterOnboardingReady.summary`, `ClusterOnboardingDriver.servesWords`). The Mac that joins asks
+nothing more once paired, also for `darkbloom cluster local`
+(`ClusterOnboardingDriver.joinedLocalLine`): it follows the leader's start from the cluster status
+over the cable and ends with the same ✓/✗ block, bounded like the leader's start
+(`ClusterOnboardingDriver.followStart`, `ClusterOnboardingFollowTiming`). The model list keeps one line per
 artifact and name (`OnboardingLive.presentedChoices`): a choice that cannot be
 served is left out when another offers the same digests under the same name,
 and an artifact this build serves is never called unsupported for a copy the

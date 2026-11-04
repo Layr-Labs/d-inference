@@ -19,3 +19,7 @@
 - **Serve through Darkbloom** checks both Macs' logins before the local API stops; **Stop serving** asks once on a pair
   served through Darkbloom.
 - Outside the first setup the steps say **Change model** (or **Choose a model**) and **Start**, not "3/4" and "4/4".
+- During the first setup the Mac that joins keeps its window open: it waits for the leading Mac to choose the model,
+  follows the start, and ends with the same ✓ or ✗ block ("Choose Retry on the other Mac" after ✗); q leaves and the
+  pair keeps going. The registration now reads "Offered to Darkbloom as a pair for <model>; waiting for Darkbloom to
+  accept this pair…" instead of the approval line.

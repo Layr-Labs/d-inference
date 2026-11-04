@@ -10,7 +10,7 @@ import re
 import subprocess
 
 
-COMPONENTS = ("provider", "sdk", "cluster")
+COMPONENTS = ("provider", "sdk", "cluster", "mimo_audio")
 COMMON = (
     "Makefile", "mise.toml", ".gitmodules", ".github/workflows/component-changes.yml",
     ".github/workflows/darkbloom-route.yml",
@@ -82,6 +82,22 @@ CLUSTER = (
 )
 
 
+
+# Inputs of the MiMo audio gate in the last provider shard, which needs the
+# 1.87 GB pinned audio codec: the MiMo, audio and media provider code, the MiMo
+# tests, the MLX pins, the fixture scripts (the audio one runs the provider
+# fixture generator with --audio-source) and the gate's recipe. Every one is
+# also a provider input. Default-branch pushes run the gate regardless.
+MIMO_AUDIO = (
+    "provider-swift/Package.swift", "provider-swift/Package.resolved",
+    "provider-swift/Sources/*MiMo*", "provider-swift/Sources/*Audio*", "provider-swift/Sources/*Media*",
+    "provider-swift/Tests/ProviderCoreTests/MiMo/*",
+    "libs/mlx", "libs/mlx/**", "libs/mlx-swift", "libs/mlx-swift/**", "libs/mlx-swift-lm", "libs/mlx-swift-lm/**",
+    ".github/workflows/ci.yml", "scripts/prepare-mimo-audio-fixtures.py",
+    "scripts/prepare-mimo-provider-fixtures.py", "scripts/run-nested-suite.sh",
+)
+
+
 def matches(path, patterns):
     return any(fnmatchcase(path, pattern) for pattern in patterns)
 
@@ -98,6 +114,7 @@ def classify(paths):
         selected["provider"] |= matches(path, PROVIDER)
         selected["sdk"] |= matches(path, SDK)
         selected["cluster"] |= matches(path, CLUSTER)
+        selected["mimo_audio"] |= matches(path, MIMO_AUDIO)
     return selected
 
 

@@ -56,6 +56,16 @@ enum SandboxFixtures {
 
     static let minimal = #"{"schema":1,"state":"ready"}"#
 
+    /// `ready` with these slot counts (all free unless jobs run) and running jobs.
+    static func ready(linux: Int, macOS: Int, jobsRunning: Int = 0) -> String {
+        ready.replacingOccurrences(
+            of: #""jobs_running":0"#, with: #""jobs_running":\#(jobsRunning)"#
+        ).replacingOccurrences(
+            of: #""slots":{"linux":{"free":1,"total":1},"macos":{"free":1,"total":1}}"#,
+            with: #""slots":{"linux":{"free":\#(max(0, linux - jobsRunning)),"total":\#(linux)},"#
+                + #""macos":{"free":\#(macOS),"total":\#(macOS)}}"#)
+    }
+
     static func status(_ json: String) -> SandboxAddonStatus {
         guard let status = SandboxAddonStatus(json: json) else { fatalError("fixture does not decode: \(json)") }
         return status

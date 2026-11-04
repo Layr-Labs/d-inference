@@ -78,6 +78,9 @@ struct Desktop: AsyncParsableCommand {
   struct StartLocal: AsyncParsableCommand {
     @OptionGroup var configOptions: ConfigOptions
     @Option var model: [String] = []
+
+    /// On a Mac in a two-Mac cluster: why local mode starts nothing; nil elsewhere.
+    static func pairRefusal(_ pair: ClusterPairSummary) -> [String]? { nil }
     mutating func run() async throws {
       guard !model.isEmpty else { throw ValidationError("Select a model") }
       try model.forEach(DesktopAction.validateModel)

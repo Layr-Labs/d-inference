@@ -509,6 +509,9 @@ extension ClusterPairSummary {
     }
 
     /// When the leading Mac could not stop the cluster: nothing changed here, and how to stop this Mac alone.
+    /// What the Mac that follows says after its forwarded stop failed.
+    static func memberStopFailureLines(_ failure: [String]) -> [String] { [memberStopFailedLine] }
+
     static let memberStopFailedLine =
         "Nothing was stopped on this Mac. To stop only this Mac: `darkbloom cluster stop --local-only` (the other Mac then "
             + "serves alone, or waits for this one)."

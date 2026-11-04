@@ -14,8 +14,8 @@
   response in 0.61 s", or the ✗ block with its choices); a pair served only through Darkbloom says this Mac has no local
   API to test from.
 - Every start ends like `darkbloom start`: the outcome block, then the model in its mode and split, the Macs, where it
-  serves, the log, "Starts by itself at login on both Macs.", and `darkbloom stop` / `restart` / `status`. A pair that
-  does not serve keeps its ✗ block with Retry, Change model, Serve locally only and Diagnostics.
+  serves, the log, whether it starts by itself at login on each Mac, and `darkbloom stop` / `restart` / `status`. A
+  pair that does not serve keeps its ✗ block with Retry, Change model, Serve locally only and Diagnostics.
 - The Mac that follows says that its part runs by itself, where to change the model, and that `darkbloom stop` there
   stops both Macs; Enter closes it.
 - When the other Mac does not answer, the screen no longer says `darkbloom cluster stop` turned its service off, and

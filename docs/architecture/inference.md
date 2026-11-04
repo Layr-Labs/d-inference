@@ -3952,7 +3952,11 @@ away; mixed pairs are first-class).
   same refusal by the same rule (`ClusterLocalNetworkAccess.Refused`): on the
   refused Mac its own service's state, on the leading Mac the other Mac's
   status, asked (`otherMacStatus`) only while the pair has been starting past
-  the settle time (`otherMacRefused`). They say `not_serving` in the screens'
+  the settle time (`otherMacRefused`). A status read keeps it across the leading
+  Mac's part restarts once a part ran past that time (`refusalIsCurrent`'s
+  `acrossRestarts`, from the service's `lastRunSeconds`); a start's own wait
+  doesn't, so a Retry just after the setting was turned on never ends at once on
+  it. They say `not_serving` in the screens'
   words, ending with the command that starts the pair again instead of the
   screen's Retry (`statusWords`, through the `then` of
   `localNetworkRefusalLines` and `localNetworkBlockedLines`). A stopped pair

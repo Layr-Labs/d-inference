@@ -1710,6 +1710,64 @@ struct ClusterStatusTruthTests {
         #expect(!ClusterLocalNetworkAccess.otherMacRefused(member: ended, own: own, now: now), "an ended part's refusal is history")
     }
 
+    @Test("R-7: a status read keeps the other Mac's refusal across this Mac's part restarts; a start's own wait doesn't")
+    func refusalHoldsAcrossTheLeadersPartRestarts() {
+        // The pair-2 re-test of the DevNet build: while the other Mac is refused, this Mac's part waits 32 s for the link,
+        // ends (exit 1) and starts again 6-25 s later. A stand-in for its published status at each moment of four parts.
+        let parts: [(start: Double, end: Double)] = [(0, 32), (38, 70), (83, 115), (140, 172)]
+        func own(at t: Double) -> ClusterServiceStatus.Child {
+            let lastRun = parts.last(where: { $0.end <= t }).map { $0.end - $0.start }
+            if let part = parts.first(where: { $0.start <= t && t < $0.end }) {
+                return .init(running: true, starts: 1, startedAt: part.start, lastRunSeconds: lastRun)
+            }
+            return .init(running: false, starts: 1, lastEnd: "exit 1", restartInSeconds: 5, lastRunSeconds: lastRun)
+        }
+        let refused = ClusterServiceStatus.Child(running: true, starts: 1,
+                                                 lastError: ClusterService.localNetworkReasonPrefix + ": macOS refused the dial")
+        let samples = Array(stride(from: 0.0, through: 170, by: 5))
+        func says(_ member: ClusterServiceStatus.Child, acrossRestarts: Bool) -> [Double] {
+            samples.filter { ClusterLocalNetworkAccess.otherMacRefused(member: member, own: own(at: $0), now: $0, acrossRestarts: acrossRestarts) }
+        }
+        #expect(says(refused, acrossRestarts: true) == Array(stride(from: 20.0, through: 170, by: 5)),
+                "a status read: not serving from 20 s into the first part, through every restart")
+        #expect(says(refused, acrossRestarts: false) == [20, 25, 30, 60, 65, 105, 110, 160, 165, 170],
+                "a start's own wait: only while the current part has run 20 s, as before")
+        // The other Mac's follower got through once the setting was on: its part no longer reports the refusal.
+        let through = ClusterServiceStatus.Child(running: true, starts: 1)
+        #expect(says(through, acrossRestarts: true).isEmpty, "a refusal the follower got past never counts")
+        // A first part that never ran 20 s carries nothing: its listener may never have had the follower's next dial.
+        let short = ClusterServiceStatus.Child(running: false, starts: 1, lastEnd: "exit 1", lastRunSeconds: 8)
+        #expect(!ClusterLocalNetworkAccess.otherMacRefused(member: refused, own: short, now: 100, acrossRestarts: true))
+    }
+
+    @Test("R-9: during the refusal, --json lines agree with the state, as the plain output does")
+    func refusalLinesAgreeWithTheState() {
+        var leader = pair(role: .leader)
+        leader.read(status: Self.starting, leaderMode: "cluster")
+        let plainBefore = leader.clusterStatusLines
+        leader.read(localNetworkRefused: .otherMac)
+        let title = "Not serving: The other Mac can't reach this Mac over the cable: macOS keeps \(Self.app) there off the local network."
+        #expect(leader.json.lines == [title], "\(leader.json.lines)")
+        #expect(leader.clusterStatusLines.contains("✗ " + title) && !leader.clusterStatusLines.contains { $0.contains("Starting") },
+                "the plain output, as before: \(leader.clusterStatusLines)")
+        #expect(plainBefore.contains("… Starting Qwen 3.8 27B."), "\(plainBefore)")
+        var member = pair(role: .member)
+        member.read(status: Self.starting, leaderMode: nil)
+        member.read(localNetworkRefused: .thisMac)
+        #expect(member.json.lines == ["Not serving: This Mac can't reach the other Mac over the cable: macOS keeps \(Self.app) off the "
+                                      + "local network."], "\(member.json.lines)")
+    }
+
+    @Test("R-8: a stopped local-only pair's line, and the API line of a pair the other Mac serves, name this build's command")
+    func servingLinesNameThisBuildsCommand() {
+        let cli = ClusterPairSummary.cli
+        #expect(ClusterServingScope.localOnly(bind: ClusterServingScope.localOnlyDefaultBind).line
+                == "Local only, on this Mac's networks; API key: `\(cli) local`")
+        let ready = ClusterOnboardingReady(servedBy: ClusterOnboardingMacName.other(named: "Apple M5 Max, 128 GB"), port: 8000, network: true)
+        #expect(ready.apiLine.hasSuffix("; this Mac answers too (`\(cli) local` shows its address)"), "\(ready.apiLine)")
+        print("R-8 in this build: " + ClusterServingScope.localOnly(bind: ClusterServingScope.localOnlyDefaultBind).line)
+    }
+
     @Test("R-5: a stopped pair reads stopped whatever the other Mac's presence, and says it isn't answering")
     func stoppedPairStaysStopped() {
         var leader = pair(role: .leader, started: false)

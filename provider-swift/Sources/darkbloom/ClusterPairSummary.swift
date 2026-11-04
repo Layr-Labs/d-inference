@@ -418,6 +418,8 @@ extension ClusterPairSummary {
         localNetworkRefused = refused
         state = .notServing
         reason = localNetworkWords?.reason
+        // The lines say what the state says, as the plain output's ✗ line does in place of the first one ("Starting …").
+        if let reason { lines = [ClusterOnboardingNotServing.title(reason: reason)] + lines.dropFirst() }
     }
 
     /// The setup screens' words for `localNetworkRefused` (`ClusterLocalNetworkAccess.statusWords`).

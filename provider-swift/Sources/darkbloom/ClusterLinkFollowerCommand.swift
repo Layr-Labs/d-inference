@@ -9,6 +9,9 @@ extension Cluster {
     /// configuration exists for such a setup. Runs until SIGTERM or SIGINT,
     /// then fences what runs and waits (bounded) for its owner's release.
     struct LinkFollower: ParsableCommand {
+        /// The app macOS lists under Local Network for the identity named `cli`.
+        static func localNetworkApp(cli: String) -> String { "darkbloom" }
+
         static let configuration = CommandConfiguration(commandName: "link-follower",
             abstract: "Serve this Mac's rank to the leader over the link control channel (follower setups only).", shouldDisplay: false)
         @OptionGroup var configOptions: ConfigOptions

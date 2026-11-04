@@ -46,6 +46,8 @@ enum ClusterPairCommands {
     struct Wait: Sendable {
         var seconds: Double
         var interval: Double
+        /// How long the same status may stay unchanged before the wait says it again.
+        var heartbeat: Double = 60
         static let standard = Wait(seconds: 600, interval: 5)
         /// How long `stop` waits for both parts to end (the member stops its part after acknowledging).
         static let teardown = Wait(seconds: 60, interval: 3)
@@ -57,6 +59,8 @@ enum ClusterPairCommands {
     @TaskLocal static var screenForTesting: (@Sendable (_ config: String?) async throws -> Void)?
     @TaskLocal static var terminalForTesting: Bool?
     @TaskLocal static var waitForTesting: Wait?
+    /// How long a blocking request may run before the command says what it waits for (tests make it short).
+    @TaskLocal static var progressAfterForTesting: Double?
 
     /// Whether a person is at a terminal (standard input and output): `darkbloom start` then opens the screen.
     static func isTerminal() -> Bool {

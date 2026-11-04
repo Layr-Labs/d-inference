@@ -547,7 +547,7 @@ private final class Looks<Value>: @unchecked Sendable {
 private func pairActions(role: ClusterOnboardingRole = .leader, serving: Bool = true,
                          stop: Result<[String], ClusterOnboardingFailure> = .success(["Stopping both Macs. Run `darkbloom cluster` to serve again."]),
                          serve: Result<[String], ClusterOnboardingFailure> = .success(["Started the other Mac's part over the cable."]),
-                         teardown: [Result<[String], ClusterOnboardingFailure>] = [.success(freed)])
+                         teardown: [Result<[String], ClusterOnboardingFailure>] = [.success(freed)], stopDelay: Double = 0)
     -> ClusterPairActions {
     @Sendable func said(_ action: String) { FileHandle.standardError.write(Data("pair action: \(action)\n".utf8)) }
     let teardownLooks = Looks(teardown)
@@ -555,7 +555,7 @@ private func pairActions(role: ClusterOnboardingRole = .leader, serving: Bool = 
         resume: { ClusterOnboardingResume(role: role, peerName: "Apple M5 Max, 128 GB", serving: serving, modelName: "EigenLabs/Qwen3.8-27B-4bit-mtp") },
         ensureService: { said("ensureService"); return .success(()) },
         serve: { said("serve"); return serve },
-        stop: { said("stop"); return stop },
+        stop: { said("stop"); Thread.sleep(forTimeInterval: stopDelay); return stop },
         verifyTeardown: { said("verifyTeardown"); return teardownLooks.next() })
 }
 
@@ -1410,5 +1410,78 @@ struct DarkbloomCommandLookRunTests {
         #expect(!bytes.contains(0x1B))
         let object = try #require(try JSONSerialization.jsonObject(with: Data(bytes)) as? [String: Any])
         #expect(object["state"] as? String == "stopped")
+    }
+}
+
+@Suite("DevNet findings, CLI side: names, waits that say so, incidents per install, a quieter control log")
+struct ClusterDevNetFindingsTests {
+    @Test("A-1: the DevNet app's start card names `darkbloom-dev`, never `darkbloom`")
+    func startCardNamesTheIdentity() async {
+        let result = await #expect(processExitsWith: .success, observing: [\.standardOutputContent]) {
+            ClusterOnboardingCommand.use("darkbloom-dev")
+            try await exitWithPair(servingPair(), actions: pairActions()) { _ in try await runCLICommand(Start.self, ["start"]) }
+        }
+        let out = text(result?.standardOutputContent)
+        #expect(out.contains("  darkbloom-dev stop     Stop both Macs\n") && out.contains("  darkbloom-dev status   Check status\n"), "\(out)")
+        #expect(!out.contains("darkbloom "), "\(out)")
+    }
+
+    @Test("A-1: cluster stop --service, its refusal, cluster local and the follower's hint name the DevNet identity")
+    func clusterTextsNameTheIdentity() async {
+        let result = await #expect(processExitsWith: .success, observing: [\.standardOutputContent]) {
+            ClusterOnboardingCommand.use("darkbloom-dev")
+            var lines = try Cluster.Stop.finishStop(nil, localOnly: true) { ["agent"] }
+            lines += Cluster.Stop.refusal(unreadable()) + [Cluster.Local.needsTerminalLine]
+            lines.append("allow " + Cluster.LinkFollower.localNetworkApp(cli: ClusterOnboardingCommand.name))
+            for line in lines { print(line) }
+        }
+        let out = text(result?.standardOutputContent)
+        #expect(out.contains("`darkbloom-dev cluster stop --service` there too") && out.contains("`darkbloom-dev cluster local`"), "\(out)")
+        #expect(out.contains("allow Darkbloom Dev\n"), "\(out)")
+        #expect(!out.contains("`darkbloom "), "\(out)")
+        #expect(Cluster.LinkFollower.localNetworkApp(cli: "darkbloom") == "darkbloom")
+    }
+
+    @Test("A-11: restart says what it waits for, and for how long at most, instead of hanging silently")
+    func restartSaysWhatItWaitsFor() async {
+        let result = await #expect(processExitsWith: .success, observing: [\.standardOutputContent]) {
+            try await exitWithPair(servingPair(), actions: pairActions(teardown: [.success(stillRunning), .success(freed)], stopDelay: 0.5)) { _ in
+                try await ClusterPairCommands.$progressAfterForTesting.withValue(0.05) {
+                    try await ClusterPairCommands.$waitForTesting.withValue(.init(seconds: 30, interval: 0)) {
+                        try await runCLICommand(Restart.self, ["restart"])
+                    }
+                }
+            }
+        }
+        let out = lines(result?.standardOutputContent)
+        #expect(out.contains("  Waiting for both Macs to stop; accepted requests finish first (up to about 6 min)."), "\(out)")
+        #expect(out.contains("  Waiting for both Macs' parts to end (up to 30 s)."), "\(out)")
+    }
+
+    @Test("A-11: a script start that keeps reading the same status says it is still waiting, and its bound")
+    func startSaysItIsStillWaiting() async {
+        let result = await #expect(processExitsWith: .success, observing: [\.standardOutputContent]) {
+            let loading = observed("Loading Qwen 3.8 27B: 1 of 2 parts ready.")
+            let looks = Looks([loading, loading, loading, observed("Serving Qwen 3.8 27B through Darkbloom on both Macs (tensor parallel).")])
+            try await exitWithPair(pair(), actions: pairActions()) { _ in
+                try await ClusterPairSummary.$readerForTesting.withValue({ live in live ? looks.next() : pair() }) {
+                    try await ClusterPairCommands.$waitForTesting.withValue(.init(seconds: 30, interval: 0, heartbeat: 0)) {
+                        try await runCLICommand(Start.self, ["start"])
+                    }
+                }
+            }
+        }
+        let out = lines(result?.standardOutputContent)
+        #expect(out.contains("  Waiting until the pair serves (up to 30 s)."), "\(out)")
+        #expect(out.contains("  Still waiting (up to 30 s in all): Loading Qwen 3.8 27B: 1 of 2 parts ready."), "\(out)")
+    }
+
+    @Test("A-12: the leader logs a following window's status requests once a minute, every other command each time")
+    func controlStatusLogIsRateLimited() {
+        let now = Date()
+        #expect(ClusterService.logsControl(.status, lastStatusLog: nil, now: now))
+        #expect(!ClusterService.logsControl(.status, lastStatusLog: now.addingTimeInterval(-1), now: now))
+        #expect(ClusterService.logsControl(.status, lastStatusLog: now.addingTimeInterval(-61), now: now))
+        #expect(ClusterService.logsControl(.stop, lastStatusLog: now.addingTimeInterval(-1), now: now))
     }
 }

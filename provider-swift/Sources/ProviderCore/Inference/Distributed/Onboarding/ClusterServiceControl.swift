@@ -6,6 +6,9 @@ import DarkbloomClusterProtocol
 /// what this Mac runs for each mode (its part, degraded serving alone, or nothing), and `darkbloom cluster` commands
 /// forwarded from any member to the leader.
 extension ClusterService {
+    /// Whether a control request is logged: every command, but a following window's `status` once a minute.
+    static func logsControl(_ op: ClusterControlRequest.Operation, lastStatusLog: Date?, now: Date) -> Bool { true }
+
     typealias PartWant = ClusterControlPartChoice
 
     /// The rank lease's own cadence and time-to-live (S03): the control lease renews and expires with it.

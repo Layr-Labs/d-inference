@@ -197,7 +197,7 @@ public final class ClusterIncidentLog: @unchecked Sendable {
     /// passes its diagnostic redaction: addresses, host and user names, home
     /// paths, key material). It must never throw away the meaning of a message.
     public init(file: URL, redact: @escaping @Sendable (String) -> String = { $0 },
-                clock: @escaping @Sendable () -> Double = { Date().timeIntervalSince1970 }) {
+                clock: @escaping @Sendable () -> Double = { Date().timeIntervalSince1970 }, install: String? = nil) {
         self.file = file
         lockFile = file.deletingLastPathComponent().appendingPathComponent(file.lastPathComponent + ".lock")
         self.redact = redact

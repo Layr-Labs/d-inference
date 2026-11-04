@@ -91,7 +91,12 @@ follows the start from the cluster's status the two Macs exchange over the cable
    `darkbloom cluster local`, it first says "Run `darkbloom cluster local` on the
    other Mac: it leads.").
 2. Once the leader starts, its live line follows the start (loading, offered to
-   Darkbloom, then one row per Mac while Darkbloom pairs them).
+   Darkbloom, then one row per Mac while Darkbloom pairs them). Serving through
+   Darkbloom, the leader's start asks Darkbloom whether to offer the pair after
+   its test; until it has, the leader's status says so ("checking with Darkbloom
+   before it offers the pair") and this Mac keeps following. Offered, it says
+   "Offered to Darkbloom as a pair for <model>; waiting for Darkbloom to accept
+   this pair…" and waits as the leader does, so both screens end the same way.
 3. It ends with the same ✓ or ✗ block as the leader's screen. After ✓: "You can
    close this window." After ✗: the reason, then "Choose Retry on the other Mac
    (…): its screen shows the choices."
@@ -115,7 +120,6 @@ two rules, then the pair's card, as `darkbloom start` ends, and the shell:
   API at http://localhost:8000 on this Mac
   Test response in 0.61 s
 ────────────────────────────────────────────────
-Cluster started on both Macs.
   Model:   Qwen3.8-27B-4bit-mtp · pipeline (Apple M3 Ultra 32 layers / Apple M5 Max 32 layers)
   Macs:    This Mac leads · the other Mac (Apple M5 Max, 128 GB) follows
   Serves:  through Darkbloom

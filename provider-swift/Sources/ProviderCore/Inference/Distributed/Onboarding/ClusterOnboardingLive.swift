@@ -1237,6 +1237,7 @@ final class OnboardingLive: @unchecked Sendable {
     /// its device journal empty), each Mac checks the entry against its own files and saves it, the other Mac first,
     /// and both parts start again as cluster members.
     func localRegister() -> Result<[String], ClusterOnboardingFailure> {
+        defer { clearRegistrationPending() }
         guard leadership?.scope.isLocalOnly != true else { return .success([]) }
         let providerConfiguration = settings.service.wizard.providerConfiguration
         guard let saved = try? ClusterApprovalAttachment.savedSetup(paths: context.paths, providerConfiguration: providerConfiguration),
@@ -1293,7 +1294,22 @@ final class OnboardingLive: @unchecked Sendable {
     }
 
     func serve() -> Result<[String], ClusterOnboardingFailure> {
-        routed(.init(op: .serve), acting: true, local: { localServe() }) { $0.lines }
+        routed(.init(op: .serve), acting: true, local: {
+            // Through Darkbloom, this start asks the coordinator after its test whether to offer the pair (`register`).
+            if leadership?.scope.isLocalOnly != true { try? store.updateRecord { $0.registrationPendingPID = getpid() } }
+            return localServe()
+        }) { $0.lines }
+    }
+
+    /// The start's question to the coordinator is answered (or will not be asked).
+    func clearRegistrationPending() {
+        if (try? store.readRecord())?.registrationPendingPID != nil { try? store.updateRecord { $0.registrationPendingPID = nil } }
+    }
+
+    /// The record's pending registration, while the start that set it runs.
+    var registrationPending: Bool {
+        guard let pid = (try? store.readRecord())?.registrationPendingPID else { return false }
+        return kill(pid, 0) == 0 || errno == EPERM
     }
 
     func setScope(_ scope: ClusterServingScope) -> Result<[String], ClusterOnboardingFailure> {
@@ -1663,7 +1679,12 @@ final class OnboardingLive: @unchecked Sendable {
     }
 
     func testRequest() -> Result<[String], ClusterOnboardingFailure> {
-        routed(.init(op: .test), seconds: 240, acting: false, local: { localTestRequest() }) { $0.lines }
+        routed(.init(op: .test), seconds: 240, acting: false, local: {
+            let tested = localTestRequest()
+            // A failed test ends the start without asking the coordinator.
+            if case .failure = tested { clearRegistrationPending() }
+            return tested
+        }) { $0.lines }
     }
 
     func localTestRequest() -> Result<[String], ClusterOnboardingFailure> {
@@ -1760,6 +1781,11 @@ final class OnboardingLive: @unchecked Sendable {
         } else if let session = now.session, session.observed {
             if session.ready {
                 let ready = ready(now, port: session.port ?? 0)
+                if leadership?.scope.isLocalOnly != true, registrationPending {
+                    // The start still asks the coordinator whether to offer the pair: serving, but not the start's outcome.
+                    lines.append(ready.summary(model: model) + " (" + ClusterOnboardingReady.offerPendingWords + ").")
+                    return lines
+                }
                 lines.append(ready.summary(model: model)
                     + ClusterOnboardingDriver.servesWords(scope: leadership?.scope ?? .publicServing, ready: ready) + ".")
                 // Why the pair serves locally although its coordinator offers a cluster approval (one line).
@@ -1818,6 +1844,7 @@ final class OnboardingLive: @unchecked Sendable {
                 record.stopDrain = .init(id: stopID,
                     keepPeerRunning: record.leadership?.serving == true || record.stopDrain?.keepPeerRunning == true)
                 record.leadership?.serving = false
+                record.registrationPendingPID = nil
             }
             lock.withLock { partsStoppedAt = Date() }
         } catch {

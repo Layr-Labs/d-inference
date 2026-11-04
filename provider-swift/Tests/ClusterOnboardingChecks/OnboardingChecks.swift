@@ -147,6 +147,7 @@ import Darwin
         // The owner's O8 and A1 (2026-11-04): the Mac that joined follows the start; the registration reads as offered.
         // Failing first on c8a6b5a494.
         joinedMacFollowsTheStartToServing()
+        aLateOfferNeverGivesTheJoinedMacAnEarlyTick()
         joinedMacFollowsTheStartToNotServing()
         joinedMacLeavesOrStopsFollowingSaying()
         registrationIsSaidAsOfferedNotAccepted()
@@ -355,7 +356,7 @@ import Darwin
         expect(run.finish() == 1, "failed test returns failure")
         expect(run.text.hasSuffix("Setup saved, but the test failed. Run `darkbloom cluster` to test again.\n"),
                "failure is explicit and ends with its next action")
-        expect(!run.text.contains("Cluster started on both Macs."), "failed response never reports setup success")
+        expect(!run.text.contains(startedLogs), "failed response never reports setup success")
         expect(recorder.all.suffix(3) == ["serve", "waitReady", "testRequest"], "readiness and actual test still run")
     }
 
@@ -648,7 +649,7 @@ import Darwin
             },
             useMode: { index, mode in recorder.note("useMode \(index) \(mode)") })
         // The Mac that joined follows the start at a check's pace.
-        made.followTiming = .init(seconds: followSeconds, settleSeconds: 0.3, pollSeconds: 0.02)
+        made.followTiming = .init(seconds: followSeconds, pollSeconds: 0.02)
         return made
     }
 
@@ -830,7 +831,7 @@ import Darwin
             expect(text.contains(line + "\n"), "leader: \(line)")
         }
         // What is done, then the one thing to do next: the last line.
-        expect(text.contains("Cluster started on both Macs.\n") && text.hasSuffix(commandLines), "leader: the card, then the commands: \(text)")
+        expect(text.contains(startedLogs) && text.hasSuffix(commandLines), "leader: the card, then the commands: \(text)")
         expect(!text.contains("Setup sent") && !text.contains("confirmed the code") && !text.contains("Cable found"),
                "leader: no line repeats what another says")
         expect(!text.contains("127.0.0.1"), "leader: no bare loopback address")
@@ -874,7 +875,7 @@ import Darwin
             // The restarted parts are awaited and tested again: the serving line is about the parts that run now.
             expect(Array(recorder.all.suffix(4)) == ["testRequest", "register", "waitReady", "testRequest"],
                    "\(label): the parts are awaited after the registration: \(recorder.all)")
-            let done = text.range(of: "Cluster started on both Macs.")?.lowerBound, restarted = text.range(of: restart)?.lowerBound
+            let done = text.range(of: startedLogs)?.lowerBound, restarted = text.range(of: restart)?.lowerBound
             expect(done != nil && restarted != nil && restarted! < done!, "\(label): Done comes after the parts serve again")
         }
     }
@@ -1275,6 +1276,24 @@ import Darwin
         expect(!run.text.contains("1) Download") && !recorder.all.contains { $0.hasPrefix("provision") || $0.hasPrefix("adopt") },
                "disk: no download offered or started: \(recorder.all)")
         transcript("leader-model-without-room-on-disk", run.text, keys: run.keys)
+
+        // The same on a set-up pair's screen: the model serving now first, the one without room last with its marker,
+        // then the scope line and Start over; chosen, it is refused before the switch question and nothing stops.
+        var serving = ClusterOnboardingResume(role: .leader, peerName: "Apple M5 Max, 128 GB", serving: true, modelName: "Qwen 3.8 27B")
+        serving.modelTitle = "Qwen 3.8 27B"
+        let pairRecorder = Recorder()
+        let pair = TerminalRun(operations(pairRecorder, resume: serving, pairEvents: [], pairResult: .failed([]), choices: choices))
+        expect(pair.waitFor(prompt(5)), "disk, set-up pair: the list")
+        expect(pair.text.contains("  1) Qwen 3.8 27B · 16.3 GB · tensor parallel · serving now\n  2) Gemma 4 26B · 15.6 GB · pipeline · does not fit now\n"
+            + "  3) Xiaomi: MiMo-V2.6-Flash · 172.9 GB · download · not enough free disk\n  4) Switch to local only (this Mac's API, no Darkbloom traffic)\n"
+            + "  5) Start over (unpair and set up again)\n"), "disk, set-up pair: last among the models, its line says so: \(pair.text)")
+        pair.type("3")
+        expect(pair.finish() == 1, "disk, set-up pair: exit 1")
+        expect(pair.text.contains("Can't start Xiaomi: MiMo-V2.6-Flash: " + short + ". Free space, then run `darkbloom cluster` again.\n")
+            && !pair.text.contains(ClusterOnboardingDriver.switchAnswers[0]), "disk, set-up pair: refused before the switch question: \(pair.text)")
+        expect(!pairRecorder.all.contains { $0.hasPrefix("provision") || $0.hasPrefix("adopt") || $0 == "stop" },
+               "disk, set-up pair: nothing downloaded or stopped: \(pairRecorder.all)")
+        transcript("leader-pair-model-without-room-on-disk", pair.text, keys: pair.keys)
     }
 
     static func copyInterrupted() {
@@ -1428,7 +1447,7 @@ import Darwin
         run.type("q")
         expect(run.finish() == 1, "timeout: exit 1")
         expect(run.text.contains("\u{2717} Not serving: The cluster did not report ready within 15 minutes.\n"), "timeout: why, first")
-        expect(!run.text.contains("Cluster started on both Macs."), "timeout: never Done")
+        expect(!run.text.contains(startedLogs), "timeout: never Done")
         expect(run.text.contains("The other Mac (Apple M3 Ultra, 256 GB): its part ended: out of memory."), "timeout: each Mac's last error on screen")
         expect(run.text.contains("Saved a diagnostics file"), "timeout: the file is saved")
         expect(!run.text.contains("rank.log"), "timeout: no log path")
@@ -2691,7 +2710,7 @@ import Darwin
         expect(run.waitFor(notServingChoices), "refused: the choices: \(run.text)")
         let shown = run.text
         expect(shown.contains("\u{2717} Not serving: " + notVerified + ".\n"), "refused: why, in one line: \(shown)")
-        expect(!shown.contains("\u{2713} Serving") && !shown.contains("Cluster started on both Macs.") && !shown.contains(ClusterOnboardingReady.offeredTestLine),
+        expect(!shown.contains("\u{2713} Serving") && !shown.contains(startedLogs) && !shown.contains(ClusterOnboardingReady.offeredTestLine),
                "refused: no Serving, no Done, no test claimed: \(shown)")
         run.type("4")
         expect(run.waitFor("Saved a diagnostics file"), "refused: Diagnostics saves the file")
@@ -2700,7 +2719,7 @@ import Darwin
         let code = run.finish()
         expect(code == 1, "refused: leaving is not success, got \(String(describing: code))")
         let text = run.text
-        expect(!text.contains("\u{2713} Serving") && !text.contains("Cluster started on both Macs."), "refused: never Serving or Done: \(text)")
+        expect(!text.contains("\u{2713} Serving") && !text.contains(startedLogs), "refused: never Serving or Done: \(text)")
         expect(text.hasSuffix("Not serving yet. Both Macs keep trying by themselves; run `darkbloom cluster` to check.\n"),
                "refused: the last line says it does not serve: \(text)")
         expect(recorder.all.contains("pairServing") && !recorder.all.contains("testRequest"),
@@ -2716,7 +2735,7 @@ import Darwin
         expect(again.waitFor(notServingChoices), "retry: the choices"); again.type("1")
         expect(again.finish() == 0, "retry: served")
         expect(again.text.contains("\u{2713} Serving Qwen3.8-27B-4bit-mtp through Darkbloom on both Macs (pipeline)\n")
-            && again.text.contains("Cluster started on both Macs."), "retry: Serving and Done only after the pair served: \(again.text)")
+            && again.text.contains(startedLogs), "retry: Serving and Done only after the pair served: \(again.text)")
         expect(retried.all.filter { $0 == "pairServing" }.count == 2, "retry: waited again: \(retried.all)")
     }
 
@@ -2735,7 +2754,7 @@ import Darwin
         let code = run.finish()
         let text = run.text
         expect(code == 1, "restart: a failed restart is not success, got \(String(describing: code))")
-        expect(!text.contains("Cluster started on both Macs."), "restart: never Done: \(text)")
+        expect(!text.contains(startedLogs), "restart: never Done: \(text)")
         expect(text.contains("\u{2717} Not serving: " + ended + "\n"), "restart: why: \(text)")
         expect(text.contains(notServingChoices), "restart: the choices: \(text)")
         expect(Array(recorder.all.prefix { $0 != "register" }.suffix(2)) == ["waitReady", "testRequest"]
@@ -2776,7 +2795,7 @@ import Darwin
                "login, local: logged in here, then local only saved: \(switched.all)")
         let setScope = switched.all.firstIndex(of: "setScope local 0.0.0.0"), serve = switched.all.firstIndex(of: "serve")
         expect(setScope != nil && serve != nil && setScope! < serve!, "login, local: saved before the start: \(switched.all)")
-        expect(local.text.contains("local API only\n") && local.text.contains("Cluster started on both Macs."), "login, local: serving locally: \(local.text)")
+        expect(local.text.contains("local API only\n") && local.text.contains(startedLogs), "login, local: serving locally: \(local.text)")
         expect(!switched.all.contains("register"), "login, local: no registration with a coordinator: \(switched.all)")
     }
 
@@ -2792,7 +2811,7 @@ import Darwin
         let text = run.text
         expect(text.contains("  Test response in 0.84 s\n"), "served: the pair's first request: \(text)")
         expect(text.contains("\u{2713} Serving Qwen3.8-27B-4bit-mtp through Darkbloom on both Macs (pipeline)\n"), "served: the line: \(text)")
-        expect(text.contains("Cluster started on both Macs.\n") && text.hasSuffix(commandLines), "served: the card: \(text)")
+        expect(text.contains(startedLogs) && text.hasSuffix(commandLines), "served: the card: \(text)")
         expect(Array(recorder.all.suffix(3)) == ["serve", "waitReady", "pairServing"], "served: loaded before it is said: \(recorder.all)")
         transcript("offered-pair-served", text, keys: run.keys)
     }
@@ -2878,7 +2897,7 @@ import Darwin
         expect(run.waitFor(prompt(2)), "block: the list"); run.type("\r")
         expect(run.finish() == 0, "block: served")
         expect(run.text.contains(block("\u{2713}", "Serving Qwen3.8-27B-4bit-mtp through Darkbloom on both Macs (pipeline)",
-            ["API at http://localhost:8000 on this Mac", "Test response in 0.61 s"]) + "Cluster started on both Macs.\n"),
+            ["API at http://localhost:8000 on this Mac", "Test response in 0.61 s"]) + "  Model:   "),
                "block: through Darkbloom, then Done: \(run.text)")
         transcript("outcome-through-darkbloom", run.text, keys: run.keys)
 
@@ -2991,6 +3010,9 @@ import Darwin
             modes: [.init(mode: "tensor_parallel_v1", split: "this Mac 50% / the other Mac 50%", measuredTokensPerSecond: nil),
                     .init(mode: "pipeline_v1", split: "this Mac 6 layers / the other Mac 24 layers", measuredTokensPerSecond: 46.0)])]
 
+    /// The started card's log line: only a start that served ends with it (right under the ✓ block).
+    static let startedLogs = "  Logs:    ~/.darkbloom/cluster-setup/service.log\n"
+
     /// The commands every ending gives, as `darkbloom start` does.
     static let commandLines = "  darkbloom stop     Stop both Macs\n  darkbloom restart  Restart with the current model\n  darkbloom status   Check status\n"
 
@@ -3072,10 +3094,10 @@ import Darwin
         run.type("y")
         expect(run.finish() == 0, "switch: served")
         let text = run.text
-        let order = ["\nStart\n", "  \u{2713} " + D.stoppedLine("Qwen 3.8 27B"), "\u{2713} Serving Gemma 4 26B", "Cluster started on both Macs."]
+        let order = ["\nStart\n", "  \u{2713} " + D.stoppedLine("Qwen 3.8 27B"), "\u{2713} Serving Gemma 4 26B", "  Model:   Gemma"]
             .compactMap { text.range(of: $0)?.lowerBound }
         expect(order.count == 4 && order == order.sorted(), "switch: the stop, the block, then the card: \(text)")
-        expect(text.contains("Cluster started on both Macs.\n  Model:   Gemma 4 26B \u{00B7} pipeline (this Mac 32 layers / the other Mac 32 layers)\n"
+        expect(text.contains(ClusterOnboardingDriver.resultRule + "\n  Model:   Gemma 4 26B \u{00B7} pipeline (this Mac 32 layers / the other Mac 32 layers)\n"
             + "  Macs:    This Mac leads \u{00B7} the other Mac (Apple M3 Ultra, 256 GB) follows\n  Serves:  through Darkbloom\n"
             + "  Logs:    ~/.darkbloom/cluster-setup/service.log\n  Starts by itself at login on both Macs.\n\n" + commandLines),
                "switch: the card, like darkbloom start's: \(text)")
@@ -3274,7 +3296,7 @@ import Darwin
         expect(run.finish() == 0, "stopped: started")
         let mode = recorder.all.firstIndex(of: "useMode 1 tensor_parallel_v1"), adopted = recorder.all.firstIndex(of: "adopt 1")
         expect(mode != nil && adopted != nil && mode! < adopted! && recorder.all.contains("serve"), "stopped: tensor parallel kept, then started: \(recorder.all)")
-        expect(run.text.contains("Cluster started on both Macs.\n") && run.text.hasSuffix(commandLines) && !run.text.contains(D.switchAnswers[0]),
+        expect(run.text.contains(startedLogs) && run.text.hasSuffix(commandLines) && !run.text.contains(D.switchAnswers[0]),
                "stopped: nothing to confirm; the card: \(run.text)")
         transcript("leader-stopped-start-again", run.text, keys: run.keys)
 
@@ -3318,6 +3340,30 @@ import Darwin
                                pairServingResults: pairServingResults, statusSequence: statusSequence, followSeconds: followSeconds))
     }
 
+    /// The leader's serving line while its start still asks Darkbloom whether to offer the pair (`registrationPendingPID`
+    /// in the record the leader publishes): a pair served on the leader's API through Darkbloom, said with what is pending.
+    static let offerPendingLine = "Serving Qwen 3.8 27B (pipeline) at http://localhost:8000 on the other Mac (checking with Darkbloom before it offers the pair)."
+
+    /// Both windows tell the same truth: a leader that offers the pair late (its start's check with Darkbloom outlasting
+    /// any wait) never gives the Mac that joined an early ✓. It follows until the pair's own wait settles, then shows the
+    /// leader's ✗ (or ✓). Failing first on a63798006 (a 30 s hold, then ✓ from the API's serving line).
+    static func aLateOfferNeverGivesTheJoinedMacAnEarlyTick() {
+        let recorder = Recorder()
+        let late = [["Stopped."], ["Loading Qwen 3.8 27B: 1 of 2 parts ready."]] + Array(repeating: [offerPendingLine], count: 30)
+            + [["Qwen 3.8 27B: registering both Macs with the coordinator for pairing."],
+               [ClusterOnboardingNotServing.statusLine(model: "Qwen 3.8 27B", reason: notVerifiedTimed)]]
+        let run = joining(recorder, statusSequence: late, pairServingResults: [.failure(.init(notVerifiedTimed))])
+        expect(run.waitFor(codeQuestion), "late offer: the code"); run.type("y")
+        expect(run.finish(seconds: 30) == 1, "late offer: not serving is not success")
+        let text = run.text
+        expect(!text.contains("\u{2713} Serving") && !recorder.all.contains("testRequest"), "late offer: never an early ✓, nothing tested: \(text)")
+        expect(text.contains("  " + ClusterOnboardingReady.offeredLine(model: "Qwen 3.8 27B") + "\n")
+            && text.contains(block("\u{2717}", "Not serving: " + notVerifiedTimed + ".", [ClusterOnboardingNotServing.remedy(forReason: notVerifiedTimed) ?? "-"])),
+               "late offer: offered, then the leader's ✗: \(text)")
+        expect(text.hasSuffix(ClusterOnboardingDriver.retryOnLeaderLine(leaderName) + "\n"), "late offer: where to act: \(text)")
+        transcript("member-late-offer", text, keys: run.keys)
+    }
+
     /// O8, ✓: the Mac that joined waits for the leader's start, follows it and ends with the same ✓ block, then says the
     /// window may close. Never "Done here" right after pairing.
     static func joinedMacFollowsTheStartToServing() {
@@ -3337,19 +3383,19 @@ import Darwin
                "follow ✓: followed the status until it served (the pair answered its own first request): \(recorder.all)")
         transcript("member-follows-start-served", text, keys: run.keys)
 
-        // Serving on the leading Mac's API: held a moment (the leader may still offer the pair to Darkbloom), then tested.
+        // Serving on the leading Mac's API, its start done (no check with Darkbloom pending): tested at once, no hold.
         let local = Recorder()
         let api = joining(local, statusSequence: [["Stopped."], ["Serving Qwen 3.8 27B (pipeline) at http://localhost:8000 on the other Mac (earning through Darkbloom)."]])
         expect(api.waitFor(codeQuestion), "follow ✓ API: the code"); api.type("y")
         expect(api.finish() == 0, "follow ✓ API: exit 0")
         expect(api.text.hasSuffix(block("\u{2713}", "Serving Qwen 3.8 27B (pipeline) at http://localhost:8000 on the other Mac (earning through Darkbloom)",
             ["Test response in 0.61 s"]) + ClusterOnboardingDriver.closeWindowLine + "\n"), "follow ✓ API: tested, then the block: \(api.text)")
-        expect(local.all.filter { $0 == "status" }.count >= 3 && local.all.last == "testRequest", "follow ✓ API: held, then tested: \(local.all)")
+        expect(local.all.filter { $0 == "status" }.count >= 2 && local.all.last == "testRequest", "follow ✓ API: tested: \(local.all)")
 
-        // The leader offers the pair to Darkbloom after its test: no ✓ for the API's serving line; the pair's own wait.
+        // The leader offers the pair to Darkbloom after its test: no ✓ while its serving line says the check is pending;
+        // the pair's own wait.
         let offered = Recorder()
-        let pair = joining(offered, statusSequence: [["Stopped."],
-            ["Serving Qwen 3.8 27B (pipeline) at http://localhost:8000 on the other Mac (earning through Darkbloom)."],
+        let pair = joining(offered, statusSequence: [["Stopped."], [offerPendingLine],
             ["Stopped; last model Qwen 3.8 27B."], ["Qwen 3.8 27B: registering both Macs with the coordinator for pairing."],
             [ClusterOnboardingNotServing.statusLine(model: "Qwen 3.8 27B", reason: "waiting for the coordinator to pair both Macs")], [served]],
             pairServingResults: [.success(["in 0.84 s"])])

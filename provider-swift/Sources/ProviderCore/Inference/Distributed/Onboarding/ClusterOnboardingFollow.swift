@@ -10,13 +10,10 @@ public struct ClusterOnboardingFollowTiming: Sendable {
     /// The bound, as the leader's start waits for the pair (`OnboardingLive.pairServingSeconds`): for the leader to
     /// start, then for the start's outcome.
     public var seconds: Double
-    /// A pair on the leading Mac's API through Darkbloom may still be offered to Darkbloom right after the leader's test
-    /// (`register` asks the coordinator, within 10 s): its serving line is the outcome once it held this long.
-    public var settleSeconds: Double
     /// Between two looks at the cluster's status over the cable.
     public var pollSeconds: Double
-    public init(seconds: Double = 900, settleSeconds: Double = 30, pollSeconds: Double = 1) {
-        self.seconds = seconds; self.settleSeconds = settleSeconds; self.pollSeconds = pollSeconds
+    public init(seconds: Double = 900, pollSeconds: Double = 1) {
+        self.seconds = seconds; self.pollSeconds = pollSeconds
     }
 }
 
@@ -46,16 +43,16 @@ extension ClusterOnboardingDriver {
         case notStarted
         /// Loading, starting, or registering both Macs with the coordinator.
         case starting
-        /// Serving. `settled`: no later step of the start changes how (the pair the coordinator formed, or local only);
-        /// a pair on the leading Mac's API through Darkbloom may still be offered to Darkbloom after the leader's test.
-        case serving(settled: Bool)
+        /// Serving, as the start's outcome: while the leader's start still asks Darkbloom whether to offer the pair, its
+        /// serving line says so (`offerPendingWords`) and the start is not over.
+        case serving
         /// Offered to Darkbloom and not serving yet: the pair's own wait decides, as on the leading Mac (`pairServing`).
         case offered
     }
 
     static func followed(_ status: [String]) -> FollowedStart {
         guard let first = status.first else { return .notStarted }
-        if first.hasPrefix("Serving ") { return .serving(settled: first.contains(pairServedMarker) || first.hasSuffix(" (local only).")) }
+        if first.hasPrefix("Serving ") { return first.contains(ClusterOnboardingReady.offerPendingWords) ? .starting : .serving }
         if ClusterOnboardingNotServing.reason(inStatusLine: first) != nil { return .offered }
         let starting = first.hasPrefix("Loading ") || first.hasPrefix("Starting ") || first.contains(": registering both Macs")
         return starting ? .starting : .notStarted
@@ -72,7 +69,7 @@ extension ClusterOnboardingDriver {
         let looks = ClusterOnboardingMailbox<[String]>()
         var asking = false, asked = Date.distantPast
         let begun = Date()
-        var started: Date?, servingSince: Date?, latest: String?
+        var started: Date?, latest: String?
         while true {
             if !asking, Date().timeIntervalSince(asked) >= timing.pollSeconds {
                 asking = true
@@ -85,18 +82,14 @@ extension ClusterOnboardingDriver {
                 if started == nil, seen != .notStarted { started = Date() }
                 if started != nil, let first = status.first { latest = first.hasSuffix(".") ? String(first.dropLast()) : first }
                 switch seen {
-                case .serving(let settled):
-                    let since = servingSince ?? Date()
-                    servingSince = since
-                    if settled || Date().timeIntervalSince(since) >= timing.settleSeconds {
-                        console.settle()
-                        return followServed(status, leader: leader, operations, console)
-                    }
+                case .serving:
+                    console.settle()
+                    return followServed(status, leader: leader, operations, console)
                 case .offered:
                     console.settle()
                     return followPair(status, leader: leader, operations, console)
                 case .starting, .notStarted:
-                    servingSince = nil
+                    break
                 }
             }
             if let started, Date().timeIntervalSince(started) >= timing.seconds {

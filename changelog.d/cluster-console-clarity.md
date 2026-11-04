@@ -20,6 +20,7 @@
   says to run `darkbloom start` or `darkbloom cluster` there.
 - A fresh setup opens with what it will ask and how long it takes.
 - During the first setup the Mac that joins keeps its window open: it waits for the leading Mac to choose the model,
-  follows the start, and ends with the same ✓ or ✗ block ("Choose Retry on the other Mac" after ✗); q leaves and the
+  follows the start, and ends with the same ✓ or ✗ block ("Choose Retry on the other Mac" after ✗), also when the leading
+  Mac offers the pair to Darkbloom late (its status says so until it has); q leaves and the
   pair keeps going. The registration now reads "Offered to Darkbloom as a pair for <model>; waiting for Darkbloom to
   accept this pair…" instead of the approval line.

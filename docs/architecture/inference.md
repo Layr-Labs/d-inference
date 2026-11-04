@@ -308,7 +308,13 @@ with hardware names, is no longer on the screens, which say one serving line
 nothing more once paired, also for `darkbloom cluster local`
 (`ClusterOnboardingDriver.joinedLocalLine`): it follows the leader's start from the cluster status
 over the cable and ends with the same ✓/✗ block, bounded like the leader's start
-(`ClusterOnboardingDriver.followStart`, `ClusterOnboardingFollowTiming`). The model list keeps one line per
+(`ClusterOnboardingDriver.followStart`, `ClusterOnboardingFollowTiming`). Serving through Darkbloom, the
+leader's start asks the coordinator after its test whether to offer the pair; until it has, the setup record
+says so (`ClusterSetupRecord.registrationPendingPID`, set by `OnboardingLive.serve`, cleared by
+`localRegister`, a failed test or a stop, honoured only while that start's process runs) and the leader's
+status says the serving line "checking with Darkbloom before it offers the pair"
+(`ClusterOnboardingReady.offerPendingWords`), which the Mac that joins follows as a start not yet over. So a
+late offer never gives it an early ✓: offered, it waits on the pair as the leader does (`pairServing`). The model list keeps one line per
 artifact and name (`OnboardingLive.presentedChoices`): a choice that cannot be
 served is left out when another offers the same digests under the same name,
 and an artifact this build serves is never called unsupported for a copy the

@@ -698,6 +698,11 @@ public struct ClusterOnboardingReady: Codable, Sendable, Equatable {
     /// " (pipeline)" after the outcome's title; empty when the split is unknown or not shown plainly.
     private var splitMarker: String { ClusterOnboardingDeployment.shownMarker(split).map { " (\($0))" } ?? "" }
 
+    /// In the leading Mac's serving line while its start still asks Darkbloom whether to offer the pair (the record's
+    /// `registrationPendingPID`, set by the start's serve and cleared once `register` decides): the start is not over,
+    /// so the Mac that joined keeps following (`ClusterOnboardingDriver.followed`) and never shows an early ✓.
+    public static let offerPendingWords = "checking with Darkbloom before it offers the pair"
+
     /// How the line of a pair registered with the coordinator as a cluster member starts (`ClusterLocalServing`). It is
     /// a log line and a prefix matcher, never shown: the screen says `offeredLine(model:)`.
     public static let registeredNotice = "Registered with the coordinator as a cluster member"
@@ -1626,11 +1631,10 @@ public enum ClusterOnboardingDriver {
         for line in pairCommands { console.say("  " + line) }
     }
 
-    /// How a start ends, after start-truth's ✓ block, as `darkbloom start` does: the model in its mode and split, the
-    /// Macs, where requests go, the log, and the commands that control the pair.
+    /// How a start ends, right under start-truth's ✓ block (one success ending, the block its title), as `darkbloom start`
+    /// does: the model in its mode and split, the Macs, where requests go, the log, and the commands that control the pair.
     static func startedCard(model: String, ready: ClusterOnboardingReady, scope: ClusterServingScope, peer: String?,
                             _ operations: ClusterOnboardingOperations, _ console: ClusterOnboardingConsole) {
-        console.say("Cluster started on both Macs.")
         console.say("  Model:   " + model + (planWords(ready).map { " · " + $0 } ?? ""))
         console.say("  Macs:    " + pairLine(.leader, named: shownName(operations.thisMacName()), other: peer, cableReady: false))
         console.say(ready.servesLocallyOnly(scope: scope)
@@ -1827,6 +1831,12 @@ public enum ClusterOnboardingDriver {
             chosen = open[picked]
         }
         var choice = choices[chosen!]
+        // A model a Mac has no room for on disk now (#1766), or that cannot be copied or downloaded here, is refused before
+        // anything is asked or stopped, in `provision`'s one wording.
+        if let offer = choice.provision, offer.blocker != nil {
+            _ = provision(offer, title: choice.title, index: chosen!, operations, console)
+            return 1
+        }
         // How both Macs split it, when it runs more than one way here: the fastest measured on this pair first, the
         // other one keypress away (owner, 2026-11-04); the current model keeps the mode it serves in. A model named on
         // the command line takes that default.

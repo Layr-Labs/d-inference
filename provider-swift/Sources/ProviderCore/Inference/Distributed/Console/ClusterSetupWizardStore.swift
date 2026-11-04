@@ -93,6 +93,10 @@ public struct ClusterSetupRecord: Codable, Sendable, Equatable {
     /// Why the pair serves on the leader's local API although its coordinator offers a cluster approval (one line,
     /// `ClusterApprovalSync`); nil when it is offered for pairing or the coordinator offers none.
     public var approvalNote: String? = nil
+    /// The leading Mac's start that serves through Darkbloom and has not yet asked the coordinator whether to offer the
+    /// pair (its process id; `OnboardingLive.serve` sets it, `localRegister`, a failed test and a stop clear it): the
+    /// status says the start is not over while that process runs, so the Mac that joined never shows an early ✓.
+    public var registrationPendingPID: Int32? = nil
     /// The approval set aside while the pair serves locally (`ApprovalSetAside`); nil otherwise.
     public var approvalSetAside: ApprovalSetAside? = nil
 

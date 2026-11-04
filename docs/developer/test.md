@@ -1,6 +1,6 @@
 # Test Provider And Native Contracts
 
-> Last updated: 2026-11-03
+> Last updated: 2026-11-04
 
 Run isolated Swift, native-resource, public-fixture and landing tests here.
 Backend integration and cross-implementation qualification are platform-owned.
@@ -1257,6 +1257,21 @@ as every cluster process does.
 plan names each gated test in the sources once, and each runner under
 `libs/darkbloom-cluster/Tests` once. When you add an environment gate to a
 runtime test, add the test to a selection or to `REQUIRES_MODEL`.
+
+MLX picks kernels by Metal's name for the GPU (`applegpu_g15d` on an M3
+Ultra), and the Cluster GPU Tests compare kernels against MLX's choices. In a
+macOS VM, Metal names the paravirtual GPU `air64_*` (`air64_v27`), and MLX
+chooses as for a GPU older than the M1, although the host's GPU runs the
+kernels. In such a VM, `scripts/cluster-test-plan.py`
+(`architecture_environment`) starts each Cluster GPU Tests process with
+`MLX_METAL_GPU_ARCH` set to the host GPU's name. It reads the host's chip from
+the guest's `machdep.cpu.brand_string` (`Apple M3 Ultra (Virtual)`) and its
+name from `HOST_GPU_ARCHITECTURES` (`applegpu_g15d`). A value that the caller
+sets wins; an empty value keeps Metal's name. On a Mac, in a VM whose GPU
+Metal names `applegpu_*`, for a chip that the table does not name (a warning)
+and in the other lanes, the processes keep Metal's name. d-inference's own
+layouts (`AffineQuantizedVectors.architecture`) read the device's name, which
+the variable does not change.
 
 Build the runtime tests once (`swift build --package-path libs/darkbloom-cluster
 -c release --build-tests --triple arm64-apple-macosx26.2 -Xcc -target -Xcc

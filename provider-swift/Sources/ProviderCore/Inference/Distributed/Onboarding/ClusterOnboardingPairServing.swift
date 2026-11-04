@@ -63,6 +63,33 @@ public enum ClusterOnboardingPairReport {
     }
 }
 
+/// The live rows while the parts load: the first row is the wait itself, then one row per Mac ("This Mac: loading
+/// its share"), each with the time since the wait began; a Mac's time stops when it is first seen ready. A progress
+/// report carries the Mac rows after its first line, one per line. No bar or percent: no real fraction is reported.
+public struct ClusterOnboardingLoadRows: Sendable {
+    public let started: Date
+    private var readyAt: [String: Date] = [:]
+
+    public init(started: Date) { self.started = started }
+
+    public mutating func rows(_ title: String, report: String?, now: Date) -> [String] {
+        let parts = report?.components(separatedBy: "\n").filter { !$0.isEmpty } ?? []
+        let head = (parts.first.map { "\(title) (\($0))" } ?? title) + " \u{00B7} " + Self.elapsed(now.timeIntervalSince(started))
+        return [head] + parts.dropFirst().map { row in
+            let mac = row.components(separatedBy: ": ").first ?? row
+            if row.hasSuffix(": ready"), readyAt[mac] == nil { readyAt[mac] = now }
+            let end = row.hasSuffix(": ready") ? readyAt[mac] ?? now : now
+            return row + " \u{00B7} " + Self.elapsed(end.timeIntervalSince(started))
+        }
+    }
+
+    /// "48 s", "1 min 15 s".
+    static func elapsed(_ seconds: Double) -> String {
+        let whole = max(0, Int(seconds.rounded(.down)))
+        return whole < 60 ? "\(whole) s" : "\(whole / 60) min \(whole % 60) s"
+    }
+}
+
 /// Why a pair the coordinator forms does not serve, in one plain line for the screens, with what to do. The words come
 /// from what the two Macs know: their Darkbloom login, the coordinator's trust status for each member (App Attest),
 /// the guidance of the incident a failed start recorded, and a coordinator refusal reason when one reaches them.
@@ -73,8 +100,22 @@ public enum ClusterOnboardingNotServing {
             + "so the coordinator won't pair \(macs.count == 1 ? "it" : "them")"
     }
 
-    public static func notVerified(_ mac: String) -> String {
-        "Darkbloom hasn't verified \(mac) for private serving yet (App Attest)"
+    /// The coordinator pairs only members Apple has verified (App Attest). `retryAt`: when this Mac's local
+    /// key-generation safeguard lets Darkbloom try again, said in local time; unknown, "within minutes". A restart
+    /// meanwhile cut an attestation once (an end user's M4 pair, 2026-11-03), so the line asks to leave both Macs alone.
+    public static func notVerified(_ mac: String, retryAt: Date? = nil, timeZone: TimeZone = .current) -> String {
+        let when = retryAt.map { "at about " + clock($0, timeZone: timeZone) } ?? "within minutes"
+        return "\(ClusterOnboardingMacName.sentence(mac)) isn't verified by Apple yet; Darkbloom retries by itself \(when). "
+            + "Don't restart either Mac until then"
+    }
+
+    /// "00:34": hours and minutes in `timeZone`.
+    static func clock(_ date: Date, timeZone: TimeZone) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = timeZone
+        formatter.dateFormat = "HH:mm"
+        return formatter.string(from: date)
     }
 
     public static func lacksMemory(_ mac: String) -> String { "\(ClusterOnboardingMacName.sentence(mac)) lacks free memory for its share" }
@@ -103,9 +144,7 @@ public enum ClusterOnboardingNotServing {
     /// What to do next, said under the reason (the choices follow it).
     public static func remedy(forReason line: String) -> String? {
         if line.contains("logged in to Darkbloom") { return "Run `darkbloom login` on each Mac named, then Retry; or serve locally only." }
-        if line.contains("(App Attest)") {
-            return "Keep both Macs logged in and running Darkbloom; it is verified within minutes. Retry then, or serve locally only."
-        }
+        if line.contains("isn't verified by Apple yet") { return "Then choose Retry, or serve locally only now." }
         if line.contains("lacks free memory") { return "Quit apps on that Mac, then Retry; or change the model." }
         return nil
     }

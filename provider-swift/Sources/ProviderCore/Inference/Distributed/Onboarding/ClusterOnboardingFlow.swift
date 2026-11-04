@@ -294,6 +294,21 @@ public struct ClusterOnboardingModelChoice: Codable, Sendable, Equatable {
     }
 }
 
+/// A start's pending check with Darkbloom (`ClusterSetupRecord.registrationPendingPID`), as the leader's status reads it:
+/// pending while that start's process runs. A start that died before it asked leaves its pid behind; it is cleared once
+/// seen dead, and only while the record still holds that pid, so a new start's pid is never wiped (and a reused pid
+/// never reads as a pending check later).
+public enum ClusterOnboardingPendingRegistration {
+    /// Whether the recorded pid counts, and the pid to clear because its process is gone.
+    public static func look(_ recorded: Int32?, alive: (Int32) -> Bool) -> (pending: Bool, clear: Int32?) {
+        guard let pid = recorded else { return (false, nil) }
+        return alive(pid) ? (true, nil) : (false, pid)
+    }
+
+    /// The record's pid once `dead` is cleared: unchanged unless it still holds `dead`.
+    public static func cleared(_ current: Int32?, dead: Int32) -> Int32? { current == dead ? nil : current }
+}
+
 /// One way both Macs can run a model (owner, 2026-11-04: tensor parallel and pipeline both offered, the fastest measured
 /// on this pair by default, the other one keypress away): the planner's mode, each Mac's share in the screen's words,
 /// and the decode speed this pair served it at when it has (`ClusterServedModes`), never an estimate.
@@ -1128,7 +1143,7 @@ public enum ClusterOnboardingDriver {
     /// Said once this Mac unpaired: the other Mac still holds the old pairing until it pairs again too. This Mac no
     /// longer answers it, so it offers Start over (or Pair again, when its own pairing cannot be used either).
     public static let otherMacPairAgainLine =
-        "On the other Mac, run `darkbloom cluster` too; if it offers Start over (pair again) or Pair again, choose it."
+        "On the other Mac, run `darkbloom cluster` too; if it offers Start over or Pair again, choose it."
 
     /// What every paired Mac offers while its pairing works (the leader in its list, the member under its next step):
     /// unpair, then pair again from the start, after one confirmation (No is the default).
@@ -1637,11 +1652,52 @@ public enum ClusterOnboardingDriver {
     /// does: the model in its mode and split, the Macs, where requests go, the log, and the commands that control the pair.
     static func startedCard(model: String, ready: ClusterOnboardingReady, scope: ClusterServingScope, peer: String?,
                             _ operations: ClusterOnboardingOperations, _ console: ClusterOnboardingConsole) {
-        console.say("  Model:   " + model + (planWords(ready).map { " · " + $0 } ?? ""))
+        pairCard(model: model, how: planWords(ready), serves: ready.servesLocallyOnly(scope: scope)
+            ? "Local:   http://localhost:\(ready.port)" + (ready.servedBy == ClusterOnboardingMacName.this ? "" : " on \(ready.servedBy)")
+            : "Serves:  through Darkbloom", peer: peer, operations, console)
+    }
+
+    /// The model the pair serves, chosen again in its mode and scope: one test request, the start's, and its result. A
+    /// failed test leaves the pair marked serving, so this is how `darkbloom cluster` tests again. Passed: the result in
+    /// the ✓ block, then the card; failed: the start's ✗ block and its choices; a pair served only through Darkbloom has
+    /// no local API on this Mac to test from, said plainly, then the pair's own status (from both Macs' reports).
+    static func testServing(_ title: String, mode: String?, pair: ClusterOnboardingResume, peer: String?, startOverRequest: ClusterOnboardingRequest?,
+                            _ operations: ClusterOnboardingOperations, _ console: ClusterOnboardingConsole) -> Int32 {
+        while true {
+            switch busy(console, "Sending a test request", operations.testRequest) {
+            case .success(let lines):
+                console.result(true, "Already serving \(title); test response" + (lines.first.flatMap { $0.isEmpty ? nil : " " + $0 } ?? ""), [])
+                pairCard(model: title, how: mode.map(ClusterOnboardingDeployment.modeWords),
+                         serves: pair.scope.isLocalOnly ? "Serves:  locally only, on this Mac's API" : "Serves:  through Darkbloom",
+                         peer: peer, operations, console)
+                return 0
+            case .failure(let failure) where failure.lines.first == ClusterOnboardingReady.offeredTestLine:
+                console.say("Already serving \(title) through Darkbloom; this Mac has no local API to send a test from.")
+                unchangedEnding(operations, console)
+                return 0
+            case .failure(let failure):
+                switch notServing(failure.lines, operations, console) {
+                case .retry: continue
+                case .changeModel:
+                    return chooseAndServe(operations, console, scope: pair.scope, startOverRequest: startOverRequest, peer: peer, heading: "Change model")
+                case .localOnly:
+                    return changeScope(to: .localOnly(bind: ClusterServingScope.localOnlyDefaultBind), pair, startOverRequest: startOverRequest,
+                                       operations, console)
+                case .leave:
+                    console.say(notServingLastLine)
+                    return 1
+                }
+            }
+        }
+    }
+
+    /// The card's lines under a ✓ block: the model in its mode (and split, after a start), the Macs, where requests go,
+    /// the log, and the commands that control the pair.
+    static func pairCard(model: String, how: String?, serves: String, peer: String?,
+                         _ operations: ClusterOnboardingOperations, _ console: ClusterOnboardingConsole) {
+        console.say("  Model:   " + model + (how.map { " · " + $0 } ?? ""))
         console.say("  Macs:    " + pairLine(.leader, named: shownName(operations.thisMacName()), other: peer, cableReady: false))
-        console.say(ready.servesLocallyOnly(scope: scope)
-            ? "  Local:   http://localhost:\(ready.port)" + (ready.servedBy == ClusterOnboardingMacName.this ? "" : " on \(ready.servedBy)")
-            : "  Serves:  through Darkbloom")
+        console.say("  " + serves)
         console.say("  Logs:    " + serviceLogPath)
         console.say("  " + (operations.serviceOutlivesWindow() ? "Starts by itself at login on both Macs."
                                                               : "Keep both windows open: this build's cluster service stops with them."))
@@ -1859,9 +1915,7 @@ public enum ClusterOnboardingDriver {
         // A pair that serves another model stops it for this one: said and confirmed first (No by default).
         if let serving, let currentTitle = serving.modelTitle ?? serving.modelName {
             if chosen == current, mode == serving.servingMode, scope == serving.scope {
-                console.say("Already serving \(choice.title); nothing changed.")
-                unchangedEnding(operations, console)
-                return 0
+                return testServing(choice.title, mode: mode, pair: serving, peer: peer, startOverRequest: startOverRequest, operations, console)
             }
             console.say("  " + switchQuestion(to: choice.title, from: currentTitle))
             guard console.choose(switchAnswers, selected: 1) == 0 else {
@@ -1990,7 +2044,7 @@ public enum ClusterOnboardingDriver {
                 return 0
             case .testFailed:
                 console.say("")
-                console.say("Setup saved, but the test failed. Run `darkbloom cluster` to test again.")
+                console.say("Setup saved, but the test failed. To test again, run `darkbloom cluster` and choose \(title): it sends one test request.")
                 return 1
             case .notServing(let lines):
                 switch notServing(lines, operations, console) {

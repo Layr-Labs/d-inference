@@ -173,8 +173,9 @@ recovery steps stay in scrollback, and no credential is printed: the API key lin
 names `darkbloom local`, which shows it.
 
 Setup reports completion only after the test response succeeds. If that request
-fails, the saved setup remains available: run `darkbloom cluster` on the leader,
-press Enter on the model it lists first: the start sends its test request again.
+fails, the saved setup remains available: run `darkbloom cluster` on the leader
+and choose the model it serves (preselected, so Enter): it sends one test request
+and shows the result.
 
 After setup, `darkbloom cluster` works like `darkbloom start`; on a paired Mac,
 `darkbloom start` opens the same screen, and `darkbloom stop`, `restart` and
@@ -209,8 +210,14 @@ first (else the planner's), the other one keypress away:
 - **Speculative pipeline** (MiMo): a pipeline that drafts several tokens and
   checks them together.
 
-Choosing the model that serves, in its mode, says "Already serving Qwen 3.8
-27B; nothing changed." Choosing another while one serves asks once ("Switch to
+Choosing the model that serves, in its mode, sends one test request, the same as
+a start's, and changes nothing else: "Already serving Qwen 3.8 27B; test response
+in 0.61 s" in the ✓ block, then the card; a failed test shows the ✗ block with
+**Retry**, **Change model**, **Serve locally only** and **Diagnostics**. A pair
+served only through Darkbloom has no local API on this Mac to send a test from;
+the screen says so ("Already serving Qwen 3.8 27B through Darkbloom; this Mac has
+no local API to send a test from.") and shows the pair's status as both Macs
+report it. Choosing another while one serves asks once ("Switch to
 Gemma 4 26B? Qwen 3.8 27B stops serving on both Macs while Gemma 4 26B loads …",
 **No** by default), then says "✓ Stopped Qwen 3.8 27B on both Macs" and shows
 each Mac's load. The steps are headed **Model** and **Start**; the numbered "1/4

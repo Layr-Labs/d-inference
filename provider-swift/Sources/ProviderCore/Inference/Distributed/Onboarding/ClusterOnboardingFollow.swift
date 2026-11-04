@@ -135,7 +135,7 @@ extension ClusterOnboardingDriver {
                 let first = failure.lines.first ?? "The test request failed"
                 console.result(false, ClusterOnboardingNotServing.title(reason: first.hasSuffix(".") ? String(first.dropLast()) : first),
                                Array(failure.lines.dropFirst()))
-                console.say("On \(ClusterOnboardingMacName.other(named: leader)), run `darkbloom cluster` to test again.")
+                console.say("To test again, run `darkbloom cluster` on \(ClusterOnboardingMacName.other(named: leader)) and choose the model it serves.")
                 return 1
             }
         }

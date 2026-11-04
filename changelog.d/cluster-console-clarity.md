@@ -10,7 +10,9 @@
 - A line under the models switches between local only and serving through Darkbloom (both logins are checked first,
   before the local API stops); another starts over after one question.
 - Choosing another model while one serves asks once, then says "✓ Stopped … on both Macs" and shows each Mac's load.
-  The serving model in its mode says "Already serving …; nothing changed."
+  Choosing the serving model in its mode sends one test request and shows its result ("Already serving …; test
+  response in 0.61 s", or the ✗ block with its choices); a pair served only through Darkbloom says this Mac has no local
+  API to test from.
 - Every start ends like `darkbloom start`: the outcome block, then the model in its mode and split, the Macs, where it
   serves, the log, "Starts by itself at login on both Macs.", and `darkbloom stop` / `restart` / `status`. A pair that
   does not serve keeps its ✗ block with Retry, Change model, Serve locally only and Diagnostics.

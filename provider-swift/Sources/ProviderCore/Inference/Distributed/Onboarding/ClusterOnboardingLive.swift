@@ -1309,8 +1309,12 @@ final class OnboardingLive: @unchecked Sendable {
 
     /// The record's pending registration, while the start that set it runs.
     var registrationPending: Bool {
-        guard let pid = (try? store.readRecord())?.registrationPendingPID else { return false }
-        return kill(pid, 0) == 0 || errno == EPERM
+        let seen = ClusterOnboardingPendingRegistration.look((try? store.readRecord())?.registrationPendingPID) { kill($0, 0) == 0 || errno == EPERM }
+        if let dead = seen.clear {
+            // That start ended before it asked the coordinator: compare-and-clear, so a new start's pid stays.
+            try? store.updateRecord { $0.registrationPendingPID = ClusterOnboardingPendingRegistration.cleared($0.registrationPendingPID, dead: dead) }
+        }
+        return seen.pending
     }
 
     func setScope(_ scope: ClusterServingScope) -> Result<[String], ClusterOnboardingFailure> {

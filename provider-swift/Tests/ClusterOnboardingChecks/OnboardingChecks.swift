@@ -132,6 +132,8 @@ import Darwin
         memberScreenSaysWhoLeadsAndWhatToRun()
         switchAsksOnceThenEndsLikeStart()
         qAtTheListChangesNothing()
+        alreadyServingTestsAgainOrSaysWhyNot()
+        aDeadPendingStartIsClearedOnlyWhileStillRecorded()
         modeChoiceOffersBothWithTheFastestMeasuredFirst()
         modelListMarksTheCurrentModelAndMeasuredSpeeds()
         firstRunSaysWhatWillBeAsked()
@@ -354,8 +356,8 @@ import Darwin
         expect(run.waitFor(prompt(2)), "failed test: choose model")
         run.type("\r")
         expect(run.finish() == 1, "failed test returns failure")
-        expect(run.text.hasSuffix("Setup saved, but the test failed. Run `darkbloom cluster` to test again.\n"),
-               "failure is explicit and ends with its next action")
+        expect(run.text.hasSuffix("Setup saved, but the test failed. To test again, run `darkbloom cluster` and choose Qwen3.8-27B-4bit-mtp: "
+            + "it sends one test request.\n"), "failure is explicit and ends with its next action, which tests: \(run.text)")
         expect(!run.text.contains(startedLogs), "failed response never reports setup success")
         expect(recorder.all.suffix(3) == ["serve", "waitReady", "testRequest"], "readiness and actual test still run")
     }
@@ -2617,7 +2619,7 @@ import Darwin
     }
 
     /// End user, 2026-11-03 (c): starting from scratch took wiping the config by hand. Every paired Mac whose pairing
-    /// works offers Start over (pair again) with one confirmation, No by default: the leader before Quit in its list,
+    /// works offers Start over with one confirmation, No by default: the leader under its models,
     /// the member as its one choice. It unpairs as Pair again does, then pairs. A fresh setup is unchanged.
     static func startOverIsAlwaysOfferedWithOneConfirmation() {
         let recorder = Recorder()
@@ -3040,10 +3042,53 @@ import Darwin
         run.type("\r")
         expect(run.finish() == 0, "already serving: exit 0")
         let text = run.text
-        expect(text.contains("Already serving Qwen 3.8 27B; nothing changed.\n") && text.hasSuffix(servingBlock + "\n" + commandLines),
-               "already serving: said, then the status block and the commands: \(text)")
-        expect(!recorder.all.contains { $0.hasPrefix("adopt") || $0 == "serve" || $0 == "stop" }, "already serving: nothing run: \(recorder.all)")
+        expect(text.hasSuffix(block("\u{2713}", "Already serving Qwen 3.8 27B; test response in 0.61 s", [])
+            + "  Model:   Qwen 3.8 27B \u{00B7} tensor parallel\n  Macs:    This Mac (Studio A) leads \u{00B7} the other Mac (Apple M3 Ultra, 256 GB) follows\n"
+            + "  Serves:  through Darkbloom\n" + startedLogs + "  Starts by itself at login on both Macs.\n\n" + commandLines),
+               "already serving: one test, its result in the block, then the details and the commands: \(text)")
+        expect(recorder.all.filter { $0 == "testRequest" }.count == 1 && !recorder.all.contains { $0.hasPrefix("adopt") || $0 == "serve" || $0 == "stop" },
+               "already serving: one test request, nothing started or stopped: \(recorder.all)")
         transcript("leader-already-serving", text, keys: run.keys)
+    }
+
+    /// The serving model chosen again tests it ("run `darkbloom cluster` to test again" leads here): a failed test is the
+    /// start's ✗ block with its choices; a pair served only through Darkbloom has no local API here, said plainly.
+    static func alreadyServingTestsAgainOrSaysWhyNot() {
+        let failing = Recorder()
+        let fail = TerminalRun(operations(failing, resume: qwenServing, pairEvents: [], pairResult: .failed([]), choices: switchChoices,
+            testResult: .failure(.init(["Test response timed out."]))))
+        expect(fail.waitFor(prompt(4)), "test again, fail: the list"); fail.type("\r")
+        expect(fail.waitFor(notServingChoices), "test again, fail: the choices"); fail.type("q")
+        expect(fail.finish() == 1, "test again, fail: exit 1")
+        expect(fail.text.contains(block("\u{2717}", "Not serving: Test response timed out.", []) + notServingChoices)
+            && !fail.text.contains("Already serving") && failing.all.filter { $0 == "testRequest" }.count == 1,
+               "test again, fail: the ✗ block and its choices after one test: \(fail.text)")
+        transcript("leader-already-serving-test-fails", fail.text, keys: fail.keys)
+
+        let offered = Recorder()
+        let pair = TerminalRun(operations(offered, resume: qwenServing, pairEvents: [], pairResult: .failed([]), choices: switchChoices,
+            testResult: .failure(.init([ClusterOnboardingReady.offeredTestLine]))))
+        expect(pair.waitFor(prompt(4)), "test again, no local API: the list"); pair.type("\r")
+        expect(pair.finish() == 0, "test again, no local API: exit 0")
+        expect(pair.text.contains("Already serving Qwen 3.8 27B through Darkbloom; this Mac has no local API to send a test from.\n")
+            && pair.text.hasSuffix(servingBlock + "\n" + commandLines) && !pair.text.contains("\u{2717}"),
+               "test again, no local API: said plainly, then the pair's status and the commands: \(pair.text)")
+        transcript("leader-already-serving-no-local-api", pair.text, keys: pair.keys)
+    }
+
+    /// A start that died before it asked Darkbloom leaves its pid in the record: the status clears it once its process
+    /// is gone, and only while the record still holds that pid (a new start's pid is never wiped).
+    static func aDeadPendingStartIsClearedOnlyWhileStillRecorded() {
+        typealias P = ClusterOnboardingPendingRegistration
+        let dead = P.look(4242, alive: { _ in false })
+        expect(!dead.pending && dead.clear == 4242, "pending pid: a dead start's pid is not pending and is cleared")
+        let running = P.look(5151, alive: { _ in true })
+        expect(running.pending && running.clear == nil, "pending pid: a running start's pid stays pending")
+        let none = P.look(nil, alive: { _ in true })
+        expect(!none.pending && none.clear == nil, "pending pid: none recorded")
+        expect(P.cleared(4242, dead: 4242) == nil, "pending pid: cleared while the record still holds it")
+        expect(P.cleared(5151, dead: 4242) == 5151, "pending pid: a new start's pid is kept")
+        expect(P.cleared(nil, dead: 4242) == nil, "pending pid: nothing to clear")
     }
 
     /// q (or Esc) at the list changes nothing: the status block again and the commands; exit 0.

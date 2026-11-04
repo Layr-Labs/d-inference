@@ -9,9 +9,9 @@
   by itself; don't restart either Mac until then), a Mac without free memory for its share, or a part that keeps
   ending. **Retry**, **Change model**, **Serve locally only** and **Diagnostics** follow; q exits with status 1 and
   never says Done.
-- **Serve through Darkbloom** and **Serve locally only** in the leader's menu now end the same way: tested (or, for a pair
-  registered with the coordinator, awaited until it serves), then the outcome block. Before, from the menu, a registered
-  pair was called serving at once.
+- Switching a serving pair between serving through Darkbloom and locally only, from the leading Mac, now ends the same
+  way as a start: tested (or, for a pair registered with the coordinator, awaited until it serves), then the outcome
+  block. Before, a registered pair was called serving at once.
 - A missing login is named before the Start step starts anything, with **Log in on this Mac** (or **Check again**),
   **Serve locally only** and **Cancel**.
 - The Start step says loading takes a few minutes for a large model; a color terminal shows one live row per Mac with

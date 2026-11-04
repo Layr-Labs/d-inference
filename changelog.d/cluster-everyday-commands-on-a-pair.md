@@ -52,3 +52,6 @@
   so when it is slow; past that they show this Mac's own view.
 - `darkbloom unenroll` (leaving fully) and the app's local mode no longer stop with an internal error when they stop or
   drain the provider first.
+- `status` and `cluster status` no longer say "loading" while macOS keeps a Mac off the local network: both Macs say
+  the pair is not serving and what to turn on, on which Mac. A stopped pair reads stopped even when the other Mac has
+  gone.

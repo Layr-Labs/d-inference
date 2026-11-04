@@ -829,7 +829,7 @@ drained for an update yet: its update waits while it serves (the log says
   ([listeners](../architecture/inference.md#cluster-service-listeners-follow-the-cable-and-the-pairing)).
   If the other Mac still refuses the connection (`refused (handshakeRejected)`),
   restart its service, since one an earlier release started keeps the earlier
-  pairing: on that Mac, run `darkbloom cluster stop`, then `darkbloom cluster`.
+  pairing: on that Mac, run `darkbloom cluster stop --service`, then `darkbloom cluster`.
 - **A part keeps ending the same way**: after three identical ends the screen
   says it and offers **Save diagnostics for Darkbloom**; both Macs
   keep trying by themselves.
@@ -856,6 +856,24 @@ drained for an update yet: its update waits while it serves (the log says
   your home folder (no keys, addresses or names in it; nothing is written if any
   would remain).
 
+## Stopping and starting again
+
+Once the pair is set up, the everyday commands control it, on either Mac, as
+they control single-Mac serving on one Mac
+([CLI reference](cli-reference.md#darkbloom-cluster-status)):
+
+| Command | On a Mac in the pair |
+|---|---|
+| `darkbloom stop` (or `darkbloom cluster stop`) | Stops serving on both Macs. They stay stopped after a restart, and both cluster services stay up, idle, so the next start needs no visit to the other Mac. It ends with `Memory freed on both Macs ✓` |
+| `darkbloom start` | In a terminal, the same screen as `darkbloom cluster`. In a script, starts the saved model on both Macs and waits until it serves |
+| `darkbloom restart` | Stops and starts the pair with its current model |
+| `darkbloom status` (or `darkbloom cluster status`) | The pair first: who leads, the model, whether it serves now and what to do |
+
+Each says first that it acts on the pair. `--solo` on any of them acts on
+single-Mac serving on this Mac only and never touches the pair. If the leading
+Mac doesn't answer, `darkbloom stop` says so and that
+`darkbloom cluster stop --local-only` stops this Mac alone.
+
 ## Undo
 
 `darkbloom cluster link --remove` on each Mac restores the cable port's earlier
@@ -863,9 +881,9 @@ network settings (one approval). `darkbloom cluster pair --forget <pin>` removes
 a pairing. Run on the leader, it first tells the other Mac over the cable, which
 removes the pair's prompt-cache records (its own single-Mac cache stays) and
 stops its part; each Mac also removes its own pair records when it unpairs.
-`darkbloom cluster stop` stops a Mac's cluster service and keeps it from starting
-at login. On the leader it stops the pair first. When the other Mac is gone for
-good, `darkbloom cluster stop --local-only` stops only this one.
+`darkbloom cluster stop --service` stops a Mac's cluster service and keeps it
+from starting at login. On the leader it stops the pair first. When the other
+Mac is gone for good, `darkbloom cluster stop --local-only` stops only this one.
 
 ## Cache settings
 

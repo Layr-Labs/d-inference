@@ -257,18 +257,18 @@ request answered. Otherwise its line names why
 
 ## Everyday commands on a Mac in a two-Mac cluster
 
-`darkbloom stop`, `start` and `restart` manage single-Mac serving; the cluster is
-managed with `darkbloom cluster` and `darkbloom cluster stop`
+On a paired Mac `darkbloom stop`, `start`, `restart` and `status` control the pair;
+`--solo` manages single-Mac serving on this Mac
 ([CLI reference](cli-reference.md#darkbloom-cluster-status)).
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `darkbloom stop` prints `` `darkbloom stop` stops single-Mac serving, and none runs on this Mac: nothing was stopped. `` | The Mac serves in its cluster; `stop` never drains the cluster's part (`Stop.pairedStop`) | `darkbloom cluster stop` (both Macs stop), or Stop in `darkbloom cluster` on the leading Mac |
-| `darkbloom start` prints `Single-Mac serving next to it would compete for this Mac's memory.` | The cluster service runs on this Mac (`Start.pairGuard`) | Stop the cluster first (`darkbloom cluster stop`), or pass `--solo` to serve on this Mac too |
+| `darkbloom stop` says `stopping both Macs` on a Mac in a cluster | On a paired Mac `stop` controls the pair, as on one Mac it controls single-Mac serving (`Stop.pairedStop`) | Expected: both Macs stop and stay stopped; `darkbloom start` on either Mac starts the pair again. `darkbloom stop --solo` stops single-Mac serving only |
+| `darkbloom start` opens the cluster's screen, or in a script ends with `✗ Not serving: …` | On a paired Mac `start` starts the pair (`Start.pairStart`); a script gets `darkbloom cluster status`'s exit status | Follow the result block's `Next:` line. `darkbloom start --solo` serves this Mac alone |
 | Is the pair serving? Why not? | `darkbloom cluster` needs a terminal | `darkbloom cluster status` (or `--json`; exit 0 only while it serves) |
 | `This Mac's pairing record couldn't be read (…), so it may be in a two-Mac cluster.` (`cluster status` exit 7) | The pairing store can't be read (a damaged or unsafe file); the commands treat the Mac as maybe in a cluster, so `start` and `restart` need `--solo` (`ClusterPairSummary.membership`) | `darkbloom cluster` on this Mac checks the pairing |
 | `darkbloom cluster link --remove` asks `Remove it? [y/N]` | The Mac is paired; removing the port setup stops the cluster on both Macs until it is set up again | Answer `n` unless the cable port must go; never remove it because of a doctor line alone. `--yes` for scripts |
-| On the Mac that follows, `darkbloom cluster stop` says it stops the cluster on both Macs | The leading Mac stops both Macs' parts, as the menu's Stop does (`Cluster.Stop.pairStop`) | Expected. `--local-only` stops this Mac alone (the other Mac then serves alone, or waits) |
+| `darkbloom stop` on the Mac that follows says the other Mac didn't answer, and `Nothing was stopped on this Mac.` | The leading Mac stops both Macs, and it isn't answering (`ClusterPairCommands.stop`) | Wake or log in to the leading Mac and run it again, or `darkbloom cluster stop --local-only` to stop this Mac alone |
 
 ## Missing base reward
 

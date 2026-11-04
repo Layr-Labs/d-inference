@@ -1,6 +1,6 @@
 # Install, update, and uninstall the provider
 
-> Last updated: 2026-11-02
+> Last updated: 2026-11-04
 
 How to put the `darkbloom` CLI on an Apple Silicon Mac with `scripts/install.sh`,
 what the script verifies before it touches an existing install, how the binary
@@ -224,7 +224,7 @@ in `~/.darkbloom/recovery/predecessor/` (`provider-swift/Sources/ProviderCore/Up
 back to it on one Mac, with automatic updates left on:
 
 1. On a Mac that serves in a `darkbloom cluster` pair, first stop its cluster
-   service with `darkbloom cluster stop`, roll it back, then start it again
+   service with `darkbloom cluster stop --service`, roll it back, then start it again
    with `darkbloom cluster`. The other Mac follows the rollback to the same
    release by itself ([the pair's coordinated update](./cluster-always-on.md#a-rollback-on-one-mac)).
    For a cluster-member provider service, stop it with `darkbloom stop` and

@@ -70,9 +70,10 @@ enum ClusterSetupPlanning {
         }
     }
 
-    /// What loads when a mode is chosen: each Mac's share.
+    /// What loads when a mode is chosen: each Mac's share, and the requests the pair then serves at once.
     struct Loads: Sendable, Equatable {
         var shares: [ClusterSetupPlanSummary.Mode.Share]
+        var concurrentRequests: Int?
     }
 
     /// The modes the question offers, each with what loads when it is chosen: the listed plan's split for the listed
@@ -83,17 +84,27 @@ enum ClusterSetupPlanning {
         modes.map { mode in
             guard let raw = ClusterGenerationMode(rawValue: mode.mode),
                   let family = ClusterForcedMode.allCases.first(where: { $0.admits(raw) }) else { return mode }
+            let loads = family.admits(listedMode) ? listed : families[family] ?? Loads(shares: [], concurrentRequests: nil)
             var offered = mode
-            offered.shares = (family.admits(listedMode) ? listed : families[family])?.shares ?? []
+            offered.shares = loads.shares
+            offered.concurrentRequests = loads.concurrentRequests
             return offered
         }
     }
 
-    /// What `placement` loads: each rank's share, named for the Mac that runs it.
-    static func loads(_ placement: ClusterPlacementCandidate, localMemberID: String) -> Loads {
-        .init(shares: placement.ranks.enumerated().map { index, rank in
+    /// What `placement` loads: each rank's share, named for the Mac that runs it, and the requests its setup serves at
+    /// once (`DistributedInstalledPlan.batchLanes`, without the diagnostic switch); nil when the setup can't be read.
+    static func loads(_ placement: ClusterPlacementCandidate, setup: ClusterPlacementSetup?, localMemberID: String,
+                      capability: (record: ClusterRuntimeCapability, data: Data, sha256: String)) -> Loads {
+        let shares = placement.ranks.enumerated().map { index, rank in
             ClusterSetupPlanSummary.Mode.Share(local: rank.device == localMemberID, firstLayer: rank.firstLayer, endLayer: rank.endLayer,
                 share: placement.mode.usesTensorParallelPrefill ? (placement.shares?[index] ?? 1 / Double(placement.ranks.count)) : nil)
+        }
+        let configuration = setup?.configurations[localMemberID].flatMap {
+            try? ClusterConfigurationCodec.decode($0, capability: capability.record, capabilitySHA256: capability.sha256)
+        }
+        return .init(shares: shares, concurrentRequests: configuration.map {
+            DistributedInstalledPlan.batchLanes(configuration: $0, capability: capability.record, environment: [:]) ?? 1
         })
     }
 
@@ -243,8 +254,8 @@ enum ClusterSetupPlanning {
                     artifactSHA256: capability.record.artifactSHA256, mode: chosen.mode,
                     tensorAssistant: assistantQuote?.assistant != nil && chosen.mode == .tensorParallel)
                 // Each other way the question offers is planned now as the start plans it once chosen (`chosenModes`),
-                // from the same samples, and that plan is the one the start adopts: the split the question shows is the
-                // one that loads (R4-13: GLM's pipeline was offered 1 / 44 from this plan's
+                // from the same samples, and that plan is the one the start adopts: the split and the requests at once
+                // the question shows are the ones that load (R4-13: GLM's pipeline was offered 1 / 44 from this plan's
                 // assessment, and the start's own plan in that mode, with this Mac's speed measured again, loaded 44 / 1).
                 var families: [(family: ClusterForcedMode, plan: ClusterSetupPlanSummary, setup: ClusterPlacementSetup, loads: Loads)] = []
                 if let listed = plan.modes, listed.count > 1, chosenModes[reading.model.modelID] == nil {
@@ -255,9 +266,10 @@ enum ClusterSetupPlanning {
                               startRefusal(placement) == nil, let setup = other.decided.setup else { continue }
                         families.append((family, summary(other.decided.result, chosen: placement, lines: other.decided.lines,
                             localMemberID: localMemberID, profiles: profiles), setup,
-                            loads(placement, localMemberID: localMemberID)))
+                            loads(placement, setup: setup, localMemberID: localMemberID, capability: capability)))
                     }
-                    plan.modes = offered(listed, listed: loads(chosen, localMemberID: localMemberID), listedMode: chosen.mode, families: Dictionary(families.map { ($0.family, $0.loads) }, uniquingKeysWith: { first, _ in first }))
+                    plan.modes = offered(listed, listed: loads(chosen, setup: decided.setup, localMemberID: localMemberID, capability: capability),
+                        listedMode: chosen.mode, families: Dictionary(families.map { ($0.family, $0.loads) }, uniquingKeysWith: { first, _ in first }))
                 }
                 var option = ClusterSetupModelOption(model: reading.model, onOtherMac: onOther, blocker: nil, plan: plan)
                 option.familyPlans = families.isEmpty ? nil : families.map { $0.plan }

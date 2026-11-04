@@ -168,6 +168,9 @@ public struct ClusterSetupPlanSummary: Codable, Sendable, Equatable {
         public var shares: [Share]
         /// Nil: this pair has not served it in this mode yet (never a prediction).
         public var servedDecodeTokensPerSecond: Double?
+        /// Requests the pair serves at once in this mode, as its plan's setup says (1: one at a time); nil when not
+        /// known, and in a summary written before it existed.
+        public var concurrentRequests: Int? = nil
     }
 }
 

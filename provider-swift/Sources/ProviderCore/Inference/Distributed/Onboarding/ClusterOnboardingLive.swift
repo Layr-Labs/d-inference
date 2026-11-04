@@ -790,11 +790,11 @@ final class OnboardingLive: @unchecked Sendable {
     /// `ClusterServiceStatus.startsAtLogin`), else as this run's own service setup left it (`setUp`).
     static func startsAtLogin(now: Bool?, setUp: Bool?) -> Bool? { now ?? setUp }
 
-    /// A planned mode as the screen shows it: each Mac's share (`modeSplit`; `serving`: a model serves now) and the
-    /// decode rate this pair served it at.
+    /// A planned mode as the screen shows it: each Mac's share (`modeSplit`; `serving`: a model serves now), the decode
+    /// rate this pair served it at, and the requests it serves at once.
     func screenMode(_ mode: ClusterSetupPlanSummary.Mode, serving: Bool) -> ClusterOnboardingMode {
         .init(mode: mode.mode, split: Self.modeSplit(mode.shares, here: hereShort, there: thereShort, serving: serving),
-              measuredTokensPerSecond: mode.servedDecodeTokensPerSecond)
+              measuredTokensPerSecond: mode.servedDecodeTokensPerSecond, concurrentRequests: mode.concurrentRequests)
     }
 
     /// `keeping`: the mode each model id keeps (`LiveContext.plan`); the service's re-plan after an update passes the

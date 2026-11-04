@@ -38,10 +38,11 @@ struct ClusterOnboardingPeerLabelTests {
         let loads = [Share(local: true, firstLayer: 0, endLayer: 44, share: nil), Share(local: false, firstLayer: 44, endLayer: 45, share: nil)]
         let listed = [ClusterSetupPlanSummary.Mode(mode: ClusterGenerationMode.tensorParallel.rawValue, shares: tensor, servedDecodeTokensPerSecond: nil),
                       ClusterSetupPlanSummary.Mode(mode: ClusterGenerationMode.pipeline.rawValue, shares: assessed, servedDecodeTokensPerSecond: 41)]
-        let listedPlan = ClusterSetupPlanning.Loads(shares: tensor)
+        let listedPlan = ClusterSetupPlanning.Loads(shares: tensor, concurrentRequests: 8)
         let offered = ClusterSetupPlanning.offered(listed, listed: listedPlan, listedMode: .tensorParallel,
-                                                   families: [ClusterForcedMode.pipeline: .init(shares: loads)])
+                                                   families: [ClusterForcedMode.pipeline: .init(shares: loads, concurrentRequests: 1)])
         #expect(offered.map(\.shares) == [tensor, loads], "each mode shows its own plan's split")
+        #expect(offered.map(\.concurrentRequests) == [8, 1], "and how many requests that plan serves at once")
         #expect(offered.map(\.servedDecodeTokensPerSecond) == [nil, 41], "the measured speeds stay")
         func split(_ mode: ClusterSetupPlanSummary.Mode, serving: Bool = false) -> String? {
             OnboardingLive.modeSplit(mode.shares, here: "this Mac", there: "the other Mac", serving: serving)
@@ -49,7 +50,7 @@ struct ClusterOnboardingPeerLabelTests {
         #expect(split(offered[1]) == "this Mac 44 layers / the other Mac 1 layer", "the split that loads")
         // A mode that could not be planned on its own shows no split, rather than one that won't load.
         let unplanned = ClusterSetupPlanning.offered(listed, listed: listedPlan, listedMode: .tensorParallel, families: [:])
-        #expect(unplanned[0].shares == tensor && unplanned[1].shares.isEmpty && split(unplanned[1]) == nil)
+        #expect(unplanned[0].shares == tensor && unplanned[1].shares.isEmpty && unplanned[1].concurrentRequests == nil && split(unplanned[1]) == nil)
         // Round 4's R3-3: while a model serves, the start plans again once its memory is back, and the question says so.
         #expect(split(offered[1], serving: true) == ClusterOnboardingMode.decidedWhenItLoads)
     }

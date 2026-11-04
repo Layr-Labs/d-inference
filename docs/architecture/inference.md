@@ -3964,8 +3964,10 @@ away; mixed pairs are first-class).
   reads stopped whatever the other Mac's presence
   (`ClusterPairSummary.state(ofStatus:started:leaderMode:)`).
 - **The split shown:** each mode's share names the Mac that runs it
-  (`OnboardingLive.modeSplit`, "1 layer" for one). It is the plan that loads
-  when that mode is chosen (`ClusterSetupPlanning.offered`): the listed plan for its own
+  (`OnboardingLive.modeSplit`, "1 layer" for one), with the requests it serves
+  at once (`ClusterSetupPlanSummary.Mode.concurrentRequests`, from the setup's
+  `DistributedInstalledPlan.batchLanes`). It is the plan that loads when that
+  mode is chosen (`ClusterSetupPlanning.offered`): the listed plan for its own
   family, and for each other family the plan `ClusterPlacementFlow.decide(chosenMode:)`
   makes from the same samples, kept with its setup
   (`ClusterSetupModelOption.familyPlans`, `Decision.familySetups`). A family

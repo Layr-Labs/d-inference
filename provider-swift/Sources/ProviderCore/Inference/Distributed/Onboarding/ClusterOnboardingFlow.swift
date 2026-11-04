@@ -357,9 +357,19 @@ public struct ClusterOnboardingMode: Codable, Sendable, Equatable {
     public var split: String?
     /// Decode tokens per second this pair served the model at in this mode; nil: not measured on these Macs yet.
     public var measuredTokensPerSecond: Double?
+    /// Requests the pair serves at once in this mode, from the plan that loads (1: one at a time); nil when not known
+    /// and from an older leader.
+    public var concurrentRequests: Int?
 
-    public init(mode: String, split: String?, measuredTokensPerSecond: Double?) {
+    public init(mode: String, split: String?, measuredTokensPerSecond: Double?, concurrentRequests: Int? = nil) {
         self.mode = mode; self.split = split; self.measuredTokensPerSecond = measuredTokensPerSecond
+        self.concurrentRequests = concurrentRequests
+    }
+
+    /// How many requests it serves at once, plainly (R4-15: GLM's pipeline took one request at a time, and Darkbloom
+    /// turned the rest away at capacity, while its tensor parallel took 8); nil when not known.
+    var requestsWords: String? {
+        concurrentRequests.map { $0 <= 1 ? "serves one request at a time" : "serves up to \($0) requests at once" }
     }
 
     /// A mode's split while a model serves (`OnboardingLive.modeSplit`): planned with that model's memory taken, it is
@@ -1273,7 +1283,8 @@ public enum ClusterOnboardingDriver {
     /// The mode question for a model with more than one mode, and each mode's line.
     public static func modeQuestion(model: String) -> String { "How should both Macs split \(model)?" }
     public static func modeLine(_ mode: ClusterOnboardingMode) -> String {
-        menuLine(mode.label, mode.what + (mode.split.map { " (\($0))" } ?? "") + " · " + mode.speedWords)
+        menuLine(mode.label, mode.what + (mode.split.map { " (\($0))" } ?? "") + (mode.requestsWords.map { " · " + $0 } ?? "")
+            + " · " + mode.speedWords)
     }
 
     /// The fresh setup's opening (brief: "one screen before 1/4"): what will be asked, and how long it takes.

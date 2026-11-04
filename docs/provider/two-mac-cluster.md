@@ -240,6 +240,15 @@ first (else the planner's), the other one keypress away:
 - **Speculative pipeline** (MiMo): a pipeline that drafts several tokens and
   checks them together.
 
+Each mode also says how many requests it serves at once: "serves one request
+at a time" or "serves up to 8 requests at once"
+(`DistributedInstalledPlan.defaultBatchLanes`). **On a GLM-5.3-Flash pair,
+choose Tensor parallel.** Its pipeline serves one request at a time: through
+Darkbloom, every other request waits about 6 s and is then refused as "at
+capacity". On two M5 Ultras (2026-11-04, DevNet), its tensor parallel served 8
+requests at once with none refused, and each answered about 2.6 times faster
+(105.6 against 40.8 tokens/s alone).
+
 The split each mode shows is the one that loads when you choose it: the list
 plans every mode it offers, and the start loads the plan it showed. While a
 model serves, each mode's split reads "decided when it loads": the list plans

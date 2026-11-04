@@ -3523,6 +3523,16 @@ import Darwin
         expect(D.modeLine(M(mode: "pipeline_mtp_v1", split: "this Mac 24 layers / the other Mac 24 layers", measuredTokensPerSecond: 59))
             == D.menuLine("Speculative pipeline", "a pipeline that drafts several tokens and checks them together (this Mac 24 layers / the other Mac 24 layers) · 59 tok/s measured"),
                "modes: MiMo's speculative pipeline")
+        // R4-15 (the M5 Ultra pair's DevNet run): GLM's pipeline took one request at a time and Darkbloom turned the rest
+        // away at capacity, while its tensor parallel took 8 at once, 2.6x faster each. Each mode says how many it takes.
+        let glmPipeline = D.modeLine(M(mode: "pipeline_v1", split: "this Mac 44 layers / the other Mac 1 layer", measuredTokensPerSecond: 41,
+                                       concurrentRequests: 1))
+        expect(glmPipeline == D.menuLine("Pipeline", "each Mac runs its share of the layers (this Mac 44 layers / the other Mac 1 layer) "
+                   + "· serves one request at a time · 41 tok/s measured"), "modes: a pipeline that takes one request at a time says so: \(glmPipeline)")
+        let glmTensor = D.modeLine(M(mode: "tensor_parallel_v1", split: "this Mac 50% / the other Mac 50%", measuredTokensPerSecond: 106,
+                                     concurrentRequests: 8))
+        expect(glmTensor == D.menuLine("Tensor parallel", "both Macs work on every layer, each holding a share of it (this Mac 50% / the "
+                   + "other Mac 50%) · serves up to 8 requests at once · 106 tok/s measured"), "modes: how many at once: \(glmTensor)")
         // The screen, on a stopped pair: another model's question offers both, the measured one by default.
         let recorder = Recorder()
         var stopped = qwenServing

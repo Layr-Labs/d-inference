@@ -143,6 +143,8 @@ import Darwin
         theServingMarkerFollowsOnlyASettledServingLine()
         theServingModelsTestNeverMarksAStart()
         pairingSaysWhatToCheckWhenTheOtherMacIsNotFound()
+        // R-3 (the pair-2 re-test, 2026-11-04): the hint's firewall line named production's app in the DevNet app.
+        pairingLinesNameTheApp()
         alreadyServingTestsAgainOrSaysWhyNot()
         aDeadPendingStartIsClearedOnlyWhileStillRecorded()
         modeChoiceOffersBothWithTheFastestMeasuredFirst()
@@ -3244,6 +3246,24 @@ import Darwin
         expect(quick.waitFor(prompt(2), count: 2), "found: the list"); quick.type("\r")
         _ = quick.finish()
         expect(!quick.text.contains(P.otherMacNotFoundLines[0]), "found: no hint")
+    }
+
+    /// R-3 (the pair-2 re-test): the hint's firewall line said "Darkbloom" in the DevNet app, whose firewall entry is its own
+    /// name. It, and the line that asks to pair again after a reinstall, name the app as the Local Network lines do.
+    static func pairingLinesNameTheApp() {
+        ClusterOnboardingCommand.useApp("Darkbloom Dev")
+        defer { ClusterOnboardingCommand.useApp("Darkbloom") }
+        let run = TerminalRun(operations(Recorder(), pairEvents: leaderEvents, pairResult: .paired(role: .leader, peerName: "Apple M3 Ultra, 256 GB"),
+            pairHintSeconds: 0.3, pairWait: 1.5))
+        expect(run.waitFor(codeQuestion, seconds: 20), "app name: the pairing goes on"); run.type("y")
+        expect(run.waitFor(prompt(2), count: 2), "app name: the list"); run.type("\r")
+        expect(run.finish() == 0, "app name: served")
+        expect(run.text.contains("  · macOS's firewall lets Darkbloom Dev in on both Macs (System Settings → Network → Firewall);\n"),
+               "app name: the firewall line names the app: \(run.text)")
+        expect(!run.text.contains("lets Darkbloom in"), "app name: never production's app")
+        expect(ClusterOnboardingPairingProblem.keyChanged.line
+            .contains("(Darkbloom Dev was reinstalled, or this Mac moved between the Darkbloom and DevNet apps)"),
+               "app name: the line that asks to pair again names the app that was reinstalled")
     }
 
     /// Validator D's m1 meets m9: the list says "serving now" only beside a settled serving line, the one shown as ✓. A

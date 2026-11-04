@@ -10,6 +10,8 @@ enum ClusterConsoleText {
         }.prefix(maximum))
     }
 
+    static func boundedAtWord(_ text: String, maximum: Int) -> String { bounded(text, maximum: maximum) }
+
     /// `2026-10-09T06:45:12Z`.
     static func timestamp(_ date: Date = Date()) -> String {
         let formatter = ISO8601DateFormatter()

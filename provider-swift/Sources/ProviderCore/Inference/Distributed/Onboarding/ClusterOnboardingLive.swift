@@ -1694,7 +1694,7 @@ final class OnboardingLive: @unchecked Sendable {
 
     /// One line per Mac: the last error each Mac's part reported (`lastErrors`).
     static func errorLines(here: String, there: String, own: ClusterServiceStatus.Child?, other: ClusterServiceStatus.Child?,
-                           otherUnreachable: String?, ownWorker: OwnWorker = .notSeen) -> [String] {
+                           otherUnreachable: String?, ownWorker: OwnWorker = .notSeen, refusalSaid: Bool = false) -> [String] {
         func line(_ mac: String, _ child: ClusterServiceStatus.Child?, unreachable: String? = nil) -> String {
             if let unreachable { return "\(mac): did not answer over the cable (\(unreachable))." }
             guard let child else { return "\(mac): no report." }

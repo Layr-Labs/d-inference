@@ -17,3 +17,8 @@
 - The leading Mac's wait for Allow on its Local Network prompt now shows a timer and gives up after 10 minutes. It
   ends with a ✗ that says where to turn Darkbloom on, and what to do when Darkbloom isn't in the list: macOS asks on
   that Mac's screen the next time it connects.
+- Every live line is one row: in the cluster screens, and in `darkbloom start`, `stop`, `restart` and `update`.
+  - A long reason is shortened and keeps its time at the end. Its newlines and tabs become spaces.
+  - Line wrap is off while the row is drawn, so a terminal that draws a character wider can't wrap it.
+  - Before, the loading line could repeat across the window at every turn of its petal ("Loading Gemma 4 26B on both
+    Macs (starting; this Mac's part ended (exit 1: …  ▖ Loading Gemma 4 26B …").

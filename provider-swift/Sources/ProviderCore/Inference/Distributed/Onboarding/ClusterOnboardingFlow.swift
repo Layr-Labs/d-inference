@@ -1447,8 +1447,13 @@ public enum ClusterOnboardingDriver {
     /// never recorded an answer for the app, and lists no row, the prompt it shows on that Mac's screen at the next dial.
     public static func localNetworkSteps(app: String, row: String, screen: String) -> String {
         "System Settings → Privacy & Security → Local Network → turn on “\(row)”"
-            + (row == app ? "" : " (macOS lists \(app) as “\(row)”)")
+            + localNetworkRowNote(app: app, row: row)
             + "; if it isn't listed, click Allow when macOS asks on \(screen), the next time \(app) dials over the cable"
+    }
+
+    /// Said after the row's name when the app's own name differs (the DevNet app): the name macOS lists it by.
+    public static func localNetworkRowNote(app: String, row: String) -> String {
+        row == app ? "" : " (macOS lists \(app) as “\(row)”)"
     }
 
     private static func onScreen(_ remote: Bool) -> String {

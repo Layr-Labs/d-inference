@@ -62,7 +62,7 @@ extension Cluster {
         static func refusalLine(app: String, row: String) -> String {
             "this process \(ClusterService.localNetworkRefusal): macOS refused the dial before the cable was tried. "
                 + "Turn on “\(row)” under System Settings > Privacy & Security > Local Network"
-                + (row == app ? "" : " (macOS lists \(app) as “\(row)”)")
+                + ClusterOnboardingDriver.localNetworkRowNote(app: app, row: row)
                 + "; if it isn't listed, click Allow when macOS asks on this Mac's screen at the next dial. "
                 + "Or start the follower from a session that has that access."
         }

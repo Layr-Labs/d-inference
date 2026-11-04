@@ -664,7 +664,7 @@ final class OnboardingLive: @unchecked Sendable {
     static func localNetworkHint(_ mac: String) -> String {
         let row = ClusterService.localNetworkRow, app = ClusterService.appName
         return "If you denied the Local Network prompt on \(mac), turn on “\(row)”"
-            + (row == app ? "" : " (macOS lists \(app) as “\(row)”)")
+            + ClusterOnboardingDriver.localNetworkRowNote(app: app, row: row)
             + " in System Settings → Privacy & Security → Local Network there, then run `\(Self.cli) cluster` again."
     }
 

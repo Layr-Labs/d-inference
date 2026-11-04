@@ -1806,3 +1806,53 @@ struct ClusterStatusTruthTests {
                 "\(out)")
     }
 }
+
+@Suite("Status names the serving mode and split for every mode, as the ✓ line does")
+struct ClusterStatusModeTests {
+    private static let glm = "Z.ai: GLM-5.3-Flash"
+
+    private static func glmPair(mode: String?, status: [String]) -> ClusterPairSummary {
+        var summary = pair(role: .leader)
+        summary.modelID = "glm-5.3-flash"
+        summary.modelName = glm
+        summary.deployment = mode.map { mode in
+            ClusterOnboardingDeployment.line(model: glm, mode: mode, shares: [
+                .init(name: "Apple M3 Ultra, 256 GB", layers: 30, weightsBytes: 150),
+                .init(name: "Apple M5 Ultra, 256 GB", layers: 17, weightsBytes: 150)])
+        }
+        summary.read(status: status, leaderMode: "cluster")
+        return summary
+    }
+
+    @Test("R3-4: a GLM pipeline pair, whose name holds \": \", says its mode and split in the JSON and the Model line")
+    func glmPipelineSaysItsMode() {
+        let summary = Self.glmPair(mode: "pipeline",
+            status: ["Serving \(Self.glm) (pipeline) at http://localhost:8000 and on the network (local only)."])
+        #expect(summary.state == .serving)
+        let json = summary.json
+        #expect(json.mode == "pipeline" && json.split == "M3 Ultra 30 layers / M5 Ultra 17 layers", "\(String(describing: json.mode)) \(String(describing: json.split))")
+        #expect(summary.clusterStatusLines.contains("Model: \(Self.glm) · pipeline · M3 Ultra 30 layers / M5 Ultra 17 layers"),
+                "\(summary.clusterStatusLines)")
+    }
+
+    @Test("R3-4: every serving mode's words come back from the deployment line, whatever the model's name")
+    func everyModeComesBack() {
+        for raw in ["tensor", "pipeline", "pipeline_mtp", "prefill_tensor_decode", "phase_split"] {
+            let summary = Self.glmPair(mode: raw, status: ["Serving \(Self.glm) at http://localhost:8000."])
+            let words = ClusterOnboardingDeployment.modeWords(raw)
+            #expect(summary.json.mode == words, "\(raw): \(String(describing: summary.json.mode))")
+            #expect(summary.json.split != nil, "\(raw)")
+        }
+        #expect(Self.glmPair(mode: "tensor", status: ["Serving \(Self.glm) at http://localhost:8000."]).json.split
+                == "M3 Ultra 50% / M5 Ultra 50%")
+    }
+
+    @Test("R3-4: without a recorded deployment line, the mode comes from the ✓ line's own marker")
+    func modeFromTheServingLineWithoutADeployment() {
+        let summary = Self.glmPair(mode: nil, status: ["Serving \(Self.glm) (pipeline) at http://localhost:8000 on the other Mac."])
+        #expect(summary.json.mode == "pipeline" && summary.json.split == nil, "\(String(describing: summary.json.mode))")
+        #expect(summary.clusterStatusLines.contains("Model: \(Self.glm) · pipeline"), "\(summary.clusterStatusLines)")
+        let unmarked = Self.glmPair(mode: nil, status: ["Serving \(Self.glm) at http://localhost:8000."])
+        #expect(unmarked.json.mode == nil && unmarked.json.split == nil)
+    }
+}

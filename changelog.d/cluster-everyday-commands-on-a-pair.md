@@ -58,3 +58,5 @@
 - On the leading Mac, that "not serving" now holds while the other Mac stays refused, also while the leading Mac's
   part restarts; `cluster status --json` then lists the same "Not serving" line as the plain output. The DevNet app's
   stopped pair names its own `local` command.
+- `cluster status --json` gives the serving mode and each Mac's share, and the "Model:" line of `status` and `cluster
+  status` names the mode, for every mode. Before, a pair serving GLM-5.3-Flash in pipeline left them out.

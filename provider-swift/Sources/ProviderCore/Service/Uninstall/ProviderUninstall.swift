@@ -50,6 +50,9 @@ public enum ProviderUninstall {
         public var runningClusterService: () -> RunningClusterService?
         /// Ends that service (SIGTERM to its pid) and waits until it has released this Mac's part.
         public var stopClusterService: (_ pid: Int32) throws -> Void
+        /// Stops the pair this install's cluster service serves, on both Macs, as `darkbloom stop` on either Mac does
+        /// (a member asks the leader over the control channel). Its services stay up, idle.
+        public var stopPair: () async throws -> PairStop
 
         public init(stopServing: @escaping () async throws -> Outcome, stopClusterPart: @escaping () async throws -> Outcome,
                     removeServices: [(name: String, remove: () throws -> Outcome)], servicesHandled: @escaping () -> Void = {},
@@ -58,13 +61,27 @@ public enum ProviderUninstall {
                     delete: @escaping (URL) throws -> Void = { try FileManager.default.removeItem(at: $0) },
                     availableBytes: @escaping () -> Int64? = { nil },
                     runningClusterService: @escaping () -> RunningClusterService? = { nil },
-                    stopClusterService: @escaping (Int32) throws -> Void = { _ in }) {
+                    stopClusterService: @escaping (Int32) throws -> Void = { _ in },
+                    stopPair: @escaping () async throws -> PairStop = { .notServing }) {
             self.stopServing = stopServing; self.stopClusterPart = stopClusterPart; self.removeServices = removeServices
             self.servicesHandled = servicesHandled; self.revokeToken = revokeToken; self.forget = forget
             self.removeCableSetup = removeCableSetup; self.delete = delete; self.availableBytes = availableBytes
             self.runningClusterService = runningClusterService; self.stopClusterService = stopClusterService
+            self.stopPair = stopPair
         }
     }
+
+    /// How `Operations.stopPair` ended.
+    public enum PairStop: Equatable, Sendable {
+        /// Both Macs stopped serving.
+        case stopped
+        /// The pair was not serving: there was nothing to tell the other Mac.
+        case notServing
+        /// The other Mac did not answer (why), so only this Mac's part stops.
+        case noAnswer(String)
+    }
+
+    static let pairNoAnswer = "did not answer the stop"
 
     /// A cluster service that holds this Mac's service lock: launchd's, or one a session started (`darkbloom cluster`
     /// when launchd did not take the agent, development builds). Its files must not go while it runs.
@@ -179,7 +196,9 @@ public enum ProviderUninstall {
         }
         let clusterHandled: Bool
         if let other = sharedWith, let own = items.lazy.compactMap(\.ownClusterAgent).first {
-            clusterHandled = await step(ownClusterStep) { try removeOwnClusterService(own, keptFor: other, operations: operations) }
+            clusterHandled = await step(ownClusterStep) {
+                try await removeOwnClusterService(own, keptFor: other, otherMac: pairing?.otherMacName, operations: operations)
+            }
         } else {
             clusterHandled = await step(clusterStep, operations.stopClusterPart)
         }
@@ -273,15 +292,28 @@ public enum ProviderUninstall {
     /// not started again); a service of this install that still runs, a session's, is then stopped, ending this Mac's
     /// part as `cluster stop --local-only` does. The other install's service and agent, the pairing and the cable port
     /// setup stay. A service from neither install is left running, and the run deletes nothing.
-    static func removeOwnClusterService(_ label: String, keptFor other: String, operations: Operations) throws -> Outcome {
+    static func removeOwnClusterService(_ label: String, keptFor other: String, otherMac: String?,
+                                        operations: Operations) async throws -> Outcome {
         let running = operations.runningClusterService()
         if let running, running.owner == .unknown { throw StepFailure(stillRunningReason(running)) }
+        // When this install's service serves the pair, the pair stops first, on both Macs, so the other Mac does not
+        // keep restarting its part for a member that is gone. Without an answer, only this Mac's part stops.
+        var pair: String?
+        if running?.owner == .thisInstall {
+            let outcome: PairStop
+            do { outcome = try await operations.stopPair() } catch { outcome = .noAnswer("\(error)") }
+            switch outcome {
+            case .stopped: pair = "asked the pair to stop first, and both Macs stopped serving"
+            case .notServing: pair = nil
+            case .noAnswer(let why): pair = "the other Mac\(otherMac.map { " (\($0))" } ?? "") \(pairNoAnswer) (\(why))"
+            }
+        }
         let installed = FileManager.default.fileExists(atPath: ClusterServiceAgent.plistPath(label: label).path)
             || ClusterServiceAgent.isLoaded(label: label)
         if installed { try ClusterServiceAgent.remove(label: label) }
         if let still = operations.runningClusterService(), still.owner == .thisInstall { try operations.stopClusterService(still.pid) }
         let ownPid = running?.owner == .thisInstall ? running?.pid : nil
-        let detail = [ownPid.map { "stopped it (pid \($0)), so this Mac's part ended cleanly" } ?? running?.described,
+        let detail = [pair, ownPid.map { "stopped it (pid \($0)), so this Mac's part ended cleanly" } ?? running?.described,
                       installed ? "removed \(label)" : nil,
                       ownPid == nil && !installed ? "this install has none" : nil,
                       ownPid == nil ? "the pair and \(other)'s cluster service are left as they are"

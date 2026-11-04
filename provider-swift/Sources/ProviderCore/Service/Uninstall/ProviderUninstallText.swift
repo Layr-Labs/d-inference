@@ -53,7 +53,8 @@ extension ProviderUninstall {
         if let shared = plan.items.first(where: { $0.sharedWith != nil }), let other = shared.sharedWith {
             switch plan.runningClusterService {
             case let running? where running.owner == .thisInstall:
-                action("\(ownClusterStep): stop it first (pid \(running.pid), running from this install); "
+                action("\(ownClusterStep): if it serves the pair, ask the pair to stop on both Macs, as `\(plan.cli) stop` does; "
+                    + "then stop it (pid \(running.pid), running from this install); "
                     + (shared.ownClusterAgentPlist.map { "then remove \($0)" } ?? "it has no login agent")
                     + "; the pairing and the cable port setup stay for \(other)")
             case let running? where running.owner == .unknown:
@@ -118,6 +119,9 @@ extension ProviderUninstall {
             }
         }
         if let pairing = plan.pairing, !plan.sharesCluster { lines.append(otherMacLine(pairing, cli: plan.cli)) }
+        if report.steps.contains(where: { $0.name == ownClusterStep && $0.detail?.contains(pairNoAnswer) == true }) {
+            lines.append(otherMacStillServingLine(plan.pairing?.otherMacName, cli: plan.cli))
+        }
         return lines
     }
 
@@ -172,6 +176,11 @@ extension ProviderUninstall {
     static func neverTouched(_ plan: Plan) -> [String] {
         plan.kept.map { "\($0.keptInDarkbloomFolder ? "Kept" : "Never touched"): \($0.label) (\(formatBytes($0.bytes)), \($0.path)): "
             + ($0.reason ?? "") } + [keychainLine] + plan.elsewhere
+    }
+
+    /// The last line when the other Mac did not answer the pair's stop: it may keep restarting its part.
+    static func otherMacStillServingLine(_ name: String?, cli: String) -> String {
+        "The other Mac\(name.map { " (\($0))" } ?? "") did not answer, so its part may keep restarting: run `\(cli) cluster stop` on it."
     }
 
     /// The last line on a paired Mac, about the other one.

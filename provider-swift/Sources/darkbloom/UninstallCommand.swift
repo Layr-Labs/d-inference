@@ -177,7 +177,21 @@ struct Uninstall: AsyncParsableCommand {
             runningClusterService: {
                 ProviderUninstall.liveRunningClusterService(paths: ProviderUninstallPaths(home: FileManager.default.homeDirectoryForCurrentUser))
             },
-            stopClusterService: { try ProviderUninstall.liveStopClusterService(pid: $0) })
+            stopClusterService: { try ProviderUninstall.liveStopClusterService(pid: $0) },
+            stopPair: {
+                // As `darkbloom stop` on either Mac: the leader stops both Macs; a serving member asks the leader.
+                await Task.detached { () -> ProviderUninstall.PairStop in
+                    guard let control = try? ClusterOnboardingOperations.live(.clusterService(config: nil, worker: nil)) else {
+                        return .noAnswer("this Mac's cluster service could not be asked")
+                    }
+                    let resume = control.resume()
+                    guard Cluster.Stop.pairStop(role: resume.role, serving: resume.serving) != .stopHere else { return .notServing }
+                    switch control.stop() {
+                    case .success: return .stopped
+                    case .failure(let failure): return .noAnswer(failure.lines.joined(separator: " "))
+                    }
+                }.value
+            })
     }
 
     /// The drain's lease, held until the services are removed, so an update cannot start the provider in between.

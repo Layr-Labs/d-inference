@@ -273,8 +273,9 @@ the test.
 up yet ([below](#when-something-is-in-the-way)).
 
 Switching how a serving pair serves says what it does ("Switching to serving
-through Darkbloom: the leading Mac's part starts again that way."), never the
-result: the outcome block follows once the pair serves, or why it doesn't. A
+through Darkbloom: both Macs load the model again from a plan made for
+Darkbloom." or "Switching to local only: the leading Mac's part starts again
+that way."), never the result: the outcome block follows once the pair serves, or why it doesn't. A
 part that stops serving says why in its log ("Distributed serving stops: …",
 for example "the coordinator reported this member's runtime as outdated");
 the ✗ block and the diagnostics file give that reason, not the cancellation
@@ -331,9 +332,11 @@ coordinator never carries it. So, with the default `[backend] mtp_mode` of
 
 With `mtp_mode = "on"`, `darkbloom cluster` keeps the assistant too. That pair
 is then not offered to the coordinator: its plan says "not offered for public
-traffic", and it serves on the leader's local API. A serving cluster switched
-with **Switch to local only** or **Switch to serving through Darkbloom** keeps the setup it
-has; to plan the model again for the new way of serving, stop the pair (`darkbloom stop`) and start it again from the list. Public speculative decoding for Qwen pairs needs
+traffic", and it serves on the leader's local API. **Switch to serving through
+Darkbloom** on a serving cluster plans its model again for Darkbloom (without the
+assistant, with equal shares) and starts it as a start does. **Switch to local
+only** keeps the setup it has; to plan the model again for local serving, stop
+the pair (`darkbloom stop`) and start it again from the list. Public speculative decoding for Qwen pairs needs
 qualification evidence of its own, which no record holds yet. Rules:
 [Qwen27 TP assistant policy](../reference/configuration.md#qwen27-tp-assistant-policy).
 
@@ -353,13 +356,20 @@ format instruction only, as on one Mac
 | 2 | the other Mac | Run `darkbloom cluster`. The same checks; then it finds the waiting Mac on the cable by itself (no address, no host name). Both screens show the same six-digit code ("Code 123 456. Same on the other Mac?"); a Mac that answered first says "Now confirm on the other Mac." | the same as the first Mac; **Yes** on each Mac when the codes match |
 | 3 | both Macs | Each says it is paired ("✓ Paired. This Mac leads." on the leader, "✓ Paired. The other Mac leads." on the other Mac). Both cluster services now run, and macOS asks on both Macs at the same moment to let Darkbloom find devices on your local network: click Allow on each; each screen waits for its own ("✓ Allowed"). Nothing else is ever asked on the other Mac; it says "Waiting for the other Mac (…) to choose the model and start…" and follows the start to the same ✓/✗ block. | Local Network access for Darkbloom, once on each Mac |
 | 4 | the leader | It lists every model approved for clusters that the pair can serve (held by both Macs, by one of them, or in Darkbloom's catalog), one line each with its size and how the planner splits it, "tensor parallel" or "pipeline" ("Qwen3.8-27B-4bit-mtp · 16.3 GB · pipeline"), ending "copy" or "download" when the model must reach a Mac first (a model no Mac holds yet is split once it arrives, so its line has no split). A model a Mac holds twice (a catalog download beside the cluster's own copy) is listed once. The planner records why a model that has tensor parallel is split otherwise (for example "tensor parallel: slower here", "tensor parallel: not measured yet" or "tensor parallel: link unmeasured"); `darkbloom cluster plan` gives the full reason under "Tensor parallel or pipeline". Models that fit in the Macs' free memory now come first; one that does not ends with "does not fit now". A model a Mac has no room for on disk now comes last, ending "not enough free disk" ([Free disk](#free-disk)). Choose the model with ↑↓ and enter (enter takes the first). If the other Mac does not answer over the cable (its Darkbloom prompt may still wait for Allow), it offers **Try again** or **Cancel**. | the copy first in a list; a short one says its time ("Copy to the other Mac (about 7 s)") |
-| 5 | — | Choosing is starting: the leader saves the setup, sends it to the other Mac over the cable and starts both Macs; once both are loaded it says where and how the pair serves ("✓ Serving Qwen3.8-27B-4bit-mtp (pipeline) at http://localhost:8000 (earning through Darkbloom)", or "(local only)") and answers one test request ("✓ Test response in 0.61 s"). | nothing |
+| 5 | — | Choosing is starting: the leader saves the setup, sends it to the other Mac over the cable and starts both Macs; once both are loaded it answers one test request, and through Darkbloom the coordinator is asked for the pair ([below](#registered-with-the-coordinator-as-a-cluster-member)). It says where and how the pair serves: "✓ Serving Qwen3.8-27B-4bit-mtp through Darkbloom on both Macs (pipeline)" once the coordinator has the pair, or "✓ Serving Qwen3.8-27B-4bit-mtp on this Mac's local API only (pipeline)" when it serves locally only, with the test response ("Test response in 0.61 s"). | nothing |
 
-When it serves, the screen says where in one line, for example:
+When it serves through Darkbloom, the screen says so in one line, for example:
 
 ```
-✓ Serving Qwen3.8-27B-4bit-mtp (pipeline) at http://localhost:8000 (earning through Darkbloom)
+✓ Serving Qwen3.8-27B-4bit-mtp through Darkbloom on both Macs (pipeline)
 ```
+
+No screen and no status says it serves or earns through Darkbloom unless the
+pair is offered (both Macs carry a cluster approval) and the coordinator has
+it. A pair set to serve through Darkbloom that the coordinator doesn't take
+serves on the leader's local API only, and both Macs say why: `✗ Not serving:
+not offered to Darkbloom (<why>).`, then `Meanwhile it answers only on the local
+API at http://localhost:<port> (no Darkbloom traffic).`
 
 Every screen names the Macs from where it is shown: "this Mac" is the Mac the
 screen is on and "the other Mac" the other one. A line that must tell them
@@ -371,8 +381,9 @@ shows the leader's answers in the same words for its own screen.
 When the coordinator in your provider configuration cannot take a cluster
 member yet (it is unreachable, or it has no cluster support), the pair still
 serves, on the leader's local API only, with the same local token as
-`darkbloom start --local`, and its serving line ends "(local only)" instead of
-"(earning through Darkbloom)". The leader's part logs why:
+`darkbloom start --local`. It isn't offered, so both Macs say `not offered to
+Darkbloom (the coordinator could not be reached or has no cluster support)`.
+The leader's part logs why:
 
 ```
 Notice: Serving locally on this Mac's API; public serving needs a coordinator with cluster support
@@ -462,12 +473,19 @@ What `darkbloom cluster` status says in each mode:
 | Mode | Status line |
 |---|---|
 | Registered, paired and loaded | `Serving <model> through Darkbloom on both Macs (<split>).` |
-| Registered, not serving yet | `<model> is not serving yet: <reason or progress>.`, then what to do (a missing login, App Attest, memory) |
-| Coordinator gave no answer for the grace | The serving line, then `The coordinator has not answered for 10 minutes: the pair serves on the leader's local API until it answers again, then it is offered again with approval <id>.` |
-| Approval no longer listed | The serving line, then `The coordinator no longer lists cluster approval <id>: the pair serves on the leader's local API until it lists a matching one again.` |
-| Parts kept ending | The serving line, then `The coordinator-paired parts ended 3 times in a row right after starting with cluster approval <id>: the pair serves on the leader's local API for 60 minutes, then it is offered again with it, or sooner with a later one the coordinator lists.` |
-| Approval ended | The serving line, then one line that says the cluster approval `<id>` expired and the pair serves on the leader's local API |
-| No approval (staging, production before its coordinator derives approvals from releases, no matching entry) | The serving line, then (only after a refusal) `Not offered for pairing: <reason>.` |
+| Registered, not serving yet | `<model> is not serving yet: <reason or progress>.` (a missing login, App Attest, memory). The leading Mac's setup screen adds what to do under its ✗; `cluster status` says it in `Next:` |
+| On the leader's local API: not offered | `<model> is not serving yet: not offered to Darkbloom (<why>).`, then `Meanwhile it answers only on the local API at http://localhost:<port> (no Darkbloom traffic).` and the test's line. `<why>` is one of the rows below, never "earning through Darkbloom" |
+| … coordinator gave no answer for the grace | `The coordinator has not answered for 10 minutes: the pair serves on the leader's local API until it answers again, then it is offered again with approval <id>` |
+| … approval no longer listed | `The coordinator no longer lists cluster approval <id>: the pair serves on the leader's local API until it lists a matching one again` |
+| … parts kept ending | `The coordinator-paired parts ended 3 times in a row right after starting with cluster approval <id>: the pair serves on the leader's local API for 60 minutes, then it is offered again with it, or sooner with a later one the coordinator lists` |
+| … approval ended | The line that says the cluster approval `<id>` expired and the pair serves on the leader's local API |
+| … the check refused the approval | `this Mac's check refused it: <reason>` (or the other Mac's refusal) |
+| … no approval (staging, production before its coordinator derives approvals from releases, no matching entry) | `no cluster approval is attached to its setup` |
+
+`darkbloom cluster status` reads the first row as `serving` (exit 0) and a pair that isn't offered as `not_serving`
+(exit 3), on both Macs. During a model or mode change, or while the pair updates Darkbloom, it can read `stopped`
+(exit 4) or `unknown` for a minute or two while the pair is actually reloading: wait about a minute and check again
+before running `darkbloom start`.
 
 Approval sources, checks and saved fields:
 [coordinator-paired member](../reference/configuration.md#coordinator-paired-member).
@@ -480,8 +498,8 @@ mark, beside "Darkbloom cluster" and the part each Mac plays and the cable
 ("This Mac leads · the other Mac (Apple M3 Ultra, 256 GB) follows · cable
 ready"; with the name System Settings gives this Mac, "This Mac (Studio A)
 leads · …", so two identical Macs each say which they are), then shows the
-cluster's state as the outcome block ("✓ Serving Qwen3.8-27B-4bit-mtp at
-http://localhost:8000 (earning through Darkbloom)", or "Stopped; last model …")
+cluster's state as the outcome block ("✓ Serving Qwen3.8-27B-4bit-mtp through
+Darkbloom on both Macs (pipeline)", or "Stopped; last model …")
 and, on the leader, the pair's model list [above](#the-steps-once). The other
 Mac then says its part runs by itself, names the Mac it follows and the command
 to run there; Enter closes it, and **Start over (unpair and set up again)** is
@@ -534,12 +552,17 @@ may ask once to let Darkbloom accept incoming connections.
 The choice is kept: after a restart or reboot both Macs serve locally only
 again, until you switch back. In `darkbloom cluster` on the leader, the list's
 **Switch to serving through Darkbloom** serves through Darkbloom again and
-**Switch to local only** serves locally only; on a serving cluster the leading
-Mac's part restarts that way and the screen waits for it as after a start: a
-test request on the leader's API, or, for a pair registered with the coordinator,
-until the coordinator paired both Macs and both loaded the model. It ends with
-the same outcome block (✓ only then; otherwise ✗ with the reason and the
-choices). The model list still
+**Switch to local only** serves locally only. On a serving cluster, **Switch to
+serving through Darkbloom** plans the model again for Darkbloom (a local plan
+may carry Qwen's speculative assistant or unequal tensor-parallel shares, which
+the coordinator can't register), adopts that plan before anything stops, and
+starts both Macs as a start does: a test request, then the coordinator is asked
+for the pair, and the screen waits until the coordinator paired both Macs and
+both loaded the model. **Switch to local only** restarts the leading Mac's part
+that way and waits for a test request on the leader's API. Both end with the
+same outcome block: ✓ only then; otherwise ✗ with the reason and the choices,
+including `Not serving: not offered to Darkbloom (<why>).` for a pair the
+coordinator doesn't take. The model list still
 reads Darkbloom's catalog when the network is up (to download a model neither
 Mac has); with no network, it lists the models already on the Macs. Only
 catalog models are served. Qualification records never gate local-only
@@ -835,7 +858,8 @@ memory holds its share. Unequal shares are for a pair that serves you alone
 (`darkbloom cluster local`): a pair served through Darkbloom is always planned
 with equal shares, because its registration with the coordinator cannot name
 unequal ones yet. A pair saved with unequal shares is not offered for pairing,
-and its status says why; press `m` in `darkbloom cluster` to plan it again.
+and its status says why (`not offered to Darkbloom (…)`); choose the model again
+in `darkbloom cluster` to plan it again.
 
 ## Prompt prefixes on the pair
 

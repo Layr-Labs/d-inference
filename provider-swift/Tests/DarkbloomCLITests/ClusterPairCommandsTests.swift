@@ -177,6 +177,54 @@ struct ClusterPairHabitCommandsTests {
         #expect(ClusterPairSummary.ownState(started: true, own: own) == (.otherMacAway, "The other Mac (Apple M5 Max, 128 GB) is gone; …"))
         #expect(ClusterPairSummary.ownState(started: true, own: nil) == (.unknown, nil))
     }
+
+    /// The DevNet traffic run (2026-11-04): the leading Mac's own view read its ready local API as serving. Through
+    /// Darkbloom, a pair there isn't offered (an offered pair's part reports its pair line): not serving, never exit 0.
+    @Test("this Mac's own view: a ready local API serves through Darkbloom only when offered")
+    func ownStateOfALocalAPI() throws {
+        let json = #"{"serving":true,"sessionLeader":true,"child":{"running":true,"starts":1},"#
+            + #""session":{"observed":true,"ready":true,"readyRanks":2,"ranks":2,"port":8001}}"#
+        let own = try JSONDecoder().decode(ClusterServiceStatus.self, from: Data(json.utf8))
+        let (state, reason) = ClusterPairSummary.ownState(started: true, own: own)
+        #expect(state == .notServing)
+        #expect(reason == "not offered to Darkbloom (no cluster approval is attached to its setup)")
+        // The refactor pass's B2: a part registered as the pair's member before its pair line may still be paired.
+        let offered = #"{"serving":true,"sessionLeader":true,"child":{"running":true,"starts":1,"#
+            + #""notice":"\#(ClusterLocalServing.offeredNotice)"},"session":{"observed":true,"ready":true,"readyRanks":2,"ranks":2}}"#
+        let member = try JSONDecoder().decode(ClusterServiceStatus.self, from: Data(offered.utf8))
+        #expect(ClusterPairSummary.ownState(started: true, own: member) == (.loading, nil))
+    }
+}
+
+@Suite("darkbloom cluster status: a pair set to serve through Darkbloom that isn't offered")
+struct ClusterStatusNotOfferedTests {
+    static let reason = "not offered to Darkbloom (this Mac's check refused it: Unequal tensor-parallel shares serve local clusters only)"
+    static let status = ["Qwen 3.8 27B is not serving yet: \(reason).",
+                         "Meanwhile it answers only on the local API at http://localhost:8001 (no Darkbloom traffic).",
+                         "Test response in 0.23 s (the leading Mac's test)"]
+
+    /// The DevNet traffic run (2026-11-04): `cluster status --json` said `serving`, exit 0, "earning through Darkbloom"
+    /// while the coordinator never had the pair. The leading Mac's status now says it isn't offered: not serving, exit 3,
+    /// why, and what to do.
+    @Test("not serving, exit 3, the reason, and what to do: plan the model again, or serve locally only")
+    func notOfferedIsNotServing() {
+        var summary = pair()
+        summary.started = true
+        summary.read(status: Self.status, leaderMode: "cluster")
+        #expect(summary.state == .notServing)
+        #expect(summary.exitCode == 3)
+        #expect(summary.reason == Self.reason)
+        #expect(summary.json.state == "not_serving" && summary.json.exitCode == 3)
+        let cli = BuildEnvironment.current.cliName
+        #expect(summary.next == "To offer it to Darkbloom: `\(cli) cluster` on this Mac, then choose the model again (it is "
+            + "planned for Darkbloom). Or serve locally only: `\(cli) cluster local` on this Mac.")
+        #expect(summary.clusterStatusLines.contains("Serves: through Darkbloom (not offered)"))
+        #expect(summary.clusterStatusLines.contains("✗ Not serving: \(Self.reason)."))
+        #expect(!summary.clusterStatusLines.joined(separator: "\n").contains("earning")
+            && !summary.clusterStatusLines.contains { $0.hasPrefix("✓") })
+        // `darkbloom start` stops waiting at once: only a new plan or approval changes it.
+        #expect(ClusterPairSummary.isFinalReason(Self.reason))
+    }
 }
 
 @Suite("darkbloom cluster status")

@@ -56,13 +56,17 @@ extension ClusterOnboardingDriver {
         case offered
         /// The start's test request failed (the leader's note under its not-serving line): the start's outcome.
         case testFailed
+        /// Set to serve through Darkbloom, but not offered (`ClusterOnboardingReady.notOfferedReason`): the start's outcome,
+        /// never a wait for a coordinator that doesn't have the pair.
+        case notOffered
     }
 
     static func followed(_ status: [String]) -> FollowedStart {
         guard let first = status.first else { return .notStarted }
         if first.hasPrefix("Serving ") { return first.contains(ClusterOnboardingReady.offerPendingWords) ? .starting : .serving }
-        if ClusterOnboardingNotServing.reason(inStatusLine: first) != nil {
-            return status.dropFirst().contains(where: ClusterOnboardingReady.isTestFailedNote) ? .testFailed : .offered
+        if let reason = ClusterOnboardingNotServing.reason(inStatusLine: first) {
+            if status.dropFirst().contains(where: ClusterOnboardingReady.isTestFailedNote) { return .testFailed }
+            return ClusterOnboardingReady.isNotOffered(reason) ? .notOffered : .offered
         }
         let starting = first.hasPrefix("Loading ") || first.hasPrefix("Starting ") || first.contains(": registering both Macs")
         return starting ? .starting : .notStarted
@@ -130,6 +134,12 @@ extension ClusterOnboardingDriver {
                 case .testFailed:
                     console.settle()
                     return followTestFailed(status, leader: leader, console)
+                case .notOffered:
+                    // The leading Mac's ✗, in its words: why, and where the pair answers meanwhile.
+                    console.settle()
+                    _ = showOutcome(status, console)
+                    console.say(retryOnLeaderLine(leader))
+                    return 1
                 case .starting, .notStarted:
                     break
                 }

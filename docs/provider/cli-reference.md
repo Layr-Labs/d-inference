@@ -707,8 +707,8 @@ Next: Leave both Macs running: Darkbloom retries by itself. Or serve locally onl
 
 | Exit status | `state` | Meaning |
 |---|---|---|
-| `0` | `serving` | The pair serves (through Darkbloom, or on the leading Mac's local API) |
-| `3` | `loading`, `not_serving`, `unknown` | Not serving yet: loading, or a reason in `reason` (such as macOS keeping a Mac off the local network, below) |
+| `0` | `serving` | The pair serves: through Darkbloom once the coordinator has it, or on the leading Mac's local API when it serves locally only |
+| `3` | `loading`, `not_serving`, `unknown` | Not serving yet: loading, or a reason in `reason` (such as macOS keeping a Mac off the local network, or a pair not offered to Darkbloom, below) |
 | `4` | `stopped` | Stopped (Stop in `darkbloom cluster`, or `darkbloom cluster stop`), also while the other Mac isn't answering |
 | `5` | `other_mac_away` | The pair is started and the other Mac isn't answering over the cable (its cluster service is off, it sleeps, or waits for a login) |
 | `6` | `not_paired` | This Mac isn't in a cluster |
@@ -728,6 +728,25 @@ ends. The DevNet app names "Darkbloom Dev" and `darkbloom-dev`.
   Network → turn on “Darkbloom” (on a Mac with no display, through Screen Sharing). Then run `darkbloom start` here,
   or choose Retry in `darkbloom cluster`." Once the setting is on, it clears when that Mac's follower gets through.
 - On both Macs, `lines` then holds that state's line, "Not serving: <reason>.", as the plain output's ✗ line does.
+
+A pair set to serve through Darkbloom that serves on the leading Mac's local API has no cluster approval attached, so
+the coordinator can't form it and it earns nothing. Both Macs read `not_serving` (exit 3), never `serving` or "earning
+through Darkbloom" (`OnboardingLive.notOfferedLines`):
+- `reason` is `not offered to Darkbloom (<why>)`: the leading Mac's latest approval check (for example `this Mac's
+  check refused it: Unequal tensor-parallel shares serve local clusters only …`), `no cluster approval is attached to
+  its setup`, or `the coordinator could not be reached or has no cluster support`.
+- `lines` add where it answers meanwhile: `Meanwhile it answers only on the local API at http://localhost:<port> (no
+  Darkbloom traffic).`
+- The plain output says `Serves: through Darkbloom (not offered)`; `serves` stays `darkbloom`, the way it is set to
+  serve.
+- `next` is "To offer it to Darkbloom: `darkbloom cluster` on <the leading Mac>, then choose the model again (it is
+  planned for Darkbloom). Or serve locally only: `darkbloom cluster local` on <the leading Mac>."
+- `darkbloom start` without a terminal stops waiting at once on this reason (exit 3).
+
+During a model or mode change, or while the pair updates Darkbloom, `status` and `cluster status` can read `stopped`
+(exit 4) or `unknown` for a minute or two while the pair is actually reloading. If such a change happened recently,
+or the status showed "Updating…", wait about a minute and check again before acting. Run `darkbloom start` only if it
+still reads `stopped`.
 
 A stopped pair reads `stopped` (exit 4) even while the other Mac isn't answering, as after a stop the other Mac asked
 for before it left (its uninstall does): `lines` are "Stopped; last model …" and "The other Mac (…) isn't answering

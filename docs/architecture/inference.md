@@ -418,8 +418,10 @@ at …", `ClusterOnboardingReady.summary`, from the setup each Mac saved). Every
 of a missing model is a list as well, a short one with its predicted time
 (`ClusterOnboardingDriver.provision`). The public-traffic line
 (`ClusterOnboardingModelChoice.publicTraffic`) is said only for a private image
-candidate; the serving line ends "(earning through Darkbloom)" or "(local
-only)" (`ClusterOnboardingDriver.servesWords`). When the other Mac does not
+candidate; a serving line on the leader's API ends "(local only)"
+(`ClusterOnboardingDriver.servesWords`): such a pair is never offered, so no line
+says it earns through Darkbloom, and one set to serve through Darkbloom says
+`not offered to Darkbloom (<why>)` instead (`OnboardingLive.notOfferedLines`). When the other Mac does not
 answer over the cable, the leader asks **Try again** or **Cancel**
 (`chooseAndServe`).
 
